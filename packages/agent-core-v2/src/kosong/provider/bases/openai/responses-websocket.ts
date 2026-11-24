@@ -758,6 +758,7 @@ export interface ResponsesWebSocketCreateOptions {
   readonly canonical?: ResponsesWebSocketCanonical | readonly unknown[] | string;
   readonly forceFullInput?: boolean;
   readonly baselinePolicyKey?: string;
+  readonly auxiliaryNonCommitting?: boolean;
   readonly canonicalOutput?: OutputProjection;
   readonly onFullInput?: (input: readonly unknown[]) => void;
 }
@@ -897,6 +898,14 @@ export class ResponsesWebSocketTransport {
     this._resolveRetire = undefined;
   }
 
+  isInFlight(): boolean {
+    return this._inFlight;
+  }
+
+  isActive(): boolean {
+    return !this._disposed && !this._retired;
+  }
+
   async request(
     fullParams: Record<string, unknown>,
     options: {
@@ -906,6 +915,7 @@ export class ResponsesWebSocketTransport {
       readonly suppressUserAgent?: boolean;
       readonly signal?: AbortSignal;
       readonly forceFullInput?: boolean;
+      readonly auxiliaryNonCommitting?: boolean;
       readonly baselinePolicyKey?: string;
       readonly canonicalOutput?: OutputProjection;
       readonly onFullInput?: (input: readonly unknown[]) => void;
@@ -1072,6 +1082,7 @@ export class ResponsesWebSocketTransport {
         primed.record,
         primed.delta,
         primed.retriedStateMiss,
+        options.auxiliaryNonCommitting === true,
       );
     } catch (error) {
       if (
@@ -1520,6 +1531,7 @@ export class ResponsesWebSocketTransport {
     initialRecord: SDKStreamRecord,
     initialDelta: boolean,
     initialRetriedStateMiss: boolean,
+    auxiliaryNonCommitting: boolean,
   ): AsyncGenerator<unknown> {
     const iterator = connection.stream;
     const capabilities = this._capabilities;
@@ -1582,7 +1594,13 @@ export class ResponsesWebSocketTransport {
             const canonicalPrefix = outputProjection === undefined && canonical.input !== undefined && completion !== undefined
               ? [...canonical.input, ...completion.output] : undefined;
             const stateBytes = prefix === undefined ? undefined : jsonBytes(prefix);
-            if (
+            if (auxiliaryNonCommitting) {
+              this._clearBaseline();
+              this._fullRebase = null;
+              if (!peerClosed && terminal === 'completed' && completion !== undefined) {
+                keepConnection = true;
+              }
+            } else if (
               (!peerClosed || capabilities?.version === 2) &&
               terminal === 'completed' && completion !== undefined && canonical.input !== undefined &&
               canonical.inputFingerprint !== undefined && prefix !== undefined &&

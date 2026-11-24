@@ -1714,11 +1714,64 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             estimateText: (text) => tokenCounting.estimateText(text),
             summarize: opts.seed === 'compact'
               ? async (settled, compactCount) => {
+                  const signal = new AbortController().signal;
+                  const canTrySourceHot =
+                    opts.turnIndex === undefined &&
+                    !anyActiveTurn &&
+                    opts.externalMaterialOnly !== true &&
+                    sourceHandle !== undefined;
+                  if (canTrySourceHot) {
+                    const sourceMain = sourceHandle.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
+                    if (sourceMain !== undefined) {
+                      const sourceStates = sourceMain.accessor.get(IAgentStateService);
+                      const sourceEpoch = sourceStates.get(contextWindowEpochKey);
+                      const sourceModel = sourceMain.accessor.get(IAgentProfileService).data().modelAlias;
+                      const targetModel = mainHandle.accessor.get(IAgentProfileService).data().modelAlias;
+                      const sourceHistory = sourceMain.accessor.get(IAgentContextMemoryService).get();
+                      const historyMatches =
+                        sourceEpoch === mainEpoch &&
+                        sourceModel === targetModel &&
+                        sourceHistory.length === settled.length &&
+                        sourceHistory.every((msg, idx) =>
+                          msg.role === settled[idx]?.role &&
+                          msg.id === settled[idx]?.id &&
+                          msg.toolCallId === settled[idx]?.toolCallId &&
+                          JSON.stringify(msg.content) === JSON.stringify(settled[idx]?.content) &&
+                          JSON.stringify(msg.toolCalls) === JSON.stringify(settled[idx]?.toolCalls),
+                        );
+                      if (historyMatches) {
+                        const sourceCompactor = sourceMain.accessor.get(IAgentFullCompactionService);
+                        if (typeof sourceCompactor.prepareSummary === 'function') {
+                          return sourceCompactor.prepareSummary({
+                            authorizedHistory: settled,
+                            compactCount,
+                            disposition: 'fork_seed',
+                            scope: {
+                              sessionId: sourceId,
+                              agentId: MAIN_AGENT_ID,
+                              windowEpoch: sourceEpoch,
+                              allowSourceCacheEnvelope: true,
+                            },
+                          }, signal);
+                        }
+                      }
+                    }
+                  }
                   const compactor = mainHandle.accessor.get(IAgentFullCompactionService);
-                  return compactor.prepareModelSwitchSummary(
-                    settled.slice(0, compactCount),
-                    new AbortController().signal,
-                  );
+                  if (typeof compactor.prepareSummary === 'function') {
+                    return compactor.prepareSummary({
+                      authorizedHistory: settled,
+                      compactCount,
+                      disposition: 'fork_seed',
+                      scope: {
+                        sessionId: targetId,
+                        agentId: MAIN_AGENT_ID,
+                        windowEpoch: mainEpoch,
+                        allowSourceCacheEnvelope: false,
+                      },
+                    }, signal);
+                  }
+                  return compactor.prepareModelSwitchSummary(settled, signal);
                 }
               : undefined,
           });

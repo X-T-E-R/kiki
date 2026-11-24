@@ -2115,6 +2115,7 @@ describe('FullCompaction', () => {
       messages:
         user: text "old user one"
         assistant: text "old assistant one"
+        user: text "run both tools"
         user: text <compaction-instruction>
     `);
     expect(ctx.context.get().map((message) => message.role)).toEqual([
@@ -2471,6 +2472,9 @@ describe('FullCompaction', () => {
           assistant: text "old assistant one"
           user: text "old user two"
           assistant: text "old assistant two"
+          user: text "recent user three"
+          assistant: text "recent assistant three"
+          user: text "Answer after compacting"
           user: text <compaction-instruction>
 
       call 2:
@@ -2973,7 +2977,10 @@ describe('FullCompaction', () => {
 
       expect(result.compactedCount).toBe(compactedCount);
       expect(ctx.llmCalls[0]?.history.slice(0, -1).map(messageText)).toEqual(
-        Array.from({ length: compactedCount }, (_, i) => `assistant ${String(i)}`),
+        Array.from({ length: 6 }, (_, i) => `assistant ${String(i)}`),
+      );
+      expect(messageText(ctx.llmCalls[0]?.history.at(-1))).toContain(
+        `Summarize ONLY messages 1 through ${String(compactedCount)} of the 6`,
       );
       expect(ctx.compactHistory()).toEqual([
         {

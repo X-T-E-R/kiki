@@ -34,6 +34,8 @@ export interface ResponsesTransportDiagnostics {
 
 export interface ResponsesRequestTransport {
   diagnostics?(): ResponsesTransportDiagnostics;
+  isInFlight?(): boolean;
+  isActive?(): boolean;
   request(params: Record<string, unknown>, options: {
     baseUrl: string;
     apiKey: string;
@@ -41,6 +43,7 @@ export interface ResponsesRequestTransport {
     signal?: AbortSignal;
     suppressUserAgent?: boolean;
     forceFullInput?: boolean;
+    auxiliaryNonCommitting?: boolean;
     baselinePolicyKey?: string;
     canonicalOutput?: (nativeOutput: readonly unknown[]) => ResponsesOutputProjection | undefined;
     onFullInput?: (input: readonly unknown[]) => void;

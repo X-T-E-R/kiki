@@ -1,5 +1,6 @@
 import { createDecorator } from '#/_base/di/instantiation';
 import type { AnthropicResponseCaptureInput, AnthropicResponseCaptureStatus } from './anthropicResponseCapture';
+import type { TurnCacheEnvelopeSummary } from './turnCacheEnvelope';
 import type { FinishReason, ResponseFormat, ThinkingEffort, ToolChoice } from '#/kosong/contract/provider';
 import type { Message, StreamedMessagePart } from '#/kosong/contract/message';
 import type { Tool } from '#/kosong/contract/tool';
@@ -24,6 +25,27 @@ export type AgentLLMRequestSource =
       readonly logFields?: AgentLLMRequestLogFields;
     };
 
+export type LLMRequestCacheInheritanceMode =
+  | 'none'
+  | 'last_turn_envelope_exclusive'
+  | 'last_turn_envelope_readonly';
+
+export type LLMRequestCacheInheritanceStatus =
+  | 'warm_envelope'
+  | 'size_degraded'
+  | 'cold_no_envelope'
+  | 'envelope_scope_mismatch'
+  | 'envelope_prefix_mismatch';
+
+export interface LLMRequestCacheInheritanceOptions {
+  readonly mode: LLMRequestCacheInheritanceMode;
+  readonly allowWarmEnvelope?: boolean;
+  readonly baseHistoryLength?: number;
+  readonly forceFullIncremental?: boolean;
+  readonly requireTextOnly?: boolean;
+  readonly coldFreezeKey?: string;
+}
+
 export interface AgentLLMRequestFinish {
   message: Message;
   usage: TokenUsage;
@@ -35,6 +57,7 @@ export interface AgentLLMRequestFinish {
   providerMessageId?: string;
   timing?: ModelRequestTiming;
   traceId?: string;
+  cacheInheritanceStatus?: LLMRequestCacheInheritanceStatus;
 }
 
 export type AgentLLMRequestPartHandler = (part: StreamedMessagePart, responseInstanceId?: string) => void | Promise<void>;
@@ -50,6 +73,7 @@ export interface AgentLLMRequestOverrides {
   toolChoice?: ToolChoice;
   responseFormat?: ResponseFormat;
   retry?: 'never';
+  cacheInheritance?: LLMRequestCacheInheritanceOptions;
   onAttemptRetry?: (mode: AgentLLMAttemptRetryMode) => void;
   onRequestAttempt?: () => void;
 }
@@ -69,6 +93,7 @@ export interface IAgentLLMRequesterService {
   prepareTurnConfig(turnId: number): PreparedTurnRequestConfig | undefined;
   supportsAssistantPrefill?(): boolean;
   invalidatePromptSnapshots(): number;
+  getTurnCacheEnvelopeSummary?(): TurnCacheEnvelopeSummary | undefined;
   /** Arms an in-memory, default-off diagnostic lease for this exact session/agent and provider/model/effort. Captures future Anthropic SSE bytes in a separate logs append-log, never request/auth headers or canonical history. Expiry is within two hours; 1–100 attempts, 8 MiB per response and 64 MiB per lease are ceilings, not coverage claims. */
   armAnthropicResponseCapture(input: AnthropicResponseCaptureInput): AnthropicResponseCaptureStatus;
   /** Flushes diagnostic records and returns their scope/key and capture health without returning payloads. Null means never armed; process or agent recreation does not restore a lease. */

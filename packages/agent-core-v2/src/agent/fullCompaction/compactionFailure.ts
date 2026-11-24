@@ -13,7 +13,17 @@ import {
 import { isAbortError } from '#/_base/utils/abort';
 import { MAX_RETRY_AFTER_MS, readRetryAfterMs } from '#/_base/utils/retry';
 import { sliceUtf16 } from '#/_base/text/utf16';
-import { Error2, isCodedError, readAttachedErrorDetails, toErrorDisplayMessage, toErrorPayload, unwrapErrorCause } from '#/errors';
+import { Error2, attachErrorDetails, isCodedError, readAttachedErrorDetails, toErrorDisplayMessage, toErrorPayload, unwrapErrorCause } from '#/errors';
+
+export class CompactionToolOutputError extends Error {
+  readonly code = 'compaction_tool_output';
+
+  constructor(message = 'Compaction summary attempted to call tools after text-only correction.') {
+    super(message);
+    this.name = 'CompactionToolOutputError';
+    attachErrorDetails(this, { retry: false, reason: 'compaction_tool_output' });
+  }
+}
 
 export function isStreamedSafetyRefusalText(text: string): boolean {
   return text.includes("This request was blocked by Gemini's filters.") && text.includes('generative-ai/use-policy');
@@ -106,6 +116,7 @@ function isBufferedStreamTerminal502(error: unknown, cause: unknown): boolean {
 
 export function isRetryableCompactionError(error: unknown, maxRetryAfterMs = MAX_RETRY_AFTER_MS): boolean {
   const cause = unwrapErrorCause(error);
+  if (error instanceof CompactionToolOutputError || cause instanceof CompactionToolOutputError) return false;
   if (isAbortError(error) || isAbortError(cause)) return false;
   const kind = compactionFailureKind(error);
   if (kind === 'filtered' || kind === 'auth' || kind === 'quota') return false;

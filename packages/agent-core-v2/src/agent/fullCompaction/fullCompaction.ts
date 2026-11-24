@@ -25,6 +25,27 @@ export interface FullCompactionTask {
   readonly committedResult?: CompactionResult;
 }
 
+export type SummaryScopeDisposition =
+  | 'replace_window'
+  | 'branch_seed'
+  | 'fork_seed'
+  | 'model_switch';
+
+export interface PrepareSummaryScope {
+  readonly sessionId?: string;
+  readonly agentId?: string;
+  readonly windowEpoch?: number;
+  readonly allowSourceCacheEnvelope?: boolean;
+}
+
+export interface PrepareSummaryInput {
+  readonly authorizedHistory: readonly import('#/agent/contextMemory/types').ContextMessage[];
+  readonly compactCount: number;
+  readonly disposition: SummaryScopeDisposition;
+  readonly scope?: PrepareSummaryScope;
+  readonly onSummarizing?: () => void | Promise<void>;
+}
+
 export interface IAgentFullCompactionService {
   readonly _serviceBrand: undefined;
 
@@ -33,6 +54,7 @@ export interface IAgentFullCompactionService {
   isCompacting(): boolean;
   begin(input: FullCompactionInput): boolean;
   cancel(): void;
+  prepareSummary(input: PrepareSummaryInput, signal: AbortSignal): Promise<string | undefined>;
   prepareModelSwitchSummary(history: readonly import('#/agent/contextMemory/types').ContextMessage[], signal: AbortSignal, onSummarizing?: () => void | Promise<void>): Promise<string | undefined>;
   getAutoCompact(): import('./autoCompact').ResolvedAutoCompact;
   getDefaultAutoCompact(): import('./autoCompact').ResolvedAutoCompact;

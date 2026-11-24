@@ -246,6 +246,12 @@ export class ModelRequesterImpl implements ModelRequester {
       rawResponseObserver: params?.rawResponseObserver,
       requestIdentity: params?.requestIdentity,
       responsesTransport: params?.responsesTransport,
+      forceFullResponsesInput: params?.forceFullResponsesInput,
+      responsesAuxiliaryNonCommitting: params?.responsesAuxiliaryNonCommitting,
+      inheritedAnthropicBreakpoints: params?.inheritedAnthropicBreakpoints,
+      anthropicThreadDisposition: params?.anthropicThreadDisposition,
+      anthropicThinkingBudgetOverride: params?.anthropicThinkingBudgetOverride,
+      onProviderCacheEvidence: params?.onProviderCacheEvidence,
       responseFormat: input.responseFormat,
     };
 
@@ -285,6 +291,17 @@ export class ModelRequesterImpl implements ModelRequester {
             const provider = this.resolveChatProvider();
             const responsesBaselinePolicyKey = this.adapterBindingKey === undefined ? options.responsesBaselinePolicyKey :
               JSON.stringify([this.adapterBindingKey, options.responsesBaselinePolicyKey]);
+            const providerEvidenceHandler = params.onProviderCacheEvidence === undefined
+              ? undefined
+              : (evidence: import('#/kosong/contract/provider').ProviderCacheEvidence) => {
+                  params.onProviderCacheEvidence?.({
+                    effectiveMaxCompletionTokens: options.maxCompletionTokens,
+                    ...evidence,
+                  });
+                };
+            if (providerEvidenceHandler !== undefined && this.model.protocol !== 'anthropic') {
+              providerEvidenceHandler({});
+            }
             return await generate(
               provider,
               input.systemPrompt,
@@ -300,7 +317,15 @@ export class ModelRequesterImpl implements ModelRequester {
                   });
                 },
               },
-              { ...options, signal: requestSignal, auth, responsesTransport, responsesWebSocket: selection?.config, responsesBaselinePolicyKey },
+              {
+                ...options,
+                onProviderCacheEvidence: providerEvidenceHandler,
+                signal: requestSignal,
+                auth,
+                responsesTransport,
+                responsesWebSocket: selection?.config,
+                responsesBaselinePolicyKey,
+              },
             );
           } finally {
             permit?.release();

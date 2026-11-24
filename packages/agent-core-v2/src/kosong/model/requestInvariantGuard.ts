@@ -84,7 +84,7 @@ export function verifyAndApplyPreBaselinePatch(
       Math.min(patch.maxCompletionTokens, options.maxCompletionTokens ?? Infinity),
     requestParams: options.requestParams,
     deterministicVendorFields: vendor,
-    forceFullResponsesInput: patch.forceFullResponsesInput === true,
+    forceFullResponsesInput: options.forceFullResponsesInput === true || patch.forceFullResponsesInput === true,
     responsesBaselinePolicyKey: JSON.stringify([thinking?.effort ?? null, vendor]),
   };
 }

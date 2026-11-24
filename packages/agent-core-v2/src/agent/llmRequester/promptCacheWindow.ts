@@ -86,4 +86,39 @@ export class PromptCacheWindow {
     projected.push(...messages.slice(start));
     return { text: this.extension.baseline, messages: projected };
   }
+
+  snapshotExtensions(): {
+    readonly baseline: string;
+    readonly updates: readonly { readonly index: number; readonly message: Message }[];
+  } | undefined {
+    if (this.extension === undefined) return undefined;
+    return {
+      baseline: this.extension.baseline,
+      updates: this.extensionUpdates.map((update) => ({
+        index: update.index,
+        message: update.message,
+      })),
+    };
+  }
+}
+
+export function applyExtensionUpdatesSnapshot(
+  updates: readonly { readonly index: number; readonly message: Message }[],
+  messages: readonly Message[],
+  baseHistoryLength?: number,
+): Message[] {
+  if (updates.length === 0) return [...messages];
+  const limit = baseHistoryLength === undefined
+    ? messages.length
+    : Math.min(baseHistoryLength, messages.length);
+  const projected: Message[] = [];
+  let start = 0;
+  for (const update of updates) {
+    if (update.index > limit) continue;
+    const at = Math.min(Math.max(start, update.index), limit);
+    projected.push(...messages.slice(start, at), update.message);
+    start = at;
+  }
+  projected.push(...messages.slice(start));
+  return projected;
 }

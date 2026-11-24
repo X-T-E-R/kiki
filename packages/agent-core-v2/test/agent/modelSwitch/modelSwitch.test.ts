@@ -229,7 +229,7 @@ describe('model switch engine', () => {
   it('does not commit after the active context changes during asynchronous preparation', async () => {
     const ctx = await createHost();
     appendOldContext(ctx);
-    vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareModelSwitchSummary').mockImplementation(async () => {
+    vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareSummary').mockImplementation(async () => {
       ctx.appendUserMessage([{ type: 'text', text: 'A newly delivered input' }]);
       return 'Prepared summary';
     });
@@ -288,7 +288,7 @@ describe('model switch engine', () => {
     await metadata.registerAgent('main', { type: 'main', model: OLD, labels: { preserved: 'label' } });
     const update = metadata.updateAgent.bind(metadata);
     vi.spyOn(metadata, 'updateAgent').mockRejectedValueOnce(new Error2(ErrorCodes.STORAGE_IO_FAILED, 'metadata projection unavailable')).mockImplementation(update);
-    const summary = vi.spyOn(restored.get(IAgentFullCompactionService), 'prepareModelSwitchSummary');
+    const summary = vi.spyOn(restored.get(IAgentFullCompactionService), 'prepareSummary');
     const status = vi.spyOn(restored.get(IAgentProfileService), 'republishStatus');
     expect(service.get(input.operationId)?.state).toBe('preparing');
     expect(await service.execute(input)).toMatchObject({ state: 'preparing', error: { code: ErrorCodes.STORAGE_IO_FAILED } });
@@ -360,7 +360,7 @@ describe('model switch engine', () => {
     const liveTasks = [{ taskId: 'process-1', kind: 'process' as const, status: 'running' as const, description: 'Isolated worker',
       startedAt: 1, endedAt: null, command: 'test', pid: 123, exitCode: null }];
     vi.spyOn(ctx.get(IAgentTaskService), 'list').mockReturnValue(liveTasks);
-    vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareModelSwitchSummary').mockImplementation(async () => {
+    vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareSummary').mockImplementation(async () => {
       ctx.get(ISessionTodoService).setNotes({ next: 'New state written during preparation' }, { turnId: 4, step: 1, toolCallId: 'notes-during-prepare' });
       return 'Portable summary';
     });
@@ -535,7 +535,7 @@ describe('model switch engine', () => {
     appendOldContext(ctx);
     const prepared = await ctx.get(IAgentProfileService).prepareModelSwitchBinding(NEW);
     const binding = { ...prepared, maxContextTokens: undefined, reservedTokens: undefined };
-    const summary = vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareModelSwitchSummary');
+    const summary = vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareSummary');
     const before = ctx.get(IAgentContextMemoryService).get();
     for (const mode of ['fresh', 'compact'] as const) {
       expect(await ctx.get(IAgentModelSwitchService).execute({ operationId: `unsupported-${mode}`, model: NEW, mode }, { binding }))

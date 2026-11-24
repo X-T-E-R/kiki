@@ -95,6 +95,10 @@ import {
   type AnthropicThreadTrackerOptions,
   type PreparedAnthropicThreadRequest,
 } from './anthropic-threads';
+import {
+  assertAnthropicBreakpointsValid,
+  planAndApplyAnthropicMessageBreakpoints,
+} from './anthropic-cache-breakpoints';
 import { mergeConsecutiveUserMessages } from '../merge-user-messages';
 import { isGeminiModel } from '#/kosong/contract/modelFamily';
 import {
@@ -303,36 +307,11 @@ function budgetTokensForEffort(effort: ThinkingEffort): number | undefined {
 
 const CACHE_CONTROL = { type: 'ephemeral' as const };
 
-type CacheableBlock = ContentBlockParam & { cache_control?: { type: 'ephemeral' } };
-
 function shouldPreserveUnsignedThinking(model: string): boolean {
   return (
     parseAnthropicModelVersion(model) === null &&
     matchKnownAnthropicModelProfile(model) === undefined
   );
-}
-
-const CACHEABLE_TYPES = new Set([
-  'text',
-  'image',
-  'document',
-  'search_result',
-  'tool_use',
-  'tool_result',
-  'server_tool_use',
-  'web_search_tool_result',
-]);
-
-function injectCacheControlOnLastBlock(messages: MessageParam[]): void {
-  const lastMessage = messages.at(-1);
-  if (lastMessage === undefined) return;
-  const content = lastMessage.content;
-  if (!Array.isArray(content) || content.length === 0) return;
-  const lastBlock = content.at(-1) as CacheableBlock | undefined;
-  if (lastBlock === undefined) return;
-  if (CACHEABLE_TYPES.has(lastBlock.type)) {
-    lastBlock.cache_control = CACHE_CONTROL;
-  }
 }
 
 function isToolResultOnly(message: MessageParam): boolean {
@@ -1340,8 +1319,6 @@ export class AnthropicChatProvider implements ChatProvider {
       },
     );
 
-    injectCacheControlOnLastBlock(messages);
-
     let kwargs: AnthropicGenerationKwargs = { ...this._generationKwargs };
     let useBetaApi = this._betaApi;
 
@@ -1406,9 +1383,10 @@ export class AnthropicChatProvider implements ChatProvider {
           'Anthropic budget thinking requires max_tokens greater than 1024; increase the output cap or disable thinking for a model that supports it.',
         );
       }
+      const requestedBudget = options?.anthropicThinkingBudgetOverride ?? kwargs.thinking.budget_tokens;
       kwargs = {
         ...kwargs,
-        thinking: { ...kwargs.thinking, budget_tokens: Math.min(kwargs.thinking.budget_tokens, kwargs.max_tokens - 1) },
+        thinking: { ...kwargs.thinking, budget_tokens: Math.max(1024, Math.min(requestedBudget, kwargs.max_tokens - 1)) },
       };
     }
 
@@ -1470,6 +1448,22 @@ export class AnthropicChatProvider implements ChatProvider {
     if (metadata !== undefined) {
       createParams['metadata'] = metadata;
     }
+
+    const breakpointPlan = planAndApplyAnthropicMessageBreakpoints(
+      createParams,
+      messages,
+      options?.inheritedAnthropicBreakpoints,
+    );
+    assertAnthropicBreakpointsValid(createParams);
+    options?.onProviderCacheEvidence?.({
+      anthropic: {
+        messageBreakpoints: breakpointPlan.applied,
+        fixedBreakpointCount: breakpointPlan.fixedCount,
+        effectiveMaxTokens: kwargs.max_tokens,
+        effectiveThinkingBudget:
+          kwargs.thinking?.type === 'enabled' ? kwargs.thinking.budget_tokens : undefined,
+      },
+    });
 
     if (
       options?.requestIdentity?.suppressUserAgent === true &&
@@ -1577,26 +1571,36 @@ export class AnthropicChatProvider implements ChatProvider {
       fallbacks: createParams['fallbacks'],
       betas: mergeBetaTokens(baseBetas, [MESSAGE_THREADS_BETA]),
     });
+    const threadDisposition = options?.anthropicThreadDisposition ?? 'turn';
+    const commitThread = threadDisposition === 'turn';
+    const readonlyThread = threadDisposition === 'auxiliary_readonly';
     const threadInput = {
       scopeKey: threadScopeKey,
       baseBody: createParams,
       messages,
       baseBetas,
       fixedHash,
+      allowedBreakpoints: breakpointPlan.allowedKeys,
+      fixedBreakpointCount: breakpointPlan.fixedCount,
+      threadDisposition,
     };
     let currentAttempt: PreparedAnthropicThreadRequest = this._threadTracker.prepare(threadInput);
     let replayedAsCreate = false;
 
     for (;;) {
       try {
+        assertAnthropicBreakpointsValid(
+          currentAttempt.body,
+          currentAttempt.kind === 'continue' ? breakpointPlan.fixedCount : 0,
+        );
         const response = await sendAttempt(currentAttempt.body, currentAttempt.betas);
-        const settlementContext = extractAnthropicThreadSettlementContext(currentAttempt);
+        const settlementContext = commitThread ? extractAnthropicThreadSettlementContext(currentAttempt) : undefined;
         return guardRequestDelivery(
           new AnthropicStreamedMessage(
             response,
             this._stream,
             this._hooks?.convertError,
-            this._createThreadSettlementCallback(settlementContext),
+            settlementContext === undefined ? undefined : this._createThreadSettlementCallback(settlementContext),
           ),
           this._guardDelivery,
         );
@@ -1606,7 +1610,7 @@ export class AnthropicChatProvider implements ChatProvider {
         }
         const classified = classifyAnthropicThreadError(error, currentAttempt.kind);
         if (classified.kind === 'replay' && currentAttempt.kind === 'continue' && !replayedAsCreate) {
-          this._threadTracker.delete(threadScopeKey);
+          if (!readonlyThread) this._threadTracker.delete(threadScopeKey);
           if (classified.errorCode === 'thread_not_found' && currentAttempt.replacesLostThread) {
             this._threadTracker.markTargetUnsupported(targetKey);
             break;
@@ -1619,7 +1623,7 @@ export class AnthropicChatProvider implements ChatProvider {
           continue;
         }
         if (classified.kind === 'unsupported') {
-          this._threadTracker.delete(threadScopeKey);
+          if (!readonlyThread) this._threadTracker.delete(threadScopeKey);
           this._threadTracker.markTargetUnsupported(targetKey);
           break;
         }
@@ -1628,6 +1632,7 @@ export class AnthropicChatProvider implements ChatProvider {
     }
 
     const unthreaded = this._threadTracker.buildUnthreaded(threadInput);
+    assertAnthropicBreakpointsValid(unthreaded.body);
     try {
       const response = await sendAttempt(unthreaded.body, unthreaded.betas);
       return guardRequestDelivery(

@@ -340,7 +340,7 @@ describe('model switch control queue with real engine', () => {
     const history = ctx.get(IAgentContextMemoryService).get();
     const entered = deferred<void>();
     const release = deferred<void>();
-    vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareModelSwitchSummary').mockImplementation(async (_history, signal) => {
+    vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareSummary').mockImplementation(async (_input, signal) => {
       entered.resolve(); await release.promise; signal.throwIfAborted();
       throw new Error('Example summary failed');
     });
@@ -1530,7 +1530,7 @@ describe('model switch control queue with real engine', () => {
     const ctx = await host();
     ctx.get(IAgentContextMemoryService).append({ role: 'user', content: [{ type: 'text', text: 'Existing task.' }], toolCalls: [] });
     const svc = ctx.get(IAgentPromptService);
-    const summary = vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareModelSwitchSummary').mockRejectedValueOnce(new Error('offline'));
+    const summary = vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareSummary').mockRejectedValueOnce(new Error('offline'));
     expect(await svc.switchModel({ operationId: 'failed', model: NEW, mode: 'compact' })).toMatchObject({ state: 'failed' });
     const dependent = await svc.enqueue({ id: 'dependent', message: { role: 'user', content: [{ type: 'text', text: 'Wait for successful switch.' }], toolCalls: [] }, execution: { afterModelSwitch: 'failed' } });
     expect(dependent.state).toBe('pending');
@@ -1718,7 +1718,7 @@ describe('model switch recovery actions', () => {
     const ctx = await host();
     const svc = ctx.get(IAgentPromptService);
     const entered = deferred<void>();
-    vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareModelSwitchSummary').mockImplementation(async (_history, signal) => {
+    vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareSummary').mockImplementation(async (_input, signal) => {
       entered.resolve();
       await new Promise<void>((_resolve, reject) => { signal.addEventListener('abort', () => { reject(signal.reason); }, { once: true }); });
       return undefined;
