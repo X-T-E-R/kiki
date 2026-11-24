@@ -317,13 +317,44 @@ function readAllStoredComposerScalars(): Record<string, PersistedComposerScalars
   }
 }
 
+function samePersistedModelChoice(
+  left: ComposerModelChoice | undefined,
+  right: ComposerModelChoice | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined) return false;
+  return left.model === right.model && left.thinking === right.thinking;
+}
+
+function samePersistedComposerScalars(
+  left: PersistedComposerScalars,
+  right: PersistedComposerScalars,
+): boolean {
+  return (
+    left.modelOverride === right.modelOverride &&
+    left.effortOverride === right.effortOverride &&
+    left.modelSwitchMode === right.modelSwitchMode &&
+    samePersistedModelChoice(left.modelChoice, right.modelChoice) &&
+    samePersistedModelChoice(left.effortChoice, right.effortChoice)
+  );
+}
+
 function persistComposerScalars(
   sessionId: string,
   scalars: PersistedComposerScalars,
 ): void {
   if (!draftsEnabled()) return;
+  const empty = scalars.modelOverride === undefined && scalars.effortOverride === undefined;
+  if (empty) {
+    try {
+      if (spaceStorage.getItem(PERSISTED_COMPOSER_STATE_KEY) === null) return;
+    } catch {
+      return;
+    }
+  }
   const all = readAllStoredComposerScalars();
-  if (scalars.modelOverride === undefined && scalars.effortOverride === undefined) {
+  if (empty) {
+    if (!(sessionId in all)) return;
     delete all[sessionId];
   } else {
     all[sessionId] = scalars;
@@ -422,14 +453,20 @@ export function readComposerState(
 }
 
 export function writeComposerState(sessionId: string, state: ComposerSessionState): void {
-  composerMemoryForScope().set(sessionId, state);
-  persistComposerScalars(sessionId, {
+  const scoped = composerMemoryForScope();
+  const previous = scoped.get(sessionId);
+  scoped.set(sessionId, state);
+  const nextScalars: PersistedComposerScalars = {
     modelOverride: state.modelOverride,
     effortOverride: state.effortOverride,
     modelChoice: state.modelChoice,
     effortChoice: state.effortChoice,
     modelSwitchMode: state.modelSwitchMode,
-  });
+  };
+  if (previous !== undefined && samePersistedComposerScalars(previous, nextScalars)) {
+    return;
+  }
+  persistComposerScalars(sessionId, nextScalars);
 }
 
 export function clearComposerState(sessionId: string): void {

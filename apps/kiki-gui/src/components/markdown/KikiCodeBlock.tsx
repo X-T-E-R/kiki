@@ -22,6 +22,7 @@ import { afterPaint } from '../../lib/afterPaint';
 import { usePhoneMode } from '../../lib/layoutHooks';
 import { pushToast } from '../../lib/toasts';
 import { Icon } from '../icons';
+import { unwrapDomAnnotationMarks } from './domAnnotationMarks';
 import { useMermaidEngine } from './streamdown-plugins';
 
 /** A settled fence longer than this collapses behind "View more". */
@@ -107,6 +108,7 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
   // reload, a row scrolled back into view) starts collapsed.
   const [expanded, setExpanded] = useState(isIncomplete === true);
   const [copied, setCopied] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { code, language } = extractCode(children);
   const lines = code === '' ? [] : code.split('\n');
@@ -169,6 +171,7 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
       </div>
 
       <div
+        ref={bodyRef}
         className="kiki-cb-body overflow-x-auto"
         style={{
           maxHeight: collapsed
@@ -191,7 +194,10 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
       {canCollapse ? (
         <button
           type="button"
-          onClick={() => { setExpanded((value) => !value); }}
+          onClick={() => {
+            if (bodyRef.current !== null) unwrapDomAnnotationMarks(bodyRef.current);
+            setExpanded((value) => !value);
+          }}
           aria-expanded={expanded}
           className="kiki-cb-toggle flex min-h-7 w-full items-center justify-center gap-1 border-t border-hairline font-sans text-[12px] text-ink-faint transition-colors hover:bg-paper/60 hover:text-ink"
         >

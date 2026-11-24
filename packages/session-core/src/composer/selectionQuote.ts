@@ -29,18 +29,91 @@ export interface SelectionQuote {
   readonly source?: SelectionSourceAnchor | null;
 }
 
+const MAX_VERSION_CACHE = 128;
+const sourceVersionCache = new Map<string, string>();
+
+const MAX_CANONICAL_INDEX_CACHE = 16;
+
+interface CanonicalTextIndex {
+  readonly canonical: string;
+  readonly offsets: Int32Array;
+}
+
+const canonicalIndexCache = new Map<string, CanonicalTextIndex>();
+
+function isAsciiWhitespace(code: number): boolean {
+  return code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d || code === 0x0b || code === 0x0c;
+}
+
+function getCanonicalTextIndex(text: string): CanonicalTextIndex {
+  const cached = canonicalIndexCache.get(text);
+  if (cached !== undefined) {
+    canonicalIndexCache.delete(text);
+    canonicalIndexCache.set(text, cached);
+    return cached;
+  }
+  const length = text.length;
+  const canonical = canonicalSelectionText(text);
+  const offsets = new Int32Array(canonical.length);
+  let kept = 0;
+  for (let index = 0; index < length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code <= 0x20) {
+      if (isAsciiWhitespace(code)) continue;
+    } else if (code >= 0x80 && /\s/u.test(text[index]!)) {
+      continue;
+    }
+    offsets[kept] = index;
+    kept += 1;
+  }
+  const entry: CanonicalTextIndex = {
+    canonical,
+    offsets: kept === offsets.length ? offsets : offsets.subarray(0, kept),
+  };
+  if (canonicalIndexCache.size >= MAX_CANONICAL_INDEX_CACHE) {
+    const oldest = canonicalIndexCache.keys().next().value;
+    if (oldest !== undefined) canonicalIndexCache.delete(oldest);
+  }
+  canonicalIndexCache.set(text, entry);
+  return entry;
+}
+
 /** Whitespace differs between streaming paragraphs and a whole-document parse. */
 export function canonicalSelectionText(text: string): string {
   return text.replaceAll(/\s/gu, '');
 }
 
 export function sourceTextVersion(text: string): string {
+  if (typeof text === 'string') {
+    const cached = sourceVersionCache.get(text);
+    if (cached !== undefined) {
+      sourceVersionCache.delete(text);
+      sourceVersionCache.set(text, cached);
+      return cached;
+    }
+    let hash = 2166136261;
+    const length = text.length;
+    for (let index = 0; index < length; ) {
+      const cp = text.codePointAt(index)!;
+      hash = Math.imul(hash ^ cp, 16777619);
+      index += cp > 0xffff ? 2 : 1;
+    }
+    const unsigned = hash < 0 ? hash + 0x1_0000_0000 : hash;
+    const version = `${length}-${unsigned.toString(16)}`;
+    if (sourceVersionCache.size >= MAX_VERSION_CACHE) {
+      const oldest = sourceVersionCache.keys().next().value;
+      if (oldest !== undefined) sourceVersionCache.delete(oldest);
+    }
+    sourceVersionCache.set(text, version);
+    return version;
+  }
+  const iterable = text as unknown as Iterable<string> & { readonly length: number };
   let hash = 2166136261;
-  for (const character of text) {
+  for (const character of iterable) {
     hash = Math.imul(hash ^ (character.codePointAt(0) ?? 0), 16777619);
   }
   const unsigned = hash < 0 ? hash + 0x1_0000_0000 : hash;
-  return `${text.length}-${unsigned.toString(16)}`;
+  return `${iterable.length}-${unsigned.toString(16)}`;
 }
 
 /** Capture the actual message and rendered occurrence, before focus collapses selection. */
@@ -96,17 +169,12 @@ export function parseSourceAnchor(line: string): SelectionSourceAnchor | null {
 
 /** Resolve only the captured rendered occurrence, without quote searching. */
 export function anchoredSelectionRange(text: string, source: SelectionSourceAnchor): { start: number; end: number } | null {
-  const offsets: number[] = [];
-  let canonical = '';
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index]!;
-    if (/\s/u.test(character)) continue;
-    offsets.push(index);
-    canonical += character;
-  }
-  if (canonical.slice(source.start, source.end) !== source.text) return null;
-  const start = offsets[source.start];
-  const last = offsets[source.end - 1];
+  if (source.start < 0 || source.end <= source.start) return null;
+  const indexed = getCanonicalTextIndex(text);
+  if (source.end > indexed.canonical.length) return null;
+  if (!indexed.canonical.startsWith(source.text, source.start)) return null;
+  const start = indexed.offsets[source.start];
+  const last = indexed.offsets[source.end - 1];
   return start === undefined || last === undefined ? null : { start, end: last + 1 };
 }
 

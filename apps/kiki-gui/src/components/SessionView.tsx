@@ -2874,7 +2874,6 @@ export function SessionView({
     composerOwnerActive,
     timelineBlocksRef: mainTranscriptBlocksRef,
     annotations: {
-      annotations,
       setAnnotations,
       annotationsRef: draftSelectionsRef,
       surface: annotationSurface,
@@ -3695,7 +3694,8 @@ export function SessionView({
         // annotations first (blockquote + comment per segment), then the plain
         // quote as a Markdown blockquote — exactly what the transcript renders
         // back. The wire protocol stays untouched.
-        const carry = serializeSelectionCarryover(annotations, text, options?.presentation);
+        const currentAnnotations = draftSelectionsRef.current;
+        const carry = serializeSelectionCarryover(currentAnnotations, text, options?.presentation);
         const content = options?.firstMessage?.submission?.content ?? buildPromptContent(carry.quotedText, composerAttachments, carry.presentation);
         if (content === null || pendingSendRef.current) return;
         const textPart = content.find((part) => part.type === 'text');
@@ -3739,7 +3739,7 @@ export function SessionView({
           refresh: () => { void controller.refreshSession(); },
         });
         if (options?.now === true) {
-          const sentAnnotationsNow = annotations;
+          const sentAnnotationsNow = currentAnnotations;
           const sentNowIds = new Set(sentAnnotationsNow.map((annotation) => annotation.id));
           let compositionReleased = false;
           const releaseComposition = () => {
@@ -3879,7 +3879,7 @@ export function SessionView({
         }
         // The captured payload, notes and identity belong to X, not whatever
         // the user composes after a failure toast appears.
-        const sentAnnotations = annotations;
+        const sentAnnotations = currentAnnotations;
         const sentIds = new Set(sentAnnotations.map((annotation) => annotation.id));
         const restoreCapturedSubmission = () => {
           if (composerOwnerActive.current) {
@@ -4242,7 +4242,6 @@ boundExecution,
     liveSettings.defaultAppendTiming,
     modelSwitches.switches,
     modelSwitches.refresh,
-    annotations,
     sessionId,
     t,
     updateDraft,
@@ -5129,7 +5128,7 @@ boundExecution,
         setAnnotations(edit.savedAnnotations);
       };
       const item = queuedItems.find((entry) => entry.promptId === edit.promptId);
-      const carry = selectionCarryoverPresentation(annotations, []);
+      const carry = selectionCarryoverPresentation(draftSelectionsRef.current, []);
       const prepared = reconcileEditedThreadRefs(edit.original, { text, presentation: argumentPresentation });
       const presentation: import('@kiki/transcript').TextPresentation = {
         spans: [
@@ -5154,7 +5153,7 @@ boundExecution,
         .then(exit)
         .catch(() => undefined);
     },
-    [queueEdit, queuedItems, annotations, actions, updateDraft, handleQueueEditLeftQueue],
+    [queueEdit, queuedItems, actions, updateDraft, handleQueueEditLeftQueue],
   );
   const handleQueueEditCancel = useCallback(() => {
     const edit = queueEditRef.current;

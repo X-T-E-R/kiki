@@ -300,7 +300,7 @@ export type SharedWorkspaceComposerProps = Pick<
   | 'onChange'
   | 'attachments'
   | 'onChangeAttachments'
-  | 'annotations'
+  | 'annotationStore'
   | 'onRemoveAnnotation'
   | 'onUpdateAnnotation'
   | 'onLocateAnnotation'
@@ -436,6 +436,7 @@ export function useAgentWorkspaceCore(
     agentId,
     blocks: () => timelineBlocksRef.current,
     isMutationLocked: isAnnotationMutationLocked,
+    persistComposerState,
   });
 
   const composerOwnerActive = useRef(true);
@@ -552,7 +553,7 @@ export function useAgentWorkspaceCore(
     const chrome = readComposerState(storageKey);
     writeComposerState(storageKey, {
       attachments,
-      annotations: annotations.annotations,
+      annotations: annotations.annotationsRef.current,
       quotes: [],
       quote: null,
       quoteSource: undefined,
@@ -591,7 +592,6 @@ export function useAgentWorkspaceCore(
     persistComposerState,
     storageKey,
     attachments,
-    annotations.annotations,
     extraComposerState?.permissionMode,
     extraComposerState?.planMode,
     extraComposerState?.planGate,
@@ -870,7 +870,7 @@ export function useAgentWorkspaceCore(
     onChange: updateDraft,
     attachments,
     onChangeAttachments: updateAttachments,
-    annotations: annotations.annotations,
+    annotationStore: annotations.surface.store,
     onRemoveAnnotation: annotations.onRemove,
     onUpdateAnnotation: annotations.onUpdate,
     onLocateAnnotation: annotations.onLocate,
@@ -888,7 +888,7 @@ export function useAgentWorkspaceCore(
     updateDraft,
     attachments,
     updateAttachments,
-    annotations.annotations,
+    annotations.surface.store,
     annotations.onRemove,
     annotations.onUpdate,
     annotations.onLocate,

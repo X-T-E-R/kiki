@@ -134,6 +134,10 @@ import { resolveProfileIcon } from '../lib/profileIcon';
 import { ImageTile, QuoteChip, SkillChip, TextTile } from './ContextChips';
 import { ComposerFileTile } from './fileContextMenu';
 import { ComposerNotes } from './ComposerNotes';
+import {
+  useSubscribedAnnotations,
+  type ConversationAnnotationStore,
+} from './agent-workspace/useConversationAnnotations';
 import { ContextMeter, type ContextMeterAutoCompact, type ContextMeterCompactAvailability, type ContextMeterUsage } from './ContextMeter';
 import { LifeMark } from './LifeMark';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -439,7 +443,8 @@ export function Composer({
   onRemoveQuote,
   quotes,
   onRemoveQuoteItem,
-  annotations,
+  annotations: annotationsProp,
+  annotationStore,
   onRemoveAnnotation,
   onChangeAttachments,
   onActivateSkill,
@@ -622,6 +627,8 @@ export function Composer({
   onRemoveQuoteItem?: (id: string) => void;
   /** Selection annotations (quote + comment) accumulating beside the quote. */
   annotations?: readonly SelectionAnnotation[];
+  /** Scoped draft annotation store — avoids re-rendering host workspace views on note edits. */
+  annotationStore?: ConversationAnnotationStore;
   onRemoveAnnotation?: (id: string) => void;
   /**
    * Setter accepting a next array or an updater over the previous one. The
@@ -799,6 +806,7 @@ export function Composer({
    */
   engine?: ComposerEngine;
 }) {
+  const annotations = useSubscribedAnnotations(annotationStore, annotationsProp);
   const quoteItems = quotes ?? (quote === undefined || quote === null ? [] : [{ id: 'legacy-quote', quote }]);
   const host = useHost();
   const vscodeRuntime = isVscodeWebview();

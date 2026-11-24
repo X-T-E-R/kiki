@@ -226,7 +226,12 @@ describe('precise rendered source marks', () => {
     expect(outsideBubble?.getAttribute('data-annotation-ref')).toBe('ta-code-chip');
     expect(outsideBubble?.querySelector('svg path')).not.toBeNull();
     expect(container.innerHTML).not.toContain('💬');
-    // Unannotated fenced code block still renders through Streamdown CodeBlock (Shiki).
+    // Unannotated fenced code block still renders through Streamdown CodeBlock (Shiki) after KikiCodeBlock's afterPaint upgrade.
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => { requestAnimationFrame(() => { setTimeout(resolve, 0); }); });
+      });
+    });
     expect(container.querySelector('[data-streamdown="code-block"]')).not.toBeNull();
   });
 });

@@ -12,6 +12,8 @@ import type { ComponentProps } from 'react';
 import { cjk } from '@streamdown/cjk';
 import type { Streamdown } from 'streamdown';
 
+import { unwrapDomMarksInCodeBlocks } from './domAnnotationMarks';
+
 type PluginConfig = NonNullable<ComponentProps<typeof Streamdown>['plugins']>;
 type CodePlugin = NonNullable<PluginConfig['code']>;
 type MathPlugin = NonNullable<PluginConfig['math']>;
@@ -102,13 +104,19 @@ const LAZY_CODE: CodePlugin = {
   getSupportedLanguages: () => loaded.code?.getSupportedLanguages() ?? [],
   supportsLanguage: (language) => loaded.code?.supportsLanguage(language) ?? true,
   highlight(options, callback) {
-    if (loaded.code !== undefined) return loaded.code.highlight(options, callback);
+    const safeCallback = callback === undefined
+      ? undefined
+      : (result: Parameters<NonNullable<typeof callback>>[0]) => {
+          unwrapDomMarksInCodeBlocks();
+          callback(result);
+        };
+    if (loaded.code !== undefined) return loaded.code.highlight(options, safeCallback);
     ensure('code');
     void codeFlight?.then((plugin) => {
-      const result = plugin?.highlight(options, callback);
+      const result = plugin?.highlight(options, safeCallback);
       // The maintained highlighter can return cached tokens synchronously.
       // eslint-disable-next-line promise/no-callback-in-promise
-      if (result !== null && result !== undefined) callback?.(result);
+      if (result !== null && result !== undefined) safeCallback?.(result);
     });
     return null;
   },

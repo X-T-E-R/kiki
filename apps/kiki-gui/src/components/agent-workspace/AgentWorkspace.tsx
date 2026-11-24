@@ -277,7 +277,7 @@ function WorkspaceSurface({
         ? timeline
         : {
             ...timeline,
-            draftAnnotations: annotations.items,
+            draftAnnotationStore: annotations.store,
             onSaveDraftAnnotation: annotations.onUpdate,
             onRemoveDraftAnnotation: annotations.onRemove,
           },
@@ -987,7 +987,7 @@ function ChildAgentWorkspace({
     submissionInFlight,
     timelineBlocksRef,
     annotations: {
-      annotations,
+      annotationsRef,
       setAnnotations,
       surface: annotationSurface,
     },
@@ -1183,7 +1183,7 @@ function ChildAgentWorkspace({
   ) => {
     if (!agentKnown || isPendingSubmissionInFlight(draftKey, sendScope)) return;
     const rawDraftText = draftRef.current;
-    const carry = serializeSelectionCarryover(annotations, text, options?.presentation);
+    const carry = serializeSelectionCarryover(annotationsRef.current, text, options?.presentation);
     const submittedText = carry.quotedText;
     const content = buildPromptContent(submittedText, composerAttachments, carry.presentation);
     if (content === null) return;
@@ -1394,7 +1394,7 @@ function ChildAgentWorkspace({
   ) => {
     if (!agentKnown || isPendingSubmissionInFlight(draftKey, sendScope)) return;
     const submittedDraft = projectPresentedText(text, presentation);
-    const carry = serializeSelectionCarryover(annotations, text, presentation);
+    const carry = serializeSelectionCarryover(annotationsRef.current, text, presentation);
     const content = buildPromptContent(carry.quotedText, composerAttachments, carry.presentation);
     if (content === null) return;
     if (controller === null) throw new Error(t('subagent.composerUnavailable'));
