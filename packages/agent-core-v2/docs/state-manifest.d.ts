@@ -927,7 +927,7 @@ export interface SessionStateSnapshot {
       readonly resultSummary?: string;
       readonly error?: string;
       readonly taskId?: string;
-      readonly runSources?: Readonly<Record<string, /* AgentRunSource — packages/transcript/src/contract/agentReference.ts */ {
+      readonly runSources?: Readonly<Record<string, /* AgentRunSource — ../wt-integration/packages/transcript/src/contract/agentReference.ts */ {
         readonly messageId: string;
         readonly refId: string;
         readonly profile: string;
@@ -1560,7 +1560,7 @@ export interface AgentStateSnapshot {
             }[];
           };
         };
-        readonly agentRefs?: readonly /* AgentReference — packages/transcript/src/contract/agentReference.ts */ {
+        readonly agentRefs?: readonly /* AgentReference — ../wt-integration/packages/transcript/src/contract/agentReference.ts */ {
           readonly refId: string;
           readonly profile: string;
           readonly executor: string;
@@ -1688,6 +1688,7 @@ export interface AgentStateSnapshot {
         };
         readonly messageId: string;
         readonly acceptedAt: number;
+        readonly notification?: boolean;
       } | /* BridgedPeerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'bridged_peer';
         readonly messageId: string;
@@ -1954,7 +1955,7 @@ export interface AgentStateSnapshot {
           }[];
         };
       };
-      readonly agentRefs?: readonly /* AgentReference — packages/transcript/src/contract/agentReference.ts */ {
+      readonly agentRefs?: readonly /* AgentReference — ../wt-integration/packages/transcript/src/contract/agentReference.ts */ {
         readonly refId: string;
         readonly profile: string;
         readonly executor: string;
@@ -2082,6 +2083,7 @@ export interface AgentStateSnapshot {
       };
       readonly messageId: string;
       readonly acceptedAt: number;
+      readonly notification?: boolean;
     } | /* BridgedPeerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'bridged_peer';
       readonly messageId: string;
@@ -2276,7 +2278,7 @@ export interface AgentStateSnapshot {
             }[];
           };
         };
-        readonly agentRefs?: readonly /* AgentReference — packages/transcript/src/contract/agentReference.ts */ {
+        readonly agentRefs?: readonly /* AgentReference — ../wt-integration/packages/transcript/src/contract/agentReference.ts */ {
           readonly refId: string;
           readonly profile: string;
           readonly executor: string;
@@ -2404,6 +2406,7 @@ export interface AgentStateSnapshot {
         };
         readonly messageId: string;
         readonly acceptedAt: number;
+        readonly notification?: boolean;
       } | /* BridgedPeerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'bridged_peer';
         readonly messageId: string;
@@ -2723,7 +2726,7 @@ export interface AgentStateSnapshot {
           }[];
         };
       };
-      readonly agentRefs?: readonly /* AgentReference — packages/transcript/src/contract/agentReference.ts */ {
+      readonly agentRefs?: readonly /* AgentReference — ../wt-integration/packages/transcript/src/contract/agentReference.ts */ {
         readonly refId: string;
         readonly profile: string;
         readonly executor: string;
@@ -2851,6 +2854,7 @@ export interface AgentStateSnapshot {
       };
       readonly messageId: string;
       readonly acceptedAt: number;
+      readonly notification?: boolean;
     } | /* BridgedPeerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'bridged_peer';
       readonly messageId: string;
@@ -3407,8 +3411,8 @@ export interface AgentStateSnapshot {
         readonly id: string;
         readonly value: string;
         readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'effective' | 'deferred' | 'unsupported' | 'shadowed' | 'inactive';
-        readonly sources: readonly /* PromptOverrideSource — packages/agent-profiles/src/promptOverrides.ts */ {
-          readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'model' | 'profile' | 'system' | 'global' | 'profile-model' | 'caller-lease-model' | 'recipe';
+        readonly sources: readonly /* PromptOverrideSource — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly surface: /* PromptOverrideSurface — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ 'model' | 'profile' | 'system' | 'global' | 'profile-model' | 'caller-lease-model' | 'recipe';
           readonly kind: 'file' | 'inline';
           readonly path?: string;
           readonly fileIndex?: number;
@@ -4589,7 +4593,7 @@ export interface AgentStateSnapshot {
         readonly scope: string;
         readonly runtimeId: string;
       }[];
-      readonly space?: /* KikiSpaceContext — packages/agent-profiles/src/agentProfile.ts */ {
+      readonly space?: /* KikiSpaceContext — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
         readonly id: string;
         readonly name: string;
         readonly kind: 'main' | 'space' | 'unavailable';
@@ -4655,8 +4659,8 @@ export interface AgentStateSnapshot {
       model?: string;
       thinking?: string;
     }>;
-    readonly persona?: /* PersonaSnapshot — packages/agent-profiles/src/personaFile.ts */ {
-      readonly definition: /* PersonaDefinition — packages/agent-profiles/src/personaFile.ts */ {
+    readonly persona?: /* PersonaSnapshot — ../wt-integration/packages/agent-profiles/src/personaFile.ts */ {
+      readonly definition: /* PersonaDefinition — ../wt-integration/packages/agent-profiles/src/personaFile.ts */ {
         readonly id: string;
         readonly name: string;
         readonly title?: string;
@@ -4668,8 +4672,8 @@ export interface AgentStateSnapshot {
         readonly greetings?: readonly string[];
         readonly roomGreeting?: string;
         readonly delivery?: 'message' | 'reply';
-        readonly memory?: /* PersonaMemoryDefinition — packages/agent-profiles/src/personaFile.ts */ {
-          readonly shared: readonly (/* PersonaSharedMemoryScope — packages/agent-profiles/src/personaFile.ts */ 'global' | 'workspace')[];
+        readonly memory?: /* PersonaMemoryDefinition — ../wt-integration/packages/agent-profiles/src/personaFile.ts */ {
+          readonly shared: readonly (/* PersonaSharedMemoryScope — ../wt-integration/packages/agent-profiles/src/personaFile.ts */ 'global' | 'workspace')[];
         };
         readonly skills?: readonly string[];
         readonly tags?: readonly string[];
@@ -4862,23 +4866,23 @@ export interface AgentStateSnapshot {
     };
     readonly thinkingLevel: string;
     readonly thinkingEffortAdjusted?: boolean;
-    readonly bindingAdvisories?: readonly /* BindingAdvisory — packages/agent-profiles/src/bindingAdvisory.ts */ {
+    readonly bindingAdvisories?: readonly /* BindingAdvisory — ../wt-integration/packages/agent-profiles/src/bindingAdvisory.ts */ {
       readonly version: 1;
-      readonly code: /* BindingAdvisoryCode — packages/agent-profiles/src/bindingAdvisory.ts */ 'model_not_preferred' | 'model_discouraged' | 'effort_not_preferred' | 'model_not_allowed' | 'model_denied' | 'effort_not_allowed' | 'model_pin_overridden' | 'effort_pin_overridden';
-      readonly dimension: /* BindingAdvisoryDimension — packages/agent-profiles/src/bindingAdvisory.ts */ 'model' | 'thinking_effort';
+      readonly code: /* BindingAdvisoryCode — ../wt-integration/packages/agent-profiles/src/bindingAdvisory.ts */ 'model_not_preferred' | 'model_discouraged' | 'effort_not_preferred' | 'model_not_allowed' | 'model_denied' | 'effort_not_allowed' | 'model_pin_overridden' | 'effort_pin_overridden';
+      readonly dimension: /* BindingAdvisoryDimension — ../wt-integration/packages/agent-profiles/src/bindingAdvisory.ts */ 'model' | 'thinking_effort';
       readonly ruleSource: string;
       readonly ruleValue?: string;
       readonly ruleValues?: readonly string[];
       readonly requestedValue?: string;
       readonly effectiveValue: string;
-      readonly valueSource: /* BindingValueSource — packages/agent-profiles/src/bindingAdvisory.ts */ 'dispatch-explicit' | 'runtime-explicit' | 'resume-existing' | 'route-default' | 'caller-lease-default' | 'profile-default' | 'model-profile-default' | 'model-default' | 'config-default' | 'executor-normalized' | 'environment-forced';
+      readonly valueSource: /* BindingValueSource — ../wt-integration/packages/agent-profiles/src/bindingAdvisory.ts */ 'dispatch-explicit' | 'runtime-explicit' | 'resume-existing' | 'route-default' | 'caller-lease-default' | 'profile-default' | 'model-profile-default' | 'model-default' | 'config-default' | 'executor-normalized' | 'environment-forced';
       readonly model?: string;
       readonly message: string;
     }[];
     readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
     readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>>;
     readonly systemPrompt: string;
-    readonly environmentDisclosure?: /* EnvironmentDisclosureSnapshot — packages/agent-profiles/src/agentProfile.ts */ {
+    readonly environmentDisclosure?: /* EnvironmentDisclosureSnapshot — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
       readonly cwd: string;
       readonly date: {
         readonly disclosed: true;
@@ -4908,7 +4912,7 @@ export interface AgentStateSnapshot {
     readonly preferredSubagents?: readonly string[];
     readonly denySubagents?: readonly string[];
     readonly subagents?: readonly string[];
-    readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+    readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
       readonly source?: undefined;
       readonly name: string;
       readonly description?: string;
@@ -4932,8 +4936,8 @@ export interface AgentStateSnapshot {
       readonly prompt?: string;
       readonly delegationNotice?: 'off' | 'auto';
       readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-      readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+      readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
         readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly when?: string;
@@ -4941,12 +4945,12 @@ export interface AgentStateSnapshot {
         readonly allowedEfforts?: readonly string[];
         readonly promptMode?: 'append' | 'prepend' | 'wrap';
         readonly prompt?: string;
-        readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-          readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+        readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           } | 'same';
-          readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           } | 'same';
@@ -4954,11 +4958,11 @@ export interface AgentStateSnapshot {
           readonly fields?: Readonly<Record<string, string>>;
         };
         readonly recipeOptions?: Readonly<Record<string, boolean>>;
-        readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
         };
-        readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
         };
@@ -4966,7 +4970,7 @@ export interface AgentStateSnapshot {
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
         readonly preferredModels?: readonly string[];
@@ -4974,7 +4978,7 @@ export interface AgentStateSnapshot {
         readonly preferredEfforts?: readonly string[];
       }[];
       readonly modelPrompts?: 'replace' | 'preserve';
-    } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+    } | /* SourceSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
       readonly source: string;
       readonly name: string;
       readonly description?: string;
@@ -4998,8 +5002,8 @@ export interface AgentStateSnapshot {
       readonly prompt?: string;
       readonly delegationNotice?: 'off' | 'auto';
       readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-      readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+      readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
         readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly when?: string;
@@ -5007,12 +5011,12 @@ export interface AgentStateSnapshot {
         readonly allowedEfforts?: readonly string[];
         readonly promptMode?: 'append' | 'prepend' | 'wrap';
         readonly prompt?: string;
-        readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-          readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+        readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           } | 'same';
-          readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           } | 'same';
@@ -5020,11 +5024,11 @@ export interface AgentStateSnapshot {
           readonly fields?: Readonly<Record<string, string>>;
         };
         readonly recipeOptions?: Readonly<Record<string, boolean>>;
-        readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
         };
-        readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
         };
@@ -5032,7 +5036,7 @@ export interface AgentStateSnapshot {
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
         readonly preferredModels?: readonly string[];
@@ -5041,11 +5045,11 @@ export interface AgentStateSnapshot {
       }[];
       readonly modelPrompts?: 'replace' | 'preserve';
     }>>;
-    readonly dispatchDecision?: /* SubagentDispatchDecision — packages/agent-profiles/src/subagentDispatch.ts */ {
+    readonly dispatchDecision?: /* SubagentDispatchDecision — ../wt-integration/packages/agent-profiles/src/subagentDispatch.ts */ {
       readonly version: 2 | 1;
       readonly policyMode: 'fixed' | 'strict' | 'advisory' | 'legacy';
       readonly policySource: 'default' | 'profile' | 'legacy';
-      readonly declaration: /* SubagentDeclaration — packages/agent-profiles/src/agentProfile.ts */ {
+      readonly declaration: /* SubagentDeclaration — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
         readonly kind: 'inherit';
       } | {
         readonly kind: 'all';
@@ -5053,10 +5057,10 @@ export interface AgentStateSnapshot {
         readonly kind: 'set';
         readonly names: readonly string[];
       };
-      readonly selectionKind: /* SubagentSelectionKind — packages/agent-profiles/src/subagentDispatch.ts */ 'profile' | 'profile_file' | 'route' | 'scoped';
-      readonly selectionOrigin: /* SubagentSelectionOrigin — packages/agent-profiles/src/subagentDispatch.ts */ 'explicit' | 'recommended-default' | 'configured-fallback';
+      readonly selectionKind: /* SubagentSelectionKind — ../wt-integration/packages/agent-profiles/src/subagentDispatch.ts */ 'profile' | 'profile_file' | 'route' | 'scoped';
+      readonly selectionOrigin: /* SubagentSelectionOrigin — ../wt-integration/packages/agent-profiles/src/subagentDispatch.ts */ 'explicit' | 'recommended-default' | 'configured-fallback';
       readonly requestedProfile: string;
-      readonly recommendationStatus: /* SubagentRecommendationStatus — packages/agent-profiles/src/subagentDispatch.ts */ 'blocked' | 'preferred' | 'allowed_nonpreferred' | 'unconfigured';
+      readonly recommendationStatus: /* SubagentRecommendationStatus — ../wt-integration/packages/agent-profiles/src/subagentDispatch.ts */ 'blocked' | 'preferred' | 'allowed_nonpreferred' | 'unconfigured';
       readonly advisoryDeviation: boolean;
       readonly allowed: boolean;
       readonly fallback?: 'no-recommendations' | 'recommended-unavailable';
@@ -5065,7 +5069,7 @@ export interface AgentStateSnapshot {
       readonly preferredSubagents?: readonly string[];
       readonly denySubagents?: readonly string[];
     };
-    readonly spawnPolicy?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+    readonly spawnPolicy?: /* SpawnConstraints — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
       readonly preferredModels?: readonly string[];
       readonly discouragedModels?: readonly string[];
       readonly preferredEfforts?: readonly string[];
@@ -5074,7 +5078,7 @@ export interface AgentStateSnapshot {
       readonly allowedEfforts?: readonly string[];
       readonly disallowedTools?: readonly string[];
     };
-    readonly appliedLease?: /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+    readonly appliedLease?: /* NamedSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
       readonly source?: undefined;
       readonly name: string;
       readonly description?: string;
@@ -5098,8 +5102,8 @@ export interface AgentStateSnapshot {
       readonly prompt?: string;
       readonly delegationNotice?: 'off' | 'auto';
       readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-      readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+      readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
         readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly when?: string;
@@ -5107,12 +5111,12 @@ export interface AgentStateSnapshot {
         readonly allowedEfforts?: readonly string[];
         readonly promptMode?: 'append' | 'prepend' | 'wrap';
         readonly prompt?: string;
-        readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-          readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+        readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           } | 'same';
-          readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           } | 'same';
@@ -5120,11 +5124,11 @@ export interface AgentStateSnapshot {
           readonly fields?: Readonly<Record<string, string>>;
         };
         readonly recipeOptions?: Readonly<Record<string, boolean>>;
-        readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
         };
-        readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
         };
@@ -5132,7 +5136,7 @@ export interface AgentStateSnapshot {
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
         readonly preferredModels?: readonly string[];
@@ -5140,7 +5144,7 @@ export interface AgentStateSnapshot {
         readonly preferredEfforts?: readonly string[];
       }[];
       readonly modelPrompts?: 'replace' | 'preserve';
-    } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+    } | /* SourceSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
       readonly source: string;
       readonly name: string;
       readonly description?: string;
@@ -5164,8 +5168,8 @@ export interface AgentStateSnapshot {
       readonly prompt?: string;
       readonly delegationNotice?: 'off' | 'auto';
       readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-      readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+      readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
         readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly when?: string;
@@ -5173,12 +5177,12 @@ export interface AgentStateSnapshot {
         readonly allowedEfforts?: readonly string[];
         readonly promptMode?: 'append' | 'prepend' | 'wrap';
         readonly prompt?: string;
-        readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-          readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+        readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           } | 'same';
-          readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           } | 'same';
@@ -5186,11 +5190,11 @@ export interface AgentStateSnapshot {
           readonly fields?: Readonly<Record<string, string>>;
         };
         readonly recipeOptions?: Readonly<Record<string, boolean>>;
-        readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
         };
-        readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
         };
@@ -5198,7 +5202,7 @@ export interface AgentStateSnapshot {
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
         readonly preferredModels?: readonly string[];
@@ -5260,7 +5264,7 @@ export interface AgentStateSnapshot {
         request_params?: Record<string, boolean | string | number>;
       };
       readonly restrictModelsToMenu?: boolean;
-      readonly modelMenuConstraint?: /* ProfileModelMenuConstraint — packages/agent-profiles/src/agentProfile.ts */ {
+      readonly modelMenuConstraint?: /* ProfileModelMenuConstraint — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
         readonly source: string;
         readonly defaultAlias?: string;
         readonly aliases: readonly string[];
@@ -5269,7 +5273,7 @@ export interface AgentStateSnapshot {
       };
       readonly effectiveModelAliases?: readonly string[];
       readonly modelMenuDiagnostics?: readonly string[];
-      readonly modelConstraintProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+      readonly modelConstraintProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
         readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly when?: string;
@@ -5277,12 +5281,12 @@ export interface AgentStateSnapshot {
         readonly allowedEfforts?: readonly string[];
         readonly promptMode?: 'append' | 'prepend' | 'wrap';
         readonly prompt?: string;
-        readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-          readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+        readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           } | 'same';
-          readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           } | 'same';
@@ -5290,11 +5294,11 @@ export interface AgentStateSnapshot {
           readonly fields?: Readonly<Record<string, string>>;
         };
         readonly recipeOptions?: Readonly<Record<string, boolean>>;
-        readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
         };
-        readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
         };
@@ -5302,7 +5306,7 @@ export interface AgentStateSnapshot {
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
         readonly preferredModels?: readonly string[];
@@ -5310,7 +5314,7 @@ export interface AgentStateSnapshot {
         readonly preferredEfforts?: readonly string[];
       }[];
       readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
-      readonly fileDefinition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+      readonly fileDefinition?: /* AgentFileDefinition — ../wt-integration/packages/agent-profiles/src/agentFileTypes.ts */ {
         readonly recipe?: string;
         readonly recipeOptions?: Readonly<Record<string, boolean>>;
         readonly endpoint?: {
@@ -5356,7 +5360,7 @@ export interface AgentStateSnapshot {
         readonly preferredSubagents?: readonly string[];
         readonly denySubagents?: readonly string[];
         readonly subagents?: readonly string[];
-        readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+        readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
           readonly source?: undefined;
           readonly name: string;
           readonly description?: string;
@@ -5380,8 +5384,8 @@ export interface AgentStateSnapshot {
           readonly prompt?: string;
           readonly delegationNotice?: 'off' | 'auto';
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-          readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+          readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
             readonly alias: string;
             readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
             readonly when?: string;
@@ -5389,12 +5393,12 @@ export interface AgentStateSnapshot {
             readonly allowedEfforts?: readonly string[];
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
-            readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-              readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               } | 'same';
-              readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               } | 'same';
@@ -5402,11 +5406,11 @@ export interface AgentStateSnapshot {
               readonly fields?: Readonly<Record<string, string>>;
             };
             readonly recipeOptions?: Readonly<Record<string, boolean>>;
-            readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
             };
-            readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
             };
@@ -5414,7 +5418,7 @@ export interface AgentStateSnapshot {
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly preferredModels?: readonly string[];
@@ -5422,7 +5426,7 @@ export interface AgentStateSnapshot {
             readonly preferredEfforts?: readonly string[];
           }[];
           readonly modelPrompts?: 'replace' | 'preserve';
-        } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+        } | /* SourceSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
           readonly source: string;
           readonly name: string;
           readonly description?: string;
@@ -5446,8 +5450,8 @@ export interface AgentStateSnapshot {
           readonly prompt?: string;
           readonly delegationNotice?: 'off' | 'auto';
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-          readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+          readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
             readonly alias: string;
             readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
             readonly when?: string;
@@ -5455,12 +5459,12 @@ export interface AgentStateSnapshot {
             readonly allowedEfforts?: readonly string[];
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
-            readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-              readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               } | 'same';
-              readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               } | 'same';
@@ -5468,11 +5472,11 @@ export interface AgentStateSnapshot {
               readonly fields?: Readonly<Record<string, string>>;
             };
             readonly recipeOptions?: Readonly<Record<string, boolean>>;
-            readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
             };
-            readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
             };
@@ -5480,7 +5484,7 @@ export interface AgentStateSnapshot {
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly preferredModels?: readonly string[];
@@ -5489,7 +5493,7 @@ export interface AgentStateSnapshot {
           }[];
           readonly modelPrompts?: 'replace' | 'preserve';
         }>>;
-        readonly spawnConstraints?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+        readonly spawnConstraints?: /* SpawnConstraints — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
           readonly preferredModels?: readonly string[];
           readonly discouragedModels?: readonly string[];
           readonly preferredEfforts?: readonly string[];
@@ -5566,7 +5570,7 @@ export interface AgentStateSnapshot {
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
         readonly allowedEfforts?: readonly string[];
-        readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly alias: string;
           readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly when?: string;
@@ -5574,12 +5578,12 @@ export interface AgentStateSnapshot {
           readonly allowedEfforts?: readonly string[];
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
-          readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-            readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             } | 'same';
-            readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             } | 'same';
@@ -5587,11 +5591,11 @@ export interface AgentStateSnapshot {
             readonly fields?: Readonly<Record<string, string>>;
           };
           readonly recipeOptions?: Readonly<Record<string, boolean>>;
-          readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
           };
-          readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
           };
@@ -5599,7 +5603,7 @@ export interface AgentStateSnapshot {
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
           readonly preferredModels?: readonly string[];
@@ -5607,13 +5611,13 @@ export interface AgentStateSnapshot {
           readonly preferredEfforts?: readonly string[];
         }[];
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
-        readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-          readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           } | 'same';
-          readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           } | 'same';
@@ -5623,15 +5627,15 @@ export interface AgentStateSnapshot {
         readonly systemPromptMode?: 'inherit' | 'replace' | 'append' | 'prepend';
         readonly prompt: string;
         readonly path: string;
-        readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
+        readonly source: /* AgentFileSource — ../wt-integration/packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
         readonly delegationNotice?: 'off' | 'auto';
       };
-      readonly routeDefinition?: /* AgentProfileRouteDefinition — packages/agent-profiles/src/agentProfile.ts */ {
+      readonly routeDefinition?: /* AgentProfileRouteDefinition — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
         readonly id: string;
         readonly profile: string;
         readonly description: string;
         readonly whenToUse?: string;
-        readonly promptMode: /* AgentProfileRoutePromptMode — packages/agent-profiles/src/agentProfile.ts */ 'inherit' | 'append' | 'prepend' | 'wrap';
+        readonly promptMode: /* AgentProfileRoutePromptMode — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ 'inherit' | 'append' | 'prepend' | 'wrap';
         readonly prompt: string;
         readonly tools?: readonly string[];
         readonly disallowedTools?: readonly string[];
@@ -5643,7 +5647,7 @@ export interface AgentStateSnapshot {
         readonly modelAlias?: string;
         readonly thinkingEffort?: string;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
         readonly overriddenFields: readonly string[];
         readonly path: string;
       };
@@ -5678,7 +5682,7 @@ export interface AgentStateSnapshot {
       readonly preferredSubagents?: readonly string[];
       readonly denySubagents?: readonly string[];
       readonly subagents?: readonly string[];
-      readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+      readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
         readonly source?: undefined;
         readonly name: string;
         readonly description?: string;
@@ -5702,8 +5706,8 @@ export interface AgentStateSnapshot {
         readonly prompt?: string;
         readonly delegationNotice?: 'off' | 'auto';
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-        readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+        readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly alias: string;
           readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly when?: string;
@@ -5711,12 +5715,12 @@ export interface AgentStateSnapshot {
           readonly allowedEfforts?: readonly string[];
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
-          readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-            readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             } | 'same';
-            readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             } | 'same';
@@ -5724,11 +5728,11 @@ export interface AgentStateSnapshot {
             readonly fields?: Readonly<Record<string, string>>;
           };
           readonly recipeOptions?: Readonly<Record<string, boolean>>;
-          readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
           };
-          readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
           };
@@ -5736,7 +5740,7 @@ export interface AgentStateSnapshot {
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
           readonly preferredModels?: readonly string[];
@@ -5744,7 +5748,7 @@ export interface AgentStateSnapshot {
           readonly preferredEfforts?: readonly string[];
         }[];
         readonly modelPrompts?: 'replace' | 'preserve';
-      } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+      } | /* SourceSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
         readonly source: string;
         readonly name: string;
         readonly description?: string;
@@ -5768,8 +5772,8 @@ export interface AgentStateSnapshot {
         readonly prompt?: string;
         readonly delegationNotice?: 'off' | 'auto';
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-        readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+        readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly alias: string;
           readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly when?: string;
@@ -5777,12 +5781,12 @@ export interface AgentStateSnapshot {
           readonly allowedEfforts?: readonly string[];
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
-          readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-            readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             } | 'same';
-            readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             } | 'same';
@@ -5790,11 +5794,11 @@ export interface AgentStateSnapshot {
             readonly fields?: Readonly<Record<string, string>>;
           };
           readonly recipeOptions?: Readonly<Record<string, boolean>>;
-          readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
           };
-          readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
           };
@@ -5802,7 +5806,7 @@ export interface AgentStateSnapshot {
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
           readonly preferredModels?: readonly string[];
@@ -5811,7 +5815,7 @@ export interface AgentStateSnapshot {
         }[];
         readonly modelPrompts?: 'replace' | 'preserve';
       }>>;
-      readonly spawnConstraints?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+      readonly spawnConstraints?: /* SpawnConstraints — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
         readonly preferredModels?: readonly string[];
         readonly discouragedModels?: readonly string[];
         readonly preferredEfforts?: readonly string[];
@@ -5885,7 +5889,7 @@ export interface AgentStateSnapshot {
       readonly allowedModels?: readonly string[];
       readonly denyModels?: readonly string[];
       readonly allowedEfforts?: readonly string[];
-      readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+      readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
         readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly when?: string;
@@ -5893,12 +5897,12 @@ export interface AgentStateSnapshot {
         readonly allowedEfforts?: readonly string[];
         readonly promptMode?: 'append' | 'prepend' | 'wrap';
         readonly prompt?: string;
-        readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-          readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+        readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           } | 'same';
-          readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
             readonly files?: readonly string[];
             readonly fields?: Readonly<Record<string, string>>;
           } | 'same';
@@ -5906,11 +5910,11 @@ export interface AgentStateSnapshot {
           readonly fields?: Readonly<Record<string, string>>;
         };
         readonly recipeOptions?: Readonly<Record<string, boolean>>;
-        readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
         };
-        readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
         };
@@ -5918,17 +5922,17 @@ export interface AgentStateSnapshot {
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+        readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
         readonly preferredModels?: readonly string[];
         readonly discouragedModels?: readonly string[];
         readonly preferredEfforts?: readonly string[];
       }[];
-      readonly modelPromptLayers?: readonly /* AgentModelPromptLayer — packages/agent-profiles/src/agentProfile.ts */ {
+      readonly modelPromptLayers?: readonly /* AgentModelPromptLayer — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
         readonly source: 'profile' | 'lease';
         readonly sourcePath?: string;
-        readonly entries: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly entries: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly alias: string;
           readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly when?: string;
@@ -5936,12 +5940,12 @@ export interface AgentStateSnapshot {
           readonly allowedEfforts?: readonly string[];
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
-          readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-            readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             } | 'same';
-            readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             } | 'same';
@@ -5949,11 +5953,11 @@ export interface AgentStateSnapshot {
             readonly fields?: Readonly<Record<string, string>>;
           };
           readonly recipeOptions?: Readonly<Record<string, boolean>>;
-          readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
           };
-          readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
           };
@@ -5961,7 +5965,7 @@ export interface AgentStateSnapshot {
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
           readonly preferredModels?: readonly string[];
@@ -5969,10 +5973,10 @@ export interface AgentStateSnapshot {
           readonly preferredEfforts?: readonly string[];
         }[];
       }[];
-      readonly modelPromptBase?: readonly /* AgentModelPromptLayer — packages/agent-profiles/src/agentProfile.ts */ {
+      readonly modelPromptBase?: readonly /* AgentModelPromptLayer — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
         readonly source: 'profile' | 'lease';
         readonly sourcePath?: string;
-        readonly entries: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly entries: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly alias: string;
           readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly when?: string;
@@ -5980,12 +5984,12 @@ export interface AgentStateSnapshot {
           readonly allowedEfforts?: readonly string[];
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
-          readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-            readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             } | 'same';
-            readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             } | 'same';
@@ -5993,11 +5997,11 @@ export interface AgentStateSnapshot {
             readonly fields?: Readonly<Record<string, string>>;
           };
           readonly recipeOptions?: Readonly<Record<string, boolean>>;
-          readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
           };
-          readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
           };
@@ -6005,7 +6009,7 @@ export interface AgentStateSnapshot {
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
           readonly preferredModels?: readonly string[];
@@ -6014,25 +6018,25 @@ export interface AgentStateSnapshot {
         }[];
       }[];
       readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
-      readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-        readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+      readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+        readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         } | 'same';
-        readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+        readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         } | 'same';
         readonly files?: readonly string[];
         readonly fields?: Readonly<Record<string, string>>;
       };
-      readonly promptOverrideLayers?: readonly /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-        readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+      readonly promptOverrideLayers?: readonly /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+        readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         } | 'same';
-        readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+        readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
           readonly files?: readonly string[];
           readonly fields?: Readonly<Record<string, string>>;
         } | 'same';
@@ -6040,8 +6044,8 @@ export interface AgentStateSnapshot {
         readonly fields?: Readonly<Record<string, string>>;
       }[];
       readonly systemPromptMode?: 'inherit' | 'replace' | 'append' | 'prepend';
-      readonly systemPrompt: (context: /* AgentProfileContext — packages/agent-profiles/src/agentProfile.ts */ {
-        readonly space?: /* KikiSpaceContext — packages/agent-profiles/src/agentProfile.ts */ {
+      readonly systemPrompt: (context: /* AgentProfileContext — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
+        readonly space?: /* KikiSpaceContext — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly id: string;
           readonly name: string;
           readonly kind: 'main' | 'space' | 'unavailable';
@@ -6068,8 +6072,8 @@ export interface AgentStateSnapshot {
         readonly promptFields?: Readonly<Record<string, string>>;
         [key: string]: unknown;
       }) => string;
-      readonly renderSystemPrompt: (context: /* AgentProfileContext — packages/agent-profiles/src/agentProfile.ts */ {
-        readonly space?: /* KikiSpaceContext — packages/agent-profiles/src/agentProfile.ts */ {
+      readonly renderSystemPrompt: (context: /* AgentProfileContext — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
+        readonly space?: /* KikiSpaceContext — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly id: string;
           readonly name: string;
           readonly kind: 'main' | 'space' | 'unavailable';
@@ -6095,9 +6099,9 @@ export interface AgentStateSnapshot {
         readonly promptVariables?: Readonly<Record<string, string>>;
         readonly promptFields?: Readonly<Record<string, string>>;
         [key: string]: unknown;
-      }) => /* SystemPromptRenderResult — packages/agent-profiles/src/agentProfile.ts */ {
+      }) => /* SystemPromptRenderResult — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
         readonly text: string;
-        readonly environment: /* EnvironmentDisclosureSnapshot — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly environment: /* EnvironmentDisclosureSnapshot — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly cwd: string;
           readonly date: {
             readonly disclosed: true;
@@ -6110,7 +6114,7 @@ export interface AgentStateSnapshot {
           };
         };
       };
-      readonly summaryPolicy?: /* AgentProfileSummaryPolicy — packages/agent-profiles/src/agentProfile.ts */ {
+      readonly summaryPolicy?: /* AgentProfileSummaryPolicy — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
         readonly minChars: number;
         readonly continuationPrompt: string;
         readonly retries: number;
@@ -6141,7 +6145,7 @@ export interface AgentStateSnapshot {
         request_params?: Record<string, boolean | string | number>;
       };
       readonly fileSources?: /* FrozenProfileFileSources — packages/agent-core-v2/src/session/dispatch/profileFile.ts */ {
-        readonly root: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+        readonly root: /* AgentFileDefinition — ../wt-integration/packages/agent-profiles/src/agentFileTypes.ts */ {
           readonly recipe?: string;
           readonly recipeOptions?: Readonly<Record<string, boolean>>;
           readonly endpoint?: {
@@ -6187,7 +6191,7 @@ export interface AgentStateSnapshot {
           readonly preferredSubagents?: readonly string[];
           readonly denySubagents?: readonly string[];
           readonly subagents?: readonly string[];
-          readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+          readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
             readonly source?: undefined;
             readonly name: string;
             readonly description?: string;
@@ -6211,8 +6215,8 @@ export interface AgentStateSnapshot {
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
               readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
@@ -6220,12 +6224,12 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
-              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-                readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
-                readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
@@ -6233,11 +6237,11 @@ export interface AgentStateSnapshot {
                 readonly fields?: Readonly<Record<string, string>>;
               };
               readonly recipeOptions?: Readonly<Record<string, boolean>>;
-              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
-              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
@@ -6245,7 +6249,7 @@ export interface AgentStateSnapshot {
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
               readonly preferredModels?: readonly string[];
@@ -6253,7 +6257,7 @@ export interface AgentStateSnapshot {
               readonly preferredEfforts?: readonly string[];
             }[];
             readonly modelPrompts?: 'replace' | 'preserve';
-          } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+          } | /* SourceSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
             readonly source: string;
             readonly name: string;
             readonly description?: string;
@@ -6277,8 +6281,8 @@ export interface AgentStateSnapshot {
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
               readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
@@ -6286,12 +6290,12 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
-              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-                readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
-                readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
@@ -6299,11 +6303,11 @@ export interface AgentStateSnapshot {
                 readonly fields?: Readonly<Record<string, string>>;
               };
               readonly recipeOptions?: Readonly<Record<string, boolean>>;
-              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
-              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
@@ -6311,7 +6315,7 @@ export interface AgentStateSnapshot {
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
               readonly preferredModels?: readonly string[];
@@ -6320,7 +6324,7 @@ export interface AgentStateSnapshot {
             }[];
             readonly modelPrompts?: 'replace' | 'preserve';
           }>>;
-          readonly spawnConstraints?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+          readonly spawnConstraints?: /* SpawnConstraints — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
             readonly preferredModels?: readonly string[];
             readonly discouragedModels?: readonly string[];
             readonly preferredEfforts?: readonly string[];
@@ -6397,7 +6401,7 @@ export interface AgentStateSnapshot {
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
           readonly allowedEfforts?: readonly string[];
-          readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
             readonly alias: string;
             readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
             readonly when?: string;
@@ -6405,12 +6409,12 @@ export interface AgentStateSnapshot {
             readonly allowedEfforts?: readonly string[];
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
-            readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-              readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               } | 'same';
-              readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               } | 'same';
@@ -6418,11 +6422,11 @@ export interface AgentStateSnapshot {
               readonly fields?: Readonly<Record<string, string>>;
             };
             readonly recipeOptions?: Readonly<Record<string, boolean>>;
-            readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
             };
-            readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
             };
@@ -6430,7 +6434,7 @@ export interface AgentStateSnapshot {
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly preferredModels?: readonly string[];
@@ -6438,13 +6442,13 @@ export interface AgentStateSnapshot {
             readonly preferredEfforts?: readonly string[];
           }[];
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
-          readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-            readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             } | 'same';
-            readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             } | 'same';
@@ -6454,7 +6458,7 @@ export interface AgentStateSnapshot {
           readonly systemPromptMode?: 'inherit' | 'replace' | 'append' | 'prepend';
           readonly prompt: string;
           readonly path: string;
-          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
+          readonly source: /* AgentFileSource — ../wt-integration/packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
           readonly delegationNotice?: 'off' | 'auto';
         };
         readonly callerCeiling?: Pick</* ProfileData — packages/agent-core-v2/src/agent/profile/profile.ts */ {
@@ -6478,8 +6482,8 @@ export interface AgentStateSnapshot {
             model?: string;
             thinking?: string;
           }>;
-          readonly persona?: /* PersonaSnapshot — packages/agent-profiles/src/personaFile.ts */ {
-            readonly definition: /* PersonaDefinition — packages/agent-profiles/src/personaFile.ts */ {
+          readonly persona?: /* PersonaSnapshot — ../wt-integration/packages/agent-profiles/src/personaFile.ts */ {
+            readonly definition: /* PersonaDefinition — ../wt-integration/packages/agent-profiles/src/personaFile.ts */ {
               readonly id: string;
               readonly name: string;
               readonly title?: string;
@@ -6491,8 +6495,8 @@ export interface AgentStateSnapshot {
               readonly greetings?: readonly string[];
               readonly roomGreeting?: string;
               readonly delivery?: 'message' | 'reply';
-              readonly memory?: /* PersonaMemoryDefinition — packages/agent-profiles/src/personaFile.ts */ {
-                readonly shared: readonly (/* PersonaSharedMemoryScope — packages/agent-profiles/src/personaFile.ts */ 'global' | 'workspace')[];
+              readonly memory?: /* PersonaMemoryDefinition — ../wt-integration/packages/agent-profiles/src/personaFile.ts */ {
+                readonly shared: readonly (/* PersonaSharedMemoryScope — ../wt-integration/packages/agent-profiles/src/personaFile.ts */ 'global' | 'workspace')[];
               };
               readonly skills?: readonly string[];
               readonly tags?: readonly string[];
@@ -6510,16 +6514,16 @@ export interface AgentStateSnapshot {
           readonly routeDetached?: boolean;
           readonly profileSource?: 'registered' | 'profile-file';
           readonly permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
-          readonly bindingAdvisories?: readonly /* BindingAdvisory — packages/agent-profiles/src/bindingAdvisory.ts */ {
+          readonly bindingAdvisories?: readonly /* BindingAdvisory — ../wt-integration/packages/agent-profiles/src/bindingAdvisory.ts */ {
             readonly version: 1;
-            readonly code: /* BindingAdvisoryCode — packages/agent-profiles/src/bindingAdvisory.ts */ 'model_not_preferred' | 'model_discouraged' | 'effort_not_preferred' | 'model_not_allowed' | 'model_denied' | 'effort_not_allowed' | 'model_pin_overridden' | 'effort_pin_overridden';
-            readonly dimension: /* BindingAdvisoryDimension — packages/agent-profiles/src/bindingAdvisory.ts */ 'model' | 'thinking_effort';
+            readonly code: /* BindingAdvisoryCode — ../wt-integration/packages/agent-profiles/src/bindingAdvisory.ts */ 'model_not_preferred' | 'model_discouraged' | 'effort_not_preferred' | 'model_not_allowed' | 'model_denied' | 'effort_not_allowed' | 'model_pin_overridden' | 'effort_pin_overridden';
+            readonly dimension: /* BindingAdvisoryDimension — ../wt-integration/packages/agent-profiles/src/bindingAdvisory.ts */ 'model' | 'thinking_effort';
             readonly ruleSource: string;
             readonly ruleValue?: string;
             readonly ruleValues?: readonly string[];
             readonly requestedValue?: string;
             readonly effectiveValue: string;
-            readonly valueSource: /* BindingValueSource — packages/agent-profiles/src/bindingAdvisory.ts */ 'dispatch-explicit' | 'runtime-explicit' | 'resume-existing' | 'route-default' | 'caller-lease-default' | 'profile-default' | 'model-profile-default' | 'model-default' | 'config-default' | 'executor-normalized' | 'environment-forced';
+            readonly valueSource: /* BindingValueSource — ../wt-integration/packages/agent-profiles/src/bindingAdvisory.ts */ 'dispatch-explicit' | 'runtime-explicit' | 'resume-existing' | 'route-default' | 'caller-lease-default' | 'profile-default' | 'model-profile-default' | 'model-default' | 'config-default' | 'executor-normalized' | 'environment-forced';
             readonly model?: string;
             readonly message: string;
           }[];
@@ -6714,7 +6718,7 @@ export interface AgentStateSnapshot {
           readonly preferredSubagents?: readonly string[];
           readonly denySubagents?: readonly string[];
           readonly subagents?: readonly string[];
-          readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+          readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
             readonly source?: undefined;
             readonly name: string;
             readonly description?: string;
@@ -6738,8 +6742,8 @@ export interface AgentStateSnapshot {
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
               readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
@@ -6747,12 +6751,12 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
-              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-                readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
-                readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
@@ -6760,11 +6764,11 @@ export interface AgentStateSnapshot {
                 readonly fields?: Readonly<Record<string, string>>;
               };
               readonly recipeOptions?: Readonly<Record<string, boolean>>;
-              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
-              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
@@ -6772,7 +6776,7 @@ export interface AgentStateSnapshot {
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
               readonly preferredModels?: readonly string[];
@@ -6780,7 +6784,7 @@ export interface AgentStateSnapshot {
               readonly preferredEfforts?: readonly string[];
             }[];
             readonly modelPrompts?: 'replace' | 'preserve';
-          } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+          } | /* SourceSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
             readonly source: string;
             readonly name: string;
             readonly description?: string;
@@ -6804,8 +6808,8 @@ export interface AgentStateSnapshot {
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
               readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
@@ -6813,12 +6817,12 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
-              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-                readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
-                readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
@@ -6826,11 +6830,11 @@ export interface AgentStateSnapshot {
                 readonly fields?: Readonly<Record<string, string>>;
               };
               readonly recipeOptions?: Readonly<Record<string, boolean>>;
-              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
-              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
@@ -6838,7 +6842,7 @@ export interface AgentStateSnapshot {
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
               readonly preferredModels?: readonly string[];
@@ -6847,11 +6851,11 @@ export interface AgentStateSnapshot {
             }[];
             readonly modelPrompts?: 'replace' | 'preserve';
           }>>;
-          readonly dispatchDecision?: /* SubagentDispatchDecision — packages/agent-profiles/src/subagentDispatch.ts */ {
+          readonly dispatchDecision?: /* SubagentDispatchDecision — ../wt-integration/packages/agent-profiles/src/subagentDispatch.ts */ {
             readonly version: 2 | 1;
             readonly policyMode: 'fixed' | 'strict' | 'advisory' | 'legacy';
             readonly policySource: 'default' | 'profile' | 'legacy';
-            readonly declaration: /* SubagentDeclaration — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly declaration: /* SubagentDeclaration — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly kind: 'inherit';
             } | {
               readonly kind: 'all';
@@ -6859,10 +6863,10 @@ export interface AgentStateSnapshot {
               readonly kind: 'set';
               readonly names: readonly string[];
             };
-            readonly selectionKind: /* SubagentSelectionKind — packages/agent-profiles/src/subagentDispatch.ts */ 'profile' | 'profile_file' | 'route' | 'scoped';
-            readonly selectionOrigin: /* SubagentSelectionOrigin — packages/agent-profiles/src/subagentDispatch.ts */ 'explicit' | 'recommended-default' | 'configured-fallback';
+            readonly selectionKind: /* SubagentSelectionKind — ../wt-integration/packages/agent-profiles/src/subagentDispatch.ts */ 'profile' | 'profile_file' | 'route' | 'scoped';
+            readonly selectionOrigin: /* SubagentSelectionOrigin — ../wt-integration/packages/agent-profiles/src/subagentDispatch.ts */ 'explicit' | 'recommended-default' | 'configured-fallback';
             readonly requestedProfile: string;
-            readonly recommendationStatus: /* SubagentRecommendationStatus — packages/agent-profiles/src/subagentDispatch.ts */ 'blocked' | 'preferred' | 'allowed_nonpreferred' | 'unconfigured';
+            readonly recommendationStatus: /* SubagentRecommendationStatus — ../wt-integration/packages/agent-profiles/src/subagentDispatch.ts */ 'blocked' | 'preferred' | 'allowed_nonpreferred' | 'unconfigured';
             readonly advisoryDeviation: boolean;
             readonly allowed: boolean;
             readonly fallback?: 'no-recommendations' | 'recommended-unavailable';
@@ -6871,7 +6875,7 @@ export interface AgentStateSnapshot {
             readonly preferredSubagents?: readonly string[];
             readonly denySubagents?: readonly string[];
           };
-          readonly spawnPolicy?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+          readonly spawnPolicy?: /* SpawnConstraints — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
             readonly preferredModels?: readonly string[];
             readonly discouragedModels?: readonly string[];
             readonly preferredEfforts?: readonly string[];
@@ -6880,7 +6884,7 @@ export interface AgentStateSnapshot {
             readonly allowedEfforts?: readonly string[];
             readonly disallowedTools?: readonly string[];
           };
-          readonly appliedLease?: /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+          readonly appliedLease?: /* NamedSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
             readonly source?: undefined;
             readonly name: string;
             readonly description?: string;
@@ -6904,8 +6908,8 @@ export interface AgentStateSnapshot {
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
               readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
@@ -6913,12 +6917,12 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
-              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-                readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
-                readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
@@ -6926,11 +6930,11 @@ export interface AgentStateSnapshot {
                 readonly fields?: Readonly<Record<string, string>>;
               };
               readonly recipeOptions?: Readonly<Record<string, boolean>>;
-              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
-              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
@@ -6938,7 +6942,7 @@ export interface AgentStateSnapshot {
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
               readonly preferredModels?: readonly string[];
@@ -6946,7 +6950,7 @@ export interface AgentStateSnapshot {
               readonly preferredEfforts?: readonly string[];
             }[];
             readonly modelPrompts?: 'replace' | 'preserve';
-          } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+          } | /* SourceSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
             readonly source: string;
             readonly name: string;
             readonly description?: string;
@@ -6970,8 +6974,8 @@ export interface AgentStateSnapshot {
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
               readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
@@ -6979,12 +6983,12 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
-              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-                readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
-                readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
@@ -6992,11 +6996,11 @@ export interface AgentStateSnapshot {
                 readonly fields?: Readonly<Record<string, string>>;
               };
               readonly recipeOptions?: Readonly<Record<string, boolean>>;
-              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
-              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
@@ -7004,7 +7008,7 @@ export interface AgentStateSnapshot {
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
               readonly preferredModels?: readonly string[];
@@ -7016,7 +7020,7 @@ export interface AgentStateSnapshot {
           readonly boundProfile?: /* BoundProfile — recursive (packages/agent-core-v2/src/agent/profile/boundProfile.ts) */ unknown;
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>>;
-          readonly environmentDisclosure?: /* EnvironmentDisclosureSnapshot — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly environmentDisclosure?: /* EnvironmentDisclosureSnapshot — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
             readonly cwd: string;
             readonly date: {
               readonly disclosed: true;
@@ -7068,11 +7072,11 @@ export interface AgentStateSnapshot {
         }, 'disallowedTools' | 'activeToolNames' | 'toolAllowPolicies'> & {
           readonly externalToolAllowPolicies?: readonly (readonly string[])[];
         };
-        readonly scopedBindings: Readonly<Record<string, Readonly<Record<string, /* AgentFileScopedBinding — packages/agent-profiles/src/agentFileTypes.ts */ {
+        readonly scopedBindings: Readonly<Record<string, Readonly<Record<string, /* AgentFileScopedBinding — ../wt-integration/packages/agent-profiles/src/agentFileTypes.ts */ {
           readonly parentDefinitionId: string;
           readonly alias: string;
           readonly source: string;
-          readonly lease: /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+          readonly lease: /* SourceSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
             readonly source: string;
             readonly name: string;
             readonly description?: string;
@@ -7096,8 +7100,8 @@ export interface AgentStateSnapshot {
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
               readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
@@ -7105,12 +7109,12 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
-              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-                readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
-                readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
@@ -7118,11 +7122,11 @@ export interface AgentStateSnapshot {
                 readonly fields?: Readonly<Record<string, string>>;
               };
               readonly recipeOptions?: Readonly<Record<string, boolean>>;
-              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
-              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
@@ -7130,7 +7134,7 @@ export interface AgentStateSnapshot {
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
               readonly preferredModels?: readonly string[];
@@ -7141,7 +7145,7 @@ export interface AgentStateSnapshot {
           };
           readonly status: 'ready' | 'unavailable';
           readonly sourceDefinitionId?: string;
-          readonly definition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+          readonly definition?: /* AgentFileDefinition — ../wt-integration/packages/agent-profiles/src/agentFileTypes.ts */ {
             readonly recipe?: string;
             readonly recipeOptions?: Readonly<Record<string, boolean>>;
             readonly endpoint?: {
@@ -7187,7 +7191,7 @@ export interface AgentStateSnapshot {
             readonly preferredSubagents?: readonly string[];
             readonly denySubagents?: readonly string[];
             readonly subagents?: readonly string[];
-            readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
               readonly source?: undefined;
               readonly name: string;
               readonly description?: string;
@@ -7211,8 +7215,8 @@ export interface AgentStateSnapshot {
               readonly prompt?: string;
               readonly delegationNotice?: 'off' | 'auto';
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-              readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+              readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly alias: string;
                 readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
                 readonly when?: string;
@@ -7220,12 +7224,12 @@ export interface AgentStateSnapshot {
                 readonly allowedEfforts?: readonly string[];
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
-                readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-                  readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+                  readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                     readonly files?: readonly string[];
                     readonly fields?: Readonly<Record<string, string>>;
                   } | 'same';
-                  readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+                  readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                     readonly files?: readonly string[];
                     readonly fields?: Readonly<Record<string, string>>;
                   } | 'same';
@@ -7233,11 +7237,11 @@ export interface AgentStateSnapshot {
                   readonly fields?: Readonly<Record<string, string>>;
                 };
                 readonly recipeOptions?: Readonly<Record<string, boolean>>;
-                readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+                readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                   readonly promptMode?: 'append' | 'prepend' | 'wrap';
                   readonly prompt?: string;
                 };
-                readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+                readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                   readonly promptMode?: 'append' | 'prepend' | 'wrap';
                   readonly prompt?: string;
                 };
@@ -7245,7 +7249,7 @@ export interface AgentStateSnapshot {
                 readonly contextBudget?: number;
                 readonly maxCompletionTokens?: number;
                 readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-                readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+                readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
                 readonly allowedModels?: readonly string[];
                 readonly denyModels?: readonly string[];
                 readonly preferredModels?: readonly string[];
@@ -7253,7 +7257,7 @@ export interface AgentStateSnapshot {
                 readonly preferredEfforts?: readonly string[];
               }[];
               readonly modelPrompts?: 'replace' | 'preserve';
-            } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+            } | /* SourceSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
               readonly source: string;
               readonly name: string;
               readonly description?: string;
@@ -7277,8 +7281,8 @@ export interface AgentStateSnapshot {
               readonly prompt?: string;
               readonly delegationNotice?: 'off' | 'auto';
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-              readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+              readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly alias: string;
                 readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
                 readonly when?: string;
@@ -7286,12 +7290,12 @@ export interface AgentStateSnapshot {
                 readonly allowedEfforts?: readonly string[];
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
-                readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-                  readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+                  readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                     readonly files?: readonly string[];
                     readonly fields?: Readonly<Record<string, string>>;
                   } | 'same';
-                  readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+                  readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                     readonly files?: readonly string[];
                     readonly fields?: Readonly<Record<string, string>>;
                   } | 'same';
@@ -7299,11 +7303,11 @@ export interface AgentStateSnapshot {
                   readonly fields?: Readonly<Record<string, string>>;
                 };
                 readonly recipeOptions?: Readonly<Record<string, boolean>>;
-                readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+                readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                   readonly promptMode?: 'append' | 'prepend' | 'wrap';
                   readonly prompt?: string;
                 };
-                readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+                readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                   readonly promptMode?: 'append' | 'prepend' | 'wrap';
                   readonly prompt?: string;
                 };
@@ -7311,7 +7315,7 @@ export interface AgentStateSnapshot {
                 readonly contextBudget?: number;
                 readonly maxCompletionTokens?: number;
                 readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-                readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+                readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
                 readonly allowedModels?: readonly string[];
                 readonly denyModels?: readonly string[];
                 readonly preferredModels?: readonly string[];
@@ -7320,7 +7324,7 @@ export interface AgentStateSnapshot {
               }[];
               readonly modelPrompts?: 'replace' | 'preserve';
             }>>;
-            readonly spawnConstraints?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+            readonly spawnConstraints?: /* SpawnConstraints — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
               readonly preferredModels?: readonly string[];
               readonly discouragedModels?: readonly string[];
               readonly preferredEfforts?: readonly string[];
@@ -7397,7 +7401,7 @@ export interface AgentStateSnapshot {
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly allowedEfforts?: readonly string[];
-            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
               readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
@@ -7405,12 +7409,12 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
-              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-                readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
-                readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
@@ -7418,11 +7422,11 @@ export interface AgentStateSnapshot {
                 readonly fields?: Readonly<Record<string, string>>;
               };
               readonly recipeOptions?: Readonly<Record<string, boolean>>;
-              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
-              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
@@ -7430,7 +7434,7 @@ export interface AgentStateSnapshot {
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
               readonly preferredModels?: readonly string[];
@@ -7438,13 +7442,13 @@ export interface AgentStateSnapshot {
               readonly preferredEfforts?: readonly string[];
             }[];
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
-            readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-              readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               } | 'same';
-              readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               } | 'same';
@@ -7454,10 +7458,10 @@ export interface AgentStateSnapshot {
             readonly systemPromptMode?: 'inherit' | 'replace' | 'append' | 'prepend';
             readonly prompt: string;
             readonly path: string;
-            readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
+            readonly source: /* AgentFileSource — ../wt-integration/packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
             readonly delegationNotice?: 'off' | 'auto';
           };
-          readonly diagnostic?: /* AgentProfileDiagnostic — packages/agent-profiles/src/scopedAgentProfile.ts */ {
+          readonly diagnostic?: /* AgentProfileDiagnostic — ../wt-integration/packages/agent-profiles/src/scopedAgentProfile.ts */ {
             readonly code: string;
             readonly severity: 'error' | 'warning';
             readonly message: string;
@@ -7467,7 +7471,7 @@ export interface AgentStateSnapshot {
             readonly source?: string;
           };
         }>>>>;
-        readonly sourceDefinitions: Readonly<Record<string, /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+        readonly sourceDefinitions: Readonly<Record<string, /* AgentFileDefinition — ../wt-integration/packages/agent-profiles/src/agentFileTypes.ts */ {
           readonly recipe?: string;
           readonly recipeOptions?: Readonly<Record<string, boolean>>;
           readonly endpoint?: {
@@ -7513,7 +7517,7 @@ export interface AgentStateSnapshot {
           readonly preferredSubagents?: readonly string[];
           readonly denySubagents?: readonly string[];
           readonly subagents?: readonly string[];
-          readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+          readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ /* NamedSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
             readonly source?: undefined;
             readonly name: string;
             readonly description?: string;
@@ -7537,8 +7541,8 @@ export interface AgentStateSnapshot {
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
               readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
@@ -7546,12 +7550,12 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
-              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-                readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
-                readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
@@ -7559,11 +7563,11 @@ export interface AgentStateSnapshot {
                 readonly fields?: Readonly<Record<string, string>>;
               };
               readonly recipeOptions?: Readonly<Record<string, boolean>>;
-              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
-              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
@@ -7571,7 +7575,7 @@ export interface AgentStateSnapshot {
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
               readonly preferredModels?: readonly string[];
@@ -7579,7 +7583,7 @@ export interface AgentStateSnapshot {
               readonly preferredEfforts?: readonly string[];
             }[];
             readonly modelPrompts?: 'replace' | 'preserve';
-          } | /* SourceSubagentLease — packages/agent-profiles/src/subagentLease.ts */ {
+          } | /* SourceSubagentLease — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
             readonly source: string;
             readonly name: string;
             readonly description?: string;
@@ -7603,8 +7607,8 @@ export interface AgentStateSnapshot {
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
-            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
-            readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
+            readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
               readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
@@ -7612,12 +7616,12 @@ export interface AgentStateSnapshot {
               readonly allowedEfforts?: readonly string[];
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
-              readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-                readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
-                readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                   readonly files?: readonly string[];
                   readonly fields?: Readonly<Record<string, string>>;
                 } | 'same';
@@ -7625,11 +7629,11 @@ export interface AgentStateSnapshot {
                 readonly fields?: Readonly<Record<string, string>>;
               };
               readonly recipeOptions?: Readonly<Record<string, boolean>>;
-              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
-              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+              readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
                 readonly promptMode?: 'append' | 'prepend' | 'wrap';
                 readonly prompt?: string;
               };
@@ -7637,7 +7641,7 @@ export interface AgentStateSnapshot {
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
               readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+              readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
               readonly preferredModels?: readonly string[];
@@ -7646,7 +7650,7 @@ export interface AgentStateSnapshot {
             }[];
             readonly modelPrompts?: 'replace' | 'preserve';
           }>>;
-          readonly spawnConstraints?: /* SpawnConstraints — packages/agent-profiles/src/subagentLease.ts */ {
+          readonly spawnConstraints?: /* SpawnConstraints — ../wt-integration/packages/agent-profiles/src/subagentLease.ts */ {
             readonly preferredModels?: readonly string[];
             readonly discouragedModels?: readonly string[];
             readonly preferredEfforts?: readonly string[];
@@ -7723,7 +7727,7 @@ export interface AgentStateSnapshot {
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
           readonly allowedEfforts?: readonly string[];
-          readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly modelProfiles?: readonly /* AgentModelProfile — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
             readonly alias: string;
             readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
             readonly when?: string;
@@ -7731,12 +7735,12 @@ export interface AgentStateSnapshot {
             readonly allowedEfforts?: readonly string[];
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
-            readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-              readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               } | 'same';
-              readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+              readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly files?: readonly string[];
                 readonly fields?: Readonly<Record<string, string>>;
               } | 'same';
@@ -7744,11 +7748,11 @@ export interface AgentStateSnapshot {
               readonly fields?: Readonly<Record<string, string>>;
             };
             readonly recipeOptions?: Readonly<Record<string, boolean>>;
-            readonly main?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly main?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
             };
-            readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — packages/agent-profiles/src/agentProfile.ts */ {
+            readonly independent?: 'off' | 'same' | /* AgentModelPromptContent — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
             };
@@ -7756,7 +7760,7 @@ export interface AgentStateSnapshot {
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
             readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+            readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
             readonly preferredModels?: readonly string[];
@@ -7764,13 +7768,13 @@ export interface AgentStateSnapshot {
             readonly preferredEfforts?: readonly string[];
           }[];
           readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
-          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
-          readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
-            readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+          readonly requestParams?: Readonly<Record<string, /* RequestParamValue — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
+          readonly promptOverrides?: /* PromptOverrides — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly main?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             } | 'same';
-            readonly independent?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
+            readonly independent?: 'off' | /* PromptOverrideContent — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
               readonly files?: readonly string[];
               readonly fields?: Readonly<Record<string, string>>;
             } | 'same';
@@ -7780,11 +7784,11 @@ export interface AgentStateSnapshot {
           readonly systemPromptMode?: 'inherit' | 'replace' | 'append' | 'prepend';
           readonly prompt: string;
           readonly path: string;
-          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
+          readonly source: /* AgentFileSource — ../wt-integration/packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
           readonly delegationNotice?: 'off' | 'auto';
         }>>;
         readonly dependencyIndex: Readonly<Record<string, readonly string[]>>;
-        readonly diagnostics: readonly /* AgentProfileDiagnostic — packages/agent-profiles/src/scopedAgentProfile.ts */ {
+        readonly diagnostics: readonly /* AgentProfileDiagnostic — ../wt-integration/packages/agent-profiles/src/scopedAgentProfile.ts */ {
           readonly code: string;
           readonly severity: 'error' | 'warning';
           readonly message: string;
@@ -7796,7 +7800,7 @@ export interface AgentStateSnapshot {
       };
       readonly promptBase?: /* BoundPromptBase — packages/agent-core-v2/src/agent/profile/boundProfile.ts */ {
         readonly text: string;
-        readonly environment: /* EnvironmentDisclosureSnapshot — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly environment: /* EnvironmentDisclosureSnapshot — ../wt-integration/packages/agent-profiles/src/agentProfile.ts */ {
           readonly cwd: string;
           readonly date: {
             readonly disclosed: true;
@@ -7914,8 +7918,8 @@ export interface AgentStateSnapshot {
               readonly id: string;
               readonly value: string;
               readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'effective' | 'deferred' | 'unsupported' | 'shadowed' | 'inactive';
-              readonly sources: readonly /* PromptOverrideSource — packages/agent-profiles/src/promptOverrides.ts */ {
-                readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'model' | 'profile' | 'system' | 'global' | 'profile-model' | 'caller-lease-model' | 'recipe';
+              readonly sources: readonly /* PromptOverrideSource — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly surface: /* PromptOverrideSurface — ../wt-integration/packages/agent-profiles/src/promptOverrides.ts */ 'model' | 'profile' | 'system' | 'global' | 'profile-model' | 'caller-lease-model' | 'recipe';
                 readonly kind: 'file' | 'inline';
                 readonly path?: string;
                 readonly fileIndex?: number;
@@ -9012,7 +9016,7 @@ export interface AgentStateSnapshot {
               }[];
             };
           };
-          readonly agentRefs?: readonly /* AgentReference — packages/transcript/src/contract/agentReference.ts */ {
+          readonly agentRefs?: readonly /* AgentReference — ../wt-integration/packages/transcript/src/contract/agentReference.ts */ {
             readonly refId: string;
             readonly profile: string;
             readonly executor: string;
@@ -9140,6 +9144,7 @@ export interface AgentStateSnapshot {
           };
           readonly messageId: string;
           readonly acceptedAt: number;
+          readonly notification?: boolean;
         } | /* BridgedPeerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly kind: 'bridged_peer';
           readonly messageId: string;
@@ -9412,7 +9417,7 @@ export interface AgentStateSnapshot {
   'task': /* TaskModelState — packages/agent-core-v2/src/agent/task/taskOps.ts */ Map<string, /* AgentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ /* SubagentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'agent';
     readonly continued?: boolean;
-    readonly sourceRef?: /* AgentRunSource — packages/transcript/src/contract/agentReference.ts */ {
+    readonly sourceRef?: /* AgentRunSource — ../wt-integration/packages/transcript/src/contract/agentReference.ts */ {
       readonly messageId: string;
       readonly refId: string;
       readonly profile: string;
@@ -9551,7 +9556,7 @@ export interface AgentStateSnapshot {
   'task.ghosts': Map<string, /* AgentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ /* SubagentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'agent';
     readonly continued?: boolean;
-    readonly sourceRef?: /* AgentRunSource — packages/transcript/src/contract/agentReference.ts */ {
+    readonly sourceRef?: /* AgentRunSource — ../wt-integration/packages/transcript/src/contract/agentReference.ts */ {
       readonly messageId: string;
       readonly refId: string;
       readonly profile: string;

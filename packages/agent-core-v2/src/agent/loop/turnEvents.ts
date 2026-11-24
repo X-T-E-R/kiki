@@ -1,7 +1,7 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
 import { z } from 'zod';
 
-import type { PromptOrigin } from '#/agent/contextMemory/types';
+import { isThreadWatchNotificationOrigin, type PromptOrigin } from '#/agent/contextMemory/types';
 import { parseDaemonFileUrl } from '#/agent/media/mediaRef';
 import { Event2, registerEvent2Class } from '#/app/event/event2';
 import type { FinishReason } from '#/kosong/contract/provider';
@@ -85,6 +85,7 @@ export function turnPromptAttachments(
 
 export function isDisplayablePromptOrigin(origin: PromptOrigin): boolean {
   if (origin.kind === 'merged') return origin.origins.some(isDisplayablePromptOrigin);
+  if (isThreadWatchNotificationOrigin(origin)) return false;
   if (origin.kind === 'external_thread' || origin.kind === 'unknown') return true;
   if (origin.kind === 'user' || origin.kind === 'peer_thread' || origin.kind === 'bridged_peer' || (origin.kind === 'room_message' && origin.targeted)) return true;
   if (origin.kind === 'system_trigger' && (origin.name === 'subagent' || origin.name === 'thread_create')) return true;

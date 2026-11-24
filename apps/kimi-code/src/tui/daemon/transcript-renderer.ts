@@ -505,7 +505,7 @@ export function createBlockComponent(
     case 'system': {
       const info = classifySystemBlock(block);
       const body = info.kind === 'other' ? block.text : `${info.summary}\n${block.text}`;
-      return new ProcessDetail(info.summary, body, 'textDim', ui);
+      return new ProcessDetail(info.summary, body, info.tone ?? 'textDim', ui);
     }
     case 'system-reminder': {
       const label = block.variant === 'steer' ? 'Steer' : 'Reminder';
@@ -744,7 +744,7 @@ class ProcessDetail implements Component, MouseRoutable {
   constructor(
     private readonly summary: string,
     private readonly body: string,
-    private readonly tone: 'text' | 'textDim' | 'error' = 'textDim',
+    private readonly tone: 'text' | 'textDim' | 'warning' | 'error' = 'textDim',
     private readonly ui?: TUI,
   ) {}
 
@@ -1439,7 +1439,28 @@ function prepareDisplayBlocks(
 
 function classifySystemBlock(
   block: SystemBlock,
-): { readonly kind: 'recipe' | 'internal' | 'other'; readonly summary: string } {
+): { readonly kind: 'recipe' | 'internal' | 'notification' | 'other'; readonly summary: string; readonly tone?: 'textDim' | 'warning' } {
+  if (block.variant === 'thread_watch') {
+    const meta = block.taskNotification;
+    const isWarning =
+      meta?.severity === 'warning' ||
+      meta?.severity === 'error' ||
+      meta?.type === 'thread.attention' ||
+      meta?.type === 'thread.watch_stopped' ||
+      meta?.status === 'failed' ||
+      meta?.status === 'cancelled' ||
+      meta?.status === 'deleted' ||
+      meta?.status === 'attention' ||
+      meta?.status === 'stopped';
+    const summary = meta?.title ?? (block.text.split(/\r?\n/u, 1)[0]!.trim() || 'Thread notification');
+    return { kind: 'notification', summary, tone: isWarning ? 'warning' : 'textDim' };
+  }
+  const taskTitle = block.taskNotification?.title;
+  if (block.variant === 'task' && taskTitle !== undefined) {
+    const meta = block.taskNotification!;
+    const isWarning = meta.severity === 'warning' || meta.severity === 'error' || meta.type === 'task.failed' || meta.status === 'failed';
+    return { kind: 'notification', summary: taskTitle, tone: isWarning ? 'warning' : 'textDim' };
+  }
   const recipeName = extractRecipeName(block);
   const source = block.source ?? '';
   const isRecipe =

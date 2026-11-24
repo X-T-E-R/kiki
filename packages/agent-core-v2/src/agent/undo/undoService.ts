@@ -270,10 +270,14 @@ export class AgentConversationUndoService
 
   private async reconcileLastPrompt(): Promise<void> {
     if (this.agentCtx.agentId !== MAIN_AGENT_ID) return;
-    const pending = this.prompt.list().pending.at(-1);
-    let lastPrompt = pending === undefined
-      ? undefined
-      : promptMetadataTextFromContentParts(pending.message.content);
+    const pendingList = this.prompt.list().pending;
+    let lastPrompt: string | undefined;
+    for (let i = pendingList.length - 1; i >= 0; i--) {
+      const item = pendingList[i]!;
+      if (!isUndoAnchor(item.message)) continue;
+      lastPrompt = promptMetadataTextFromContentParts(item.message.content);
+      if (lastPrompt !== undefined) break;
+    }
     if (lastPrompt === undefined) {
       const history = this.context.get();
       for (let i = history.length - 1; i >= 0; i--) {

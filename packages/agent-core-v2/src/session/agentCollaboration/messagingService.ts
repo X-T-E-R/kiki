@@ -639,6 +639,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       if (this.messageLanded(handle, message.messageId)) return 'skipped';
       executionState = execution.status().state;
     }
+    if (this._store.isDisposed || this.lifecycle.get(handle.id) !== handle) return 'skipped';
     if (executionState !== 'idle') return 'skipped';
     const loopStatus = loop.status();
     const prompts = handle.accessor.get(IAgentPromptService).list();
@@ -648,7 +649,9 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       loopStatus.hasPendingRequests ||
       prompts.pending.length > 0
     ) return 'skipped';
-    if (isExternalClientMain(await this.metadata.read(), handle.id)) return 'skipped';
+    const meta = await this.metadata.read();
+    if (this._store.isDisposed || this.lifecycle.get(handle.id) !== handle) return 'skipped';
+    if (meta.archived === true || isExternalClientMain(meta, handle.id)) return 'skipped';
     return this.startWake(handle, message, idleWake, sourceAgentId, child, sourceTurnId);
   }
 

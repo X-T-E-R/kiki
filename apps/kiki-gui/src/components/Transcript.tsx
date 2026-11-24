@@ -1341,6 +1341,7 @@ const SYSTEM_VARIANT_KEYS = {
   cron_job: 'transcript.system.cron',
   cron_missed: 'transcript.system.cronMissed',
   task: 'transcript.system.task',
+  thread_watch: 'transcript.system.threadWatch',
   retry: 'transcript.system.retry',
   agent_message: 'transcript.system.agent',
   system: 'transcript.system.generic',
@@ -1388,14 +1389,26 @@ function PlainSystemMessage({ block, superseded = false }: { block: SystemBlock;
     ? resolution?.tasks.find((candidate) => candidate.id === block.taskId)
     : undefined;
   const meta = block.taskNotification;
-  const isFailed = block.variant === 'task' && (
-    task?.status === 'failed' ||
-    isFailedTaskNotificationText(block.text) ||
-    meta?.type === 'task.failed' ||
-    meta?.status === 'failed' ||
-    meta?.severity === 'warning' ||
-    meta?.severity === 'error'
-  );
+  const isFailed =
+    (block.variant === 'task' && (
+      task?.status === 'failed' ||
+      isFailedTaskNotificationText(block.text) ||
+      meta?.type === 'task.failed' ||
+      meta?.status === 'failed' ||
+      meta?.severity === 'warning' ||
+      meta?.severity === 'error'
+    )) ||
+    (block.variant === 'thread_watch' && (
+      meta?.severity === 'warning' ||
+      meta?.severity === 'error' ||
+      meta?.type === 'thread.attention' ||
+      meta?.type === 'thread.watch_stopped' ||
+      meta?.status === 'failed' ||
+      meta?.status === 'cancelled' ||
+      meta?.status === 'deleted' ||
+      meta?.status === 'attention' ||
+      meta?.status === 'stopped'
+    ));
   const isProcess = block.variant === 'task' && (
     task?.kind === 'bash' ||
     task?.task_kind === 'process' ||
@@ -1404,7 +1417,15 @@ function PlainSystemMessage({ block, superseded = false }: { block: SystemBlock;
   );
   let label = t(SYSTEM_VARIANT_KEYS[block.variant]);
   let detail: ReactNode = block.source ?? (block.variant === 'task' ? systemHeadline(block.text) : undefined);
-  if (block.variant === 'task') {
+  if (block.variant === 'thread_watch') {
+    if (meta?.title !== undefined && meta.title !== '') label = meta.title;
+    const previewFirstLine = meta?.outputPreview?.split('\n', 1)[0]?.trim();
+    const bodyFirstLine = meta?.body?.split('\n', 1)[0]?.trim();
+    const summaryLine = previewFirstLine && previewFirstLine !== '' ? previewFirstLine : bodyFirstLine;
+    detail = summaryLine !== undefined && summaryLine !== ''
+      ? (summaryLine.length > 120 ? `${summaryLine.slice(0, 119)}…` : summaryLine)
+      : undefined;
+  } else if (block.variant === 'task') {
     const desc = (task?.description || task?.command || meta?.description)?.trim();
     const exitCode = task?.exit_code ?? meta?.exitCode;
     if (isProcess) {
@@ -1418,6 +1439,8 @@ function PlainSystemMessage({ block, superseded = false }: { block: SystemBlock;
       label = t('transcript.task.neutralNotification');
     }
   }
+  const watchBody = block.variant === 'thread_watch' ? (meta?.body ?? block.text) : block.text;
+  const watchPreview = block.variant === 'thread_watch' ? meta?.outputPreview : undefined;
   return (
     <ActivityRow
       attrs={{ 'data-system': block.variant, 'data-superseded': superseded || undefined }}
@@ -1431,13 +1454,23 @@ function PlainSystemMessage({ block, superseded = false }: { block: SystemBlock;
       onToggle={() => { setOpen((value) => !value); }}
     >
       {open ? (
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           <div className="flex max-w-full items-start gap-2 border-l border-hairline pl-3">
             <div className="min-w-0 flex-1 max-h-[28rem] overflow-auto pr-2 text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink-faint">
-              {block.text}
+              {watchBody}
             </div>
-            {block.text !== '' ? <CopyButton text={block.text} label={label} /> : null}
+            {watchBody !== '' ? <CopyButton text={block.text} label={label} /> : null}
           </div>
+          {watchPreview !== undefined && watchPreview !== '' ? (
+            <div className="ml-3 rounded border border-hairline/70 bg-paper/70 px-2.5 py-2">
+              <div className="mb-1 text-[11px] font-medium text-ink-faint">
+                {t('transcript.threadWatch.latestOutput')}
+              </div>
+              <div className="max-h-[16rem] overflow-auto text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink-soft">
+                {watchPreview}
+              </div>
+            </div>
+          ) : null}
           <ContentContinuation source={block.contentSource} roots={SYSTEM_MESSAGE_ROOTS} label={label} />
         </div>
       ) : undefined}

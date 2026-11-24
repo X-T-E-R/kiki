@@ -538,6 +538,7 @@ export const publicPromptOriginSchema = z.discriminatedUnion('kind', [
     source: threadRefSchema,
     messageId: z.string(),
     acceptedAt: z.number(),
+    notification: z.boolean().optional(),
   }).strict(),
   z.object({
     kind: z.literal('agent_message'),

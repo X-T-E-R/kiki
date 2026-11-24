@@ -647,6 +647,17 @@ describe('peer-thread routes', () => {
       expect(rejected.details).toEqual(
         expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining('source') })]),
       );
+
+      const rejectedWatch = await post('/api/threads:send', {
+        target,
+        content: 'external rest must not arm terminal watch',
+        idempotency_key: 'rest-notify-on-terminal',
+        notify_on_terminal: true,
+      });
+      expect(rejectedWatch.code).toBe(ErrorCode.VALIDATION_FAILED);
+      expect(rejectedWatch.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining('notify_on_terminal') })]),
+      );
     } finally {
       await server?.close();
       await rm(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });

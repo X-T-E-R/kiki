@@ -328,6 +328,67 @@ describe('classifyTranscriptText', () => {
       }),
     ).toMatchObject({ lane: 'system', systemVariant: 'task', text: 'Title: Background agent completed\nreview finished' });
   });
+
+  it('classifies thread watch notifications as system thread_watch without raw XML and keeps untrusted user text literal', () => {
+    const watchXml =
+      '<notification id="notify-terminal:send:4ee096346d074c1ba90a95896d9ffcf6:891" category="thread" type="thread.terminal" source_kind="thread" source_id="session_afecd3f8" agent_id="main">\n' +
+      'Title: Thread completed (session_afecd3f8)\n' +
+      'Severity: info\n\n' +
+      'Watched thread session_afecd3f8 (workspace ws-1) emitted terminal (completed).\n' +
+      'Latest output:\n' +
+      'All checks passed &lt;ok&gt;.\n' +
+      '</notification>';
+
+    const byFlag = classifyTranscriptText({
+      text: watchXml,
+      role: 'user',
+      origin: { kind: 'peer_thread', notification: true, source: { sessionId: 'session_afecd3f8' } },
+    });
+    expect(byFlag.lane).toBe('system');
+    expect(byFlag.systemVariant).toBe('thread_watch');
+    expect(byFlag.text).not.toContain('<notification');
+    expect(byFlag.text).not.toContain('&lt;');
+    expect(byFlag.taskNotification).toMatchObject({
+      category: 'thread',
+      type: 'thread.terminal',
+      sourceId: 'session_afecd3f8',
+      agentId: 'main',
+      title: 'Thread completed (session_afecd3f8)',
+      severity: 'info',
+      status: 'completed',
+      outputPreview: 'All checks passed <ok>.',
+    });
+
+    const byLegacyName = classifyTranscriptText({
+      text: watchXml,
+      role: 'user',
+      origin: { kind: 'peer_thread', source: { sessionId: 'session_afecd3f8', name: 'thread-watch:session_afecd3f8' } },
+    });
+    expect(byLegacyName.lane).toBe('system');
+    expect(byLegacyName.systemVariant).toBe('thread_watch');
+
+    const userLiteral = classifyTranscriptText({ text: watchXml, role: 'user', origin: { kind: 'user' } });
+    expect(userLiteral).toMatchObject({ lane: 'you', text: watchXml });
+
+    const mergedCron = classifyTranscriptText({
+      text:
+        '<cron-fire jobId="j1"><prompt>Check disk</prompt><script-output trust="untrusted">free &lt;10%&gt;</script-output></cron-fire>\n\n' +
+        '<cron-fire jobId="j2"><prompt>Check queue</prompt></cron-fire>',
+      role: 'user',
+      origin: { kind: 'merged', origins: [{ kind: 'cron_job' }, { kind: 'cron_job' }] },
+    });
+    expect(mergedCron.lane).toBe('system');
+    expect(mergedCron.systemVariant).toBe('cron_job');
+    expect(mergedCron.text).toBe('Check disk\n\nCheck queue');
+    expect(mergedCron.text).not.toContain('<cron-fire');
+
+    const hookCleaned = classifyTranscriptText({
+      text: '<hook_context>Lint check &lt;ok&gt;</hook_context>',
+      role: 'user',
+      origin: { kind: 'hook_result', event: 'PostToolUse' },
+    });
+    expect(hookCleaned).toMatchObject({ lane: 'system', systemVariant: 'hook_result', text: 'Lint check <ok>' });
+  });
 });
 
 describe('message-closure anchors', () => {

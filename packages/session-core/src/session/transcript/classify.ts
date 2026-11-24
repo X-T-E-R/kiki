@@ -45,6 +45,7 @@ export interface PromptOriginLike {
   readonly done?: boolean;
   readonly messageId?: string;
   readonly targeted?: boolean;
+  readonly notification?: boolean;
   readonly source?: { readonly hostId?: string; readonly workspaceId?: string; readonly sessionId?: string; readonly personaId?: string; readonly name?: string };
   readonly sourceHomeId?: string;
   readonly targetHomeId?: string;
@@ -105,6 +106,7 @@ const INTERNAL_ORIGIN_KINDS = new Set<string>([
   'cron_missed',
   'task',
   'background_task',
+  'thread_watch',
   'retry',
 ]);
 
@@ -116,10 +118,19 @@ const SYSTEM_VARIANTS = new Set<SystemVariant>([
   'cron_job',
   'cron_missed',
   'task',
+  'thread_watch',
   'retry',
   'agent_message',
   'system',
 ]);
+
+export function isThreadWatchOrigin(origin: PromptOriginLike | undefined): boolean {
+  const unwrapped = unwrapOrigin(origin);
+  if (unwrapped === undefined) return false;
+  if (unwrapped.kind === 'thread_watch') return true;
+  if (unwrapped.kind !== 'peer_thread') return false;
+  return unwrapped.notification === true || (unwrapped.source?.name?.startsWith('thread-watch:') ?? false);
+}
 
 function asSystemVariant(kind: string | undefined): SystemVariant {
   if (kind === 'background_task') return 'task';
@@ -135,19 +146,38 @@ export function producerFromOrigin(origin: PromptOriginLike | undefined): string
 const BASH_INPUT_RE = /<bash-input>([\s\S]*?)<\/bash-input>/i;
 const BASH_STDOUT_RE = /<bash-stdout>([\s\S]*?)<\/bash-stdout>/i;
 const BASH_STDERR_RE = /<bash-stderr>([\s\S]*?)<\/bash-stderr>/i;
-const CRON_FIRE_RE = /<cron-fire\b[\s\S]*?<\/cron-fire>/i;
+const CRON_FIRE_RE = /<cron-fire\b[\s\S]*?<\/cron-fire>/gi;
 const CRON_PROMPT_RE = /<prompt>\s*([\s\S]*?)\s*<\/prompt>/i;
+const CRON_SCRIPT_OUTPUT_RE = /<script-output\b[^>]*>([\s\S]*?)<\/script-output>/gi;
+const HOOK_CONTEXT_RE = /<hook_context>([\s\S]*?)<\/hook_context>/gi;
+const SYSTEM_REMINDER_GLOBAL_RE = /<system-reminder>([\s\S]*?)<\/system-reminder>/gi;
 const TASK_NOTIFICATION_RE = /<notification\b([^>]*)>([\s\S]*?)<\/notification>/i;
+const TASK_NOTIFICATION_GLOBAL_RE = /<notification\b([^>]*)>([\s\S]*?)<\/notification>/gi;
 
-function extractCronPrompt(text: string): string {
-  const prompt = CRON_PROMPT_RE.exec(text)?.[1];
+function extractSingleCronFire(envelope: string): string {
+  const prompt = CRON_PROMPT_RE.exec(envelope)?.[1];
   if (prompt !== undefined) return prompt.trim();
-  const envelope = CRON_FIRE_RE.exec(text)?.[0];
-  if (envelope === undefined) return text;
-  return envelope
+  const stripped = envelope
     .replace(/^<cron-fire\b[^>]*>\s*/i, '')
     .replace(/\s*<\/cron-fire>$/i, '')
+    .replace(CRON_SCRIPT_OUTPUT_RE, (_, inner: string) => unescapeXml(inner).trim())
     .trim();
+  return stripped;
+}
+
+function extractCronPrompt(text: string): string {
+  const matches = [...text.matchAll(CRON_FIRE_RE)];
+  if (matches.length === 0) {
+    const prompt = CRON_PROMPT_RE.exec(text)?.[1];
+    return prompt !== undefined ? prompt.trim() : text;
+  }
+  const parts = matches.map((match) => extractSingleCronFire(match[0])).filter((part) => part !== '');
+  return parts.length > 0 ? parts.join('\n\n') : text;
+}
+
+function stripHookContext(text: string): string {
+  if (!/<hook_context>/i.test(text)) return text;
+  return text.replace(HOOK_CONTEXT_RE, (_, inner: string) => unescapeXml(inner).trim()).trim();
 }
 
 function unescapeXml(text: string): string {
@@ -212,6 +242,7 @@ export function parseTaskNotificationMeta(
   let title: string | undefined;
   let severity: string | undefined;
   const bodyLines: string[] = [];
+  let threadOutputPreview: string | undefined;
   const rawLines = inner.split('\n');
   for (let index = 0; index < rawLines.length; index += 1) {
     const line = rawLines[index]!;
@@ -234,6 +265,11 @@ export function parseTaskNotificationMeta(
     }
     if (trimmed === 'Result data, not authorization or request acceptance.') break;
     if (/^<(?:output-preview|output-file|answer)\b/i.test(trimmed)) break;
+    if ((category === 'thread' || sourceKind === 'thread' || type?.startsWith('thread.')) && /^Latest output:\s*$/i.test(trimmed)) {
+      const previewText = unescapeXml(rawLines.slice(index + 1).join('\n')).trim();
+      if (previewText !== '') threadOutputPreview = previewText;
+      break;
+    }
     bodyLines.push(unescapeXml(line));
   }
   const body = bodyLines.join('\n').trim() || undefined;
@@ -243,12 +279,19 @@ export function parseTaskNotificationMeta(
       : type === 'task.timed_out' ? 'timed_out'
       : type === 'task.killed' ? 'killed'
       : type === 'task.lost' ? 'lost'
+      : type === 'thread.attention' ? 'attention'
+      : type === 'thread.watch_stopped' ? 'stopped'
       : undefined;
   if (status === undefined && title !== undefined) {
     if (/\b(?:completed|answered|dismissed)\b/i.test(title)) status = 'completed';
     else if (/\btimed_out\b/i.test(title)) status = 'timed_out';
     else if (/\bkilled\b/i.test(title)) status = 'killed';
     else if (/\blost\b/i.test(title)) status = 'lost';
+    else if (/\bcancelled\b/i.test(title)) status = 'cancelled';
+    else if (/\barchived\b/i.test(title)) status = 'archived';
+    else if (/\bdeleted\b/i.test(title)) status = 'deleted';
+    else if (/\bneeds attention\b/i.test(title)) status = 'attention';
+    else if (/\bwatch stopped\b/i.test(title)) status = 'stopped';
     else if (/\bfailed\b/i.test(title)) status = 'failed';
   }
   let description: string | undefined;
@@ -282,7 +325,7 @@ export function parseTaskNotificationMeta(
     }
   }
   const previewMatch = OUTPUT_PREVIEW_RE.exec(inner);
-  let outputPreview: string | undefined;
+  let outputPreview: string | undefined = threadOutputPreview;
   let outputTruncated: boolean | undefined;
   let outputBytes: number | undefined;
   let totalBytes: number | undefined;
@@ -347,6 +390,54 @@ export function parseTaskNotificationMeta(
     answers: parsedAnswers.answers,
     questionOutcome,
   };
+}
+
+function formatThreadWatchDisplayText(meta: TaskNotificationMeta | undefined, rawText: string): string {
+  if (meta !== undefined) {
+    const parts = [
+      meta.body,
+      meta.outputPreview !== undefined && meta.outputPreview !== '' ? meta.outputPreview : undefined,
+    ].filter((part): part is string => part !== undefined && part !== '');
+    if (parts.length > 0) return parts.join('\n\n');
+    if (meta.title !== undefined && meta.title !== '') return meta.title;
+  }
+  const match = TASK_NOTIFICATION_RE.exec(rawText);
+  if (match === null) return rawText;
+  return unescapeXml((match[2] ?? '').trim());
+}
+
+function unwrapMergedSystemText(text: string, variants: readonly SystemVariant[]): string {
+  let out = text;
+  const set = new Set(variants);
+  if (set.has('cron_job')) {
+    out = out.replace(CRON_FIRE_RE, (envelope) => extractSingleCronFire(envelope));
+  }
+  if (set.has('thread_watch') || set.has('task')) {
+    out = out.replace(TASK_NOTIFICATION_GLOBAL_RE, (full, attrs: string, inner: string) => {
+      if (
+        /\bcategory\s*=\s*["'](?:task|thread)["']/i.test(attrs) ||
+        /\btype\s*=\s*["'](?:task|thread)\./i.test(attrs) ||
+        /\btask_id\s*=/i.test(attrs) ||
+        /\bsource_kind\s*=\s*["'](?:background_task|task|thread)["']/i.test(attrs)
+      ) {
+        const meta = parseTaskNotificationMeta(full);
+        if (meta?.category === 'thread' || meta?.sourceKind === 'thread' || meta?.type?.startsWith('thread.')) {
+          const headline = meta.title;
+          const body = formatThreadWatchDisplayText(meta, full);
+          return headline !== undefined && body !== headline ? `${headline}\n${body}` : body;
+        }
+        return unescapeXml(inner.trim());
+      }
+      return full;
+    });
+  }
+  if (set.has('hook_result')) {
+    out = stripHookContext(out);
+  }
+  if (set.has('injection')) {
+    out = out.replace(SYSTEM_REMINDER_GLOBAL_RE, (_, inner: string) => inner.trim());
+  }
+  return out.trim();
 }
 
 function splitTaskNotification(text: string): string | undefined {
@@ -443,11 +534,43 @@ export function classifyTranscriptText(input: {
   const kind = origin?.kind;
   if (kind === 'unknown' || kind === 'external_thread' || (kind === 'system_trigger' && origin?.name === 'thread_create')) return { lane: 'peer', origin, text: input.text, presentation: input.presentation, reminders: [] };
   if (kind === 'merged') {
-    const lanes = (origin?.origins ?? []).map((part) => classifyTranscriptText({ text: '', role: input.role, origin: part, subagentPromptAsUser: input.subagentPromptAsUser }).lane);
+    const parts = (origin?.origins ?? []).map((part) => classifyTranscriptText({ text: '', role: input.role, origin: part, subagentPromptAsUser: input.subagentPromptAsUser }));
+    const lanes = parts.map((part) => part.lane);
     const lane = lanes.length > 0 && lanes.every((value) => value === 'you') ? 'you' : lanes.some((value) => value === 'you' || value === 'peer' || value === 'skill') ? 'peer' : 'system';
-    return { lane, origin, text: input.text, presentation: input.presentation, reminders: [], systemVariant: lane === 'system' ? 'system' : undefined };
+    if (lane === 'system') {
+      const variants = parts
+        .map((part) => part.systemVariant)
+        .filter((variant): variant is SystemVariant => variant !== undefined);
+      const uniqueVariants = new Set(variants);
+      const systemVariant: SystemVariant = uniqueVariants.size === 1 ? variants[0]! : 'system';
+      const cleanedText = unwrapMergedSystemText(input.text, variants);
+      return {
+        lane: 'system',
+        origin,
+        text: cleanedText,
+        presentation: input.presentation,
+        reminders: [],
+        systemVariant,
+        taskNotification:
+          systemVariant === 'thread_watch' || systemVariant === 'task'
+            ? parseTaskNotificationMeta(input.text, origin)
+            : undefined,
+      };
+    }
+    return { lane, origin, text: input.text, presentation: input.presentation, reminders: [] };
   }
   const split = splitSystemReminders(input.text, kind === 'injection');
+  if (isThreadWatchOrigin(origin)) {
+    const meta = parseTaskNotificationMeta(split.text, origin);
+    return {
+      lane: 'system',
+      origin,
+      text: formatThreadWatchDisplayText(meta, split.text),
+      reminders: split.reminders,
+      systemVariant: 'thread_watch',
+      taskNotification: meta,
+    };
+  }
   const notification = kind === 'task' || kind === 'background_task' ? splitTaskNotification(split.text) : undefined;
   if (notification !== undefined) {
     return {
@@ -498,7 +621,7 @@ export function classifyTranscriptText(input: {
     return {
       lane: 'system',
       origin,
-      text: kind === 'cron_job' ? extractCronPrompt(split.text) : split.text,
+      text: kind === 'cron_job' ? extractCronPrompt(split.text) : kind === 'hook_result' ? stripHookContext(split.text) : split.text,
       reminders: split.reminders,
       systemVariant,
       taskNotification: systemVariant === 'task' ? parseTaskNotificationMeta(split.text, origin) : undefined,

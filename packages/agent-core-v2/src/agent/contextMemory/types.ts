@@ -121,6 +121,14 @@ export interface PeerThreadOrigin {
   readonly source: ThreadRef;
   readonly messageId: string;
   readonly acceptedAt: number;
+  readonly notification?: boolean;
+}
+
+export function isThreadWatchNotificationOrigin(origin: PromptOrigin | undefined): boolean {
+  return origin?.kind === 'peer_thread' && (
+    origin.notification === true ||
+    (origin.source.name?.startsWith('thread-watch:') ?? false)
+  );
 }
 
 export interface BridgedPeerOrigin extends BridgedThreadMetadata {

@@ -11,6 +11,14 @@ export function nonEmptyStringOf(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined;
 }
 
+function isThreadWatchNotificationOrigin(origin: Readonly<Record<string, unknown>> | undefined): boolean {
+  if (stringOf(origin?.['kind']) !== 'peer_thread') return false;
+  if (origin?.['notification'] === true) return true;
+  const source = objectOf(origin?.['source']);
+  const name = stringOf(source?.['name']);
+  return name !== undefined && name.startsWith('thread-watch:');
+}
+
 export function isUndoAnchorOrigin(value: unknown): boolean {
   const raw = objectOf(value);
   const payload = objectOf(raw?.['payload']);
@@ -20,6 +28,7 @@ export function isUndoAnchorOrigin(value: unknown): boolean {
     const origins = Array.isArray(origin?.['origins']) ? origin['origins'] : [];
     return origins.some(isUndoAnchorOrigin);
   }
+  if (isThreadWatchNotificationOrigin(origin)) return false;
   if (
     kind === undefined ||
     kind === 'user' ||

@@ -206,6 +206,20 @@ export function isMediaTool(block: Block): block is ToolBlock {
  * follows); a live one stays out until it settles.
  */
 function isFailedTaskSystemBlock(node: SystemBlock): boolean {
+  if (node.variant === 'thread_watch') {
+    const meta = node.taskNotification;
+    return (
+      meta?.severity === 'warning' ||
+      meta?.severity === 'error' ||
+      meta?.type === 'thread.attention' ||
+      meta?.type === 'thread.watch_stopped' ||
+      meta?.status === 'failed' ||
+      meta?.status === 'cancelled' ||
+      meta?.status === 'deleted' ||
+      meta?.status === 'attention' ||
+      meta?.status === 'stopped'
+    );
+  }
   if (node.variant !== 'task') return false;
   if (node.taskNotification?.severity === 'warning' || node.taskNotification?.severity === 'error') return true;
   if (node.taskNotification?.type === 'task.failed' || node.taskNotification?.status === 'failed') return true;
@@ -262,7 +276,7 @@ function foldable(
       return true;
     case 'system':
       if (node.variant === 'compaction_summary') return false;
-      if (node.variant === 'task' && isFailedTaskSystemBlock(node)) return false;
+      if ((node.variant === 'task' || node.variant === 'thread_watch') && isFailedTaskSystemBlock(node)) return false;
       return true;
     case 'notice':
       // Text an external client saved stays in view: its body is the reason

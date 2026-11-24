@@ -30,6 +30,8 @@ import { DELETED_PRIVACY_DIR, RETAINED_USAGE_SCOPE, deletedPrivacyKey } from '#/
 import { ISessionManager, type ISessionManager as SessionManager } from '#/app/sessionManager/sessionManager';
 import {
   IThreadCommunicationService,
+  type SendThreadMessageInput,
+  type ThreadCaller,
   type ThreadRef,
 } from '#/app/threadCommunication/threadCommunication';
 import { ThreadCommunicationService } from '#/app/threadCommunication/threadCommunicationService';
@@ -52,11 +54,15 @@ import {
   type StoredThreadActivity,
 } from '#/app/threadCommunication/threadMailboxStore';
 import { IAgentPromptService, type PromptHandle } from '#/agent/prompt/prompt';
-import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import {
   ISessionActivityView,
   type SessionActivityChangedEvent,
+  type SessionActivityState,
 } from '#/session/sessionActivity/sessionActivity';
+import { isUndoAnchorOrigin } from '#/agent/contextMemory/conversationTime';
+import { isDisplayablePromptOrigin } from '#/agent/loop/turnEvents';
+import { steeringInputSource } from '#/features/modelSteering/modelSteeringSources';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type {
   SessionArchivedEvent,
@@ -1969,6 +1975,271 @@ describe('ThreadCommunicationService', () => {
     expect(delivered[0]).toContain('<notification ');
     expect(delivered[0]).toContain('type="thread.terminal"');
     expect(delivered[0]).toContain('Evicted terminal output.');
+  });
+
+  it('rejects self-watch, bridged self-send, and external_client notifyOnTerminal', async () => {
+    const selfSummary = summary('self-session', 'ws-self', 1_700_000_000_000);
+    ix.stub(ISessionIndex, {
+      get: async (sessionId: string) => (sessionId === 'self-session' ? selfSummary : undefined),
+      listRecent: async () => ({ items: [selfSummary] }),
+    } as unknown as ISessionIndex);
+    const service = ix.get(IThreadCommunicationService);
+    const caller: ThreadCaller = { sessionId: 'self-session', workspaceId: 'ws-self' };
+    const selfRef = ref(service.hostId, 'ws-self', 'self-session');
+
+    await expect(service.watchTerminal!({ caller, target: selfRef })).rejects.toMatchObject({
+      code: ErrorCodes.THREAD_SELF_SEND,
+    });
+    await expect(service.watchTerminal!({ caller, target: { ...selfRef, hostId: 'local' } })).rejects.toMatchObject({
+      code: ErrorCodes.THREAD_SELF_SEND,
+    });
+    await expect(
+      peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({
+        source: selfRef,
+        target: { ...selfRef, bridgeId: '11111111-1111-4111-8111-111111111111' },
+        content: 'loop',
+        idempotencyKey: 'self-bridge',
+      }),
+    ).rejects.toMatchObject({ code: ErrorCodes.THREAD_SELF_SEND });
+    await expect(
+      service.sendMessage({
+        target: selfRef,
+        content: 'external',
+        idempotencyKey: 'ext-watch',
+        notifyOnTerminal: true,
+      } as SendThreadMessageInput),
+    ).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+  });
+
+  it('defers terminal completed while session is busy and ignores subagent turn_ended during main turn', async () => {
+    const targetSummary = summary('busy-target', 'ws-b', 1_700_000_000_000);
+    const activity = new Emitter<SessionActivityChangedEvent>();
+    let currentState: SessionActivityState = { busy: false, mainTurnActive: false, pendingInteraction: 'none' };
+    const fireActivity = (cause: SessionActivityChangedEvent['cause'], next: SessionActivityState): void => {
+      currentState = next;
+      activity.fire({ cause, state: next });
+    };
+    const handle: ISessionScopeHandle = {
+      id: 'busy-target',
+      kind: LifecycleScope.Session,
+      accessor: accessor([
+        [ISessionContext, { _serviceBrand: undefined, sessionId: 'busy-target', workspaceId: 'ws-b', cwd: '/ws-b', createdAt: 1 }],
+        [ISessionActivityView, { _serviceBrand: undefined, state: () => currentState, onDidChange: activity.event }],
+      ]),
+      dispose: async () => {},
+    } as unknown as ISessionScopeHandle;
+
+    ix.stub(ISessionIndex, {
+      get: async (sessionId: string) => (sessionId === 'busy-target' ? targetSummary : undefined),
+      listRecent: async () => ({ items: [targetSummary] }),
+    } as unknown as ISessionIndex);
+    ix.stub(ISessionManager, {
+      list: () => [handle],
+      get: (sessionId: string) => (sessionId === 'busy-target' ? handle : undefined),
+      onDidCreateSession: Event.None,
+      onDidForkSession: Event.None,
+      onDidArchiveSession: Event.None,
+      onDidCloseSession: Event.None,
+    } as unknown as ISessionManager);
+    ix.get(IThreadCommunicationService);
+
+    fireActivity('turn_started', { busy: true, mainTurnActive: true, pendingInteraction: 'none' });
+    fireActivity('turn_ended', { busy: true, mainTurnActive: true, pendingInteraction: 'none', lastTurnReason: 'completed' });
+    fireActivity('turn_ended', { busy: true, mainTurnActive: false, pendingInteraction: 'none', lastTurnReason: 'completed' });
+    await Promise.resolve();
+    expect(activityEvents).toEqual([]);
+
+    fireActivity('interaction', { busy: true, mainTurnActive: false, pendingInteraction: 'approval', lastTurnReason: 'completed' });
+    await vi.waitFor(() =>
+      expect(activityEvents.map((e) => ({ kind: e.kind, reason: e.reason }))).toEqual([
+        { kind: 'attention', reason: 'approval' },
+      ]),
+    );
+
+    fireActivity('background', { busy: false, mainTurnActive: false, pendingInteraction: 'none', lastTurnReason: 'completed' });
+    await vi.waitFor(() =>
+      expect(activityEvents.map((e) => ({ kind: e.kind, reason: e.reason }))).toEqual([
+        { kind: 'attention', reason: 'approval' },
+        { kind: 'terminal', reason: 'completed' },
+      ]),
+    );
+  });
+
+  it('auto-cancels send watch on explicit peer reply and cleans watches on caller delete', async () => {
+    const watcherSummary = summary('watcher-a', 'ws-shared', 1_700_000_000_000);
+    const targetSummary = summary('target-b', 'ws-shared', 1_700_000_000_000);
+    const targetActivity = new Emitter<SessionActivityChangedEvent>();
+    const deleted = new Emitter<{ readonly sessionId: string }>();
+    const deliveredToWatcher: Array<{ content: string; origin?: unknown }> = [];
+    const targetHandle = observedSessionHandle('target-b', 'ws-shared', targetActivity);
+    const makePromptHandle = (sessionId: string): ISessionScopeHandle => {
+      const agentHandle = {
+        id: MAIN_AGENT_ID,
+        kind: LifecycleScope.Agent,
+        accessor: accessor([
+          [IAgentPromptService, {
+            _serviceBrand: undefined,
+            lookup: () => undefined,
+            inject: vi.fn(),
+            steer: vi.fn(),
+            abort: vi.fn(),
+            enqueue: async (input: { readonly id: string; readonly message: { readonly content: readonly { readonly text?: string }[]; readonly origin?: unknown } }) => {
+              if (sessionId === 'watcher-a') {
+                deliveredToWatcher.push({
+                  content: input.message.content.map((p) => p.text ?? '').join(''),
+                  origin: input.message.origin,
+                });
+              }
+              return {
+                id: input.id,
+                userMessageId: input.id,
+                createdAt: new Date().toISOString(),
+                state: 'completed',
+                message: input.message,
+                launched: Promise.resolve(undefined),
+                completion: Promise.resolve(undefined),
+              } as unknown as PromptHandle;
+            },
+          }],
+        ]),
+        dispose: () => {},
+      } as unknown as IAgentScopeHandle;
+      return {
+        id: sessionId,
+        kind: LifecycleScope.Session,
+        accessor: accessor([
+          [ISessionContext, { _serviceBrand: undefined, sessionId, workspaceId: 'ws-shared', cwd: '/ws-shared', createdAt: 1 }],
+          [ISessionActivityView, {
+            _serviceBrand: undefined,
+            state: () => ({ busy: false, mainTurnActive: false, pendingInteraction: 'none' as const }),
+            onDidChange: sessionId === 'target-b' ? targetActivity.event : Event.None,
+          }],
+          [IAgentLifecycleService, {
+            _serviceBrand: undefined,
+            get: () => agentHandle,
+            create: async () => agentHandle,
+            list: () => [agentHandle],
+          }],
+        ]),
+        dispose: async () => {},
+      } as unknown as ISessionScopeHandle;
+    };
+    const live = new Map<string, ISessionScopeHandle>([
+      ['watcher-a', makePromptHandle('watcher-a')],
+      ['target-b', makePromptHandle('target-b')],
+    ]);
+
+    const pendingByTarget = new Map<string, AcceptedThreadMessage[]>();
+    let seqCounter = 1;
+    const baseMailbox = inMemoryMailbox();
+    ix.stub(IThreadMailboxStore, {
+      ...baseMailbox,
+      acceptMessage: async (input) => {
+        const message: AcceptedThreadMessage = {
+          ...input,
+          messageId: `msg-${seqCounter++}`,
+          acceptedAt: Date.now(),
+          targetSeq: seqCounter,
+        };
+        const key = threadIdentity(input.target);
+        const list = pendingByTarget.get(key) ?? [];
+        list.push(message);
+        pendingByTarget.set(key, list);
+        return { message, deduplicated: false, delivery: 'pending', payloadConflict: false };
+      },
+      claimNext: async (input) => {
+        const key = threadIdentity(input.target);
+        const list = pendingByTarget.get(key);
+        const next = list?.shift();
+        if (next === undefined) return undefined;
+        return { message: next, consumerId: input.consumerId, hostEpoch: 'epoch-1', fence: 1, leaseUntil: Date.now() + input.leaseMs };
+      },
+      acknowledgeDelivery: async () => true,
+    });
+    ix.stub(ISessionIndex, {
+      get: async (sessionId: string) => (sessionId === 'watcher-a' ? watcherSummary : sessionId === 'target-b' ? targetSummary : undefined),
+      listRecent: async () => ({ items: [watcherSummary, targetSummary] }),
+    } as unknown as ISessionIndex);
+    ix.stub(ISessionManager, {
+      list: () => [targetHandle],
+      get: (sessionId: string) => live.get(sessionId),
+      resume: async (sessionId: string) => live.get(sessionId),
+      onDidCreateSession: Event.None,
+      onDidForkSession: Event.None,
+      onDidArchiveSession: Event.None,
+      onDidCloseSession: Event.None,
+      onDidDeleteSession: deleted.event,
+    } as unknown as ISessionManager);
+    const service = ix.get(IThreadCommunicationService);
+    const refA = ref(service.hostId, 'ws-shared', 'watcher-a');
+    const refB = ref(service.hostId, 'ws-shared', 'target-b');
+
+    await peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({
+      source: refA,
+      target: refB,
+      content: 'please do task X',
+      idempotencyKey: 'a-to-b-1',
+      notifyOnTerminal: true,
+    });
+    await peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({
+      source: refB,
+      target: refA,
+      content: 'task X done, here is the result',
+      idempotencyKey: 'b-to-a-reply',
+    });
+    await vi.waitFor(() =>
+      expect(deliveredToWatcher.some((msg) => msg.content.includes('task X done'))).toBe(true),
+    );
+    targetActivity.fire({
+      cause: 'turn_ended',
+      state: { busy: false, mainTurnActive: false, pendingInteraction: 'none', lastTurnReason: 'failed' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(deliveredToWatcher.some((msg) => msg.content.includes('<notification'))).toBe(false);
+
+    await service.watchTerminal!({ caller: { sessionId: 'watcher-a', workspaceId: 'ws-shared' }, target: refB });
+    deleted.fire({ sessionId: 'watcher-a' });
+    targetActivity.fire({
+      cause: 'turn_ended',
+      state: { busy: false, mainTurnActive: false, pendingInteraction: 'none', lastTurnReason: 'completed' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(deliveredToWatcher.some((msg) => msg.content.includes('<notification'))).toBe(false);
+  });
+
+  it('excludes thread-watch peer_thread notifications from undo anchors, displayable origins, and thread steering', () => {
+    const watchByFlag = {
+      kind: 'peer_thread' as const,
+      source: ref('h1', 'w1', 's2'),
+      messageId: 'm1',
+      acceptedAt: 1,
+      notification: true,
+    };
+    const watchByLegacyName = {
+      kind: 'peer_thread' as const,
+      source: { ...ref('h1', 'w1', 's2'), name: 'thread-watch:s2' },
+      messageId: 'm2',
+      acceptedAt: 1,
+    };
+    const normalPeer = {
+      kind: 'peer_thread' as const,
+      source: ref('h1', 'w1', 's2'),
+      messageId: 'm3',
+      acceptedAt: 1,
+    };
+
+    expect(isUndoAnchorOrigin(watchByFlag)).toBe(false);
+    expect(isUndoAnchorOrigin(watchByLegacyName)).toBe(false);
+    expect(isUndoAnchorOrigin(normalPeer)).toBe(true);
+
+    expect(isDisplayablePromptOrigin(watchByFlag)).toBe(false);
+    expect(isDisplayablePromptOrigin(watchByLegacyName)).toBe(false);
+    expect(isDisplayablePromptOrigin(normalPeer)).toBe(true);
+
+    expect(steeringInputSource(watchByFlag)).toBe('task');
+    expect(steeringInputSource(watchByLegacyName)).toBe('task');
+    expect(steeringInputSource(normalPeer)).toBe('thread');
   });
 });
 

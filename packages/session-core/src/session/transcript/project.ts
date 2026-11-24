@@ -44,6 +44,7 @@ import { isModelSwitchQueueId, modelSwitchQueueId } from '../modelSwitchQueue';
 import { describeError } from '../../util/errorText';
 import {
   classifyTranscriptText,
+  isThreadWatchOrigin,
   mergeMediaWithPresentation,
   originFromRecord,
   producerFromOrigin,
@@ -327,6 +328,7 @@ function isUserVisibleOrigin(origin: PromptOriginLike | undefined): boolean {
   const unwrapped = unwrapOrigin(origin);
   const kind = unwrapped?.kind;
   if (kind === 'merged') return (unwrapped?.origins ?? []).some(isUserVisibleOrigin);
+  if (isThreadWatchOrigin(unwrapped)) return false;
   return kind === 'user' || kind === 'peer_thread' || kind === 'bridged_peer' || kind === 'branch_fold' || kind === 'external_thread' || kind === 'unknown' || (kind === 'system_trigger' && unwrapped?.name === 'thread_create');
 }
 

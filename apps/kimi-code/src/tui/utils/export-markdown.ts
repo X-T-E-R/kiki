@@ -108,6 +108,9 @@ const INTERNAL_ORIGINS = new Set<PromptOrigin['kind']>([
 export function isInternalMessage(msg: ContextMessage): boolean {
   const origin = msg.origin;
   if (origin === undefined) return false;
+  if (origin.kind === 'peer_thread' && (origin.notification === true || origin.source.name?.startsWith('thread-watch:') === true)) {
+    return true;
+  }
   return INTERNAL_ORIGINS.has(origin.kind);
 }
 

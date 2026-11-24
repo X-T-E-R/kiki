@@ -1386,4 +1386,32 @@ describe('DaemonTranscriptRenderer', () => {
     expect(expanded).toContain('✓ worker · Initial run succeeded');
     expect(expanded).toContain('▸ ✗ worker · Resumed run failed');
   });
+
+  it('renders thread_watch system blocks using clean notification title without raw XML', () => {
+    const container = new Container();
+    const renderer = new DaemonTranscriptRenderer(container);
+    const frame = () => strip(container.render(100).join('\n'));
+    renderer.sync([
+      {
+        kind: 'system',
+        id: 'sys-watch-1',
+        turnId: 't1',
+        variant: 'thread_watch',
+        text: 'Watched thread session_c07e emitted terminal (failed).',
+        createdAt: undefined,
+        taskNotification: {
+          category: 'thread',
+          type: 'thread.terminal',
+          sourceId: 'session_c07e',
+          agentId: 'main',
+          title: 'Thread failed (session_c07e)',
+          severity: 'warning',
+          status: 'failed',
+        },
+      },
+    ]);
+    const output = frame();
+    expect(output).toContain('Thread failed (session_c07e)');
+    expect(output).not.toContain('<notification');
+  });
 });

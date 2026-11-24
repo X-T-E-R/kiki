@@ -565,6 +565,7 @@ function publicPromptOrigin(origin: PromptOrigin) {
         },
         messageId: origin.messageId,
         acceptedAt: origin.acceptedAt,
+        notification: origin.notification,
       };
     case 'agent_message':
       return {

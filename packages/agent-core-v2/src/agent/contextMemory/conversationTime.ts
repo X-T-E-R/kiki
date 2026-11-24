@@ -9,10 +9,11 @@ import {
   ContextUndo,
 } from './contextEvents';
 import { findProviderMessageIndex } from './loopEventFold';
-import type { ContextMessage } from './types';
+import { isThreadWatchNotificationOrigin, type ContextMessage } from './types';
 
 export function isUndoAnchorOrigin(origin: ContextMessage['origin']): boolean {
   if (origin?.kind === 'merged') return origin.origins.some(isUndoAnchorOrigin);
+  if (isThreadWatchNotificationOrigin(origin)) return false;
   if (origin?.kind === 'external_thread' || origin?.kind === 'unknown') return true;
   if (
     origin === undefined ||

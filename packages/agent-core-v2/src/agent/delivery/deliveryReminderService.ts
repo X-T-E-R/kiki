@@ -3,7 +3,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IEventBus } from '#/app/event/eventBus';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
-import type { PromptOrigin } from '#/agent/contextMemory/types';
+import { isThreadWatchNotificationOrigin, type PromptOrigin } from '#/agent/contextMemory/types';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -85,6 +85,7 @@ function nativeRegisteredSendMessage(executorId: string | undefined, registry: I
 }
 
 function shouldRemind(origin: PromptOrigin): boolean {
+  if (isThreadWatchNotificationOrigin(origin)) return false;
   return origin.kind === 'user' || origin.kind === 'peer_thread' || origin.kind === 'bridged_peer' || (origin.kind === 'room_message' && origin.targeted);
 }
 

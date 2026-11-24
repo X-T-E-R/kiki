@@ -1,5 +1,5 @@
 import type { ModelSteeringSource } from '@kiki/protocol';
-import type { PromptOrigin } from '#/agent/contextMemory/types';
+import { isThreadWatchNotificationOrigin, type PromptOrigin } from '#/agent/contextMemory/types';
 
 export type SteeringInputSource = 'user' | ModelSteeringSource;
 
@@ -8,7 +8,7 @@ export function steeringInputSource(origin: PromptOrigin | undefined): SteeringI
     case 'user': return 'user';
     case 'plugin_command': return origin.trigger === 'user-slash' ? 'user' : undefined;
     case 'skill_activation': return origin.trigger === 'user-slash' ? 'user' : 'skill';
-    case 'peer_thread':
+    case 'peer_thread': return isThreadWatchNotificationOrigin(origin) ? 'task' : 'thread';
     case 'bridged_peer': return 'thread';
     case 'room_message': return 'room';
     case 'agent_message':

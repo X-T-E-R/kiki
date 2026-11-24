@@ -9,7 +9,7 @@ import { IModelService } from '#/kosong/model/model';
 import { applyRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { TurnStarted } from '#/agent/loop/turnEvents';
-import type { PromptOrigin } from '#/agent/contextMemory/types';
+import { isThreadWatchNotificationOrigin, type PromptOrigin } from '#/agent/contextMemory/types';
 import type { ExecutableToolContext } from '#/tool/toolContract';
 import { INTERACTION_SECTION, type InteractionConfig } from './configSection';
 
@@ -122,6 +122,7 @@ export class QuestionFrequencyGuard extends Disposable implements IQuestionFrequ
 }
 
 function startsUserRound(origin: PromptOrigin): boolean {
+  if (isThreadWatchNotificationOrigin(origin)) return false;
   return origin.kind === 'user' ||
     ((origin.kind === 'skill_activation' || origin.kind === 'plugin_command') && origin.trigger === 'user-slash') ||
     (origin.kind === 'room_message' && origin.targeted) ||

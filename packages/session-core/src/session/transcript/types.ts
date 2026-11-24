@@ -149,6 +149,7 @@ export type SystemVariant =
   | 'cron_job'
   | 'cron_missed'
   | 'task'
+  | 'thread_watch'
   | 'retry'
   | 'agent_message'
   | 'system';
@@ -164,7 +165,7 @@ export interface TaskNotificationMeta {
   readonly severity?: string;
   readonly body?: string;
   readonly description?: string;
-  readonly status?: 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost';
+  readonly status?: 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost' | 'cancelled' | 'archived' | 'deleted' | 'attention' | 'stopped';
   readonly stopReason?: string;
   readonly exitCode?: number | null;
   readonly durationMs?: number;

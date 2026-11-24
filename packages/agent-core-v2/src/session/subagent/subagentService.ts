@@ -146,7 +146,12 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
             if (!this.stopped) this.publishPendingReceipts();
             if (this.agentLifecycle.get(handle.id) === handle) this.scheduleRelease(handle.id);
           }, (error: unknown) => {
-            if (!this.stopped) this.log.error('autonomous subagent receipt delivery stopped before completion', { agentId: handle.id, error });
+            this.pendingReceipts.delete(receipt);
+            this.recheckAncestors(handle.id);
+            if (!this.stopped) {
+              this.publishPendingReceipts();
+              this.log.error('autonomous subagent receipt delivery stopped before completion', { agentId: handle.id, error });
+            }
           });
         }, () => this.hasDescendantReceiptWork(handle.id), () => this.recheckAncestors(handle.id), receipts.signal));
         this.recheckAncestors(handle.id);

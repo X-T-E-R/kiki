@@ -443,4 +443,38 @@ describe('buildExportMarkdown', () => {
     });
     expect(md).toContain('2 tool calls');
   });
+
+  it('marks thread-watch peer_thread notifications as internal', () => {
+    expect(
+      isInternalMessage(
+        userMsg('<notification category="thread">done</notification>', {
+          kind: 'peer_thread',
+          source: { hostId: 'h1', workspaceId: 'w1', sessionId: 's2' },
+          messageId: 'm1',
+          acceptedAt: 1,
+          notification: true,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isInternalMessage(
+        userMsg('<notification category="thread">done</notification>', {
+          kind: 'peer_thread',
+          source: { hostId: 'h1', workspaceId: 'w1', sessionId: 's2', name: 'thread-watch:s2' },
+          messageId: 'm2',
+          acceptedAt: 1,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isInternalMessage(
+        userMsg('real peer message', {
+          kind: 'peer_thread',
+          source: { hostId: 'h1', workspaceId: 'w1', sessionId: 's2' },
+          messageId: 'm3',
+          acceptedAt: 1,
+        }),
+      ),
+    ).toBe(false);
+  });
 });

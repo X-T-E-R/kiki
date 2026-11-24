@@ -25,7 +25,7 @@ import { Error2, ErrorCodes, fromErrorPayload, isError2, toErrorPayload, type Er
 import { isStorageError, StorageErrors } from '#/persistence/interface/storage';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
-import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
+import { ISessionActivityView, type SessionActivityState } from '#/session/sessionActivity/sessionActivity';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import {
   agentScopeOf,
@@ -197,7 +197,11 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }): Promise<SendThreadMessageResult> {
     if (this.connector === undefined) throw new Error2(ErrorCodes.THREAD_CROSS_HOST, 'No space bridge is installed.');
     await this.connector.beforeDelivery({ ...input, messageId: '', acceptedAt: Date.now(), targetSeq: 0 });
-    return this.sendProducedMessage(input);
+    const result = await this.sendProducedMessage(input);
+    if (result.delivery !== 'undeliverable') {
+      this.cancelSendWatchesForReply(input.producer.source, input.target);
+    }
+    return result;
   }
 
   private needsBridge(ref: ThreadRef): boolean {
@@ -219,7 +223,13 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   private readonly claimRequestIds = new Map<string, string>();
   private readonly roomDeliveryTargets = new Map<string, RoomDeliveryTarget>();
   private readonly roomDeliveryReceipts = new Map<string, RoomDeliveryReceipt>();
-  private readonly terminalWatches = new Map<string, { readonly controller: AbortController; readonly watchId: string }>();
+  private readonly terminalWatches = new Map<string, {
+    readonly controller: AbortController;
+    readonly watchId: string;
+    readonly callerRef: ThreadRef;
+    readonly target: ThreadRef;
+    readonly kind: 'send' | 'create' | 'watch';
+  }>();
   private readonly mailboxController = new AbortController();
   private readonly shutdownSignal: Promise<void>;
   private resolveShutdown!: () => void;
@@ -384,6 +394,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   async watchTerminal(input: WatchThreadTerminalInput): Promise<void> {
     await this.ensureRecovery();
     const callerRef: ThreadRef = { hostId: this.hostId, workspaceId: input.caller.workspaceId, sessionId: input.caller.sessionId };
+    if (sameThread(callerRef, this.normalizeSelfCheckTarget(input.target))) {
+      throw new Error2(ErrorCodes.THREAD_SELF_SEND, 'A thread cannot watch itself.');
+    }
     await this.requireThread(callerRef, input.caller);
     if (this.needsBridge(input.target)) {
       this.requireConnector().assertCanWatch?.({ caller: input.caller, target: input.target });
@@ -391,7 +404,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       const localTarget = this.requireLocalHost(input.target);
       await this.requireThread(localTarget, input.caller);
     }
-    this.startTerminalWatch(input.caller, callerRef, input.target, input.cursor);
+    this.startTerminalWatch(input.caller, callerRef, input.target, input.cursor, undefined, false, 'watch');
   }
 
   async createThread(input: CreateBridgedThreadInput): Promise<CreateBridgedThreadResult> {
@@ -427,6 +440,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         created.activityCursor,
         `create:${watchKeyHash}`,
         true,
+        'create',
       );
     }
     return created;
@@ -546,6 +560,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   async sendMessage(input: SendThreadMessageInput): Promise<SendThreadMessageResult> {
+    if ((input as { readonly notifyOnTerminal?: unknown }).notifyOnTerminal === true) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'external_client send does not support notify_on_terminal.');
+    }
     return this.sendProducedMessage({
       producer: { kind: 'external_client' },
       caller: input.caller,
@@ -621,6 +638,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     await waitWithSignal(this.ensureRecovery(), input.signal);
     validateSendInput(input);
     const source = this.requireLocalHost(input.source);
+    if (sameThread(source, this.normalizeSelfCheckTarget(input.target))) {
+      throw new Error2(ErrorCodes.THREAD_SELF_SEND, 'A thread cannot send a message to itself.');
+    }
     const caller: ThreadCaller = {
       sessionId: source.sessionId,
       workspaceId: source.workspaceId,
@@ -680,6 +700,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         signal: peer.signal,
         deliveryTimeoutMs: Math.max(0, deadline - Date.now()),
       }, peer.allowWhenDisabled !== true);
+      if (result.delivery !== 'undeliverable') {
+        this.cancelSendWatchesForReply(peer.source, target);
+      }
     }
     if (input.notifyOnTerminal === true && !result.deduplicated && result.delivery !== 'undeliverable') {
       const watchTarget = this.needsBridge(peer.target) ? peer.target : this.requireLocalHost(peer.target);
@@ -691,6 +714,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         watchCursor,
         `send:${sendKeyHash}`,
         true,
+        'send',
       );
     }
     return result;
@@ -956,6 +980,84 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     return title === undefined || title === '' ? ref.sessionId : `"${title}" (${ref.sessionId})`;
   }
 
+  private normalizeSelfCheckTarget(ref: ThreadRef): ThreadRef {
+    const hostId = ref.hostId === 'local' || ref.hostId === '' ? this.hostId : ref.hostId;
+    return { hostId, workspaceId: ref.workspaceId, sessionId: ref.sessionId };
+  }
+
+  private cancelSendWatchesForReply(senderRef: ThreadRef, recipientRef: ThreadRef): void {
+    const normalizedSender = this.normalizeSelfCheckTarget(senderRef);
+    const normalizedRecipient = this.normalizeSelfCheckTarget(recipientRef);
+    for (const [key, record] of this.terminalWatches) {
+      if (record.kind !== 'send') continue;
+      if (!sameThread(record.callerRef, normalizedRecipient)) continue;
+      if (!sameThread(this.normalizeSelfCheckTarget(record.target), normalizedSender)) continue;
+      record.controller.abort();
+      this.terminalWatches.delete(key);
+    }
+  }
+
+  private cancelWatchesForCaller(sessionId: string): void {
+    for (const [key, record] of this.terminalWatches) {
+      if (record.callerRef.sessionId !== sessionId) continue;
+      record.controller.abort();
+      this.terminalWatches.delete(key);
+    }
+  }
+
+  private localTargetActivityState(target: ThreadRef): SessionActivityState | undefined {
+    if (this.needsBridge(target)) return undefined;
+    const live = this.liveSession(target.sessionId);
+    if (live === undefined) return undefined;
+    if (live.accessor.get(ISessionContext).workspaceId !== target.workspaceId) return undefined;
+    return live.accessor.get(ISessionActivityView).state();
+  }
+
+  private async awaitLocalTargetIdle(target: ThreadRef, signal: AbortSignal): Promise<boolean> {
+    if (this.needsBridge(target) || signal.aborted || this.closing) return false;
+    const live = this.liveSession(target.sessionId);
+    if (live === undefined) return true;
+    if (live.accessor.get(ISessionContext).workspaceId !== target.workspaceId) return true;
+    const activity = live.accessor.get(ISessionActivityView);
+    const current = activity.state();
+    if (!current.busy || current.pendingInteraction !== 'none') return true;
+    return new Promise<boolean>((resolve) => {
+      const subs = new DisposableStore();
+      let settled = false;
+      const finish = (ok: boolean): void => {
+        if (settled) return;
+        settled = true;
+        subs.dispose();
+        signal.removeEventListener('abort', onAbort);
+        resolve(ok);
+      };
+      const onAbort = (): void => finish(false);
+      subs.add(
+        activity.onDidChange((event) => {
+          if (!event.state.busy || event.state.pendingInteraction !== 'none') finish(true);
+        }),
+      );
+      if (this.sessionManager.onDidCloseSession !== undefined) {
+        subs.add(this.sessionManager.onDidCloseSession((event) => {
+          if (event.sessionId === target.sessionId) finish(true);
+        }));
+      }
+      if (this.sessionManager.onDidArchiveSession !== undefined) {
+        subs.add(this.sessionManager.onDidArchiveSession((event) => {
+          if (event.sessionId === target.sessionId) finish(true);
+        }));
+      }
+      if (this.sessionManager.onDidDeleteSession !== undefined) {
+        subs.add(this.sessionManager.onDidDeleteSession((event) => {
+          if (event.sessionId === target.sessionId) finish(true);
+        }));
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+      const recheck = activity.state();
+      if (!recheck.busy || recheck.pendingInteraction !== 'none') finish(true);
+    });
+  }
+
   private startTerminalWatch(
     caller: ThreadCaller,
     callerRef: ThreadRef,
@@ -963,8 +1065,10 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     initialCursor: string | undefined,
     explicitWatchId?: string,
     preserveIfSameOrActive = false,
+    kind: 'send' | 'create' | 'watch' = 'watch',
   ): void {
     if (this.closing || this.mailboxController.signal.aborted) return;
+    if (sameThread(callerRef, this.normalizeSelfCheckTarget(target))) return;
     const normalizedTarget: ThreadRef = this.needsBridge(target) ? target : this.requireLocalHost(target);
     const key = `${threadIdentity(callerRef)}\0${caller.agentId ?? MAIN_AGENT_ID}\0${threadIdentity(normalizedTarget)}`;
     const watchId = explicitWatchId ?? randomUUID();
@@ -976,7 +1080,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       previous.controller.abort();
     }
     const controller = new AbortController();
-    const record = { controller, watchId };
+    const record = { controller, watchId, callerRef, target: normalizedTarget, kind };
     this.terminalWatches.set(key, record);
     const signal = AbortSignal.any([controller.signal, this.mailboxController.signal]);
     this.detach(
@@ -1062,15 +1166,49 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         const entry = result.threads[0];
         if (entry !== undefined) cursor = entry.cursor;
         if (result.timedOut || entry === undefined || entry.activities.length === 0) continue;
+        let activities = entry.activities;
         let preview: string | undefined;
         let previewError: string | undefined;
-        const hasTerminal = entry.activities.some((activity) => activity.kind === 'terminal');
-        const hasDeletedOrArchived = entry.activities.some(
+        let hasTerminal = activities.some((activity) => activity.kind === 'terminal');
+        let hasDeletedOrArchived = activities.some(
           (activity) => activity.kind === 'lifecycle' && (activity.reason === 'deleted' || activity.reason === 'archived'),
         );
-        const hasAttention = entry.activities.some((activity) => activity.kind === 'attention');
-        const shouldTerminate = hasTerminal || hasDeletedOrArchived;
+        let hasAttention = activities.some((activity) => activity.kind === 'attention');
+        let shouldTerminate = hasTerminal || hasDeletedOrArchived;
         if (!shouldTerminate && !hasAttention) continue;
+        const onlyCompletedTerminal =
+          hasTerminal &&
+          !hasDeletedOrArchived &&
+          !hasAttention &&
+          activities.every((activity) => activity.kind !== 'terminal' || activity.reason === 'completed');
+        if (onlyCompletedTerminal && this.localTargetActivityState(target)?.busy === true) {
+          const settled = await this.awaitLocalTargetIdle(target, signal);
+          if (!settled || signal.aborted || this.closing) return;
+          try {
+            const followUp = await this.waitThreads({
+              caller,
+              threads: [{ thread: target, cursor }],
+              timeoutMs: 0,
+              signal,
+            });
+            const followUpEntry = followUp.threads[0];
+            if (followUpEntry !== undefined) {
+              cursor = followUpEntry.cursor;
+              if (followUpEntry.activities.length > 0) {
+                activities = followUpEntry.activities;
+                hasTerminal = activities.some((activity) => activity.kind === 'terminal');
+                hasDeletedOrArchived = activities.some(
+                  (activity) => activity.kind === 'lifecycle' && (activity.reason === 'deleted' || activity.reason === 'archived'),
+                );
+                hasAttention = activities.some((activity) => activity.kind === 'attention');
+                shouldTerminate = hasTerminal || hasDeletedOrArchived;
+                if (!shouldTerminate && !hasAttention) continue;
+              }
+            }
+          } catch {
+            if (signal.aborted || this.closing) return;
+          }
+        }
         if (hasTerminal && !hasDeletedOrArchived) {
           try {
             const readResult = await this.readThread({ caller, thread: target, limit: 1, signal });
@@ -1080,11 +1218,11 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
           }
         }
         if (signal.aborted || this.closing) return;
-        const lastSeq = entry.activities.at(-1)!.seq;
+        const lastSeq = activities.at(-1)!.seq;
         const notificationId = shouldTerminate
           ? `notify-terminal:${watchId}:${lastSeq}`
           : `notify-attention:${watchId}:${lastSeq}`;
-        const content = formatTerminalWatchMessage(target, entry.activities, preview, previewError, {
+        const content = formatTerminalWatchMessage(target, activities, preview, previewError, {
           notificationId,
           agentId: caller.agentId,
         });
@@ -1171,6 +1309,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       if (signal.aborted || this.closing) return { terminated: true };
       const latestTurn = readResult.turns.at(-1);
       if (latestTurn !== undefined && latestTurn.endedAt >= watchStartedAt) {
+        if (latestTurn.reason === 'completed' && this.localTargetActivityState(target)?.busy === true) {
+          return { terminated: false, cursor: updatedCursor };
+        }
         const preview = extractTerminalPreview(readResult);
         const notificationId = `notify-terminal:${watchId}:reconciled:${latestTurn.turnId}`;
         const synthesized: ThreadActivity = {
@@ -1207,6 +1348,10 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     signal: AbortSignal,
   ): Promise<void> {
     if (signal.aborted || this.closing) return;
+    const callerSummary = await this.sessions.get(callerRef.sessionId, callerRef.workspaceId).catch(() => undefined);
+    if (callerSummary === undefined || callerSummary.workspaceId !== callerRef.workspaceId || callerSummary.archived === true) {
+      return;
+    }
     try {
       await this.sendProducedMessage({
         producer: {
@@ -1466,6 +1611,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
             },
             messageId: message.messageId,
             acceptedAt: message.acceptedAt,
+            notification: message.producer.rawNotification === true ? true : undefined,
           } satisfies PeerThreadOrigin
         : message.producer.kind === 'room'
           ? {
@@ -1630,9 +1776,20 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     if (lifecycle.onDidArchiveSession !== undefined) {
       store.add(
         lifecycle.onDidArchiveSession((event) => {
+          this.cancelWatchesForCaller(event.sessionId);
           const ref = this.refForLifecycleSession(lifecycle, event.sessionId);
           this.detachObservedSession(event.sessionId);
           if (!this.closing && ref !== undefined) this.detach(this.appendLifecycle(ref, 'archived'));
+        }),
+      );
+    }
+    if (lifecycle.onDidDeleteSession !== undefined) {
+      store.add(
+        lifecycle.onDidDeleteSession((event) => {
+          this.cancelWatchesForCaller(event.sessionId);
+          const ref = this.refForLifecycleSession(lifecycle, event.sessionId);
+          this.detachObservedSession(event.sessionId);
+          if (!this.closing && ref !== undefined) this.detach(this.appendLifecycle(ref, 'deleted'));
         }),
       );
     }
@@ -1663,15 +1820,40 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     if (this.observedSessions.has(key)) return;
     const store = new DisposableStore();
     const activity = handle.accessor.get(ISessionActivityView);
+    let previousState = activity.state();
+    let deferredCompleted = false;
     store.add(
       activity.onDidChange((event) => {
         if (this.closing) return;
-        if (event.cause === 'turn_ended') {
-          this.detach(this.appendActivityIfEnabled(
-            ref,
-            'terminal',
-            event.state.lastTurnReason ?? 'failed',
-          ));
+        const prev = previousState;
+        previousState = event.state;
+        if (event.cause === 'turn_started' || event.state.mainTurnActive) {
+          deferredCompleted = false;
+        } else if (event.cause === 'turn_ended') {
+          const reason = event.state.lastTurnReason ?? 'failed';
+          if (reason === 'completed') {
+            if (event.state.busy) {
+              deferredCompleted = true;
+            } else {
+              deferredCompleted = false;
+              this.detach(this.appendActivityIfEnabled(ref, 'terminal', reason));
+            }
+          } else {
+            const subagentOnlyEnd = !prev.mainTurnActive && prev.busy && event.state.busy;
+            if (!subagentOnlyEnd) {
+              deferredCompleted = false;
+              this.detach(this.appendActivityIfEnabled(ref, 'terminal', reason));
+            }
+          }
+        } else if (deferredCompleted && !event.state.busy && !event.state.mainTurnActive) {
+          deferredCompleted = false;
+          this.detach(
+            this.appendActivityIfEnabled(
+              ref,
+              'terminal',
+              event.state.lastTurnReason ?? 'completed',
+            ),
+          );
         }
         if (event.cause === 'interaction' && event.state.pendingInteraction !== 'none') {
           this.detach(this.appendActivityIfEnabled(

@@ -12186,4 +12186,38 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
     expect(anchorAfter).not.toBeNull();
     expect(Math.abs(anchorAfter!.getBoundingClientRect().top - topBefore)).toBeLessThanOrEqual(4);
   });
+
+  it('renders thread_watch notifications as compact system rows without raw XML or edit controls', async () => {
+    const watchBlock: SystemBlock = {
+      kind: 'system',
+      id: 'system-watch-1',
+      turnId: 't1',
+      variant: 'thread_watch',
+      text: 'Watched thread session_c07e (workspace ws-1) emitted terminal (failed).\n\nStep failed <err>.',
+      createdAt: '2026-11-24T12:00:00.000Z',
+      taskNotification: {
+        category: 'thread',
+        type: 'thread.terminal',
+        sourceKind: 'thread',
+        sourceId: 'session_c07e',
+        agentId: 'main',
+        title: 'Thread failed (session_c07e)',
+        severity: 'warning',
+        status: 'failed',
+        body: 'Watched thread session_c07e (workspace ws-1) emitted terminal (failed).',
+        outputPreview: 'Step failed <err>.',
+      },
+    };
+    const container = await renderTranscript([watchBlock]);
+    const row = container.querySelector<HTMLElement>('[data-system="thread_watch"]');
+    expect(row).not.toBeNull();
+    expect(row!.textContent).toContain('Thread failed (session_c07e)');
+    expect(row!.textContent).not.toContain('<notification');
+    expect(row!.querySelector('[data-edit-user]')).toBeNull();
+
+    const toggle = row!.querySelector<HTMLButtonElement>('button');
+    expect(toggle).not.toBeNull();
+    await act(async () => { toggle!.click(); });
+    expect(row!.textContent).toContain('Step failed <err>.');
+  });
 });

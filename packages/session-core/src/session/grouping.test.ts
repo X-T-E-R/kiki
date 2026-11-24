@@ -763,4 +763,56 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
       'assistant',
     ]);
   });
+
+  it('keeps warning thread_watch rows unfolded and never converts thread_watch with agentId=main into subagent-ended', () => {
+    const infoWatch: Block = {
+      kind: 'system',
+      id: 'watch-ok',
+      turnId: 't1',
+      variant: 'thread_watch',
+      text: 'Watched thread session_b emitted terminal (completed).',
+      createdAt: undefined,
+      taskNotification: {
+        category: 'thread',
+        type: 'thread.terminal',
+        sourceKind: 'thread',
+        sourceId: 'session_b',
+        agentId: 'main',
+        title: 'Thread completed (session_b)',
+        severity: 'info',
+        status: 'completed',
+      },
+    };
+    const warnWatch: Block = {
+      kind: 'system',
+      id: 'watch-fail',
+      turnId: 't2',
+      variant: 'thread_watch',
+      text: 'Watched thread session_c emitted terminal (failed).',
+      createdAt: undefined,
+      taskNotification: {
+        category: 'thread',
+        type: 'thread.terminal',
+        sourceKind: 'thread',
+        sourceId: 'session_c',
+        agentId: 'main',
+        title: 'Thread failed (session_c)',
+        severity: 'warning',
+        status: 'failed',
+      },
+    };
+    const nodes = foldHistory([
+      inTurn(text('user'), 't1'),
+      inTurn(read('/w/a.ts'), 't1'),
+      infoWatch,
+      inTurn(text('assistant'), 't1'),
+      inTurn(text('user'), 't2'),
+      inTurn(read('/w/b.ts'), 't2'),
+      warnWatch,
+      inTurn(text('assistant'), 't2'),
+    ], undefined);
+    expect(nodes.some((n) => n.kind === 'subagent-ended')).toBe(false);
+    expect(nodes.some((n) => n.kind === 'system' && n.id === 'watch-fail')).toBe(true);
+    expect(nodes.some((n) => n.kind === 'system' && n.id === 'watch-ok')).toBe(false);
+  });
 });

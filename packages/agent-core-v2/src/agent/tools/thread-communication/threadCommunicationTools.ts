@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { bridgeReadSchema } from '@kiki/protocol';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { isThreadWatchNotificationOrigin } from '#/agent/contextMemory/types';
 
 import { createDecorator, IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
 import { toInputJsonSchema } from '#/tool/input-schema';
@@ -62,7 +63,7 @@ export const SendMessageToThreadToolInputSchema = z.union([
     thread: ThreadRefSchema,
     content: z.string().min(1).max(100_000).describe('Input for the other thread. It arrives as a peer message from this thread.'),
     idempotency_key: z.string().min(1).max(256).optional().describe('Retries this same content. Omit it to reuse the tool call id. A different message with a used key fails.'),
-    notify_on_terminal: z.boolean().optional().describe('Watch the target thread in the background and automatically notify this thread when the target finishes, needs attention, or terminates.'),
+    notify_on_terminal: z.boolean().optional().describe('Only set when delegating a bounded async job and the target will not reply via ThreadSend. Watches the target until it settles (waiting for active subagents/finite tasks on completion) or needs attention/terminates, and auto-cancels if the target sends a peer reply back. Leave unset for routine peer replies, status syncs, or back-and-forth discussion.'),
   }).strict(),
   z.object({
     ...ModelOutputOptions,
@@ -294,7 +295,7 @@ export class SendMessageToThreadTool
             ? { output }
             : { allowsTurnEndWithSendMessage: true, output };
         }
-        const origin = this.memory.get().findLast((message) => message.role === 'user' && ['user', 'peer_thread', 'bridged_peer'].includes(message.origin?.kind ?? 'user'))?.origin;
+        const origin = this.memory.get().findLast((message) => message.role === 'user' && !isThreadWatchNotificationOrigin(message.origin) && ['user', 'peer_thread', 'bridged_peer'].includes(message.origin?.kind ?? 'user'))?.origin;
         const result = await peerSendCapability(this.threads)[SEND_PEER_THREAD_MESSAGE]({
           signal: ctx.signal,
           cause: origin?.kind === 'bridged_peer' ? { causeId: origin.causeId, hop: origin.hop } : undefined,
