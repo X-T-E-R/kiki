@@ -18,6 +18,7 @@ import type { McpServerLocator, McpSessionCapability } from '@kiki/klient';
 
 import { I18nProvider } from '../../i18n';
 import { bindPendingNewSessionDraft, clearPendingNewSessionCapabilities, pendingNewSessionCapabilities } from './newSessionCapabilities';
+import { SessionMcpRail } from './optionalCapabilityUi';
 import { useMcpPicker } from './useMcpPicker';
 
 const surface = vi.hoisted(() => {
@@ -323,6 +324,59 @@ describe('an MCP write that outlives its conversation', () => {
     } finally {
       klient.global.mcp.list = original;
       clearPendingNewSessionCapabilities();
+    }
+  });
+});
+
+describe('SessionMcpRail search and bounded disclosure', () => {
+  it('auto-reveals search, bounds initial rows, and filters many MCP servers', async () => {
+    const many = Array.from({ length: 10 }, (_, index) => capability({
+      locator: { source: 'global', name: `mcp-${index + 1}` },
+      runtimeName: index === 8 ? 'postgres-analytics' : `mcp-${index + 1}`,
+      config: { transport: index === 8 ? 'http' : 'stdio', command: 'npx', enabled: true } as McpSessionCapability['config'],
+    }));
+    surface.list.mockResolvedValue(many);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <SessionMcpRail sessionId="session-a" />
+            </I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await settle();
+
+      const search = container.querySelector<HTMLInputElement>('[data-rail-mcp-search]')!;
+      expect(search).not.toBeNull();
+      expect(container.querySelectorAll('[data-rail-mcp-server]')).toHaveLength(6);
+      const moreBtn = container.querySelector<HTMLButtonElement>('[data-rail-mcp-more]')!;
+      expect(moreBtn).not.toBeNull();
+      await act(async () => { moreBtn.click(); });
+      expect(container.querySelectorAll('[data-rail-mcp-server]')).toHaveLength(10);
+      expect(container.querySelector('[data-rail-mcp-scroll]')).not.toBeNull();
+
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      await act(async () => {
+        setter.call(search, 'postgres');
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      expect(container.querySelectorAll('[data-rail-mcp-server]')).toHaveLength(1);
+      expect(container.querySelector('[data-rail-mcp-server="postgres-analytics"]')).not.toBeNull();
+
+      await act(async () => {
+        setter.call(search, 'does-not-exist');
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      expect(container.querySelector('[data-rail-mcp-no-match]')).not.toBeNull();
+    } finally {
+      await act(async () => { root.unmount(); });
+      container.remove();
     }
   });
 });

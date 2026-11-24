@@ -62,6 +62,7 @@ export const SendMessageToThreadToolInputSchema = z.union([
     thread: ThreadRefSchema,
     content: z.string().min(1).max(100_000).describe('Input for the other thread. It arrives as a peer message from this thread.'),
     idempotency_key: z.string().min(1).max(256).optional().describe('Retries this same content. Omit it to reuse the tool call id. A different message with a used key fails.'),
+    notify_on_terminal: z.boolean().optional().describe('Watch the target thread in the background and automatically notify this thread when the target finishes, needs attention, or terminates.'),
   }).strict(),
   z.object({
     ...ModelOutputOptions,
@@ -302,8 +303,15 @@ export class SendMessageToThreadTool
           target: fromToolRef(input.thread),
           content: input.content,
           idempotencyKey: input.idempotency_key ?? ctx.toolCallId,
+          notifyOnTerminal: input.notify_on_terminal,
         });
-        const output = JSON.stringify(result, null, 2);
+        const output = JSON.stringify(
+          input.notify_on_terminal === true && result.delivery !== 'undeliverable'
+            ? { ...result, notify_on_terminal: true }
+            : result,
+          null,
+          2,
+        );
         return result.delivery === 'undeliverable'
           ? { output }
           : { allowsTurnEndWithSendMessage: true, output };

@@ -280,7 +280,8 @@ export class HttpChannel implements KlientChannel {
         await response.body?.cancel();
         return undefined as T;
       }
-      const envelope = await this.readEnvelope(response, signal, reading ? SESSION_READ_BODY_BYTES : 4 * 1024 * 1024);
+      const maxResponseBytes = options.maxResponseBytes ?? (reading ? SESSION_READ_BODY_BYTES : 4 * 1024 * 1024);
+      const envelope = await this.readEnvelope(response, signal, maxResponseBytes);
       acceptRequestId(envelope.request_id);
       const okCodes = options.okCodes ?? [0];
       if (response.ok === false || !okCodes.includes(envelope.code)) {
@@ -340,7 +341,8 @@ export class HttpChannel implements KlientChannel {
       : body instanceof Uint8Array
         ? body.byteLength
         : undefined;
-    if (bodySize !== undefined && bodySize > HTTP_REQUEST_BODY_LIMIT_BYTES) {
+    const maxBodyBytes = options.maxBodyBytes ?? HTTP_REQUEST_BODY_LIMIT_BYTES;
+    if (bodySize !== undefined && bodySize > maxBodyBytes) {
       throw new RPCError(40001, 'request body exceeds the allowed size limit');
     }
     const controller = new AbortController();

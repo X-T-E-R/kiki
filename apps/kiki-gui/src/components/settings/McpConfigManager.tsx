@@ -563,11 +563,18 @@ export function McpConfigManager({
   }, [entries, runtimeFor]);
 
   const keyOf = useCallback((entry: McpManagedServer) => `${entry.source}:${entry.name}`, []);
-  const textOf = useCallback((entry: McpManagedServer) => [
-    entry.name,
-    entry.plugin?.name,
-    entry.config.transport === 'stdio' ? entry.config.command : entry.config.url,
-  ], []);
+  const textOf = useCallback((entry: McpManagedServer) => {
+    const live = runtimeFor(entry);
+    const tools = live === undefined ? [] : runtime?.toolsByServer.get(live.id) ?? [];
+    return [
+      entry.name,
+      entry.plugin?.name,
+      entry.plugin?.id,
+      entry.config.transport,
+      entry.config.transport === 'stdio' ? entry.config.command : entry.config.url,
+      ...tools,
+    ];
+  }, [runtime, runtimeFor]);
   const filters = useMemo<readonly ListFilterSpec<McpManagedServer>[]>(() => [
     { id: 'attention', label: t('st.mcp.filter.attention'), tone: 'attention', test: needsAttention },
     { id: 'connected', label: t('st.mcp.filter.connected'), test: (entry) => runtimeFor(entry)?.status === 'connected' },
@@ -578,6 +585,13 @@ export function McpConfigManager({
   ], [t]);
   // Attention leads in the default order; `useListView` keeps that stable.
   const view = useListView({ listId: 'mcp-servers', items: attentionFirst, keyOf, textOf, filters, sorts });
+  const toolbarView = useMemo(() => ({
+    ...view,
+    tools: {
+      ...view.tools,
+      search: attentionFirst.length > 0,
+    },
+  }), [attentionFirst.length, view]);
 
   // One handoff element, rendered beside whichever add verb is on screen.
   const askKikiButton = (
@@ -619,7 +633,7 @@ export function McpConfigManager({
       </div>
       <Hint>{t('st.mcp.configHint')}</Hint>
       {entries.length > 0 ? (
-        <ListToolbar view={view} total={entries.length} filters={filters} sorts={sorts}
+        <ListToolbar view={toolbarView} total={entries.length} filters={filters} sorts={sorts}
           searchLabel={t('st.mcp.search')} searchPlaceholder={t('st.mcp.searchPlaceholder')}
           actions={
             // Both verbs that add a server, with the handoff beside whichever

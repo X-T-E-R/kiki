@@ -555,3 +555,163 @@ describe.each(['local', 'network'] as const)('directed space thread bridge (%s, 
     }
   }, 60000);
 });
+
+it('supports trusted bidirectional bridge-only yolo ceiling and notify_on_terminal wake callbacks', async () => {
+  const f = await fixture();
+  const aClient = owner(f.a);
+  const bClient = owner(f.b);
+  try {
+    const pairCode = await bClient.rest!.connections.createPairCode({ trustTier: 'trusted_personal' });
+    expect(pairCode.loopbackEndpoint).toBeDefined();
+    expect(pairCode.bridgeOperations).toEqual(['read', 'send', 'wait', 'wake', 'create']);
+    const paired = await aClient.rest!.connections.pair({
+      endpoint: pairCode.loopbackEndpoint!,
+      code: pairCode.code,
+      label: 'trusted-peer',
+      includeGui: false,
+      trusted: true,
+      backgroundSummary: false,
+    });
+    expect(paired.purposes).toEqual(['bridge']);
+    expect(paired.localTrusted).toBe(true);
+
+    await vi.waitFor(async () => {
+      const aBridges = await aClient.rest!.threadBridges.status();
+      const bBridges = await bClient.rest!.threadBridges.status();
+      expect(aBridges.outbound.some((entry) => entry.connectionId === paired.id && entry.grant.permissionCeiling === 'yolo')).toBe(true);
+      expect(aBridges.inbound.some((entry) => entry.permissionCeiling === 'yolo' && entry.operations.includes('create'))).toBe(true);
+      expect(bBridges.inbound.some((entry) => entry.permissionCeiling === 'yolo' && entry.operations.includes('create'))).toBe(true);
+      expect(bBridges.outbound.some((entry) => entry.grant.permissionCeiling === 'yolo' && entry.grant.operations.includes('create'))).toBe(true);
+    }, { timeout: 15000, interval: 100 });
+
+    const callerPermission = f.main.accessor.get(IAgentPermissionModeService);
+    callerPermission.setModeCeiling('yolo');
+    callerPermission.setMode('yolo');
+
+    const createTool = f.main.accessor.get(IThreadCreateTool);
+    const created = await execute<{
+      id: string;
+      prompt_started: boolean;
+      notify_on_terminal?: boolean;
+      thread: { host_id: string; workspace_id: string; session_id: string; bridge_id?: string; connection_id?: string };
+    }>(createTool, {
+      connection_id: paired.id,
+      workspace_id: f.target.workspaceId,
+      permission_mode: 'yolo',
+      prompt: 'Execute trusted yolo task.',
+      notify_on_terminal: true,
+      idempotency_key: 'trusted-yolo-create-1',
+    });
+    expect(created.prompt_started).toBe(true);
+    expect(created.notify_on_terminal).toBe(true);
+
+    const createdSession = f.b.core.accessor.get(ISessionManager).get(created.id)!;
+    const createdMain = await ensureMainAgent(createdSession);
+    expect(createdMain.accessor.get(IAgentPermissionModeService).modeCeiling).toBe('yolo');
+    expect(createdMain.accessor.get(IAgentPermissionModeService).mode).toBe('yolo');
+
+    const aMailbox = f.a.core.accessor.get(IThreadMailboxStore);
+    await vi.waitFor(async () => {
+      const inbox = await aMailbox.readMessages({ group: `session:${f.source.sessionId}`, limit: 20 });
+      expect(
+        inbox.items.some(
+          (entry) =>
+            entry.message.content.includes('<notification ') &&
+            entry.message.content.includes('type="thread.terminal"') &&
+            entry.message.content.includes(`session=${created.id}`) &&
+            entry.message.content.includes('terminal') &&
+            entry.message.content.includes('Verified bridge reply.'),
+        ),
+      ).toBe(true);
+    }, { timeout: 15000, interval: 100 });
+
+    const sendTool = f.main.accessor.get(ISendMessageToThreadTool);
+    await execute<SendThreadMessageResult>(sendTool, {
+      thread: created.thread,
+      content: 'Follow-up watched work.',
+      notify_on_terminal: true,
+      idempotency_key: 'trusted-watch-send-1',
+    });
+    await vi.waitFor(async () => {
+      const inbox = await aMailbox.readMessages({ group: `session:${f.source.sessionId}`, limit: 20 });
+      const matching = inbox.items.filter(
+        (entry) => entry.message.content.includes(`session=${created.id}`) && entry.message.content.includes('terminal'),
+      );
+      expect(matching.length).toBeGreaterThanOrEqual(2);
+    }, { timeout: 15000, interval: 100 });
+
+    const bBridgesStatus = await bClient.rest!.threadBridges.status();
+    const reverseLink = bBridgesStatus.outbound.find((entry) => entry.grant.permissionCeiling === 'yolo')!;
+    const bThreads = f.b.core.accessor.get(IThreadCommunicationService);
+    const bList = await bThreads.listThreads({
+      caller: { workspaceId: f.target.workspaceId, sessionId: created.id },
+      bridgeId: reverseLink.grant.id,
+    });
+    const reverseRef = bList.threads.find(
+      (entry) =>
+        entry.ref.hostId === f.a.admission.identity.hostId &&
+        entry.ref.sessionId === f.source.sessionId &&
+        entry.ref.bridgeId === reverseLink.grant.id,
+    );
+    expect(reverseRef).toBeDefined();
+    const bPeerSend = bThreads as unknown as {
+      [importedPeerSend](input: {
+        source: ThreadRef;
+        target: ThreadRef;
+        content: string;
+        idempotencyKey: string;
+      }): Promise<SendThreadMessageResult>;
+    };
+    const reverseSent = await bPeerSend[importedPeerSend]({
+      source: { hostId: f.b.admission.identity.hostId, workspaceId: f.target.workspaceId, sessionId: created.id },
+      target: reverseRef!.ref,
+      content: 'Reverse peer_socket reply from trusted remote.',
+      idempotencyKey: 'reverse-peer-socket-1',
+    });
+    expect(['delivered', 'pending']).toContain(reverseSent.delivery);
+    await vi.waitFor(async () => {
+      const inbox = await aMailbox.readMessages({ group: `session:${f.source.sessionId}`, limit: 30 });
+      expect(inbox.items.some((entry) => entry.message.content.includes('Reverse peer_socket reply from trusted remote.'))).toBe(true);
+    }, { timeout: 15000, interval: 100 });
+
+    const noWaitLink = await linkFor(f, 'network', true, 10, {
+      targetScope: { workspaceId: f.target.workspaceId },
+      operations: ['read', 'send', 'create'],
+      permissionCeiling: 'yolo',
+    });
+    await expect(
+      execute(createTool, {
+        bridge_id: noWaitLink.grant.id,
+        workspace_id: f.target.workspaceId,
+        permission_mode: 'yolo',
+        prompt: 'Should fail without wait op',
+        notify_on_terminal: true,
+        idempotency_key: 'no-wait-create',
+      }),
+    ).rejects.toThrow('bridge_operation_denied');
+    await expect(
+      execute(sendTool, {
+        thread: toolRef(f.target, noWaitLink),
+        content: 'Should fail without wait op',
+        notify_on_terminal: true,
+        idempotency_key: 'no-wait-send',
+      }),
+    ).rejects.toThrow('bridge_operation_denied');
+
+    const inboundStatus = await bClient.rest!.connections.inbound();
+    const peerGrant = inboundStatus.grants.find((entry) => entry.trustTier === 'trusted_personal')!;
+    await f.b.admission.setTrust(peerGrant.id, 'restricted_peer', ['read', 'send', 'execute']);
+    await expect(
+      execute(createTool, {
+        connection_id: paired.id,
+        workspace_id: f.target.workspaceId,
+        permission_mode: 'yolo',
+        prompt: 'Must fail for restricted_peer even with execute mesh capability',
+        idempotency_key: 'post-downgrade-restricted-execute-yolo',
+      }),
+    ).rejects.toThrow('bridge_permission_ceiling');
+  } finally {
+    await aClient.close();
+    await bClient.close();
+  }
+}, 90000);

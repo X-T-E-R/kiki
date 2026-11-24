@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
 import type { CronTask, ListCronTasksResponse } from '../../lib/client';
-import { SessionCronSection } from './SessionCronSection';
+import { RunCronSection, SessionCronSection, useSessionCronTasks } from './SessionCronSection';
 
 const { listCronTasks, pauseCronTask, resumeCronTask, connection } = vi.hoisted(() => ({
   listCronTasks: vi.fn(),
@@ -347,5 +347,47 @@ describe('SessionCronSection delivery timing', () => {
     // No recorded timing: the default the host will apply, never a mode it
     // never reported.
     expect(text('legacy-task')).toBe('空闲时插入');
+  });
+});
+
+describe('RunCronSection and shared sessionCronQueryKey cache', () => {
+  function SharedCronHarness({ sessionId }: { readonly sessionId: string }) {
+    const { activeTasks } = useSessionCronTasks(sessionId);
+    return (
+      <>
+        <RunCronSection sessionId={sessionId} activeTasks={activeTasks} />
+        <SessionCronSection sessionId={sessionId} />
+      </>
+    );
+  }
+
+  it('deduplicates listCronTasks across RunCronSection and SessionCronSection and omits paused tasks in Run', async () => {
+    seed([
+      makeTask({ id: 'active-1', prompt_preview: '巡检构建队列' }),
+      makeTask({ id: 'paused-1', paused: true, next_fire_at: null, prompt_preview: '已暂停任务' }),
+    ]);
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={['/s/sess-1']}>
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <SharedCronHarness sessionId={SESSION} />
+            </I18nProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await settle();
+    expect(listCronTasks).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-rail-run-cron-row="active-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-rail-run-cron-row="paused-1"]')).toBeNull();
+
+    // Pausing from Run updates the shared cache and removes the Run section when 0 active remain.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-rail-run-cron] [data-rail-cron-toggle="active-1"]')!.click();
+    });
+    await settle();
+    expect(container.querySelector('[data-rail-run-cron]')).toBeNull();
+    expect(container.querySelector('[data-rail-cron-row="active-1"]')?.getAttribute('data-cron-paused')).toBe('');
   });
 });

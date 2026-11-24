@@ -1,18 +1,40 @@
-import type { FastifyInstance } from 'fastify';
+import { constants as bufferConstants } from 'node:buffer';
+import type { Readable } from 'node:stream';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
+  portableSpaceSessionSelectionSchema,
   syncBundleExportInputSchema,
-  syncBundleSchema,
+  syncBundleImportInputSchema,
   syncCredentialMergeInputSchema,
   syncCredentialSealInputSchema,
+  syncFilesExportInputSchema,
+  syncFilesImportInputSchema,
+  syncPeerFilesPullInputSchema,
+  syncPeerFilesPushInputSchema,
   syncPeerTransferInputSchema,
   syncProjectIdentityResolveInputSchema,
 } from '@kiki/protocol';
 
 import { errEnvelope, okEnvelope } from '../envelope';
+import { AdmissionError } from '../services/connections/admission';
+import { peerAudience } from '../services/connections/audience';
+import {
+  SyncArchiveInvalidError,
+  SyncPathForbiddenError,
+  SyncPathNotFoundError,
+} from '../services/sync/fileSync';
 import type { SyncService } from '../services/sync/syncService';
 
-/** Registers REST endpoints for device X25519 keys, per-entry credential envelopes, project identity resolution, portable config/memory/skill bundles, and peer push/pull sync. */
+function requireTrustedFileSyncPeer(req: FastifyRequest): void {
+  const peer = peerAudience(req);
+  if (peer === undefined) return;
+  if (peer.trustTier !== 'trusted_personal' || peer.meshCapabilities?.includes('file_sync') !== true) {
+    throw new AdmissionError(403, 'mesh_capability_denied');
+  }
+}
+
+/** Registers REST endpoints for device X25519 keys, per-entry credential envelopes, project identity resolution, portable config/memory/skill bundles, peer push/pull sync, and bounded file/directory transfer. */
 export function registerSyncRoutes(app: FastifyInstance, sync: SyncService): void {
   const handle = async <T>(
     requestId: string,
@@ -22,11 +44,19 @@ export function registerSyncRoutes(app: FastifyInstance, sync: SyncService): voi
     try {
       return reply.send(okEnvelope(await work(), requestId));
     } catch (error) {
-      if (error instanceof z.ZodError) {
+      if (error instanceof z.ZodError || error instanceof SyncArchiveInvalidError) {
         reply.code(400);
         return reply.send(errEnvelope(40001, error.message, requestId));
       }
-      if (error instanceof Error && error.message.includes('not found')) {
+      if (error instanceof SyncPathForbiddenError) {
+        reply.code(403);
+        return reply.send(errEnvelope(40301, error.message, requestId));
+      }
+      if (error instanceof AdmissionError) {
+        reply.code(error.status);
+        return reply.send(errEnvelope(error.reason === 'mesh_capability_denied' ? 40302 : 40101, error.reason, requestId));
+      }
+      if (error instanceof SyncPathNotFoundError || (error instanceof Error && error.message.includes('not found'))) {
         reply.code(404);
         return reply.send(errEnvelope(40401, error.message, requestId));
       }
@@ -78,9 +108,9 @@ export function registerSyncRoutes(app: FastifyInstance, sync: SyncService): voi
     ),
   );
 
-  app.post('/api/sync/bundle/import', { bodyLimit: 8 * 1024 * 1024 }, async (req, reply) =>
+  app.post('/api/sync/bundle/import', { bodyLimit: 64 * 1024 * 1024 }, async (req, reply) =>
     handle(req.id, reply, () =>
-      sync.importSyncBundle(syncBundleSchema.parse(req.body)),
+      sync.importSyncBundle(syncBundleImportInputSchema.parse(req.body)),
     ),
   );
 
@@ -101,4 +131,74 @@ export function registerSyncRoutes(app: FastifyInstance, sync: SyncService): voi
       ),
     ),
   );
+
+  app.post('/api/sync/files::export', { bodyLimit: 16_384 }, async (req, reply) =>
+    handle(req.id, reply, async () => {
+      requireTrustedFileSyncPeer(req);
+      return sync.exportFiles(syncFilesExportInputSchema.parse(req.body));
+    }),
+  );
+
+  app.post('/api/sync/files::import', { bodyLimit: bufferConstants.MAX_STRING_LENGTH }, async (req, reply) =>
+    handle(req.id, reply, async () => {
+      requireTrustedFileSyncPeer(req);
+      return sync.importFiles(syncFilesImportInputSchema.parse(req.body));
+    }),
+  );
+
+  app.post('/api/sync/peers/:peerId/files::pull', { bodyLimit: 16_384 }, async (req, reply) =>
+    handle(req.id, reply, () =>
+      sync.pullFilesFromPeer(
+        (req.params as { peerId: string }).peerId,
+        syncPeerFilesPullInputSchema.parse(req.body),
+      ),
+    ),
+  );
+
+  app.post('/api/sync/peers/:peerId/files::push', { bodyLimit: 16_384 }, async (req, reply) =>
+    handle(req.id, reply, () =>
+      sync.pushFilesToPeer(
+        (req.params as { peerId: string }).peerId,
+        syncPeerFilesPushInputSchema.parse(req.body),
+      ),
+    ),
+  );
+
+  const sessionStreamExportSchema = z.object({
+    sessions: portableSpaceSessionSelectionSchema,
+  });
+
+  app.post('/api/sync/sessions/export', { bodyLimit: 65_536 }, async (req, reply) => {
+    try {
+      const parsed = sessionStreamExportSchema.parse(req.body);
+      const stream = await sync.exportSessionsStream(parsed.sessions);
+      reply.header('content-type', 'application/gzip');
+      return await reply.send(stream);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        reply.code(400);
+        return reply.send(errEnvelope(40001, error.message, req.id));
+      }
+      if (error instanceof Error && error.message.includes('not found')) {
+        reply.code(404);
+        return reply.send(errEnvelope(40401, error.message, req.id));
+      }
+      throw error;
+    }
+  });
+
+  app.register(async (scoped) => {
+    scoped.addContentTypeParser('application/gzip', (_req, payload, done) => {
+      done(null, payload);
+    });
+    scoped.post('/api/sync/sessions/import', async (req, reply) =>
+      handle(req.id, reply, async () => {
+        const query = req.query as { target_work_dir?: string; target_project_id?: string };
+        return sync.importSessionsStream(req.body as Readable, {
+          targetWorkDir: typeof query.target_work_dir === 'string' && query.target_work_dir.length > 0 ? query.target_work_dir : undefined,
+          targetProjectId: typeof query.target_project_id === 'string' && query.target_project_id.length > 0 ? query.target_project_id : undefined,
+        });
+      }),
+    );
+  });
 }

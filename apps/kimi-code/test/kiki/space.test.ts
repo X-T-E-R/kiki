@@ -298,6 +298,57 @@ describe('portable Space CLI', () => {
       domains: ['config', 'sessions'], sessions: { mode: 'ids', sessionIds: ['test-session'] },
     });
     expect(runRemote.mock.calls[0]?.[1].slice(0, 5)).toEqual(['-T', '-p', '2222', '--', 'deployer@example.test']);
+    expect(runRemote.mock.calls[0]?.[1].at(-1)).toContain('https://raw.githubusercontent.com/X-T-E-R/kiki/kiki/scripts/install.sh');
+    expect(runRemote.mock.calls[0]?.[1].at(-1)).toContain('--channel beta');
+  });
+
+  it('honors explicit --channel stable on clone', async () => {
+    const harness = makeHarness(() => ({ destination: 'clone.kiki.age', format: 'age', spaceMode: 'full', secretMode: 'sealed', encryptionMode: 'x25519', domains: [], totalItems: 1 }));
+    const exportFetch = harness.dependencies.fetch!;
+    const runRemote = vi.fn(async (_program: string, args: string[], archive?: string) => {
+      if (!archive) {
+        expect(args.at(-1)).toContain('--channel stable');
+        return JSON.stringify(sourceList());
+      }
+      return JSON.stringify({ ...applyReceipt(), mode: 'override' });
+    });
+    await parse({ ...harness.dependencies, runRemote, fetch: async (input, init) => {
+      if (typeof init?.body !== 'string') throw new Error('Expected JSON request body.');
+      const body = JSON.parse(init.body) as { destination: string };
+      await writeFile(body.destination, 'fixture-age-bytes');
+      return exportFetch(input, init);
+    } }, 'clone', 'ssh://deployer@example.test', '--channel', 'stable');
+    expect(runRemote).toHaveBeenCalledTimes(2);
+  });
+
+  it('pulls a remote ccp or ssh Space encrypted to the local device recipient and applies it locally', async () => {
+    const harness = makeHarness((path) => path.endsWith('/sources') ? sourceList() : path.endsWith('/preview') ? preview() : applyReceipt());
+    const runRemote = vi.fn(async (program: string, args: string[], archive?: string, outputArchive?: string) => {
+      if (program === 'ccp' && args[0] === 'ssh' && args[1] === 'prepare') {
+        expect(args[2]).toBe('rt-colab-1');
+        return JSON.stringify({ id: 'ssh_abc123' });
+      }
+      expect(program).toBe('ccp');
+      expect(args.slice(0, 4)).toEqual(['ssh', 'connect', 'ssh_abc123', '--command']);
+      expect(args[4]).toContain("exec 'kiki' 'space' 'export' '-' '--format' 'age' '--recipient' 'age1device'");
+      expect(args[4]).toContain("'--only' 'memories'");
+      expect(args[4]).toContain("'--include-sessions' 'recent:5'");
+      expect(archive).toBeUndefined();
+      expect(outputArchive).toBeDefined();
+      await writeFile(outputArchive!, 'pulled-remote-age-bytes');
+      return '';
+    });
+    await parse({ ...harness.dependencies, runRemote }, 'pull', 'ccp:rt-colab-1', '--only', 'memories', '--include-sessions', 'recent:5', '--yes');
+    expect(runRemote).toHaveBeenCalledTimes(2);
+    expect(harness.requests.map((request) => request.path)).toEqual([
+      '/api/spaces/portable/sources',
+      '/api/spaces/portable/preview',
+      '/api/spaces/portable/apply',
+    ]);
+    expect(harness.requests[1]?.body).toMatchObject({
+      sources: [{ kind: 'archive', path: expect.stringMatching(/pull\.kiki\.age$/) }],
+      target: { kind: 'live', spaceId: 'main' },
+    });
   });
 
   it('does not mutate an archive when the editor leaves canonical bytes unchanged', async () => {

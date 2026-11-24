@@ -1,12 +1,14 @@
 import {
   DEFAULT_AGENT_PROFILE_NAME, ensureMainAgent, ISessionManager, ISessionAgentProfileCatalog,
   IAgentProfileService, IAgentPermissionModeService, IAgentLifecycleService, IAgentPlanService,
-  IAgentPromptService, IEventDispatcher, ISessionMetadata, CREATED_BY_SESSION_ID_KEY, CREATED_BY_AGENT_ID_KEY,
-  Error2, ErrorCodes, constrainPermissionMode, type Scope, type Workspace, type CreateBridgedThreadResult,
+  IAgentPromptService, IEventDispatcher, ISessionMetadata, IThreadCommunicationService,
+  CREATED_BY_SESSION_ID_KEY, CREATED_BY_AGENT_ID_KEY,
+  Error2, ErrorCodes, constrainPermissionMode,
+  type PermissionMode, type Scope, type Workspace, type CreateBridgedThreadResult,
 } from '@kiki/agent-core-v2';
 import type { BridgeCreate } from '@kiki/protocol';
 
-export async function createBridgedThread(core: Scope, workspace: Workspace, hostId: string, input: BridgeCreate, sessionId: string, promptId: string): Promise<CreateBridgedThreadResult> {
+export async function createBridgedThread(core: Scope, workspace: Workspace, hostId: string, input: BridgeCreate, sessionId: string, promptId: string, ceiling: PermissionMode = 'auto'): Promise<CreateBridgedThreadResult> {
   const sessions = core.accessor.get(ISessionManager);
   const existing = await sessions.resume(sessionId);
   const handle = existing ?? await sessions.create({
@@ -35,8 +37,9 @@ export async function createBridgedThread(core: Scope, workspace: Workspace, hos
       [CREATED_BY_AGENT_ID_KEY]: 'bridged_peer',
     } }, { touchUpdatedAt: false });
     const permission = main.accessor.get(IAgentPermissionModeService);
-    const effectiveMode = constrainPermissionMode(input.permissionMode ?? 'auto', 'auto');
-    permission.setModeCeiling('auto');
+    const defaultMode = constrainPermissionMode('auto', ceiling);
+    const effectiveMode = constrainPermissionMode(input.permissionMode ?? defaultMode, ceiling);
+    permission.setModeCeiling(ceiling);
     permission.setMode(effectiveMode);
     main.accessor.get(IAgentLifecycleService).broadcastPermissionMode(effectiveMode);
     if (input.planMode !== undefined) {
@@ -48,7 +51,22 @@ export async function createBridgedThread(core: Scope, workspace: Workspace, hos
     }
     await main.accessor.get(IEventDispatcher).flush();
     const createdTitle = (await metadata.read()).title ?? 'Untitled session';
+    const ref = { hostId, workspaceId: workspace.id, sessionId: handle.id };
+    let activityCursor: string | undefined;
     if (input.prompt !== undefined) {
+      const threads = core.accessor.get(IThreadCommunicationService);
+      if (input.notifyOnTerminal === true) {
+        const baseline = await threads.waitThreads({ threads: [{ thread: ref }], timeoutMs: 0 });
+        activityCursor = baseline.threads[0]?.cursor;
+        if (activityCursor === undefined || activityCursor.length === 0) {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Unable to establish activity cursor for notify_on_terminal.');
+        }
+      } else {
+        const baseline = await threads
+          .waitThreads({ threads: [{ thread: ref }], timeoutMs: 0 })
+          .catch(() => undefined);
+        activityCursor = baseline?.threads[0]?.cursor;
+      }
       promptAccepted = true;
       await main.accessor.get(IAgentPromptService).enqueue({ id: promptId, waitForLaunch: false, message: {
         role: 'user', content: [{ type: 'text', text: input.prompt }], toolCalls: [],
@@ -56,8 +74,7 @@ export async function createBridgedThread(core: Scope, workspace: Workspace, hos
       } });
       await main.accessor.get(IEventDispatcher).flush();
     }
-    return { ref: { hostId, workspaceId: workspace.id, sessionId: handle.id },
-      title: createdTitle, profile: profile.name, promptStarted: input.prompt !== undefined };
+    return { ref, title: createdTitle, profile: profile.name, promptStarted: input.prompt !== undefined, activityCursor };
   } catch (error) {
     if (existing === undefined && !promptAccepted) await sessions.delete(handle.id);
     throw error;

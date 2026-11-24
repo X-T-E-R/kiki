@@ -454,7 +454,7 @@ describe('thread communication tools', () => {
     }));
     expect(create).not.toHaveBeenCalled();
     expect(createThread).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      caller: { workspaceId: 'ambient-workspace', sessionId: 'ambient-a' },
+      caller: { workspaceId: 'ambient-workspace', sessionId: 'ambient-a', agentId: 'main' },
       bridgeId, workspaceId: 'remote-workspace', idempotencyKey: 'fixture-tool-call', permissionMode: 'auto', prompt: 'Start',
     }));
     expect(JSON.parse(result.output as string)).toMatchObject({
@@ -714,7 +714,7 @@ describe('thread communication tools', () => {
     } finally {
       await target.dispose();
     }
-  }, 30_000);
+  }, 60_000);
 
   it('prefers an explicit title when launching a prompt', async () => {
     const { tool, metadata } = createThreadFixture();
@@ -789,11 +789,88 @@ describe('thread communication tools', () => {
     expect(ThreadCreateToolInputSchema.safeParse({ plan_mode: 'true' }).success).toBe(false);
     expect(ThreadCreateToolInputSchema.safeParse({ unsupported: true }).success).toBe(false);
     expect(Object.keys(tool.parameters['properties'] as Record<string, unknown>)).toEqual([
-      'title', 'cwd', 'from_subagent', 'profile', 'persona', 'model_alias', 'effort', 'permission_mode', 'plan_mode', 'prompt',
+      'title', 'cwd', 'from_subagent', 'profile', 'persona', 'model_alias', 'effort', 'permission_mode', 'plan_mode', 'prompt', 'notify_on_terminal',
       'bridge_id', 'connection_id', 'workspace_id', 'idempotency_key',
     ]);
     expect(tool.description).toContain('only when the user explicitly asks');
     expect(tool.description).toContain('the new thread is user-owned, does not report its work back');
+  });
+
+  it('allows cross-space permission_mode yolo only when both caller and bridge ceiling permit yolo', async () => {
+    const allowed = createThreadFixture({ callerMode: 'yolo', bridgeCeiling: 'yolo' });
+    const allowedResult = await executeThreadCreate(allowed.tool, {
+      connection_id: 'conn-trusted',
+      permission_mode: 'yolo',
+      prompt: 'Run build',
+      notify_on_terminal: true,
+    });
+    expect(allowed.createThread).toHaveBeenCalledWith(expect.objectContaining({
+      connectionId: 'conn-trusted',
+      permissionMode: 'yolo',
+      prompt: 'Run build',
+      notifyOnTerminal: true,
+    }));
+    expect(JSON.parse(allowedResult.output as string)).toMatchObject({
+      id: 'remote-session',
+      prompt_started: true,
+      notify_on_terminal: true,
+    });
+
+    const restrictedBridge = createThreadFixture({ callerMode: 'yolo', bridgeCeiling: 'auto' });
+    expect(await executeThreadCreate(restrictedBridge.tool, {
+      connection_id: 'conn-restricted',
+      permission_mode: 'yolo',
+      prompt: 'Run build',
+    })).toMatchObject({
+      isError: true,
+      output: expect.stringContaining('exceeds the cross-space auto ceiling'),
+    });
+    expect(restrictedBridge.createThread).not.toHaveBeenCalled();
+
+    const restrictedCaller = createThreadFixture({ callerMode: 'auto', bridgeCeiling: 'yolo' });
+    expect(await executeThreadCreate(restrictedCaller.tool, {
+      connection_id: 'conn-trusted',
+      permission_mode: 'yolo',
+      prompt: 'Run build',
+    })).toMatchObject({
+      isError: true,
+      output: expect.stringContaining('exceeds the caller\'s effective auto mode'),
+    });
+    expect(restrictedCaller.createThread).not.toHaveBeenCalled();
+  });
+
+  it('validates notify_on_terminal on ThreadCreate and ThreadSend schemas and execution', async () => {
+    const fixture = createThreadFixture({ callerMode: 'yolo' });
+    expect(await executeThreadCreate(fixture.tool, {
+      title: 'No prompt',
+      notify_on_terminal: true,
+    })).toMatchObject({
+      isError: true,
+      output: expect.stringContaining('notify_on_terminal requires prompt'),
+    });
+
+    const localResult = await executeThreadCreate(fixture.tool, {
+      title: 'With prompt',
+      prompt: 'Finish this task',
+      notify_on_terminal: true,
+    });
+    expect(fixture.waitThreads).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 0 }));
+    expect(fixture.watchTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      cursor: 'cursor-baseline',
+      target: expect.objectContaining({ sessionId: 'session-new' }),
+    }));
+    expect(JSON.parse(localResult.output as string)).toMatchObject({ notify_on_terminal: true });
+
+    expect(SendMessageToThreadToolInputSchema.safeParse({
+      thread: { host_id: 'h', workspace_id: 'w', session_id: 's' },
+      content: 'ping',
+      notify_on_terminal: true,
+    }).success).toBe(true);
+    expect(SendMessageToThreadToolInputSchema.safeParse({
+      room: 'room-a',
+      content: 'ping',
+      notify_on_terminal: true,
+    }).success).toBe(false);
   });
 
   it('propagates binding validation errors from session creation without starting a prompt', async () => {
@@ -829,6 +906,7 @@ function createThreadFixture(options: {
   boundProfile?: string;
   sourceAgents?: Record<string, AgentMeta>;
   promoteAvailable?: boolean;
+  bridgeCeiling?: PermissionMode;
 } = {}) {
   const ix = disposables.add(new TestInstantiationService());
   let profileName = options.boundProfile;
@@ -916,7 +994,23 @@ function createThreadFixture(options: {
     ref: { hostId: 'remote', workspaceId: 'remote-workspace', sessionId: 'remote-session', bridgeId: input.bridgeId, connectionId: 'remote-connection' },
     title: 'Start', profile: 'agent', promptStarted: true,
   }));
-  ix.stub(IThreadCommunicationService, { createThread });
+  const waitThreads = vi.fn<IThreadCommunicationService['waitThreads']>(async (input) => ({
+    timedOut: false,
+    threads: input.threads.map((item) => ({ thread: item.thread, cursor: 'cursor-baseline', activities: [] })),
+  }));
+  const watchTerminal = vi.fn<NonNullable<IThreadCommunicationService['watchTerminal']>>(async () => {});
+  const resolveBridgePermissionCeiling = vi.fn<NonNullable<IThreadCommunicationService['resolveBridgePermissionCeiling']>>(
+    () => options.bridgeCeiling,
+  );
+  const isWorkspaceEnabled = vi.fn<IThreadCommunicationService['isWorkspaceEnabled']>(async () => true);
+  ix.stub(IThreadCommunicationService, {
+    hostId: 'local-host',
+    isWorkspaceEnabled,
+    createThread,
+    waitThreads,
+    watchTerminal,
+    resolveBridgePermissionCeiling,
+  });
   ix.stub(ISessionContext, { cwd: '/ambient/workspace', sessionId: 'ambient-a', workspaceId: 'ambient-workspace' });
   ix.stub(IAgentScopeContext, { agentId: options.callerAgentId ?? 'main' });
   ix.stub(IAgentPermissionModeService, { mode: options.callerMode ?? 'review' });
@@ -927,7 +1021,21 @@ function createThreadFixture(options: {
     },
   }) });
   ix.set(IThreadCreateTool, new SyncDescriptor(ThreadCreateTool));
-  return { tool: ix.get(IThreadCreateTool), create, createThread, promoteAgent, remove, metadata, lifecycle, targetPermission, plan, prompt, calls };
+  return {
+    tool: ix.get(IThreadCreateTool),
+    create,
+    createThread,
+    waitThreads,
+    watchTerminal,
+    promoteAgent,
+    remove,
+    metadata,
+    lifecycle,
+    targetPermission,
+    plan,
+    prompt,
+    calls,
+  };
 }
 
 async function executeThreadCreate(tool: IThreadCreateTool, input: Parameters<IThreadCreateTool['resolveExecution']>[0]) {

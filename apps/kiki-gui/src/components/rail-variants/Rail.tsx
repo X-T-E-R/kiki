@@ -64,7 +64,7 @@ import { readExternalClientMark } from '../../lib/externalClients';
 import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead, SessionEnvironmentControls } from './DefaultSections';
 import { RailTodos } from './DefaultRail';
 import { RailLiveTopology } from './RailLiveTopology';
-import { SessionCronSection } from './SessionCronSection';
+import { RunCronSection, SessionCronSection, useSessionCronTasks } from './SessionCronSection';
 import { SessionChannelsRail } from '../im/SessionChannelsRail';
 import { PersonaSettingsUpdate } from '../persona/PersonaSettingsUpdate';
 
@@ -330,6 +330,8 @@ export const Rail = memo(function Rail({
     queryClient ?? FALLBACK_QUERY_CLIENT,
   );
   const hasConfigAttention = isMainAgent && personaAttentionQuery.data?.hasUpdate === true;
+  const sessionCron = useSessionCronTasks(state.sessionId, isMainAgent);
+  const activeCronTasks = sessionCron.activeTasks;
 
   const forest = useMemo(
     () => (isRoutedChildPage ? mergeAgentViewIntoForest(forestProp, focusedAgentId, state) : forestProp),
@@ -630,6 +632,43 @@ export const Rail = memo(function Rail({
     </div>
   ) : null;
 
+  const cronTurnActive = useMemo(() => {
+    if (!busy || !isMainAgent) return false;
+    if (state.activePromptId !== undefined && state.queuedPromptMeta[state.activePromptId]?.originKind === 'cron_job') {
+      return true;
+    }
+    let activeTurnId: string | undefined = state.abortableTurnId !== undefined ? String(state.abortableTurnId) : undefined;
+    for (let index = state.blocks.length - 1; index >= 0; index -= 1) {
+      const block = state.blocks[index];
+      if (block === undefined) continue;
+      const blockTurnId = 'turnId' in block ? block.turnId : undefined;
+      if (activeTurnId === undefined && blockTurnId !== undefined) {
+        activeTurnId = blockTurnId;
+      } else if (activeTurnId !== undefined && blockTurnId !== undefined && blockTurnId !== activeTurnId) {
+        return false;
+      }
+      if (block.kind === 'system') {
+        if (block.variant === 'cron_job') return true;
+        if (block.variant === 'task' || block.variant === 'agent_message' || block.variant === 'system_trigger') {
+          return false;
+        }
+      }
+      if (block.kind === 'user') return false;
+    }
+    return false;
+  }, [busy, isMainAgent, state.abortableTurnId, state.activePromptId, state.blocks, state.queuedPromptMeta]);
+
+  const runCronSection = isMainAgent && activeCronTasks.length > 0 ? (
+    <div className={SECTION} data-rail-section="run-cron">
+      <RunCronSection
+        sessionId={state.sessionId}
+        activeTasks={activeCronTasks}
+        cronTurnActive={cronTurnActive}
+        turnStartedAt={runStartedAt}
+      />
+    </div>
+  ) : null;
+
   const settledTasksHistoryRow = runningBackgroundCount === 0 && settledBackgroundCount > 0 ? (
     <RailSection
       key="tasks-settled"
@@ -788,6 +827,7 @@ export const Rail = memo(function Rail({
     ['branches', branchesSection],
     ['todos', todosSection],
     ['tasks', runningTasksSection],
+    ['cron', runCronSection],
     ['agents', agentsSection],
     ['history', historyTailSection],
   ] as const).filter(([, section]) => section !== null);
@@ -1043,10 +1083,19 @@ export const Rail = memo(function Rail({
                 forest={deferredForest}
                 openBranches={sessionBranches.open}
                 runningSubagentTasks={runningSubagentTasks}
+                activeCronTasks={isMainAgent ? activeCronTasks : undefined}
                 waitingAgentIds={waitingAgentIds}
                 pendingCount={topologyPendingCount}
                 onSwitchToRun={() => { setActiveTab('run'); }}
                 onOpenAgent={openAgentInRun}
+                onOpenCron={() => {
+                  const target = railScrollRef.current?.querySelector<HTMLElement>('[data-rail-section="cron"]');
+                  if (target !== null && target !== undefined && typeof target.scrollIntoView === 'function') {
+                    target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                  } else {
+                    setActiveTab('run');
+                  }
+                }}
               />
 
               {isMainAgent ? (

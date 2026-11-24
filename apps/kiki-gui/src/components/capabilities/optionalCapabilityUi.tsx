@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { OptionalCapabilitySessionResponse } from '@kiki/protocol';
@@ -8,9 +8,11 @@ import { useI18n } from '../../i18n';
 import type { KikiConfigResponse } from '../../lib/client';
 import { isCoarsePointer } from '../../lib/layoutHooks';
 import { useConnection } from '../../state/connection';
+import { INSPECTOR_HEAD, InspectorChevron } from '../agent-panel/InspectorSection';
 import { Toggle } from '../controls';
+import { Icon } from '../icons';
 import { FOCUS_RING } from '../rail-variants/shell';
-import { heldByConversation, overrideForSwitch, type McpSessionRow } from './sessionMcp';
+import { heldByConversation, mcpRowMatches, overrideForSwitch, type McpSessionRow } from './sessionMcp';
 import { useMcpPicker } from './useMcpPicker';
 import {
   currentPendingCapabilityScope,
@@ -370,90 +372,206 @@ function mcpRailFact(row: McpSessionRow): I18nKey {
   return 'composer.addMenu.mcpStateUnknown';
 }
 
+const MCP_VISIBLE_LIMIT = 6;
+
 export function SessionMcpRail({ sessionId }: { sessionId?: string }) {
   const { t } = useI18n();
   const mcp = useMcpPicker(sessionId);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showAll, setShowAll] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setSearchQuery('');
+    setSearchOpen(false);
+    setShowAll(false);
+  }, [sessionId]);
+
+  const filtering = searchQuery.trim() !== '';
+  const filteredItems = useMemo(
+    () => (filtering ? mcp.items.filter((row) => mcpRowMatches(row, searchQuery)) : mcp.items),
+    [filtering, mcp.items, searchQuery],
+  );
+
   if (!mcp.available || (mcp.items.length === 0 && mcp.failure === undefined)) return null;
   const activeCount = mcp.items.filter(heldByConversation).length;
-  return (
-    <div className="mt-1.5 border-t border-hairline pt-1.5" data-rail-mcp>
-      <div className="flex items-baseline justify-between gap-1.5 pb-0.5 text-[11px] font-medium text-ink-faint">
-        <span>{t('rail.mcp.title')}</span>
-        {mcp.items.length > 0 ? <span className="font-normal tabular-nums">{activeCount}/{mcp.items.length}</span> : null}
-      </div>
-      <div>
-        {mcp.items.map((row) => {
-        const held = heldByConversation(row);
-        const rowBusy = mcp.busyName === row.name;
-        const checked = rowBusy && mcp.busyOn !== undefined ? mcp.busyOn : held;
-        const key = mcpRailFact(row);
-        const pluginName = row.pluginLabel ?? '';
-        const fact = t(key, key === 'composer.addMenu.mcpPluginMuted' || key === 'composer.addMenu.mcpFromPlugin' ? { name: pluginName } : undefined);
-        const showInlineFact = row.override !== 'inherit' || row.condition === 'plugin-off' || row.condition === 'signed-out' || row.condition === 'failed';
-        const nextChoice: Choice = checked ? 'off' : 'on';
-        return (
-          <div
-            key={row.name}
-            data-rail-mcp-server={row.name}
-            data-rail-mcp-effective={held ? 'true' : 'false'}
-            data-rail-mcp-source={row.override === 'inherit' ? row.origin : 'session'}
-            data-rail-mcp-override={row.override}
-            className="flex min-h-7 items-center justify-between gap-2.5 border-t border-hairline py-1 first:border-t-0"
-          >
-            <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-              <span className={`truncate text-[12.5px] leading-5 ${checked ? 'text-ink' : 'text-ink-soft'}`} title={row.name}>
-                {row.name}
-              </span>
-              <span className="inline-flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[11.5px] leading-4 text-ink-faint">
-                <span
-                  data-rail-mcp-fact={row.name}
-                  className={showInlineFact ? (row.override === 'on' ? 'text-selected-ink' : 'text-ink-faint') : 'sr-only'}
-                >
-                  {fact}
-                </span>
-                {row.canRestore && row.locator !== undefined ? (
-                  <button
-                    type="button"
-                    data-rail-mcp-restore={row.name}
-                    data-rail-mcp-set="inherit"
-                    disabled={rowBusy || !mcp.writable}
-                    onClick={() => { mcp.setOverride(row.locator!, 'inherit', row.name); }}
-                    className={`rounded text-ink-faint underline decoration-dotted underline-offset-2 transition-colors hover:text-ink disabled:opacity-40 ${FOCUS_RING}`}
-                  >
-                    {t('rail.plugins.restore')}
-                  </button>
-                ) : null}
-              </span>
-            </div>
-            {row.addressable && row.locator !== undefined ? (
-              // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- delegates synthetic clicks targeted at data-rail-mcp-set to the inner checkbox
-              <span
-                className="flex shrink-0 items-center"
-                data-rail-mcp-toggle={row.name}
-                data-rail-mcp-set={nextChoice}
-                onClick={(event) => {
-                  if (event.target !== event.currentTarget) return;
-                  if (rowBusy || !mcp.writable) return;
-                  mcp.setOverride(row.locator!, overrideForSwitch(row, nextChoice === 'on'), row.name);
-                }}
+  const autoSearch = mcp.items.length > MCP_VISIBLE_LIMIT;
+  const showSearchInput = mcp.items.length > 0 && (autoSearch || searchOpen);
+  const hasOverflow = !filtering && mcp.items.length > MCP_VISIBLE_LIMIT;
+  const visibleItems = hasOverflow && !showAll ? filteredItems.slice(0, MCP_VISIBLE_LIMIT) : filteredItems;
+
+  const renderMcpRow = (row: McpSessionRow) => {
+    const held = heldByConversation(row);
+    const rowBusy = mcp.busyName === row.name;
+    const checked = rowBusy && mcp.busyOn !== undefined ? mcp.busyOn : held;
+    const key = mcpRailFact(row);
+    const pluginName = row.pluginLabel ?? '';
+    const fact = t(key, key === 'composer.addMenu.mcpPluginMuted' || key === 'composer.addMenu.mcpFromPlugin' ? { name: pluginName } : undefined);
+    const showInlineFact = row.override !== 'inherit' || row.condition === 'plugin-off' || row.condition === 'signed-out' || row.condition === 'failed';
+    const nextChoice: Choice = checked ? 'off' : 'on';
+    return (
+      <div
+        key={row.name}
+        data-rail-mcp-server={row.name}
+        data-rail-mcp-effective={held ? 'true' : 'false'}
+        data-rail-mcp-source={row.override === 'inherit' ? row.origin : 'session'}
+        data-rail-mcp-override={row.override}
+        className="flex min-h-7 items-center justify-between gap-2.5 border-t border-hairline py-1 first:border-t-0"
+      >
+        <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className={`truncate text-[12.5px] leading-5 ${checked ? 'text-ink' : 'text-ink-soft'}`} title={row.name}>
+            {row.name}
+          </span>
+          <span className="inline-flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[11.5px] leading-4 text-ink-faint">
+            <span
+              data-rail-mcp-fact={row.name}
+              className={showInlineFact ? (row.override === 'on' ? 'text-selected-ink' : 'text-ink-faint') : 'sr-only'}
+            >
+              {fact}
+            </span>
+            {row.canRestore && row.locator !== undefined ? (
+              <button
+                type="button"
+                data-rail-mcp-restore={row.name}
+                data-rail-mcp-set="inherit"
+                disabled={rowBusy || !mcp.writable}
+                onClick={() => { mcp.setOverride(row.locator!, 'inherit', row.name); }}
+                className={`rounded text-ink-faint underline decoration-dotted underline-offset-2 transition-colors hover:text-ink disabled:opacity-40 ${FOCUS_RING}`}
               >
-                <Toggle
-                  id={`rail-mcp-${sessionId ?? 'draft'}-${row.name}`}
-                  layout="bare"
-                  label={t('composer.addMenu.mcpToggle', { name: row.name })}
-                  checked={checked}
-                  disabled={rowBusy || !mcp.writable}
-                  onChange={(next) => {
-                    if (rowBusy || !mcp.writable) return;
-                    mcp.setOverride(row.locator!, overrideForSwitch(row, next), row.name);
-                  }}
-                />
-              </span>
+                {t('rail.plugins.restore')}
+              </button>
             ) : null}
-          </div>
-        );
-        })}
+          </span>
+        </div>
+        {row.addressable && row.locator !== undefined ? (
+          // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- delegates synthetic clicks targeted at data-rail-mcp-set to the inner checkbox
+          <span
+            className="flex shrink-0 items-center"
+            data-rail-mcp-toggle={row.name}
+            data-rail-mcp-set={nextChoice}
+            onClick={(event) => {
+              if (event.target !== event.currentTarget) return;
+              if (rowBusy || !mcp.writable) return;
+              mcp.setOverride(row.locator!, overrideForSwitch(row, nextChoice === 'on'), row.name);
+            }}
+          >
+            <Toggle
+              id={`rail-mcp-${sessionId ?? 'draft'}-${row.name}`}
+              layout="bare"
+              label={t('composer.addMenu.mcpToggle', { name: row.name })}
+              checked={checked}
+              disabled={rowBusy || !mcp.writable}
+              onChange={(next) => {
+                if (rowBusy || !mcp.writable) return;
+                mcp.setOverride(row.locator!, overrideForSwitch(row, next), row.name);
+              }}
+            />
+          </span>
+        ) : null}
       </div>
+    );
+  };
+
+  return (
+    <div className="mt-1.5 border-t border-hairline pt-3" data-rail-mcp>
+      <div className="flex min-h-6 items-center justify-between gap-1.5 pb-1">
+        <span className={INSPECTOR_HEAD}>{t('rail.mcp.title')}</span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {mcp.items.length > 0 ? <span className="text-[11px] font-normal text-ink-faint tabular-nums">{activeCount}/{mcp.items.length}</span> : null}
+          {mcp.items.length > 0 && !autoSearch ? (
+            <button
+              type="button"
+              data-rail-mcp-search-toggle=""
+              aria-label={t('rail.mcp.search')}
+              aria-pressed={searchOpen}
+              title={t('rail.mcp.search')}
+              onClick={() => {
+                setSearchOpen((open) => {
+                  const next = !open;
+                  if (!next) setSearchQuery('');
+                  else queueMicrotask(() => { searchInputRef.current?.focus(); });
+                  return next;
+                });
+              }}
+              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.05] hover:text-ink ${
+                searchOpen ? 'bg-ink/[0.06] text-ink' : 'text-ink-faint'
+              } ${FOCUS_RING}`}
+            >
+              <Icon name="search" size={12} />
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {showSearchInput ? (
+        <label className="relative mb-1.5 block">
+          <span className="sr-only">{t('rail.mcp.search')}</span>
+          <Icon name="search" size={12} className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-ink-faint" />
+          <input
+            ref={searchInputRef}
+            type="search"
+            data-rail-mcp-search=""
+            value={searchQuery}
+            onChange={(event) => { setSearchQuery(event.target.value); }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && searchQuery !== '') {
+                event.preventDefault();
+                event.stopPropagation();
+                setSearchQuery('');
+              }
+            }}
+            placeholder={t('rail.mcp.search')}
+            className="h-7 w-full rounded-md border border-hairline bg-transparent pr-7 pl-7 text-[12px] text-ink placeholder:text-ink-faint transition-colors hover:border-hairline-strong focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink pointer-coarse:h-9 [&::-webkit-search-cancel-button]:hidden"
+          />
+          {searchQuery !== '' ? (
+            <button
+              type="button"
+              data-rail-mcp-search-clear=""
+              aria-label={t('inspector.cap.clearSearch')}
+              onClick={() => { setSearchQuery(''); searchInputRef.current?.focus(); }}
+              className={`absolute top-1/2 right-1.5 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`}
+            >
+              <Icon name="close" size={12} />
+            </button>
+          ) : null}
+        </label>
+      ) : null}
+
+      {filtering && visibleItems.length === 0 ? (
+        <div data-rail-mcp-no-match="" className="flex items-baseline gap-2 py-1 text-[12px] text-ink-faint">
+          <span>{t('rail.mcp.noMatch')}</span>
+          <button
+            type="button"
+            onClick={() => { setSearchQuery(''); }}
+            className={`rounded text-ink-soft underline decoration-dotted underline-offset-2 transition-colors hover:text-ink ${FOCUS_RING}`}
+          >
+            {t('inspector.cap.clearSearch')}
+          </button>
+        </div>
+      ) : (
+        <div
+          data-rail-mcp-scroll={showAll || filtering ? '' : undefined}
+          className={showAll || filtering ? 'max-h-64 overflow-y-auto pr-0.5' : undefined}
+        >
+          {visibleItems.map(renderMcpRow)}
+        </div>
+      )}
+
+      {hasOverflow ? (
+        <button
+          type="button"
+          data-rail-mcp-more=""
+          aria-expanded={showAll}
+          onClick={() => { setShowAll((value) => !value); }}
+          className={`-mx-1.5 mt-0.5 flex h-7 w-[calc(100%+0.75rem)] items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink ${FOCUS_RING}`}
+        >
+          <span className="min-w-0 flex-1 truncate">
+            {showAll ? t('rail.mcp.showLess') : t('rail.mcp.showAll', { count: mcp.items.length })}
+          </span>
+          <InspectorChevron open={showAll} />
+        </button>
+      ) : null}
       {mcp.failure === undefined ? null : <p role="alert" className="pt-1 text-[12px] text-danger">{mcp.failure.message}</p>}
     </div>
   );

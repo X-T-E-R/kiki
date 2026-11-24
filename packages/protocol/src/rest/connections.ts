@@ -40,7 +40,13 @@ export const sshRemoteTransportSchema = /* @__PURE__ */ z.object({ kind: z.liter
 export type SshRemoteTransport = z.infer<typeof sshRemoteTransportSchema>;
 export const localSpaceTransportSchema = /* @__PURE__ */ z.object({ kind: z.literal('local_space'), localSpaceId: z.string().min(1).max(128) }).strict();
 export const peerSocketTransportSchema = /* @__PURE__ */ z.object({ kind: z.literal('peer_socket'), grantId: z.string().uuid() }).strict();
-export const connectionTransportSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [sshRemoteTransportSchema, localSpaceTransportSchema, peerSocketTransportSchema]);
+export const ccpTunnelTransportSchema = /* @__PURE__ */ z.object({
+  kind: z.literal('ccp_tunnel'),
+  runtimeId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/),
+  remoteTlsPort: z.number().int().min(1).max(65535),
+}).strict();
+export type CcpTunnelTransport = z.infer<typeof ccpTunnelTransportSchema>;
+export const connectionTransportSchema = /* @__PURE__ */ z.discriminatedUnion('kind', [sshRemoteTransportSchema, localSpaceTransportSchema, peerSocketTransportSchema, ccpTunnelTransportSchema]);
 export type ConnectionTransportDescriptor = z.infer<typeof connectionTransportSchema>;
 export const connectionIdentitySchema = /* @__PURE__ */ z.object({
   homeId: z.string().uuid(), hostId: z.string().min(1).max(128),
@@ -57,7 +63,7 @@ export const connectionGrantSchema = /* @__PURE__ */ z.object({
   meshCapabilities: z.array(meshCapabilitySchema).optional(),
 });
 export type ConnectionGrant = z.infer<typeof connectionGrantSchema>;
-export const inboundStatusSchema = /* @__PURE__ */ z.object({ enabled: z.boolean(), configuredEnabled: z.boolean(), unavailableReason: z.literal('dangerous_auth_bypass').optional(), identity: connectionIdentitySchema, grants: z.array(connectionGrantSchema) });
+export const inboundStatusSchema = /* @__PURE__ */ z.object({ enabled: z.boolean(), configuredEnabled: z.boolean(), unavailableReason: z.literal('dangerous_auth_bypass').optional(), identity: connectionIdentitySchema, grants: z.array(connectionGrantSchema), loopbackEndpoint: z.string().optional() });
 export type InboundStatus = z.infer<typeof inboundStatusSchema>;
 export const connectionInviteInputSchema = /* @__PURE__ */ z.object({ source: connectionIdentitySchema, label: z.string().max(128), expiresInMs: z.number().int().min(1000).max(3600000).optional() }).strict();
 export const connectionClaimInputSchema = /* @__PURE__ */ z.object({ invitation: z.string().min(32).max(128), source: connectionIdentitySchema }).strict();
@@ -81,6 +87,7 @@ export const pairCodeCreateOutputSchema = /* @__PURE__ */ z.object({
   expiresAt: z.number().int().positive(),
   target: connectionIdentitySchema,
   suggestedEndpoints: z.array(z.string()),
+  loopbackEndpoint: z.string().optional(),
   tlsFingerprint: fingerprintSchema.optional(),
   bridgeOperations: bridgeOperationsSchema.optional(),
   trustTier: peerTrustTierSchema.optional(),
@@ -89,15 +96,24 @@ export const pairCodeCreateOutputSchema = /* @__PURE__ */ z.object({
 export type PairCodeCreateOutput = z.infer<typeof pairCodeCreateOutputSchema>;
 export const connectionPairInputSchema = /* @__PURE__ */ z.object({
   endpoint: z.string().min(1).max(2048),
-  code: z.string().min(8).max(16),
+  code: z.string().min(8).max(16).optional(),
   label: z.string().max(128).optional(),
-  backgroundSummary: z.boolean().default(true),
+  backgroundSummary: z.boolean().optional(),
+  includeGui: z.boolean().optional(),
   requestBridge: z.boolean().optional(),
   bridgeOperations: bridgeOperationsSchema.optional(),
   borrowTools: z.boolean().optional(),
   fingerprint: fingerprintSchema.optional(),
-}).strict();
+  trusted: z.boolean().optional(),
+}).strict().refine(
+  (value) => value.code !== undefined || value.endpoint.startsWith('ccp:') || parsePairingUri(value.endpoint) !== undefined,
+  { message: 'code is required unless pairing with a kiki:// URI or ccp:<runtimeId>' },
+).transform((value) => ({
+  ...value,
+  backgroundSummary: value.includeGui === false ? false : (value.backgroundSummary ?? true),
+}));
 export type ConnectionPairInput = z.infer<typeof connectionPairInputSchema>;
+export type ConnectionPairRequest = z.input<typeof connectionPairInputSchema>;
 export const pairClaimInputSchema = /* @__PURE__ */ z.object({
   code: z.string().min(8).max(16),
   source: connectionIdentitySchema,
@@ -153,6 +169,7 @@ export const remoteConnectionSchema = /* @__PURE__ */ z.object({
   rttMs: z.number().int().nonnegative().optional(),
   summary: z.object({ value: spaceSummarySchema, lastSeen: z.number(), stale: z.boolean() }).optional(),
   trustTier: peerTrustTierSchema.optional(),
+  localTrusted: z.boolean().optional(),
   meshCapabilities: z.array(meshCapabilitySchema).optional(),
   x25519Recipient: z.string().regex(/^age1[a-z0-9]+$/).optional(),
 });

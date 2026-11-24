@@ -7,10 +7,11 @@ import { isLegacyTlsError, peerFetch } from './peerTls';
 import { hostname, networkInterfaces } from 'node:os';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { bridgeGrantSchema, connectionIdentitySchema, isDirectConnectionHost, meshCapabilitySchema, normalizePairingCode, parsePairingUri, peerTrustTierSchema, type BridgeGrant, type BridgeOperation, type ConnectionIdentity, type ConnectionPairInput, type RemoteConnection, type SpacePlatform } from '@kiki/protocol';
+import { bridgeGrantSchema, connectionIdentitySchema, isDirectConnectionHost, meshCapabilitySchema, normalizePairingCode, parsePairingUri, peerTrustTierSchema, type BridgeGrant, type BridgeOperation, type ConnectionIdentity, type ConnectionPairRequest, type RemoteConnection, type SpacePlatform } from '@kiki/protocol';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { AdmissionError } from './admission';
 import { PairingBridgeRetirementError, validateEndpoint, type RemoteConnectionManager } from './manager';
+import { parseCcpEndpoint, type CcpPairingPrepared } from '../ccpTunnel/connector';
 
 const claimedSchema = z.object({
   target: connectionIdentitySchema, targetLabel: z.string().max(128), grantId: z.string().uuid(), revision: z.number().int().positive(),
@@ -28,6 +29,7 @@ export interface PairingHooks {
   retireBridges?(connectionId: string, ids: readonly string[]): Promise<void>;
   enableThreads(): Promise<void>;
   endpoints(): Promise<readonly string[]>;
+  loopbackEndpoint?(): string | undefined;
   x25519Recipient?(): string | undefined;
 }
 export class PairingRateLimit {
@@ -165,6 +167,7 @@ export function directEndpoints(bound: { host: string; port: number } | number, 
 }
 export class PeerListeners {
   private readonly servers = new Map<string, { url: string; rank: number; order: number; close: () => Promise<void> }>();
+  private loopbackServer?: { url: string; close: () => Promise<void> };
   private flight: Promise<void> = Promise.resolve();
   private closed = false;
   private refreshTimer?: ReturnType<typeof setInterval>;
@@ -176,6 +179,13 @@ export class PeerListeners {
       this.refreshTimer.unref();
     }
     const run = this.flight.then(async () => {
+      if (!this.closed && this.loopbackServer === undefined) {
+        const bound = await this.listen('127.0.0.1', 0, true).catch(() => undefined);
+        if (bound !== undefined) {
+          if (this.closed) { await bound.close().catch(() => undefined); }
+          else { this.loopbackServer = { url: bound.url.replace(/^http:/, 'https:'), close: bound.close }; }
+        }
+      }
       const ranked = rankedDirectAddresses();
       const hosts = new Set(ranked.map(({ address }) => address));
       for (const [host, listener] of this.servers) if (!hosts.has(host)) { this.servers.delete(host); await listener.close(); }
@@ -193,15 +203,19 @@ export class PeerListeners {
     return run.then(() => this.urls());
   }
   urls(): string[] { return [...this.servers.values()].sort((left, right) => left.rank - right.rank || left.order - right.order).map((entry) => entry.url); }
+  loopbackUrl(): string | undefined { return this.loopbackServer?.url; }
   async close(): Promise<void> {
     this.closed = true;
     clearInterval(this.refreshTimer);
     await this.flight;
     const active = [...this.servers.values()];
     this.servers.clear();
+    const loopback = this.loopbackServer;
+    this.loopbackServer = undefined;
+    if (loopback !== undefined) active.push({ ...loopback, rank: 0, order: 0 });
     await Promise.allSettled(active.map((entry) => entry.close()));
   }
-  private async listen(host: string, port: number): Promise<{ url: string; close: () => Promise<void> }> {
+  private async listen(host: string, port: number, tlsOnly = false): Promise<{ url: string; close: () => Promise<void> }> {
     const headerTimers = new WeakMap<Socket, ReturnType<typeof setTimeout>>();
     const clearHeaders = (socket: Socket): void => { clearTimeout(headerTimers.get(socket)); headerTimers.delete(socket); };
     const http = createServer((req, res) => { clearHeaders(req.socket); this.peerRequests.add(req); this.app.server.emit('request', req, res); });
@@ -229,6 +243,8 @@ export class PeerListeners {
         socket.unshift(chunk);
         if (chunk[0] === 0x16) {
           tls.emit('connection', socket);
+        } else if (tlsOnly) {
+          socket.destroy();
         } else {
           guardHeaders(socket);
           http.emit('connection', socket);
@@ -256,67 +272,114 @@ export function normalizeEndpoint(raw: string): string {
   const name = host.startsWith('[') ? host.slice(1, host.indexOf(']')) : host.split(':')[0] ?? host;
   return validateEndpoint(`${isDirectConnectionHost(name) ? 'http' : 'https'}://${text}`);
 }
-export async function pairOutbound(manager: RemoteConnectionManager, input: ConnectionPairInput, hooks: PairingHooks | undefined): Promise<RemoteConnection> {
-  const parsedUri = parsePairingUri(input.endpoint);
-  let endpoint = normalizeEndpoint(parsedUri?.endpoint ?? input.endpoint);
-  const secure = new URL(endpoint);
-  const port = secure.port || (secure.protocol === 'http:' ? '80' : '443');
-  secure.protocol = 'https:'; secure.port = port;
-  const explicitFingerprint = parsedUri?.fingerprint ?? input.fingerprint;
-  const previous = manager.list().find((entry) => entry.purposes.includes('gui') && entry.endpoint === secure.origin && entry.pinnedFingerprint !== undefined);
-  const fingerprint = explicitFingerprint ?? previous?.pinnedFingerprint;
-  let pinnedFingerprint: string | undefined;
-  const code = normalizePairingCode(parsedUri?.code ?? input.code);
-  if (code === undefined) throw new AdmissionError(401, 'invalid_pairing_code');
-  const requestBridge = input.requestBridge ?? true;
-  const sourceWorkspaces = hooks === undefined || !requestBridge ? [] : await hooks.workspaces();
-  const localRecipient = hooks?.x25519Recipient?.();
-  const init: RequestInit = {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-kiki-pairing-rotation': '1', 'x-kiki-mesh-metadata': '1' },
-    body: JSON.stringify({
-      code,
-      source: manager.identity,
-      sourceLabel: machineLabel(),
-      requestBridge,
-      bridgeOperations: input.bridgeOperations,
-      sourceWorkspaces,
-      ...(localRecipient === undefined ? {} : { x25519Recipient: localRecipient }),
-    }),
-    signal: AbortSignal.timeout(15000),
-  };
-  const original = endpoint;
-  const direct = isDirectConnectionHost(new URL(endpoint).hostname);
-  let response: Response;
-  if (fingerprint !== undefined || original.startsWith('https:') || (direct && original.startsWith('http:'))) {
-    endpoint = secure.origin;
-    try { response = await peerFetch(endpoint + '/api/remote-connections/pair/claim', init, fingerprint, (actual) => { pinnedFingerprint = actual; }); }
-    catch (error) {
-      if (fingerprint !== undefined || !original.startsWith('http:') || !isLegacyTlsError(error)) throw error;
-      endpoint = original;
-      response = await peerFetch(endpoint + '/api/remote-connections/pair/claim', init);
-    }
-  } else response = await peerFetch(endpoint + '/api/remote-connections/pair/claim', init);
-  const envelope = await readBoundedJsonBody(response, 65536).catch(() => undefined) as { code?: number; msg?: string; data?: unknown } | undefined;
-  if (!response.ok || envelope?.code !== 0) throw new AdmissionError(response.ok ? 409 : response.status, typeof envelope?.msg === 'string' ? envelope.msg : 'invalid_pairing_code');
-  const claimed = claimedSchema.parse(envelope.data);
-  const bridges = claimed.bridge ?? [];
-  const id = randomUUID();
-  const record: RemoteConnection = { id, label: input.label?.trim() || claimed.targetLabel, endpoint, pinnedFingerprint, fingerprintToVerify: fingerprint === undefined ? pinnedFingerprint : undefined, target: claimed.target, credentialRef: id, enabled: true, purposes: bridges.length > 0 ? ['gui', 'bridge'] : ['gui'], backgroundSummary: input.backgroundSummary, state: 'online', lastConnectedAt: Date.now(), activeLeases: 0, ...(claimed.trustTier === undefined ? {} : { trustTier: claimed.trustTier }), ...(claimed.meshCapabilities === undefined ? {} : { meshCapabilities: claimed.meshCapabilities }), ...(claimed.x25519Recipient === undefined ? {} : { x25519Recipient: claimed.x25519Recipient }) };
-  let saved: RemoteConnection | undefined;
+export async function pairOutbound(manager: RemoteConnectionManager, input: ConnectionPairRequest, hooks: PairingHooks | undefined): Promise<RemoteConnection> {
+  const ccpSpec = parseCcpEndpoint(input.endpoint);
+  let ccpPrepared: CcpPairingPrepared | undefined;
+  let ccpAdopted = false;
   try {
-    saved = await manager.storePeer(record, { ownerToken: claimed.peerToken, grant: claimed.peerToken, grantId: claimed.grantId, revision: claimed.revision }, input.label);
-    await hooks?.retireBridges?.(saved.id, claimed.revokedBridgeIds ?? []);
-    if (hooks !== undefined && bridges.length > 0) {
-      await hooks.enableThreads().catch(() => undefined);
-      for (const bundle of bridges) await hooks.installBridge(saved.id, bundle.grant, bundle.credential, claimed.grantId, input.borrowTools);
+    let rawEndpoint = input.endpoint;
+    let rawCode = input.code;
+    let explicitFingerprint = input.fingerprint;
+    if (ccpSpec !== undefined) {
+      if (manager.ccpTunnel === undefined) throw new AdmissionError(503, 'ccp_tunnel_transport_unavailable');
+      ccpPrepared = await manager.ccpTunnel.preparePairing({
+        runtimeId: ccpSpec.runtimeId,
+        remoteTlsPort: ccpSpec.remoteTlsPort,
+        code: input.code,
+        trusted: input.trusted,
+        fingerprint: input.fingerprint,
+      });
+      rawEndpoint = ccpPrepared.tunnel.endpoint;
+      rawCode = ccpPrepared.code;
+      explicitFingerprint = ccpPrepared.fingerprint;
     }
-    return saved;
-  } catch (error) {
-    if (saved === undefined && !(error instanceof PairingBridgeRetirementError)) {
+    const parsedUri = ccpSpec !== undefined ? undefined : parsePairingUri(rawEndpoint);
+    let endpoint = normalizeEndpoint(parsedUri?.endpoint ?? rawEndpoint);
+    const secure = new URL(endpoint);
+    const port = secure.port || (secure.protocol === 'http:' ? '80' : '443');
+    secure.protocol = 'https:'; secure.port = port;
+    explicitFingerprint = parsedUri?.fingerprint ?? explicitFingerprint;
+    const previous = manager.list().find((entry) =>
+      ccpSpec !== undefined
+        ? entry.transport?.kind === 'ccp_tunnel' && entry.transport.runtimeId === ccpSpec.runtimeId && entry.pinnedFingerprint !== undefined
+        : entry.transport === undefined && entry.endpoint === secure.origin && entry.pinnedFingerprint !== undefined,
+    );
+    const fingerprint = explicitFingerprint ?? previous?.pinnedFingerprint;
+    let pinnedFingerprint: string | undefined;
+    const code = normalizePairingCode(parsedUri?.code ?? rawCode ?? '');
+    if (code === undefined) throw new AdmissionError(401, 'invalid_pairing_code');
+    const includeGui = input.includeGui !== false;
+    const requestBridge = includeGui ? (input.requestBridge ?? true) : true;
+    const backgroundSummary = includeGui ? (input.backgroundSummary ?? true) : false;
+    const sourceWorkspaces = hooks === undefined || !requestBridge ? [] : await hooks.workspaces();
+    const localRecipient = hooks?.x25519Recipient?.();
+    const init: RequestInit = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-kiki-pairing-rotation': '1', 'x-kiki-mesh-metadata': '1', 'x-kiki-bridge-ceiling': '1' },
+      body: JSON.stringify({
+        code,
+        source: manager.identity,
+        sourceLabel: machineLabel(),
+        requestBridge,
+        bridgeOperations: input.bridgeOperations,
+        sourceWorkspaces,
+        ...(localRecipient === undefined ? {} : { x25519Recipient: localRecipient }),
+      }),
+      signal: AbortSignal.timeout(15000),
+    };
+    const original = endpoint;
+    const direct = isDirectConnectionHost(new URL(endpoint).hostname);
+    let response: Response;
+    if (fingerprint !== undefined || original.startsWith('https:') || (direct && original.startsWith('http:'))) {
+      endpoint = secure.origin;
+      try { response = await peerFetch(endpoint + '/api/remote-connections/pair/claim', init, fingerprint, (actual) => { pinnedFingerprint = actual; }); }
+      catch (error) {
+        if (fingerprint !== undefined || !original.startsWith('http:') || !isLegacyTlsError(error)) throw error;
+        endpoint = original;
+        response = await peerFetch(endpoint + '/api/remote-connections/pair/claim', init);
+      }
+    } else response = await peerFetch(endpoint + '/api/remote-connections/pair/claim', init);
+    const envelope = await readBoundedJsonBody(response, 65536).catch(() => undefined) as { code?: number; msg?: string; data?: unknown } | undefined;
+    if (!response.ok || envelope?.code !== 0) throw new AdmissionError(response.ok ? 409 : response.status, typeof envelope?.msg === 'string' ? envelope.msg : 'invalid_pairing_code');
+    const claimed = claimedSchema.parse(envelope.data);
+    const bridges = claimed.bridge ?? [];
+    if (!includeGui && bridges.length === 0) {
       const credential = { ownerToken: claimed.peerToken, grant: claimed.peerToken, grantId: claimed.grantId, revision: claimed.revision };
-      await manager.cancelClaim(endpoint, claimed.target, credential, pinnedFingerprint);
+      await manager.cancelClaim(endpoint, claimed.target, credential, pinnedFingerprint).catch(() => undefined);
+      throw new AdmissionError(409, 'bridge_operation_denied');
     }
-    throw error;
+    const id = randomUUID();
+    const purposes: RemoteConnection['purposes'] = includeGui ? (bridges.length > 0 ? ['gui', 'bridge'] : ['gui']) : ['bridge'];
+    const ccpTransport = ccpPrepared === undefined
+      ? undefined
+      : { kind: 'ccp_tunnel' as const, runtimeId: ccpPrepared.runtimeId, remoteTlsPort: ccpPrepared.remoteTlsPort };
+    const storedEndpoint = ccpTransport === undefined ? endpoint : `ccp://${encodeURIComponent(ccpTransport.runtimeId)}`;
+    const record: RemoteConnection = { id, label: input.label?.trim() || claimed.targetLabel, endpoint: storedEndpoint, ...(ccpTransport === undefined ? {} : { transport: ccpTransport }), pinnedFingerprint, fingerprintToVerify: fingerprint === undefined ? pinnedFingerprint : undefined, target: claimed.target, credentialRef: id, enabled: true, purposes, backgroundSummary, state: 'online', lastConnectedAt: Date.now(), activeLeases: 0, ...(claimed.trustTier === undefined ? {} : { trustTier: claimed.trustTier }), ...(input.trusted === true ? { localTrusted: true } : {}), ...(claimed.meshCapabilities === undefined ? {} : { meshCapabilities: claimed.meshCapabilities }), ...(claimed.x25519Recipient === undefined ? {} : { x25519Recipient: claimed.x25519Recipient }) };
+    let saved: RemoteConnection | undefined;
+    try {
+      saved = await manager.storePeer(
+        record,
+        { ownerToken: claimed.peerToken, grant: claimed.peerToken, grantId: claimed.grantId, revision: claimed.revision },
+        input.label,
+        ccpPrepared?.tunnel,
+      );
+      if (ccpPrepared !== undefined) ccpAdopted = true;
+      await hooks?.retireBridges?.(saved.id, claimed.revokedBridgeIds ?? []);
+      if (hooks !== undefined && bridges.length > 0) {
+        await hooks.enableThreads().catch(() => undefined);
+        for (const bundle of bridges) await hooks.installBridge(saved.id, bundle.grant, bundle.credential, claimed.grantId, input.borrowTools);
+      }
+      return saved;
+    } catch (error) {
+      if (saved === undefined && !(error instanceof PairingBridgeRetirementError)) {
+        const credential = { ownerToken: claimed.peerToken, grant: claimed.peerToken, grantId: claimed.grantId, revision: claimed.revision };
+        await manager.cancelClaim(endpoint, claimed.target, credential, pinnedFingerprint);
+      }
+      throw error;
+    }
+  } finally {
+    if (ccpPrepared !== undefined && !ccpAdopted) {
+      await ccpPrepared.tunnel.close().catch(() => {});
+    }
   }
 }

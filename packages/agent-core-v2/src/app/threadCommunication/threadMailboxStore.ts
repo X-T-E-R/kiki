@@ -26,7 +26,7 @@ export interface BridgedThreadMetadata {
 
 export type ThreadMessageProducer =
   | ({ readonly kind: 'bridged_peer' } & BridgedThreadMetadata)
-  | { readonly kind: 'peer_thread'; readonly source: ThreadRef; readonly sender?: ThreadMessageSender; readonly allowWhenDisabled?: boolean }
+  | { readonly kind: 'peer_thread'; readonly source: ThreadRef; readonly sender?: ThreadMessageSender; readonly allowWhenDisabled?: boolean; readonly targetAgentId?: string; readonly rawNotification?: boolean }
   | { readonly kind: 'room'; readonly roomId: string; readonly targeted?: boolean; readonly generation?: number; readonly sender?: ThreadMessageSender; readonly queueWhenBusy?: boolean; readonly requireCommunication?: boolean }
   | { readonly kind: 'external_client' };
 

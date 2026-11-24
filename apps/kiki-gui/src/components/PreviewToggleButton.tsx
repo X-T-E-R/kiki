@@ -11,6 +11,7 @@ import { floatingSurfaceZIndex, registerOverlay } from '../lib/uiBusy';
 import { Icon, resolvePluginSlotIconName, Spinner } from './icons';
 import { useMediaPreview } from './mediaPreviewContext';
 import { useExecutePluginSlotAction, usePluginGuiSlots } from './plugins/PluginComposerSlots';
+import { FOCUS_RING } from './rail-variants/shell';
 import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
 
 const INLINE_MAX = 4;
@@ -30,9 +31,14 @@ export function WorkspacePanelsControl({
   const preview = useMediaPreview();
   const [menuOpen, setMenuOpen] = useState(false);
   const [headerWidth, setHeaderWidth] = useState<number | null>(null);
+  const [panelQuery, setPanelQuery] = useState('');
   const anchorRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!menuOpen) {
+      setPanelQuery('');
+      return;
+    }
     return registerOverlay('workspace-panels');
   }, [menuOpen]);
   const { slots } = usePluginGuiSlots({ sessionId, workspaceId });
@@ -74,7 +80,7 @@ export function WorkspacePanelsControl({
 
   if (!hasVisibleControls) return null;
 
-  const panelsLabel = locale === 'zh' ? '工作台面板' : 'Workspace panels';
+  const panelsLabel = t('preview.panels.title');
   const compactFold = headerWidth !== null && headerWidth < COMPACT_FOLD_HEADER_WIDTH;
   const hasOverflow = compactFold ? panelSlots.length > 0 : panelSlots.length > INLINE_MAX;
   const inlineSlots = compactFold ? [] : (hasOverflow ? panelSlots.slice(0, INLINE_OVERFLOW_KEEP) : panelSlots);
@@ -107,6 +113,25 @@ export function WorkspacePanelsControl({
       : labelExpandAt === '800'
         ? '@[800px]/center:static @[800px]/center:ring-0'
         : '@[680px]/center:static @[680px]/center:ring-0';
+  const panelSearchNeedles = panelQuery.trim().toLowerCase().split(/\s+/).filter((part) => part !== '');
+  const filteringPanels = panelSearchNeedles.length > 0;
+  const popoverSlots = filteringPanels
+    ? panelSlots.filter((slot) => {
+        const label = resolvePluginLocalizedText(slot.label, locale);
+        const tooltip = slot.tooltip === undefined ? '' : resolvePluginLocalizedText(slot.tooltip, locale);
+        const panelIdHint = slot.action.kind === 'open_plugin_panel' ? slot.action.panelId : '';
+        const haystack = [
+          label,
+          slot.label.default,
+          slot.label.zh ?? '',
+          tooltip,
+          slot.pluginId,
+          slot.id,
+          panelIdHint,
+        ].join('\n').toLowerCase();
+        return panelSearchNeedles.every((needle) => haystack.includes(needle));
+      })
+    : overflowSlots;
 
   const activatePanelSlot = (slot: PluginComposerToolbarSlotContribution, key: string, label: string, isPanelActive: boolean) => {
     setMenuOpen(false);
@@ -149,7 +174,18 @@ export function WorkspacePanelsControl({
   };
 
   const overflowMenu = overflowSlots.length > 0 ? (
-    <Popover.Root open={menuOpen} onOpenChange={setMenuOpen}>
+    <Popover.Root
+      open={menuOpen}
+      onOpenChange={(nextOpen, details) => {
+        if (!nextOpen && details.reason === 'escape-key' && panelQuery !== '') {
+          details.cancel();
+          setPanelQuery('');
+          searchInputRef.current?.focus();
+          return;
+        }
+        setMenuOpen(nextOpen);
+      }}
+    >
       <Popover.Trigger
         type="button"
         data-workspace-panels-trigger=""
@@ -182,8 +218,50 @@ export function WorkspacePanelsControl({
             className={`anim-enter flex w-60 max-h-[min(22rem,var(--available-height,60vh))] flex-col p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
           >
             <p className="px-2.5 py-1 text-[11px] font-medium text-ink-faint">{panelsLabel}</p>
+            <label className="relative mx-1.5 mb-1 block">
+              <span className="sr-only">{t('preview.panels.search')}</span>
+              <Icon name="search" size={12} className="pointer-events-none absolute top-1/2 left-2 -translate-y-1/2 text-ink-faint" />
+              <input
+                ref={searchInputRef}
+                type="search"
+                data-workspace-panels-search=""
+                value={panelQuery}
+                onChange={(event) => { setPanelQuery(event.target.value); }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape' && panelQuery !== '') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setPanelQuery('');
+                    return;
+                  }
+                  if (event.key === 'Enter' && filteringPanels && popoverSlots.length > 0) {
+                    event.preventDefault();
+                    const first = popoverSlots[0]!;
+                    const meta = renderSlotMeta(first);
+                    if (!meta.isBusy) activatePanelSlot(first, meta.key, meta.label, meta.isPanelActive);
+                  }
+                }}
+                placeholder={t('preview.panels.search')}
+                className="h-7 w-full rounded-md border border-hairline bg-transparent pr-6 pl-6 text-[12px] text-ink placeholder:text-ink-faint transition-colors hover:border-hairline-strong focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink [&::-webkit-search-cancel-button]:hidden"
+              />
+              {panelQuery !== '' ? (
+                <button
+                  type="button"
+                  data-workspace-panels-search-clear=""
+                  aria-label={t('inspector.cap.clearSearch')}
+                  onClick={() => { setPanelQuery(''); searchInputRef.current?.focus(); }}
+                  className={`absolute top-1/2 right-1 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`}
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              ) : null}
+            </label>
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {overflowSlots.map((slot) => {
+              {popoverSlots.length === 0 ? (
+                <p data-workspace-panels-empty="" className="px-2.5 py-2 text-[12px] text-ink-faint">
+                  {t('preview.panels.empty')}
+                </p>
+              ) : popoverSlots.map((slot) => {
                 const { key, label, tooltip, isBusy, iconName, isPanelActive, hasActiveCapsule } = renderSlotMeta(slot);
                 return (
                   <button

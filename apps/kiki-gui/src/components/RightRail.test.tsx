@@ -26,13 +26,7 @@ vi.mock('./rail-variants/DefaultSections', async (importOriginal) => ({
   CapabilitiesBlock: () => null,
 }));
 
-// The session rail also mounts its cron section and the persona update, both of
-// which read the connection and the settings stores these fixtures have no
-// stand-in for; they render as the same kind of plain stand-in.
-vi.mock('./rail-variants/SessionCronSection', () => ({
-  SessionCronSection: () => <div data-rail-session-cron />,
-}));
-
+// Persona update reads the settings store this fixture has no stand-in for.
 vi.mock('./persona/PersonaSettingsUpdate', () => ({
   PersonaSettingsUpdate: () => <div data-rail-persona-settings />,
 }));
@@ -68,6 +62,7 @@ vi.mock('../state/connection', async (importOriginal) => {
     ...actual,
     useOptionalControllerRegistry: () => registryHolder.current,
     useOptionalConnection: () => connectionHolder.current,
+    useConnection: () => connectionHolder.current ?? actual.useConnection(),
   };
 });
 
@@ -113,14 +108,14 @@ beforeAll(() => {
   actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 });
 afterEach(async () => {
-  registryHolder.current = null;
-  connectionHolder.current = null;
-  pluginSlotsHolder.current = [];
-  localStorage.removeItem('kiki.railMode');
   for (const { container, root } of mounts.splice(0)) {
     await act(async () => { root.unmount(); });
     container.remove();
   }
+  registryHolder.current = null;
+  connectionHolder.current = null;
+  pluginSlotsHolder.current = [];
+  localStorage.removeItem('kiki.railMode');
 });
 afterAll(() => {
   actEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
@@ -315,7 +310,7 @@ describe('RightRail Run | Config tabs and decluttered layout', () => {
     expect(rail.querySelector('#rail-todos [data-panel-props="hooks"]')).toBeNull();
     expect(rail.querySelector('[data-inspector-tail] [data-panel-props="notes"]')).not.toBeNull();
     // Session config items (cron, persona, controls) stay out of Run tab.
-    expect(rail.querySelector('[data-rail-session-cron]')).toBeNull();
+    expect(rail.querySelector('[data-rail-section="cron"]')).toBeNull();
     expect(rail.querySelector('[data-rail-persona-settings]')).toBeNull();
 
     for (const selector of ['[data-rail-agent-panel-slot]', '#rail-todos', '[data-inspector-tail]']) {
@@ -365,7 +360,7 @@ describe('RightRail Run | Config tabs and decluttered layout', () => {
     expect(rail.querySelector('[data-topology-connectors] svg, svg[data-topology-connectors]')).not.toBeNull();
     expect(rail.querySelector('[data-topology-node="branch-a"]')?.getAttribute('data-topology-kind')).toBe('branch');
     expect(rail.querySelector('[data-topology-node="agent-1"]')?.getAttribute('data-topology-kind')).toBe('subagent');
-    expect(rail.querySelector('[data-rail-session-cron]')).not.toBeNull();
+    expect(rail.querySelector('[data-rail-section="cron"]')).not.toBeNull();
     expect(rail.querySelector('[data-rail-persona-settings]')).not.toBeNull();
     expect(rail.querySelector('[data-rail-config-foundation] [data-panel-props="hooks"]')).not.toBeNull();
 
@@ -416,6 +411,151 @@ describe('RightRail Run | Config tabs and decluttered layout', () => {
     expect(rail.querySelector('[data-rail-panel="run"]')).not.toBeNull();
   });
 
+  it('shows active scheduled tasks in Run and Config RailLiveTopology, and collapses to 0px when none are active', async () => {
+    const nextIso = new Date(Date.now() + 10 * 60_000).toISOString();
+    let cronItems = [
+      {
+        id: 'cron-1',
+        session_id: 'sess-1',
+        workspace_id: 'ws-1',
+        cron: '0 9 * * *',
+        human_schedule: 'Every day at 09:00',
+        prompt_preview: 'Digest nightly logs',
+        next_fire_at: nextIso,
+        recurring: true,
+        delivery_mode: 'idle' as const,
+        paused: false,
+        age_days: 1,
+        stale: false,
+        created_at: '2026-01-01T00:00:00.000Z',
+        last_fired_at: null,
+      },
+      {
+        id: 'cron-paused',
+        session_id: 'sess-1',
+        workspace_id: 'ws-1',
+        cron: '0 18 * * *',
+        human_schedule: 'Every day at 18:00',
+        prompt_preview: 'Paused evening check',
+        next_fire_at: null,
+        recurring: true,
+        delivery_mode: 'idle' as const,
+        paused: true,
+        age_days: 1,
+        stale: false,
+        created_at: '2026-01-01T00:00:00.000Z',
+        last_fired_at: null,
+      },
+    ];
+    const listCronTasks = vi.fn(async () => ({ items: cronItems, has_more: false }));
+    const pauseCronTask = vi.fn(async (id: string) => {
+      const target = cronItems.find((item) => item.id === id)!;
+      const updated = { ...target, paused: true, next_fire_at: null };
+      cronItems = cronItems.map((item) => (item.id === id ? updated : item));
+      return { task: updated };
+    });
+    connectionHolder.current = {
+      scopeId: 'local',
+      client: {
+        listCronTasks,
+        pauseCronTask,
+        sessions: {},
+        getConfig: async () => ({}),
+        getSessionOptionalCapabilities: async () => ({ revision: 1, rows: [] }),
+        getPluginUsage: async () => ({
+          home_id: 'home-1',
+          target: { workspace_id: 'ws-1', name: 'Work', root: '/work' },
+          revision: 1,
+          apply_state: 'applied',
+          errors: [],
+          plugins: [],
+        }),
+      },
+    };
+      const rail = await renderRail({
+        empty: true,
+        stateOverrides: {
+          busy: true,
+          blocks: [
+            {
+              kind: 'system',
+              id: 'sys-cron-1',
+              variant: 'cron_job',
+              text: 'Digest nightly logs',
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        },
+      });
+      for (let i = 0; i < 6; i += 1) {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      }
+      // Only active (non-paused) cron renders in Run, with live indicator on cron turn.
+      expect(rail.querySelector('[data-rail-run-cron]')).not.toBeNull();
+      expect(rail.querySelector('[data-rail-run-cron-row="cron-1"]')).not.toBeNull();
+      expect(rail.querySelector('[data-rail-run-cron-row="cron-paused"]')).toBeNull();
+      expect(rail.querySelector('[data-rail-run-cron-live]')).not.toBeNull();
+
+      // A newer non-user system wake turn after a completed cron turn does not falsely show running.
+      const wakeTurnRail = await renderRail({
+        empty: true,
+        stateOverrides: {
+          busy: true,
+          blocks: [
+            {
+              kind: 'system',
+              id: 'sys-cron-old',
+              turnId: 't1',
+              variant: 'cron_job',
+              text: 'Digest nightly logs',
+              createdAt: new Date(Date.now() - 60_000).toISOString(),
+            },
+            {
+              kind: 'system',
+              id: 'sys-task-new',
+              turnId: 't2',
+              variant: 'task',
+              text: 'Background build finished',
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        },
+      });
+      for (let i = 0; i < 6; i += 1) {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      }
+      expect(wakeTurnRail.querySelector('[data-rail-run-cron-row="cron-1"]')).not.toBeNull();
+      expect(wakeTurnRail.querySelector('[data-rail-run-cron-live]')).toBeNull();
+
+      // Config RailLiveTopology includes the active cron node + summary count.
+      await selectTab(rail, 'config');
+      const cronNode = rail.querySelector<HTMLButtonElement>('[data-topology-node="cron"]');
+      expect(cronNode).not.toBeNull();
+      expect(cronNode?.getAttribute('data-topology-kind')).toBe('cron');
+      expect(cronNode?.textContent).toContain('Digest nightly logs');
+      expect(rail.querySelector('[data-topology-summary]')?.textContent).toContain('1 scheduled');
+
+      // Pausing the last active cron task in Run removes [data-rail-run-cron] (0px).
+      await selectTab(rail, 'run');
+      await act(async () => {
+        rail.querySelector<HTMLButtonElement>('[data-rail-cron-toggle="cron-1"]')!.click();
+      });
+      for (let i = 0; i < 6; i += 1) {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      }
+      expect(pauseCronTask).toHaveBeenCalledWith('cron-1', 'sess-1');
+      expect(rail.querySelector('[data-rail-run-cron]')).toBeNull();
+
+      // Idle session with only paused cron renders 0px topology in Config.
+      const idleOnlyPaused = await renderRail({ empty: true, stateOverrides: { busy: false } });
+      for (let i = 0; i < 6; i += 1) {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      }
+      expect(idleOnlyPaused.querySelector('[data-rail-run-cron]')).toBeNull();
+      await selectTab(idleOnlyPaused, 'config');
+      expect(idleOnlyPaused.querySelector('[data-rail-config-topology]')).toBeNull();
+  });
+
   it('isolates session-wide settings to main agent and renders compact sub-tabs when peeking a subagent', async () => {
     const peeked = await renderRail({ subagent: context, onInspectMain: vi.fn() });
     expect(peeked.querySelector('[data-rail-pinned] [data-rail-owner]')).not.toBeNull();
@@ -424,7 +564,7 @@ describe('RightRail Run | Config tabs and decluttered layout', () => {
 
     await selectTab(peeked, 'config');
     expect(peeked.querySelector('[data-rail-section="environment"]')).toBeNull();
-    expect(peeked.querySelector('[data-rail-session-cron]')).toBeNull();
+    expect(peeked.querySelector('[data-rail-section="cron"]')).toBeNull();
     expect(peeked.querySelector('[data-rail-persona-settings]')).toBeNull();
     expect(peeked.querySelector('[data-inspector-session]')).toBeNull();
     expect(peeked.querySelector('[data-rail-config-foundation] [data-panel-props="hooks"]')).not.toBeNull();
@@ -708,10 +848,10 @@ describe('RightRail shared chapters', () => {
     const scroll = child.querySelector('[data-agent-panel-scroll]')!;
     expect(scroll.querySelector('[data-inspector-setup]')).toBeNull();
     // Session-level cron lives in main's Config tab and never leaks to a subagent rail.
-    expect(main.querySelector('[data-rail-session-cron]')).toBeNull();
+    expect(main.querySelector('[data-rail-section="cron"]')).toBeNull();
     await act(async () => { main.querySelector<HTMLButtonElement>('[data-rail-tab="config"]')!.click(); });
-    expect(main.querySelector('[data-rail-session-cron]')).not.toBeNull();
-    expect(scroll.querySelector('[data-rail-session-cron]')).toBeNull();
+    expect(main.querySelector('[data-rail-section="cron"]')).not.toBeNull();
+    expect(scroll.querySelector('[data-rail-section="cron"]')).toBeNull();
     const order = [
       scroll.querySelector('[data-rail-profile-head]'),
       now,
@@ -1827,7 +1967,7 @@ describe('RightRail plugin preview routing and branch-owned rail', () => {
     // Routed branch page keeps the Branches switcher accessible so users can jump between branches or back to main,
     // while main-only cron & persona settings stay out of the branch rail.
     expect(container.querySelector('[data-rail-section="branches"]')).not.toBeNull();
-    expect(container.querySelector('[data-rail-session-cron]')).toBeNull();
+    expect(container.querySelector('[data-rail-section="cron"]')).toBeNull();
     expect(container.querySelector('[data-rail-persona-settings]')).toBeNull();
 
     // Overview belongs to branch-281 (not main) in default mode
@@ -1843,7 +1983,7 @@ describe('RightRail plugin preview routing and branch-owned rail', () => {
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-rail-tab="config"]')!.click();
     });
-    expect(container.querySelector('[data-rail-session-cron]')).toBeNull();
+    expect(container.querySelector('[data-rail-section="cron"]')).toBeNull();
     expect(container.querySelector('[data-rail-persona-settings]')).toBeNull();
     expect(container.querySelector('[data-rail-config-topology]')).not.toBeNull();
   });

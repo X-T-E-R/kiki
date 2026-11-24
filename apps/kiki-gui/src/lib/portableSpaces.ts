@@ -273,7 +273,8 @@ export function buildColabCommand(options: {
 }): string {
   const lines = [
     '# Set KIKI_AGE_PASSPHRASE (or KIKI_AGE_KEY) in Colab Secrets if encrypted',
-    'curl -fsSL https://github.com/X-T-E-R/kiki/releases/latest/download/install.sh | sh -s -- \\',
+    'curl -fsSL https://raw.githubusercontent.com/X-T-E-R/kiki/kiki/scripts/install.sh | sh -s -- \\',
+    '  --channel beta \\',
     `  --apply ${shellSingleQuote(endpointCliArg(options.source))} \\`,
   ];
   if (options.overlay !== undefined) {

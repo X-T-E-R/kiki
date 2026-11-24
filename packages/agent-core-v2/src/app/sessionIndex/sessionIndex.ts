@@ -112,6 +112,8 @@ export interface ISessionIndex {
    * directory) is deleted by the caller (`sessionLifecycle.delete`).
    */
   remove(id: string): Promise<void>;
+  /** Force a reconciliation pass against persisted session directories. */
+  reconcileNow?(options?: { reuseFingerprints?: boolean }): Promise<void>;
 }
 
 export const ISessionIndex: ServiceIdentifier<ISessionIndex> =
