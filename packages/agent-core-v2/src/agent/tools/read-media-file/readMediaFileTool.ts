@@ -592,8 +592,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
           const canStreamArchiveDirectly =
             isLocalRuntime &&
             this.blobService?.offloadFile !== undefined &&
-            (args.full_resolution === true || stat.size <= inlineBudget) &&
-            (fileType.kind === 'audio' || this.videoUploader === undefined);
+            (args.full_resolution === true || stat.size <= inlineBudget);
           if (canStreamArchiveDirectly) {
             const refUrl = await this.blobService!.offloadFile!(fileType.mimeType, safePath, { signal });
             mediaPart = fileType.kind === 'video'

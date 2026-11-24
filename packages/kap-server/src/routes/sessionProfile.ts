@@ -1,4 +1,5 @@
 import {
+  detachSessionSharedCasAliases,
   ISessionContext,
   ISessionMetadata,
   type ISessionScopeHandle,
@@ -32,6 +33,12 @@ export async function updateSessionProfile(
 
   if (body.private !== undefined) {
     await metadata.update({ private: body.private });
+    if (body.private === true) {
+      const ctxForDetach = session.accessor.get(ISessionContext);
+      if (ctxForDetach.sessionDir.length > 0) {
+        await detachSessionSharedCasAliases(ctxForDetach.sessionDir);
+      }
+    }
   }
 
   const metadataPatch = body.metadata;

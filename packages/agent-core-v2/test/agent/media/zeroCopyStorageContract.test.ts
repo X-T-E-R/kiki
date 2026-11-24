@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { access, constants, mkdir, mkdtemp, open as fsOpen, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -20,7 +21,7 @@ import {
 } from '#/agent/media/hostPinnedMedia';
 import { SessionMediaStoreService } from '#/agent/media/sessionMediaStoreService';
 import type { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
-import { StorageGovernanceService } from '#/app/storageGovernance/storageGovernanceService';
+import { detachSessionSharedCasAliases, StorageGovernanceService } from '#/app/storageGovernance/storageGovernanceService';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { BlobStoreService } from '#/persistence/backends/node-fs/blobStoreService';
 import { ContentAddressedStoreService } from '#/persistence/backends/node-fs/contentAddressedStoreService';
@@ -488,11 +489,20 @@ describe('zero-copy CAS, privacy isolation, streaming, HostPinnedRef, checkpoint
       await mkdir(retiredDir, { recursive: true });
       await writeFile(join(retiredDir, 'old.bin'), Buffer.alloc(4096, 0x11));
       await mkdir(join(homeDir, 'search-index-v2'), { recursive: true });
-      const sqliteHeader = Buffer.alloc(4096);
-      Buffer.from('SQLite format 3\0', 'ascii').copy(sqliteHeader, 0);
-      await writeFile(join(homeDir, 'search-index-v2', 'index.sqlite'), sqliteHeader);
+      const successorDbPath = join(homeDir, 'search-index-v2', 'index.sqlite');
+      const stubHeader = Buffer.alloc(4096);
+      Buffer.from('SQLite format 3\0', 'ascii').copy(stubHeader, 0);
+      await writeFile(successorDbPath, stubHeader);
 
       const governance = new StorageGovernanceService(homeDir);
+      const stubStatus = await governance.status();
+      expect(stubStatus.retired.find((r) => r.relativePath === 'search-index')?.successorReady).toBe(false);
+
+      await rm(successorDbPath);
+      const db = new DatabaseSync(successorDbPath);
+      db.exec('CREATE TABLE docs (id INTEGER PRIMARY KEY, body TEXT); INSERT INTO docs (body) VALUES (\'ok\');');
+      db.close();
+
       const status = await governance.status();
       expect(status.workspaces.totalFiles).toBe(1);
       expect(status.workspaces.excludedFromCleanup).toBe(true);
@@ -510,6 +520,11 @@ describe('zero-copy CAS, privacy isolation, streaming, HostPinnedRef, checkpoint
       const inoB = (await stat(join(homeDir, sessionScope, 'agents', 'main', 'blobs', legacySha), { bigint: true })).ino;
       expect(inoA).toBe(inoB);
 
+      const detachedCount = await detachSessionSharedCasAliases(join(homeDir, sessionScope));
+      expect(detachedCount).toBeGreaterThanOrEqual(2);
+      const detachedStat = await stat(join(childDir, 'blobs', legacySha), { bigint: true });
+      expect(detachedStat.nlink).toBe(1n);
+
       const dryClean = await governance.cleanRetired({ apply: false });
       expect(dryClean.applied).toBe(false);
       expect(dryClean.items.find((c) => c.relativePath === 'search-index')?.status).toBe('planned');
@@ -520,7 +535,13 @@ describe('zero-copy CAS, privacy isolation, streaming, HostPinnedRef, checkpoint
       expect(await stat(retiredDir).catch(() => undefined)).toBeUndefined();
       expect(await readFile(userFile, 'utf8')).toBe('do not touch user workspace');
 
-      const rolledBack = await governance.cleanRetired({ rollbackRunId: appliedClean.runId });
+      const dryRollback = await governance.cleanRetired({ rollbackRunId: appliedClean.runId, apply: false });
+      expect(dryRollback.applied).toBe(false);
+      expect(dryRollback.restoredBytes).toBe(0);
+      expect(await stat(retiredDir).catch(() => undefined)).toBeUndefined();
+
+      const rolledBack = await governance.cleanRetired({ rollbackRunId: appliedClean.runId, apply: true });
+      expect(rolledBack.applied).toBe(true);
       expect(rolledBack.restoredBytes).toBe(4096);
       expect((await stat(join(retiredDir, 'old.bin'))).size).toBe(4096);
 

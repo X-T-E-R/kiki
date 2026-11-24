@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { chmod, link, lstat, mkdir, open, readdir, readFile, rename, rm, stat, unlink } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
 import { dirname, join, resolve } from 'pathe';
 
 import { replaceFileNonDestructive, syncDir, writeFileAtomicDurable } from '#/_base/utils/fs';
@@ -343,10 +344,116 @@ async function checkSqliteSuccessorReady(
     if (bytesRead !== 16 || !header.equals(SQLITE_MAGIC)) {
       return { ready: false, reason: 'successor_invalid_sqlite_header' };
     }
-    return { ready: true };
   } finally {
     await handle.close();
   }
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(fullPath, { readOnly: true });
+    const checkRow = db.prepare('PRAGMA quick_check').get() as { readonly quick_check?: string } | undefined;
+    if (checkRow?.quick_check !== 'ok') {
+      return { ready: false, reason: 'successor_quick_check_failed' };
+    }
+    const tablesRow = db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table'").get() as { readonly count?: number } | undefined;
+    if (typeof tablesRow?.count !== 'number' || tablesRow.count < 1) {
+      return { ready: false, reason: 'successor_schema_empty' };
+    }
+    return { ready: true };
+  } catch {
+    return { ready: false, reason: 'successor_sqlite_unreadable' };
+  } finally {
+    db?.close();
+  }
+}
+
+async function isExecutionControlBlocking(sessionDir: string): Promise<boolean> {
+  const controlPath = join(sessionDir, 'execution-control.json');
+  const raw = await readFile(controlPath, 'utf8').catch(() => undefined);
+  if (raw === undefined) return false;
+  try {
+    const parsed = JSON.parse(raw) as {
+      readonly state?: { readonly phase?: unknown };
+      readonly requiredAgents?: unknown;
+      readonly points?: unknown;
+    };
+    if (parsed?.state?.phase !== 'running') return true;
+    if (Array.isArray(parsed.requiredAgents) && parsed.requiredAgents.length > 0) return true;
+    if (parsed.points !== null && typeof parsed.points === 'object' && Object.keys(parsed.points).length > 0) return true;
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+async function copyFileToPrivateInode(filePath: string, casRoot?: string, signal?: AbortSignal): Promise<void> {
+  const tempPath = `${filePath}.detach.${process.pid}.${randomUUID()}`;
+  const srcHandle = await open(filePath, 'r');
+  const hash = createHash('sha256');
+  let dstHandle;
+  try {
+    dstHandle = await open(tempPath, 'wx', 0o600);
+    const buf = Buffer.allocUnsafe(STREAM_CHUNK_BYTES);
+    for (;;) {
+      signal?.throwIfAborted();
+      const { bytesRead } = await srcHandle.read(buf, 0, buf.byteLength, null);
+      if (bytesRead === 0) break;
+      const slice = buf.subarray(0, bytesRead);
+      hash.update(slice);
+      let offset = 0;
+      while (offset < bytesRead) {
+        const { bytesWritten } = await dstHandle.write(buf, offset, bytesRead - offset);
+        if (bytesWritten <= 0) throw new Error('short write while detaching private alias');
+        offset += bytesWritten;
+      }
+    }
+    await dstHandle.sync();
+    await dstHandle.close();
+    dstHandle = undefined;
+    await srcHandle.close();
+    try {
+      await replaceFileNonDestructive(tempPath, filePath, signal);
+    } catch (replaceError) {
+      if (process.platform !== 'win32') throw replaceError;
+      const sha256 = hash.digest('hex');
+      await chmod(filePath, 0o600).catch(() => undefined);
+      try {
+        await rename(tempPath, filePath);
+      } finally {
+        if (casRoot !== undefined) {
+          const casObjPath = join(casRoot, sha256.slice(0, 2), sha256);
+          await chmod(casObjPath, 0o400).catch(() => undefined);
+        }
+      }
+    }
+    await syncDir(dirname(filePath));
+  } catch (error) {
+    await srcHandle.close().catch(() => undefined);
+    if (dstHandle !== undefined) await dstHandle.close().catch(() => undefined);
+    await unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** Detaches all shared CAS hard-links (`nlink > 1`) under one session directory into private-only inodes. */
+export async function detachSessionSharedCasAliases(sessionDir: string, signal?: AbortSignal): Promise<number> {
+  let detached = 0;
+  const casRoot = join(resolve(sessionDir, '../../..'), 'blobs', 'v2');
+  const roots = [join(sessionDir, 'media'), join(sessionDir, 'attachments')];
+  const agentsDir = join(sessionDir, 'agents');
+  const agents = await readdir(agentsDir, { withFileTypes: true }).catch(() => []);
+  for (const agent of agents) {
+    if (agent.isSymbolicLink() || !agent.isDirectory()) continue;
+    roots.push(join(agentsDir, agent.name, 'blobs'));
+  }
+  for (const root of roots) {
+    await walkRegularFiles(root, async (fullPath, _rel, info) => {
+      if (info.nlink > 1n) {
+        await copyFileToPrivateInode(fullPath, casRoot, signal);
+        detached += 1;
+      }
+    }, signal);
+  }
+  return detached;
 }
 
 async function readSessionMetadata(sessionDir: string): Promise<SessionMetadataShape | undefined> {
@@ -590,7 +697,7 @@ export class StorageGovernanceService {
           metadata !== undefined &&
           typeof metadata.id === 'string' &&
           metadata.id.length > 0 &&
-          metadata.private !== true;
+          metadata.private === false;
         const agentsDir = join(sessionDir, 'agents');
         const agents = await readdir(agentsDir, { withFileTypes: true }).catch(() => []);
         for (const agentEntry of agents) {
@@ -701,26 +808,7 @@ export class StorageGovernanceService {
           continue;
         }
 
-        const rep = group[0]!;
-        const stored = await cas.putFromFile(rep.path, { signal });
-        if (stored.sha256 !== rawSha256) {
-          skippedFiles += group.length;
-          for (const entry of group) {
-            items.push({
-              path: entry.path,
-              sessionId: entry.sessionId,
-              agentId: entry.agentId,
-              key: entry.key,
-              size: entry.size,
-              rawSha256,
-              inodeKey: entry.inodeKey,
-              phase: 'skipped',
-              reason: 'source_changed_before_commit',
-            });
-          }
-          continue;
-        }
-        const publishedCasPath = cas.objectPath(rawSha256)!;
+        let publishedCasPath = casInode !== undefined ? cas.objectPath(rawSha256) : undefined;
         const committedInodes = new Set<string>();
         if (casInode !== undefined) committedInodes.add(casInode);
 
@@ -749,6 +837,22 @@ export class StorageGovernanceService {
             continue;
           }
           try {
+            const lockedMeta = await readSessionMetadata(join(this.homeDir, entry.sessionScope));
+            if (lockedMeta === undefined || typeof lockedMeta.id !== 'string' || lockedMeta.private !== false) {
+              excludedFiles += 1;
+              items.push({
+                path: entry.path,
+                sessionId: entry.sessionId,
+                agentId: entry.agentId,
+                key: entry.key,
+                size: entry.size,
+                rawSha256,
+                inodeKey: entry.inodeKey,
+                phase: 'excluded',
+                reason: 'privacy_changed_under_lock',
+              });
+              continue;
+            }
             const currentInfo = await lstat(entry.path, { bigint: true }).catch(() => undefined);
             if (
               currentInfo === undefined ||
@@ -786,6 +890,25 @@ export class StorageGovernanceService {
                 reason: 'digest_changed_under_lock',
               });
               continue;
+            }
+            if (publishedCasPath === undefined) {
+              const stored = await cas.putFromFile(entry.path, { signal });
+              if (stored.sha256 !== rawSha256) {
+                skippedFiles += 1;
+                items.push({
+                  path: entry.path,
+                  sessionId: entry.sessionId,
+                  agentId: entry.agentId,
+                  key: entry.key,
+                  size: entry.size,
+                  rawSha256,
+                  inodeKey: entry.inodeKey,
+                  phase: 'skipped',
+                  reason: 'source_changed_before_commit',
+                });
+                continue;
+              }
+              publishedCasPath = cas.objectPath(rawSha256)!;
             }
             const tempAlias = `${entry.path}.dedup.${process.pid}.${randomUUID()}`;
             try {
@@ -893,10 +1016,12 @@ export class StorageGovernanceService {
     const signal = options.signal;
     signal?.throwIfAborted();
     if (options.rollbackRunId !== undefined) {
-      return this.rollbackRetiredQuarantine(options.rollbackRunId, signal);
+      return this.rollbackRetiredQuarantine(options.rollbackRunId, options.apply === true, signal);
     }
     if (options.purgeQuarantine === true) {
-      return this.purgeExpiredQuarantine(options.apply === true, options.minQuarantineAgeDays ?? QUARANTINE_RETENTION_DAYS, signal);
+      const requestedDays = options.minQuarantineAgeDays ?? QUARANTINE_RETENTION_DAYS;
+      const effectiveDays = Math.max(QUARANTINE_RETENTION_DAYS, requestedDays);
+      return this.purgeExpiredQuarantine(options.apply === true, effectiveDays, signal);
     }
     const apply = options.apply === true;
     const runId = apply ? `retired-${Date.now()}-${randomUUID().slice(0, 8)}` : undefined;
@@ -1025,25 +1150,34 @@ export class StorageGovernanceService {
           if (sessionEntry.isSymbolicLink() || !sessionEntry.isDirectory()) continue;
           const sessionDir = join(wsDir, sessionEntry.name);
           const sessionScope = `sessions/${wsEntry.name}/${sessionEntry.name}`;
-          const pauseDocExists = (await lstat(join(sessionDir, 'execution-pause.json')).catch(() => undefined)) !== undefined;
+          const executionBlocked = await isExecutionControlBlocking(sessionDir);
           const metadata = await readSessionMetadata(sessionDir);
+          const isExplicitPublic =
+            metadata !== undefined &&
+            typeof metadata.id === 'string' &&
+            metadata.id.length > 0 &&
+            metadata.private === false;
+          const collectDelegators = (agents: NonNullable<SessionMetadataShape['agents']>): Set<string> => {
+            const set = new Set<string>();
+            for (const entry of Object.values(agents)) {
+              if (typeof entry?.parentAgentId === 'string' && entry.parentAgentId.length > 0) {
+                set.add(entry.parentAgentId);
+              }
+              if (typeof entry?.delegator === 'string' && entry.delegator.length > 0) {
+                set.add(entry.delegator);
+              } else if (
+                entry?.delegator !== null &&
+                typeof entry?.delegator === 'object' &&
+                (entry.delegator as { readonly kind?: unknown }).kind === 'agent' &&
+                typeof (entry.delegator as { readonly agentId?: unknown }).agentId === 'string'
+              ) {
+                set.add((entry.delegator as { readonly agentId: string }).agentId);
+              }
+            }
+            return set;
+          };
           const agentsMeta = metadata?.agents ?? {};
-          const delegatorIds = new Set<string>();
-          for (const entry of Object.values(agentsMeta)) {
-            if (typeof entry?.parentAgentId === 'string' && entry.parentAgentId.length > 0) {
-              delegatorIds.add(entry.parentAgentId);
-            }
-            if (typeof entry?.delegator === 'string' && entry.delegator.length > 0) {
-              delegatorIds.add(entry.delegator);
-            } else if (
-              entry?.delegator !== null &&
-              typeof entry?.delegator === 'object' &&
-              (entry.delegator as { readonly kind?: unknown }).kind === 'agent' &&
-              typeof (entry.delegator as { readonly agentId?: unknown }).agentId === 'string'
-            ) {
-              delegatorIds.add((entry.delegator as { readonly agentId: string }).agentId);
-            }
-          }
+          const delegatorIds = collectDelegators(agentsMeta);
           const agentsDir = join(sessionDir, 'agents');
           const agentEntries = await readdir(agentsDir, { withFileTypes: true }).catch(() => []);
           for (const agentEntry of agentEntries) {
@@ -1061,12 +1195,27 @@ export class StorageGovernanceService {
               scannedCount += 1;
               eligibleCount += 1;
               if (!apply) continue;
-              const result = await rehydrateColdReplayCheckpoint(agentDir, REPLAY_ABI_VERSION, signal);
-              if (result.restored) {
-                rehydratedCount += 1;
-                restoredBytes += result.restoredBytes;
-              } else {
+              let sessionLock;
+              try {
+                sessionLock = await storage.acquireLock(SESSION_LOCK_SCOPE, sessionLockKey(sessionScope), {
+                  waitForMs: 0,
+                  signal,
+                  owner: { op: 'storage.rehydrateCheckpoints', sessionId: sessionEntry.name },
+                });
+              } catch {
                 skippedCount += 1;
+                continue;
+              }
+              try {
+                const result = await rehydrateColdReplayCheckpoint(agentDir, REPLAY_ABI_VERSION, signal);
+                if (result.restored) {
+                  rehydratedCount += 1;
+                  restoredBytes += result.restoredBytes;
+                } else {
+                  skippedCount += 1;
+                }
+              } finally {
+                await sessionLock.release();
               }
               continue;
             }
@@ -1085,7 +1234,7 @@ export class StorageGovernanceService {
               agentMeta.taskId.length > 0;
             const wireInfo = await lstat(join(agentDir, 'wire.jsonl')).catch(() => undefined);
             const latestMtime = Math.max(primaryInfo.mtimeMs, wireInfo?.mtimeMs ?? 0);
-            if (isMain || hasChildren || !hasTerminalOutcome || pauseDocExists || latestMtime > cutoffMs) {
+            if (!isExplicitPublic || isMain || hasChildren || !hasTerminalOutcome || executionBlocked || latestMtime > cutoffMs) {
               skippedCount += 1;
               continue;
             }
@@ -1104,6 +1253,37 @@ export class StorageGovernanceService {
               continue;
             }
             try {
+              const lockedBlocked = await isExecutionControlBlocking(sessionDir);
+              const lockedMeta = await readSessionMetadata(sessionDir);
+              const lockedPublic =
+                lockedMeta !== undefined &&
+                typeof lockedMeta.id === 'string' &&
+                lockedMeta.id.length > 0 &&
+                lockedMeta.private === false;
+              const lockedAgents = lockedMeta?.agents ?? {};
+              const lockedDelegators = collectDelegators(lockedAgents);
+              const lockedAgentMeta = lockedAgents[agentId];
+              const lockedTerminal =
+                typeof lockedAgentMeta?.status === 'string' &&
+                TERMINAL_AGENT_STATUSES.has(lockedAgentMeta.status) &&
+                typeof lockedAgentMeta?.taskId === 'string' &&
+                lockedAgentMeta.taskId.length > 0;
+              const lockedPrimary = await lstat(primaryPath).catch(() => undefined);
+              const lockedWire = await lstat(join(agentDir, 'wire.jsonl')).catch(() => undefined);
+              const lockedMtime = Math.max(lockedPrimary?.mtimeMs ?? Infinity, lockedWire?.mtimeMs ?? 0);
+              if (
+                !lockedPublic ||
+                lockedBlocked ||
+                lockedDelegators.has(agentId) ||
+                !lockedTerminal ||
+                lockedPrimary === undefined ||
+                lockedPrimary.isSymbolicLink() ||
+                !lockedPrimary.isFile() ||
+                lockedMtime > cutoffMs
+              ) {
+                skippedCount += 1;
+                continue;
+              }
               const res = await slimColdReplayCheckpoint(agentDir, LIGHTWEIGHT_STATE_NAMES, REPLAY_ABI_VERSION, signal);
               if (res.status === 'slimmed') {
                 slimmedCount += 1;
@@ -1140,7 +1320,11 @@ export class StorageGovernanceService {
     }
   }
 
-  private async rollbackRetiredQuarantine(runId: string, signal?: AbortSignal): Promise<StorageCleanRetiredReport> {
+  private async rollbackRetiredQuarantine(
+    runId: string,
+    apply: boolean,
+    signal?: AbortSignal,
+  ): Promise<StorageCleanRetiredReport> {
     const manifestPath = join(this.homeDir, 'store', 'storage-governance', 'quarantine', `${runId}.json`);
     const raw = await readFile(manifestPath, 'utf8');
     const manifest = JSON.parse(raw) as QuarantineManifest;
@@ -1163,6 +1347,10 @@ export class StorageGovernanceService {
         items.push({ relativePath: entry.relativePath, bytes: entry.bytes, files: entry.files, status: 'absent' });
         continue;
       }
+      if (!apply) {
+        items.push({ relativePath: entry.relativePath, bytes: entry.bytes, files: entry.files, status: 'planned', quarantinePath: entry.quarantinePath });
+        continue;
+      }
       await mkdir(dirname(targetPath), { recursive: true });
       await rename(entry.quarantinePath, targetPath);
       restoredBytes += entry.bytes;
@@ -1171,7 +1359,7 @@ export class StorageGovernanceService {
     return {
       schemaVersion: 1,
       homeDir: this.homeDir,
-      applied: true,
+      applied: apply,
       runId,
       quarantinedBytes: 0,
       freedBytes: 0,
@@ -1188,7 +1376,7 @@ export class StorageGovernanceService {
   ): Promise<StorageCleanRetiredReport> {
     const manifestsDir = join(this.homeDir, 'store', 'storage-governance', 'quarantine');
     const names = await readdir(manifestsDir).catch(() => []);
-    const cutoff = Date.now() - minAgeDays * 86_400_000;
+    const cutoff = Date.now() - Math.max(QUARANTINE_RETENTION_DAYS, minAgeDays) * 86_400_000;
     const items: CleanRetiredItemResult[] = [];
     let freedBytes = 0;
     for (const name of names) {
@@ -1215,10 +1403,12 @@ export class StorageGovernanceService {
         }
         continue;
       }
+      const remainingEntries: QuarantineManifest['items'][number][] = [];
       for (const entry of manifest.items) {
         signal?.throwIfAborted();
         const successor = await checkSqliteSuccessorReady(this.homeDir, entry.successorRelativePath);
         if (!successor.ready) {
+          remainingEntries.push(entry);
           items.push({
             relativePath: entry.relativePath,
             bytes: entry.bytes,
@@ -1230,6 +1420,7 @@ export class StorageGovernanceService {
           continue;
         }
         if (!apply) {
+          remainingEntries.push(entry);
           items.push({
             relativePath: entry.relativePath,
             bytes: entry.bytes,
@@ -1239,7 +1430,10 @@ export class StorageGovernanceService {
           });
           continue;
         }
-        if (!isInsideHome(this.homeDir, entry.quarantinePath)) continue;
+        if (!isInsideHome(this.homeDir, entry.quarantinePath)) {
+          remainingEntries.push(entry);
+          continue;
+        }
         await rm(entry.quarantinePath, { recursive: true, force: true });
         freedBytes += entry.bytes;
         items.push({
@@ -1251,8 +1445,15 @@ export class StorageGovernanceService {
         });
       }
       if (apply) {
-        await rm(join(this.homeDir, 'cache', '.quarantine-retired', manifest.runId), { recursive: true, force: true }).catch(() => undefined);
-        await unlink(manifestPath).catch(() => undefined);
+        if (remainingEntries.length === 0) {
+          await rm(join(this.homeDir, 'cache', '.quarantine-retired', manifest.runId), { recursive: true, force: true }).catch(() => undefined);
+          await unlink(manifestPath).catch(() => undefined);
+        } else {
+          await writeFileAtomicDurable(
+            manifestPath,
+            Buffer.from(JSON.stringify({ ...manifest, items: remainingEntries }, null, 2), 'utf8'),
+          );
+        }
       }
     }
     return {

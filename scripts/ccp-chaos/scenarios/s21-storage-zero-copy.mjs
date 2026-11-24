@@ -14,13 +14,12 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import * as nodePath from 'node:path';
 import { dirname, join, resolve } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { Readable } from 'node:stream';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { deflateSync } from 'node:zlib';
-
-const kapServerRequire = createRequire(new URL('../../../packages/kap-server/package.json', import.meta.url));
-const Fastify = kapServerRequire('fastify');
 
 import { AgentBlobServiceImpl } from '../../../packages/agent-core-v2/src/agent/blob/agentBlobServiceImpl.ts';
 import {
@@ -30,11 +29,12 @@ import {
   openVerifiedHostPinnedStream,
   registerHostPinnedRef,
 } from '../../../packages/agent-core-v2/src/agent/media/hostPinnedMedia.ts';
-import { validateMediaFileIntegrity } from '../../../packages/agent-core-v2/src/agent/media/mediaIntegrity.ts';
 import { SessionMediaStoreService } from '../../../packages/agent-core-v2/src/agent/media/sessionMediaStoreService.ts';
+import { ReadMediaFileTool } from '../../../packages/agent-core-v2/src/agent/tools/read-media-file/readMediaFileTool.ts';
+import { HostFileSystem } from '../../../packages/agent-core-v2/src/os/backends/node-local/hostFsService.ts';
 import { FileServiceImpl } from '../../../packages/agent-core-v2/src/app/file/fileServiceImpl.ts';
 import { PluginMediaService } from '../../../packages/agent-core-v2/src/app/pluginMedia/pluginMediaService.ts';
-import { StorageGovernanceService } from '../../../packages/agent-core-v2/src/app/storageGovernance/storageGovernanceService.ts';
+import { detachSessionSharedCasAliases, StorageGovernanceService } from '../../../packages/agent-core-v2/src/app/storageGovernance/storageGovernanceService.ts';
 import { JsonAtomicDocumentStore } from '../../../packages/agent-core-v2/src/persistence/backends/node-fs/atomicDocumentStore.ts';
 import { BlobStoreService } from '../../../packages/agent-core-v2/src/persistence/backends/node-fs/blobStoreService.ts';
 import { ContentAddressedStoreService } from '../../../packages/agent-core-v2/src/persistence/backends/node-fs/contentAddressedStoreService.ts';
@@ -56,6 +56,9 @@ import { AGENT_WIRE_RECORD_KEY } from '../../../packages/agent-core-v2/src/wire/
 import { resolvePromptMediaFiles } from '../../../packages/kap-server/src/lib/promptMedia.ts';
 import { createAuthHook } from '../../../packages/kap-server/src/middleware/auth.ts';
 import { registerHostMediaPreviewRoutes } from '../../../packages/kap-server/src/routes/hostMediaPreview.ts';
+
+const kapServerRequire = createRequire(new URL('../../../packages/kap-server/package.json', import.meta.url));
+const Fastify = kapServerRequire('fastify');
 
 const MiB = 1024 * 1024;
 const KiB = 1024;
@@ -278,26 +281,45 @@ export async function runScenarioS21StorageZeroCopy(options = {}) {
     const pubCtx = makeSessionCtx(sessionPubScope, sessionPubId, { isPrivate: false, ephemeral: false });
     const srcStatBefore = await stat(sameVolMp4, { bigint: true });
 
+    const hostFs = new HostFileSystem();
+    const runtime = {
+      identity: { workspaceId: 'wd_s21', runtimeId: 'local', generation: 's21' },
+      capabilities: new Set(['fs']),
+      environment: {
+        platform: process.platform,
+        homedir: homeDir,
+        tmpdir: tmpdir(),
+        env: {},
+      },
+      path: nodePath,
+      workspace: { mapRoots: (roots) => roots },
+      fs: hostFs,
+      status: 'ready',
+      onDidChangeStatus: () => ({ dispose: () => {} }),
+      dispose: () => {},
+    };
+    const localRuntime = {
+      onDidChange: () => ({ dispose: () => {} }),
+      isAvailable: (required = []) => required.every((cap) => runtime.capabilities.has(cap)),
+      inspect: () => runtime,
+      acquire: () => ({ runtime, track: (resource) => resource, dispose: () => {} }),
+      prepareFor: async () => runtime,
+      acquireFor: () => ({ runtime, track: (resource) => resource, dispose: () => {} }),
+    };
+    const workspaceCfg = {
+      workspaceDir: sameVolWs,
+      additionalDirs: crossVolWs !== undefined ? [crossVolWs] : [],
+    };
+    let toolVideoUploaderCalls = 0;
+    const stubVideoUploader = async () => {
+      toolVideoUploaderCalls += 1;
+      return { type: 'video_url', videoUrl: { url: 'ms://unexpected-bypass' } };
+    };
+
     const archiveRss = createRssTracker();
     const archiveRefs = await Promise.all(
       Array.from({ length: 10 }, async (_, idx) => {
         const src = crossVolMp4 !== undefined && idx >= 5 ? crossVolMp4 : sameVolMp4;
-        const fh = await fsOpen(src, 'r');
-        let integrity;
-        try {
-          integrity = await validateMediaFileIntegrity(
-            async (offset, length) => {
-              const buf = Buffer.allocUnsafe(length);
-              const { bytesRead } = await fh.read(buf, 0, length, offset);
-              return buf.subarray(0, bytesRead);
-            },
-            mp4SizeBytes,
-            'video/mp4',
-          );
-        } finally {
-          await fh.close();
-        }
-        assert(integrity.valid === true, `MP4 integrity failed for child-${idx}: ${integrity.reason ?? ''}`);
         const blobSvc = new AgentBlobServiceImpl(
           blobs,
           makeAgentScope(sessionPubScope, `sub-${idx}`),
@@ -305,24 +327,50 @@ export async function runScenarioS21StorageZeroCopy(options = {}) {
           { current: pubCtx },
           { current: docs },
         );
-        const url = await blobSvc.offloadFile('video/mp4', src);
+        const tool = new ReadMediaFileTool(
+          localRuntime,
+          workspaceCfg,
+          {
+            image_in: true,
+            video_in: true,
+            audio_in: true,
+            thinking: false,
+            tool_use: true,
+            max_context_tokens: 0,
+          },
+          stubVideoUploader,
+          undefined,
+          false,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          blobSvc,
+        );
+        const execution = await tool.resolveExecution({ path: src, full_resolution: true });
+        const toolResult = 'execute' in execution
+          ? await execution.execute({
+              turnId: 1,
+              toolCallId: `call_${idx}`,
+              signal: new AbortController().signal,
+            })
+          : execution;
+        assert(toolResult.isError !== true, `ReadMediaFileTool failed for child-${idx}: ${JSON.stringify(toolResult.output)}`);
+        assert(Array.isArray(toolResult.output), `expected ContentPart[] output for child-${idx}`);
+        const videoPart = toolResult.output.find((p) => p.type === 'video_url');
+        assert(videoPart !== undefined, `missing video_url part for child-${idx}`);
         const toolResultEvent = JSON.stringify({
           type: 'tool.result',
           toolCallId: `call_${idx}`,
-          result: {
-            output: [
-              { type: 'text', text: `Loaded video ${src}` },
-              { type: 'video_url', videoUrl: { url } },
-            ],
-            isError: false,
-          },
+          result: { output: toolResult.output, isError: false },
         });
         assert(!toolResultEvent.includes('data:'), `tool.result leaked inline base64 for child-${idx}`);
         assert(Buffer.byteLength(toolResultEvent, 'utf8') < 8 * KiB, `tool.result exceeded 8 KiB: ${toolResultEvent.length}`);
-        return { url, eventBytes: Buffer.byteLength(toolResultEvent, 'utf8') };
+        return { url: videoPart.videoUrl.url, eventBytes: Buffer.byteLength(toolResultEvent, 'utf8') };
       }),
     );
     const archiveRssReport = archiveRss.stop();
+    assert(toolVideoUploaderCalls === 0, `ReadMediaFileTool bypassed CAS offloadFile into videoUploader (${toolVideoUploaderCalls} calls)`);
 
     const casObjPath = cas.objectPath(mp4Sha);
     assert(casObjPath !== undefined, 'CAS object path missing');
@@ -917,9 +965,9 @@ export async function runScenarioS21StorageZeroCopy(options = {}) {
       await mkdir(retiredSearch, { recursive: true });
       await writeFile(join(retiredSearch, 'legacy.idx'), Buffer.alloc(8192, 0x19));
       await mkdir(join(govHome, 'search-index-v2'), { recursive: true });
-      const sqliteStub = Buffer.alloc(4096);
-      Buffer.from('SQLite format 3\0', 'ascii').copy(sqliteStub, 0);
-      await writeFile(join(govHome, 'search-index-v2', 'index.sqlite'), sqliteStub);
+      const govSuccessorDb = new DatabaseSync(join(govHome, 'search-index-v2', 'index.sqlite'));
+      govSuccessorDb.exec('CREATE TABLE docs (id INTEGER PRIMARY KEY, body TEXT); INSERT INTO docs (body) VALUES (\'ok\');');
+      govSuccessorDb.close();
 
       const governance = new StorageGovernanceService(govHome);
       const status = await governance.status();
@@ -935,9 +983,13 @@ export async function runScenarioS21StorageZeroCopy(options = {}) {
       assert(inoLeaf === inoMain, 'public legacy blobs were not linked to same inode');
       assert(inoPriv !== inoLeaf, 'private legacy blob was wrongly deduplicated into shared CAS');
 
+      const detachedAliases = await detachSessionSharedCasAliases(join(govHome, coldSessionScope));
+      assert(detachedAliases >= 2, `expected >= 2 detached shared CAS aliases, got ${detachedAliases}`);
+      assert((await stat(join(govHome, leafScope, 'blobs', legacyBase64Hash), { bigint: true })).nlink === 1n, 'detached alias still hard-linked');
+
       const cleanApply = await governance.cleanRetired({ apply: true });
       assert(cleanApply.applied === true && cleanApply.quarantinedBytes === 8192 && cleanApply.runId !== undefined, 'clean-retired apply failed');
-      const rolledBack = await governance.cleanRetired({ rollbackRunId: cleanApply.runId });
+      const rolledBack = await governance.cleanRetired({ rollbackRunId: cleanApply.runId, apply: true });
       assert(rolledBack.restoredBytes === 8192, 'clean-retired rollback failed');
 
       const slimApply = await governance.slimCheckpoints({ apply: true, minAgeDays: 0 });

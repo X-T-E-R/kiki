@@ -25,6 +25,8 @@ import { IPluginService } from '#/app/plugin/plugin';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { IPluginSettingsService } from '#/app/plugin/pluginSettingsService';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { sourceSchema, sourceValues, sourceDefaults, scriptSources, scriptDefinition, scriptEnvironmentKey, scriptSettingsSchema } from '#/app/plugin/mediaSourceSettings';
 import { mediaSourceUpdateSchema, mediaScriptSourceInputSchema, mediaSourceSettingsInputSchema, type MediaManagedSource, type MediaSourceUpdate, type MediaScriptSourceInput } from '@kiki/protocol';
 
@@ -34,26 +36,29 @@ const activeStates = new Set(['running', 'pending']);
 const PLUGIN_MEDIA_INPUTS_MAX_BYTES = 256 * 1024 * 1024;
 const PLUGIN_MEDIA_INPUTS_MAX_ENTRIES = 512;
 const PLUGIN_MEDIA_INPUTS_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const STAGED_INPUT_PIN_TTL_MS = 5 * 60 * 1000;
 
 export class PluginMediaService extends Service implements IPluginMediaService {
   declare readonly _serviceBrand: undefined;
   readonly ready: Promise<void>;
   private readonly active = new Map<string, { controller: AbortController; result: Promise<MediaJob> }>();
   private readonly progress = new Map<string, NonNullable<import('#/app/plugin/pluginHostService').PluginMediaCallContext['onProgress']>>();
-  private readonly pinnedInputHashes = new Set<string>();
+  private readonly pinnedInputHashes = new Map<string, number>();
   private activeDiscoveries = 0;
   private readonly scope: string;
   private readonly cache: string;
   private shuttingDown = false;
   private readonly usage?: IPluginUsageService;
   private readonly sessions?: ISessionIndex;
+  private readonly sessionManager?: ISessionManager;
   private readonly blobs?: IBlobStore;
 
   async stageInput(key: string, name: string, source: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<string> {
     const inputHash = hash(key);
     const scope = `${this.cache}/inputs/${inputHash}`;
     const filename = path.basename(name);
-    this.pinnedInputHashes.add(inputHash);
+    this.pinnedInputHashes.set(inputHash, Date.now() + STAGED_INPUT_PIN_TTL_MS);
+    let succeeded = false;
     try {
       const pinned = await this.collectPinnedInputHashes();
       const budgetBefore = await this.sweepInputsCache(pinned, 0);
@@ -81,9 +86,14 @@ export class PluginMediaService extends Service implements IPluginMediaService {
       const location = this.storage.pathFor(scope, filename);
       if (location === undefined) throw new Error('Media input snapshots require the host file storage backend');
       await this.sweepInputsCache(pinned, 0);
+      succeeded = true;
       return location;
     } finally {
-      this.pinnedInputHashes.delete(inputHash);
+      if (!succeeded) {
+        this.pinnedInputHashes.delete(inputHash);
+      } else {
+        this.pinnedInputHashes.set(inputHash, Date.now() + STAGED_INPUT_PIN_TTL_MS);
+      }
     }
   }
 
@@ -101,6 +111,7 @@ export class PluginMediaService extends Service implements IPluginMediaService {
     super();
     this.usage = optionalService(instantiation, IPluginUsageService);
     this.sessions = optionalService(instantiation, ISessionIndex);
+    this.sessionManager = optionalService(instantiation, ISessionManager);
     this.blobs = optionalService(instantiation, IBlobStore);
     this.scope = `${bootstrap.scope('store')}/plugin-media-v1`;
     this.cache = `${bootstrap.scope('cache')}/plugin-media-v1`;
@@ -471,9 +482,25 @@ export class PluginMediaService extends Service implements IPluginMediaService {
     }
   }
 
+  private async isOwnerConfirmedPublic(owner: MediaJobOwner): Promise<boolean> {
+    const live = this.sessionManager?.get(owner.sessionId);
+    if (live !== undefined) {
+      try {
+        const ctx = live.accessor.get(ISessionContext);
+        return ctx.ephemeral === false && typeof ctx.isPrivate === 'function' && ctx.isPrivate() === false;
+      } catch {
+        return false;
+      }
+    }
+    const mediaSuffix = '/media';
+    if (!owner.mediaScope.endsWith(mediaSuffix)) return false;
+    const sessionScope = owner.mediaScope.slice(0, -mediaSuffix.length);
+    const state = await this.documents.get<{ readonly id?: unknown; readonly private?: unknown }>(sessionScope, 'state.json').catch(() => undefined);
+    return state !== undefined && state.id === owner.sessionId && state.private === false;
+  }
+
   private async materialize(record: StoredMediaJob, outcome: MediaOutcome, signal: AbortSignal): Promise<StoredMediaJob> {
-    const session = await this.sessions?.get(record.owner.sessionId).catch(() => undefined);
-    const allowSharedCas = session !== undefined && session.private === false;
+    const allowSharedCas = await this.isOwnerConfirmedPublic(record.owner);
     const media = new ScopedMediaStore(
       record.owner.mediaScope,
       this.storage,
@@ -535,6 +562,8 @@ export class PluginMediaService extends Service implements IPluginMediaService {
         record.view.artifacts.length > 0 &&
         record.view.artifacts.every((artifact) => artifact.complete && typeof artifact.file_id === 'string' && artifact.file_id.length > 0);
       if (!allMaterialized) return;
+    } else if (record.view.artifacts.some((artifact) => !artifact.complete || typeof artifact.file_id !== 'string' || artifact.file_id.length === 0)) {
+      return;
     }
     await this.removeStagingDirectory(id);
   }
@@ -553,7 +582,12 @@ export class PluginMediaService extends Service implements IPluginMediaService {
   }
 
   private async collectPinnedInputHashes(): Promise<Set<string>> {
-    const pinned = new Set<string>(this.pinnedInputHashes);
+    const now = Date.now();
+    const pinned = new Set<string>();
+    for (const [inputHash, expiresAt] of this.pinnedInputHashes.entries()) {
+      if (expiresAt > now) pinned.add(inputHash);
+      else this.pinnedInputHashes.delete(inputHash);
+    }
     const records = await this.readAll().catch(() => []);
     const inputsBase = this.storage.pathFor(`${this.cache}/inputs`, '');
     for (const record of records) {

@@ -1,6 +1,8 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { open, stat, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ContentPart } from '#/kosong/contract/message';
 import { LifecycleScope } from '#/app/scopes';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
@@ -139,20 +141,24 @@ export class AgentBlobServiceImpl implements IAgentBlobService {
       await cas.linkAlias(stored.sha256, this.storageScope, stored.sha256, { signal: options?.signal });
       return formatBlobRef(mimeType, stored.sha256);
     }
-    const digest = await digestLocalFileStable(sourcePath, options?.signal);
-    const exists = await this.blobs.has(this.storageScope, digest).catch(() => false);
-    if (!exists) {
-      const stream = createReadStream(sourcePath, {
-        highWaterMark: STREAM_CHUNK_BYTES,
-        signal: options?.signal,
-      });
-      try {
-        await this.blobs.putStream(this.storageScope, digest, stream as AsyncIterable<Uint8Array>);
-      } finally {
-        stream.destroy();
+    const staged = await stageLocalFileSnapshot(sourcePath, options?.signal);
+    try {
+      const exists = await this.blobs.has(this.storageScope, staged.digest).catch(() => false);
+      if (!exists) {
+        const stream = createReadStream(staged.tempPath, {
+          highWaterMark: STREAM_CHUNK_BYTES,
+          signal: options?.signal,
+        });
+        try {
+          await this.blobs.putStream(this.storageScope, staged.digest, stream as AsyncIterable<Uint8Array>);
+        } finally {
+          stream.destroy();
+        }
       }
+      return formatBlobRef(mimeType, staged.digest);
+    } finally {
+      await unlink(staged.tempPath).catch(() => undefined);
     }
-    return formatBlobRef(mimeType, digest);
   }
 
   async registerHostPinnedRef(input: AgentHostPinnedInput): Promise<HostPinnedRefRecord> {
@@ -359,7 +365,10 @@ export class AgentBlobServiceImpl implements IAgentBlobService {
   }
 }
 
-async function digestLocalFileStable(filePath: string, signal?: AbortSignal): Promise<string> {
+async function stageLocalFileSnapshot(
+  filePath: string,
+  signal?: AbortSignal,
+): Promise<{ readonly tempPath: string; readonly digest: string }> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     signal?.throwIfAborted();
     let before;
@@ -371,18 +380,38 @@ async function digestLocalFileStable(filePath: string, signal?: AbortSignal): Pr
     if (!before.isFile()) {
       throw new StorageError(StorageErrors.codes.STORAGE_NOT_FOUND, `source path is not a regular file: ${filePath}`);
     }
+    const tempPath = join(tmpdir(), `kiki-agent-blob-${process.pid}-${randomUUID()}.tmp`);
     const hash = createHash('sha256');
     let bytes = 0n;
-    const stream = createReadStream(filePath, { highWaterMark: STREAM_CHUNK_BYTES, signal });
+    const srcHandle = await open(filePath, 'r');
+    let dstHandle;
     try {
-      for await (const chunk of stream) {
+      dstHandle = await open(tempPath, 'wx', 0o600);
+      const buffer = Buffer.allocUnsafe(STREAM_CHUNK_BYTES);
+      for (;;) {
         signal?.throwIfAborted();
-        const buf = chunk as Uint8Array;
-        hash.update(buf);
-        bytes += BigInt(buf.byteLength);
+        const { bytesRead } = await srcHandle.read(buffer, 0, buffer.byteLength, null);
+        if (bytesRead === 0) break;
+        const slice = buffer.subarray(0, bytesRead);
+        let offset = 0;
+        while (offset < slice.byteLength) {
+          const { bytesWritten } = await dstHandle.write(slice, offset, slice.byteLength - offset);
+          if (bytesWritten <= 0) {
+            throw new StorageError(StorageErrors.codes.STORAGE_IO_FAILED, 'short write staging private blob');
+          }
+          offset += bytesWritten;
+        }
+        hash.update(slice);
+        bytes += BigInt(bytesRead);
       }
-    } finally {
-      stream.destroy();
+      await dstHandle.close();
+      dstHandle = undefined;
+      await srcHandle.close();
+    } catch (error) {
+      await srcHandle.close().catch(() => undefined);
+      if (dstHandle !== undefined) await dstHandle.close().catch(() => undefined);
+      await unlink(tempPath).catch(() => undefined);
+      throw error;
     }
     const after = await stat(filePath, { bigint: true }).catch(() => undefined);
     if (
@@ -395,8 +424,9 @@ async function digestLocalFileStable(filePath: string, signal?: AbortSignal): Pr
       before.ino === after.ino &&
       bytes === after.size
     ) {
-      return hash.digest('hex');
+      return { tempPath, digest: hash.digest('hex') };
     }
+    await unlink(tempPath).catch(() => undefined);
   }
   throw new StorageError(
     StorageErrors.codes.STORAGE_IO_FAILED,

@@ -281,6 +281,12 @@ export async function resolvePromptMediaFiles(
   const knownAbsentInSessionMedia = new Set<string>();
   const attachmentPaths = new Map<string, Promise<string>>();
   const attachmentNotes = new Set<string>();
+  const pinReleases: Array<() => void> = [];
+  const releasePins = (): void => {
+    while (pinReleases.length > 0) {
+      try { pinReleases.pop()!(); } catch {}
+    }
+  };
   const getFile = (fileId: string): Promise<GetResult> => {
     let pending = resolvedFiles.get(fileId);
     if (pending === undefined) {
@@ -295,6 +301,8 @@ export async function resolvePromptMediaFiles(
           }
           knownAbsentInSessionMedia.add(fileId);
         }
+        const releasePin = store.pin?.(fileId);
+        if (releasePin !== undefined) pinReleases.push(releasePin);
         return store.get(fileId);
       })();
       resolvedFiles.set(fileId, pending);
@@ -315,6 +323,7 @@ export async function resolvePromptMediaFiles(
   const discard = async (): Promise<void> => {
     if (discarded) return;
     discarded = true;
+    releasePins();
     await Promise.all(
       [...ownedFileIds].map((fileId) => store.delete(fileId).catch(() => undefined)),
     );
@@ -502,6 +511,9 @@ export async function resolvePromptMediaFiles(
 
     if (part.type === 'file') {
       const file = await getFile(part.file_id);
+      if (options.sessionMedia !== undefined) {
+        await retainSessionMedia(options.sessionMedia, file, undefined, knownAbsentInSessionMedia.has(file.meta.id), store);
+      }
       const attachedPath = await materialize(file, await resolveAttachmentsDir());
       notes.push({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: 'file' });
       return { notes, items, changed: true };

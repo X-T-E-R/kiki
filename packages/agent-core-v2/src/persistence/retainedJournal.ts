@@ -31,7 +31,10 @@ import {
   type IFileSystemStorageService,
 } from '#/persistence/interface/storage';
 import { readPinnedRange, wireFileAddress } from '#/persistence/logicalWireFile';
+import { gunzipSync, zstdDecompressSync } from 'node:zlib';
 import {
+  COLD_CHECKPOINT_ARCHIVE_GZ_KEY,
+  COLD_CHECKPOINT_ARCHIVE_ZST_KEY,
   COLD_CHECKPOINT_PROJECTION_KEY,
   REPLAY_CHECKPOINT_PRIMARY_KEY,
   REPLAY_CHECKPOINT_SUBSCOPE,
@@ -352,6 +355,27 @@ async function inspectCheckpointWireOffset(agentDir: string, signal?: AbortSigna
       return { kind: 'unreadable' };
     } finally {
       await handle?.close().catch(() => undefined);
+    }
+  }
+  const archives: ReadonlyArray<{ readonly key: string; readonly kind: 'zst' | 'gz' }> = [
+    { key: COLD_CHECKPOINT_ARCHIVE_ZST_KEY, kind: 'zst' },
+    { key: COLD_CHECKPOINT_ARCHIVE_GZ_KEY, kind: 'gz' },
+  ];
+  for (const archive of archives) {
+    const archivePath = join(agentDir, REPLAY_CHECKPOINT_SUBSCOPE, archive.key);
+    try {
+      const compressed = await readFile(archivePath, { signal });
+      const decompressed = archive.kind === 'zst' ? zstdDecompressSync(compressed) : gunzipSync(compressed);
+      const parsedJson = JSON.parse(decompressed.toString('utf8')) as { wire?: { size?: unknown } } | null;
+      const wireSize = parsedJson?.wire?.size;
+      if (typeof wireSize === 'number' && Number.isSafeInteger(wireSize) && wireSize >= 0) {
+        return { kind: 'found', offset: wireSize };
+      }
+      return { kind: 'unreadable' };
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      if (isEnoent(error)) continue;
+      return { kind: 'unreadable' };
     }
   }
   return sawMissing === candidates.length ? { kind: 'absent' } : { kind: 'unreadable' };

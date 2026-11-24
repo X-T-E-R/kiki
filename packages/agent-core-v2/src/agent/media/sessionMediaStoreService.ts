@@ -6,7 +6,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { isFileId } from '#/app/file/fileService';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
-import { IBlobStore } from '#/persistence/interface/blobStore';
+import { IBlobStore, type BlobReadRange } from '#/persistence/interface/blobStore';
 import { IContentAddressedStore } from '#/persistence/interface/contentAddressedStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -199,20 +199,25 @@ export class ScopedMediaStore implements ISessionMediaStore {
     const ref = parseAgentBlobRef(fileId);
     if (ref === undefined || this.blobs === undefined || this.sessionScope === undefined) return undefined;
     const blobScope = `${this.sessionScope}/agents/${ref.agentId}/blobs`;
-    if (this.blobs.size !== undefined) {
-      const size = await this.blobs.size(blobScope, ref.hash);
-      if (size === undefined || size <= 0) return undefined;
+    const size = this.blobs.size !== undefined
+      ? await this.blobs.size(blobScope, ref.hash)
+      : await this.storage.size(blobScope, ref.hash).catch(() => undefined);
+    if (size !== undefined) {
+      if (size <= 0) return undefined;
       const headEnd = Math.min(MEDIA_SNIFF_BYTES - 1, size - 1);
-      const header = await readHeadBytes(this.blobs.getStream(blobScope, ref.hash, { start: 0, end: headEnd }), MEDIA_SNIFF_BYTES);
+      const streamSource = (range?: BlobReadRange): AsyncIterable<Uint8Array> =>
+        this.blobs!.size !== undefined
+          ? this.blobs!.getStream(blobScope, ref.hash, range)
+          : this.storage.readStream(blobScope, ref.hash, range, { chunkBytes: MEDIA_STREAM_CHUNK_BYTES });
+      const header = await readHeadBytes(streamSource({ start: 0, end: headEnd }), MEDIA_SNIFF_BYTES);
       const type = detectFileType(fileId, header, 'media');
       if (type.kind !== 'image' && type.kind !== 'video' && type.kind !== 'audio') return undefined;
-      const blobs = this.blobs;
       return {
         path: undefined,
         name: fileId,
         mediaType: type.mimeType,
         size,
-        stream: (range) => blobs.getStream(blobScope, ref.hash, range),
+        stream: (range) => streamSource(range),
       };
     }
     const data = await this.blobs.get(blobScope, ref.hash);
