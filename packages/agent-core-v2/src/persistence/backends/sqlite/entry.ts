@@ -8,6 +8,8 @@ import type { IndexDef, StagedWrite, WriteCondition, WriteOp } from '../../inter
 import type { ReadQuery, StoreOperation, StoreRequest, StoreResponse } from './protocol.ts';
 // oxlint-disable-next-line import/extensions
 import { getPath, matches, scalarKey, sortValue, totalSortKey } from './querySemantics.ts';
+// oxlint-disable-next-line import/extensions
+import { executeSidebarGroupMembers, executeSidebarPage, executeSidebarResolveUnits } from './sidebarQueries.ts';
 
 import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
 import { warnIfWorkerHeapLimit } from '#/_base/node/workerHeapPolicy';
@@ -137,15 +139,33 @@ function ensureIndex(collection: string, definition: IndexDef): void {
   });
 }
 
-function indexedEqualities(filter: Record<string, unknown> | undefined): Array<[string, unknown]> {
-  const result: Array<[string, unknown]> = [];
+type IndexedPredicate =
+  | { readonly field: string; readonly kind: 'eq'; readonly value: unknown }
+  | { readonly field: string; readonly kind: 'in'; readonly values: readonly unknown[] };
+
+const MAX_INDEXED_IN_VALUES = 500;
+
+function isIndexableScalar(value: unknown): boolean {
+  return value === null || ['string', 'number', 'boolean', 'undefined'].includes(typeof value);
+}
+
+function indexedPredicates(filter: Record<string, unknown> | undefined): IndexedPredicate[] {
+  const result: IndexedPredicate[] = [];
   for (const [field, value] of Object.entries(filter ?? {})) {
-    if (field === '$and' && Array.isArray(value)) for (const nested of value) result.push(...indexedEqualities(nested));
+    if (field === '$and' && Array.isArray(value)) for (const nested of value) result.push(...indexedPredicates(nested));
     else if (!field.startsWith('$')) {
-      if (value === null || ['string', 'number', 'boolean', 'undefined'].includes(typeof value)) result.push([field, value]);
-      else if (value !== null && typeof value === 'object' && Object.keys(value).length === 1 && '$eq' in value) {
-        const expected = value.$eq;
-        if (expected === null || ['string', 'number', 'boolean', 'undefined'].includes(typeof expected)) result.push([field, expected]);
+      if (isIndexableScalar(value)) result.push({ field, kind: 'eq', value });
+      else if (value !== null && typeof value === 'object' && Object.keys(value).length === 1) {
+        if ('$eq' in value && isIndexableScalar(value.$eq)) {
+          result.push({ field, kind: 'eq', value: value.$eq });
+        } else if (
+          '$in' in value &&
+          Array.isArray(value.$in) &&
+          value.$in.length <= MAX_INDEXED_IN_VALUES &&
+          value.$in.every((item) => isIndexableScalar(item) && item !== undefined && item !== null)
+        ) {
+          result.push({ field, kind: 'in', values: value.$in });
+        }
       }
     }
   }
@@ -155,10 +175,10 @@ function indexedEqualities(filter: Record<string, unknown> | undefined): Array<[
 function selectValueIndex(
   connection: DatabaseSync,
   collection: string,
-  equalities: ReadonlyArray<readonly [string, unknown]>,
+  predicates: readonly IndexedPredicate[],
 ): string | undefined {
-  if (equalities.length === 0) return undefined;
-  const fields = new Set(equalities.map(([field]) => field));
+  if (predicates.length === 0) return undefined;
+  const fields = new Set(predicates.map((predicate) => predicate.field));
   const definitions = connection.prepare('SELECT id,json FROM definitions WHERE collection=? ORDER BY id ASC').all(collection);
   let fallback: string | undefined;
   for (const row of definitions) {
@@ -200,7 +220,10 @@ async function query(input: ReadQuery): Promise<{ items: unknown[]; nextCursor?:
   }
   const limit = input.limit;
   if (limit !== undefined && (!Number.isInteger(limit) || limit < 0)) throw new RangeError('Query limit must be a nonnegative integer');
-  const equalities = indexedEqualities(input.filter);
+  const predicates = indexedPredicates(input.filter);
+  if (predicates.some((predicate) => predicate.kind === 'in' && predicate.values.length === 0)) {
+    return { items: [] };
+  }
   const clauses = input.column === undefined ? [`r.collection=${quote(input.collection)}`] : ['r.collection=?'];
   const parameters: SQLInputValue[] = input.column === undefined ? [] : [input.collection];
   let from = 'rows r';
@@ -219,10 +242,18 @@ async function query(input: ReadQuery): Promise<{ items: unknown[]; nextCursor?:
     }
     if (input.columnOrder !== undefined) orderedValue = 'c.value';
   } else if (input.sort === undefined) {
-    const valueIndex = selectValueIndex(connection, input.collection, equalities);
+    const valueIndex = selectValueIndex(connection, input.collection, predicates);
     if (valueIndex !== undefined) from = `rows r INDEXED BY ${valueIndex}`;
   }
-  for (const [field, value] of equalities) { clauses.push(`kiki_value(r.json,${quote(field)}) IS ?`); parameters.push(scalarKey(value)); }
+  for (const predicate of predicates) {
+    if (predicate.kind === 'eq') {
+      clauses.push(`kiki_value(r.json,${quote(predicate.field)}) IS ?`);
+      parameters.push(scalarKey(predicate.value));
+    } else {
+      clauses.push(`kiki_value(r.json,${quote(predicate.field)}) IN (${predicate.values.map(() => '?').join(',')})`);
+      for (const value of predicate.values) parameters.push(scalarKey(value));
+    }
+  }
   if (input.sort !== undefined) {
     orderedValue = mixed ? `kiki_order_key(r.json,${quote(input.sort.field)})` : `kiki_order(r.json,${quote(input.sort.field)})`;
     descending = input.sort.dir === 'desc';
@@ -259,6 +290,24 @@ async function execute(operation: StoreOperation): Promise<unknown> {
     const connection = open();
     connection.exec('BEGIN');
     try { const page = await query(operation.query); connection.exec('COMMIT'); return page; }
+    catch (error) { rollbackQuietly(connection); throw error; }
+  }
+  if (operation.type === 'sidebarPage') {
+    const connection = open();
+    connection.exec('BEGIN');
+    try { const page = await executeSidebarPage(connection, db!.get, operation.query, check); connection.exec('COMMIT'); return page; }
+    catch (error) { rollbackQuietly(connection); throw error; }
+  }
+  if (operation.type === 'sidebarGroupMembers') {
+    const connection = open();
+    connection.exec('BEGIN');
+    try { const page = await executeSidebarGroupMembers(connection, db!.get, operation.query, check); connection.exec('COMMIT'); return page; }
+    catch (error) { rollbackQuietly(connection); throw error; }
+  }
+  if (operation.type === 'sidebarResolveUnits') {
+    const connection = open();
+    connection.exec('BEGIN');
+    try { const result = await executeSidebarResolveUnits(connection, db!.get, operation.query, check); connection.exec('COMMIT'); return result; }
     catch (error) { rollbackQuietly(connection); throw error; }
   }
   if (operation.type === 'index') return ensureIndex(operation.collection, operation.definition);

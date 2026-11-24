@@ -2,6 +2,7 @@ import {
   DEFAULT_AGENT_PROFILE_NAME, ensureMainAgent, ISessionManager, ISessionAgentProfileCatalog,
   IAgentProfileService, IAgentPermissionModeService, IAgentLifecycleService, IAgentPlanService,
   IAgentPromptService, IEventDispatcher, ISessionMetadata, CREATED_BY_SESSION_ID_KEY, CREATED_BY_AGENT_ID_KEY,
+  SESSION_GROUP_ID_KEY, SESSION_GROUP_ORIGIN_KEY,
   Error2, ErrorCodes, constrainPermissionMode, type Scope, type Workspace, type CreateBridgedThreadResult,
 } from '@kiki/agent-core-v2';
 import type { BridgeCreate } from '@kiki/protocol';
@@ -9,8 +10,18 @@ import type { BridgeCreate } from '@kiki/protocol';
 export async function createBridgedThread(core: Scope, workspace: Workspace, hostId: string, input: BridgeCreate, sessionId: string, promptId: string): Promise<CreateBridgedThreadResult> {
   const sessions = core.accessor.get(ISessionManager);
   const existing = await sessions.resume(sessionId);
+  const groupCustom: Record<string, unknown> = {
+    [CREATED_BY_SESSION_ID_KEY]: `${input.source.hostId}:${input.source.sessionId}`,
+    [CREATED_BY_AGENT_ID_KEY]: 'bridged_peer',
+    ...(input.groupId !== undefined ? { [SESSION_GROUP_ID_KEY]: input.groupId } : {}),
+    ...(input.groupOrigin !== undefined ? { [SESSION_GROUP_ORIGIN_KEY]: input.groupOrigin } : {}),
+  };
+  const firstLine = input.prompt?.split(/\r?\n/, 1)[0]?.trim();
+  const title = input.title ?? (firstLine ? Array.from(firstLine).slice(0, 80).join('') : undefined);
   const handle = existing ?? await sessions.create({
     sessionId, workspaceId: workspace.id, workDir: workspace.root,
+    title,
+    initialCustom: groupCustom,
     mainAgentBinding: input.profile === undefined && input.persona === undefined && input.modelAlias === undefined && input.effort === undefined
       ? undefined
       : { profile: input.profile ?? (input.persona === undefined ? DEFAULT_AGENT_PROFILE_NAME : undefined),
@@ -26,14 +37,14 @@ export async function createBridgedThread(core: Scope, workspace: Workspace, hos
     if (profile === undefined) throw new Error2(ErrorCodes.PROFILE_UNKNOWN, `Agent profile "${profileName}" is unavailable or disabled. Choose an enabled main-agent profile.`);
     if (profile.main !== true) throw new Error2(ErrorCodes.REQUEST_INVALID, `Agent profile "${profile.name}" is not a main-agent profile. Choose an enabled main-agent profile.`);
     const metadata = handle.accessor.get(ISessionMetadata);
-    const firstLine = input.prompt?.split(/\r?\n/, 1)[0]?.trim();
-    const title = input.title ?? (firstLine ? Array.from(firstLine).slice(0, 80).join('') : undefined);
-    if (title !== undefined) await metadata.setTitle(title);
-    await metadata.update({ custom: {
-      ...(await metadata.read()).custom,
-      [CREATED_BY_SESSION_ID_KEY]: `${input.source.hostId}:${input.source.sessionId}`,
-      [CREATED_BY_AGENT_ID_KEY]: 'bridged_peer',
-    } }, { touchUpdatedAt: false });
+    if (existing !== undefined) {
+      if (title !== undefined) await metadata.setTitle(title);
+      if (metadata.updateCustom !== undefined) {
+        await metadata.updateCustom((current) => ({ ...current, ...groupCustom }), { touchUpdatedAt: false, allowReservedGroupWrite: true });
+      } else {
+        await metadata.update({ custom: { ...(await metadata.read()).custom, ...groupCustom } }, { touchUpdatedAt: false, allowReservedGroupWrite: true });
+      }
+    }
     const permission = main.accessor.get(IAgentPermissionModeService);
     const effectiveMode = constrainPermissionMode(input.permissionMode ?? 'auto', 'auto');
     permission.setModeCeiling('auto');

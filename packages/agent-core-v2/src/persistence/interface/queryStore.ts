@@ -118,6 +118,96 @@ export interface ColumnPageQuery {
   readonly limit: number;
 }
 
+export interface SidebarQueryMemberFilter {
+  readonly workspaceIds?: readonly string[];
+  readonly archived: 'hide' | 'include' | 'only';
+  readonly privacy: 'hide' | 'include' | 'only';
+  readonly pinned?: boolean;
+  readonly excludeEmpty?: boolean;
+  readonly query?: string;
+  readonly persona?: string;
+  readonly busy?: boolean;
+  readonly busyIds?: readonly string[];
+}
+
+export interface SidebarCompoundPageQuery {
+  readonly sessionCollection: string;
+  readonly unitCollection: string;
+  readonly unitColumn: string;
+  readonly recencyField: string;
+  readonly filter: SidebarQueryMemberFilter;
+  readonly sort: 'updated_desc' | 'created_desc' | 'title';
+  readonly limit: number;
+  readonly memberLimit: number;
+  readonly maxRows: number;
+  readonly cursor?: { readonly sortAt: number; readonly sortText?: string; readonly typedUnitId: string };
+  readonly pending?: readonly unknown[];
+  readonly explain?: boolean;
+  readonly revisionCheckpointKey?: string;
+}
+
+export interface SidebarCompoundUnit<T> {
+  readonly kind: 'session' | 'group';
+  readonly id: string;
+  readonly typedUnitId: string;
+  readonly sortAt: number;
+  readonly sortText?: string;
+  readonly openerId?: string;
+  readonly title?: string;
+  readonly primaryWorkspaceId?: string;
+  readonly hasPinned: boolean;
+  readonly memberCount: number;
+  readonly members: readonly T[];
+  readonly hasMoreMembers: boolean;
+}
+
+export interface SidebarCompoundPageResult<T> {
+  readonly units: readonly SidebarCompoundUnit<T>[];
+  readonly hasMore: boolean;
+  readonly revision?: number;
+  readonly stats: {
+    readonly unitsVisited: number;
+    readonly rowsVisited: number;
+    readonly indexPlan?: readonly string[];
+  };
+}
+
+export interface SidebarGroupMembersQuery {
+  readonly sessionCollection: string;
+  readonly recencyField: string;
+  readonly groupId: string;
+  readonly filter: SidebarQueryMemberFilter;
+  readonly limit: number;
+  readonly cursor?: { readonly ownUpdatedAt: number; readonly id: string };
+  readonly pending?: readonly unknown[];
+  readonly revisionCheckpointKey?: string;
+}
+
+export interface SidebarGroupMembersResult<T> {
+  readonly memberCount: number;
+  readonly members: readonly T[];
+  readonly hasMore: boolean;
+  readonly revision?: number;
+}
+
+export interface SidebarResolveUnitsQuery {
+  readonly sessionCollection: string;
+  readonly recencyField: string;
+  readonly sessionIds: readonly string[];
+  readonly groupIds: readonly string[];
+  readonly filter: SidebarQueryMemberFilter;
+  readonly memberLimit: number;
+  readonly pending?: readonly unknown[];
+  readonly revisionCheckpointKey?: string;
+}
+
+export interface SidebarResolveUnitsResult<T> {
+  readonly units: readonly SidebarCompoundUnit<T>[];
+  readonly missingSessionIds: readonly string[];
+  readonly missingGroupIds: readonly string[];
+  readonly revision?: number;
+}
+
 export interface IQueryStore {
   readonly _serviceBrand: undefined;
 
@@ -141,6 +231,12 @@ export interface IQueryStore {
    * collections (index walk, not a full scan + in-memory sort).
    */
   pageByColumn<T>(collection: string, query: ColumnPageQuery, signal?: AbortSignal): Promise<Page<T>>;
+  /** Single-transaction compound sidebar unit page read with indexed member hydration. */
+  sidebarPage?<T>(query: SidebarCompoundPageQuery, signal?: AbortSignal): Promise<SidebarCompoundPageResult<T>>;
+  /** Single-transaction indexed member pagination for a single session group. */
+  sidebarGroupMembers?<T>(query: SidebarGroupMembersQuery, signal?: AbortSignal): Promise<SidebarGroupMembersResult<T>>;
+  /** Single-transaction batch resolution of session and group units for live replacement or multi-space coalescing. */
+  sidebarResolveUnits?<T>(query: SidebarResolveUnitsQuery, signal?: AbortSignal): Promise<SidebarResolveUnitsResult<T>>;
   ensureIndex(collection: string, def: IndexDef): Promise<void>;
   /** Every key currently in the collection (engine key decoding applied). */
   listKeys(collection: string): Promise<readonly string[]>;

@@ -7,6 +7,7 @@ import { IEventService } from '#/app/event/event';
 import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ISessionIndex, ISessionIndexMirror, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
+import { preserveReservedSessionGroupKeys } from '#/app/sessionIndex/sessionGroup';
 import { buildSessionSummary } from '#/app/sessionIndex/sessionIndexSource';
 import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
 import { ErrorCodes, isError2 } from '#/errors';
@@ -37,7 +38,7 @@ function replaceCustomMetadata(
   existing: Record<string, unknown> | undefined,
   patch: Record<string, unknown>,
 ): Record<string, unknown> {
-  const custom = { ...patch };
+  const custom = preserveReservedSessionGroupKeys(existing, patch);
   for (const key of [PROMOTED_FROM_KEY, FORKED_FROM_KEY, 'goal']) {
     if (!Object.hasOwn(custom, key) && existing !== undefined && Object.hasOwn(existing, key)) {
       custom[key] = existing[key];

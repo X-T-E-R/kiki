@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { join } from 'node:path';
 import { lstat, readdir, rm } from 'node:fs/promises';
-import { ConfigTarget, isSkillSyncExcluded, planSkillSync, type IBootstrapService, type IConfigRegistry, type IConfigService, type IMemoryScopes, type IMemoryStore, type ISessionIndex, type ISessionManager } from '@kiki/agent-core-v2';
+import { ConfigTarget, SESSION_GROUP_DETACHED_KEY, SESSION_GROUP_ID_KEY, explicitSessionGroupId, isSkillSyncExcluded, planSkillSync, type IBootstrapService, type IConfigRegistry, type IConfigService, type IMemoryScopes, type IMemoryStore, type ISessionIndex, type ISessionManager } from '@kiki/agent-core-v2';
 import { IMcpConfigStore } from '@kiki/agent-core-v2/app/mcpConfig/configStore';
 import { applySectionToToml, snakeToCamel, transformTomlData } from '@kiki/agent-core-v2/app/config/toml';
 import { mergeConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
@@ -35,6 +35,7 @@ export interface LiveServices {
   sessions: ISessionManager;
   index: ISessionIndex;
   logs: IAppendLogStore;
+  onSessionsMutated?: (sessionIds: readonly string[]) => void;
 }
 
 function scopePath(scope: MemoryScope): string {
@@ -80,13 +81,56 @@ async function exportSessions(files: Map<string, Buffer>, live: LiveServices, se
       if (!entry) throw new Error(`Session not found: ${id}`);
       return entry;
     }));
+  const eligible: Array<{ readonly session: typeof sessions[number]; readonly root: string; readonly scope: string; readonly stateFile: Buffer | undefined; readonly parsedState: Data | undefined }> = [];
+  const unresolvedLegacyIds: string[] = [];
   for (const session of sessions) {
     if (session.private || live.sessions.isEphemeral(session.id)) continue;
     const root = join(live.bootstrap.sessionsDir, safePortablePath(session.workspaceId), safePortablePath(session.id));
     const scope = `${live.bootstrap.scope('sessions')}/${session.workspaceId}/${session.id}`;
-    for (const entry of ['state.json', 'meta.json']) {
-      const file = await missing(readBounded(join(root, entry)));
-      if (file) files.set(`sessions/${session.id}/${entry}`, Buffer.from(JSON.stringify({ ...object(JSON.parse(file.toString('utf8'))), workspaceId: session.workspaceId })));
+    const stateFile = (await missing(readBounded(join(root, 'state.json'))))
+      ?? (await missing(readBounded(join(root, 'session-meta', 'state.json'))));
+    const parsedState = stateFile ? object(JSON.parse(stateFile.toString('utf8'))) : undefined;
+    const custom = parsedState ? object(parsedState['custom']) : {};
+    const hasExplicit = explicitSessionGroupId(custom) !== undefined;
+    const isDetached = custom[SESSION_GROUP_DETACHED_KEY] === true;
+    if (stateFile && !hasExplicit && !isDetached && session.groupId === undefined) {
+      unresolvedLegacyIds.push(session.id);
+    }
+    eligible.push({ session, root, scope, stateFile, parsedState });
+  }
+  const resolvedGroupBySessionId = new Map<string, string>();
+  if (unresolvedLegacyIds.length > 0 && live.index.resolveSidebarUnits !== undefined) {
+    const resolved = await live.index.resolveSidebarUnits({
+      sessionIds: unresolvedLegacyIds,
+      groupIds: [],
+      filter: { archived: 'include', privacy: 'include' },
+      memberLimit: Number.MAX_SAFE_INTEGER,
+    });
+    for (const unit of resolved.units) {
+      if (unit.kind !== 'group') continue;
+      for (const member of unit.members) {
+        resolvedGroupBySessionId.set(member.id, unit.id);
+      }
+    }
+  }
+  for (const { session, root, scope, stateFile, parsedState } of eligible) {
+    if (stateFile && parsedState) {
+      const custom = object(parsedState['custom']);
+      const hasExplicit = explicitSessionGroupId(custom) !== undefined;
+      const isDetached = custom[SESSION_GROUP_DETACHED_KEY] === true;
+      const resolvedGroupId = session.groupId ?? resolvedGroupBySessionId.get(session.id);
+      const nextCustom = !hasExplicit && !isDetached && resolvedGroupId !== undefined
+        ? { ...custom, [SESSION_GROUP_ID_KEY]: resolvedGroupId }
+        : parsedState['custom'];
+      files.set(`sessions/${session.id}/state.json`, Buffer.from(JSON.stringify({
+        ...parsedState,
+        ...(nextCustom !== undefined ? { custom: nextCustom } : {}),
+        workspaceId: session.workspaceId,
+      })));
+    }
+    const metaFile = await missing(readBounded(join(root, 'meta.json')));
+    if (metaFile) {
+      files.set(`sessions/${session.id}/meta.json`, Buffer.from(JSON.stringify({ ...object(JSON.parse(metaFile.toString('utf8'))), workspaceId: session.workspaceId })));
     }
     const agentRoot = join(root, 'agents');
     for (const id of await dirs(agentRoot)) {
@@ -188,6 +232,7 @@ export async function writeLive(live: LiveServices, next: Units, before: Units, 
     return { write: bytes !== undefined, doc: memoryDocument(unit.path, bytes ?? unit.value as Buffer) };
   });
   const files = new Map<string, { path: string; bytes?: Buffer }>();
+  const mutatedSessionIds = new Set<string>();
   for (const unit of changes) {
     if (!Buffer.isBuffer(unit.value) || unit.domain === 'memories') continue;
     const bytes = requested.get(unit.path);
@@ -199,6 +244,7 @@ export async function writeLive(live: LiveServices, next: Units, before: Units, 
       path = `${sessionWorkspace(meta)}/${id}/${tail.join('/')}`;
       root = live.bootstrap.sessionsDir;
       if (id && live.sessions.get(id)) throw new Error(`Close session ${id} before replacing its data`);
+      if (id) mutatedSessionIds.add(id);
     }
     const destination = await checkedPath(root, path);
     files.set(destination, { path: destination, bytes });
@@ -290,6 +336,9 @@ export async function writeLive(live: LiveServices, next: Units, before: Units, 
   for (const { path, bytes } of files.values()) {
     if (bytes) await writeFileAtomic(path, bytes);
     else await rm(path, { force: true });
+  }
+  if (mutatedSessionIds.size > 0) {
+    live.onSessionsMutated?.([...mutatedSessionIds]);
   }
   if (installationPath) {
     const previous = await missing(readBounded(installationPath));

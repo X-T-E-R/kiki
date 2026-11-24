@@ -42,6 +42,7 @@ import { join } from 'node:path';
 import {
   ErrorCodes,
   DEFAULT_AGENT_PROFILE_NAME,
+  stripSessionGroupControls,
   IAgentProfileRegistry,
   IAgentPermissionModeService,
   IAgentPlanService,
@@ -118,6 +119,7 @@ import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
 import {
   deleteArchivedSessionRequestSchema,
   deleteArchivedSessionsResponseSchema,
+  detachSessionGroupResponseSchema,
   worktreeRemovalOutcomeSchema,
   sessionCreationStatusSchema,
   toRestContextBreakdown,
@@ -863,7 +865,7 @@ export function registerSessionsRoutes(
             } } };
           }
         }
-        const cursor = await readSessionCursor(core, broadcaster, summary.id, signal, true);
+        const cursor = await readSessionCursor(core, broadcaster, summary.id, signal, true, true);
         return toWireSession(summary, cwd, facts, cursor?.seq, false, toAttentionCursor(cursor));
       };
 
@@ -1389,6 +1391,7 @@ export function registerSessionsRoutes(
           setSessionBranchToolsLockResponseSchema,
           archiveSessionResponseSchema,
           deleteArchivedSessionsResponseSchema,
+          detachSessionGroupResponseSchema,
         ]),
       },
       errors: {
@@ -1410,7 +1413,7 @@ export function registerSessionsRoutes(
         const { tail } = req.params;
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['fork', 'compact', 'undo', 'abort', 'btw', 'branch', 'fold', 'discard', 'tools-lock', 'archive', 'restore', 'delete-archived'] as const,
+          allowedActions: ['fork', 'compact', 'undo', 'abort', 'btw', 'branch', 'fold', 'discard', 'tools-lock', 'archive', 'restore', 'delete-archived', 'detach-group'] as const,
           resourceLabel: 'session',
         });
         if (parsed.kind !== 'action') {
@@ -1422,6 +1425,21 @@ export function registerSessionsRoutes(
         if (parsed.action === 'delete-archived') {
           const body = deleteArchivedSessionRequestSchema.parse(req.body);
           reply.send(okEnvelope(await deleteArchivedSessions(core, parsed.id, body.exclude_session_ids), req.id));
+          return;
+        }
+
+        if (parsed.action === 'detach-group') {
+          const manager = core.accessor.get(ISessionManager);
+          if (manager.detachSessionGroup === undefined) {
+            throw new Error2(ErrorCodes.REQUEST_INVALID, 'session group detach is unavailable');
+          }
+          const result = await manager.detachSessionGroup(parsed.id);
+          requestLog(req)?.info({ session_id: parsed.id, action: 'detach-group', previous_group_id: result.previousGroupId }, 'session group detached');
+          reply.send(okEnvelope({
+            detached: result.detached,
+            session_id: result.sessionId,
+            ...(result.previousGroupId !== undefined ? { previous_group_id: result.previousGroupId } : {}),
+          }, req.id));
           return;
         }
 
@@ -2119,6 +2137,7 @@ export interface SessionWireFields {
   readonly executorId?: string;
   readonly negotiated?: NegotiatedExecutorCapabilities;
   readonly allowKikiSubagents?: boolean;
+  readonly groupId?: string;
 }
 
 export function toWireSession(
@@ -2968,7 +2987,8 @@ function buildWireMetadata(
   cwd: string,
 ): { cwd: string; [key: string]: unknown } {
   if (custom === undefined) return { cwd };
-  const { goal: _drop, [PROMOTED_FROM_KEY]: _promoted, [FORKED_FROM_KEY]: _forked, ...rest } = custom as {
+  const stripped = stripSessionGroupControls(custom) ?? {};
+  const { goal: _drop, [PROMOTED_FROM_KEY]: _promoted, [FORKED_FROM_KEY]: _forked, ...rest } = stripped as {
     goal?: unknown;
     [key: string]: unknown;
   };

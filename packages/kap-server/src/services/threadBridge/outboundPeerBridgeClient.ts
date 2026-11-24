@@ -5,6 +5,7 @@ import { decodeJsonFrame, encodeJsonFrame, type KlientFrame } from '@kiki/klient
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import {
   PEER_BRIDGE_CAPABILITY_CHUNKED_V1,
+  PEER_BRIDGE_CAPABILITY_GROUP_IDENTITY_V1,
   bridgeCreateSchema,
   bridgeListSchema,
   bridgeReadSchema,
@@ -660,7 +661,7 @@ export class OutboundPeerBridgeClient {
           sendFrame(ws, {
             type: 'bridge_attach',
             id: randomUUID(),
-            data: { capabilities: [PEER_BRIDGE_CAPABILITY_CHUNKED_V1] },
+            data: { capabilities: [PEER_BRIDGE_CAPABILITY_CHUNKED_V1, PEER_BRIDGE_CAPABILITY_GROUP_IDENTITY_V1] },
           });
           heartbeatTimer = setInterval(() => {
             if (socket !== ws || ws.readyState !== WebSocket.OPEN) return;

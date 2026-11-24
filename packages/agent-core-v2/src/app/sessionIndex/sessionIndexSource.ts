@@ -21,6 +21,7 @@ import {
   type SessionSummary,
   type SessionUsageSummary,
 } from './sessionIndex';
+import { explicitSessionGroupId, isSessionGroupDetached } from './sessionGroup';
 import type { SessionSourceFingerprint } from './sessionIndexModel';
 
 const META_SCOPE = 'session-meta';
@@ -172,6 +173,8 @@ export function buildSessionSummary(fields: {
     executorId: fields.agents?.['main']?.executor,
     negotiated: fields.agents?.['main']?.negotiated,
     allowKikiSubagents: fields.agents?.['main']?.allowKikiSubagents,
+    groupId: explicitSessionGroupId(custom),
+    groupDetached: isSessionGroupDetached(custom) ? true : undefined,
   };
 }
 
@@ -214,7 +217,9 @@ export function summaryEquals(a: SessionSummary, b: SessionSummary): boolean {
     JSON.stringify(a.usage) === JSON.stringify(b.usage) &&
     a.executorId === b.executorId &&
     JSON.stringify(a.negotiated) === JSON.stringify(b.negotiated) &&
-    a.allowKikiSubagents === b.allowKikiSubagents
+    a.allowKikiSubagents === b.allowKikiSubagents &&
+    a.groupId === b.groupId &&
+    a.groupDetached === b.groupDetached
   );
 }
 

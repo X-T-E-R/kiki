@@ -1,3 +1,4 @@
+import { stat } from 'node:fs/promises';
 import type {
   AgentActivityState,
   ApprovalResponse,
@@ -89,6 +90,11 @@ import { InFlightTurnTracker } from './inFlightTurnTracker';
 import { SubagentRosterTracker } from './subagentRosterTracker';
 import { TurnUsageTracker } from './turnUsageTracker';
 import { buildResyncRequired } from './protocol';
+import {
+  JournalWatermarkIndex,
+  type JournalWatermark,
+  type JournalWatermarkStats,
+} from './journalWatermarkIndex';
 import {
   type EventEnvelope,
   type JournalLogger,
@@ -308,6 +314,7 @@ export class SessionEventBroadcaster {
   private attachedPluginPort?: PluginExtensionBrokerHostPort;
   private readonly pluginGenerations = new Map<string, number>();
   private readonly activePruneUnlinks = new Map<string, Promise<void>>();
+  private readonly watermarkIndex: JournalWatermarkIndex;
   private journalPruneTimer?: ReturnType<typeof setTimeout>;
   private journalPruneInterval?: ReturnType<typeof setInterval>;
   private closed = false;
@@ -322,6 +329,7 @@ export class SessionEventBroadcaster {
     },
   ) {
     this.maxBufferSize = opts.maxBufferSize ?? DEFAULT_MAX_BUFFER_SIZE;
+    this.watermarkIndex = new JournalWatermarkIndex(opts.eventsDir, opts.logger);
     this.coreEventSubscription = opts.core.accessor
       .get(IEventService)
       .subscribe((event) => this.onCoreEvent(event));
@@ -332,14 +340,20 @@ export class SessionEventBroadcaster {
     const onArchive = sessionManager.onDidArchiveSession?.(({ sessionId }) => {
       this.scheduleSessionEviction(sessionId);
     });
+    const onDelete = sessionManager.onDidDeleteSession?.(({ sessionId }) => {
+      this.scheduleSessionEviction(sessionId);
+      this.watermarkIndex.invalidate(sessionId, 'delete');
+    });
     this.sessionLifecycleSubscription = {
       dispose: () => {
         onClose?.dispose();
         onArchive?.dispose();
+        onDelete?.dispose();
       },
     };
     this.syncPluginTopicSubscription();
     this.scheduleJournalPrune();
+    void this.watermarkIndex.prepare().catch(() => undefined);
   }
 
   private scheduleJournalPrune(): void {
@@ -353,6 +367,7 @@ export class SessionEventBroadcaster {
           if (this.closed || isSessionActive(sessionId) || this.activePruneUnlinks.has(sessionId)) {
             return undefined;
           }
+          this.watermarkIndex.markDirty(sessionId, 'prune');
           let release!: () => void;
           const wait = new Promise<void>((resolve) => { release = resolve; });
           this.activePruneUnlinks.set(sessionId, wait);
@@ -362,6 +377,9 @@ export class SessionEventBroadcaster {
             }
             release();
           };
+        },
+        onUnlinked: (sessionId) => {
+          this.watermarkIndex.recordRemoved(sessionId);
         },
         logger: this.opts.logger,
       }).catch(() => undefined);
@@ -1589,6 +1607,34 @@ export class SessionEventBroadcaster {
     return { events: applyFilter(fromDisk), resyncRequired: false, currentSeq, epoch };
   }
 
+  prepareWatermarkIndex(): Promise<void> {
+    return this.watermarkIndex.prepare();
+  }
+
+  watermarkStats(): JournalWatermarkStats {
+    return this.watermarkIndex.stats();
+  }
+
+  invalidateWatermark(sessionId: string, reason = 'external'): void {
+    this.watermarkIndex.invalidate(sessionId, reason);
+  }
+
+  getCoveredCursor(sessionId: string): JournalWatermark | undefined {
+    const live = this.sessions.get(sessionId);
+    if (live !== undefined) {
+      this.watermarkIndex.recordLiveHit();
+      return {
+        seq: live.journal.seq,
+        epoch: live.journal.epoch,
+        attentionSeq: live.journal.attentionSeq,
+      };
+    }
+    if (this.pendingStates.has(sessionId) || this.evictions.has(sessionId)) {
+      return undefined;
+    }
+    return this.watermarkIndex.getCovered(sessionId);
+  }
+
   async getCursor(
     sessionId: string,
     signal?: AbortSignal,
@@ -1604,6 +1650,7 @@ export class SessionEventBroadcaster {
     }
     await (signal === undefined ? state.queue : abortable(state.queue, signal));
     signal?.throwIfAborted();
+    this.watermarkIndex.recordLiveHit();
     return {
       seq: state.journal.seq,
       epoch: state.journal.epoch,
@@ -1795,10 +1842,40 @@ export class SessionEventBroadcaster {
       if (summary === undefined) return undefined;
     }
     signal?.throwIfAborted();
-    return SessionEventJournal.peekWatermark(
-      sessionJournalPath(this.opts.eventsDir, sessionId),
+    const journalPath = sessionJournalPath(this.opts.eventsDir, sessionId);
+    const mutationBefore = this.watermarkIndex.currentMutationSeq(sessionId);
+    let statBefore: { readonly size: number; readonly mtimeMs: number; readonly ctimeMs: number } | null | undefined;
+    try {
+      const info = await stat(journalPath);
+      statBefore = { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs };
+    } catch (error) {
+      statBefore = (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : undefined;
+    }
+    const watermark = await SessionEventJournal.peekWatermark(
+      journalPath,
       this.opts.logger,
     );
+    let statAfter: { readonly size: number; readonly mtimeMs: number; readonly ctimeMs: number } | null | undefined;
+    try {
+      const info = await stat(journalPath);
+      statAfter = { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs };
+    } catch (error) {
+      statAfter = (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : undefined;
+    }
+    if (statBefore === null && statAfter === null) {
+      this.watermarkIndex.backfillAuthoritative(sessionId, watermark, undefined, mutationBefore);
+    } else if (
+      statBefore !== null &&
+      statBefore !== undefined &&
+      statAfter !== null &&
+      statAfter !== undefined &&
+      statBefore.size === statAfter.size &&
+      Math.abs(statBefore.mtimeMs - statAfter.mtimeMs) < 0.001 &&
+      Math.abs(statBefore.ctimeMs - statAfter.ctimeMs) < 0.001
+    ) {
+      this.watermarkIndex.backfillAuthoritative(sessionId, watermark, statAfter, mutationBefore);
+    }
+    return watermark;
   }
 
   async close(): Promise<void> {
@@ -1826,6 +1903,7 @@ export class SessionEventBroadcaster {
       this.opts.transcriptService?.dropSession(sessionId);
     }
     this.sessions.clear();
+    await this.watermarkIndex.close();
   }
 
   private scheduleSessionEviction(sessionId: string): void {
@@ -1887,6 +1965,8 @@ export class SessionEventBroadcaster {
       sessionJournalPath(this.opts.eventsDir, sessionId),
       this.opts.logger,
       this.maxBufferSize,
+      undefined,
+      this.watermarkIndex.hookFor(sessionId),
     );
     if (this.closed) {
       await journal.close();

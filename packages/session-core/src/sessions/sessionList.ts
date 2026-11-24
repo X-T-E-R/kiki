@@ -34,16 +34,24 @@ export function isPinnedSession(session: Pick<Session, 'metadata'>): boolean {
   return session.metadata[SESSION_PIN_META_KEY] === true;
 }
 
+const RESERVED_SESSION_GROUP_META_KEYS: readonly string[] = [
+  'kiki.group_id',
+  'kiki.group_detached',
+  'kiki.group_gen',
+  'kiki.group_origin',
+];
+
 /**
  * Build the `metadata` to send with a pin/unpin patch. It round-trips the
  * full wire `metadata` document (including the authoritative `cwd`) with the
- * pin flag toggled, so the patch is never empty — the v1 profile route skips
- * empty metadata patches, which would otherwise make "unpin" a silent no-op.
- * `buildWireMetadata` on the server overlays the real `cwd` back in, so
- * echoing it here is harmless and matches the wire contract.
+ * pin flag toggled, stripping reserved session-group keys so pin patches
+ * never overwrite concurrent group state.
  */
 export function pinMetadataPatch(session: Session, pinned: boolean): Record<string, unknown> {
   const base: Record<string, unknown> = { ...session.metadata };
+  for (const key of RESERVED_SESSION_GROUP_META_KEYS) {
+    delete base[key];
+  }
   if (pinned) base[SESSION_PIN_META_KEY] = true;
   else delete base[SESSION_PIN_META_KEY];
   return base;
@@ -156,21 +164,51 @@ export function mergeSessionFirstPage(
 /**
  * Fold a point-read session back into its loaded page, and only when it is at
  * least as fresh as the row it replaces — a late read that lost the race must
- * not move a row backwards. Cursors, page boundaries and untouched rows stay.
+ * not move a row backwards. Preserves object identity for untouched pages/rows.
  */
 export function mergeSessionActivity(old: SessionListData | undefined, fresh: Session): SessionListData | undefined {
   if (old === undefined || old === null || !Array.isArray(old.pages)) return old;
-  return { ...old, pages: old.pages.map((page) => (!Array.isArray(page?.items) ? page : {
-    ...page,
-    items: page.items.map((session) => session.id === fresh.id && Date.parse(fresh.updated_at) >= Date.parse(session.updated_at)
-      ? retainSessionCursors(fresh, session.last_seq, session.attention_cursor)
-      : session),
-  })) };
+  let pagesChanged = false;
+  const nextPages = old.pages.map((page) => {
+    if (!Array.isArray(page?.items)) return page;
+    let itemsChanged = false;
+    const nextItems = page.items.map((session) => {
+      if (session.id !== fresh.id || Date.parse(fresh.updated_at) < Date.parse(session.updated_at)) {
+        return session;
+      }
+      itemsChanged = true;
+      return retainSessionCursors(fresh, session.last_seq, session.attention_cursor);
+    });
+    if (!itemsChanged) return page;
+    pagesChanged = true;
+    return { ...page, items: nextItems };
+  });
+  return pagesChanged ? { ...old, pages: nextPages } : old;
+}
+
+function sameAttentionCursor(
+  a: SessionAttentionCursor | undefined,
+  b: SessionAttentionCursor | undefined,
+): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  return a.epoch === b.epoch && a.seq === b.seq;
 }
 
 export function patchSessionWorkChanged(session: Session, change: SessionWorkChangedPatch): Session {
   if (session.id !== change.sessionId) return session;
   const attention_cursor = mergeAttentionCursor(session.attention_cursor, change.attention_cursor);
+  if (
+    session.busy === change.busy &&
+    session.executing === change.executing &&
+    session.cleanup_pending === change.cleanup_pending &&
+    session.main_turn_active === change.main_turn_active &&
+    session.pending_interaction === change.pending_interaction &&
+    session.last_turn_reason === change.last_turn_reason &&
+    sameAttentionCursor(session.attention_cursor, attention_cursor)
+  ) {
+    return session;
+  }
   return {
     ...session,
     busy: change.busy,
@@ -188,13 +226,20 @@ export function mergeSessionWorkChanged(
   change: SessionWorkChangedPatch,
 ): SessionListData | undefined {
   if (old === undefined || old === null || !Array.isArray(old.pages)) return old;
-  return {
-    ...old,
-    pages: old.pages.map((page) => (!Array.isArray(page?.items) ? page : {
-      ...page,
-      items: page.items.map((session) => patchSessionWorkChanged(session, change)),
-    })),
-  };
+  let pagesChanged = false;
+  const nextPages = old.pages.map((page) => {
+    if (!Array.isArray(page?.items)) return page;
+    let itemsChanged = false;
+    const nextItems = page.items.map((session) => {
+      const patched = patchSessionWorkChanged(session, change);
+      if (patched !== session) itemsChanged = true;
+      return patched;
+    });
+    if (!itemsChanged) return page;
+    pagesChanged = true;
+    return { ...page, items: nextItems };
+  });
+  return pagesChanged ? { ...old, pages: nextPages } : old;
 }
 
 /** Upper bound on pages drained for the complete pinned set. */

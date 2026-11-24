@@ -1,9 +1,13 @@
 export const CONNECTION_OPERATIONS = {
   meta: ['GET', '/meta'], spaceSummary: ['GET', '/space-summary'],
   sessions: ['GET', '/sessions'], sessionQuery: ['GET', '/sessions/query'], ephemeralSessions: ['GET', '/sessions/ephemeral'],
+  sidebarSessions: ['GET', '/sidebar/sessions'],
+  sidebarGroupMembers: ['GET', '/sidebar/groups/{groupId}/members'],
+  sidebarUnitsResolve: ['POST', '/sidebar/units:resolve'],
   sessionCreate: ['POST', '/sessions'], session: ['GET', '/sessions/{sessionId}'],
   sessionUpdate: ['PATCH', '/sessions/{sessionId}'], sessionArchive: ['POST', '/sessions/{sessionId}:archive'],
   sessionRestore: ['POST', '/sessions/{sessionId}:restore'], sessionFork: ['POST', '/sessions/{sessionId}:fork'],
+  sessionDetachGroup: ['POST', '/sessions/{sessionId}:detach-group'],
   sessionBtw: ['POST', '/sessions/{sessionId}:btw'], sessionBranch: ['POST', '/sessions/{sessionId}:branch'],
   sessionFold: ['POST', '/sessions/{sessionId}:fold'], sessionDiscard: ['POST', '/sessions/{sessionId}:discard'],
   sessionToolsLock: ['POST', '/sessions/{sessionId}:tools-lock'],

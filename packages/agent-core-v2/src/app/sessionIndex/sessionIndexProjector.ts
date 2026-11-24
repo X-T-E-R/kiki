@@ -5,13 +5,17 @@ import { IQueryStore, type WriteOp } from '#/persistence/interface/queryStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
 import { CREATED_BY_SESSION_ID_KEY, PARENT_SESSION_ID_KEY, type SessionSummary } from './sessionIndex';
+import { resolveHomeGroupOrigin, resolveSessionGroupProjection } from './sessionGroup';
 import {
   CREATED_BY_INDEX_NAME,
+  GROUP_ID_INDEX_NAME,
   LEGACY_SESSION_INDEX_MANIFEST,
   PARENT_INDEX_NAME,
   SESSION_INDEX_MANIFEST,
   SESSION_SOURCE_ROOT_KEY,
+  WORKSPACE_ID_INDEX_NAME,
   advanceSessionIndexRevision,
+  buildAdvanceSessionIndexRevisionOp,
   legacySessionCollection,
   legacySessionCountersCollection,
   legacySessionSourcesCollection,
@@ -21,12 +25,19 @@ import {
   sessionCountersCollection,
   sessionSourcesCollection,
   sessionWorkspaceSourcesCollection,
+  sidebarUnitCollection,
+  stripRecencyField,
   withRecencyField,
   type SessionSourceFingerprint,
   type SessionSourceRoot,
   type SessionWorkspaceCounts,
   type SessionWorkspaceSource,
 } from './sessionIndexModel';
+import {
+  buildAffectedSidebarUnitOps,
+  inheritLegacyGroupId,
+  yieldAllSidebarUnitWriteOps,
+} from './sidebarUnitOps';
 import {
   listSessionIds,
   listWorkspaceIds,
@@ -103,6 +114,7 @@ export interface SessionIndexProjectorDeps {
   readonly queryStore: IQueryStore;
   readonly log: ILogService;
   readonly sessionsScope: string;
+  readonly homeDir?: string;
 }
 
 export interface ProjectionResult {
@@ -383,15 +395,19 @@ export class SessionIndexProjector {
   }
 
   async project(generation: number, scan: AuthoritativeScan): Promise<ProjectionResult> {
-    const { queryStore, log } = this.deps;
-    const { summaries, counts, fingerprints, workspaceSources, sourceMaxMtimeMs } = scan;
+    const { queryStore, log, storage, homeDir } = this.deps;
+    const originKey = await resolveHomeGroupOrigin(homeDir ?? this.deps.sessionsScope, storage);
+    const summaries = resolveSessionGroupProjection(scan.summaries, originKey);
+    const { counts, fingerprints, workspaceSources, sourceMaxMtimeMs } = scan;
     const collection = sessionCollection(generation);
+    const unitCollection = sidebarUnitCollection(generation);
     const counters = sessionCountersCollection(generation);
     const sources = sessionSourcesCollection(generation);
     const workspaces = sessionWorkspaceSourcesCollection(generation);
     await advanceSessionIndexRevision(queryStore);
     await Promise.all([
       queryStore.dropCollection(collection),
+      queryStore.dropCollection(unitCollection),
       queryStore.dropCollection(counters),
       queryStore.dropCollection(sources),
       queryStore.dropCollection(workspaces),
@@ -407,6 +423,16 @@ export class SessionIndexProjector {
         name: CREATED_BY_INDEX_NAME,
         field: `custom.${CREATED_BY_SESSION_ID_KEY}`,
       }),
+      queryStore.ensureIndex(collection, {
+        kind: 'value',
+        name: GROUP_ID_INDEX_NAME,
+        field: 'groupId',
+      }),
+      queryStore.ensureIndex(collection, {
+        kind: 'value',
+        name: WORKSPACE_ID_INDEX_NAME,
+        field: 'workspaceId',
+      }),
     ]);
 
     function* writes(): Generator<WriteOp> {
@@ -417,6 +443,7 @@ export class SessionIndexProjector {
           columns: { [recencyColumn(generation)]: summary.updatedAt },
         };
       }
+      yield* yieldAllSidebarUnitWriteOps(generation, summaries);
       for (const [sessionId, fingerprint] of fingerprints) {
         yield { kind: 'put', collection: sources, key: sessionId, value: fingerprint };
       }
@@ -466,6 +493,7 @@ export class SessionIndexProjector {
     if (generation > 1) {
       const staleCollections = [
         sessionCollection(generation - 1),
+        sidebarUnitCollection(generation - 1),
         sessionCountersCollection(generation - 1),
         sessionSourcesCollection(generation - 1),
         sessionWorkspaceSourcesCollection(generation - 1),
@@ -533,6 +561,7 @@ export class SessionIndexProjector {
       }
     }
     const ops: WriteOp[] = [];
+    const fullUnitChanges: { readonly id: string; readonly old: SessionSummary | undefined; readonly next: SessionSummary | undefined }[] = [];
     const targetedChanges: {
       readonly workspaceId: string;
       readonly sessionId: string;
@@ -702,12 +731,15 @@ export class SessionIndexProjector {
       }
       for (const sessionId of affectedIds) {
         await maybeYield();
-        const oldSummary = oldSummaries.get(sessionId);
-        const nextSummary = nextSummaries.get(sessionId);
+        const rawOld = oldSummaries.get(sessionId);
+        const oldSummary = rawOld === undefined ? undefined : stripRecencyField(generation, rawOld);
+        const rawNext = nextSummaries.get(sessionId);
+        const nextSummary = rawNext === undefined ? undefined : inheritLegacyGroupId(rawNext, oldSummary);
         if (nextSummary === undefined) {
           const owners = currentSessionOwners.get(sessionId) ?? 0;
           if (oldSummary !== undefined && (removedSet.has(sessionId) || owners <= 1 && changedSet.has(sessionId))) {
             ops.push({ kind: 'delete', collection, key: sessionId });
+            fullUnitChanges.push({ id: sessionId, old: oldSummary, next: undefined });
             removed += 1;
           }
         } else if (oldSummary === undefined || !summaryEquals(oldSummary, nextSummary)) {
@@ -718,6 +750,7 @@ export class SessionIndexProjector {
             value: withRecencyField(generation, nextSummary),
             columns: { [recencyColumn(generation)]: nextSummary.updatedAt },
           });
+          fullUnitChanges.push({ id: sessionId, old: oldSummary, next: nextSummary });
           upserted += 1;
         }
       }
@@ -767,8 +800,10 @@ export class SessionIndexProjector {
           ? new Map<string, SessionSummary>()
           : await queryStore.getMany<SessionSummary>(collection, removedIds);
       for (const sessionId of removedIds) {
-        if (oldSummaries.has(sessionId)) {
+        const oldSummary = oldSummaries.get(sessionId);
+        if (oldSummary !== undefined) {
           ops.push({ kind: 'delete', collection, key: sessionId });
+          fullUnitChanges.push({ id: sessionId, old: stripRecencyField(generation, oldSummary), next: undefined });
           removed += 1;
         }
         ops.push({ kind: 'delete', collection: sources, key: sessionId });
@@ -825,6 +860,8 @@ export class SessionIndexProjector {
       const commitOps: WriteOp[] = [...ops];
       let commitUpserted = upserted;
       let commitRemoved = removed;
+      const commitUnitChanges: { readonly id: string; readonly old: SessionSummary | undefined; readonly next: SessionSummary | undefined }[] =
+        changed === undefined ? fullUnitChanges : [];
       if (changed !== undefined && targetedChanges.length > 0) {
         const targetedIds = [...new Set(targetedChanges.map((entry) => entry.sessionId))];
         const committedSummaries = await queryStore.getMany<SessionSummary>(collection, targetedIds);
@@ -855,7 +892,8 @@ export class SessionIndexProjector {
           deltaByWorkspace.set(workspaceId, entry);
         };
         for (const entry of targetedChanges) {
-          const committed = committedSummaries.get(entry.sessionId);
+          const rawCommitted = committedSummaries.get(entry.sessionId);
+          const committed = rawCommitted === undefined ? undefined : stripRecencyField(generation, rawCommitted);
           if (committed !== undefined && committed.workspaceId !== entry.workspaceId) {
             return { sessions: 0, upserted: 0, removed: 0, inventoryRequired: true };
           }
@@ -864,6 +902,7 @@ export class SessionIndexProjector {
             if (committed !== undefined) {
               commitOps.push({ kind: 'delete', collection, key: entry.sessionId });
               commitOps.push({ kind: 'delete', collection: sources, key: entry.sessionId });
+              commitUnitChanges.push({ id: entry.sessionId, old: committed, next: undefined });
               commitRemoved += 1;
               bump(entry.workspaceId, committed.archived ? 'archived' : 'active', -1);
             }
@@ -871,20 +910,22 @@ export class SessionIndexProjector {
             wsState.activeSessionIds.delete(entry.sessionId);
             wsState.archivedSessionIds.delete(entry.sessionId);
           } else {
+            const effectiveNext = inheritLegacyGroupId(entry.nextSummary, committed);
             if (committed === undefined) {
-              bump(entry.workspaceId, entry.nextSummary.archived ? 'archived' : 'active', 1);
-            } else if (committed.archived !== entry.nextSummary.archived) {
+              bump(entry.workspaceId, effectiveNext.archived ? 'archived' : 'active', 1);
+            } else if (committed.archived !== effectiveNext.archived) {
               bump(entry.workspaceId, committed.archived ? 'archived' : 'active', -1);
-              bump(entry.workspaceId, entry.nextSummary.archived ? 'archived' : 'active', 1);
+              bump(entry.workspaceId, effectiveNext.archived ? 'archived' : 'active', 1);
             }
-            if (committed === undefined || !summaryEquals(committed, entry.nextSummary)) {
+            if (committed === undefined || !summaryEquals(committed, effectiveNext)) {
               commitOps.push({
                 kind: 'put',
                 collection,
                 key: entry.sessionId,
-                value: withRecencyField(generation, entry.nextSummary),
-                columns: { [recencyColumn(generation)]: entry.nextSummary.updatedAt },
+                value: withRecencyField(generation, effectiveNext),
+                columns: { [recencyColumn(generation)]: effectiveNext.updatedAt },
               });
+              commitUnitChanges.push({ id: entry.sessionId, old: committed, next: effectiveNext });
               commitUpserted += 1;
             }
             if (entry.fingerprint !== undefined) {
@@ -893,7 +934,7 @@ export class SessionIndexProjector {
             wsState.sessionIds.add(entry.sessionId);
             wsState.activeSessionIds.delete(entry.sessionId);
             wsState.archivedSessionIds.delete(entry.sessionId);
-            if (entry.nextSummary.archived) wsState.archivedSessionIds.add(entry.sessionId);
+            if (effectiveNext.archived) wsState.archivedSessionIds.add(entry.sessionId);
             else wsState.activeSessionIds.add(entry.sessionId);
           }
         }
@@ -949,8 +990,16 @@ export class SessionIndexProjector {
               }
               return true;
             });
-      if (filteredOps.length > 0) await advanceSessionIndexRevision(queryStore);
-      await this.batchChunks(filteredOps);
+      const survivingUnitChanges =
+        effectiveSkipSessionIds.size === 0
+          ? commitUnitChanges
+          : commitUnitChanges.filter((change) => !effectiveSkipSessionIds.has(change.id));
+      const unitOps = await buildAffectedSidebarUnitOps(queryStore, generation, survivingUnitChanges);
+      const allOps = unitOps.length === 0 ? filteredOps : [...filteredOps, ...unitOps];
+      if (allOps.length > 0) {
+        const revOp = await buildAdvanceSessionIndexRevisionOp(queryStore);
+        await queryStore.batch([...allOps, revOp]);
+      }
       const manifest = await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
       if (
         manifest?.seq === generation &&

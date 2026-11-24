@@ -21,8 +21,23 @@ import { createProviderQuotaFacade } from './provider-quota.js';
 import { createExternalClientsFacade } from './external-clients.js';
 import { listAgentTasksQuerySchema, listAgentTasksResponseSchema } from '../../contract/session/agent-tasks.js';
 import { sessionMediaPlaybackSchema } from '../../contract/session/media-playback.js';
-import { agentReferenceCandidatesQuerySchema, agentReferenceCandidatesResponseSchema, executorDiscoveryResponseSchema,
-  executorAccountSourcesResponseSchema, executorAccountsResponseSchema, harnessQuotaActionRequestSchema, harnessQuotaActionResponseSchema, harnessQuotaCacheResponseSchema, harnessQuotaReadRequestSchema, pluginModelCatalogSchema } from '@kiki/protocol';
+import {
+  agentReferenceCandidatesQuerySchema,
+  agentReferenceCandidatesResponseSchema,
+  detachSessionGroupResponseSchema,
+  executorDiscoveryResponseSchema,
+  executorAccountSourcesResponseSchema,
+  executorAccountsResponseSchema,
+  harnessQuotaActionRequestSchema,
+  harnessQuotaActionResponseSchema,
+  harnessQuotaCacheResponseSchema,
+  harnessQuotaReadRequestSchema,
+  pluginModelCatalogSchema,
+  resolveSidebarUnitsRequestSchema,
+  resolveSidebarUnitsResponseSchema,
+  sidebarGroupMembersResponseSchema,
+  sidebarSessionsPageSchema,
+} from '@kiki/protocol';
 import type {
   ActivateSkillRequest,
   AuthSummary,
@@ -276,6 +291,14 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       restore: (sessionId: string) => transport.json('/sessions/' + encodeURIComponent(sessionId) + ':restore', {
         method: 'POST', body: {}, timeoutMs: 0,
       }),
+      detachGroup: async (sessionId: string, options?: HttpRestRequestOptions) =>
+        detachSessionGroupResponseSchema.parse(
+          await transport.json('/sessions/' + encodeURIComponent(sessionId) + ':detach-group', {
+            method: 'POST',
+            body: {},
+            ...options,
+          }),
+        ),
       deleteArchived: async (sessionId: string, options = {}) => deleteArchivedSessionsResponseSchema.parse(await transport.json('/sessions/' + encodeURIComponent(sessionId) + ':delete-archived', {
         method: 'POST', body: deleteArchivedSessionRequestSchema.parse(options), timeoutMs: 0,
       })),
@@ -383,6 +406,62 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
           };
         },
       ),
+    },
+
+    sidebar: {
+      list: async (query = {}, options) =>
+        sidebarSessionsPageSchema.parse(
+          await transport.json('/sidebar/sessions', {
+            query: {
+              cursor: query.cursor,
+              page_size: query.page_size,
+              member_limit: query.member_limit,
+              sort: query.sort,
+              workspace_id: query.workspace_id,
+              persona: query.persona,
+              busy: query.busy,
+              include_archive: query.include_archive,
+              archived_only: query.archived_only,
+              include_private: query.include_private,
+              private_only: query.private_only,
+              exclude_empty: query.exclude_empty,
+              pinned: query.pinned,
+              q: query.q,
+            },
+            signal: options?.signal,
+            timeoutMs: options?.timeoutMs,
+          }),
+        ),
+      groupMembers: async (groupId: string, query = {}, options) =>
+        sidebarGroupMembersResponseSchema.parse(
+          await transport.json(`/sidebar/groups/${encodeURIComponent(groupId)}/members`, {
+            query: {
+              cursor: query.cursor,
+              page_size: query.page_size,
+              workspace_id: query.workspace_id,
+              persona: query.persona,
+              busy: query.busy,
+              include_archive: query.include_archive,
+              archived_only: query.archived_only,
+              include_private: query.include_private,
+              private_only: query.private_only,
+              exclude_empty: query.exclude_empty,
+              pinned: query.pinned,
+              q: query.q,
+            },
+            signal: options?.signal,
+            timeoutMs: options?.timeoutMs,
+          }),
+        ),
+      resolveUnits: async (body, options) =>
+        resolveSidebarUnitsResponseSchema.parse(
+          await transport.json('/sidebar/units:resolve', {
+            method: 'POST',
+            body: resolveSidebarUnitsRequestSchema.parse(body),
+            signal: options?.signal,
+            timeoutMs: options?.timeoutMs,
+          }),
+        ),
     },
 
     bots: {

@@ -85,6 +85,15 @@ export interface JournalLogger {
 
 const noopLogger: JournalLogger = { warn: () => {} };
 
+/** Hook notified around durable journal file writes to keep a derived watermark index consistent. */
+export interface JournalWriteWatermarkHook {
+  onBeforeWrite(reason?: string): void;
+  onDurableFlush(
+    watermark: { readonly seq: number; readonly epoch: string; readonly attentionSeq: number },
+    fileStat: { readonly size: number; readonly mtimeMs: number; readonly ctimeMs?: number },
+  ): void;
+}
+
 interface RetainedJournalEntry {
   readonly raw: string;
   readonly bytes: number;
@@ -123,6 +132,7 @@ export class SessionEventJournal {
     isFresh: boolean,
     private readonly capacity: number,
     private readonly maxRetainedBytes: number,
+    private readonly watermarkHook?: JournalWriteWatermarkHook,
   ) {
     this._seq = lastSeq;
     this._attentionSeq = attentionSeq;
@@ -151,6 +161,7 @@ export class SessionEventJournal {
     logger: JournalLogger = noopLogger,
     capacity = 1000,
     maxRetainedBytes = DEFAULT_MAX_RETAINED_BYTES,
+    watermarkHook?: JournalWriteWatermarkHook,
   ): Promise<SessionEventJournal> {
     if (!Number.isSafeInteger(capacity) || capacity < 0) throw new RangeError('journal capacity must be a nonnegative integer');
     if (!Number.isSafeInteger(maxRetainedBytes) || maxRetainedBytes < 0) throw new RangeError('journal maxRetainedBytes must be a nonnegative integer');
@@ -178,6 +189,7 @@ export class SessionEventJournal {
     if (epoch === undefined) {
       if (sawAnyLine) {
         logger.warn({ filePath }, 'event journal missing header; rotating to a fresh epoch');
+        watermarkHook?.onBeforeWrite('epoch_reset');
       }
       const truncateStaleTailBeforeFreshHeader = async (): Promise<void> => {
         try {
@@ -187,9 +199,9 @@ export class SessionEventJournal {
         }
       };
       await truncateStaleTailBeforeFreshHeader();
-      return new SessionEventJournal(filePath, logger, `ep_${ulid()}`, 0, 0, true, capacity, maxRetainedBytes);
+      return new SessionEventJournal(filePath, logger, `ep_${ulid()}`, 0, 0, true, capacity, maxRetainedBytes, watermarkHook);
     }
-    return new SessionEventJournal(filePath, logger, epoch, lastSeq, attentionSeq, false, capacity, maxRetainedBytes);
+    return new SessionEventJournal(filePath, logger, epoch, lastSeq, attentionSeq, false, capacity, maxRetainedBytes, watermarkHook);
   }
 
   /**
@@ -395,11 +407,21 @@ export class SessionEventJournal {
       ? [JSON.stringify(this.header()), ...events.map((entry) => entry.raw)]
       : events.map((entry) => entry.raw);
     if (lines.length > 0) {
+      let handleStat: { readonly size: number; readonly mtimeMs: number; readonly ctimeMs: number; readonly ino: number } | undefined;
       try {
+        this.watermarkHook?.onBeforeWrite('append');
         await mkdir(dirname(this.filePath), { recursive: true });
         const file = await open(this.filePath, 'a');
         try {
           await file.appendFile((this.appendSeparator ? '\n' : '') + lines.join('\n') + '\n', 'utf8');
+          if (this.watermarkHook !== undefined) {
+            try {
+              const info = await file.stat();
+              handleStat = { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, ino: info.ino };
+            } catch (statError) {
+              this.logger.warn({ filePath: this.filePath, err: String(statError) }, 'event journal post-append handle stat failed; session kept dirty');
+            }
+          }
         } finally {
           await file.close();
         }
@@ -423,24 +445,59 @@ export class SessionEventJournal {
       const trimmed = trimRetainedEntries(retained.concat(events), this.capacity, this.maxRetainedBytes);
       this.retainedEntries = trimmed.entries;
       this.retainedBytes = trimmed.bytes;
+      if (this.watermarkHook !== undefined && handleStat !== undefined) {
+        try {
+          const pathInfo = await stat(this.filePath);
+          const sameSource =
+            pathInfo.ino === handleStat.ino &&
+            pathInfo.size === handleStat.size &&
+            Math.abs(pathInfo.mtimeMs - handleStat.mtimeMs) < 0.001 &&
+            Math.abs(pathInfo.ctimeMs - handleStat.ctimeMs) < 0.001;
+          if (sameSource) {
+            this.watermarkHook.onDurableFlush(
+              { epoch: this.epoch, seq: this.durableSeq, attentionSeq: this.durableAttentionSeq },
+              { size: handleStat.size, mtimeMs: handleStat.mtimeMs, ctimeMs: handleStat.ctimeMs },
+            );
+          }
+        } catch (error) {
+          this.logger.warn({ filePath: this.filePath, err: String(error) }, 'event journal watermark checkpoint failed after durable append; session kept dirty');
+        }
+      }
     }
     this.writeFailed = false;
     if (this.needsCompaction()) {
+      let compacted = false;
       try {
+        this.watermarkHook?.onBeforeWrite('compact');
         const content = [JSON.stringify(this.header()), ...this.retainedEntries!.map((entry) => entry.raw)].join('\n') + '\n';
         await replaceJournal(this.filePath, content);
         this.diskEventCount = this.retainedEntries!.length;
         this.diskBytes = this.retainedBytes;
         this.compactPending = false;
         this.dirtySinceSync = false;
-        return;
+        compacted = true;
       } catch (error) {
         this.compactPending = true;
         this.compactFailed = true;
         this.logger.warn({ filePath: this.filePath, err: String(error) }, 'event journal compaction failed; durable source retained for retry');
       }
+      if (compacted) {
+        if (this.watermarkHook !== undefined) {
+          try {
+            const info = await stat(this.filePath);
+            this.watermarkHook.onDurableFlush(
+              { epoch: this.epoch, seq: this.durableSeq, attentionSeq: this.durableAttentionSeq },
+              { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs },
+            );
+          } catch (error) {
+            this.logger.warn({ filePath: this.filePath, err: String(error) }, 'event journal watermark checkpoint failed after compaction; session kept dirty');
+          }
+        }
+        return;
+      }
     }
     if (this.closing && this.dirtySinceSync) {
+      let synced = false;
       try {
         const file = await open(this.filePath, 'a');
         try {
@@ -449,9 +506,21 @@ export class SessionEventJournal {
           await file.close();
         }
         this.dirtySinceSync = false;
+        synced = true;
       } catch (error) {
         this.closeSyncFailed = true;
         this.logger.warn({ filePath: this.filePath, err: String(error) }, 'event journal close sync failed');
+      }
+      if (synced && this.watermarkHook !== undefined) {
+        try {
+          const info = await stat(this.filePath);
+          this.watermarkHook.onDurableFlush(
+            { epoch: this.epoch, seq: this.durableSeq, attentionSeq: this.durableAttentionSeq },
+            { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs },
+          );
+        } catch (error) {
+          this.logger.warn({ filePath: this.filePath, err: String(error) }, 'event journal watermark checkpoint failed on close sync; session kept dirty');
+        }
       }
     }
   }
@@ -483,6 +552,7 @@ export async function pruneExpiredEventJournals(
     readonly activeSessionIds?: ReadonlySet<string>;
     readonly isSessionActive?: (sessionId: string) => boolean;
     readonly beforeUnlink?: (sessionId: string) => (() => void) | undefined;
+    readonly onUnlinked?: (sessionId: string) => void;
     readonly now?: number;
     readonly logger?: JournalLogger;
   },
@@ -491,6 +561,7 @@ export async function pruneExpiredEventJournals(
   const activeSessionIds = options?.activeSessionIds;
   const isSessionActive = options?.isSessionActive;
   const beforeUnlink = options?.beforeUnlink;
+  const onUnlinked = options?.onUnlinked;
   const now = options?.now ?? Date.now();
   const logger = options?.logger ?? noopLogger;
   let entries;
@@ -525,6 +596,7 @@ export async function pruneExpiredEventJournals(
       }
       try {
         await rm(fullPath, { force: true });
+        if (isJournal) onUnlinked?.(sessionId);
         removed += 1;
       } finally {
         release?.();

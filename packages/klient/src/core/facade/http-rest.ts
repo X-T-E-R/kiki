@@ -482,6 +482,7 @@ export interface HttpRestFacade {
     applyPersonaSettings(sessionId: string, input?: import('@kiki/protocol').ApplyPersonaSettingsRequest): Promise<import('@kiki/protocol').SessionPersonaSettings>;
     archive(sessionId: string, options?: import('@kiki/protocol').ArchiveSessionRequest): Promise<ArchiveSessionResponse>;
     restore(sessionId: string): Promise<RestoreSessionResponse>;
+    detachGroup(sessionId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').DetachSessionGroupResponse>;
     deleteArchived(sessionId: string, options?: import('@kiki/protocol').DeleteArchivedSessionRequest): Promise<import('@kiki/protocol').DeleteArchivedSessionsResponse>;
     deleteAllArchived(): Promise<import('@kiki/protocol').DeleteArchivedSessionsResponse>;
     goal(sessionId: string): Promise<GoalSnapshot | null>;
@@ -522,6 +523,22 @@ export interface HttpRestFacade {
     openMediaPlayback(sessionId: string, fileId: string, options?: HttpRestRequestOptions): Promise<import('../../contract/session/media-playback.js').SessionMediaPlayback>;
     closeMediaPlayback(previewId: string, options?: HttpRestRequestOptions): Promise<void>;
     export(sessionId: string): Promise<HttpRestSessionArchive>;
+  };
+
+  readonly sidebar: {
+    list(
+      query?: import('@kiki/protocol').SidebarSessionsQuery,
+      options?: HttpRestRequestOptions,
+    ): Promise<import('@kiki/protocol').SidebarSessionsPage>;
+    groupMembers(
+      groupId: string,
+      query?: import('@kiki/protocol').SidebarGroupMembersQuery,
+      options?: HttpRestRequestOptions,
+    ): Promise<import('@kiki/protocol').SidebarGroupMembersResponse>;
+    resolveUnits(
+      body: import('@kiki/protocol').ResolveSidebarUnitsRequest,
+      options?: HttpRestRequestOptions,
+    ): Promise<import('@kiki/protocol').ResolveSidebarUnitsResponse>;
   };
 
   readonly bots: GlobalBotsFacade;

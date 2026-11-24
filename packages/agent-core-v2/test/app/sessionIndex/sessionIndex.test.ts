@@ -4409,7 +4409,7 @@ describe('FileSessionIndex (read model)', () => {
     console.log('[projection-memory]', JSON.stringify({ sessions: summaries.length, firstChunkMaterialized, maxBatch, heapGrowthMiB: (peakHeap - baselineHeap) / (1 << 20) }));
     expect(firstChunkMaterialized).toBe(500);
     expect(maxBatch).toBe(500);
-    expect(written).toBe(50_001);
+    expect(written).toBe(100_001);
   });
 
   const baseline = { retry: 1, timeout: 120_000 };

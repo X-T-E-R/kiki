@@ -223,7 +223,22 @@ export interface ISessionMetadata {
   usage(): SessionUsageSummary | undefined;
   recordUsage(model: string, usage: TokenUsage, usageKnown?: boolean): void;
   /** Deferred writes update live metadata immediately and share the usage flush window; drain and disposal persist them. */
-  update(patch: SessionMetadataWrite, opts?: { readonly touchUpdatedAt?: boolean; readonly deferPersistence?: boolean }): Promise<void>;
+  update(
+    patch: SessionMetadataWrite,
+    opts?: {
+      readonly touchUpdatedAt?: boolean;
+      readonly deferPersistence?: boolean;
+      readonly allowReservedGroupWrite?: boolean;
+    },
+  ): Promise<void>;
+  /** Serialized read-modify-write on `custom` inside the metadata write queue. */
+  updateCustom?(
+    updater: (current: Record<string, unknown>) => Record<string, unknown>,
+    opts?: {
+      readonly touchUpdatedAt?: boolean;
+      readonly allowReservedGroupWrite?: boolean;
+    },
+  ): Promise<SessionMeta>;
   setTitle(title: string): Promise<void>;
   /**
    * Checks title conditions inside the serialized update. `force` permits replacing

@@ -8,4 +8,5 @@ export * from './conversationLinks';
 export * from './quickSwitcher';
 export * from './search';
 export * from './sessionList';
+export * from './sidebarUnits';
 export * from './sorting';

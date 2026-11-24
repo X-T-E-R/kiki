@@ -10,6 +10,12 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { sessionScopeOf, workspacePersistenceScope } from '#/workspace/sessionLifecycle/internal/addressing';
 import { setColdSessionArchived, tryDeleteColdSession } from '#/workspace/sessionLifecycle/coldSessionArchive';
+import {
+  detachSessionGroupUnguarded,
+  ensureSessionGroupUnguarded,
+  type DetachedSessionGroup,
+  type EnsuredSessionGroup,
+} from '#/workspace/sessionLifecycle/sessionGroupAuthority';
 import { Emitter, type Event, type IWaitUntil } from '#/_base/event';
 import { ScopeActivation, registerScopedService, type ISessionScopeHandle } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
@@ -597,9 +603,16 @@ export class SessionManager implements ISessionManager {
             `session ${options.sourceSessionId} does not exist`,
           );
         }
+        const groupId =
+          options.groupId ??
+          (this.instantiation !== undefined
+            ? (await this.instantiation.invokeFunction((accessor) =>
+                ensureSessionGroupUnguarded(accessor, options.sourceSessionId),
+              )).groupId
+            : undefined);
         return this.runWorkspaceOperation(
           target.workspaceId,
-          () => target.controller.fork(options),
+          () => target.controller.fork({ ...options, groupId }),
           target.release,
         );
       },
@@ -619,9 +632,16 @@ export class SessionManager implements ISessionManager {
             `session ${options.sourceSessionId} does not exist`,
           );
         }
+        const groupId =
+          options.groupId ??
+          (this.instantiation !== undefined
+            ? (await this.instantiation.invokeFunction((accessor) =>
+                ensureSessionGroupUnguarded(accessor, options.sourceSessionId),
+              )).groupId
+            : undefined);
         return this.runWorkspaceOperation(
           target.workspaceId,
-          () => target.controller.createChild(options),
+          () => target.controller.createChild({ ...options, groupId }),
           target.release,
         );
       },
@@ -631,6 +651,11 @@ export class SessionManager implements ISessionManager {
   async promoteAgent(options: PromoteAgentOptions): Promise<ISessionScopeHandle> {
     this.willAccessEmitter.fire(options.sourceSessionId);
     await this.awaitSessionMaintenanceRelease(options.sourceSessionId);
+    const groupId =
+      options.groupId ??
+      (this.instantiation !== undefined
+        ? (await this.ensureSessionGroup(options.sourceSessionId)).groupId
+        : undefined);
     const source = await this.controllerForSession(options.sourceSessionId);
     if (source === undefined) {
       throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${options.sourceSessionId} does not exist`);
@@ -644,10 +669,34 @@ export class SessionManager implements ISessionManager {
     const workspaceId = lease.instance.id;
     const promote = () => this.runWorkspaceOperation(
       workspaceId,
-      () => this.controllerForWorkspace(workspaceId).materializePromotion(snapshot, options),
+      () => this.controllerForWorkspace(workspaceId).materializePromotion(snapshot, { ...options, groupId }),
       () => lease.dispose(),
     );
     return options.newSessionId === undefined ? promote() : this.serializeLifecycle(options.newSessionId, promote);
+  }
+
+  async ensureSessionGroup(sessionId: string): Promise<EnsuredSessionGroup> {
+    if (this.instantiation === undefined) {
+      throw new Error2(ErrorCodes.INTERNAL, 'Session manager cannot resolve group authority without instantiation service');
+    }
+    const instantiation = this.instantiation;
+    this.willAccessEmitter.fire(sessionId);
+    return this.serializeLifecycle(sessionId, async () => {
+      await this.awaitSessionMaintenanceRelease(sessionId);
+      return instantiation.invokeFunction((accessor) => ensureSessionGroupUnguarded(accessor, sessionId));
+    });
+  }
+
+  async detachSessionGroup(sessionId: string): Promise<DetachedSessionGroup> {
+    if (this.instantiation === undefined) {
+      throw new Error2(ErrorCodes.INTERNAL, 'Session manager cannot detach group without instantiation service');
+    }
+    const instantiation = this.instantiation;
+    this.willAccessEmitter.fire(sessionId);
+    return this.serializeLifecycle(sessionId, async () => {
+      await this.awaitSessionMaintenanceRelease(sessionId);
+      return instantiation.invokeFunction((accessor) => detachSessionGroupUnguarded(accessor, sessionId));
+    });
   }
 
   async dispose(): Promise<void> {

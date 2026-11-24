@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { KlientFrame } from '@kiki/klient/host';
 import {
   PEER_BRIDGE_CAPABILITY_CHUNKED_V1,
+  PEER_BRIDGE_CAPABILITY_GROUP_IDENTITY_V1,
   peerBridgeAttachPayloadSchema,
   peerBridgeResponseChunkPayloadSchema,
   peerBridgeResponsePayloadSchema,
@@ -173,6 +174,10 @@ export class PeerBridgeRegistry {
     return this.select(grantId, operation) !== undefined;
   }
 
+  supportsCapability(grantId: string, capability: string, operation?: PeerBridgeOperation): boolean {
+    return this.select(grantId, operation)?.supportsCapability(capability) === true;
+  }
+
   forward(grantId: string, operation: PeerBridgeOperation, credential: string, body: unknown, signal: AbortSignal): Promise<PeerBridgeReply> {
     const active = this.select(grantId, operation);
     if (active === undefined) return Promise.reject(new AdmissionError(503, 'peer_bridge_offline'));
@@ -216,6 +221,11 @@ export class PeerBridgeConnection {
   /** Whether the attached peer negotiated the `chunked_v1` framing capability. */
   supportsChunkedResponses(): boolean {
     return this.peerCapabilities.has(PEER_BRIDGE_CAPABILITY_CHUNKED_V1);
+  }
+
+  /** Whether the attached peer negotiated a named peer-bridge capability. */
+  supportsCapability(capability: string): boolean {
+    return this.peerCapabilities.has(capability);
   }
 
   receive(frame: KlientFrame): boolean {
@@ -289,17 +299,21 @@ export class PeerBridgeConnection {
     }
     const operations = [...new Set(parsed.data.operations ?? DEFAULT_PEER_BRIDGE_OPERATIONS)];
     const requestedCaps = new Set(parsed.data.capabilities ?? []);
-    const negotiatedCaps = requestedCaps.has(PEER_BRIDGE_CAPABILITY_CHUNKED_V1)
-      ? [PEER_BRIDGE_CAPABILITY_CHUNKED_V1]
-      : undefined;
+    const negotiatedCaps: string[] = [];
+    if (requestedCaps.has(PEER_BRIDGE_CAPABILITY_CHUNKED_V1)) {
+      negotiatedCaps.push(PEER_BRIDGE_CAPABILITY_CHUNKED_V1);
+    }
+    if (requestedCaps.has(PEER_BRIDGE_CAPABILITY_GROUP_IDENTITY_V1)) {
+      negotiatedCaps.push(PEER_BRIDGE_CAPABILITY_GROUP_IDENTITY_V1);
+    }
     this.attachedOperations = new Set(operations);
-    this.peerCapabilities = new Set(negotiatedCaps ?? []);
+    this.peerCapabilities = new Set(negotiatedCaps);
     this.registry.register(this);
     if (id !== '') {
       this.send({
         type: 'bridge_attached',
         id,
-        data: negotiatedCaps === undefined ? { operations } : { operations, capabilities: negotiatedCaps },
+        data: negotiatedCaps.length === 0 ? { operations } : { operations, capabilities: negotiatedCaps },
       });
     }
   }
