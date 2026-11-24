@@ -217,13 +217,24 @@ async function runPinnedHelper(input: {
 
   return new Promise<VerifiedPinnedHostStream>((resolve, reject) => {
     let settled = false;
+    let childClosed = false;
+    const childExited = new Promise<void>((resolveExit) => {
+      child.once('close', () => {
+        childClosed = true;
+        resolveExit();
+      });
+    });
     const rl = createInterface({ input: child.stderr, crlfDelay: Infinity });
     const fail = (error: Error): void => {
       if (settled) return;
       settled = true;
       rl.close();
       close();
-      reject(error);
+      if (childClosed) {
+        reject(error);
+      } else {
+        void childExited.then(() => reject(error));
+      }
     };
 
     child.once('error', (error) => {
@@ -252,17 +263,22 @@ async function runPinnedHelper(input: {
         const verifiedBytes = Number(parts[4]);
         if (!SHA256_RE.test(sha256) || !Number.isSafeInteger(size) || size < 0) {
           close();
-          reject(new HostPinnedSourceChangedError('invalid_verification_receipt'));
+          void childExited.then(() => reject(new HostPinnedSourceChangedError('invalid_verification_receipt')));
           return;
         }
-        resolve({
+        const receipt = {
           sha256,
           size,
           fileIdentity,
           verifiedBytes: Number.isSafeInteger(verifiedBytes) ? verifiedBytes : size,
           stream: child.stdout,
           close,
-        });
+        };
+        if (input.mode === 'inspect') {
+          void childExited.then(() => resolve(receipt));
+        } else {
+          resolve(receipt);
+        }
         return;
       }
       const code = parts[1] ?? 'verification_failed';
