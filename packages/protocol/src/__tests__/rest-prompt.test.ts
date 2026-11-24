@@ -123,6 +123,26 @@ describe('prompt lifecycle & list schemas', () => {
     expect(parsed.status).toBe(status);
   });
 
+  it('preserves agent_id on promptSubmitResult and promptListResponse ingress items', () => {
+    const receipt = {
+      prompt_id: 'prompt_child',
+      user_message_id: 'msg_child',
+      agent_id: 'child-agent-1',
+      status: 'queued',
+      admission: 'admitted',
+      content: [{ type: 'text', text: 'child follow-up' }],
+      created_at: '2026-06-09T00:00:00.000Z',
+    };
+    expect(promptSubmitResultSchema.parse(receipt).agent_id).toBe('child-agent-1');
+    const list = promptListResponseSchema.parse({
+      active: null,
+      queued: [],
+      ingress: [receipt],
+    });
+    expect(list.ingress?.[0]?.agent_id).toBe('child-agent-1');
+    expect(promptSubmitResultSchema.safeParse({ ...receipt, agent_id: '' }).success).toBe(false);
+  });
+
   it('rejects empty prompt_id on promptSubmitResult', () => {
     expect(promptSubmitResultSchema.safeParse({ prompt_id: '', user_message_id: 'msg' }).success).toBe(false);
   });

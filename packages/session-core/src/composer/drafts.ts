@@ -317,13 +317,44 @@ function readAllStoredComposerScalars(): Record<string, PersistedComposerScalars
   }
 }
 
+function samePersistedModelChoice(
+  left: ComposerModelChoice | undefined,
+  right: ComposerModelChoice | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined) return false;
+  return left.model === right.model && left.thinking === right.thinking;
+}
+
+function samePersistedComposerScalars(
+  left: PersistedComposerScalars,
+  right: PersistedComposerScalars,
+): boolean {
+  return (
+    left.modelOverride === right.modelOverride &&
+    left.effortOverride === right.effortOverride &&
+    left.modelSwitchMode === right.modelSwitchMode &&
+    samePersistedModelChoice(left.modelChoice, right.modelChoice) &&
+    samePersistedModelChoice(left.effortChoice, right.effortChoice)
+  );
+}
+
 function persistComposerScalars(
   sessionId: string,
   scalars: PersistedComposerScalars,
 ): void {
   if (!draftsEnabled()) return;
+  const empty = scalars.modelOverride === undefined && scalars.effortOverride === undefined;
+  if (empty) {
+    try {
+      if (spaceStorage.getItem(PERSISTED_COMPOSER_STATE_KEY) === null) return;
+    } catch {
+      return;
+    }
+  }
   const all = readAllStoredComposerScalars();
-  if (scalars.modelOverride === undefined && scalars.effortOverride === undefined) {
+  if (empty) {
+    if (!(sessionId in all)) return;
     delete all[sessionId];
   } else {
     all[sessionId] = scalars;
@@ -422,14 +453,20 @@ export function readComposerState(
 }
 
 export function writeComposerState(sessionId: string, state: ComposerSessionState): void {
-  composerMemoryForScope().set(sessionId, state);
-  persistComposerScalars(sessionId, {
+  const scoped = composerMemoryForScope();
+  const previous = scoped.get(sessionId);
+  scoped.set(sessionId, state);
+  const nextScalars: PersistedComposerScalars = {
     modelOverride: state.modelOverride,
     effortOverride: state.effortOverride,
     modelChoice: state.modelChoice,
     effortChoice: state.effortChoice,
     modelSwitchMode: state.modelSwitchMode,
-  });
+  };
+  if (previous !== undefined && samePersistedComposerScalars(previous, nextScalars)) {
+    return;
+  }
+  persistComposerScalars(sessionId, nextScalars);
 }
 
 export function clearComposerState(sessionId: string): void {
@@ -692,12 +729,29 @@ export function resetInputHistoryForTests(): void {
  * stored text — one channel that works whether or not that session's composer
  * is currently mounted.
  */
-const AGENT_ROUTE_RE = /^\/s\/([^/]+)\/agent\/([^/]+)/;
+const AGENT_ROUTE_RE = /^\/(?:p\/[^/]+\/)?s\/([^/]+)\/agent\/([^/]+)/;
+
+/**
+ * Canonical draft/composer storage key for one conversation target:
+ * main sessions key on `sessionId`; branches and subagents always key on
+ * `JSON.stringify([scopeId ?? '', sessionId, agentId])`, even when `scopeId` is
+ * empty/absent, so child drafts and annotations never collide with `main`.
+ */
+export function agentDraftKey(
+  scopeId: string | undefined,
+  sessionId: string,
+  agentId?: string,
+): string {
+  if (agentId === undefined || agentId === '' || agentId === 'main') {
+    return sessionId;
+  }
+  return JSON.stringify([scopeId ?? '', sessionId, agentId]);
+}
 
 /**
  * Resolve the draft/composer storage key for the currently viewed conversation:
- * main sessions key on `sessionId`; routed branches and subagents key on
- * `JSON.stringify([scopeId, sessionId, agentId])` (matching `AgentWorkspace`).
+ * main sessions key on `sessionId`; routed branches and subagents key via
+ * `agentDraftKey` (matching `AgentWorkspace`).
  */
 export function resolveActiveDraftKey(
   scopeId: string | undefined,
@@ -724,10 +778,7 @@ export function resolveActiveDraftKey(
       agentId = agentIdOrPathname;
     }
   }
-  if (agentId !== undefined && scopeId !== undefined && scopeId !== '') {
-    return JSON.stringify([scopeId, sessionId, agentId]);
-  }
-  return sessionId;
+  return agentDraftKey(scopeId, sessionId, agentId);
 }
 
 /**
@@ -811,7 +862,9 @@ export function restorePromptToDraft(sessionId: string, content: readonly import
   writeComposerState(sessionId, {
     attachments: [...(previous.attachments ?? []), ...restored],
     annotations: previous.annotations ?? [],
+    quotes: previous.quotes,
     quote: previous.quote,
+    quoteSource: previous.quoteSource,
     permissionMode: previous.permissionMode,
     planMode: previous.planMode,
     planGate: previous.planGate,
@@ -820,6 +873,7 @@ export function restorePromptToDraft(sessionId: string, content: readonly import
     effortOverride: previous.effortOverride,
     modelChoice: previous.modelChoice,
     effortChoice: previous.effortChoice,
+    modelSwitchMode: previous.modelSwitchMode,
     execution: previous.execution,
   });
   for (const listener of appendListeners) listener(sessionId, restored);

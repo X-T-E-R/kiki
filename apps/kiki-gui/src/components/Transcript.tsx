@@ -45,11 +45,7 @@ import { ActiveTranscriptMediaPill, useActiveTranscriptMedia } from './ActiveTra
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import {
-  collectDraftAnnotationTargets,
-  collectTimelineAnnotations,
-  applyAnnotationOverrides,
-  getAnnotationOverridesSnapshot,
-  subscribeAnnotationOverrides,
+  getAnnotationOverride,
   writeAnnotationOverride,
   sourceTextVersion,
   parseSelectionCarryovers,
@@ -146,6 +142,13 @@ import {
   TimelineDivider,
 } from './timeline/ActivityRow';
 import { AnnotationPopover, type AnnotationPopoverOpen } from './AnnotationPopover';
+import type { ConversationAnnotationStore } from './agent-workspace/useConversationAnnotations';
+import {
+  TranscriptAnnotationsContext,
+  TranscriptAnnotationTargetStore,
+  useBlockAnnotationMarks,
+  useTranscriptAnnotationById,
+} from './timeline/transcriptAnnotationStore';
 import { QuoteChip } from './ContextChips';
 import { ModelSwitchNotice } from './model-switch/ModelSwitchNotice';
 import { SentAnnotationsBubble } from './SentAnnotationsBubble';
@@ -428,6 +431,9 @@ const UserMessage = memo(function UserMessage({
   onOpenAgent?: (agentId: string) => void;
 }) {
   const { t, time } = useI18n();
+  const scopedAnnotations = useBlockAnnotationMarks(block.id);
+  const effectiveAnnotations = annotations ?? scopedAnnotations;
+  const sourceVersion = useMemo(() => sourceTextVersion(block.text), [block.text]);
   const outcomeActions = usePromptOutcomeActions();
   const messageLink = useMessageLink();
   const [editing, setEditing] = useState(false);
@@ -811,7 +817,7 @@ const UserMessage = memo(function UserMessage({
             ref={contentRef}
             id={contentId}
             data-source-block-id={block.id}
-            data-source-version={sourceTextVersion(block.text)}
+            data-source-version={sourceVersion}
             data-collapsible-content
             className={
               clipped
@@ -819,9 +825,9 @@ const UserMessage = memo(function UserMessage({
                 : undefined
             }
           >
-            {annotations === undefined || annotations.length === 0
+            {effectiveAnnotations === undefined || effectiveAnnotations.length === 0
               ? projectBody(bodyText)
-              : projectTextWithAnnotationMarks(bodyText, annotations, projectBody)}
+              : projectTextWithAnnotationMarks(bodyText, effectiveAnnotations, projectBody)}
             {!clipped && serverRemaining ? (
               <span
                 data-content-continuation={isServerFailed ? 'error' : isServerLoading ? 'loading' : 'idle'}
@@ -1108,6 +1114,8 @@ const AssistantMessage = memo(function AssistantMessage({
   annotations?: readonly TimelineAnnotation[];
 }) {
   const { t, time } = useI18n();
+  const scopedAnnotations = useBlockAnnotationMarks(block.id);
+  const effectiveAnnotations = annotations ?? scopedAnnotations;
   const messageLink = useMessageLink();
   const tapActions = useMessageRowTapActions<HTMLDivElement>();
   const source = frameContentSource(block);
@@ -1158,7 +1166,7 @@ const AssistantMessage = memo(function AssistantMessage({
             sessionId={sessionId}
             sourceText={block.text}
             isStreamingSource={streaming}
-            annotations={annotations}
+            annotations={effectiveAnnotations}
             onReadingTextChange={setReadingText}
           />
         ) : streaming ? (
@@ -1180,7 +1188,7 @@ const AssistantMessage = memo(function AssistantMessage({
             <Markdown
               text={block.text}
               sourceBlockId={block.id}
-              annotationTargets={annotations}
+              annotationTargets={effectiveAnnotations}
             />
           ) : null
         )}
@@ -3981,47 +3989,6 @@ function useStableMap<K, V>(build: () => Map<K, V>, deps: readonly unknown[]): R
   }, deps);
 }
 
-function annotationListsEqual(
-  previous: readonly TimelineAnnotation[] | undefined,
-  next: readonly TimelineAnnotation[],
-): previous is readonly TimelineAnnotation[] {
-  return (
-    previous !== undefined &&
-    previous.length === next.length &&
-    previous.every((annotation, index) => {
-      const candidate = next[index];
-      return (
-        candidate !== undefined &&
-        annotation.id === candidate.id &&
-        annotation.quote === candidate.quote &&
-        annotation.comment === candidate.comment &&
-        JSON.stringify(annotation.source) === JSON.stringify(candidate.source)
-      );
-    })
-  );
-}
-
-function useStableAnnotationTargets(
-  next: ReadonlyMap<string, readonly TimelineAnnotation[]>,
-): ReadonlyMap<string, readonly TimelineAnnotation[]> {
-  const ref = useRef<ReadonlyMap<string, readonly TimelineAnnotation[]> | null>(null);
-  const previous = ref.current;
-  let allIdentical = previous !== null && previous.size === next.size;
-  const stable = new Map<string, readonly TimelineAnnotation[]>();
-  for (const [blockId, annotations] of next) {
-    const previousList = previous?.get(blockId);
-    if (annotationListsEqual(previousList, annotations)) {
-      stable.set(blockId, previousList);
-    } else {
-      stable.set(blockId, annotations);
-      allIdentical = false;
-    }
-  }
-  if (allIdentical && previous !== null) return previous;
-  ref.current = stable;
-  return stable;
-}
-
 /**
  * Content-level identity stabilization for the forest prop. SessionView
  * rebuilds the agent forest from the whole session state on every publish;
@@ -5537,6 +5504,42 @@ function dedupeBoundaryUserBlocks(blocks: readonly Block[]): readonly Block[] {
   return result ?? blocks;
 }
 
+function TranscriptAnnotationPopover({
+  state,
+  store,
+  onSaveDraft,
+  onRemoveDraft,
+  onClose,
+}: {
+  readonly state: AnnotationPopoverOpen;
+  readonly store: TranscriptAnnotationTargetStore;
+  readonly onSaveDraft?: (id: string, comment: string) => void;
+  readonly onRemoveDraft?: (id: string) => void;
+  readonly onClose: () => void;
+}) {
+  const openAnnotation = useTranscriptAnnotationById(state.annotationId);
+  useEffect(() => {
+    if (openAnnotation === undefined) onClose();
+  }, [openAnnotation, onClose]);
+  if (openAnnotation === undefined) return null;
+  return (
+    <AnnotationPopover
+      state={state}
+      annotation={openAnnotation}
+      onSave={(id, comment) => {
+        if (store.isDraftAnnotation(id)) onSaveDraft?.(id, comment);
+        else writeAnnotationOverride(id, { ...getAnnotationOverride(id), comment });
+      }}
+      onRemove={(id) => {
+        if (store.isDraftAnnotation(id)) onRemoveDraft?.(id);
+        else writeAnnotationOverride(id, { ...getAnnotationOverride(id), deleted: true });
+        onClose();
+      }}
+      onClose={onClose}
+    />
+  );
+}
+
 export const Transcript = memo(function Transcript({
   state,
   agentId = 'main',
@@ -5558,6 +5561,7 @@ export const Transcript = memo(function Transcript({
   connected,
   view = 'process',
   draftAnnotations,
+  draftAnnotationStore,
   onSaveDraftAnnotation,
   onRemoveDraftAnnotation,
   showQueuedPrompts = false,
@@ -5613,6 +5617,8 @@ export const Transcript = memo(function Transcript({
    * annotation itself. Sent notes also remain marked on their source.
    */
   draftAnnotations?: readonly TimelineAnnotation[];
+  /** Scoped draft annotation store so draft edits bypass full Transcript re-renders. */
+  draftAnnotationStore?: ConversationAnnotationStore;
   onSaveDraftAnnotation?: (id: string, comment: string) => void;
   onRemoveDraftAnnotation?: (id: string) => void;
   /** 1-click Continue when a failed turn already completed partial tool/subagent steps. */
@@ -5669,7 +5675,7 @@ export const Transcript = memo(function Transcript({
       : state.blocks;
   const loadError = state.loadError ?? (!loaded && state.resyncFailed ? state.resyncError?.message : undefined);
   const sessionIdForLocate = state.sessionId === '' ? undefined : state.sessionId;
-  const activeDraftKey = useActiveDraftKey(sessionIdForLocate);
+  const activeDraftKey = useActiveDraftKey(sessionIdForLocate, agentId);
   const retryDraftKey = activeDraftKey ?? sessionIdForLocate;
   // Failed / aborted prompts: send again puts the text back in the active
   // workspace's composer (main session, subagent, or branch) without rewriting
@@ -5699,27 +5705,20 @@ export const Transcript = memo(function Transcript({
     const deduped = dedupeBoundaryUserBlocks(blocks);
     return showQueuedPrompts ? queuedPromptsLast(deduped) : deduped.filter((block) => block.kind !== 'user' || block.promptStatus !== 'queued');
   }, [blocks, showQueuedPrompts]);
-  const annotationOverrides = useSyncExternalStore(subscribeAnnotationOverrides, getAnnotationOverridesSnapshot, getAnnotationOverridesSnapshot);
-  const annotationTargets = useStableAnnotationTargets(
-    useMemo(() => {
-      const sent = applyAnnotationOverrides(collectTimelineAnnotations(blocks), annotationOverrides);
-      const merged = new Map(sent);
-      for (const [blockId, drafts] of collectDraftAnnotationTargets(timelineBlocks, draftAnnotations ?? [])) {
-        merged.set(blockId, [...drafts, ...(merged.get(blockId) ?? [])]);
-      }
-      return merged;
-    }, [blocks, timelineBlocks, draftAnnotations, annotationOverrides]),
+  const annotationStoreRef = useRef<TranscriptAnnotationTargetStore | null>(null);
+  if (annotationStoreRef.current === null) {
+    annotationStoreRef.current = new TranscriptAnnotationTargetStore();
+  }
+  const annotationStore = annotationStoreRef.current;
+  annotationStore.syncInputs(blocks, timelineBlocks, draftAnnotationStore, draftAnnotations);
+  useLayoutEffect(() => {
+    annotationStore.flushPendingNotifications();
+  });
+  useEffect(
+    () => annotationStore.bindSubscriptions(draftAnnotationStore),
+    [annotationStore, draftAnnotationStore],
   );
-  const annotationsById = useMemo(() => {
-    const map = new Map<string, TimelineAnnotation>();
-    for (const annotations of annotationTargets.values()) {
-      for (const annotation of annotations) map.set(annotation.id, annotation);
-    }
-    return map;
-  }, [annotationTargets]);
   const [annotationPopover, setAnnotationPopover] = useState<AnnotationPopoverOpen | null>(null);
-  const openAnnotation =
-    annotationPopover === null ? undefined : annotationsById.get(annotationPopover.annotationId);
   const closeAnnotationPopover = useCallback(() => { setAnnotationPopover(null); }, []);
   const openAnnotationMark = useCallback((mark: HTMLElement) => {
     const annotationId = mark.dataset['annotationRef'];
@@ -5764,9 +5763,6 @@ export const Transcript = memo(function Transcript({
         : { ...current, anchor };
     });
   }, [annotationPopover]);
-  useEffect(() => {
-    if (annotationPopover !== null && openAnnotation === undefined) setAnnotationPopover(null);
-  }, [annotationPopover, openAnnotation]);
   // The fold-steps preference is app-global chrome (Settings' Timeline card
   // writes it), so the transcript reacts immediately via its pub/sub snapshot.
   const foldSteps = useSyncExternalStore(
@@ -8240,6 +8236,7 @@ export const Transcript = memo(function Transcript({
     timelineBlocks.length === 0 && !state.busy && replyGap === undefined && !showTopEdgeForEmptyHistory;
 
   return (
+    <TranscriptAnnotationsContext.Provider value={annotationStore}>
     <AgentRefResolutionProvider value={agentRefResolution}>
     <TranscriptDeliveryProvider
       sessionId={state.sessionId}
@@ -8417,7 +8414,6 @@ export const Transcript = memo(function Transcript({
                           forest={stableForest}
                           rowActions={rowActions}
                           latestFinalAssistantId={latestFinalAssistantId}
-                          annotations={annotationTargets.get(virtualNodeKey(node))}
                           executionBadge={executionBadges.get(virtualNodeKey(node))}
                           stoppedTailTurnId={node.kind === 'assistant' ? stoppedTailTurnId : undefined}
                           superseded={
@@ -8542,19 +8538,12 @@ export const Transcript = memo(function Transcript({
         </CompactionRecoveryContext.Provider>
         )}
       </div>
-      {annotationPopover !== null && openAnnotation !== undefined ? (
-        <AnnotationPopover
+      {annotationPopover !== null ? (
+        <TranscriptAnnotationPopover
           state={annotationPopover}
-          annotation={openAnnotation}
-          onSave={(id, comment) => {
-            if (draftAnnotations?.some((note) => note.id === id)) onSaveDraftAnnotation?.(id, comment);
-            else writeAnnotationOverride(id, { ...annotationOverrides[id], comment });
-          }}
-          onRemove={(id) => {
-            if (draftAnnotations?.some((note) => note.id === id)) onRemoveDraftAnnotation?.(id);
-            else writeAnnotationOverride(id, { ...annotationOverrides[id], deleted: true });
-            closeAnnotationPopover();
-          }}
+          store={annotationStore}
+          onSaveDraft={onSaveDraftAnnotation}
+          onRemoveDraft={onRemoveDraftAnnotation}
           onClose={closeAnnotationPopover}
         />
       ) : null}
@@ -8618,5 +8607,6 @@ export const Transcript = memo(function Transcript({
     </InvocationContext.Provider>
     </TranscriptDeliveryProvider>
     </AgentRefResolutionProvider>
+    </TranscriptAnnotationsContext.Provider>
   );
 });

@@ -2555,9 +2555,9 @@ export class SessionController {
     }
   };
 
-  private setDurableIngress(records: readonly DurableIngressItem[], agentId = MAIN_AGENT_ID): void {
+  private setDurableIngress(records: readonly DurableIngressItem[]): void {
     for (const record of records) {
-      const recordAgent = record.agent_id ?? agentId;
+      const recordAgent = record.agent_id ?? MAIN_AGENT_ID;
       if (record.admission === 'failed' || record.admission === 'cancelled' || record.delivery_state === 'failed' || record.delivery_state === 'cancelled' ||
           (record.admission === 'admitted' && record.delivery_state === 'queued')) {
         this.reconcileSteerOutcome(recordAgent, record.prompt_id, this.settledSteerOutcome(recordAgent, record.prompt_id));
@@ -2569,7 +2569,7 @@ export class SessionController {
         : record.admission === 'admitted' ? 'waiting'
         : (record.admission === 'restoring' || record.admission === 'waiting_switch') && pending.phase !== 'waiting' ? 'preparing' : pending.phase;
       if (phase !== pending.phase) this.setPendingSteer(recordAgent, { ...pending, phase });
-      if (record.admission !== undefined) forgetUnconfirmedSubmission(this.sessionId, record.prompt_id);
+      if (record.admission !== undefined) forgetUnconfirmedSubmission(this.sessionId, record.prompt_id, recordAgent);
     }
     const previous = this.shell.durableIngress ?? [];
     if (previous.length === records.length && previous.every((item, index) => {
@@ -2629,7 +2629,7 @@ export class SessionController {
       this.setDurableIngress([
         ...this.getDurableIngress().filter((item) => item.prompt_id !== stamped.prompt_id || (item.agent_id ?? MAIN_AGENT_ID) !== target.agentId),
         stamped,
-      ], target.agentId);
+      ]);
       if (result.admission !== 'restoring' && result.admission !== 'waiting_switch') {
         this.durableSteerReads.delete(key);
         this.durablePromptReads.delete(key);
@@ -2722,7 +2722,7 @@ export class SessionController {
     this.setDurableIngress([
       ...this.getDurableIngress().filter((item) => item.prompt_id !== promptId || (item.agent_id ?? MAIN_AGENT_ID) !== agentId),
       stamped,
-    ], agentId);
+    ]);
   }
 
   getDurableIngress(): readonly DurableIngressItem[] {
@@ -2739,14 +2739,14 @@ export class SessionController {
       agent_id: body.agent_id ?? (agentId === MAIN_AGENT_ID ? undefined : agentId),
     }, agentId);
     const admissionRejected = result.admission === 'failed' || result.admission === 'cancelled';
-    if (!admissionRejected) forgetUnconfirmedSubmission(this.sessionId, promptId);
     const targetAgent = (result as DurableIngressItem).agent_id ?? body.agent_id ?? agentId;
+    if (!admissionRejected) forgetUnconfirmedSubmission(this.sessionId, promptId, targetAgent);
     const stamped = stampIngressAgent(result, targetAgent);
     if (result.admission !== undefined) {
       this.setDurableIngress([
         ...this.getDurableIngress().filter((item) => item.prompt_id !== promptId || (item.agent_id ?? MAIN_AGENT_ID) !== targetAgent),
         stamped,
-      ], targetAgent);
+      ]);
     }
     const coreAdmitted = result.admission === undefined || result.admission === 'admitted';
     if (coreAdmitted && this.shell.cursor.epoch?.startsWith('cold:') === true) {
@@ -5828,6 +5828,7 @@ export class SessionController {
         if (durable) this.observeDurableSteer(agentId, promptId);
         throw new SendNowError('unknown', error);
       }
+      preservation.acknowledge();
       this.clearPendingSteer(agentId, promptId);
       throw new SendNowError('submit', error);
     }
@@ -5842,7 +5843,7 @@ export class SessionController {
       this.setDurableIngress([
         ...(this.shell.durableIngress ?? []).filter((item) => item.prompt_id !== stamped.prompt_id || (item.agent_id ?? MAIN_AGENT_ID) !== agentId),
         stamped,
-      ], agentId);
+      ]);
     }
     const settled = this.settledSteerOutcome(agentId, result.prompt_id);
     if (settled !== undefined) {

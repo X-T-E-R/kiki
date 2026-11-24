@@ -8,10 +8,13 @@ import {
   collectDraftAnnotationTargets,
   collectTimelineAnnotations,
   findQuoteRange,
+  flushAnnotationOverrides,
+  getAnnotationOverride,
   getAnnotationOverridesSnapshot,
   parseSelectionCarryovers,
   resetAnnotationOverridesForTests,
   selectionCarryoverPreviewText,
+  subscribeAnnotationOverrideIds,
   subscribeAnnotationOverrides,
   writeAnnotationOverride,
   type TimelineAnnotation,
@@ -354,5 +357,40 @@ describe('annotation overrides', () => {
     const id = annotationOverrideId('q', 'original');
     writeAnnotationOverride(id, {});
     expect(getAnnotationOverridesSnapshot()[id]).toBeUndefined();
+  });
+
+  it('notifies scoped per-id subscribers only when their watched ids change', () => {
+    const watched = annotationOverrideId('q1', 'c1');
+    const unrelated = annotationOverrideId('q2', 'c2');
+    let watchedHits = 0;
+    const unsub = subscribeAnnotationOverrideIds([watched], () => {
+      watchedHits += 1;
+    });
+    writeAnnotationOverride(unrelated, { comment: 'other' });
+    expect(watchedHits).toBe(0);
+    expect(getAnnotationOverride(unrelated)).toEqual({ comment: 'other' });
+    writeAnnotationOverride(watched, { comment: 'updated' });
+    expect(watchedHits).toBe(1);
+    expect(getAnnotationOverride(watched)).toEqual({ comment: 'updated' });
+    unsub();
+  });
+
+  it('defers localStorage writes off the synchronous click frame and flushes on demand', () => {
+    const id = annotationOverrideId('q', 'deferred');
+    const setItemCalls: string[] = [];
+    const originalSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key: string, value: string) {
+      setItemCalls.push(key);
+      return originalSetItem.call(this, key, value);
+    };
+    try {
+      writeAnnotationOverride(id, { comment: 'instant' });
+      expect(setItemCalls).toHaveLength(0);
+      expect(getAnnotationOverride(id)).toEqual({ comment: 'instant' });
+      flushAnnotationOverrides();
+      expect(setItemCalls.length).toBeGreaterThan(0);
+    } finally {
+      Storage.prototype.setItem = originalSetItem;
+    }
   });
 });

@@ -24,6 +24,7 @@ import { useExecutorCatalog } from '../settings/profileEditor/engines';
 import type { PermissionMode, PromptSkillActivation, SessionAgentCounts } from '@kiki/protocol';
 import { resolveControllerSubagentSearch, type SubagentSearchFn } from '../../lib/subagentSearch';
 import {
+  agentDraftKey,
   beginPendingSubmissionFlight,
   buildPromptContent,
   buildSkillActivation,
@@ -82,7 +83,9 @@ import { Icon } from '../icons';
 import type { ComponentType } from 'react';
 import type { MediaPreviewProvider as OwnedMediaPreviewProvider } from '../mediaPreview';
 import { PreviewToggleButton } from '../PreviewToggleButton';
-import { useMediaPreview, type MediaPreviewApi } from '../mediaPreviewContext';
+import { ActiveDraftKeyProvider } from '../mediaParts';
+import { MediaPreviewContext, useMediaPreview, type MediaPreviewApi } from '../mediaPreviewContext';
+import { SubmissionRecovery } from '../SubmissionRecovery';
 import { ConversationDockColumn } from '../ConversationDockColumn';
 import { RightRail } from '../RightRail';
 import { SelectionQuoteButton } from '../SelectionQuoteButton';
@@ -277,7 +280,7 @@ function WorkspaceSurface({
         ? timeline
         : {
             ...timeline,
-            draftAnnotations: annotations.items,
+            draftAnnotationStore: annotations.store,
             onSaveDraftAnnotation: annotations.onUpdate,
             onRemoveDraftAnnotation: annotations.onRemove,
           },
@@ -762,7 +765,7 @@ export const AgentWorkspace = memo(function AgentWorkspace(props: WorkspaceCompo
   }
   return (
     <ExecutorLabelProvider labels={executorLabels}>
-      <ChildAgentWorkspace key={JSON.stringify([scopeId, props.target.sessionId, props.target.agentId])} {...props} />
+      <ChildAgentWorkspace key={agentDraftKey(scopeId, props.target.sessionId, props.target.agentId)} {...props} />
     </ExecutorLabelProvider>
   );
 });
@@ -801,20 +804,37 @@ function ChildAgentWorkspace({
   const handleOpenImage = useCallback(
     (src: string, name?: string) => {
       if (ambientMediaPreview !== null) {
-        ambientMediaPreview.openImage(src, name);
+        ambientMediaPreview.openImage(src, name, agentId);
         return;
       }
-      effectivePreviewRef.current?.openImage(src, name);
+      effectivePreviewRef.current?.openImage(src, name, agentId);
     },
-    [ambientMediaPreview, effectivePreviewRef],
+    [ambientMediaPreview, effectivePreviewRef, agentId],
   );
+  const scopedMediaPreview = useMemo<MediaPreviewApi | null>(() => {
+    if (!inheritMediaPreview || ambientMediaPreview === null) return null;
+    return {
+      ...ambientMediaPreview,
+      openImage: (src, name, targetAgentId) => {
+        ambientMediaPreview.openImage(src, name, targetAgentId ?? agentId);
+      },
+      openGalleryImage: ambientMediaPreview.openGalleryImage === undefined
+        ? undefined
+        : (item, targetAgentId, initialSrc, occurrenceId) => {
+            ambientMediaPreview.openGalleryImage!(item, targetAgentId ?? agentId, initialSrc, occurrenceId);
+          },
+      openAttachment: (item, galleryAgentId) => {
+        ambientMediaPreview.openAttachment(item, galleryAgentId ?? agentId);
+      },
+    };
+  }, [inheritMediaPreview, ambientMediaPreview, agentId]);
   const promoteAction = usePromoteAgent(sessionId, agentId);
   const contextSlots = useOptionalConversationShell()?.slots;
   const slots = slotsOverride ?? contextSlots ?? EMPTY_SLOTS;
 
   // Target identity owns both the composition and Composer's transient state.
   // A remount reads the old target back rather than discarding its unsent work.
-  const draftKey = JSON.stringify([scopeId, sessionId, agentId]);
+  const draftKey = agentDraftKey(scopeId, sessionId, agentId);
   const sendScope = draftKey;
   const [sendNotice, setSendNotice] = useState<{ scope: string; text: string } | null>(null);
   // The sent message stays on this timeline from the keypress until the
@@ -965,7 +985,7 @@ function ChildAgentWorkspace({
         externalBindingSetting: isExternal ? externalBindingSetting : undefined,
         sendTimingDefault: isExternal ? undefined : liveSettings.defaultAppendTiming,
         sessionRecord: sessionState.session,
-        durableIngress: sessionState.durableIngress,
+        durableIngress: filterIngressForAgent(sessionState.durableIngress, agentId),
         fsSearchEnabled: agentKnown,
       };
     },
@@ -987,7 +1007,7 @@ function ChildAgentWorkspace({
     submissionInFlight,
     timelineBlocksRef,
     annotations: {
-      annotations,
+      annotationsRef,
       setAnnotations,
       surface: annotationSurface,
     },
@@ -1183,7 +1203,7 @@ function ChildAgentWorkspace({
   ) => {
     if (!agentKnown || isPendingSubmissionInFlight(draftKey, sendScope)) return;
     const rawDraftText = draftRef.current;
-    const carry = serializeSelectionCarryover(annotations, text, options?.presentation);
+    const carry = serializeSelectionCarryover(annotationsRef.current, text, options?.presentation);
     const submittedText = carry.quotedText;
     const content = buildPromptContent(submittedText, composerAttachments, carry.presentation);
     if (content === null) return;
@@ -1394,7 +1414,7 @@ function ChildAgentWorkspace({
   ) => {
     if (!agentKnown || isPendingSubmissionInFlight(draftKey, sendScope)) return;
     const submittedDraft = projectPresentedText(text, presentation);
-    const carry = serializeSelectionCarryover(annotations, text, presentation);
+    const carry = serializeSelectionCarryover(annotationsRef.current, text, presentation);
     const content = buildPromptContent(carry.quotedText, composerAttachments, carry.presentation);
     if (content === null) return;
     if (controller === null) throw new Error(t('subagent.composerUnavailable'));
@@ -1777,6 +1797,7 @@ function ChildAgentWorkspace({
   }, [locale]);
 
   const chrome = (
+    <ActiveDraftKeyProvider sessionId={sessionId} draftKey={draftKey}>
     <MessageViewContext.Provider value={core.messageViewContext}>
     <InteractionPlacementContext.Provider value={core.interactionPlacement}>
     <ModelSwitchActionsContext.Provider value={modelSwitchActions}>
@@ -1826,6 +1847,7 @@ function ChildAgentWorkspace({
       }}
       annotations={annotationSurface}
       dock={<div className="space-y-2 pt-2">
+        <SubmissionRecovery sessionId={sessionId} agentId={agentId} draftKey={draftKey} state={agentState} />
         <ResyncStatusBanner
           resyncing={sessionState.resyncing} resyncFailed={sessionState.resyncFailed}
           error={sessionState.resyncError}
@@ -1863,7 +1885,7 @@ function ChildAgentWorkspace({
             </span>
           </ConversationDockColumn>
         ) : null}
-        {sendNotice?.scope === sendScope ? (
+        {sendNotice !== null && sendNotice.scope === sendScope ? (
           <ConversationDockColumn>
             <p role="alert" className="max-h-24 overflow-y-auto overscroll-contain break-words rounded-lg border border-hairline bg-paper px-3 py-2 text-[11px] text-danger">
               {sendNotice.text}
@@ -1934,12 +1956,20 @@ function ChildAgentWorkspace({
     </ModelSwitchActionsContext.Provider>
     </InteractionPlacementContext.Provider>
     </MessageViewContext.Provider>
+    </ActiveDraftKeyProvider>
   );
 
   // Embedded mode (preview tab): the ambient session-level provider already
   // owns media overlays and the one preview workspace; mounting another
-  // provider here would fork that seat.
-  if (inheritMediaPreview) return chrome;
+  // provider here would fork that seat, so we wrap only the image openers to
+  // bind lightbox annotations to this child's draft key.
+  if (inheritMediaPreview) {
+    return scopedMediaPreview === null ? chrome : (
+      <MediaPreviewContext.Provider value={scopedMediaPreview}>
+        {chrome}
+      </MediaPreviewContext.Provider>
+    );
+  }
   if (MediaPreviewProvider === undefined) throw new Error('Owned workspace requires a media preview provider');
 
   return (

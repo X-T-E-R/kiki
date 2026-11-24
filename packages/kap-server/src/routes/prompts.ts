@@ -454,12 +454,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
   });
   app.addHook?.('preClose', () => ingress.close());
   app.addHook?.('onListen', async () => { ingress.start(); });
-  const durableIngressItemSchema = promptItemSchema.extend({
-    agent_id: z.string().min(1).optional(),
-  });
-  const durableIngressReceiptSchema = promptSubmitReceiptSchema.extend({
-    agent_id: z.string().min(1).optional(),
-  });
+  const durableIngressItemSchema = promptItemSchema.extend({ agent_id: z.string().min(1).optional() });
+  const durableIngressReceiptSchema = promptSubmitReceiptSchema.extend({ agent_id: z.string().min(1).optional() });
   const durablePromptListResponseSchema = promptListResponseSchema.extend({
     ingress: z.array(durableIngressItemSchema).optional(),
   });
@@ -720,9 +716,11 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         }
       };
       const sendResult = (result: z.input<typeof durableIngressItemSchema> & Pick<PromptIngressResult, 'resolved_parts'>) => {
-        const resolved_parts = result.resolved_parts ?? (retryContentRanges ?? preparedMedia?.sourceRanges)?.map(({ index, start, end }) => ({ index, content: result.content.slice(start, end) }));
-        const data = req.query.receipt === 'true' ? durableIngressReceiptSchema.parse({ ...result, resolved_parts })
-          : ingressExecution === undefined ? result : { ...result, resolved_parts };
+        const agent_id = result.agent_id ?? (req.body.agent_id !== undefined && req.body.agent_id !== MAIN_AGENT_ID ? req.body.agent_id : undefined);
+        const withAgent = agent_id === undefined ? result : { ...result, agent_id };
+        const resolved_parts = withAgent.resolved_parts ?? (retryContentRanges ?? preparedMedia?.sourceRanges)?.map(({ index, start, end }) => ({ index, content: withAgent.content.slice(start, end) }));
+        const data = req.query.receipt === 'true' ? durableIngressReceiptSchema.parse({ ...withAgent, resolved_parts })
+          : ingressExecution === undefined ? withAgent : { ...withAgent, resolved_parts };
         return reply.send(okEnvelope(data, req.id));
       };
       try {
@@ -895,11 +893,13 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         await ingressExecution?.beforeSubmit();
         const admission = await subphase('admit_run', () => admitPromptRun(core, session, resolved, reservation!));
         try {
-          await subphase('metadata_update', () => applyPromptMetadataUpdate({
-            metadata: session.accessor.get(ISessionMetadata),
-            eventService: core.accessor.get(IEventService),
-            sessionId: session_id,
-          }, promptMetadataTextFromContentParts(parts)));
+          if (resolved.agentId === MAIN_AGENT_ID) {
+            await subphase('metadata_update', () => applyPromptMetadataUpdate({
+              metadata: session.accessor.get(ISessionMetadata),
+              eventService: core.accessor.get(IEventService),
+              sessionId: session_id,
+            }, promptMetadataTextFromContentParts(parts)));
+          }
           if (req.body.skills !== undefined) {
             const settlement = watchPromptSettlements(resolved.events);
             let result: PromptWithSkillsResult;

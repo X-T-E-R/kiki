@@ -809,7 +809,7 @@ it('consumes the final durable reason after the first acknowledgement, once', as
   expect(harness.pushToast).not.toHaveBeenCalled();
 
   const queued: PromptItem = {
-    prompt_id: 'p', user_message_id: 'u', status: 'queued', admission: 'admitted',
+    prompt_id: 'p', user_message_id: 'u', agent_id: 'child', status: 'queued', admission: 'admitted',
     delivery_state: 'queued', delivery_reason: 'target_changed',
     content: [{ type: 'text', text: 'late receipt' }], created_at: '2026-10-20T00:00:00.000Z',
   };

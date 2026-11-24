@@ -24,9 +24,21 @@ function read(storage: SpaceStorage): UnconfirmedSubmission[] {
   } catch { return []; }
 }
 
+const unconfirmedListeners = new Set<() => void>();
+
+function notifyUnconfirmedListeners(): void {
+  for (const listener of unconfirmedListeners) listener();
+}
+
+export function subscribeUnconfirmedSubmissions(listener: () => void): () => void {
+  unconfirmedListeners.add(listener);
+  return () => { unconfirmedListeners.delete(listener); };
+}
+
 function write(storage: SpaceStorage, items: readonly UnconfirmedSubmission[]): void {
   if (items.length === 0) storage.removeItem(KEY);
   else storage.setItem(KEY, JSON.stringify(items));
+  notifyUnconfirmedListeners();
 }
 
 export interface SubmissionPreservation {
@@ -54,12 +66,19 @@ export function preserveSubmission(input: UnconfirmedSubmission, options: { read
   };
 }
 
-export function readUnconfirmedSubmissions(sessionId: string): readonly UnconfirmedSubmission[] {
-  return read(spaceStorage).filter(item => item.sessionId === sessionId);
+export function readUnconfirmedSubmissions(sessionId: string, agentId?: string): readonly UnconfirmedSubmission[] {
+  return read(spaceStorage).filter(
+    item => item.sessionId === sessionId && (agentId === undefined || item.agentId === agentId),
+  );
 }
 
 /** Remove only an acknowledged identity or an item explicitly dismissed by its author; never resend. */
-export function forgetUnconfirmedSubmission(sessionId: string, promptId: string): void {
+export function forgetUnconfirmedSubmission(sessionId: string, promptId: string, agentId?: string): void {
   if (typeof localStorage === 'undefined') return;
-  write(spaceStorage, read(spaceStorage).filter(item => item.sessionId !== sessionId || item.promptId !== promptId));
+  write(
+    spaceStorage,
+    read(spaceStorage).filter(
+      item => item.sessionId !== sessionId || item.promptId !== promptId || (agentId !== undefined && item.agentId !== agentId),
+    ),
+  );
 }

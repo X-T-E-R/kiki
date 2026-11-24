@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { resetDraftMemoryForTests, flushDrafts, writeDraft } from '../composer/drafts';
 import {
+  flushAnnotationOverrides,
   resetAnnotationOverridesForTests,
   writeAnnotationOverride,
 } from '../composer/timelineAnnotations';
@@ -105,6 +106,7 @@ describe('space-scoped keys of session-core go through the wrapper', () => {
     flushDrafts();
     resetAnnotationOverridesForTests();
     writeAnnotationOverride('block-1', { comment: 'keep this', deleted: undefined });
+    flushAnnotationOverrides();
     resetSessionSeen();
     markSessionSeen('session-1', 12);
 

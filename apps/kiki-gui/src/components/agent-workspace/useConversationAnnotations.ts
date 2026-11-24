@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type Dispatch, type RefObject, type SetStateAction } from 'react';
 import {
   collectDraftAnnotationTargets,
   createAnnotation,
@@ -15,13 +15,23 @@ import type { TextPresentation } from '@kiki/transcript';
 import { useTimelineNavigation } from '../../lib/useTimelineNavigation';
 
 /**
+ * Scoped subscription store for a conversation's unsent draft annotations.
+ * Allows `<Transcript />` to track draft mark changes without re-rendering
+ * `AgentWorkspace`, `WorkspaceSurface`, or the virtualized timeline shell.
+ */
+export interface ConversationAnnotationStore {
+  readonly getSnapshot: () => readonly SelectionAnnotation[];
+  readonly subscribe: (listener: () => void) => () => void;
+}
+
+/**
  * Canonical timeline selection-quote + draft-annotation surface passed into
  * `WorkspaceSurface` so `main`, `branch`, and `subagent` share one rendering
- * and interaction path.
+ * and interaction path. Referentially stable across annotation edits.
  */
 export interface ConversationAnnotationSurface {
   readonly containerRef: RefObject<HTMLDivElement | null>;
-  readonly items: readonly SelectionAnnotation[];
+  readonly store: ConversationAnnotationStore;
   readonly onAnnotate: (text: string, comment: string, source?: SelectionSourceAnchor | null) => string;
   readonly onUpdate: (id: string, comment: string) => void;
   readonly onRemove: (id: string) => void;
@@ -61,7 +71,9 @@ export function updateStoredAnnotations(
     ...saved,
     attachments: saved.attachments ?? [],
     quotes: [],
-    annotations: update(saved.annotations ?? []),
+    quote: null,
+    quoteSource: undefined,
+    annotations: update(normalizeStoredAnnotations(saved)),
     permissionMode: saved.permissionMode,
     planMode: saved.planMode,
     planGate: saved.planGate,
@@ -100,9 +112,26 @@ export function serializeSelectionCarryover(
   };
 }
 
+const NOOP_ANNOTATION_SUBSCRIBE = (): (() => void) => () => {};
+const EMPTY_ANNOTATIONS: readonly SelectionAnnotation[] = [];
+const EMPTY_ANNOTATIONS_SNAPSHOT = (): readonly SelectionAnnotation[] => EMPTY_ANNOTATIONS;
+
+/** Subscribe to a conversation's draft annotations when driven by a scoped store, or return the controlled prop. */
+export function useSubscribedAnnotations(
+  store: ConversationAnnotationStore | undefined,
+  controlled: readonly SelectionAnnotation[] | undefined,
+): readonly SelectionAnnotation[] | undefined {
+  const subscribed = useSyncExternalStore(
+    store?.subscribe ?? NOOP_ANNOTATION_SUBSCRIBE,
+    store?.getSnapshot ?? EMPTY_ANNOTATIONS_SNAPSHOT,
+    store?.getSnapshot ?? EMPTY_ANNOTATIONS_SNAPSHOT,
+  );
+  return store !== undefined ? subscribed : controlled;
+}
+
 export interface UseConversationAnnotationsResult {
-  readonly annotations: readonly SelectionAnnotation[];
   readonly setAnnotations: Dispatch<SetStateAction<readonly SelectionAnnotation[]>>;
+  readonly hydrateAnnotations: (next: readonly SelectionAnnotation[]) => void;
   readonly annotationsRef: RefObject<readonly SelectionAnnotation[]>;
   readonly containerRef: RefObject<HTMLDivElement | null>;
   readonly onAnnotate: (text: string, comment: string, source?: SelectionSourceAnchor | null) => string;
@@ -112,19 +141,122 @@ export interface UseConversationAnnotationsResult {
   readonly surface: ConversationAnnotationSurface;
 }
 
+function sameAnnotationList(
+  left: readonly SelectionAnnotation[],
+  right: readonly SelectionAnnotation[],
+): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index]!;
+    const b = right[index]!;
+    if (
+      a.id !== b.id ||
+      a.quote !== b.quote ||
+      a.comment !== b.comment ||
+      a.source?.blockId !== b.source?.blockId ||
+      a.source?.version !== b.source?.version ||
+      a.source?.start !== b.source?.start ||
+      a.source?.end !== b.source?.end ||
+      a.source?.text !== b.source?.text
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function useConversationAnnotations(options: {
   readonly storageKey: string;
   readonly sessionId: string;
   readonly agentId?: string;
   readonly blocks: readonly Block[] | (() => readonly Block[]);
   readonly isMutationLocked?: () => boolean;
+  readonly persistComposerState?: boolean;
 }): UseConversationAnnotationsResult {
-  const { storageKey, sessionId, agentId = MAIN_AGENT_ID, blocks, isMutationLocked } = options;
-  const [annotations, setAnnotations] = useState<readonly SelectionAnnotation[]>(() =>
-    normalizeStoredAnnotations(readComposerState(storageKey)),
-  );
-  const annotationsRef = useRef(annotations);
-  annotationsRef.current = annotations;
+  const {
+    storageKey,
+    sessionId,
+    agentId = MAIN_AGENT_ID,
+    blocks,
+    isMutationLocked,
+    persistComposerState = true,
+  } = options;
+  const storageKeyRef = useRef(storageKey);
+  storageKeyRef.current = storageKey;
+  const persistRef = useRef(persistComposerState);
+  persistRef.current = persistComposerState;
+  const storeRef = useRef<{
+    storageKey: string;
+    items: readonly SelectionAnnotation[];
+    pendingNotify: boolean;
+    readonly listeners: Set<() => void>;
+    readonly api: ConversationAnnotationStore;
+    readonly publish: (next: readonly SelectionAnnotation[]) => void;
+    readonly notifyAll: () => void;
+  } | null>(null);
+  if (storeRef.current === null) {
+    const initial = normalizeStoredAnnotations(readComposerState(storageKey));
+    const listeners = new Set<() => void>();
+    const record = {
+      storageKey,
+      items: initial,
+      pendingNotify: false,
+      listeners,
+      api: {
+        getSnapshot: () => record.items,
+        subscribe: (listener: () => void) => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+      },
+      publish: (next: readonly SelectionAnnotation[]) => {
+        if (record.items === next) return;
+        record.items = next;
+        record.pendingNotify = false;
+        for (const listener of listeners) listener();
+      },
+      notifyAll: () => {
+        if (!record.pendingNotify) return;
+        record.pendingNotify = false;
+        for (const listener of listeners) listener();
+      },
+    };
+    storeRef.current = record;
+  }
+  const annotationsRef = useRef(storeRef.current.items);
+  if (storeRef.current.storageKey !== storageKey) {
+    const reloaded = normalizeStoredAnnotations(readComposerState(storageKey));
+    storeRef.current.storageKey = storageKey;
+    if (!sameAnnotationList(storeRef.current.items, reloaded)) {
+      storeRef.current.items = reloaded;
+      storeRef.current.pendingNotify = true;
+    }
+    annotationsRef.current = storeRef.current.items;
+  }
+  useLayoutEffect(() => {
+    storeRef.current?.notifyAll();
+  }, [storageKey]);
+  const hydrateAnnotations = useCallback((next: readonly SelectionAnnotation[]) => {
+    const record = storeRef.current;
+    if (record === null || sameAnnotationList(record.items, next)) return;
+    annotationsRef.current = next;
+    record.publish(next);
+  }, []);
+  const setAnnotations: Dispatch<SetStateAction<readonly SelectionAnnotation[]>> = useCallback((action) => {
+    const record = storeRef.current;
+    if (record === null) return;
+    const current = record.items;
+    const next = typeof action === 'function' ? action(current) : action;
+    if (next === current) return;
+    annotationsRef.current = next;
+    if (persistRef.current) {
+      updateStoredAnnotations(storageKeyRef.current, () => next);
+    }
+    record.publish(next);
+  }, []);
   const containerRef = useRef<HTMLDivElement>(null);
   const blocksRef = useRef(blocks);
   blocksRef.current = blocks;
@@ -136,19 +268,25 @@ export function useConversationAnnotations(options: {
     const annotation = createAnnotation(text, comment, source);
     setAnnotations((current) => [...current, annotation]);
     return annotation.id;
-  }, []);
+  }, [setAnnotations]);
 
   const onRemove = useCallback((id: string) => {
     if (lockedRef.current?.() === true) return;
     setAnnotations((current) => removeAnnotation(current, id));
-  }, []);
+  }, [setAnnotations]);
 
   const onUpdate = useCallback((id: string, comment: string) => {
     if (lockedRef.current?.() === true) return;
-    setAnnotations((current) =>
-      current.map((annotation) => (annotation.id === id ? { ...annotation, comment } : annotation)),
-    );
-  }, []);
+    setAnnotations((current) => {
+      let changed = false;
+      const next = current.map((annotation) => {
+        if (annotation.id !== id || annotation.comment === comment) return annotation;
+        changed = true;
+        return { ...annotation, comment };
+      });
+      return changed ? next : current;
+    });
+  }, [setAnnotations]);
 
   const onLocate = useCallback(
     (annotation: SelectionAnnotation) => {
@@ -165,20 +303,21 @@ export function useConversationAnnotations(options: {
     [agentId, navigateTimeline, sessionId],
   );
 
+  const store = storeRef.current.api;
   const surface = useMemo<ConversationAnnotationSurface>(
     () => ({
       containerRef,
-      items: annotations,
+      store,
       onAnnotate,
       onUpdate,
       onRemove,
     }),
-    [annotations, onAnnotate, onUpdate, onRemove],
+    [store, onAnnotate, onUpdate, onRemove],
   );
 
   return {
-    annotations,
     setAnnotations,
+    hydrateAnnotations,
     annotationsRef,
     containerRef,
     onAnnotate,

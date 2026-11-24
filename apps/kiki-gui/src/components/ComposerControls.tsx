@@ -1000,29 +1000,38 @@ function FileContinueRow({
 }
 
 /**
- * The send-timing rows, shared by the send button's hover menu and the ＋
+ * The send-timing rows, shared by the send button's split menu and the ＋
  * menu's timing view (the phone path, where there is no hover): send with the
- * session's default timing, send into the running turn, or defer until a
- * chosen queue timing. When `busySendsNow` is active, plain send already
- * steers into the running turn, so the menu leads with Send now and offers all
- * three deferred queue timings (`agent_idle`, `subagents_done`, `tasks_done`).
+ * session's default timing, send into the running turn (when busy), or defer
+ * until subagents/tasks finish. When `busy && busySendsNow` is active, plain
+ * send already steers into the running turn, so the menu leads with Send now
+ * and offers all three deferred queue timings (`agent_idle`, `subagents_done`,
+ * `tasks_done`). When idle (`busy === false`), plain send already starts
+ * immediately so `now` and `agent_idle` are omitted.
  */
 export function SendTimingRows({
   defaultTiming,
   canSendNow,
+  busy = true,
   busySendsNow = false,
   onPick,
 }: {
   readonly defaultTiming: DeferredAppendTiming;
   readonly canSendNow: boolean;
+  readonly busy?: boolean;
   readonly busySendsNow?: boolean;
   readonly onPick: (choice: SendTimingChoice) => void;
 }) {
   const { t } = useI18n();
-  const deferredPicks = busySendsNow ? DEFERRED_SEND_TIMING_PICKS : SEND_TIMING_PICKS;
+  const showSendNow = busy && canSendNow;
+  const showDefault = !(busy && busySendsNow);
+  const deferredPicks = busy && busySendsNow ? DEFERRED_SEND_TIMING_PICKS : SEND_TIMING_PICKS;
+  const defaultHint = !busy && defaultTiming === 'agent_idle'
+    ? t('composer.sendTiming.sendIdleHint')
+    : t('composer.sendTiming.sendHint', { timing: t(TIMING_SHORT_KEY[defaultTiming]) });
   return (
     <>
-      {!busySendsNow ? (
+      {showDefault ? (
         <button
           type="button"
           role="menuitem"
@@ -1034,12 +1043,12 @@ export function SendTimingRows({
           <span className="min-w-0 flex-1">
             <span className="block font-medium text-ink">{t('composer.sendTiming.send')}</span>
             <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">
-              {t('composer.sendTiming.sendHint', { timing: t(TIMING_SHORT_KEY[defaultTiming]) })}
+              {defaultHint}
             </span>
           </span>
         </button>
       ) : null}
-      {canSendNow ? (
+      {showSendNow ? (
         <button
           type="button"
           role="menuitem"
@@ -1103,11 +1112,12 @@ export function AddMenu({
   readonly rebuildDisabled?: boolean;
   /** Absent hides the Mode row (subagent composer). */
   readonly runMode?: RunModeControls;
-  /** Send-timing view (queue-while-busy choices); absent hides the row. The
-   * phone path to timing: the send button's hover menu never opens on touch. */
+  /** Send-timing view (immediate/deferred send timing choices); absent hides
+   * the row. The phone path to timing alongside the send button's caret. */
   readonly timing?: {
     readonly defaultTiming: DeferredAppendTiming;
     readonly canSendNow: boolean;
+    readonly busy?: boolean;
     readonly busySendsNow?: boolean;
     readonly onPick: (choice: SendTimingChoice) => void;
   };
@@ -1964,6 +1974,7 @@ export function AddMenu({
                 <SendTimingRows
                   defaultTiming={timing.defaultTiming}
                   canSendNow={timing.canSendNow}
+                  busy={timing.busy}
                   busySendsNow={timing.busySendsNow}
                   onPick={(choice) => { close(); timing.onPick(choice); }}
                 />

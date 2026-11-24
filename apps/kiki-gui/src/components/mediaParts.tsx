@@ -1,6 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
-import { appendToDraft, mentionToken, resolveActiveDraftKey } from '@kiki/session-core/composer';
+import {
+  appendToDraft,
+  agentDraftKey,
+  mentionToken,
+  resolveActiveDraftKey,
+} from '@kiki/session-core/composer';
 import { basenameOf, formatBytes, resolveHostPath, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
 import { openExternalUrl, useHost } from '../host';
 import { useI18n } from '../i18n';
@@ -40,10 +45,13 @@ export function ActiveDraftKeyProvider({
   return <ActiveDraftKeyContext.Provider value={value}>{children}</ActiveDraftKeyContext.Provider>;
 }
 
-export function useActiveDraftKey(sessionId?: string): string | undefined {
+export function useActiveDraftKey(sessionId?: string, agentId?: string): string | undefined {
   const context = useContext(ActiveDraftKeyContext);
   const connection = useOptionalConnection();
   const effectiveSessionId = sessionId ?? context?.sessionId;
+  if (agentId !== undefined && effectiveSessionId !== undefined && effectiveSessionId !== '') {
+    return agentDraftKey(connection?.scopeId, effectiveSessionId, agentId);
+  }
   if (context?.draftKey !== undefined && context.sessionId === effectiveSessionId) {
     return context.draftKey;
   }

@@ -9,8 +9,8 @@
  * Overrides persist with composer drafts but never change the sent prompt.
  */
 
-import { readSettings } from '../settings/settings';
-import { onDidChangeSpaceStorage, spaceStorage, spaceStorageKey } from '../storage/spaceStorage';
+import { readSettings, settingsSnapshot } from '../settings/settings';
+import { onDidChangeSpaceStorage, spaceStorage, spaceStorageKey, type SpaceStorage } from '../storage/spaceStorage';
 import { projectPresentedText } from '@kiki/transcript';
 import { parseSourceAnchor, sourceTextVersion, type SelectionSourceAnchor } from './selectionQuote';
 
@@ -267,51 +267,116 @@ export function findQuoteRange(
 /** Block kinds eligible as annotation anchors: message text only. */
 const ANCHORABLE_KINDS = new Set(['user', 'assistant']);
 
+interface BlockAnchorIndex {
+  readonly length: number;
+  readonly byId: Map<string, TimelineBlockLike>;
+  readonly anchorable: TimelineBlockLike[];
+}
+
+const blockAnchorIndexCache = new WeakMap<readonly TimelineBlockLike[], BlockAnchorIndex>();
+
+function getBlockAnchorIndex(blocks: readonly TimelineBlockLike[]): BlockAnchorIndex {
+  const cached = blockAnchorIndexCache.get(blocks);
+  if (cached !== undefined && cached.length === blocks.length) return cached;
+  const byId = new Map<string, TimelineBlockLike>();
+  const anchorable: TimelineBlockLike[] = [];
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index];
+    if (block === undefined || !ANCHORABLE_KINDS.has(block.kind) || block.text === undefined) continue;
+    if (!byId.has(block.id)) byId.set(block.id, block);
+    anchorable.push(block);
+  }
+  const built: BlockAnchorIndex = { length: blocks.length, byId, anchorable };
+  blockAnchorIndexCache.set(blocks, built);
+  return built;
+}
+
 /** Resolve explicit sources with one version read per text in a single derivation. */
-function createAnnotationSourceResolver() {
+function createVersionReader() {
   const versions = new Map<string, string>();
-  const versionOf = (text: string): string => {
+  return (text: string): string => {
     const cached = versions.get(text);
     if (cached !== undefined) return cached;
     const version = sourceTextVersion(text);
     versions.set(text, version);
     return version;
   };
-  return (
-    blocks: readonly TimelineBlockLike[],
-    quote: string,
-    source?: SelectionSourceAnchor | null,
-  ): TimelineBlockLike | undefined => {
-    if (quote.trim() === '' || source === null) return undefined;
-    const candidates = blocks.filter((block) => ANCHORABLE_KINDS.has(block.kind) && block.text !== undefined);
-    if (source !== undefined) {
-      return candidates.find((block) => block.id === source.blockId && versionOf(block.text!) === source.version);
+}
+
+function resolveFromAnchorIndex(
+  byId: ReadonlyMap<string, TimelineBlockLike>,
+  anchorable: readonly TimelineBlockLike[],
+  versionOf: (text: string) => string,
+  quote: string,
+  source?: SelectionSourceAnchor | null,
+): TimelineBlockLike | undefined {
+  if (quote.trim() === '' || source === null) return undefined;
+  if (source !== undefined) {
+    const candidate = byId.get(source.blockId);
+    if (candidate === undefined || candidate.text === undefined) return undefined;
+    return versionOf(candidate.text) === source.version ? candidate : undefined;
+  }
+  let match: TimelineBlockLike | undefined;
+  for (let index = 0; index < anchorable.length; index += 1) {
+    const block = anchorable[index]!;
+    if (findQuoteRange(block.text!, quote) !== null) {
+      if (match !== undefined) return undefined;
+      match = block;
     }
-    const matches = candidates.filter((block) => findQuoteRange(block.text!, quote) !== null);
-    return matches.length === 1 ? matches[0] : undefined;
-  };
+  }
+  return match;
 }
 
 /** Sent markers derive from the same carrying text in local echoes and cold history. */
 export function collectTimelineAnnotations(
   blocks: readonly TimelineBlockLike[],
 ): ReadonlyMap<string, readonly TimelineAnnotation[]> {
-  const annotationSource = createAnnotationSourceResolver();
+  const versionOf = createVersionReader();
   const targets = new Map<string, TimelineAnnotation[]>();
+  const precedingById = new Map<string, TimelineBlockLike>();
+  const precedingAnchorable: TimelineBlockLike[] = [];
   for (let index = 0; index < blocks.length; index += 1) {
     const block = blocks[index];
-    if (block === undefined || block.kind !== 'user' || block.text === undefined) continue;
-    const carry = parseSelectionCarryovers(block.text, block.presentation);
-    const segments: readonly { quote: string; comment: string | null; source?: SelectionSourceAnchor | null }[] = [
-      ...carry.annotations,
-      ...carry.quotes.map((q) => ({ quote: q.quote, comment: null, source: q.source })),
-    ];
-    for (const [ordinal, segment] of segments.entries()) {
-      const candidate = annotationSource(blocks.slice(0, index), segment.quote, segment.source);
-      if (candidate === undefined) continue;
-      const base = { id: annotationOverrideId(segment.quote, segment.comment ?? '', block.id, ordinal), quote: segment.quote, comment: segment.comment };
-      const annotation = segment.source === undefined ? base : { ...base, source: segment.source };
-      targets.set(candidate.id, [...(targets.get(candidate.id) ?? []), annotation]);
+    if (block === undefined) continue;
+    if (
+      block.kind === 'user' &&
+      block.text !== undefined &&
+      (block.presentation !== undefined || (typeof block.text === 'string' && block.text.startsWith('>')))
+    ) {
+      const carry = parseSelectionCarryovers(block.text, block.presentation);
+      const totalSegments = carry.annotations.length + carry.quotes.length;
+      if (totalSegments > 0) {
+        const segments: readonly { quote: string; comment: string | null; source?: SelectionSourceAnchor | null }[] = [
+          ...carry.annotations,
+          ...carry.quotes.map((q) => ({ quote: q.quote, comment: null, source: q.source })),
+        ];
+        for (const [ordinal, segment] of segments.entries()) {
+          const candidate = resolveFromAnchorIndex(
+            precedingById,
+            precedingAnchorable,
+            versionOf,
+            segment.quote,
+            segment.source,
+          );
+          if (candidate === undefined) continue;
+          const base = {
+            id: annotationOverrideId(segment.quote, segment.comment ?? '', block.id, ordinal),
+            quote: segment.quote,
+            comment: segment.comment,
+          };
+          const annotation = segment.source === undefined ? base : { ...base, source: segment.source };
+          let list = targets.get(candidate.id);
+          if (list === undefined) {
+            list = [];
+            targets.set(candidate.id, list);
+          }
+          list.push(annotation);
+        }
+      }
+    }
+    if (ANCHORABLE_KINDS.has(block.kind) && block.text !== undefined) {
+      if (!precedingById.has(block.id)) precedingById.set(block.id, block);
+      precedingAnchorable.push(block);
     }
   }
   return targets;
@@ -322,12 +387,19 @@ export function collectDraftAnnotationTargets(
   blocks: readonly TimelineBlockLike[],
   drafts: readonly TimelineAnnotation[],
 ): ReadonlyMap<string, readonly TimelineAnnotation[]> {
-  const annotationSource = createAnnotationSourceResolver();
   const targets = new Map<string, TimelineAnnotation[]>();
+  if (drafts.length === 0) return targets;
+  const versionOf = createVersionReader();
+  const { byId, anchorable } = getBlockAnchorIndex(blocks);
   for (const draft of drafts) {
-    const candidate = annotationSource(blocks, draft.quote, draft.source);
+    const candidate = resolveFromAnchorIndex(byId, anchorable, versionOf, draft.quote, draft.source);
     if (candidate === undefined) continue;
-    targets.set(candidate.id, [...(targets.get(candidate.id) ?? []), draft]);
+    let list = targets.get(candidate.id);
+    if (list === undefined) {
+      list = [];
+      targets.set(candidate.id, list);
+    }
+    list.push(draft);
   }
   return targets;
 }
@@ -363,7 +435,23 @@ const hydratedScopes = new Set<string>();
 /** Per-scope frozen snapshots for useSyncExternalStore; identity changes only on writes. */
 const snapshotByScope = new Map<string, Readonly<Record<string, AnnotationOverride>>>();
 const listeners = new Set<() => void>();
+const idListeners = new Map<string, Set<() => void>>();
+const changeListeners = new Set<(changedId: string | null) => void>();
+const scopeSwitchListeners = new Set<() => void>();
 let spaceListenerBound = false;
+let overrideUnloadBound = false;
+let overrideFlushQueued = false;
+const pendingOverrideFlushes = new Map<string, { readonly storage: SpaceStorage; readonly scoped: Map<string, AnnotationOverride> }>();
+
+function ensureSpaceListener(): void {
+  if (spaceListenerBound) return;
+  spaceListenerBound = true;
+  onDidChangeSpaceStorage(() => {
+    for (const each of listeners) each();
+    for (const each of scopeSwitchListeners) each();
+    for (const each of changeListeners) each(null);
+  });
+}
 
 function activeOverrideScope(): string {
   return spaceStorageKey(STORAGE_KEY);
@@ -380,6 +468,10 @@ function overrideMemoryForScope(scope: string = activeOverrideScope()): Map<stri
 
 function overridesEnabled(): boolean {
   return readSettings().draftPersistence;
+}
+
+function overridesEnabledFast(): boolean {
+  return typeof localStorage !== 'undefined' && settingsSnapshot().draftPersistence;
 }
 
 function readAllStored(): Record<string, AnnotationOverride> {
@@ -406,14 +498,58 @@ function readAllStored(): Record<string, AnnotationOverride> {
   }
 }
 
-function persistAll(scoped: Map<string, AnnotationOverride>): void {
-  if (!overridesEnabled()) return;
+function persistAllToStorage(storage: SpaceStorage, scoped: Map<string, AnnotationOverride>): void {
   const all = Object.fromEntries(scoped);
   try {
-    if (scoped.size === 0) spaceStorage.removeItem(STORAGE_KEY);
-    else spaceStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+    if (scoped.size === 0) storage.removeItem(STORAGE_KEY);
+    else storage.setItem(STORAGE_KEY, JSON.stringify(all));
   } catch {
     // storage full / unavailable — overrides are a convenience
+  }
+}
+
+/** Flush any deferred localStorage writes for annotation overrides immediately. */
+export function flushAnnotationOverrides(): void {
+  overrideFlushQueued = false;
+  if (pendingOverrideFlushes.size === 0) return;
+  const batches = [...pendingOverrideFlushes.values()];
+  pendingOverrideFlushes.clear();
+  if (!overridesEnabled()) return;
+  for (const batch of batches) {
+    persistAllToStorage(batch.storage, batch.scoped);
+  }
+}
+
+interface LifecycleHost {
+  readonly addEventListener?: (type: string, listener: () => void) => void;
+  readonly document?: {
+    readonly visibilityState?: string;
+    readonly addEventListener?: (type: string, listener: () => void) => void;
+  };
+}
+
+function scheduleOverrideFlush(scope: string, scoped: Map<string, AnnotationOverride>): void {
+  if (!overridesEnabledFast()) {
+    pendingOverrideFlushes.delete(scope);
+    return;
+  }
+  const host = globalThis as unknown as LifecycleHost;
+  if (!overrideUnloadBound && typeof host.addEventListener === 'function') {
+    host.addEventListener('pagehide', flushAnnotationOverrides);
+    host.addEventListener('beforeunload', flushAnnotationOverrides);
+    host.document?.addEventListener?.('visibilitychange', () => {
+      if (host.document?.visibilityState === 'hidden') flushAnnotationOverrides();
+    });
+    overrideUnloadBound = true;
+  }
+  const existing = pendingOverrideFlushes.get(scope);
+  pendingOverrideFlushes.set(scope, {
+    storage: existing?.storage ?? spaceStorage.capture(),
+    scoped,
+  });
+  if (!overrideFlushQueued) {
+    overrideFlushQueued = true;
+    queueMicrotask(flushAnnotationOverrides);
   }
 }
 
@@ -441,6 +577,12 @@ export function getAnnotationOverridesSnapshot(): Readonly<Record<string, Annota
   return snapshotByScope.get(scope) ?? EMPTY_SNAPSHOT;
 }
 
+/** Read a single annotation override in O(1) without materializing unrelated ids. */
+export function getAnnotationOverride(id: string): AnnotationOverride | undefined {
+  const scope = activeOverrideScope();
+  return hydrateFromDiskIfNeeded(scope).get(id);
+}
+
 /**
  * Write (or clear, with `null`) one annotation's local overlay. Patches merge:
  * editing a comment keeps a prior deletion flag from silently resurrecting —
@@ -449,32 +591,82 @@ export function getAnnotationOverridesSnapshot(): Readonly<Record<string, Annota
 export function writeAnnotationOverride(id: string, override: AnnotationOverride | null): void {
   const scope = activeOverrideScope();
   const scoped = hydrateFromDiskIfNeeded(scope);
-  if (override === null || (override.comment === undefined && override.deleted === undefined)) {
+  const previous = scoped.get(id);
+  const normalized =
+    override === null || (override.comment === undefined && override.deleted === undefined)
+      ? undefined
+      : override;
+  if (
+    previous?.comment === normalized?.comment &&
+    previous?.deleted === normalized?.deleted
+  ) {
+    return;
+  }
+  if (normalized === undefined) {
     scoped.delete(id);
   } else {
-    scoped.set(id, override);
+    scoped.set(id, normalized);
   }
-  persistAll(scoped);
   rebuildSnapshot(scope, scoped);
+  scheduleOverrideFlush(scope, scoped);
   for (const listener of listeners) listener();
+  const targeted = idListeners.get(id);
+  if (targeted !== undefined) {
+    for (const listener of targeted) listener();
+  }
+  for (const listener of changeListeners) listener(id);
 }
 
 /** Subscribe to override writes and space-scope switches; returns the unsubscribe. */
 export function subscribeAnnotationOverrides(listener: () => void): () => void {
   listeners.add(listener);
-  if (!spaceListenerBound) {
-    spaceListenerBound = true;
-    onDidChangeSpaceStorage(() => {
-      for (const each of listeners) each();
-    });
-  }
+  ensureSpaceListener();
   return () => {
     listeners.delete(listener);
   };
 }
 
+/** Subscribe only to writes affecting the listed annotation ids (plus space switches). */
+export function subscribeAnnotationOverrideIds(
+  ids: readonly string[],
+  listener: () => void,
+): () => void {
+  ensureSpaceListener();
+  scopeSwitchListeners.add(listener);
+  for (const id of ids) {
+    let set = idListeners.get(id);
+    if (set === undefined) {
+      set = new Set<() => void>();
+      idListeners.set(id, set);
+    }
+    set.add(listener);
+  }
+  return () => {
+    scopeSwitchListeners.delete(listener);
+    for (const id of ids) {
+      const set = idListeners.get(id);
+      if (set === undefined) continue;
+      set.delete(listener);
+      if (set.size === 0) idListeners.delete(id);
+    }
+  };
+}
+
+/** Subscribe to override mutations with the affected annotation id (`null` on space switch/reset). */
+export function subscribeAnnotationOverrideChanges(
+  listener: (changedId: string | null) => void,
+): () => void {
+  changeListeners.add(listener);
+  ensureSpaceListener();
+  return () => {
+    changeListeners.delete(listener);
+  };
+}
+
 /** Test-only: forget this-process memory as if the module were freshly imported. */
 export function resetAnnotationOverridesForTests(): void {
+  pendingOverrideFlushes.clear();
+  overrideFlushQueued = false;
   memoryByScope.clear();
   hydratedScopes.clear();
   snapshotByScope.clear();
@@ -483,4 +675,7 @@ export function resetAnnotationOverridesForTests(): void {
   } catch {
     // ignore
   }
+  for (const listener of listeners) listener();
+  for (const listener of scopeSwitchListeners) listener();
+  for (const listener of changeListeners) listener(null);
 }

@@ -26,6 +26,7 @@ import {
   IConfigService,
   ISessionIndex,
   ISessionManager,
+  ISessionMetadata,
   ensureMainAgent,
   closeSessionById,
   getLiveSessionById,
@@ -1550,6 +1551,25 @@ describe('server-v2 /api prompts', () => {
       releaseResume();
       resumeSpy.mockRestore();
     }
+  });
+
+  it('preserves agent_id on child prompt submission receipts and keeps main session title/lastPrompt untouched', async () => {
+    const id = await createSession(fixture.home as string);
+    const child = await fixture.createHeldChild(id);
+    const live = getLiveSessionById(fixture.server!.core.accessor, id)!;
+    await live.accessor.get(ISessionMetadata).update({ title: 'Main Title', lastPrompt: 'main original prompt' });
+
+    const submitted = await call<PromptItemWire & { agent_id?: string }>('POST', `/api/sessions/${id}/prompts`, {
+      agent_id: child.id,
+      content: [{ type: 'text', text: 'child-only follow up' }],
+    });
+    expect(submitted.body.code, submitted.body.msg).toBe(0);
+    expect(submitted.body.data.agent_id).toBe(child.id);
+
+    const meta = await live.accessor.get(ISessionMetadata).read();
+    expect(meta.title).toBe('Main Title');
+    expect(meta.lastPrompt).toBe('main original prompt');
+    child.accessor.get(IAgentPromptService).abort(submitted.body.data.prompt_id);
   });
 
   it('acknowledges a new durable prompt without blocking on another prompt holding its key lock during beforeSubmit', async () => {

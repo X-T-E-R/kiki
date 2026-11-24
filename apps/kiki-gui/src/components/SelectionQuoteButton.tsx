@@ -205,6 +205,18 @@ export function SelectionQuoteButton({
     const onScroll = (event: Event) => {
       const popover = popoverRef.current;
       if (popover !== null && event.target instanceof Node && popover.contains(event.target)) return;
+      const scrollTarget = event.target;
+      const container = containerRef.current;
+      if (
+        scrollTarget !== window &&
+        scrollTarget !== document &&
+        scrollTarget instanceof Node &&
+        container !== null &&
+        !scrollTarget.contains(container) &&
+        !container.contains(scrollTarget)
+      ) {
+        return;
+      }
       if (modeRef.current !== 'annotate') {
         closeRef.current();
         return;
