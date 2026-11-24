@@ -258,6 +258,24 @@ describe('SettingsNav grouped tree', () => {
     expect(container.querySelector('[data-settings-nav-error]')).toBeNull();
     expect(container.querySelectorAll('[data-settings-nav-leaf]').length).toBeGreaterThan(10);
   });
+
+  it('shows the bottom scroll hint only when scrollable with more items below, and hides it at scroll end', async () => {
+    const container = await render(
+      <SettingsNav active="general" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
+    );
+    const scroller = container.querySelector<HTMLDivElement>('[data-settings-nav-scroll]')!;
+    expect(container.querySelector('[data-settings-nav-more-below]')).toBeNull();
+
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 420 });
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 820 });
+    Object.defineProperty(scroller, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    await act(async () => { window.dispatchEvent(new Event('resize')); });
+    expect(container.querySelector('[data-settings-nav-more-below]')).not.toBeNull();
+
+    scroller.scrollTop = 400;
+    await act(async () => { scroller.dispatchEvent(new Event('scroll')); });
+    expect(container.querySelector('[data-settings-nav-more-below]')).toBeNull();
+  });
 });
 
 describe('UnknownSettingsSection', () => {

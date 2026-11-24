@@ -129,7 +129,7 @@ function HeroSpaceChip() {
   const controlClient = localClient ?? (inBrokeredScope ? null : client);
   const hasRemoteApi = controlClient?.klient?.rest?.connections !== undefined;
   const remotesQuery = useRemoteConnections(hasRemoteApi ? controlClient : null, { poll: open });
-  const localServerHomeId = connLocalServerHomeId ?? (inBrokeredScope ? undefined : meta.server_home_id);
+  const localServerHomeId = connLocalServerHomeId ?? (inBrokeredScope ? undefined : meta?.server_home_id);
   const onlineRemotes = useMemo(
     () => (remotesQuery.data ?? []).filter((record) => (
       browsableRemote(record)
@@ -792,7 +792,7 @@ function NewSessionPageContent({
                     role="group"
                     aria-label={t('new.startersAria')}
                     data-hero-starters
-                    className="motion-stagger -mx-1 mt-2 flex flex-wrap gap-x-0.5 gap-y-1"
+                    className="motion-stagger mt-3 flex flex-wrap items-center gap-1.5 sm:gap-2"
                   >
                     {/*
                       Bringing an old conversation in is the other way to start
@@ -806,10 +806,10 @@ function NewSessionPageContent({
                         type="button"
                         data-hero-import
                         onClick={() => { void navigate(importHistoryPath()); }}
-                        className="motion-press inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[13px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
+                        className="motion-press inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-full bg-ink/[0.035] px-3 py-1 text-left text-[12.5px] leading-5 text-ink-soft transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-11 pointer-coarse:py-2"
                       >
-                        <Icon name="read" size={12} className="text-ink-faint" />
-                        {t('cap.import.entry')}
+                        <Icon name="read" size={12} className="shrink-0 text-ink-faint" />
+                        <span className="min-w-0 break-words">{t('cap.import.entry')}</span>
                       </button>
                     ) : null}
                     {starters.map((starter, index) => (
@@ -822,11 +822,13 @@ function NewSessionPageContent({
                           state.updateDraft(t(starter.draftKey));
                           focusComposer();
                         }}
-                        className="motion-press h-7 rounded-md px-2 text-[13px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
+                        className="motion-press inline-flex min-h-7 max-w-full items-center rounded-full bg-ink/[0.035] px-3 py-1 text-left text-[12.5px] leading-5 text-ink-soft transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-11 pointer-coarse:py-2"
                       >
-                        {starter.named === true
-                          ? t('new.starter.explainNamed', { name: workspaceChipLabel(state) ?? '' })
-                          : t(starter.labelKey)}
+                        <span className="min-w-0 break-words">
+                          {starter.named === true
+                            ? t('new.starter.explainNamed', { name: workspaceChipLabel(state) ?? '' })
+                            : t(starter.labelKey)}
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -834,7 +836,7 @@ function NewSessionPageContent({
               )}
 
               {tourDone ? null : (
-                <div className={connectFirst ? 'mt-1' : 'mt-4'}>
+                <div className={connectFirst ? 'mt-2' : 'mt-3.5'}>
                   <TourLine onDone={() => { setTourDone(true); }} />
                 </div>
               )}

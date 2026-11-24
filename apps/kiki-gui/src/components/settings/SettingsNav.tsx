@@ -170,7 +170,14 @@ export function SettingsSearch({
   }, [focusToken]);
 
   return (
-    <div className={className}>
+    <div className={floatingResults ? className : `relative ${className}`.trim()}>
+      {floatingResults ? null : (
+        <Icon
+          name="search"
+          size={12}
+          className="pointer-events-none absolute left-2.5 top-2 text-ink-faint pointer-coarse:top-4"
+        />
+      )}
       <input
         ref={inputRef}
         type="search"
@@ -192,7 +199,7 @@ export function SettingsSearch({
             setQuery('');
           }
         }}
-        className="h-8 w-full rounded-md bg-ink/[0.04] px-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.06] focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
+        className={`h-7 w-full rounded-md bg-ink/[0.04] ${floatingResults ? 'px-3' : 'pl-8 pr-2.5'} text-[12.5px] text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.06] focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)] pointer-coarse:h-11 pointer-coarse:text-[15px]`}
       />
       {searching ? (
         <div role="listbox" aria-label={t('st.search.aria')} data-settings-search-results
@@ -206,7 +213,7 @@ export function SettingsSearch({
               role="option"
               aria-selected="false"
               onClick={() => { onSearchHit(entry); setQuery(''); }}
-              className="w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-ink/[0.04]"
+              className="w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-ink/[0.04] pointer-coarse:min-h-11"
             >
               <span className="block truncate text-[13px] text-ink">{entry.title}</span>
               <span className="block truncate text-[12px] leading-4 text-ink-faint">
@@ -277,14 +284,14 @@ export function SettingsNavTree({
         data-settings-nav-leaf={id}
         aria-current={isCurrent ? 'page' : undefined}
         onClick={() => { onNavigate(id as SectionId); onAfterNavigate?.(); }}
-        className={`row-interactive flex h-8 items-center gap-2 px-3 text-left text-[13px] pointer-coarse:h-11 pointer-coarse:text-[15px] ${
+        className={`row-interactive flex h-7 items-center gap-2 px-2.5 text-left text-[13px] pointer-coarse:h-11 pointer-coarse:px-3 pointer-coarse:text-[15px] ${
           isCurrent ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
         }`}
       >
         <span className="min-w-0 flex-1 truncate">{t(labelKey)}</span>
         {/* A word, not a dot: the state reads without colour (rule 4). */}
         {attentionLeaves.has(id) ? (
-          <span data-settings-nav-attention={id} className="shrink-0 text-[12px] font-normal text-attention">
+          <span data-settings-nav-attention={id} className="shrink-0 text-[11.5px] font-normal text-attention pointer-coarse:text-[12px]">
             {t('st.nav.leafAttention')}
           </span>
         ) : null}
@@ -299,13 +306,13 @@ export function SettingsNavTree({
   );
 
   return (
-    <div className="mt-4 flex flex-col gap-4" data-settings-nav-tree>
+    <div className="mt-2.5 flex flex-col gap-2.5 pointer-coarse:mt-4 pointer-coarse:gap-4" data-settings-nav-tree>
       {showAttention && attention.length > 0 ? (
         <div data-settings-attention>
-          <p className="flex h-7 items-center px-2 text-[12px] font-medium text-attention">
+          <p className="flex h-[22px] items-center px-2.5 text-[11px] font-medium text-attention pointer-coarse:h-7 pointer-coarse:text-[12px]">
             {t('st.nav.needsAttention')}
           </p>
-          <div className="flex flex-col gap-0.5">
+          <div className="flex flex-col gap-0 pointer-coarse:gap-0.5">
             {attention.map((item) => {
               const sectionKey = labelFor(item.section);
               return (
@@ -314,7 +321,7 @@ export function SettingsNavTree({
                   type="button"
                   data-settings-attention-row={item.key}
                   onClick={() => { onNavigate(item.target); onAfterNavigate?.(); }}
-                  className="row-interactive flex h-8 items-center gap-2 px-3 text-left text-[13px] text-ink pointer-coarse:h-11 pointer-coarse:text-[15px]"
+                  className="row-interactive flex h-7 items-center gap-2 px-2.5 text-left text-[13px] text-ink pointer-coarse:h-11 pointer-coarse:px-3 pointer-coarse:text-[15px]"
                 >
                   <span className="min-w-0 flex-1 truncate">
                     {t('st.nav.attentionRow', {
@@ -332,10 +339,10 @@ export function SettingsNavTree({
       ) : null}
       {groups.map((node) => (
         <div key={node.id} data-settings-nav-group={node.id}>
-          <p className="flex h-7 items-center px-2 text-[12px] font-medium text-section-ink">
+          <p className="flex h-[22px] items-center px-2.5 text-[11px] font-medium text-ink-faint pointer-coarse:h-7 pointer-coarse:text-[12px]">
             {t(node.labelKey)}
           </p>
-          <div className="flex flex-col gap-0.5">
+          <div className="flex flex-col gap-0 pointer-coarse:gap-0.5">
             {node.sections.map((id) => leafButton(id))}
           </div>
         </div>
@@ -370,14 +377,54 @@ export function SettingsNav({
   remoteNotice?: string;
 }) {
   const { t } = useI18n();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [hasMoreBelow, setHasMoreBelow] = useState(false);
+
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (scroller === null) return;
+    const sync = () => {
+      const scrollable = scroller.scrollHeight > scroller.clientHeight + 2;
+      const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      setHasMoreBelow(scrollable && remaining > 2);
+    };
+    sync();
+    scroller.addEventListener('scroll', sync, { passive: true });
+    window.addEventListener('resize', sync);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(sync);
+    observer?.observe(scroller);
+    if (contentRef.current !== null) observer?.observe(contentRef.current);
+    return () => {
+      scroller.removeEventListener('scroll', sync);
+      window.removeEventListener('resize', sync);
+      observer?.disconnect();
+    };
+  }, [navTree, showAttention, remoteNotice]);
+
   return (
-    <nav aria-label={t('st.nav.browse')} className="flex h-full w-full flex-col overflow-y-auto overscroll-y-contain px-3 pb-4 pt-3 lg:w-[232px]">
-      <SettingsSearch
-        focusToken={searchFocusToken}
-        onSearchHit={onSearchHit}
-        navTree={navTree}
-        idle={<SettingsNavTree active={active} activeTab={activeTab} onNavigate={onNavigate} tree={navTree} showAttention={showAttention} remoteNotice={remoteNotice} />}
-      />
+    <nav aria-label={t('st.nav.browse')} className="relative flex h-full w-full flex-col lg:w-[232px]">
+      <div
+        ref={scrollRef}
+        data-settings-nav-scroll
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain scroll-pb-8 scroll-pt-2 px-3 pb-3 pt-2.5"
+      >
+        <div ref={contentRef}>
+          <SettingsSearch
+            focusToken={searchFocusToken}
+            onSearchHit={onSearchHit}
+            navTree={navTree}
+            idle={<SettingsNavTree active={active} activeTab={activeTab} onNavigate={onNavigate} tree={navTree} showAttention={showAttention} remoteNotice={remoteNotice} />}
+          />
+        </div>
+      </div>
+      {hasMoreBelow ? (
+        <div
+          aria-hidden="true"
+          data-settings-nav-more-below
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-paper via-paper/85 to-transparent"
+        />
+      ) : null}
     </nav>
   );
 }
