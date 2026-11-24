@@ -100,7 +100,7 @@ import {
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
-import { isExecutorActionAvailable, mapExecutorCapabilities } from '../lib/executorCapabilities';
+import { isExecutorActionAvailable, mapExecutorCapabilities, resolveExecutorModelThinkingLevels } from '../lib/executorCapabilities';
 import {
   agentUnavailableReason,
   filterAgentCandidates,
@@ -357,6 +357,9 @@ export interface ComposerEngine {
   readonly label: string;
   readonly fork: boolean;
   readonly images: boolean;
+  readonly permissionModes?: readonly string[];
+  readonly modelThinkingLevels?: Readonly<Record<string, readonly string[]>>;
+  readonly advertisesCompact?: boolean;
 }
 
 /** `/fork` leaves the slash menu when the engine's handshake refused forking. */
@@ -1359,6 +1362,7 @@ export function Composer({
   const capabilityNow = useElapsedSince(executorId !== undefined || boundExecutorId !== undefined ? 0 : undefined) ?? 0;
   const compactAvailability = useMemo((): ContextMeterCompactAvailability | undefined => {
     if (boundExecutorId === undefined) return undefined;
+    if (engine?.advertisesCompact === true) return { available: true };
     const response = boundExecutorId === executorId ? executorModelResponse : boundExecutorModelsQuery.data;
     const control = mapExecutorCapabilities(response, capabilityNow).controls.manual_compact;
     if (control.kind === 'absent') return { available: false, reason: t('context.compactUnread') };
@@ -1368,7 +1372,7 @@ export function Composer({
       control.diagnostic,
     ].filter((part): part is string => part !== undefined && part !== '').join(' · ');
     return { available: false, reason };
-  }, [boundExecutorId, executorId, executorModelResponse, boundExecutorModelsQuery.data, capabilityNow, t]);
+  }, [boundExecutorId, engine?.advertisesCompact, executorId, executorModelResponse, boundExecutorModelsQuery.data, capabilityNow, t]);
   const executorCapabilities = mapExecutorCapabilities(executorModelResponse, capabilityNow);
   const executorModelValues = executorCapabilities.models.kind === 'ready' || executorCapabilities.models.kind === 'partial'
     ? executorCapabilities.models.values ?? [] : [];
@@ -1391,9 +1395,20 @@ export function Composer({
     }
     return onChangeModel(next);
   };
-  const executorEfforts = isExecutorActionAvailable(executorCapabilities.controls.thinking_switch)
+  const catalogExecutorItem = executorId === undefined
+    ? undefined
+    : executorCatalog.find((entry) => entry.id === executorId);
+  const executorModelThinkingLevels = engine?.modelThinkingLevels ?? catalogExecutorItem?.capabilities?.negotiated?.model_thinking_levels;
+  const executorPermissionModes = engine?.permissionModes ?? catalogExecutorItem?.capabilities?.negotiated?.permission_modes;
+  const nativeAutoPermission = externalExecution && executorPermissionModes?.includes('auto') === true;
+  const executorGlobalEfforts = isExecutorActionAvailable(executorCapabilities.controls.thinking_switch)
     && (executorCapabilities.thinking_levels.kind === 'ready' || executorCapabilities.thinking_levels.kind === 'partial')
     ? executorCapabilities.thinking_levels.values : undefined;
+  const executorEfforts = resolveExecutorModelThinkingLevels(
+    validatingModel,
+    executorModelThinkingLevels,
+    executorGlobalEfforts,
+  );
   const selectedModel = !externalExecution && validatingModel !== undefined
     ? resolveCatalogModel(models, validatingModel)
     : undefined;
@@ -3474,6 +3489,7 @@ export function Composer({
             }}
             onChangeEffort={onChangeEffort}
             executorResponse={executorModelResponse}
+            modelThinkingLevels={executorModelThinkingLevels}
             executorRefreshBusy={executorRefreshCurrent && executorRefresh.isPending}
             executorRefreshFailed={executorRefreshCurrent && executorRefresh.isError}
             onRefreshExecutorModels={() => { executorRefresh.mutate({ id: executorId!, key: executorModelsKey }); }}
@@ -3648,6 +3664,7 @@ export function Composer({
           onOpenChange={setModeOpen}
           value={permissionMode}
           onChange={onChangePermissionMode}
+          nativeAutoPermission={nativeAutoPermission}
         />
       ),
     });

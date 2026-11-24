@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
-import { antigravityVersionValid, loginOutcomeKey, loginStatusDisplay, reduceInstallProgress, secondsLeft, type InstallProgressEvent } from './AntigravitySetup';
+import {
+  antigravityVersionValid,
+  formatAntigravityModelLabel,
+  isAntigravityPasteValid,
+  isAntigravityProgramReady,
+  loginOutcomeKey,
+  loginStatusDisplay,
+  reduceInstallProgress,
+  resolveLoginFlowKind,
+  secondsLeft,
+  type InstallProgressEvent,
+} from './AntigravitySetup';
 
 describe('antigravityVersionValid', () => {
   it('accepts 1.x releases only', () => {
@@ -80,5 +91,34 @@ describe('loginStatusDisplay', () => {
       key: 'st.engines.stepWaiting',
       className: 'text-ink-faint',
     });
+  });
+});
+
+describe('Antigravity 1.5+ code_paste & model helpers', () => {
+  it('resolves code_paste vs loopback_url flow kind cleanly', () => {
+    expect(resolveLoginFlowKind({ flow_kind: 'code_paste', redirect_uri: 'https://antigravity.google/oauth-callback' })).toBe('code_paste');
+    expect(resolveLoginFlowKind({ flow_kind: 'loopback_url', redirect_uri: 'http://127.0.0.1:9123/oauth' })).toBe('loopback_url');
+    expect(resolveLoginFlowKind({ redirect_uri: 'https://antigravity.google/oauth-callback' })).toBe('code_paste');
+    expect(resolveLoginFlowKind({ redirect_uri: 'http://127.0.0.1:9123/oauth' })).toBe('loopback_url');
+  });
+
+  it('accepts raw authorization codes in code_paste mode and requires http(s) URL in loopback_url mode', () => {
+    expect(isAntigravityPasteValid('4/0A-sample-auth-code', 'code_paste')).toBe(true);
+    expect(isAntigravityPasteValid('https://antigravity.google/oauth-callback?code=abc', 'code_paste')).toBe(true);
+    expect(isAntigravityPasteValid('  ', 'code_paste')).toBe(false);
+    expect(isAntigravityPasteValid('4/0A-sample-auth-code', 'loopback_url')).toBe(false);
+    expect(isAntigravityPasteValid('http://localhost:9123/oauth2callback?code=abc', 'loopback_url')).toBe(true);
+  });
+
+  it('formats entitled model labels preferring label over raw id', () => {
+    expect(formatAntigravityModelLabel({ id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' })).toBe('Gemini 3.1 Pro');
+    expect(formatAntigravityModelLabel({ id: 'claude-sonnet-4-6' })).toBe('claude-sonnet-4-6');
+  });
+
+  it('treats PATH-only / external CLI installs as ready for sign-in even without a managed active_version', () => {
+    expect(isAntigravityProgramReady(undefined, false)).toBe(false);
+    expect(isAntigravityProgramReady(undefined, true)).toBe(true);
+    expect(isAntigravityProgramReady('external', false)).toBe(true);
+    expect(isAntigravityProgramReady('1.5.11', false)).toBe(true);
   });
 });

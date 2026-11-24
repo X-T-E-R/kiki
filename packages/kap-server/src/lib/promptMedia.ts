@@ -3,6 +3,7 @@ import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { pathToFileURL } from 'node:url';
 
 import { buildDaemonFileUrl } from '@kiki/agent-core-v2/agent/media/mediaRef';
 import { buildImageCompressionCaption, compressBase64ForModel, compressImageForModel, validateImageDataUrl, type ImageCompressionTelemetry } from '@kiki/agent-core-v2/agent/media/image-compress';
@@ -19,6 +20,16 @@ import type { PublishedMediaReader } from '../services/publishedMedia';
 import { audioWavAttachmentPath, inspectWav, type WavAudioFormat } from './ffmpegAudio';
 
 type WireContent = PromptSubmission['content'];
+
+interface VerifiedFileAttachment {
+  readonly fileId: string;
+  readonly uri: string;
+  readonly name: string;
+  readonly mimeType: string;
+  readonly size: number;
+}
+
+const verifiedFileNotes = new WeakMap<object, VerifiedFileAttachment>();
 
 /**
  * The prompt-media file view of one session: a `file_id` resolves to the
@@ -167,7 +178,30 @@ export async function resolvePromptSessionMediaRefs(
 export function contentToCoreParts(content: WireContent): ContentPart[] {
   const parts: ContentPart[] = [];
   for (const part of content) {
-    if (part.type === 'text') parts.push({ type: 'text', text: part.text, presentation: part.presentation });
+    if (part.type === 'text') {
+      const verified = verifiedFileNotes.get(part);
+      parts.push(
+        verified === undefined
+          ? { type: 'text', text: part.text, presentation: part.presentation }
+          : {
+              type: 'text',
+              text: part.text,
+              presentation: part.presentation,
+              attachment: {
+                fileId: verified.fileId,
+                name: verified.name,
+                mimeType: verified.mimeType,
+                size: verified.size,
+              },
+              resourceLink: {
+                uri: verified.uri,
+                name: verified.name,
+                mimeType: verified.mimeType,
+                size: verified.size,
+              },
+            },
+      );
+    }
     else if (part.type === 'image' && part.source.kind === 'url') parts.push({ type: 'image_url', imageUrl: { url: part.source.url, id: part.source.id, name: part.name } });
     else if (part.type === 'image' && part.source.kind === 'base64') parts.push({ type: 'image_url', imageUrl: { url: `data:${part.source.media_type};base64,${part.source.data}`, name: part.name } });
     else if (part.type === 'image' && part.source.kind === 'session_media') parts.push({ type: 'image_url', imageUrl: { url: buildDaemonFileUrl(part.source.file_id), id: part.source.file_id, name: part.name } });
@@ -312,6 +346,7 @@ export async function resolvePromptMediaFiles(
     options.telemetry === undefined ? undefined : { client: options.telemetry, source };
   type AttachmentNoteInput = {
     readonly path: string;
+    readonly fileId?: string;
     readonly name: string;
     readonly mediaType: string;
     readonly size: number;
@@ -335,10 +370,20 @@ export async function resolvePromptMediaFiles(
         : noteInput.kind === 'video'
           ? buildAttachedVideoNotice(name, noteInput.mediaType, noteInput.size, noteInput.path)
           : buildAttachedFileNotice(name, noteInput.mediaType, noteInput.size, noteInput.path);
-    content.push({
+    const notePart: WireContent[number] = {
       type: 'text', text,
       presentation: { spans: [{ start: 0, end: text.length, kind: 'attachment', attachment: { path: noteInput.path, name, mime: noteInput.mediaType, size: noteInput.size } }] },
-    });
+    };
+    if (noteInput.kind === 'file' && noteInput.fileId !== undefined) {
+      verifiedFileNotes.set(notePart, {
+        fileId: noteInput.fileId,
+        uri: pathToFileURL(noteInput.path).href,
+        name,
+        mimeType: noteInput.mediaType,
+        size: noteInput.size,
+      });
+    }
+    content.push(notePart);
   };
   const preparePart = async (part: WireContent[number]): Promise<PreparedSlot> => {
     const notes: AttachmentNoteInput[] = [];
@@ -450,8 +495,13 @@ export async function resolvePromptMediaFiles(
 
     if (part.type === 'file') {
       const file = await getFile(part.file_id);
-      const attachedPath = await materialize(file, await resolveAttachmentsDir());
-      notes.push({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: 'file' });
+      const [attachedPath] = await Promise.all([
+        resolveAttachmentsDir().then((dir) => materialize(file, dir)),
+        options.sessionMedia !== undefined
+          ? retainSessionMedia(options.sessionMedia, file, undefined, knownAbsentInSessionMedia.has(file.meta.id))
+          : Promise.resolve(),
+      ]);
+      notes.push({ path: attachedPath, fileId: file.meta.id, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: 'file' });
       return { notes, items, changed: true };
     }
 

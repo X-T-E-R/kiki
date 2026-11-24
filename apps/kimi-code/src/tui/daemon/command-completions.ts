@@ -20,6 +20,7 @@ import { dirname, join, resolve } from 'node:path';
 import { sortThinkingEffortsForDisplay } from '@kiki/session-core/settings/thinkingEffort';
 import type { AutocompleteItem } from '@kiki/pi-tui';
 import type { ModelAlias } from '@kiki/node-sdk';
+import type { ExecutorCatalogItem } from '@kiki/protocol';
 
 import type {
   SlashArgumentCompleter,
@@ -28,6 +29,12 @@ import type {
 } from '#/tui/components/editor/file-mention-provider';
 import { CURRENT_MARK } from '#/tui/constant/symbols';
 import { listCustomThemesSync } from '#/tui/theme/custom-theme-loader';
+import {
+  buildLoginArgumentCompletions,
+  buildModelArgumentCompletions,
+  executorThinkingLevelsForModel,
+  type ResolvedExecutorModels,
+} from './executor-models';
 
 export interface CachedPluginEntry {
   readonly id: string;
@@ -95,6 +102,9 @@ export interface DaemonCompletionSnapshot {
   readonly goalStatus?: 'running' | 'paused' | 'completed' | 'cancelled' | 'failed';
   readonly copyCandidates: readonly CachedCopyCandidate[];
   readonly sessionId?: string;
+  readonly externalModels?: ResolvedExecutorModels;
+  readonly executorCatalog?: readonly ExecutorCatalogItem[];
+  readonly pendingAntigravityLogin?: boolean;
   readonly requestLazyRefresh: (resource: LazyCompletionResource) => void;
 }
 
@@ -193,6 +203,15 @@ export function createDaemonArgumentCompletions(
   completers.set('model', (ctx) => {
     if (ctx.tokenIndex > 0) return null;
     const snap = getSnapshot();
+    if (snap.externalModels !== undefined && snap.externalModels.models.length > 0) {
+      return buildModelArgumentCompletions(ctx.currentToken, snap.externalModels, [])
+        .slice(0, 40)
+        .map((item) => ({
+          ...item,
+          label: `${item.label}${item.value === snap.currentModel ? CURRENT_MARK : ''}`,
+          intent: 'runOnEnter' as const,
+        }));
+    }
     const entries = Object.entries(snap.availableModels).map(([alias, cfg]) => ({
       alias,
       provider: cfg.provider,
@@ -217,12 +236,17 @@ export function createDaemonArgumentCompletions(
   completers.set('effort', (ctx) => {
     if (ctx.tokenIndex > 0) return null;
     const snap = getSnapshot();
+    const externalLevels = snap.externalModels !== undefined
+      ? executorThinkingLevelsForModel(snap.externalModels, snap.currentModel)
+      : [];
     const activeCfg = snap.availableModels[snap.currentModel];
     const supported = activeCfg?.supportEfforts;
     const rawLevels: string[] =
-      Array.isArray(supported) && supported.length > 0
-        ? ['off', ...sortThinkingEffortsForDisplay(supported)]
-        : ['off', 'on'];
+      externalLevels.length > 0
+        ? [...externalLevels]
+        : Array.isArray(supported) && supported.length > 0
+          ? ['off', ...sortThinkingEffortsForDisplay(supported)]
+          : ['off', 'on'];
     const unique = [...new Set(rawLevels)];
     const ranked = rankByPrefixAndFrecency(unique, ctx.currentToken, (l) => l, (l) => l);
     return ranked.map((level) => ({
@@ -347,8 +371,14 @@ export function createDaemonArgumentCompletions(
     if (ctx.tokenIndex > 0) return null;
     const snap = getSnapshot();
     snap.requestLazyRefresh('providers');
-    const eligible = snap.providers.filter((p) => p.authSupported !== false);
-    return rankByPrefixAndFrecency(
+    const executorItems = buildLoginArgumentCompletions(
+      ctx.currentToken,
+      snap.executorCatalog ?? [],
+      snap.pendingAntigravityLogin === true,
+    ).map((item) => ({ ...item, intent: 'insert' as const }));
+    const seen = new Set(executorItems.map((item) => item.value));
+    const eligible = snap.providers.filter((p) => p.authSupported !== false && !seen.has(p.id));
+    const providerItems = rankByPrefixAndFrecency(
       eligible,
       ctx.currentToken,
       (p) => p.id,
@@ -357,8 +387,9 @@ export function createDaemonArgumentCompletions(
       value: p.id,
       label: p.id,
       description: p.authenticated ? 'authenticated' : (p.description ?? 'Authenticate provider'),
-      intent: 'insert',
+      intent: 'insert' as const,
     }));
+    return [...executorItems, ...providerItems];
   });
 
   completers.set('logout', (ctx) => {

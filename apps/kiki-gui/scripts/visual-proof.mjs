@@ -45,6 +45,7 @@ import { createUsageExportWalker } from './visual-proof-usage-export.mjs';
 import { createLiveAgentsAttentionWalker, createLiveAgentsCompactWalker } from './visual-proof-live-agents.mjs';
 import { createPluginImportWalker } from './visual-proof-plugin-import.mjs';
 import { createExternalMainWalker } from './visual-proof-external-main.mjs';
+import { createAntigravityBridgeWalker } from './visual-proof-antigravity-bridge.mjs';
 import { createSteerWalker } from './visual-proof-steer.mjs';
 import { en as EN_DICTIONARY } from '@kiki/session-core/i18n/en';
 import { zh as ZH_DICTIONARY } from '@kiki/session-core/i18n/zh';
@@ -6957,6 +6958,14 @@ async function scenarioExternalMain() {
   await walk();
 }
 
+/** Antigravity 1.5+ flagship bridge: CLI update bar, code_paste login, entitled models, multi-account & quota panel. */
+async function scenarioAntigravityBridge() {
+  const walk = createAntigravityBridgeWalker({
+    page, shot, webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
+  });
+  await walk();
+}
+
 /** Send now into a running main / child turn (scripts/visual-proof-steer.mjs). */
 async function scenarioSteer() {
   const walk = createSteerWalker({
@@ -8970,6 +8979,7 @@ const BODIES = [
   ['external-harness', scenarioExternalHarness],
   ['codex-claude-engine-facts', scenarioCodexClaudeEngineFacts],
   ['external-main', scenarioExternalMain],
+  ['antigravity-bridge', scenarioAntigravityBridge],
   ['reconnect', scenarioReconnect],
   ['reconnect-mid-turn', scenarioReconnectMidTurn],
   ['resync-hold', scenarioResyncHold],

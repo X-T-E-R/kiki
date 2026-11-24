@@ -888,6 +888,10 @@ export interface SessionStateSnapshot {
         readonly planApproval?: boolean;
         readonly models?: readonly string[];
         readonly thinkingLevels?: readonly string[];
+        readonly modelThinkingLevels?: Readonly<Record<string, readonly string[]>>;
+        readonly slashCommands?: readonly string[];
+        readonly pdf?: boolean;
+        readonly textAttachment?: boolean;
         readonly nativeAgents?: readonly string[];
         readonly contextWindow?: number;
         readonly maxInputTokens?: number;

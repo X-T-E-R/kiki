@@ -1,15 +1,24 @@
 import type { HostProcessLike, HostProcessServiceLike } from '@kiki/acp-client';
 import { createHash, randomUUID } from 'node:crypto';
-import { basename, dirname, join } from 'pathe';
+import { basename, dirname, join, normalize } from 'pathe';
 
+import { Error2, ErrorCodes } from '#/errors';
+import {
+  readAntigravityProfileSecrets,
+  removeDirectoryForce,
+  syncAntigravityUserConfig,
+} from '#/os/backends/node-local/antigravityHostOps';
 import { antigravityAuthSettings, antigravityCredentialEnvToRemove } from '#/os/backends/node-local/antigravitySettings';
-import { prepareAntigravityRuntime, removeAntigravityRuntimeTemp } from '#/os/backends/node-local/antigravityRuntime';
-import { executorSourceId, type AgentExecutorDescriptor } from './agentExecutor';
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { executorSourceId, type AgentExecutorDescriptor } from './agentExecutor';
+import { antigravityCacheRoot } from './antigravityDistribution';
 import { executorProcessEnv } from './executorOverrides';
+import { isRemoteHostProcessService } from './windowsNodeShim';
 
 export const ANTIGRAVITY_BROWSER_MARKER = '__KIKI_ANTIGRAVITY_AUTH_URL__';
 export const ANTIGRAVITY_BROWSER_HELPER_SOURCE = `process.stderr.on("error",()=>process.exit(0)).write("${ANTIGRAVITY_BROWSER_MARKER}"+JSON.stringify(process.argv[1])+"\\n",()=>process.exit(0))`;
+export const ANTIGRAVITY_SSH_CONNECTION_SENTINEL = '127.0.0.1 0 127.0.0.1 0';
+export const ANTIGRAVITY_APP_DATA_DIR_NAME = 'antigravity-acp';
 
 const POLLUTED_ENV = [
   'GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION', 'GOOGLE_CLOUD_QUOTA_PROJECT',
@@ -18,7 +27,84 @@ const POLLUTED_ENV = [
   'GEMINI_HOME', 'AGY_ACP_FORCE_FILE_STORAGE', 'ANTIGRAVITY_HARNESS_PATH', 'ELECTRON_RUN_AS_NODE',
 ] as const;
 
-export function antigravityProcessService(processes: HostProcessServiceLike, descriptor: AgentExecutorDescriptor, bootstrap: IBootstrapService): HostProcessServiceLike {
+const leasedVersionDirectories = new Map<string, number>();
+
+export function acquireAntigravityBinaryLease(commandPath: string, cacheRoot: string): () => void {
+  const versionDirectory = managedOfficialVersionDirectory(commandPath, cacheRoot);
+  if (versionDirectory === undefined) return () => undefined;
+  leasedVersionDirectories.set(versionDirectory, (leasedVersionDirectories.get(versionDirectory) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const count = (leasedVersionDirectories.get(versionDirectory) ?? 1) - 1;
+    if (count <= 0) leasedVersionDirectories.delete(versionDirectory);
+    else leasedVersionDirectories.set(versionDirectory, count);
+  };
+}
+
+export function activeAntigravityLeasedDirectories(): ReadonlySet<string> {
+  return new Set(leasedVersionDirectories.keys());
+}
+
+export function isOfficialAntigravityCliCommand(
+  command: string,
+  descriptor?: Pick<AgentExecutorDescriptor, 'selectedSource' | 'launchArgs'>,
+  args?: readonly string[],
+): boolean {
+  const base = basename(command).replace(/\.(?:exe|par|cmd|bat|com)$/i, '').toLowerCase();
+  if (base === 'agy_acp_server') return false;
+  if (
+    descriptor?.selectedSource === 'agy-cli' ||
+    descriptor?.selectedSource === 'antigravity-cli' ||
+    descriptor?.selectedSource === 'kiki-managed-cli'
+  ) {
+    return true;
+  }
+  if (args?.[0] === 'acp' || descriptor?.launchArgs?.[0] === 'acp') return true;
+  return base === 'agy' || base === 'antigravity';
+}
+
+export function shouldAppendOfficialAntigravityArgs(
+  command: string,
+  descriptor?: Pick<AgentExecutorDescriptor, 'launchArgs'>,
+  args?: readonly string[],
+): boolean {
+  const base = basename(command).replace(/\.(?:exe|par|cmd|bat|com)$/i, '').toLowerCase();
+  if (base === 'agy_acp_server') return false;
+  if (args?.[0] === 'acp' || descriptor?.launchArgs?.[0] === 'acp') return true;
+  return base === 'agy' || base === 'antigravity';
+}
+
+export function antigravityOfficialCliArgs(args: readonly string[], profileHome: string): readonly string[] {
+  const next = args[0] === 'acp' ? [...args] : ['acp', ...args];
+  if (!next.includes('--gemini-dir')) {
+    next.push('--gemini-dir', profileHome);
+  }
+  if (!next.includes('--app-data-dir')) {
+    next.push('--app-data-dir', ANTIGRAVITY_APP_DATA_DIR_NAME);
+  }
+  return next;
+}
+
+export function antigravitySshConnectionValue(
+  env: Record<string, string>,
+  bootstrap: IBootstrapService,
+): string {
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toUpperCase() === 'SSH_CONNECTION' && value.trim() !== '') {
+      return value.trim();
+    }
+  }
+  const inherited = bootstrap.getEnv('SSH_CONNECTION')?.trim();
+  return inherited !== undefined && inherited !== '' ? inherited : ANTIGRAVITY_SSH_CONNECTION_SENTINEL;
+}
+
+export function antigravityProcessService(
+  processes: HostProcessServiceLike,
+  descriptor: AgentExecutorDescriptor,
+  bootstrap: IBootstrapService,
+): HostProcessServiceLike {
   const sourceId = executorSourceId(descriptor);
   if (sourceId === 'agy-cli') {
     const auditDir = join(bootstrap.homeDir, 'tools', 'agy-cli', 'audit');
@@ -36,12 +122,26 @@ export function antigravityProcessService(processes: HostProcessServiceLike, des
   if (sourceId !== 'antigravity-acp') return processes;
   return {
     spawn: async (command, args, options, startupSignal) => {
+      if (isRemoteHostProcessService(processes)) {
+        throw new Error2(
+          ErrorCodes.CONFIG_INVALID,
+          'Google Antigravity ACP requires a local runtime; remote SSH execution cannot use local Antigravity profiles or OAuth tokens.',
+        );
+      }
       const env = { ...executorProcessEnv(descriptor), ...options?.env };
       const home = antigravitySettingsHome(env, bootstrap, descriptor.id);
       const tempHome = antigravityRuntimeTempHome(bootstrap, descriptor.id);
-      await prepareAntigravityRuntime({ profileHome: home, tempHome, userHome: antigravityUserHome(env, bootstrap), platform: bootstrap.platform });
+      await syncAntigravityUserConfig({
+        profileHome: home,
+        tempHome,
+        userHome: antigravityUserHome(env, bootstrap),
+        platform: bootstrap.platform,
+      });
+      const releaseLease = acquireAntigravityBinaryLease(command, antigravityCacheRoot(bootstrap.homeDir));
       try {
         const method = await antigravityAuthSettings(home);
+        const secrets = await readAntigravityProfileSecrets(home);
+        const official = isOfficialAntigravityCliCommand(command, descriptor, args);
         const envUnset = new Set([...options?.envUnset ?? [], ...POLLUTED_ENV, ...antigravityCredentialEnvToRemove(method)]);
         if (method === 'gemini-api-key') envUnset.delete('GEMINI_API_KEY');
         if (method === 'agent-platform') envUnset.delete('GOOGLE_API_KEY');
@@ -50,7 +150,12 @@ export function antigravityProcessService(processes: HostProcessServiceLike, des
             if (key.toUpperCase() === removed.toUpperCase()) delete env[key];
           }
         }
-        const harness = descriptor.selectedSource === 'agy-cli' ? undefined : join(dirname(command), bootstrap.platform === 'win32' ? 'localharness_external.exe' : 'localharness_external');
+        if (method === 'gemini-api-key' && !hasEnvKey(env, 'GEMINI_API_KEY') && secrets?.geminiApiKey) {
+          env['GEMINI_API_KEY'] = secrets.geminiApiKey;
+        }
+        if (method === 'agent-platform' && !hasEnvKey(env, 'GOOGLE_API_KEY') && secrets?.googleApiKey) {
+          env['GOOGLE_API_KEY'] = secrets.googleApiKey;
+        }
         Object.assign(env, {
           GEMINI_HOME: home,
           AGY_ACP_FORCE_FILE_STORAGE: '1',
@@ -61,15 +166,39 @@ export function antigravityProcessService(processes: HostProcessServiceLike, des
           TMP: tempHome,
           TMPDIR: tempHome,
         });
-        if (harness !== undefined) {
-          env['ANTIGRAVITY_HARNESS_PATH'] = harness;
+        for (const key of ['GEMINI_HOME', 'AGY_ACP_FORCE_FILE_STORAGE', 'BROWSER', 'PYTHONUNBUFFERED', 'ELECTRON_RUN_AS_NODE', 'TEMP', 'TMP', 'TMPDIR']) {
+          envUnset.delete(key);
+        }
+        let spawnArgs = args ?? [];
+        if (official) {
+          env['AGY_CLI_DISABLE_AUTO_UPDATE'] = '1';
+          envUnset.delete('AGY_CLI_DISABLE_AUTO_UPDATE');
+          if (method === 'oauth-personal') {
+            const sshConnection = antigravitySshConnectionValue(env, bootstrap);
+            deleteEnvCaseInsensitive(env, 'SSH_CONNECTION');
+            env['SSH_CONNECTION'] = sshConnection;
+            envUnset.delete('SSH_CONNECTION');
+          }
+          if (shouldAppendOfficialAntigravityArgs(command, descriptor, spawnArgs)) {
+            spawnArgs = antigravityOfficialCliArgs(spawnArgs, home);
+          }
+        } else {
+          env['ANTIGRAVITY_HARNESS_PATH'] = join(
+            dirname(command),
+            bootstrap.platform === 'win32' ? 'localharness_external.exe' : 'localharness_external',
+          );
           envUnset.delete('ANTIGRAVITY_HARNESS_PATH');
         }
-        for (const key of ['GEMINI_HOME', 'AGY_ACP_FORCE_FILE_STORAGE', 'BROWSER', 'PYTHONUNBUFFERED', 'ELECTRON_RUN_AS_NODE', 'TEMP', 'TMP', 'TMPDIR']) envUnset.delete(key);
-        const child = await processes.spawn(command, args, { ...options, env, envUnset: [...envUnset] }, startupSignal);
-        return withTempCleanup(child, tempHome);
+        const child = await processes.spawn(
+          command,
+          spawnArgs,
+          { ...options, env, envUnset: [...envUnset], ownedProcessTree: true },
+          startupSignal,
+        );
+        return withRuntimeCleanup(child, tempHome, releaseLease);
       } catch (error) {
-        await removeAntigravityRuntimeTemp(tempHome);
+        releaseLease();
+        await removeDirectoryForce(tempHome);
         throw error;
       }
     },
@@ -106,8 +235,39 @@ function antigravityUserHome(env: Record<string, string>, bootstrap: IBootstrapS
   return env['HOME'] ?? bootstrap.getEnv('HOME') ?? bootstrap.osHomeDir;
 }
 
-function withTempCleanup(child: HostProcessLike, tempHome: string): HostProcessLike {
-  const exit = child.wait().finally(() => removeAntigravityRuntimeTemp(tempHome));
+function managedOfficialVersionDirectory(commandPath: string, cacheRoot: string): string | undefined {
+  const normalizedCommand = normalize(commandPath);
+  const versionsPrefix = `${normalize(join(cacheRoot, 'versions'))}/`;
+  const compareCommand = process.platform === 'win32' ? normalizedCommand.toLowerCase() : normalizedCommand;
+  const comparePrefix = process.platform === 'win32' ? versionsPrefix.toLowerCase() : versionsPrefix;
+  if (!compareCommand.startsWith(comparePrefix)) return undefined;
+  const rest = normalizedCommand.slice(versionsPrefix.length);
+  const slashIndex = rest.indexOf('/');
+  if (slashIndex <= 0) return undefined;
+  return normalize(join(cacheRoot, 'versions', rest.slice(0, slashIndex)));
+}
+
+function hasEnvKey(env: Record<string, string>, target: string): boolean {
+  const upper = target.toUpperCase();
+  return Object.entries(env).some(([key, value]) => key.toUpperCase() === upper && value.trim() !== '');
+}
+
+function deleteEnvCaseInsensitive(env: Record<string, string>, target: string): void {
+  const upper = target.toUpperCase();
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === upper) delete env[key];
+  }
+}
+
+function withRuntimeCleanup(
+  child: HostProcessLike,
+  tempHome: string,
+  releaseLease: () => void,
+): HostProcessLike {
+  const exit = child.wait().finally(async () => {
+    releaseLease();
+    await removeDirectoryForce(tempHome);
+  });
   void exit.catch(() => undefined);
   return {
     get pid() { return child.pid; },
@@ -117,6 +277,9 @@ function withTempCleanup(child: HostProcessLike, tempHome: string): HostProcessL
     stderr: child.stderr,
     wait: () => exit,
     kill: (signal) => child.kill(signal),
-    dispose: () => child.dispose(),
+    dispose: () => {
+      releaseLease();
+      return child.dispose();
+    },
   };
 }

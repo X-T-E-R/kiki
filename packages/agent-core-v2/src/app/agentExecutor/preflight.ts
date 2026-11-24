@@ -11,7 +11,8 @@ import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
 
 import { ANTIGRAVITY_IDE_NOT_ACP, executorSourceId, IAgentExecutorRegistry, type AgentExecutorDescriptor, type AgentExecutorSourceProbe } from './agentExecutor';
-import { expandExecutorText, locateCommand, selectExecutorSource } from './binaryDiscovery';
+import { antigravitySettingsHome } from './antigravityProcess';
+import { expandExecutorText, isAntigravityIdeCandidate, locateCommand, selectExecutorSource } from './binaryDiscovery';
 import {
   CLAUDE_EXPLICIT_SETTINGS_SOURCES,
   claudeConfigDir,
@@ -19,8 +20,9 @@ import {
   credentialFromClaudeCliStatus,
   scanClaudeCredentials,
 } from './claudeCredentials';
-import { executorEnvLookup, executorLaunchArgs, executorProcessOptions, redactExecutorOutput } from './executorOverrides';
+import { executorEnvLookup, executorLaunchArgs, executorProcessEnv, executorProcessOptions, redactExecutorOutput } from './executorOverrides';
 import { executorInstanceIssue, INSTANCE_ISSUE_MESSAGE } from './executorInstances';
+import { readAntigravityLocalCredentials, readAntigravityProfileCache } from '#/os/backends/node-local/antigravityHostOps';
 
 export type AgentExecutorPreflightStatus = 'ready' | 'warning' | 'unavailable';
 export type AgentExecutorPreflightSeverity = 'info' | 'warning' | 'error';
@@ -162,9 +164,16 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     } else {
       diagnostics.unshift(info(`Selected source ${selected.id}: ${sourceLocation(selected)}.`));
     }
-    if (executorSourceId(descriptor) === 'antigravity-acp' && selected === undefined && (sources.some((source) => source.diagnosticCode === ANTIGRAVITY_IDE_NOT_ACP) || await locateCommand('antigravity', this.fs, this.bootstrap) !== undefined)) {
-      return resultOf(id, '', descriptor.args, undefined, [error('这是 Antigravity IDE，不是 ACP CLI。请通过 Antigravity 执行器的二进制缓存安装 Google Antigravity ACP CLI 1.x（默认 1.4.5），或设置 ANTIGRAVITY_ACP_PATH 指向 agy_acp_server（保留同目录 localharness_external）。', ANTIGRAVITY_IDE_NOT_ACP)], undefined, sources, undefined,
-        [programRequirement(descriptor, 'missing', undefined, undefined, this.bootstrap)]);
+    if (executorSourceId(descriptor) === 'antigravity-acp' && selected === undefined) {
+      const pathAntigravity = sources.some((source) => source.diagnosticCode === ANTIGRAVITY_IDE_NOT_ACP)
+        ? undefined
+        : await locateCommand('antigravity', this.fs, this.bootstrap);
+      const isIde = sources.some((source) => source.diagnosticCode === ANTIGRAVITY_IDE_NOT_ACP) ||
+        (pathAntigravity !== undefined && await isAntigravityIdeCandidate(pathAntigravity, this.fs, this.bootstrap.platform));
+      if (isIde) {
+        return resultOf(id, '', descriptor.args, undefined, [error('这是 Antigravity IDE，不是 ACP CLI。请通过 Antigravity 执行器的二进制缓存安装官方 Google Antigravity CLI 1.5+（或设置 ANTIGRAVITY_ACP_PATH 指向 agy / agy_acp_server）。', ANTIGRAVITY_IDE_NOT_ACP)], undefined, sources, undefined,
+          [programRequirement(descriptor, 'missing', undefined, undefined, this.bootstrap)]);
+      }
     }
     const executable = selected === undefined ? descriptor : { ...descriptor, command: selected.command, launchArgs: selected.launchArgs };
     const rules = await this.#diagnostics(executable, selected?.version, selected !== undefined, selected?.command);
@@ -264,6 +273,9 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
   }
 
   async #auth(descriptor: AgentExecutorDescriptor, command = descriptor.command): Promise<CredentialResolution> {
+    if (executorSourceId(descriptor) === 'antigravity-acp') {
+      return this.#antigravityCredentials(descriptor);
+    }
     const auth = descriptor.auth;
     if (auth?.kind === 'codex-account') {
       if (command === undefined) return { loginStatus: 'unknown' };
@@ -332,6 +344,49 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     return remote.source === 'none'
       ? { loginStatus: 'logged_out', source: 'none' }
       : { loginStatus: 'logged_in', source: remote.source, detail: remote.detail };
+  }
+
+  async #antigravityCredentials(descriptor: AgentExecutorDescriptor): Promise<CredentialResolution> {
+    const env = executorProcessEnv(descriptor);
+    const lookup = executorEnvLookup(descriptor, (name) => this.bootstrap.getEnv(name));
+    const home = antigravitySettingsHome(env, this.bootstrap, descriptor.id);
+    const [credentials, cache] = await Promise.all([
+      readAntigravityLocalCredentials(home),
+      readAntigravityProfileCache(home),
+    ]);
+    if (cache?.verificationFailed === true || cache?.eligibility === 'subscription_required') {
+      return { loginStatus: 'logged_out', source: 'none' };
+    }
+    const method = credentials.settings.authMethod;
+    if (method === 'oauth-personal' || method === 'oauth-business') {
+      if (credentials.cliToken !== undefined || credentials.legacyToken !== undefined) {
+        return {
+          loginStatus: 'logged_in',
+          source: 'oauth_login',
+          detail: cache?.accountLabel ?? method,
+        };
+      }
+      return { loginStatus: 'logged_out', source: 'none' };
+    }
+    if (method === 'gemini-api-key') {
+      if (credentials.secrets?.geminiApiKey) {
+        return { loginStatus: 'logged_in', source: 'api_key', detail: 'gemini-api-key' };
+      }
+      if (lookup('GEMINI_API_KEY')) {
+        return { loginStatus: 'logged_in', source: 'api_key_env', detail: 'GEMINI_API_KEY' };
+      }
+      return { loginStatus: 'logged_out', source: 'none' };
+    }
+    if (credentials.secrets?.googleApiKey) {
+      return { loginStatus: 'logged_in', source: 'api_key', detail: 'agent-platform' };
+    }
+    if (lookup('GOOGLE_API_KEY')) {
+      return { loginStatus: 'logged_in', source: 'api_key_env', detail: 'GOOGLE_API_KEY' };
+    }
+    if (credentials.settings.gcpProject && credentials.settings.gcpLocation) {
+      return { loginStatus: 'logged_in', source: 'oauth_login', detail: `${credentials.settings.gcpProject}/${credentials.settings.gcpLocation}` };
+    }
+    return { loginStatus: 'logged_out', source: 'none' };
   }
 
   async #probe(command: string, args: readonly string[], descriptor: AgentExecutorDescriptor): Promise<CommandProbe> {

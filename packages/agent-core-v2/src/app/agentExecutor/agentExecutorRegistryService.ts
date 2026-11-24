@@ -23,6 +23,7 @@ import {
 import { Error2, ErrorCodes } from '#/errors';
 
 import {
+  type AgentExecutorBinarySource,
   type AgentExecutorDescriptor,
   type AgentExecutorOptions,
   type AgentExecutorSourceProbe,
@@ -55,7 +56,8 @@ import {
 import { executorModelProbe, MANAGED_ADAPTER_SCOPE, withManagedAdapterSource, type ManagedAdapterState } from './managedAdapterRegistry';
 import { wrapWindowsNodeShims } from './windowsNodeShim';
 import { ANTIGRAVITY_CACHE_SCOPE, type AntigravityCacheState } from './antigravityService';
-import { antigravityCacheRoot, antigravityRelease } from './antigravityDistribution';
+import { antigravityCacheRoot, antigravityOfficialVersionsRoot, antigravityRelease } from './antigravityDistribution';
+import { officialReleaseDirectoryName } from '#/os/backends/node-local/antigravityHostOps';
 import { readExecutorDiscovery } from './executorDiscovery';
 import { AGENT_EXECUTOR_INSTANCES_SECTION, executorInstanceIssue, INSTANCE_ISSUE_MESSAGE, materializeExecutorInstance, type AgentExecutorInstances } from './executorInstances';
 import { applyInstanceLaunch, overlayScheduleLaunch, type ScheduleInstanceView } from './executorSchedule';
@@ -578,11 +580,41 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     const sourceId = executorSourceId(descriptor);
     if (sourceId === 'antigravity-acp') {
       const state = await this.documents?.get<AntigravityCacheState>(ANTIGRAVITY_CACHE_SCOPE, sourceId);
-      if (state?.activeVersion !== undefined && descriptor.sources?.some((source) => source.id === 'kiki-managed')) {
+      if (state?.activeVersion !== undefined && descriptor.sources !== undefined) {
         const release = antigravityRelease(state.activeVersion, this.bootstrap.platform, this.bootstrap.arch);
+        if (state.layout === 'official-cli' && state.activeDirectory !== undefined) {
+          const versionsRoot = antigravityOfficialVersionsRoot(this.bootstrap.homeDir);
+          const candidates = [state.activeDirectory];
+          if (/^[a-f0-9]{64}$/i.test(state.activeDirectory)) {
+            candidates.push(officialReleaseDirectoryName(state.activeVersion, state.activeDirectory));
+          }
+          let resolvedPath: string | undefined;
+          for (const dirName of candidates) {
+            const candidate = join(versionsRoot, dirName, release.entry);
+            const exists = await this.fs.stat(candidate).then((info) => info.isFile, () => false);
+            if (exists) {
+              resolvedPath = candidate;
+              break;
+            }
+          }
+          if (resolvedPath !== undefined) {
+            const managedSource: AgentExecutorBinarySource = { id: 'kiki-managed', kind: 'explicit-path', path: resolvedPath };
+            const withoutManaged = descriptor.sources.filter((source) => source.id !== 'kiki-managed-cli' && source.id !== 'kiki-managed');
+            const envIndex = withoutManaged.findIndex((source) => source.id === 'env');
+            const nextSources = envIndex >= 0
+              ? [...withoutManaged.slice(0, envIndex + 1), managedSource, ...withoutManaged.slice(envIndex + 1)]
+              : [managedSource, ...withoutManaged];
+            return { ...descriptor, sources: nextSources };
+          }
+          return descriptor;
+        }
         const path = join(antigravityCacheRoot(this.bootstrap.homeDir), release.version, release.platform, release.entry);
-        return { ...descriptor, sources: descriptor.sources.map((source) => source.id === 'kiki-managed'
-          ? { id: source.id, kind: 'explicit-path', path } : source) };
+        return {
+          ...descriptor,
+          sources: descriptor.sources
+            .filter((source) => source.id !== 'kiki-managed-cli')
+            .map((source) => source.id === 'kiki-managed' ? { id: source.id, kind: 'explicit-path', path } : source),
+        };
       }
       return descriptor;
     }

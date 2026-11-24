@@ -2456,38 +2456,81 @@ export class KikiClient {
     } as KikiConfigPatch);
   }
 
-  /** Antigravity ACP CLI cache: the release Kiki would fetch, installed versions, the active one. */
-  getAntigravityBinaries(): Promise<import('@kiki/protocol').AntigravityStatusResponse> {
-    return this.memoryRequest('GET', '/executors/antigravity-acp/binaries');
+  /** Antigravity ACP CLI cache: the release Kiki would fetch, installed versions, active release, and instance profile. */
+  getAntigravityBinaries(options?: {
+    readonly instance_id?: string;
+    readonly check_updates?: boolean;
+    readonly refresh_models?: boolean;
+  }): Promise<import('@kiki/protocol').AntigravityStatusResponse> {
+    const query = options === undefined ? undefined : {
+      instance_id: options.instance_id,
+      check_updates: options.check_updates === undefined ? undefined : String(options.check_updates),
+      refresh_models: options.refresh_models === undefined ? undefined : String(options.refresh_models),
+    };
+    return this.memoryRequest('GET', '/executors/antigravity-acp/binaries', { query });
   }
 
   /** Download + unpack a 1.x release (`version` absent = the default release) into Kiki's cache. */
-  installAntigravityBinary(version?: string): Promise<import('@kiki/protocol').AntigravityStatusResponse> {
+  installAntigravityBinary(
+    versionOrOptions?: string | { readonly version?: string; readonly instance_id?: string },
+  ): Promise<import('@kiki/protocol').AntigravityStatusResponse> {
+    const body = typeof versionOrOptions === 'string'
+      ? { version: versionOrOptions }
+      : versionOrOptions === undefined
+        ? {}
+        : {
+          ...(versionOrOptions.version !== undefined ? { version: versionOrOptions.version } : {}),
+          ...(versionOrOptions.instance_id !== undefined ? { instance_id: versionOrOptions.instance_id } : {}),
+        };
     // The route answers after the download and unpack finish.
     // A minute past the server's download deadline, so its timeout reply (and pushed failure) arrives first.
-    return this.memoryRequest('POST', '/executors/antigravity-acp/binaries/install', { body: version === undefined ? {} : { version }, timeoutMs: 11 * 60_000 });
+    return this.memoryRequest('POST', '/executors/antigravity-acp/binaries/install', { body, timeoutMs: 11 * 60_000 });
   }
 
-  activateAntigravityBinary(version: string): Promise<import('@kiki/protocol').AntigravityStatusResponse> {
-    return this.memoryRequest('POST', '/executors/antigravity-acp/binaries/activate', { body: { version } });
+  activateAntigravityBinary(version: string, instanceId?: string): Promise<import('@kiki/protocol').AntigravityStatusResponse> {
+    return this.memoryRequest('POST', '/executors/antigravity-acp/binaries/activate', {
+      body: instanceId === undefined ? { version } : { version, instance_id: instanceId },
+    });
   }
 
-  /** Begin a Google sign-in; answers `already_signed_in` or the URL to open and the flow handle. */
-  startAntigravityLogin(methodId: 'oauth-personal' | 'oauth-business' | 'gemini-api-key' | 'agent-platform'): Promise<import('@kiki/protocol').AntigravityLoginStartResponse> {
-    return this.memoryRequest('POST', '/executors/antigravity-acp/login/start', { body: { method_id: methodId } });
+  /** Begin an Antigravity sign-in or direct credential connect. */
+  startAntigravityLogin(
+    methodOrRequest:
+      | import('@kiki/protocol').AntigravityAuthMethod
+      | import('@kiki/protocol').AntigravityLoginRequest,
+  ): Promise<import('@kiki/protocol').AntigravityLoginStartResponse> {
+    const body = typeof methodOrRequest === 'string' ? { method_id: methodOrRequest } : methodOrRequest;
+    return this.memoryRequest('POST', '/executors/antigravity-acp/login/start', { body });
   }
 
-  /** Finish a sign-in with the address the browser landed on; `retryable` keeps the flow open. */
-  completeAntigravityLogin(handle: string, redirectUrl: string): Promise<import('@kiki/protocol').AntigravityLoginOutcomeResponse> {
-    return this.memoryRequest('POST', '/executors/antigravity-acp/login/complete', { body: { handle, redirect_url: redirectUrl } });
+  /** Finish a sign-in with an authorization code or callback URL; `retryable` keeps the flow open. */
+  completeAntigravityLogin(
+    handle: string,
+    codeOrUrl: string,
+    options?: { readonly instance_id?: string },
+  ): Promise<import('@kiki/protocol').AntigravityLoginOutcomeResponse> {
+    const trimmed = codeOrUrl.trim();
+    const isHttpUrl = /^https?:\/\/\S+$/i.test(trimmed);
+    return this.memoryRequest('POST', '/executors/antigravity-acp/login/complete', {
+      body: {
+        handle,
+        code_or_url: trimmed,
+        ...(isHttpUrl ? { redirect_url: trimmed } : {}),
+        ...(options?.instance_id !== undefined ? { instance_id: options.instance_id } : {}),
+      },
+    });
   }
 
-  cancelAntigravityLogin(handle: string): Promise<{ cancelled: true }> {
-    return this.memoryRequest('POST', '/executors/antigravity-acp/login/cancel', { body: { handle } });
+  cancelAntigravityLogin(handle: string, instanceId?: string): Promise<{ cancelled: true }> {
+    return this.memoryRequest('POST', '/executors/antigravity-acp/login/cancel', {
+      body: instanceId === undefined ? { handle } : { handle, instance_id: instanceId },
+    });
   }
 
-  logoutAntigravity(): Promise<{ signed_out: true }> {
-    return this.memoryRequest('POST', '/executors/antigravity-acp/logout', { body: {} });
+  logoutAntigravity(instanceId?: string): Promise<{ signed_out: true }> {
+    return this.memoryRequest('POST', '/executors/antigravity-acp/logout', {
+      body: instanceId === undefined ? {} : { instance_id: instanceId },
+    });
   }
 
   previewExecutorPrompt(name: string, workspace: string, executor: string): Promise<import('@kiki/protocol').ExecutorPromptPreviewResponse> {

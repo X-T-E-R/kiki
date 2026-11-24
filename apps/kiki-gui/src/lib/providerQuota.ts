@@ -432,11 +432,18 @@ export interface QuotaEngineScope {
   readonly configured: ReadonlySet<string>;
 }
 
-/** An explicit on counts; a user-written descriptor counts unless explicitly turned off. */
+/** An explicit on counts; a user-written descriptor or multi-account instance counts unless explicitly turned off. */
 export function isEngineInQuotaScope(engineId: string, scope: QuotaEngineScope): boolean {
   if (!scope.externalsVisible) return false;
   if (scope.enabled.has(engineId)) return true;
-  return !scope.disabled.has(engineId) && scope.configured.has(engineId);
+  if (scope.disabled.has(engineId)) return false;
+  if (scope.configured.has(engineId)) return true;
+  const sep = engineId.indexOf(':');
+  if (sep > 0) {
+    const parentId = engineId.slice(0, sep);
+    return scope.enabled.has(parentId) || (!scope.disabled.has(parentId) && scope.configured.has(parentId));
+  }
+  return false;
 }
 
 export interface ArrangedQuotaSources {
@@ -517,6 +524,15 @@ export function quotaEngineScopeOf(config: { readonly raw?: unknown } | undefine
       .filter(([, entry]) => typeof asConfigRecord(entry)?.['source_executor_id'] !== 'string')
       .map(([id]) => id),
   );
+  const instances = asConfigRecord(asConfigRecord(config?.raw)?.['agent_executor_instances']);
+  if (instances !== undefined) {
+    for (const [id, rawInstance] of Object.entries(instances)) {
+      const sourceExecutor = asConfigRecord(rawInstance)?.['source_executor'];
+      if (typeof sourceExecutor === 'string' && (prefs.enabled.has(sourceExecutor) || configured.has(sourceExecutor))) {
+        configured.add(id);
+      }
+    }
+  }
   return { ...prefs, configured };
 }
 

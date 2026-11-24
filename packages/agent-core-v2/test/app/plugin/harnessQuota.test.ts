@@ -203,4 +203,29 @@ describe('harness quota cache', () => {
     expect((await raceService.cached()).sources[0]?.readings).toBeUndefined();
     expect(await raceService.read(definition.id)).toEqual([freshReading]);
   });
+
+  it('registers official:antigravity-acp alongside plugin quota sources and caches official readings', async () => {
+    const pluginHosts = {
+      attachQuotaCache: vi.fn(),
+      listHarnessQuotaSources: vi.fn(async () => [definition]),
+      readHarnessQuota: vi.fn(async () => [reading]),
+    } as unknown as IPluginHostService;
+    const officialReading: HarnessQuotaReading = {
+      accountId: 'agy-acct-1',
+      accountLabel: 'alice@example.test',
+      pool: 'gemini',
+      unit: 'percent',
+      window: '5h',
+      remaining: 88,
+    };
+    const readAllInstanceQuotas = vi.fn(async () => [officialReading]);
+    const service = new HarnessQuotaService(pluginHosts, { readAllInstanceQuotas } as unknown as import('#/app/agentExecutor/antigravityService').IAntigravityService);
+
+    const defs = await service.definitions();
+    expect(defs.map((item) => item.id)).toEqual([definition.id, 'official:antigravity-acp']);
+    expect(await service.read('official:antigravity-acp')).toEqual([officialReading]);
+    expect(await service.read('official:antigravity-acp')).toEqual([officialReading]);
+    expect(readAllInstanceQuotas).toHaveBeenCalledTimes(1);
+    expect(await service.read(definition.id)).toEqual([reading]);
+  });
 });

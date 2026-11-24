@@ -1162,9 +1162,11 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
   const loginCommand = connection?.login_command?.join(' ');
   const caps = item.capabilities;
   const setup = shown?.requirements !== undefined && shown.requirements.length > 0;
-  // Kiki installs and signs in Antigravity's ACP CLI itself; the generic
-  // "copy this command" guide would show a sentence as a command.
-  const antigravity = item.id === ANTIGRAVITY_ID;
+  // Kiki installs and signs in Antigravity's ACP CLI itself (for both the main
+  // engine and every isolated multi-account instance); the generic "copy this
+  // command" guide would show a sentence as a command.
+  const antigravity = item.id === ANTIGRAVITY_ID || item.instance?.source_executor === ANTIGRAVITY_ID;
+  const antigravityInstanceId = item.instance?.source_executor === ANTIGRAVITY_ID ? item.id : undefined;
   const savedDefaults = engineDefaultsOf(config?.raw, item.id);
   // With discovery the banner's component lines own versions and roles; the
   // subtitle drops its bare version rather than attach it to the wrong part.
@@ -1312,8 +1314,23 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
                   })()}
                 </div>
               ) : null}
-              {antigravity ? <AntigravitySetup login={login} onChanged={() => void runCheck()}
-                ideDetected={shown?.diagnostics.some((diagnostic) => diagnostic.code === 'antigravity_ide_not_acp') === true} /> : null}
+              {antigravity ? (() => {
+                const antigravityIdeDetected = shown?.diagnostics.some((diagnostic) => diagnostic.code === 'antigravity_ide_not_acp') === true;
+                const antigravityReady = !antigravityIdeDetected && (
+                  item.status === 'ready'
+                  || health === 'ready'
+                  || (health === 'warning' && program !== undefined)
+                );
+                return (
+                  <AntigravitySetup
+                    login={login}
+                    ready={antigravityReady}
+                    instanceId={antigravityInstanceId}
+                    onChanged={() => void runCheck()}
+                    ideDetected={antigravityIdeDetected}
+                  />
+                );
+              })() : null}
               {setup && !antigravity && shown !== undefined ? <EngineSetup check={shown} loginCommand={loginCommand} apiKeyEnv={apiKeyEnv}
                 accountSource={pluginAccount?.source} /> : null}
               {/* When discovery reported, its banner already carries the

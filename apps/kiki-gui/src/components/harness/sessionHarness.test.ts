@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import type { ExecutorCatalogItem, NamedAgentProfile } from '@kiki/protocol';
 
-import { harnessDenies, sessionHarnessOf } from './sessionHarness';
+import {
+  formatExternalCompactPrompt,
+  harnessAdvertisesCompact,
+  harnessDenies,
+  sessionHarnessOf,
+} from './sessionHarness';
 
 const profile = (fields: Partial<NamedAgentProfile>): NamedAgentProfile => ({
   name: 'lead', source: 'user', main: true, disabled: false, routes: [], ...fields,
@@ -62,5 +67,32 @@ describe('capability gates', () => {
     expect(harnessDenies(harness, 'image')).toBe(false);
     expect(harnessDenies(sessionHarnessOf('lead', [profile({ executor: 'x' })], []), 'fork')).toBe(false);
     expect(harnessDenies(undefined, 'fork')).toBe(false);
+  });
+
+  it('detects negotiated external /compact slash command and formats compact prompt', () => {
+    const agyHarness = sessionHarnessOf('lead', [], [], {
+      executor_id: 'antigravity-acp',
+      negotiated: { slash_commands: ['compact', 'init'] },
+    });
+    expect(harnessAdvertisesCompact(agyHarness)).toBe(true);
+    const slashedHarness = sessionHarnessOf('lead', [], [], {
+      executor_id: 'antigravity-acp',
+      negotiated: { slash_commands: ['/compact'] },
+    });
+    expect(harnessAdvertisesCompact(slashedHarness)).toBe(true);
+    const catalogFallback = sessionHarnessOf('lead', [], [], { executor_id: 'antigravity-acp' });
+    expect(harnessAdvertisesCompact(catalogFallback, {
+      capabilities: {
+        prompt_deliveries: ['preamble'],
+        steer: 'native',
+        permission: { trust_engine_settings: false },
+        thinking_binding: true,
+        negotiated: { slash_commands: ['compact'] },
+      },
+    })).toBe(true);
+    expect(harnessAdvertisesCompact(sessionHarnessOf('lead', [profile({ executor: 'claude-acp' })], [claude]))).toBe(false);
+    expect(harnessAdvertisesCompact(undefined)).toBe(false);
+    expect(formatExternalCompactPrompt()).toBe('/compact');
+    expect(formatExternalCompactPrompt('  keep decisions  ')).toBe('/compact keep decisions');
   });
 });

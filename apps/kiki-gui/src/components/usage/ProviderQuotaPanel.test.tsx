@@ -1309,4 +1309,68 @@ describe('ProviderQuotaPanel', () => {
     // In-flight deduplication prevented duplicate concurrent calls for already-queued sources:
     expect(refreshSource).toHaveBeenCalledTimes(6);
   });
+
+  it('renders native Antigravity 5h/weekly meters with account label and multi-account token renewal settings link', async () => {
+    client.getConfig.mockResolvedValue({
+      raw: {
+        agent_executor_overrides: {
+          'antigravity-acp': { show_in_profile_list: true },
+        },
+        agent_executor_instances: {
+          'instance-agy-work': {
+            source_executor: 'antigravity-acp',
+            display_name: 'Antigravity · Work',
+            show_in_profile_list: true,
+          },
+        },
+      },
+    });
+    show([
+      source({
+        id: 'executor:antigravity-acp',
+        provider_id: 'antigravity-acp',
+        label: 'Antigravity',
+        account_label: 'alex@example.com',
+        kind: 'executor',
+        supported: true,
+        status: 'ready',
+        meters: [
+          meter({ id: 'gemini-5h', label: 'Gemini · 5h', remaining: 82, used: 18, limit: 100 }),
+          meter({ id: 'gemini-weekly', label: 'Gemini · Weekly', remaining: 64, used: 36, limit: 100 }),
+          meter({ id: 'claude-5h', label: 'Claude & GPT · 5h', remaining: 55, used: 45, limit: 100 }),
+          meter({ id: 'claude-weekly', label: 'Claude & GPT · Weekly', remaining: 40, used: 60, limit: 100 }),
+        ],
+      }),
+      source({
+        id: 'executor:antigravity-acp:instance-agy-work',
+        provider_id: 'instance-agy-work',
+        label: 'Antigravity · Work',
+        account_label: 'work@example.com',
+        kind: 'executor',
+        supported: true,
+        status: 'auth_required',
+        message: 'Antigravity CLI token expired',
+        meters: [],
+      }),
+    ]);
+
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+    expect(container.querySelector('[data-quota-empty]')).toBeNull();
+    expect(container.textContent).not.toContain('No quota information available');
+
+    const primaryRow = container.querySelector('[data-quota-engine="antigravity-acp"]');
+    expect(primaryRow).not.toBeNull();
+    expect(primaryRow?.textContent).toContain('alex@example.com');
+    expect(primaryRow?.textContent).toContain('82%');
+    expect(primaryRow?.textContent).toContain('40%');
+    expect(primaryRow?.querySelectorAll('[data-quota-progress]').length).toBe(4);
+
+    const workRow = container.querySelector('[data-quota-engine="instance-agy-work"]');
+    expect(workRow).not.toBeNull();
+    expect(workRow?.textContent).toContain('work@example.com');
+    expect(workRow?.textContent).toContain('Antigravity CLI token expired');
+    expect(workRow?.querySelector('[data-quota-engine-auth-settings]')).not.toBeNull();
+  });
 });

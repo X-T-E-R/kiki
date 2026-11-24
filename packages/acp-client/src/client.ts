@@ -23,9 +23,15 @@ import { AcpClientError, AcpClientErrorCode, AcpProtocolError } from '#/errors';
 import {
   antigravityClientFileReads,
   antigravityClientName,
+  antigravityCommandOutlivesPrompt,
+  antigravityIsScheduleToolCall,
   antigravitySessionMeta,
+  antigravitySupportsLogout,
+  antigravitySupportsPromptSteering,
+  classifyAntigravitySubagentToolCall,
   isCopilotLostSessionError,
   makeAntigravityReadRepair,
+  makeAntigravityUpdateStepsPlans,
   normalizeAntigravitySessionUpdate,
   readAntigravityTextFile,
 } from '#/antigravity';
@@ -69,8 +75,14 @@ const DEFAULT_STARTUP_TIMEOUT_MS = 70_000;
 const DEFAULT_CANCEL_GRACE_MS = 3_000;
 const DEFAULT_SHUTDOWN_GRACE_MS = 3_000;
 const DEFAULT_STDERR_MAX_BYTES = 64 * 1024;
+const DEFAULT_AGY_BUSY_RETRY_MS = 1_000;
+const DEFAULT_AGY_TERMINAL_DEBOUNCE_MS = 3_000;
+const DEFAULT_AGY_OPEN_REPLY_SILENCE_MS = 120_000;
+const DEFAULT_AGY_SILENT_COMMAND_CAP_MS = 1_800_000;
+const DEFAULT_AGY_SUBAGENT_POLL_MS = 2_000;
 const MAX_EVENT_BACKLOG = 1024;
 const SESSION_REF_VERSION = 1;
+const TERMINAL_TOOL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 const UNKNOWN_UPDATE_METHOD = '_kiki/session_update_unknown';
 const KNOWN_UPDATE_TYPES = new Set([
   'user_message_chunk',
@@ -88,12 +100,44 @@ const KNOWN_UPDATE_TYPES = new Set([
   'usage_update',
 ]);
 
+type PromptUsage = NonNullable<import('@agentclientprotocol/sdk').PromptResponse['usage']>;
+
+interface TrackedToolMeta {
+  readonly kind?: RequestPermissionRequest['toolCall']['kind'];
+  readonly locations?: RequestPermissionRequest['toolCall']['locations'];
+  readonly title?: string;
+  readonly rawInput?: unknown;
+  readonly meta?: unknown;
+}
+
 interface ActiveTurn {
   readonly queue: AsyncQueue<NormalizedExecutorEvent>;
-  readonly toolCalls: Map<string, Pick<RequestPermissionRequest['toolCall'], 'kind' | 'locations'>>;
+  readonly toolCalls: Map<string, TrackedToolMeta>;
   readonly requestController: AbortController;
   readonly signal: AbortSignal;
   readonly settled: Promise<void>;
+  readonly session: AcpOpenSessionResult;
+  readonly connection: ClientConnection;
+  readonly sessionMeta?: Record<string, unknown>;
+  readonly promptUsages: Map<number, PromptUsage>;
+  readonly outlivingCommands: Set<string>;
+  readonly outlivingSchedules: Set<string>;
+  readonly subagentCalls: Set<string>;
+  readonly openSubagentCalls: Set<string>;
+  promptSequence: number;
+  latestResponse?: import('@agentclientprotocol/sdk').PromptResponse;
+  finished: boolean;
+  holding: boolean;
+  holdGeneration: number;
+  replyActive: boolean;
+  lastProgressAt: number;
+  unknownChildHoldSince?: number;
+  debounceTimer?: NodeJS.Timeout;
+  openReplyTimer?: NodeJS.Timeout;
+  silentCommandTimer?: NodeJS.Timeout;
+  subagentPollTimer?: NodeJS.Timeout;
+  resolveTurn(result: AcpTurnResult): void;
+  rejectTurn(error: unknown): void;
   resolveSettled(): void;
   cancellation?: Promise<void>;
 }
@@ -337,7 +381,9 @@ export class AcpProcessClient {
   #copilotLostSession = false;
   #protocolFailure: AcpProtocolError | undefined;
   #steeringDetached = false;
+  #advertisedCommands: readonly string[] = [];
   readonly #antigravityReadRepair = makeAntigravityReadRepair();
+  #antigravityUpdateStepsPlans = makeAntigravityUpdateStepsPlans();
   readonly #grokInputMerger = new GrokAcpInputMerger();
 
   constructor(
@@ -374,6 +420,53 @@ export class AcpProcessClient {
 
   sessionRef(): ExecutorSessionRefEnvelope | undefined {
     return this.#openResult?.sessionRef;
+  }
+
+  supportsPromptSteering(): boolean {
+    return this.#isAntigravity() &&
+      this.#openResult !== undefined &&
+      antigravitySupportsPromptSteering(this.#openResult.initialize);
+  }
+
+  advertisedCommands(): readonly string[] {
+    return this.#advertisedCommands;
+  }
+
+  async logout(signal?: AbortSignal): Promise<boolean> {
+    const connection = this.#connection;
+    const session = this.#openResult;
+    if (connection === undefined || connection.signal.aborted || session === undefined) {
+      return false;
+    }
+    if (!antigravitySupportsLogout(session.initialize)) {
+      return false;
+    }
+    const closed = connection.closed.then(() => {
+      throw this.#disconnectError('ACP connection closed during logout');
+    });
+    void closed.catch(() => undefined);
+    await Promise.race([
+      connection.agent.request('logout', {}, signal === undefined ? undefined : { cancellationSignal: signal }),
+      closed,
+    ]);
+    return true;
+  }
+
+  async retireSession(reason: unknown = new Error('ACP session retired')): Promise<void> {
+    if (this.#state === 'closed') return;
+    try {
+      if (this.#activeTurn !== undefined) await this.cancel(reason);
+    } finally {
+      await this.#cleanupTransport(false);
+      this.#openResult = undefined;
+      this.#observedModeId = undefined;
+      this.#advertisedCommands = [];
+      this.#latestConfigOptions = undefined;
+      this.#steeringDetached = false;
+      this.#antigravityReadRepair.reset();
+      this.#antigravityUpdateStepsPlans = makeAntigravityUpdateStepsPlans();
+      this.#setState('cold');
+    }
   }
 
   async openSession(options: AcpOpenSessionOptions): Promise<AcpOpenSessionResult> {
@@ -488,7 +581,10 @@ export class AcpProcessClient {
           this.#modeWaiter = undefined;
         }
       }
-      this.#openResult = { ...this.#openResult, currentModeId: this.#observedModeId };
+      const currentModeId = options.modeId === undefined
+        ? this.#observedModeId ?? this.#openResult.currentModeId
+        : this.#observedModeId ?? (options.modeId === this.#openResult.currentModeId ? this.#openResult.currentModeId : undefined);
+      this.#openResult = { ...this.#openResult, currentModeId };
       this.#setState('ready');
       return this.#openResult;
     } catch (error) {
@@ -626,6 +722,9 @@ export class AcpProcessClient {
       if (attachment.type === 'audio' && session.capabilities.promptCapabilities?.audio !== true) {
         throw new AcpProtocolError('ACP harness does not support audio attachments');
       }
+      if ((attachment.type === 'resource' || attachment.type === 'resource_link') && session.capabilities.promptCapabilities?.embeddedContext !== true) {
+        throw new AcpProtocolError('ACP harness does not support embedded context attachments');
+      }
     }
     const queue = new AsyncQueue<NormalizedExecutorEvent>(MAX_EVENT_BACKLOG);
     const requestController = new AbortController();
@@ -633,12 +732,34 @@ export class AcpProcessClient {
     const settled = new Promise<void>((resolve) => {
       resolveSettled = resolve;
     });
+    let resolveTurn!: (result: AcpTurnResult) => void;
+    let rejectTurn!: (error: unknown) => void;
+    const turnDone = new Promise<AcpTurnResult>((resolve, reject) => {
+      resolveTurn = resolve;
+      rejectTurn = reject;
+    });
     const active: ActiveTurn = {
       queue,
       toolCalls: new Map(),
       requestController,
       signal: request.signal,
       settled,
+      session,
+      connection,
+      sessionMeta: request.session?.sessionMeta,
+      promptUsages: new Map(),
+      outlivingCommands: new Set(),
+      outlivingSchedules: new Set(),
+      subagentCalls: new Set(),
+      openSubagentCalls: new Set(),
+      promptSequence: 1,
+      finished: false,
+      holding: false,
+      holdGeneration: 0,
+      replyActive: false,
+      lastProgressAt: Date.now(),
+      resolveTurn,
+      rejectTurn,
       resolveSettled,
     };
     this.#activeTurn = active;
@@ -649,55 +770,28 @@ export class AcpProcessClient {
     };
     request.signal.addEventListener('abort', onAbort, { once: true });
 
+    const onConnectionClosed = (): void => {
+      if (!active.finished) {
+        this.#failTurn(active, this.#disconnectError('ACP connection closed during prompt'));
+      }
+    };
+    void connection.closed.then(onConnectionClosed, onConnectionClosed);
+
     const completion = (async (): Promise<AcpTurnResult> => {
       try {
-        if (this.#isAntigravity()) this.#antigravityReadRepair.reset();
+        if (this.#isAntigravity()) {
+          this.#antigravityReadRepair.reset();
+          this.#antigravityUpdateStepsPlans = makeAntigravityUpdateStepsPlans();
+        }
         request.onDeliveryAttempt?.();
-        const prompt = connection.agent.request(
-          methods.agent.session.prompt,
-          {
-            sessionId: session.sessionId,
-            prompt: [{ type: 'text', text: request.prompt }, ...request.attachments ?? []],
-            _meta: request.session?.sessionMeta,
-          },
-          { cancellationSignal: requestController.signal },
-        );
-        const response = await Promise.race([
-          prompt,
-          connection.closed.then(() => {
-            throw this.#disconnectError('ACP connection closed during prompt');
-          }),
-        ]);
-        const sessionFailure = airSessionFailure(response._meta);
-        if (sessionFailure !== undefined) throw sessionFailure;
-        queue.close();
-        if (
-          this.#state === 'prompting' &&
-          this.#connection === connection &&
-          !connection.signal.aborted
-        ) {
-          this.#setState('ready');
-        }
-        // stderr is a pipe independent of the ACP stdout stream, so there is no
-        // ordering guarantee between an agent's stderr write and its prompt
-        // response. This snapshot is a best-effort view of the stderr received
-        // so far; `stderrTail()` retains the live tail.
-        return { response, session, stderrTail: this.stderrTail() };
-      } catch (error) {
-        if ((this.#descriptor.sourceId ?? this.#descriptor.id) === 'copilot-acp' && isCopilotLostSessionError(error)) {
-          this.#copilotLostSession = true;
-        }
-        const failure =
-          error instanceof AcpClientError
-            ? error
-            : connection.signal.aborted
-              ? this.#disconnectError('ACP connection closed during prompt', error)
-              : this.#decorateError(error, AcpClientErrorCode.ProtocolError);
-        queue.fail(failure);
-        this.#releasePendingEventReservations(active);
-        if (this.#state === 'prompting') this.#setState('broken');
-        throw failure;
+        const promptBlocks: import('@agentclientprotocol/sdk').ContentBlock[] = [
+          { type: 'text', text: request.prompt },
+          ...request.attachments ?? [],
+        ];
+        void this.#runTurnPrompt(active, 1, promptBlocks, false);
+        return await turnDone;
       } finally {
+        this.#clearHoldTimers(active);
         request.signal.removeEventListener('abort', onAbort);
         active.resolveSettled();
         if (this.#activeTurn === active) this.#activeTurn = undefined;
@@ -712,13 +806,374 @@ export class AcpProcessClient {
     };
   }
 
+  async #runTurnPrompt(
+    active: ActiveTurn,
+    sequence: number,
+    promptBlocks: readonly import('@agentclientprotocol/sdk').ContentBlock[],
+    allowBusyRetry: boolean,
+  ): Promise<void> {
+    const connection = active.connection;
+    const sendOnce = () => connection.agent.request(
+      methods.agent.session.prompt,
+      {
+        sessionId: active.session.sessionId,
+        prompt: [...promptBlocks],
+        _meta: active.sessionMeta,
+      },
+      { cancellationSignal: active.requestController.signal },
+    );
+
+    try {
+      let response: import('@agentclientprotocol/sdk').PromptResponse;
+      try {
+        response = await sendOnce();
+      } catch (error) {
+        if (
+          allowBusyRetry &&
+          isAntigravityBusyError(error) &&
+          !active.finished &&
+          !active.signal.aborted &&
+          active.cancellation === undefined &&
+          active.promptSequence === sequence
+        ) {
+          const retryMs = this.#options.antigravityHooks?.timing?.busyRetryMs ?? DEFAULT_AGY_BUSY_RETRY_MS;
+          await delay(retryMs);
+          if (
+            active.finished ||
+            active.signal.aborted ||
+            active.cancellation !== undefined ||
+            active.promptSequence !== sequence
+          ) {
+            return;
+          }
+          response = await sendOnce();
+        } else {
+          throw error;
+        }
+      }
+
+      if (active.finished) return;
+      if (response.usage !== undefined && response.usage !== null) {
+        active.promptUsages.set(sequence, response.usage);
+      }
+      if (active.promptSequence !== sequence) {
+        return;
+      }
+      const sessionFailure = airSessionFailure(response._meta);
+      if (sessionFailure !== undefined) {
+        this.#failTurn(active, sessionFailure);
+        return;
+      }
+      active.latestResponse = response;
+      if (
+        this.#isAntigravity() &&
+        !active.signal.aborted &&
+        active.cancellation === undefined &&
+        response.stopReason !== 'cancelled' &&
+        await this.#shouldHoldAfterSettle(active, sequence)
+      ) {
+        if (active.finished || active.promptSequence !== sequence) return;
+        active.holding = true;
+        active.lastProgressAt = Date.now();
+        active.holdGeneration += 1;
+        await this.#evaluateHold(active);
+        return;
+      }
+      if (active.finished || active.promptSequence !== sequence) return;
+      this.#finalizeTurn(active, sequence);
+    } catch (error) {
+      if (active.finished) return;
+      if (active.promptSequence !== sequence && !connection.signal.aborted) {
+        return;
+      }
+      this.#failTurn(active, error);
+    }
+  }
+
+  async #shouldHoldAfterSettle(active: ActiveTurn, sequence: number): Promise<boolean> {
+    if (
+      active.outlivingCommands.size > 0 ||
+      active.outlivingSchedules.size > 0 ||
+      active.openSubagentCalls.size > 0
+    ) {
+      return true;
+    }
+    const hooks = this.#options.antigravityHooks;
+    if (active.subagentCalls.size > 0 && hooks?.childrenAtWork !== undefined) {
+      const work = await hooks.childrenAtWork(active.session.sessionId, [...active.subagentCalls])
+        .catch(() => ({ activeToolCallIds: [], incomplete: false }));
+      if (active.finished || active.promptSequence !== sequence) return false;
+      if (work.activeToolCallIds.length > 0) {
+        active.unknownChildHoldSince = undefined;
+        return true;
+      }
+      if (work.incomplete) {
+        active.unknownChildHoldSince ??= Date.now();
+        return true;
+      }
+      active.unknownChildHoldSince = undefined;
+    }
+    if (hooks?.hasPendingReply !== undefined) {
+      const pending = await hooks.hasPendingReply(active.session.sessionId).catch(() => false);
+      if (active.finished || active.promptSequence !== sequence) return false;
+      if (pending) return true;
+    }
+    return false;
+  }
+
+  async #evaluateHold(active: ActiveTurn): Promise<void> {
+    if (active.finished || !active.holding || active.signal.aborted || active.cancellation !== undefined) {
+      return;
+    }
+    const generation = active.holdGeneration;
+    const sequence = active.promptSequence;
+    const timing = this.#options.antigravityHooks?.timing;
+    const debounceMs = timing?.terminalDebounceMs ?? DEFAULT_AGY_TERMINAL_DEBOUNCE_MS;
+    const openReplyMs = timing?.openReplySilenceMs ?? DEFAULT_AGY_OPEN_REPLY_SILENCE_MS;
+    const silentCommandMs = timing?.silentCommandCapMs ?? DEFAULT_AGY_SILENT_COMMAND_CAP_MS;
+    const pollMs = timing?.subagentPollIntervalMs ?? DEFAULT_AGY_SUBAGENT_POLL_MS;
+
+    let detachedActive = false;
+    let unknownChildRemainingMs: number | undefined;
+    const hooks = this.#options.antigravityHooks;
+    if (active.subagentCalls.size > 0 && hooks?.childrenAtWork !== undefined) {
+      const work = await hooks.childrenAtWork(active.session.sessionId, [...active.subagentCalls])
+        .catch(() => ({ activeToolCallIds: [], incomplete: false }));
+      if (active.finished || active.holdGeneration !== generation || active.promptSequence !== sequence) {
+        return;
+      }
+      if (work.activeToolCallIds.length > 0) {
+        detachedActive = true;
+        active.unknownChildHoldSince = undefined;
+      } else if (work.incomplete) {
+        active.unknownChildHoldSince ??= Date.now();
+        const remaining = openReplyMs - (Date.now() - active.unknownChildHoldSince);
+        if (remaining > 0) {
+          unknownChildRemainingMs = remaining;
+        }
+      } else {
+        active.unknownChildHoldSince = undefined;
+      }
+    }
+
+    const hasWork =
+      active.outlivingCommands.size > 0 ||
+      active.outlivingSchedules.size > 0 ||
+      active.openSubagentCalls.size > 0 ||
+      detachedActive;
+
+    if (!hasWork && !active.replyActive && unknownChildRemainingMs === undefined) {
+      if (hooks?.hasPendingReply !== undefined) {
+        const pending = await hooks.hasPendingReply(active.session.sessionId).catch(() => false);
+        if (active.finished || active.holdGeneration !== generation || active.promptSequence !== sequence) {
+          return;
+        }
+        if (pending) {
+          const remaining = openReplyMs - (Date.now() - active.lastProgressAt);
+          if (remaining <= 0) {
+            this.#finalizeTurn(active, sequence);
+            return;
+          }
+          this.#armOpenReplyTimer(active, generation, sequence, remaining);
+          this.#armSubagentPollTimer(active, generation, sequence, Math.min(pollMs, remaining));
+          return;
+        }
+      }
+      if (active.openReplyTimer !== undefined) {
+        clearTimeout(active.openReplyTimer);
+        active.openReplyTimer = undefined;
+      }
+      if (active.silentCommandTimer !== undefined) {
+        clearTimeout(active.silentCommandTimer);
+        active.silentCommandTimer = undefined;
+      }
+      if (active.subagentPollTimer !== undefined) {
+        clearTimeout(active.subagentPollTimer);
+        active.subagentPollTimer = undefined;
+      }
+      if (active.debounceTimer === undefined) {
+        active.debounceTimer = setTimeout(() => {
+          active.debounceTimer = undefined;
+          if (!active.finished && active.holdGeneration === generation && active.promptSequence === sequence) {
+            this.#finalizeTurn(active, sequence);
+          }
+        }, debounceMs);
+      }
+      return;
+    }
+
+    if (active.debounceTimer !== undefined) {
+      clearTimeout(active.debounceTimer);
+      active.debounceTimer = undefined;
+    }
+    if (active.replyActive) {
+      const remaining = openReplyMs - (Date.now() - active.lastProgressAt);
+      if (remaining <= 0) {
+        this.#finalizeTurn(active, sequence);
+        return;
+      }
+      this.#armOpenReplyTimer(active, generation, sequence, remaining);
+    } else if (unknownChildRemainingMs !== undefined && !hasWork) {
+      this.#armOpenReplyTimer(active, generation, sequence, unknownChildRemainingMs);
+      this.#armSubagentPollTimer(active, generation, sequence, Math.min(pollMs, unknownChildRemainingMs));
+      return;
+    }
+    if (hasWork) {
+      const remainingSilent = silentCommandMs - (Date.now() - active.lastProgressAt);
+      if (remainingSilent <= 0) {
+        this.#finalizeTurn(active, sequence);
+        return;
+      }
+      this.#armSilentCommandTimer(active, generation, sequence, remainingSilent);
+    }
+    if (detachedActive || unknownChildRemainingMs !== undefined) {
+      this.#armSubagentPollTimer(active, generation, sequence, pollMs);
+    }
+  }
+
+  #armOpenReplyTimer(active: ActiveTurn, generation: number, sequence: number, timeoutMs: number): void {
+    if (active.openReplyTimer !== undefined) clearTimeout(active.openReplyTimer);
+    active.openReplyTimer = setTimeout(() => {
+      active.openReplyTimer = undefined;
+      if (!active.finished && active.holdGeneration === generation && active.promptSequence === sequence) {
+        this.#finalizeTurn(active, sequence);
+      }
+    }, Math.max(1, timeoutMs));
+  }
+
+  #armSilentCommandTimer(active: ActiveTurn, generation: number, sequence: number, timeoutMs: number): void {
+    if (active.silentCommandTimer !== undefined) clearTimeout(active.silentCommandTimer);
+    active.silentCommandTimer = setTimeout(() => {
+      active.silentCommandTimer = undefined;
+      if (!active.finished && active.holdGeneration === generation && active.promptSequence === sequence) {
+        this.#finalizeTurn(active, sequence);
+      }
+    }, Math.max(1, timeoutMs));
+  }
+
+  #armSubagentPollTimer(active: ActiveTurn, generation: number, sequence: number, intervalMs: number): void {
+    if (active.subagentPollTimer !== undefined) clearTimeout(active.subagentPollTimer);
+    active.subagentPollTimer = setTimeout(() => {
+      active.subagentPollTimer = undefined;
+      if (!active.finished && active.holdGeneration === generation && active.promptSequence === sequence) {
+        void this.#evaluateHold(active);
+      }
+    }, Math.max(1, intervalMs));
+  }
+
+  #clearHoldTimers(active: ActiveTurn): void {
+    if (active.debounceTimer !== undefined) {
+      clearTimeout(active.debounceTimer);
+      active.debounceTimer = undefined;
+    }
+    if (active.openReplyTimer !== undefined) {
+      clearTimeout(active.openReplyTimer);
+      active.openReplyTimer = undefined;
+    }
+    if (active.silentCommandTimer !== undefined) {
+      clearTimeout(active.silentCommandTimer);
+      active.silentCommandTimer = undefined;
+    }
+    if (active.subagentPollTimer !== undefined) {
+      clearTimeout(active.subagentPollTimer);
+      active.subagentPollTimer = undefined;
+    }
+  }
+
+  #finalizeTurn(active: ActiveTurn, expectedSequence?: number): void {
+    if (active.finished) return;
+    if (expectedSequence !== undefined && active.promptSequence !== expectedSequence) return;
+    active.finished = true;
+    active.holding = false;
+    this.#clearHoldTimers(active);
+    const baseResponse = active.latestResponse ?? { stopReason: 'end_turn' as const };
+    const aggregatedUsage = this.#isAntigravity()
+      ? aggregatePromptUsages(active.promptUsages)
+      : baseResponse.usage;
+    const response = aggregatedUsage === undefined
+      ? baseResponse
+      : { ...baseResponse, usage: aggregatedUsage };
+    const promptUsages = active.promptUsages.size > 0
+      ? [...active.promptUsages.entries()]
+          .toSorted(([left], [right]) => left - right)
+          .map(([, usage]) => usage)
+      : undefined;
+    active.queue.close();
+    if (
+      this.#state === 'prompting' &&
+      this.#connection === active.connection &&
+      !active.connection.signal.aborted
+    ) {
+      this.#setState('ready');
+    }
+    active.resolveTurn({
+      response,
+      promptUsages,
+      session: active.session,
+      stderrTail: this.stderrTail(),
+    });
+  }
+
+  #failTurn(active: ActiveTurn, error: unknown): void {
+    if (active.finished) return;
+    active.finished = true;
+    active.holding = false;
+    this.#clearHoldTimers(active);
+    if ((this.#descriptor.sourceId ?? this.#descriptor.id) === 'copilot-acp' && isCopilotLostSessionError(error)) {
+      this.#copilotLostSession = true;
+    }
+    const failure =
+      error instanceof AcpClientError
+        ? error
+        : active.connection.signal.aborted
+          ? this.#disconnectError('ACP connection closed during prompt', error)
+          : this.#decorateError(error, AcpClientErrorCode.ProtocolError);
+    active.queue.fail(failure);
+    this.#releasePendingEventReservations(active);
+    if (this.#state === 'prompting') this.#setState('broken');
+    active.rejectTurn(failure);
+  }
+
   async steer(prompt: readonly import('@agentclientprotocol/sdk').ContentBlock[]): Promise<boolean | 'unknown'> {
     const active = this.#activeTurn;
     const connection = this.#connection;
     const session = this.#openResult;
-    const steering = objectValue(session?.initialize._meta?.['steering']);
-    if (active === undefined || active.signal.aborted || connection === undefined || session === undefined ||
-        steering?.['supported'] !== true || this.#steeringDetached) return false;
+    if (
+      active === undefined ||
+      active.finished ||
+      active.signal.aborted ||
+      active.cancellation !== undefined ||
+      connection === undefined ||
+      connection.signal.aborted ||
+      session === undefined
+    ) {
+      return false;
+    }
+    if (this.#isAntigravity() && antigravitySupportsPromptSteering(session.initialize)) {
+      for (const block of prompt) {
+        if (block.type === 'image' && session.capabilities.promptCapabilities?.image !== true) {
+          throw new AcpProtocolError('ACP harness does not support image attachments');
+        }
+        if (block.type === 'audio' && session.capabilities.promptCapabilities?.audio !== true) {
+          throw new AcpProtocolError('ACP harness does not support audio attachments');
+        }
+        if ((block.type === 'resource' || block.type === 'resource_link') && session.capabilities.promptCapabilities?.embeddedContext !== true) {
+          throw new AcpProtocolError('ACP harness does not support embedded context attachments');
+        }
+      }
+      const nextSequence = active.promptSequence + 1;
+      active.promptSequence = nextSequence;
+      active.holding = false;
+      active.replyActive = false;
+      active.lastProgressAt = Date.now();
+      active.unknownChildHoldSince = undefined;
+      active.holdGeneration += 1;
+      this.#clearHoldTimers(active);
+      void this.#runTurnPrompt(active, nextSequence, prompt, true);
+      return true;
+    }
+    const steering = objectValue(session.initialize._meta?.['steering']);
+    if (steering?.['supported'] !== true || this.#steeringDetached) return false;
     try {
       const closed = connection.closed.then(() => {
         throw this.#disconnectError('ACP connection closed during steering');
@@ -761,6 +1216,10 @@ export class AcpProcessClient {
     }
 
     active.cancellation = (async () => {
+      const wasHolding = active.holding;
+      active.holding = false;
+      active.holdGeneration += 1;
+      this.#clearHoldTimers(active);
       active.requestController.abort(reason);
       try {
         await connection.agent.notify(methods.agent.session.cancel, {
@@ -771,6 +1230,11 @@ export class AcpProcessClient {
         this.#options.logger?.warn?.('Failed to send ACP session/cancel', {
           error: error instanceof Error ? error.message : String(error),
         });
+      }
+      if (wasHolding && !active.finished) {
+        active.latestResponse = { ...active.latestResponse, stopReason: 'cancelled' };
+        this.#finalizeTurn(active);
+        return;
       }
 
       const grace = this.#descriptor.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
@@ -1079,6 +1543,7 @@ export class AcpProcessClient {
       configOptions,
       currentModeId: opened.currentModeId,
       availableModes: opened.availableModes,
+      availableCommands: this.#advertisedCommands.length > 0 ? [...this.#advertisedCommands] : undefined,
       sessionRef,
       sessionRequestMeta: opened.requestMeta === undefined ? undefined : JSON.parse(JSON.stringify(opened.requestMeta)),
       sessionResponseMeta: opened.sessionMeta,
@@ -1286,11 +1751,22 @@ export class AcpProcessClient {
     try {
       const sourceId = this.#descriptor.sourceId ?? this.#descriptor.id;
       const merged = sourceId === 'grok-acp' ? this.#grokInputMerger.normalize(params, method) : params;
-      const normalized = this.#isAntigravity()
-        ? normalizeAntigravitySessionUpdate(this.#antigravityReadRepair.repair(merged))
-        : sourceId === 'devin-acp'
-          ? normalizeDevinSessionUpdate(merged)
-          : merged;
+      let normalized: unknown;
+      if (this.#isAntigravity()) {
+        const repaired = this.#antigravityReadRepair.repair(merged);
+        const planned = this.#antigravityUpdateStepsPlans(repaired);
+        if (planned === undefined) {
+          pending?.reservation.release();
+          return;
+        }
+        normalized = normalizeAntigravitySessionUpdate(planned, {
+          readPreEditFile: this.#options.antigravityHooks?.readPreEditFile,
+        });
+      } else if (sourceId === 'devin-acp') {
+        normalized = normalizeDevinSessionUpdate(merged);
+      } else {
+        normalized = merged;
+      }
       const mapped = mapAcpSessionNotification(normalized, method);
       const advertised = mapped.event.type === 'config.update'
         ? mapped.event.configOptions as SessionConfigOption[]
@@ -1300,6 +1776,13 @@ export class AcpProcessClient {
         this.#configOptionsWaiter?.();
         const gate = this.#loadReplayGate;
         if (gate !== undefined && mapped.sessionId === gate.sessionId) gate.candidateConfigOptions = advertised;
+      }
+      if (mapped.event.type === 'commands.update') {
+        const names = extractCommandNames(mapped.event.commands);
+        this.#advertisedCommands = names;
+        if (this.#openResult !== undefined && mapped.sessionId === this.#openResult.sessionId) {
+          this.#openResult = { ...this.#openResult, availableCommands: names };
+        }
       }
       if (this.#openResult !== undefined && mapped.sessionId === this.#openResult.sessionId) {
         if (advertised !== undefined) this.#openResult = { ...this.#openResult, configOptions: advertised };
@@ -1320,15 +1803,27 @@ export class AcpProcessClient {
       const active = pending?.active ?? this.#activeTurn;
       if (
         active !== undefined &&
+        !active.finished &&
         (pending?.active === active || active === this.#activeTurn) &&
         mapped.sessionId === this.#openResult?.sessionId
       ) {
+        active.lastProgressAt = Date.now();
         if (mapped.event.type === 'tool.call' || mapped.event.type === 'tool.update') {
           const previous = active.toolCalls.get(mapped.event.toolCallId);
-          active.toolCalls.set(mapped.event.toolCallId, {
+          const rawUpdate = objectValue(objectValue(normalized)?.['update']);
+          const nextMeta: TrackedToolMeta = {
             kind: mapped.event.kind === undefined ? previous?.kind : permissionToolKind.safeParse(mapped.event.kind).data,
             locations: mapped.event.locations === undefined ? previous?.locations : permissionToolLocations.safeParse(mapped.event.locations).data,
-          });
+            title: mapped.event.title ?? previous?.title,
+            rawInput: mapped.event.rawInput === undefined ? previous?.rawInput : mapped.event.rawInput,
+            meta: rawUpdate?.['_meta'] === undefined ? previous?.meta : rawUpdate['_meta'],
+          };
+          active.toolCalls.set(mapped.event.toolCallId, nextMeta);
+          if (this.#isAntigravity()) {
+            this.#trackAntigravityToolLifecycle(active, mapped.event.toolCallId, nextMeta, mapped.event.status);
+          }
+        } else if (this.#isAntigravity() && active.holding) {
+          this.#handleAntigravityPostSettleEvent(active, mapped.event);
         }
         if (pending?.active === active) pending.reservation.commit(mapped.event);
         else active.queue.push(mapped.event);
@@ -1345,6 +1840,67 @@ export class AcpProcessClient {
             });
       this.#protocolFailure = protocolError;
       this.#connection?.close(protocolError);
+    }
+  }
+
+  #trackAntigravityToolLifecycle(
+    active: ActiveTurn,
+    toolCallId: string,
+    meta: TrackedToolMeta,
+    status: string | undefined,
+  ): void {
+    const terminal = status !== undefined && TERMINAL_TOOL_STATUSES.has(status);
+    if (terminal) {
+      active.outlivingCommands.delete(toolCallId);
+      active.outlivingSchedules.delete(toolCallId);
+      active.openSubagentCalls.delete(toolCallId);
+      if (status === 'failed' || status === 'cancelled') {
+        active.subagentCalls.delete(toolCallId);
+      } else if (classifyAntigravitySubagentToolCall({ kind: meta.kind ?? undefined, title: meta.title, meta: meta.meta }) === 'subagent') {
+        active.subagentCalls.add(toolCallId);
+      }
+    } else {
+      const info = { kind: meta.kind ?? undefined, title: meta.title, rawInput: meta.rawInput };
+      if (antigravityIsScheduleToolCall(info)) {
+        active.outlivingSchedules.add(toolCallId);
+      } else if (antigravityCommandOutlivesPrompt(info)) {
+        active.outlivingCommands.add(toolCallId);
+      }
+      if (classifyAntigravitySubagentToolCall({ kind: meta.kind ?? undefined, title: meta.title, meta: meta.meta }) === 'subagent') {
+        active.subagentCalls.add(toolCallId);
+        active.openSubagentCalls.add(toolCallId);
+      }
+    }
+    if (active.holding) {
+      if (active.debounceTimer !== undefined) {
+        clearTimeout(active.debounceTimer);
+        active.debounceTimer = undefined;
+      }
+      active.holdGeneration += 1;
+      void this.#evaluateHold(active);
+    }
+  }
+
+  #handleAntigravityPostSettleEvent(active: ActiveTurn, event: NormalizedExecutorEvent): void {
+    const timing = this.#options.antigravityHooks?.timing;
+    if (event.type === 'message.delta' || event.type === 'thought.delta' || event.type === 'plan.update') {
+      active.replyActive = true;
+      if (active.debounceTimer !== undefined) {
+        clearTimeout(active.debounceTimer);
+        active.debounceTimer = undefined;
+      }
+      const openReplyMs = timing?.openReplySilenceMs ?? DEFAULT_AGY_OPEN_REPLY_SILENCE_MS;
+      this.#armOpenReplyTimer(active, active.holdGeneration, active.promptSequence, openReplyMs);
+      return;
+    }
+    if (event.type === 'usage' && active.replyActive) {
+      active.replyActive = false;
+      if (active.openReplyTimer !== undefined) {
+        clearTimeout(active.openReplyTimer);
+        active.openReplyTimer = undefined;
+      }
+      active.holdGeneration += 1;
+      void this.#evaluateHold(active);
     }
   }
 
@@ -1673,6 +2229,68 @@ export function grokModelOptions(options: readonly SessionConfigOption[], rawMod
   if (!choices.some((choice) => choice.value === current)) choices.unshift({ value: current, name: current, description: undefined });
   return [...result, { id: 'reasoning_effort', name: 'Reasoning effort', category: 'thought_level', type: 'select', currentValue: current,
     options: choices, _meta: { 'kiki.transport': 'session/set_model' } }];
+}
+
+function isAntigravityBusyError(error: unknown): boolean {
+  const candidates: unknown[] = [];
+  if (error instanceof RequestError) {
+    candidates.push(error.message);
+    const data = objectValue(error.data);
+    candidates.push(data?.['message'], data?.['details']);
+  } else if (error instanceof Error) {
+    candidates.push(error.message);
+  }
+  return candidates.some(
+    (value) => typeof value === 'string' && value.trim().startsWith('Agent is already processing'),
+  );
+}
+
+function aggregatePromptUsages(usages: ReadonlyMap<number, PromptUsage>): PromptUsage | undefined {
+  if (usages.size === 0) return undefined;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+  let thoughtTokens: number | undefined;
+  let cachedReadTokens: number | undefined;
+  let cachedWriteTokens: number | undefined;
+  for (const [, usage] of [...usages.entries()].toSorted(([left], [right]) => left - right)) {
+    inputTokens += usage.inputTokens;
+    outputTokens += usage.outputTokens;
+    totalTokens += usage.totalTokens;
+    if (typeof usage.thoughtTokens === 'number' && Number.isFinite(usage.thoughtTokens)) {
+      thoughtTokens = (thoughtTokens ?? 0) + usage.thoughtTokens;
+    }
+    if (typeof usage.cachedReadTokens === 'number' && Number.isFinite(usage.cachedReadTokens)) {
+      cachedReadTokens = (cachedReadTokens ?? 0) + usage.cachedReadTokens;
+    }
+    if (typeof usage.cachedWriteTokens === 'number' && Number.isFinite(usage.cachedWriteTokens)) {
+      cachedWriteTokens = (cachedWriteTokens ?? 0) + usage.cachedWriteTokens;
+    }
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    ...(thoughtTokens === undefined ? {} : { thoughtTokens }),
+    ...(cachedReadTokens === undefined ? {} : { cachedReadTokens }),
+    ...(cachedWriteTokens === undefined ? {} : { cachedWriteTokens }),
+  };
+}
+
+function extractCommandNames(commands: readonly unknown[]): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const entry of commands) {
+    const raw = typeof entry === 'string' ? entry : objectValue(entry)?.['name'];
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) continue;
+    const normalized = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    names.push(normalized);
+  }
+  return names;
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {

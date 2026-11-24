@@ -149,7 +149,7 @@ const SUPPORTED_COMMANDS = [
   command('plugins', [], 'Manage plugins (install --trust consents to full account permissions)', 'optional-rest', '[marketplace|install [--trust] <source>|enable|disable|remove|reload]', 'structured'),
   command('provider', ['providers'], 'Manage AI providers', 'optional-rest', '[add|remove|refresh]', 'structured'),
   command('reload', [], 'Reload daemon configuration and plugins', 'none', undefined, 'none'),
-  command('login', [], 'Authenticate a provider', 'optional-one', '[provider]', 'finite'),
+  command('login', [], 'Authenticate a provider', 'optional-rest', '[provider|antigravity-acp [code]]', 'structured'),
   command('logout', ['disconnect'], 'Log out of a configured provider', 'optional-one', '[provider]', 'finite'),
   command('mcp', [], 'Manage MCP servers and session overrides', 'none', undefined, 'none'),
   command('goal', [], 'Start or manage an autonomous goal', 'optional-rest', '[objective|pause|resume|cancel]', 'freeform-guarded'),

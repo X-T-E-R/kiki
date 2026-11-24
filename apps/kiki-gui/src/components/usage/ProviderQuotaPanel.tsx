@@ -163,15 +163,6 @@ export function ProviderQuotaPanel() {
             </div>
           ) : (
             <div className="space-y-4" data-quota-items>
-              {state.arranged.live.length === 0 ? (
-                <div className="flex flex-wrap items-center justify-between gap-3 border-y border-hairline py-4 text-[12.5px] text-ink-faint" data-quota-empty>
-                  <span>{t('usage.quota.emptyTitle')}</span>
-                  <Link to="/settings/ai?tab=providers" data-quota-manage-connections className={ROW_LINK}>
-                    {t('usage.quota.action.manageConnections')}
-                  </Link>
-                </div>
-              ) : null}
-
               {state.arranged.attention.length > 0 ? (
                 <section className="space-y-2.5" data-quota-attention>
                   {state.arranged.attention.map((source) => {

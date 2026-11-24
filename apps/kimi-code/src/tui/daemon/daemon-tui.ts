@@ -11,7 +11,15 @@ import {
   type PluginInfo,
   type PluginSummary,
 } from '@kiki/node-sdk';
-import { ErrorCode, type ManagedUsageResult, type MessageContent, type PromptStatus, type UpdateSessionProfileRequest } from '@kiki/protocol';
+import {
+  ErrorCode,
+  type ExecutorCatalogItem,
+  type ExecutorModelCatalogResponse,
+  type ManagedUsageResult,
+  type MessageContent,
+  type PromptStatus,
+  type UpdateSessionProfileRequest,
+} from '@kiki/protocol';
 
 import type { SessionViewSignal } from '@kiki/klient/session-view';
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
@@ -148,6 +156,19 @@ import { parsePluginInstallArgs } from '#/tui/utils/plugin-install-args';
 import { editInExternalEditor, resolveEditorCommand } from '#/utils/process/external-editor';
 import { detectFdPath } from '#/utils/process/fd-detect';
 
+import {
+  antigravityInstanceIdOf,
+  checkAntigravityPendingTargetMismatch,
+  executorAdvertisesSlashCommand,
+  executorThinkingLevelsForModel,
+  formatExternalSlashCommandPrompt,
+  isAntigravityExecutorId,
+  isExternalExecutorId,
+  parseAntigravityLoginArgs,
+  pickExecutorThinkingForModel,
+  resolveExecutorModels,
+  type ResolvedExecutorModels,
+} from './executor-models';
 import { projectAttachmentSettlement } from './attachment-settlement';
 import { executeWebCommand } from './web-command';
 import {
@@ -255,6 +276,12 @@ export class DaemonTUI {
   private activeSessionPicker: SessionPickerComponent | undefined;
   private readonly skillCommands = new Map<string, DaemonSkillCommand>();
   private readonly agentProfileCommands = new Map<string, string>();
+  private readonly profileExecutors = new Map<string, string>();
+  private executorCatalog: readonly ExecutorCatalogItem[] = [];
+  private readonly executorModelCatalogs = new Map<string, ExecutorModelCatalogResponse>();
+  private pendingAntigravityLogin:
+    | { readonly handle: string; readonly instanceId?: string; readonly flowKind: 'code_paste' | 'loopback_url'; readonly redirectUri: string }
+    | undefined;
   private readonly imageAttachments = new ImageAttachmentStore();
   private readonly fileAttachments = new Map<number, DaemonFileAttachment>();
   private nextFileAttachmentId = 1;
@@ -1287,6 +1314,45 @@ export class DaemonTUI {
       : controller.getAgentState(this.focusedAgentId).blocks;
   }
 
+  private activeExternalExecutorId(): string | undefined {
+    const forestExecutor = this.controller?.getForest()?.byId[this.focusedAgentId]?.executorId;
+    if (isExternalExecutorId(forestExecutor)) return forestExecutor;
+    const sessionExecutor = this.controller?.getState().session?.executor_id;
+    if (isExternalExecutorId(sessionExecutor)) return sessionExecutor;
+    const profileKey = this.state.appState.agentProfile?.toLowerCase();
+    const profileExecutor = profileKey === undefined ? undefined : this.profileExecutors.get(profileKey);
+    return isExternalExecutorId(profileExecutor) ? profileExecutor : undefined;
+  }
+
+  private currentExternalModels(): ResolvedExecutorModels | undefined {
+    const executorId = this.activeExternalExecutorId();
+    if (executorId === undefined) return undefined;
+    const sessionNegotiated = this.controller?.getState().session?.negotiated;
+    const catalogItem = this.executorCatalog.find((entry) => entry.id === executorId);
+    const modelCatalog = this.executorModelCatalogs.get(executorId);
+    return resolveExecutorModels(executorId, sessionNegotiated, catalogItem, modelCatalog);
+  }
+
+  private async refreshExternalExecutors(executorId?: string): Promise<void> {
+    if (typeof this.client.listExecutors === 'function') {
+      try {
+        const listed = await this.client.listExecutors();
+        this.executorCatalog = listed.items;
+      } catch {
+        // Older daemons or mocked clients without `/executors` stay unaffected.
+      }
+    }
+    const targetId = executorId ?? this.activeExternalExecutorId();
+    if (isExternalExecutorId(targetId) && typeof this.client.getExecutorModels === 'function') {
+      try {
+        const catalog = await this.client.getExecutorModels(targetId);
+        this.executorModelCatalogs.set(targetId, catalog);
+      } catch {
+        // Unprobed or unsupported executor model catalogs fall back to negotiated/native state.
+      }
+    }
+  }
+
   private getCompletionSnapshot(): DaemonCompletionSnapshot {
     const controller = this.controller;
     const forest = controller?.getForest();
@@ -1336,6 +1402,9 @@ export class DaemonTUI {
       goalStatus,
       copyCandidates,
       sessionId: controller?.sessionId,
+      externalModels: this.currentExternalModels(),
+      executorCatalog: this.executorCatalog,
+      pendingAntigravityLogin: this.pendingAntigravityLogin !== undefined,
       requestLazyRefresh: (resource) => this.triggerLazyCompletionRefresh(resource),
     };
   }
@@ -1470,9 +1539,16 @@ export class DaemonTUI {
   private async refreshAgentCommands(): Promise<void> {
     const profiles = await this.client.listAgentProfiles();
     this.agentProfileCommands.clear();
+    this.profileExecutors.clear();
     for (const profile of profiles.items) {
-      if (!profile.disabled) this.agentProfileCommands.set(profile.name.toLowerCase(), profile.name);
+      if (!profile.disabled) {
+        this.agentProfileCommands.set(profile.name.toLowerCase(), profile.name);
+        if (isExternalExecutorId(profile.executor)) {
+          this.profileExecutors.set(profile.name.toLowerCase(), profile.executor);
+        }
+      }
     }
+    await this.refreshExternalExecutors();
     this.setupAutocomplete();
   }
 
@@ -2959,6 +3035,31 @@ export class DaemonTUI {
     explicitThinking?: string,
     persistAsDefault?: boolean,
   ): Promise<void> {
+    const externalId = this.activeExternalExecutorId();
+    if (externalId !== undefined) {
+      await this.refreshExternalExecutors(externalId);
+      const external = this.currentExternalModels();
+      if (external !== undefined && external.models.length > 0 && !external.models.includes(model)) {
+        throw new Error(`Model "${model}" is not available on ${external.label}.`);
+      }
+      const controller = await this.ensureSession();
+      const levels = external === undefined ? [] : executorThinkingLevelsForModel(external, model);
+      const thinkingEffort = explicitThinking !== undefined && (levels.length === 0 || levels.includes(explicitThinking))
+        ? explicitThinking
+        : pickExecutorThinkingForModel(
+            this.preferredThinking,
+            this.state.appState.thinkingEffort,
+            levels,
+          );
+      const session = await this.client.setModel(controller.sessionId, model, thinkingEffort);
+      this.runModel = model;
+      controller.handleSessionRecord(session);
+      this.setAppState({
+        model,
+        ...(thinkingEffort !== undefined ? { thinkingEffort } : {}),
+      });
+      return;
+    }
     const models = await this.refreshModels();
     const choice = models.find((item) => item.id === model);
     if (choice === undefined) throw new Error(`Model "${model}" was not found.`);
@@ -3080,6 +3181,14 @@ export class DaemonTUI {
 
   private async compactSession(instruction: string): Promise<void> {
     const controller = await this.ensureSession();
+    const externalId = this.activeExternalExecutorId();
+    if (externalId !== undefined) {
+      const catalogItem = this.executorCatalog.find((entry) => entry.id === externalId);
+      if (executorAdvertisesSlashCommand('compact', controller.getState().session?.negotiated, catalogItem)) {
+        await this.sendPrompt(formatExternalSlashCommandPrompt('compact', instruction));
+        return;
+      }
+    }
     const started = await this.client.klient
       .session(controller.sessionId)
       .agent('main')
@@ -3434,6 +3543,16 @@ export class DaemonTUI {
   private async login(provider: string | undefined): Promise<void> {
     clearTimeout(this.authFlowTimer);
     this.authFlowTimer = undefined;
+    const parsedAgy = parseAntigravityLoginArgs(
+      provider,
+      this.activeExternalExecutorId(),
+      this.executorCatalog,
+      this.pendingAntigravityLogin,
+    );
+    if (parsedAgy !== undefined) {
+      await this.handleAntigravityLogin(parsedAgy);
+      return;
+    }
     const flow = await this.client.klient.global.auth.startLogin(provider);
     if (flow.status === 'authenticated') {
       this.programStatus.requireAuth(undefined);
@@ -3463,7 +3582,106 @@ export class DaemonTUI {
     this.authFlowTimer.unref();
   }
 
+  private async handleAntigravityLogin(
+    parsed: NonNullable<ReturnType<typeof parseAntigravityLoginArgs>>,
+  ): Promise<void> {
+    if (parsed.kind === 'cancel') {
+      const active = this.pendingAntigravityLogin;
+      this.pendingAntigravityLogin = undefined;
+      if (active !== undefined) {
+        await this.client.cancelAntigravityLogin(active.handle, active.instanceId).catch(() => undefined);
+      }
+      this.showStatus('Cancelled Antigravity sign-in.', { transient: true });
+      return;
+    }
+    if (parsed.kind === 'complete') {
+      const pending = this.pendingAntigravityLogin;
+      if (pending === undefined) {
+        throw new Error('No pending Antigravity sign-in. Run /login antigravity-acp first.');
+      }
+      const mismatch = checkAntigravityPendingTargetMismatch(parsed, pending);
+      if (mismatch !== undefined) {
+        throw new Error(mismatch);
+      }
+      const trimmed = parsed.codeOrUrl.trim();
+      const isHttpUrl = /^https?:\/\/\S+$/i.test(trimmed);
+      const outcome = await this.client.completeAntigravityLogin({
+        handle: pending.handle,
+        code_or_url: trimmed,
+        ...(isHttpUrl ? { redirect_url: trimmed } : {}),
+        ...(pending.instanceId !== undefined ? { instance_id: pending.instanceId } : {}),
+      });
+      if (outcome.signed_in) {
+        this.pendingAntigravityLogin = undefined;
+        this.programStatus.requireAuth(undefined);
+        await this.refreshExternalExecutors(pending.instanceId ?? 'antigravity-acp');
+        const account = outcome.profile?.account_label;
+        const modelCount = outcome.profile?.models?.length;
+        const summary = [
+          account ? `Signed in to Antigravity as ${account}.` : 'Signed in to Antigravity.',
+          modelCount !== undefined && modelCount > 0 ? `${modelCount} models available.` : undefined,
+        ].filter(Boolean).join(' ');
+        this.showResult(summary);
+        return;
+      }
+      if (!outcome.retryable) this.pendingAntigravityLogin = undefined;
+      if (outcome.message_code === 'subscription_required') {
+        this.showStatus(
+          outcome.message ?? 'This Google account does not have an active Antigravity plan.',
+          'error',
+        );
+        return;
+      }
+      this.showStatus(
+        outcome.message ?? (outcome.retryable ? 'Code not accepted. Paste the code again with /login <code>.' : 'Antigravity sign-in ended. Run /login antigravity-acp to start again.'),
+        'error',
+      );
+      return;
+    }
+    const started = await this.client.startAntigravityLogin({
+      method_id: 'oauth-personal',
+      ...(parsed.instanceId !== undefined ? { instance_id: parsed.instanceId } : {}),
+    });
+    if (started.already_signed_in) {
+      this.pendingAntigravityLogin = undefined;
+      this.programStatus.requireAuth(undefined);
+      await this.refreshExternalExecutors(parsed.instanceId ?? 'antigravity-acp');
+      const account = started.profile?.account_label;
+      this.showStatus(
+        account ? `Already signed in to Antigravity (${account}).` : 'Already signed in to Antigravity.',
+        { transient: true },
+      );
+      return;
+    }
+    const flowKind = started.flow_kind ?? (started.redirect_uri.includes('antigravity.google') ? 'code_paste' : 'loopback_url');
+    this.pendingAntigravityLogin = {
+      handle: started.handle,
+      instanceId: parsed.instanceId,
+      flowKind,
+      redirectUri: started.redirect_uri,
+    };
+    this.programStatus.requireAuth('Complete Antigravity sign-in with /login <code>.');
+    openUrl(started.auth_url);
+    this.showResult(
+      flowKind === 'code_paste'
+        ? `Open ${started.auth_url} to sign in with Google, then copy the code from antigravity.google and run: /login <code> (or /login cancel).`
+        : `Open ${started.auth_url} to sign in with Google, then copy the callback URL (${started.redirect_uri}...) and run: /login <callback-url>.`,
+    );
+  }
+
   private async logout(provider: string | undefined): Promise<void> {
+    const trimmed = provider?.trim();
+    const activeExecutor = this.activeExternalExecutorId();
+    const targetAgy = trimmed !== undefined && trimmed !== ''
+      ? (isAntigravityExecutorId(trimmed, this.executorCatalog) ? trimmed : undefined)
+      : (isAntigravityExecutorId(activeExecutor, this.executorCatalog) ? activeExecutor : undefined);
+    if (targetAgy !== undefined) {
+      const instanceId = antigravityInstanceIdOf(targetAgy, this.executorCatalog);
+      await this.client.logoutAntigravity(instanceId);
+      this.pendingAntigravityLogin = undefined;
+      this.showStatus(`Logged out from ${targetAgy}.`, { transient: true });
+      return;
+    }
     const result = await this.client.klient.global.auth.logout(provider);
     this.showStatus(`Logged out from ${result.provider}.`, { transient: true });
   }
@@ -4853,6 +5071,34 @@ export class DaemonTUI {
   }
 
   private async showThinkingPicker(): Promise<void> {
+    const externalId = this.activeExternalExecutorId();
+    if (externalId !== undefined) {
+      await this.refreshExternalExecutors(externalId);
+      const external = this.currentExternalModels();
+      const externalLevels = external === undefined ? [] : executorThinkingLevelsForModel(external, this.state.appState.model);
+      if (externalLevels.length > 0) {
+        const efforts = [...externalLevels];
+        if (this.state.appState.thinkingEffort !== '' && !efforts.includes(this.state.appState.thinkingEffort)) {
+          efforts.push(this.state.appState.thinkingEffort);
+        }
+        const picker = new ChoicePickerComponent({
+          title: 'Select thinking effort',
+          options: efforts.map((effort) => ({ value: effort, label: effort })),
+          currentValue: this.state.appState.thinkingEffort,
+          onSelect: (effort) => {
+            this.restoreEditor();
+            void this.applyThinking(effort).catch((error: unknown) => {
+              this.showStatus(formatErrorMessage(error), 'error');
+            });
+          },
+          onCancel: () => {
+            this.restoreEditor();
+          },
+        });
+        this.mountEditorReplacement(picker);
+        return;
+      }
+    }
     const models = await this.client.listModels();
     const model = models.items.find((item) => item.id === this.state.appState.model);
     if (model === undefined) throw new Error('Select a model before choosing thinking effort.');
@@ -4886,6 +5132,37 @@ export class DaemonTUI {
   }
 
   private async showModelPicker(): Promise<void> {
+    const externalId = this.activeExternalExecutorId();
+    if (externalId !== undefined) {
+      await this.refreshExternalExecutors(externalId);
+      const external = this.currentExternalModels();
+      if (external !== undefined && external.models.length > 0) {
+        const picker = new ChoicePickerComponent({
+          title: `Select ${external.label} model`,
+          options: external.models.map((id) => {
+            const levels = executorThinkingLevelsForModel(external, id);
+            return {
+              value: id,
+              label: id,
+              description: levels.length > 0 ? `${external.label} · ${levels.join('/')}` : external.label,
+            };
+          }),
+          currentValue: this.state.appState.model,
+          searchable: true,
+          onSelect: (model) => {
+            this.restoreEditor();
+            void this.applyModel(model).catch((error: unknown) => {
+              this.showStatus(formatErrorMessage(error), 'error');
+            });
+          },
+          onCancel: () => {
+            this.restoreEditor();
+          },
+        });
+        this.mountEditorReplacement(picker);
+        return;
+      }
+    }
     const models = await this.refreshModels();
     if (models.length === 0) {
       this.programStatus.requireAuth('Sign in with /login or configure a provider to continue.');

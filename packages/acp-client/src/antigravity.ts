@@ -1,17 +1,53 @@
 import { readFile, stat } from 'node:fs/promises';
 
 import {
+  PROTOCOL_VERSION,
   RequestError,
   type InitializeResponse,
+  type PermissionOption,
   type ReadTextFileRequest,
   type RequestPermissionRequest,
   type SessionConfigOption,
 } from '@agentclientprotocol/sdk';
 
+import {
+  ANTIGRAVITY_EDIT_DIFF_OMITTED,
+  antigravityEditPatch,
+  isAntigravitySnippetPatch,
+} from '#/antigravityEditLocation';
+
 const TOOL_TEXT_LIMIT = 8_000;
 const TOOL_TEXT_TRUNCATED = '[Earlier output truncated]\n\n';
+const COMMAND_LINE_TRUNCATED = '\n\n[Command truncated]';
 const QUESTION_LABEL_LIMIT = 512;
+const WARNING_TEXT_LIMIT = 512;
+const SECURITY_WARNING_META_KEY = 'agy.security.warning';
+const OFFICIAL_ANTIGRAVITY_SERVER_NAME = 'Antigravity ACP Server';
 const CLIENT_READ_TITLES = new Set(['Running client_view_file', 'Run client_view_file?']);
+
+const COMMAND_LINE_FIELDS = new Set(['CommandLine', 'command_line', 'commandLine', 'command']);
+const COMMAND_TEXT_FIELDS = new Set([
+  'aggregatedOutput',
+  'combinedOutput',
+  'combined_output',
+  'output',
+  'text',
+]);
+
+export const ANTIGRAVITY_SCHEDULE_TITLES: ReadonlySet<string> = new Set([
+  'Run schedule',
+  'Running schedule',
+]);
+
+export const ANTIGRAVITY_SUBAGENT_TITLES: ReadonlySet<string> = new Set([
+  'Running start_subagent',
+  'Run start_subagent?',
+  'Running invoke_subagent',
+  'Run invoke_subagent?',
+  'Run invoke_subagent',
+]);
+
+export const ANTIGRAVITY_SUBAGENT_BATCH_TITLE = 'Antigravity subagent batch';
 
 export interface AntigravityUserInputOption {
   readonly optionId: string;
@@ -25,8 +61,19 @@ export interface AntigravityUserInputQuestion {
   readonly options: readonly AntigravityUserInputOption[];
 }
 
+export interface AntigravityChildLaunch {
+  readonly role: string;
+  readonly prompt: string;
+}
+
+export interface AntigravityUpdateNormalizationOptions {
+  readonly readPreEditFile?: (path: string) => string | undefined;
+}
+
 function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function versionParts(version: string | null | undefined): readonly number[] | undefined {
@@ -47,6 +94,27 @@ function atLeast(version: string | null | undefined, minimum: readonly number[])
   return parsed !== undefined && compareVersions(parsed, minimum) >= 0;
 }
 
+export function isOfficialAntigravityAcpServer(initialize: InitializeResponse): boolean {
+  return initialize.agentInfo?.name === OFFICIAL_ANTIGRAVITY_SERVER_NAME &&
+    initialize.protocolVersion === PROTOCOL_VERSION;
+}
+
+export function antigravitySupportsPromptSteering(initialize: InitializeResponse): boolean {
+  return isOfficialAntigravityAcpServer(initialize) &&
+    atLeast(initialize.agentInfo?.version, [1, 5, 0]);
+}
+
+export function antigravitySupportsLogout(initialize: InitializeResponse): boolean {
+  const capabilities = record(initialize.agentCapabilities);
+  const auth = record(capabilities?.['authCapabilities']) ?? record(capabilities?.['auth']);
+  const logout = auth?.['logout'];
+  return logout === true || record(logout) !== undefined;
+}
+
+export function antigravitySupportsEmbeddedContext(initialize: InitializeResponse): boolean {
+  return initialize.agentCapabilities?.promptCapabilities?.embeddedContext === true;
+}
+
 export function antigravityClientName(runtimeVersion: string | null | undefined, fallback: string): string {
   return atLeast(runtimeVersion, [1, 5, 1]) ? fallback : 'zed';
 }
@@ -61,8 +129,64 @@ export function antigravityCliSessionMode(modeId: string): string {
   return modeId;
 }
 
-export function antigravitySessionMode(selectedSource: string | undefined, modeId: string): string {
-  return selectedSource === 'agy-cli' ? antigravityCliSessionMode(modeId) : modeId;
+export function antigravitySessionMode(
+  selectedSource: string | undefined,
+  modeId: string,
+  availableModes?: readonly string[],
+): string {
+  if (selectedSource === 'agy-cli') {
+    const mapped = antigravityCliSessionMode(modeId);
+    if (availableModes === undefined || availableModes.includes(mapped)) {
+      return mapped;
+    }
+  }
+  if (modeId === 'auto') {
+    return availableModes?.includes('auto') === true ? 'auto' : 'default';
+  }
+  if (modeId === 'yolo' || modeId === 'auto_edit') {
+    return 'default';
+  }
+  if (availableModes !== undefined && !availableModes.includes(modeId) && availableModes.includes('default')) {
+    return 'default';
+  }
+  return modeId;
+}
+
+export function antigravitySecurityWarning(option: PermissionOption): string | undefined {
+  const meta = record(option._meta);
+  const warning = record(meta?.[SECURITY_WARNING_META_KEY]);
+  if (warning === undefined) return undefined;
+  const message = typeof warning['message'] === 'string' ? warning['message'].trim() : '';
+  const title = typeof warning['title'] === 'string' ? warning['title'].trim() : '';
+  const text = message || title;
+  if (!text) return undefined;
+  return text.length > WARNING_TEXT_LIMIT
+    ? copyBoundedText(`${text.slice(0, WARNING_TEXT_LIMIT - 3).replace(/[\uD800-\uDBFF]$/u, '')}...`)
+    : text;
+}
+
+const PROXIED_MCP_TITLE = /^MCP Tool (?<tool>[A-Za-z0-9_]+)\??$/;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function isAntigravityManagedMcpRequest(
+  request: RequestPermissionRequest,
+  leasedServerName: string,
+): boolean {
+  if (!leasedServerName) return false;
+  const title = request.toolCall.title?.trim() ?? '';
+  const rawInput = record(request.toolCall.rawInput);
+  const proxiedTool = PROXIED_MCP_TITLE.exec(title)?.groups?.['tool'];
+  if (proxiedTool !== undefined) {
+    return rawInput?.['ServerName'] === leasedServerName && rawInput?.['ToolName'] === proxiedTool;
+  }
+  if (typeof rawInput?.['CommandLine'] === 'string' || typeof rawInput?.['command_line'] === 'string') {
+    return false;
+  }
+  const directPattern = new RegExp(`^Run mcp_${escapeRegExp(leasedServerName)}_(?<tool>[A-Za-z0-9_]+)\\??$`);
+  return directPattern.test(title);
 }
 
 export function antigravitySupportsSystemPromptAppend(initialize: InitializeResponse): boolean {
@@ -160,12 +284,56 @@ export function resolveAntigravityUserInputOptionId(
   return byLabel.length === 1 ? byLabel[0]?.optionId : undefined;
 }
 
-function boundText(text: string, limit = TOOL_TEXT_LIMIT): string {
+export function boundAntigravityToolText(text: string, limit = TOOL_TEXT_LIMIT): string {
   return text.length <= limit ? text : copyBoundedText(`${TOOL_TEXT_TRUNCATED}${text.slice(-limit)}`);
 }
 
+export function boundAntigravityCommandOutput(text: string, limit = TOOL_TEXT_LIMIT): string {
+  if (
+    text.length <= limit ||
+    (text.length <= limit + TOOL_TEXT_TRUNCATED.length && text.startsWith(TOOL_TEXT_TRUNCATED))
+  ) {
+    return text;
+  }
+  const tail = text.slice(-limit).replace(/^[\uDC00-\uDFFF]/u, '');
+  return copyBoundedText(`${TOOL_TEXT_TRUNCATED}${tail}`);
+}
+
+export function boundAntigravityCommandLine(text: string, limit = TOOL_TEXT_LIMIT): string {
+  if (
+    text.length <= limit ||
+    (text.length <= limit + COMMAND_LINE_TRUNCATED.length && text.endsWith(COMMAND_LINE_TRUNCATED))
+  ) {
+    return text;
+  }
+  const head = text.slice(0, limit).replace(/[\uD800-\uDBFF]$/u, '');
+  return copyBoundedText(`${head}${COMMAND_LINE_TRUNCATED}`);
+}
+
+export function isCutAntigravityToolText(text: string): boolean {
+  return text.includes(TOOL_TEXT_TRUNCATED);
+}
+
 export function stripAntigravitySystemMessages(text: string): string {
-  return text.replace(/<system_message\b[^>]*>[\s\S]*?<\/system_message>/gi, '').replace(/<system_message\b[^>]*>[\s\S]*$/gi, '');
+  return text
+    .replace(/<system_message\b[^>]*>[\s\S]*?<\/system_message>/gi, '')
+    .replace(/<system_message\b[^>]*>[\s\S]*$/gi, '');
+}
+
+export function stripAntigravityToolSummary(value: unknown): unknown {
+  const object = record(value);
+  if (object === undefined) return value;
+  let next: Record<string, unknown> = object;
+  if ('toolSummary' in next) {
+    const { toolSummary: _toolSummary, ...rest } = next;
+    next = rest;
+  }
+  const args = record(next['Arguments']);
+  if (args !== undefined && 'toolSummary' in args) {
+    const { toolSummary: _toolSummary, ...restArgs } = args;
+    next = { ...next, Arguments: restArgs };
+  }
+  return next;
 }
 
 interface ToolPayloadBudget {
@@ -173,11 +341,22 @@ interface ToolPayloadBudget {
   text: number;
 }
 
-function sanitizeToolValue(value: unknown, budget: ToolPayloadBudget, depth: number): unknown {
+function sanitizeToolValue(
+  value: unknown,
+  budget: ToolPayloadBudget,
+  depth: number,
+  field?: string,
+): unknown {
   if (depth > 12 || budget.nodes-- <= 0) return undefined;
   if (typeof value === 'string') {
     if (/^data:image\//i.test(value) || budget.text <= 0) return undefined;
-    const text = boundText(stripAntigravitySystemMessages(value), Math.min(TOOL_TEXT_LIMIT, budget.text));
+    const stripped = stripAntigravitySystemMessages(value);
+    const limit = Math.min(TOOL_TEXT_LIMIT, budget.text);
+    const text = field !== undefined && COMMAND_LINE_FIELDS.has(field)
+      ? boundAntigravityCommandLine(stripped, limit)
+      : field !== undefined && COMMAND_TEXT_FIELDS.has(field)
+        ? boundAntigravityCommandOutput(stripped, limit)
+        : boundAntigravityToolText(stripped, limit);
     budget.text -= text.length;
     return text;
   }
@@ -198,7 +377,7 @@ function sanitizeToolValue(value: unknown, budget: ToolPayloadBudget, depth: num
     if ((object['type'] === 'image' && (key === 'data' || key === 'blob')) ||
       (key === 'blob' && typeof object['mimeType'] === 'string' && object['mimeType'].startsWith('image/')) ||
       ((key === 'formatted_output' || key === 'formattedOutput') && (entry === object['combinedOutput'] || entry === object['combined_output']))) continue;
-    const sanitized = sanitizeToolValue(entry, budget, depth + 1);
+    const sanitized = sanitizeToolValue(entry, budget, depth + 1, key);
     if (sanitized !== undefined) entries.push([key, sanitized]);
   }
   return Object.fromEntries(entries);
@@ -208,26 +387,248 @@ export function sanitizeAntigravityToolPayload(payload: unknown): unknown {
   return sanitizeToolValue(payload, { nodes: 512, text: 64_000 }, 0);
 }
 
-export function normalizeAntigravitySessionUpdate<T>(notification: T): T {
+function hasTruncatedText(value: unknown): boolean {
+  if (typeof value === 'string') return value.startsWith(TOOL_TEXT_TRUNCATED);
+  if (Array.isArray(value)) return value.some(hasTruncatedText);
+  const object = record(value);
+  return object !== undefined && Object.values(object).some(hasTruncatedText);
+}
+
+function editTargetPath(rawInput: unknown, locations: unknown): string | undefined {
+  if (Array.isArray(locations)) {
+    const first = record(locations[0]);
+    if (typeof first?.['path'] === 'string' && first['path'].length > 0) return first['path'];
+  }
+  const input = record(rawInput);
+  if (input === undefined) return undefined;
+  for (const key of ['TargetFile', 'target_file', 'AbsolutePath', 'absolute_path', 'file_path', 'filePath', 'path', 'Path']) {
+    const value = input[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return undefined;
+}
+
+function applyEditPatches(
+  content: readonly unknown[] | undefined,
+  rawInput: unknown,
+  locations: unknown,
+  readPreEditFile: ((path: string) => string | undefined) | undefined,
+): unknown[] | undefined {
+  const existing = Array.isArray(content) ? content : [];
+  const hasDiffEntry = existing.some((entry) => record(entry)?.['type'] === 'diff');
+  const entries = hasDiffEntry
+    ? existing
+    : (() => {
+        const path = editTargetPath(rawInput, locations);
+        if (path === undefined) return existing;
+        const patch = antigravityEditPatch({ path, rawInput, locations, readPreEditFile });
+        if (patch === undefined) return existing;
+        const formatted = patch === ANTIGRAVITY_EDIT_DIFF_OMITTED || patch.length > TOOL_TEXT_LIMIT
+          ? { format: 'omitted' }
+          : isAntigravitySnippetPatch(patch)
+            ? { format: 'snippet', text: patch }
+            : { text: patch };
+        return [...existing, { type: 'diff', path, patch: formatted }];
+      })();
+
+  if (!hasDiffEntry) return entries.length > 0 ? entries : undefined;
+
+  return entries.map((entry) => {
+    const diff = record(entry);
+    if (diff === undefined || diff['type'] !== 'diff' || typeof diff['path'] !== 'string') {
+      return entry;
+    }
+    if (diff['patch'] !== undefined) {
+      const patch = record(diff['patch']);
+      const cut = patch !== undefined &&
+        patch['format'] !== 'omitted' &&
+        (typeof patch['text'] !== 'string' || patch['text'].startsWith(TOOL_TEXT_TRUNCATED));
+      return cut ? { ...diff, patch: { format: 'omitted' } } : diff;
+    }
+    if ([rawInput, diff['oldText'], diff['newText']].some(hasTruncatedText)) {
+      return { ...diff, patch: { format: 'omitted' } };
+    }
+    const text = antigravityEditPatch({
+      path: diff['path'],
+      rawInput,
+      locations,
+      readPreEditFile,
+    });
+    if (text === ANTIGRAVITY_EDIT_DIFF_OMITTED || (text !== undefined && text.length > TOOL_TEXT_LIMIT)) {
+      return { ...diff, patch: { format: 'omitted' } };
+    }
+    if (text === undefined) return diff;
+    return {
+      ...diff,
+      patch: isAntigravitySnippetPatch(text) ? { format: 'snippet', text } : { text },
+    };
+  });
+}
+
+export function normalizeAntigravitySessionUpdate<T>(
+  notification: T,
+  options?: AntigravityUpdateNormalizationOptions,
+): T {
   const source = record(notification);
   const update = record(source?.['update']);
-  if (source === undefined || update === undefined || (update['sessionUpdate'] !== 'tool_call' && update['sessionUpdate'] !== 'tool_call_update')) return notification;
+  if (source === undefined || update === undefined || (update['sessionUpdate'] !== 'tool_call' && update['sessionUpdate'] !== 'tool_call_update')) {
+    return notification;
+  }
   const contentBudget = { nodes: 512, text: 32_000 };
-  const content = Array.isArray(update['content']) ? update['content'].flatMap((entry) => {
-    const sanitized = sanitizeToolValue(entry, contentBudget, 0);
-    return sanitized === undefined ? [] : [sanitized];
-  }) : update['content'];
+  const sanitizedContent = Array.isArray(update['content'])
+    ? update['content'].flatMap((entry) => {
+        const sanitized = sanitizeToolValue(entry, contentBudget, 0);
+        return sanitized === undefined ? [] : [sanitized];
+      })
+    : undefined;
+  const sanitizedRawInput = update['rawInput'] === undefined
+    ? undefined
+    : sanitizeAntigravityToolPayload(stripAntigravityToolSummary(update['rawInput']));
+  const sanitizedRawOutput = update['rawOutput'] === undefined
+    ? undefined
+    : sanitizeAntigravityToolPayload(update['rawOutput']);
+  const readPreEditFile = update['status'] === 'pending' ? options?.readPreEditFile : undefined;
+  const content = update['kind'] === 'edit'
+    ? applyEditPatches(sanitizedContent, sanitizedRawInput, update['locations'], readPreEditFile) ?? sanitizedContent
+    : sanitizedContent;
   return {
     ...source,
     update: {
       ...update,
-      title: typeof update['title'] === 'string' ? boundText(stripAntigravitySystemMessages(update['title'])) : update['title'],
-      rawInput: update['rawInput'] === undefined ? undefined : sanitizeAntigravityToolPayload(update['rawInput']),
-      rawOutput: update['rawOutput'] === undefined ? undefined : sanitizeAntigravityToolPayload(update['rawOutput']),
-      content,
+      title: typeof update['title'] === 'string'
+        ? boundAntigravityToolText(stripAntigravitySystemMessages(update['title']))
+        : update['title'],
+      rawInput: sanitizedRawInput,
+      rawOutput: sanitizedRawOutput,
+      content: content ?? update['content'],
       _meta: update['_meta'] === undefined ? undefined : sanitizeAntigravityToolPayload(update['_meta']),
     },
   } as T;
+}
+
+function antigravityUpdateSteps(rawInput: unknown): Array<{ readonly content: string; readonly priority: string; readonly status: string }> | undefined {
+  const input = record(rawInput);
+  const steps = input?.['steps'];
+  if (!Array.isArray(steps)) return undefined;
+  return steps.flatMap((step) => {
+    const entry = record(step);
+    if (entry === undefined || typeof entry['title'] !== 'string') return [];
+    const rawStatus = entry['status'];
+    return [{
+      content: entry['title'],
+      priority: 'medium',
+      status: rawStatus === 'done'
+        ? 'completed'
+        : typeof rawStatus === 'string'
+          ? rawStatus
+          : 'pending',
+    }];
+  });
+}
+
+export function makeAntigravityUpdateStepsPlans() {
+  const calls = new Set<string>();
+  return <T>(notification: T): T | undefined => {
+    const source = record(notification);
+    const update = record(source?.['update']);
+    if (source === undefined || update === undefined || (update['sessionUpdate'] !== 'tool_call' && update['sessionUpdate'] !== 'tool_call_update')) {
+      return notification;
+    }
+    const sessionId = typeof source['sessionId'] === 'string' ? source['sessionId'] : '';
+    const toolCallId = typeof update['toolCallId'] === 'string' ? update['toolCallId'] : '';
+    const key = `${sessionId}\u0000${toolCallId}`;
+    if (
+      update['title'] === 'Run update_steps' &&
+      (update['kind'] === undefined || update['kind'] === null || update['kind'] === 'other')
+    ) {
+      calls.add(key);
+    }
+    if (!calls.has(key)) return notification;
+    if (update['status'] === 'completed' || update['status'] === 'failed') calls.delete(key);
+    const entries = antigravityUpdateSteps(update['rawInput']);
+    return entries === undefined
+      ? undefined
+      : { ...source, update: { sessionUpdate: 'plan', entries } } as T;
+  };
+}
+
+export function antigravityIsScheduleToolCall(toolCall: { readonly title?: string }): boolean {
+  return toolCall.title !== undefined && ANTIGRAVITY_SCHEDULE_TITLES.has(toolCall.title);
+}
+
+export function antigravityCommandOutlivesPrompt(toolCall: {
+  readonly kind?: string;
+  readonly title?: string;
+  readonly rawInput?: unknown;
+}): boolean {
+  if (antigravityIsScheduleToolCall(toolCall)) return false;
+  const input = record(toolCall.rawInput);
+  return toolCall.kind === 'execute' && input?.['IsDaemon'] !== true;
+}
+
+export function antigravityToolOutlivesPrompt(toolCall: {
+  readonly kind?: string;
+  readonly title?: string;
+  readonly rawInput?: unknown;
+}): boolean {
+  return antigravityIsScheduleToolCall(toolCall) || antigravityCommandOutlivesPrompt(toolCall);
+}
+
+export function classifyAntigravitySubagentToolCall(toolCall: {
+  readonly kind?: string;
+  readonly title?: string;
+  readonly meta?: unknown;
+}): 'subagent' | 'mcp' | undefined {
+  if (
+    (toolCall.kind !== undefined && toolCall.kind !== 'other') ||
+    toolCall.title === undefined ||
+    !ANTIGRAVITY_SUBAGENT_TITLES.has(toolCall.title)
+  ) {
+    return undefined;
+  }
+  const meta = record(toolCall.meta);
+  return meta?.['is_mcp_tool_call'] === true ? 'mcp' : 'subagent';
+}
+
+function parseSingleLaunch(value: unknown): AntigravityChildLaunch | undefined {
+  const entry = record(value);
+  if (entry === undefined) return undefined;
+  const role = typeof entry['Role'] === 'string'
+    ? entry['Role']
+    : typeof entry['role'] === 'string'
+      ? entry['role']
+      : undefined;
+  const prompt = typeof entry['Prompt'] === 'string'
+    ? entry['Prompt']
+    : typeof entry['prompt'] === 'string'
+      ? entry['prompt']
+      : undefined;
+  if (role === undefined || prompt === undefined) return undefined;
+  return { role, prompt };
+}
+
+export function antigravitySubagentLaunches(input: unknown): readonly AntigravityChildLaunch[] | undefined {
+  const object = record(input);
+  if (object === undefined) return undefined;
+  const batch = object['Subagents'] ?? object['subagents'];
+  if (Array.isArray(batch) && batch.length > 0) {
+    const parsed = batch.map(parseSingleLaunch);
+    return parsed.every((entry): entry is AntigravityChildLaunch => entry !== undefined) ? parsed : undefined;
+  }
+  const single = parseSingleLaunch(object);
+  return single === undefined ? undefined : [single];
+}
+
+export function describeAntigravitySubagentLaunches(
+  launches: readonly AntigravityChildLaunch[],
+): { readonly title: string; readonly prompt: string } {
+  const [only] = launches;
+  return launches.length === 1 && only !== undefined
+    ? { title: only.role, prompt: only.prompt }
+    : {
+        title: launches.map((launch) => launch.role).join(', '),
+        prompt: launches.map((launch) => `${launch.role}\n${launch.prompt}`).join('\n\n'),
+      };
 }
 
 function clientReadPath(update: Record<string, unknown>): string | undefined {

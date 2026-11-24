@@ -13,6 +13,7 @@ import {
   type AgentExecutorSourceProbe,
 } from './agentExecutor';
 import { ANTIGRAVITY_CLI_ACP_ARGS, ANTIGRAVITY_CLI_MIN_VERSION } from './antigravityDistribution';
+import { isAntigravityIdeArtifact } from '#/os/backends/node-local/antigravityHostOps';
 import type { ExecutorCapabilityDimension } from '@kiki/agent-profiles/ports';
 import { executorProcessOptions, redactExecutorOutput } from './executorOverrides';
 
@@ -59,17 +60,39 @@ export async function discoverExecutorMetadata(
           command, launchArgs: [script], diagnostic: command === undefined ? 'Adapter script or Node runtime is missing' : undefined,
           diagnosticCode: command !== undefined ? undefined : exists ? 'not_on_path' : 'path_not_found' };
       }
-      const commands = (await sourceCommands(source, fs, bootstrap, true)).toSorted(compareExecutorBinaryPaths);
+      const commands = (await sourceCommands(source, fs, bootstrap, true))
+        .filter((command) => !(executorSourceId(descriptor) === 'antigravity-acp' && source.id === 'kiki-managed-cli' && !isOfficialAntigravityBinaryName(command)))
+        .toSorted(compareExecutorBinaryPaths);
+      let sawIde = false;
       for (const command of commands.toReversed()) {
         if (!await isFile(fs, command, true)) continue;
-        if (executorSourceId(descriptor) === 'antigravity-acp' && source.id !== 'agy-cli') {
-          const ide = stripExecutableExtension(basename(command)).toLowerCase() === 'antigravity';
-          const sibling = join(dirname(command), command.endsWith('.exe') ? 'localharness_external.exe' : 'localharness_external');
-          if (ide || !await isFile(fs, sibling, true)) continue;
+        if (executorSourceId(descriptor) === 'antigravity-acp') {
+          const managed = await inspectManagedOfficialAntigravityCandidate(command, fs, true);
+          if (managed !== undefined) {
+            return { id: source.id, kind: source.kind, available: true, command, launchArgs: ANTIGRAVITY_CLI_ACP_ARGS, version: managed.version };
+          }
+          if (await isAntigravityIdeCandidate(command, fs, bootstrap.platform, true)) {
+            sawIde = true;
+            continue;
+          }
+          if (isLegacyAntigravityServerName(command)) {
+            const sibling = join(dirname(command), command.endsWith('.exe') ? 'localharness_external.exe' : 'localharness_external');
+            if (!await isFile(fs, sibling, true)) continue;
+            return { id: source.id, kind: source.kind, available: true, command, launchArgs: bootstrap.platform === 'linux' ? ['--uid='] : [] };
+          }
+          if (source.id === 'kiki-managed-cli') continue;
+          return { id: source.id, kind: source.kind, available: true, command, launchArgs: ANTIGRAVITY_CLI_ACP_ARGS };
         }
-        const launchArgs = executorSourceId(descriptor) !== 'antigravity-acp' ? undefined
-          : source.id === 'agy-cli' ? ANTIGRAVITY_CLI_ACP_ARGS : bootstrap.platform === 'linux' ? ['--uid='] : [];
-        return { id: source.id, kind: source.kind, available: true, command, launchArgs };
+        return { id: source.id, kind: source.kind, available: true, command };
+      }
+      if (sawIde) {
+        return {
+          id: source.id,
+          kind: source.kind,
+          available: false,
+          diagnostic: ANTIGRAVITY_IDE_DIAGNOSTIC,
+          diagnosticCode: ANTIGRAVITY_IDE_NOT_ACP,
+        };
       }
       const envUnset = source.kind === 'env' && !bootstrap.getEnv(source.name)?.trim();
       return { id: source.id, kind: source.kind, available: false,
@@ -252,7 +275,10 @@ async function probeSource(
   exhaustive: boolean,
 ): Promise<AgentExecutorSourceProbe> {
   if (source.kind === 'node-script') return probeNodeScript(source, descriptor, processService, fs, bootstrap);
-  const commands = await sourceCommands(source, fs, bootstrap);
+  const rawCommands = await sourceCommands(source, fs, bootstrap);
+  const commands = executorSourceId(descriptor) === 'antigravity-acp' && source.id === 'kiki-managed-cli'
+    ? rawCommands.filter(isOfficialAntigravityBinaryName)
+    : rawCommands;
   if (commands.length === 0) {
     return {
       id: source.id,
@@ -265,30 +291,81 @@ async function probeSource(
     ? [commands.toSorted(compareExecutorBinaryPaths).at(-1)!]
     : commands;
   const candidates = await Promise.all(selectedCommands.map(async (command) => {
-    if (executorSourceId(descriptor) === 'antigravity-acp' && source.id === 'agy-cli') {
+    if (executorSourceId(descriptor) === 'antigravity-acp') {
+      const managed = await inspectManagedOfficialAntigravityCandidate(command, fs);
+      if (managed !== undefined) {
+        return {
+          command,
+          launchArgs: ANTIGRAVITY_CLI_ACP_ARGS,
+          diagnosticCode: undefined as string | undefined,
+          probe: { available: true, code: 0, output: managed.version },
+        };
+      }
+      if (await isAntigravityIdeCandidate(command, fs, bootstrap.platform)) {
+        return {
+          command,
+          launchArgs: undefined as readonly string[] | undefined,
+          diagnosticCode: ANTIGRAVITY_IDE_NOT_ACP as string | undefined,
+          probe: { available: false, code: undefined, output: ANTIGRAVITY_IDE_DIAGNOSTIC },
+        };
+      }
+      if (isLegacyAntigravityServerName(command)) {
+        const sibling = join(dirname(command), command.endsWith('.exe') ? 'localharness_external.exe' : 'localharness_external');
+        if (!await isFile(fs, sibling)) {
+          return {
+            command,
+            launchArgs: undefined as readonly string[] | undefined,
+            diagnosticCode: undefined as string | undefined,
+            probe: {
+              available: false,
+              code: undefined,
+              output: 'Antigravity ACP installation is incomplete: localharness_external is missing.',
+            },
+          };
+        }
+        const cachedVersion = basename(dirname(dirname(command)));
+        return {
+          command,
+          launchArgs: bootstrap.platform === 'linux' ? ['--uid='] : [],
+          diagnosticCode: undefined as string | undefined,
+          probe: { available: true, code: 0, output: parse(cachedVersion)?.version ?? '' },
+        };
+      }
+      if (source.id === 'kiki-managed-cli') {
+        return {
+          command,
+          launchArgs: undefined as readonly string[] | undefined,
+          diagnosticCode: undefined as string | undefined,
+          probe: {
+            available: false,
+            code: undefined,
+            output: 'Antigravity CLI managed installation is incomplete: .install-complete.json is missing or invalid.',
+          },
+        };
+      }
       const probe = await probeCommand(processService, command, descriptor.versionProbe?.args ?? ['--version'], descriptor);
       const version = probeSemver(probe.output, command);
       const supported = probe.available && probe.code === 0 && version !== null && gte(version, ANTIGRAVITY_CLI_MIN_VERSION);
-      return { command, launchArgs: ANTIGRAVITY_CLI_ACP_ARGS, probe: {
-        ...probe,
-        code: supported ? probe.code : -1,
-        output: supported ? probe.output : `Antigravity CLI ${ANTIGRAVITY_CLI_MIN_VERSION} or newer is required for native agy acp; installed: ${version?.version ?? firstLine(probe.output) ?? 'unknown'}.`,
-      } };
+      return {
+        command,
+        launchArgs: ANTIGRAVITY_CLI_ACP_ARGS,
+        diagnosticCode: undefined as string | undefined,
+        probe: {
+          ...probe,
+          code: supported ? probe.code : -1,
+          output: supported
+            ? version.version
+            : `Antigravity CLI ${ANTIGRAVITY_CLI_MIN_VERSION} or newer is required for native agy acp; installed: ${version?.version ?? firstLine(probe.output) ?? 'unknown'}.`,
+        },
+      };
     }
-    if (executorSourceId(descriptor) === 'antigravity-acp') {
-      const ide = stripExecutableExtension(basename(command)).toLowerCase() === 'antigravity';
-      const sibling = join(dirname(command), command.endsWith('.exe') ? 'localharness_external.exe' : 'localharness_external');
-      if (ide || !await isFile(fs, sibling)) return { command, probe: {
-        available: false, code: undefined,
-        output: ide ? '这是 Antigravity IDE，不是 ACP CLI。请通过 Antigravity 执行器的二进制缓存安装 Google Antigravity ACP CLI 1.x（默认 1.4.5）。'
-          : 'Antigravity ACP installation is incomplete: localharness_external is missing.',
-      } };
-      const cachedVersion = basename(dirname(dirname(command)));
-      return { command, launchArgs: bootstrap.platform === 'linux' ? ['--uid='] : [],
-        probe: { available: true, code: 0, output: parse(cachedVersion)?.version ?? '' } };
-    }
-    return { command, probe: await probeCommand(processService, command,
-      descriptor.versionProbe?.args ?? ['--version'], descriptor) };
+    return {
+      command,
+      launchArgs: undefined as readonly string[] | undefined,
+      diagnosticCode: undefined as string | undefined,
+      probe: await probeCommand(processService, command,
+        descriptor.versionProbe?.args ?? ['--version'], descriptor),
+    };
   }));
   const available = candidates.filter((candidate) => candidate.probe.available && candidate.probe.code === 0);
   if (available.length === 0) {
@@ -299,8 +376,7 @@ async function probeSource(
       available: false,
       command: first?.command,
       version: firstLine(first?.probe.output ?? ''),
-      diagnosticCode: executorSourceId(descriptor) === 'antigravity-acp' && first?.command !== undefined &&
-        stripExecutableExtension(basename(first.command)).toLowerCase() === 'antigravity' ? ANTIGRAVITY_IDE_NOT_ACP : undefined,
+      diagnosticCode: first?.diagnosticCode,
       diagnostic: executorSourceId(descriptor) === 'antigravity-acp' && first?.probe.output
         ? first.probe.output : first?.probe.available === true
           ? `version probe exited with code ${String(first.probe.code)}`
@@ -612,7 +688,88 @@ function semverInText(value: string): SemVer | null {
   return match?.[1] === undefined ? null : parse(match[1]);
 }
 
+const ANTIGRAVITY_IDE_DIAGNOSTIC = '这是 Antigravity IDE，不是 ACP CLI。请通过 Antigravity 执行器的二进制缓存安装官方 Google Antigravity CLI 1.5+（或安装 agy 1.5+ CLI）。';
+
+function isOfficialAntigravityBinaryName(command: string): boolean {
+  const name = basename(command).toLowerCase();
+  return name === 'agy.exe' || name === 'agy' || name === 'antigravity';
+}
+
+function isLegacyAntigravityServerName(command: string): boolean {
+  return basename(command).replace(/\.(?:exe|par|cmd|bat|com)$/i, '').toLowerCase() === 'agy_acp_server';
+}
+
+async function inspectManagedOfficialAntigravityCandidate(
+  command: string,
+  fs: IHostFileSystem,
+  strict = false,
+): Promise<{ readonly version: string } | undefined> {
+  if (!isOfficialAntigravityBinaryName(command)) return undefined;
+  const markerPath = join(dirname(command), '.install-complete.json');
+  let raw: string;
+  try {
+    raw = await fs.readText(markerPath);
+  } catch (error) {
+    if (strict && !missingPathError(error)) throw error;
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const version = typeof parsed['version'] === 'string' ? parse(parsed['version'].trim()) : null;
+    if (version === null || !gte(version, ANTIGRAVITY_CLI_MIN_VERSION)) return undefined;
+    const rawExecutable = parsed['executable'];
+    const executableName = typeof rawExecutable === 'string'
+      ? rawExecutable
+      : rawExecutable !== null && typeof rawExecutable === 'object' && typeof (rawExecutable as Record<string, unknown>)['name'] === 'string'
+        ? (rawExecutable as Record<string, unknown>)['name'] as string
+        : undefined;
+    const executableBytes = rawExecutable !== null && typeof rawExecutable === 'object' && typeof (rawExecutable as Record<string, unknown>)['bytes'] === 'number'
+      ? (rawExecutable as Record<string, unknown>)['bytes'] as number
+      : typeof parsed['size'] === 'number'
+        ? parsed['size']
+        : undefined;
+    if (executableName !== undefined && executableName.toLowerCase() !== basename(command).toLowerCase()) return undefined;
+    if (executableBytes !== undefined && executableBytes > 0) {
+      const info = await fs.stat(command);
+      if (info.size > 0 && info.size !== executableBytes) return undefined;
+    }
+    return { version: version.version };
+  } catch {
+    return undefined;
+  }
+}
+
+export async function isAntigravityIdeCandidate(
+  command: string,
+  fs: IHostFileSystem,
+  platform: NodeJS.Platform,
+  strict = false,
+): Promise<boolean> {
+  if (stripExecutableExtension(basename(command)).toLowerCase() !== 'antigravity') return false;
+  if (platform === 'win32') return true;
+  const normalized = normalize(command).toLowerCase();
+  if (normalized.includes('.app/contents/')) return true;
+  const dir = dirname(command);
+  for (const marker of [
+    join(dir, 'resources', 'app', 'package.json'),
+    join(dir, '..', 'resources', 'app', 'package.json'),
+    join(dir, '..', '..', 'Resources', 'app', 'package.json'),
+    join(dir, 'Contents', 'MacOS', 'Electron'),
+  ]) {
+    if (await isFile(fs, marker, strict)) return true;
+  }
+  return isAntigravityIdeArtifact(command, platform);
+}
+
 function pathVersion(path: string): BinaryVersionKey | undefined {
+  const parentDirectory = basename(dirname(path));
+  const officialRelease = parentDirectory.match(/^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)-[0-9a-f]{12}$/i)?.[1];
+  if (officialRelease !== undefined) return versionKey(officialRelease);
+  const legacyVersion = basename(dirname(dirname(path)));
+  if (isLegacyAntigravityServerName(path)) {
+    const parsedLegacy = versionKey(legacyVersion);
+    if (parsedLegacy !== undefined) return parsedLegacy;
+  }
   const packageDirectory = basename(dirname(dirname(dirname(path))));
   const desktop = packageDirectory.match(/^OpenAI\.Codex_([^_]+)/i)?.[1];
   const extension = packageDirectory.match(

@@ -201,13 +201,20 @@ export class AgentExecutionService implements IAgentExecutionService {
       controller.signal.throwIfAborted();
       let outbound = runContext.request ?? request;
       const binding = this.profile.data();
+      const executorId = binding.executorId ?? 'native';
+      const negotiated = executorId === 'native'
+        ? undefined
+        : this.executors.lastNegotiated?.(executorId) as { readonly slashCommands?: readonly string[] } | undefined;
+      const nativeCompact = outbound.kind === 'prompt' &&
+        (outbound.prompt.trim() === '/compact' || outbound.prompt.trim().startsWith('/compact ')) &&
+        (negotiated?.slashCommands?.some((command) => command === '/compact' || command === 'compact') === true);
       const usesContextHooks = binding.kikiContext?.includes('hooks') === true && binding.executorId !== 'grok-acp';
-      if (binding.execution === undefined && (binding.executorId ?? 'native') !== 'native' && outbound.kind !== 'retry' && !usesContextHooks) {
+      if (binding.execution === undefined && executorId !== 'native' && outbound.kind !== 'retry' && !usesContextHooks && !nativeCompact) {
         await this.agent.accessor.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
         const todos = this.agent.accessor.get(ISessionTodoService);
         hints = [
           ...externalPromptHints(this.agent.accessor.get(IAgentContextMemoryService).get().map(withoutMemoryWorkset), this.deliveredHints,
-            resolveExecutorPrompt(binding.executorPrompt, binding.executorId ?? 'native').include.includes('workspace_info')),
+            resolveExecutorPrompt(binding.executorPrompt, executorId).include.includes('workspace_info')),
           ...externalStateHints({
             todos: todos.getTodos(this.agent.id),
             notes: todos.getNotes(this.agent.id).notes,
@@ -221,8 +228,8 @@ export class AgentExecutionService implements IAgentExecutionService {
         ].join('\n\n') };
       }
       const memoryAllowed = harnessCapabilities(binding).context?.includes('memory') === true ||
-        resolveExecutorPrompt(binding.executorPrompt, binding.executorId ?? 'native').include.includes('memory_snapshot');
-      if ((binding.executorId ?? 'native') !== 'native' && outbound.kind !== 'retry' && memoryAllowed) {
+        resolveExecutorPrompt(binding.executorPrompt, executorId).include.includes('memory_snapshot');
+      if (executorId !== 'native' && outbound.kind !== 'retry' && memoryAllowed && !nativeCompact) {
         const memory = this.agent.accessor.get(IAgentMemorySnapshot);
         const inbound = runContext.request ?? request;
         await memory.refreshIfDirty(inbound.kind === 'retry' ? undefined : inbound.prompt);

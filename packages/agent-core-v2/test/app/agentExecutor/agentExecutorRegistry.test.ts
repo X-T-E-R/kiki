@@ -381,7 +381,11 @@ describe('AgentExecutorRegistryService', () => {
       protocol: 'acp-v1', homeEnv: 'GEMINI_HOME', args: [],
       sources: expect.arrayContaining([{ id: 'env', kind: 'env', name: 'ANTIGRAVITY_ACP_PATH' }]),
     });
-    expect(BUILTIN_AGENT_EXECUTORS['antigravity-acp']?.sources).not.toContainEqual(expect.objectContaining({ command: 'antigravity' }));
+    expect(BUILTIN_AGENT_EXECUTORS['antigravity-acp']?.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'kiki-managed-cli', kind: 'glob' }),
+      expect.objectContaining({ id: 'agy-cli', command: 'agy' }),
+      expect.objectContaining({ id: 'antigravity-cli', command: 'antigravity' }),
+    ]));
     expect(BUILTIN_AGENT_EXECUTORS['antigravity-acp']?.modelProbe).toBeUndefined();
     expect(BUILTIN_AGENT_EXECUTORS['agy-cli']).toMatchObject({
       label: 'AGY CLI',
@@ -418,7 +422,7 @@ describe('AgentExecutorRegistryService', () => {
 
   it.each([
     { version: '1.5.1', nativeAvailable: true, expectedSource: 'agy-cli' },
-    { version: '1.5.0', nativeAvailable: false, expectedSource: 'kiki-managed' },
+    { version: '1.4.9', nativeAvailable: false, expectedSource: 'kiki-managed' },
   ])('discovers the native AGY ACP source at $version and resolves $expectedSource', async ({ version, nativeAvailable, expectedSource }) => {
     const managedRoot = '/kiki/tools/antigravity-acp/1.4.5/linux-x64';
     const managedExecutable = `${managedRoot}/agy_acp_server.par`;
@@ -467,17 +471,103 @@ describe('AgentExecutorRegistryService', () => {
     if (nativeAvailable) {
       expect(discovered.find((source) => source.id === 'agy-cli')).toMatchObject({
         command: '/usr/bin/agy',
-        launchArgs: ['acp', '--stdio', '--process-per-session'],
-        version: 'agy 1.5.1',
+        launchArgs: ['acp'],
+        version: '1.5.1',
       });
     } else {
-      expect(discovered.find((source) => source.id === 'agy-cli')?.diagnostic).toContain('installed: 1.5.0');
+      expect(discovered.find((source) => source.id === 'agy-cli')?.diagnostic).toContain('installed: 1.4.9');
     }
     const resolved = await registry.resolveExecutable('antigravity-acp');
     expect(resolved.descriptor).toMatchObject({ selectedSource: expectedSource });
     expect([...resolved.descriptor.launchArgs ?? [], ...resolved.descriptor.args]).toEqual(nativeAvailable
-      ? ['acp', '--stdio', '--process-per-session'] : ['--uid=']);
+      ? ['acp'] : ['--uid=']);
     expect(probes).toContain('/usr/bin/agy --version');
+  });
+
+  it('discovers managed official 1.5+ CLI with zero child processes and preserves POSIX antigravity shim while rejecting IDE bundles', async () => {
+    const versionDir = '/kiki/tools/antigravity-acp/versions/1.5.4-abcdef123456';
+    const managedBinary = `${versionDir}/antigravity`;
+    const markerPath = `${versionDir}/.install-complete.json`;
+    const shimPath = '/home/user/.local/share/mise/shims/antigravity';
+    const ideBinary = '/Applications/Antigravity.app/Contents/MacOS/antigravity';
+    const directories: Readonly<Record<string, readonly { name: string; isFile: boolean; isDirectory: boolean }[]>> = {
+      '/kiki/tools/antigravity-acp/versions': [{ name: '1.5.4-abcdef123456', isFile: false, isDirectory: true }],
+      [versionDir]: [
+        { name: 'antigravity', isFile: true, isDirectory: false },
+        { name: '.install-complete.json', isFile: true, isDirectory: false },
+      ],
+    };
+    const fileSizes = new Map<string, number>([
+      [managedBinary, 128],
+      [markerPath, 96],
+      [shimPath, 64],
+      [ideBinary, 64],
+    ]);
+    const markerText = JSON.stringify({
+      version: '1.5.4',
+      releaseId: '1.5.4-abcdef123456',
+      layout: 'official-cli',
+      sha512: 'a'.repeat(128),
+      executable: { name: 'antigravity', bytes: 128 },
+    });
+    services.set(IHostFileSystem, {
+      stat: async (path: string) => {
+        const size = fileSizes.get(path);
+        if (size === undefined) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        return { isFile: true, isDirectory: false, size };
+      },
+      readText: async (path: string) => {
+        if (path === markerPath) return markerText;
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      },
+      readdir: async (path: string) => directories[path] ?? [],
+    } as unknown as IHostFileSystem);
+    services.set(IBootstrapService, {
+      platform: 'darwin', arch: 'arm64', homeDir: '/kiki', osHomeDir: '/home/user',
+      getEnv: (name: string) => name === 'PATH' ? '/home/user/.local/share/mise/shims' : name === 'ANTIGRAVITY_ACP_PATH' ? ideBinary : undefined,
+    } as unknown as IBootstrapService);
+    const probes: string[] = [];
+    services.set(IHostProcessService, {
+      spawn: async (command: string, args: readonly string[]) => {
+        probes.push([command, ...args].join(' '));
+        return {
+          _serviceBrand: undefined,
+          pid: 1,
+          exitCode: 0,
+          stdin: new Writable({ write(_chunk, _encoding, done) { done(); } }),
+          stdout: Readable.from(['antigravity 1.5.5\n']),
+          stderr: Readable.from([]),
+          wait: async () => { await new Promise<void>((resolve) => setImmediate(resolve)); return 0; },
+          kill: async () => {},
+          dispose: async () => {},
+        };
+      },
+    } as unknown as IHostProcessService);
+    services.set(IConfigService, configWith({}));
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    const registry = services.get(IAgentExecutorRegistry);
+
+    const resolved = await registry.resolveExecutable('antigravity-acp');
+    expect(resolved.descriptor).toMatchObject({
+      selectedSource: 'kiki-managed-cli',
+      command: managedBinary,
+      launchArgs: ['acp'],
+      version: '1.5.4',
+    });
+    expect(probes).toEqual([]);
+
+    const discovered = await registry.discover('antigravity-acp');
+    expect(discovered.find((source) => source.id === 'env')).toMatchObject({
+      available: false,
+      diagnosticCode: 'antigravity_ide_not_acp',
+    });
+    expect(discovered.find((source) => source.id === 'antigravity-cli')).toMatchObject({
+      available: true,
+      command: shimPath,
+      launchArgs: ['acp'],
+      version: '1.5.5',
+    });
+    expect(probes).toEqual([`${shimPath} --version`]);
   });
 
   it('loads a host-defined Claude settings file into only the selected ACP descriptor and its revision', () => {

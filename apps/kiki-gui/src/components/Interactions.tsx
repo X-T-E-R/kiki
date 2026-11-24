@@ -98,6 +98,34 @@ export interface ExternalPermissionOption {
   readonly label: string;
   readonly kind: string;
   readonly changes?: readonly unknown[];
+  readonly securityWarning?: string;
+}
+
+function warningStringFromEntry(entry: unknown): string | undefined {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return undefined;
+  const record = entry as Record<string, unknown>;
+  for (const key of ['agy.security.warning', 'security_warning', 'securityWarning', 'warning']) {
+    const val = record[key];
+    if (typeof val === 'string' && val.trim() !== '') return val.trim();
+  }
+  if (record['kind'] === 'security_warning' || record['type'] === 'security_warning') {
+    const msg = record['message'] ?? record['text'];
+    if (typeof msg === 'string' && msg.trim() !== '') return msg.trim();
+  }
+  return undefined;
+}
+
+function extractDetailOptionWarning(detail: unknown, optionId: string): string | undefined {
+  if (typeof detail !== 'object' || detail === null || Array.isArray(detail)) return undefined;
+  const record = detail as Record<string, unknown>;
+  for (const mapKey of ['optionWarnings', 'securityWarnings', 'option_warnings', 'security_warnings']) {
+    const map = record[mapKey];
+    if (typeof map === 'object' && map !== null && !Array.isArray(map)) {
+      const value = (map as Record<string, unknown>)[optionId];
+      if (typeof value === 'string' && value.trim() !== '') return value.trim();
+    }
+  }
+  return undefined;
 }
 
 export interface ExternalPermissionDisplay {
@@ -135,9 +163,32 @@ export function externalPermissionFromDisplay(display: unknown): ExternalPermiss
     if (typeof id !== 'string' || id === '') return { ok: false };
     if (typeof label !== 'string' || label === '') return { ok: false };
     if (typeof kind !== 'string' || kind === '') return { ok: false };
-    const changes = option['changes'];
-    if (changes !== undefined && !Array.isArray(changes)) return { ok: false };
-    options.push({ id, label, kind, changes: changes as readonly unknown[] | undefined });
+    const rawChanges = option['changes'];
+    if (rawChanges !== undefined && !Array.isArray(rawChanges)) return { ok: false };
+    const optionMeta = typeof option['_meta'] === 'object' && option['_meta'] !== null && !Array.isArray(option['_meta'])
+      ? (option['_meta'] as Record<string, unknown>)
+      : undefined;
+    let securityWarning = warningStringFromEntry(option)
+      ?? warningStringFromEntry(optionMeta)
+      ?? extractDetailOptionWarning(record['detail'], id);
+    const changes: unknown[] = [];
+    if (rawChanges !== undefined) {
+      for (const entry of rawChanges) {
+        const extracted = warningStringFromEntry(entry);
+        if (extracted !== undefined && securityWarning === undefined) {
+          securityWarning = extracted;
+        } else if (extracted === undefined) {
+          changes.push(entry);
+        }
+      }
+    }
+    options.push({
+      id,
+      label,
+      kind,
+      changes: rawChanges === undefined ? undefined : changes,
+      ...(securityWarning !== undefined ? { securityWarning } : {}),
+    });
   }
   if (options.length === 0) return { ok: false };
   return {
@@ -1142,6 +1193,19 @@ function ExternalOptionButton({
           <span className={`shrink-0 text-[12px] ${tone.chip}`}>{kindLabel}</span>
         )}
       </button>
+      {option.securityWarning !== undefined ? (
+        <p
+          role="note"
+          data-external-option-warning={option.id}
+          className="flex items-start gap-1.5 px-3 pb-1.5 pl-[34px] text-[12px] leading-snug text-amber-ink"
+        >
+          <Icon name="warning" size={12} className="mt-0.5 shrink-0 text-amber-rule" />
+          <span className="min-w-0 break-words">
+            <span className="sr-only">{t('ia.external.securityWarning')}: </span>
+            {option.securityWarning}
+          </span>
+        </p>
+      ) : null}
       {changes.length > 0 ? (
         <div className="px-3 pb-1.5 pl-[34px]">
           <button

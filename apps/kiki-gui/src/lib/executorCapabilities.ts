@@ -139,3 +139,19 @@ export function isExecutorActionAvailable(
 ): boolean {
   return dimension?.kind === 'ready';
 }
+
+/**
+ * Resolves valid thinking levels for a specific external executor model.
+ * When `model_thinking_levels` declares an entry for `modelId` (including an
+ * explicit empty list), that per-model list wins over the executor-wide list.
+ */
+export function resolveExecutorModelThinkingLevels(
+  modelId: string | undefined,
+  modelThinkingLevels: Readonly<Record<string, readonly string[]>> | undefined,
+  fallbackLevels: readonly string[] | undefined,
+): readonly string[] | undefined {
+  if (modelId !== undefined && modelId !== '' && modelThinkingLevels !== undefined && Object.hasOwn(modelThinkingLevels, modelId)) {
+    return modelThinkingLevels[modelId];
+  }
+  return fallbackLevels;
+}
