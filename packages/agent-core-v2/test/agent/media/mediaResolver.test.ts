@@ -829,7 +829,11 @@ describe('AgentMediaResolverService image upload references', () => {
     expect(uploadImage.mock.calls[0]?.[1]?.cachedFileId).toBeUndefined();
     expect(uploadImage.mock.calls[1]?.[1]?.cachedFileId).toBe('image-fixture');
     expect(uploadImage.mock.calls[0]?.[0]).toEqual({ data: PNG_BYTES, mimeType: 'image/png', filename: 'pic.png' });
-    expect(put.mock.calls.every(([scope, key, value]) => scope === 'image-upload-cache' && !key.includes('fixture-token') && new TextDecoder().decode(value) === 'image-fixture')).toBe(true);
+    expect(put.mock.calls.every(([scope, key, value]) => {
+      if (scope !== 'image-upload-cache' || key.includes('fixture-token')) return false;
+      const decoded = JSON.parse(new TextDecoder().decode(value)) as { llmFileId?: string; uploadedAtMs?: number };
+      return decoded.llmFileId === 'image-fixture' && typeof decoded.uploadedAtMs === 'number';
+    })).toBe(true);
     expect(files.get(FILE_ID)?.bytes).toEqual(PNG_BYTES);
     expect(messages).toEqual(original);
   });
@@ -918,15 +922,17 @@ describe('AgentMediaResolverService image strategy', () => {
     } finally { await closeCpuPool(); }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-  it('reports undecodable image content separately from invalid base64 syntax', async () => {
+  it('degrades undecodable or invalid historical inline image data URLs to corrupt text placeholders', async () => {
     const res = resolver(new Map());
-    await expect(res.resolve([imageMessage('data:image/png;base64,%%%')], requester({})))
-      .rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID, message: expect.stringContaining('incomplete or invalid base64 data URL') });
+    expect(firstPart(await res.resolve([imageMessage('data:image/png;base64,%%%')], requester({})))).toEqual({
+      type: 'text',
+      text: '[image omitted: the file or media data is empty, corrupted, or incomplete]',
+    });
     const url = `data:image/png;base64,${PNG_BYTES.subarray(0, -12).toString('base64')}`;
-    await expect(res.resolve([imageMessage(url)], requester({})))
-      .rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID,
-        message: expect.stringContaining('valid base64 data, but its image content could not be decoded'),
-        details: { mediaType: 'image', urlLength: url.length } });
+    expect(firstPart(await res.resolve([imageMessage(url)], requester({})))).toEqual({
+      type: 'text',
+      text: '[image omitted: the file or media data is empty, corrupted, or incomplete]',
+    });
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('keeps every attachment when accumulated inline media exceeds 20 MiB', async () => {
@@ -1051,26 +1057,101 @@ describe('AgentMediaResolverService image strategy', () => {
   it.each([
     { name: 'invalid alphabet', url: 'data:image/png;base64,%%%not-base64%%%' },
     { name: 'truncated unpadded payload', url: `data:image/png;base64,${'A'.repeat(1022)}` },
-  ])('rejects an incomplete inline image without changing the composition ($name)', async ({ url }) => {
+    { name: 'empty payload', url: 'data:image/png;base64,' },
+  ])('degrades an incomplete inline image without changing the original composition ($name)', async ({ url }) => {
     const res = resolver(new Map());
     const messages = [imageMessage(url)];
 
-    await expect(
-      res.resolve(
-        messages,
-        requester({
-          providerType: 'openai',
-          imagePolicy: {
-            acceptedTypes: new Set(['image/png']),
-            convertUnsupported: 'off',
-          },
-        }),
-      ),
-    ).rejects.toMatchObject({
-      code: ErrorCodes.REQUEST_INVALID,
-      details: { mediaType: 'image', urlLength: url.length },
+    const out = await res.resolve(
+      messages,
+      requester({
+        providerType: 'openai',
+        imagePolicy: {
+          acceptedTypes: new Set(['image/png']),
+          convertUnsupported: 'off',
+        },
+      }),
+    );
+    expect(firstPart(out)).toEqual({
+      type: 'text',
+      text: '[image omitted: the file or media data is empty, corrupted, or incomplete]',
     });
     expect(messages[0]!.content[0]).toEqual({ type: 'image_url', imageUrl: { url } });
+  });
+
+  it('degrades zero-byte canonical files, missing image blobrefs, expired upload cache (>18h), and evicts upload cache on poison', async () => {
+    const zeroImage = resolver(new Map([[FILE_ID, { name: 'empty.png', bytes: Buffer.alloc(0) }]]));
+    expect(firstPart(await zeroImage.resolve([imageMessage(buildKimiFileUrl(FILE_ID))], requester({})))).toEqual({
+      type: 'text',
+      text: '[image omitted: the file or media data is empty, corrupted, or incomplete]',
+    });
+
+    const zeroVideo = resolver(new Map([[FILE_ID, { name: 'empty.mp4', bytes: Buffer.alloc(0) }]]));
+    expect(firstPart(await zeroVideo.resolve([videoMessage(buildKimiFileUrl(FILE_ID))], requester({})))).toEqual({
+      type: 'text',
+      text: '[video omitted: the file or media data is empty, corrupted, or incomplete]',
+    });
+
+    const missingHash = 'c'.repeat(64);
+    const blobs = blobStore();
+    const res = resolver(new Map(), undefined, stubMediaStore(), blobs);
+    expect(firstPart(await res.resolve([imageMessage(`blobref:image/png;${missingHash}`)], requester({})))).toEqual({
+      type: 'text',
+      text: IMAGE_UNAVAILABLE_TEXT,
+    });
+
+    const baseNow = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(baseNow);
+    try {
+      const files = new Map([[FILE_ID, { name: 'clip.mp4', bytes: VIDEO_BYTES }]]);
+      const upload = vi.fn<NonNullable<ModelRequester['uploadVideo']>>()
+        .mockResolvedValueOnce(msPart('prov-fresh'))
+        .mockResolvedValueOnce(msPart('prov-reuploaded'));
+      const videoMsg = [videoMessage(buildKimiFileUrl(FILE_ID))];
+      const sameResolver = resolver(files, undefined, stubMediaStore(), blobs);
+      expect(firstPart(await sameResolver.resolve(videoMsg, requester({ uploadVideo: upload })))).toEqual(msPart('prov-fresh'));
+
+      nowSpy.mockReturnValue(baseNow + 19 * 60 * 60 * 1000);
+      expect(firstPart(await sameResolver.resolve(videoMsg, requester({ uploadVideo: upload })))).toEqual(msPart('prov-reuploaded'));
+      expect(upload).toHaveBeenCalledTimes(2);
+
+      files.delete(FILE_ID);
+      expect(firstPart(await sameResolver.resolve(videoMsg, requester({ uploadVideo: upload })))).toEqual({
+        type: 'text',
+        text: '[video omitted: the uploaded file is no longer available]',
+      });
+
+      const delSpy = vi.spyOn(blobs, 'delete');
+      files.set(FILE_ID, { name: 'clip.mp4', bytes: VIDEO_BYTES });
+      upload.mockResolvedValueOnce(msPart('prov-third'));
+      expect(firstPart(await sameResolver.resolve(videoMsg, requester({ uploadVideo: upload })))).toEqual(msPart('prov-third'));
+      sameResolver.markMediaPoisoned?.(['ms://prov-third']);
+      expect(delSpy).toHaveBeenCalledWith('video-upload-cache', expect.any(String));
+
+      const imageFiles = new Map([[FILE_ID, { name: 'pic.png', bytes: PNG_BYTES }]]);
+      const imgUpload = vi.fn<NonNullable<ModelRequester['uploadImage']>>(async (_input, opts) => ({
+        type: 'image_url',
+        imageUrl: { url: `ms://${opts?.cachedFileId ?? 'img-fresh'}` },
+      }));
+      const imgReq = requester({
+        baseUrl: 'https://api.kimi.com/coding/v1',
+        authProvider: { getAuth: async () => ({ apiKey: 'fixture-token' }) },
+        uploadImage: imgUpload,
+      });
+      const imgMsg = [imageMessage(buildKimiFileUrl(FILE_ID))];
+      const imgResolver = resolver(imageFiles, undefined, stubMediaStore(), blobs);
+      nowSpy.mockReturnValue(baseNow);
+      await imgResolver.resolve(imgMsg, imgReq);
+      expect(imgUpload.mock.calls[0]?.[1]?.cachedFileId).toBeUndefined();
+      nowSpy.mockReturnValue(baseNow + 10 * 60 * 60 * 1000);
+      await imgResolver.resolve(imgMsg, imgReq);
+      expect(imgUpload.mock.calls[1]?.[1]?.cachedFileId).toBe('img-fresh');
+      nowSpy.mockReturnValue(baseNow + 19 * 60 * 60 * 1000);
+      await imgResolver.resolve(imgMsg, imgReq);
+      expect(imgUpload.mock.calls[2]?.[1]?.cachedFileId).toBeUndefined();
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('rethrows a cancelled image read instead of degrading to a tag', async () => {

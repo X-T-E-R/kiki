@@ -342,6 +342,7 @@ export function isProviderInvalidMediaError(error: unknown): boolean {
 
 export interface SentMediaAttachment {
   readonly urls: readonly string[];
+  readonly fromCurrentTurn?: boolean;
 }
 
 const STRUCTURED_MEDIA_URL_FIELDS = new Set([
@@ -394,11 +395,12 @@ function collectStructuredErrorUrls(error: unknown): ReadonlySet<string> {
 }
 
 /**
- * Attributes a provider invalid-media rejection to the exact logical attachment(s)
- * that should be poisoned. A single logical attachment (even with both source and
- * resolved URLs) is unambiguously responsible; with multiple attachments, only
- * attachments explicitly named in a structured provider error URL field are
- * returned, and unattributed or ambiguous prose rejections return an empty list.
+ * Attributes a provider invalid-media rejection to the attachment URLs that should
+ * be poisoned before retrying. When the provider names specific URLs in structured
+ * error details, only those attachments are poisoned. When multiple attachments
+ * were sent without structured URL attribution, attachments from earlier turns are
+ * poisoned first to preserve freshly validated current-turn uploads; if none are
+ * from earlier turns, all remaining attachments in the request are returned.
  */
 export function identifyPoisonedMediaUrls(
   error: unknown,
@@ -416,12 +418,15 @@ export function identifyPoisonedMediaUrls(
   };
   if (attachments.length === 1) return collectUnique(attachments);
   const structuredUrls = collectStructuredErrorUrls(error);
-  if (structuredUrls.size === 0) return [];
-  const matched = attachments.filter((attachment) =>
-    attachment.urls.some((url) => url.length > 0 && structuredUrls.has(url)),
-  );
-  if (matched.length === 0 || matched.length === attachments.length) return [];
-  return collectUnique(matched);
+  if (structuredUrls.size > 0) {
+    const matched = attachments.filter((attachment) =>
+      attachment.urls.some((url) => url.length > 0 && structuredUrls.has(url)),
+    );
+    if (matched.length > 0) return collectUnique(matched);
+  }
+  const earlierTurn = attachments.filter((attachment) => attachment.fromCurrentTurn === false);
+  if (earlierTurn.length > 0) return collectUnique(earlierTurn);
+  return collectUnique(attachments);
 }
 
 function explicitDeliveryMark(error: object): 'unknown' | 'executed' | undefined {
@@ -581,21 +586,34 @@ export function isRetryableMissingTerminalError(error: unknown): boolean {
   return isRetryableUncommittedProviderError(error, (_cause, code) => code === 'antigravity_missing_terminal');
 }
 
+const TRANSIENT_STREAM_ERROR_CODES: ReadonlySet<string> = new Set([
+  'server_error',
+  'overloaded_error',
+  'service_unavailable',
+  'rate_limit_error',
+]);
+
+const TRANSIENT_STREAM_ERROR_TYPES: ReadonlySet<string> = new Set([
+  'service_unavailable',
+  'service_unavailable_error',
+  'server_error',
+  'overloaded_error',
+  'rate_limit_error',
+]);
+
 export function isRetryableUncommittedStreamOverloadError(error: unknown): boolean {
   if (hasExplicitRetryVeto(error)) return false;
   return isRetryableUncommittedProviderError(error, (cause, code) => {
     const details = providerErrorMetadata(cause);
-    if (details['errorSource'] !== 'provider_event') return false;
-    if (cause instanceof APIProviderOverloadedError || cause instanceof APIProviderRateLimitError) return true;
-    if (cause instanceof APIStatusError && !(cause instanceof APIProviderQuotaExhaustedError) &&
-      (cause.statusCode === 429 || (cause.statusCode >= 500 && cause.statusCode <= 599))) {
-      return true;
+    const source = details['errorSource'];
+    if (source !== 'provider_event' && source !== 'provider_stream') return false;
+    if (cause instanceof APIProviderQuotaExhaustedError) return false;
+    if (typeof code === 'string' && code.length > 0) {
+      return TRANSIENT_STREAM_ERROR_CODES.has(code);
     }
+    if (cause instanceof APIProviderOverloadedError || cause instanceof APIProviderRateLimitError) return true;
     const type = details['upstreamErrorType'];
-    return (
-      code === 'server_error' || code === 'overloaded_error' || code === 'service_unavailable' ||
-      type === 'service_unavailable_error' || type === 'server_error' || type === 'overloaded_error'
-    );
+    return typeof type === 'string' && TRANSIENT_STREAM_ERROR_TYPES.has(type);
   });
 }
 

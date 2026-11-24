@@ -1,6 +1,14 @@
 import type { Scope } from '@kiki/agent-core-v2';
-import { IHarnessQuotaService } from '@kiki/agent-core-v2';
-import { HARNESS_QUOTA_UNAVAILABLE_MESSAGE, harnessQuotaCacheResponseSchema, harnessQuotaReadRequestSchema, ErrorCode } from '@kiki/protocol';
+import { Error2, ErrorCodes, IHarnessQuotaService, ILogService } from '@kiki/agent-core-v2';
+import {
+  HARNESS_QUOTA_UNAVAILABLE_MESSAGE,
+  harnessQuotaActionRequestSchema,
+  harnessQuotaActionResponseSchema,
+  harnessQuotaCacheResponseSchema,
+  harnessQuotaReadRequestSchema,
+  ErrorCode,
+} from '@kiki/protocol';
+import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
@@ -16,7 +24,7 @@ interface HarnessQuotaRouteHost {
     path: string,
     options: { preHandler: unknown[]; schema?: Record<string, unknown> },
     handler: (
-      req: { id: string; body: { source: string } },
+      req: { id: string; body: unknown; params?: unknown },
       reply: { send(payload: unknown): unknown; raw: { on(event: string, listener: () => void): void } },
     ) => Promise<void> | void,
   ): unknown;
@@ -54,4 +62,55 @@ export function registerHarnessQuotaRoutes(app: HarnessQuotaRouteHost, core: Sco
     }, req);
   });
   app.post(readRoute.path, readRoute.options, readRoute.handler as unknown as Parameters<HarnessQuotaRouteHost['post']>[2]);
+
+  const actionRoute = defineRoute({
+    method: 'POST',
+    path: '/harness-quota/:sourceId/action',
+    params: z.object({
+      sourceId: z.string().regex(/^plugin:[a-z0-9][a-z0-9_-]{0,63}\/[a-z0-9][a-z0-9-]{0,63}$/),
+    }),
+    body: harnessQuotaActionRequestSchema,
+    success: { data: harnessQuotaActionResponseSchema },
+    errors: {
+      [ErrorCode.VALIDATION_FAILED]: {},
+      [ErrorCode.PLUGIN_NOT_FOUND]: {},
+      [ErrorCode.INTERNAL_ERROR]: {},
+    },
+    description: 'Invoke a bounded declarative action declared by a registered harness quota plugin source',
+    tags: ['plugins'],
+  }, async (req, reply) => {
+    await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
+      const quota = core.accessor.get(IHarnessQuotaService);
+      if (typeof quota.performAction !== 'function') {
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Harness quota actions are not supported', req.id));
+        return;
+      }
+      try {
+        const result = await quota.performAction(req.params.sourceId, req.body.action, req.body.account_id, signal);
+        if (signal.aborted) return;
+        reply.send(okEnvelope(result, req.id));
+      } catch (error) {
+        if (signal.aborted) return;
+        if (error instanceof Error2 && error.code === ErrorCodes.PLUGIN_NOT_FOUND) {
+          reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, error.message, req.id));
+          return;
+        }
+        if (error instanceof Error2 && error.code === ErrorCodes.REQUEST_INVALID) {
+          reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
+          return;
+        }
+        try {
+          core.accessor.get(ILogService)?.warn('harness quota action failed', {
+            sourceId: req.params.sourceId,
+            action: req.body.action,
+            failureKind: error instanceof Error ? error.name : 'unknown_error',
+          });
+        } catch {
+          void 0;
+        }
+        reply.send(errEnvelope(ErrorCode.INTERNAL_ERROR, HARNESS_QUOTA_UNAVAILABLE_MESSAGE, req.id));
+      }
+    }, req);
+  });
+  app.post(actionRoute.path, actionRoute.options, actionRoute.handler as unknown as Parameters<HarnessQuotaRouteHost['post']>[2]);
 }

@@ -4,6 +4,8 @@ import {
   APIProviderQuotaExhaustedError,
   APIStatusError,
   isRetryableBufferedRequestError,
+  isRetryableMalformedFunctionCallError,
+  isRetryableMissingTerminalError,
   isSafetyProviderErrorCode,
   isStructuredQuotaExhaustedCode,
   readUpstreamSafetySubCode,
@@ -69,7 +71,7 @@ function statusCodeOf(error: unknown, cause: unknown): number | undefined {
   return undefined;
 }
 
-function hasDetailFlag(error: unknown, key: string, expected: boolean): boolean {
+function hasDetailFlag(error: unknown, key: string, expected: boolean | string): boolean {
   const visited = new Set<object>();
   let current: unknown = error;
   while (typeof current === 'object' && current !== null && !visited.has(current)) {
@@ -108,12 +110,18 @@ export function isRetryableCompactionError(error: unknown, maxRetryAfterMs = MAX
   const kind = compactionFailureKind(error);
   if (kind === 'filtered' || kind === 'auth' || kind === 'quota') return false;
   if (hasDetailFlag(error, 'upstream_should_retry', false)) return false;
+  if (hasDetailFlag(error, 'retry_exhausted', true)) return false;
   const statusCode = statusCodeOf(error, cause);
   if (statusCode === 429) {
     const retryAfterMs = readRetryAfterMs(cause) ?? readRetryAfterMs(error);
     if (retryAfterMs !== null && retryAfterMs > maxRetryAfterMs) return false;
     if (hasDetailFlag(error, 'upstream_retryable', false)) return false;
-  } else if (hasDetailFlag(error, 'upstream_retryable', false) && !isBufferedStreamTerminal502(error, cause)) {
+  } else if (
+    hasDetailFlag(error, 'upstream_retryable', false) &&
+    !isBufferedStreamTerminal502(error, cause) &&
+    !isRetryableMalformedFunctionCallError(error) &&
+    !isRetryableMissingTerminalError(error)
+  ) {
     return false;
   }
   if (!isRetryableBufferedRequestError(error)) return false;

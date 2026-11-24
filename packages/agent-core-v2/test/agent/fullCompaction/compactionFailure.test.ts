@@ -62,6 +62,18 @@ describe('compaction-only retry classification', () => {
         expect(isRetryableCompactionError(wrapped)).toBe(false);
       }
     }
+    if (code === 'antigravity_malformed_function_call' || code === 'antigravity_missing_terminal') {
+      const non502 = markProviderEventError(new ChatProviderError('upstream failed'), code);
+      attachErrorDetails(non502, { upstreamErrorType: 'api_error', upstream_retryable: false });
+      noteExecutedRequestDelivery(non502);
+      const wrapped = new Error2(non502.code, 'summary request failed', { cause: non502 });
+      expect(isRetryableCompactionError(wrapped)).toBe(true);
+      attachErrorDetails(wrapped, { retry_exhausted: true });
+      expect(isRetryableCompactionError(wrapped)).toBe(false);
+      const vetoed = new Error2(non502.code, 'summary request failed', { cause: non502 });
+      attachErrorDetails(vetoed, { retry_policy_veto: true });
+      expect(isRetryableCompactionError(vetoed)).toBe(false);
+    }
   });
 
   it('ignores transport replay vetoes for buffered summaries while retaining user policy vetoes', () => {

@@ -925,6 +925,13 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         requestKind: 'full_compaction',
         logFields: { droppedCount },
       },
+      onAttemptRetry: (mode) => {
+        if (mode === 'discard') {
+          rollingText = '';
+          sawFilterMarkerA = false;
+          sawFilterMarkerB = false;
+        }
+      },
     }, (part) => {
       if (part.type !== 'text' || part.text.length === 0) return;
       const combined = rollingText + part.text;

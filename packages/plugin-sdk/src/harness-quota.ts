@@ -8,6 +8,19 @@ export const HARNESS_QUOTA_MIN_REFRESH_MS = 300_000;
 export const HARNESS_QUOTA_UNAVAILABLE_MESSAGE = 'Harness quota source is unavailable';
 
 export const harnessQuotaUnitSchema = z.enum(['percent', 'money', 'tokens', 'requests', 'credits', 'count']);
+export const harnessQuotaActionIdSchema = z.enum(['set_primary', 'toggle_pause', 'manage']);
+export const harnessQuotaActionScopeSchema = z.enum(['pool', 'account']);
+
+export const harnessQuotaActionDeclarationSchema = z.object({
+  id: harnessQuotaActionIdSchema,
+  label: z.string().min(1).max(64),
+  scope: harnessQuotaActionScopeSchema,
+}).strict();
+
+const harnessQuotaActionsSchema = z.array(harnessQuotaActionDeclarationSchema).max(3).refine(
+  (actions) => new Set(actions.map((action) => action.id)).size === actions.length,
+  'Duplicate harness quota action id',
+);
 
 export const harnessQuotaSourceDefinitionSchema = z.object({
   schemaVersion: z.literal(1),
@@ -15,6 +28,7 @@ export const harnessQuotaSourceDefinitionSchema = z.object({
   label: z.string().min(1),
   engineIds,
   minRefreshIntervalMs: z.number().int().min(HARNESS_QUOTA_MIN_REFRESH_MS).optional(),
+  actions: harnessQuotaActionsSchema.optional(),
 }).strict();
 
 export const harnessQuotaReadingSchema = z.object({
@@ -38,8 +52,24 @@ export const harnessQuotaBatchSchema = z.union([
 ]);
 
 export type HarnessQuotaUnit = z.infer<typeof harnessQuotaUnitSchema>;
+export type HarnessQuotaActionId = z.infer<typeof harnessQuotaActionIdSchema>;
+export type HarnessQuotaActionScope = z.infer<typeof harnessQuotaActionScopeSchema>;
+export type HarnessQuotaActionDeclaration = z.infer<typeof harnessQuotaActionDeclarationSchema>;
 export type HarnessQuotaSourceDefinition = z.infer<typeof harnessQuotaSourceDefinitionSchema>;
 export type HarnessQuotaReading = z.infer<typeof harnessQuotaReadingSchema>;
+
+export const harnessQuotaActionRequestSchema = z.object({
+  action: harnessQuotaActionIdSchema,
+  account_id: identifier.optional(),
+}).strict();
+
+export const harnessQuotaActionResponseSchema = z.object({
+  ok: z.boolean(),
+  message: z.string().optional(),
+}).strict();
+
+export type HarnessQuotaActionRequest = z.infer<typeof harnessQuotaActionRequestSchema>;
+export type HarnessQuotaActionResponse = z.infer<typeof harnessQuotaActionResponseSchema>;
 
 export interface HarnessQuotaContext {
   readonly settings: Readonly<Record<string, unknown>>;
@@ -50,6 +80,11 @@ export interface HarnessQuotaContext {
 export interface HarnessQuotaAdapter {
   /** One batch for this source. Do not issue a request per model, engine, or account. */
   read(context: HarnessQuotaContext): Promise<{ readonly readings: readonly HarnessQuotaReading[] } | readonly HarnessQuotaReading[]>;
+  /** Optional bounded declarative action handler for declared actions (`set_primary`, `toggle_pause`, `manage`). */
+  performAction?(
+    request: { readonly action: HarnessQuotaActionId; readonly accountId?: string },
+    context: HarnessQuotaContext,
+  ): Promise<HarnessQuotaActionResponse>;
 }
 
 export const harnessQuotaSnapshotSchema = z.object({
@@ -57,6 +92,7 @@ export const harnessQuotaSnapshotSchema = z.object({
   label: z.string().min(1),
   engineIds: z.array(z.string().min(1)),
   minRefreshIntervalMs: z.number().int().positive(),
+  actions: harnessQuotaActionsSchema.optional(),
   readAt: z.string().datetime({ offset: true }).optional(),
   readings: z.array(harnessQuotaReadingSchema).optional(),
   error: z.literal(HARNESS_QUOTA_UNAVAILABLE_MESSAGE).optional(),

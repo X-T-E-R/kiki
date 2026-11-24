@@ -54,8 +54,9 @@ export interface UsageReadModelQuote {
 export interface UsageReadModelQuery {
   readonly startAt?: number;
   readonly endAt?: number;
-  readonly granularity: 'day' | 'week' | 'month' | 'session' | 'five_hour';
+  readonly granularity: 'hour' | 'day' | 'week' | 'month' | 'session' | 'five_hour';
   readonly dimension: 'agent' | 'model' | 'project' | 'session' | 'provider' | 'profile';
+  readonly sortBy?: 'tokens' | 'cost';
   readonly models: readonly string[];
   readonly providers: readonly string[];
   readonly profiles: readonly string[];
@@ -87,6 +88,8 @@ export interface UsageReadModelResult {
   readonly earliestAt?: number;
   readonly latestAt?: number;
   readonly sessionCount: number;
+  readonly turnCount: number;
+  readonly requestCount: number;
   readonly incompleteSessions: number;
   readonly scannedSessions: number;
   readonly includesDeletedSessions: boolean;
@@ -101,7 +104,7 @@ export interface UsageReadModelResult {
     readonly sessions: readonly { readonly id: string; readonly turnIds: readonly number[]; readonly turns: number; readonly unknownTurnRecords: number }[];
     readonly sessionsTruncated: boolean;
   }[];
-  readonly sessions: readonly (UsageReadModelAggregate & { readonly session: UsageReadModelSession; readonly primaryModel?: string; readonly profileNames: readonly string[]; readonly unknownPriceModels: readonly string[] })[];
+  readonly sessions: readonly (UsageReadModelAggregate & { readonly session: UsageReadModelSession; readonly sortValue: number; readonly primaryModel?: string; readonly profileNames: readonly string[]; readonly unknownPriceModels: readonly string[] })[];
   readonly hasMore: boolean;
 }
 

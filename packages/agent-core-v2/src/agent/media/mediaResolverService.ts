@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { extname } from 'node:path';
 
-import { Error2, ErrorCodes } from '#/errors';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
@@ -38,9 +37,7 @@ import {
   decodeBase64Prefix,
   isDataUrl,
   isModelAcceptedImageMime,
-  INVALID_IMAGE_DATA_URL_MESSAGE,
   normalizeImageMime,
-  parseCompleteImageDataUrl,
   resolveEffectiveImageMime,
   unsupportedImageMimeFromUrl,
 } from './image-format-policy';
@@ -65,7 +62,9 @@ import {
 } from './videoUpload';
 
 const CACHE_SCOPE = 'video-upload-cache';
+const IMAGE_UPLOAD_CACHE_SCOPE = 'image-upload-cache';
 const AV_COMPRESS_CACHE_SCOPE = 'av-compress-cache';
+const UPLOAD_CACHE_TTL_MS = 18 * 60 * 60 * 1000;
 const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const VIDEO_UNAVAILABLE_TEXT =
   '[video omitted: the uploaded file is no longer available]';
@@ -75,6 +74,8 @@ const VIDEO_CORRUPT_TEXT =
   '[video omitted: the file or media data is empty, corrupted, or incomplete]';
 const IMAGE_UNAVAILABLE_TEXT =
   '[image omitted: the uploaded file is no longer available]';
+const IMAGE_CORRUPT_TEXT =
+  '[image omitted: the file or media data is empty, corrupted, or incomplete]';
 const AUDIO_UNAVAILABLE_TEXT =
   '[audio omitted: inline audio is unavailable for this model request]';
 const AUDIO_CORRUPT_TEXT =
@@ -129,11 +130,78 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
   private imageMemoBytes = 0;
   private readonly imageUploadUnsupported = new WeakSet<ModelRequester>();
   private readonly poisonedMedia = new Set<string>();
+  private readonly uploadCacheByUrl = new Map<string, Set<string>>();
+  private readonly evictedUploadCacheKeys = new Set<string>();
+  private readonly memoKeysByUrl = new Map<string, Set<string>>();
+  private readonly videoMemoExpiresAt = new Map<string, number>();
 
   markMediaPoisoned(urlsOrKeys: Iterable<string>): void {
     for (const urlOrKey of urlsOrKeys) {
       if (urlOrKey.length === 0) continue;
-      this.poisonedMedia.add(poisonKey(urlOrKey));
+      const key = poisonKey(urlOrKey);
+      this.poisonedMedia.add(key);
+      const cacheEntries = this.uploadCacheByUrl.get(key);
+      if (cacheEntries !== undefined) {
+        for (const entry of cacheEntries) {
+          this.evictedUploadCacheKeys.add(entry);
+          const sep = entry.indexOf('\0');
+          if (sep > 0) {
+            const scope = entry.slice(0, sep);
+            const hashedKey = entry.slice(sep + 1);
+            void this.blobs.delete(scope, hashedKey).catch(() => undefined);
+          }
+        }
+        this.uploadCacheByUrl.delete(key);
+      }
+      const memoEntries = this.memoKeysByUrl.get(key);
+      if (memoEntries !== undefined) {
+        for (const entry of memoEntries) {
+          const sep = entry.indexOf('\0');
+          if (sep <= 0) continue;
+          const kind = entry.slice(0, sep);
+          const memoKey = entry.slice(sep + 1);
+          if (kind === 'resolved') {
+            this.resolved.delete(memoKey);
+            this.videoMemoExpiresAt.delete(memoKey);
+          } else if (kind === 'image') {
+            const existing = this.imageMemo.get(memoKey);
+            if (existing !== undefined) {
+              this.imageMemoBytes -= existing.bytes;
+              this.imageMemo.delete(memoKey);
+            }
+          }
+        }
+        this.memoKeysByUrl.delete(key);
+      }
+    }
+  }
+
+  private rememberUploadCache(urls: readonly (string | undefined)[], scope: string, hashedKey: string): void {
+    const entry = `${scope}\0${hashedKey}`;
+    this.evictedUploadCacheKeys.delete(entry);
+    for (const url of urls) {
+      if (url === undefined || url.length === 0) continue;
+      const key = poisonKey(url);
+      let entries = this.uploadCacheByUrl.get(key);
+      if (entries === undefined) {
+        entries = new Set<string>();
+        this.uploadCacheByUrl.set(key, entries);
+      }
+      entries.add(entry);
+    }
+  }
+
+  private rememberMemoKey(urls: readonly (string | undefined)[], kind: 'resolved' | 'image', cacheKey: string): void {
+    const entry = `${kind}\0${cacheKey}`;
+    for (const url of urls) {
+      if (url === undefined || url.length === 0) continue;
+      const key = poisonKey(url);
+      let entries = this.memoKeysByUrl.get(key);
+      if (entries === undefined) {
+        entries = new Set<string>();
+        this.memoKeysByUrl.set(key, entries);
+      }
+      entries.add(entry);
     }
   }
 
@@ -168,11 +236,11 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
         const daemonPart = daemonFileRefFromPart(part);
         let resolved =
           daemonPart?.kind === 'video'
-            ? await this.resolveVideoPart(daemonPart.ref, requester, signal)
+            ? await this.resolveVideoPart(daemonPart.ref, requester, signal, rawUrl)
             : daemonPart?.kind === 'image'
-              ? await this.resolveImagePart(daemonPart.ref, requester, signal, headers)
+              ? await this.resolveImagePart(daemonPart.ref, requester, signal, headers, rawUrl)
               : daemonPart?.kind === 'audio'
-                ? await this.resolveAudioPart(daemonPart.ref, requester, signal)
+                ? await this.resolveAudioPart(daemonPart.ref, requester, signal, rawUrl)
                 : part.type === 'image_url'
                   ? await this.resolveInlineImagePart(part, requester, signal)
                   : part.type === 'video_url'
@@ -202,6 +270,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     ref: DaemonFileRef,
     requester: ModelRequester,
     signal: AbortSignal | undefined,
+    rawUrl: string | undefined,
   ): Promise<ContentPart> {
     if (!requester.model.capabilities.audio_in) {
       return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
@@ -212,6 +281,9 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     try {
       signal?.throwIfAborted();
       const file = await this.mediaStore.open(ref.fileId, 'wav') ?? await this.mediaStore.open(ref.fileId);
+      if (file !== undefined && file.size === 0) {
+        return { type: 'text', text: AUDIO_CORRUPT_TEXT };
+      }
       const mime = file === undefined ? undefined : normalizeAudioMime(file.mediaType);
       const type = mime !== undefined && SUPPORTED_AUDIO_MIMES.has(mime)
         ? mime : file && AUDIO_MIME_BY_SUFFIX[extname(file.name).toLowerCase()];
@@ -222,7 +294,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
           chunks.push(chunk);
         }
         const rawBytes = Buffer.concat(chunks);
-        if (!validateMediaBytesIntegrity(rawBytes, type).valid) {
+        if (rawBytes.length === 0 || !validateMediaBytesIntegrity(rawBytes, type).valid) {
           return { type: 'text', text: AUDIO_CORRUPT_TEXT };
         }
         const prepared = ref.fullResolution === true
@@ -236,6 +308,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
           },
         };
         this.resolved.set(cacheKey, part);
+        this.rememberMemoKey([rawUrl, part.audioUrl.url], 'resolved', cacheKey);
         return part;
       }
     } catch {
@@ -371,6 +444,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     requester: ModelRequester,
     signal: AbortSignal | undefined,
     headers: Readonly<Record<string, string>> | undefined,
+    rawUrl: string | undefined,
   ): Promise<ContentPart> {
     if (!requester.model.capabilities.image_in) {
       return degradedImage(await this.displayPath(ref));
@@ -392,6 +466,9 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       signal?.throwIfAborted();
       return degradedImage(path);
     }
+    if (source.bytes.length === 0) {
+      return { type: 'text', text: IMAGE_CORRUPT_TEXT };
+    }
 
     const fileType = detectFileType(
       source.filename,
@@ -412,7 +489,8 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     if (uploader !== undefined) {
       const variant = `${cacheKey}\0${resolved.mimeType}`;
       const uploadKey = await imageUploadCacheKey(requester, variant, headers);
-      const cachedFileId = uploadKey === undefined ? undefined : await this.readCachedUpload(uploadKey, 'image-upload-cache');
+      const cachedUpload = uploadKey === undefined ? undefined : await this.readCachedUpload(uploadKey, IMAGE_UPLOAD_CACHE_SCOPE);
+      const cachedFileId = cachedUpload?.llmFileId;
       try {
         const uploaded = await uploader({
           data: resolved.bytes,
@@ -424,7 +502,10 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
           const id = msFileIdFromUrl(uploaded.imageUrl.url);
           if (id !== undefined && PROVIDER_ID_RE.test(id)) {
             if (uploadKey !== undefined && uploadKey === await imageUploadCacheKey(requester, variant, headers)) {
-              await this.writeCachedUpload(uploadKey, id, 'image-upload-cache');
+              if (id !== cachedFileId) {
+                await this.writeCachedUpload(uploadKey, id, IMAGE_UPLOAD_CACHE_SCOPE);
+              }
+              this.rememberUploadCache([rawUrl, uploaded.imageUrl.url], IMAGE_UPLOAD_CACHE_SCOPE, blobKey(uploadKey));
             }
             return uploaded;
           }
@@ -443,6 +524,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     };
     if (resolved.bytes.length <= IMAGE_MEMO_MAX_BYTES) {
       this.memoizeImage(cacheKey, part, resolved.bytes.length, resolved.mimeType);
+      this.rememberMemoKey([rawUrl, part.imageUrl.url], 'image', cacheKey);
     }
     return part;
   }
@@ -462,28 +544,49 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       requester,
       this.flags.enabled('image_format_conversion'),
     );
-    const validated = await validateImageDataUrl(part.imageUrl.url);
+    let effectivePart = part;
+    if (part.imageUrl.url.startsWith('blobref:')) {
+      const ref = parseMediaBlobRef(part.imageUrl.url);
+      if (ref === undefined || (ref.kind === 'mime' && !ref.mime.startsWith('image/'))) {
+        return { type: 'text', text: IMAGE_CORRUPT_TEXT };
+      }
+      signal?.throwIfAborted();
+      const scope = resolveBlobScope(this.agentScope?.current, ref);
+      const bytes = await this.blobs.get(scope, ref.hash);
+      signal?.throwIfAborted();
+      if (bytes === undefined) {
+        return { type: 'text', text: IMAGE_UNAVAILABLE_TEXT };
+      }
+      if (bytes.length === 0) {
+        return { type: 'text', text: IMAGE_CORRUPT_TEXT };
+      }
+      const sniffed = sniffMediaFromMagic(bytes);
+      const declaredMime = ref.kind === 'mime' ? ref.mime : sniffed?.kind === 'image' ? sniffed.mimeType : undefined;
+      if (declaredMime === undefined) {
+        return { type: 'text', text: IMAGE_CORRUPT_TEXT };
+      }
+      const normalizedMime = normalizeImageMime(resolveEffectiveImageMime(declaredMime, bytes));
+      effectivePart = {
+        type: 'image_url',
+        imageUrl: { ...part.imageUrl, url: `data:${normalizedMime};base64,${Buffer.from(bytes).toString('base64')}` },
+      };
+    }
+    const validated = await validateImageDataUrl(effectivePart.imageUrl.url);
     if (validated === null) {
-      if (isDataUrl(part.imageUrl.url)) {
-        throw new Error2(
-          ErrorCodes.REQUEST_INVALID,
-          parseCompleteImageDataUrl(part.imageUrl.url) === null
-            ? INVALID_IMAGE_DATA_URL_MESSAGE
-            : 'The image attachment has valid base64 data, but its image content could not be decoded. The image may be damaged or unsupported by the local decoder. Reattach it as PNG or JPEG and retry.',
-          { details: { mediaType: 'image', urlLength: part.imageUrl.url.length } },
-        );
+      if (isDataUrl(effectivePart.imageUrl.url)) {
+        return { type: 'text', text: IMAGE_CORRUPT_TEXT };
       }
       const unsupported = unsupportedImageMimeFromUrl(
-        part.imageUrl.url,
+        effectivePart.imageUrl.url,
         requester.model.providerType,
         policy.acceptedTypes,
       );
-      if (unsupported === null) return part;
+      if (unsupported === null) return effectivePart;
       return {
         type: 'text',
         text: buildUnsupportedImageNotice(
           unsupported,
-          part.imageUrl.url,
+          effectivePart.imageUrl.url,
           requester.model.providerType,
           policy.acceptedTypes,
         ),
@@ -496,7 +599,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       const url = `data:${mimeType};base64,${validated.base64}`;
       return url === part.imageUrl.url
         ? part
-        : { type: 'image_url', imageUrl: { ...part.imageUrl, url } };
+        : { type: 'image_url', imageUrl: { ...effectivePart.imageUrl, url } };
     }
     const source = validated.bytes;
     const resolved = await prepareImageBytes(
@@ -522,7 +625,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     const url = `data:${resolved.mimeType};base64,${resolved.bytes.toString('base64')}`;
     return url === part.imageUrl.url
       ? part
-      : { type: 'image_url', imageUrl: { ...part.imageUrl, url } };
+      : { type: 'image_url', imageUrl: { ...effectivePart.imageUrl, url } };
   }
 
   private memoedImage(cacheKey: string, policy: ResolvedImagePolicy): ContentPart | undefined {
@@ -556,6 +659,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     ref: DaemonFileRef,
     requester: ModelRequester,
     signal: AbortSignal | undefined,
+    rawUrl: string | undefined,
   ): Promise<ContentPart> {
     const model = requester.model;
     if (!model.capabilities.video_in) return videoTag(await this.displayPath(ref));
@@ -564,10 +668,37 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     const cacheKey = `${ref.fileId}\0${providerKey}${mode}`;
 
     const memoed = this.resolved.get(cacheKey);
-    if (memoed !== undefined) return this.memoedOutcome(ref, memoed);
+    if (memoed !== undefined) {
+      const expiresAtMs = this.videoMemoExpiresAt.get(cacheKey);
+      if (expiresAtMs !== undefined && Date.now() >= expiresAtMs) {
+        this.resolved.delete(cacheKey);
+        this.videoMemoExpiresAt.delete(cacheKey);
+      } else if (memoed.type === 'video_url' && memoed.videoUrl.url.startsWith('ms://')) {
+        const localState = await this.preflightLocalMedia(ref, signal);
+        if (localState === 'ok') {
+          return memoed;
+        }
+        this.resolved.delete(cacheKey);
+        this.videoMemoExpiresAt.delete(cacheKey);
+        void this.blobs.delete(CACHE_SCOPE, blobKey(cacheKey)).catch(() => undefined);
+        return localState === 'empty'
+          ? { type: 'text', text: VIDEO_CORRUPT_TEXT }
+          : videoTag(await this.displayPath(ref));
+      } else {
+        return this.memoedOutcome(ref, memoed);
+      }
+    }
 
-    const { part, memoize } = await this.resolveVideoUncached(ref, requester, cacheKey, signal);
-    if (memoize) this.resolved.set(cacheKey, part);
+    const { part, memoize, expiresAtMs } = await this.resolveVideoUncached(ref, requester, cacheKey, signal, rawUrl);
+    if (memoize) {
+      this.resolved.set(cacheKey, part);
+      if (expiresAtMs !== undefined) {
+        this.videoMemoExpiresAt.set(cacheKey, expiresAtMs);
+      } else {
+        this.videoMemoExpiresAt.delete(cacheKey);
+      }
+      this.rememberMemoKey([rawUrl, mediaPartUrl(part)], 'resolved', cacheKey);
+    }
     return part;
   }
 
@@ -580,18 +711,48 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     return { type: 'text', text: buildMediaPathTag(tag.kind, path) };
   }
 
+  private async preflightLocalMedia(
+    ref: DaemonFileRef,
+    signal: AbortSignal | undefined,
+  ): Promise<'ok' | 'missing' | 'empty'> {
+    signal?.throwIfAborted();
+    try {
+      const file = await this.files.get(ref.fileId);
+      return file.meta.size > 0 ? 'ok' : 'empty';
+    } catch {
+      signal?.throwIfAborted();
+    }
+    const opened = await this.mediaStore.open(ref.fileId);
+    if (opened !== undefined) return opened.size > 0 ? 'ok' : 'empty';
+    const canonical = await this.mediaStore.read(ref.fileId);
+    if (canonical === undefined) return 'missing';
+    return canonical.data.length > 0 ? 'ok' : 'empty';
+  }
+
   private async resolveVideoUncached(
     ref: DaemonFileRef,
     requester: ModelRequester,
     cacheKey: string,
     signal: AbortSignal | undefined,
-  ): Promise<{ part: ContentPart; memoize: boolean }> {
-    const cachedLlmFileId = await this.readCachedUpload(cacheKey);
-    if (cachedLlmFileId !== undefined) {
-      return {
-        part: { type: 'video_url', videoUrl: { url: `ms://${cachedLlmFileId}`, id: cachedLlmFileId } },
-        memoize: true,
-      };
+    rawUrl: string | undefined,
+  ): Promise<{ part: ContentPart; memoize: boolean; expiresAtMs?: number }> {
+    const cachedUpload = await this.readCachedUpload(cacheKey);
+    if (cachedUpload !== undefined) {
+      const localState = await this.preflightLocalMedia(ref, signal);
+      if (localState === 'ok') {
+        const url = `ms://${cachedUpload.llmFileId}`;
+        this.rememberUploadCache([rawUrl, url], CACHE_SCOPE, blobKey(cacheKey));
+        return {
+          part: { type: 'video_url', videoUrl: { url, id: cachedUpload.llmFileId } },
+          memoize: true,
+          expiresAtMs: cachedUpload.uploadedAtMs + UPLOAD_CACHE_TTL_MS,
+        };
+      }
+      void this.blobs.delete(CACHE_SCOPE, blobKey(cacheKey)).catch(() => undefined);
+      if (localState === 'empty') {
+        return { part: { type: 'text', text: VIDEO_CORRUPT_TEXT }, memoize: false };
+      }
+      return { part: videoTag(await this.displayPath(ref)), memoize: false };
     }
     const tagPath = await this.displayPath(ref);
 
@@ -604,6 +765,9 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     }
 
     const { bytes, filename } = source;
+    if (bytes.length === 0) {
+      return { part: { type: 'text', text: VIDEO_CORRUPT_TEXT }, memoize: false };
+    }
     const fileType = detectFileType(filename, bytes.subarray(0, MEDIA_SNIFF_BYTES), 'media');
     if (fileType.kind !== 'video') return { part: videoTag(tagPath), memoize: true };
     const mimeType = fileType.mimeType;
@@ -636,8 +800,14 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     try {
       const uploaded = await uploader({ data: bytes, mimeType, filename }, { signal });
       const llmFileId = uploaded.videoUrl.id ?? msFileIdFromUrl(uploaded.videoUrl.url);
-      if (llmFileId !== undefined) await this.writeCachedUpload(cacheKey, llmFileId);
-      return { part: uploaded, memoize: true };
+      let expiresAtMs: number | undefined;
+      if (llmFileId !== undefined) {
+        const uploadedAtMs = Date.now();
+        await this.writeCachedUpload(cacheKey, llmFileId, CACHE_SCOPE, uploadedAtMs);
+        expiresAtMs = uploadedAtMs + UPLOAD_CACHE_TTL_MS;
+        this.rememberUploadCache([rawUrl, uploaded.videoUrl.url, `ms://${llmFileId}`], CACHE_SCOPE, blobKey(cacheKey));
+      }
+      return { part: uploaded, memoize: true, expiresAtMs };
     } catch (error) {
       if (signal?.aborted) throw error;
       if (isVideoUploadAuthError(error)) throw error;
@@ -723,16 +893,46 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     await this.blobs.put(AV_COMPRESS_CACHE_SCOPE, blobKey(cacheKey), payload).catch(() => undefined);
   }
 
-  private async readCachedUpload(cacheKey: string, scope = CACHE_SCOPE): Promise<string | undefined> {
-    const data = await this.blobs.get(scope, blobKey(cacheKey)).catch(() => undefined);
+  private async readCachedUpload(
+    cacheKey: string,
+    scope = CACHE_SCOPE,
+  ): Promise<{ readonly llmFileId: string; readonly uploadedAtMs: number } | undefined> {
+    const hashed = blobKey(cacheKey);
+    if (this.evictedUploadCacheKeys.has(`${scope}\0${hashed}`)) return undefined;
+    const data = await this.blobs.get(scope, hashed).catch(() => undefined);
     if (data === undefined) return undefined;
-    const llmFileId = textDecoder.decode(data);
-    return PROVIDER_ID_RE.test(llmFileId) ? llmFileId : undefined;
+    try {
+      const parsed = JSON.parse(textDecoder.decode(data)) as { llmFileId?: unknown; uploadedAtMs?: unknown };
+      if (
+        typeof parsed?.llmFileId === 'string' &&
+        PROVIDER_ID_RE.test(parsed.llmFileId) &&
+        typeof parsed.uploadedAtMs === 'number' &&
+        Number.isFinite(parsed.uploadedAtMs)
+      ) {
+        const ageMs = Date.now() - parsed.uploadedAtMs;
+        if (ageMs >= -60_000 && ageMs < UPLOAD_CACHE_TTL_MS) {
+          return { llmFileId: parsed.llmFileId, uploadedAtMs: parsed.uploadedAtMs };
+        }
+      }
+    } catch {
+      void this.blobs.delete(scope, hashed).catch(() => undefined);
+      return undefined;
+    }
+    void this.blobs.delete(scope, hashed).catch(() => undefined);
+    return undefined;
   }
 
-  private async writeCachedUpload(cacheKey: string, llmFileId: string, scope = CACHE_SCOPE): Promise<void> {
+  private async writeCachedUpload(
+    cacheKey: string,
+    llmFileId: string,
+    scope = CACHE_SCOPE,
+    uploadedAtMs = Date.now(),
+  ): Promise<void> {
     if (!PROVIDER_ID_RE.test(llmFileId)) return;
-    await this.blobs.put(scope, blobKey(cacheKey), textEncoder.encode(llmFileId)).catch(
+    const hashed = blobKey(cacheKey);
+    this.evictedUploadCacheKeys.delete(`${scope}\0${hashed}`);
+    const payload = JSON.stringify({ llmFileId, uploadedAtMs });
+    await this.blobs.put(scope, hashed, textEncoder.encode(payload)).catch(
       () => undefined,
     );
   }
