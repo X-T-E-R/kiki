@@ -146,6 +146,7 @@ export class WsConnectionV1 implements BroadcastTarget {
   private readonly pendingAttaches = new Set<string>();
   private readonly replayHolds = new Set<string>();
   private readonly heldDuringReplay = new Map<string, EventEnvelope[]>();
+  private readonly heldControlResyncs = new Map<string, { reason: ResyncReason; currentSeq: number; epoch?: string }>();
   private readonly heldSessionBytes = new Map<string, number>();
   private heldBytes = 0;
   private lastFragmentProgressAt = 0;
@@ -276,20 +277,26 @@ export class WsConnectionV1 implements BroadcastTarget {
     }
   }
 
-  private takeReplayHeld(sid: string): EventEnvelope[] {
-    const held = this.heldDuringReplay.get(sid) ?? [];
+  private takeReplayHeld(sid: string): {
+    events: EventEnvelope[];
+    controlResync?: { reason: ResyncReason; currentSeq: number; epoch?: string };
+  } {
+    const events = this.heldDuringReplay.get(sid) ?? [];
+    const controlResync = this.heldControlResyncs.get(sid);
     this.discardReplayHeld(sid);
-    return held;
+    return { events, ...(controlResync !== undefined ? { controlResync } : {}) };
   }
 
   private discardReplayHeld(sid?: string): void {
     if (sid === undefined) {
       this.heldDuringReplay.clear();
+      this.heldControlResyncs.clear();
       this.heldSessionBytes.clear();
       this.heldBytes = 0;
       return;
     }
     this.heldDuringReplay.delete(sid);
+    this.heldControlResyncs.delete(sid);
     const removed = this.heldSessionBytes.get(sid) ?? 0;
     this.heldSessionBytes.delete(sid);
     this.heldBytes = Math.max(0, this.heldBytes - removed);
@@ -355,6 +362,36 @@ export class WsConnectionV1 implements BroadcastTarget {
   }
 
   sendControl(frame: unknown): void {
+    if (typeof frame === 'object' && frame !== null) {
+      const rec = frame as {
+        readonly type?: unknown;
+        readonly payload?: {
+          readonly session_id?: unknown;
+          readonly reason?: unknown;
+          readonly current_seq?: unknown;
+          readonly epoch?: unknown;
+        };
+      };
+      if (rec.type === 'resync_required' && typeof rec.payload?.session_id === 'string') {
+        const sid = rec.payload.session_id;
+        if (this.replayHolds.has(sid)) {
+          const prev = this.heldControlResyncs.get(sid);
+          const nextSeq =
+            typeof rec.payload.current_seq === 'number' && Number.isSafeInteger(rec.payload.current_seq)
+              ? rec.payload.current_seq
+              : 0;
+          const nextEpoch = typeof rec.payload.epoch === 'string' ? rec.payload.epoch : prev?.epoch;
+          const nextReason =
+            typeof rec.payload.reason === 'string' ? (rec.payload.reason as ResyncReason) : 'journal_gap';
+          this.heldControlResyncs.set(sid, {
+            reason: prev?.reason ?? nextReason,
+            currentSeq: Math.max(prev?.currentSeq ?? 0, nextSeq),
+            ...(nextEpoch !== undefined ? { epoch: nextEpoch } : {}),
+          });
+          return;
+        }
+      }
+    }
     this.sendImmediateFrame(frame);
   }
 
@@ -957,11 +994,23 @@ export class WsConnectionV1 implements BroadcastTarget {
       detachedTranscriptAgents,
     );
     this.replayHolds.delete(sid);
-    const held = this.takeReplayHeld(sid);
+    const { events: held, controlResync } = this.takeReplayHeld(sid);
     let seq = result.currentSeq;
+    let epoch = result.epoch;
     if (result.resyncRequired !== false) {
+      if (controlResync !== undefined && controlResync.currentSeq > seq) {
+        seq = controlResync.currentSeq;
+        if (controlResync.epoch !== undefined) epoch = controlResync.epoch;
+      }
       this.sendImmediateFrame(
-        buildResyncRequired(sid, result.resyncRequired as ResyncReason, result.currentSeq, result.epoch),
+        buildResyncRequired(sid, result.resyncRequired as ResyncReason, seq, epoch),
+      );
+      resyncRequired.push(sid);
+    } else if (controlResync !== undefined && controlResync.currentSeq > result.currentSeq) {
+      seq = controlResync.currentSeq;
+      if (controlResync.epoch !== undefined) epoch = controlResync.epoch;
+      this.sendImmediateFrame(
+        buildResyncRequired(sid, controlResync.reason, seq, epoch),
       );
       resyncRequired.push(sid);
     } else {
@@ -975,7 +1024,7 @@ export class WsConnectionV1 implements BroadcastTarget {
         deliver(envelope);
       }
     }
-    serverCursors[sid] = { seq, epoch: result.epoch };
+    serverCursors[sid] = { seq, epoch };
   }
 
   private async authorize(frame: InboundFrame): Promise<boolean> {

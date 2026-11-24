@@ -20,6 +20,8 @@ const WRITEV_MAX_IOVS = 64;
 const COMPACT_HYSTERESIS_FACTOR = 2;
 const DEFAULT_MAX_SESSION_PENDING_BYTES = 4 * 1024 * 1024;
 const DEFAULT_MAX_PROCESS_PENDING_BYTES = 64 * 1024 * 1024;
+const HEADER_ONLY_PENDING_BYTES = 64;
+const TRANSIENT_OPEN_RETRY_DELAYS_MS = [15, 30, 60, 120] as const;
 const BACKGROUND_FLUSH_COALESCE_MS = 25;
 const DEFAULT_STALE_JOURNAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const STALE_TEMP_JOURNAL_TTL_MS = 60 * 60 * 1000;
@@ -187,14 +189,18 @@ export interface JournalGapInput {
   readonly fromSeq?: number;
 }
 
-interface JournalHeaderLine {
-  kind: 'journal_header';
+interface JournalHeaderLineBase {
   version: number;
   epoch: string;
   created_at: number;
   last_seq?: number;
   attention_seq?: number;
+  has_gaps?: boolean;
 }
+
+type JournalHeaderLine =
+  | (JournalHeaderLineBase & { kind: 'journal_header' })
+  | (JournalHeaderLineBase & { kind: 'journal_header_v2' });
 
 interface JournalEventLine {
   kind: 'event';
@@ -234,6 +240,7 @@ const noopLogger: JournalLogger = { warn: () => {} };
 interface RetainedJournalEntry {
   buf: Buffer;
   bytes: number;
+  chargedPendingBytes: number;
   seq: number;
   fromSeq?: number;
   attentionSeq: number;
@@ -359,6 +366,7 @@ function extractRosterHintFromFields(
 }
 
 export class SessionEventJournal {
+  private _epoch: string;
   private _seq: number;
   private _attentionSeq: number;
   private pendingEntries: RetainedJournalEntry[] = [];
@@ -367,7 +375,10 @@ export class SessionEventJournal {
   private flushPromise: Promise<void> | undefined;
   private headerPending: boolean;
   private replaceOnFirstWrite: boolean;
-  private readonly transientOpenError: boolean;
+  private initPending: boolean;
+  private hasGapRecords: boolean;
+  private headerIsV2: boolean;
+  private tornTailTruncateTo: number | undefined;
   private hasWritten = false;
   private writeFailed = false;
   private writePoisoned = false;
@@ -408,30 +419,40 @@ export class SessionEventJournal {
   private constructor(
     private readonly filePath: string,
     private readonly logger: JournalLogger,
-    public readonly epoch: string,
+    epoch: string,
     lastSeq: number,
     attentionSeq: number,
     isFresh: boolean,
     replaceOnFirstWrite: boolean,
-    transientOpenError: boolean,
+    initPending: boolean,
+    hasGapRecords: boolean,
+    headerIsV2: boolean,
     private readonly capacity: number,
     private readonly maxRetainedBytes: number,
     options?: SessionEventJournalOptions,
   ) {
+    this._epoch = epoch;
     this._seq = lastSeq;
     this._attentionSeq = attentionSeq;
     this.durableSeq = lastSeq;
     this.durableAttentionSeq = attentionSeq;
-    this.headerPending = isFresh;
-    this.replaceOnFirstWrite = replaceOnFirstWrite;
-    this.transientOpenError = transientOpenError;
+    this.headerPending = isFresh && !initPending;
+    this.replaceOnFirstWrite = replaceOnFirstWrite && !initPending;
+    this.initPending = initPending;
+    this.hasGapRecords = hasGapRecords;
+    this.headerIsV2 = headerIsV2;
     this.maxSingleLineBytes = Math.min(
       MAX_SINGLE_JOURNAL_LINE_BYTES,
       options?.maxSingleLineBytes ?? MAX_SINGLE_JOURNAL_LINE_BYTES,
     );
     this.maxSessionPendingBytes = options?.maxSessionPendingBytes ?? DEFAULT_MAX_SESSION_PENDING_BYTES;
     this.maxProcessPendingBytes = options?.maxProcessPendingBytes ?? DEFAULT_MAX_PROCESS_PENDING_BYTES;
-    if (isFresh) this.retainedEntries = [];
+    if (isFresh && !initPending) this.retainedEntries = [];
+  }
+
+  /** Active journal epoch identifier. */
+  get epoch(): string {
+    return this._epoch;
   }
 
   /** Highest durable seq appended (0 if none). */
@@ -493,23 +514,47 @@ export class SessionEventJournal {
     let lastSeq = 0;
     let attentionSeq = 0;
     let sawAnyLine = false;
+    let hasGaps = false;
+    let headerIsV2 = false;
     let transientOpenError = false;
 
     try {
-      const watermark = await readWatermark(filePath);
+      const watermark = await readWatermarkWithTransientRetry(filePath);
       epoch = watermark.epoch;
       lastSeq = watermark.lastSeq;
       attentionSeq = watermark.attentionSeq;
       sawAnyLine = watermark.sawAnyLine;
+      hasGaps = watermark.hasGaps;
+      headerIsV2 = watermark.headerIsV2;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {
         transientOpenError = isTransientReadError(code);
         logger.warn(
           { filePath, err: String(error) },
-          'event journal unreadable; starting a fresh epoch',
+          transientOpenError
+            ? 'event journal temporarily locked; deferring initialization without overwriting existing file'
+            : 'event journal unreadable; starting a fresh epoch',
         );
       }
+    }
+
+    if (transientOpenError) {
+      return new SessionEventJournal(
+        filePath,
+        logger,
+        `ep_${ulid()}`,
+        0,
+        0,
+        true,
+        false,
+        true,
+        false,
+        false,
+        capacity,
+        maxRetainedBytes,
+        options,
+      );
     }
 
     if (epoch === undefined) {
@@ -523,8 +568,10 @@ export class SessionEventJournal {
         0,
         0,
         true,
-        sawAnyLine || transientOpenError,
-        transientOpenError,
+        sawAnyLine,
+        false,
+        false,
+        false,
         capacity,
         maxRetainedBytes,
         options,
@@ -539,6 +586,8 @@ export class SessionEventJournal {
       false,
       false,
       false,
+      hasGaps,
+      headerIsV2,
       capacity,
       maxRetainedBytes,
       options,
@@ -606,6 +655,7 @@ export class SessionEventJournal {
         const entry: RetainedJournalEntry = {
           buf: encoded.buffer,
           bytes: encoded.bytes,
+          chargedPendingBytes: 0,
           seq,
           attentionSeq,
           isGap: false,
@@ -711,9 +761,13 @@ export class SessionEventJournal {
     this.recordAlloc(encoded.bytes);
     if (encoded.bytes > this.statMaxLineBytes) this.statMaxLineBytes = encoded.bytes;
     const fitsBudget = this.capacity > 0 && encoded.bytes <= this.maxRetainedBytes;
+    if (fitsBudget) {
+      this.hasGapRecords = true;
+    }
     const entry: RetainedJournalEntry = {
       buf: encoded.buffer,
       bytes: encoded.bytes,
+      chargedPendingBytes: 0,
       seq,
       ...(gap.fromSeq !== undefined ? { fromSeq: gap.fromSeq } : {}),
       attentionSeq,
@@ -744,26 +798,63 @@ export class SessionEventJournal {
     };
   }
 
+  private availablePendingRoom(): number {
+    return Math.max(
+      0,
+      Math.min(
+        this.maxSessionPendingBytes - this.sessionPendingBytes,
+        this.maxProcessPendingBytes - processPendingBytes,
+      ),
+    );
+  }
+
   private admitEntry(entry: RetainedJournalEntry):
     | { readonly kind: 'admitted' }
     | { readonly kind: 'collapsed'; readonly gap: JournalGapEntry; readonly bytes: number; readonly collapsedIntoPrevious: boolean } {
     this.hasWritten = true;
-    const projectedBytes = entry.headerOnly === true ? 0 : entry.bytes;
+    if (entry.headerOnly === true) {
+      const tail = this.pendingEntries.at(-1);
+      if (tail !== undefined && tail.headerOnly === true) {
+        tail.fromSeq = tail.fromSeq ?? tail.seq;
+        tail.seq = Math.max(tail.seq, entry.seq);
+        tail.attentionSeq = Math.max(tail.attentionSeq, entry.attentionSeq);
+        if (entry.gap !== undefined) {
+          tail.gap = {
+            ...entry.gap,
+            fromSeq: tail.fromSeq,
+            seq: tail.seq,
+            attentionSeq: tail.attentionSeq,
+          };
+        }
+        this.writeFailed = false;
+        this.scheduleBackgroundFlush();
+        return { kind: 'admitted' };
+      }
+      const headerCharge = Math.min(HEADER_ONLY_PENDING_BYTES, this.availablePendingRoom());
+      entry.chargedPendingBytes = headerCharge;
+      this.pendingEntries.push(entry);
+      if (headerCharge > 0) this.adjustPendingBytes(headerCharge);
+      this.writeFailed = false;
+      this.scheduleBackgroundFlush();
+      return { kind: 'admitted' };
+    }
+
+    const projectedBytes = entry.bytes;
     const overBudget =
-      projectedBytes > 0 &&
-      (this.sessionPendingBytes + projectedBytes > this.maxSessionPendingBytes ||
-        processPendingBytes + projectedBytes > this.maxProcessPendingBytes);
+      this.sessionPendingBytes + projectedBytes > this.maxSessionPendingBytes ||
+      processPendingBytes + projectedBytes > this.maxProcessPendingBytes;
 
     if (overBudget) {
       this.statBackpressureCollapseCount += 1;
       const tail = this.pendingEntries.at(-1);
       if (tail !== undefined && tail.isGap && tail.gap?.reason === 'queue_backpressure') {
-        const mergedFromSeq = tail.fromSeq ?? tail.seq;
+        const mergedFromSeq = Math.min(tail.fromSeq ?? tail.seq, entry.fromSeq ?? entry.seq);
+        const mergedSeq = Math.max(tail.seq, entry.seq);
         const mergedAttention = Math.max(tail.attentionSeq, entry.attentionSeq);
         const mergedOmitted = tail.gap.omittedBytesAtLeast + entry.bytes;
         const mergedGap: JournalGapEntry = {
           kind: 'gap',
-          seq: entry.seq,
+          seq: mergedSeq,
           fromSeq: mergedFromSeq,
           attentionSeq: mergedAttention,
           eventType: '*',
@@ -775,54 +866,93 @@ export class SessionEventJournal {
         };
         const encoded = encodeGapLine(mergedGap);
         this.recordAlloc(encoded.bytes);
-        const oldBytes = tail.headerOnly === true ? 0 : tail.bytes;
         const fits = this.capacity > 0 && encoded.bytes <= this.maxRetainedBytes;
-        const nextBytes = fits ? encoded.bytes : 0;
-        this.adjustPendingBytes(nextBytes - oldBytes);
+        if (fits) this.hasGapRecords = true;
+        const oldCharge = tail.chargedPendingBytes;
+        if (oldCharge > 0) this.adjustPendingBytes(-oldCharge);
+        const desiredCharge = fits ? encoded.bytes : HEADER_ONLY_PENDING_BYTES;
+        const nextCharge = Math.min(desiredCharge, this.availablePendingRoom());
         tail.buf = encoded.buffer;
         tail.bytes = encoded.bytes;
-        tail.seq = entry.seq;
+        tail.chargedPendingBytes = nextCharge;
+        tail.seq = mergedSeq;
         tail.fromSeq = mergedFromSeq;
         tail.attentionSeq = mergedAttention;
         tail.gap = mergedGap;
         tail.headerOnly = !fits;
+        if (nextCharge > 0) this.adjustPendingBytes(nextCharge);
         this.writeFailed = false;
         this.scheduleBackgroundFlush();
         return { kind: 'collapsed', gap: mergedGap, bytes: encoded.bytes, collapsedIntoPrevious: true };
       }
+
       this.statGapCount += 1;
-      const bpGap: JournalGapEntry = {
-        kind: 'gap',
-        seq: entry.seq,
-        fromSeq: entry.fromSeq ?? entry.seq,
-        attentionSeq: entry.attentionSeq,
-        eventType: '*',
-        agentId: null,
-        routingKnown: false,
-        omittedBytesAtLeast: entry.bytes,
-        reason: 'queue_backpressure',
-        epoch: this.epoch,
+      let mergedFromSeq = entry.fromSeq ?? entry.seq;
+      let mergedSeq = entry.seq;
+      let mergedAttention = entry.attentionSeq;
+      let mergedOmitted = entry.bytes;
+
+      const makeGap = () => {
+        const bpGap: JournalGapEntry = {
+          kind: 'gap',
+          seq: mergedSeq,
+          fromSeq: mergedFromSeq,
+          attentionSeq: mergedAttention,
+          eventType: '*',
+          agentId: null,
+          routingKnown: false,
+          omittedBytesAtLeast: mergedOmitted,
+          reason: 'queue_backpressure',
+          epoch: this.epoch,
+        };
+        const encoded = encodeGapLine(bpGap);
+        this.recordAlloc(encoded.bytes);
+        return { bpGap, encoded };
       };
-      const encoded = encodeGapLine(bpGap);
-      this.recordAlloc(encoded.bytes);
-      const fits = this.capacity > 0 && encoded.bytes <= this.maxRetainedBytes;
+
+      let built = makeGap();
+      let fits = this.capacity > 0 && built.encoded.bytes <= this.maxRetainedBytes;
+      let desiredCharge = fits ? built.encoded.bytes : HEADER_ONLY_PENDING_BYTES;
+      while (
+        this.pendingEntries.length > 0 &&
+        desiredCharge > this.availablePendingRoom() &&
+        desiredCharge <= this.maxSessionPendingBytes &&
+        desiredCharge <= this.maxProcessPendingBytes
+      ) {
+        const popped = this.pendingEntries.pop()!;
+        if (popped.chargedPendingBytes > 0) {
+          this.adjustPendingBytes(-popped.chargedPendingBytes);
+        }
+        mergedFromSeq = Math.min(mergedFromSeq, popped.fromSeq ?? popped.seq);
+        mergedSeq = Math.max(mergedSeq, popped.seq);
+        mergedAttention = Math.max(mergedAttention, popped.attentionSeq);
+        mergedOmitted += popped.gap !== undefined ? popped.gap.omittedBytesAtLeast : popped.bytes;
+        built = makeGap();
+        fits = this.capacity > 0 && built.encoded.bytes <= this.maxRetainedBytes;
+        desiredCharge = fits ? built.encoded.bytes : HEADER_ONLY_PENDING_BYTES;
+      }
+
+      if (fits) this.hasGapRecords = true;
+      const bpCharge = Math.min(desiredCharge, this.availablePendingRoom());
       const bpEntry: RetainedJournalEntry = {
-        buf: encoded.buffer,
-        bytes: encoded.bytes,
-        seq: bpGap.seq,
-        fromSeq: bpGap.fromSeq,
-        attentionSeq: bpGap.attentionSeq,
+        buf: built.encoded.buffer,
+        bytes: built.encoded.bytes,
+        chargedPendingBytes: bpCharge,
+        seq: built.bpGap.seq,
+        fromSeq: built.bpGap.fromSeq,
+        attentionSeq: built.bpGap.attentionSeq,
         isGap: true,
-        gap: bpGap,
+        gap: built.bpGap,
         headerOnly: !fits,
       };
       this.pendingEntries.push(bpEntry);
-      if (fits) this.adjustPendingBytes(encoded.bytes);
+      if (bpCharge > 0) this.adjustPendingBytes(bpCharge);
       this.writeFailed = false;
       this.scheduleBackgroundFlush();
-      return { kind: 'collapsed', gap: bpGap, bytes: encoded.bytes, collapsedIntoPrevious: false };
+      return { kind: 'collapsed', gap: built.bpGap, bytes: built.encoded.bytes, collapsedIntoPrevious: false };
     }
 
+    entry.chargedPendingBytes = projectedBytes;
     this.pendingEntries.push(entry);
     if (projectedBytes > 0) this.adjustPendingBytes(projectedBytes);
     this.writeFailed = false;
@@ -842,7 +972,7 @@ export class SessionEventJournal {
   /** Read event entries with `seq > fromSeqExclusive`, capped at `limit`. */
   async readSince(fromSeqExclusive: number, limit: number): Promise<JournalEntry[]> {
     await this.flush();
-    if (this.writePoisoned || limit <= 0) return [];
+    if (this.writePoisoned || this.initPending || limit <= 0) return [];
     const out: JournalEntry[] = [];
     try {
       for await (const parsed of streamJournalRecordsForward(this.filePath, this.maxSingleLineBytes)) {
@@ -868,7 +998,7 @@ export class SessionEventJournal {
     limit: number,
   ): Promise<JournalReadRangeResult> {
     await this.flush();
-    if (this.writePoisoned) {
+    if (this.writePoisoned || this.initPending) {
       return { epoch: this.epoch, records: [], healthy: false, headerEpochValid: false };
     }
     if (limit <= 0 || upToSeqInclusive <= fromSeqExclusive) {
@@ -885,7 +1015,7 @@ export class SessionEventJournal {
           healthy = false;
           continue;
         }
-        if (parsed.kind === 'journal_header') {
+        if (parsed.kind === 'journal_header' || parsed.kind === 'journal_header_v2') {
           if (headerEpoch === undefined) {
             headerEpoch = parsed.epoch;
             runningAttentionSeq = Math.max(runningAttentionSeq, nonNegativeSafeInt(parsed.attention_seq));
@@ -943,7 +1073,7 @@ export class SessionEventJournal {
       (!this.writePoisoned && this.pendingEntries.length > 0) ||
       (this.closing &&
         !this.writePoisoned &&
-        ((this.headerPending && !this.transientOpenError) ||
+        ((this.headerPending && !this.initPending) ||
           (this.dirtySinceSync && !this.closeSyncFailed) ||
           (this.hasWritten && this.needsCompaction() && !this.compactFailed)))
     ) {
@@ -1025,12 +1155,13 @@ export class SessionEventJournal {
 
   private header(): JournalHeaderLine {
     return {
-      kind: 'journal_header',
+      kind: this.hasGapRecords ? 'journal_header_v2' : 'journal_header',
       version: JOURNAL_VERSION,
       epoch: this.epoch,
       created_at: this.createdAt,
       last_seq: this.durableSeq,
       attention_seq: this.durableAttentionSeq,
+      ...(this.hasGapRecords ? { has_gaps: true } : {}),
     };
   }
 
@@ -1066,8 +1197,16 @@ export class SessionEventJournal {
           const end = headBuf.subarray(0, bytesRead).indexOf(10);
           const headerLen = end < 0 ? bytesRead : end + 1;
           this.headerBytes = headerLen;
-          const header = parseJournalLine(headBuf.subarray(0, end < 0 ? bytesRead : end).toString('utf8'));
-          if (header?.kind === 'journal_header') this.createdAt = header.created_at;
+          if (end >= 0) {
+            const header = parseJournalLine(headBuf.subarray(0, end).toString('utf8'));
+            if (header?.kind === 'journal_header' || header?.kind === 'journal_header_v2') {
+              this.createdAt = header.created_at;
+              if (header.kind === 'journal_header_v2') {
+                this.headerIsV2 = true;
+                this.hasGapRecords = true;
+              }
+            }
+          }
         }
         let linesOnDisk = 0;
         const effectiveMaxLineBytes = Math.min(this.maxSingleLineBytes, this.maxRetainedBytes);
@@ -1082,11 +1221,13 @@ export class SessionEventJournal {
           if (line.kind === 'event') {
             if (line.bytes > effectiveMaxLineBytes) {
               this.compactPending = true;
+              this.hasGapRecords = true;
               const gap = projectOversizedEventToGap(line.seq, line.attentionSeq, line.envelope, line.bytes, this.epoch);
               const gapBuf = encodeGapLine(gap);
               entry = {
                 buf: gapBuf.buffer,
                 bytes: gapBuf.bytes,
+                chargedPendingBytes: 0,
                 seq: gap.seq,
                 attentionSeq: gap.attentionSeq,
                 isGap: true,
@@ -1096,6 +1237,7 @@ export class SessionEventJournal {
               entry = {
                 buf: line.buf,
                 bytes: line.bytes,
+                chargedPendingBytes: 0,
                 seq: line.seq,
                 attentionSeq: line.attentionSeq,
                 isGap: false,
@@ -1103,11 +1245,13 @@ export class SessionEventJournal {
             }
           } else {
             if (line.oversizedSource) this.compactPending = true;
+            this.hasGapRecords = true;
             const gapBuf = line.buf ?? encodeGapLine(line.gap).buffer;
             const gapBytes = gapBuf.byteLength;
             entry = {
               buf: gapBuf,
               bytes: gapBytes,
+              chargedPendingBytes: 0,
               seq: line.gap.seq,
               ...(line.gap.fromSeq !== undefined ? { fromSeq: line.gap.fromSeq } : {}),
               attentionSeq: line.gap.attentionSeq,
@@ -1156,9 +1300,21 @@ export class SessionEventJournal {
             let end = activeLen;
             if (!checkedTrailingByte) {
               checkedTrailingByte = true;
-              this.appendSeparator = activeBuf[end - 1] !== 10;
-              this.compactPending ||= this.appendSeparator;
-              if (!this.appendSeparator) end -= 1;
+              if (activeBuf[end - 1] !== 10) {
+                this.compactPending = true;
+                const lastLfInChunk = activeBuf.subarray(0, end).lastIndexOf(10);
+                if (lastLfInChunk >= 0) {
+                  this.tornTailTruncateTo = windowStart + lastLfInChunk + 1;
+                  end = lastLfInChunk;
+                } else {
+                  const earlierLf = await findLastNewlineBefore(file, windowStart);
+                  this.tornTailTruncateTo = earlierLf >= 0 ? earlierLf + 1 : 0;
+                  windowEnd = Math.max(earlierLf, 0);
+                  continue;
+                }
+              } else {
+                end -= 1;
+              }
             }
 
             let nextWindowEnd = windowStart;
@@ -1182,7 +1338,7 @@ export class SessionEventJournal {
                 const parsed = parseJournalLine(rawSlice.toString('utf8'));
                 if (parsed === undefined) {
                   admitDiskLine({ kind: 'corrupt', prevEnd: 0 });
-                } else if (parsed.kind === 'journal_header') {
+                } else if (parsed.kind === 'journal_header' || parsed.kind === 'journal_header_v2') {
                   if (admitDiskLine({ kind: 'journal_header', header: parsed, prevEnd: 0 }) === 'stop') {
                     stopped = true;
                     break;
@@ -1266,9 +1422,143 @@ export class SessionEventJournal {
   private releaseBatchPendingBytes(batch: readonly RetainedJournalEntry[]): void {
     let released = 0;
     for (const entry of batch) {
-      if (entry.headerOnly !== true) released += entry.bytes;
+      if (entry.chargedPendingBytes > 0) {
+        released += entry.chargedPendingBytes;
+        entry.chargedPendingBytes = 0;
+      }
     }
     if (released > 0) this.adjustPendingBytes(-released);
+  }
+
+  private async reconcilePendingInit(): Promise<boolean> {
+    if (!this.initPending) return true;
+    try {
+      const watermark = await readWatermark(this.filePath);
+      if (watermark.epoch === undefined) {
+        this.initPending = false;
+        this.retainedEntries = [];
+        if (watermark.sawAnyLine) {
+          this.replaceOnFirstWrite = true;
+          this.headerPending = true;
+        } else {
+          this.headerPending = true;
+        }
+        return true;
+      }
+      if (this._seq === 0 && this.pendingEntries.length === 0) {
+        this._epoch = watermark.epoch;
+        this._seq = watermark.lastSeq;
+        this._attentionSeq = watermark.attentionSeq;
+        this.durableSeq = watermark.lastSeq;
+        this.durableAttentionSeq = watermark.attentionSeq;
+        this.hasGapRecords = watermark.hasGaps;
+        this.headerIsV2 = watermark.headerIsV2;
+        this.initPending = false;
+        return true;
+      }
+      this.initPending = false;
+      this.writePoisoned = true;
+      this.writeFailed = true;
+      const dropped = this.pendingEntries.splice(0);
+      this.releaseBatchPendingBytes(dropped);
+      const log = this.logger.error ?? this.logger.warn;
+      log(
+        { filePath: this.filePath, existingEpoch: watermark.epoch, existingSeq: watermark.lastSeq },
+        'event journal recovered intact file after transient lock; preserving existing file and pausing provisional writer',
+      );
+      return false;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') {
+        this.initPending = false;
+        this.headerPending = true;
+        this.retainedEntries = [];
+        return true;
+      }
+      this.writeFailed = true;
+      this.statWriteFailureCount += 1;
+      this.logger.warn(
+        { filePath: this.filePath, err: String(error) },
+        'event journal still locked during deferred init; existing file preserved untouched',
+      );
+      return false;
+    }
+  }
+
+  private wouldCrossHotCompaction(batch: readonly RetainedJournalEntry[]): boolean {
+    if (this.retainedEntries === undefined || this.capacity === 0 || this.maxRetainedBytes === 0) return false;
+    if (this.headerPending || this.replaceOnFirstWrite || this.tornTailTruncateTo !== undefined) return false;
+    let addedBytes = 0;
+    let addedCount = 0;
+    for (const entry of batch) {
+      if (entry.headerOnly === true) return false;
+      addedBytes += entry.bytes;
+      addedCount += 1;
+    }
+    if (addedCount === 0) return false;
+    const factor = COMPACT_HYSTERESIS_FACTOR;
+    return (
+      this.diskEventCount + addedCount > this.capacity * factor ||
+      this.diskEventBytes + addedBytes > this.maxRetainedBytes * factor ||
+      this.diskFileBytes + addedBytes > this.headerBytes + this.maxRetainedBytes * factor
+    );
+  }
+
+  private async compactWithBatch(batch: RetainedJournalEntry[]): Promise<boolean> {
+    const retained = this.retainedEntries!;
+    const addedRetainable = batch.filter((e) => e.headerOnly !== true);
+    const trimmed = trimRetainedEntries(
+      addedRetainable.length > 0 ? retained.concat(addedRetainable) : retained,
+      this.capacity,
+      this.maxRetainedBytes,
+    );
+    let nextDurableSeq = this.durableSeq;
+    let nextDurableAttentionSeq = this.durableAttentionSeq;
+    let batchLineBytes = 0;
+    for (const entry of batch) {
+      nextDurableSeq = Math.max(nextDurableSeq, entry.seq);
+      nextDurableAttentionSeq = Math.max(nextDurableAttentionSeq, entry.attentionSeq);
+      if (entry.headerOnly !== true) batchLineBytes += entry.bytes;
+    }
+    const prevDurableSeq = this.durableSeq;
+    const prevDurableAttentionSeq = this.durableAttentionSeq;
+    this.durableSeq = nextDurableSeq;
+    this.durableAttentionSeq = nextDurableAttentionSeq;
+    try {
+      await mkdir(dirname(this.filePath), { recursive: true });
+      const headerBuf = this.encodeHeader();
+      const bufs: Buffer[] = [headerBuf];
+      for (const entry of trimmed.entries) bufs.push(entry.buf);
+      const written = await replaceJournalBuffers(this.filePath, bufs, (b) => this.recordBatchWrite(b));
+      this.statCompactedTempBytes += written;
+      this.statCompactionCount += 1;
+      this.statValidBoundedLineBytes += batchLineBytes;
+      this.headerIsV2 = this.hasGapRecords;
+      this.headerPending = false;
+      this.replaceOnFirstWrite = false;
+      this.appendSeparator = false;
+      this.tornTailTruncateTo = undefined;
+      this.compactPending = false;
+      this.dirtySinceSync = false;
+      this.retainedEntries = trimmed.entries;
+      this.retainedBytes = trimmed.bytes;
+      this.diskEventCount = trimmed.entries.length;
+      this.diskEventBytes = trimmed.bytes;
+      this.diskFileBytes = written;
+      this.releaseBatchPendingBytes(batch);
+      return true;
+    } catch (error) {
+      this.durableSeq = prevDurableSeq;
+      this.durableAttentionSeq = prevDurableAttentionSeq;
+      this.compactPending = true;
+      this.compactFailed = true;
+      this.statCompactFailureCount += 1;
+      this.logger.warn(
+        { filePath: this.filePath, err: String(error) },
+        'event journal direct batch compaction failed; falling back to append',
+      );
+      return false;
+    }
   }
 
   private async flushOnce(): Promise<void> {
@@ -1278,8 +1568,13 @@ export class SessionEventJournal {
     if (this.pendingEntries.length === 0 && this.closing && !this.hasWritten && !this.headerPending) {
       return;
     }
-    if (this.pendingEntries.length === 0 && this.closing && this.transientOpenError && !this.hasWritten) {
+    if (this.pendingEntries.length === 0 && this.closing && this.initPending && !this.hasWritten) {
       return;
+    }
+
+    if (this.initPending) {
+      const ready = await this.reconcilePendingInit();
+      if (!ready) return;
     }
 
     try {
@@ -1294,7 +1589,7 @@ export class SessionEventJournal {
       return;
     }
 
-    if (this.pendingEntries.length === 0 && this.headerPending && this.closing && !this.transientOpenError) {
+    if (this.pendingEntries.length === 0 && this.headerPending && this.closing) {
       const ok = await this.writeHeaderOnlyInitial();
       if (!ok) return;
     }
@@ -1302,6 +1597,18 @@ export class SessionEventJournal {
     while (this.pendingEntries.length > 0 && !this.writePoisoned) {
       const batch = this.takeNextSubBatch();
       if (batch.length === 0) break;
+      const needsV2HeaderUpgrade =
+        !this.headerPending &&
+        !this.headerIsV2 &&
+        (this.hasGapRecords || batch.some((entry) => entry.isGap && entry.headerOnly !== true));
+      if (needsV2HeaderUpgrade) {
+        this.hasGapRecords = true;
+        this.replaceOnFirstWrite = true;
+      }
+      if (!needsV2HeaderUpgrade && this.wouldCrossHotCompaction(batch)) {
+        const compacted = await this.compactWithBatch(batch);
+        if (compacted) continue;
+      }
       const outcome = await this.flushSubBatch(batch);
       if (outcome !== 'ok') {
         return;
@@ -1341,7 +1648,9 @@ export class SessionEventJournal {
         const written = await replaceJournalBuffers(this.filePath, [headerBuf], (b) => this.recordBatchWrite(b));
         this.replaceOnFirstWrite = false;
         this.headerPending = false;
+        this.headerIsV2 = this.hasGapRecords;
         this.appendSeparator = false;
+        this.tornTailTruncateTo = undefined;
         this.dirtySinceSync = false;
         this.diskFileBytes = written;
         this.diskEventBytes = 0;
@@ -1358,6 +1667,7 @@ export class SessionEventJournal {
         await file.close();
       }
       this.headerPending = false;
+      this.headerIsV2 = this.hasGapRecords;
       this.appendSeparator = false;
       this.dirtySinceSync = true;
       return true;
@@ -1397,7 +1707,9 @@ export class SessionEventJournal {
         this.statValidBoundedLineBytes += batchLineBytes;
         this.replaceOnFirstWrite = false;
         this.headerPending = false;
+        this.headerIsV2 = this.hasGapRecords;
         this.appendSeparator = false;
+        this.tornTailTruncateTo = undefined;
         this.dirtySinceSync = false;
         this.compactPending = false;
         this.retainedEntries = nextRetained.entries;
@@ -1466,6 +1778,10 @@ export class SessionEventJournal {
       beforeSize = Number(beforeStat.size);
       beforeDev = beforeStat.dev;
       beforeIno = beforeStat.ino;
+      if (this.tornTailTruncateTo !== undefined && beforeSize > this.tornTailTruncateTo) {
+        await file.truncate(this.tornTailTruncateTo);
+        beforeSize = this.tornTailTruncateTo;
+      }
 
       const written = await writevBuffers(file, buffers, beforeSize, (b) => this.recordBatchWrite(b));
       if (written !== expectedWriteBytes) {
@@ -1532,8 +1848,12 @@ export class SessionEventJournal {
 
     if (!writeCompleted) return 'poisoned';
 
+    if (this.headerPending) {
+      this.headerIsV2 = this.hasGapRecords;
+    }
     this.headerPending = false;
     this.appendSeparator = false;
+    this.tornTailTruncateTo = undefined;
     this.dirtySinceSync = true;
     this.statAppendedBytes += expectedWriteBytes;
     this.statValidBoundedLineBytes += batchLineBytes;
@@ -1561,8 +1881,11 @@ export class SessionEventJournal {
 
   private async compactNow(isCloseConvergence: boolean): Promise<boolean> {
     try {
+      const trimmed = trimRetainedEntries(this.retainedEntries!, this.capacity, this.maxRetainedBytes);
+      this.retainedEntries = trimmed.entries;
+      this.retainedBytes = trimmed.bytes;
       const headerBuf = this.encodeHeader();
-      const retained = this.retainedEntries!;
+      const retained = this.retainedEntries;
       const bufs: Buffer[] = [headerBuf];
       for (const entry of retained) bufs.push(entry.buf);
       const written = await replaceJournalBuffers(this.filePath, bufs, (b) => this.recordBatchWrite(b));
@@ -1573,6 +1896,8 @@ export class SessionEventJournal {
         this.statCompactedTempBytes += written;
         this.statCompactionCount += 1;
       }
+      this.headerIsV2 = this.hasGapRecords;
+      this.tornTailTruncateTo = undefined;
       this.diskEventCount = retained.length;
       this.diskEventBytes = this.retainedBytes;
       this.diskFileBytes = written;
@@ -1917,6 +2242,39 @@ export function sessionJournalPath(eventsDir: string, sessionId: string): string
   return join(eventsDir, `${sessionId}.jsonl`);
 }
 
+/**
+ * Remove derived v2 gap-bearing event journals from `<eventsDir>` before an
+ * intentional binary downgrade, without ever touching canonical session wires.
+ */
+export async function prepareEventsDirForDowngrade(
+  eventsDir: string,
+  logger: JournalLogger = noopLogger,
+): Promise<number> {
+  let entries: string[];
+  try {
+    entries = await readdir(eventsDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw error;
+  }
+  let removed = 0;
+  for (const name of entries) {
+    if (!name.endsWith('.jsonl')) continue;
+    const fullPath = join(eventsDir, name);
+    try {
+      const wm = await readWatermark(fullPath);
+      if (!wm.headerIsV2 && !wm.hasGaps) continue;
+      await rm(fullPath, { force: true });
+      removed += 1;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.warn({ filePath: fullPath, err: String(error) }, 'event journal downgrade cleanup failed');
+      }
+    }
+  }
+  return removed;
+}
+
 function nonNegativeSafeInt(value: unknown): number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
@@ -1962,7 +2320,7 @@ function parseJournalLine(raw: string): ParsedDiskLine | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
   const rec = value as Record<string, unknown>;
   const kind = rec['kind'];
-  if (kind === 'journal_header') {
+  if (kind === 'journal_header' || kind === 'journal_header_v2') {
     const epoch = rec['epoch'];
     const version = rec['version'];
     if (typeof epoch !== 'string' || epoch.length === 0) return undefined;
@@ -2041,7 +2399,7 @@ function projectStreamingMetaToParsedLine(
   lineBytes: number,
 ): ParsedDiskLine | undefined {
   if (meta === undefined) return undefined;
-  if (meta.kind === 'journal_header') {
+  if (meta.kind === 'journal_header' || meta.kind === 'journal_header_v2') {
     if (typeof meta.epoch !== 'string' || meta.epoch.length === 0) return undefined;
     if (
       meta.version !== undefined &&
@@ -2050,12 +2408,13 @@ function projectStreamingMetaToParsedLine(
       return undefined;
     }
     return {
-      kind: 'journal_header',
-      version: meta.version ?? 1,
+      kind: meta.kind,
+      version: meta.version ?? (meta.kind === 'journal_header_v2' ? 2 : 1),
       epoch: meta.epoch,
       created_at: typeof meta.created_at === 'number' ? meta.created_at : 0,
       ...(meta.last_seq !== undefined ? { last_seq: meta.last_seq } : {}),
       ...(meta.attention_seq !== undefined ? { attention_seq: meta.attention_seq } : {}),
+      ...(meta.kind === 'journal_header_v2' ? { has_gaps: true } : {}),
     };
   }
   if (meta.kind === 'event') {
@@ -2207,7 +2566,7 @@ async function readSingleLineReverse(
     const rawBuf = await readExactRange(file, lineStart, lineLen);
     const parsed = parseJournalLine(rawBuf.toString('utf8'));
     if (parsed === undefined) return { kind: 'corrupt', prevEnd };
-    if (parsed.kind === 'journal_header') {
+    if (parsed.kind === 'journal_header' || parsed.kind === 'journal_header_v2') {
       return { kind: 'journal_header', header: parsed, prevEnd };
     }
     const withLf = Buffer.allocUnsafe(lineLen + 1);
@@ -2238,7 +2597,7 @@ async function readSingleLineReverse(
 
   const parsed = await parseOversizedLineRange(file, lineStart, end);
   if (parsed === undefined) return { kind: 'corrupt', prevEnd };
-  if (parsed.kind === 'journal_header') {
+  if (parsed.kind === 'journal_header' || parsed.kind === 'journal_header_v2') {
     return { kind: 'journal_header', header: parsed, prevEnd };
   }
   if (parsed.kind === 'gap') {
@@ -2282,7 +2641,7 @@ async function* streamJournalRecordsForward(
         lineChunks = [];
         lineLen = 0;
         if (finished === undefined) return { kind: 'corrupt' };
-        if (finished.kind === 'journal_header') return finished;
+        if (finished.kind === 'journal_header' || finished.kind === 'journal_header_v2') return finished;
         if (finished.kind === 'gap') return finished.gap;
         return finished;
       }
@@ -2292,7 +2651,7 @@ async function* streamJournalRecordsForward(
       lineLen = 0;
       const parsed = parseJournalLine(buf.toString('utf8'));
       if (parsed === undefined) return { kind: 'corrupt' };
-      if (parsed.kind === 'journal_header') return parsed;
+      if (parsed.kind === 'journal_header' || parsed.kind === 'journal_header_v2') return parsed;
       if (parsed.kind === 'gap') return parsed.gap;
       return parsed;
     };
@@ -2337,24 +2696,69 @@ async function* streamJournalRecordsForward(
         start = nl + 1;
       }
     }
-    const trailing = flushCurrentLine();
-    if (trailing !== undefined) yield trailing;
+    if (lineLen > 0 || oversizedParser !== undefined) {
+      yield { kind: 'corrupt' };
+    }
   } finally {
     await file.close();
   }
 }
 
-async function readWatermark(filePath: string): Promise<{
+async function findLastNewlineBefore(file: FileHandle, endExclusive: number): Promise<number> {
+  const chunk = Buffer.allocUnsafe(WATERMARK_READ_BYTES);
+  let pos = endExclusive;
+  while (pos > 0) {
+    const start = Math.max(0, pos - WATERMARK_READ_BYTES);
+    const len = pos - start;
+    let got = 0;
+    while (got < len) {
+      const res = await file.read(chunk, got, len - got, start + got);
+      if (res.bytesRead === 0) return -1;
+      got += res.bytesRead;
+    }
+    const idx = chunk.subarray(0, got).lastIndexOf(10);
+    if (idx >= 0) return start + idx;
+    pos = start;
+  }
+  return -1;
+}
+
+interface ReadWatermarkResult {
   epoch: string | undefined;
   lastSeq: number;
   attentionSeq: number;
   sawAnyLine: boolean;
-}> {
+  hasGaps: boolean;
+  headerIsV2: boolean;
+}
+
+async function readWatermarkWithTransientRetry(filePath: string): Promise<ReadWatermarkResult> {
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await readWatermark(filePath);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!isTransientReadError(code) || attempt >= TRANSIENT_OPEN_RETRY_DELAYS_MS.length) {
+        throw error;
+      }
+      const delayMs = TRANSIENT_OPEN_RETRY_DELAYS_MS[attempt]!;
+      attempt += 1;
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, delayMs);
+      });
+    }
+  }
+}
+
+async function readWatermark(filePath: string): Promise<ReadWatermarkResult> {
   const file = await open(filePath, 'r');
-  let fast: { epoch: string; lastSeq: number; attentionSeq: number; sawAnyLine: boolean } | undefined;
+  let fast: ReadWatermarkResult | undefined;
   try {
     const { size } = await file.stat();
-    if (size === 0) return { epoch: undefined, lastSeq: 0, attentionSeq: 0, sawAnyLine: false };
+    if (size === 0) {
+      return { epoch: undefined, lastSeq: 0, attentionSeq: 0, sawAnyLine: false, hasGaps: false, headerIsV2: false };
+    }
     const headSize = Math.min(size, WATERMARK_READ_BYTES);
     const head = Buffer.allocUnsafe(headSize);
     const headRead = await file.read(head, 0, headSize, 0);
@@ -2363,11 +2767,11 @@ async function readWatermark(filePath: string): Promise<{
     const header =
       headerEnd >= 0
         ? parseJournalLine(headSlice.subarray(0, headerEnd).toString('utf8'))
-        : size <= headRead.bytesRead
-          ? parseJournalLine(headSlice.toString('utf8'))
-          : undefined;
+        : undefined;
 
-    if (header?.kind === 'journal_header') {
+    if (header?.kind === 'journal_header' || header?.kind === 'journal_header_v2') {
+      const headerIsV2 = header.kind === 'journal_header_v2';
+      let hasGaps = headerIsV2 || header.has_gaps === true;
       const tailStart = Math.max(0, size - WATERMARK_READ_BYTES);
       const tailLen = size - tailStart;
       const tail = Buffer.allocUnsafe(tailLen);
@@ -2384,6 +2788,18 @@ async function readWatermark(filePath: string): Promise<{
       let prevSeq = Number.POSITIVE_INFINITY;
       let valid = true;
       let reverseResumeOffset = size;
+
+      if (end > 0 && tail[end - 1] !== 10) {
+        const lastLf = tail.lastIndexOf(10, end - 1);
+        if (lastLf >= 0) {
+          end = lastLf + 1;
+          reverseResumeOffset = tailStart + end;
+        } else {
+          const earlierLf = await findLastNewlineBefore(file, tailStart);
+          end = 0;
+          reverseResumeOffset = Math.max(earlierLf, 0);
+        }
+      }
 
       while (end > 0) {
         if (tail[end - 1] === 10) end -= 1;
@@ -2417,6 +2833,7 @@ async function readWatermark(filePath: string): Promise<{
             attentionResolved = true;
           }
         } else if (parsed.kind === 'gap') {
+          hasGaps = true;
           if (parsed.gap.seq > prevSeq) {
             valid = false;
             break;
@@ -2471,6 +2888,7 @@ async function readWatermark(filePath: string): Promise<{
               attentionResolved = true;
             }
           } else {
+            hasGaps = true;
             if (line.gap.seq > prevSeq) {
               valid = false;
               break;
@@ -2496,6 +2914,8 @@ async function readWatermark(filePath: string): Promise<{
           lastSeq: Math.max(lastSeq, savedSeq),
           attentionSeq: Math.max(attentionSeq, savedAttentionSeq),
           sawAnyLine: true,
+          hasGaps,
+          headerIsV2,
         };
       }
     }
@@ -2508,11 +2928,15 @@ async function readWatermark(filePath: string): Promise<{
   let lastSeq = 0;
   let attentionSeq = 0;
   let sawAnyLine = false;
+  let hasGaps = false;
+  let headerIsV2 = false;
   for await (const parsed of streamJournalRecordsForward(filePath, MAX_SINGLE_JOURNAL_LINE_BYTES)) {
     sawAnyLine = true;
     if (parsed.kind === 'corrupt') continue;
-    if (parsed.kind === 'journal_header' && epoch === undefined) {
+    if ((parsed.kind === 'journal_header' || parsed.kind === 'journal_header_v2') && epoch === undefined) {
       epoch = parsed.epoch;
+      headerIsV2 = parsed.kind === 'journal_header_v2';
+      hasGaps = hasGaps || headerIsV2 || parsed.has_gaps === true;
       lastSeq = Math.max(lastSeq, nonNegativeSafeInt(parsed.last_seq));
       attentionSeq = Math.max(attentionSeq, nonNegativeSafeInt(parsed.attention_seq));
       continue;
@@ -2523,9 +2947,10 @@ async function readWatermark(filePath: string): Promise<{
       continue;
     }
     if (parsed.kind === 'gap') {
+      hasGaps = true;
       lastSeq = Math.max(lastSeq, parsed.seq);
       attentionSeq = resolveRecordAttention(parsed.seq, parsed.attentionSeq, parsed.eventType, attentionSeq);
     }
   }
-  return { epoch, lastSeq, attentionSeq, sawAnyLine };
+  return { epoch, lastSeq, attentionSeq, sawAnyLine, hasGaps, headerIsV2 };
 }

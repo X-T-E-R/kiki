@@ -2112,4 +2112,130 @@ describe('WsConnectionV1 cursor replay ordering', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('holds and reconciles live resync_required gap controls arriving during async WS replay hold', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kap-ws-hold-resync-'));
+    try {
+      const listeners = new Set<(event: unknown) => void>();
+      const mainBus = {
+        subscribe: (fn: (event: unknown) => void) => {
+          listeners.add(fn);
+          return { dispose: () => { listeners.delete(fn); } };
+        },
+        emit: (event: unknown) => {
+          for (const fn of listeners) fn(event);
+        },
+      };
+      const mainAgent = {
+        id: 'main',
+        accessor: { get: (token: unknown) => (token === IEventBus ? mainBus : undefined) },
+      };
+      const sessionHandle = {
+        accessor: {
+          get: (token: unknown) => {
+            if (token === IAgentLifecycleService) {
+              return { list: () => [mainAgent], onDidCreate: () => ({ dispose: () => {} }), onDidDispose: () => ({ dispose: () => {} }) };
+            }
+            if (token === ISessionActivityView) {
+              return { state: () => ({ busy: false, executing: false, mainTurnActive: false, pendingInteraction: false }), onDidChange: () => ({ dispose: () => {} }) };
+            }
+            if (token === ISessionInteractionService) {
+              return {
+                listPending: () => [],
+                onDidChangePending: () => ({ dispose: () => {} }),
+                onDidResolve: () => ({ dispose: () => {} }),
+                acquireConsumer: () => {},
+                releaseConsumer: () => {},
+              };
+            }
+            return undefined;
+          },
+        },
+      };
+      const core = {
+        accessor: {
+          get: (token: unknown) => {
+            if (token === IEventService) return { subscribe: () => ({ dispose: () => {} }) };
+            if (token === ISessionManager) {
+              return {
+                get: (sid: string) => (sid === 's_hold' ? sessionHandle : undefined),
+                acquire: async (sid: string) => (sid === 's_hold' ? { handle: sessionHandle, dispose: async () => {} } : undefined),
+              };
+            }
+            return undefined;
+          },
+        },
+      };
+      const broadcaster = new SessionEventBroadcaster({ eventsDir: dir, core: core as never });
+
+      const cursor0 = await broadcaster.getCursor('s_hold');
+      mainBus.emit({ type: 'turn.started', turnId: 1 });
+      await broadcaster.flushSessionJournal('s_hold');
+      const cursor1 = await broadcaster.getCursor('s_hold');
+      expect(cursor1.seq).toBe(1);
+
+      let releaseReplay!: () => void;
+      const replayEntered = new Promise<void>((resolve) => {
+        const origGetBufferedSince = broadcaster.getBufferedSince.bind(broadcaster);
+        vi.spyOn(broadcaster, 'getBufferedSince').mockImplementationOnce(async (...args) => {
+          const result = await origGetBufferedSince(...args);
+          resolve();
+          await new Promise<void>((r) => { releaseReplay = r; });
+          return result;
+        });
+      });
+
+      const sock = new FakeSocket();
+      const conn = makeConn(sock, { broadcaster });
+      sock.emit(
+        'message',
+        JSON.stringify({
+          type: 'subscribe',
+          id: 'sub-hold-1',
+          payload: {
+            session_ids: ['s_hold'],
+            cursors: { s_hold: { seq: cursor0.seq, epoch: cursor0.epoch } },
+          },
+        }),
+      );
+
+      await replayEntered;
+
+      mainBus.emit({
+        type: 'tool.result',
+        turnId: 1,
+        toolCallId: 'giant-during-hold',
+        output: 'Q'.repeat(16 * 1024 * 1024),
+      });
+      await broadcaster.flushSessionJournal('s_hold');
+
+      const framesBeforeRelease = sock.frames();
+      expect(framesBeforeRelease.some((f) => (f as { type?: string }).type === 'resync_required')).toBe(false);
+
+      releaseReplay();
+      await vi.waitFor(() => {
+        expect(sock.frames().some((f) => (f as { type?: string; id?: string }).type === 'ack' && (f as { id?: string }).id === 'sub-hold-1')).toBe(true);
+      });
+
+      const framesAfter = sock.frames() as Array<Record<string, unknown>>;
+      const resyncIdx = framesAfter.findIndex((f) => f['type'] === 'resync_required');
+      const ackIdx = framesAfter.findIndex((f) => f['type'] === 'ack' && f['id'] === 'sub-hold-1');
+      expect(resyncIdx).toBeGreaterThanOrEqual(0);
+      expect(ackIdx).toBeGreaterThan(resyncIdx);
+      expect((framesAfter[resyncIdx]!['payload'] as Record<string, unknown>)).toMatchObject({
+        session_id: 's_hold',
+        reason: 'journal_gap',
+        current_seq: 2,
+      });
+      expect((framesAfter[ackIdx]!['payload'] as Record<string, unknown>)['resync_required']).toEqual(['s_hold']);
+      expect(
+        ((framesAfter[ackIdx]!['payload'] as Record<string, unknown>)['cursors'] as Record<string, { seq: number }>)['s_hold']?.seq,
+      ).toBe(2);
+
+      conn.close();
+      await broadcaster.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

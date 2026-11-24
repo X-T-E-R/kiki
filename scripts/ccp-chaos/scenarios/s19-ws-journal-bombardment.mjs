@@ -1,13 +1,44 @@
 import { EventEmitter } from 'node:events';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import { mkdtemp, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import inspector from 'node:inspector';
 import module, { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
+
+const { mkdtemp, readFile, rm, stat, writeFile } = fs.promises;
+const rawOpen = fs.promises.open;
+const rawRename = fs.promises.rename;
+let renameFaultInjector = null;
+let closeFaultInjector = null;
+let fsFaultHooksInstalled = false;
+
+function installFsFaultHooks() {
+  if (fsFaultHooksInstalled) return;
+  fsFaultHooksInstalled = true;
+  fs.promises.rename = async function patchedRename(oldPath, newPath) {
+    if (typeof renameFaultInjector === 'function') {
+      const err = renameFaultInjector(oldPath, newPath);
+      if (err) throw err;
+    }
+    return rawRename.call(this, oldPath, newPath);
+  };
+  fs.promises.open = async function patchedOpen(filePath, flags, mode) {
+    const fh = await rawOpen.call(this, filePath, flags, mode);
+    if (typeof closeFaultInjector === 'function') {
+      const predicate = closeFaultInjector;
+      const origOwnClose = fh.close.bind(fh);
+      fh.close = async function patchedOwnClose() {
+        await origOwnClose();
+        const err = predicate(filePath);
+        if (err) throw err;
+      };
+    }
+    return fh;
+  };
+}
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
 const MiB = 1024 * 1024;
@@ -38,15 +69,30 @@ class InMemoryWsSocket extends EventEmitter {
   readyState = 1;
   bufferedAmount = 0;
   sentFrames = [];
+  totalSentCount = 0;
   terminateCalls = 0;
   closeCalls = 0;
+  maxRetainedFrames;
+
+  constructor(maxRetainedFrames = 5000) {
+    super();
+    this.maxRetainedFrames = maxRetainedFrames;
+  }
 
   send(data, _opts, cb) {
+    this.totalSentCount += 1;
     if (typeof data === 'string') {
+      let parsed;
       try {
-        this.sentFrames.push(JSON.parse(data));
+        parsed = JSON.parse(data);
       } catch {
-        this.sentFrames.push({ _raw: data.slice(0, 64) });
+        parsed = { _raw: data.slice(0, 64) };
+      }
+      if (this.maxRetainedFrames > 0) {
+        this.sentFrames.push(parsed);
+        if (this.sentFrames.length > this.maxRetainedFrames) {
+          this.sentFrames.shift();
+        }
       }
     }
     if (typeof _opts === 'function') _opts(null);
@@ -68,13 +114,27 @@ class InMemoryWsSocket extends EventEmitter {
 
 function createFakeBus() {
   const listeners = new Set();
+  const perType = new Map();
   return {
     subscribe(fn) {
       listeners.add(fn);
       return { dispose: () => { listeners.delete(fn); } };
     },
+    on(type, fn) {
+      let set = perType.get(type);
+      if (!set) {
+        set = new Set();
+        perType.set(type, set);
+      }
+      set.add(fn);
+      return { dispose: () => { set.delete(fn); } };
+    },
     emit(event) {
       for (const fn of listeners) fn(event);
+      const typed = perType.get(event?.type);
+      if (typed) {
+        for (const fn of typed) fn(event);
+      }
     },
   };
 }
@@ -110,6 +170,15 @@ function createSessionHarness(coreTokens, sessionIds) {
       accessor: {
         get(token) {
           if (token === coreTokens.IEventBus) return childBus;
+          if (token === coreTokens.IAgentContextMemoryService) {
+            return { get: () => [] };
+          }
+          if (token === coreTokens.IWireService) {
+            return { flush: async () => {} };
+          }
+          if (token === coreTokens.IAgentScopeContext) {
+            return { scope: () => `s19:${sid}:child-1` };
+          }
           return undefined;
         },
       },
@@ -130,6 +199,7 @@ function createSessionHarness(coreTokens, sessionIds) {
             return {
               list: () => agents,
               get: (id) => agents.find((a) => a.id === id),
+              getHandle: (id) => agents.find((a) => a.id === id),
               onDidCreate: () => ({ dispose: () => {} }),
               onDidDispose: () => ({ dispose: () => {} }),
             };
@@ -148,6 +218,20 @@ function createSessionHarness(coreTokens, sessionIds) {
               acquireConsumer: () => {},
               releaseConsumer: () => {},
             };
+          }
+          if (token === coreTokens.ISessionMetadata) {
+            const meta = {
+              id: sid,
+              private: false,
+              agents: { main: { type: 'main' }, 'child-1': { type: 'subagent', parentAgentId: 'main' } },
+            };
+            return {
+              snapshot: () => meta,
+              read: async () => meta,
+            };
+          }
+          if (token === coreTokens.ISessionContext) {
+            return { sessionId: sid, ephemeral: false };
           }
           return undefined;
         },
@@ -187,7 +271,22 @@ function createSessionHarness(coreTokens, sessionIds) {
           return {
             pathFor: () => undefined,
             mtime: async () => 0,
+            size: async () => 0,
             stat: async () => undefined,
+            read: async () => undefined,
+            readRange: async () => undefined,
+            exists: async () => false,
+            list: async () => [],
+            write: async () => {},
+            append: async () => {},
+            remove: async () => {},
+          };
+        }
+        if (token === coreTokens.IAppendLogStore) {
+          return {
+            async *read() {},
+            append: () => {},
+            flush: async () => {},
           };
         }
         return undefined;
@@ -316,6 +415,7 @@ let cachedKapModulesPromise = null;
 function loadKapModules() {
   if (cachedKapModulesPromise) return cachedKapModulesPromise;
   cachedKapModulesPromise = (async () => {
+    installFsFaultHooks();
     const pkgMap = new Map();
     const packagesRoot = path.join(REPO_ROOT, 'packages');
     for (const dir of fs.readdirSync(packagesRoot)) {
@@ -356,14 +456,15 @@ function loadKapModules() {
     const tsxApiUrl = pathToFileURL(rootRequire.resolve('tsx/esm/api')).href;
     const { register } = await import(tsxApiUrl);
     register();
-    const [journalMod, encoderMod, broadcasterMod, wsMod, coreMod] = await Promise.all([
+    const [journalMod, encoderMod, broadcasterMod, wsMod, transcriptMod, coreMod] = await Promise.all([
       import(pathToFileURL(path.join(REPO_ROOT, 'packages/kap-server/src/transport/ws/v1/sessionEventJournal.ts')).href),
       import(pathToFileURL(path.join(REPO_ROOT, 'packages/kap-server/src/transport/ws/v1/boundedJsonEncoder.ts')).href),
       import(pathToFileURL(path.join(REPO_ROOT, 'packages/kap-server/src/transport/ws/v1/sessionEventBroadcaster.ts')).href),
       import(pathToFileURL(path.join(REPO_ROOT, 'packages/kap-server/src/transport/ws/v1/wsConnectionV1.ts')).href),
+      import(pathToFileURL(path.join(REPO_ROOT, 'packages/kap-server/src/services/transcript/transcriptService.ts')).href),
       import('@kiki/agent-core-v2'),
     ]);
-    return { journalMod, encoderMod, broadcasterMod, wsMod, coreMod };
+    return { journalMod, encoderMod, broadcasterMod, wsMod, transcriptMod, coreMod };
   })();
   return cachedKapModulesPromise;
 }
@@ -392,12 +493,13 @@ export async function runScenarioS19JournalBombardment(options = {}) {
   const startedAt = performance.now();
 
   try {
-    const { journalMod, encoderMod, broadcasterMod, wsMod, coreMod } = await loadKapModules();
+    const { journalMod, encoderMod, broadcasterMod, wsMod, transcriptMod, coreMod } = await loadKapModules();
 
     const { SessionEventJournal, MAX_SINGLE_JOURNAL_LINE_BYTES, getJournalProcessPendingBytes } = journalMod;
     const { encodeJsonLineBounded } = encoderMod;
     const { SessionEventBroadcaster } = broadcasterMod;
     const { WsConnectionV1 } = wsMod;
+    const { TranscriptService } = transcriptMod;
 
     // Pre-allocate ONE reusable 16 MiB fixture string BEFORE sampling so fixture allocation is separated.
     const giantPayload16MiB = 'G'.repeat(16 * MiB);
@@ -410,9 +512,9 @@ export async function runScenarioS19JournalBombardment(options = {}) {
     const mixedSchedule = buildMixedSchedule(2000, 200, 50);
 
     // -----------------------------------------------------------------------
-    // Cell 1: Single-session 2,000 mixed heavy bombardment + dual reconnects
+    // Cell 1: Single-session 2,000 mixed heavy bombardment + real TranscriptService + dual reconnects
     // -----------------------------------------------------------------------
-    progress('S19 [1/6]: Running single-session 2,000-event mixed bombardment (4,000 MiB logical payload) with modern delta + legacy reconnects...');
+    progress('S19 [1/6]: Running single-session 2,000-event mixed bombardment with real TranscriptService + modern subscribe_v2/transcript_since + legacy message snapshot parity...');
     const cell1Dir = path.join(workDir, 'cell1-single');
     fs.mkdirSync(cell1Dir, { recursive: true });
 
@@ -420,11 +522,14 @@ export async function runScenarioS19JournalBombardment(options = {}) {
       const sid = 's19_single';
       const { core, sessions } = createSessionHarness(coreMod, [sid]);
       const harness = sessions.get(sid);
-      const broadcaster = new SessionEventBroadcaster({ eventsDir: cell1Dir, core });
+      const transcriptService = new TranscriptService({ homeDir: cell1Dir, core });
+      transcriptService.forSessionLive(sid);
+      await transcriptService.whenReady(sid);
+      const broadcaster = new SessionEventBroadcaster({ eventsDir: cell1Dir, core, transcriptService });
       const connectionRegistry = { add: () => {}, remove: () => {} };
 
-      const openWsClient = async (mode, cursor) => {
-        const socket = new InMemoryWsSocket();
+      const openWsClient = async (mode, cursor, transcriptSince) => {
+        const socket = new InMemoryWsSocket(4000);
         const conn = new WsConnectionV1({
           socket,
           broadcaster,
@@ -442,6 +547,10 @@ export async function runScenarioS19JournalBombardment(options = {}) {
               session_id: sid,
               transcript: { '*': 'delta' },
               transcript_coverage_version: 2,
+              ...(cursor ? { cursor } : {}),
+              ...(transcriptSince !== undefined && transcriptSince > 0
+                ? { transcript_since: { main: transcriptSince } }
+                : {}),
             },
           }));
           const ack = await waitForAck(socket, helloId);
@@ -459,6 +568,27 @@ export async function runScenarioS19JournalBombardment(options = {}) {
         return { socket, conn, ack };
       };
 
+      const scanModernTranscriptWatermark = (socket, prevSeq) => {
+        let maxSeq = prevSeq;
+        let opsFrames = 0;
+        let resetFrames = 0;
+        for (const frame of socket.sentFrames) {
+          const ev = frame?.type === 'session_event' ? frame.payload : frame;
+          const evType = ev?.type;
+          const inner = ev?.payload;
+          if (evType === 'transcript.ops' && inner?.agent_id === 'main') {
+            opsFrames += 1;
+            const s = Number(inner?.through_seq ?? inner?.cursor?.seq ?? 0);
+            if (Number.isSafeInteger(s) && s > maxSeq) maxSeq = s;
+          } else if (evType === 'transcript.reset' && inner?.agent_id === 'main') {
+            resetFrames += 1;
+            const s = Number(inner?.cursor?.seq ?? 0);
+            if (Number.isSafeInteger(s) && s > maxSeq) maxSeq = s;
+          }
+        }
+        return { maxSeq, opsFrames, resetFrames };
+      };
+
       let modernClient = await openWsClient('modern');
       let legacyClient = await openWsClient('legacy');
       let modernCursor = await broadcaster.getCursor(sid);
@@ -466,17 +596,31 @@ export async function runScenarioS19JournalBombardment(options = {}) {
 
       let modernExtraResets = 0;
       let legacyGapResyncs = 0;
+      let legacySnapshotMessageChecks = 0;
+      let legacySnapshotMessageParity = true;
+      let modernTranscriptSinceCycles = 0;
+      let modernTranscriptOpsCount = 0;
+      let lastTranscriptSeq = scanModernTranscriptWatermark(modernClient.socket, 0).maxSeq;
       let reconnectCycles = 0;
       let peakLiveFileBytes = 0;
       let peakTailBytes = 0;
       let expectedAttentionSeq = 0;
+      let activeTurnId = 0;
 
       for (let i = 0; i < mixedSchedule.length; i += 1) {
         const kind = mixedSchedule[i];
+        if (i % 50 === 0) {
+          activeTurnId += 1;
+          harness.mainBus.emit({
+            type: 'turn.started',
+            turnId: activeTurnId,
+            origin: { kind: 'user' },
+          });
+        }
         if (kind === 'tool_16m') {
           harness.mainBus.emit({
             type: 'tool.result',
-            turnId: Math.floor(i / 20) + 1,
+            turnId: activeTurnId || 1,
             toolCallId: `tool-${i}`,
             output: giantPayload16MiB,
           });
@@ -489,16 +633,16 @@ export async function runScenarioS19JournalBombardment(options = {}) {
             deleteCount: 0,
             messages: nextCtx,
           });
-        } else if (i % 50 === 0) {
+        } else if (i % 50 === 49) {
           harness.mainBus.emit({
             type: 'turn.ended',
-            turnId: Math.floor(i / 50) + 1,
+            turnId: activeTurnId,
             reason: 'completed',
           });
         } else {
           harness.mainBus.emit({
             type: 'tool.call.started',
-            turnId: Math.floor(i / 20) + 1,
+            turnId: activeTurnId || 1,
             toolCallId: `tool-${i}`,
             name: 'Read',
             args: { path: `/tmp/file-${i}.txt` },
@@ -517,7 +661,10 @@ export async function runScenarioS19JournalBombardment(options = {}) {
           const m = broadcaster.getSessionJournalMetrics(sid);
           if (m && m.tailBytes > peakTailBytes) peakTailBytes = m.tailBytes;
 
-          // Disconnect and reconnect both modern delta and legacy clients every 200 events
+          const beforeCloseScan = scanModernTranscriptWatermark(modernClient.socket, lastTranscriptSeq);
+          lastTranscriptSeq = beforeCloseScan.maxSeq;
+          modernTranscriptOpsCount += beforeCloseScan.opsFrames;
+
           modernClient.conn.close();
           legacyClient.conn.close();
           reconnectCycles += 1;
@@ -526,14 +673,31 @@ export async function runScenarioS19JournalBombardment(options = {}) {
           if (modernReplay.resyncRequired !== false) {
             modernExtraResets += 1;
           }
+          modernClient = await openWsClient('modern', modernCursor, lastTranscriptSeq);
+          if (lastTranscriptSeq > 0) modernTranscriptSinceCycles += 1;
+          const modernAckResync = modernClient.ack?.payload?.resync_required?.includes(sid);
+          if (modernAckResync) {
+            modernExtraResets += 1;
+          }
+          const afterOpenScan = scanModernTranscriptWatermark(modernClient.socket, lastTranscriptSeq);
+          lastTranscriptSeq = afterOpenScan.maxSeq;
+          modernTranscriptOpsCount += afterOpenScan.opsFrames;
           modernCursor = { seq: modernReplay.currentSeq, epoch: modernReplay.epoch };
-          modernClient = await openWsClient('modern');
 
           legacyClient = await openWsClient('legacy', legacyCursor);
           const legacyResync = legacyClient.ack?.payload?.resync_required?.includes(sid);
           if (legacyResync) {
             legacyGapResyncs += 1;
-            const snap = await broadcaster.getSnapshotState(sid, { captureMessages: false });
+            const snap = await broadcaster.getSnapshotState(sid, { captureMessages: true });
+            legacySnapshotMessageChecks += 1;
+            const expectedCtx = harness.getContext();
+            if (
+              snap.contextMessageCount !== expectedCtx.length ||
+              snap.contextMessages.length !== expectedCtx.length ||
+              (expectedCtx.length > 0 && snap.contextMessages.at(-1) !== expectedCtx.at(-1))
+            ) {
+              legacySnapshotMessageParity = false;
+            }
             legacyCursor = { seq: snap.seq, epoch: snap.epoch };
           } else {
             const ackCursor = legacyClient.ack?.payload?.cursors?.[sid];
@@ -558,12 +722,16 @@ export async function runScenarioS19JournalBombardment(options = {}) {
       const legacyUnsuppressedReplay = await broadcaster.getBufferedSince(sid, beforeUnsuppressed);
 
       const finalCursor = await broadcaster.getCursor(sid);
-      const finalSnapshot = await broadcaster.getSnapshotState(sid, { captureMessages: false });
+      const finalSnapshot = await broadcaster.getSnapshotState(sid, { captureMessages: true });
       const liveMetrics = broadcaster.getSessionJournalMetrics(sid);
+      const liveTranscriptAgent = transcriptService.forSessionLive(sid)?.getAgent('main');
+      const liveTranscriptTurnCount =
+        liveTranscriptAgent?.snapshot()?.items?.filter((item) => item.kind === 'turn').length ?? 0;
 
       modernClient.conn.close();
       legacyClient.conn.close();
       await broadcaster.close();
+      transcriptService.dispose();
 
       const closedFileBytes = (await stat(path.join(cell1Dir, `${sid}.jsonl`))).size;
       const coldPeek = await SessionEventJournal.peekWatermark(path.join(cell1Dir, `${sid}.jsonl`));
@@ -574,6 +742,12 @@ export async function runScenarioS19JournalBombardment(options = {}) {
         reconnectCycles,
         modernExtraResets,
         legacyGapResyncs,
+        legacySnapshotMessageChecks,
+        legacySnapshotMessageParity,
+        modernTranscriptSinceCycles,
+        modernTranscriptOpsCount,
+        lastTranscriptSeq,
+        liveTranscriptTurnCount,
         modernUnsuppressedResync: modernUnsuppressedReplay.resyncRequired,
         legacyUnsuppressedResync: legacyUnsuppressedReplay.resyncRequired,
         cursorParity:
@@ -582,6 +756,7 @@ export async function runScenarioS19JournalBombardment(options = {}) {
           finalCursor.seq === finalSnapshot.seq &&
           finalCursor.epoch === finalSnapshot.epoch &&
           finalCursor.attentionSeq === finalSnapshot.attentionSeq &&
+          finalSnapshot.contextMessageCount === harness.getContext().length &&
           coldPeek.seq === finalCursor.seq &&
           coldPeek.epoch === finalCursor.epoch &&
           coldPeek.attentionSeq === finalCursor.attentionSeq &&
@@ -596,19 +771,34 @@ export async function runScenarioS19JournalBombardment(options = {}) {
     });
 
     // -----------------------------------------------------------------------
-    // Cell 2: 16 concurrent sessions sharing the 2,000-event mixed recipe
+    // Cell 2: 16 concurrent sessions with real WsConnectionV1 targets
     // -----------------------------------------------------------------------
-    progress('S19 [2/6]: Running 16 concurrent sessions sharing 2,000 mixed events (4,000 MiB logical)...');
+    progress('S19 [2/6]: Running 16 concurrent sessions with real WsConnectionV1 targets sharing 2,000 mixed events (4,000 MiB logical)...');
     const cell2Dir = path.join(workDir, 'cell2-concurrent-16');
     fs.mkdirSync(cell2Dir, { recursive: true });
     const sessionIds16 = Array.from({ length: 16 }, (_, idx) => `s19_c_${idx}`);
     const { core: core16, sessions: sessions16 } = createSessionHarness(coreMod, sessionIds16);
     const bc16 = new SessionEventBroadcaster({ eventsDir: cell2Dir, core: core16 });
-    const dummyTargets16 = [];
+    const registry16 = { add: () => {}, remove: () => {} };
+    const wsClients16 = [];
     for (const sid of sessionIds16) {
-      const target = { send: () => {}, sendDurableCursor: () => {}, sendControl: () => {} };
-      dummyTargets16.push(target);
-      await bc16.subscribe(sid, target, undefined, { '*': 'delta' });
+      const socket = new InMemoryWsSocket(16);
+      const conn = new WsConnectionV1({
+        socket,
+        broadcaster: bc16,
+        connectionRegistry: registry16,
+        remoteAddress: '127.0.0.1',
+        userAgent: `s19-c16-${sid}`,
+        heartbeatIntervalMs: 0,
+      });
+      const subId = `sub-${sid}`;
+      socket.emit('message', JSON.stringify({
+        type: 'subscribe_v2',
+        id: subId,
+        payload: { session_id: sid, transcript: { '*': 'delta' }, transcript_coverage_version: 2 },
+      }));
+      await waitForAck(socket, subId);
+      wsClients16.push({ sid, socket, conn });
     }
 
     let c16PeakLiveFileBytes = 0;
@@ -647,6 +837,11 @@ export async function runScenarioS19JournalBombardment(options = {}) {
       }
     }
 
+    let c16RealTargetsTotalSent = 0;
+    for (const c of wsClients16) {
+      c16RealTargetsTotalSent += c.socket.totalSentCount;
+      c.conn.close();
+    }
     await bc16.close();
     let c16MaxClosedFileBytes = 0;
     for (const sid of sessionIds16) {
@@ -659,6 +854,7 @@ export async function runScenarioS19JournalBombardment(options = {}) {
     const cell2 = {
       sessionCount: 16,
       totalEvents: mixedSchedule.length,
+      realTargetsTotalSent: c16RealTargetsTotalSent,
       peakLiveFileBytes: c16PeakLiveFileBytes,
       maxClosedFileBytes: c16MaxClosedFileBytes,
       peakTailBytes: c16PeakTailBytes,
@@ -670,17 +866,31 @@ export async function runScenarioS19JournalBombardment(options = {}) {
     };
 
     // -----------------------------------------------------------------------
-    // Cell 3: Extreme tier 2,000 x 16 MiB = 31.25 GiB logical (bounded reuse)
+    // Cell 3: Extreme tier 2,000 x 16 MiB = 31.25 GiB logical with real WsConnectionV1 target
     // -----------------------------------------------------------------------
     let cell3 = { skipped: !includeExtreme };
     if (includeExtreme) {
-      progress('S19 [3/6]: Running extreme tier 2,000 x 16 MiB (31.25 GiB logical payload) via bounded generator reuse...');
+      progress('S19 [3/6]: Running extreme tier 2,000 x 16 MiB (31.25 GiB logical payload) with real WsConnectionV1 target...');
       const cell3Dir = path.join(workDir, 'cell3-extreme-31g');
       fs.mkdirSync(cell3Dir, { recursive: true });
       const sid = 's19_extreme';
       const { core: coreExt, sessions: sessionsExt } = createSessionHarness(coreMod, [sid]);
       const bcExt = new SessionEventBroadcaster({ eventsDir: cell3Dir, core: coreExt });
-      await bcExt.subscribe(sid, { send: () => {}, sendDurableCursor: () => {} }, undefined, { '*': 'delta' });
+      const extSocket = new InMemoryWsSocket(16);
+      const extConn = new WsConnectionV1({
+        socket: extSocket,
+        broadcaster: bcExt,
+        connectionRegistry: { add: () => {}, remove: () => {} },
+        remoteAddress: '127.0.0.1',
+        userAgent: 's19-extreme-modern',
+        heartbeatIntervalMs: 0,
+      });
+      extSocket.emit('message', JSON.stringify({
+        type: 'subscribe_v2',
+        id: 'sub-ext',
+        payload: { session_id: sid, transcript: { '*': 'delta' }, transcript_coverage_version: 2 },
+      }));
+      await waitForAck(extSocket, 'sub-ext');
       const h = sessionsExt.get(sid);
 
       let extPeakLiveBytes = 0;
@@ -707,6 +917,8 @@ export async function runScenarioS19JournalBombardment(options = {}) {
       }
       const extMetrics = bcExt.getSessionJournalMetrics(sid);
       const extCursor = await bcExt.getCursor(sid);
+      const extRealTargetSent = extSocket.totalSentCount;
+      extConn.close();
       await bcExt.close();
       const extClosedBytes = (await stat(path.join(cell3Dir, `${sid}.jsonl`))).size;
       const postExtMem = forceGcAndRss();
@@ -715,6 +927,7 @@ export async function runScenarioS19JournalBombardment(options = {}) {
         events: extCount,
         logicalGiB: roundNum((extCount * 16) / 1024, 2),
         finalSeq: extCursor.seq,
+        realTargetSent: extRealTargetSent,
         peakLiveFileBytes: extPeakLiveBytes,
         closedFileBytes: extClosedBytes,
         peakTailBytes: extPeakTailBytes,
@@ -726,16 +939,59 @@ export async function runScenarioS19JournalBombardment(options = {}) {
     }
 
     // -----------------------------------------------------------------------
-    // Cell 4: Write amplification (prefilled between B0 and 2*B0; >=1000 events & >=3 rotations)
+    // Cell 4: Write amplification dual windows:
+    //   Window A: midway [B0, 2*B0) (~6 MiB) prefill + 1,000 small events (zero thrash)
+    //   Window B: >= 1,100 bounded events crossing >= 3 full rotations (<= 2.5x)
+    //   plus separate closeConvergenceTempBytes reporting
     // -----------------------------------------------------------------------
-    progress('S19 [4/6]: Measuring pre-filled write amplification across >=1,000 events and >=3 full rotations...');
+    progress('S19 [4/6]: Measuring dual write-amplification windows (midway [B0,2B0)+1000 small events AND >=3 full rotations)...');
     const cell4Dir = path.join(workDir, 'cell4-write-amp');
     fs.mkdirSync(cell4Dir, { recursive: true });
-    const ampPath = path.join(cell4Dir, 'amp.jsonl');
     const b0 = 4 * MiB;
-    const ampJournal = await SessionEventJournal.open(ampPath, undefined, 1000, b0);
+
+    const midwayPath = path.join(cell4Dir, 'amp_midway_small.jsonl');
+    const midwayJournal = await SessionEventJournal.open(midwayPath, undefined, 4000, b0);
     const pad16k = 'w'.repeat(16 * KiB);
-    // Pre-fill to ~5 MiB (between 4 MiB B0 and 8 MiB 2*B0)
+    // Pre-fill to ~6 MiB (1.5 * B0, safely in [B0, 2*B0))
+    for (let i = 1; i <= 380; i += 1) {
+      midwayJournal.append(midwayJournal.nextSeq(), {
+        type: 'event.session.work_changed',
+        seq: i,
+        timestamp: '2026-01-01T00:00:00.000Z',
+        payload: { agentId: 'main', pad: pad16k },
+      });
+      if (i % 16 === 0) await midwayJournal.flush();
+    }
+    await midwayJournal.flush();
+    const midwayPrefillStats = midwayJournal.stats();
+    const midwayPrefillBytes = (await stat(midwayPath)).size;
+
+    const smallPad = 's'.repeat(160);
+    for (let i = 1; i <= 1000; i += 1) {
+      const seq = midwayJournal.nextSeq();
+      midwayJournal.append(seq, {
+        type: 'event.session.work_changed',
+        seq,
+        timestamp: '2026-01-01T00:00:00.000Z',
+        payload: { agentId: 'main', pad: smallPad },
+      });
+      if (i % 50 === 0) await midwayJournal.flush();
+    }
+    await midwayJournal.flush();
+    const midwayAfterStats = midwayJournal.stats();
+    const midwayPeakLiveBytes = (await stat(midwayPath)).size;
+    await midwayJournal.close();
+    const midwayAfterCloseStats = midwayJournal.stats();
+    const midwayClosedBytes = (await stat(midwayPath)).size;
+    const midwayDeltaAppended = midwayAfterStats.appendedBytes - midwayPrefillStats.appendedBytes;
+    const midwayDeltaCompact = midwayAfterStats.compactedTempBytes - midwayPrefillStats.compactedTempBytes;
+    const midwayDeltaValid = midwayAfterStats.validBoundedLineBytes - midwayPrefillStats.validBoundedLineBytes;
+    const midwaySmallRotations = midwayAfterStats.compactionCount - midwayPrefillStats.compactionCount;
+    const midwaySmallWriteAmplification =
+      midwayDeltaValid > 0 ? (midwayDeltaAppended + midwayDeltaCompact) / midwayDeltaValid : Infinity;
+
+    const ampPath = path.join(cell4Dir, 'amp_rotations.jsonl');
+    const ampJournal = await SessionEventJournal.open(ampPath, undefined, 1000, b0);
     for (let i = 1; i <= 320; i += 1) {
       ampJournal.append(ampJournal.nextSeq(), {
         type: 'event.session.work_changed',
@@ -749,7 +1005,7 @@ export async function runScenarioS19JournalBombardment(options = {}) {
     const prefillStats = ampJournal.stats();
     const prefillFileSize = (await stat(ampPath)).size;
 
-    // Window: 1,100 bounded ~16 KiB events (~17.6 MiB valid bounded lines -> >=3 full rotations!)
+    // Window B: 1,100 bounded ~16 KiB events (~17.6 MiB valid bounded lines -> >=3 full rotations)
     let ampPeakLiveBytes = prefillFileSize;
     for (let i = 1; i <= 1100; i += 1) {
       const seq = ampJournal.nextSeq();
@@ -776,6 +1032,13 @@ export async function runScenarioS19JournalBombardment(options = {}) {
     const deltaRotations = afterWindowStats.compactionCount - prefillStats.compactionCount;
     const writeAmplification = deltaValidBounded > 0 ? (deltaAppended + deltaCompactTemp) / deltaValidBounded : Infinity;
     const cell4 = {
+      midwayPrefillBytes,
+      midwaySmallEvents: 1000,
+      midwaySmallRotations,
+      midwaySmallWriteAmplification: roundNum(midwaySmallWriteAmplification, 4),
+      midwayPeakLiveBytes,
+      midwayClosedBytes,
+      midwayCloseConvergenceTempBytes: midwayAfterCloseStats.closeCompactedTempBytes,
       prefillFileBytes: prefillFileSize,
       windowEvents: 1100,
       rotationsInWindow: deltaRotations,
@@ -783,9 +1046,10 @@ export async function runScenarioS19JournalBombardment(options = {}) {
       deltaCompactedTempBytes: deltaCompactTemp,
       deltaValidBoundedLineBytes: deltaValidBounded,
       writeAmplification: roundNum(writeAmplification, 4),
+      statCloseCompactedTempBytes: afterCloseStats.closeCompactedTempBytes,
       closeConvergenceTempBytes: afterCloseStats.closeCompactedTempBytes,
-      peakLiveFileBytes: ampPeakLiveBytes,
-      closedFileBytes: ampClosedBytes,
+      peakLiveFileBytes: Math.max(ampPeakLiveBytes, midwayPeakLiveBytes),
+      closedFileBytes: Math.max(ampClosedBytes, midwayClosedBytes),
     };
 
     // -----------------------------------------------------------------------
@@ -800,7 +1064,7 @@ export async function runScenarioS19JournalBombardment(options = {}) {
     const headerLine = JSON.stringify({ kind: 'journal_header', version: 1, epoch: 'ep_cold_16m', created_at: 1 });
     const mkLegacy16m = (seq, type) =>
       `{"kind":"event","seq":${seq},"envelope":{"type":"${type}","seq":${seq},"epoch":"ep_cold_16m","session_id":"s_cold","timestamp":"2026-01-01T00:00:00Z","payload":{"agentId":"main","fake":${JSON.stringify(fakeNested)},"blob":"${giantPayload16MiB}"}}}\n`;
-    const fh = await open(coldHugePath, 'w');
+    const fh = await rawOpen(coldHugePath, 'w');
     try {
       await fh.write(`${headerLine}\n`);
       await fh.write(mkLegacy16m(1, 'turn.ended'));
@@ -810,7 +1074,7 @@ export async function runScenarioS19JournalBombardment(options = {}) {
       await fh.close();
     }
 
-    const protoProbe = await open(coldHugePath, 'r');
+    const protoProbe = await rawOpen(coldHugePath, 'r');
     const fhProto = Object.getPrototypeOf(protoProbe);
     await protoProbe.close();
     const origRead = fhProto.read;
@@ -885,9 +1149,9 @@ export async function runScenarioS19JournalBombardment(options = {}) {
     };
 
     // -----------------------------------------------------------------------
-    // Cell 6: Fault injection (short write, zero-progress, close/sync failure)
+    // Cell 6: Fault injection (short write, zero-progress, rename, close, sync + post-recovery writes)
     // -----------------------------------------------------------------------
-    progress('S19 [6/6]: Executing fault injection (short write, zero-progress rollback, sync failure)...');
+    progress('S19 [6/6]: Executing fault injection (short write, zero-progress rollback, rename failure, close/sync failure + post-recovery writes)...');
     const cell6Dir = path.join(workDir, 'cell6-faults');
     fs.mkdirSync(cell6Dir, { recursive: true });
 
@@ -921,34 +1185,118 @@ export async function runScenarioS19JournalBombardment(options = {}) {
       fj.append(fj.nextSeq(), { type: 'turn.ended', seq: 3, timestamp: '2026-01-01T00:00:00Z', payload: {} });
       await fj.flush();
       await fj.flush();
+      fj.append(fj.nextSeq(), { type: 'tool.call.started', seq: 4, timestamp: '2026-01-01T00:00:00Z', payload: { afterRecovery: true } });
+      await fj.flush();
       const recovered = await fj.readSince(0, 10);
       shortAndZeroRecovered =
-        recovered.map((e) => e.seq).join(',') === '1,2,3' && !fj.poisoned;
+        recovered.map((e) => e.seq).join(',') === '1,2,3,4' && !fj.poisoned;
     } finally {
       fhProto.writev = origWritev;
       await fj.close();
     }
 
+    // Real rename failure during compaction + subsequent non-zero recovery write
+    const renameFailPath = path.join(cell6Dir, 'fault_rename.jsonl');
+    let renameFaultInjected = false;
+    let renameFailRecovered = false;
+    const rj = await SessionEventJournal.open(renameFailPath, undefined, 2, 64 * KiB);
+    try {
+      renameFaultInjector = (_oldPath, newPath) => {
+        if (!renameFaultInjected && path.resolve(String(newPath)) === path.resolve(renameFailPath)) {
+          renameFaultInjected = true;
+          return Object.assign(new Error('EACCES injected rename failure'), { code: 'EACCES' });
+        }
+        return null;
+      };
+      for (let i = 1; i <= 5; i += 1) {
+        rj.append(rj.nextSeq(), { type: 'tool.call.started', seq: i, timestamp: '2026-01-01T00:00:00Z', payload: { n: i } });
+        await rj.flush();
+      }
+      renameFaultInjector = null;
+      const failedCount = rj.stats().compactFailureCount;
+      rj.append(rj.nextSeq(), { type: 'turn.ended', seq: 6, timestamp: '2026-01-01T00:00:00Z', payload: { recovered: true } });
+      await rj.flush();
+      const postRenameEntries = await rj.readSince(0, 10);
+      const postRenameBytes = (await stat(renameFailPath)).size;
+      renameFailRecovered =
+        renameFaultInjected &&
+        failedCount >= 1 &&
+        !rj.poisoned &&
+        postRenameBytes > 0 &&
+        postRenameEntries.some((e) => e.seq === 6);
+    } finally {
+      renameFaultInjector = null;
+      await rj.close();
+    }
+
+    // Real close failure (tail verification + sync retry) + subsequent non-zero write
+    const closeFailPath = path.join(cell6Dir, 'fault_close.jsonl');
+    let closeFaultInjected = false;
+    let closeFailRecovered = false;
+    const cj = await SessionEventJournal.open(closeFailPath);
+    try {
+      closeFaultInjector = (targetPath) => {
+        if (!closeFaultInjected && path.resolve(String(targetPath)) === path.resolve(closeFailPath)) {
+          closeFaultInjected = true;
+          return Object.assign(new Error('EIO injected close'), { code: 'EIO' });
+        }
+        return null;
+      };
+      cj.append(cj.nextSeq(), { type: 'turn.started', seq: 1, timestamp: '2026-01-01T00:00:00Z', payload: {} });
+      await cj.flush();
+      closeFaultInjector = null;
+      cj.append(cj.nextSeq(), { type: 'turn.ended', seq: 2, timestamp: '2026-01-01T00:00:00Z', payload: { afterCloseFault: true } });
+      await cj.flush();
+      const afterCloseFault = await cj.readSince(0, 10);
+      closeFailRecovered =
+        closeFaultInjected &&
+        !cj.poisoned &&
+        afterCloseFault.map((e) => e.seq).join(',') === '1,2';
+    } finally {
+      closeFaultInjector = null;
+      await cj.close();
+    }
+
+    // Real fsync failure during compaction + clean recovery write
     const syncFailPath = path.join(cell6Dir, 'fault_sync.jsonl');
     const origSync = fhProto.sync;
-    fhProto.sync = async function patchedSync() {
-      throw Object.assign(new Error('EIO injected sync'), { code: 'EIO' });
-    };
+    let syncFaultInjected = false;
     let syncFailCleanClose = false;
+    const sj = await SessionEventJournal.open(syncFailPath, undefined, 2, 64 * KiB);
     try {
-      const sj = await SessionEventJournal.open(syncFailPath);
-      sj.append(sj.nextSeq(), { type: 'turn.started', seq: 1, timestamp: '2026-01-01T00:00:00Z', payload: {} });
+      fhProto.sync = async function patchedSync() {
+        if (!syncFaultInjected) {
+          syncFaultInjected = true;
+          throw Object.assign(new Error('EIO injected sync'), { code: 'EIO' });
+        }
+        return origSync.call(this);
+      };
+      for (let i = 1; i <= 5; i += 1) {
+        sj.append(sj.nextSeq(), { type: 'turn.started', seq: i, timestamp: '2026-01-01T00:00:00Z', payload: { i } });
+        await sj.flush();
+      }
+      fhProto.sync = origSync;
+      sj.append(sj.nextSeq(), { type: 'turn.ended', seq: 6, timestamp: '2026-01-01T00:00:00Z', payload: { afterSyncFault: true } });
       await sj.close();
-      syncFailCleanClose = true;
+      const syncPeek = await SessionEventJournal.peekWatermark(syncFailPath);
+      syncFailCleanClose =
+        syncFaultInjected &&
+        syncPeek.seq === 6 &&
+        (await stat(syncFailPath)).size > 0;
     } finally {
       fhProto.sync = origSync;
     }
 
     const cell6 = {
       shortAndZeroRecovered,
+      renameFailRecovered,
+      closeFailRecovered,
       syncFailCleanClose,
       shortInjected,
       zeroInjected,
+      renameFaultInjected,
+      closeFaultInjected,
+      syncFaultInjected,
     };
 
     // -----------------------------------------------------------------------
@@ -961,6 +1309,14 @@ export async function runScenarioS19JournalBombardment(options = {}) {
     check(unhandledErrors.length === 0, `unhandled rejections observed: ${unhandledErrors.join('; ')}`);
     check(cell1.modernExtraResets === 0, `cell1 modern delta had ${cell1.modernExtraResets} extra resets`);
     check(cell1.legacyGapResyncs > 0, 'cell1 legacy client never observed expected journal_gap resync');
+    check(
+      cell1.legacySnapshotMessageChecks > 0 && cell1.legacySnapshotMessageParity,
+      `cell1 legacy snapshot message parity failed (checks=${cell1.legacySnapshotMessageChecks})`,
+    );
+    check(
+      cell1.modernTranscriptSinceCycles > 0 && cell1.lastTranscriptSeq > 0 && cell1.liveTranscriptTurnCount > 0,
+      `cell1 real TranscriptService / transcript_since reconnect failed (cycles=${cell1.modernTranscriptSinceCycles}, seq=${cell1.lastTranscriptSeq}, turns=${cell1.liveTranscriptTurnCount})`,
+    );
     check(cell1.modernUnsuppressedResync === 'journal_gap', `cell1 unsuppressed 16MiB failed for modern: ${cell1.modernUnsuppressedResync}`);
     check(cell1.legacyUnsuppressedResync === 'journal_gap', `cell1 unsuppressed 16MiB failed for legacy: ${cell1.legacyUnsuppressedResync}`);
     check(cell1.cursorParity === true, 'cell1 modern/legacy/snapshot/cold cursor parity mismatch');
@@ -972,6 +1328,7 @@ export async function runScenarioS19JournalBombardment(options = {}) {
     check((cell1.journalStats?.maxSingleAllocBytes ?? 0) < BUDGETS.maxSingleAllocBytes, `cell1 maxSingleAllocBytes=${cell1.journalStats?.maxSingleAllocBytes}`);
     check(cell1Sampling.maxJournalSampleBytes < BUDGETS.maxSingleAllocBytes, `cell1 V8 heap sample in journal path=${cell1Sampling.maxJournalSampleBytes} (${cell1Sampling.maxJournalSampleFn})`);
 
+    check(cell2.realTargetsTotalSent >= 16, `cell2 real WsConnectionV1 targets sent=${cell2.realTargetsTotalSent}`);
     check(cell2.peakLiveFileBytes <= BUDGETS.maxLiveFileBytes, `cell2 peakLiveFileBytes=${cell2.peakLiveFileBytes}`);
     check(cell2.maxClosedFileBytes <= BUDGETS.maxClosedFileBytes, `cell2 maxClosedFileBytes=${cell2.maxClosedFileBytes}`);
     check(cell2.peakTailBytes <= BUDGETS.maxTailBytes, `cell2 peakTailBytes=${cell2.peakTailBytes}`);
@@ -983,6 +1340,7 @@ export async function runScenarioS19JournalBombardment(options = {}) {
 
     if (includeExtreme) {
       check(cell3.finalSeq === 2000, `cell3 finalSeq=${cell3.finalSeq} !== 2000`);
+      check(cell3.realTargetSent >= 1, `cell3 real WsConnectionV1 target sent=${cell3.realTargetSent}`);
       check(cell3.peakLiveFileBytes <= BUDGETS.maxLiveFileBytes, `cell3 peakLiveFileBytes=${cell3.peakLiveFileBytes}`);
       check(cell3.closedFileBytes <= BUDGETS.maxClosedFileBytes, `cell3 closedFileBytes=${cell3.closedFileBytes}`);
       check(cell3.peakTailBytes <= BUDGETS.maxTailBytes, `cell3 peakTailBytes=${cell3.peakTailBytes}`);
@@ -992,6 +1350,8 @@ export async function runScenarioS19JournalBombardment(options = {}) {
       check(cell3.rssDeltaAfterDrainBytes <= BUDGETS.maxPostGcRssDeltaBytes, `cell3 post-GC RSS delta=${roundMiB(cell3.rssDeltaAfterDrainBytes)} MiB > 64 MiB`);
     }
 
+    check(cell4.midwaySmallRotations === 0, `cell4 midway [B0,2B0) small-event window thrashed with ${cell4.midwaySmallRotations} rotations`);
+    check(cell4.midwaySmallWriteAmplification <= BUDGETS.maxWriteAmplification, `cell4 midwaySmallWriteAmplification=${cell4.midwaySmallWriteAmplification} > ${BUDGETS.maxWriteAmplification}`);
     check(cell4.rotationsInWindow >= 3, `cell4 rotationsInWindow=${cell4.rotationsInWindow} < 3`);
     check(cell4.writeAmplification <= BUDGETS.maxWriteAmplification, `cell4 writeAmplification=${cell4.writeAmplification} > ${BUDGETS.maxWriteAmplification}`);
     check(cell4.peakLiveFileBytes <= BUDGETS.maxLiveFileBytes, `cell4 peakLiveFileBytes=${cell4.peakLiveFileBytes}`);
@@ -1011,7 +1371,9 @@ export async function runScenarioS19JournalBombardment(options = {}) {
     check(cell5.crossChunkPeek.seq === 3 && cell5.crossChunkPeek.attentionSeq === 3, 'cell5 cross-chunk check failed');
 
     check(cell6.shortAndZeroRecovered, 'cell6 short/zero-progress writev recovery failed');
-    check(cell6.syncFailCleanClose, 'cell6 sync failure close did not settle cleanly');
+    check(cell6.renameFailRecovered, 'cell6 rename compaction failure recovery failed');
+    check(cell6.closeFailRecovered, 'cell6 close failure tail-verify recovery failed');
+    check(cell6.syncFailCleanClose, 'cell6 sync failure recovery/close failed');
 
     const finalMem = forceGcAndRss();
     const durationMs = Math.round(performance.now() - startedAt);
@@ -1088,7 +1450,10 @@ if (isCliMain && process.env.KIKI_S19_TSX_READY !== '1') {
 
 if (isCliMain && process.env.KIKI_S19_TSX_READY === '1') {
   const args = process.argv.slice(2);
-  const tier = args.includes('--tier=smoke') || args.includes('--smoke') ? 'smoke' : 'full';
+  const tierIdx = args.indexOf('--tier');
+  const tierVal = tierIdx >= 0 ? args[tierIdx + 1] : undefined;
+  const tier =
+    args.includes('--tier=smoke') || args.includes('--smoke') || tierVal === 'smoke' ? 'smoke' : 'full';
   const outIdx = args.indexOf('--out-json');
   const outJsonPath = outIdx >= 0 && args[outIdx + 1] ? path.resolve(args[outIdx + 1]) : null;
   const dirIdx = args.indexOf('--dir');

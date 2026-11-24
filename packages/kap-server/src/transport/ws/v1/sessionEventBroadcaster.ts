@@ -91,10 +91,12 @@ import { TurnUsageTracker } from './turnUsageTracker';
 import { buildResyncRequired } from './protocol';
 import {
   encodeJsonValueBounded,
+  estimateJsonByteLengthBounded,
   MAX_SINGLE_JOURNAL_LINE_BYTES,
 } from './boundedJsonEncoder';
 import {
   type EventEnvelope,
+  isAttentionEventType,
   type JournalAppendOutcome,
   type JournalLogger,
   type JournalWriteStats,
@@ -104,6 +106,8 @@ import {
   toAttentionCursor,
 } from './sessionEventJournal';
 import {
+  buildLightweightLoopEventStub,
+  buildLightweightTrackerStub,
   buildRosterHintEnvelopeFromGap,
   collectContiguousDiskRange,
   collectContiguousTailRange,
@@ -136,7 +140,8 @@ export interface BufferedSinceResult {
 export interface RawSessionTarget {
   readonly wantsDeltas?: boolean;
   send(envelope: EventEnvelope): void;
-  onEvicted?(info: { readonly epoch: string; readonly seq: number }): void;
+  onEvicted?(info: { readonly epoch: string; readonly seq: number; readonly reason?: 'session_evicted' | 'journal_gap' }): void;
+  onGap?(info: { readonly epoch: string; readonly seq: number; readonly reason: 'journal_gap' }): void;
 }
 
 export interface GlobalRawTarget {
@@ -217,6 +222,19 @@ interface PendingTranscriptSeed {
   readonly timing: SessionViewTimingContext;
 }
 
+interface QueuedBackpressureState {
+  count: number;
+  omittedBytesAtLeast: number;
+  hasAttention: boolean;
+  isGlobal: boolean;
+}
+
+interface QueuedSessionTask {
+  readonly run: () => Promise<void> | void;
+  readonly liveBytes: number;
+  readonly backpressure?: QueuedBackpressureState;
+}
+
 interface SessionState {
   readonly sessionId: string;
   readonly sessionHandle?: ISessionScopeHandle;
@@ -233,7 +251,7 @@ interface SessionState {
   readonly rawTargets: Set<RawSessionTarget>;
   readonly interactionConsumers: Map<BroadcastTarget, string>;
   interactionService?: ISessionInteractionService;
-  readonly taskQueue: Array<{ readonly run: () => Promise<void> | void; readonly liveBytes: number }>;
+  readonly taskQueue: QueuedSessionTask[];
   queuedLiveBytes: number;
   queueDrainPromise?: Promise<void>;
   readonly agentDisposables: Map<string, IDisposable>;
@@ -249,6 +267,7 @@ export const DEFAULT_MAX_BUFFER_SIZE = 1000;
 const MAX_TAIL_BUFFER_BYTES = 8 * 1024 * 1024;
 const MAX_SESSION_QUEUE_LIVE_BYTES = 4 * 1024 * 1024;
 const MAX_PROCESS_QUEUE_LIVE_BYTES = 64 * 1024 * 1024;
+const MIN_QUEUED_TASK_BYTES = 256;
 const MAX_GLOBAL_RAW_RING_BYTES = 4 * 1024 * 1024;
 const GLOBAL_SESSION_ID = '__global__';
 const TRANSCRIPT_RESET_TAIL_TURNS = 20;
@@ -2698,7 +2717,9 @@ export class SessionEventBroadcaster {
 
     const projected = preProjectEventForQueue(event, volatile, MAX_SINGLE_JOURNAL_LINE_BYTES);
     let finalProjected: QueuedDispatchPayload = projected;
-    let liveBytes = 0;
+    let liveBytes = MIN_QUEUED_TASK_BYTES;
+    let backpressureDropped = false;
+    let backpressureOmittedBytes = 0;
 
     if (projected.kind === 'oversized_gap') {
       const wantsRaw = this.hasUnsuppressedRecipient(
@@ -2715,27 +2736,124 @@ export class SessionEventBroadcaster {
           processQueuedLiveBytes + probe.bytes <= MAX_PROCESS_QUEUE_LIVE_BYTES
         ) {
           finalProjected = { ...projected, liveRawEvent: event };
-          liveBytes = probe.bytes;
+          liveBytes = Math.max(MIN_QUEUED_TASK_BYTES, probe.bytes);
         }
       }
-    } else if (
-      !volatile &&
-      (state.queuedLiveBytes + projected.estimatedBytes > MAX_SESSION_QUEUE_LIVE_BYTES ||
-        processQueuedLiveBytes + projected.estimatedBytes > MAX_PROCESS_QUEUE_LIVE_BYTES)
-    ) {
-      finalProjected = {
-        kind: 'oversized_gap',
-        trackerEvent: event,
-        eventType: event.type,
-        agentId: typeof event.agentId === 'string' ? event.agentId : null,
-        routingKnown: false,
-        omittedBytesAtLeast: projected.estimatedBytes,
-        reason: 'queue_backpressure',
-        ...(event.time !== undefined ? { time: event.time } : {}),
-        estimatedBytes: 256,
-      };
+      if (
+        finalProjected.kind === 'oversized_gap' &&
+        finalProjected.liveRawEvent === undefined &&
+        (state.queuedLiveBytes + MIN_QUEUED_TASK_BYTES > MAX_SESSION_QUEUE_LIVE_BYTES ||
+          processQueuedLiveBytes + MIN_QUEUED_TASK_BYTES > MAX_PROCESS_QUEUE_LIVE_BYTES)
+      ) {
+        backpressureDropped = true;
+        backpressureOmittedBytes = projected.omittedBytesAtLeast;
+      }
+    } else if (!volatile) {
+      const neededBytes = Math.max(MIN_QUEUED_TASK_BYTES, projected.estimatedBytes);
+      if (
+        state.queuedLiveBytes + neededBytes > MAX_SESSION_QUEUE_LIVE_BYTES ||
+        processQueuedLiveBytes + neededBytes > MAX_PROCESS_QUEUE_LIVE_BYTES
+      ) {
+        backpressureDropped = true;
+        backpressureOmittedBytes = projected.estimatedBytes;
+      } else {
+        liveBytes = neededBytes;
+      }
     } else {
-      liveBytes = projected.estimatedBytes;
+      liveBytes = Math.max(MIN_QUEUED_TASK_BYTES, Math.min(projected.estimatedBytes, MAX_SINGLE_JOURNAL_LINE_BYTES));
+    }
+
+    if (backpressureDropped && !volatile) {
+      const eventHasAttention = isAttentionEventType(event.type);
+      const eventIsGlobal = isGlobalEventType(event.type);
+      const tailTask = state.taskQueue.at(-1);
+      if (
+        contextAuthoritativeRef === undefined &&
+        fallbackSplice === undefined &&
+        tailTask?.backpressure !== undefined
+      ) {
+        tailTask.backpressure.count += 1;
+        tailTask.backpressure.omittedBytesAtLeast += backpressureOmittedBytes;
+        tailTask.backpressure.hasAttention ||= eventHasAttention;
+        tailTask.backpressure.isGlobal ||= eventIsGlobal;
+        this.ensureQueueDraining(state);
+        return;
+      }
+
+      const bpState: QueuedBackpressureState = {
+        count: 1,
+        omittedBytesAtLeast: backpressureOmittedBytes,
+        hasAttention: eventHasAttention,
+        isGlobal: eventIsGlobal,
+      };
+      const trackerStub = buildLightweightTrackerStub(event);
+      const bpLiveBytes = MIN_QUEUED_TASK_BYTES;
+      adjustQueueLiveBytes(state, bpLiveBytes);
+      state.taskQueue.push({
+        liveBytes: bpLiveBytes,
+        backpressure: bpState,
+        run: async () => {
+          try {
+            if (contextAuthoritativeRef !== undefined) {
+              state.contextView = {
+                messages: contextAuthoritativeRef,
+                revision: state.contextView.revision + 1,
+              };
+            } else if (fallbackSplice !== undefined) {
+              const prev = state.contextView.messages;
+              state.contextView = {
+                messages: [
+                  ...prev.slice(0, fallbackSplice.start),
+                  ...fallbackSplice.messages,
+                  ...prev.slice(fallbackSplice.start + fallbackSplice.deleteCount),
+                ],
+                revision: state.contextView.revision + 1,
+              };
+            }
+            if (bpState.count === 1) {
+              state.tracker.apply(state.sessionId, trackerStub);
+              state.roster.apply(state.sessionId, trackerStub);
+            }
+            const fromSeq = state.journal.nextSeq();
+            let toSeq = fromSeq;
+            for (let i = 1; i < bpState.count; i += 1) {
+              toSeq = state.journal.nextSeq();
+            }
+            const outcome = state.journal.appendGap(toSeq, {
+              fromSeq,
+              eventType: '*',
+              agentId: null,
+              routingKnown: false,
+              omittedBytesAtLeast: bpState.omittedBytesAtLeast,
+              reason: 'queue_backpressure',
+              sessionId: state.sessionId,
+              advancesAttention: bpState.hasAttention,
+            });
+            this.pushTailOutcome(state, outcome);
+            const frame = buildResyncRequired(state.sessionId, 'journal_gap', toSeq, state.journal.epoch);
+            if (bpState.isGlobal) {
+              const recipients = new Set<BroadcastTarget>(this.globalTargets);
+              for (const target of this.allTargets()) recipients.add(target);
+              for (const target of recipients) {
+                try {
+                  target.sendControl?.(frame);
+                } catch {}
+              }
+            } else {
+              for (const target of state.targets.keys()) {
+                try {
+                  target.sendControl?.(frame);
+                } catch {}
+              }
+            }
+            this.notifyRawTargetsGap(state, toSeq);
+          } catch (error: unknown) {
+            this.logDispatchDropped(state.sessionId, 'queue_backpressure', error);
+          }
+        },
+      });
+      this.ensureQueueDraining(state);
+      return;
     }
 
     this.enqueueStateTask(
@@ -2765,27 +2883,46 @@ export class SessionEventBroadcaster {
   }
 
   private enqueueContextLoopEvent(state: SessionState, event: Event): void {
+    if (event.type !== 'context.append_loop_event') return;
     const authoritativeRef = state.authoritativeContext
       ? readContextMessagesRef(state.mainAgent)
       : undefined;
-    this.enqueueStateTask(
-      state,
-      () => {
-        if (event.type !== 'context.append_loop_event') return;
-        if (authoritativeRef !== undefined) {
+    const trackerStub = buildLightweightLoopEventStub(event);
+    if (authoritativeRef !== undefined) {
+      this.enqueueStateTask(
+        state,
+        () => {
           state.contextView = {
             messages: authoritativeRef,
             revision: state.contextView.revision + 1,
           };
-        } else {
-          state.contextView = {
-            messages: foldLoopEvent(state.contextView.messages, event.event),
-            revision: state.contextView.revision + 1,
-          };
+          if (trackerStub !== undefined) {
+            state.tracker.apply(state.sessionId, trackerStub);
+          }
+        },
+        event.type,
+        MIN_QUEUED_TASK_BYTES,
+      );
+      return;
+    }
+    const loopPayload = event.event;
+    const estimated = estimateJsonByteLengthBounded(loopPayload, MAX_SESSION_QUEUE_LIVE_BYTES);
+    const liveBytes = Number.isFinite(estimated)
+      ? Math.max(MIN_QUEUED_TASK_BYTES, Math.min(estimated, MAX_SESSION_QUEUE_LIVE_BYTES))
+      : MIN_QUEUED_TASK_BYTES;
+    this.enqueueStateTask(
+      state,
+      () => {
+        state.contextView = {
+          messages: foldLoopEvent(state.contextView.messages, loopPayload),
+          revision: state.contextView.revision + 1,
+        };
+        if (trackerStub !== undefined) {
+          state.tracker.apply(state.sessionId, trackerStub);
         }
-        state.tracker.apply(state.sessionId, event);
       },
       event.type,
+      liveBytes,
     );
   }
 
@@ -3009,11 +3146,7 @@ export class SessionEventBroadcaster {
             target.sendControl?.(frame);
           } catch {}
         }
-        for (const rawTarget of state.rawTargets) {
-          try {
-            rawTarget.onEvicted?.({ epoch: journal.epoch, seq: durableSeq });
-          } catch {}
-        }
+        this.notifyRawTargetsGap(state, durableSeq);
       }
       return;
     }
@@ -3025,11 +3158,7 @@ export class SessionEventBroadcaster {
         } catch {}
       }
     } else if (!volatile) {
-      for (const rawTarget of state.rawTargets) {
-        try {
-          rawTarget.onEvicted?.({ epoch: journal.epoch, seq: durableSeq });
-        } catch {}
-      }
+      this.notifyRawTargetsGap(state, durableSeq);
     }
 
     const subject = { eventType, agentId, routingKnown };
@@ -3100,6 +3229,16 @@ export class SessionEventBroadcaster {
       payload: event,
       ...extras,
     };
+  }
+
+  private notifyRawTargetsGap(state: SessionState, seq: number): void {
+    const info = { epoch: state.journal.epoch, seq, reason: 'journal_gap' as const };
+    for (const rawTarget of state.rawTargets) {
+      try {
+        if (rawTarget.onGap !== undefined) rawTarget.onGap(info);
+        else rawTarget.onEvicted?.(info);
+      } catch {}
+    }
   }
 
   private *allTargets(): Iterable<BroadcastTarget> {

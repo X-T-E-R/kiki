@@ -8,6 +8,7 @@ const REUSABLE_SCRATCH_BYTES = 256 * 1024;
 export const MAX_SINGLE_JOURNAL_LINE_BYTES = 256 * 1024;
 
 const reusableScratch = new Uint8Array(REUSABLE_SCRATCH_BYTES);
+let reusableScratchInUse = false;
 const HEX_DIGITS = new Uint8Array([
   0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
   0x38, 0x39, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66,
@@ -28,16 +29,26 @@ class BoundedUtf8JsonWriter {
   private offset = 0;
   private readonly maxBytes: number;
   private readonly dynamic: boolean;
+  private readonly borrowedScratch: boolean;
   private readonly seen = new Set<object>();
 
   constructor(maxBytes: number, dynamic: boolean) {
     this.maxBytes = maxBytes;
     this.dynamic = dynamic;
-    if (!dynamic && maxBytes <= reusableScratch.byteLength) {
+    if (!dynamic && maxBytes <= reusableScratch.byteLength && !reusableScratchInUse) {
+      reusableScratchInUse = true;
+      this.borrowedScratch = true;
       this.buf = reusableScratch;
     } else {
+      this.borrowedScratch = false;
       const initial = Math.min(Math.max(4096, 64), Math.max(64, maxBytes));
       this.buf = new Uint8Array(initial);
+    }
+  }
+
+  release(): void {
+    if (this.borrowedScratch) {
+      reusableScratchInUse = false;
     }
   }
 
@@ -47,7 +58,7 @@ class BoundedUtf8JsonWriter {
       throw new BudgetExceededSignal(needed);
     }
     if (needed <= this.buf.byteLength) return;
-    if (!this.dynamic) {
+    if (!this.dynamic && this.borrowedScratch) {
       throw new BudgetExceededSignal(needed);
     }
     let nextSize = this.buf.byteLength;
@@ -189,7 +200,7 @@ class BoundedUtf8JsonWriter {
         if (this.offset + lowerBound > this.maxBytes) {
           throw new BudgetExceededSignal(this.offset + lowerBound);
         }
-      } else if (ArrayBuffer.isView(value)) {
+      } else if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
         const lowerBound = value.byteLength * 5;
         if (this.offset + lowerBound > this.maxBytes) {
           throw new BudgetExceededSignal(this.offset + lowerBound);
@@ -200,9 +211,14 @@ class BoundedUtf8JsonWriter {
         value = (maybeToJson as (k: string) => unknown).call(value, key);
       }
     }
-    if (value instanceof Number) value = value.valueOf();
-    else if (value instanceof String) value = value.valueOf();
-    else if (value instanceof Boolean) value = value.valueOf();
+    if (typeof value === 'object' && value !== null) {
+      const tag = Object.prototype.toString.call(value);
+      if (tag === '[object Number]' || tag === '[object String]' || tag === '[object Boolean]') {
+        value = (value as { valueOf(): unknown }).valueOf();
+      } else if (tag === '[object BigInt]') {
+        throw new TypeError('Do not know how to serialize a BigInt');
+      }
+    }
 
     if (value === null) {
       this.writeAscii('null');
@@ -314,6 +330,8 @@ export function encodeJsonLineBounded(
       return { ok: false, reason: 'exceeded', omittedBytesAtLeast: error.omittedBytesAtLeast + 1 };
     }
     return { ok: false, reason: 'invalid', error };
+  } finally {
+    writer.release();
   }
 }
 
@@ -341,6 +359,8 @@ export function encodeJsonValueBounded(
       return { ok: false, reason: 'exceeded', omittedBytesAtLeast: error.omittedBytesAtLeast };
     }
     return { ok: false, reason: 'invalid', error };
+  } finally {
+    writer.release();
   }
 }
 

@@ -262,6 +262,34 @@ export function registerRawEventsRoutes(
         return true;
       };
 
+      let pendingReset: { epoch: string; seq: number; reason: 'session_evicted' | 'journal_gap' } | undefined;
+
+      const emitResetAndClose = (epoch: string, seq: number, reason: 'session_evicted' | 'journal_gap'): void => {
+        if (closed) return;
+        writeFrame({
+          type: 'reset',
+          session_id,
+          epoch,
+          latest_seq: seq,
+          reason,
+        });
+        cleanup();
+        if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
+      };
+
+      const handleResetSignal = (epoch: string, seq: number, reason: 'session_evicted' | 'journal_gap'): void => {
+        if (closed) return;
+        if (!replayDone) {
+          pendingReset = {
+            epoch,
+            seq: Math.max(pendingReset?.seq ?? 0, seq),
+            reason: pendingReset?.reason === 'session_evicted' ? 'session_evicted' : reason,
+          };
+          return;
+        }
+        emitResetAndClose(epoch, seq, reason);
+      };
+
       const target: RawSessionTarget = {
         wantsDeltas: grade === 'delta',
         send(envelope) {
@@ -276,17 +304,11 @@ export function registerRawEventsRoutes(
           if (envelope.volatile !== true) lastEmittedSeq = envelope.seq;
           writeFrame(projectRawFrame(envelope));
         },
-        onEvicted({ epoch, seq }) {
-          if (closed) return;
-          writeFrame({
-            type: 'reset',
-            session_id,
-            epoch,
-            latest_seq: seq,
-            reason: 'session_evicted',
-          });
-          cleanup();
-          if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
+        onGap({ epoch, seq, reason }) {
+          handleResetSignal(epoch, seq, reason);
+        },
+        onEvicted({ epoch, seq, reason }) {
+          handleResetSignal(epoch, seq, reason ?? 'session_evicted');
         },
       };
 
@@ -338,6 +360,10 @@ export function registerRawEventsRoutes(
       }
 
       replayDone = true;
+      if (pendingReset !== undefined && (pendingReset.reason === 'session_evicted' || pendingReset.seq > lastEmittedSeq)) {
+        emitResetAndClose(pendingReset.epoch, pendingReset.seq, pendingReset.reason);
+        return;
+      }
       for (const pending of bufferedQueue.splice(0)) {
         if (closed) return;
         if (pending.volatile !== true && pending.seq <= lastEmittedSeq) continue;

@@ -5196,5 +5196,41 @@ describe('SessionEventBroadcaster', () => {
       expect(metrics).toBeDefined();
       expect(metrics!.tailBytes).toBeLessThanOrEqual(8 * 1024 * 1024);
     });
+
+    it('reports journal_gap rather than session_evicted to raw targets on oversized live drops and drops giant loop payloads on authoritative context', async () => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      let authoritativeMessages: Array<{ role: 'user' | 'assistant'; content: Array<{ type: 'text'; text: string }>; toolCalls: never[] }> = [];
+      main.set(IAgentContextMemoryService, { get: () => authoritativeMessages });
+      sessions.set('s1', lc);
+
+      const gapSignals: Array<{ epoch: string; seq: number; reason: string }> = [];
+      const evictedSignals: Array<{ epoch: string; seq: number; reason?: string }> = [];
+      const detach = await bc.attachRawSessionTarget('s1', {
+        wantsDeltas: false,
+        send: () => {},
+        onGap: (info) => { gapSignals.push(info); },
+        onEvicted: (info) => { evictedSignals.push(info); },
+      });
+
+      main.bus.emit(agentEvent('context.append_loop_event', {
+        event: {
+          type: 'tool.result',
+          toolCallId: 'huge-loop-tc',
+          output: 'L'.repeat(16 * 1024 * 1024),
+        },
+      }));
+      main.bus.emit(agentEvent('tool.result', {
+        turnId: 1,
+        toolCallId: 'giant-raw-drop',
+        output: 'Z'.repeat(16 * 1024 * 1024),
+      }));
+      await bc.flushSessionJournal('s1');
+
+      expect(gapSignals.length).toBeGreaterThanOrEqual(1);
+      expect(gapSignals[0]!.reason).toBe('journal_gap');
+      expect(evictedSignals).toHaveLength(0);
+      detach();
+    });
   });
 });

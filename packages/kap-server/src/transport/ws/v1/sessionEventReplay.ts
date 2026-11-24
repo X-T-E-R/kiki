@@ -480,7 +480,8 @@ export type QueuedDispatchPayload =
       readonly liveRawEvent?: Event;
     };
 
-function buildLightweightTrackerStub(event: Event): Event {
+/** Extract only lightweight tracker/roster fields from an event without retaining giant payloads. */
+export function buildLightweightTrackerStub(event: Event): Event {
   const rec = event as unknown as Record<string, unknown>;
   const stub: Record<string, unknown> = {
     type: event.type,
@@ -509,6 +510,69 @@ function buildLightweightTrackerStub(event: Event): Event {
     };
   }
   return stub as unknown as Event;
+}
+
+/** Extract only the bounded loop-event metadata required by `InFlightTurnTracker`. */
+export function buildLightweightLoopEventStub(event: Event): Event | undefined {
+  if (event.type !== 'context.append_loop_event') return undefined;
+  const loop = event.event as unknown as Record<string, unknown> | undefined;
+  if (typeof loop !== 'object' || loop === null) return undefined;
+  const loopType = loop['type'];
+  if (loopType === 'step.begin') {
+    return {
+      type: 'context.append_loop_event',
+      agentId: event.agentId,
+      sessionId: event.sessionId,
+      event: {
+        type: 'step.begin',
+        turnId: loop['turnId'],
+        step: loop['step'],
+        uuid: loop['uuid'],
+      },
+    } as unknown as Event;
+  }
+  if (loopType === 'content.part') {
+    const part = loop['part'] as { readonly type?: unknown } | undefined;
+    if (part?.type !== 'text' && part?.type !== 'think') return undefined;
+    return {
+      type: 'context.append_loop_event',
+      agentId: event.agentId,
+      sessionId: event.sessionId,
+      event: {
+        type: 'content.part',
+        turnId: loop['turnId'],
+        stepUuid: loop['stepUuid'],
+        part: { type: part.type },
+      },
+    } as unknown as Event;
+  }
+  if (loopType === 'tool.call') {
+    const argsProbe = encodeJsonValueBounded(loop['args'], 8192);
+    return {
+      type: 'context.append_loop_event',
+      agentId: event.agentId,
+      sessionId: event.sessionId,
+      event: {
+        type: 'tool.call',
+        turnId: loop['turnId'],
+        toolCallId: loop['toolCallId'],
+        name: loop['name'],
+        ...(argsProbe.ok ? { args: loop['args'] } : {}),
+      },
+    } as unknown as Event;
+  }
+  if (loopType === 'tool.result') {
+    return {
+      type: 'context.append_loop_event',
+      agentId: event.agentId,
+      sessionId: event.sessionId,
+      event: {
+        type: 'tool.result',
+        toolCallId: loop['toolCallId'],
+      },
+    } as unknown as Event;
+  }
+  return undefined;
 }
 
 /**
