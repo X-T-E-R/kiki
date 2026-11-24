@@ -1,11 +1,14 @@
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import Fastify from 'fastify';
-import type { Scope } from '@kiki/agent-core-v2';
+import { ISessionIndex, ISessionManager, type Scope } from '@kiki/agent-core-v2';
 import { AgentTranscript, applyContentSegment, jsonBytes, TRANSCRIPT_COVERAGE_VERSION, transcriptDetailListResponseSchema, type AgentTranscriptSnapshot, type TranscriptStep, type TranscriptTask, type TranscriptTurn } from '@kiki/transcript';
 import { sessionViewTranscriptPageInputSchema } from '@kiki/klient';
 import { createKlient } from '@kiki/klient/http';
 import { CanonicalEntityPreparingError } from '../src/services/history/historyCanonicalReader';
-import type { TranscriptService } from '../src/services/transcript/transcriptService';
+import { TranscriptService } from '../src/services/transcript/transcriptService';
 import { registerSessionViewHttp } from '../src/transport/klient/sessionViewHttp';
 import { registerTranscriptRoutes } from '../src/routes/transcript';
 import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
@@ -2024,5 +2027,161 @@ describe('bounded session-view canonical reads', () => {
     const decodedNext = JSON.parse(Buffer.from(page!.next_cursor!, 'base64url').toString('utf8')) as Record<string, unknown>;
     expect(decodedNext['anchor']).toBe('turn:t141');
     expect(decodedNext['orphanTurn']).toBeUndefined();
+  });
+
+  it('keeps leading split orphan turn trimmed when cold/resident older-page merge overlaps firstResidentTurn', async () => {
+    const liveTranscript = new AgentTranscript('main');
+    const resident142: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't142',
+      ordinal: 142,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'TURN_MARKER_000142',
+      steps: [],
+    };
+    const resident143: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't143',
+      ordinal: 143,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'TURN_MARKER_000143',
+      steps: [],
+    };
+    liveTranscript.apply([{
+      op: 'reset',
+      agentId: 'main',
+      snapshot: { ...empty(), items: [resident142, resident143], hasMoreOlder: true },
+    }]);
+    const splitOrphan140: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't140',
+      ordinal: 140,
+      state: 'completed',
+      origin: { kind: 'other' },
+      steps: [],
+    };
+    const complete141: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't141',
+      ordinal: 141,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'TURN_MARKER_000141',
+      steps: [],
+    };
+    const coldSnapshot: AgentTranscriptSnapshot = {
+      ...empty(),
+      items: [splitOrphan140, complete141, resident142, resident143],
+      hasMoreOlder: true,
+    };
+    const readFullAgentSnapshot = vi.fn(async (_sid: string, _aid: string, _transcript: unknown, _signal: unknown, _source: unknown, _beforeTurn: unknown, seed: AgentTranscriptSnapshot) => ({
+      ...seed,
+      items: [...seed.items],
+      hasMoreOlder: true,
+    }));
+    const service = {
+      forSessionLive: () => ({ agents: () => [], getAgent: () => liveTranscript }),
+      ensureAgentHistory: async () => liveTranscript,
+      isTranscriptLiveCoverageVerified: () => false,
+      verifyTranscriptLiveCoverage: async () => false,
+      getTranscriptCursor: () => ({ seq: 16, epoch: 'live-epoch' }),
+      readColdPageSnapshot: async (_sid: string, _aid: string, project: (s: AgentTranscriptSnapshot) => AgentTranscriptSnapshot) => project(coldSnapshot),
+      readFullAgentSnapshot,
+      reconcileQuestionSnapshot: (_session: string, snapshot: AgentTranscriptSnapshot) => snapshot,
+    } as unknown as TranscriptService;
+
+    const beforeCursor = Buffer.from(JSON.stringify({
+      v: 2,
+      agentId: 'main',
+      source: 'derived',
+      epoch: 'live-epoch',
+      anchor: 'turn:t143',
+    })).toString('base64url');
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', {
+      agentId: 'main',
+      beforeItem: beforeCursor,
+      pageSize: 20,
+    });
+    expect(readFullAgentSnapshot).toHaveBeenCalledTimes(1);
+    expect(page?.items.map((item) => item.kind === 'turn' ? item.turnId : item.kind)).toEqual(['t141', 't142']);
+    expect(page?.has_more).toBe(true);
+    const decodedNext = JSON.parse(Buffer.from(page!.next_cursor!, 'base64url').toString('utf8')) as Record<string, unknown>;
+    expect(decodedNext['anchor']).toBe('turn:t141');
+    expect(decodedNext['orphanTurn']).toBeUndefined();
+  });
+
+  it('seeks strictly older turns before t151 in one non-preparing slice on a >9 MiB live-appending wire without scanning from byte 0', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-s18-anchor-seek-'));
+    try {
+      const sessionId = 'giant-s18';
+      const workspaceId = 'ws-s18';
+      const wireDir = join(home, 'sessions', workspaceId, sessionId, 'agents', 'main');
+      await mkdir(wireDir, { recursive: true });
+      const wirePath = join(wireDir, 'wire.jsonl');
+      const pad = 'x'.repeat(62 * 1024);
+      const lines: string[] = [];
+      for (let turn = 1; turn <= 160; turn += 1) {
+        lines.push(JSON.stringify({
+          type: 'turn.prompt',
+          turnId: turn,
+          promptId: `prompt-${turn}`,
+          userMessageId: `msg-user-${turn}`,
+          input: [{ type: 'text', text: `TURN_MARKER_${String(turn).padStart(6, '0')} Synthetic turn ${turn} ${pad}` }],
+          origin: { kind: 'user' },
+          time: turn * 1000,
+        }));
+        lines.push(JSON.stringify({ type: 'turn.ended', turnId: turn, reason: 'completed', time: turn * 1000 + 100 }));
+      }
+      await writeFile(wirePath, `${lines.join('\n')}\n`, 'utf8');
+
+      const coldCore = {
+        accessor: {
+          get: (token: unknown) => {
+            if (token === ISessionManager) return { get: () => undefined };
+            if (token === ISessionIndex) return { get: async (id: string) => id === sessionId ? { id: sessionId, workspaceId } : undefined };
+            return undefined;
+          },
+        },
+      } as unknown as Scope;
+
+      const service = new TranscriptService({ homeDir: home, core: coldCore });
+      try {
+        const tailPage = await service.readColdPageSnapshot(sessionId, 'main', (s) => s, undefined, false, undefined, false, true);
+        expect(tailPage).toBeDefined();
+        const tailTurns = tailPage!.items.filter((item): item is TranscriptTurn => item.kind === 'turn');
+        expect(tailTurns.length).toBeGreaterThan(0);
+        const oldestTailTurn = tailTurns[0]!.turnId;
+        const oldestTailOrdinal = Number(oldestTailTurn.slice(1));
+        expect(oldestTailOrdinal).toBeGreaterThan(20);
+
+        await appendFile(
+          wirePath,
+          `${JSON.stringify({ type: 'turn.prompt', turnId: 161, promptId: 'prompt-161', userMessageId: 'msg-user-161', input: [{ type: 'text', text: 'TURN_MARKER_000161 live append' }], origin: { kind: 'user' }, time: 161_000 })}\n`,
+          'utf8',
+        );
+
+        const bytesBefore = service.memoryReport().coldReads.bytes;
+        const startedAt = performance.now();
+        const anchored = await service.readAnchoredColdSnapshot(sessionId, 'main', oldestTailTurn);
+        const elapsedMs = performance.now() - startedAt;
+        const bytesRead = service.memoryReport().coldReads.bytes - bytesBefore;
+
+        expect(anchored).toBeDefined();
+        expect(service.anchorReadState(anchored!)).not.toBe('pending');
+        const olderTurns = anchored!.items
+          .filter((item): item is TranscriptTurn => item.kind === 'turn')
+          .map((item) => Number(item.turnId.slice(1)));
+        expect(olderTurns.some((ordinal) => ordinal < oldestTailOrdinal)).toBe(true);
+        expect(olderTurns).toContain(oldestTailOrdinal - 1);
+        expect(bytesRead).toBeLessThan(3 << 20);
+        expect(elapsedMs).toBeLessThan(2000);
+      } finally {
+        service.dispose();
+      }
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });

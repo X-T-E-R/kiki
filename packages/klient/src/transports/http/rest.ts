@@ -21,7 +21,7 @@ import { createExternalClientsFacade } from './external-clients.js';
 import { listAgentTasksQuerySchema, listAgentTasksResponseSchema } from '../../contract/session/agent-tasks.js';
 import { sessionMediaPlaybackSchema } from '../../contract/session/media-playback.js';
 import { agentReferenceCandidatesQuerySchema, agentReferenceCandidatesResponseSchema, executorDiscoveryResponseSchema,
-  executorAccountSourcesResponseSchema, executorAccountsResponseSchema, harnessQuotaCacheResponseSchema, harnessQuotaReadRequestSchema, pluginModelCatalogSchema } from '@kiki/protocol';
+  executorAccountSourcesResponseSchema, executorAccountsResponseSchema, harnessQuotaActionRequestSchema, harnessQuotaActionResponseSchema, harnessQuotaCacheResponseSchema, harnessQuotaReadRequestSchema, pluginModelCatalogSchema } from '@kiki/protocol';
 import type {
   ActivateSkillRequest,
   AuthSummary,
@@ -699,6 +699,11 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       read: async (source, options) => harnessQuotaCacheResponseSchema.parse(await transport.json('/harness-quota/read', {
         ...options, method: 'POST', body: harnessQuotaReadRequestSchema.parse({ source }),
       })),
+      performAction: async (sourceId, body, options) => harnessQuotaActionResponseSchema.parse(
+        await transport.json(`/harness-quota/${encodeURIComponent(sourceId)}/action`, {
+          ...options, method: 'POST', body: harnessQuotaActionRequestSchema.parse(body),
+        }),
+      ),
     },
 
     agents: {

@@ -89,7 +89,11 @@ export function shownPinnedNavItems(
 export type SidebarMode = 'inbox' | 'sessions';
 
 export interface LayoutPreferences extends SessionListPreferences {
-  /** The primary sidebar surface shown for the current layout. */
+  /**
+   * Explicit sidebar surface chosen by the user (`'inbox'` or `'sessions'`).
+   * `undefined` means no explicit choice has been saved yet, so the sidebar
+   * follows automatic attention routing (`needsYouCount > 0 ? 'inbox' : 'sessions'`).
+   */
   sidebarMode?: SidebarMode;
   /** The persisted space filter for the sidebar; `all` shows every space. */
   spaceScope?: string;
@@ -137,7 +141,6 @@ export const DEFAULT_LAYOUT_PREFERENCES: LayoutPreferences = {
   groupBy: 'time',
   sortBy: 'updated-desc',
   filters: DEFAULT_SESSION_LIST_FILTERS,
-  sidebarMode: 'inbox',
   spaceScope: 'all',
   sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
   railWidth: RAIL_DEFAULT_WIDTH,
@@ -158,8 +161,8 @@ function isSortBy(value: unknown): value is SessionSortOrder {
   return isSessionSortOrder(value);
 }
 
-function parseSidebarMode(value: unknown): SidebarMode {
-  return value === 'sessions' ? 'sessions' : 'inbox';
+function parseSidebarMode(value: unknown): SidebarMode | undefined {
+  return value === 'sessions' || value === 'inbox' ? value : undefined;
 }
 
 function parseSpaceScope(value: unknown): string {
@@ -231,10 +234,11 @@ export function readLayoutPreferences(): LayoutPreferences {
   const sidebarPersonasShowAll = typeof stored['sidebarPersonasShowAll'] === 'boolean'
     ? stored['sidebarPersonasShowAll']
     : undefined;
+  const parsedSidebarMode = parseSidebarMode(sidebarMode);
   return {
     groupBy: isGroupBy(groupBy) ? groupBy : DEFAULT_LAYOUT_PREFERENCES.groupBy,
     sortBy: isSortBy(sortBy) ? sortBy : DEFAULT_LAYOUT_PREFERENCES.sortBy,
-    sidebarMode: parseSidebarMode(sidebarMode),
+    ...(parsedSidebarMode !== undefined ? { sidebarMode: parsedSidebarMode } : {}),
     spaceScope: parseSpaceScope(spaceScope),
     filters: parseSessionListFilters(stored['filters']),
     sidebarWidth: clamp(
@@ -314,10 +318,12 @@ export function resetLayoutPreferencesForTests(): void {
 
 export function writeLayoutPreferences(patch: Partial<LayoutPreferences>): LayoutPreferences {
   const current = layoutPreferencesSnapshot();
+  const nextSidebarMode = 'sidebarMode' in patch
+    ? parseSidebarMode(patch.sidebarMode)
+    : current.sidebarMode;
   const next: LayoutPreferences = {
     ...current,
     ...patch,
-    sidebarMode: patch.sidebarMode !== undefined ? parseSidebarMode(patch.sidebarMode) : current.sidebarMode ?? 'inbox',
     spaceScope: patch.spaceScope !== undefined ? parseSpaceScope(patch.spaceScope) : current.spaceScope ?? 'all',
     sidebarWidth: clamp(patch.sidebarWidth ?? current.sidebarWidth, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH),
     railWidth: clamp(patch.railWidth ?? current.railWidth, RAIL_MIN_WIDTH, RAIL_MAX_WIDTH),
@@ -340,6 +346,11 @@ export function writeLayoutPreferences(patch: Partial<LayoutPreferences>): Layou
         ? { sidebarPersonasShowAll: current.sidebarPersonasShowAll }
         : {}),
   };
+  if (nextSidebarMode !== undefined) {
+    next.sidebarMode = nextSidebarMode;
+  } else {
+    delete next.sidebarMode;
+  }
   // Every write stores the whole record, so an unrelated write (a width, the
   // grouping) would otherwise save the default tool list as if it had been
   // chosen. Only a list someone actually set is stored; the default stays

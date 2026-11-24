@@ -226,6 +226,37 @@ function Get-ExpectedHeadlessPort([object]$SpaceState) {
     return Resolve-ExpectedHeadlessPort $false $launchArgs $origPort
 }
 
+function Test-RecordedHeadlessPortMatch([object]$SpaceState, [object]$ServerInfo) {
+    if ($null -eq $SpaceState -or [bool](Get-ObjectProperty $SpaceState 'hadDesktop')) { return $true }
+    $expPort = Get-ExpectedHeadlessPort $SpaceState
+    if ($null -eq $expPort -or $expPort -le 0) { return $true }
+    if ($null -eq $ServerInfo -or $null -eq $ServerInfo.instance) { return $false }
+    return ([int]$ServerInfo.instance.port -eq $expPort)
+}
+
+function Test-RecoverUniformFastPath(
+    [object[]]$RecordedSpaces,
+    [hashtable]$RunningByHome,
+    [hashtable]$UnhealthyByHome,
+    [bool]$ShouldRollback,
+    [object[]]$MissingSpaces,
+    [string[]]$UniqueRunningReleases,
+    [hashtable]$TokensByHome
+) {
+    if ($MissingSpaces.Count -ne 0 -or $UnhealthyByHome.Count -ne 0 -or $ShouldRollback -or $UniqueRunningReleases.Count -ne 1) {
+        return $false
+    }
+    foreach ($spState in @($RecordedSpaces)) {
+        $k = ([string]$spState.kikiHome).ToLowerInvariant()
+        if (-not $RunningByHome.ContainsKey($k)) { return $false }
+        $srv = $RunningByHome[$k]
+        if (-not (Test-RecordedHeadlessPortMatch $spState $srv)) { return $false }
+        if ($srv.layout -ne 'active') { return $false }
+        if (-not (Test-ServerHealthz $srv.instance $TokensByHome[$k])) { return $false }
+    }
+    return $true
+}
+
 function Test-TcpPortListening([int]$Port) {
     if ($Port -le 0 -or $Port -gt 65535) { return $false }
     try {
@@ -1793,10 +1824,7 @@ try {
             if (-not $runningByHome.ContainsKey($k)) { return $false }
             $srv = $runningByHome[$k]
             if ($srv.releaseId -cne $desiredReleaseId -or $srv.meta.build_id -cne $desiredBuildId -or $srv.layout -ne 'active') { return $true }
-            if (-not [bool]$_.hadDesktop) {
-                $expPort = Get-ExpectedHeadlessPort $_
-                if ($null -ne $expPort -and $expPort -gt 0 -and [int]$srv.instance.port -ne $expPort) { return $true }
-            }
+            if (-not (Test-RecordedHeadlessPortMatch $_ $srv)) { return $true }
             return (-not (Test-ServerHealthz $srv.instance $tokensByHome[$k]))
         })
         $missingSpaces = @($recordedSpaces | Where-Object {
@@ -1805,7 +1833,7 @@ try {
 
         $uniqueRunningReleases = @($runningByHome.Values | ForEach-Object { [string]$_.releaseId } | Select-Object -Unique)
         $allHealthySurviving = ($unhealthyByHome.Count -eq 0) -and ($wrongSpaces.Count -eq 0)
-        $allUniformOnRecordedRelease = ($missingSpaces.Count -eq 0) -and ($unhealthyByHome.Count -eq 0) -and (-not $shouldRollback) -and ($uniqueRunningReleases.Count -eq 1) -and (@($runningByHome.Keys | Where-Object { -not (Test-ServerHealthz $runningByHome[$_].instance $tokensByHome[$_]) }).Count -eq 0)
+        $allUniformOnRecordedRelease = Test-RecoverUniformFastPath $recordedSpaces $runningByHome $unhealthyByHome $shouldRollback $missingSpaces $uniqueRunningReleases $tokensByHome
 
         if ($allUniformOnRecordedRelease -or ($allHealthySurviving -and $missingSpaces.Count -eq 0)) {
             if ($shouldRollback) {

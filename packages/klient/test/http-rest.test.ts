@@ -1891,4 +1891,35 @@ describe('filesystem.previewHostFile (#31)', () => {
       await channel.close();
     }
   });
+
+  it('sends POST /api/harness-quota/:sourceId/action via harnessQuota.performAction with encoded sourceId', async () => {
+    const calls: Array<{ url: string; method: string; body: unknown }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
+      calls.push({ url, method: init?.method ?? 'GET', body });
+      return new Response(
+        JSON.stringify({ code: 0, msg: 'ok', data: { ok: true, message: 'switched primary' }, request_id: 'req-1' }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as unknown as typeof fetch;
+
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture-token', fetch: fetchMock });
+    try {
+      const response = await channel.rest.harnessQuota.performAction('plugin:magpie/agy', {
+        action: 'set_primary',
+        account_id: 'acc-2',
+      });
+      expect(response).toEqual({ ok: true, message: 'switched primary' });
+      expect(calls).toEqual([
+        {
+          url: 'http://example.test/api/harness-quota/plugin%3Amagpie%2Fagy/action',
+          method: 'POST',
+          body: { action: 'set_primary', account_id: 'acc-2' },
+        },
+      ]);
+    } finally {
+      await channel.close();
+    }
+  });
 });

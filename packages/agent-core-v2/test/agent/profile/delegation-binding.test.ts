@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Event } from '#/_base/event';
 import { renderPromptTemplateResult, renderSystemPromptResult } from '@kiki/agent-profiles/profileShared';
+import { agentProfileFromFile } from '@kiki/agent-profiles/agentProfileFromFile';
+import type { AgentFileDefinition } from '@kiki/agent-profiles/agentFileTypes';
 import { DEFAULT_INDEPENDENT_DELEGATION_NOTICE } from '#/agent/profile/delegationContext';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
@@ -924,5 +926,104 @@ describe('model usage policy binding', () => {
       expect(childProfile.data().spawnPolicy).toEqual({ allowedModels: ['old-model'] });
       expect(childProfile.data().allowedSubagents).toEqual(['ctf-worker']);
     } finally { await restoredChildCtx.dispose(); }
+  });
+
+  it('refreshes live catalog fields for file-backed catalog profiles like ctf while keeping explicit profile_file bindings frozen', async () => {
+    const basePrompt = (context: Parameters<typeof renderSystemPromptResult>[1]) =>
+      renderSystemPromptResult('default prompt', context, { skillActive: false });
+    const makeFileDef = (overrides: Partial<AgentFileDefinition>): AgentFileDefinition => ({
+      name: 'ctf',
+      definitionId: 'user:/home/.kiki/agents/ctf.md',
+      contributionRoot: '/home/.kiki/agents',
+      private: false,
+      path: '/home/.kiki/agents/ctf.md',
+      source: 'user',
+      description: 'CTF coordinator',
+      prompt: 'ctf prompt',
+      override: false,
+      ...overrides,
+    });
+    const oldCtf = agentProfileFromFile(
+      makeFileDef({
+        canSpawnSubagents: true,
+        allowedSubagents: ['ctf-worker'],
+        preferredSubagents: ['ctf-worker'],
+        denySubagents: ['reviewer'],
+        spawnConstraints: { allowedModels: ['old-model'] },
+        subagentLeases: { 'ctf-worker': { name: 'ctf-worker', allowedModels: ['old-model'] } },
+      }),
+      basePrompt,
+    );
+    expect(oldCtf.fileDefinition).toBeDefined();
+    const updatedCtf = agentProfileFromFile(
+      makeFileDef({
+        canSpawnSubagents: true,
+        allowedSubagents: ['ctf-worker', 'reviewer'],
+        preferredSubagents: ['reviewer'],
+        denySubagents: [],
+        spawnConstraints: { allowedModels: ['usage'] },
+        subagentLeases: { 'ctf-worker': { name: 'ctf-worker', modelAlias: 'usage' } },
+      }),
+      basePrompt,
+    );
+
+    const initialMainCtx = createTestAgent(
+      sessionService(ISessionAgentProfileCatalog, catalogWith(oldCtf)),
+      { initialConfig: { models: { usage: configuredModel } } },
+    );
+    let savedCatalogSnapshot: ReturnType<IAgentProfileService['data']>;
+    try {
+      const profile = initialMainCtx.get(IAgentProfileService);
+      await profile.bind({ profile: 'ctf', model: 'usage' });
+      expect(profile.data().boundProfile?.fileDefinition?.source).toBe('user');
+      savedCatalogSnapshot = JSON.parse(JSON.stringify(profile.data()));
+    } finally { await initialMainCtx.dispose(); }
+
+    const restoredMainCtx = createTestAgent(
+      sessionService(ISessionAgentProfileCatalog, catalogWith(updatedCtf)),
+      { initialConfig: { models: { usage: configuredModel } } },
+    );
+    try {
+      const profile = restoredMainCtx.get(IAgentProfileService);
+      profile.applyBindingSnapshot(savedCatalogSnapshot!);
+      expect(profile.data().canSpawnSubagents).toBe(true);
+      expect(profile.data().allowedSubagents).toEqual(['ctf-worker', 'reviewer']);
+      expect(profile.data().preferredSubagents).toEqual(['reviewer']);
+      expect(profile.data().denySubagents).toEqual([]);
+      expect(profile.data().spawnPolicy).toEqual({ allowedModels: ['usage'] });
+      expect(profile.data().subagentLeases).toEqual({ 'ctf-worker': { name: 'ctf-worker', modelAlias: 'usage' } });
+    } finally { await restoredMainCtx.dispose(); }
+
+    const explicitFileProfile = agentProfileFromFile(
+      makeFileDef({
+        source: 'explicit',
+        path: '/tmp/explicit-ctf.md',
+        allowedSubagents: ['ctf-worker'],
+        spawnConstraints: { allowedModels: ['old-model'] },
+      }),
+      basePrompt,
+    );
+    const explicitInitCtx = createTestAgent(
+      sessionService(ISessionAgentProfileCatalog, catalogWith(updatedCtf)),
+      { initialConfig: { models: { usage: configuredModel } } },
+    );
+    let savedExplicitSnapshot: ReturnType<IAgentProfileService['data']>;
+    try {
+      const profile = explicitInitCtx.get(IAgentProfileService);
+      await profile.bind({ resolvedProfile: explicitFileProfile, model: 'usage' });
+      expect(profile.data().boundProfile?.fileDefinition?.source).toBe('explicit');
+      savedExplicitSnapshot = JSON.parse(JSON.stringify(profile.data()));
+    } finally { await explicitInitCtx.dispose(); }
+
+    const restoredExplicitCtx = createTestAgent(
+      sessionService(ISessionAgentProfileCatalog, catalogWith(updatedCtf)),
+      { initialConfig: { models: { usage: configuredModel } } },
+    );
+    try {
+      const profile = restoredExplicitCtx.get(IAgentProfileService);
+      profile.applyBindingSnapshot(savedExplicitSnapshot!);
+      expect(profile.data().allowedSubagents).toEqual(['ctf-worker']);
+      expect(profile.data().spawnPolicy).toEqual({ allowedModels: ['old-model'] });
+    } finally { await restoredExplicitCtx.dispose(); }
   });
 });

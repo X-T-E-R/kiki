@@ -927,7 +927,7 @@ export function MediaLoadFailure({
     );
   }
 
-  const interactiveChipClass = `${chipClass} cursor-pointer transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`;
+  const interactiveChipClass = `${chipClass} cursor-pointer transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:h-auto pointer-coarse:min-h-11`;
 
   if (kind === 'transient') {
     if (onRetry === undefined) {

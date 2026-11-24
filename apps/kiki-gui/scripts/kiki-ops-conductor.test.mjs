@@ -1460,3 +1460,80 @@ test('desktop-hot-switch.ps1 Try-RuntimeSwitch distinguishes 404 unfenced, 5xx f
     rmSync(harnessDir, { recursive: true, force: true });
   }
 });
+
+test('desktop-hot-switch.ps1 -Recover fast path rejects healthy headless space on a drifted port', async () => {
+  const srv = http.createServer((req, res) => {
+    if (req.url === '/api/healthz') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((res) => srv.listen(0, '127.0.0.1', res));
+  const actualPort = srv.address().port;
+  const driftedExpectedPort = actualPort === 58627 ? 58628 : 58627;
+  const psScriptPath = join(repoRoot, 'apps', 'kiki-gui', 'scripts', 'desktop-hot-switch.ps1');
+  const psSource = readFileSync(psScriptPath, 'utf8');
+  const startIdx = psSource.indexOf('function Call-Local(');
+  const endIdx = psSource.indexOf('function Get-ProcessTreePids(');
+  assert.ok(startIdx > 0 && endIdx > startIdx, 'Could not locate helper block in desktop-hot-switch.ps1');
+  const helperBlock = psSource.slice(startIdx, endIdx);
+  const harnessDir = makeTemp();
+  const harnessPath = join(harnessDir, 'recover-port-harness.ps1');
+  writeFileSync(
+    harnessPath,
+    [
+      'param([int]$ActualPort, [int]$DriftedExpectedPort)',
+      'function Get-ObjectProperty([object]$Obj, [string]$Name) { if ($null -eq $Obj) { return $null }; $p = $Obj.PSObject.Properties[$Name]; if ($null -ne $p) { return $p.Value }; return $null }',
+      'function Test-ServerHealthz([object]$Instance, [string]$Token) {',
+      '  $resp = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/api/healthz" -f $Instance.port) -Method Get -TimeoutSec 5',
+      '  return [bool]$resp.ok',
+      '}',
+      helperBlock,
+      '$homeKey = "c:\\spaces\\ctf"',
+      '$runningByHome = @{ $homeKey = [pscustomobject]@{ releaseId = "rel-2"; layout = "active"; instance = [pscustomobject]@{ port = $ActualPort } } }',
+      '$unhealthyByHome = @{}',
+      '$tokensByHome = @{ $homeKey = "tok" }',
+      '$driftedRecorded = @([pscustomobject]@{ kikiHome = "C:\\Spaces\\ctf"; hadDesktop = $false; expectedPort = $DriftedExpectedPort; headlessOriginalPort = $DriftedExpectedPort })',
+      '$matchedRecorded = @([pscustomobject]@{ kikiHome = "C:\\Spaces\\ctf"; hadDesktop = $false; expectedPort = $ActualPort; headlessOriginalPort = $ActualPort })',
+      '$driftedPortMatch = Test-RecordedHeadlessPortMatch $driftedRecorded[0] $runningByHome[$homeKey]',
+      '$driftedFastPath = Test-RecoverUniformFastPath $driftedRecorded $runningByHome $unhealthyByHome $false @() @("rel-2") $tokensByHome',
+      '$matchedPortMatch = Test-RecordedHeadlessPortMatch $matchedRecorded[0] $runningByHome[$homeKey]',
+      '$matchedFastPath = Test-RecoverUniformFastPath $matchedRecorded $runningByHome $unhealthyByHome $false @() @("rel-2") $tokensByHome',
+      '[pscustomobject]@{ driftedPortMatch = $driftedPortMatch; driftedFastPath = $driftedFastPath; matchedPortMatch = $matchedPortMatch; matchedFastPath = $matchedFastPath } | ConvertTo-Json -Compress',
+    ].join('\n'),
+  );
+  try {
+    const out = await new Promise((resolveRun, rejectRun) => {
+      execFile(
+        'powershell',
+        [
+          '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', harnessPath,
+          '-ActualPort', String(actualPort),
+          '-DriftedExpectedPort', String(driftedExpectedPort),
+        ],
+        { encoding: 'utf8', timeout: 20_000 },
+        (err, stdout, stderr) => {
+          if (err) {
+            rejectRun(new Error(stderr || err.message));
+            return;
+          }
+          try {
+            resolveRun(JSON.parse(stdout.trim()));
+          } catch (parseErr) {
+            rejectRun(parseErr);
+          }
+        },
+      );
+    });
+    assert.equal(out.driftedPortMatch, false);
+    assert.equal(out.driftedFastPath, false);
+    assert.equal(out.matchedPortMatch, true);
+    assert.equal(out.matchedFastPath, true);
+  } finally {
+    await new Promise((res) => srv.close(res));
+    rmSync(harnessDir, { recursive: true, force: true });
+  }
+});

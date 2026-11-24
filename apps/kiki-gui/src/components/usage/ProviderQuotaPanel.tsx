@@ -157,6 +157,8 @@ export function ProviderQuotaPanel() {
                     now={state.now}
                     refreshingPluginIds={state.refreshingPluginIds}
                     pluginErrors={state.pluginErrors}
+                    pendingPluginActions={state.pendingPluginActions}
+                    pluginActionFeedbacks={state.pluginActionFeedbacks}
                     savingEngineSourceIds={state.savingEngineSourceIds}
                     refreshingNativeSourceId={state.refreshingSourceId}
                     activeRefreshSourceIds={state.activeRefreshSourceIds}
@@ -164,6 +166,7 @@ export function ProviderQuotaPanel() {
                     onClearFeedback={state.clearFeedback}
                     onSelectQuotaSource={state.handleSelectEngineQuotaSource}
                     onRefreshPluginSource={state.refreshPluginSource}
+                    onPerformPluginAction={state.performPluginAction}
                     onRefreshNativeSource={state.refreshSource}
                   />
                 </div>

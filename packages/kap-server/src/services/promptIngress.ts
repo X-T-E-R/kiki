@@ -291,18 +291,32 @@ export class PromptIngress {
   private pageKeyToken(target: Target, entry: Entry): string {
     return `${target.scope}\0${entry.ordinal}\0${entry.key}`;
   }
+  private async ensureIndexNext(target: Target, minNext: number): Promise<void> {
+    const index = await this.documents().get<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY);
+    if (index !== undefined && index.next >= minNext) return;
+    await this.documents().set<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY, { next: minNext });
+  }
   private async publish(target: Target, entry: Entry, holdsIndexLock = false): Promise<void> {
     const token = this.pageKeyToken(target, entry);
     if (this.publishedPageKeys.has(token)) {
       await this.save(target, entry);
       return;
     }
-    const ensurePage = holdsIndexLock
-      ? this.ensurePageKey(target, entry)
-      : this.lockedIndex(target, () => this.ensurePageKey(target, entry));
+    const ensureIndexAndPage = async (): Promise<void> => {
+      const settledMetadata = await Promise.allSettled([
+        this.ensureIndexNext(target, entry.ordinal + 1),
+        this.ensurePageKey(target, entry),
+      ]);
+      for (const outcome of settledMetadata) {
+        if (outcome.status === 'rejected') throw outcome.reason;
+      }
+    };
+    const ensureMetadata = holdsIndexLock
+      ? ensureIndexAndPage()
+      : this.lockedIndex(target, ensureIndexAndPage);
     const settled = await Promise.allSettled([
       this.save(target, entry),
-      ensurePage,
+      ensureMetadata,
     ]);
     for (const outcome of settled) {
       if (outcome.status === 'rejected') throw outcome.reason;

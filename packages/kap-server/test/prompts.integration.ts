@@ -18,6 +18,7 @@ import {
   IAgentProfileService,
   IAgentPromptService,
   normalizeAgentProfile,
+  IAtomicDocumentStore,
   IEventDispatcher,
   IFileSystemStorageService,
   IWireService,
@@ -1596,6 +1597,50 @@ describe('server-v2 /api prompts', () => {
     } finally {
       releaseFirstKeyLock();
       lockSpy.mockRestore();
+    }
+  });
+
+  it('repairs index.next on durable prompt retry after a partial index.json write failure so subsequent prompts do not overwrite slot 0', async () => {
+    const id = await createSession(fixture.home as string);
+    const docs = fixture.server!.core.accessor.get(IAtomicDocumentStore);
+    const originalSet = docs.set.bind(docs);
+    let failIndexOnce = true;
+    const setSpy = vi.spyOn(docs, 'set').mockImplementation(async (scope, key, value) => {
+      if (failIndexOnce && scope.endsWith('/prompt-ingress') && key === 'index.json') {
+        failIndexOnce = false;
+        throw new Error('Simulated index.json write failure');
+      }
+      return originalSet(scope, key, value);
+    });
+    try {
+      const firstFailed = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        admission: 'durable',
+        prompt_id: 'partial-index-p1',
+        content: [{ type: 'text', text: 'first prompt body' }],
+      });
+      expect(firstFailed.body.code).not.toBe(0);
+
+      const firstRetried = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        admission: 'durable',
+        prompt_id: 'partial-index-p1',
+        content: [{ type: 'text', text: 'first prompt body' }],
+      });
+      expect(firstRetried.body.code, firstRetried.body.msg).toBe(0);
+      expect(firstRetried.body.data.prompt_id).toBe('partial-index-p1');
+
+      const second = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        admission: 'durable',
+        prompt_id: 'partial-index-p2',
+        content: [{ type: 'text', text: 'second prompt body' }],
+      });
+      expect(second.body.code, second.body.msg).toBe(0);
+      expect(second.body.data.prompt_id).toBe('partial-index-p2');
+
+      const listed = await call<{ ingress?: PromptItemWire[] }>('GET', `/api/sessions/${id}/prompts?admission=durable`);
+      expect(listed.body.code, listed.body.msg).toBe(0);
+      expect(listed.body.data.ingress?.map((item) => item.prompt_id)).toEqual(['partial-index-p1', 'partial-index-p2']);
+    } finally {
+      setSpy.mockRestore();
     }
   });
 });

@@ -321,12 +321,15 @@ export async function runScenarioS18CoupledWorkstationGate({
   };
 
   let browser = null;
+  let context = null;
   let serverB = null;
   let stopTickProducer = false;
   let tickTimer = null;
   let tickLoop = null;
   let stopHeartbeat = false;
   let heartbeatPromise = null;
+  let stopHeartbeatB = false;
+  let heartbeatBPromise = null;
   let stopBgContention = false;
   let bgContentionPromise = null;
 
@@ -496,7 +499,7 @@ export async function runScenarioS18CoupledWorkstationGate({
     })();
 
     browser = await chromium.launch({ headless: true, args: ['--no-proxy-server'] });
-    const context = await browser.newContext({
+    context = await browser.newContext({
       viewport: { width: cfg.layout.viewportWidth, height: cfg.layout.viewportHeight },
       deviceScaleFactor: cfg.layout.deviceScaleFactor,
       locale: 'zh-CN',
@@ -1030,9 +1033,9 @@ export async function runScenarioS18CoupledWorkstationGate({
     await serverB.resetWindow();
 
     // External /api/healthz watchdog covering Home B throughout Phase 6
-    let stopHeartbeatB = false;
+    stopHeartbeatB = false;
     const watchdogB = { samples: 0, failures: 0, maxLatencyMs: 0, failureDetails: [] };
-    const heartbeatBPromise = (async () => {
+    heartbeatBPromise = (async () => {
       while (!stopHeartbeatB) {
         const h = await apiJson(serverB.endpoint, serverB.token, 'GET', '/api/healthz', undefined, 3_000);
         watchdogB.samples += 1;
@@ -1343,6 +1346,20 @@ export async function runScenarioS18CoupledWorkstationGate({
       });
 
       // Step 2: Switch to paired Home B via real SpaceScopeControl -> SpaceSwitchSheet -> remote item -> Home B conversation row.
+      const ensureSessionsSidebarTab = async (p) => {
+        const sessionsTab = p.locator('[data-sidebar-mode="sessions"]').first();
+        if (await sessionsTab.count() > 0) {
+          const selected = await sessionsTab.getAttribute('aria-selected').catch(() => null);
+          if (selected !== 'true') {
+            await sessionsTab.click();
+            await p.waitForFunction(
+              () => document.querySelector('[data-sidebar-mode="sessions"]')?.getAttribute('aria-selected') === 'true',
+              null,
+              { timeout: 5_000 },
+            );
+          }
+        }
+      };
       if (pairedHomeBRecordId) {
         await switchPage.locator('[data-space-switcher]').click();
         await switchPage.waitForSelector('[data-space-switcher-menu]', { timeout: 10_000 });
@@ -1354,6 +1371,7 @@ export async function runScenarioS18CoupledWorkstationGate({
           pairedHomeBRecordId,
           { timeout: 10_000 },
         );
+        await ensureSessionsSidebarTab(switchPage);
         const homeBSessionRow = switchPage.locator(`[data-session-row="${bSessionId}"]`).first();
         await homeBSessionRow.waitFor({ state: 'visible', timeout: 15_000 });
         await homeBSessionRow.click();
@@ -1403,6 +1421,7 @@ export async function runScenarioS18CoupledWorkstationGate({
           null,
           { timeout: 10_000 },
         );
+        await ensureSessionsSidebarTab(switchPage);
         const homeASessionRow = switchPage.locator(`[data-session-row="${corpus.giantSessionId}"]`).first();
         await homeASessionRow.waitFor({ state: 'visible', timeout: 15_000 });
         await homeASessionRow.click();
@@ -1534,15 +1553,18 @@ export async function runScenarioS18CoupledWorkstationGate({
     };
 
     await context.close().catch(() => undefined);
+    context = null;
   } catch (error) {
     report.fatalError = String(error?.stack ?? error).slice(0, 1200);
   } finally {
     stopBgContention = true;
     stopTickProducer = true;
     stopHeartbeat = true;
+    stopHeartbeatB = true;
     if (tickTimer) clearInterval(tickTimer);
     tickLoop?.stop();
-    await Promise.allSettled([bgContentionPromise, heartbeatPromise]);
+    await Promise.allSettled([bgContentionPromise, heartbeatPromise, heartbeatBPromise]);
+    if (context) await context.close().catch(() => undefined);
     if (browser) await browser.close().catch(() => undefined);
     if (serverB) await serverB.shutdown().catch(() => undefined);
   }

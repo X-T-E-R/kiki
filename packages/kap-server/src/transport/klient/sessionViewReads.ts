@@ -761,6 +761,9 @@ async function readSessionViewTranscriptPageRaw(
         if (loaded.snapshot.hasMoreOlder !== true && cold.hasMoreOlder !== true) throw error;
         page = { items: [], hasMore: true };
       }
+      if (!loaded.preparing) {
+        page = trimLeadingSplitOrphanTurn(page, query, anchored, cold.hasMoreOlder === true || loaded.snapshot.hasMoreOlder === true);
+      }
       if (query.refreshTurn !== undefined) {
         const refreshed = cold.items.find(item => item.kind === 'turn' && item.turnId === query.refreshTurn);
         if (refreshed !== undefined) page = { items: [refreshed], hasMore: page.hasMore };
@@ -1458,28 +1461,55 @@ async function readColdTranscriptPage(
       }
     }
   }
-  if (
-    anchored &&
-    query.afterItem === undefined &&
-    query.afterTurn === undefined &&
-    query.refreshTurn === undefined &&
-    !located.missing &&
-    snapshot.hasMoreOlder === true &&
-    located.page.items.length > 1 &&
-    isOrphanTurn(located.page.items[0]!)
-  ) {
-    const firstCompleteIndex = located.page.items.findIndex((item) => !isOrphanTurn(item));
-    if (firstCompleteIndex > 0 && located.page.items.slice(firstCompleteIndex).some((item) => item.kind === 'turn')) {
+  if (!located.missing) {
+    const trimmedPage = trimLeadingSplitOrphanTurn(located.page, query, anchored, snapshot.hasMoreOlder === true);
+    if (trimmedPage !== located.page) {
+      const trimmedTurnIds = new Set(
+        located.page.items
+          .slice(0, located.page.items.length - trimmedPage.items.length)
+          .flatMap((item) => (isOrphanTurn(item) ? [item.turnId] : [])),
+      );
+      if (trimmedTurnIds.size > 0) {
+        snapshot = {
+          ...snapshot,
+          items: snapshot.items.filter((item) => !(isOrphanTurn(item) && trimmedTurnIds.has(item.turnId))),
+          hasMoreOlder: true,
+        };
+      }
       located = {
         ...located,
-        page: {
-          items: located.page.items.slice(firstCompleteIndex),
-          hasMore: true,
-        },
+        page: trimmedPage,
       };
     }
   }
   return { snapshot, page: located.page, query };
+}
+
+function trimLeadingSplitOrphanTurn(
+  page: ReturnType<typeof paginateTurns>,
+  query: { readonly afterItem?: string; readonly afterTurn?: string; readonly refreshTurn?: string },
+  anchored: boolean,
+  hasMoreOlder: boolean,
+): ReturnType<typeof paginateTurns> {
+  if (
+    !anchored ||
+    query.afterItem !== undefined ||
+    query.afterTurn !== undefined ||
+    query.refreshTurn !== undefined ||
+    !hasMoreOlder ||
+    page.items.length <= 1 ||
+    !isOrphanTurn(page.items[0]!)
+  ) {
+    return page;
+  }
+  const firstCompleteIndex = page.items.findIndex((item) => !isOrphanTurn(item));
+  if (firstCompleteIndex <= 0 || !page.items.slice(firstCompleteIndex).some((item) => item.kind === 'turn')) {
+    return page;
+  }
+  return {
+    items: page.items.slice(firstCompleteIndex),
+    hasMore: true,
+  };
 }
 
 function hasTurnOpening(turn: TranscriptTurn): boolean {

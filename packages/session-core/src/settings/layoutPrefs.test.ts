@@ -49,13 +49,13 @@ describe('readLayoutPreferences', () => {
       groupBy: 'time',
       sortBy: 'updated-desc',
       filters: { status: [], workspaces: [], archived: 'hide' },
-      sidebarMode: 'inbox',
       spaceScope: 'all',
       sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
       railWidth: RAIL_DEFAULT_WIDTH,
       pinnedNavItems: ['memory', 'personas', 'usage'],
       sidebarNavSectionCollapsed: true,
     });
+    expect(prefs.sidebarMode).toBeUndefined();
   });
 
   it('round-trips group/sort/filters and drops unknown filter entries', () => {
@@ -80,7 +80,9 @@ describe('readLayoutPreferences', () => {
     expect(readLayoutPreferences()).toMatchObject({ sidebarMode: 'sessions', spaceScope: 'space-a' });
 
     ls().setItem('kiki.layout', JSON.stringify({ sidebarMode: 'unknown', spaceScope: 42 }));
-    expect(readLayoutPreferences()).toMatchObject({ sidebarMode: 'inbox', spaceScope: 'all' });
+    const invalid = readLayoutPreferences();
+    expect(invalid.sidebarMode).toBeUndefined();
+    expect(invalid.spaceScope).toBe('all');
 
     ls().setItem('kiki.layout', JSON.stringify({ sidebarMode: 'inbox', spaceScope: '   ' }));
     expect(readLayoutPreferences()).toMatchObject({ sidebarMode: 'inbox', spaceScope: 'all' });
@@ -176,11 +178,19 @@ describe('writeLayoutPreferences', () => {
     expect(next.railWidth).toBe(RAIL_MIN_WIDTH);
   });
 
-  it('persists the sidebar mode and space scope', () => {
+  it('persists the sidebar mode only when explicitly written and keeps it unset across width resizes', () => {
     resetLayoutPreferencesForTests();
+    const resized = writeLayoutPreferences({ sidebarWidth: 320 });
+    expect(resized.sidebarMode).toBeUndefined();
+    expect('sidebarMode' in JSON.parse(ls().getItem('kiki.layout') ?? '{}')).toBe(false);
+
     const next = writeLayoutPreferences({ sidebarMode: 'sessions', spaceScope: 'space-b' });
     expect(next).toMatchObject({ sidebarMode: 'sessions', spaceScope: 'space-b' });
     expect(JSON.parse(ls().getItem('kiki.layout') ?? '{}')).toMatchObject({ sidebarMode: 'sessions', spaceScope: 'space-b' });
+
+    const resizedAfter = writeLayoutPreferences({ sidebarWidth: 340 });
+    expect(resizedAfter.sidebarMode).toBe('sessions');
+    expect(JSON.parse(ls().getItem('kiki.layout') ?? '{}')).toMatchObject({ sidebarMode: 'sessions', sidebarWidth: 340 });
   });
 
   it('writes and updates pinnedNavItems, sidebarNavSectionCollapsed and sidebarPersonaSectionCollapsed', () => {

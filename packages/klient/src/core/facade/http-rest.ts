@@ -721,6 +721,12 @@ export interface HttpRestFacade {
     cached(options?: HttpRestRequestOptions): Promise<{ readonly sources: readonly import('@kiki/protocol').PluginHarnessQuotaSnapshot[] }>;
     /** One explicit read. The host still applies the source interval and single in-flight request. */
     read(source: string, options?: HttpRestRequestOptions): Promise<{ readonly sources: readonly import('@kiki/protocol').PluginHarnessQuotaSnapshot[] }>;
+    /** Invoke a bounded declarative action declared by a registered harness quota plugin source. */
+    performAction(
+      sourceId: string,
+      body: import('@kiki/protocol').HarnessQuotaActionRequest,
+      options?: HttpRestRequestOptions,
+    ): Promise<import('@kiki/protocol').HarnessQuotaActionResponse>;
   };
 
   readonly agents: {

@@ -6,6 +6,8 @@ import {
   formatQuotaResetDuration,
   formatQuotaResetShort,
   quotaFuelTier,
+  type HarnessQuotaActionDeclaration,
+  type HarnessQuotaActionId,
   type HarnessQuotaAccountGroup,
   type HarnessQuotaReading,
 } from '../../../lib/providerQuota';
@@ -48,10 +50,18 @@ export function SingleAccountPluginRow({
   account,
   snapshotReadAt,
   nowMs,
+  pluginSourceId,
+  accountActions,
+  pendingPluginActions,
+  onPerformPluginAction,
 }: {
   readonly account: HarnessQuotaAccountGroup;
   readonly snapshotReadAt: string | undefined;
   readonly nowMs: number;
+  readonly pluginSourceId?: string;
+  readonly accountActions?: readonly HarnessQuotaActionDeclaration[];
+  readonly pendingPluginActions?: ReadonlySet<string>;
+  readonly onPerformPluginAction?: (pluginSourceId: string, action: HarnessQuotaActionId, accountId?: string) => Promise<void>;
 }) {
   const cols = account.readings.length;
   const gridClass =
@@ -64,19 +74,43 @@ export function SingleAccountPluginRow({
           : 'space-y-2';
 
   return (
-    <div data-engine-plugin-readings data-quota-account={account.accountId} className={gridClass}>
-      {account.readings.map((reading) => (
-        <PluginQuotaBucketCell
-          key={`${reading.pool ?? 'default'}:${reading.window ?? ''}:${reading.resetAt ?? ''}:${(reading.modelIds ?? []).join(',')}`}
-          reading={reading}
-          snapshotReadAt={snapshotReadAt}
-          nowMs={nowMs}
-          showPoolLabel="always"
-          showModelDisclosure
-          alignTrack={cols > 1}
-          muteIfExhausted={false}
-        />
-      ))}
+    <div className="space-y-2">
+      <div data-engine-plugin-readings data-quota-account={account.accountId} className={gridClass}>
+        {account.readings.map((reading) => (
+          <PluginQuotaBucketCell
+            key={`${reading.pool ?? 'default'}:${reading.window ?? ''}:${reading.resetAt ?? ''}:${(reading.modelIds ?? []).join(',')}`}
+            reading={reading}
+            snapshotReadAt={snapshotReadAt}
+            nowMs={nowMs}
+            showPoolLabel="always"
+            showModelDisclosure
+            alignTrack={cols > 1}
+            muteIfExhausted={false}
+          />
+        ))}
+      </div>
+      {pluginSourceId !== undefined && onPerformPluginAction !== undefined && accountActions !== undefined && accountActions.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {accountActions.map((action) => {
+            const actionKey = `${pluginSourceId}\0${action.id}\0${account.accountId}`;
+            const isPending = pendingPluginActions?.has(actionKey) === true;
+            return (
+              <button
+                key={action.id}
+                type="button"
+                data-quota-account-action={action.id}
+                data-quota-account-action-target={account.accountId}
+                data-quota-plugin-source={pluginSourceId}
+                disabled={isPending}
+                onClick={() => { void onPerformPluginAction(pluginSourceId, action.id, account.accountId); }}
+                className="inline-flex h-6 shrink-0 items-center rounded border border-hairline bg-paper px-2 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:h-auto pointer-coarse:min-h-11 pointer-coarse:px-2.5"
+              >
+                {action.label}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -87,12 +121,20 @@ export function PluginAccountsMatrix({
   poolByKey,
   snapshotReadAt,
   nowMs,
+  pluginSourceId,
+  accountActions,
+  pendingPluginActions,
+  onPerformPluginAction,
 }: {
   readonly engineId: string;
   readonly accountGroups: readonly HarnessQuotaAccountGroup[];
   readonly poolByKey: ReadonlyMap<string, FleetPoolBottleneckItem>;
   readonly snapshotReadAt: string | undefined;
   readonly nowMs: number;
+  readonly pluginSourceId?: string;
+  readonly accountActions?: readonly HarnessQuotaActionDeclaration[];
+  readonly pendingPluginActions?: ReadonlySet<string>;
+  readonly onPerformPluginAction?: (pluginSourceId: string, action: HarnessQuotaActionId, accountId?: string) => Promise<void>;
 }) {
   const { t } = useI18n();
   const defaultPoolLabel = t('usage.quota.engines.defaultPool');
@@ -187,6 +229,28 @@ export function PluginAccountsMatrix({
                   <p className="mt-0.5 truncate pl-3.5 text-[11px] text-ink-faint" title={seatIdentity.secondary}>
                     {compactIdentifier(seatIdentity.secondary)}
                   </p>
+                ) : null}
+                {pluginSourceId !== undefined && onPerformPluginAction !== undefined && accountActions !== undefined && accountActions.length > 0 ? (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1 pl-3.5">
+                    {accountActions.map((action) => {
+                      const actionKey = `${pluginSourceId}\0${action.id}\0${group.accountId}`;
+                      const isPending = pendingPluginActions?.has(actionKey) === true;
+                      return (
+                        <button
+                          key={action.id}
+                          type="button"
+                          data-quota-account-action={action.id}
+                          data-quota-account-action-target={group.accountId}
+                          data-quota-plugin-source={pluginSourceId}
+                          disabled={isPending}
+                          onClick={() => { void onPerformPluginAction(pluginSourceId, action.id, group.accountId); }}
+                          className="inline-flex h-6 shrink-0 items-center rounded border border-hairline bg-paper px-1.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:h-auto pointer-coarse:min-h-11 pointer-coarse:px-2"
+                        >
+                          {action.label}
+                        </button>
+                      );
+                    })}
+                  </div>
                 ) : null}
               </div>
 

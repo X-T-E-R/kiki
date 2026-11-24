@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   HARNESS_QUOTA_MIN_REFRESH_MS, HARNESS_QUOTA_UNAVAILABLE_MESSAGE,
+  type HarnessQuotaActionDeclaration, type HarnessQuotaActionId, type HarnessQuotaActionResponse,
   type HarnessQuotaReading, type PluginHarnessQuotaSnapshot, type ProviderCatalogItem,
   type ProviderQuotaMeter, type ProviderQuotaSnapshot, type ProviderQuotaSource,
 } from '@kiki/protocol';
@@ -12,6 +13,7 @@ import {
 
 export {
   HARNESS_QUOTA_MIN_REFRESH_MS, HARNESS_QUOTA_UNAVAILABLE_MESSAGE,
+  type HarnessQuotaActionDeclaration, type HarnessQuotaActionId, type HarnessQuotaActionResponse,
   type HarnessQuotaReading, type PluginHarnessQuotaSnapshot, type ProviderQuotaMeter,
   type ProviderQuotaSnapshot, type ProviderQuotaSource,
 } from '@kiki/protocol';
@@ -277,8 +279,45 @@ export function isSourceLocked(source: ProviderQuotaSource, now = Date.now()): b
   return new Date(source.refresh_after).getTime() > now;
 }
 
+export const QUOTA_REFRESH_CONCURRENCY = 4;
+
 export function isSourceRefreshable(source: ProviderQuotaSource, now = Date.now()): boolean {
   return source.enabled && source.supported && !isSourceLocked(source, now);
+}
+
+/** True when an enabled, refreshable native source has never been fetched yet (no cached snapshot). */
+export function isNativeQuotaNeverFetched(
+  source: ProviderQuotaSource,
+  signedOut: ReadonlySet<string>,
+  now = Date.now(),
+): boolean {
+  return (
+    isSourceRefreshable(source, now) &&
+    !signedOut.has(source.provider_id) &&
+    source.status === 'unknown' &&
+    source.checked_at === undefined &&
+    source.data_as_of === undefined &&
+    source.meters.length === 0
+  );
+}
+
+/** Runs async tasks with a hard upper bound on concurrent in-flight work. */
+export async function runWithConcurrency(
+  tasks: readonly (() => Promise<void>)[],
+  limit = QUOTA_REFRESH_CONCURRENCY,
+): Promise<void> {
+  if (tasks.length === 0) return;
+  const concurrency = Math.max(1, Math.min(limit, tasks.length));
+  let nextIndex = 0;
+  await Promise.all(
+    Array.from({ length: concurrency }, async () => {
+      while (nextIndex < tasks.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        await tasks[index]!();
+      }
+    }),
+  );
 }
 
 export type QuotaFuelTier = 'healthy' | 'low' | 'critical';

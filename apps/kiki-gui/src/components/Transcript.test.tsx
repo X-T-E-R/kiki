@@ -12092,6 +12092,27 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
     expect(turn140Users).toHaveLength(1);
     expect(turn140Users[0]?.getAttribute('data-block-id')).toBe('user-msg-user-140');
 
+    // Orphan t151 header recovery: synthetic user-prompt-151 carrying promptId='prompt-151'
+    // collapses with recovered canonical user-msg-user-151 in the same turnId.
+    const recoveryContainer = await renderTranscript([
+      userBlock({
+        id: 'user-prompt-151',
+        turnId: 't151',
+        promptId: 'prompt-151',
+        text: 'TURN_MARKER_000151 Synthetic chaos benchmark turn 151 invoking TodoList',
+      }),
+      userBlock({
+        id: 'user-msg-user-151',
+        turnId: 't151',
+        userMessageId: 'msg-user-151',
+        text: 'TURN_MARKER_000151 Synthetic chaos benchmark turn 151 invoking TodoList',
+      }),
+    ]);
+    const turn151Users = [...recoveryContainer.querySelectorAll('[data-turn-id="t151"]')]
+      .filter((el) => el.textContent?.includes('TURN_MARKER_000151'));
+    expect(turn151Users).toHaveLength(1);
+    expect(turn151Users[0]?.getAttribute('data-block-id')).toBe('user-msg-user-151');
+
     // Distinct batched steers, distinct promptIds, and non-adjacent repeat after assistant reply stay separate.
     const turn141Users = [...container.querySelectorAll('[data-turn-id="t141"]')]
       .filter((el) => el.getAttribute('data-block-id')?.startsWith('user-') === true);

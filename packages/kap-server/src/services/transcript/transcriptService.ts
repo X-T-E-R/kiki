@@ -179,7 +179,7 @@ const UNVERIFIED_RESIDENT_MAX_BYTES = 4 << 20;
 const UNVERIFIED_RESIDENT_MAX_AGENTS = 16;
 const TURN_START_INDEX_MAX_WIRES = 64;
 const ANCHOR_OPENING_MAX_RECORDS = 8;
-const ANCHOR_PROXIMITY_MAX_TURN_GAP = 32;
+const ANCHOR_PROXIMITY_MAX_TURN_GAP = 64;
 const ANCHOR_PROXIMITY_MAX_BYTES = 4 << 20;
 const ANCHOR_PROXIMITY_MAX_RECORDS = 16_384;
 const PROXIMITY_MISS_MAX_ENTRIES = 128;
@@ -6056,11 +6056,22 @@ export class TranscriptService {
       await this.matchesAppendSafeWitness(wirePath, existingWindow, info, signal)
       ? existingWindow : undefined;
     let searchEnd: number | undefined;
-    if (validWindow !== undefined && validWindow.start > 0 &&
-        !hasVisibilityResetRecord(validWindow.records)) {
-      const windowOldest = oldestTurnOrdinal(validWindow.snapshot.items);
-      if (windowOldest !== undefined && targetOrdinal <= windowOldest && windowOldest - targetOrdinal <= ANCHOR_PROXIMITY_MAX_TURN_GAP) {
-        searchEnd = validWindow.start;
+    let fallbackAtSearchEnd: number | undefined;
+    if (validWindow !== undefined && !hasVisibilityResetRecord(validWindow.records)) {
+      const inWindowPrompt = validWindow.records.find(
+        (entry) => entry.record.type === 'turn.prompt' && wireTurnId(entry.record) === beforeTurn,
+      );
+      if (inWindowPrompt !== undefined && inWindowPrompt.position.startByteOffset > 0) {
+        return { at: inWindowPrompt.position.startByteOffset, witness: validWindow.witness };
+      }
+      if (validWindow.start > 0) {
+        const windowOldest = oldestTurnOrdinal(validWindow.snapshot.items);
+        if (windowOldest !== undefined && targetOrdinal <= windowOldest && windowOldest - targetOrdinal <= ANCHOR_PROXIMITY_MAX_TURN_GAP) {
+          searchEnd = validWindow.start;
+          if (targetOrdinal === windowOldest) {
+            fallbackAtSearchEnd = validWindow.start;
+          }
+        }
       }
     }
     if (searchEnd === undefined) {
@@ -6073,7 +6084,7 @@ export class TranscriptService {
       }
     }
     if (searchEnd === undefined || searchEnd <= 0) return undefined;
-    return this.scheduleHistoryRead(signal, owned => this.seekTurnOffsetNearTailInLane(wirePath, info, searchEnd, beforeTurn, owned, budget));
+    return this.scheduleHistoryRead(signal, owned => this.seekTurnOffsetNearTailInLane(wirePath, info, searchEnd, beforeTurn, owned, budget, fallbackAtSearchEnd));
   }
 
   private async seekTurnOffsetNearTailInLane(
@@ -6083,6 +6094,7 @@ export class TranscriptService {
     beforeTurn: string,
     signal: AbortSignal,
     budget: AnchorReadBudget,
+    fallbackAtSearchEnd?: number,
   ): Promise<{ readonly at: number; readonly witness?: WirePrefixWitness } | undefined> {
     const beforeWitness = await captureWirePrefixWitness(wirePath, info, signal);
     if (beforeWitness === undefined) return undefined;
@@ -6169,7 +6181,10 @@ export class TranscriptService {
                 }
                 markers.push(marker);
                 if (marker.kind === 'turn.prompt' && marker.turnId !== undefined) {
-                  if (marker.turnId === beforeTurn) {
+                  const matchedExact = marker.turnId === beforeTurn;
+                  const crossedBefore = !matchedExact && compareTurnIds(marker.turnId, beforeTurn) < 0;
+                  if (matchedExact || (crossedBefore && fallbackAtSearchEnd !== undefined)) {
+                    const resolvedAt = matchedExact ? boundary : fallbackAtSearchEnd!;
                     const after = await stat(wirePath);
                     signal.throwIfAborted();
                     const checked = await verifyWitnessAppendSafe(wirePath, beforeWitness, after, beforeWitness.completeTailOffset, FIRST_SCREEN_WINDOW_BYTES, signal);
@@ -6181,9 +6196,9 @@ export class TranscriptService {
                     const spanFingerprint = await this.reconcileColdSpanIndexes(wirePath, after, stamp, signal);
                     markers.reverse();
                     await this.recordColdTurnSpans(wirePath, spanFingerprint, markers, boundary, searchEnd, searchEnd >= after.size, after.size, undefined, { ...afterWitness, sealStamp: stamp }, signal);
-                    return { at: boundary, witness: afterWitness };
+                    return { at: resolvedAt, witness: afterWitness };
                   }
-                  if (compareTurnIds(marker.turnId, beforeTurn) < 0) return undefined;
+                  if (crossedBefore) return undefined;
                 }
               }
             }

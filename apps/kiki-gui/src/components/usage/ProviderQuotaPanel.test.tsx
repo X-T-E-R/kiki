@@ -17,13 +17,20 @@ vi.mock('../../lib/providerQuota', async (importOriginal) => {
 });
 const harnessQuotaCached = vi.fn();
 const harnessQuotaRead = vi.fn();
+const harnessQuotaPerformAction = vi.fn();
 const patchConfig = vi.fn();
 const client = {
   listOAuthMethods: vi.fn(), startOAuthLogin: vi.fn(), getOAuthStatus: vi.fn(), cancelOAuthLogin: vi.fn(),
   listProviders: vi.fn(), getConfig: vi.fn(), patchConfig, listExecutors: vi.fn(),
   getProviderQuotas: vi.fn(), refreshProviderQuota: vi.fn(), setProviderQuotaEnabled: vi.fn(),
-  klient: { rest: { harnessQuota: { cached: harnessQuotaCached, read: harnessQuotaRead } } } as {
-    rest?: { harnessQuota?: { cached: typeof harnessQuotaCached; read: typeof harnessQuotaRead } };
+  klient: { rest: { harnessQuota: { cached: harnessQuotaCached, read: harnessQuotaRead, performAction: harnessQuotaPerformAction } } } as {
+    rest?: {
+      harnessQuota?: {
+        cached: typeof harnessQuotaCached;
+        read: typeof harnessQuotaRead;
+        performAction?: typeof harnessQuotaPerformAction;
+      };
+    };
   },
 };
 vi.mock('../../state/connection', () => ({ useConnection: () => ({ client, scopeId: 'local', wsStatus: 'open' }) }));
@@ -81,9 +88,10 @@ beforeEach(() => {
   client.getConfig.mockResolvedValue({ raw: {} });
   patchConfig.mockResolvedValue({ raw: {} });
   client.listExecutors.mockResolvedValue({ items: [] });
-  client.klient = { rest: { harnessQuota: { cached: harnessQuotaCached, read: harnessQuotaRead } } };
+  client.klient = { rest: { harnessQuota: { cached: harnessQuotaCached, read: harnessQuotaRead, performAction: harnessQuotaPerformAction } } };
   harnessQuotaCached.mockResolvedValue({ sources: [] });
   harnessQuotaRead.mockResolvedValue({ sources: [] });
+  harnessQuotaPerformAction.mockResolvedValue({ ok: true });
   client.listOAuthMethods.mockResolvedValue([{ id: 'openai-codex', provider: 'managed:openai-codex', label: 'ChatGPT' }]);
   client.startOAuthLogin.mockResolvedValue(pending);
   client.getOAuthStatus.mockResolvedValue(pending);
@@ -656,14 +664,16 @@ describe('ProviderQuotaPanel', () => {
     expect(claudeRow.querySelector('[data-engine-quota-query="claude-acp"]')?.getAttribute('title')).toContain('Cached reading expired');
     expect(claudeRow.textContent).not.toContain('Native Claude Meter');
 
-    // Unqueried state on agy-cli (never queried)
+    // Unqueried selected plugin source (agy-cli) auto-refreshes once on mount while expired claude-acp (readAt present) does NOT
+    expect(harnessQuotaRead).toHaveBeenCalledTimes(1);
+    expect(harnessQuotaRead).toHaveBeenCalledWith('plugin:magpie/agy');
     expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset['engineQuotaStatus']).toBe('unqueried');
     expect(agyRow.querySelector('[data-engine-quota-unqueried="agy-cli"]')).not.toBeNull();
 
     // Failing refresh on claude-acp shows error and never falls back to Native Claude Meter
     harnessQuotaRead.mockRejectedValueOnce(new Error('Magpie local bridge unreachable'));
     await click(container, '[data-engine-quota-query="claude-acp"]');
-    expect(harnessQuotaRead).toHaveBeenCalledExactlyOnceWith('plugin:alpha/claude');
+    expect(harnessQuotaRead).toHaveBeenLastCalledWith('plugin:alpha/claude');
     expect(claudeRow.querySelector('[data-engine-quota-error="claude-acp"]')?.textContent).toContain('Magpie local bridge unreachable');
     expect(claudeRow.textContent).not.toContain('Native Claude Meter');
     expect(claudeRow.textContent).not.toContain('22%');
@@ -952,5 +962,153 @@ describe('ProviderQuotaPanel', () => {
     expect(hydratedRow.querySelectorAll('[data-reading-models-toggle="mobile"]')).toHaveLength(1);
     expect(container.textContent).not.toContain('Updated ');
     expect(container.textContent).not.toContain('Read ');
+  });
+
+  it('auto-refreshes only never_fetched enabled sources on mount and caps concurrency at 4 for mount and Refresh All', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const resolvers: Array<() => void> = [];
+    refreshSource.mockImplementation(() => new Promise<void>((resolve) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      resolvers.push(() => {
+        inFlight -= 1;
+        resolve();
+      });
+    }));
+
+    const unqueriedSources = Array.from({ length: 6 }, (_, index) =>
+      source({
+        id: `never-fetched-${index}`,
+        label: `Fresh ${index}`,
+        provider_id: `prov-${index}`,
+        status: 'unknown',
+        meters: [],
+      }),
+    );
+    const cachedReady = source({
+      id: 'already-cached',
+      label: 'Cached',
+      provider_id: 'cached-prov',
+      status: 'ready',
+      checked_at: '2026-10-10T11:55:00Z',
+      meters: [meter({ id: 'm-cached', unit: 'percent', unit_label: '%', used: 20, remaining: 80, limit: 100 })],
+    });
+    const disabledSource = source({
+      id: 'disabled-never',
+      label: 'Disabled',
+      provider_id: 'disabled-prov',
+      enabled: false,
+      status: 'off',
+      meters: [],
+    });
+    show([...unqueriedSources, cachedReady, disabledSource]);
+
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+    // Initial cached render is immediately visible while bounded background refresh runs (max 4 in-flight)
+    expect(container.querySelector('[data-quota-item="already-cached"]')?.textContent).toContain('80%');
+    expect(maxInFlight).toBe(4);
+    expect(refreshSource).not.toHaveBeenCalledWith('already-cached');
+    expect(refreshSource).not.toHaveBeenCalledWith('disabled-never');
+
+    while (resolvers.length > 0) {
+      await act(async () => {
+        const batch = resolvers.splice(0, resolvers.length);
+        batch.forEach((fn) => fn());
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+    expect(refreshSource).toHaveBeenCalledTimes(6);
+    expect(maxInFlight).toBe(4);
+
+    // Refresh All across all 7 enabled sources also caps concurrency at <= 4
+    refreshSource.mockClear();
+    maxInFlight = 0;
+    inFlight = 0;
+    const refreshBtn = container.querySelector<HTMLButtonElement>('[data-quota-refresh-button]')!;
+    await act(async () => { refreshBtn.click(); await new Promise((resolve) => setTimeout(resolve, 15)); });
+    expect(maxInFlight).toBe(4);
+    while (resolvers.length > 0) {
+      await act(async () => {
+        const batch = resolvers.splice(0, resolvers.length);
+        batch.forEach((fn) => fn());
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+    expect(refreshSource).toHaveBeenCalledTimes(7);
+    expect(maxInFlight).toBe(4);
+  });
+
+  it('renders declared pool and account plugin actions, dispatches performAction to the owning plugin source, and refreshes state', async () => {
+    const freshAt = new Date(Date.now() - 5_000).toISOString();
+    client.getConfig.mockResolvedValue({
+      raw: {
+        agent_executor_overrides: {
+          'agy-cli': { show_in_profile_list: true, quota_source: 'plugin:magpie/agy' },
+        },
+      },
+    });
+    const baseSnapshot = {
+      id: 'plugin:magpie/agy',
+      label: 'Magpie AGY Quota',
+      engineIds: ['agy-cli'],
+      minRefreshIntervalMs: 300_000,
+      readAt: freshAt,
+      actions: [
+        { id: 'manage' as const, label: 'Manage pool', scope: 'pool' as const },
+        { id: 'set_primary' as const, label: 'Set primary', scope: 'account' as const },
+        { id: 'toggle_pause' as const, label: 'Pause', scope: 'account' as const },
+      ],
+      readings: [
+        { accountId: 'acc-1', accountLabel: 'alpha@example.test', pool: 'Gemini', window: '5h', remaining: 75, unit: 'percent' as const },
+        { accountId: 'acc-2', accountLabel: 'beta@example.test', pool: 'Gemini', window: '5h', remaining: 40, unit: 'percent' as const },
+      ],
+    };
+    harnessQuotaCached.mockResolvedValue({ sources: [baseSnapshot] });
+    harnessQuotaPerformAction.mockResolvedValue({ ok: true, message: 'Switched primary account' });
+    harnessQuotaRead.mockResolvedValue({
+      sources: [
+        {
+          ...baseSnapshot,
+          readAt: new Date(Date.now() - 1_000).toISOString(),
+          readings: [
+            { accountId: 'acc-1', accountLabel: 'alpha@example.test', pool: 'Gemini', window: '5h', remaining: 75, unit: 'percent' as const },
+            { accountId: 'acc-2', accountLabel: 'beta@example.test', pool: 'Gemini', window: '5h', remaining: 92, unit: 'percent' as const },
+          ],
+        },
+      ],
+    });
+    show([
+      source({
+        id: 'executor:agy-cli',
+        provider_id: 'agy-cli',
+        label: 'AGY CLI',
+        kind: 'executor',
+        supported: false,
+        status: 'unsupported',
+        meters: [],
+      }),
+    ]);
+
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+    // Pool-scope action renders in row controls and invokes performAction without account_id
+    const poolBtn = container.querySelector<HTMLButtonElement>('[data-quota-plugin-action="manage"][data-quota-plugin-source="plugin:magpie/agy"]');
+    expect(poolBtn).not.toBeNull();
+    await click(container, '[data-quota-plugin-action="manage"][data-quota-plugin-source="plugin:magpie/agy"]');
+    expect(harnessQuotaPerformAction).toHaveBeenCalledWith('plugin:magpie/agy', { action: 'manage' });
+    expect(harnessQuotaRead).toHaveBeenCalledWith('plugin:magpie/agy');
+
+    // Expand multi-seat fleet matrix and invoke account-scope set_primary & toggle_pause on acc-2
+    await click(container, '[data-quota-fleet-summary="agy-cli"]');
+    await click(container, '[data-quota-account-action="set_primary"][data-quota-account-action-target="acc-2"]');
+    expect(harnessQuotaPerformAction).toHaveBeenCalledWith('plugin:magpie/agy', { action: 'set_primary', account_id: 'acc-2' });
+    expect(container.textContent).toContain('92%');
+
+    await click(container, '[data-quota-account-action="toggle_pause"][data-quota-account-action-target="acc-2"]');
+    expect(harnessQuotaPerformAction).toHaveBeenCalledWith('plugin:magpie/agy', { action: 'toggle_pause', account_id: 'acc-2' });
   });
 });

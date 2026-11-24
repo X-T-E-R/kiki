@@ -4373,6 +4373,27 @@ describe('Sidebar Vibe42 Inbox-Zero, zero-jank pin, triage, 72h cold fold & opti
     expect(mountedBlocked.container.querySelector('[data-sidebar-inbox]')).not.toBeNull();
   });
 
+  it('keeps sessions active after dragging sidebar width when needsYouCount is 0 without persisting implicit inbox mode', async () => {
+    const done = { ...session('s-done'), last_turn_reason: 'completed' as const, last_seq: 5, updated_at: '2026-10-06T10:00:00Z' };
+    const { container } = await mount({
+      sidebarMode: undefined,
+      sessions: [done],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [done] }],
+      nowMs: FIXTURE_NOW_MS,
+    });
+    expect(container.querySelector('[data-sidebar-mode="sessions"]')?.getAttribute('aria-selected')).toBe('true');
+
+    await act(async () => {
+      writeLayoutPreferences({ sidebarWidth: 324 });
+    });
+
+    expect(container.querySelector('[data-sidebar-mode="sessions"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('[data-sidebar-mode="inbox"]')?.getAttribute('aria-selected')).toBe('false');
+    const stored = JSON.parse(localStorage.getItem('kiki.layout') ?? '{}') as Record<string, unknown>;
+    expect(stored['sidebarWidth']).toBe(324);
+    expect(stored['sidebarMode']).toBeUndefined();
+  });
+
   it('holds a clicked unread done row in place (zero-jank viewing pin) with cleared dot until settled, busy, or navigated away', async () => {
     const s1 = { ...session('s-1'), title: 'First done', last_turn_reason: 'completed' as const, last_seq: 8, updated_at: '2026-10-06T11:00:00Z' };
     const s2 = { ...session('s-2'), title: 'Second done', last_turn_reason: 'completed' as const, last_seq: 6, updated_at: '2026-10-06T10:00:00Z' };

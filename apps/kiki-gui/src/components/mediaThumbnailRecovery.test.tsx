@@ -535,4 +535,35 @@ describe('thumbnail recovery', () => {
     expect(registry.parkedCount).toBe(0);
     expect(closeCount).toBe(openCount);
   });
+
+  it('preserves h-7 desktop media recovery chips while enforcing 44px coarse-pointer touch targets on Retry and Open buttons', async () => {
+    fixture.preview.mockImplementation(async (_session: string, fileId: string) => {
+      if (fileId === 'f-transient') throw new Error('network blip');
+      throw new ApiError({ code: 413, msg: 'preview_budget_exceeded', data: null });
+    });
+    fixture.original.mockRejectedValue(new ApiError({ code: 413, msg: 'preview_budget_exceeded', data: null }));
+    const items: MediaRef[] = [
+      { kind: 'image', fileId: 'f-transient', mime: 'image/png', name: 'transient.png' },
+      { kind: 'image', fileId: 'f-large', mime: 'image/png', name: 'huge.png' },
+    ];
+    await act(async () => {
+      root.render(
+        <TestShell>
+          <MediaPreviewProvider sessionId="session">
+            <MediaPartList media={items} />
+          </MediaPreviewProvider>
+        </TestShell>,
+      );
+    });
+    await flush();
+
+    const retryChip = container.querySelector<HTMLButtonElement>('button[data-media-retry]');
+    const openChip = container.querySelector<HTMLButtonElement>('button[data-media-open]');
+    expect(retryChip).not.toBeNull();
+    expect(openChip).not.toBeNull();
+    for (const button of [retryChip!, openChip!]) {
+      expect(button.className).toContain('h-7');
+      expect(button.className).toContain('pointer-coarse:min-h-11');
+    }
+  });
 });

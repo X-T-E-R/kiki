@@ -5408,12 +5408,17 @@ function dedupeBoundaryUserBlocks(blocks: readonly Block[]): readonly Block[] {
       (prev.promptId !== undefined && prev.promptId === next.promptId);
     if (sameIdentity) return true;
     // Positive boundary-echo check: one canonical `user-msg-*` paired with the
-    // exact same turn's synthetic `user-prompt-<ordinal>` echo (no distinct promptId).
+    // exact same turn's synthetic `user-prompt-<ordinal>` echo (no conflicting distinct promptId).
     const turnOrdinal = turn.startsWith('t') ? turn.slice(1) : turn;
     const syntheticTurnId = `user-prompt-${turnOrdinal}`;
+    const syntheticPromptId = `prompt-${turnOrdinal}`;
+    const isSyntheticTurnPrompt = (block: UserBlock): boolean =>
+      !isCanonicalUser(block) &&
+      block.id === syntheticTurnId &&
+      (block.promptId === undefined || block.promptId === syntheticPromptId);
     return (
-      (isCanonicalUser(prev) && next.id === syntheticTurnId && next.promptId === undefined) ||
-      (isCanonicalUser(next) && prev.id === syntheticTurnId && prev.promptId === undefined)
+      (isCanonicalUser(prev) && isSyntheticTurnPrompt(next)) ||
+      (isCanonicalUser(next) && isSyntheticTurnPrompt(prev))
     );
   };
   const mergeUser = (primary: UserBlock, secondary: UserBlock): UserBlock => ({
@@ -5421,6 +5426,7 @@ function dedupeBoundaryUserBlocks(blocks: readonly Block[]): readonly Block[] {
     ...primary,
     createdAt: primary.createdAt ?? secondary.createdAt,
     media: primary.media !== undefined && primary.media.length > 0 ? primary.media : secondary.media,
+    promptId: primary.promptId ?? secondary.promptId,
     promptOutcome: primary.promptOutcome ?? secondary.promptOutcome,
     presentation: primary.presentation ?? secondary.presentation,
     userMessageId: primary.userMessageId ?? secondary.userMessageId,

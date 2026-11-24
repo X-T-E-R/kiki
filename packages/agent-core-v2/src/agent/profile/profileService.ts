@@ -3991,10 +3991,13 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private resolveLiveMainCatalogProfile(): AgentProfile | undefined {
     if (this.delegationPosition !== 'main' || this.agentScope.agentId !== MAIN_AGENT_ID) return undefined;
+    const state = this.profileState;
+    const bound = state.boundProfile;
     if (
-      this.profileState.boundProfile?.fileSources !== undefined ||
-      this.profileState.boundProfile?.fileDefinition !== undefined ||
-      this.profileState.execution?.selection.profile_file !== undefined
+      bound?.fileSources !== undefined ||
+      bound?.fileDefinition?.source === 'explicit' ||
+      state.execution?.selection.profile_file !== undefined ||
+      state.dispatchDecision?.selectionKind === 'profile_file'
     ) {
       return undefined;
     }

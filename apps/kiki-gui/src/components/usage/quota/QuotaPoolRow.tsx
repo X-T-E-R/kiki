@@ -11,6 +11,8 @@ import {
   pluginQuotaSnapshotStatus,
   quotaFuelTier,
   quotaSettingsHref,
+  type HarnessQuotaActionDeclaration,
+  type HarnessQuotaActionId,
   type HarnessQuotaAccountGroup,
   type PluginHarnessQuotaSnapshot,
   type ProviderQuotaSource,
@@ -48,6 +50,8 @@ export function EngineQuotaSection({
   now,
   refreshingPluginIds,
   pluginErrors,
+  pendingPluginActions,
+  pluginActionFeedbacks,
   savingEngineSourceIds,
   refreshingNativeSourceId,
   activeRefreshSourceIds,
@@ -55,6 +59,7 @@ export function EngineQuotaSection({
   onClearFeedback,
   onSelectQuotaSource,
   onRefreshPluginSource,
+  onPerformPluginAction,
   onRefreshNativeSource,
 }: {
   readonly engines: readonly ProviderQuotaSource[];
@@ -70,6 +75,8 @@ export function EngineQuotaSection({
   readonly now: number;
   readonly refreshingPluginIds: ReadonlySet<string>;
   readonly pluginErrors: Readonly<Record<string, string>>;
+  readonly pendingPluginActions?: ReadonlySet<string>;
+  readonly pluginActionFeedbacks?: Readonly<Record<string, Feedback>>;
   readonly savingEngineSourceIds: ReadonlySet<string>;
   readonly refreshingNativeSourceId: string | undefined;
   readonly activeRefreshSourceIds: readonly string[];
@@ -77,6 +84,7 @@ export function EngineQuotaSection({
   readonly onClearFeedback: (id: string) => void;
   readonly onSelectQuotaSource: (engineId: string, nextSourceId: string) => Promise<void>;
   readonly onRefreshPluginSource: (pluginSourceId: string) => Promise<void>;
+  readonly onPerformPluginAction?: (pluginSourceId: string, action: HarnessQuotaActionId, accountId?: string) => Promise<void>;
   readonly onRefreshNativeSource: (sourceId: string) => Promise<unknown>;
 }) {
   const { t } = useI18n();
@@ -120,6 +128,8 @@ export function EngineQuotaSection({
                 savingSource={savingEngineSourceIds.has(engineId)}
                 isRefreshingPlugin={selectedSourceId !== '' && refreshingPluginIds.has(selectedSourceId)}
                 pluginError={selectedSourceId !== '' ? pluginErrors[selectedSourceId] : undefined}
+                pendingPluginActions={pendingPluginActions}
+                pluginActionFeedback={selectedSourceId !== '' ? pluginActionFeedbacks?.[selectedSourceId] : undefined}
                 isRefreshingNative={
                   refreshingNativeSourceId === source.id ||
                   source.refreshing ||
@@ -129,6 +139,7 @@ export function EngineQuotaSection({
                 onClearFeedback={() => onClearFeedback(source.id)}
                 onSelectQuotaSource={(next) => onSelectQuotaSource(engineId, next)}
                 onRefreshPluginSource={onRefreshPluginSource}
+                onPerformPluginAction={onPerformPluginAction}
                 onRefreshNativeSource={() => onRefreshNativeSource(source.id)}
               />
             );
@@ -155,11 +166,14 @@ function EngineQuotaRow({
   savingSource,
   isRefreshingPlugin,
   pluginError,
+  pendingPluginActions,
+  pluginActionFeedback,
   isRefreshingNative,
   feedback: externalFeedback,
   onClearFeedback,
   onSelectQuotaSource,
   onRefreshPluginSource,
+  onPerformPluginAction,
   onRefreshNativeSource,
 }: {
   readonly source: ProviderQuotaSource;
@@ -172,11 +186,14 @@ function EngineQuotaRow({
   readonly savingSource: boolean;
   readonly isRefreshingPlugin: boolean;
   readonly pluginError: string | undefined;
+  readonly pendingPluginActions?: ReadonlySet<string>;
+  readonly pluginActionFeedback?: Feedback;
   readonly isRefreshingNative: boolean;
   readonly feedback: Feedback | undefined;
   readonly onClearFeedback: () => void;
   readonly onSelectQuotaSource: (nextSourceId: string) => Promise<void>;
   readonly onRefreshPluginSource: (pluginSourceId: string) => Promise<void>;
+  readonly onPerformPluginAction?: (pluginSourceId: string, action: HarnessQuotaActionId, accountId?: string) => Promise<void>;
   readonly onRefreshNativeSource: () => Promise<unknown>;
 }) {
   const { t, time, locale } = useI18n();
@@ -200,7 +217,12 @@ function EngineQuotaRow({
     [accountGroups, defaultPoolLabel, now],
   );
 
-  const feedback = localFeedback ?? externalFeedback ?? null;
+  const feedback = localFeedback ?? pluginActionFeedback ?? externalFeedback ?? null;
+  const declaredActions: readonly HarnessQuotaActionDeclaration[] = isPluginMode && selectedPluginSnapshot !== undefined && pStatus !== 'missing'
+    ? (selectedPluginSnapshot.actions ?? [])
+    : [];
+  const poolActions = declaredActions.filter((action) => action.scope === 'pool');
+  const accountActions = declaredActions.filter((action) => action.scope === 'account');
   const view = ENGINE_HEALTH[health];
   const hasQuotaControls = matchingPluginSources.length > 0 || selectedSourceId !== '' || source.supported;
 
@@ -405,6 +427,10 @@ function EngineQuotaRow({
                   account={accountGroups[0]!}
                   snapshotReadAt={selectedPluginSnapshot?.readAt}
                   nowMs={now}
+                  pluginSourceId={selectedPluginSnapshot?.id}
+                  accountActions={accountActions}
+                  pendingPluginActions={pendingPluginActions}
+                  onPerformPluginAction={onPerformPluginAction}
                 />
               )}
             </div>
@@ -412,7 +438,28 @@ function EngineQuotaRow({
           <FeedbackLine feedback={feedback} />
         </div>
 
-        <div className="flex shrink-0 items-center justify-end gap-1 max-md:order-2">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1 max-md:order-2">
+          {selectedPluginSnapshot !== undefined && onPerformPluginAction !== undefined && poolActions.map((action) => {
+            const actionKey = `${selectedPluginSnapshot.id}\0${action.id}\0`;
+            const isPending = pendingPluginActions?.has(actionKey) === true;
+            return (
+              <button
+                key={action.id}
+                type="button"
+                data-quota-plugin-action={action.id}
+                data-quota-plugin-source={selectedPluginSnapshot.id}
+                disabled={isPending || isRefreshingPlugin}
+                onClick={() => {
+                  setLocalFeedback(null);
+                  onClearFeedback();
+                  void onPerformPluginAction(selectedPluginSnapshot.id, action.id);
+                }}
+                className="inline-flex h-7 shrink-0 items-center rounded-md border border-hairline bg-paper px-2 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:h-auto pointer-coarse:min-h-11 pointer-coarse:px-2.5"
+              >
+                {action.label}
+              </button>
+            );
+          })}
           {showSourceSelect ? (
             <SearchableSelect
               triggerData={{
@@ -489,6 +536,10 @@ function EngineQuotaRow({
           poolByKey={fleetHealth.poolByKey}
           snapshotReadAt={selectedPluginSnapshot?.readAt}
           nowMs={now}
+          pluginSourceId={selectedPluginSnapshot?.id}
+          accountActions={accountActions}
+          pendingPluginActions={pendingPluginActions}
+          onPerformPluginAction={onPerformPluginAction}
         />
       ) : null}
     </li>
