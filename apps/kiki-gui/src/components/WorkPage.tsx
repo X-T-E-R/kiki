@@ -144,7 +144,7 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
     <>
       {slots.header !== null
         ? createPortal(
-            <div className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
+            <div className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline/70 bg-paper px-4">
               <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
                 {mode?.name ?? t('workHome.eyebrow')}
               </h1>
@@ -152,7 +152,7 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
             </div>,
             slots.header,
           )
-        : null}      <div className="mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)] px-6 pb-5 pt-7 text-left" data-work-page>
+        : null}      <div className="mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)] px-4 pb-5 pt-7 text-left sm:px-6" data-work-page>
         <p className="flex items-center gap-2 text-[10.5px] font-semibold uppercase tracking-[0.11em] text-accent-ink">
           <span aria-hidden className="inline-block h-2 w-2 rounded-[2px] bg-accent" />
           {t('workHome.eyebrow')}
@@ -203,16 +203,16 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
           </button>
         </div>
 
-        <div className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2">
           {TASKS.map((task) => (
             <button
               key={task.id}
               type="button"
               data-work-task={task.id}
               onClick={() => { state.updateDraft(`${t(task.labelKey)} — ${t(task.bodyKey)}`); }}
-              className="flex items-start gap-3 border-b border-hairline py-3.5 text-left transition-colors hover:bg-ink/[0.02] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-selected-ink"
+              className="group flex min-h-11 items-start gap-3 border-b border-hairline py-3.5 text-left transition-colors hover:bg-ink/[0.02] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-selected-ink"
             >
-              <span aria-hidden className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-hairline bg-panel text-ink-soft">
+              <span aria-hidden className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center text-ink-faint transition-colors group-hover:text-ink">
                 <Icon name={task.icon} size={14} />
               </span>
               <span className="min-w-0">

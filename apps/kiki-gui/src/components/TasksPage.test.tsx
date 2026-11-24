@@ -213,6 +213,48 @@ describe('TasksPage', () => {
     expect(getToasts().some((toast) => toast.tone === 'error')).toBe(false);
     expect([...container.querySelectorAll('button')].some((button) => button.textContent === 'Stop')).toBe(true);
   });
+
+  it('uses split log workbench on >=1024px, polls only the selected task, and shows copy & error recovery', async () => {
+    const origMatchMedia = window.matchMedia;
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+      matches: query === '(min-width: 1024px)',
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })));
+    try {
+      const t1 = makeTask({ id: 't1', status: 'running', description: 'build watcher', command: 'pnpm dev' });
+      const t2 = makeTask({ id: 't2', status: 'completed', description: 'lint pass', command: 'pnpm lint' });
+      listTasks.mockResolvedValue({ items: [t1, t2] });
+      getTask.mockImplementation(async (_sid, taskId) => {
+        if (taskId === 't1') return { ...t1, output_preview: 'watching files...' };
+        throw new Error('tail unavailable');
+      });
+
+      const container = await renderPage();
+      expect(container.querySelector('[data-tasks-split]')).not.toBeNull();
+      expect(container.querySelector('[data-task-detail-id="t1"]')).not.toBeNull();
+      expect(container.querySelector('[data-task-output]')?.textContent).toContain('watching files...');
+      // Only the selected task was fetched; unselected t2 was not polled.
+      expect(getTask).toHaveBeenCalledTimes(1);
+      expect(getTask).toHaveBeenCalledWith('sess-1', 't1', { with_output: true });
+
+      // Selecting t2 switches the right pane and surfaces error + Retry instead of claiming no output.
+      const rows = container.querySelectorAll('[data-task-row]');
+      await act(async () => {
+        rows[1]!.querySelector<HTMLButtonElement>('button')!.click();
+      });
+      for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(container.querySelector('[data-task-detail-id="t2"]')).not.toBeNull();
+      expect(container.querySelector('[data-task-output-error]')?.textContent).toContain('tail unavailable');
+    } finally {
+      vi.stubGlobal('matchMedia', origMatchMedia);
+    }
+  });
 });
 
 describe('RightRail tasks view-all entry', () => {

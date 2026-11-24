@@ -208,4 +208,28 @@ describe('NeedsYouTray approval chords', () => {
     press('a');
     expect(onResolveApproval).toHaveBeenCalledExactlyOnceWith('a1', 'approved');
   });
+
+  it('prevents keyboard double-submission while an approval decision is in flight and allows retry on failure', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    resetShortcutRuntime('windows');
+    let rejectFirst!: (err: Error) => void;
+    const onResolveApproval = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectFirst = reject; }))
+      .mockResolvedValueOnce(undefined);
+    await renderTray([approval('a1', 'pnpm test')], onResolveApproval);
+    vi.advanceTimersByTime(700);
+
+    press('y');
+    press('y');
+    press('n');
+    expect(onResolveApproval).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      rejectFirst(new Error('network blip'));
+      await Promise.resolve();
+    });
+
+    press('y');
+    expect(onResolveApproval).toHaveBeenCalledTimes(2);
+  });
 });
