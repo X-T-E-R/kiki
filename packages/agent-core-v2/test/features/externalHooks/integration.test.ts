@@ -447,7 +447,7 @@ describe('IExternalHooksRunnerService integration', () => {
       expect(context.messages.at(-1)).toEqual(
         expect.objectContaining({
           role: 'user',
-          content: [{ type: 'text', text: 'continue 1' }],
+          content: [{ type: 'text', text: '<system-reminder>\ncontinue 1\n</system-reminder>' }],
           origin: { kind: 'system_trigger', name: 'stop_hook' },
         }),
       );
@@ -482,7 +482,7 @@ describe('IExternalHooksRunnerService integration', () => {
       expect(context.messages.at(-1)).toEqual(
         expect.objectContaining({
           role: 'user',
-          content: [{ type: 'text', text: 'continue 2' }],
+          content: [{ type: 'text', text: '<system-reminder>\ncontinue 2\n</system-reminder>' }],
           origin: { kind: 'system_trigger', name: 'stop_hook' },
         }),
       );
@@ -813,7 +813,7 @@ describe('IExternalHooksRunnerService integration', () => {
       expect(context.messages.at(-1)).toEqual(
         expect.objectContaining({
           role: 'user',
-          content: [{ type: 'text', text: 'loaded stop hook' }],
+          content: [{ type: 'text', text: '<system-reminder>\nloaded stop hook\n</system-reminder>' }],
           origin: { kind: 'system_trigger', name: 'stop_hook' },
         }),
       );
@@ -1741,6 +1741,12 @@ describe('IExternalHooksRunnerService integration', () => {
         kind: 'hook_result',
         event: 'UserPromptSubmit',
       });
+      expect(context.messages[0]?.content).toEqual([
+        {
+          type: 'text',
+          text: '<system-reminder>\n<hook_result hook_event="UserPromptSubmit">\nremember the lint rule\n</hook_result>\n</system-reminder>',
+        },
+      ]);
       expect(context.observableMessages).toEqual([context.messages[0]]);
     } finally {
       await ix?.dispose();

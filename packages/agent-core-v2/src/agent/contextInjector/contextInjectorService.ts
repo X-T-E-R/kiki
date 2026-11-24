@@ -10,8 +10,9 @@ import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
 import { isCompactionSummaryMessage } from '#/agent/contextMemory/compactionHandoff';
 import { isDeliveryVisibleMessage } from '#/agent/contextMemory/messageDelivery';
 import { IAgentLoopService, type BeforeStepContext } from '#/agent/loop/loop';
-import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
+import { IAgentSystemReminderService, wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { IEventBus } from '#/app/event/eventBus';
+import type { ContentPart } from '#/kosong/contract/message';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { CAPABILITY_PROVIDERS, capabilitySourceMessage, type CapabilityDeltaPart } from './capabilityDelta';
 import {
@@ -205,7 +206,7 @@ export class AgentContextInjectorService extends Service implements IAgentContex
       }
       this.appendContext({
         role: message.role,
-        content: [...message.content],
+        content: message.role === 'user' ? wrapUserInjectionParts(message.content) : [...message.content],
         toolCalls: [],
         tools: message.tools,
         origin,
@@ -215,7 +216,7 @@ export class AgentContextInjectorService extends Service implements IAgentContex
     if (resolved.length === 0) return;
     this.appendContext({
       role: 'user',
-      content: [...resolved],
+      content: wrapUserInjectionParts(resolved),
       toolCalls: [],
       origin,
     });
@@ -228,6 +229,14 @@ export class AgentContextInjectorService extends Service implements IAgentContex
     }
     this.context.append(message);
   }
+}
+
+function wrapUserInjectionParts(parts: readonly ContentPart[]): ContentPart[] {
+  return parts.map((part) => (
+    part.type === 'text' && part.text.trim().length > 0
+      ? { ...part, text: wrapSystemReminder(part.text) }
+      : part
+  ));
 }
 
 function isCompactionSplice(splice: {

@@ -1524,6 +1524,41 @@ describe('projector tool-exchange normalization', () => {
       expect(JSON.stringify(projected.at(-1)?.content)).toContain('Follow-up');
     });
 
+    it('wraps legacy unwrapped injection text in system-reminder on both standalone user messages and tool-result-appendix without double-wrapping', () => {
+      const bareSteering: ContextMessage = {
+        role: 'user',
+        content: [{ type: 'text', text: 'LEGACY BARE STEERING' }],
+        toolCalls: [],
+        origin: { kind: 'injection', variant: 'model_steering' },
+      };
+      const wrappedReminder = hostInjection('Already wrapped reminder', 'agents_md');
+      const standalone = projector.project([user('start'), bareSteering, wrappedReminder]);
+      expect(standalone[1]?.content).toEqual([
+        { type: 'text', text: '<system-reminder>\nLEGACY BARE STEERING\n</system-reminder>' },
+      ]);
+      expect(standalone[2]?.content).toEqual([
+        { type: 'text', text: '<system-reminder>\nAlready wrapped reminder\n</system-reminder>' },
+      ]);
+
+      const withAppendix = projector.project(
+        [user('start'), assistant('', ['c1']), toolResult('c1', 'ok'), bareSteering, wrappedReminder],
+        { toolResultAppendix: 'host_auto_injections' },
+      );
+      expect(withAppendix[2]?.content).toEqual([
+        { type: 'text', text: 'ok' },
+        {
+          type: 'text',
+          text: [
+            '<tool-result-appendix>',
+            '<system-reminder>\nLEGACY BARE STEERING\n</system-reminder>',
+            '',
+            '<system-reminder>\nAlready wrapped reminder\n</system-reminder>',
+            '</tool-result-appendix>',
+          ].join('\n'),
+        },
+      ]);
+    });
+
     it('never folds conversational tail text into a repaired incomplete exchange', () => {
       const history = [user('start'), assistant('', ['c1', 'c2']), toolResult('c1', 'result'), user('Follow-up must survive')];
       const projected = projector.project(history, { structure: 'strict', toolResultAppendix: 'trailing_user_text' });

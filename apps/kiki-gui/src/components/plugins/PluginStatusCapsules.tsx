@@ -279,62 +279,6 @@ export function PluginStatusCapsules({
                 data-plugin-capsules-overflow-tone={overflowTone}
                 className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_TONE_CLASSES[overflowTone]}`}
               />
-<<<<<<< HEAD
-            )}
-            <span className="shrink-0 whitespace-nowrap text-[12px] leading-4 text-ink-soft">{label}</span>
-            {capsule.valueText !== undefined && capsule.valueText !== '' ? (
-              <span
-                data-plugin-capsule-value
-                className="min-w-0 truncate font-mono text-[11.5px] leading-4 text-ink-faint tabular-nums @max-[260px]/statusline:hidden"
-              >
-                {capsule.valueText}
-              </span>
-            ) : null}
-          </>
-        );
-
-        if (capsule.action === undefined) {
-          return (
-            <span
-              key={key}
-              title={fullText}
-              data-plugin-status-capsule={key}
-              className="inline-flex h-6 max-w-52 min-w-0 items-center gap-1.5 rounded-md px-1.5 select-none"
-            >
-              {content}
-            </span>
-          );
-        }
-
-        const action = capsule.action;
-        return (
-          <button
-            key={key}
-            type="button"
-            disabled={disabled || isBusy}
-            title={fullText}
-            aria-label={fullText}
-            data-plugin-status-capsule={key}
-            onClick={() => {
-              void execute(
-                {
-                  pluginId: capsule.pluginId,
-                  label,
-                  action,
-                  sessionId,
-                  workspaceId,
-                  onOpenPanel,
-                },
-                key,
-              );
-            }}
-            className={`${STATUS_SEGMENT_CLASS} h-6 max-w-52 px-1.5 text-[12px]`}
-          >
-            {content}
-          </button>
-        );
-      })}
-=======
             ) : null}
             <span>+{overflowCapsules.length}</span>
           </Popover.Trigger>
@@ -402,7 +346,6 @@ export function PluginStatusCapsules({
           </Popover.Portal>
         </Popover.Root>
       ) : null}
->>>>>>> 267a2bf64e
     </div>
   );
 }

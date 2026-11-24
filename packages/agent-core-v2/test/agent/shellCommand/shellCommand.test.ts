@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import {
   IAgentContextMemoryService,
+  IAgentLoopService,
   IAgentShellCommandService,
   IAgentToolRegistryService,
   IEventBus,
@@ -213,5 +214,41 @@ describe('AgentShellCommandService', () => {
       { role: 'user', origin: { kind: 'shell_command', phase: 'output', isError: true } },
     ]);
     expect(textOf(context.get()[1]!)).toContain('Bash tool is not registered');
+  });
+
+  it('wraps backgrounded shell command notifications in system-reminder XML', async () => {
+    const fakeBash = {
+      resolveExecution: async () => ({
+        isError: false as const,
+        description: 'run',
+        approvalRule: 'Bash',
+        execute: async () => ({ isError: false, output: 'task_id: bg-1\nstatus: running' }),
+      }),
+    };
+    const registry = {
+      _serviceBrand: undefined,
+      register: () => ({ dispose: () => {} }),
+      registerPreparation: () => ({ dispose: () => {} }),
+      prepare: async () => {},
+      list: () => [fakeBash],
+      listReferences: () => [],
+      resolve: () => fakeBash,
+    } as unknown as IAgentToolRegistryService;
+    ctx = createTestAgent(agentService(IAgentToolRegistryService, registry));
+    context = ctx.get(IAgentContextMemoryService);
+    shell = ctx.get(IAgentShellCommandService);
+    ctx.mockNextResponse({ type: 'text', text: 'Noted.' });
+    const ended = ctx.untilTurnEnd();
+
+    const result = await shell.run({ command: 'sleep 10' });
+    expect(result.backgrounded).toBe(true);
+    await ended;
+    await ctx.get(IAgentLoopService).settled();
+    const backgrounded = context.get().find((message) =>
+      message.origin?.kind === 'injection' && message.origin.variant === 'shell_command_backgrounded',
+    );
+    expect(backgrounded?.content).toEqual([
+      { type: 'text', text: '<system-reminder>\ntask_id: bg-1\nstatus: running\n</system-reminder>' },
+    ]);
   });
 });

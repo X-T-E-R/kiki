@@ -1,5 +1,6 @@
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { capabilityDeltaParts, capabilitySourceMessage } from '#/agent/contextInjector/capabilityDelta';
+import { wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { sliceUtf16 } from '#/_base/text/utf16';
 
 import { SELECT_TOOLS_TOOL_NAME, type ShapedToolHistory } from './toolSelect';
@@ -34,7 +35,7 @@ export function shapeDynamicToolContext(history: readonly ContextMessage[]): Sha
     if (isLoadableToolsAnnouncement(message)) {
       const parts = capabilityDeltaParts(message).filter((part) => part.variant !== LOADABLE_TOOLS_VARIANT);
       if (parts.length === 0) return undefined;
-      return { ...message, content: [{ type: 'text', text: `<system-reminder>\n${parts.map((part) => part.content).join('\n\n')}\n</system-reminder>` }],
+      return { ...message, content: [{ type: 'text', text: wrapSystemReminder(parts.map((part) => part.content).join('\n\n')) }],
         origin: { kind: 'injection', variant: 'capability_delta', disclosure: { parts } } };
     }
     if (!isDynamicToolSchemaMessage(message)) return message;

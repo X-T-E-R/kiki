@@ -1370,7 +1370,7 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
       expect(childContext.messages.at(-1)).toMatchObject({
         role: 'user',
         origin: { kind: 'system_trigger', name: 'stop_hook' },
-        content: [{ type: 'text', text: 'finish child checks' }],
+        content: [{ type: 'text', text: '<system-reminder>\nfinish child checks\n</system-reminder>' }],
       });
       expect(subagentStopCount).toBe(1);
       expect(childLoop.queue.takeNextBatch()?.driver.kind).toBe('stop_hook');

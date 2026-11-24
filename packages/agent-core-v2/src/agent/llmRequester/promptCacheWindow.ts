@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import type { Message } from '#/kosong/contract/message';
 import type { Tool } from '#/kosong/contract/tool';
 
@@ -61,7 +62,7 @@ export class PromptCacheWindow {
         role: 'user',
         content: [{
           type: 'text',
-          text: `<system-reminder>\nExtension prompt sections updated; use this state instead of the previous extension prompt sections.\n\n${text || 'No extension prompt sections are active.'}\n</system-reminder>`,
+          text: wrapSystemReminder(`Extension prompt sections updated; use this state instead of the previous extension prompt sections.\n\n${text || 'No extension prompt sections are active.'}`),
         }],
         toolCalls: [],
       };

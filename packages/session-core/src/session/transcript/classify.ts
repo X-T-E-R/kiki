@@ -9,10 +9,27 @@ export interface SplitSystemRemindersResult {
   readonly reminders: readonly string[];
 }
 
+const SYSTEM_REMINDER_GLOBAL_RE = /<system-reminder>([\s\S]*?)<\/system-reminder>/gi;
+
 export function splitSystemReminders(text: string, generated = false): SplitSystemRemindersResult {
   if (!generated) return { text, reminders: [] };
-  const match = /^<system-reminder>([\s\S]*)<\/system-reminder>$/.exec(text.trim());
-  return match === null ? { text, reminders: [] } : { text: '', reminders: [match[1]!.trim()] };
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('<system-reminder>') || !trimmed.endsWith('</system-reminder>')) {
+    return { text, reminders: [] };
+  }
+  const reminders: string[] = [];
+  let cursor = 0;
+  for (const match of trimmed.matchAll(SYSTEM_REMINDER_GLOBAL_RE)) {
+    if (trimmed.slice(cursor, match.index).trim() !== '') {
+      return { text, reminders: [] };
+    }
+    reminders.push(match[1]!.trim());
+    cursor = match.index + match[0].length;
+  }
+  if (reminders.length === 0 || trimmed.slice(cursor).trim() !== '') {
+    return { text, reminders: [] };
+  }
+  return { text: '', reminders };
 }
 
 export interface PromptOriginLike {
@@ -150,7 +167,7 @@ const CRON_FIRE_RE = /<cron-fire\b[\s\S]*?<\/cron-fire>/gi;
 const CRON_PROMPT_RE = /<prompt>\s*([\s\S]*?)\s*<\/prompt>/i;
 const CRON_SCRIPT_OUTPUT_RE = /<script-output\b[^>]*>([\s\S]*?)<\/script-output>/gi;
 const HOOK_CONTEXT_RE = /<hook_context>([\s\S]*?)<\/hook_context>/gi;
-const SYSTEM_REMINDER_GLOBAL_RE = /<system-reminder>([\s\S]*?)<\/system-reminder>/gi;
+const HOOK_RESULT_RE = /<hook_result\b[^>]*>([\s\S]*?)<\/hook_result>/gi;
 const TASK_NOTIFICATION_RE = /<notification\b([^>]*)>([\s\S]*?)<\/notification>/i;
 const TASK_NOTIFICATION_GLOBAL_RE = /<notification\b([^>]*)>([\s\S]*?)<\/notification>/gi;
 
@@ -178,6 +195,19 @@ function extractCronPrompt(text: string): string {
 function stripHookContext(text: string): string {
   if (!/<hook_context>/i.test(text)) return text;
   return text.replace(HOOK_CONTEXT_RE, (_, inner: string) => unescapeXml(inner).trim()).trim();
+}
+
+function stripSystemReminderEnvelope(text: string): string {
+  const split = splitSystemReminders(text, true);
+  return split.reminders.length > 0 ? split.reminders.join('\n\n') : text;
+}
+
+function stripHookResultEnvelope(text: string): string {
+  const unwrapped = stripSystemReminderEnvelope(text);
+  const stripped = /<hook_result\b/i.test(unwrapped)
+    ? unwrapped.replace(HOOK_RESULT_RE, (_, inner: string) => inner.trim()).trim()
+    : unwrapped;
+  return stripHookContext(stripped);
 }
 
 function unescapeXml(text: string): string {
@@ -432,9 +462,9 @@ function unwrapMergedSystemText(text: string, variants: readonly SystemVariant[]
     });
   }
   if (set.has('hook_result')) {
-    out = stripHookContext(out);
+    out = stripHookResultEnvelope(out);
   }
-  if (set.has('injection')) {
+  if (set.has('injection') || set.has('system_trigger')) {
     out = out.replace(SYSTEM_REMINDER_GLOBAL_RE, (_, inner: string) => inner.trim());
   }
   return out.trim();
@@ -621,7 +651,14 @@ export function classifyTranscriptText(input: {
     return {
       lane: 'system',
       origin,
-      text: kind === 'cron_job' ? extractCronPrompt(split.text) : kind === 'hook_result' ? stripHookContext(split.text) : split.text,
+      text:
+        kind === 'cron_job'
+          ? extractCronPrompt(split.text)
+          : kind === 'hook_result'
+            ? stripHookResultEnvelope(split.text)
+            : kind === 'system_trigger'
+              ? stripSystemReminderEnvelope(split.text)
+              : split.text,
       reminders: split.reminders,
       systemVariant,
       taskNotification: systemVariant === 'task' ? parseTaskNotificationMeta(split.text, origin) : undefined,

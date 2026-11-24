@@ -42,6 +42,7 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentModelSteeringService } from '#/features/modelSteering/modelSteering';
+import { wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import '#/features/modelSteering/modelSteeringFeature';
 import { runWillBeginStepHooks } from '../loop/stubs';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
@@ -285,16 +286,16 @@ describe('per-model cognition overlay', () => {
       await agent.get(IAgentLLMRequesterService).request({ tools: [] });
       return agent.llmCalls.at(-1)!.history.flatMap((message) => message.content).filter((part) => part.type === 'text').map((part) => part.text);
     };
-    expect(await request()).toContain('USER OLD');
+    expect(await request()).toContain(wrapSystemReminder('USER OLD'));
     await agent.get(IWireService).flush(); await agent.dispose();
     user = 'USER NEW'; modelPack = { ...modelPack, revision: 'source-model-new', branches: { ...modelPack.branches, main: { ...modelPack.branches.main, steering: user } } };
     profilePack = { ...profilePack, revision: 'source-profile-new' };
     agent = create(); await agent.restorePersisted(); profile = agent.get(IAgentProfileService); await profile.syncBindingMetadata();
     expect(await profile.getCognitionBinding()).toEqual(frozen);
-    expect(await request()).not.toContain('USER NEW');
+    expect(await request()).not.toContain(wrapSystemReminder('USER NEW'));
     await profile.rebuildPromptContext();
     expect((await profile.getCognitionBinding()).steeringSources?.thread?.mode).toBe('inherit');
-    expect(await request()).toContain('USER NEW');
+    expect(await request()).toContain(wrapSystemReminder('USER NEW'));
   });
 
   it('freezes the effective request and cold recovery, adopts explicit rebuilds, and restores original model settings when switching away', async () => {
@@ -357,7 +358,7 @@ describe('per-model cognition overlay', () => {
     agent.get(IAgentModelSteeringService);
     agent.get(IAgentContextMemoryService).append({ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'User request' }], origin: { kind: 'user' } });
     await runWillBeginStepHooks(agent.get(IAgentLoopService), true);
-    expect(agent.get(IAgentContextMemoryService).get().some((message) => message.content.some((part) => part.type === 'text' && part.text === `cue:${body}`))).toBe(true);
+    expect(agent.get(IAgentContextMemoryService).get().some((message) => message.content.some((part) => part.type === 'text' && part.text === wrapSystemReminder(`cue:${body}`)))).toBe(true);
     await agent.get(IWireService).flush(); await agent.dispose();
     body = 'NATIVE NEW\n新的正文\n';
     agent = create(); await agent.restorePersisted(); profile = agent.get(IAgentProfileService);
@@ -483,7 +484,7 @@ describe('per-model cognition overlay', () => {
     }), llmGenerateServices(async (_provider, system, _tools, messages) => {
       observedSystem = system;
       observedMessages = JSON.stringify(messages);
-      expect(messages.some((message) => message.role === 'user' && message.content.some((part) => part.type === 'text' && part.text === cue))).toBe(true);
+      expect(messages.some((message) => message.role === 'user' && message.content.some((part) => part.type === 'text' && part.text === wrapSystemReminder(cue)))).toBe(true);
       return { id: 'response', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], toolCalls: [] }, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
     }));
     const profile = ctx.get(IAgentProfileService);
@@ -643,7 +644,7 @@ describe('per-model cognition overlay', () => {
     agent.get(IAgentContextMemoryService).append({ role: 'user', content: [{ type: 'text', text: 'Human request' }], toolCalls: [], origin: { kind: 'user' } });
     agent.get(IAgentModelSteeringService);
     await runWillBeginStepHooks(agent.get(IAgentLoopService), true);
-    expect(agent.get(IAgentContextMemoryService).get().some((message) => message.origin?.kind === 'injection' && message.origin.variant === 'model_steering' && message.content.some((part) => part.type === 'text' && part.text === 'FLASH STEERING'))).toBe(true);
+    expect(agent.get(IAgentContextMemoryService).get().some((message) => message.origin?.kind === 'injection' && message.origin.variant === 'model_steering' && message.content.some((part) => part.type === 'text' && part.text === wrapSystemReminder('FLASH STEERING')))).toBe(true);
     expect(await agent.get(IAgentCognitionAnchorService).project({ sourceType: 'turn', turnId: 0, step: 1, hasExplicitSystemPrompt: false })).toBe('OLD ANCHOR');
   });
 
@@ -745,7 +746,7 @@ describe('per-model cognition overlay', () => {
     expect(profile.getSystemPrompt()).toContain('FLASH OVERLAY');
     await runWillBeginStepHooks(agent.get(IAgentLoopService), true);
     expect(cues()).toHaveLength(position === 'main' ? 2 : 0);
-    if (position === 'main') expect(cues().at(-1)?.content[0]).toMatchObject({ text: 'SECOND MAIN CUE' });
+    if (position === 'main') expect(cues().at(-1)?.content[0]).toMatchObject({ text: wrapSystemReminder('SECOND MAIN CUE') });
     await agent.get(ISessionMetadata).registerAgent('main', { type: 'main' });
     const binding = await profile.prepareResumeBinding({ modelAlias: MOCK_MODEL, allowModelChange: true });
     await agent.get(IAgentModelSwitchService).execute({ operationId: `cognition-resume-${position}`, model: binding.model, thinking: binding.thinking, mode: 'direct' }, { binding });
@@ -851,7 +852,7 @@ describe('per-model cognition overlay', () => {
     expect(cues()).toHaveLength(0);
     await runWillBeginStepHooks(loop, false);
     expect(cues()).toHaveLength(1);
-    expect(cues()[0]!.content).toEqual([{ type: 'text', text: 'FLASH STEERING' }]);
+    expect(cues()[0]!.content).toEqual([{ type: 'text', text: wrapSystemReminder('FLASH STEERING') }]);
   });
 
   it('validates every branch structure and path without requiring unselected files', () => {

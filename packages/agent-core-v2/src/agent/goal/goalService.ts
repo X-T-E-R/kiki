@@ -31,7 +31,7 @@ import { LoopErrors } from '#/agent/loop/errors';
 import { ContinuationStepRequest, MessageStepRequest } from '#/agent/loop/stepRequest';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
-import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
+import { IAgentSystemReminderService, wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { IAgentTaskService, type AgentTaskInfo } from '#/agent/task/task';
 import { TaskSettlementReady } from '#/agent/task/taskOps';
 import type { ExecutableToolResult } from '#/tool/toolContract';
@@ -1134,7 +1134,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
       content: [
         {
           type: 'text',
-          text: `${prompt} ${buildGoalFollowUpGuidance(state, this.isTaskWaitAvailable())}`,
+          text: wrapSystemReminder(`${prompt} ${buildGoalFollowUpGuidance(state, this.isTaskWaitAvailable())}`),
         },
       ],
       toolCalls: [],

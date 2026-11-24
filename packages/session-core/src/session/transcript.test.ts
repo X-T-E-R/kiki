@@ -189,6 +189,26 @@ describe('classifyTranscriptText', () => {
         subagentPromptAsUser: true,
       }),
     ).toMatchObject({ lane: 'you', text: 'Inspect the renderer' });
+    expect(
+      splitSystemReminders(
+        '<system-reminder>\nFirst steering\n</system-reminder>\n<system-reminder>\nSecond steering\n</system-reminder>',
+        true,
+      ),
+    ).toEqual({ text: '', reminders: ['First steering', 'Second steering'] });
+    expect(
+      classifyTranscriptText({
+        text: '<system-reminder>\nContinue the active goal\n</system-reminder>',
+        role: 'user',
+        origin: { kind: 'system_trigger', name: 'goal_continuation' },
+      }),
+    ).toMatchObject({ lane: 'system', systemVariant: 'system_trigger', text: 'Continue the active goal', reminders: [] });
+    expect(
+      classifyTranscriptText({
+        text: '<system-reminder>\n<hook_result hook_event="UserPromptSubmit">\nremember the lint rule\n</hook_result>\n</system-reminder>',
+        role: 'user',
+        origin: { kind: 'hook_result', event: 'UserPromptSubmit' },
+      }),
+    ).toMatchObject({ lane: 'system', systemVariant: 'hook_result', text: 'remember the lint rule', reminders: [] });
   });
 
   it('projects agent mailbox messages into attributed user blocks', () => {

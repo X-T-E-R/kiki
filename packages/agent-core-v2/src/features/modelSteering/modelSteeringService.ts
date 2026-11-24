@@ -1,6 +1,7 @@
 import { modelSteeringSourceIds } from '@kiki/protocol';
 import { Disposable } from '#/_base/di/lifecycle';
 import { IAgentContextInjectorService, type ContextInjectionContent, type ContextInjectionContext } from '#/agent/contextInjector/contextInjector';
+import { wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { readCognitionContent } from '#/agent/cognition/cognitionFiles';
 import { loadSteeringSources } from '#/agent/cognition/steeringBinding';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -105,7 +106,7 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
       if (!(isNewTurn && onTurn) && !(inputSources.has(source) && onInput) && !(this.inStep && interval > 0 && counter.steps - counter.lastInjection >= interval)) continue;
       const text = inherited ? binding.slots === undefined ? await readCognitionContent(this.fs, this.bootstrap.homeDir, 'steering', binding.config?.steering, this.hostEnv.pathClass) : binding.slots.steering : setting?.custom?.steering;
       if (text === undefined || text.trim().length === 0) continue;
-      texts.add(text);
+      texts.add(wrapSystemReminder(text));
       counter.lastInjection = counter.steps;
     }
     if (texts.size === 0) return undefined;

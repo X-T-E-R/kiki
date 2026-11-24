@@ -1,4 +1,5 @@
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 
 export const CAPABILITY_PROVIDERS = new Set(['loadable-tools', 'capabilities_rebuilt', 'profile_capabilities_changed', 'agent_profile_changes', 'plugin_change', 'plugin_session_start']);
 export interface CapabilityDeltaPart { readonly variant: string; readonly content: string; readonly disclosure?: unknown }
@@ -10,6 +11,6 @@ export function capabilitySourceMessage(message: ContextMessage, variant: string
   if (message.origin?.kind === 'injection' && message.origin.variant === variant) return message;
   const part = capabilityDeltaParts(message).find((item) => item.variant === variant);
   return part === undefined ? undefined : { ...message,
-    content: [{ type: 'text', text: `<system-reminder>\n${part.content}\n</system-reminder>` }],
+    content: [{ type: 'text', text: wrapSystemReminder(part.content) }],
     origin: { kind: 'injection', variant, disclosure: part.disclosure } };
 }

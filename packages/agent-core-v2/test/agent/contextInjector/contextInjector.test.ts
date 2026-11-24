@@ -170,9 +170,10 @@ describe('AgentContextInjectorService', () => {
     });
   });
 
-  it('appends provider content parts verbatim without system-reminder wrapping', async () => {
+  it('wraps provider content-part text in system-reminder while preserving media parts and avoiding double-wrapping', async () => {
     injector(ix).register('media_test', () => [
       { type: 'text', text: 'caption' },
+      { type: 'text', text: '<system-reminder>\nalready wrapped\n</system-reminder>' },
       { type: 'image_url', imageUrl: { url: 'https://example.com/a.png' } },
     ]);
 
@@ -180,7 +181,8 @@ describe('AgentContextInjectorService', () => {
 
     const message = context.get().at(-1);
     expect(message?.content).toEqual([
-      { type: 'text', text: 'caption' },
+      { type: 'text', text: '<system-reminder>\ncaption\n</system-reminder>' },
+      { type: 'text', text: '<system-reminder>\nalready wrapped\n</system-reminder>' },
       { type: 'image_url', imageUrl: { url: 'https://example.com/a.png' } },
     ]);
     expect(message?.origin).toEqual({ kind: 'injection', variant: 'media_test' });
@@ -544,20 +546,20 @@ describe('AgentContextInjectorService delivery routing', () => {
     );
   });
 
-  it('delivers raw content-part injections through the observable channel', async () => {
+  it('delivers content-part injections through the observable channel wrapped in system-reminder', async () => {
     const events = recordObservableAppends();
     injectorService.register('parts_probe', () => [{ type: 'text', text: 'caption' }]);
 
     await injectorService.reconcileAtSafeBoundary('parts_probe');
 
     const stored = context.get().at(-1);
-    expect(stored?.content).toEqual([{ type: 'text', text: 'caption' }]);
+    expect(stored?.content).toEqual([{ type: 'text', text: '<system-reminder>\ncaption\n</system-reminder>' }]);
     expect(events).toHaveLength(1);
     expect(events[0]?.delivery?.origin).toBe('injection');
     expect(events[0]?.delivery?.messageId).toBe(stored?.id);
   });
 
-  it('delivers tagged raw user-message injections through the observable channel', async () => {
+  it('delivers tagged raw user-message injections through the observable channel wrapped in system-reminder', async () => {
     const events = recordObservableAppends();
     injectorService.register('raw_user_probe', () => ({
       message: { role: 'user', content: [{ type: 'text', text: 'raw user payload' }] },
@@ -567,6 +569,7 @@ describe('AgentContextInjectorService delivery routing', () => {
 
     const stored = context.get().at(-1);
     expect(stored?.role).toBe('user');
+    expect(stored?.content).toEqual([{ type: 'text', text: '<system-reminder>\nraw user payload\n</system-reminder>' }]);
     expect(events).toHaveLength(1);
     expect(events[0]?.delivery?.origin).toBe('injection');
     expect(events[0]?.delivery?.messageId).toBe(stored?.id);

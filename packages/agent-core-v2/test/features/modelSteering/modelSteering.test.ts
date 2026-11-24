@@ -18,6 +18,7 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IAgentModelSteeringService } from '#/features/modelSteering/modelSteering';
+import { wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import type { CognitionContent } from '#/kosong/model/model';
 import '#/features/modelSteering/modelSteeringFeature';
 
@@ -104,7 +105,7 @@ describe('AgentModelSteeringService', () => {
     const text = JSON.stringify(request);
     expect(text).toContain(id);
     expect(text.includes('RECIPE COMPLETION CUE')).toBe(inject);
-    if (inject) expect(request.at(-1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: 'RECIPE COMPLETION CUE' }] });
+    if (inject) expect(request.at(-1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: wrapSystemReminder('RECIPE COMPLETION CUE') }] });
     expect(ctx.context.get().filter((message) => message.origin?.kind === 'task')).toHaveLength(1);
     expect(steeringMessages(ctx.context)).toHaveLength(inject ? 1 : 0);
     await ctx.expectResumeMatches();
@@ -159,7 +160,7 @@ describe('AgentModelSteeringService', () => {
       expect(steeringMessages(memory)).toHaveLength(Math.floor(step / 2));
     }
     expect(steeringMessages(memory).map(message => message.content)).toEqual([
-      [{ type: 'text', text }], [{ type: 'text', text }],
+      [{ type: 'text', text: wrapSystemReminder(text) }], [{ type: 'text', text: wrapSystemReminder(text) }],
     ]);
   });
 
@@ -202,7 +203,7 @@ describe('AgentModelSteeringService', () => {
         expect.objectContaining({ role: 'user', content: [{ type: 'text', text: 'Initial request' }] }),
         expect.objectContaining({ role: 'user', content: snapshots[0]!.content }),
       ];
-      if (configured) initialTail.push(expect.objectContaining({ role: 'user', content: [{ type: 'text', text: 'CLASSIFY THEN ACT' }] }));
+      if (configured) initialTail.push(expect.objectContaining({ role: 'user', content: [{ type: 'text', text: wrapSystemReminder('CLASSIFY THEN ACT') }] }));
       expect(scripted.calls[0]!.history.slice(-initialTail.length)).toEqual(initialTail);
       const cancelled = await prompts.enqueue({ message: {
         role: 'user', content: [{ type: 'text', text: 'Cancelled correction' }], toolCalls: [], origin: { kind: 'user' },
@@ -237,13 +238,13 @@ describe('AgentModelSteeringService', () => {
     const correctionTail = [
       expect.objectContaining({ role: 'user', content: [{ type: 'text', text: 'Understand the complete intent first.\n\nThen prioritize the intended use.' }] }),
     ];
-    if (configured) correctionTail.push(expect.objectContaining({ role: 'user', content: [{ type: 'text', text: 'CLASSIFY THEN ACT' }] }));
+    if (configured) correctionTail.push(expect.objectContaining({ role: 'user', content: [{ type: 'text', text: wrapSystemReminder('CLASSIFY THEN ACT') }] }));
     expect(scripted.calls[1]!.history.slice(-correctionTail.length)).toEqual(correctionTail);
     for (const [index, call] of scripted.calls.entries()) {
       const texts = call.history.flatMap((message) => message.content).filter((part) => part.type === 'text').map((part) => part.text);
       expect(texts).not.toContain('Cancelled correction');
       expect(texts).not.toContain('Superseded correction');
-      expect(texts.filter((text) => text === 'CLASSIFY THEN ACT')).toHaveLength(configured ? Math.min(index + 1, 2) : 0);
+      expect(texts.filter((text) => text === wrapSystemReminder('CLASSIFY THEN ACT'))).toHaveLength(configured ? Math.min(index + 1, 2) : 0);
     }
     expect(steeringMessages(memory)).toHaveLength(configured ? 2 : 0);
   });
@@ -273,7 +274,7 @@ describe('AgentModelSteeringService', () => {
     expect(steeringMessages(memory)[0]?.role).toBe('user');
     expect(steeringMessages(memory)[0]?.content[0]).toMatchObject({
       type: 'text',
-      text: 'CLASSIFY THEN ACT',
+      text: wrapSystemReminder('CLASSIFY THEN ACT'),
     });
 
     await runWillBeginStepHooks(loop, false);
@@ -338,7 +339,7 @@ describe('AgentModelSteeringService', () => {
     memory.applyCompaction({ summary: 'Compacted conversation', compactedCount: memory.get().length, tokensBefore: 100 });
     await runWillBeginStepHooks(loop, false);
     expect(steeringMessages(memory)).toHaveLength(1);
-    expect(steeringMessages(memory)[0]!.content).toEqual([{ type: 'text', text: 'CLASSIFY THEN ACT' }]);
+    expect(steeringMessages(memory)[0]!.content).toEqual([{ type: 'text', text: wrapSystemReminder('CLASSIFY THEN ACT') }]);
     expect(await profile.getCognitionBinding()).toEqual(binding);
     await runWillBeginStepHooks(loop, false);
     expect(steeringMessages(memory)).toHaveLength(1);
@@ -369,10 +370,10 @@ describe('AgentModelSteeringService', () => {
     }
     expect(agent.llmCalls).toHaveLength(4);
     const counts = agent.llmCalls.map((call) => call.history.flatMap((message) => message.content)
-      .filter((part) => part.type === 'text' && part.text === 'CLASSIFY THEN ACT').length);
+      .filter((part) => part.type === 'text' && part.text === wrapSystemReminder('CLASSIFY THEN ACT')).length);
     expect(counts).toEqual(onInput ? [1, 2, 2, 3] : [1, 1, 2, 2]);
     expect(agent.llmCalls[1]!.history.at(onInput ? -2 : -1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: 'Accepted correction' }] });
-    if (onInput) expect(agent.llmCalls[1]!.history.at(-1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: 'CLASSIFY THEN ACT' }] });
+    if (onInput) expect(agent.llmCalls[1]!.history.at(-1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: wrapSystemReminder('CLASSIFY THEN ACT') }] });
   });
 
   it('steering cadence can disable all triggers, including new turns and compaction re-arm', async () => {
@@ -431,11 +432,11 @@ describe('AgentModelSteeringService', () => {
     try { await agent.rpc.prompt({ input: [{ type: 'text', text: 'Initial human' }] }); await loop.settled(); await Promise.all(steerings); }
     finally { await hook.dispose(); }
     expect(agent.llmCalls).toHaveLength(3);
-    const cues = agent.llmCalls.map((call) => call.history.flatMap((message) => message.content).filter((part) => part.type === 'text' && part.text === 'CLASSIFY THEN ACT').length);
+    const cues = agent.llmCalls.map((call) => call.history.flatMap((message) => message.content).filter((part) => part.type === 'text' && part.text === wrapSystemReminder('CLASSIFY THEN ACT')).length);
     expect(cues).toEqual(enabled ? [1, 2, 3] : [1, 1, 1]);
     const second = agent.llmCalls[1]!.history.flatMap((message) => message.content).filter((part) => part.type === 'text').map((part) => part.text);
     expect(second).toContain('Input agent_message\n\nInput task');
-    expect(second.filter((text) => text === 'AGENT CUE')).toHaveLength(enabled ? 1 : 0);
+    expect(second.filter((text) => text === wrapSystemReminder('AGENT CUE'))).toHaveLength(enabled ? 1 : 0);
     expect(agent.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'agent_message' || message.origin?.kind === 'task').map((message) => message.origin)).toMatchObject([{ kind: 'agent_message', senderAgentId: 'example-child' }, { kind: 'task', taskId: 'example-task' }]);
   });
 
@@ -458,7 +459,7 @@ describe('AgentModelSteeringService', () => {
       await loop.settled();
     } finally { await continuePeer.dispose(); }
     expect(agent.llmCalls).toHaveLength(2);
-    const cue = mode === 'custom' ? 'PEER CUE' : 'CLASSIFY THEN ACT';
+    const cue = wrapSystemReminder(mode === 'custom' ? 'PEER CUE' : 'CLASSIFY THEN ACT');
     expect(agent.llmCalls.map((call) => call.history.flatMap((message) => message.content).filter((part) => part.type === 'text' && part.text === cue).length)).toEqual(mode === 'off' ? [0, 0] : [1, 2]);
     memory.applyCompaction({ summary: 'Peer compacted', compactedCount: memory.get().length, tokensBefore: 100 });
     await runWillBeginStepHooks(loop, false);
@@ -503,11 +504,11 @@ describe('AgentModelSteeringService', () => {
     const loop = ctx.get(IAgentLoopService);
     for (const origin of [{ kind: 'user' }, { kind: 'agent_message', messageId: 'example-agent', senderAgentId: 'example-child', senderTaskName: 'example' }, { kind: 'task', taskId: 'example-task', notificationId: 'example-notice', status: 'completed' }] satisfies ContextMessage['origin'][]) memory.append({ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Mixed input' }], origin });
     await runWillBeginStepHooks(loop, true);
-    expect(steeringMessages(memory)[0]!.content).toEqual([{ type: 'text', text: 'CLASSIFY THEN ACT' }]);
+    expect(steeringMessages(memory)[0]!.content).toEqual([{ type: 'text', text: wrapSystemReminder('CLASSIFY THEN ACT') }]);
     await writeFile(join(homeDir, 'cognition/steering.md'), 'CHANGED SOURCE FILE');
     memory.append({ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Task update' }], origin: { kind: 'task', taskId: 'example-task', notificationId: 'example-new-notice', status: 'completed' } });
     await runWillBeginStepHooks(loop, false);
-    expect(steeringMessages(memory).at(-1)!.content).toEqual([{ type: 'text', text: 'CLASSIFY THEN ACT' }]);
+    expect(steeringMessages(memory).at(-1)!.content).toEqual([{ type: 'text', text: wrapSystemReminder('CLASSIFY THEN ACT') }]);
   });
 
   it.each([
@@ -528,11 +529,12 @@ describe('AgentModelSteeringService', () => {
     await agent.get(IAgentLoopService).settled();
     const history = agent.llmCalls[0]!.history;
     const texts = history.flatMap((message) => message.content).flatMap((part) => part.type === 'text' ? [part.text] : []);
+    const wrappedCue = wrapSystemReminder(cue);
     expect(texts).toContain('Open the new thread');
-    expect(texts.filter((text) => text === cue)).toHaveLength(count);
-    expect(texts.filter((text) => text === 'CLASSIFY THEN ACT')).toHaveLength(label === 'custom' ? 0 : count);
-    expect(texts.filter((text) => text === 'PEER CUE')).toHaveLength(label === 'custom' ? 1 : 0);
-    if (count === 1) expect(history.at(-1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: cue }] });
+    expect(texts.filter((text) => text === wrappedCue)).toHaveLength(count);
+    expect(texts.filter((text) => text === wrapSystemReminder('CLASSIFY THEN ACT'))).toHaveLength(label === 'custom' ? 0 : count);
+    expect(texts.filter((text) => text === wrapSystemReminder('PEER CUE'))).toHaveLength(label === 'custom' ? 1 : 0);
+    if (count === 1) expect(history.at(-1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: wrappedCue }] });
     expect(agent.get(IAgentContextMemoryService).get().find((message) => message.content.some((part) => part.type === 'text' && part.text === 'Open the new thread'))?.origin)
       .toEqual({ kind: 'system_trigger', name: 'thread_create' });
   });
@@ -557,11 +559,11 @@ describe('AgentModelSteeringService', () => {
     await peer.completion;
     await loop.settled();
     expect(agent.llmCalls).toHaveLength(2);
-    const cues = agent.llmCalls.map((call) => call.history.flatMap((message) => message.content).filter((part) => part.type === 'text' && part.text === 'CLASSIFY THEN ACT').length);
+    const cues = agent.llmCalls.map((call) => call.history.flatMap((message) => message.content).filter((part) => part.type === 'text' && part.text === wrapSystemReminder('CLASSIFY THEN ACT')).length);
     expect(cues).toEqual([1, 1]);
     const second = agent.llmCalls[1]!.history.flatMap((message) => message.content).flatMap((part) => part.type === 'text' ? [part.text] : []);
     expect(second).toContain('Later peer');
-    expect(second.filter((text) => text === 'CLASSIFY THEN ACT')).toHaveLength(1);
+    expect(second.filter((text) => text === wrapSystemReminder('CLASSIFY THEN ACT'))).toHaveLength(1);
     expect(agent.context.get().filter((message) => message.origin?.kind === 'peer_thread' || (message.origin?.kind === 'system_trigger' && message.origin.name === 'thread_create')).map((message) => message.origin))
       .toEqual([
         { kind: 'system_trigger', name: 'thread_create' },
@@ -594,10 +596,10 @@ describe('AgentModelSteeringService', () => {
     await send('Unrelated peer', { kind: 'peer_thread', source: { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-other' }, messageId: 'example-other-peer', acceptedAt: 3 });
     await agent.get(IAgentLoopService).settled();
     expect(agent.llmCalls).toHaveLength(4);
-    const cues = agent.llmCalls.map((call) => call.history.flatMap((message) => message.content).filter((part) => part.type === 'text' && part.text === 'CLASSIFY THEN ACT').length);
+    const cues = agent.llmCalls.map((call) => call.history.flatMap((message) => message.content).filter((part) => part.type === 'text' && part.text === wrapSystemReminder('CLASSIFY THEN ACT')).length);
     expect(cues).toEqual([1, 2, 3, 3]);
     for (const call of agent.llmCalls.slice(0, 3)) {
-      expect(call.history.at(-1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: 'CLASSIFY THEN ACT' }] });
+      expect(call.history.at(-1)).toMatchObject({ role: 'user', content: [{ type: 'text', text: wrapSystemReminder('CLASSIFY THEN ACT') }] });
     }
   });
 
@@ -637,5 +639,24 @@ describe('AgentModelSteeringService', () => {
     await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
     await runWillBeginStepHooks(ctx.get(IAgentLoopService), true);
     expect(steeringMessages(ctx.get(IAgentContextMemoryService))).toHaveLength(0);
+  });
+
+  it('does not double-wrap pre-wrapped steering text and deduplicates equivalent wrapped and bare sources', async () => {
+    ctx = createTestAgent(homeDirServices(homeDir));
+    await bindModel(true, {
+      steering: { text: '<system-reminder>\nPREWRAPPED STEERING\n</system-reminder>' },
+      steeringSources: {
+        task: { mode: 'custom', custom: { steering: { text: 'PREWRAPPED STEERING' } } },
+      },
+    });
+    const memory = ctx.get(IAgentContextMemoryService);
+    const loop = ctx.get(IAgentLoopService);
+    memory.append({ role: 'user', content: [{ type: 'text', text: 'Human request' }], toolCalls: [], origin: { kind: 'user' } });
+    memory.append({ role: 'user', content: [{ type: 'text', text: 'Task update' }], toolCalls: [], origin: { kind: 'task', taskId: 'example-task', notificationId: 'example-notice', status: 'completed' } });
+    await runWillBeginStepHooks(loop, true);
+    expect(steeringMessages(memory)).toHaveLength(1);
+    expect(steeringMessages(memory)[0]!.content).toEqual([
+      { type: 'text', text: '<system-reminder>\nPREWRAPPED STEERING\n</system-reminder>' },
+    ]);
   });
 });

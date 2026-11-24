@@ -7,6 +7,7 @@ import { userCancellationReason } from '#/_base/utils/abort';
 import { escapeXml } from '#/_base/utils/xml-escape';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { IAgentStateService } from '#/agent/state/agentState';
 import type { ToolUpdate } from '#/tool/toolContract';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -227,7 +228,7 @@ export class AgentShellCommandService implements IAgentShellCommandService {
   private notifyBackgrounded(output: string): void {
     void this.promptService.inject({
       role: 'user',
-      content: [{ type: 'text', text: output }],
+      content: [{ type: 'text', text: wrapSystemReminder(output) }],
       toolCalls: [],
       origin: { kind: 'injection', variant: 'shell_command_backgrounded' },
     });

@@ -368,7 +368,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
           this.stopHookContinuationUsed = true;
           this.context.appendObservable({
             role: 'user',
-            content: [{ type: 'text', text: reason }],
+            content: [{ type: 'text', text: wrapSystemReminder(reason) }],
             toolCalls: [],
             origin: { kind: 'system_trigger', name: 'stop_hook' },
           });
@@ -561,7 +561,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
 
     const append = renderUserPromptHookResult(results);
     if (append !== undefined) {
-      const message: ContextMessage = { role: 'user', content: [{ type: 'text', text: append.text }], toolCalls: [], origin: { kind: 'hook_result', event: append.event } };
+      const message: ContextMessage = { role: 'user', content: [{ type: 'text', text: wrapSystemReminder(append.text) }], toolCalls: [], origin: { kind: 'hook_result', event: append.event } };
       if (ctx.appendMessage !== undefined) ctx.appendMessage(message);
       else this.context.appendObservable(message);
       void this.dispatcher.dispatch(

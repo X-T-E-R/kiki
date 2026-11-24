@@ -3,6 +3,7 @@ import { renderImSourceMetadata } from '@nb-corp/im-bridge-core/metadata';
 import { renderToolResultForModel } from '#/agent/contextMemory/toolResultRender';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { isVacuousContentPart } from '#/agent/contextMemory/vacuousContent';
+import { wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import type { ContentPart, Message, ToolCall } from '#/kosong/contract/message';
 import { renderModelReceipt } from './modelReceipt';
 
@@ -452,14 +453,17 @@ function projectedContent(source: ContextMessage, onAnomaly?: OnAnomaly, call?: 
         })
       : source.content;
   const projected = cleanContent(source, source.origin?.kind === 'compaction_summary' ? content.filter(part => part.type === 'text') : content, onAnomaly);
+  const wrapped = source.role === 'user' && source.origin?.kind === 'injection'
+    ? projected.map((part) => (part.type === 'text' && part.text.trim().length > 0 ? { ...part, text: wrapSystemReminder(part.text) } : part))
+    : projected;
   const im = source.role === 'user' && source.origin?.kind === 'user' ? source.origin.im : undefined;
   if (im !== undefined) {
-    projected.splice(skillPrefixCount(source), 0, {
+    wrapped.splice(skillPrefixCount(source), 0, {
       type: 'text',
       text: renderImSourceMetadata(im),
     });
   }
-  return projected;
+  return wrapped;
 }
 
 function cleanContent(
