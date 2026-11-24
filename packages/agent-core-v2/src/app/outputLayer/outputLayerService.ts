@@ -1,21 +1,32 @@
 import {
   OUTPUT_LAYER_PLUGIN_ID, outputLayerConfigurationSchema, outputLayerRequestSchema,
+  type LlmCompleteRequest, type LlmCompleteResponse, type LlmCompleteStreamEvent,
   type OutputLayerConfiguration, type OutputLayerEvent, type OutputLayerRequest,
 } from '@kiki/protocol';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IConfigService } from '#/app/config/config';
+import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { IPluginModelRequests } from '#/app/plugin/pluginModelRequests';
 import { IRequestIdentityInstallation, operationRequestIdentity } from '#/session/requestIdentity/requestIdentityRegistry';
 import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
 import { IPluginSettingsService } from '#/app/plugin/pluginSettingsService';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IModelCatalog } from '#/kosong/model/catalog';
+import { IModelService } from '#/kosong/model/model';
 import type { Message } from '#/kosong/contract/message';
 import type { ModelRequestParams } from '#/kosong/model/modelRequester';
 import { estimateTokens, estimateTokensForMessages } from '#/kosong/contract/tokens';
-import { IOutputLayerService } from './outputLayer';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IOutputLayerService, type LlmCompleteRunOptions, type LlmCompleteUsageCallback } from './outputLayer';
+import { runLlmComplete, streamLlmComplete, type LlmCompleteDeps } from './llmComplete';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { IWorkspaceService } from '#/app/workspace/workspace';
@@ -35,7 +46,41 @@ export class OutputLayerService implements IOutputLayerService {
     @IPluginModelRequests private readonly modelRequests: IPluginModelRequests,
     @IRequestIdentityInstallation private readonly installation: IRequestIdentityInstallation,
     @IRetainedUsageService private readonly retainedUsage: IRetainedUsageService,
+    @ref(IConfigService) private readonly configRef?: LiveRef<IConfigService>,
+    @ref(IModelService) private readonly modelsRef?: LiveRef<IModelService>,
+    @ref(ISessionManager) private readonly sessionManagerRef?: LiveRef<ISessionManager>,
+    @ref(IBootstrapService) private readonly bootstrapRef?: LiveRef<IBootstrapService>,
+    @ref(IAppendLogStore) private readonly appendLogRef?: LiveRef<IAppendLogStore>,
+    @ref(IAtomicDocumentStore) private readonly docsRef?: LiveRef<IAtomicDocumentStore>,
+    @ref(IFileSystemStorageService) private readonly storageRef?: LiveRef<IFileSystemStorageService>,
+    @ref(ICpuWorkerService) private readonly cpuWorkerRef?: LiveRef<ICpuWorkerService>,
   ) {}
+
+  private llmCompleteDeps(): LlmCompleteDeps {
+    return {
+      catalog: this.catalog,
+      sessions: this.sessions,
+      modelRequests: this.modelRequests,
+      installation: this.installation,
+      retainedUsage: this.retainedUsage,
+      config: this.configRef?.current,
+      models: this.modelsRef?.current,
+      sessionManager: this.sessionManagerRef?.current,
+      bootstrap: this.bootstrapRef?.current,
+      appendLog: this.appendLogRef?.current,
+      docs: this.docsRef?.current,
+      storage: this.storageRef?.current,
+      cpuWorker: this.cpuWorkerRef?.current,
+    };
+  }
+
+  completeStream(input: LlmCompleteRequest, signal: AbortSignal, options?: LlmCompleteUsageCallback | LlmCompleteRunOptions): AsyncIterable<LlmCompleteStreamEvent> {
+    return streamLlmComplete(this.llmCompleteDeps(), input, signal, options);
+  }
+
+  complete(input: LlmCompleteRequest, signal: AbortSignal, options?: LlmCompleteUsageCallback | LlmCompleteRunOptions): Promise<LlmCompleteResponse> {
+    return runLlmComplete(this.llmCompleteDeps(), input, signal, options);
+  }
 
   private async indexedSession(sessionId: string): Promise<SessionSummary> {
     const session = await this.sessions.get(sessionId);

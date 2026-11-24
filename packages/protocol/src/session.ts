@@ -237,6 +237,70 @@ export const sessionSchema = /* @__PURE__ */ z.object({
 
 export type Session = z.infer<typeof sessionSchema>;
 
+export const sessionMcpServerCommonShape = {
+  enabled: z.boolean().optional(),
+  startupTimeoutMs: z.number().int().min(1).max(2_147_483_647).optional(),
+  toolTimeoutMs: z.number().int().min(1).max(2_147_483_647).optional(),
+  enabledTools: z.array(z.string()).optional(),
+  disabledTools: z.array(z.string()).optional(),
+  inherit: z.boolean().optional(),
+};
+
+export const sessionMcpServerStdioConfigSchema = /* @__PURE__ */ z.object({
+  transport: z.literal('stdio'),
+  command: z.string().min(1),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  cwd: z.string().optional(),
+  executor: z.enum(['local', 'kaos']).optional(),
+  runtime_id: z.string().min(1).optional(),
+  ...sessionMcpServerCommonShape,
+}).strict();
+
+export const sessionMcpServerHttpConfigSchema = /* @__PURE__ */ z.object({
+  transport: z.literal('http'),
+  url: z.string().url(),
+  headers: z.record(z.string(), z.string()).optional(),
+  auth: z.literal('oauth').optional(),
+  bearerTokenEnvVar: z.string().min(1).optional(),
+  ...sessionMcpServerCommonShape,
+}).strict();
+
+export const sessionMcpServerSseConfigSchema = /* @__PURE__ */ z.object({
+  transport: z.literal('sse'),
+  url: z.string().url(),
+  headers: z.record(z.string(), z.string()).optional(),
+  auth: z.literal('oauth').optional(),
+  bearerTokenEnvVar: z.string().min(1).optional(),
+  ...sessionMcpServerCommonShape,
+}).strict();
+
+const sessionMcpServerDiscriminatedSchema = /* @__PURE__ */ z.discriminatedUnion('transport', [
+  sessionMcpServerStdioConfigSchema,
+  sessionMcpServerHttpConfigSchema,
+  sessionMcpServerSseConfigSchema,
+]);
+
+export const sessionMcpServerConfigSchema = /* @__PURE__ */ z.preprocess((raw) => {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
+  const obj = raw as Record<string, unknown>;
+  if ('transport' in obj) return obj;
+  if (typeof obj['command'] === 'string') return { ...obj, transport: 'stdio' };
+  if (typeof obj['url'] === 'string') return { ...obj, transport: 'http' };
+  return obj;
+}, sessionMcpServerDiscriminatedSchema);
+
+export type SessionMcpServerConfig = z.infer<typeof sessionMcpServerConfigSchema>;
+
+export const sessionUserToolSchema = /* @__PURE__ */ z.object({
+  name: z.string().min(1),
+  description: z.string(),
+  input_schema: z.record(z.string(), z.unknown()),
+  inherit: z.boolean().optional(),
+}).strict();
+
+export type SessionUserTool = z.infer<typeof sessionUserToolSchema>;
+
 export const sessionCreateSchema = /* @__PURE__ */ z.object({
   creation_id: z.string().uuid().transform((value) => value.toLowerCase()).optional(),
   title: z.string().min(1).optional(),
@@ -258,6 +322,8 @@ export const sessionCreateSchema = /* @__PURE__ */ z.object({
   ephemeral: z.boolean().optional(),
   private: z.boolean().optional(),
   isolation: worktreeIsolationSchema.optional(),
+  mcp_servers: z.record(z.string().min(1), sessionMcpServerConfigSchema).optional(),
+  user_tools: z.array(sessionUserToolSchema).optional(),
 });
 
 export type SessionCreate = z.infer<typeof sessionCreateSchema>;

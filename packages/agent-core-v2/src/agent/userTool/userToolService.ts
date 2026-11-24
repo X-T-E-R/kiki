@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { type IDisposable } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
@@ -9,6 +10,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { abortable } from '#/_base/utils/abort';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import type {
   ExecutableTool,
   ExecutableToolContext,
@@ -19,7 +21,11 @@ import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
-import { IAgentUserToolService, type UserToolRegistration } from './userTool';
+import {
+  IAgentUserToolService,
+  ISessionDeclaredUserTools,
+  type UserToolRegistration,
+} from './userTool';
 import {
   ToolsRegisterUserTool,
   ToolsUnregisterUserTool,
@@ -37,6 +43,7 @@ export class AgentUserToolService extends Service implements IAgentUserToolServi
   declare readonly _serviceBrand: undefined;
 
   private readonly registrations = new Map<string, IDisposable>();
+  private readonly declaredByName = new Map<string, UserToolRegistration>();
 
   constructor(
     @IAgentToolRegistryService private readonly registry: IAgentToolRegistryService,
@@ -45,9 +52,16 @@ export class AgentUserToolService extends Service implements IAgentUserToolServi
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @IAgentStateService private readonly agentState: IAgentStateService,
     @IAgentScopeContext private readonly agentContext: IAgentScopeContext,
+    @ref(ISessionDeclaredUserTools) declaredUserTools?: LiveRef<readonly UserToolRegistration[]>,
   ) {
     super();
     this.agentState.contributeState(userToolKey);
+    const declared = declaredUserTools?.current ?? [];
+    for (const tool of declared) {
+      if (this.agentContext.agentId !== MAIN_AGENT_ID && tool.inherit !== true) continue;
+      this.declaredByName.set(tool.name, tool);
+      this.applyRegister(tool);
+    }
     this._register(
       this.dispatcher.hooks.onDidRestore.register('user-tool', async (_ctx, next) => {
         this.restoreRegisteredTools();
@@ -57,11 +71,16 @@ export class AgentUserToolService extends Service implements IAgentUserToolServi
   }
 
   list(): readonly UserToolRegistration[] {
-    return [...this.agentState.get(userToolKey).values()];
+    const merged = new Map<string, UserToolRegistration>(this.declaredByName);
+    for (const [name, registration] of this.agentState.get(userToolKey)) {
+      merged.set(name, registration);
+    }
+    return [...merged.values()];
   }
 
   inheritUserTools(parent: IAgentUserToolService): void {
     for (const registration of parent.list()) {
+      if (registration.inherit === false) continue;
       this.register(registration);
     }
   }
@@ -78,7 +97,14 @@ export class AgentUserToolService extends Service implements IAgentUserToolServi
 
   private restoreRegisteredTools(): void {
     const persistedActive = this.profile.getActiveToolNames();
-    for (const registration of this.agentState.get(userToolKey).values()) {
+    const durableMap = this.agentState.get(userToolKey);
+    for (const registration of this.declaredByName.values()) {
+      if (durableMap.has(registration.name)) continue;
+      const activate =
+        persistedActive === undefined || persistedActive.includes(registration.name);
+      this.applyRegister(registration, { activate });
+    }
+    for (const registration of durableMap.values()) {
       const activate =
         persistedActive === undefined || persistedActive.includes(registration.name);
       this.applyRegister(registration, { activate });

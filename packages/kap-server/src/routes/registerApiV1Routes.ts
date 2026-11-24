@@ -54,6 +54,9 @@ import { registerHarnessQuotaRoutes } from './harnessQuota';
 import { registerPluginUsageRoutes } from './pluginUsage';
 import { registerOptionalCapabilityRoutes } from './optionalCapabilities';
 import { registerOutputLayerRoutes } from './outputLayer';
+import { registerLlmCompleteRoutes } from './llmComplete';
+import { registerInteractionsRoutes } from './interactions';
+import { registerRawEventsRoutes } from './events';
 import { registerPromptsRoutes } from './prompts';
 import { registerQuestionsRoutes } from './questions';
 import { registerRuntimeRoutes } from './runtime';
@@ -261,6 +264,19 @@ export async function registerApiV1Routes(
         core,
       );
       registerOutputLayerRoutes(apiV1 as unknown as Parameters<typeof registerOutputLayerRoutes>[0], core);
+      registerLlmCompleteRoutes(
+        apiV1 as unknown as Parameters<typeof registerLlmCompleteRoutes>[0],
+        core,
+        opts.broadcaster,
+      );
+      registerInteractionsRoutes(apiV1 as unknown as Parameters<typeof registerInteractionsRoutes>[0], core);
+      registerRawEventsRoutes(
+        apiV1 as unknown as Parameters<typeof registerRawEventsRoutes>[0],
+        core,
+        opts.broadcaster,
+        opts.notifications,
+        opts.shutdownSignal,
+      );
       registerPluginsRoutes(apiV1 as unknown as Parameters<typeof registerPluginsRoutes>[0], core, {
         marketplaceUrl: opts.pluginMarketplaceUrl,
         serverToken: opts.pluginBridgeServerToken,

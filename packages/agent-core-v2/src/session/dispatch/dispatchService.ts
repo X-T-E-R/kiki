@@ -356,7 +356,9 @@ export class SessionDispatchService implements ISessionDispatchService {
             (input.strictThinkingFromProfile === true
               ? input.thinkingEffort !== undefined || profile.thinkingEffort !== undefined
               : undefined),
-          inheritedUserToolNames: researchReadonly ? undefined : requesterUserTools.list().map((tool) => tool.name),
+          inheritedUserToolNames: researchReadonly
+            ? undefined
+            : requesterUserTools.list().filter((tool) => tool.inherit !== false).map((tool) => tool.name),
           lease,
           spawnPolicy: target.spawnPolicy,
           dispatchDecision: target.decision,

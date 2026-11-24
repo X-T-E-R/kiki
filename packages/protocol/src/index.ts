@@ -125,3 +125,8 @@ export * from './rest/mesh';
 export * from './rest/sync';
 export * from './rest/portable-space';
 export * from './pluginExtensions';
+export * from './rest/llmComplete';
+export * from './rest/interactions';
+export * from './rest/rawEvents';
+export * from './jsonSchemaValidate';
+export * from './openapi';

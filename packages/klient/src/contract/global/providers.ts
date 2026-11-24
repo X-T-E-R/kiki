@@ -8,11 +8,11 @@
 
 import {
   AnthropicMessageThreadsLayerSchema,
+  OAuthRefSchema as oAuthRefSchema,
   RequestCompressionLayerSchema,
+  RequestIdentityPolicySchema,
   ResponsesWebSocketLayerSchema,
-} from '@kiki/agent-core-v2/kosong/provider/requestCompression';
-import { RequestIdentityPolicySchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
-import { OAuthRefSchema as oAuthRefSchema } from '@kiki/agent-core-v2/kosong/provider/oauthRef';
+} from './engine-schemas.js';
 import { z } from 'zod';
 
 import { maybe, noResult } from '../helpers.js';

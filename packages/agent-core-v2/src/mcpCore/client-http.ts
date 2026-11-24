@@ -18,7 +18,7 @@ import {
 } from './client-shared';
 import { buildMcpRemoteHeaders } from './client-remote';
 import { createMcpOAuthFetch } from './oauth/provider';
-import type { MCPClient, MCPToolDefinition, MCPToolResult } from './types';
+import type { MCPClient, MCPToolCallContext, MCPToolDefinition, MCPToolResult } from './types';
 
 export interface HttpMcpClientOptions {
   readonly clientName?: string;
@@ -118,9 +118,14 @@ export class HttpMcpClient implements MCPClient {
     name: string,
     args: Record<string, unknown>,
     signal?: AbortSignal,
+    context?: MCPToolCallContext,
   ): Promise<MCPToolResult> {
     const requestOptions = buildRequestOptions(this.toolCallTimeoutMs, signal);
-    const result = await this.client.callTool({ name, arguments: args }, undefined, requestOptions);
+    const result = await this.client.callTool(
+      context?.meta === undefined ? { name, arguments: args } : { name, arguments: args, _meta: context.meta },
+      undefined,
+      requestOptions,
+    );
     return toMcpToolResult(result);
   }
 

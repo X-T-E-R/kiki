@@ -116,6 +116,9 @@ export const promptSubmissionSchema = /* @__PURE__ */ z.object({
   prompt_id: z.string().min(1).optional(),
   persona_greeting_reply: z.boolean().optional(),
   skills: z.array(promptSkillActivationSchema).min(1).optional(),
+  wait: z.boolean().optional(),
+  output_schema: z.record(z.string(), z.unknown()).optional(),
+  include_thinking: z.boolean().optional(),
 });
 export type PromptSubmission = z.infer<typeof promptSubmissionSchema>;
 export type PromptSubmissionInput = z.input<typeof promptSubmissionSchema>;
@@ -150,6 +153,26 @@ export type PromptDeliveryReason = z.infer<typeof promptDeliveryReasonSchema>;
 
 export const promptDeliveryStateSchema = /* @__PURE__ */ z.enum(['queued', 'accepted', 'steered', 'started', 'failed', 'cancelled']);
 
+export const promptTurnUsageSchema = /* @__PURE__ */ z.object({
+  input_tokens: z.number().int().nonnegative(),
+  output_tokens: z.number().int().nonnegative(),
+  cache_read_tokens: z.number().int().nonnegative(),
+  cache_creation_tokens: z.number().int().nonnegative(),
+});
+export type PromptTurnUsage = z.infer<typeof promptTurnUsageSchema>;
+
+export const promptTurnResultSchema = /* @__PURE__ */ z.object({
+  turn_id: z.number().int().nonnegative().optional(),
+  status: z.enum(['completed', 'failed', 'cancelled', 'blocked']),
+  text: z.string(),
+  structured_output: z.unknown().optional(),
+  thinking: z.string().optional(),
+  usage: promptTurnUsageSchema.optional(),
+  stop_reason: z.string().optional(),
+  error: z.string().optional(),
+});
+export type PromptTurnResult = z.infer<typeof promptTurnResultSchema>;
+
 export const promptItemSchema = /* @__PURE__ */ z.object({
   admission: promptAdmissionStateSchema.optional(),
   delivery_state: promptDeliveryStateSchema.optional(),
@@ -173,6 +196,7 @@ export const promptItemSchema = /* @__PURE__ */ z.object({
   thinking: z.string().optional(),
   after_model_switch: z.string().optional(),
   queue_index: z.number().int().optional(),
+  turn_result: promptTurnResultSchema.optional(),
 });
 export type PromptItem = z.infer<typeof promptItemSchema>;
 

@@ -843,4 +843,6 @@ export interface HttpRestFacade {
   readonly auth: {
     summary(): Promise<AuthSummary>;
   };
+
+  readonly raw: import('./raw-substrate.js').RawSubstrateFacade;
 }

@@ -28,6 +28,9 @@ interface McpToolOptions {
   readonly computerUsagePreference?: () => 'avoid' | 'prefer';
   readonly annotations?: MCPToolAnnotations;
   readonly serverName?: string;
+  readonly sessionId?: string;
+  readonly agentId?: string;
+  readonly subagentDefault?: 'opt-in';
   readonly onUnauthorized?: (error: unknown, client: MCPClient) => Promise<boolean>;
 }
 
@@ -37,8 +40,24 @@ export function createMcpTool(
   client: MCPClient,
   options: McpToolOptions = {},
 ): ExecutableTool {
-  const callTool = (activeClient: MCPClient, args: unknown, signal: AbortSignal) =>
-    activeClient.callTool(tool.name, (args ?? {}) as Record<string, unknown>, signal);
+  const callTool = (
+    activeClient: MCPClient,
+    args: unknown,
+    context: Pick<ExecutableToolContext, 'signal' | 'turnId' | 'toolCallId'>,
+  ) => {
+    const kikiMeta: Record<string, unknown> = {
+      turn_id: context.turnId,
+      tool_call_id: context.toolCallId,
+    };
+    if (options.sessionId !== undefined) kikiMeta['session_id'] = options.sessionId;
+    if (options.agentId !== undefined) kikiMeta['agent_id'] = options.agentId;
+    return activeClient.callTool(
+      tool.name,
+      (args ?? {}) as Record<string, unknown>,
+      context.signal,
+      { meta: { kiki: kikiMeta } },
+    );
+  };
   return {
     name: qualifiedName,
     get description() {
@@ -46,7 +65,7 @@ export function createMcpTool(
         ? computerToolDescription(tool.name, tool.description, options.computerUsagePreference?.())
         : tool.description;
     },
-    subagentDefault: options.computerControl === true ? 'opt-in' : undefined,
+    subagentDefault: options.computerControl === true || options.subagentDefault === 'opt-in' ? 'opt-in' : undefined,
     parameters: tool.parameters,
     resolveExecution: (args) => ({
       approvalRule: qualifiedName,
@@ -66,7 +85,7 @@ export function createMcpTool(
         try {
           let result;
           try {
-            result = await callTool(client, args, context.signal);
+            result = await callTool(client, args, context);
           } catch (error) {
             await throwIfUnauthorized(options, qualifiedName, error, client, context.signal);
             result = await retryAfterReconnect(error, client, args, context, options, callTool, qualifiedName);
@@ -109,9 +128,9 @@ async function retryAfterReconnect(
   error: unknown,
   client: MCPClient,
   args: unknown,
-  context: Pick<ExecutableToolContext, 'signal' | 'onUpdate'>,
+  context: Pick<ExecutableToolContext, 'signal' | 'onUpdate' | 'turnId' | 'toolCallId'>,
   options: McpToolOptions,
-  callTool: (client: MCPClient, args: unknown, signal: AbortSignal) => Promise<MCPToolResult>,
+  callTool: (client: MCPClient, args: unknown, context: Pick<ExecutableToolContext, 'signal' | 'turnId' | 'toolCallId'>) => Promise<MCPToolResult>,
   qualifiedName: string,
 ): Promise<MCPToolResult> {
   const reconnect = options.reconnect;
@@ -148,7 +167,7 @@ async function retryAfterReconnect(
     context.signal.throwIfAborted();
     if (alive) {
       try {
-        return await callTool(client, args, context.signal);
+        return await callTool(client, args, context);
       } catch (retryError) {
         await throwIfUnauthorized(options, qualifiedName, retryError, client, context.signal);
         if (isUnrecoverable(retryError)) {
@@ -180,7 +199,7 @@ async function retryAfterReconnect(
     throw failure;
   }
   try {
-    return await callTool(freshClient, args, context.signal);
+    return await callTool(freshClient, args, context);
   } catch (finalError) {
     await throwIfUnauthorized(options, qualifiedName, finalError, freshClient, context.signal);
     throw finalError;

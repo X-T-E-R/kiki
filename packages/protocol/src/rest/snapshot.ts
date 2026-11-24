@@ -29,6 +29,7 @@ import { messageSchema } from '../message';
 import { questionRequestSchema } from '../question';
 import { sessionSchema } from '../session';
 import { taskSchema } from '../task';
+import { pendingUserToolSchema } from './interactions';
 
 export const inFlightToolCallSchema = /* @__PURE__ */ z.object({
   tool_call_id: z.string().min(1),
@@ -138,6 +139,7 @@ export const sessionSnapshotResponseSchema = /* @__PURE__ */ z.object({
   context_breakdown: restContextBreakdownSchema.optional(),
   pending_approvals: z.array(approvalRequestSchema),
   pending_questions: z.array(questionRequestSchema),
+  pending_user_tools: z.array(pendingUserToolSchema).optional(),
 });
 export type SessionSnapshotResponse = z.infer<typeof sessionSnapshotResponseSchema>;
 

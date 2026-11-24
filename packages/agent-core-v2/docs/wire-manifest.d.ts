@@ -1141,6 +1141,7 @@ interface PromptEnqueuedPayload {
     goalObjective?: string;
     goalFollowUpTiming?: 'subagents_done' | 'tasks_done';
     goalInitialStatus?: 'active' | 'paused';
+    outputSchema?: Record<string, unknown>;
   };
   goalId?: string;
   deferredDisabledTools?: string[];
@@ -1333,6 +1334,7 @@ interface PromptReplacedPayload {
     goalObjective?: string;
     goalFollowUpTiming?: 'subagents_done' | 'tasks_done';
     goalInitialStatus?: 'active' | 'paused';
+    outputSchema?: Record<string, unknown>;
   };
   revision: number;
   replacedAt: string;
@@ -1631,6 +1633,7 @@ interface ToolsRegisterUserToolPayload {
   description: string;
   parameters: Record<string, unknown>;
   disclosure?: 'inline' | 'deferred';
+  inherit?: boolean;
 }
 
 /**

@@ -1512,6 +1512,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         {
           retry: thinkingOnlyFollowup ? 'never' : undefined,
           thinkingEffort,
+          responseFormat: continuationBudget.job?.seed.responseFormat,
           source: { type: 'turn', turnId, step: currentStep },
           onRequestAttempt: () => { continuationBudget.deliveryPhase = 'sent_outcome_unknown'; },
           onAttemptRetry: (mode) => {

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import {
   ConfigTarget, IConfigService, ISessionManager, ISessionActivityView,
+  ISessionContext, ISessionMetadata,
   ISessionInteractionService, IInstantiationService,
   type Scope, type ISessionScopeHandle, type UserMessageChannel, type UserMessageInput,
   type PluginImCapabilities, type PluginImRoute, type PluginImSendReceipt, type PluginImSendRequest,
@@ -143,6 +144,11 @@ export class NotificationService {
   private readonly subscriptions: { dispose(): void }[] = [];
   private readonly lastSent = new Map<string, number>();
   private sceneSuppressor?: (input: { providerInstanceId: string; scene: 'work_complete' | 'question_pending'; target: Record<string, unknown> }) => boolean;
+  private readonly episodeListeners = new Set<(episode: { session_id: string; episode_id: string; completed_at: number }) => void>();
+  onDidCompleteEpisode(listener: (episode: { session_id: string; episode_id: string; completed_at: number }) => void): () => void {
+    this.episodeListeners.add(listener);
+    return () => { this.episodeListeners.delete(listener); };
+  }
   private readonly health = new Map<string, { state: import('@kiki/klient').NotificationHealth; at: number }>();
   private setHealth(id: string, state: import('@kiki/klient').NotificationHealth, at = Date.now()): void {
     if (at >= (this.health.get(id)?.at ?? 0)) this.health.set(id, { state, at });
@@ -476,13 +482,21 @@ export class NotificationService {
     state.subscriptions.push(interactions.onDidResolve(({ id }) => { this.cancelQuestion(state, id); }));
     this.reconcileSession(state);
   }
+  private isSilentSession(session: ISessionScopeHandle): boolean {
+    if (session.accessor.get(ISessionContext).ephemeral === true) return true;
+    try {
+      if (session.accessor.get(ISessionMetadata).snapshot().private === true) return true;
+    } catch {}
+    return false;
+  }
   private completeReady(state: Watched): boolean {
+    if (this.isSilentSession(state.session)) return false;
     const activity = state.activity.state();
     return !activity.busy && !activity.mainTurnActive && activity.pendingInteraction === 'none' &&
       activity.lastTurnReason === 'completed';
   }
   listCompletions(): readonly { session_id: string; episode_id: string; completed_at: number }[] {
-    return [...this.watched.values()].flatMap((state) => state.completed !== undefined &&
+    return [...this.watched.values()].flatMap((state) => !this.isSilentSession(state.session) && state.completed !== undefined &&
       Date.now() - state.completed.completed_at < 600_000 && this.completeReady(state) ? [state.completed] : []);
   }
   private unwatch(id: string): void {
@@ -498,6 +512,13 @@ export class NotificationService {
     for (const state of this.watched.values()) this.reconcileSession(state);
   }
   private reconcileSession(state: Watched): void {
+    if (this.isSilentSession(state.session)) {
+      if (state.completion) { clearTimeout(state.completion); state.completion = undefined; }
+      for (const id of Array.from(state.questions.keys())) this.cancelQuestion(state, id);
+      state.startedAt = undefined;
+      state.completed = undefined;
+      return;
+    }
     const activity = state.activity.state();
     const interaction = state.session.accessor.get(ISessionInteractionService);
     const pending = interaction.listPending('question');
@@ -532,6 +553,9 @@ export class NotificationService {
       const elapsed = Date.now() - state.startedAt;
       state.startedAt = undefined;
       state.completed = { session_id: state.session.id, episode_id: cycle, completed_at: Date.now() };
+      for (const listener of this.episodeListeners) {
+        try { listener(state.completed); } catch {}
+      }
       if (elapsed >= this.settings.global.min_work_ms) this.dispatch(state, 'work_complete', `w:${cycle}`, () =>
         state.cycle === cycle && state.startedAt === undefined && this.completeReady(state));
     }, this.settings.global.work_stable_ms);
@@ -553,7 +577,7 @@ export class NotificationService {
     return from === to ? false : from < to ? now >= from && now < to : now >= from || now < to;
   }
   private dispatch(state: Watched, scene: Scene, key: string, valid: () => boolean, deliveries?: string[]): void {
-    if (this.stopped || this.pausing || !this.settings.global.enabled || !this.watched.has(state.session.id) || !valid()) return;
+    if (this.stopped || this.pausing || !this.settings.global.enabled || !this.watched.has(state.session.id) || this.isSilentSession(state.session) || !valid()) return;
     if (this.inQuietHours()) {
       const timer = setTimeout(() => {
         this.quietTimers.delete(timer);

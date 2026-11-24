@@ -37,6 +37,7 @@ import { createMcpTool } from '#/agent/mcp/tools/mcp';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
+import { ISessionEphemeralMcpInherit, ISessionEphemeralMcpServers } from '#/session/mcp/ephemeralMcpServers';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import type { McpServerEntry } from '#/mcpCore/connection-manager';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
@@ -114,6 +115,9 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     @IMcpRegistryService private readonly serverRegistry: IMcpRegistryService,
     @ref(IAgentToolPolicyService) private readonly toolPolicy: LiveRef<IAgentToolPolicyService>,
     @ref(IComputerAdmissionService) private readonly computerAdmission?: LiveRef<IComputerAdmissionService>,
+    @ref(IAgentScopeContext) private readonly agentScope?: LiveRef<IAgentScopeContext>,
+    @ref(ISessionEphemeralMcpServers) private readonly ephemeralMcpServers?: LiveRef<Readonly<Record<string, McpServerConfig>>>,
+    @ref(ISessionEphemeralMcpInherit) private readonly ephemeralMcpInherit?: LiveRef<ReadonlySet<string>>,
   ) {
     super();
     this.sessionOverrides = mcpHandle.selection?.overrides ?? new Map();
@@ -739,10 +743,15 @@ export class AgentMcpService extends Service implements IAgentMcpService {
         continue;
       }
       seenInThisCall.set(qualified, tool.name);
+      const isEphemeralServer = Object.hasOwn(this.ephemeralMcpServers?.current ?? {}, serverName);
+      const inheritEphemeral = this.ephemeralMcpInherit?.current?.has(serverName) === true;
       const disposable = this._register(
         this.registry.register(
           createMcpTool(qualified, tool, client, {
             serverName,
+            sessionId: this.sessionContext.sessionId,
+            agentId: this.agentScope?.current?.agentId,
+            subagentDefault: isEphemeralServer && !inheritEphemeral ? 'opt-in' : undefined,
             admitCall: callAdmission,
             onUnauthorized: (error, failedClient) =>
               this.mcpHandle.connectionManager.markNeedsAuth(serverName, error, failedClient),

@@ -53,6 +53,7 @@ export interface PromptExecutionBinding {
   readonly goalInitialStatus?: 'active' | 'paused';
   /** Prompt-bound control; resume does not launch an autonomous continuation. */
   readonly goalControl?: 'pause' | 'resume' | 'cancel';
+  readonly outputSchema?: Record<string, unknown>;
 }
 
 export interface PromptContentRange {

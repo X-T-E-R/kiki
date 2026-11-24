@@ -3232,7 +3232,15 @@ export class AgentPromptService implements IAgentPromptService {
                 promptIds: deliverable.slice(1).map(candidate => candidate.id),
                 content: deliverable.slice(1).flatMap(candidate => stripBundledSkillBlocks(candidate.message)),
                 steeredAt: new Date().toISOString() }));
-            } : undefined, hookMessages, item.parentReceiptManaged),
+            } : undefined, hookMessages, item.parentReceiptManaged,
+            item.execution?.outputSchema === undefined ? undefined : {
+              type: 'json_schema',
+              jsonSchema: {
+                name: 'output',
+                schema: item.execution.outputSchema,
+                strict: true,
+              },
+            }),
           { at: 'head' },
         );
         launching.receipt = receipt;

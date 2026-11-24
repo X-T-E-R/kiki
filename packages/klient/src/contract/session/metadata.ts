@@ -59,6 +59,13 @@ const sessionPromotedFromSchema = /* @__PURE__ */ z.object({
   profile: z.string().optional(), promotedAt: z.number().optional(),
 });
 
+const declaredUserToolSchema = /* @__PURE__ */ z.object({
+  name: z.string(),
+  description: z.string(),
+  parameters: z.record(z.string(), z.unknown()),
+  inherit: z.boolean().optional(),
+});
+
 export const sessionMetaSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   version: z.number().optional(),
@@ -78,6 +85,7 @@ export const sessionMetaSchema = /* @__PURE__ */ z.object({
   forkedFrom: z.string().optional(),
   promotedFrom: sessionPromotedFromSchema.optional(),
   agents: z.record(z.string(), agentMetaSchema).optional(),
+  declaredUserTools: z.array(declaredUserToolSchema).optional(),
   custom: z.record(z.string(), z.unknown()).optional(),
   sshHosts: z.record(z.string(), z.string()).optional(),
   lastTurnReason: z.enum(['completed', 'cancelled', 'failed']).optional(),
@@ -100,6 +108,7 @@ export const sessionMetaPatchSchema = /* @__PURE__ */ z.object({
   forkedFrom: z.string().optional(),
   promotedFrom: sessionPromotedFromSchema.optional(),
   agents: z.record(z.string(), agentMetaSchema).optional(),
+  declaredUserTools: z.array(declaredUserToolSchema).optional(),
   custom: z.record(z.string(), z.unknown()).optional(),
   sshHosts: z.record(z.string(), z.string()).optional(),
   lastTurnReason: z.enum(['completed', 'cancelled', 'failed']).optional(),
@@ -125,6 +134,7 @@ export const sessionMetaKeySchema = /* @__PURE__ */ z.enum([
   'forkedFrom',
   'promotedFrom',
   'agents',
+  'declaredUserTools',
   'custom',
   'sshHosts',
   'lastTurnReason',

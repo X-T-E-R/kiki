@@ -1,5 +1,3 @@
-import { Error2, ErrorCodes } from '@kiki/agent-core-v2/errors';
-
 /**
  * Client-side RPC error surfaced when the wire envelope carries a non-zero
  * `code`. Mirrors the server envelope (`{ code, msg, data, request_id }`) — the
@@ -24,49 +22,52 @@ export class RPCError extends Error {
 
 /**
  * Engine error code → wire number, mirroring what kap-server's REST mappers
- * send for the same `Error2`. Anything absent collapses to 50001, which is why
- * a locked session or a missing session read as "internal error" over IPC while
- * REST named them: the two client surfaces of one product must agree.
+ * send for the same `Error2`. Kept as pure string literals so `@kiki/klient/http`
+ * carries zero runtime dependency on `@kiki/agent-core-v2`.
  */
 const ENGINE_ERROR_CODES: Readonly<Record<string, number>> = {
-  [ErrorCodes.REQUEST_INVALID]: 40001,
-  // MCP management plane: mirror the `/api/v2/mcp` wire codes so memory and
-  // ipc surface the same numbers as REST.
-  [ErrorCodes.CONFIG_INVALID]: 40001,
-  [ErrorCodes.SESSION_NOT_FOUND]: 40401,
-  [ErrorCodes.AGENT_NOT_FOUND]: 40401,
-  [ErrorCodes.PROMPT_NOT_FOUND]: 40402,
-  [ErrorCodes.MCP_SERVER_NOT_FOUND]: 40408,
-  [ErrorCodes.WORKSPACE_NOT_FOUND]: 40410,
-  [ErrorCodes.TERMINAL_NOT_FOUND]: 40414,
-  [ErrorCodes.SKILL_NOT_FOUND]: 40415,
-  [ErrorCodes.PROVIDER_NOT_FOUND]: 40412,
-  [ErrorCodes.MODEL_NOT_FOUND]: 40413,
-  [ErrorCodes.PROVIDER_ALREADY_EXISTS]: 40921,
-  [ErrorCodes.MODEL_ALREADY_EXISTS]: 40942,
-  [ErrorCodes.REVISION_CONFLICT]: 40941,
-  [ErrorCodes.MCP_OAUTH_FAILED]: 40940,
-  [ErrorCodes.SESSION_BUSY]: 40901,
-  [ErrorCodes.COMPACTION_UNABLE]: 40910,
-  [ErrorCodes.STORAGE_LOCKED]: 40933,
-  [ErrorCodes.SESSION_INDEX_BUILDING]: 40939,
-  [ErrorCodes.THREAD_NOT_FOUND]: 40421,
-  [ErrorCodes.THREAD_ARCHIVED]: 40927,
-  [ErrorCodes.THREAD_DISABLED]: 40928,
-  [ErrorCodes.THREAD_CROSS_HOST]: 40929,
-  [ErrorCodes.THREAD_SELF_SEND]: 40930,
-  [ErrorCodes.THREAD_CURSOR_INVALID]: 40931,
-  [ErrorCodes.THREAD_IDEMPOTENCY_CONFLICT]: 40932,
-  [ErrorCodes.PROMPT_ID_CONFLICT]: 40938,
-  [ErrorCodes.WORK_ADMISSION_FENCED]: 40950,
-  [ErrorCodes.THREAD_LIMIT_EXCEEDED]: 42903,
+  'request.invalid': 40001,
+  'config.invalid': 40001,
+  'session.not_found': 40401,
+  'agent.not_found': 40401,
+  'prompt.not_found': 40402,
+  'mcp.server_not_found': 40408,
+  'workspace.not_found': 40410,
+  'terminal.not_found': 40414,
+  'skill.not_found': 40415,
+  'provider.not_found': 40412,
+  'model.not_found': 40413,
+  'provider.already_exists': 40921,
+  'model.already_exists': 40942,
+  'model_catalog.revision_conflict': 40941,
+  'mcp.oauth_failed': 40940,
+  'session.busy': 40901,
+  'compaction.unable': 40910,
+  'storage.locked': 40933,
+  'session.index_building': 40939,
+  'thread.not_found': 40421,
+  'thread.archived': 40927,
+  'thread.disabled': 40928,
+  'thread.cross_host': 40929,
+  'thread.self_send': 40930,
+  'thread.cursor_invalid': 40931,
+  'thread.idempotency_conflict': 40932,
+  'prompt.id_conflict': 40938,
+  'work.admission_fenced': 40950,
+  'thread.limit_exceeded': 42903,
   'dispatch.limit_exceeded': 42904,
-  [ErrorCodes.THREAD_DELIVERY_FAILED]: 50005,
+  'thread.delivery_failed': 50005,
 };
+
+function isEngineErrorLike(error: unknown): error is Error & { readonly code: string; readonly details?: unknown } {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' && (code.includes('.') || error.name === 'Error2');
+}
 
 export function toRPCError(error: unknown): unknown {
   if (error instanceof RPCError) return error;
-  if (error instanceof Error2) {
+  if (isEngineErrorLike(error)) {
     return new RPCError(
       ENGINE_ERROR_CODES[error.code] ?? 50001,
       error.message,

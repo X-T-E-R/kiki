@@ -73,6 +73,13 @@ function isRosterPath(path: Path): boolean {
   return path.length === 1 && path[0] === 'subagents';
 }
 
+function isPendingInteractionPath(path: Path): boolean {
+  return (
+    path.length === 1 &&
+    (path[0] === 'pending_approvals' || path[0] === 'pending_questions' || path[0] === 'pending_user_tools')
+  );
+}
+
 function bindCuts(entity: object, source: ContentSource, cuts: readonly Cut[]): ContentRef[] {
   return cuts.map((cut) => ({
     ...cut,
@@ -365,8 +372,10 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
   if (Array.isArray(value)) {
     const structure = isStructurePath(path);
     const roster = isRosterPath(path);
+    const pendingInteraction = isPendingInteractionPath(path);
     const count = structure ? Math.min(value.length, structureWindow)
       : roster ? Math.min(value.length, rosterWindow)
+      : pendingInteraction ? Math.min(value.length, Math.max(arrayWindow, 16))
       : depth > 12 || budget.nodes < 0 ? 0 : Math.min(value.length, arrayWindow);
     let start = structure && structureDirection === 'tail' ? value.length - count : 0;
     let sliceCount = count;
@@ -385,7 +394,7 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
         sliceCount = value.length - start;
       }
     }
-    const projected = value.slice(start, start + sliceCount).map((child, index) => projectValue(child, [...path, start + index], cuts, textBytes, arrayWindow, depth + 1, structure || roster ? { nodes: 128 } : budget, structureWindow, media, structureDirection, receiptProjection, rosterWindow, preserveUserFrames));
+    const projected = value.slice(start, start + sliceCount).map((child, index) => projectValue(child, [...path, start + index], cuts, textBytes, arrayWindow, depth + 1, structure || roster || pendingInteraction ? { nodes: 128 } : budget, structureWindow, media, structureDirection, receiptProjection, rosterWindow, preserveUserFrames));
     if (sliceCount < value.length) {
       if (structure && structureDirection === 'tail') cuts.push({ path, kind: 'array', offset: start, total: value.length, direction: 'backward' });
       else cuts.push({ path, kind: 'array', offset: sliceCount, total: value.length });

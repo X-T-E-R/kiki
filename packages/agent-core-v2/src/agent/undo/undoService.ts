@@ -42,6 +42,8 @@ import { IAgentConversationUndoService, type UndoAvailability } from './undo';
 export class ContextUndone extends Event2<{
   readonly turns: number;
   readonly fromTurnId?: number;
+  readonly cutToTurnId?: number;
+  readonly removedTurnIds?: readonly number[];
 }> {
   static override readonly type = 'context.undone';
   static override readonly observable = true;
@@ -49,6 +51,8 @@ export class ContextUndone extends Event2<{
 export interface ContextUndone {
   readonly turns: number;
   readonly fromTurnId?: number;
+  readonly cutToTurnId?: number;
+  readonly removedTurnIds?: readonly number[];
 }
 
 export class AgentConversationUndoService
@@ -122,7 +126,7 @@ export class AgentConversationUndoService
         throw this.busyError('compaction');
       }
       this.assertUndoAvailable(turns);
-      const fromTurnId = this.removedFromTurnId(turns);
+      const { fromTurnId, cutToTurnId, removedTurnIds } = this.removedTurnInfo(turns);
       if (replacementPrompt === undefined) this.context.undo(turns);
       else await this.context.undoAndReplace(turns, replacementPrompt);
       await this.flushAfterCommit('context cut');
@@ -130,19 +134,48 @@ export class AgentConversationUndoService
       await this.flushAfterCommit('state reconciliation');
       await this.reconcileLastPromptSafely();
       this.telemetry.track2('conversation_undo', { count: turns });
-      await this.dispatcher.dispatch(new ContextUndone({ turns, fromTurnId }));
+      await this.dispatcher.dispatch(new ContextUndone({ turns, fromTurnId, cutToTurnId, removedTurnIds }));
       return turns;
     } finally {
       await quiescence?.dispose();
     }
   }
 
-  private removedFromTurnId(turns: number): number | undefined {
-    const anchorTurnIds = this.agentState.get(turnKey).anchorTurnIds;
-    if (anchorTurnIds.length < turns) return undefined;
+  private removedTurnInfo(turns: number): {
+    readonly fromTurnId?: number;
+    readonly cutToTurnId?: number;
+    readonly removedTurnIds?: readonly number[];
+  } {
+    const turnState = this.agentState.get(turnKey);
+    const anchorTurnIds = turnState.anchorTurnIds;
+    if (anchorTurnIds.length < turns) return {};
     const totalAnchors = computeUndoCut(this.context.get(), Number.MAX_SAFE_INTEGER).removedCount;
-    if (totalAnchors !== anchorTurnIds.length) return undefined;
-    return anchorTurnIds[anchorTurnIds.length - turns];
+    if (totalAnchors !== anchorTurnIds.length) return {};
+    const cutIndex = anchorTurnIds.length - turns;
+    const fromTurnId = anchorTurnIds[cutIndex];
+    if (fromTurnId === undefined) return {};
+    const removedAnchorIds = anchorTurnIds.slice(cutIndex);
+    const activeTurnIds = turnState.activeTurnIds;
+    const removedSet = new Set<number>(removedAnchorIds);
+    if (activeTurnIds !== undefined) {
+      for (const id of activeTurnIds) {
+        if (id >= fromTurnId) removedSet.add(id);
+      }
+    }
+    const removedTurnIds = [...removedSet].toSorted((a, b) => a - b);
+    const survivingIds = activeTurnIds === undefined
+      ? anchorTurnIds.slice(0, cutIndex)
+      : activeTurnIds.filter((id) => id < fromTurnId);
+    const cutToTurnId = survivingIds.length > 0
+      ? Math.max(...survivingIds)
+      : cutIndex > 0
+        ? anchorTurnIds[cutIndex - 1]
+        : undefined;
+    return {
+      fromTurnId,
+      cutToTurnId,
+      removedTurnIds,
+    };
   }
 
   private checkpointDepth(): { depth: number; model: string } {

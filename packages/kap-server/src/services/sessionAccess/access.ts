@@ -8,9 +8,10 @@ import { matchesLocalOwner } from '../auth/localOwner';
 import { peerGrant } from '../connections/audience';
 import type { SessionAccessStore, SessionAccessToken } from './store';
 
-const requests = new WeakMap<object, { token: SessionAccessToken; signal: AbortSignal }>();
+const requests = new WeakMap<object, { token: SessionAccessToken; signal: AbortSignal; store: SessionAccessStore }>();
 export function sessionAccessToken(request: object): SessionAccessToken | undefined { return requests.get(request)?.token; }
 export function sessionAccessSignal(request: object): AbortSignal | undefined { return requests.get(request)?.signal; }
+export function sessionAccessStore(request: object): SessionAccessStore | undefined { return requests.get(request)?.store; }
 export function isSessionAccessLoopback(request: IncomingMessage, web: WeakSet<IncomingMessage>, peers: WeakSet<IncomingMessage>): boolean {
   const fetchSite = request.headers['sec-fetch-site'];
   return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress ?? '') &&
@@ -19,7 +20,7 @@ export function isSessionAccessLoopback(request: IncomingMessage, web: WeakSet<I
 }
 
 const sessionReadRoutes = new Set([
-  '', '/status', '/snapshot', '/messages', '/messages/:message_id', '/transcript', '/transcript/ops',
+  '', '/status', '/snapshot', '/events', '/messages', '/messages/:message_id', '/transcript', '/transcript/ops',
   '/transcript/detail', '/transcript/details', '/transcript/plan', '/transcript/user-messages',
   '/prompts', '/prompts/:prompt_id', '/approvals', '/questions',
   '/media/:file_id', '/media/:file_id/preview', '/children', '/tasks', '/tasks/:task_id',
@@ -45,21 +46,32 @@ function sessionAccessOperation(token: SessionAccessToken, request: FastifyReque
   const { method, routeOptions: { url } } = request;
   const params = request.params as { session_id?: string; sessionId?: string; tail?: string; file_id?: string };
   const sessionId = params.session_id ?? params.sessionId;
+  const sessionMatches = (target: string | undefined): boolean =>
+    token.session_id !== undefined && target === token.session_id;
   if (method === 'GET') {
+    if (url === '/api/events') {
+      return token.scopes.includes('read');
+    }
     if ((url === '/api/sessions/:session_id/media/:file_id' || url === '/api/sessions/:session_id/media/:file_id/preview') &&
         !isFileId(params.file_id!) && parseMediaBlobRef(params.file_id!)?.kind !== 'agent') return false;
-    return url !== undefined && (sessionReadRoutes.has(url) || url === '/api/usage/sessions/:sessionId/accounting') && sessionId === token.session_id && token.scopes.includes('read');
+    return url !== undefined && (sessionReadRoutes.has(url) || url === '/api/usage/sessions/:sessionId/accounting') && sessionMatches(sessionId) && token.scopes.includes('read');
   }
   if (method !== 'POST') return false;
+  if (url === '/api/llm::complete' || normalizedPath === '/api/llm:complete') {
+    return token.scopes.includes('llm') || token.scopes.includes('prompt');
+  }
+  if (url === '/api/sessions/:session_id/interactions/:tail' && /^[^/:]+:respond$/.test(params.tail ?? '')) {
+    return sessionMatches(sessionId) && (token.scopes.includes('interact') || token.scopes.includes('prompt'));
+  }
   if (url === '/api/klient/session-view/:sessionId/transcript/content') {
-    return sessionId === token.session_id && token.scopes.includes('read');
+    return sessionMatches(sessionId) && token.scopes.includes('read');
   }
   if (url === '/api/sessions/:session_id/prompts' || url === '/api/sessions/:session_id/prompts::steer' ||
       (url === '/api/sessions/:session_id/prompts/:tail' && /^[^/:]+:cancel$/.test(params.tail ?? ''))) {
-    return sessionId === token.session_id && token.scopes.includes('prompt');
+    return sessionMatches(sessionId) && token.scopes.includes('prompt');
   }
   const abort = /^\/api\/sessions\/([^/:]+):abort$/.exec(normalizedPath);
-  return abort !== null && abort[1] === token.session_id && token.scopes.includes('abort');
+  return abort !== null && sessionMatches(abort[1]) && token.scopes.includes('abort');
 }
 
 export function registerSessionAccessAdmission(app: FastifyInstance, store: SessionAccessStore, owner: string, web: WeakSet<IncomingMessage>, peers: WeakSet<IncomingMessage>): void {
@@ -73,11 +85,12 @@ export function registerSessionAccessAdmission(app: FastifyInstance, store: Sess
     const bearer = request.headers.authorization?.slice(0, 7) === 'Bearer ' ? request.headers.authorization.slice(7) : undefined;
     if (bearer?.startsWith('ksa_')) {
       request.headers.authorization = '[redacted]';
+      await store.ready;
       const token = store.lookup(bearer);
       if (token === undefined || !store.config().enabled || !isSessionAccessLoopback(request.raw, web, peers)) return reply.code(401).send(errEnvelope(40101, 'Unauthorized', request.id));
       if (!sessionAccessOperation(token, request, path)) return reply.code(403).send(errEnvelope(40101, 'session_access_scope', request.id));
       const controller = new AbortController();
-      requests.set(request, { token, signal: controller.signal });
+      requests.set(request, { token, signal: controller.signal, store });
       const detach = store.attach(token, () => { controller.abort(); request.raw.destroy(); reply.raw.destroy(); });
       reply.raw.once('close', () => { if (!reply.raw.writableFinished) controller.abort(); detach(); });
     }
@@ -101,7 +114,7 @@ function restrictedPromptField(request: FastifyRequest): string | undefined {
   const body = request.body;
   if (body === null || typeof body !== 'object' || Array.isArray(body)) return 'body';
   const input = body as Record<string, unknown>;
-  for (const field of Object.keys(input)) if (!['content', 'prompt_id', 'metadata', 'agent_id'].includes(field)) return field;
+  for (const field of Object.keys(input)) if (!['content', 'prompt_id', 'metadata', 'agent_id', 'wait', 'output_schema', 'include_thinking'].includes(field)) return field;
   if (!Array.isArray(input['content'])) return 'content';
   for (let index = 0; index < input['content'].length; index += 1) {
     const block = input['content'][index] as Record<string, unknown> | null;

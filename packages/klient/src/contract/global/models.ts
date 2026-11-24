@@ -8,8 +8,7 @@
  * engine type is `ModelRecord` — the contract-parity test pins that pairing.
  */
 
-import { RequestIdentityPolicySchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
-import { OAuthRefSchema as oAuthRefSchema } from '@kiki/agent-core-v2/kosong/provider/oauthRef';
+import { OAuthRefSchema as oAuthRefSchema, RequestIdentityPolicySchema } from './engine-schemas.js';
 import { z } from 'zod';
 
 import { maybe, noResult } from '../helpers.js';

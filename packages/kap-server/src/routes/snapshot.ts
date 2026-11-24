@@ -245,7 +245,7 @@ export async function assembleBrowseSnapshotSource(
     max_context_tokens: (facts.usage?.context_limit ?? 0) > 0 ? facts.usage?.context_limit : undefined,
     messages: { items: [], has_more: false }, in_flight_turn: null,
     subagents, agent_counts: counts,
-    pending_approvals: [], pending_questions: [],
+    pending_approvals: [], pending_questions: [], pending_user_tools: [],
   };
 }
 
@@ -526,6 +526,7 @@ async function assembleColdSnapshot(
     agent_counts: sessionAgentCounts(meta.agents, subagents),
     pending_approvals: [],
     pending_questions: [],
+    pending_user_tools: [],
   };
 }
 
@@ -657,6 +658,7 @@ async function prepareSnapshotFromLease(
           : toRestContextBreakdown(status.contextBreakdown),
       pending_approvals: snapState.pendingApprovals,
       pending_questions: snapState.pendingQuestions,
+      pending_user_tools: snapState.pendingUserTools,
     },
     deferredHistory,
   };
@@ -834,7 +836,7 @@ export async function readBrowseSnapshotContent(
     timing.signal?.throwIfAborted();
     if (agentId !== 'main' || ref.source.kind !== 'snapshot' || !['', 'legacy'].includes(ref.source.id)) throw new ContentChangedError();
     const field = ref.path[0];
-    if (typeof field !== 'string' || !['session', 'messages', 'subagents', 'in_flight_turn', 'pending_approvals', 'pending_questions', 'context_tokens', 'max_context_tokens', 'context_breakdown'].includes(field)) throw new ContentChangedError();
+    if (typeof field !== 'string' || !['session', 'messages', 'subagents', 'in_flight_turn', 'pending_approvals', 'pending_questions', 'pending_user_tools', 'context_tokens', 'max_context_tokens', 'context_breakdown'].includes(field)) throw new ContentChangedError();
     if (field === 'messages') {
       const messages = ref.source.id === 'legacy'
         ? await timeSessionViewPhase('snapshot_content_messages', fields,
@@ -848,7 +850,7 @@ export async function readBrowseSnapshotContent(
       const summary = await timeSessionViewPhase('snapshot_index', fields, () => core.accessor.get(ISessionIndex).get(sessionId, undefined, timing.signal), timing);
       timing.signal?.throwIfAborted();
       if (summary === undefined) return undefined;
-      if (field !== 'subagents' && field !== 'session') return readContentSegment({ in_flight_turn: null, pending_approvals: [], pending_questions: [] }, ref);
+      if (field !== 'subagents' && field !== 'session') return readContentSegment({ in_flight_turn: null, pending_approvals: [], pending_questions: [], pending_user_tools: [] }, ref);
       const meta = await timeSessionViewPhase('snapshot_metadata', fields, () => readColdSessionMeta(core, summary.workspaceId, sessionId), timing);
       if (meta === undefined) return undefined;
       timing.signal?.throwIfAborted();
@@ -991,6 +993,7 @@ export async function readBrowseSnapshotContent(
           in_flight_turn: attachCurrentPromptIdToInFlight(state.inFlightTurn, state.currentPromptId),
           pending_approvals: state.pendingApprovals,
           pending_questions: state.pendingQuestions,
+          pending_user_tools: state.pendingUserTools,
           context_tokens: state.status?.contextTokens,
           max_context_tokens: state.status?.maxContextTokens,
           context_breakdown: state.status?.contextBreakdown === undefined ? undefined : toRestContextBreakdown(state.status.contextBreakdown),

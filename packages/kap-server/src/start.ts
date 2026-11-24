@@ -712,7 +712,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const sessionAccess = new SessionAccessStore(core, opts.sessionAccessClock);
   const sessionAccessHandoff = new SessionAccessHandoff(core, sessionAccess, opts.sessionAccessPresenceGraceMs);
   registerSessionAccessAdmission(app, sessionAccess, localOwnerToken, webRequests, peerRequests);
-  app.addHook('preClose', async () => { sessionAccessHandoff.close(); sessionAccess.close(); });
+  app.addHook('preClose', async () => { sessionAccessHandoff.close(); await sessionAccess.flushPersisted(); sessionAccess.close(); });
   registerSessionAccessRoutes(app, core, sessionAccess, registration.serverId, serverVersion);
   let peerListeners: PeerListeners | undefined;
   let peerAdmissionHook: { dispose(): void } | undefined;

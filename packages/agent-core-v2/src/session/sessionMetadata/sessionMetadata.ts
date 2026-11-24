@@ -154,6 +154,7 @@ export interface SessionMeta {
   readonly forkedFrom?: string;
   readonly promotedFrom?: SessionPromotedFrom;
   readonly agents?: Readonly<Record<string, AgentMeta>>;
+  readonly declaredUserTools?: readonly import('#/agent/userTool/userTool').UserToolRegistration[];
   readonly custom?: Record<string, unknown>;
   readonly sshHosts?: Readonly<Record<string, string>>;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';

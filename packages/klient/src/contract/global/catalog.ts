@@ -7,7 +7,7 @@
  * exact `remote_id` sent upstream are three independent fields.
  */
 
-import { RequestIdentityPolicyWireSchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
+import { RequestIdentityPolicyWireSchema } from './engine-schemas.js';
 import {
   modelCatalogItemSchema,
   providerCatalogItemSchema,
