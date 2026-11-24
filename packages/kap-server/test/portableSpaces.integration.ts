@@ -106,7 +106,7 @@ async function request<T>(server: RunningServer, base: string, path: string, bod
   return schema.parse(envelope.data);
 }
 
-async function failedRequest(server: RunningServer, base: string, path: string, body: unknown, status: number): Promise<Envelope<unknown>> {
+async function failedRequest(server: RunningServer, base: string, path: string, body: unknown, status: number, expectedCode = 40001): Promise<Envelope<unknown>> {
   const response = await fetch(`${base}${path}`, {
     method: 'POST',
     headers: authHeaders(server, { 'content-type': 'application/json' }),
@@ -114,7 +114,7 @@ async function failedRequest(server: RunningServer, base: string, path: string, 
   } as never);
   const envelope = await response.json() as Envelope<unknown>;
   expect(response.status).toBe(status);
-  expect(envelope.code).toBe(40001);
+  expect(envelope.code).toBe(expectedCode);
   expect(typeof envelope.msg).toBe('string');
   return envelope;
 }
@@ -448,8 +448,8 @@ describe('Portable Spaces authenticated locked protocol', () => {
       encryption: { mode: 'passphrase', passphrase: nextPassphrase },
     }, portableSpaceInspectResultSchema);
     expect(rekeyInspect).toMatchObject({ endpoint: { kind: 'archive', path: rekeyPath }, format: 'age', encryptionMode: 'passphrase', secretMode: 'sealed' });
-    const oldPassphrase = await failedRequest(source, sourceBase, '/api/spaces/portable/inspect', { endpoint: { kind: 'archive', path: rekeyPath }, unlock: { passphrase: archivePassphrase } }, 400);
-    expect(oldPassphrase.msg).toBe('Unable to decrypt portable age archive');
+    const oldPassphrase = await failedRequest(source, sourceBase, '/api/spaces/portable/inspect', { endpoint: { kind: 'archive', path: rekeyPath }, unlock: { passphrase: archivePassphrase } }, 400, 40109);
+    expect(oldPassphrase.msg).toBe('Incorrect passphrase for encrypted Portable Space archive');
     const newInspect = await request(source, sourceBase, '/api/spaces/portable/inspect', { endpoint: { kind: 'archive', path: rekeyPath }, unlock: { passphrase: nextPassphrase } }, portableSpaceInspectResultSchema);
     expect(newInspect).toMatchObject({ format: 'age', encryptionMode: 'passphrase', secretMode: 'sealed' });
   }, 30_000);

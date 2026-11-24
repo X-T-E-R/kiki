@@ -400,3 +400,464 @@ export const portableSpaceRekeyInputSchema = z.object({
   encryption: portableSpaceEncryptionSchema,
 }).strict();
 export type PortableSpaceRekeyInput = z.infer<typeof portableSpaceRekeyInputSchema>;
+
+export const portableSpaceAddRecipientInputSchema = z.object({
+  recipient: z.string().regex(/^age1[a-z0-9]+$/),
+  label: z.string().min(1).max(128).optional(),
+}).strict();
+export type PortableSpaceAddRecipientInput = z.infer<typeof portableSpaceAddRecipientInputSchema>;
+
+export const PORTABLE_SUBSCRIPTION_SCOPES = [
+  'models_providers',
+  'extensions_search',
+  'agents_recipes',
+  'personas',
+  'instructions',
+  'settings',
+] as const;
+
+export const portableSubscriptionScopeSchema = z.enum(PORTABLE_SUBSCRIPTION_SCOPES);
+export type PortableSubscriptionScope = z.infer<typeof portableSubscriptionScopeSchema>;
+
+export const portableSpaceSyncPolicySchema = z.enum(['auto', 'manual', 'once']);
+export type PortableSpaceSyncPolicy = z.infer<typeof portableSpaceSyncPolicySchema>;
+
+export const portableSpaceStoredSyncPolicySchema = z.enum(['auto', 'manual']);
+export type PortableSpaceStoredSyncPolicy = z.infer<typeof portableSpaceStoredSyncPolicySchema>;
+
+export const PORTABLE_SPACE_MAX_SELECTION_OVERRIDES = 2048;
+export const PORTABLE_SPACE_MAX_BINDING_ASSIGNMENTS = 16_384;
+export const PORTABLE_SPACE_MAX_PREVIEW_ITEMS = 2048;
+export const PORTABLE_SPACE_MAX_PREVIEW_EDGES = 16_384;
+export const PORTABLE_SPACE_PREVIEW_TTL_MS = 300_000;
+export const PORTABLE_SPACE_MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
+export const PORTABLE_SPACE_CENTER_BODY_LIMIT = 3 * 1024 * 1024;
+
+export const portableSpaceSpaceIdSchema = z.union([z.literal('main'), z.string().regex(/^h-[a-z0-9-]+$/)]);
+
+/** Builds the canonical collision-free JSON tuple key for a per-unit model binding slot. */
+export function formatBindingSlotTupleKey(itemId: string, sourceModelId: string): string {
+  return JSON.stringify([itemId, sourceModelId]);
+}
+
+/** Parses a canonical JSON tuple key (`JSON.stringify([itemId, sourceModelId])`) and validates its round-trip form. */
+export function parseBindingSlotTupleKey(raw: string): readonly [itemId: string, sourceModelId: string] | undefined {
+  if (raw.length === 0 || raw.length > 1024) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 2) return undefined;
+  const [itemId, sourceModelId] = parsed;
+  if (typeof itemId !== 'string' || typeof sourceModelId !== 'string') return undefined;
+  if (itemId.length === 0 || itemId.length > 512 || sourceModelId.length === 0 || sourceModelId.length > 256) return undefined;
+  if (JSON.stringify([itemId, sourceModelId]) !== raw) return undefined;
+  return [itemId, sourceModelId] as const;
+}
+
+const uniqueItemIdArraySchema = z.array(z.string().min(1).max(512)).max(PORTABLE_SPACE_MAX_SELECTION_OVERRIDES);
+
+export const portableSpaceSubscriptionSelectionSchema = z.object({
+  version: z.literal(1),
+  enabledScopes: z.array(portableSubscriptionScopeSchema).max(PORTABLE_SUBSCRIPTION_SCOPES.length),
+  excludedIds: uniqueItemIdArraySchema,
+  includedIds: uniqueItemIdArraySchema,
+  includeCredentials: z.boolean(),
+}).strict().superRefine((value, ctx) => {
+  if (new Set(value.enabledScopes).size !== value.enabledScopes.length) {
+    ctx.addIssue({ code: 'custom', path: ['enabledScopes'], message: 'enabledScopes must contain unique scope names' });
+  }
+  const excludedSet = new Set(value.excludedIds);
+  if (excludedSet.size !== value.excludedIds.length) {
+    ctx.addIssue({ code: 'custom', path: ['excludedIds'], message: 'excludedIds must contain unique item IDs' });
+  }
+  const includedSet = new Set(value.includedIds);
+  if (includedSet.size !== value.includedIds.length) {
+    ctx.addIssue({ code: 'custom', path: ['includedIds'], message: 'includedIds must contain unique item IDs' });
+  }
+  if (value.excludedIds.length + value.includedIds.length > PORTABLE_SPACE_MAX_SELECTION_OVERRIDES) {
+    ctx.addIssue({ code: 'custom', path: ['excludedIds'], message: `Total selection overrides cannot exceed ${PORTABLE_SPACE_MAX_SELECTION_OVERRIDES}` });
+  }
+  for (const id of includedSet) {
+    if (excludedSet.has(id)) {
+      ctx.addIssue({ code: 'custom', path: ['includedIds'], message: `Item ID "${id}" cannot appear in both excludedIds and includedIds` });
+      break;
+    }
+  }
+});
+export type PortableSpaceSubscriptionSelection = z.infer<typeof portableSpaceSubscriptionSelectionSchema>;
+
+const modelAliasStringSchema = z.string().min(1).max(256);
+
+export const portableSpaceBindingChoicesFields = {
+  modelBindings: z.record(modelAliasStringSchema, modelAliasStringSchema).optional(),
+  unitModelBindings: z.record(z.string().min(1).max(1024), modelAliasStringSchema).optional(),
+  unmappedModelPolicy: z.literal('defer').optional(),
+  deferredSlotIds: z.array(z.string().min(1).max(1024)).max(PORTABLE_SPACE_MAX_BINDING_ASSIGNMENTS).optional(),
+};
+
+function validateBindingChoices(
+  value: {
+    readonly modelBindings?: Readonly<Record<string, string>>;
+    readonly unitModelBindings?: Readonly<Record<string, string>>;
+    readonly unmappedModelPolicy?: 'defer';
+    readonly deferredSlotIds?: readonly string[];
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const modelKeys = value.modelBindings ? Object.keys(value.modelBindings) : [];
+  const unitKeys = value.unitModelBindings ? Object.keys(value.unitModelBindings) : [];
+  const deferred = value.deferredSlotIds ?? [];
+  if (modelKeys.length + unitKeys.length + deferred.length > PORTABLE_SPACE_MAX_BINDING_ASSIGNMENTS) {
+    ctx.addIssue({ code: 'custom', path: ['modelBindings'], message: `Total model binding assignments cannot exceed ${PORTABLE_SPACE_MAX_BINDING_ASSIGNMENTS}` });
+  }
+  const unitKeySet = new Set<string>();
+  for (const key of unitKeys) {
+    if (parseBindingSlotTupleKey(key) === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['unitModelBindings', key], message: 'unitModelBindings keys must be canonical JSON [itemId, sourceModelId] tuples' });
+      break;
+    }
+    unitKeySet.add(key);
+  }
+  const deferredSet = new Set<string>();
+  for (let i = 0; i < deferred.length; i += 1) {
+    const slotKey = deferred[i]!;
+    if (parseBindingSlotTupleKey(slotKey) === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['deferredSlotIds', i], message: 'deferredSlotIds entries must be canonical JSON [itemId, sourceModelId] tuples' });
+      break;
+    }
+    if (deferredSet.has(slotKey)) {
+      ctx.addIssue({ code: 'custom', path: ['deferredSlotIds', i], message: `Duplicate deferredSlotIds entry: ${slotKey}` });
+      break;
+    }
+    if (unitKeySet.has(slotKey)) {
+      ctx.addIssue({ code: 'custom', path: ['deferredSlotIds', i], message: `Slot ${slotKey} cannot be both explicitly bound and deferred` });
+      break;
+    }
+    deferredSet.add(slotKey);
+  }
+  if (deferred.length > 0 && value.unmappedModelPolicy !== 'defer') {
+    ctx.addIssue({ code: 'custom', path: ['unmappedModelPolicy'], message: 'unmappedModelPolicy must be "defer" when deferredSlotIds is non-empty' });
+  }
+}
+
+export const portableSpaceBindingChoicesSchema = z.object(portableSpaceBindingChoicesFields).strict().superRefine(validateBindingChoices);
+export type PortableSpaceBindingChoices = z.infer<typeof portableSpaceBindingChoicesSchema>;
+
+export const portableSpaceDependencyEdgeSchema = z.object({
+  toId: z.string().min(1).max(512),
+  kind: z.enum(['hard', 'soft']),
+  via: z.string().min(1).max(128),
+  liveSatisfied: z.boolean(),
+}).strict();
+export type PortableSpaceDependencyEdge = z.infer<typeof portableSpaceDependencyEdgeSchema>;
+
+export const portableSpaceLocalModelOptionSchema = z.object({
+  id: z.string().min(1).max(256),
+  label: z.string().min(1).max(256),
+  providerId: z.string().min(1).max(128).optional(),
+  thinkingEfforts: z.array(z.string().min(1).max(64)).max(32).optional(),
+  defaultThinkingEffort: z.string().min(1).max(64).optional(),
+  capabilities: z.array(z.string().min(1).max(64)).max(32).optional(),
+}).strict();
+export type PortableSpaceLocalModelOption = z.infer<typeof portableSpaceLocalModelOptionSchema>;
+
+export const portableSpaceBindingSlotSchema = z.object({
+  tupleKey: z.string().min(1).max(1024),
+  itemId: z.string().min(1).max(512),
+  itemLabel: z.string().min(1).max(256),
+  itemScope: portableSubscriptionScopeSchema,
+  sourceModelId: z.string().min(1).max(256),
+  required: z.boolean(),
+  location: z.string().min(1).max(128),
+  eligibleOptionIndices: z.array(z.number().int().nonnegative()),
+  currentLocalModelId: z.string().min(1).max(256).optional(),
+  reason: z.string().max(512).optional(),
+  restrictionNote: z.string().max(512).optional(),
+}).strict();
+export type PortableSpaceBindingSlot = z.infer<typeof portableSpaceBindingSlotSchema>;
+
+export const portableSpaceSubscribePreviewItemStatusSchema = z.enum([
+  'will_write',
+  'unchanged',
+  'kept_local',
+  'new_scope',
+  'blocked',
+  'owned_by_other',
+  'pending',
+  'removed_impact',
+]);
+export type PortableSpaceSubscribePreviewItemStatus = z.infer<typeof portableSpaceSubscribePreviewItemStatusSchema>;
+
+export const portableSpaceSubscribePreviewItemSchema = z.object({
+  id: z.string().min(1).max(512),
+  scope: portableSubscriptionScopeSchema,
+  domain: portableSpaceDomainSchema,
+  label: z.string().min(1).max(256),
+  path: z.string().min(1).max(512),
+  memberUnitIds: z.array(z.string().min(1).max(512)),
+  dependsOnIds: z.array(z.string().min(1).max(512)),
+  softDependsOnIds: z.array(z.string().min(1).max(512)),
+  referencedByIds: z.array(z.string().min(1).max(512)),
+  dependencyEdges: z.array(portableSpaceDependencyEdgeSchema),
+  coupledCredentialIds: z.array(z.string().min(1).max(512)),
+  liveSatisfiedIds: z.array(z.string().min(1).max(512)),
+  blockedDependencyIds: z.array(z.string().min(1).max(512)),
+  status: portableSpaceSubscribePreviewItemStatusSchema,
+  selectable: z.boolean(),
+  selected: z.boolean(),
+  reason: z.string().max(512).optional(),
+  ownerSourceId: z.string().min(1).max(128).optional(),
+  ownerLabel: z.string().min(1).max(256).optional(),
+  safeDiff: z.string().max(PORTABLE_SPACE_DIFF_PREVIEW_MAX_CHARS).optional(),
+  safeDiffTruncated: z.boolean().optional(),
+  warnings: z.array(z.string().max(512)).optional(),
+}).strict();
+export type PortableSpaceSubscribePreviewItem = z.infer<typeof portableSpaceSubscribePreviewItemSchema>;
+
+export const portableSpaceImpactSchema = z.object({
+  managedCount: z.number().int().nonnegative(),
+  deletedIds: z.array(z.string().min(1).max(512)),
+  handedOffIds: z.array(z.string().min(1).max(512)),
+  preservedLocalIds: z.array(z.string().min(1).max(512)),
+  preservedDependencyIds: z.array(z.string().min(1).max(512)),
+  pendingReconcileIds: z.array(z.string().min(1).max(512)),
+  addedIds: z.array(z.string().min(1).max(512)),
+  updatedIds: z.array(z.string().min(1).max(512)),
+}).strict();
+export type PortableSpaceImpact = z.infer<typeof portableSpaceImpactSchema>;
+
+export const portableSpaceSubscribePreviewManifestSchema = z.object({
+  previewToken: z.string().min(1).max(128),
+  packDigest: z.string().min(1).max(128),
+  expiresAt: z.string(),
+  targetSpaceId: portableSpaceSpaceIdSchema,
+  suggestedLabel: z.string().min(1).max(256),
+  displayOrigin: z.string().min(1).max(256),
+  format: portableSpaceFormatSchema,
+  secretMode: portableSpaceSecretModeSchema,
+  encryptionMode: z.enum(['none', 'x25519', 'passphrase']),
+  allowedPolicies: z.array(portableSpaceSyncPolicySchema).min(1).max(3),
+  defaultSelection: portableSpaceSubscriptionSelectionSchema,
+  items: z.array(portableSpaceSubscribePreviewItemSchema).max(PORTABLE_SPACE_MAX_PREVIEW_ITEMS),
+  excluded: z.array(portableSpaceExcludedItemSchema),
+  bindingSlots: z.array(portableSpaceBindingSlotSchema),
+  localModelOptions: z.array(portableSpaceLocalModelOptionSchema),
+  savedBindingChoices: portableSpaceBindingChoicesSchema,
+  catalogRevision: z.string().min(1).max(128),
+  targetRevision: z.string().min(1).max(128),
+  orderRevision: z.string().min(1).max(128),
+  impact: portableSpaceImpactSchema.optional(),
+  impactDigest: z.string().min(1).max(128).optional(),
+  manifestTruncated: z.boolean().optional(),
+}).strict();
+export type PortableSpaceSubscribePreviewManifest = z.infer<typeof portableSpaceSubscribePreviewManifestSchema>;
+
+export const portableSpaceCenterSourceSchema = portableSpaceSourceRecordSchema.extend({
+  enabled: z.boolean(),
+  priority: z.number().int().nonnegative().optional(),
+  syncPolicy: portableSpaceStoredSyncPolicySchema.optional(),
+  selection: portableSpaceSubscriptionSelectionSchema.optional(),
+  revision: z.string().min(1).max(128),
+  availableNewScopes: z.array(portableSubscriptionScopeSchema).max(PORTABLE_SUBSCRIPTION_SCOPES.length),
+  needsReconcile: z.boolean(),
+  ...portableSpaceBindingChoicesFields,
+}).strict().superRefine(validateBindingChoices);
+export type PortableSpaceCenterSource = z.infer<typeof portableSpaceCenterSourceSchema>;
+
+export const portableSpaceCenterSourcesListResponseSchema = z.object({
+  deviceRecipient: z.string().regex(/^age1[a-z0-9]+$/),
+  knownRecipients: z.array(z.object({
+    label: z.string().max(128).optional(),
+    recipient: z.string().regex(/^age1[a-z0-9]+$/),
+  }).strict()),
+  items: z.array(portableSpaceCenterSourceSchema),
+  orderRevision: z.string().min(1).max(128),
+}).strict();
+export type PortableSpaceCenterSourcesListResponse = z.infer<typeof portableSpaceCenterSourcesListResponseSchema>;
+
+export const portableSpaceCenterCommitSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('subscription'),
+    source: portableSpaceCenterSourceSchema,
+    status: z.enum(['updated', 'not_modified', 'error']),
+    appliedIds: z.array(z.string()),
+    deletedIds: z.array(z.string()),
+    skippedIds: z.array(z.string()),
+    impact: portableSpaceImpactSchema,
+    error: z.string().optional(),
+    backupPath: z.string().optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('once'),
+    status: z.literal('imported'),
+    appliedIds: z.array(z.string()),
+    deletedIds: z.array(z.string()),
+    skippedIds: z.array(z.string()),
+    impact: portableSpaceImpactSchema,
+    backupPath: z.string().optional(),
+  }).strict(),
+]);
+export type PortableSpaceCenterCommit = z.infer<typeof portableSpaceCenterCommitSchema>;
+
+export const portableSpaceSubscribePreviewSourceSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('url'),
+    url: z.url().max(4096),
+  }).strict(),
+  z.object({
+    kind: z.literal('archive'),
+    path: z.string().min(1).max(4096),
+  }).strict(),
+]);
+export type PortableSpaceSubscribePreviewSource = z.infer<typeof portableSpaceSubscribePreviewSourceSchema>;
+
+export const portableSpaceSubscribePreviewInputSchema = z.object({
+  source: portableSpaceSubscribePreviewSourceSchema,
+  linkToSpaceId: portableSpaceSpaceIdSchema.default('main'),
+  unlock: portableSpaceUnlockSchema.optional(),
+}).strict();
+export type PortableSpaceSubscribePreviewInput = z.infer<typeof portableSpaceSubscribePreviewInputSchema>;
+
+export const portableSpaceCenterSubscribeInputSchema = z.object({
+  previewToken: z.string().min(1).max(128),
+  selection: portableSpaceSubscriptionSelectionSchema,
+  syncPolicy: portableSpaceSyncPolicySchema,
+  label: z.string().min(1).max(120).optional(),
+  createBackup: z.boolean().default(true),
+  ...portableSpaceBindingChoicesFields,
+}).strict().superRefine(validateBindingChoices);
+export type PortableSpaceCenterSubscribeInput = z.infer<typeof portableSpaceCenterSubscribeInputSchema>;
+
+export const portableSpaceSubscribeRequestSchema = z.union([
+  portableSpaceCenterSubscribeInputSchema,
+  portableSpaceSubscribeInputSchema,
+]);
+export type PortableSpaceSubscribeRequest = z.infer<typeof portableSpaceSubscribeRequestSchema>;
+
+export const portableSpaceSourcePreviewRefreshInputSchema = z.object({
+  unlock: portableSpaceUnlockSchema.optional(),
+}).strict();
+export type PortableSpaceSourcePreviewRefreshInput = z.infer<typeof portableSpaceSourcePreviewRefreshInputSchema>;
+
+export const portableSpaceSourcePreviewReviewInputSchema = z.object({
+  previewToken: z.string().min(1).max(128),
+  selection: portableSpaceSubscriptionSelectionSchema,
+  cleanupDeselected: z.literal(true),
+  ...portableSpaceBindingChoicesFields,
+}).strict().superRefine(validateBindingChoices);
+export type PortableSpaceSourcePreviewReviewInput = z.infer<typeof portableSpaceSourcePreviewReviewInputSchema>;
+
+export const portableSpaceSourcePreviewInputSchema = z.union([
+  portableSpaceSourcePreviewReviewInputSchema,
+  portableSpaceSourcePreviewRefreshInputSchema,
+]);
+export type PortableSpaceSourcePreviewInput = z.infer<typeof portableSpaceSourcePreviewInputSchema>;
+
+export const portableSpaceCenterTokenSyncInputSchema = z.object({
+  previewToken: z.string().min(1).max(128),
+  createBackup: z.boolean().default(true),
+  ...portableSpaceBindingChoicesFields,
+}).strict().superRefine(validateBindingChoices);
+export type PortableSpaceCenterTokenSyncInput = z.infer<typeof portableSpaceCenterTokenSyncInputSchema>;
+
+export const portableSpaceCenterDirectSyncInputSchema = z.object({
+  force: z.boolean().default(false),
+  createBackup: z.boolean().default(true),
+  unlock: portableSpaceUnlockSchema.optional(),
+}).strict();
+export type PortableSpaceCenterDirectSyncInput = z.infer<typeof portableSpaceCenterDirectSyncInputSchema>;
+
+export const portableSpaceCenterSyncInputSchema = z.union([
+  portableSpaceCenterTokenSyncInputSchema,
+  portableSpaceCenterDirectSyncInputSchema,
+]);
+export type PortableSpaceCenterSyncInput = z.infer<typeof portableSpaceCenterSyncInputSchema>;
+
+export const portableSpacePatchSourceMetadataInputSchema = z.object({
+  expectedRevision: z.string().min(1).max(128),
+  label: z.string().min(1).max(120).optional(),
+  enabled: z.boolean().optional(),
+  syncPolicy: portableSpaceStoredSyncPolicySchema.optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.label === undefined && value.enabled === undefined && value.syncPolicy === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['label'], message: 'At least one of label, enabled, or syncPolicy must be specified' });
+  }
+});
+export type PortableSpacePatchSourceMetadataInput = z.infer<typeof portableSpacePatchSourceMetadataInputSchema>;
+
+export const portableSpacePatchSourceRangeInputSchema = z.object({
+  previewToken: z.string().min(1).max(128),
+  selection: portableSpaceSubscriptionSelectionSchema,
+  cleanupDeselected: z.boolean(),
+  impactDigest: z.string().min(1).max(128).optional(),
+  createBackup: z.boolean().default(true),
+  ...portableSpaceBindingChoicesFields,
+}).strict().superRefine((value, ctx) => {
+  validateBindingChoices(value, ctx);
+  if (value.cleanupDeselected && (value.impactDigest === undefined || value.impactDigest.length === 0)) {
+    ctx.addIssue({ code: 'custom', path: ['impactDigest'], message: 'impactDigest is required when cleanupDeselected is true' });
+  }
+});
+export type PortableSpacePatchSourceRangeInput = z.infer<typeof portableSpacePatchSourceRangeInputSchema>;
+
+export const portableSpacePatchSourceInputSchema = z.union([
+  portableSpacePatchSourceMetadataInputSchema,
+  portableSpacePatchSourceRangeInputSchema,
+]);
+export type PortableSpacePatchSourceInput = z.infer<typeof portableSpacePatchSourceInputSchema>;
+
+export const portableSpacePatchSourceResultSchema = z.object({
+  source: portableSpaceCenterSourceSchema,
+  impact: portableSpaceImpactSchema,
+  backupPath: z.string().optional(),
+}).strict();
+export type PortableSpacePatchSourceResult = z.infer<typeof portableSpacePatchSourceResultSchema>;
+
+export const portableSpaceReorderSourcesInputSchema = z.object({
+  spaceId: portableSpaceSpaceIdSchema.default('main'),
+  orderedIds: z.array(z.string().min(1).max(128)).max(512),
+  expectedOrderRevision: z.string().min(1).max(128),
+}).strict().superRefine((value, ctx) => {
+  if (new Set(value.orderedIds).size !== value.orderedIds.length) {
+    ctx.addIssue({ code: 'custom', path: ['orderedIds'], message: 'orderedIds must not contain duplicates' });
+  }
+});
+export type PortableSpaceReorderSourcesInput = z.infer<typeof portableSpaceReorderSourcesInputSchema>;
+
+export const portableSpaceReorderSourcesResultSchema = z.object({
+  orderedIds: z.array(z.string().min(1).max(128)),
+  orderRevision: z.string().min(1).max(128),
+}).strict();
+export type PortableSpaceReorderSourcesResult = z.infer<typeof portableSpaceReorderSourcesResultSchema>;
+
+export const portableSpaceRemovePreviewResultSchema = z.object({
+  previewToken: z.string().min(1).max(128),
+  expiresAt: z.string(),
+  managedCount: z.number().int().nonnegative(),
+  impact: portableSpaceImpactSchema,
+  impactDigest: z.string().min(1).max(128),
+}).strict();
+export type PortableSpaceRemovePreviewResult = z.infer<typeof portableSpaceRemovePreviewResultSchema>;
+
+export const portableSpaceRemoveReviewedInputSchema = z.object({
+  previewToken: z.string().min(1).max(128),
+  purgeManaged: z.boolean(),
+  impactDigest: z.string().min(1).max(128),
+  createBackup: z.boolean().default(true),
+}).strict();
+export type PortableSpaceRemoveReviewedInput = z.infer<typeof portableSpaceRemoveReviewedInputSchema>;
+
+export const portableSpaceRemoveReviewedResponseSchema = z.object({
+  removed: z.literal(true),
+  impact: portableSpaceImpactSchema,
+  backupPath: z.string().optional(),
+}).strict();
+export type PortableSpaceRemoveReviewedResponse = z.infer<typeof portableSpaceRemoveReviewedResponseSchema>;
+
+export const portableSpaceViewQuerySchema = z.object({
+  view: z.literal('center-v1').optional(),
+}).strict();
+export type PortableSpaceViewQuery = z.infer<typeof portableSpaceViewQuerySchema>;

@@ -443,4 +443,79 @@ describe('native desktop bridge', () => {
     expect(setZoom).toHaveBeenCalledWith(1.25);
     await expect(tauriHost.setZoom(1.5)).resolves.toBe(false);
   });
+
+  it('awaits subscribe-intent listener attachment before peeking, redelivers unacked head across remount, and advances FIFO after ACK', async () => {
+    let wake!: (event: { payload: unknown }) => void;
+    let resolveListen!: (unlisten: () => void) => void;
+    const unlisten = vi.fn();
+    listen.mockImplementation(async (name, callback) => {
+      if (name === 'kiki://subscribe-intent') {
+        wake = callback;
+        return new Promise<() => void>((resolve) => {
+          resolveListen = resolve;
+        });
+      }
+      return () => {};
+    });
+
+    const queue = [
+      { id: '1', url: 'https://example.test/same.tgz', name: 'First', mode: 'auto' as const },
+      { id: '2', url: 'https://example.test/same.tgz', name: 'Second', mode: 'manual' as const },
+    ];
+    invoke.mockImplementation(async (command, args) => {
+      if (command === 'peek_subscribe_intent') return queue[0] ?? null;
+      if (command === 'ack_subscribe_intent') {
+        const id = (args as { id?: string } | undefined)?.id;
+        if (queue[0]?.id === id) {
+          queue.shift();
+          return true;
+        }
+        return false;
+      }
+      return undefined;
+    });
+
+    const received: unknown[] = [];
+    const stopFirst = tauriHost.onSubscribeIntent((intent) => received.push(intent));
+    await Promise.resolve();
+    expect(invoke).not.toHaveBeenCalledWith('peek_subscribe_intent');
+
+    resolveListen(unlisten);
+    await vi.waitFor(() => {
+      expect(received).toEqual([
+        { id: '1', url: 'https://example.test/same.tgz', name: 'First', mode: 'auto' },
+      ]);
+    });
+
+    wake({ payload: '1' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(received).toHaveLength(1);
+
+    stopFirst();
+    expect(unlisten).toHaveBeenCalledTimes(1);
+
+    const remountReceived: unknown[] = [];
+    listen.mockImplementation(async (name, callback) => {
+      if (name === 'kiki://subscribe-intent') wake = callback;
+      return () => {};
+    });
+    const stopSecond = tauriHost.onSubscribeIntent((intent) => remountReceived.push(intent));
+    await vi.waitFor(() => {
+      expect(remountReceived).toEqual([
+        { id: '1', url: 'https://example.test/same.tgz', name: 'First', mode: 'auto' },
+      ]);
+    });
+
+    await expect(tauriHost.ackSubscribeIntent('1')).resolves.toBe(true);
+    await vi.waitFor(() => {
+      expect(remountReceived).toEqual([
+        { id: '1', url: 'https://example.test/same.tgz', name: 'First', mode: 'auto' },
+        { id: '2', url: 'https://example.test/same.tgz', name: 'Second', mode: 'manual' },
+      ]);
+    });
+
+    await expect(tauriHost.ackSubscribeIntent('2')).resolves.toBe(true);
+    await expect(tauriHost.peekSubscribeIntent()).resolves.toBeNull();
+    stopSecond();
+  });
 });

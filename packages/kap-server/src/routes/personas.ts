@@ -29,7 +29,16 @@ import {
   ErrorCode,
   type Session,
 } from '@kiki/protocol';
-import { ISessionIndex, IWorkspacePersistence, IWorkspaceService, type Scope, type SessionSummary } from '@kiki/agent-core-v2';
+import {
+  clearUnboundModelHoldsForTarget,
+  IAtomicDocumentStore,
+  IBootstrapService,
+  ISessionIndex,
+  IWorkspacePersistence,
+  IWorkspaceService,
+  type Scope,
+  type SessionSummary,
+} from '@kiki/agent-core-v2';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -403,6 +412,12 @@ export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope, broa
         examples: req.body.examples,
         expectedRevision: req.body.revision,
       });
+      await clearUnboundModelHoldsForTarget(
+        core.accessor.get(IAtomicDocumentStore),
+        core.accessor.get(IBootstrapService),
+        'persona',
+        req.params.id,
+      );
       reply.send(okEnvelope(snapshot, req.id));
     } catch (error) {
       sendPersonaError(reply as unknown as PersonaReply, req.id, error);

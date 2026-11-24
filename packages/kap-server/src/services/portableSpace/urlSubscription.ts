@@ -314,26 +314,36 @@ function fetchPinnedTarget(
   });
 }
 
-function combinedSignal(outer: AbortSignal | undefined): AbortSignal {
-  const timeout = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+function overallSignal(outer: AbortSignal | undefined, deadlineMs = FETCH_TIMEOUT_MS): AbortSignal {
+  const timeout = AbortSignal.timeout(deadlineMs);
   return outer === undefined ? timeout : AbortSignal.any([outer, timeout]);
 }
 
-/** Fetches a remote subscription archive with DNS-pinned SSRF checks, redirect validation, size bounds, and origin-bound If-None-Match 304 support. */
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error('Subscription fetch timed out or aborted');
+  }
+}
+
+/** Fetches a remote subscription archive with DNS-pinned SSRF checks, single overall 30s deadline, redirect validation, size bounds, and origin-bound If-None-Match 304 support. */
 export async function fetchSubscriptionArchive(rawUrl: string, options: UrlFetchOptions = {}): Promise<UrlFetchResult> {
+  const signal = overallSignal(options.signal);
+  throwIfAborted(signal);
   const initialTarget = await resolveSafeSubscriptionTarget(rawUrl, options);
+  throwIfAborted(signal);
   const redirectAllowLoopback = options.allowLoopback === true && initialTarget.isLoopback;
   let currentTarget = initialTarget;
   const normalizedIfNoneMatch = sanitizeEtag(options.ifNoneMatch);
   const expectedEtagOrigin = (options.ifNoneMatchOrigin ?? initialTarget.url.origin).toLowerCase();
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    throwIfAborted(signal);
     const currentOrigin = currentTarget.url.origin.toLowerCase();
     const headers: Record<string, string> = { accept: 'application/gzip, application/octet-stream, */*' };
-    if (normalizedIfNoneMatch !== undefined && currentOrigin === expectedEtagOrigin) {
+    const sentIfNoneMatch = normalizedIfNoneMatch !== undefined && currentOrigin === expectedEtagOrigin;
+    if (sentIfNoneMatch) {
       headers['if-none-match'] = normalizedIfNoneMatch;
     }
-    const signal = combinedSignal(options.signal);
 
     let status: number;
     let etag: string | undefined;
@@ -366,6 +376,9 @@ export async function fetchSubscriptionArchive(rawUrl: string, options: UrlFetch
     }
 
     if (status === 304) {
+      if (!sentIfNoneMatch) {
+        throw new Error('Unexpected 304 Not Modified response without If-None-Match');
+      }
       return { status: 'not_modified', etag: etag ?? normalizedIfNoneMatch, finalOrigin: currentOrigin };
     }
     if (status >= 300 && status < 400) {

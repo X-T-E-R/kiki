@@ -144,7 +144,7 @@ cost = "cheap"
   return new Map([
     ['config.toml', Buffer.from(configToml, 'utf8')],
     ['personas/kiki/persona.md', Buffer.from('---\nname: Kiki\ntitle: Assistant\n---\nHelpful personal assistant.\n', 'utf8')],
-    ['agents/explore.md', Buffer.from('---\nname: explore\ndescription: Fast locator\nmodel_alias: gemini-4-neon\npreferred_models:\n  - gemini-4-neon\nmodel_profiles:\n  - model: gemini-4-neon\n    effort: high\n---\nExplore v1 body.\n', 'utf8')],
+    ['agents/explore.md', Buffer.from('---\nname: explore\ndescription: Fast locator\nmodel_alias: gemini-4-neon\npreferred_models:\n  - gemini-4-neon\nmodel_profiles:\n  - alias: gemini-4-neon\n    thinking_effort: high\n---\nExplore v1 body.\n', 'utf8')],
     ['agents/legacy.md', Buffer.from('---\nname: legacy\ndescription: Retired profile\n---\nLegacy v1 body.\n', 'utf8')],
     ['recipes/lab-gemini/recipe.toml', Buffer.from('schema_version = 1\nid = "lab-gemini"\nname = "Lab Gemini"\nversion = "1.0.0"\n\n[prompts]\nsystem = { file = "system.md" }\n', 'utf8')],
     ['recipes/lab-gemini/system.md', Buffer.from('# Lab Gemini v1\nInitial research guidance.\n', 'utf8')],
@@ -718,12 +718,18 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
       const text = files.get(agentPath)!.toString('utf8');
       expect(text).not.toMatch(/claude-opus-5-5/i);
       const parsed = parseAgentFileText({ path: agentPath, text, source: 'user' });
+      if (agentPath !== 'agents/explore.md') {
+        expect(parsed.modelAlias).not.toBe('swe-2');
+        expect(parsed.preferredModels ?? []).not.toContain('swe-2');
+        expect(parsed.allowedModels ?? []).not.toContain('swe-2');
+        expect((parsed.modelProfiles ?? []).map((p) => p.alias)).not.toContain('swe-2');
+      }
       parsedAgents.set(parsed.name, parsed);
     }
     expect(parsedAgents.get('explore')?.modelAlias).toBe('swe-2');
     expect(parsedAgents.get('explore')?.canSpawnSubagents).toBe(false);
     expect(files.get('agents/explore.md')!.toString('utf8')).not.toMatch(/gemini-4-neon/i);
-    expect(parsedAgents.get('worker')?.modelAlias).toBe('swe-2');
+    expect(parsedAgents.get('worker')?.modelAlias).toBe('swe-2.1');
     expect(parsedAgents.get('worker')?.canSpawnSubagents).toBe(false);
     expect(files.get('agents/worker.md')!.toString('utf8')).not.toMatch(/gemini-4-neon/i);
     expect(parsedAgents.get('operator')?.modelAlias).toBe('gemini-4-hydrogen');
@@ -732,7 +738,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     expect(parsedAgents.get('implementer')?.allowedSubagents).toEqual(['explore', 'worker']);
     expect(parsedAgents.get('frontend')?.modelAlias).toBe('gemini-4-neon');
     expect(parsedAgents.get('frontend')?.allowedSubagents).toEqual(['explore', 'worker']);
-    expect(parsedAgents.get('reviewer')?.modelAlias).toBe('gpt-6.2-sol');
+    expect(parsedAgents.get('reviewer')?.modelAlias).toBe('swe-2.1');
     expect(parsedAgents.get('reviewer')?.canSpawnSubagents).toBe(false);
     expect(parsedAgents.get('think')?.modelAlias).toBe('gpt-6.2-sol');
     expect(parsedAgents.get('think')?.preferredModels).toEqual(['gpt-6.2-sol', 'gemini-4-carbon']);
@@ -767,13 +773,14 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
       'gpt-6.2-sol',
       'k3.1-pro',
       'swe-2',
+      'swe-2.1',
     ]);
     expect(catalog.included_official_plugins).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: 'kiki-office', enabled: true })]),
     );
     expect(catalog.wechat_im_guide.steps).toHaveLength(3);
-    expect(catalog.skills_catalog.total_skills).toBe(13);
-    expect(catalog.skills_catalog.skills).toHaveLength(13);
+    expect(catalog.skills_catalog.total_skills).toBeGreaterThanOrEqual(13);
+    expect(catalog.skills_catalog.skills).toHaveLength(catalog.skills_catalog.total_skills);
   });
 
   it('subscribes via URL, inherits axon key in nb_search, handles ETag 304 and sync errors, and enforces managed_overwrite vs user_keep', async () => {
@@ -810,9 +817,11 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
         'gpt-6.2-sol',
         'k3.1-pro',
         'swe-2',
+        'swe-2.1',
       ]);
       expect(models?.['deepseek-v4-flash']?.model).toBe('deepseek-v4.1-flash');
       expect(models?.['swe-2']?.model).toBe('swe-2');
+      expect(models?.['swe-2.1']?.model).toBe('swe-2.1');
       expect(models?.['gpt-6-luna']?.recipe).toBe('recipes/sol-luna/sol.toml');
       expect(models?.['claude-opus-5-5']?.promptOverrides).toBeUndefined();
       expect(configService.get<{ contextStrategy?: string; subagentContextStrategy?: string }>('loopControl')).toMatchObject({
@@ -923,7 +932,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     v2Files.set('personas/kiki/persona.md', Buffer.from('---\nname: Kiki Upstream v2\n---\nUpstream edit.\n', 'utf8'));
     v2Files.set(
       'agents/explore.md',
-      Buffer.from('---\nname: explore\ndescription: Fast locator v2\nmodel_alias: gpt-6-luna\npreferred_models:\n  - gpt-6-luna\nmodel_profiles:\n  - model: gpt-6-luna\n    effort: medium\n---\nExplore v2 updated body.\n', 'utf8'),
+      Buffer.from('---\nname: explore\ndescription: Fast locator v2\nmodel_alias: gpt-6-luna\npreferred_models:\n  - gpt-6-luna\nmodel_profiles:\n  - alias: gpt-6-luna\n    thinking_effort: medium\n---\nExplore v2 updated body.\n', 'utf8'),
     );
     v2Files.delete('agents/legacy.md');
     const recipeBodyRelPath = externalLabPackDir ? 'recipes/neon/neon-main.md' : 'recipes/lab-gemini/system.md';

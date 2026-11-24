@@ -23,7 +23,7 @@ import { nbSearchConfigIssues, nbSearchConfigRevision, resolveNbSearchCapturedCo
 import { resolve, relative, isAbsolute, sep } from 'node:path';
 import { INbSearchService, type NbSearchCapabilities, type NbSearchReadiness, type NbSearchTestStatus } from './nbSearch';
 import { INbSearchSourceStore, type NbSearchSource } from './sourceStore';
-import { describeCapabilities } from './toolDescriptions';
+import { describeCapabilities, formatManagedCredentialMismatchHint } from './toolDescriptions';
 
 export class NbSearchService implements INbSearchService {
   declare readonly _serviceBrand: undefined;
@@ -87,8 +87,9 @@ export class NbSearchService implements INbSearchService {
   search(query: string, context?: OperationContext, lane?: string): Promise<SearchRunSyncEnvelope>;
   search(input: import('@nb-corp/nb-search').SearchInput, context?: OperationContext): Promise<import('@nb-corp/nb-search').SearchEnvelope>;
   async search(input: string | import('@nb-corp/nb-search').SearchInput, context?: OperationContext, lane?: string): Promise<import('@nb-corp/nb-search').SearchEnvelope> {
-    const runtime = await this.#requireRuntime();
-    return runtime.search(typeof input === 'string' ? { action: 'run', query: input, lane } : input, context);
+    const { runtime, status } = await this.#requireRuntimeWithStatus();
+    const result = await runtime.search(typeof input === 'string' ? { action: 'run', query: input, lane } : input, context);
+    return withManagedCredentialMismatchHint(result, status.issues);
   }
 
   async captureFetchFileIdentity(path: string): Promise<import('./nbSearch').FetchFileIdentity> {
@@ -99,8 +100,9 @@ export class NbSearchService implements INbSearchService {
   fetch(input: import('@nb-corp/nb-search').FetchInput, context?: OperationContext, admittedFile?: string, identity?: import('./nbSearch').FetchFileIdentity): Promise<import('@nb-corp/nb-search').FetchEnvelope>;
   async fetch(input: string | import('@nb-corp/nb-search').FetchInput, context?: OperationContext, admittedFile?: string, identity?: import('./nbSearch').FetchFileIdentity): Promise<import('@nb-corp/nb-search').FetchEnvelope> {
     const admission = typeof input !== 'string' && 'source' in input && input.source.kind === 'file' && admittedFile !== undefined ? { source: input.source, path: admittedFile, identity } : undefined;
-    const runtime = await this.#requireRuntime(admission);
-    return runtime.fetch(typeof input === 'string' ? { url: input } : input, context);
+    const { runtime, status } = await this.#requireRuntimeWithStatus(admission);
+    const result = await runtime.fetch(typeof input === 'string' ? { url: input } : input, context);
+    return withManagedCredentialMismatchHint(result, status.issues);
   }
 
   async resolveFetchFile(input: import('@nb-corp/nb-search').FetchRunInput): Promise<string | undefined> {
@@ -210,10 +212,10 @@ export class NbSearchService implements INbSearchService {
     );
   }
 
-  async #requireRuntime(admission?: FetchFileAdmission): Promise<NbSearchRuntime> {
+  async #requireRuntimeWithStatus(admission?: FetchFileAdmission): Promise<{ readonly runtime: NbSearchRuntime; readonly status: NbSearchConfigSourceStatus }> {
     const { runtime, status } = await this.#currentRuntime(admission);
     if (runtime === undefined) throw configurationError(status);
-    return runtime;
+    return { runtime, status };
   }
 
   async #currentRuntime(admission?: FetchFileAdmission) {
@@ -334,6 +336,27 @@ function fetchFilePath(config: import('@nb-corp/nb-search').CanonicalConfig, sou
   const inside = relative(root, path);
   if (isAbsolute(source.path) || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) throw new Error2(ErrorCodes.REQUEST_INVALID, 'FETCH_FILE_BLOCKED: file path must remain relative to its configured scope.');
   return path;
+}
+
+function withManagedCredentialMismatchHint<T extends object>(
+  envelope: T,
+  issues: readonly string[] | undefined,
+): T {
+  if (!('error' in envelope)) return envelope;
+  const err = (envelope as { readonly error?: { readonly code?: unknown; readonly message?: unknown } }).error;
+  if (err === undefined || typeof err.code !== 'string' || typeof err.message !== 'string') return envelope;
+  if (err.code !== 'LANE_NOT_CONFIGURED' && err.code !== 'PIPELINE_NOT_CONFIGURED' && err.code !== 'NO_AVAILABLE_PIPELINE') {
+    return envelope;
+  }
+  const hint = formatManagedCredentialMismatchHint(issues);
+  if (hint.length === 0 || err.message.includes(hint)) return envelope;
+  return {
+    ...envelope,
+    error: {
+      ...err,
+      message: `${err.message} ${hint}`,
+    },
+  };
 }
 
 function configurationError(status: NbSearchConfigSourceStatus): Error2 {

@@ -31,6 +31,8 @@
     "allow-prepare-space",
     "allow-take-navigation-intent",
     "allow-ack-navigation-intent",
+    "allow-peek-subscribe-intent",
+    "allow-ack-subscribe-intent",
     "allow-read-plugin-focus",
     "allow-ack-plugin-focus",
     "allow-remember-plugin-focus",

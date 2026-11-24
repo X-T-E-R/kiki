@@ -28,11 +28,13 @@ const NOT_FOUND_NOUNS: Readonly<Record<string, I18nKey>> = {
   plugin: 'err.notFound.plugin',
   persona: 'err.notFound.persona',
   memory: 'err.notFound.memory',
+  portable: 'err.notFound.portable',
 };
 
 /** Codes whose localized copy does not follow the not-found pattern. */
 const SPECIFIC_CODE_KEYS: Readonly<Record<number, I18nKey>> = {
   [-2]: 'err.timeout',
+  40109: 'err.portableUnlockRequired',
   40111: 'err.authMissing',
   40112: 'err.authRevoked',
   40113: 'err.modelUnresolved',
@@ -45,6 +47,8 @@ const SPECIFIC_CODE_KEYS: Readonly<Record<number, I18nKey>> = {
   40933: 'err.sessionLocked',
   40939: 'err.indexBuilding',
   40950: 'err.providerDisabled',
+  40951: 'err.portablePreviewStale',
+  41004: 'err.portablePreviewExpired',
   41301: 'err.fileTooLarge',
   42901: 'err.rateLimited',
   42904: 'err.dispatchLimited',

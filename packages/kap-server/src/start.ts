@@ -12,6 +12,7 @@ import {
   IAgentLoopService,
   IAgentPermissionModeService,
   IAppendLogStore,
+  IAtomicDocumentStore,
   IConfigRegistry,
   IConfigService,
   IErrorTelemetryService,
@@ -1562,6 +1563,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   meshServiceRef = meshService;
   registerMeshRoutes(app, meshService);
   registerSyncRoutes(app, syncService);
+  let portableSpacesRevision = 0;
   const portableSpaces = new PortableSpaceService(new SpaceEndpoints({
     bootstrap: bootstrapInfo,
     config: core.accessor.get(IConfigService),
@@ -1575,7 +1577,15 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     index: core.accessor.get(ISessionIndex),
     logs: core.accessor.get(IAppendLogStore),
     log: core.accessor.get(ILogService),
-  }, syncService, opts.allowLoopbackSubscriptions ? { allowLoopback: true } : undefined));
+  }, syncService, opts.allowLoopbackSubscriptions ? { allowLoopback: true } : undefined), {
+    documents: core.accessor.get(IAtomicDocumentStore),
+    onChanged: (change) => broadcaster.publishPortableSpacesChanged({
+      spaceId: change.spaceId,
+      revision: ++portableSpacesRevision,
+      at: Date.now(),
+      reason: change.reason,
+    }),
+  });
   registerPortableSpaceRoutes(app, portableSpaces, localOwnerToken);
   portableSpaces.startAutoSync();
   app.addHook('preClose', async () => {

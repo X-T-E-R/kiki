@@ -18,6 +18,7 @@ import { createWebAccessFacade } from './web-access.js';
 import { createThreadBridgesFacade } from './thread-bridges.js';
 import { createUsageExportFacade } from './usage-export.js';
 import { createProviderQuotaFacade } from './provider-quota.js';
+import { createPortableSpacesFacade } from './portable-spaces.js';
 import { createExternalClientsFacade } from './external-clients.js';
 import { listAgentTasksQuerySchema, listAgentTasksResponseSchema } from '../../contract/session/agent-tasks.js';
 import { sessionMediaPlaybackSchema } from '../../contract/session/media-playback.js';
@@ -105,6 +106,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     threadBridges: createThreadBridgesFacade(transport),
     usageExport: createUsageExportFacade(transport),
     providerQuotas: createProviderQuotaFacade(transport),
+    portableSpaces: createPortableSpacesFacade(transport),
     raw: createRawSubstrateFacade(transport),
     healthz: async (baseUrlOverride) => {
       try {

@@ -28,10 +28,13 @@ export interface LoadOptions {
   ifNoneMatch?: string;
   ifNoneMatchOrigin?: string;
   signal?: AbortSignal;
+  untrustedArchive?: boolean;
+  readOnly?: boolean;
 }
 export interface LoadedSpaceTree extends PortableSpaceTree {
   matchedPassphrase?: string;
   etag?: string;
+  usedExplicitIdentity?: boolean;
 }
 export type LoadedUrlTreeResult =
   | { readonly status: 'not_modified'; readonly etag?: string; readonly finalOrigin: string }
@@ -195,7 +198,8 @@ export class SpaceEndpoints {
     bytes: Buffer,
     nameHint: string,
     unlock?: PortableSpaceUnlock,
-    remoteUrl = false,
+    untrusted = false,
+    readOnly = false,
   ): Promise<{
     files: Map<string, Buffer>;
     format: PortableSpaceFormat;
@@ -209,10 +213,10 @@ export class SpaceEndpoints {
       || bytes.subarray(0, 14).toString('ascii') === '-----BEGIN AGE'
       ? 'age'
       : 'tgz';
-    const unpackOptions = remoteUrl ? REMOTE_ARCHIVE_LIMITS : undefined;
+    const unpackOptions = untrusted ? REMOTE_ARCHIVE_LIMITS : undefined;
     let files: Map<string, Buffer>;
     if (format === 'age') {
-      const decoded = await decodeAge(bytes, unlock, this.sync);
+      const decoded = await decodeAge(bytes, unlock, this.sync, undefined, readOnly);
       encryptionMode = decoded.mode;
       if (decoded.mode === 'passphrase') matchedPassphrase = decoded.matchedPassphrase;
       files = unpackTarGz(decoded.bytes, unpackOptions);
@@ -231,7 +235,7 @@ export class SpaceEndpoints {
     matchedPassphrase: string | undefined,
     label: string,
     options: LoadOptions,
-    remoteUrl = false,
+    untrusted = false,
     etag?: string,
   ): Promise<LoadedSpaceTree> {
     const files = new Map(rawFiles);
@@ -241,7 +245,7 @@ export class SpaceEndpoints {
     if (sealed) {
       if (files.has(PLAIN)) throw new Error('Portable Space contains both plain and sealed credentials');
       if (options.includeCredentials !== false) {
-        const decoded = await decodeAge(sealed, options.unlock, this.sync);
+        const decoded = await decodeAge(sealed, options.unlock, this.sync, undefined, options.readOnly === true);
         if (format !== 'age') {
           effectiveEncryption = decoded.mode;
           if (decoded.mode === 'passphrase') effectivePassphrase = decoded.matchedPassphrase;
@@ -250,7 +254,7 @@ export class SpaceEndpoints {
       }
       files.delete(SEALED);
     }
-    const sanitized = remoteUrl ? sanitizeRemoteSubscriptionFiles(files) : { files, excluded: [] };
+    const sanitized = untrusted ? sanitizeRemoteSubscriptionFiles(files) : { files, excluded: [] };
     const { units, excluded: projectedExcluded } = toUnitsWithExcluded(sanitized.files, this.live.registry);
     const excluded = [...sanitized.excluded, ...projectedExcluded];
     for (const [id, item] of units) if (item.domain === 'memories' && options.includeMemories === false || item.domain === 'credentials' && options.includeCredentials === false) units.delete(id);
@@ -290,7 +294,7 @@ export class SpaceEndpoints {
       return { status: 'not_modified', etag: fetched.etag, finalOrigin: fetched.finalOrigin };
     }
     const pathname = new URL(endpoint.url).pathname;
-    const decoded = await this.decodeArchiveBytes(fetched.bytes, pathname, options.unlock, true);
+    const decoded = await this.decodeArchiveBytes(fetched.bytes, pathname, options.unlock, true, options.readOnly === true);
     const tree = await this.buildLoadedTree(
       decoded.files,
       decoded.format,
@@ -339,7 +343,7 @@ export class SpaceEndpoints {
       case 'archive': {
         label = basename(resolve(endpoint.path));
         const bytes = await readBounded(endpoint.path);
-        const decoded = await this.decodeArchiveBytes(bytes, endpoint.path, options.unlock);
+        const decoded = await this.decodeArchiveBytes(bytes, endpoint.path, options.unlock, options.untrustedArchive === true, options.readOnly === true);
         files = decoded.files;
         format = decoded.format;
         encryptionMode = decoded.encryptionMode;
@@ -347,7 +351,7 @@ export class SpaceEndpoints {
         break;
       }
     }
-    return this.buildLoadedTree(files, format, encryptionMode, matchedPassphrase, label, options, false);
+    return this.buildLoadedTree(files, format, encryptionMode, matchedPassphrase, label, options, options.untrustedArchive === true);
   }
 
   async destination(input: string): Promise<PortableSpaceEndpoint> {

@@ -386,6 +386,7 @@ export interface HttpRestFacade {
   readonly threadBridges: import('./thread-bridges.js').ThreadBridgesFacade;
   readonly usageExport: import('./usage-export.js').UsageExportFacade;
   readonly providerQuotas: import('./provider-quota.js').ProviderQuotaFacade;
+  readonly portableSpaces: import('./portable-spaces.js').PortableSpacesFacade;
   healthz(baseUrlOverride?: string): Promise<boolean>;
   meta(): Promise<MetaResponse & { readonly experimental_flags?: Record<string, boolean> }>;
   renewLease(body: { readonly lease_id?: string }): Promise<{

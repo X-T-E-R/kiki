@@ -43,6 +43,11 @@ import { IConfigService } from '#/app/config/config';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
 import { fillLeasePins, spawnConstraintOrigin } from '#/app/agentProfileCatalog/applySubagentLease';
 import { resolveSubagentTarget } from '#/app/agentProfileCatalog/subagentDispatch';
+import {
+  findBlockingUnboundModelHold,
+  formatUnboundModelHoldMessage,
+  readUnboundModelHolds,
+} from '#/app/agentProfileCatalog/unboundModelHolds';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { resolveThinkingEffortForModel } from '#/kosong/model/thinking';
@@ -251,6 +256,23 @@ export class SessionDispatchService implements ISessionDispatchService {
       assertEndpointConstraints(endpoint, endpointEffort!, this.config, [profile, target.lease, target.spawnPolicy]);
       if (selection.route?.lockedModelAlias !== undefined && selection.route.lockedModelAlias !== adhocEndpointModelId(endpoint)) throw new Error2(ErrorCodes.PROFILE_CONSTRAINT_VIOLATION, 'The route model pin does not permit this endpoint.');
       await authorizeEndpoint(endpoint, this.endpointVault, requester, input.workDir, input.signal, input.selectorCall);
+    }
+    if (endpoint === undefined && input.resolvedBinding === undefined) {
+      const holdDoc = await readUnboundModelHolds(this.documents, this.bootstrap);
+      const profileHold = findBlockingUnboundModelHold(
+        holdDoc,
+        'profile',
+        selection.baseProfile.name,
+        selection.route?.lockedModelAlias ?? profile.modelAlias,
+        input.modelAlias ?? target.lease?.modelAlias,
+      );
+      if (profileHold !== undefined) {
+        throw new Error2(
+          ErrorCodes.MODEL_NOT_CONFIGURED,
+          formatUnboundModelHoldMessage(profileHold),
+          { details: { profile: selection.baseProfile.name, sourceModelId: profileHold.sourceModelId, tupleKey: profileHold.tupleKey } },
+        );
+      }
     }
     const auto = endpoint === undefined && input.resolvedBinding === undefined && usesAutoModel(this.config, profile, input.modelAlias);
     const extensions = this.extensions?.current;

@@ -962,3 +962,111 @@ const _roomUpdate: AssertWire<typeof updateRoomInputSchema, UpdateRoomInput> = t
 const _roomMessage: AssertWire<typeof roomMessageSchema, RoomMessage> = true;
 const _roomLog: AssertWire<typeof roomLogResultSchema, RoomLogResult> = true;
 const _roomUsage: AssertWire<typeof roomUsageSchema, RoomUsage> = true;
+
+// portable-spaces.ts — bidirectional parity between PortableSpacesFacade method
+// arguments/returns and `@kiki/protocol` schemas, plus overload-specific probes.
+import type { PortableSpacesFacade } from '../src/core/facade/portable-spaces.js';
+import { portableSpacesContract } from '../src/contract/portable-spaces.js';
+import type {
+  PortableSpaceAddRecipientInput,
+  PortableSpaceApplyReceipt,
+  PortableSpaceCenterCommit,
+  PortableSpaceCenterSourcesListResponse,
+  PortableSpaceExportReceipt,
+  PortableSpaceInspectResult,
+  PortableSpaceMutateReceipt,
+  PortableSpacePatchSourceResult,
+  PortableSpacePreviewResult,
+  PortableSpaceRemovePreviewResult,
+  PortableSpaceRemoveReviewedResponse,
+  PortableSpaceRemoveSourceResponse,
+  PortableSpaceReorderSourcesResult,
+  PortableSpaceSourceRecord,
+  PortableSpaceSourcesListResponse,
+  PortableSpaceSubscribePreviewManifest,
+  PortableSpaceSubscriptionSyncResult,
+} from '@kiki/protocol';
+
+type AssertExact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+
+type AssertFacadeInput<TSchema extends z.ZodType, TArg> = AssertExact<z.input<TSchema>, TArg>;
+type AssertFacadeOutput<TSchema extends z.ZodType, TReturn> = AssertExact<z.output<TSchema>, Awaited<TReturn>>;
+
+const _psRegisterInput: AssertFacadeInput<typeof portableSpacesContract.registerSource.input, Parameters<PortableSpacesFacade['registerSource']>[0]> = true;
+const _psRegisterOutput: AssertFacadeOutput<typeof portableSpacesContract.registerSource.output, ReturnType<PortableSpacesFacade['registerSource']>> = true;
+const _psPreviewSubInput: AssertFacadeInput<typeof portableSpacesContract.previewSubscribe.input, Parameters<PortableSpacesFacade['previewSubscribe']>[0]> = true;
+const _psPreviewSubOutput: AssertFacadeOutput<typeof portableSpacesContract.previewSubscribe.output, ReturnType<PortableSpacesFacade['previewSubscribe']>> = true;
+const _psPreviewSourceInput: AssertFacadeInput<typeof portableSpacesContract.previewSource.input, NonNullable<Parameters<PortableSpacesFacade['previewSource']>[1]>> = true;
+const _psPreviewSourceOutput: AssertFacadeOutput<typeof portableSpacesContract.previewSource.output, ReturnType<PortableSpacesFacade['previewSource']>> = true;
+const _psPatchInput: AssertFacadeInput<typeof portableSpacesContract.patchSource.input, Parameters<PortableSpacesFacade['patchSource']>[1]> = true;
+const _psPatchOutput: AssertFacadeOutput<typeof portableSpacesContract.patchSource.output, ReturnType<PortableSpacesFacade['patchSource']>> = true;
+const _psReorderInput: AssertFacadeInput<typeof portableSpacesContract.reorderSources.input, Parameters<PortableSpacesFacade['reorderSources']>[0]> = true;
+const _psReorderOutput: AssertFacadeOutput<typeof portableSpacesContract.reorderSources.output, ReturnType<PortableSpacesFacade['reorderSources']>> = true;
+const _psRemovePreviewOutput: AssertFacadeOutput<typeof portableSpacesContract.previewRemoveSource.output, ReturnType<PortableSpacesFacade['previewRemoveSource']>> = true;
+const _psRemoveLegacyOutput: AssertFacadeOutput<typeof portableSpacesContract.removeSource.output, ReturnType<PortableSpacesFacade['removeSource']>> = true;
+const _psRemoveReviewedInput: AssertFacadeInput<typeof portableSpacesContract.removeReviewedSource.input, Parameters<PortableSpacesFacade['removeReviewedSource']>[1]> = true;
+const _psRemoveReviewedOutput: AssertFacadeOutput<typeof portableSpacesContract.removeReviewedSource.output, ReturnType<PortableSpacesFacade['removeReviewedSource']>> = true;
+const _psInspectInput: AssertFacadeInput<typeof portableSpacesContract.inspect.input, Parameters<PortableSpacesFacade['inspect']>[0]> = true;
+const _psInspectOutput: AssertFacadeOutput<typeof portableSpacesContract.inspect.output, ReturnType<PortableSpacesFacade['inspect']>> = true;
+const _psExportInput: AssertFacadeInput<typeof portableSpacesContract.exportSpace.input, Parameters<PortableSpacesFacade['exportSpace']>[0]> = true;
+const _psExportOutput: AssertFacadeOutput<typeof portableSpacesContract.exportSpace.output, ReturnType<PortableSpacesFacade['exportSpace']>> = true;
+const _psPreviewInput: AssertFacadeInput<typeof portableSpacesContract.preview.input, Parameters<PortableSpacesFacade['preview']>[0]> = true;
+const _psPreviewOutput: AssertFacadeOutput<typeof portableSpacesContract.preview.output, ReturnType<PortableSpacesFacade['preview']>> = true;
+const _psApplyInput: AssertFacadeInput<typeof portableSpacesContract.apply.input, Parameters<PortableSpacesFacade['apply']>[0]> = true;
+const _psApplyOutput: AssertFacadeOutput<typeof portableSpacesContract.apply.output, ReturnType<PortableSpacesFacade['apply']>> = true;
+const _psPackOutput: AssertFacadeOutput<typeof portableSpacesContract.pack.output, ReturnType<PortableSpacesFacade['pack']>> = true;
+const _psUnpackOutput: AssertFacadeOutput<typeof portableSpacesContract.unpack.output, ReturnType<PortableSpacesFacade['unpack']>> = true;
+const _psForkInput: AssertFacadeInput<typeof portableSpacesContract.fork.input, Parameters<PortableSpacesFacade['fork']>[0]> = true;
+const _psForkOutput: AssertFacadeOutput<typeof portableSpacesContract.fork.output, ReturnType<PortableSpacesFacade['fork']>> = true;
+const _psDeltaInput: AssertFacadeInput<typeof portableSpacesContract.delta.input, Parameters<PortableSpacesFacade['delta']>[0]> = true;
+const _psDeltaOutput: AssertFacadeOutput<typeof portableSpacesContract.delta.output, ReturnType<PortableSpacesFacade['delta']>> = true;
+const _psMutateInput: AssertFacadeInput<typeof portableSpacesContract.mutate.input, Parameters<PortableSpacesFacade['mutate']>[0]> = true;
+const _psMutateOutput: AssertFacadeOutput<typeof portableSpacesContract.mutate.output, ReturnType<PortableSpacesFacade['mutate']>> = true;
+const _psRekeyInput: AssertFacadeInput<typeof portableSpacesContract.rekey.input, Parameters<PortableSpacesFacade['rekey']>[0]> = true;
+const _psRekeyOutput: AssertFacadeOutput<typeof portableSpacesContract.rekey.output, ReturnType<PortableSpacesFacade['rekey']>> = true;
+const _psAddRecipientInput: AssertFacadeInput<typeof portableSpacesContract.addRecipient.input, Parameters<PortableSpacesFacade['addRecipient']>[0]> = true;
+const _psAddRecipientOutput: AssertFacadeOutput<typeof portableSpacesContract.addRecipient.output, ReturnType<PortableSpacesFacade['addRecipient']>> = true;
+
+// Overload-specific call probes verify each overload resolves to its exact protocol schema output.
+function _portableSpacesOverloadProbes(
+  facade: PortableSpacesFacade,
+  legacySub: z.input<typeof portableSpacesContract.subscribeLegacy.input>,
+  centerSub: z.input<typeof portableSpacesContract.subscribeCenter.input>,
+  legacySync: z.input<typeof portableSpacesContract.syncSubscriptionLegacy.input>,
+  tokenSync: z.input<typeof portableSpacesContract.syncSubscriptionCenterToken.input>,
+  directCenterSync: z.input<typeof portableSpacesContract.syncSubscriptionCenterDirect.input>,
+  recipient: PortableSpaceAddRecipientInput,
+): void {
+  const _listLegacy: Promise<PortableSpaceSourcesListResponse> = facade.listSources();
+  const _listCenter: Promise<PortableSpaceCenterSourcesListResponse> = facade.listSources({ view: 'center-v1' });
+  const _subLegacy: Promise<PortableSpaceSubscriptionSyncResult> = facade.subscribe(legacySub);
+  const _subCenter: Promise<PortableSpaceCenterCommit> = facade.subscribe(centerSub);
+  const _syncLegacy: Promise<PortableSpaceSubscriptionSyncResult> = facade.syncSubscription('id', legacySync);
+  const _syncToken: Promise<PortableSpaceCenterCommit> = facade.syncSubscription('id', tokenSync);
+  const _syncCenterDirect: Promise<PortableSpaceCenterCommit> = facade.syncSubscription('id', directCenterSync, { view: 'center-v1' });
+  const _addRecipient: Promise<PortableSpaceSourcesListResponse> = facade.addRecipient(recipient);
+  const _checkTypes: [
+    AssertExact<Awaited<typeof _listLegacy>, PortableSpaceSourcesListResponse>,
+    AssertExact<Awaited<typeof _listCenter>, PortableSpaceCenterSourcesListResponse>,
+    AssertExact<Awaited<typeof _subLegacy>, PortableSpaceSubscriptionSyncResult>,
+    AssertExact<Awaited<typeof _subCenter>, PortableSpaceCenterCommit>,
+    AssertExact<Awaited<typeof _syncLegacy>, PortableSpaceSubscriptionSyncResult>,
+    AssertExact<Awaited<typeof _syncToken>, PortableSpaceCenterCommit>,
+    AssertExact<Awaited<typeof _syncCenterDirect>, PortableSpaceCenterCommit>,
+    AssertExact<Awaited<typeof _addRecipient>, PortableSpaceSourcesListResponse>,
+    AssertExact<Awaited<ReturnType<PortableSpacesFacade['registerSource']>>, PortableSpaceSourceRecord>,
+    AssertExact<Awaited<ReturnType<PortableSpacesFacade['previewSubscribe']>>, PortableSpaceSubscribePreviewManifest>,
+    AssertExact<Awaited<ReturnType<PortableSpacesFacade['patchSource']>>, PortableSpacePatchSourceResult>,
+    AssertExact<Awaited<ReturnType<PortableSpacesFacade['reorderSources']>>, PortableSpaceReorderSourcesResult>,
+    AssertExact<Awaited<ReturnType<PortableSpacesFacade['previewRemoveSource']>>, PortableSpaceRemovePreviewResult>,
+    AssertExact<Awaited<ReturnType<PortableSpacesFacade['removeSource']>>, PortableSpaceRemoveSourceResponse>,
+    AssertExact<Awaited<ReturnType<PortableSpacesFacade['removeReviewedSource']>>, PortableSpaceRemoveReviewedResponse>,
+    AssertExact<Awaited<ReturnType<PortableSpacesFacade['inspect']>>, PortableSpaceInspectResult>,
+    AssertExact<Awaited<ReturnType<PortableSpacesFacade['exportSpace']>>, PortableSpaceExportReceipt>,
+    AssertExact<Awaited<ReturnType<PortableSpacesFacade['preview']>>, PortableSpacePreviewResult>,
+    AssertExact<Awaited<ReturnType<PortableSpacesFacade['apply']>>, PortableSpaceApplyReceipt>,
+    AssertExact<Awaited<ReturnType<PortableSpacesFacade['mutate']>>, PortableSpaceMutateReceipt>,
+  ] = [true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true];
+  void _checkTypes;
+}
+void _portableSpacesOverloadProbes;

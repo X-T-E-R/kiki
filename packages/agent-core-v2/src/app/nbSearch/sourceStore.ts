@@ -300,17 +300,17 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
     const records = await this.#managed.all().catch(() => undefined);
     if (records === undefined) {
       status.issues = [...new Set([...status.issues, 'MANAGED_CREDENTIALS_UNAVAILABLE'])];
-      return { env, status, managedSlots: [] };
     }
     const copy = copyNbSearchEnvironment(env);
     const injected: string[] = [];
     const managedSlots: string[] = [];
     const inheritedSlots: string[] = [];
-    for (const [slotId, entry] of Object.entries(records)) {
+    const mismatchedSlots = new Set<string>();
+    for (const [slotId, entry] of Object.entries(records ?? {})) {
       const slot = config.credential_slots[slotId];
       if (slot === undefined) continue;
       if (!managedEntryMatches(entry, config, slotId, env)) {
-        status.issues = [...new Set([...status.issues, `MANAGED_CREDENTIALS_MISMATCH:${slotId}`])];
+        mismatchedSlots.add(slotId);
         continue;
       }
       const name = nbSearchEnvironmentName(env, slot.env);
@@ -352,7 +352,11 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
         Object.defineProperty(copy, slot.env, { value: inherited, enumerable: true, configurable: true, writable: true });
         injected.push(slot.env);
         inheritedSlots.push(slotId);
+        mismatchedSlots.delete(slotId);
       }
+    }
+    if (mismatchedSlots.size > 0) {
+      status.issues = [...new Set([...status.issues, ...[...mismatchedSlots].map((slotId) => `MANAGED_CREDENTIALS_MISMATCH:${slotId}`)])];
     }
     if (injected.length > 0 && (nbSearchPaths(copy).canonical !== nbSearchPaths(env).canonical
       || nbSearchConfigRevision(resolveNbSearchConfig(copy, pinnedNbSearchConfig(config), undefined)) !== nbSearchConfigRevision(config))) {

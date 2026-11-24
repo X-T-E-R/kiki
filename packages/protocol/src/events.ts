@@ -727,6 +727,14 @@ export interface RemoteConnectionsChangedEvent {
   readonly connection_id?: string;
 }
 
+export interface PortableSpacesChangedEvent {
+  readonly type: 'event.portable_spaces.changed';
+  readonly spaceId: string;
+  readonly revision: number;
+  readonly at: number;
+  readonly reason?: 'subscribed' | 'synced' | 'updated' | 'reordered' | 'removed' | 'imported';
+}
+
 export interface PersonaChangedEvent {
   readonly type: 'event.persona.changed';
 }
@@ -1313,6 +1321,7 @@ export type AgentEvent =
   | ConfigWarningEvent
   | ModelCatalogChangedEvent
   | RemoteConnectionsChangedEvent
+  | PortableSpacesChangedEvent
   | PluginChangedEvent
   | PersonaChangedEvent
   | CapabilityChangedEvent
@@ -2027,6 +2036,17 @@ export const remoteConnectionsChangedEventSchema = remoteConnectionsChangedPaylo
   type: z.literal('event.remote_connections.changed'),
 }) satisfies z.ZodType<RemoteConnectionsChangedEvent>;
 
+export const portableSpacesChangedPayloadSchema = z.object({
+  spaceId: z.string().min(1),
+  revision: z.number().int().positive(),
+  at: z.number().int().nonnegative(),
+  reason: z.enum(['subscribed', 'synced', 'updated', 'reordered', 'removed', 'imported']).optional(),
+}).strict();
+
+export const portableSpacesChangedEventSchema = portableSpacesChangedPayloadSchema.extend({
+  type: z.literal('event.portable_spaces.changed'),
+}) satisfies z.ZodType<PortableSpacesChangedEvent>;
+
 export const pluginChangedEventSchema = z.object({
   type: z.literal('event.plugin.changed'),
 }) satisfies z.ZodType<PluginChangedEvent>;
@@ -2535,6 +2555,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   configWarningEventSchema,
   modelCatalogChangedEventSchema,
   remoteConnectionsChangedEventSchema,
+  portableSpacesChangedEventSchema,
   pluginChangedEventSchema,
   personaChangedEventSchema,
   capabilityChangedEventSchema,

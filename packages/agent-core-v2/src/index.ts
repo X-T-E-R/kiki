@@ -362,6 +362,10 @@ export * from '#/workspace/workspaceAgentProfileLoader/agentProfileWriterService
 export * from '#/workspace/workspaceAgentProfileLoader/errors';
 export * from '#/app/agentProfileCatalog/flag';
 export { parseAgentFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentFile';
+export { parseAgentRouteFileText } from '@kiki/agent-profiles/agentRouteFile';
+export { parsePersonaFileText } from '@kiki/agent-profiles/personaFile';
+export { parseFrontmatter, updateFrontmatterField } from '@kiki/agent-profiles/frontmatter';
+export { recipeManifestSchema } from '#/app/recipes/recipeParser';
 export { resolveAgentPath } from '#/workspace/workspaceAgentProfileLoader/internal/paths';
 export { discoverAgentFiles } from '#/workspace/workspaceAgentProfileLoader/internal/agentFileDiscovery';
 export { configuredAgentRoots, projectAgentRoots, userAgentRoots } from '#/workspace/workspaceAgentProfileLoader/internal/agentRoots';
@@ -989,3 +993,4 @@ export * from '#/agent/userTool/pluginToolService';
 export * from '#/app/remoteTools/remoteSpaceToolBridge';
 export * from '#/app/remoteTools/remoteSpaceToolBridgeService';
 export * from '#/agent/remoteTools/agentRemoteToolService';
+export * from '#/app/agentProfileCatalog/unboundModelHolds';

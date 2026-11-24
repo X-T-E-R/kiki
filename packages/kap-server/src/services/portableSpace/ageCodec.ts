@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import type { PortableSpaceEncryption, PortableSpaceUnlock } from '@kiki/protocol';
 
 import type { SyncService } from '../sync/syncService';
+import { portableUnlockRequired } from './subscriptionErrors';
 
 type RecipientRecord = { readonly recipient: string; readonly label?: string };
 type AgeMode = 'x25519' | 'passphrase';
@@ -32,6 +33,7 @@ export async function decodeAge(
   unlock: PortableSpaceUnlock | undefined,
   sync: SyncService,
   codecLoader: () => NativeAge = loadNativeAge,
+  readOnly = false,
 ): Promise<DecodedAge> {
   const ciphertext = dearmorAge(bytes);
   const header = inspectAge(ciphertext);
@@ -65,14 +67,23 @@ export async function decodeAge(
     if (plaintext !== undefined) return attempt.mode === 'passphrase' ? { bytes: plaintext, mode: attempt.mode, matchedPassphrase: attempt.value } : { bytes: plaintext, mode: attempt.mode };
   }
   if (header.modes.has('x25519')) {
-    const keypair = await sync.ensureDeviceKeypair().catch(() => undefined);
+    const keypair = readOnly
+      ? await sync.readExistingDeviceKeypair().catch(() => undefined)
+      : await sync.ensureDeviceKeypair().catch(() => undefined);
     const identity = keypair === undefined ? undefined : resolveInlineIdentity(keypair.identity);
     if (identity !== undefined && !seenIdentities.has(identity)) {
       const plaintext = await tryDecryptIdentity(native, ciphertext, identity);
       if (plaintext !== undefined) return { bytes: plaintext, mode: 'x25519' };
     }
   }
-  throw new Error('Unable to decrypt portable age archive');
+  if (header.modes.has('passphrase')) {
+    throw portableUnlockRequired(
+      attempts.some((attempt) => attempt.mode === 'passphrase')
+        ? 'Incorrect passphrase for encrypted Portable Space archive'
+        : 'Passphrase required to unlock encrypted Portable Space archive',
+    );
+  }
+  throw portableUnlockRequired('Unable to decrypt portable age archive with available keys');
 }
 
 /** Resolves an explicit passphrase or the KIKI_AGE_PASSPHRASE / KIKI_SPACE_PASSPHRASE environment value. */

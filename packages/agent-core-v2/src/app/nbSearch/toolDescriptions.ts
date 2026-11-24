@@ -1,14 +1,27 @@
 import type { NbSearchCapabilities } from './nbSearch';
 
+const MISMATCH_PREFIX = 'MANAGED_CREDENTIALS_MISMATCH:';
+
+export function formatManagedCredentialMismatchHint(issues: readonly string[] | undefined): string {
+  if (issues === undefined || issues.length === 0) return '';
+  const slots = issues
+    .filter((issue) => issue.startsWith(MISMATCH_PREFIX))
+    .map((issue) => issue.slice(MISMATCH_PREFIX.length))
+    .filter((slot) => slot.length > 0);
+  if (slots.length === 0) return '';
+  return `Managed credential binding mismatch for slot(s): ${slots.join(', ')} (stored gui-credentials.json fingerprint no longer matches current config/base_url). Re-save the API key in Settings -> Search & Fetch, or configure a same-origin [providers.<id>] API key.`;
+}
+
 export function describeCapabilities(capabilities: NbSearchCapabilities): { expiresAt: number; search: string; fetch: string } {
   const now = Date.now();
   const header = 'Capability snapshot (availability reflects the last successful probe, not a live provider health check). Native nb-search runtime; no Skill or CLI prerequisite.';
   const available = capabilities.config_source?.availability !== 'unavailable';
   const issues = capabilities.config_source?.issues;
   const sourceStatus = available ? '' : `Configuration source unavailable: ${issues !== undefined && issues.length > 0 ? issues.join(', ') : 'unknown configuration issue'}.`;
+  const mismatchWarning = available ? formatManagedCredentialMismatchHint(issues) : '';
   const lanes = available ? capabilities.search.lanes.filter((lane) => lane.availability === 'ready') : [];
   const defaultLane = capabilities.search.default_lane;
-  const search = [header, sourceStatus,
+  const search = [header, sourceStatus, mismatchWarning,
     defaultLane === undefined ? 'Default search lane: not configured. Select an available lane or preset explicitly.' : `Configured default search lane: ${defaultLane} (${lanes.some((lane) => lane.id === defaultLane && lane.execution_modes.includes('sync')) ? 'ready for sync' : 'unavailable for sync'}).`,
     'Explicit lane/lanes/preset selection overrides the default. Invalid or unavailable selections fail without switching providers.',
     'Available search lanes:',
@@ -17,7 +30,7 @@ export function describeCapabilities(capabilities: NbSearchCapabilities): { expi
     `Presets: ${capabilities.search.presets.map((preset) => `${preset.name} [${preset.lanes.join(', ')}] (${preset.availability}; ${preset.execution_modes.join(', ')})`).join('; ') || 'none'}.`,
     `Search limits: ${JSON.stringify(capabilities.search.limits)}.`,
   ].filter(Boolean).join('\n');
-  const fetch = [header, sourceStatus,
+  const fetch = [header, sourceStatus, mismatchWarning,
     'Configured fetch chains (default representation: markdown):',
     ...capabilities.fetch.chains.map((chain) => `- ${chain.input_kind}/${chain.representation}: ${chain.pipelines.join(' -> ')}.`),
     `Fetch inputs: ${JSON.stringify(capabilities.fetch.inputs)}.`,

@@ -183,6 +183,11 @@ import {
   resolveMainThinkingCandidate,
 } from '#/agent/profile/mainModelCandidate';
 import {
+  findBlockingUnboundModelHold,
+  formatUnboundModelHoldMessage,
+  readUnboundModelHolds,
+} from '#/app/agentProfileCatalog/unboundModelHolds';
+import {
   pinBindingAdvisory,
   roleBindingAdvisories,
   roleConstraintsFromProfile,
@@ -749,6 +754,38 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const routeModelAlias = selection.route?.lockedModelAlias;
     const canonicalRouteModelAlias =
       routeModelAlias === undefined ? undefined : this.resolveModelId(routeModelAlias);
+    if (endpoint === undefined) {
+      const holdDoc = await readUnboundModelHolds(this.documents, this.bootstrap);
+      if (persona !== undefined) {
+        const personaHold = findBlockingUnboundModelHold(
+          holdDoc,
+          'persona',
+          persona.definition.id,
+          persona.definition.modelAlias,
+          input.model,
+        );
+        if (personaHold !== undefined) {
+          throw new ProfileError(
+            ProfileErrors.codes.MODEL_NOT_CONFIGURED,
+            formatUnboundModelHoldMessage(personaHold),
+          );
+        }
+      }
+      const profileOverride = input.model ?? persona?.definition.modelAlias;
+      const profileHold = findBlockingUnboundModelHold(
+        holdDoc,
+        'profile',
+        selection.baseProfile.name,
+        routeModelAlias ?? profile.modelAlias,
+        profileOverride,
+      );
+      if (profileHold !== undefined) {
+        throw new ProfileError(
+          ProfileErrors.codes.MODEL_NOT_CONFIGURED,
+          formatUnboundModelHoldMessage(profileHold),
+        );
+      }
+    }
     const requested = resolveMainModelCandidate({
       inputModel: endpoint === undefined ? input.model : adhocEndpointModelId(endpoint),
       personaModelAlias: persona?.definition.modelAlias,

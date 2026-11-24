@@ -48,6 +48,7 @@ export type {
   HttpRestSessionArchive,
 } from './core/facade/http-rest.js';
 export type * from './core/facade/external-clients.js';
+export type * from './core/facade/portable-spaces.js';
 export { RPCError } from './core/errors.js';
 export { KlientValidationError, type ValidationPhase } from './core/validation.js';
 export {

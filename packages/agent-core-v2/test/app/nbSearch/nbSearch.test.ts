@@ -1950,4 +1950,65 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     expect(source.env['NB_SEARCH_EXA_AXON_API_KEY']).toBeUndefined();
     expect(source.env['NB_SEARCH_EXA_MISSING_API_KEY']).toBeUndefined();
   });
+
+  it('inherits same-origin provider key cleanly without stale mismatch warning when gui-credentials base_url fingerprint drifts, and surfaces zero-secret mismatch hints otherwise', async () => {
+    const storedSecret = 'sk-old-gui-secret-never-leak';
+    const staleDoc = Buffer.from(JSON.stringify({
+      schema_version: '1',
+      slots: {
+        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY', binding: 'stale-old-base-url-fingerprint', value: storedSecret },
+        'exa.standalone': { provider_id: 'exa', env: 'NB_SEARCH_EXA_STANDALONE_API_KEY', binding: 'stale-standalone-fingerprint', value: storedSecret },
+      },
+    }), 'utf8');
+    const ix = createServices(disposables, {
+      additionalServices: (reg) => {
+        reg.definePartialInstance(IHostFileSystem, new HostFileSystem());
+        reg.definePartialInstance(IFileSystemStorageService, {
+          pathFor: (_scope, key) => join(fixture, 'cache', key),
+          write: async () => undefined,
+          size: async (_scope, key) => key === 'gui-credentials.json' ? staleDoc.byteLength : undefined,
+          read: async (_scope, key) => key === 'gui-credentials.json' ? staleDoc : undefined,
+        });
+        reg.definePartialInstance(IConfigService, {
+          ready: Promise.resolve(),
+          onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
+          get: ((domain: string) => domain === 'providers'
+            ? { axon: { type: 'anthropic', baseUrl: 'https://direct.example.test/v1', apiKey: 'sk-live-axon-key' } }
+            : undefined) as IConfigService['get'],
+        });
+        reg.define(INbSearchSourceStore, NbSearchSourceStore);
+      },
+    });
+    const nbPatch = {
+      credential_slots: {
+        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY' },
+        'exa.standalone': { provider_id: 'exa', env: 'NB_SEARCH_EXA_STANDALONE_API_KEY' },
+      },
+      provider_instances: {
+        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://direct.example.test/raw/68', credential_slot_id: 'exa.axon', options: {} },
+        'exa.standalone': { provider_id: 'exa', enabled: true, base_url: 'https://other.example.test/raw/99', credential_slot_id: 'exa.standalone', options: {} },
+      },
+    } as never;
+    const store = ix.get(INbSearchSourceStore);
+    const source = await store.withSource(false, nbPatch, (value) => value);
+    expect(source.env['NB_SEARCH_EXA_AXON_API_KEY']).toBe('sk-live-axon-key');
+    expect(source.env['NB_SEARCH_EXA_STANDALONE_API_KEY']).toBeUndefined();
+    expect(source.status.issues).not.toContain('MANAGED_CREDENTIALS_MISMATCH:exa.axon');
+    expect(source.status.issues).toContain('MANAGED_CREDENTIALS_MISMATCH:exa.standalone');
+
+    const { describeCapabilities } = await import('#/app/nbSearch/toolDescriptions');
+    const described = describeCapabilities({
+      schema_version: '3.0',
+      revision: 'rev-1',
+      config_source: source.status,
+      providers: { descriptors: [], instances: [] },
+      search: { lanes: [], presets: [], limits: { max_queries: 1, max_results: 1, max_timeout_ms: 1000, max_inline_bytes: 1024 } },
+      fetch: { default_representation: 'markdown', inputs: [], chains: [], pipelines: [], limits: { max_source_bytes: 1024, max_response_bytes: 1024, max_content_chars: 1024, max_redirects: 1, max_timeout_ms: 1000, max_inline_bytes: 1024 } },
+      jobs: { result_ttl_seconds: 60, cancel_supported: true },
+    });
+    expect(described.search).toContain('exa.standalone');
+    expect(described.search).not.toContain('exa.axon');
+    expect(described.search).not.toContain(storedSecret);
+    expect(described.search).not.toContain('sk-live-axon-key');
+  });
 });

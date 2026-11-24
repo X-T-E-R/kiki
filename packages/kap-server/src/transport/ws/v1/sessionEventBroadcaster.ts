@@ -413,6 +413,36 @@ export class SessionEventBroadcaster {
     }
   }
 
+  /** Broadcasts a global Portable Spaces invalidation signal to all connected clients. */
+  publishPortableSpacesChanged(change: {
+    readonly spaceId: string;
+    readonly revision: number;
+    readonly at: number;
+    readonly reason?: 'subscribed' | 'synced' | 'updated' | 'reordered' | 'removed' | 'imported';
+  }): void {
+    const event = {
+      type: 'event.portable_spaces.changed' as const,
+      spaceId: change.spaceId,
+      revision: change.revision,
+      at: change.at,
+      ...(change.reason !== undefined ? { reason: change.reason } : {}),
+      agentId: 'main',
+      sessionId: GLOBAL_SESSION_ID,
+    };
+    const envelope: EventEnvelope = {
+      type: event.type,
+      seq: 0,
+      session_id: GLOBAL_SESSION_ID,
+      timestamp: new Date(change.at).toISOString(),
+      payload: event,
+    };
+    for (const target of this.globalTargets) {
+      try {
+        target.send(envelope, 'immediate');
+      } catch {}
+    }
+  }
+
   /** Drop a closed connection from the global fan-out set. Idempotent. */
   removeGlobalTarget(target: BroadcastTarget): void {
     this.globalTargets.delete(target);
@@ -2725,6 +2755,7 @@ export function isGlobalEvent(type: string): boolean {
     type.startsWith('event.persona.') ||
     type.startsWith('event.capability.') ||
     type.startsWith('event.model_catalog.') ||
+    type.startsWith('event.portable_spaces.') ||
     type.startsWith('event.remote_connections.')
   );
 }

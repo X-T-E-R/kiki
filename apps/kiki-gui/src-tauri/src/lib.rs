@@ -28,8 +28,18 @@ mod resource_defaults;
 use work_mode::WindowModeDescriptor;
 mod clipboard_files;
 mod plugin_focus;
+mod subscribe_intent;
 use clipboard_files::read_clipboard_file_paths;
 use desktop_log::DesktopLogLevel;
+use subscribe_intent::{
+    extract_subscribe_intents_from_args,
+    ParsedSubscribeIntent,
+    SubscribeIntent,
+    SubscribeIntentQueue,
+    SUBSCRIBE_INTENT_EVENT,
+};
+#[cfg(target_os = "macos")]
+use subscribe_intent::parse_subscribe_intent;
 include!("app_commands.rs");
 
 macro_rules! command_handlers {
@@ -2284,6 +2294,28 @@ fn ack_navigation_intent(navigation_id: String) {
 }
 
 #[tauri::command]
+fn peek_subscribe_intent(queue: State<'_, SubscribeIntentQueue>) -> Option<SubscribeIntent> {
+    queue.peek()
+}
+
+#[tauri::command]
+fn ack_subscribe_intent(queue: State<'_, SubscribeIntentQueue>, id: String) -> bool {
+    queue.ack(&id)
+}
+
+fn enqueue_subscribe_intent_and_notify(app: &AppHandle, parsed: ParsedSubscribeIntent) {
+    let queue = app.state::<SubscribeIntentQueue>();
+    match queue.enqueue(parsed) {
+        Ok(intent) => {
+            let _ = app.emit_to("main", SUBSCRIBE_INTENT_EVENT, &intent.id);
+        }
+        Err(error) => {
+            eprintln!("Kiki dropped incoming subscribe intent: {error}");
+        }
+    }
+}
+
+#[tauri::command]
 fn read_plugin_focus() -> Option<plugin_focus::PluginFocusIntent> {
     plugin_focus::pending_plugin_focus()
 }
@@ -3188,29 +3220,6 @@ fn requested_home(args: &[String]) -> Result<Option<PathBuf>, String> {
 
 const TRAY_LOGON_RETRY_LIMIT: usize = 10;
 const TRAY_LOGON_RETRY_DELAY: Duration = Duration::from_millis(1500);
-
-fn requested_subscribe_url<S: AsRef<str>>(args: &[S]) -> Option<String> {
-    for arg in args.iter().skip(1) {
-        let raw = arg.as_ref().trim();
-        let Ok(parsed) = Url::parse(raw) else { continue; };
-        if !parsed.scheme().eq_ignore_ascii_case("kiki") { continue; }
-        let host_is_subscribe = parsed.host_str().map(|host| host.eq_ignore_ascii_case("subscribe")).unwrap_or(false);
-        let path_is_subscribe = parsed.path().trim_matches('/').eq_ignore_ascii_case("subscribe");
-        if !host_is_subscribe && !path_is_subscribe { continue; }
-        for (key, value) in parsed.query_pairs() {
-            if key == "url" {
-                let candidate = value.trim();
-                let Ok(target) = Url::parse(candidate) else { continue; };
-                let allowed = target.scheme() == "https"
-                    || (target.scheme() == "http" && matches!(target.host_str(), Some("localhost" | "127.0.0.1" | "::1" | "[::1]")));
-                if allowed {
-                    return Some(target.to_string());
-                }
-            }
-        }
-    }
-    None
-}
 
 fn is_background_launch_args<S: AsRef<str>>(args: &[S]) -> bool {
     let mut index = 1;
@@ -4365,25 +4374,25 @@ pub fn run() {
             if result < 0 { eprintln!("Kiki could not set the work mode taskbar identity: 0x{:x}", result); }
         }
     }
-    let initial_subscribe_url = requested_subscribe_url(&launch_args);
-    let mut window_mode_script = format!("window.__KIKI_WINDOW_MODE__ = {};", serde_json::to_string(&window_mode).expect("window mode is serializable"));
-    if let Some(subscribe_url) = initial_subscribe_url {
-        window_mode_script.push_str(&format!(
-            "\nwindow.__KIKI_SUBSCRIBE_URL__ = {};",
-            serde_json::to_string(&subscribe_url).expect("subscribe url is serializable")
-        ));
+    let subscribe_intent_queue = SubscribeIntentQueue::default();
+    for intent in extract_subscribe_intents_from_args(&launch_args) {
+        if let Err(error) = subscribe_intent_queue.enqueue(intent) {
+            eprintln!("Kiki dropped cold-launch subscribe intent: {error}");
+        }
     }
+    let window_mode_script = format!("window.__KIKI_WINDOW_MODE__ = {};", serde_json::to_string(&window_mode).expect("window mode is serializable"));
     let preset_window = selected_preset.is_some();
 
     let app = tauri::Builder::default()
         .manage(window_mode)
+        .manage(subscribe_intent_queue)
         // Register first so a second launch focuses the original window
         // without starting another backend, unless the second launch was
         // requested in background/tray mode.
         .plugin(tauri_plugin_single_instance::init(move |app, args, _cwd| {
             let quiet_background = is_background_launch_args(&args);
-            if let Some(subscribe_url) = requested_subscribe_url(&args) {
-                let _ = app.emit_to("main", "kiki://subscribe-url", subscribe_url);
+            for intent in extract_subscribe_intents_from_args(&args) {
+                enqueue_subscribe_intent_and_notify(app, intent);
             }
             if !quiet_background {
                 if let Ok(Some(home)) = requested_home(&args).map(|home| if preset_window { None } else { home }) {
@@ -4515,6 +4524,10 @@ pub fn run() {
                 .map_err(std::io::Error::other)?;
             #[cfg(windows)]
             disable_browser_accelerator_keys(&main_window).map_err(std::io::Error::other)?;
+            #[cfg(target_os = "linux")]
+            tauri::async_runtime::spawn_blocking(
+                subscribe_intent::ensure_linux_appimage_desktop_registration,
+            );
             match build_tray(app.handle()) {
                 Ok(()) => { tray_created.store(true, Ordering::SeqCst); }
                 Err(error) => {
@@ -4641,6 +4654,19 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         if let RunEvent::Reopen { .. } = &event {
             let _ = show_main_window(app_handle.clone());
+        }
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Opened { urls } = &event {
+            let mut opened_any = false;
+            for url in urls {
+                if let Ok(Some(parsed)) = parse_subscribe_intent(url.as_str()) {
+                    enqueue_subscribe_intent_and_notify(app_handle, parsed);
+                    opened_any = true;
+                }
+            }
+            if opened_any {
+                let _ = show_main_window(app_handle.clone());
+            }
         }
         // A macOS status item opens its menu on mouse-down and reports both
         // button states, so raising the window there would also fire twice;
