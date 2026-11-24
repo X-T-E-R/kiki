@@ -82,18 +82,27 @@ function normalizeCapabilities(answer: unknown): CapabilityAnswer {
 }
 
 /** One provider's models, constraints and skills, on demand. */
-export function MediaCapabilityList({ provider, kinds }: { readonly provider: string; readonly kinds: readonly MediaKind[] }) {
+export function MediaCapabilityList({
+  provider,
+  kinds,
+  resolveProvider,
+}: {
+  readonly provider: string;
+  readonly kinds: readonly MediaKind[];
+  readonly resolveProvider?: (kind: MediaKind) => string;
+}) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const [kind, setKind] = useState<MediaKind>(kinds[0] ?? 'image');
   const [asked, setAsked] = useState(false);
+  const targetProvider = resolveProvider === undefined ? provider : resolveProvider(kind);
 
   const query = useQuery({
-    queryKey: mediaKeys.capabilities(provider, '', kind),
+    queryKey: mediaKeys.capabilities(targetProvider, '', kind),
     queryFn: async (): Promise<CapabilityAnswer> => {
       const api = mediaApi(client);
       if (api === undefined) throw new Error('media domain unavailable');
-      return normalizeCapabilities(await api.capabilities({ provider, kind }));
+      return normalizeCapabilities(await api.capabilities({ provider: targetProvider, kind }));
     },
     enabled: asked,
     retry: false,

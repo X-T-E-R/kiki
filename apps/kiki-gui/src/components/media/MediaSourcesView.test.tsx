@@ -140,7 +140,7 @@ const client = {
           backend.sources = backend.sources.map((item, at) => (at === index ? next : item));
           return structuredClone(next);
         },
-        addScriptSource: async (input: { id: string; label: string; kinds: readonly ('image' | 'video' | 'tts')[]; command: string; args?: string[]; cwd?: string; protocol?: 'file' | 'json'; format?: string; mime?: string; environment?: Record<string, string> }) => {
+        addScriptSource: async (input: { id: string; label: string; kinds: readonly ('image' | 'video' | 'tts' | '3d')[]; command: string; args?: string[]; cwd?: string; protocol?: 'file' | 'json'; format?: string; mime?: string; environment?: Record<string, string> }) => {
           backend.adds.push(structuredClone(input));
           await wait(backend.delays.add ?? 0);
           if (backend.refusals.add) throw new Error('Script source id already exists');
@@ -172,7 +172,20 @@ const client = {
   // why reading values back instead of awaiting the write looked like proof
   // of success.
   getPluginSettings: async (pluginId: string) => (pluginId === PACKAGE
-    ? { schema: { schema: { properties: {} } }, values: { ...backend.settings }, secretsConfigured: [] }
+    ? {
+      schema: {
+        schema: {
+          properties: {
+            defaultImageProvider: { type: 'string' },
+            defaultVideoProvider: { type: 'string' },
+            defaultTtsProvider: { type: 'string' },
+            default3dProvider: { type: 'string' },
+          },
+        },
+      },
+      values: { ...backend.settings },
+      secretsConfigured: [],
+    }
     : { schema: { schema: { properties: {} } }, values: {}, secretsConfigured: [] }),
   setPluginSettings: vi.fn(async (pluginId: string, values: Record<string, string | number | boolean | null>) => {
     await wait(backend.delays.defaults ?? 0);
@@ -182,7 +195,20 @@ const client = {
       else backend.settings[key] = value;
     }
     // The host's own echo of the whole settings document, not of the patch.
-    return { schema: { schema: { properties: {} } }, values: { ...backend.settings }, secretsConfigured: [] };
+    return {
+      schema: {
+        schema: {
+          properties: {
+            defaultImageProvider: { type: 'string' },
+            defaultVideoProvider: { type: 'string' },
+            defaultTtsProvider: { type: 'string' },
+            default3dProvider: { type: 'string' },
+          },
+        },
+      },
+      values: { ...backend.settings },
+      secretsConfigured: [],
+    };
   }),
   listProviders: async () => ({ items: [] }),
   meta: async () => ({ experimental_flags: {} }),
@@ -675,5 +701,53 @@ describe('media sources on a unified package', () => {
     expect((q('[data-media-setting="baseUrl"] input') as HTMLInputElement).value).toBe('https://typed.example.test/v1');
     await click('[data-media-source-settings] [data-settings-draft] button');
     expect(backend.updates[0]?.values).toEqual({ baseUrl: 'https://typed.example.test/v1' });
+  });
+
+  it('shows the 3D filter band and writes default3dProvider using the concrete 3D adapter id without disturbing other defaults', async () => {
+    backend.sources = [
+      ...backend.sources,
+      managed('tripo', 'Tripo 3D', {
+        definitions: [{ schemaVersion: 1, id: 'tripo-3d', kinds: ['3d'], label: 'Tripo 3D', resumeVersion: 1 }],
+        secretsConfigured: ['apiKey'],
+        missing: [],
+      }),
+    ];
+    await mount();
+    expect(q('[data-media-filter="3d"]')).not.toBeNull();
+    await openSource('kiki-media/tripo');
+    await pressDefault('3d');
+    expect(backend.settings['default3dProvider']).toBe(`${PACKAGE}/tripo-3d`);
+    expect(backend.settings['defaultImageProvider']).toBe(`${PACKAGE}/alpha`);
+    expect(q('[data-media-default="3d"]')?.getAttribute('data-media-default-on')).toBe('true');
+  });
+
+  it('hides the 3D default switch when the defaults owner schema does not declare default3dProvider', async () => {
+    query.setQueryData(['plugin-settings', PACKAGE], {
+      schema: { schema: { properties: { defaultImageProvider: { type: 'string' } } } },
+      values: { ...backend.settings },
+      secretsConfigured: [],
+    });
+    backend.sources = [
+      ...backend.sources,
+      managed('tripo', 'Tripo 3D', {
+        definitions: [{ schemaVersion: 1, id: 'tripo-3d', kinds: ['3d'], label: 'Tripo 3D', resumeVersion: 1 }],
+        secretsConfigured: ['apiKey'],
+        missing: [],
+      }),
+    ];
+    await mount();
+    await openSource('kiki-media/tripo');
+    expect(q('[data-media-default="3d"]')).toBeNull();
+  });
+
+  it('hides all default switches when the defaults owner returns no schema', async () => {
+    query.setQueryData(['plugin-settings', PACKAGE], {
+      schema: undefined,
+      values: { ...backend.settings },
+      secretsConfigured: [],
+    });
+    await mount();
+    await openSource('kiki-media/alpha');
+    expect(q('[data-media-source-defaults]')).toBeNull();
   });
 });

@@ -44,7 +44,7 @@ import { EmptyNote, QUIET_BUTTON, SearchField, StatusDot, Tag } from '../capabil
 import { MediaKindGlyph } from './MediaKindGlyph';
 
 /** The band's own wording; a modality filter and a state filter read differently. */
-const MODALITY_FILTERS: ReadonlySet<MediaSourceFilter> = new Set(['image', 'video', 'tts']);
+const MODALITY_FILTERS: ReadonlySet<MediaSourceFilter> = new Set(['image', 'video', 'tts', '3d']);
 
 /** One row's height, and the reason the list can window at all. */
 const ROW_HEIGHT = 44;
@@ -283,7 +283,7 @@ function FilterRail({
           >
             {/* Only a modality filter carries a drawn mark; a state filter is
                 about the row, not the medium, and a glyph there would lie. */}
-            {band.id === 'image' || band.id === 'video' ? <MediaKindGlyph kind={band.id} className="h-3.5 w-3.5" /> : null}
+            {band.id === 'image' || band.id === 'video' || band.id === '3d' ? <MediaKindGlyph kind={band.id} className="h-3.5 w-3.5" /> : null}
             {label}
             <span className="font-mono text-[11px] tabular-nums text-ink-faint">{band.count}</span>
           </button>

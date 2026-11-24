@@ -1,3 +1,4 @@
+import type { MediaKind } from '@kiki/protocol';
 import { createDecorator } from '#/_base/di/instantiation';
 import { Service } from '#/_base/di/service';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -199,6 +200,8 @@ const MEDIA_TITLE_ZH: Readonly<Record<string, string>> = {
   'Default video provider': '默认视频来源',
   'Default speech provider': '默认语音来源',
   'Default TTS provider': '默认语音来源',
+  'Default 3D provider': '默认 3D 来源',
+  'Default 3d provider': '默认 3D 来源',
   'Connection ID': 'Kiki 连接（可选）',
   'Kiki connection (optional)': 'Kiki 连接（可选）',
   'Kiki Google connection (optional)': 'Kiki Google 连接（可选）',
@@ -222,6 +225,7 @@ const MEDIA_TITLE_ZH: Readonly<Record<string, string>> = {
   'Default image model': '默认图像模型',
   'Default video model': '默认视频模型',
   'Default speech model': '默认语音模型',
+  'Default 3D model': '默认 3D 模型',
   'Default Veo model': '默认 Veo 模型',
   'Default Seedream model': '默认 Seedream 模型',
   'Seedance 2.0 model or endpoint ID': 'Seedance 2.0 模型或端点 ID',
@@ -253,10 +257,11 @@ function mergeZhLocalization(
 function enrichMediaProperties(extension: PluginExtension, raw: PropertyMap): Record<string, Property> {
   const properties: Record<string, Property> = { ...raw };
   if (extension.mediaProviders !== undefined) {
-    const defaults: ReadonlyArray<readonly [string, 'image' | 'video' | 'tts', string]> = [
+    const defaults: ReadonlyArray<readonly [string, MediaKind, string]> = [
       ['defaultImageProvider', 'image', '默认图像来源'],
       ['defaultVideoProvider', 'video', '默认视频来源'],
       ['defaultTtsProvider', 'tts', '默认语音来源'],
+      ['default3dProvider', '3d', '默认 3D 来源'],
     ];
     for (const [key, kind, zhTitle] of defaults) {
       const prop = properties[key];

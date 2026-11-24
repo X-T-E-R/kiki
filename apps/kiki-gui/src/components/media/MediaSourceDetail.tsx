@@ -28,6 +28,7 @@ import { useI18n, type Locale } from '../../i18n';
 import {
   currentDefault,
   mediaSourceStatus,
+  providerForKind,
   statusKey,
   useMediaDefaultUpdate,
   useMediaSourceSettings,
@@ -66,6 +67,7 @@ export function MediaSourceDetail({
   providers,
   onBack,
   onOpenPlugin,
+  writableDefaults,
 }: {
   readonly entry: MediaSourceEntry;
   /** The whole list, so a default can be taken from whichever source held it. */
@@ -73,6 +75,8 @@ export function MediaSourceDetail({
   readonly onBack: () => void;
   /** Open this source's package on the ordinary plugin detail. */
   readonly onOpenPlugin?: (pluginId: string) => void;
+  /** Modalities whose default key is writable on the media defaults owner. */
+  readonly writableDefaults?: ReadonlySet<MediaKind>;
 }) {
   const { client } = useConnection();
   const { t, tp, locale } = useI18n();
@@ -107,13 +111,15 @@ export function MediaSourceDetail({
    * reload and no second fetch. Only a refusal leaves the badge where it was,
    * and it says why.
    */
+  const defaultKinds = entry.kinds.filter((kind) => writableDefaults === undefined || writableDefaults.has(kind));
+
   const setDefault = async (kind: MediaKind, makeDefault: boolean) => {
     setDefaultsError(null);
     // The outcome is returned rather than read back off the hook afterwards:
     // a value read from a closure after an `await` is not necessarily the one
     // this click produced, and a refused default that prints nothing is the
     // same as a default that silently did not take.
-    const outcome = await defaults.update(kind, makeDefault ? entry.provider : undefined);
+    const outcome = await defaults.update(kind, makeDefault ? providerForKind(entry, kind) : undefined);
     if (!outcome.ok) setDefaultsError(errorText(locale, outcome.error));
   };
 
@@ -192,11 +198,12 @@ export function MediaSourceDetail({
             <p className="mt-1 text-[12px] leading-4 text-ink-faint">{t('cap.media.detail.inUseHint')}</p>
           </div>
 
+          {defaultKinds.length > 0 ? (
           <div className="mt-5" data-media-source-defaults>
             <p className="text-[13px] font-medium text-ink">{t('cap.media.detail.defaults')}</p>
             <p className="mt-0.5 max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('cap.media.detail.defaultsHint')}</p>
             <div className="mt-2 flex flex-wrap gap-2">
-              {entry.kinds.map((kind) => {
+              {defaultKinds.map((kind) => {
                 const isDefault = currentDefault(providers, kind) === entry.provider;
                 return (
                   <button
@@ -221,6 +228,7 @@ export function MediaSourceDetail({
             </div>
             {defaultsError !== null ? <p role="alert" data-media-defaults-error className="mt-1 text-[12px] text-danger">{defaultsError}</p> : null}
           </div>
+          ) : null}
         </>
       )}
 
@@ -260,8 +268,12 @@ export function MediaSourceDetail({
             )
           )}
 
-          <MediaCapabilityList provider={entry.provider} kinds={entry.kinds} />
-          {entry.kinds.includes('tts') ? <MediaVoicePicker provider={entry.provider} /> : null}
+          <MediaCapabilityList
+            provider={entry.provider}
+            kinds={entry.kinds}
+            resolveProvider={(kind) => providerForKind(entry, kind)}
+          />
+          {entry.kinds.includes('tts') ? <MediaVoicePicker provider={providerForKind(entry, 'tts')} /> : null}
         </div>
       )}
 

@@ -180,7 +180,7 @@ describe('media provider persisted vertical slice', () => {
   it('installs a real script provider, discovers on demand, publishes original file_id and avoids duplicate submissions', async () => {
     const { target, service, storage } = await configured();
     expect(await service.providers()).toMatchObject([{ provider: 'fixture-media/synthetic' }]);
-    expect(await service.capabilities({ provider: 'fixture-media/synthetic' })).toMatchObject({ models: [{ id: 'synthetic-image' }, { id: 'synthetic-video' }, { id: 'synthetic-tts' }] });
+    expect(await service.capabilities({ provider: 'fixture-media/synthetic' })).toMatchObject({ models: [{ id: 'synthetic-image' }, { id: 'synthetic-video' }, { id: 'synthetic-tts' }, { id: 'synthetic-3d' }] });
     expect(await service.voices({ provider: 'fixture-media/synthetic' })).toMatchObject({ voices: [{ id: 'test-voice' }] });
     const job = await start(service, 'image-1', 'sync');
     const progress = vi.fn();
@@ -557,6 +557,125 @@ describe('media provider persisted vertical slice', () => {
     expect(JSON.parse(output.output as string)).toMatchObject({ type: 'media_generation', job: { state: 'succeeded' } });
     expect(await hosts.list()).toMatchObject([{ pluginId: 'kiki-media', definition: { name: 'generate', disclosure: 'inline' } }, { pluginId: 'kiki-media', definition: { name: 'media', disclosure: 'deferred' } }]);
   });
+
+  it('supports kind 3d capability discovery, text/image inputs, connection resolution, glb+preview artifacts, and default3dProvider routing', async () => {
+    const target = host({ 'tripo-conn': { type: 'openai', baseUrl: 'https://tripo.example.test/v1', apiKey: 'tripo-secret' } });
+    await install(target, fixture);
+    await target.app.accessor.get(IPluginSettingsService).update({ pluginId: 'fixture-media', values: { remoteDir: remote, connectionId: 'tripo-conn' } });
+    const service = target.app.accessor.get(IPluginMediaService);
+    const storage = stores.at(-1)!;
+
+    expect(await service.capabilities({ kind: '3d' })).toMatchObject({ providers: [{ provider: 'fixture-media/synthetic', definition: { kinds: ['image', 'video', 'tts', '3d'] } }] });
+    expect(await service.capabilities({ provider: 'fixture-media/synthetic', kind: '3d' })).toMatchObject({ models: [{ id: 'synthetic-3d', kind: '3d' }] });
+
+    const textJob = await service.start({ request_id: 'mesh-text-1', request: { kind: '3d', prompt: 'ceramic teapot', format: 'glb' } }, owner);
+    expect(textJob.effective).toMatchObject({ kind: '3d' });
+    expect('kind' in textJob).toBe(false);
+    const textResult = await service.run(textJob.job_id);
+    expect(textResult).toMatchObject({
+      effective: { kind: '3d' },
+      state: 'succeeded',
+      artifacts: [
+        { name: 'model.glb', mime: 'model/gltf-binary', kind: 'file', role: 'original', complete: true, file_id: expect.stringMatching(/^f_media-/) },
+        { name: 'model.preview.png', mime: 'image/png', kind: 'image', role: 'preview', complete: true, file_id: expect.stringMatching(/^f_media-/) },
+      ],
+    });
+    const media = new ScopedMediaStore(owner.mediaScope, storage, target.app.accessor.get(IAtomicDocumentStore));
+    const glbFile = await media.open(textResult.artifacts[0]!.file_id);
+    expect(glbFile?.mediaType).toBe('model/gltf-binary');
+    const previewFile = await media.open(textResult.artifacts[1]!.file_id);
+    expect(previewFile?.mediaType).toBe('image/png');
+
+    for (const [format, expectedMime] of [['gltf', 'model/gltf+json'], ['obj', 'model/obj'], ['stl', 'model/stl']] as const) {
+      const formatJob = await service.start({ request_id: `mesh-fmt-${format}`, request: { kind: '3d', prompt: `format ${format}`, format } }, owner);
+      const formatResult = await service.run(formatJob.job_id);
+      expect(formatResult.artifacts[0]).toMatchObject({ name: `model.${format}`, mime: expectedMime, kind: 'file', role: 'original' });
+      expect((await media.open(formatResult.artifacts[0]!.file_id))?.mediaType).toBe(expectedMime);
+    }
+
+    const refImage = path.join(root, 'chair-ref.png');
+    await writeFile(refImage, 'chair-reference-bytes');
+    const imgJob = await service.start({ request_id: 'mesh-img-1', request: { kind: '3d', images: [{ path: refImage }, { url: 'https://fixture.invalid/side.png' }], format: 'usdz' } }, owner);
+    const imgResult = await service.run(imgJob.job_id);
+    expect(imgResult.artifacts[0]).toMatchObject({ name: 'model.usdz', mime: 'model/vnd.usdz+zip', kind: 'file', role: 'original' });
+    expect((await media.open(imgResult.artifacts[0]!.file_id))?.mediaType).toBe('model/vnd.usdz+zip');
+    expect((await readFile(path.join(remote, 'inputs.log'), 'utf8')).trim()).toBe('chair-reference-bytes|https://fixture.invalid/side.png');
+
+    const connStaging = path.join(root, 'conn-3d');
+    await mkdir(connStaging);
+    await target.app.accessor.get(IPluginHostService).requestMediaProvider('fixture-media/synthetic', 'submit', { request: { kind: '3d', prompt: 'connection' } }, new AbortController().signal, { jobId: 'conn-3d-job', stagingDir: connStaging, owner });
+    const connPayload = JSON.parse(await readFile(path.join(connStaging, 'connection.json'), 'utf8'));
+    expect(connPayload.connection).toMatchObject({ id: 'tripo-conn', baseUrl: 'https://tripo.example.test/v1', headers: { authorization: 'Bearer tripo-secret' } });
+
+    const second3dDir = path.join(root, 'kiki-media-3d-router');
+    await mkdir(second3dDir);
+    await writeFile(path.join(second3dDir, 'kimi.plugin.json'), JSON.stringify({
+      name: 'kiki-media',
+      version: '0.1.0',
+      'x-kiki': {
+        engines: { kiki: '>=0.4.0' },
+        entry: './entry.mjs',
+        permissions: { fs: 'outside' },
+        mediaSources: [{ id: 'cloud', label: 'Cloud Media', providerIds: ['cloud-image', 'cloud-3d'], settingsPrefix: 'cloud__', required: [] }],
+        mediaProviders: [
+          { schemaVersion: 1, id: 'cloud-image', label: 'Cloud Image', kinds: ['image'], resumeVersion: 1 },
+          { schemaVersion: 1, id: 'cloud-3d', label: 'Cloud 3D', kinds: ['3d'], resumeVersion: 1 },
+        ],
+        settings: {
+          schemaVersion: 1,
+          schema: {
+            type: 'object',
+            properties: {
+              default3dProvider: { type: 'string', title: 'Default 3D provider' },
+            },
+          },
+        },
+      },
+    }));
+    await writeFile(path.join(second3dDir, 'entry.mjs'), [
+      "import { writeFile } from 'node:fs/promises';",
+      "import path from 'node:path';",
+      "export function register(api) {",
+      "  api.registerMediaProvider({ schemaVersion: 1, id: 'cloud-image', kinds: ['image'], label: 'Cloud Image', resumeVersion: 1 }, {",
+      "    async describe() { return { models: [{ id: 'cloud-img-v1', kind: 'image' }] }; },",
+      "    async submit(_input, ctx) {",
+      "      const out = path.join(ctx.stagingDir, 'img.png');",
+      "      await writeFile(out, Buffer.from('img'));",
+      "      return { state: 'complete', artifacts: [{ path: out, name: 'img.png', mime: 'image/png', kind: 'image', role: 'original', complete: true }] };",
+      "    },",
+      "  });",
+      "  api.registerMediaProvider({ schemaVersion: 1, id: 'cloud-3d', kinds: ['3d'], label: 'Cloud 3D', resumeVersion: 1 }, {",
+      "    async describe() { return { models: [{ id: 'cloud-3d-v2', kind: '3d' }] }; },",
+      "    async submit(_input, ctx) {",
+      "      const out = path.join(ctx.stagingDir, 'cloud.glb');",
+      "      await writeFile(out, Buffer.from('cloud-glb'));",
+      "      return { state: 'complete', artifacts: [{ path: out, name: 'cloud.glb', mime: 'model/gltf-binary', kind: 'file', role: 'original', complete: true }] };",
+      "    },",
+      "  });",
+      "}",
+    ].join('\n'));
+    await install(target, second3dDir);
+
+    await expect(service.start({ request_id: 'mesh-ambiguous', request: { kind: '3d', prompt: 'ambiguous' } }, owner)).rejects.toThrow('Choose one configured media provider for 3d');
+
+    expect(await service.capabilities({ provider: 'kiki-media/cloud-image', kind: '3d' })).toMatchObject({ models: [{ id: 'cloud-3d-v2', kind: '3d' }] });
+    await expect(service.capabilities({ provider: 'kiki-media/cloud-image', kind: 'video' })).rejects.toThrow('does not support video');
+
+    await target.app.accessor.get(IPluginSettingsService).update({ pluginId: 'kiki-media', values: { default3dProvider: 'kiki-media/cloud-image' } });
+    const routedGroupRep = await service.start({ request_id: 'mesh-default-group', request: { kind: '3d', prompt: 'routed via group rep' } }, owner);
+    expect(routedGroupRep.provider).toBe('kiki-media/cloud-3d');
+
+    await target.app.accessor.get(IPluginSettingsService).update({ pluginId: 'kiki-media', values: { default3dProvider: 'cloud-3d' } });
+    const routedShort = await service.start({ request_id: 'mesh-default-short', request: { kind: '3d', prompt: 'routed short' } }, owner);
+    expect(routedShort.provider).toBe('kiki-media/cloud-3d');
+
+    await target.app.accessor.get(IPluginSettingsService).update({ pluginId: 'kiki-media', values: { default3dProvider: 'fixture-media/synthetic' } });
+    const routedFull = await service.start({ request_id: 'mesh-default-full', request: { kind: '3d', prompt: 'routed full' } }, owner);
+    expect(routedFull.provider).toBe('fixture-media/synthetic');
+
+    await target.app.accessor.get(IPluginSettingsService).update({ pluginId: 'kiki-media', values: { default3dProvider: 'kiki-media/deleted-3d' } });
+    await expect(service.start({ request_id: 'mesh-default-stale', request: { kind: '3d', prompt: 'stale default' } }, owner)).rejects.toThrow('kiki-media/deleted-3d');
+  }, 20_000);
 });
 
 describe('managed sources carry the package\'s own field text', () => {

@@ -15,5 +15,6 @@ export const IAgentPluginMediaService = createDecorator<IAgentPluginMediaService
 export function mediaInputRefs(request: MediaRequest): MediaInputRef[] {
   if (request.kind === 'image') return [...request.images ?? [], ...request.mask === undefined ? [] : [request.mask]];
   if (request.kind === 'video') return request.inputs?.map((item) => item.ref) ?? [];
+  if (request.kind === '3d') return [...request.images ?? []];
   return [];
 }

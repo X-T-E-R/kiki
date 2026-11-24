@@ -37,7 +37,7 @@ import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { SettingsSelect } from '../settings/SettingsPrimitives';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 
-const MEDIA_KINDS = ['image', 'video', 'tts'] as const;
+const MEDIA_KINDS = ['image', 'video', 'tts', '3d'] as const;
 
 /** The id the host will accept, as a check the reader can see and fix. */
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,47}$/;

@@ -65,9 +65,18 @@ export const AUDIO_MIME_BY_SUFFIX: Readonly<Record<string, string>> = Object.fre
   '.wma': 'audio/x-ms-wma',
 });
 
+export const MODEL_3D_MIME_BY_SUFFIX: Readonly<Record<string, string>> = Object.freeze({
+  '.glb': 'model/gltf-binary',
+  '.gltf': 'model/gltf+json',
+  '.usdz': 'model/vnd.usdz+zip',
+  '.obj': 'model/obj',
+  '.stl': 'model/stl',
+});
+
 const IMAGE_EXT_BY_MIME = invertMimeBySuffix(IMAGE_MIME_BY_SUFFIX);
 const VIDEO_EXT_BY_MIME = invertMimeBySuffix(VIDEO_MIME_BY_SUFFIX);
 const AUDIO_EXT_BY_MIME = invertMimeBySuffix(AUDIO_MIME_BY_SUFFIX);
+const MODEL_3D_EXT_BY_MIME = invertMimeBySuffix(MODEL_3D_MIME_BY_SUFFIX);
 
 function invertMimeBySuffix(table: Readonly<Record<string, string>>): Readonly<Record<string, string>> {
   const out: Record<string, string> = {};
@@ -80,7 +89,7 @@ function invertMimeBySuffix(table: Readonly<Record<string, string>>): Readonly<R
 export function mediaExtensionForMime(mimeType: string): string | undefined {
   const semi = mimeType.indexOf(';');
   const base = (semi === -1 ? mimeType : mimeType.slice(0, semi)).trim().toLowerCase();
-  return VIDEO_EXT_BY_MIME[base] ?? IMAGE_EXT_BY_MIME[base] ?? AUDIO_EXT_BY_MIME[base];
+  return VIDEO_EXT_BY_MIME[base] ?? IMAGE_EXT_BY_MIME[base] ?? AUDIO_EXT_BY_MIME[base] ?? MODEL_3D_EXT_BY_MIME[base];
 }
 
 function mediaSuffix(path: string): string {

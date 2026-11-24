@@ -92,6 +92,7 @@ export function artifactFacts(artifact: MediaArtifact): string {
 export function isProvenPreviewOf(preview: MediaArtifact, original: MediaArtifact): boolean {
   if (preview.role !== 'preview') return false;
   if (original.role !== 'original' || original.complete !== true) return false;
+  if (original.kind === 'file' && preview.kind === 'image') return false;
   if (preview.file_id !== '' && preview.file_id === original.file_id) return true;
   return metadataMatches(preview.metadata, ['original_id', 'originalId', 'parent_id', 'parentId'], original.id)
     || metadataMatches(preview.metadata, ['original_file_id', 'originalFileId'], original.file_id)
@@ -222,6 +223,11 @@ function MediaArtifactRow({
   );
 }
 
+function is3dModelFile(item: MediaRef): boolean {
+  if (item.mime?.toLowerCase().startsWith('model/')) return true;
+  return item.name !== undefined && /\.(?:glb|gltf|usdz|obj|stl)$/i.test(item.name);
+}
+
 /**
  * A file chip for a non-picture artifact. Uses the display name in its tooltip
  * (never the internal `file_id`) and binds the shared `resourceActions` menu.
@@ -237,7 +243,7 @@ function FileChip({ item, sessionId }: { readonly item: MediaRef; readonly sessi
   }`;
   const body = (
     <>
-      <MediaKindGlyph kind="file" className="h-3.5 w-3.5 text-ink-faint" />
+      <MediaKindGlyph kind={is3dModelFile(item) ? '3d' : 'file'} className="h-3.5 w-3.5 text-ink-faint" />
       <span className="min-w-0 truncate font-mono text-[12px] text-ink">{label}</span>
     </>
   );

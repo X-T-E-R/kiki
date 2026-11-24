@@ -611,7 +611,7 @@ export interface MediaSourceFilterBand {
   readonly count: number;
 }
 
-const FILTER_ORDER: readonly MediaSourceFilter[] = ['all', 'image', 'video', 'tts', 'ready', 'needs-config', 'off', 'removed', 'blocked', 'error'];
+const FILTER_ORDER: readonly MediaSourceFilter[] = ['all', 'image', 'video', 'tts', '3d', 'ready', 'needs-config', 'off', 'removed', 'blocked', 'error'];
 
 /** Whether a source belongs in a band. A multi-kind source counts in each. */
 export function matchesFilter(entry: MediaSourceEntry, filter: MediaSourceFilter, blocked = false): boolean {
@@ -748,7 +748,7 @@ export function composeMediaSources(
         secretsConfigured: source.secretsConfigured,
         missing: source.missing,
       },
-      defaultFor: (Object.keys(defaults) as MediaKind[]).filter((kind) => defaults[kind] === source.provider),
+      defaultFor: (Object.keys(defaults) as MediaKind[]).filter((kind) => matchesDefault(source, defaults[kind], kind)),
       source,
     };
   });
@@ -773,9 +773,9 @@ export function currentDefault(
  * Where the per-modality defaults live — confirmed against the landed entry
  * package.
  *
- * They are three non-secret scalars on the media entry plugin
+ * They are four non-secret scalars on the media entry plugin
  * (`kiki-media`): `defaultImageProvider`, `defaultVideoProvider`,
- * `defaultTtsProvider`. Ordinary plugin settings, read and written through
+ * `defaultTtsProvider`, `default3dProvider`. Ordinary plugin settings, read and written through
  * the same per-key route as everything else a plugin configures, with the same
  * echo — so there is no separate defaults store, and no local copy that could
  * disagree with what the host stored.
@@ -854,8 +854,8 @@ export function defaultSettingKey(kind: MediaKind): string {
   return `default${kind[0]!.toUpperCase()}${kind.slice(1)}Provider`;
 }
 
-/** The three keys, in the order a reader meets them. */
-export const MEDIA_DEFAULT_KEYS: readonly MediaKind[] = ['image', 'video', 'tts'];
+/** The four keys, in the order a reader meets them. */
+export const MEDIA_DEFAULT_KEYS: readonly MediaKind[] = ['image', 'video', 'tts', '3d'];
 
 /**
  * The patch that hands one modality's default to `provider`, or clears it.
@@ -867,6 +867,48 @@ export function defaultPatch(
   provider: string | undefined,
 ): { readonly [key: string]: string | null } {
   return { [defaultSettingKey(kind)]: provider ?? null };
+}
+
+/** Resolve the concrete adapter provider ID for one modality of a managed source. */
+export function providerForKind(
+  source: { readonly provider: string; readonly pluginId: string; readonly definitions: readonly { readonly id: string; readonly kinds: readonly MediaKind[] }[] },
+  kind: MediaKind,
+): string {
+  const matched = source.definitions.find((definition) => definition.kinds.includes(kind));
+  return matched === undefined ? source.provider : `${source.pluginId}/${matched.id}`;
+}
+
+function matchesDefault(source: MediaManagedSource, value: string | undefined, kind: MediaKind): boolean {
+  if (value === undefined) return false;
+  if (value === source.provider) return true;
+  if (value === providerForKind(source, kind)) return true;
+  if (source.pluginId === MEDIA_DEFAULTS_PLUGIN_ID && !value.includes('/')) {
+    return source.definitions.some((definition) => definition.kinds.includes(kind) && definition.id === value);
+  }
+  return false;
+}
+
+/**
+ * Which modality defaults the installed `kiki-media` settings schema can persist.
+ * Only modalities with a declared, non-secret string `default<Kind>Provider`
+ * property are writable; absent, failed, or schema-less responses expose none.
+ */
+export function writableDefaultKinds(
+  response: { readonly schema?: unknown } | undefined,
+  failed: boolean,
+): ReadonlySet<MediaKind> {
+  if (failed || response === undefined) return new Set();
+  const outer = response.schema;
+  const inner = typeof outer === 'object' && outer !== null && 'schema' in outer ? (outer as { schema?: unknown }).schema : undefined;
+  const properties = typeof inner === 'object' && inner !== null && 'properties' in inner ? (inner as { properties?: unknown }).properties : undefined;
+  if (typeof properties !== 'object' || properties === null) return new Set();
+  const map = properties as Record<string, unknown>;
+  return new Set(MEDIA_DEFAULT_KEYS.filter((kind) => {
+    const prop = map[defaultSettingKey(kind)];
+    if (typeof prop !== 'object' || prop === null) return false;
+    const record = prop as { type?: unknown; secret?: unknown };
+    return record.type === 'string' && record.secret !== true;
+  }));
 }
 
 /**
@@ -881,6 +923,7 @@ export function defaultsFromSettings(
     image: readDefault(values?.['defaultImageProvider']),
     video: readDefault(values?.['defaultVideoProvider']),
     tts: readDefault(values?.['defaultTtsProvider']),
+    '3d': readDefault(values?.['default3dProvider']),
   };
 }
 

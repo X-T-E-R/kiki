@@ -42,13 +42,16 @@ import {
   needsConfig,
   originalArtifacts,
   outcomeIsFor,
+  providerForKind,
   visibleMediaSources,
   withSubscription,
+  writableDefaultKinds,
   cancellationNote,
   type MediaSourceEntry,
   type MediaSourceSettings,
 } from './mediaSources';
 import { artifactFacts, visibleArtifacts } from '../components/media/MediaArtifactList';
+import { jobModality } from '../components/media/MediaJobView';
 
 const HEALTHY = { enabled: true, broken: false };
 
@@ -72,7 +75,7 @@ function managed(id: string, label: string, kinds: MediaKind[], over: Partial<Me
 }
 
 function source(id: string, label: string, kinds: MediaKind[], over: Partial<MediaManagedSource> = {}): MediaSourceEntry {
-  return composeMediaSources([managed(id, label, kinds, over)], () => HEALTHY, { image: undefined, video: undefined, tts: undefined })[0]!;
+  return composeMediaSources([managed(id, label, kinds, over)], () => HEALTHY, { image: undefined, video: undefined, tts: undefined, '3d': undefined })[0]!;
 }
 
 function settings(
@@ -114,7 +117,7 @@ describe('mediaSourceStatus', () => {
     const broken = composeMediaSources(
       [managed('a', 'A', ['image'])],
       () => ({ enabled: false, broken: true, problem: 'the plugin did not load' }),
-      { image: undefined, video: undefined, tts: undefined },
+      { image: undefined, video: undefined, tts: undefined, '3d': undefined },
     )[0]!;
     expect(mediaSourceStatus(broken)).toBe('broken');
     expect(broken.problem).toBe('the plugin did not load');
@@ -174,7 +177,7 @@ describe('mediaSourceStatus', () => {
     const asDefault = composeMediaSources(
       [managed('a', 'A', ['image'], { missing: ['apiKey'] })],
       () => HEALTHY,
-      { image: 'kiki-media/a', video: undefined, tts: undefined },
+      { image: 'kiki-media/a', video: undefined, tts: undefined, '3d': undefined },
     )[0]!;
     expect(mediaSourceStatus(asDefault)).toBe('default');
     expect(mediaSourceStatus(unmet)).toBe('needs-config');
@@ -230,7 +233,7 @@ describe('search and filter', () => {
     const brokenRows = composeMediaSources(
       [managed('dead', 'Dead', ['image'])],
       () => ({ enabled: false, broken: true }),
-      { image: undefined, video: undefined, tts: undefined },
+      { image: undefined, video: undefined, tts: undefined, '3d': undefined },
     );
     const base = [...brokenRows, ...many];
     expect(visibleMediaSources(base, '', 'all', new Set())[0]?.provider).toBe('kiki-media/dead');
@@ -269,22 +272,58 @@ describe('per-modality defaults', () => {
     const sources = composeMediaSources(
       [managed('a', 'A', ['image']), managed('b', 'B', ['image'])],
       () => HEALTHY,
-      { image: 'kiki-media/b', video: undefined, tts: undefined },
+      { image: 'kiki-media/b', video: undefined, tts: undefined, '3d': undefined },
     );
     expect(currentDefault(sources, 'image')).toBe('kiki-media/b');
     expect(defaultProviderFor(sources, 'video')).toBeUndefined();
   });
 
   it('treats a blank default setting as unset rather than as a source named ""', () => {
-    expect(defaultsFromSettings({ defaultImageProvider: '   ' })).toEqual({ image: undefined, video: undefined, tts: undefined });
-    expect(defaultsFromSettings({ defaultImageProvider: 'kiki-media/a' }).image).toBe('kiki-media/a');
+    expect(defaultsFromSettings({ defaultImageProvider: '   ' })).toEqual({ image: undefined, video: undefined, tts: undefined, '3d': undefined });
+    expect(defaultsFromSettings({ defaultImageProvider: 'kiki-media/a', default3dProvider: 'kiki-media/tripo' })).toEqual({
+      image: 'kiki-media/a',
+      video: undefined,
+      tts: undefined,
+      '3d': 'kiki-media/tripo',
+    });
   });
 
   it('writes exactly one key per modality, and clears it with null', () => {
     expect(defaultSettingKey('image')).toBe('defaultImageProvider');
     expect(defaultSettingKey('tts')).toBe('defaultTtsProvider');
+    expect(defaultSettingKey('3d')).toBe('default3dProvider');
     expect(defaultPatch('video', 'kiki-media/a')).toEqual({ defaultVideoProvider: 'kiki-media/a' });
     expect(defaultPatch('video', undefined)).toEqual({ defaultVideoProvider: null });
+    expect(defaultPatch('3d', 'kiki-media/tripo')).toEqual({ default3dProvider: 'kiki-media/tripo' });
+    expect(defaultPatch('3d', undefined)).toEqual({ default3dProvider: null });
+  });
+
+  it('resolves modality adapters and matches grouped defaults across full, adapter, and bare ids', () => {
+    const grouped = managed('cloud-image', 'Cloud Media', ['image'], {
+      definitions: [
+        { schemaVersion: 1, id: 'cloud-image', kinds: ['image'], label: 'Cloud Image', resumeVersion: 1 },
+        { schemaVersion: 1, id: 'cloud-3d', kinds: ['3d'], label: 'Cloud 3D', resumeVersion: 1 },
+      ],
+    });
+    expect(providerForKind(grouped, 'image')).toBe('kiki-media/cloud-image');
+    expect(providerForKind(grouped, '3d')).toBe('kiki-media/cloud-3d');
+    expect(composeMediaSources([grouped], () => HEALTHY, { image: undefined, video: undefined, tts: undefined, '3d': 'kiki-media/cloud-3d' })[0]!.defaultFor).toEqual(['3d']);
+    expect(composeMediaSources([grouped], () => HEALTHY, { image: undefined, video: undefined, tts: undefined, '3d': 'cloud-3d' })[0]!.defaultFor).toEqual(['3d']);
+    expect(writableDefaultKinds(undefined, true)).toEqual(new Set());
+    expect(writableDefaultKinds({ schema: undefined }, false)).toEqual(new Set());
+    expect(writableDefaultKinds({ schema: { schema: { properties: {} } } }, false)).toEqual(new Set());
+    expect(writableDefaultKinds({
+      schema: {
+        schema: {
+          properties: {
+            defaultImageProvider: { type: 'string' },
+            defaultVideoProvider: { type: 'string', secret: true },
+            defaultTtsProvider: { type: 'number' },
+            default3dProvider: { type: 'string' },
+          },
+        },
+      },
+    }, false)).toEqual(new Set(['image', '3d']));
   });
 });
 
@@ -303,7 +342,7 @@ describe('composeMediaSources', () => {
         managed('comfyui', 'ComfyUI Workflow', ['image']),
       ],
       () => HEALTHY,
-      { image: undefined, video: undefined, tts: undefined },
+      { image: undefined, video: undefined, tts: undefined, '3d': undefined },
     );
     expect(rows.map((entry) => entry.displayName)).toEqual(['OpenAI Media', 'ComfyUI Workflow']);
     // One row, both modalities, both adapters — drawn from one package.
@@ -318,7 +357,7 @@ describe('composeMediaSources', () => {
     const rows = composeMediaSources(
       [managed('openai', 'OpenAI Media', ['image']), managed('comfyui', 'ComfyUI Workflow', ['image'])],
       () => HEALTHY,
-      { image: undefined, video: undefined, tts: undefined },
+      { image: undefined, video: undefined, tts: undefined, '3d': undefined },
     );
     expect(rows.map((entry) => entry.provider)).toEqual(['kiki-media/openai', 'kiki-media/comfyui']);
     expect(new Set(rows.map((entry) => entry.pluginId)).size).toBe(1);
@@ -333,7 +372,7 @@ describe('composeMediaSources', () => {
         missing: ['apiKey'],
       })],
       () => HEALTHY,
-      { image: undefined, video: undefined, tts: undefined },
+      { image: undefined, video: undefined, tts: undefined, '3d': undefined },
     );
     expect(rows[0]!.settings?.secretsConfigured).toEqual(['apiKey']);
     expect(rows[0]!.settings?.missing).toEqual(['apiKey']);
@@ -345,7 +384,7 @@ describe('composeMediaSources', () => {
     const rows = composeMediaSources(
       [managed('gone', 'Gone', ['image'])],
       () => undefined,
-      { image: undefined, video: undefined, tts: undefined },
+      { image: undefined, video: undefined, tts: undefined, '3d': undefined },
     );
     expect(rows[0]!.broken).toBe(true);
     expect(mediaSourceStatus(rows[0]!)).toBe('broken');
@@ -355,7 +394,7 @@ describe('composeMediaSources', () => {
     const rows = composeMediaSources(
       [managed('a', 'A', ['image'])],
       () => ({ enabled: false, broken: false }),
-      { image: undefined, video: undefined, tts: undefined },
+      { image: undefined, video: undefined, tts: undefined, '3d': undefined },
     );
     expect(mediaSourceStatus(rows[0]!)).toBe('broken');
   });
@@ -364,7 +403,7 @@ describe('composeMediaSources', () => {
     const rows = composeMediaSources(
       [managed('a', 'A', ['image'])],
       () => HEALTHY,
-      { image: 'kiki-media/a', video: undefined, tts: undefined },
+      { image: 'kiki-media/a', video: undefined, tts: undefined, '3d': undefined },
     );
     expect(defaultsOf(rows)).toEqual({ 'kiki-media/a': ['image'] });
   });
@@ -376,7 +415,7 @@ describe('composeMediaSources', () => {
         values: { command: 'python', args: '["render.py"]', cwd: '', protocol: 'file', format: 'png', mime: '' },
       })],
       () => HEALTHY,
-      { image: undefined, video: undefined, tts: undefined },
+      { image: undefined, video: undefined, tts: undefined, '3d': undefined },
     );
     expect(rows[0]!.custom).toBe(true);
     expect(rows[0]!.source.values['command']).toBe('python');
@@ -559,5 +598,32 @@ describe('visibleArtifacts deduplication', () => {
 
     const result = visibleArtifacts([origComplete, prevSameFile, prevSameStem, origIncomplete, prevIncomplete, prevIndependent]);
     expect(result).toEqual([origComplete, prevSameStem, origIncomplete, prevIncomplete, prevIndependent]);
+  });
+
+  it('keeps an image preview alongside a non-inline 3D file original even when metadata links them', () => {
+    const model = {
+      id: 'art-glb', file_id: 'f-glb', name: 'chair.glb', mime: 'model/gltf-binary', bytes: 8192,
+      kind: 'file' as const, role: 'original' as const, complete: true,
+      metadata: { preview_file_id: 'f-preview' },
+    };
+    const preview = {
+      id: 'art-preview', file_id: 'f-preview', name: 'chair.preview.png', mime: 'image/png', bytes: 1024,
+      kind: 'image' as const, role: 'preview' as const, complete: true,
+    };
+    expect(visibleArtifacts([model, preview])).toEqual([model, preview]);
+  });
+});
+
+describe('jobModality', () => {
+  it('prefers authoritative effective.kind even while pending or when provider id contains another modality word', () => {
+    expect(jobModality(job({ effective: { kind: '3d' }, provider: 'kiki-media/script-tripo', state: 'pending', artifacts: [] }))).toBe('3d');
+    expect(jobModality(job({ effective: { kind: '3d' }, provider: 'kiki-media/script-model-images', artifacts: [] }))).toBe('3d');
+  });
+
+  it('infers 3d from model artifacts before provider substring heuristics for historical jobs', () => {
+    expect(jobModality(job({
+      provider: 'kiki-media/script-model-images',
+      artifacts: [{ id: 'a1', file_id: 'f1', name: 'chair.glb', mime: 'model/gltf-binary', bytes: 1024, kind: 'file', role: 'original', complete: true }],
+    }))).toBe('3d');
   });
 });
