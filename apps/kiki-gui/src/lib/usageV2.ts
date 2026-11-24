@@ -54,7 +54,7 @@ export type UsageLegacyDimension = 'agent' | 'session';
 export type UsageMetric = 'cost' | 'tokens' | 'cache';
 
 export const USAGE_GROUPINGS: readonly UsageGroupBy[] = ['model', 'provider', 'profile', 'workspace'];
-export const USAGE_METRICS: readonly UsageMetric[] = ['cost', 'tokens', 'cache'];
+export const USAGE_METRICS: readonly UsageMetric[] = ['tokens', 'cost', 'cache'];
 
 /**
  * The wire dimension each GUI grouping reads. provider and profile are native
@@ -68,13 +68,83 @@ export const USAGE_GROUP_BY_DIMENSION: Readonly<Record<UsageGroupBy, UsageDimens
   workspace: 'project',
 };
 
+/** User-selectable chart granularities; legacy `five_hour` and `session` never appear in the menu. */
 export const USAGE_GRANULARITIES: readonly UsageGranularity[] = [
+  'hour',
   'day',
   'week',
   'month',
-  'session',
-  'five_hour',
 ];
+
+const DAY_MS = 86_400_000;
+
+/** Natural chart granularity derived from the selected time range. */
+export function derivedGranularityForRange(
+  range: UsageRangePreset,
+  startAt?: number,
+  endAt?: number,
+): UsageGranularity {
+  switch (range) {
+    case 'today':
+      return 'hour';
+    case 'last_7_days':
+    case 'this_week':
+    case 'this_month':
+      return 'day';
+    case 'all':
+      return 'week';
+    case 'custom': {
+      if (startAt === undefined || endAt === undefined || endAt <= startAt) return 'day';
+      const spanDays = (endAt - startAt) / DAY_MS;
+      if (spanDays <= 2) return 'hour';
+      if (spanDays <= 62) return 'day';
+      if (spanDays <= 365) return 'week';
+      return 'month';
+    }
+  }
+}
+
+/** Legal manual granularity overrides for a range (always starts with the derived value). */
+export function allowedGranularitiesForRange(
+  range: UsageRangePreset,
+  startAt?: number,
+  endAt?: number,
+): readonly UsageGranularity[] {
+  switch (range) {
+    case 'today':
+      return ['hour'];
+    case 'last_7_days':
+    case 'this_week':
+      return ['day', 'hour'];
+    case 'this_month':
+      return ['day', 'week'];
+    case 'all':
+      return ['week', 'month'];
+    case 'custom': {
+      if (startAt === undefined || endAt === undefined || endAt <= startAt) return ['day'];
+      const spanDays = (endAt - startAt) / DAY_MS;
+      if (spanDays <= 2) return ['hour'];
+      if (spanDays <= 7) return ['day', 'hour'];
+      if (spanDays <= 14) return ['day'];
+      if (spanDays <= 62) return ['day', 'week'];
+      return spanDays > 365 ? ['month', 'week'] : ['week', 'month'];
+    }
+  }
+}
+
+/** Sanitizes a URL or stored granularity against the range; rejects `five_hour`, `session`, and illegal combinations. */
+export function sanitizeGranularity(
+  raw: string | null | undefined,
+  range: UsageRangePreset,
+  startAt?: number,
+  endAt?: number,
+): UsageGranularity {
+  const allowed = allowedGranularitiesForRange(range, startAt, endAt);
+  if (typeof raw === 'string' && (allowed as readonly string[]).includes(raw)) {
+    return raw as UsageGranularity;
+  }
+  return derivedGranularityForRange(range, startAt, endAt);
+}
 export const USAGE_RANGE_PRESETS: readonly UsageRangePreset[] = [
   'today',
   'last_7_days',
@@ -129,9 +199,9 @@ export interface UsageFilters {
   readonly endAt: number | undefined;
 }
 
-/** The no-query state: local today, 5h rhythm, model grouping. */
+/** The no-query state: local today, hourly granularity, model grouping. */
 export const USAGE_FILTER_DEFAULTS: UsageFilters = {
-  granularity: 'five_hour',
+  granularity: 'hour',
   range: 'today',
   groupBy: 'model',
   advancedDimension: undefined,
@@ -162,9 +232,6 @@ export function usageFiltersHaveScope(filters: UsageFilters): boolean {
 
 export const USAGE_FILTERS_STORAGE_KEY = 'kiki.usage.filters.v2';
 
-function isGranularity(value: string): value is UsageGranularity {
-  return (USAGE_GRANULARITIES as readonly string[]).includes(value);
-}
 function isRangePreset(value: string): value is UsageRangePreset {
   return (USAGE_RANGE_PRESETS as readonly string[]).includes(value);
 }
@@ -205,12 +272,12 @@ export function parseUsageFilters(search: string): UsageFilters {
   const endAt = parseNonnegativeInt(params.get('end_at'));
   const customBoundsValid =
     parsedRange === 'custom' && startAt !== undefined && endAt !== undefined && startAt < endAt;
+  const effectiveRange = parsedRange === 'custom' && !customBoundsValid ? USAGE_FILTER_DEFAULTS.range : parsedRange;
+  const effectiveStartAt = customBoundsValid ? startAt : undefined;
+  const effectiveEndAt = customBoundsValid ? endAt : undefined;
   return {
-    granularity:
-      granularity !== null && isGranularity(granularity)
-        ? granularity
-        : USAGE_FILTER_DEFAULTS.granularity,
-    range: parsedRange === 'custom' && !customBoundsValid ? USAGE_FILTER_DEFAULTS.range : parsedRange,
+    granularity: sanitizeGranularity(granularity, effectiveRange, effectiveStartAt, effectiveEndAt),
+    range: effectiveRange,
     groupBy:
       groupBy !== null && isGroupBy(groupBy)
         ? groupBy
@@ -226,8 +293,8 @@ export function parseUsageFilters(search: string): UsageFilters {
     agentIds: params.getAll('agent.id').filter((id) => id !== ''),
     includeArchived:
       archived === null ? USAGE_FILTER_DEFAULTS.includeArchived : archived === 'true',
-    startAt: customBoundsValid ? startAt : undefined,
-    endAt: customBoundsValid ? endAt : undefined,
+    startAt: effectiveStartAt,
+    endAt: effectiveEndAt,
   };
 }
 
@@ -311,8 +378,10 @@ export function usageFiltersToSearch(filters: UsageFilters, existing?: string): 
   ]) {
     params.delete(key);
   }
-  if (filters.granularity !== USAGE_FILTER_DEFAULTS.granularity) {
-    params.set('granularity', filters.granularity);
+  const derivedGranularity = derivedGranularityForRange(filters.range, filters.startAt, filters.endAt);
+  const sanitizedGranularity = sanitizeGranularity(filters.granularity, filters.range, filters.startAt, filters.endAt);
+  if (sanitizedGranularity !== derivedGranularity) {
+    params.set('granularity', sanitizedGranularity);
   }
   if (filters.range !== USAGE_FILTER_DEFAULTS.range) params.set('range', filters.range);
   if (filters.advancedDimension !== undefined) {
@@ -363,12 +432,17 @@ export function readStoredUsageFilters(): UsageFilters | undefined {
     const rawAdvanced = record['advancedDimension'];
     const rawModel = record['model'];
     const rawProvider = record['provider'];
+    const effectiveRange = customOk ? range : USAGE_FILTER_DEFAULTS.range;
+    const effectiveStartAt = customOk ? startAt : undefined;
+    const effectiveEndAt = customOk ? endAt : undefined;
     return {
-      granularity:
-        typeof rawGranularity === 'string' && isGranularity(rawGranularity)
-          ? rawGranularity
-          : USAGE_FILTER_DEFAULTS.granularity,
-      range: customOk ? range : USAGE_FILTER_DEFAULTS.range,
+      granularity: sanitizeGranularity(
+        typeof rawGranularity === 'string' ? rawGranularity : undefined,
+        effectiveRange,
+        effectiveStartAt,
+        effectiveEndAt,
+      ),
+      range: effectiveRange,
       groupBy: storedGroupBy(rawGroupBy),
       advancedDimension:
         rawAdvanced === 'agent' || rawAdvanced === 'session' ? rawAdvanced : undefined,
@@ -384,8 +458,8 @@ export function readStoredUsageFilters(): UsageFilters | undefined {
         typeof rawArchived === 'boolean'
           ? rawArchived
           : USAGE_FILTER_DEFAULTS.includeArchived,
-      startAt: customOk ? startAt : undefined,
-      endAt: customOk ? endAt : undefined,
+      startAt: effectiveStartAt,
+      endAt: effectiveEndAt,
     };
   } catch {
     return undefined;
@@ -417,6 +491,7 @@ export function writeStoredUsageFilters(filters: UsageFilters): void {
 
 export interface UsageApiQueryOptions {
   readonly timezoneOffsetMinutes: number;
+  readonly sortBy?: 'tokens' | 'cost';
   readonly pageSize?: number;
   readonly pageToken?: string;
   /** Explicit window override, epoch ms [start, end). Used by prior-period reads. */
@@ -447,6 +522,7 @@ export function buildUsageApiQuery(
   );
   return {
     granularity: filters.granularity,
+    sort_by: options.sortBy,
     range: window === undefined && filters.range === 'all' ? undefined : filters.range,
     dimension: filters.advancedDimension ?? USAGE_GROUP_BY_DIMENSION[filters.groupBy],
     'workspace.id': filters.workspaceId,
@@ -706,6 +782,7 @@ function sourceFilterFor(key: string, group: UsageGroupWire, groupBy: UsageGroup
 export function aggregateSourceRows(
   trend: readonly UsageTrendBucketWire[],
   groupBy: UsageGroupBy,
+  metric: UsageMetric = 'tokens',
 ): UsageSourceRow[] {
   const rows = new Map<
     string,
@@ -756,7 +833,11 @@ export function aggregateSourceRows(
       modelAliases: [...entry.modelAliases].toSorted((a, b) => a.localeCompare(b)),
       filter: entry.filter,
     }))
-    .toSorted((a, b) => b.costUsdEstimated - a.costUsdEstimated || b.totalTokens - a.totalTokens);
+    .toSorted((a, b) =>
+      metric === 'cost'
+        ? b.costUsdEstimated - a.costUsdEstimated || b.totalTokens - a.totalTokens
+        : b.totalTokens - a.totalTokens || b.costUsdEstimated - a.costUsdEstimated,
+    );
 }
 
 /**
@@ -944,6 +1025,8 @@ export function bucketLabel(
   const tag = locale === 'zh' ? 'zh-CN' : 'en';
   const start = new Date(bucket.start_at);
   switch (granularity) {
+    case 'hour':
+      return `${pad2(start.getHours())}:00`;
     case 'day':
       return start.toLocaleDateString(tag, { month: 'short', day: 'numeric' });
     case 'week':
@@ -958,6 +1041,82 @@ export function bucketLabel(
     case 'session':
       return start.toLocaleDateString(tag, { month: 'short', day: 'numeric' });
   }
+}
+
+/**
+ * Zero-fills missing time buckets along `[rangeWindow.startAt, rangeWindow.endAt)`
+ * for `'hour'` and `'day'` granularities so empty time spans appear as honest
+ * gaps on a true time axis rather than compressed categories.
+ */
+export function fillUsageTrendBuckets(
+  trend: readonly UsageTrendBucketWire[],
+  granularity: UsageGranularity,
+  rangeWindow: UsageWindow | null,
+): readonly UsageTrendBucketWire[] {
+  if (trend.length === 0 || rangeWindow === null) return trend;
+  if (granularity !== 'hour' && granularity !== 'day') return trend;
+  const maxBuckets = 62;
+  const slots: Array<{ start: number; end: number }> = [];
+  if (granularity === 'hour') {
+    const stepMs = 3_600_000;
+    const first = new Date(rangeWindow.startAt);
+    first.setMinutes(0, 0, 0);
+    let cursor = first.getTime();
+    while (cursor < rangeWindow.endAt && slots.length <= maxBuckets) {
+      slots.push({ start: cursor, end: cursor + stepMs });
+      cursor += stepMs;
+    }
+  } else {
+    const first = new Date(rangeWindow.startAt);
+    first.setHours(0, 0, 0, 0);
+    let cursor = first.getTime();
+    while (cursor < rangeWindow.endAt && slots.length <= maxBuckets) {
+      const nextDate = new Date(cursor);
+      const next = new Date(nextDate.getFullYear(), nextDate.getMonth(), nextDate.getDate() + 1).getTime();
+      slots.push({ start: cursor, end: next });
+      cursor = next;
+    }
+  }
+  if (slots.length === 0 || slots.length > maxBuckets) return trend;
+  const keyForStart = (ms: number): string => {
+    const d = new Date(ms);
+    return granularity === 'hour'
+      ? `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}-${d.getHours()}`
+      : `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  };
+  const bySlot = new Map<string, UsageTrendBucketWire>();
+  for (const bucket of trend) {
+    const slotKey = keyForStart(bucket.start_at);
+    const existing = bySlot.get(slotKey);
+    if (existing === undefined) {
+      bySlot.set(slotKey, bucket);
+    } else {
+      bySlot.set(slotKey, {
+        ...existing,
+        turn_count: (existing.turn_count ?? 0) + (bucket.turn_count ?? 0),
+        request_count: (existing.request_count ?? 0) + (bucket.request_count ?? 0),
+        groups: [...existing.groups, ...bucket.groups],
+      });
+    }
+  }
+  let matchedAny = false;
+  const filled = slots.map(({ start, end }) => {
+    const found = bySlot.get(keyForStart(start));
+    if (found !== undefined) {
+      matchedAny = true;
+      return found;
+    }
+    return {
+      key: `empty:${start}`,
+      start_at: start,
+      end_at: end,
+      turn_count: 0,
+      request_count: 0,
+      groups: [],
+      drilldown: { sessions: [], sessions_truncated: false },
+    } satisfies UsageTrendBucketWire;
+  });
+  return matchedAny ? filled : trend;
 }
 
 /**

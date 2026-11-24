@@ -149,7 +149,11 @@ export function InstalledList({
     beginBusy(id);
     setFailure(null);
     try {
-      await client.setPluginEnabled(id, enabled);
+      if (current?.defaultEnabled === undefined) {
+        await client.setPluginEnabled(id, enabled);
+      } else {
+        await client.setPluginState(id, { enabled, defaultEnabled: current.defaultEnabled });
+      }
       await invalidate();
     } catch (actionError) {
       setFailure(actionError);
@@ -188,23 +192,15 @@ export function InstalledList({
   useEffect(() => {
     setPinnedGroupById((prev) => (Object.keys(prev).length === 0 ? prev : {}));
   }, [view.query, view.filter]);
-  const toolbarView = useMemo(() => {
-    const activeFilterIds = filters
-      .filter((spec) => {
-        const matched = displayPlugins.filter(spec.test).length;
-        return matched > 0 && matched < displayPlugins.length;
-      })
-      .map((spec) => spec.id);
-    return {
-      ...view,
-      tools: {
-        ...view.tools,
-        search: displayPlugins.length > 0,
-        filters: activeFilterIds.length > 0,
-        filterIds: activeFilterIds,
-      },
-    };
-  }, [filters, displayPlugins, view]);
+  const toolbarView = useMemo(() => ({
+    ...view,
+    tools: {
+      ...view.tools,
+      search: displayPlugins.length > 0,
+      filters: false,
+      filterIds: [],
+    },
+  }), [displayPlugins.length, view]);
 
   const groups = useMemo(
     () => groupItems(displayPlugins, view.visible, (plugin) => {
@@ -369,7 +365,6 @@ function InstalledRow({
   const anchor = useRef<HTMLSpanElement>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const broken = plugin.state === 'error' || plugin.hasErrors;
-  const healthTone = broken ? 'bg-danger' : plugin.enabled ? 'bg-success' : 'bg-ink-faint/50';
   const healthLabel = broken ? t('cap.state.error') : plugin.enabled ? t('cap.plugins.healthy') : t('cap.plugins.disabledState');
   const homepage = entry?.homepage;
   const source = plugin.originalSource;
@@ -407,11 +402,13 @@ function InstalledRow({
         <span className={plugin.enabled ? '' : 'opacity-60 grayscale'}><CapabilityIcon icon={plugin.icon} /></span>
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-2">
-            <span
-              aria-hidden
-              title={healthLabel}
-              className={`h-1.5 w-1.5 shrink-0 rounded-full ${healthTone}`}
-            />
+            {broken ? (
+              <span
+                aria-hidden
+                title={healthLabel}
+                className="h-1.5 w-1.5 shrink-0 rounded-full bg-danger"
+              />
+            ) : null}
             <span className={`min-w-0 truncate text-[13px] font-medium ${plugin.enabled ? 'text-ink' : 'text-ink-soft'}`}>
               {plugin.displayName}
             </span>
@@ -422,7 +419,7 @@ function InstalledRow({
             ) : null}
           </span>
           {density === 'compact' ? null : (
-            <span className="mt-0.5 flex min-w-0 items-center gap-2 pl-3.5">
+            <span className={`mt-0.5 flex min-w-0 items-center gap-2 ${broken ? 'pl-3.5' : ''}`}>
               <span className="min-w-0 truncate font-mono text-[11px] leading-4 text-ink-faint" title={source}>{fact}</span>
             </span>
           )}
@@ -446,6 +443,7 @@ function InstalledRow({
             <button
               type="button"
               data-plugin-settings-action={plugin.id}
+              data-plugin-open-settings={plugin.id}
               aria-label={`${plugin.displayName} · ${t('cap.plugins.settings')}`}
               title={t('cap.plugins.settings')}
               onClick={onOpenSettings}
@@ -470,7 +468,7 @@ function InstalledRow({
         </span>
       ) : null}
 
-      <span className="flex w-9 shrink-0 items-center justify-end">
+      <span data-plugin-row-switch className="flex w-9 shrink-0 items-center justify-end">
         <Toggle
           layout="bare"
           label={plugin.enabled ? t('cap.state.on') : t('cap.state.off')}

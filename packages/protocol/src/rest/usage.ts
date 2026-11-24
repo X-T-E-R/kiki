@@ -17,6 +17,7 @@ const repeatedStringSchema = /* @__PURE__ */ z.union([z.string().min(1), z.array
 export const usageQuerySchema = /* @__PURE__ */ z
   .object({
     granularity: usageGranularitySchema.optional(),
+    sort_by: usageSortBySchema.optional(),
     range: usageRangePresetSchema.optional(),
     dimension: usageDimensionSchema.optional(),
     model: repeatedStringSchema,
@@ -30,7 +31,6 @@ export const usageQuerySchema = /* @__PURE__ */ z
     timezone_offset_minutes: z.coerce.number().int().min(-840).max(840).optional(),
     page_size: z.coerce.number().int().min(1).max(100).optional(),
     page_token: z.string().min(1).optional(),
-    sort_by: usageSortBySchema.optional(),
   })
   .superRefine((value, ctx) => {
     const range = value.range ?? 'all';
@@ -129,6 +129,7 @@ export const usageSessionItemSchema = /* @__PURE__ */ z.object({
 export const usageResponseSchema = /* @__PURE__ */ z.object({
   query: z.object({
     granularity: usageGranularitySchema,
+    sort_by: usageSortBySchema.optional(),
     range: z.object({
       preset: usageRangePresetSchema,
       start_at: z.number().int().nonnegative().nullable(),
@@ -143,7 +144,6 @@ export const usageResponseSchema = /* @__PURE__ */ z.object({
     workspace_ids: z.array(z.string()),
     include_archived: z.boolean(),
     timezone_offset_minutes: z.number().int(),
-    sort_by: usageSortBySchema,
   }),
   summary: usageAggregateSchema.extend({
     session_count: z.number().int().nonnegative(),

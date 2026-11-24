@@ -1,8 +1,9 @@
 import type { ModelCatalogItem, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import {
+  derivedGranularityForRange,
+  sanitizeGranularity,
   USAGE_FILTER_DEFAULTS,
-  USAGE_GRANULARITIES,
   USAGE_GROUPINGS,
   USAGE_GROUP_BY_DIMENSION,
   USAGE_RANGE_PRESETS,
@@ -78,10 +79,6 @@ function dedupeNonEmpty(values: readonly string[]): string[] {
   return out;
 }
 
-function isGranularity(value: string): value is UsageGranularity {
-  return (USAGE_GRANULARITIES as readonly string[]).includes(value);
-}
-
 function isRangePreset(value: string): value is UsageRangePreset {
   return (USAGE_RANGE_PRESETS as readonly string[]).includes(value);
 }
@@ -108,13 +105,13 @@ export function parseUsageMultiFilters(search: string): UsageMultiFilters {
   const endAt = parseNonnegativeInt(params.get('end_at'));
   const customBoundsValid =
     parsedRange === 'custom' && startAt !== undefined && endAt !== undefined && startAt < endAt;
+  const effectiveRange = parsedRange === 'custom' && !customBoundsValid ? USAGE_MULTI_FILTER_DEFAULTS.range : parsedRange;
+  const effectiveStartAt = customBoundsValid ? startAt : undefined;
+  const effectiveEndAt = customBoundsValid ? endAt : undefined;
 
   return {
-    granularity:
-      granularity !== null && isGranularity(granularity)
-        ? granularity
-        : USAGE_MULTI_FILTER_DEFAULTS.granularity,
-    range: parsedRange === 'custom' && !customBoundsValid ? USAGE_MULTI_FILTER_DEFAULTS.range : parsedRange,
+    granularity: sanitizeGranularity(granularity, effectiveRange, effectiveStartAt, effectiveEndAt),
+    range: effectiveRange,
     groupBy:
       groupBy !== null && isGroupBy(groupBy)
         ? groupBy
@@ -130,8 +127,8 @@ export function parseUsageMultiFilters(search: string): UsageMultiFilters {
     profiles: dedupeNonEmpty(params.getAll('profile')),
     agentIds: dedupeNonEmpty(params.getAll('agent.id')),
     includeArchived: archived === null ? USAGE_MULTI_FILTER_DEFAULTS.includeArchived : archived === 'true',
-    startAt: customBoundsValid ? startAt : undefined,
-    endAt: customBoundsValid ? endAt : undefined,
+    startAt: effectiveStartAt,
+    endAt: effectiveEndAt,
   };
 }
 
@@ -192,8 +189,10 @@ export function usageMultiFiltersToSearch(filters: UsageMultiFilters, existing?:
   ]) {
     params.delete(key);
   }
-  if (filters.granularity !== USAGE_MULTI_FILTER_DEFAULTS.granularity) {
-    params.set('granularity', filters.granularity);
+  const derivedGranularity = derivedGranularityForRange(filters.range, filters.startAt, filters.endAt);
+  const sanitizedGranularity = sanitizeGranularity(filters.granularity, filters.range, filters.startAt, filters.endAt);
+  if (sanitizedGranularity !== derivedGranularity) {
+    params.set('granularity', sanitizedGranularity);
   }
   if (filters.range !== USAGE_MULTI_FILTER_DEFAULTS.range) {
     params.set('range', filters.range);
@@ -236,6 +235,7 @@ export function buildUsageMultiApiQuery(
   );
   return {
     granularity: filters.granularity,
+    sort_by: options.sortBy,
     range: window !== undefined ? 'custom' : filters.range === 'all' ? undefined : filters.range,
     dimension: filters.advancedDimension ?? USAGE_GROUP_BY_DIMENSION[filters.groupBy],
     'workspace.id': wireScalarOrArray(filters.workspaceIds),

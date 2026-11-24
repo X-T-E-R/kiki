@@ -298,8 +298,8 @@ export function ProvidersSection() {
           aria-label={t('st.nav.needsAttention')}
           className="space-y-1.5"
         >
-          <p className="text-[12px] font-medium text-amber-ink">{t('st.nav.needsAttention')}</p>
-          <ul className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-panel">
+          <p className="text-[14px] font-[550] text-amber-ink">{t('st.nav.needsAttention')}</p>
+          <ul className="divide-y divide-hairline border-y border-hairline">
             {attentionItems.map((provider) => {
               const method = methodFor(provider.id);
               const kind = connectionKind(provider, accountProviders);

@@ -95,6 +95,12 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
         snapshot={snapshot}
         stale={stale}
         onRefresh={() => { void queryClient.invalidateQueries({ queryKey: ['request-governance'] }); }}
+        onJumpToRule={() => {
+          setUserOpen(true);
+          requestAnimationFrame(() => {
+            limitsRef.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+          });
+        }}
       />
       <div
         ref={limitsRef}
@@ -132,10 +138,11 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
 // Live — running and queued right now
 // ---------------------------------------------------------------------------
 
-function RealtimePanel({ snapshot, stale, onRefresh }: {
+function RealtimePanel({ snapshot, stale, onRefresh, onJumpToRule }: {
   readonly snapshot: RequestGovernanceSnapshot;
   readonly stale: boolean;
   readonly onRefresh: () => void;
+  readonly onJumpToRule?: (ruleId: string) => void;
 }) {
   const { t, time } = useI18n();
   const phone = usePhoneMode();
@@ -312,17 +319,37 @@ function RealtimePanel({ snapshot, stale, onRefresh }: {
           </section>
           {snapshot.waiting.length > 0 ? (
             <section className="min-w-0" data-governance-waiting>
-              <h2 className="mb-3 text-[11.5px] font-medium text-ink-faint">{t('usage.governance.waitingTitle')}</h2>
-              <ol className="divide-y divide-hairline">
-                {snapshot.waiting.map((row) => (
-                  <li key={row.attemptId} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-2 text-[12.5px]">
-                    <span className="min-w-0 truncate text-ink" title={row.modelId}>{row.modelId}</span>
-                    {row.blockingRules.length > 0 ? (
-                      <span className="min-w-0 truncate font-mono text-[12px] text-ink-faint">{t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}</span>
-                    ) : null}
-                    <span className="ml-auto shrink-0 text-ink-soft tabular-nums">{time.formatDuration(row.waitedMs)}</span>
-                  </li>
-                ))}
+              <div className="mb-3 flex min-h-8 items-center">
+                <h2 className="text-[12px] font-medium text-ink-faint">{t('usage.governance.waitingTitle')}</h2>
+              </div>
+              <ol className="divide-y divide-hairline border-t border-hairline">
+                {snapshot.waiting.map((row) => {
+                  const longWait = row.waitedMs >= 10_000;
+                  return (
+                    <li key={row.attemptId} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-2 text-[12.5px]">
+                      <span className="min-w-0 truncate text-ink" title={row.modelId}>{row.modelId}</span>
+                      {row.blockingRules.length > 0 ? (
+                        onJumpToRule !== undefined ? (
+                          <button
+                            type="button"
+                            onClick={() => { onJumpToRule(row.blockingRules[0]!); }}
+                            className="min-w-0 truncate rounded font-mono text-[12px] text-ink-faint underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+                          >
+                            {t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}
+                          </button>
+                        ) : (
+                          <span className="min-w-0 truncate font-mono text-[12px] text-ink-faint">{t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}</span>
+                        )
+                      ) : null}
+                      <span
+                        data-governance-wait-long={longWait ? 'true' : undefined}
+                        className={`ml-auto shrink-0 tabular-nums ${longWait ? 'font-mono font-medium text-amber-ink' : 'text-ink-soft'}`}
+                      >
+                        {time.formatDuration(row.waitedMs)}
+                      </span>
+                    </li>
+                  );
+                })}
               </ol>
             </section>
           ) : null}
@@ -347,6 +374,20 @@ function RealtimePanel({ snapshot, stale, onRefresh }: {
                 >
                   <Icon name="refresh" size={12} className="h-[13px] w-[13px]" />
                 </button>
+              ) : null}
+              {executionVisibleError !== undefined ? (
+                <span role="status" data-execution-stale className="inline-flex items-center">
+                  <button
+                    type="button"
+                    data-execution-stale-retry
+                    aria-label={`${t('usage.execution.staleState')} · ${t('usage.execution.retryRefresh')}`}
+                    title={`${t('usage.execution.staleState')} · ${t('usage.execution.retryRefresh')}`}
+                    onClick={retryExecutionReads}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded text-amber-ink transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11"
+                  >
+                    <Icon name="refresh" size={12} />
+                  </button>
+                </span>
               ) : null}
               <PauseAllExecutions snapshot={agentSnapshot} states={executionStates} labelOf={labelOf} />
               <span className="sr-only" data-governance-main-agents>{agentSnapshot?.mainActive ?? agentSnapshot?.main ?? 0}</span>
@@ -432,20 +473,6 @@ function RealtimePanel({ snapshot, stale, onRefresh }: {
           </>
         )}
         <ExecutionSessionList liveSessionIds={liveSessionIds} states={executionStates} onRetryRead={refetchExecutions} labelOf={labelOf} />
-        {executionVisibleError !== undefined ? (
-          <span role="status" data-execution-stale className="mt-2 inline-flex text-amber-ink">
-            <button
-              type="button"
-              data-execution-stale-retry
-              aria-label={`${t('usage.execution.staleState')} · ${t('usage.execution.retryRefresh')}`}
-              title={`${t('usage.execution.staleState')} · ${t('usage.execution.retryRefresh')}`}
-              onClick={retryExecutionReads}
-              className="inline-flex items-center transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
-            >
-              <Icon name="refresh" size={12} className="h-[13px] w-[13px]" />
-            </button>
-          </span>
-        ) : null}
       </section>
     </div>
   );

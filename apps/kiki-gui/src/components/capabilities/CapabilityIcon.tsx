@@ -119,7 +119,7 @@ export function CapabilityIcon({
     <span
       aria-hidden
       data-capability-icon="fallback"
-      className={`${dims.box} flex shrink-0 items-center justify-center bg-ink/[0.05] text-ink-soft ring-1 ring-inset ring-hairline`}
+      className={`${dims.box} flex shrink-0 items-center justify-center bg-ink/[0.05] text-ink-soft`}
     >
       <CapabilityGlyph kind={kind} className={dims.glyph} />
     </span>

@@ -156,12 +156,12 @@ export function WorktreesCard() {
         {list.isLoading ? <Hint>{t('st.worktrees.loading')}</Hint> : null}
         {list.isError ? <InlineError error={list.error} /> : null}
         {list.isSuccess && records.length === 0 ? (
-          <p data-worktrees-empty className="rounded-lg border border-dashed border-hairline px-3 py-4 text-[12px] leading-relaxed text-ink-faint">
+          <p data-worktrees-empty className="py-2 text-[12.5px] leading-relaxed text-ink-faint">
             {t('st.worktrees.empty')}
           </p>
         ) : null}
         {records.length > 0 ? (
-          <ul data-worktree-list className="divide-y divide-hairline rounded-lg border border-hairline bg-paper">
+          <ul data-worktree-list className="divide-y divide-hairline border-y border-hairline">
             {records.map((record) => (
               <WorktreeRow
                 key={record.id}

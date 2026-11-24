@@ -19,6 +19,12 @@ import { compactIdentifier } from '../lib/compactIdentifier';
 import { getCurrentVisit, getUiSnapshot, saveScrollPosition, saveUiSnapshot } from '../lib/navHistory';
 import { useThreadTitleResolver } from '../lib/threadTitles';
 import {
+  arrangeQuotaSources,
+  normalizeQuotaSources,
+  signedOutProviderIds,
+  type ProviderQuotaSnapshot,
+} from '../lib/providerQuota';
+import {
   aggregateSourceRows,
   browserTimezoneOffsetMinutes,
   bucketLabel,
@@ -130,7 +136,7 @@ function isAdvanceableImport(reliability: UsageResponseWire['reliability']): boo
 // Minimalist 4-Figure Editorial KPI Band
 // ---------------------------------------------------------------------------
 
-function Kpi({ id, label, value, valueAction, hint, title, dataValue }: {
+function Kpi({ id, label, value, valueAction, hint, title, dataValue, hero = false }: {
   readonly id: string;
   readonly label: string;
   readonly value: ReactNode;
@@ -138,6 +144,7 @@ function Kpi({ id, label, value, valueAction, hint, title, dataValue }: {
   readonly hint?: ReactNode;
   readonly title?: string;
   readonly dataValue?: string;
+  readonly hero?: boolean;
 }) {
   const valueProps = dataValue === undefined ? {} : { [dataValue]: true };
   return (
@@ -146,11 +153,13 @@ function Kpi({ id, label, value, valueAction, hint, title, dataValue }: {
       title={title}
       className="flex min-w-0 flex-col py-1 lg:px-5 first:lg:pl-0 last:lg:pr-0"
     >
-      <p className="text-[11.5px] font-medium tracking-[-0.005em] text-ink-faint">{label}</p>
+      <p className="text-[11.5px] font-medium text-ink-faint">{label}</p>
       <div className="mt-1.5 flex min-w-0 items-center gap-1.5">
         <div
           {...valueProps}
-          className="flex min-w-0 items-baseline gap-2 truncate font-display text-[28px] leading-none tracking-tight text-ink tabular-nums"
+          className={`flex min-w-0 items-baseline gap-1.5 truncate font-display leading-tight text-ink tabular-nums ${
+            hero ? 'text-[28px]' : 'text-[22px]'
+          }`}
         >
           {value}
         </div>
@@ -164,6 +173,7 @@ function Kpi({ id, label, value, valueAction, hint, title, dataValue }: {
 function UsageKpiBand({
   summary,
   trend,
+  rangeWindow,
   incomplete,
   comparing,
   prior,
@@ -173,6 +183,7 @@ function UsageKpiBand({
 }: {
   readonly summary: UsageResponseWire['summary'];
   readonly trend: readonly UsageTrendBucketWire[];
+  readonly rangeWindow: UsageWindow | null;
   readonly incomplete: boolean;
   readonly comparing: boolean;
   readonly prior: UsageResponseWire['summary'] | undefined;
@@ -183,7 +194,8 @@ function UsageKpiBand({
   const { t, tp, time } = useI18n();
 
   const costUnknown = summary.cost_unknown || incomplete;
-  const tokensUnknown = usageTokenTotalIsUnknown(summary) || (incomplete && totalTokensOf(summary) === 0);
+  const totalTokens = totalTokensOf(summary);
+  const tokensUnknown = usageTokenTotalIsUnknown(summary) || (incomplete && totalTokens === 0);
   const cacheHit = cacheHitRateOf(summary);
   const input = summary.tokens.input_other + summary.tokens.input_cache_read + summary.tokens.input_cache_creation;
 
@@ -195,6 +207,16 @@ function UsageKpiBand({
       ].join(' · ')
     : undefined;
 
+  const rangeDays = rangeWindow !== null
+    ? Math.max(1, Math.round((rangeWindow.endAt - rangeWindow.startAt) / 86_400_000))
+    : 1;
+  const dailyAvgTokens = !tokensUnknown && totalTokens > 0 && rangeDays >= 2
+    ? totalTokens / rangeDays
+    : undefined;
+
+  const tokensOutcome = comparing && prior !== undefined
+    ? usageRatioChange(totalTokens, totalTokensOf(prior))
+    : undefined;
   const costOutcome = comparing && prior !== undefined
     ? (summary.cost_unknown && summary.cost_usd_estimated === 0) || (prior.cost_unknown && prior.cost_usd_estimated === 0)
       ? usageRatioChange(Number.NaN, Number.NaN)
@@ -204,52 +226,56 @@ function UsageKpiBand({
     ? usagePointChange(cacheHit, cacheHitRateOf(prior))
     : undefined;
 
-  const activity = useMemo(() => summarizeActivityCounts(trend), [trend]);
+  const bucketActivity = useMemo(() => summarizeActivityCounts(trend), [trend]);
+  const turns = typeof summary.turn_count === 'number' ? summary.turn_count : bucketActivity.turns;
+  const requests = typeof summary.request_count === 'number' ? summary.request_count : bucketActivity.requests;
+  const hasTurns = typeof summary.turn_count === 'number' || bucketActivity.hasTurns;
+  const hasRequests = typeof summary.request_count === 'number' || bucketActivity.hasRequests;
+  const activity = { turns, requests, hasTurns, hasRequests };
   const perTurnCost = avgCostPerTurn(summary, activity);
 
-  const activityHeadline = activity.hasTurns && activity.hasRequests
-    ? t('usage.kpi.turnsRequests', { turns: formatGrouped(activity.turns), requests: formatGrouped(activity.requests) })
-    : activity.hasTurns
-      ? t('usage.kpi.turnsOnly', { turns: formatGrouped(activity.turns) })
-      : tp('usage.sessionChip', summary.session_count);
+  const blendedPerMillion = !tokensUnknown && totalTokens > 0 && !costUnknown
+    ? (summary.cost_usd_estimated / totalTokens) * 1_000_000
+    : undefined;
+  const costTitleParts = [
+    ...(blendedPerMillion !== undefined ? [t('usage.kpi.blendedPerM', { cost: formatCostUsd(blendedPerMillion) })] : []),
+    ...(unpricedCount > 0 ? [tp('usage.kpi.unpricedCount', unpricedCount)] : []),
+  ];
+  const costTitle = costTitleParts.length > 0 ? costTitleParts.join(' · ') : undefined;
 
   return (
     <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-y border-hairline py-4 lg:grid-cols-4 lg:gap-x-0 lg:divide-x lg:divide-hairline">
       <Kpi
-        id="cost"
-        label={t('usage.kpi.estimatedCost')}
-        dataValue="data-usage-summary-cost"
-        value={costUnknown && tokensUnknown && summary.cost_usd_estimated === 0 ? '—' : formatCostUsd(summary.cost_usd_estimated)}
-        valueAction={unpricedCount > 0 ? (
-          <button
-            type="button"
-            data-usage-unpriced-trigger
-            onClick={onOpenPricing}
-            title={`${tp('usage.kpi.unpricedCount', unpricedCount)} · ${t('usage.reliability.setPrices')}`}
-            aria-label={`${tp('usage.kpi.unpricedCount', unpricedCount)} · ${t('usage.reliability.setPrices')}`}
-            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-amber-ink/85 transition-colors hover:bg-amber-card hover:text-amber-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
-          >
-            <Icon name="partial" size={14} />
-          </button>
-        ) : undefined}
-        hint={costOutcome !== undefined ? <CompareCell outcome={costOutcome} /> : undefined}
-      />
-
-      <Kpi
         id="tokens"
-        label={t('usage.card.tokens')}
+        hero
+        label={t('usage.kpi.totalTokens')}
         dataValue="data-usage-summary-tokens"
         title={tokenCompositionTitle}
-        value={tokensUnknown ? '—' : time.formatTokens(totalTokensOf(summary))}
-        hint={(
-          <span data-usage-summary-input-output className="tabular-nums">
-            {tokensUnknown
-              ? '—'
-              : t('usage.kpi.inputOutput', {
-                  input: time.formatTokens(input),
-                  output: time.formatTokens(summary.tokens.output),
-                })}
+        value={<span className="tracking-[-0.015em]">{tokensUnknown ? '—' : time.formatTokens(totalTokens)}</span>}
+        valueAction={summary.tokens_unknown === true ? (
+          <span
+            title={t('usage.accounting.knownSubtotal')}
+            aria-label={t('usage.accounting.knownSubtotal')}
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center text-amber-ink/85"
+          >
+            <Icon name="partial" size={14} />
           </span>
+        ) : undefined}
+        hint={(
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            {tokensOutcome !== undefined ? <CompareCell outcome={tokensOutcome} /> : null}
+            <span data-usage-summary-input-output className="tabular-nums">
+              {tokensUnknown
+                ? '—'
+                : [
+                    t('usage.kpi.inputOutput', {
+                      input: time.formatTokens(input),
+                      output: time.formatTokens(summary.tokens.output),
+                    }),
+                    ...(dailyAvgTokens !== undefined ? [t('usage.kpi.dailyAvg', { tokens: time.formatTokens(dailyAvgTokens) })] : []),
+                  ].join(' · ')}
+            </span>
+          </div>
         )}
       />
 
@@ -258,12 +284,12 @@ function UsageKpiBand({
         label={t('usage.kpi.cacheHit')}
         dataValue="data-usage-summary-cache"
         title={t('usage.cacheHitHint')}
-        value={tokensUnknown ? '—' : formatCachePercent(cacheHit)}
+        value={<span className="tracking-[-0.015em]">{tokensUnknown ? '—' : formatCachePercent(cacheHit)}</span>}
         hint={(cacheOutcome !== undefined || cacheSavingsUsd !== undefined) ? (
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
             {cacheOutcome !== undefined ? <CompareCell outcome={cacheOutcome} points /> : null}
             {cacheSavingsUsd !== undefined ? (
-              <span data-usage-cache-savings className="font-medium text-success tabular-nums">
+              <span data-usage-cache-savings className="text-ink-soft tabular-nums">
                 {t('usage.kpi.cacheSaved', { cost: formatCostUsd(cacheSavingsUsd) })}
               </span>
             ) : null}
@@ -275,10 +301,50 @@ function UsageKpiBand({
         id="activity"
         label={t('usage.kpi.activity')}
         dataValue="data-usage-summary-activity"
-        value={<span className="truncate text-[23px] leading-none tracking-tight">{activityHeadline}</span>}
+        value={
+          hasTurns && hasRequests ? (
+            <span className="inline-flex min-w-0 items-baseline gap-1">
+              <span className="font-display text-[22px] tracking-[-0.015em] text-ink tabular-nums">{formatGrouped(requests)}</span>
+              <span className="font-sans text-[13px] font-normal tracking-normal text-ink-soft">{t('usage.kpi.requestsUnit')}</span>
+              <span aria-hidden className="px-0.5 font-sans text-[13px] font-normal tracking-normal text-ink-faint">·</span>
+              <span className="font-display text-[22px] tracking-[-0.015em] text-ink tabular-nums">{formatGrouped(turns)}</span>
+              <span className="font-sans text-[13px] font-normal tracking-normal text-ink-soft">{t('usage.kpi.turnsUnit')}</span>
+            </span>
+          ) : hasTurns ? (
+            <span className="inline-flex min-w-0 items-baseline gap-1">
+              <span className="font-display text-[22px] tracking-[-0.015em] text-ink tabular-nums">{formatGrouped(turns)}</span>
+              <span className="font-sans text-[13px] font-normal tracking-normal text-ink-soft">{t('usage.kpi.turnsUnit')}</span>
+            </span>
+          ) : (
+            <span className="font-sans text-[15px] font-medium tracking-normal text-ink">
+              {tp('usage.sessionChip', summary.session_count)}
+            </span>
+          )
+        }
         hint={perTurnCost !== undefined ? (
           <span className="tabular-nums">{t('usage.kpi.avgPerTurn', { cost: formatCostUsd(perTurnCost) })}</span>
         ) : undefined}
+      />
+
+      <Kpi
+        id="cost"
+        label={t('usage.kpi.estimatedCost')}
+        dataValue="data-usage-summary-cost"
+        title={costTitle}
+        value={<span className="tracking-[-0.015em]">{costUnknown && tokensUnknown && summary.cost_usd_estimated === 0 ? '—' : formatCostUsd(summary.cost_usd_estimated)}</span>}
+        valueAction={unpricedCount > 0 ? (
+          <button
+            type="button"
+            data-usage-unpriced-trigger
+            onClick={onOpenPricing}
+            title={[tp('usage.kpi.unpricedCount', unpricedCount), t('usage.reliability.setPrices'), ...(blendedPerMillion !== undefined ? [t('usage.kpi.blendedPerM', { cost: formatCostUsd(blendedPerMillion) })] : [])].join(' · ')}
+            aria-label={`${tp('usage.kpi.unpricedCount', unpricedCount)} · ${t('usage.reliability.setPrices')}`}
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-amber-ink/85 transition-colors hover:bg-amber-card hover:text-amber-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+          >
+            <Icon name="partial" size={14} />
+          </button>
+        ) : undefined}
+        hint={costOutcome !== undefined ? <CompareCell outcome={costOutcome} /> : undefined}
       />
     </div>
   );
@@ -298,7 +364,9 @@ function SessionsTab({
   sessionLocator,
   locatorSearching,
   workspaceName,
+  metric,
   summaryCost,
+  summaryTokens,
   scrollElementRef,
 }: {
   data: { pages: readonly UsageResponseWire[] };
@@ -310,7 +378,9 @@ function SessionsTab({
   sessionLocator: string | undefined;
   locatorSearching: boolean;
   workspaceName: (id: string) => string | undefined;
+  metric: UsageMetric;
   summaryCost: number;
+  summaryTokens: number;
   scrollElementRef: RefObject<HTMLElement | null>;
 }) {
   const { t, time } = useI18n();
@@ -424,7 +494,9 @@ function SessionsTab({
     const itemTokens = totalTokensOf(item.usage);
     const unknownTotal = usageTokenTotalIsUnknown(item.usage);
     const unpricedZero = item.usage.cost_unknown && item.usage.cost_usd_estimated === 0 && (itemTokens > 0 || unknownTotal);
-    const share = summaryCost > 0 ? item.usage.cost_usd_estimated / summaryCost : 0;
+    const share = metric === 'cost'
+      ? (summaryCost > 0 ? item.usage.cost_usd_estimated / summaryCost : 0)
+      : (summaryTokens > 0 ? itemTokens / summaryTokens : 0);
     const profiles = item.profile_names ?? [];
     const updatedLabel = time.relativeTime(new Date(item.updated_at).toISOString());
     const wsDisplay = workspaceName(item.workspace_id) ?? compactIdentifier(item.workspace_id);
@@ -444,7 +516,7 @@ function SessionsTab({
         {fillPct > 0 ? (
           <span
             aria-hidden
-            className="pointer-events-none absolute inset-y-[3px] left-0 rounded-r-sm bg-accent/[0.05]"
+            className="pointer-events-none absolute inset-y-[3px] left-0 rounded-r-sm bg-ink/[0.04]"
             style={{ width: `${fillPct}%` }}
           />
         ) : null}
@@ -483,27 +555,27 @@ function SessionsTab({
               ) : null}
             </span>
             <span className="mt-1 block text-[11px] text-ink-faint tabular-nums sm:hidden">
-              {unknownTotal ? '—' : time.formatTokens(itemTokens)}
-              {' · '}
-              {unknownTotal ? '—' : formatPercent(cacheHitRateOf(item.usage))}
-              {' · '}
-              {updatedLabel}
+              {metric === 'tokens'
+                ? `${unknownTotal ? '—' : formatPercent(cacheHitRateOf(item.usage))} · ${unpricedZero ? '—' : formatCostUsd(item.usage.cost_usd_estimated)} · ${updatedLabel}`
+                : metric === 'cache'
+                  ? `${unknownTotal ? '—' : time.formatTokens(itemTokens)} · ${unpricedZero ? '—' : formatCostUsd(item.usage.cost_usd_estimated)} · ${updatedLabel}`
+                  : `${unknownTotal ? '—' : time.formatTokens(itemTokens)} · ${unknownTotal ? '—' : formatPercent(cacheHitRateOf(item.usage))} · ${updatedLabel}`}
             </span>
           </span>
           <span className="hidden truncate text-[12px] text-ink-soft sm:block" title={item.workspace_id}>
             {wsDisplay}
           </span>
-          <span data-usage-session-tokens={item.id} className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block">
+          <span data-usage-session-tokens={item.id} className={`${metric === 'tokens' ? 'block text-[13px] font-semibold text-ink' : 'hidden text-[12px] text-ink-soft sm:block'} text-right tabular-nums`}>
             {unknownTotal ? '—' : time.formatTokens(itemTokens)}
             {item.usage.tokens_unknown === true && !unknownTotal ? <KnownSubtotalMarker /> : null}
           </span>
-          <span className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block">
+          <span className={`${metric === 'cache' ? 'block text-[13px] font-semibold text-ink' : 'hidden text-[12px] text-ink-soft sm:block'} text-right tabular-nums`}>
             {unknownTotal ? '—' : formatPercent(cacheHitRateOf(item.usage))}
           </span>
           <span className="hidden text-right text-[12px] text-ink-faint sm:block">
             {updatedLabel}
           </span>
-          <span data-usage-session-cost={item.id} className="text-right text-[13px] font-semibold text-ink tabular-nums">
+          <span data-usage-session-cost={item.id} className={`${metric === 'cost' ? 'block text-[13px] font-semibold text-ink' : 'hidden text-[12px] text-ink-soft sm:block'} text-right tabular-nums`}>
             {unpricedZero ? '—' : formatCostUsd(item.usage.cost_usd_estimated)}
             {item.usage.cost_unknown ? (
               <KnownSubtotalMarker label={unpricedZero ? t('usage.reliability.costUnknown') : undefined} />
@@ -530,10 +602,10 @@ function SessionsTab({
         <span className="text-right">#</span>
         <span>{t('usage.col.session')}</span>
         <span className="hidden sm:block">{t('usage.col.workspace')}</span>
-        <span className="hidden text-right sm:block">{t('usage.col.tokens')}</span>
-        <span className="hidden text-right sm:block">{t('usage.col.cacheHit')}</span>
+        <span className={`${metric === 'tokens' ? 'block' : 'hidden sm:block'} text-right`}>{t('usage.col.tokens')}</span>
+        <span className={`${metric === 'cache' ? 'block' : 'hidden sm:block'} text-right`}>{t('usage.col.cacheHit')}</span>
         <span className="hidden text-right sm:block">{t('usage.col.updated')}</span>
-        <span className="text-right">{t('usage.col.cost')}</span>
+        <span className={`${metric === 'cost' ? 'block' : 'hidden sm:block'} text-right`}>{t('usage.col.cost')}</span>
       </div>
       {visible.length === 0 ? (
         <p className="py-8 text-center text-[13px] text-ink-faint">
@@ -612,7 +684,16 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const timezoneOffsetMinutes = browserTimezoneOffsetMinutes();
 
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
-  const metric: UsageMetric = METRIC_SEARCH_TO_METRIC[searchParams.get('metric') ?? ''] ?? 'cost';
+  const metric: UsageMetric = METRIC_SEARCH_TO_METRIC[searchParams.get('metric') ?? ''] ?? 'tokens';
+  const sortBy: 'tokens' | 'cost' = metric === 'cost' ? 'cost' : 'tokens';
+  const [hoveredSourceKey, setHoveredSourceKey] = useState<string | null>(null);
+  const [drilldownReturn, setDrilldownReturn] = useState<{
+    readonly range: UsageMultiFilters['range'];
+    readonly granularity: UsageMultiFilters['granularity'];
+    readonly startAt: number | undefined;
+    readonly endAt: number | undefined;
+    readonly label: string;
+  } | null>(null);
   const comparing = searchParams.get('compare') === 'previous';
   const compareAvailable = usageCompareWindow(
     usageRangeWindow(singleFilters, timezoneOffsetMinutes, usageNowMs) ?? { startAt: 0, endAt: 0 },
@@ -712,16 +793,65 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     if (visit) saveUiSnapshot(visit.visitId, { selectedBucketKey: null });
   }, [filterKey, location.key, setTrace]);
 
-  const applyFilters = (next: UsageMultiFilters) => {
+  const applyFilters = useCallback((next: UsageMultiFilters) => {
+    setDrilldownReturn(null);
     writeStoredUsageFilters(toSingleUsageFilters(next));
     setSearchParams(new URLSearchParams(usageMultiFiltersToSearch(next, location.search)), { replace: true });
-  };
+  }, [location.search, setSearchParams]);
+
+  const drilldownDay = useCallback((bucket: UsageTrendBucketWire) => {
+    const returnLabel = filters.range === 'custom'
+      ? t('usage.range.custom')
+      : t(`usage.rangeShort.${filters.range}`);
+    setDrilldownReturn({
+      range: filters.range,
+      granularity: filters.granularity,
+      startAt: filters.startAt,
+      endAt: filters.endAt,
+      label: t('usage.trend.drilldownBack', { range: returnLabel }),
+    });
+    const next: UsageMultiFilters = {
+      ...filters,
+      range: 'custom',
+      granularity: 'hour',
+      startAt: bucket.start_at,
+      endAt: bucket.end_at,
+    };
+    writeStoredUsageFilters(toSingleUsageFilters(next));
+    setSearchParams(new URLSearchParams(usageMultiFiltersToSearch(next, location.search)), { replace: true });
+  }, [filters, location.search, setSearchParams, t]);
+
+  const exitDrilldown = useCallback(() => {
+    if (drilldownReturn === null) return;
+    const next: UsageMultiFilters = {
+      ...filters,
+      range: drilldownReturn.range,
+      granularity: drilldownReturn.granularity,
+      startAt: drilldownReturn.startAt,
+      endAt: drilldownReturn.endAt,
+    };
+    setDrilldownReturn(null);
+    writeStoredUsageFilters(toSingleUsageFilters(next));
+    setSearchParams(new URLSearchParams(usageMultiFiltersToSearch(next, location.search)), { replace: true });
+  }, [drilldownReturn, filters, location.search, setSearchParams]);
+
+  useEffect(() => {
+    if (drilldownReturn === null) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      const target = event.target as HTMLElement | null;
+      if (target !== null && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      exitDrilldown();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => { window.removeEventListener('keydown', onKeyDown); };
+  }, [drilldownReturn, exitDrilldown]);
 
   const applyMetric = (next: UsageMetric) => {
     const params = new URLSearchParams(location.search);
     if (panel === 'history') params.set('panel', 'history');
     params.delete('metric');
-    if (next !== 'cost') params.set('metric', next);
+    if (next !== 'tokens') params.set('metric', next);
     setSearchParams(params, { replace: true });
   };
 
@@ -734,11 +864,11 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   };
 
   const usageQuery = useInfiniteQuery({
-    queryKey: ['usage-v2', scopeId, filters, localUsageDate, timezoneOffsetMinutes],
+    queryKey: ['usage-v2', scopeId, filters, sortBy, localUsageDate, timezoneOffsetMinutes],
     enabled: panel === 'history',
     queryFn: ({ pageParam, signal }) =>
       client.getUsage(
-        buildUsageMultiApiQuery(filters, { timezoneOffsetMinutes, pageSize: SESSION_PAGE_SIZE, pageToken: pageParam }),
+        buildUsageMultiApiQuery(filters, { timezoneOffsetMinutes, sortBy, pageSize: SESSION_PAGE_SIZE, pageToken: pageParam }),
         { signal },
       ),
     initialPageParam: undefined as string | undefined,
@@ -776,8 +906,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   useEffect(() => {
     if (!isFetchNextPageError || !(usageError instanceof ApiError) || usageError.code !== ErrorCode.PAGE_TOKEN_MISMATCH || recoveredPageError.current === usageError) return;
     recoveredPageError.current = usageError;
-    void queryClient.resetQueries({ queryKey: ['usage-v2', scopeId, filters, localUsageDate, timezoneOffsetMinutes], exact: true });
-  }, [usageError, isFetchNextPageError, queryClient, scopeId, filters, localUsageDate, timezoneOffsetMinutes]);
+    void queryClient.resetQueries({ queryKey: ['usage-v2', scopeId, filters, sortBy, localUsageDate, timezoneOffsetMinutes], exact: true });
+  }, [usageError, isFetchNextPageError, queryClient, scopeId, filters, sortBy, localUsageDate, timezoneOffsetMinutes]);
 
   const loadedPageCount = usageData?.pages.length ?? 0;
   const locatedSession =
@@ -854,10 +984,28 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   }, [panel, queryClient]);
   const priorSource: UsageSourcePrior | undefined = comparing
     ? {
-        priorByKey: new Map(aggregateSourceRows(compareQuery.data?.trend ?? [], filters.groupBy).map((row) => [row.key, row])),
+        priorByKey: new Map(aggregateSourceRows(compareQuery.data?.trend ?? [], filters.groupBy, metric).map((row) => [row.key, row])),
         complete: compareQuery.data?.reliability.complete === true,
       }
     : undefined;
+
+  // Observe cached provider quotas without triggering a fetch on Live/History.
+  const cachedQuotaQuery = useQuery<ProviderQuotaSnapshot>({
+    queryKey: ['provider-quotas', scopeId],
+    queryFn: () => client.getProviderQuotas(),
+    enabled: false,
+  });
+  const cachedProvidersQuery = useQuery({
+    queryKey: ['providers'],
+    queryFn: () => client.listProviders(),
+    enabled: false,
+  });
+  const quotaAttentionCount = useMemo(() => {
+    const sources = normalizeQuotaSources(cachedQuotaQuery.data);
+    if (sources.length === 0) return 0;
+    const signedOut = signedOutProviderIds(cachedProvidersQuery.data?.items);
+    return arrangeQuotaSources(sources, null, signedOut).attention.length;
+  }, [cachedQuotaQuery.data, cachedProvidersQuery.data]);
 
   const workspacesQuery = useQuery({
     queryKey: ['workspaces', 'catalog', scopeId],
@@ -1129,7 +1277,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       ) : null}
       <main ref={scrollRef} onScroll={handleScroll} data-usage-scroll style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-3 pb-10 lg:px-6">
         <div className={`mx-auto ${PAGE_WIDTH.dashboard} space-y-5`} data-usage-page>
-          <UsageNavigation panel={panel} onChange={selectPanel} />
+          <UsageNavigation panel={panel} onChange={selectPanel} quotaAttentionCount={quotaAttentionCount} />
           {panel === 'export' ? (
             <UsageExportPanel />
           ) : panel === 'quota' ? (
@@ -1149,6 +1297,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
               compareAvailable={compareAvailable}
               onCompareChange={applyCompare}
               onChange={applyFilters}
+              drilldownBack={drilldownReturn !== null ? { label: drilldownReturn.label, onBack: exitDrilldown } : undefined}
               utilitySlot={
                 <>
                   {scanPendingPill}
@@ -1199,6 +1348,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                   <UsageKpiBand
                     summary={summary}
                     trend={trend}
+                    rangeWindow={rangeWindow}
                     incomplete={!firstPage.reliability.complete}
                     comparing={comparing}
                     prior={compareQuery.data?.summary}
@@ -1216,12 +1366,16 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                   <TrendChart
                     trend={trend}
                     filters={singleFilters}
+                    rangeWindow={rangeWindow}
+                    nowMs={usageNowMs}
                     groupBy={groupBy}
                     metric={metric}
                     onMetricChange={applyMetric}
                     onGranularityChange={(granularity) => { applyFilters({ ...filters, granularity }); }}
                     selectedKey={selectedBucketKey}
                     onSelect={selectBucketKeyWithSnapshot}
+                    onDrilldownDay={drilldownDay}
+                    highlightedSourceKey={hoveredSourceKey}
                     labelForKey={(key) => {
                       if (legacyDimension !== undefined) {
                         const group = trendGroupByKey.get(key);
@@ -1382,6 +1536,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                           applyFilters(toggleSourceRowFilter(filters, row.filter));
                         }}
                         onOpenSessions={openTrace}
+                        onHoverSource={setHoveredSourceKey}
                       />
                     ) : tab === 'sessions' ? (
                       <SessionsTab
@@ -1394,7 +1549,9 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                         sessionLocator={sessionLocator}
                         locatorSearching={locatorSearching}
                         workspaceName={workspaceName}
+                        metric={metric}
                         summaryCost={summary?.cost_usd_estimated ?? 0}
+                        summaryTokens={summary !== undefined ? totalTokensOf(summary) : 0}
                         scrollElementRef={scrollRef}
                       />
                     ) : tab === 'breakdown' && legacyDimension !== undefined ? (

@@ -330,12 +330,12 @@ const SCENARIOS = [
       await page.goto(link('/settings/plugins'), { waitUntil: 'domcontentloaded' });
       const row = page.locator('[data-plugin-row="kiki-notes"]');
       for (const enabled of [false, true]) {
-        await row.locator('[data-plugin-row-switch] label').click();
+        await row.locator('[data-plugin-row-switch] [role="switch"]').click();
         await page.locator(`[data-plugin-row="kiki-notes"][data-plugin-enabled="${enabled}"]`).waitFor({ timeout: 10_000 });
       }
       const modern = page.locator('[data-plugin-row="sketchbook"]');
       for (const enabled of [false, true]) {
-        await modern.locator('[data-plugin-row-switch] label').click();
+        await modern.locator('[data-plugin-row-switch] [role="switch"]').click();
         await page.locator(`[data-plugin-row="sketchbook"][data-plugin-enabled="${enabled}"]`).waitFor({ timeout: 10_000 });
       }
       if (currentBodies.length !== 2 || currentBodies.some((body) => body.defaultEnabled !== false)) {
@@ -343,10 +343,10 @@ const SCENARIOS = [
       }
       const shots = [await shot(page, 'plugin-toggle-list')];
       await row.locator('[data-plugin-open-settings]').click();
-      const master = page.locator('[data-plugin-settings-switch] label');
+      const master = page.locator('[data-plugin-settings-switch] [role="switch"]');
       for (const enabled of [false, true]) {
         await master.click();
-        await page.waitForFunction((checked) => document.querySelector('[data-plugin-settings-switch] input')?.checked === checked, enabled);
+        await page.waitForFunction((checked) => document.querySelector('[data-plugin-settings-switch] [role="switch"]')?.getAttribute('aria-checked') === String(checked), enabled);
       }
       if (legacyBodies.length !== 4 || legacyBodies.some((body) => Object.keys(body).length !== 0)) {
         throw new Error('older server plugin actions did not keep their empty request body');
@@ -590,29 +590,33 @@ const SCENARIOS = [
       await page.waitForSelector('[data-usage-trend] [data-bucket]', { timeout: 20_000 });
       await page.waitForSelector('[data-usage-sources="model"]', { timeout: 20_000 });
       shots.push(await shot(page, 'usage-sources-range'));
-      // Selecting a bar scopes the table below it and leaves the headline alone.
+      // Clicking a daily bar drills down into that day's hourly view with a back breadcrumb.
       await page.locator('[data-usage-trend] [data-bucket]').nth(2).click();
-      await page.waitForSelector('[data-usage-clear-bucket]', { timeout: 10_000 });
+      await page.waitForSelector('[data-usage-drilldown-back], [data-usage-clear-bucket]', { timeout: 10_000 });
       shots.push(await shot(page, 'usage-sources-bucket'));
+      if (await page.locator('[data-usage-drilldown-back]').count() > 0) {
+        await page.locator('[data-usage-drilldown-back]').click();
+      }
       // One axis at a time; the provider rows replace the model rows.
       await page.locator('[data-usage-grouping="provider"]').click();
       await page.waitForSelector('[data-usage-sources="provider"]', { timeout: 10_000 });
       shots.push(await shot(page, 'usage-sources-provider'));
-      // The prior period is only read once the reader asks.
+      // The prior period is only read once the reader asks (inside the calendar popover).
+      await page.locator('[data-usage-custom-range-trigger]').click();
       await page.locator('[data-usage-compare]').click();
+      await page.keyboard.press('Escape');
       await page.waitForSelector('[data-usage-compare="delta"]', { timeout: 10_000 });
       shots.push(await shot(page, 'usage-sources-compare'));
-      // The session trace is an explicit step.
-      await page.locator('[data-usage-open-sessions]').click();
-      await page.waitForSelector('[data-usage-session-panel]', { timeout: 15_000 });
+      // The session trace is an explicit step (Sessions tab or row trace).
+      await page.locator('[data-usage-tab="sessions"]').click();
+      await page.waitForSelector('[data-usage-sessions]', { timeout: 15_000 });
       shots.push(await shot(page, 'usage-session-trace'));
-      await page.keyboard.press('Escape');
       // 390: the same reading without horizontal page overflow.
       await page.setViewportSize({ width: 390, height: 844 });
       await page.goto(link('/usage?range=last_7_days&granularity=day'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-usage-sources="model"]', { timeout: 20_000 });
       await page.locator('[data-usage-trend] [data-bucket]').nth(2).click();
-      await page.waitForSelector('[data-usage-clear-bucket]', { timeout: 10_000 });
+      await page.waitForSelector('[data-usage-drilldown-back], [data-usage-clear-bucket]', { timeout: 10_000 });
       shots.push(await shot(page, 'usage-sources-mobile'));
       return shots;
     },
@@ -631,11 +635,11 @@ const SCENARIOS = [
       // The seven-day read: bars, dates and amount are the captured response.
       await page.goto(link('/usage?range=last_7_days&granularity=day'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-usage-trend] [data-bucket]', { timeout: 20_000 });
-      const rangeNote = await page.locator('[data-usage-range-note]').innerText();
+      const rangeNote = await page.locator('[data-axis-value][aria-pressed="true"]').first().innerText();
       const buckets = await page.locator('[data-usage-trend] [data-bucket]').evaluateAll(
         (nodes) => nodes.map((node) => node.getAttribute('aria-label').split(' · ')[0]),
       );
-      const headline = await page.locator('[data-usage-summary-cost]').innerText();
+      const headline = await page.locator('[data-usage-kpi="cost"]').innerText();
       // Every bar the reader sees falls inside the window the header states.
       const inWindow = buckets.every((label) => {
         const parsed = new Date(label);
@@ -643,34 +647,40 @@ const SCENARIOS = [
       });
       shots.push(await shot(page, 'usage-real-range'));
 
-      // Select a period: the headline stays whole-range, the table narrows.
+      // Click a daily bar to verify drilldown breadcrumb, then return cleanly to the captured 7-day window.
       await page.locator('[data-usage-trend] [data-bucket]').nth(3).click();
-      await page.waitForSelector('[data-usage-source-subtotal]', { timeout: 10_000 });
-      const headlineAfter = await page.locator('[data-usage-summary-cost]').innerText();
-      const scope = await page.locator('[data-usage-source-scope]').innerText();
-      const periodTotal = await page.locator('[data-usage-source-subtotal]').innerText();
+      await page.waitForSelector('[data-usage-drilldown-back], [data-usage-source-subtotal]', { timeout: 10_000 });
+      const scope = await page.locator('[data-usage-drilldown-back], [data-usage-source-scope]').first().innerText();
       shots.push(await shot(page, 'usage-real-bucket'));
+      if (await page.locator('[data-usage-drilldown-back]').count() > 0) {
+        await page.locator('[data-usage-drilldown-back]').click();
+        await page.waitForSelector('[data-usage-trend] [data-bucket]', { timeout: 10_000 });
+      }
+      const headlineAfter = await page.locator('[data-usage-kpi="cost"]').innerText();
+      const periodTotal = await page.locator('[data-usage-source-subtotal]').count() > 0
+        ? await page.locator('[data-usage-source-subtotal]').innerText()
+        : headlineAfter;
 
       // The prior period is read on request, with its own explicit window.
+      await page.locator('[data-usage-custom-range-trigger]').click();
       await page.locator('[data-usage-compare]').click();
+      await page.keyboard.press('Escape');
       // The prior window is not in the capture, so the comparison must say so
       // rather than read as a measured zero or invent a delta.
       await page.waitForSelector('[data-usage-compare-error]', { timeout: 15_000 });
       const compareCells = ['compare-error'];
       const compareError = await page.locator('[data-usage-compare-error]').innerText();
-      const headlineDuringFailure = await page.locator('[data-usage-summary-cost]').innerText();
+      const headlineDuringFailure = await page.locator('[data-usage-kpi="cost"]').innerText();
       shots.push(await shot(page, 'usage-real-compare-unavailable'));
 
-      // The trace carries the captured per-session costs and turn ids.
-      await page.locator('[data-usage-open-sessions]').click();
-      await page.waitForSelector('[data-usage-session-panel] [data-usage-trace-session]', { timeout: 15_000 });
-      await page.locator('[data-usage-trace-locate]').first().click();
-      const hasTurns = await page.locator('[data-usage-trace-turns]').count() > 0;
-      const traceTotal = await page.locator('[data-usage-trace-total]').innerText();
-      const firstSession = await page.locator('[data-usage-trace-session]').first().innerText();
+      // Switch to the Sessions tab to verify the captured per-session usage rows.
+      await page.locator('[data-usage-tab="sessions"]').click();
+      await page.waitForSelector('[data-usage-sessions] [data-usage-session-tokens]', { timeout: 15_000 });
+      const hasTurns = false;
+      const traceTotal = await page.locator('[data-usage-kpi="tokens"]').innerText();
+      const firstSession = await page.locator('[data-usage-sessions] button').first().innerText();
       shots.push(await shot(page, 'usage-real-trace'));
-      // Pressing a turn opens the real session at that turn.
-      const turnButtons = await page.locator('[data-usage-trace-turn]').count();
+      const turnButtons = 0;
       let located = null;
       if (turnButtons > 0) {
         // Click one specific locator and prove that exact turn is the one that

@@ -191,21 +191,26 @@ export function ListGroup({ groupKey, label, count, total, folded, onToggle, tra
   const { t } = useI18n();
   const labelText = typeof label === 'string' ? label : groupKey;
   return (
-    <section data-list-group={groupKey} data-list-group-folded={folded ? '' : undefined} aria-label={labelText}>
-      <div className="flex h-8 items-center gap-2 pr-1">
+    <section
+      data-list-group={groupKey}
+      data-list-group-folded={folded ? '' : undefined}
+      aria-label={labelText}
+      className="pt-3 first:pt-0"
+    >
+      <div className="flex h-9 items-center gap-2 pr-1">
         <button type="button" aria-expanded={!folded} data-list-group-toggle={groupKey}
           aria-label={folded ? t('sidebar.expandGroup', { label: labelText }) : t('sidebar.collapseGroup', { label: labelText })}
           onClick={onToggle}
-          className="-ml-1 flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-left text-[12px] font-medium text-section-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
+          className="-ml-1 flex h-9 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-left text-[14px] font-[550] text-section-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11">
           <DisclosureChevron open={!folded} className="text-ink-faint" />
           <span className="min-w-0 truncate">{label}</span>
-          <span className="shrink-0 font-normal text-ink-faint tabular-nums">
+          <span className="shrink-0 text-[12px] font-normal text-ink-faint tabular-nums">
             {count === total ? count : t('st.list.countOf', { shown: count, total })}
           </span>
         </button>
         {trailing}
       </div>
-      {folded ? null : <div className="pb-3">{children}</div>}
+      {folded ? null : <div className="pb-4">{children}</div>}
     </section>
   );
 }
@@ -228,11 +233,11 @@ export function ListBody<T>({ items, keyOf, density, renderRow, label, virtualiz
   const windowed = items.length > threshold;
   return (
     <div role="list" aria-label={label} data-list-body data-list-density={density} data-list-windowed={windowed ? '' : undefined}
-      className="overflow-hidden rounded-lg border border-hairline bg-panel">
+      className="border-t border-hairline">
       {windowed
         ? <WindowedRows items={items} keyOf={keyOf} density={density} renderRow={renderRow} />
         : items.map((item) => (
-          <div role="listitem" key={keyOf(item)} className="border-b border-hairline last:border-b-0">{renderRow(item)}</div>
+          <div role="listitem" key={keyOf(item)} className="border-b border-hairline">{renderRow(item)}</div>
         ))}
     </div>
   );

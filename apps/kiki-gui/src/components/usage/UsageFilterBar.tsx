@@ -14,6 +14,7 @@ import { formatCostUsd } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
 import { usePhoneMode } from '../../lib/layoutHooks';
 import {
+  derivedGranularityForRange,
   totalTokensOf,
   USAGE_SOURCE_KEY_UNKNOWN,
   type UsageRangePreset,
@@ -252,6 +253,7 @@ export function UsageFilterBar({
   compareAvailable,
   onCompareChange,
   onChange,
+  drilldownBack,
   reliabilitySlot,
   utilitySlot,
 }: {
@@ -266,6 +268,7 @@ export function UsageFilterBar({
   readonly compareAvailable: boolean;
   readonly onCompareChange: (next: boolean) => void;
   readonly onChange: (next: UsageMultiFilters) => void;
+  readonly drilldownBack?: { readonly label: string; readonly onBack: () => void };
   readonly reliabilitySlot?: ReactNode;
   readonly utilitySlot?: ReactNode;
 }) {
@@ -561,15 +564,24 @@ export function UsageFilterBar({
     if (range === 'custom') {
       const today = startOfLocalDay(Date.now());
       const defaultStart = today - 6 * 86_400_000;
+      const nextStart = filters.startAt ?? defaultStart;
+      const nextEnd = filters.endAt ?? nextLocalDayStart(today);
       onChange({
         ...filters,
         range: 'custom',
-        startAt: filters.startAt ?? defaultStart,
-        endAt: filters.endAt ?? nextLocalDayStart(today),
+        granularity: derivedGranularityForRange('custom', nextStart, nextEnd),
+        startAt: nextStart,
+        endAt: nextEnd,
       });
       return;
     }
-    onChange({ ...filters, range, startAt: undefined, endAt: undefined });
+    onChange({
+      ...filters,
+      range,
+      granularity: derivedGranularityForRange(range),
+      startAt: undefined,
+      endAt: undefined,
+    });
   };
 
   const navItemCount = isCategoryStage
@@ -900,6 +912,17 @@ export function UsageFilterBar({
   return (
     <div data-anchor="usage-filter" data-usage-filters className="space-y-2 pt-0.5">
       <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+        {drilldownBack !== undefined ? (
+          <button
+            type="button"
+            data-usage-drilldown-back
+            onClick={drilldownBack.onBack}
+            className="inline-flex h-8 items-center gap-1 rounded-lg border border-hairline bg-paper px-2.5 text-[12.5px] font-medium text-ink transition-colors hover:border-hairline-strong hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+          >
+            <Icon name="arrowLeft" size={12} />
+            <span>{drilldownBack.label}</span>
+          </button>
+        ) : null}
         <div
           role="group"
           aria-label={t('usage.axis.range')}
@@ -915,7 +938,7 @@ export function UsageFilterBar({
                 data-axis-value={preset}
                 aria-pressed={active}
                 onClick={() => { selectPresetRange(preset); }}
-                className={`inline-flex h-7 items-center rounded-md px-2 text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink sm:px-2.5 pointer-coarse:min-h-10 ${
+                className={`inline-flex h-7 items-center justify-center rounded-md px-2 text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink sm:px-2.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${
                   active
                     ? 'bg-paper font-medium text-ink shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06)]'
                     : 'text-ink-soft hover:text-ink'
@@ -938,7 +961,7 @@ export function UsageFilterBar({
             aria-expanded={calendarOpen}
             aria-pressed={isCustomOrCalendarPreset}
             onClick={() => { setCalendarOpen((open) => !open); }}
-            className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12.5px] tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink sm:px-2.5 pointer-coarse:min-h-10 ${
+            className={`inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-2 text-[12.5px] tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink sm:px-2.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${
               isCustomOrCalendarPreset
                 ? 'bg-paper font-medium text-ink shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06)]'
                 : 'text-ink-soft hover:text-ink'
@@ -1071,7 +1094,13 @@ export function UsageFilterBar({
         compareAvailable={compareAvailable}
         onSelectPreset={selectPresetRange}
         onSelectCustomRange={(startAt, endAt) => {
-          onChange({ ...filters, range: 'custom', startAt, endAt });
+          onChange({
+            ...filters,
+            range: 'custom',
+            granularity: derivedGranularityForRange('custom', startAt, endAt),
+            startAt,
+            endAt,
+          });
         }}
         onCompareChange={onCompareChange}
         onClose={() => { setCalendarOpen(false); }}
