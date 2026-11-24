@@ -18,6 +18,13 @@ import {
   withPinnedSidebarUnits,
   type SidebarUnitPagesData,
 } from './sidebarUnits';
+import {
+  isPageTokenMismatchError,
+  patchSidebarUnitRow,
+  projectSidebarUnitGroups,
+  sidebarRowToSession,
+  type SidebarUnitSpaceSource,
+} from './sidebarUnitProjection';
 
 function makeRow(id: string, overrides: Partial<SidebarRow> = {}): SidebarRow {
   const ts = overrides.own_updated_at ?? '2026-11-24T10:00:00.000Z';
@@ -371,5 +378,186 @@ describe('sidebarUnits cache & structural sharing', () => {
       pageParams: [undefined],
     };
     expect(withPinnedSidebarUnits(pinned51List, pinned51Query).map(typedUnitKey)).toEqual(['s:top', 'g:grp_51']);
+  });
+
+  it('projects persona suppression before counts/placement, respects workspace B-only filter, and lifts pinned units once', () => {
+    const nowMs = Date.parse('2026-11-24T12:00:00.000Z');
+    const homeRow = makeRow('p_home', { workspace_id: 'ws_a', title: 'Persona Home', persona_id: 'nia' });
+    const childTopic = makeRow('p_child', { workspace_id: 'ws_b', title: 'Lone Non-Home Topic', persona_id: 'nia' });
+    const archivedHome = makeRow('p_arch', {
+      workspace_id: 'ws_a',
+      title: 'Archived Home',
+      persona_id: 'nia',
+      archived: true,
+      own_updated_at: '2026-11-24T11:59:00.000Z',
+      updated_at: '2026-11-24T11:59:00.000Z',
+    });
+    const crossA = makeRow('cross_a', {
+      workspace_id: 'ws_a',
+      title: 'Opener In A',
+      own_updated_at: '2026-11-24T11:58:00.000Z',
+      updated_at: '2026-11-24T11:58:00.000Z',
+    });
+    const crossB = makeRow('cross_b', {
+      workspace_id: 'ws_b',
+      title: 'Child In B',
+      own_updated_at: '2026-11-24T11:57:00.000Z',
+      updated_at: '2026-11-24T11:57:00.000Z',
+    });
+    const pinnedMember = makeRow('pin_m', { workspace_id: 'ws_a', title: 'Pinned Child', pinned: true, own_updated_at: '2026-10-01T00:00:00.000Z', updated_at: '2026-10-01T00:00:00.000Z' });
+    const siblingOld = makeRow('pin_sib', { workspace_id: 'ws_a', title: 'Sibling', own_updated_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z' });
+
+    const source: SidebarUnitSpaceSource = {
+      spaceKey: 'main',
+      spaceName: 'Main',
+      isRemote: false,
+      serverHomeId: 'home_local',
+      units: [
+        makeGroupUnit('grp_persona', nowMs, [homeRow, childTopic], { opener_id: 'p_home', primary_workspace_id: 'ws_a' }),
+        makeSessionUnit('p_arch', nowMs - 1000, archivedHome),
+        makeGroupUnit('grp_cross', nowMs - 2000, [crossA, crossB], { opener_id: 'cross_a', primary_workspace_id: 'ws_a' }),
+        makeGroupUnit('grp_pinned', Date.parse('2026-10-01T00:00:00.000Z'), [pinnedMember, siblingOld], { has_pinned: true, opener_id: 'pin_sib' }),
+      ],
+    };
+
+    const shouldHideRow = (row: SidebarRow) => row.archived !== true && row.id === 'p_home';
+
+    // Default include_archive: 'include' to verify archived bypasses suppression.
+    const buckets = projectSidebarUnitGroups([source], {
+      groupBy: 'workspace',
+      workspaces: [{ id: 'ws_a', name: 'Alpha' }, { id: 'ws_b', name: 'Beta' }],
+      filters: { status: [], workspaces: [], archived: 'include' },
+      nowMs,
+      labels: { pinned: 'Pinned' },
+      shouldHideRow,
+    });
+
+    // Pinned lifts whole grp_pinned once into pinned bucket; never duplicated in ws_a.
+    const pinnedBucket = buckets.find((b) => b.key === 'pinned')!;
+    expect(pinnedBucket.items).toHaveLength(1);
+    expect(pinnedBucket.items[0]!.kind).toBe('session-group');
+    expect(pinnedBucket.total).toBe(2);
+
+    // grp_persona had p_home suppressed -> unwraps lone p_child into ws_b without leaking p_home!
+    const wsB = buckets.find((b) => b.key === 'ws_b')!;
+    expect(wsB.items.map((item) => item.key)).toEqual(['session:p_child']);
+
+    // grp_cross placed under opener's workspace ws_a, alongside archived p_arch (bypassing suppression).
+    const wsA = buckets.find((b) => b.key === 'ws_a')!;
+    expect(wsA.items.map((item) => item.key)).toEqual(['session:p_arch', 'group:grp_cross']);
+
+    // B-only filter shows cross_b in ws_b without revealing cross_a in ws_a.
+    const bOnly = projectSidebarUnitGroups([source], {
+      groupBy: 'workspace',
+      workspaces: [{ id: 'ws_a', name: 'Alpha' }, { id: 'ws_b', name: 'Beta' }],
+      filters: { status: [], workspaces: ['ws_b'], archived: 'hide' },
+      nowMs,
+      labels: { pinned: 'Pinned' },
+      shouldHideRow,
+    });
+    expect(bOnly.map((b) => b.key)).toEqual(['ws_b']);
+    expect(bOnly[0]!.items.map((item) => item.key)).toEqual(['session:cross_b', 'session:p_child']);
+  });
+
+  it('coalesces All Spaces group fragments only on verified origin identity, preserves host prefixes, and marks partial coverage', () => {
+    const nowMs = Date.parse('2026-11-24T12:00:00.000Z');
+    const localOpener = makeRow('s_open', { title: 'Local Opener', group_id: 'grp_shared' });
+    const remoteChild = makeRow('s_remote', {
+      title: 'Remote Child',
+      group_id: 'grp_shared',
+      created_by_session_id: 'host-local:s_open',
+      group_origin: { home_id: 'home_local', host_id: 'host-local', bridge_id: 'bridge_1' },
+    });
+    const unverifiedCollision = makeRow('s_other', {
+      title: 'Unverified Host Session',
+      group_id: 'grp_shared',
+    });
+
+    const localSrc: SidebarUnitSpaceSource = {
+      spaceKey: 'main',
+      spaceName: 'This computer',
+      isRemote: false,
+      serverHomeId: 'home_local',
+      units: [makeGroupUnit('grp_shared', nowMs, [localOpener], { member_count: 1, opener_id: 's_open' })],
+    };
+    const verifiedRemote: SidebarUnitSpaceSource = {
+      spaceKey: 'remote:conn_1',
+      spaceName: 'GPU Box',
+      isRemote: true,
+      serverHomeId: 'home_gpu',
+      units: [makeGroupUnit('grp_shared', nowMs + 1000, [remoteChild], { member_count: 1 })],
+    };
+    const unrelatedRemote: SidebarUnitSpaceSource = {
+      spaceKey: 'remote:conn_2',
+      spaceName: 'Other Box',
+      isRemote: true,
+      serverHomeId: 'home_other',
+      partialCoverage: true,
+      units: [makeGroupUnit('grp_shared', nowMs - 5000, [unverifiedCollision], { member_count: 2 })],
+    };
+
+    const buckets = projectSidebarUnitGroups([localSrc, verifiedRemote, unrelatedRemote], {
+      groupBy: 'none',
+      workspaces: [],
+      filters: { status: [], workspaces: [], archived: 'hide' },
+      nowMs,
+    });
+    expect(buckets).toHaveLength(1);
+    const items = buckets[0]!.items;
+    expect(items).toHaveLength(2);
+    const coalesced = items.find((item) => item.kind === 'session-group' && item.key === 'group:grp_shared');
+    expect(coalesced?.kind).toBe('session-group');
+    if (coalesced?.kind === 'session-group') {
+      expect(coalesced.members.map((m) => m.key)).toEqual(['remote:conn_1:session:s_remote', 'session:s_open']);
+      expect(coalesced.members[0]!.session.metadata['created_by_session_id']).toBe('host-local:s_open');
+      expect(coalesced.partialCoverage).toBe(true);
+    }
+    const separate = items.find((item) => item.kind === 'session-group' && item.key === 'remote:conn_2:group:grp_shared');
+    expect(separate).toBeDefined();
+  });
+
+  it('patches single rows inside SidebarUnitPagesData with structural sharing and detects PAGE_TOKEN_MISMATCH', () => {
+    const p0: SidebarSessionsPage = {
+      revision: 1,
+      units: [makeGroupUnit('grp_1', 5000, [makeRow('m1', { title: 'Old' }), makeRow('m2')], { opener_id: 'm1' })],
+      has_more: true,
+      next_cursor: 'c1',
+    };
+    const p1: SidebarSessionsPage = {
+      revision: 1,
+      units: [makeSessionUnit('s_other', 4000)],
+      has_more: false,
+    };
+    const data: SidebarUnitPagesData = { pages: [p0, p1], pageParams: [undefined, 'c1'] };
+    const renamed = patchSidebarUnitRow(data, 'm1', (row) => ({ ...row, title: 'New Title', pinned: true }))!;
+    expect(renamed.pages[1]).toBe(p1);
+    const grp = renamed.pages[0]!.units[0] as Extract<SidebarUnit, { kind: 'group' }>;
+    expect(grp.title).toBe('New Title');
+    expect(grp.has_pinned).toBe(true);
+    expect(sidebarRowToSession(grp.members[0]!).metadata['kiki.pinned']).toBe(true);
+    expect(isPageTokenMismatchError({ code: 40922 })).toBe(true);
+    expect(isPageTokenMismatchError(new Error('40922 PAGE_TOKEN_MISMATCH'))).toBe(true);
+    expect(isPageTokenMismatchError(new Error('network timeout'))).toBe(false);
+  });
+
+  it('forwards optional subagent, branch, agent-attribution, and external-client wire fields in sidebarRowToSession', () => {
+    const extRow = {
+      ...makeRow('child_ext', { created_by_session_id: 'parent_1' }),
+      child_session_kind: 'child',
+      parent_session_id: 'parent_1',
+      created_by_agent_id: 'agent_alpha',
+      external_client: { driver: 'external', connectionId: 'c1', clientName: 'Codex', sessionRef: 'ref-1' },
+    } as SidebarRow;
+    const reconstructed = sidebarRowToSession(extRow);
+    const meta = reconstructed.metadata as Record<string, unknown>;
+    expect(meta['child_session_kind']).toBe('child');
+    expect(meta['parent_session_id']).toBe('parent_1');
+    expect(meta['created_by_agent_id']).toBe('agent_alpha');
+    expect(meta['externalClient']).toEqual({
+      driver: 'external',
+      connectionId: 'c1',
+      clientName: 'Codex',
+      sessionRef: 'ref-1',
+    });
   });
 });

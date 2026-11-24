@@ -252,6 +252,7 @@ describe('App sidebar Escape wiring', () => {
     window.history.replaceState(null, '');
     appHarness.connection = {
       scopeId: 'local',
+      config: { url: 'http://example.test', token: '' },
       meta: { server_home_id: 'main', capabilities: {}, open_in_apps: [] },
       wsStatus: 'open',
       localClient: null,
@@ -455,8 +456,10 @@ describe('App sidebar Escape wiring', () => {
     try {
       updateHarness.options = null;
       await mountApp();
-      const seen = updateHarness.options as { hasPendingApproval?: boolean } | null;
-      expect(seen?.hasPendingApproval).toBe(true);
+      await vi.waitFor(() => {
+        const seen = updateHarness.options as { hasPendingApproval?: boolean } | null;
+        expect(seen?.hasPendingApproval).toBe(true);
+      });
     } finally {
       base.client.listSessions = original;
     }
@@ -554,10 +557,11 @@ describe('App sidebar Escape wiring', () => {
     base.client.listSessions = list;
     try {
       await mountApp();
-      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-      expect(list).toHaveBeenCalledWith(expect.objectContaining({ pinned: true }), expect.anything());
+      await vi.waitFor(() => {
+        expect(list).toHaveBeenCalledWith(expect.objectContaining({ pinned: true }), expect.anything());
+      });
       const block = element('[data-session-group-block="pinned"]');
-      const rows = [...block.querySelectorAll('[data-session-row]')].map((node) => node.getAttribute('data-session-row'));
+      const rows = [...container.querySelectorAll('[data-session-group-key="pinned"] [data-session-row]')].map((node) => node.getAttribute('data-session-row'));
       expect(rows).toEqual(['pinned_recent', 'pinned_old']);
       expect(block.querySelector('[data-session-group-count]')?.textContent).toBe('2');
       expect(container.querySelectorAll('[data-session-row="pinned_old"]')).toHaveLength(1);
@@ -828,6 +832,134 @@ describe('App sidebar Escape wiring', () => {
     } finally {
       conn.client.listSessions = originalListSessions;
       conn.client.klient.events.on = originalEventsOn;
+    }
+  });
+
+  it('uses sidebar/units when sidebar_groups is advertised, lifts pinned groups once, and suppresses persona home from session groups', async () => {
+    const conn = appHarness.connection as {
+      meta: { server_home_id: string; capabilities: Record<string, boolean>; open_in_apps: unknown[] };
+      client: {
+        listSessions: ReturnType<typeof vi.fn>;
+        listPersonas: () => Promise<unknown[]>;
+        klient: {
+          rest: {
+            rooms: { listItems: () => Promise<unknown[]> };
+            sidebar?: {
+              list: ReturnType<typeof vi.fn>;
+              resolveUnits: ReturnType<typeof vi.fn>;
+              groupMembers: ReturnType<typeof vi.fn>;
+            };
+          };
+          events: { on: () => { dispose: () => void } };
+        };
+      };
+    };
+    const originalMeta = conn.meta;
+    const originalListSessions = conn.client.listSessions;
+    const originalListPersonas = conn.client.listPersonas;
+    const listSessionsSpy = vi.fn(async () => ({ items: [], has_more: false }));
+    const sidebarRow = (
+      id: string,
+      title: string,
+      updatedAt: string,
+      extra: Record<string, unknown> = {},
+    ) => ({
+      id,
+      title,
+      workspace_id: 'ws_a',
+      cwd: '/work/a',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: updatedAt,
+      own_updated_at: updatedAt,
+      archived: false,
+      private: false,
+      pinned: false,
+      busy: false,
+      executing: false,
+      pending_interaction: 'none' as const,
+      last_seq: 1,
+      cleanup_pending: false,
+      member_role: 'standalone' as const,
+      ...extra,
+    });
+    const pinnedGroup = {
+      kind: 'group' as const,
+      id: 'grp_old_pin',
+      opener_id: 's_pin_open',
+      title: 'Pinned family',
+      workspace_id: 'ws_a',
+      created_at: '2025-01-01T00:00:00Z',
+      updated_at: '2025-01-02T00:00:00Z',
+      sort_at: Date.parse('2025-01-02T00:00:00Z'),
+      has_pinned: true,
+      busy: false,
+      executing: false,
+      pending_interaction: 'none' as const,
+      cleanup_pending: false,
+      member_count: 2,
+      members: [
+        sidebarRow('s_pin_open', 'Pinned opener', '2025-01-01T00:00:00Z', { group_id: 'grp_old_pin', member_role: 'opener' }),
+        sidebarRow('s_pin_child', 'Pinned child', '2025-01-02T00:00:00Z', { group_id: 'grp_old_pin', pinned: true, member_role: 'member' }),
+      ],
+    };
+    const personaGroup = {
+      kind: 'group' as const,
+      id: 'grp_persona',
+      opener_id: 'p_home',
+      title: 'Persona home',
+      workspace_id: 'ws_a',
+      created_at: '2026-06-01T00:00:00Z',
+      updated_at: '2026-06-01T02:00:00Z',
+      sort_at: Date.parse('2026-06-01T02:00:00Z'),
+      has_pinned: false,
+      busy: false,
+      executing: false,
+      pending_interaction: 'none' as const,
+      cleanup_pending: false,
+      member_count: 2,
+      members: [
+        sidebarRow('p_home', 'Persona home', '2026-06-01T01:00:00Z', { group_id: 'grp_persona', member_role: 'opener', persona_id: 'xiao-you' }),
+        sidebarRow('p_topic', 'Persona side topic', '2026-06-01T02:00:00Z', { group_id: 'grp_persona', member_role: 'member', persona_id: 'xiao-you' }),
+      ],
+    };
+    const sidebarList = vi.fn(async (query?: { pinned?: boolean }) => ({
+      revision: 1,
+      generation: 1,
+      units: query?.pinned === true ? [pinnedGroup] : [personaGroup],
+      has_more: false,
+    }));
+    conn.meta = { server_home_id: 'main', capabilities: { sidebar_groups: true }, open_in_apps: [] };
+    conn.client.listSessions = listSessionsSpy;
+    conn.client.listPersonas = async () => [{
+      id: 'xiao-you',
+      name: '小柚',
+      revision: 'rev-1',
+      archived: false,
+      homeSessionId: 'p_home',
+    }];
+    conn.client.klient.rest.sidebar = {
+      list: sidebarList,
+      resolveUnits: vi.fn(async () => ({ revision: 1, generation: 1, units: [], missing_session_ids: [], missing_group_ids: [] })),
+      groupMembers: vi.fn(async () => ({ revision: 1, group_id: 'grp_old_pin', member_count: 2, members: [], has_more: false })),
+    };
+    writeLayoutPreferences({ groupBy: 'workspace' });
+    try {
+      await mountApp();
+      await vi.waitFor(() => {
+        expect(container.querySelector('[data-session-group-key="pinned"] [data-sidebar-unit-group="grp_old_pin"]')).not.toBeNull();
+        expect(container.querySelector('[data-session-row="p_topic"]')).not.toBeNull();
+      }, { timeout: 2_000 });
+      expect(listSessionsSpy).not.toHaveBeenCalled();
+      expect(container.querySelectorAll('[data-sidebar-unit-group="grp_old_pin"]')).toHaveLength(1);
+      // Persona current home is suppressed from session groups; its lone remaining topic unwraps as a standalone row.
+      expect(container.querySelector('[data-session-row="p_home"]')).toBeNull();
+      expect(container.querySelector('[data-sidebar-unit-group="grp_persona"]')).toBeNull();
+    } finally {
+      conn.meta = originalMeta;
+      conn.client.listSessions = originalListSessions;
+      conn.client.listPersonas = originalListPersonas;
+      delete conn.client.klient.rest.sidebar;
+      writeLayoutPreferences({ groupBy: 'time' });
     }
   });
 });

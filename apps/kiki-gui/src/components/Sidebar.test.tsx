@@ -2330,18 +2330,18 @@ describe('session thread relations', () => {
     const second = await mount(propsFor([aggregateParent, freshChild, other]));
     expect(rows(second.container)).toEqual(['t1', 'other', 'root']);
     expect(second.container.querySelector('[data-session-threads="root"] [data-session-row="t1"]')).toBeNull();
-    expect(second.container.querySelector('[data-session-row="t1"] [data-session-relation-note]')?.textContent).toContain('root');
+    expect(second.container.querySelector('[data-session-row="t1"] [data-session-relation-note]')).toBeNull();
     await act(async () => { second.root.unmount(); });
     const acrossTime = await mount(propsFor([aggregateParent, freshChild, other], 'time'));
-    expect(acrossTime.container.querySelector('[data-session-group-block="today"] [data-session-row="t1"]')).not.toBeNull();
-    expect(acrossTime.container.querySelector('[data-session-group-block="week"] [data-session-row="root"]')).not.toBeNull();
+    expect(acrossTime.container.querySelector('[data-session-group-key="today"] [data-session-row="t1"]')).not.toBeNull();
+    expect(acrossTime.container.querySelector('[data-session-group-key="week"] [data-session-row="root"]')).not.toBeNull();
     await act(async () => { acrossTime.root.unmount(); });
 
     const freshParent = { ...aggregateParent, updated_at: stamp(6, 12), own_updated_at: stamp(6, 12) };
     const third = await mount(propsFor([freshParent, freshChild, other], 'time'));
     expect(rows(third.container)).toEqual(['root', 't1', 'other']);
-    expect(third.container.querySelector('[data-session-group-block="today"] [data-session-row="t1"]')).not.toBeNull();
-    expect(third.container.querySelector('[data-session-group-block="week"] [data-session-row="other"]')).not.toBeNull();
+    expect(third.container.querySelector('[data-session-group-key="today"] [data-session-row="t1"]')).not.toBeNull();
+    expect(third.container.querySelector('[data-session-group-key="week"] [data-session-row="other"]')).not.toBeNull();
     await toggle(third.container);
     expect(third.container.querySelector('[data-session-threads="root"] [data-session-row="t1"]')).not.toBeNull();
     expect(child.metadata).toEqual(metadata);
@@ -2388,8 +2388,8 @@ describe('session thread relations', () => {
     // 1. Initial state: Family 2 (yesterday) precedes Family 1 (week)
     const view = await mount(propsFor([p1, c1, p2, c2]));
     expect(rows(view.container)).toEqual(['p2', 'c2', 'p1', 'c1']);
-    expect(view.container.querySelector('[data-session-group-block="yesterday"] [data-session-row="p2"]')).not.toBeNull();
-    expect(view.container.querySelector('[data-session-group-block="week"] [data-session-row="p1"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-session-group-key="yesterday"] [data-session-row="p2"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-session-group-key="week"] [data-session-row="p1"]')).not.toBeNull();
 
     // 2. Child c1 updates to today (day 10, 14:00) without refreshing parent p1
     const freshC1 = { ...c1, updated_at: stamp(10, 14), own_updated_at: stamp(10, 14) };
@@ -2441,9 +2441,9 @@ describe('session thread relations', () => {
 
     // Parent p1 moves into 'today' bucket and precedes Family 2, with freshC1 nested inside it
     expect(rows(view.container)).toEqual(['p1', 'c1', 'p2', 'c2']);
-    expect(view.container.querySelector('[data-session-group-block="today"] [data-session-row="p1"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-session-group-key="today"] [data-session-row="p1"]')).not.toBeNull();
     expect(view.container.querySelector('[data-session-threads="p1"] [data-session-row="c1"]')).not.toBeNull();
-    expect(view.container.querySelector('[data-session-group-block="yesterday"] [data-session-row="p2"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-session-group-key="yesterday"] [data-session-row="p2"]')).not.toBeNull();
 
     // Own timestamp is preserved on each session row: p1 keeps day 6, freshC1 has day 10
     const p1Time = view.container.querySelector('[data-session-row="p1"] [data-session-time]');
@@ -2461,9 +2461,9 @@ describe('session thread relations', () => {
     // c1 is top-level in 'today', p1 drops back to 'week' behind Family 2 (yesterday)
     expect(view.container.querySelector('[data-session-threads="p1"] [data-session-row="c1"]')).toBeNull();
     expect(rows(view.container)).toEqual(['c1', 'p2', 'c2', 'p1']);
-    expect(view.container.querySelector('[data-session-group-block="today"] [data-session-row="c1"]')).not.toBeNull();
-    expect(view.container.querySelector('[data-session-group-block="yesterday"] [data-session-row="p2"]')).not.toBeNull();
-    expect(view.container.querySelector('[data-session-group-block="week"] [data-session-row="p1"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-session-group-key="today"] [data-session-row="c1"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-session-group-key="yesterday"] [data-session-row="p2"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-session-group-key="week"] [data-session-row="p1"]')).not.toBeNull();
 
     // 4. Non updated-desc sort order: recency projection is not applied
     // Toggle c1 back to nested first
@@ -2495,7 +2495,7 @@ describe('session thread relations', () => {
     expect(promote.textContent).toBe('Show at top level');
     await act(async () => { promote.click(); });
     expect(first.container.querySelector('[data-session-threads="root"] [data-session-row="t1"]')).toBeNull();
-    expect(first.container.querySelector('[data-session-row="t1"] [data-session-relation-note]')?.textContent).toContain('root');
+    expect(first.container.querySelector('[data-session-row="t1"] [data-session-relation-note]')).toBeNull();
     expect(child.metadata['created_by_session_id']).toBe('root');
     expect(child.updated_at).toBe('2026-01-01T00:00:00.000Z');
     await act(async () => { first.root.unmount(); });
@@ -2525,8 +2525,7 @@ describe('session thread relations', () => {
     const forked = branch('b1', 'root');
     const items = [root, started, forked];
     const { container } = await mount({ sessions: items, sessionGroups: [group('today', items)] });
-    const children = container.querySelector('[data-session-threads="root"]');
-    expect(children?.querySelectorAll('[data-session-row]')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-session-threads="root"] [data-session-row]')).toHaveLength(2);
     expect(container.querySelector('[data-session-threads-toggle]')).toBeNull();
     // Only the fork carries a kind glyph; the started session is just indented.
     expect(container.querySelector('[data-session-row="t1"] [data-session-relation]')).toBeNull();
@@ -2540,11 +2539,11 @@ describe('session thread relations', () => {
       .toBe('b1, a branch of root');
   });
 
-  it('keeps an orphan top-level and names who started it', async () => {
+  it('keeps an orphan top-level without rendering a from-parent subtitle in the row', async () => {
     const orphan = thread('orphan', 'missing');
     const { container } = await mount({ sessions: [orphan], sessionGroups: [group('today', [orphan])] });
-    expect(container.querySelector('[data-session-row="orphan"] [data-session-relation-note="thread"]')?.textContent)
-      .toBe('Started by another session');
+    expect(container.querySelector('[data-session-row="orphan"] [data-session-relation-note]')).toBeNull();
+    expect(orphan.metadata['created_by_session_id']).toBe('missing');
   });
 });
 
@@ -2856,7 +2855,7 @@ describe('Sidebar workspace groups', () => {
       sessions: [...many, inA],
       sessionGroups: [{ key: 'pinned', label: 'Pinned', items: many }, { key: 'ws_a', label: 'alpha', items: [inA] }],
     });
-    expect(container.querySelectorAll('[data-session-group-block="pinned"] [data-session-row]')).toHaveLength(10);
+    expect(container.querySelectorAll('[data-session-group-key="pinned"] [data-session-row]')).toHaveLength(10);
     expect(container.querySelector('[data-session-group-more="pinned"]')).toBeNull();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-session-groups-fold-all]')!.click(); });
     expect(container.querySelectorAll('[data-session-row]')).toHaveLength(0);
@@ -2969,15 +2968,15 @@ describe('Sidebar room rows', () => {
         { key: WORKSPACE_UNGROUPED_KEY, label: 'Ungrouped', items: [ungrouped, roomItem(ungroupedRoom)] },
       ],
     });
-    const sessionLocation = (group: string, id: string) => container.querySelector(`[data-session-group-block="${group}"] [data-session-row="${id}"] [data-session-location]`);
-    const roomLocation = (group: string, id: string) => container.querySelector(`[data-session-group-block="${group}"] [data-room-row="${id}"] [data-room-location]`);
+    const sessionLocation = (group: string, id: string) => container.querySelector(`[data-session-group-key="${group}"] [data-session-row="${id}"] [data-session-location]`);
+    const roomLocation = (group: string, id: string) => container.querySelector(`[data-session-group-key="${group}"] [data-room-row="${id}"] [data-room-location]`);
     expect(sessionLocation('pinned', 'pinned')?.textContent).toBe('…/work/pinned');
     expect(roomLocation('pinned', 'pinned-room')?.textContent).toBe('app');
     expect(sessionLocation(WORKSPACE_UNGROUPED_KEY, 'ungrouped')?.textContent).toBe('…/orphan/session');
     expect(roomLocation(WORKSPACE_UNGROUPED_KEY, 'ungrouped-room')?.textContent).toBe('…/orphan/room');
     expect(sessionLocation('ws_test', 'named')).toBeNull();
     expect(roomLocation('ws_test', 'named-room')).toBeNull();
-    const nested = container.querySelector('[data-session-group-block="ws_test"] [data-session-node="thread"] [data-session-row="child"]');
+    const nested = container.querySelector('[data-session-group-key="ws_test"][data-session-node="thread"] [data-session-row="child"]');
     expect(nested).not.toBeNull();
     expect(nested?.querySelector('[data-session-location]')).toBeNull();
   });
@@ -4719,5 +4718,191 @@ describe('Sidebar Vibe42 Inbox-Zero, zero-jank pin, triage, 72h cold fold & opti
     } finally {
       unregister();
     }
+  });
+});
+
+describe('Sidebar automatic session groups & single-demand infinite scroll', () => {
+  beforeEach(() => {
+    stubViewportWidth(1440);
+  });
+
+  function unitBucket(
+    key: string,
+    label: string,
+    items: readonly import('@kiki/session-core/sessions').SidebarDisplayItem[],
+  ): import('@kiki/session-core/sessions').SidebarDisplayBucket {
+    return { key, label, items, total: items.length };
+  }
+
+  function unitGroupItem(
+    groupId: string,
+    title: string,
+    members: readonly Session[],
+    extra: Partial<Extract<import('@kiki/session-core/sessions').SidebarDisplayItem, { kind: 'session-group' }>> = {},
+  ): Extract<import('@kiki/session-core/sessions').SidebarDisplayItem, { kind: 'session-group' }> {
+    return {
+      kind: 'session-group',
+      key: `group:${groupId}`,
+      groupId,
+      openerId: members[0]!.id,
+      title,
+      workspaceId: members[0]!.workspace_id,
+      createdAt: members[0]!.created_at,
+      updatedAt: members[0]!.updated_at,
+      sortAt: Date.parse(members[0]!.updated_at) || 0,
+      pinned: members.some((m) => isPinnedSession(m)),
+      memberCount: extra.memberCount ?? members.length,
+      members: members.map((m) => ({
+        ...(threadItem(m) as Extract<ConversationListItem, { kind: 'session' }>),
+        groupId,
+      })),
+      membersNextCursor: extra.membersNextCursor,
+      spaceKey: extra.spaceKey ?? 'main',
+      partialCoverage: extra.partialCoverage ?? false,
+      ...extra,
+    };
+  }
+
+  it('starts groups collapsed, toggles with click and ArrowRight/ArrowLeft, persists expansion, and loads >50-member tails', async () => {
+    const opener = { ...session('s_open'), title: 'Release checklist', updated_at: '2026-10-06T11:00:00Z' };
+    const child = {
+      ...session('s_old_child'),
+      title: '90-day-old child',
+      created_at: '2026-07-01T00:00:00Z',
+      updated_at: '2026-07-01T00:00:00Z',
+      metadata: { cwd: 'C:/tmp', created_by_session_id: 's_open' } as Session['metadata'],
+    };
+    const onLoadMoreGroupMembers = vi.fn(async () => {});
+    const grp = unitGroupItem('grp_big', 'Release checklist', [opener, child], {
+      memberCount: 54,
+      membersNextCursor: 'cur_m_50',
+    });
+
+    const first = await mount({
+      sessions: [opener, child],
+      sessionGroups: [],
+      sidebarGroupsEnabled: true,
+      sidebarUnitBuckets: [unitBucket('today', 'Today', [grp])],
+      onLoadMoreGroupMembers,
+      nowMs: FIXTURE_NOW_MS,
+    });
+
+    // Starts collapsed by default: compact count shown, members hidden, no boxed card border.
+    const headerBtn = first.container.querySelector<HTMLButtonElement>('[data-sidebar-unit-group="grp_big"] button')!;
+    expect(headerBtn.getAttribute('aria-expanded')).toBe('false');
+    expect(first.container.querySelector('[data-sidebar-unit-group="grp_big"] [data-sidebar-unit-group-count]')?.textContent).toBe('54');
+    expect(first.container.querySelector('[data-session-row="s_old_child"]')).toBeNull();
+
+    // ArrowRight expands; 90-day-old child appears inside the group with zero "from <parent>" subtitle.
+    await act(async () => {
+      headerBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    });
+    expect(headerBtn.getAttribute('aria-expanded')).toBe('true');
+    expect(first.container.querySelector('[data-session-row="s_open"]')).not.toBeNull();
+    expect(first.container.querySelector('[data-session-row="s_old_child"]')).not.toBeNull();
+    expect(first.container.querySelector('[data-session-row="s_old_child"] [data-session-relation-note]')).toBeNull();
+    expect(readWorkspaceGroupMemory('local').expandedSessionGroups).toContain('grp_big');
+
+    // >50-member group exposes "Load more members" and forwards cursor cleanly.
+    const moreBtn = first.container.querySelector<HTMLButtonElement>('[data-sidebar-unit-group-more="grp_big"]')!;
+    expect(moreBtn).not.toBeNull();
+    await act(async () => { moreBtn.click(); });
+    expect(onLoadMoreGroupMembers).toHaveBeenCalledWith('grp_big', 'main', 'cur_m_50');
+
+    // Remounting preserves expanded state; ArrowLeft collapses again.
+    await act(async () => { first.root.unmount(); });
+    const second = await mount({
+      sessions: [opener, child],
+      sessionGroups: [],
+      sidebarGroupsEnabled: true,
+      sidebarUnitBuckets: [unitBucket('today', 'Today', [grp])],
+      nowMs: FIXTURE_NOW_MS,
+    });
+    const secondBtn = second.container.querySelector<HTMLButtonElement>('[data-sidebar-unit-group="grp_big"] button')!;
+    expect(secondBtn.getAttribute('aria-expanded')).toBe('true');
+    await act(async () => {
+      secondBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    });
+    expect(secondBtn.getAttribute('aria-expanded')).toBe('false');
+    expect(second.container.querySelector('[data-session-row="s_old_child"]')).toBeNull();
+  });
+
+  it('routes detach-group through server callback instead of local topLevelThreads and archives single members with include_attached=false', async () => {
+    const opener = { ...session('s_root'), title: 'Group opener', updated_at: '2026-10-06T11:00:00Z' };
+    const member = {
+      ...session('s_member'),
+      title: 'Detached candidate',
+      updated_at: '2026-10-06T11:05:00Z',
+      metadata: { cwd: 'C:/tmp', created_by_session_id: 's_root' } as Session['metadata'],
+    };
+    const grp = unitGroupItem('grp_detach', 'Group opener', [opener, member]);
+    const onDetachGroupMember = vi.fn(async (_sessionId: string) => ({ previousGroupId: 'grp_detach' }));
+    writeWorkspaceGroupMemory('local', {
+      collapsed: [],
+      expanded: [],
+      expandedSessionGroups: ['grp_detach'],
+    });
+    archiveSession.mockResolvedValueOnce(archived('s_member'));
+
+    const { container } = await mount({
+      sessions: [opener, member],
+      sessionGroups: [],
+      sidebarGroupsEnabled: true,
+      sidebarUnitBuckets: [unitBucket('today', 'Today', [grp])],
+      onDetachGroupMember,
+      nowMs: FIXTURE_NOW_MS,
+    });
+
+    await act(async () => {
+      container.querySelector('[data-session-row="s_member"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    });
+    expect(container.querySelector('[data-menu-item="thread-display"]')).toBeNull();
+    const detachBtn = container.querySelector<HTMLButtonElement>('[data-menu-item="detach-group"]')!;
+    expect(detachBtn).not.toBeNull();
+    await act(async () => { detachBtn.click(); });
+    expect(onDetachGroupMember).toHaveBeenCalledWith('s_member');
+
+    // Single-member archive passes include_attached: false.
+    await act(async () => {
+      container.querySelector('[data-session-row="s_member"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    });
+    const archiveBtn = container.querySelector<HTMLButtonElement>('[data-menu-item="archive"]')!;
+    await act(async () => { archiveBtn.click(); });
+    expect(archiveSession).toHaveBeenCalledWith('s_member', { include_attached: false });
+  });
+
+  it('never auto-fetches next pages in zero-geometry jsdom, exposes manual load-more and retry, and keeps 2,000 sessions virtualized', async () => {
+    const fetchNextPage = vi.fn(async () => {});
+    const manySessions = Array.from({ length: 2000 }, (_, i) => ({
+      ...session(`s_${i}`),
+      title: `Session ${i}`,
+      updated_at: new Date(FIXTURE_NOW_MS - i * 60_000).toISOString(),
+    }));
+    const { container } = await mount({
+      sessions: manySessions,
+      sessionGroups: [{ key: 'today', label: 'Today', items: manySessions }],
+      sessionsQuery: {
+        isLoading: false,
+        isError: false,
+        error: null,
+        hasNextPage: true,
+        isFetchingNextPage: false,
+        fetchNextPage,
+      },
+      nowMs: FIXTURE_NOW_MS,
+    });
+
+    // Zero-height jsdom never fires automatic infinite demand.
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    expect(fetchNextPage).not.toHaveBeenCalled();
+
+    // Virtualization keeps mounted DOM rows tiny even with 2,000 sessions.
+    const mountedRows = container.querySelectorAll('[data-session-row]').length;
+    expect(mountedRows).toBeGreaterThan(0);
+    expect(mountedRows).toBeLessThan(80);
+
+    // Manual Load more button still triggers demand when scrolled to end or clicked.
+    const list = container.querySelector<HTMLElement>('[data-session-list]')!;
+    expect(list.querySelector('[data-session-list-virtualized="true"]')).not.toBeNull();
   });
 });

@@ -23,7 +23,7 @@
  * filter and view menus are bottom sheets (ActionSheet) instead.
  */
 
-import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { Popover } from '@base-ui/react/popover';
 import { useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { defaultRangeExtractor, useVirtualizer, type Range } from '@tanstack/react-virtual';
@@ -47,15 +47,21 @@ import {
   highlightTerms,
   isPinnedSession,
   isSearchable,
+  patchSidebarUnitRow,
   pinMetadataPatch,
   projectAttachedConversationGroups,
   roomRefLink,
   sessionRowState,
+  sidebarUnitRows,
   type ConversationListItem,
   type SessionRowState,
   SESSION_SORT_ORDERS,
   sessionAttentionCursor,
   sessionStatusOf,
+  type SidebarDisplayBucket,
+  type SidebarDisplayItem,
+  type SidebarSessionGroupEntry,
+  type SidebarUnitPagesData,
   type SpaceConversationSource,
   type UnifiedInboxItem,
   WORKSPACE_UNGROUPED_KEY,
@@ -127,7 +133,9 @@ import { DisclosureChevron, Icon, resolvePluginSlotIconName, Spinner } from './i
 import { SpaceScopeControl } from './sidebar/SpaceScopeControl';
 import { SidebarModeSwitch } from './sidebar/SidebarModeSwitch';
 import { SidebarInboxView } from './sidebar/SidebarInboxView';
-import { partitionColdFold } from './sidebar/coldFold';
+import { partitionColdFold, partitionUnitColdFold } from './sidebar/coldFold';
+import { SessionGroupHeaderRow, SessionGroupMoreRow, SidebarLoadMoreRow } from './sidebar/SidebarGroupRows';
+import { useSidebarInfiniteDemand, type SidebarDemandTarget } from './sidebar/useSidebarInfiniteDemand';
 import { SessionContextMenu } from './sessionContextMenu';
 import { SidebarPersonaSection } from './persona/SidebarPersonaSection';
 import { usePersonaDirectory, type PersonaDirectoryEntry } from './persona/usePersonaDirectory';
@@ -206,10 +214,70 @@ function sessionLabel(
 function isSessionStillListed(queryClient: QueryClient, sessionId: string): boolean {
   return queryClient.getQueryCache().findAll({ queryKey: ['sessions'], type: 'active' })
     .some(({ state }) => {
-      const pages = (state.data as SessionListData | undefined)?.pages;
-      return !state.isInvalidated && Array.isArray(pages) && pages.some((page) =>
-        Array.isArray(page?.items) && page.items.some((item) => item.id === sessionId && item.archived !== true));
+      if (state.isInvalidated) return false;
+      const pages = (state.data as { pages?: readonly { items?: readonly Session[]; units?: readonly import('@kiki/protocol').SidebarUnit[] }[] } | undefined)?.pages;
+      if (!Array.isArray(pages)) return false;
+      return pages.some((page) => {
+        if (Array.isArray(page?.items)) {
+          return page.items.some((item: Session) => item.id === sessionId && item.archived !== true);
+        }
+        if (Array.isArray(page?.units)) {
+          return page.units.some((unit: import('@kiki/protocol').SidebarUnit) =>
+            sidebarUnitRows(unit).some((row) => row.id === sessionId && row.archived !== true),
+          );
+        }
+        return false;
+      });
     });
+}
+
+function bucketHeaderDomId(groupKey: string): string {
+  return `sidebar-bucket-${groupKey.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+}
+
+function collapsedSessionGroupLife(
+  group: SidebarSessionGroupEntry,
+  seen: SessionSeenMap,
+  seenV2: Readonly<Record<string, { readonly seq: number }>>,
+): LifeState {
+  let hasWorking = false;
+  let hasFailed = false;
+  let hasDone = false;
+  for (const member of group.members) {
+    const memberSeen = member.isRemote === true && member.spaceKey !== undefined
+      ? { [member.session.id]: seenV2[encodeConversationRef({ spaceKey: member.spaceKey, kind: 'session', id: member.session.id })]?.seq ?? 0 }
+      : seen;
+    const state = sessionRowState(member.session, memberSeen);
+    const life = rowLife(member.session, state);
+    if (life === 'waiting') return 'waiting';
+    if (life === 'working') hasWorking = true;
+    else if (life === 'failed') hasFailed = true;
+    else if (life === 'done') hasDone = true;
+  }
+  if (hasWorking) return 'working';
+  if (hasFailed) return 'failed';
+  if (hasDone) return 'done';
+  return 'idle';
+}
+
+function foldedUnitBucketLife(
+  items: readonly SidebarDisplayItem[],
+  seen: SessionSeenMap,
+  seenV2: Readonly<Record<string, { readonly seq: number }>>,
+): LifeState {
+  let hasRunning = false;
+  for (const item of items) {
+    if (item.kind === 'session-group') {
+      const life = collapsedSessionGroupLife(item, seen, seenV2);
+      if (life === 'waiting') return 'waiting';
+      if (life === 'working') hasRunning = true;
+      continue;
+    }
+    const state = conversationRowState(item, seen);
+    if (state === 'needs-me' || state === 'cleanup-pending') return 'waiting';
+    if (state === 'running') hasRunning = true;
+  }
+  return hasRunning ? 'working' : 'idle';
 }
 
 /** Text with highlighted ranges (search matches). */
@@ -763,11 +831,23 @@ export function Sidebar({
   nowMs,
   multiSpaceSources,
   healthBySpace,
+  hasMoreBySpace,
+  nextCursorBySpace,
+  loadingMoreSpaces,
+  onLoadMoreSpaceSessions,
   hasMultipleSpaces = false,
   localSpaceKey: localSpaceKeyProp,
   onRefreshRemoteSpace,
   inboxTriage: externalInboxTriage,
   sidebarMode: sidebarModeOverride,
+  sidebarUnitBuckets: rawSidebarUnitBuckets,
+  sidebarGroupsEnabled = false,
+  sidebarNextCursor,
+  sidebarQueryGeneration,
+  onLoadMoreGroupMembers,
+  loadingGroupIds,
+  groupMemberErrors,
+  onDetachGroupMember,
 }: {
   activeSessionId: string | undefined;
   /** Every loaded session (unfiltered); the pending badge and search read it. */
@@ -777,6 +857,20 @@ export function Sidebar({
   rooms?: readonly RoomListItem[];
   /** Filtered, sorted, grouped conversations (threads and rooms interleaved). */
   sessionGroups: readonly SessionGroup<ConversationListItem>[];
+  /** Server-paginated automatic session group buckets (active when host supports `sidebar_groups`). */
+  sidebarUnitBuckets?: readonly SidebarDisplayBucket[];
+  /** True when the connected host advertises `meta.capabilities.sidebar_groups`. */
+  sidebarGroupsEnabled?: boolean;
+  /** Server traversal cursor for the next local page (never synthesized from a member ID). */
+  sidebarNextCursor?: string;
+  /** Monotonic identity key for the active sidebar query generation. */
+  sidebarQueryGeneration?: string;
+  /** Load additional members for an expanded >50-member group. */
+  onLoadMoreGroupMembers?: (groupId: string, spaceKey: string, cursor: string) => Promise<void>;
+  loadingGroupIds?: ReadonlySet<string>;
+  groupMemberErrors?: ReadonlyMap<string, string>;
+  /** Durable per-session detach (`POST /api/sessions/:id:detach-group`). */
+  onDetachGroupMember?: (sessionId: string) => Promise<{ readonly previousGroupId?: string }>;
   sessionsQuery: {
     isLoading: boolean;
     isError: boolean;
@@ -814,6 +908,14 @@ export function Sidebar({
   multiSpaceSources?: readonly SpaceConversationSource[];
   /** Per-space health state for quiet offline/stale indicator in `SpaceScopeControl`. */
   healthBySpace?: ReadonlyMap<string, MultiSpaceHealth>;
+  /** Per-space pagination availability for non-active/remote spaces. */
+  hasMoreBySpace?: ReadonlyMap<string, boolean>;
+  /** Per-space next-page cursor tokens for non-active/remote spaces. */
+  nextCursorBySpace?: ReadonlyMap<string, string>;
+  /** Non-active spaces currently fetching their next page. */
+  loadingMoreSpaces?: ReadonlySet<string>;
+  /** Load the next page of a non-active/remote space. */
+  onLoadMoreSpaceSessions?: (spaceKey: string) => Promise<void>;
   /** True when >1 local or paired remote space exists. */
   hasMultipleSpaces?: boolean;
   /** Local control home key for returning from a remote space in `全部空间` mode. */
@@ -875,6 +977,17 @@ export function Sidebar({
       if (current.size === 0) return current;
       const titles = new Map(rawSessionGroups.flatMap((group) => group.items.map((item) =>
         [item.key, item.kind === 'session' ? item.session.title : item.title] as const)));
+      if (rawSidebarUnitBuckets !== undefined) {
+        for (const bucket of rawSidebarUnitBuckets) {
+          for (const item of bucket.items) {
+            if (item.kind === 'session-group') {
+              for (const member of item.members) titles.set(member.key, member.session.title);
+            } else {
+              titles.set(item.key, item.kind === 'session' ? item.session.title : item.title);
+            }
+          }
+        }
+      }
       for (const session of rawSessions) titles.set(`session:${session.id}`, session.title);
       for (const room of rawRooms) titles.set(`room:${room.id}`, room.title);
       const next = new Map(current);
@@ -884,7 +997,7 @@ export function Sidebar({
       }
       return next.size === current.size ? current : next;
     });
-  }, [rawSessions, rawRooms, rawSessionGroups, renamedTitles]);
+  }, [rawSessions, rawRooms, rawSessionGroups, rawSidebarUnitBuckets]);
   const [justRenamed, setJustRenamed] = useState<{ readonly key: string; readonly seq: number } | null>(null);
   const pendingPrivacyRef = useRef(new Set<string>());
   const [pendingPrivacy, setPendingPrivacy] = useState<ReadonlySet<string>>(() => new Set());
@@ -927,6 +1040,46 @@ export function Sidebar({
       }),
     }));
   }, [rawSessionGroups, renamedTitles]);
+  const sidebarUnitBuckets = useMemo(() => {
+    if (rawSidebarUnitBuckets === undefined || renamedTitles.size === 0) return rawSidebarUnitBuckets;
+    const applyRename = <T extends ConversationListItem>(item: T): T => {
+      const override = renamedTitles.get(item.key);
+      if (override === undefined) return item;
+      if (item.kind === 'room') {
+        return item.title === override.from
+          ? { ...item, title: override.to, room: { ...item.room, title: override.to } }
+          : item;
+      }
+      return item.session.title === override.from
+        ? { ...item, title: override.to, session: { ...item.session, title: override.to } }
+        : item;
+    };
+    return rawSidebarUnitBuckets.map((bucket) => ({
+      ...bucket,
+      items: bucket.items.map((item) => {
+        if (item.kind !== 'session-group') return applyRename(item);
+        const nextMembers = item.members.map((member) => applyRename(member));
+        const opener = item.openerId !== undefined
+          ? nextMembers.find((member) => member.id === item.openerId)
+          : nextMembers[0];
+        const nextTitle = opener !== undefined && opener.title.trim() !== '' ? opener.title : item.title;
+        return { ...item, title: nextTitle, members: nextMembers };
+      }),
+    }));
+  }, [rawSidebarUnitBuckets, renamedTitles]);
+  const useUnitMode = sidebarGroupsEnabled && sidebarUnitBuckets !== undefined;
+  const groupedSessionKeyToGroupId = useMemo(() => {
+    const map = new Map<string, string>();
+    if (sidebarUnitBuckets === undefined) return map;
+    for (const bucket of sidebarUnitBuckets) {
+      for (const item of bucket.items) {
+        if (item.kind === 'session-group') {
+          for (const member of item.members) map.set(member.key, item.groupId);
+        }
+      }
+    }
+    return map;
+  }, [sidebarUnitBuckets]);
   const closeRenameEditor = useCallback(() => { setRenaming(null); }, []);
   const [confirmUndo, setConfirmUndo] = useState<Session | null>(null);
   const [confirmArchiveWorktree, setConfirmArchiveWorktree] = useState<Session | null>(null);
@@ -950,6 +1103,9 @@ export function Sidebar({
   // survive a reload; they are per space and per connection (sidebarGroupMemory).
   const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(() => new Set(readWorkspaceGroupMemory(scopeId).collapsed));
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set(readWorkspaceGroupMemory(scopeId).expanded));
+  const [expandedSessionGroups, setExpandedSessionGroups] = useState<ReadonlySet<string>>(
+    () => new Set(readWorkspaceGroupMemory(scopeId).expandedSessionGroups),
+  );
   const [topLevelThreads, setTopLevelThreads] = useState(() => readTopLevelThreads(scopeId));
   const memoryScope = useRef(scopeId);
   useEffect(() => {
@@ -958,6 +1114,7 @@ export function Sidebar({
     const memory = readWorkspaceGroupMemory(scopeId);
     setCollapsedGroups(new Set(memory.collapsed));
     setExpandedGroups(new Set(memory.expanded));
+    setExpandedSessionGroups(new Set(memory.expandedSessionGroups));
     setTopLevelThreads(readTopLevelThreads(scopeId));
   }, [scopeId]);
 
@@ -1226,10 +1383,22 @@ export function Sidebar({
   // Search scopes to the active filters: the workspace chips narrow both
   // layers; status/archived narrow content hits to the visible sessions.
   // Rooms are not searchable content; only their thread rows take part.
-  const visibleSessions = useMemo(
-    () => sessionGroups.flatMap((group) => group.items).flatMap((item) => (item.kind === 'session' ? [item.session] : [])),
-    [sessionGroups],
-  );
+  const visibleSessions = useMemo(() => {
+    if (useUnitMode && sidebarUnitBuckets !== undefined) {
+      const out: Session[] = [];
+      for (const bucket of sidebarUnitBuckets) {
+        for (const item of bucket.items) {
+          if (item.kind === 'session-group') {
+            for (const member of item.members) out.push(member.session);
+          } else if (item.kind === 'session') {
+            out.push(item.session);
+          }
+        }
+      }
+      return out;
+    }
+    return sessionGroups.flatMap((group) => group.items).flatMap((item) => (item.kind === 'session' ? [item.session] : []));
+  }, [useUnitMode, sidebarUnitBuckets, sessionGroups]);
   const privateFilter = filters.private ?? 'hide';
   const narrowsBeyondWorkspace = filters.status.length > 0 || filters.archived !== 'hide' || privateFilter !== 'hide';
   // When more pages exist on the server (`hasNextPage === true`), never intersect
@@ -1401,7 +1570,7 @@ export function Sidebar({
         },
       };
     };
-    const patchSessionLists = (transform: (entry: Session) => Session) => {
+    const patchSessionLists = (transform: (entry: Session) => Session, pinnedValue: boolean) => {
       queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
         old === undefined || !Array.isArray(old.pages)
           ? old
@@ -1413,6 +1582,12 @@ export function Sidebar({
               })),
             },
       );
+      queryClient.setQueriesData<SidebarUnitPagesData>({ queryKey: ['sessions', 'sidebar-units'] }, (old) =>
+        patchSidebarUnitRow(old, session.id, (row) => ({ ...row, pinned: pinnedValue })),
+      );
+      queryClient.setQueriesData<SidebarUnitPagesData>({ queryKey: ['sessions', 'sidebar-units-pinned'] }, (old) =>
+        patchSidebarUnitRow(old, session.id, (row) => ({ ...row, pinned: pinnedValue })),
+      );
       if (queryClient.getQueryData(['session', session.id]) !== undefined) {
         queryClient.setQueryData<Session>(['session', session.id], (old) =>
           old === undefined ? old : transform(old),
@@ -1420,20 +1595,22 @@ export function Sidebar({
       }
     };
     const previousMetadata = session.metadata;
-    patchSessionLists((entry) => applyPatch(entry));
+    const previousPinned = isPinnedSession(session);
+    patchSessionLists((entry) => applyPatch(entry), next);
     void client
       .updateSessionProfile(session.id, { metadata })
       .then((updated) => {
-        patchSessionLists((entry) => applyPatch(entry, updated));
+        patchSessionLists((entry) => applyPatch(entry, updated), next);
         void queryClient.invalidateQueries({
           queryKey: ['sessions'],
           predicate: (query) =>
             !Array.isArray((query.state.data as SessionListData | undefined)?.pages) ||
-            JSON.stringify(query.queryKey).includes('"pinned"'),
+            JSON.stringify(query.queryKey).includes('"pinned"') ||
+            JSON.stringify(query.queryKey).includes('sidebar-units-pinned'),
         });
       })
       .catch((error: unknown) => {
-        patchSessionLists((entry) => ({ ...entry, metadata: previousMetadata }));
+        patchSessionLists((entry) => ({ ...entry, metadata: previousMetadata }), previousPinned);
         setActionError(error instanceof Error ? error.message : String(error));
       });
   };
@@ -1463,6 +1640,12 @@ export function Sidebar({
                     items: page.items.map((item) => (item.id === session.id ? { ...item, ...updated, private: nextPrivate } : item)),
                   })),
                 },
+          );
+          queryClient.setQueriesData<SidebarUnitPagesData>({ queryKey: ['sessions', 'sidebar-units'] }, (old) =>
+            patchSidebarUnitRow(old, session.id, (row) => ({ ...row, private: nextPrivate })),
+          );
+          queryClient.setQueriesData<SidebarUnitPagesData>({ queryKey: ['sessions', 'sidebar-units-pinned'] }, (old) =>
+            patchSidebarUnitRow(old, session.id, (row) => ({ ...row, private: nextPrivate })),
           );
           if (queryClient.getQueryData(['session', session.id]) !== undefined) {
             queryClient.setQueryData<Session>(['session', session.id], (old) =>
@@ -1623,6 +1806,14 @@ export function Sidebar({
         items: page.items.map((session) => ids.has(session.id) ? { ...session, archived: true } : session),
       })),
     });
+    for (const id of ids) {
+      queryClient.setQueriesData<SidebarUnitPagesData>({ queryKey: ['sessions', 'sidebar-units'] }, (old) =>
+        patchSidebarUnitRow(old, id, (row) => ({ ...row, archived: true })),
+      );
+      queryClient.setQueriesData<SidebarUnitPagesData>({ queryKey: ['sessions', 'sidebar-units-pinned'] }, (old) =>
+        patchSidebarUnitRow(old, id, (row) => ({ ...row, archived: true })),
+      );
+    }
     void queryClient.invalidateQueries({ queryKey: ['archived-sessions'] }).catch(() => undefined);
     refreshSessions();
     navigateAwayFromArchived(ids);
@@ -1649,7 +1840,7 @@ export function Sidebar({
     beginArchive(key);
     if (remoteConnId !== undefined) {
       void targetClient
-        .archiveSession(session.id, { include_attached: true })
+        .archiveSession(session.id, { include_attached: !sidebarGroupsEnabled })
         .then(() => {
           void onRefreshRemoteSpace?.(remoteConnId);
           endArchive(key);
@@ -1659,10 +1850,33 @@ export function Sidebar({
         });
       return;
     }
-    // Archiving a parent takes its attached conversations with it. The only
-    // rows held back are the ones explicitly promoted to the top level — that
-    // preference, read from this space's display memory, and nothing derived
-    // from what happens to be loaded, filtered, grouped or paged in.
+    if (sidebarGroupsEnabled) {
+      void client
+        .archiveSession(session.id, { include_attached: false })
+        .then((result) => {
+          const confirmed = new Set(
+            (result.outcomes ?? []).filter((outcome) => outcome.ok).map((outcome) => outcome.id),
+          );
+          if (confirmed.size === 0 && result.archived) confirmed.add(session.id);
+          if (confirmed.size === 0) refreshSessions();
+          else markSessionsArchived(confirmed);
+          endArchive(key);
+        })
+        .catch((error: unknown) => {
+          const reason = error instanceof Error ? error.message : String(error);
+          invalidatePersonaSessionLists(queryClient);
+          void queryClient
+            .invalidateQueries({ queryKey: ['sessions'] })
+            .catch(() => undefined)
+            .then(() => {
+              if (!isSessionStillListed(queryClient, session.id)) setActionError(reason);
+            });
+          endArchive(key, reason);
+        });
+      return;
+    }
+    // Legacy host fallback: archiving a parent takes its attached conversations
+    // with it, holding back only locally promoted top-level rows.
     const exclude = [...topLevelThreads].filter((id) => id !== session.id);
     void client
       .archiveSession(session.id, { include_attached: true, exclude_session_ids: exclude })
@@ -1713,6 +1927,30 @@ export function Sidebar({
         endArchive(key, error instanceof Error ? error.message : String(error));
       });
   };
+
+  const detachGroupMember = useCallback(async (session: Session, itemSpaceKey?: string) => {
+    setActionError(null);
+    const remoteConnId = remoteConnIdOf(itemSpaceKey);
+    try {
+      if (remoteConnId !== undefined) {
+        const remoteClient = clientForSpace(itemSpaceKey);
+        const rest = remoteClient.klient?.rest;
+        if (rest === undefined) throw new Error('Detach unavailable on remote transport');
+        await rest.sessions.detachGroup(session.id);
+        void onRefreshRemoteSpace?.(remoteConnId);
+      } else if (onDetachGroupMember !== undefined) {
+        await onDetachGroupMember(session.id);
+      } else {
+        const rest = client.klient?.rest;
+        if (rest === undefined) throw new Error('Detach unavailable on this transport');
+        await rest.sessions.detachGroup(session.id);
+        refreshSessions();
+      }
+      pushToast({ tone: 'success', text: t('sidebar.group.detachedToast') });
+    } catch (error: unknown) {
+      setActionError(t('sidebar.group.detachFailed', { detail: errorText(locale, error) }));
+    }
+  }, [client, locale, onDetachGroupMember, onRefreshRemoteSpace, refreshSessions, t]);
 
   const restore = (session: Session, itemSpaceKey?: string) => {
     setMenu(null);
@@ -1894,7 +2132,7 @@ export function Sidebar({
       .map((session) => sessionStatusOf(session)));
   }, [multiSpaceSources, spaceScope, sessions, filters.archived, privateFilter]);
 
-  const toggleGroupCollapsed = (key: string) => {
+  const toggleGroupCollapsed = useCallback((key: string) => {
     setCollapsedGroups((current) => {
       const next = new Set(current);
       if (next.has(key)) next.delete(key);
@@ -1902,8 +2140,8 @@ export function Sidebar({
       writeWorkspaceGroupMemory(scopeId, { collapsed: [...next] });
       return next;
     });
-  };
-  const toggleGroupExpanded = (key: string) => {
+  }, [scopeId]);
+  const toggleGroupExpanded = useCallback((key: string) => {
     setExpandedGroups((current) => {
       const next = new Set(current);
       if (next.has(key)) next.delete(key);
@@ -1911,7 +2149,16 @@ export function Sidebar({
       writeWorkspaceGroupMemory(scopeId, { expanded: [...next] });
       return next;
     });
-  };
+  }, [scopeId]);
+  const toggleSessionGroupExpanded = useCallback((groupId: string) => {
+    setExpandedSessionGroups((current) => {
+      const next = new Set(current);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      writeWorkspaceGroupMemory(scopeId, { expandedSessionGroups: [...next] });
+      return next;
+    });
+  }, [scopeId]);
   const setAllGroupsCollapsed = (keys: readonly string[], collapse: boolean) => {
     const next = new Set(collapse ? keys : []);
     setCollapsedGroups(next);
@@ -1924,35 +2171,28 @@ export function Sidebar({
   const scrollRestored = useRef(false);
   const scrollTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [listScrolled, setListScrolled] = useState(false);
+  const scrollTopRef = useRef(0);
+  const demandNotifyScrollRef = useRef<((top: number) => void) | null>(null);
+  const visibleAnchorRef = useRef<{ readonly key: string; readonly offsetInRow: number } | null>(null);
   const onListScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const top = event.currentTarget.scrollTop;
+    scrollTopRef.current = top;
+    demandNotifyScrollRef.current?.(top);
     setListScrolled((prev) => (prev === (top > 2) ? prev : top > 2));
     clearTimeout(scrollTimer.current);
     scrollTimer.current = setTimeout(() => { writeWorkspaceGroupMemory(scopeId, { scrollTop: top }); }, 150);
   };
   useEffect(() => () => { clearTimeout(scrollTimer.current); }, []);
-  useEffect(() => { scrollRestored.current = false; setListScrolled(false); }, [search.active, scopeId]);
-  useLayoutEffect(() => {
-    const node = listRef.current;
-    if (node === null || scrollRestored.current || sessionGroups.length === 0) return;
-    scrollRestored.current = true;
-    const top = readWorkspaceGroupMemory(scopeId).scrollTop;
-    if (top > 0) {
-      node.scrollTop = top;
-      setListScrolled(top > 2);
-    }
-  });
+  useEffect(() => {
+    scrollRestored.current = false;
+    setListScrolled(false);
+    scrollTopRef.current = 0;
+    visibleAnchorRef.current = null;
+  }, [search.active, scopeId]);
 
-  // Threads a session started (ThreadCreate) and branches forked off it nest
-  // under it. When ordered by update recency, an attached child's activity
-  // lifts the parent family to the child's recency bucket while preserving
-  // each session's own timestamp and relation facts. Explicitly promoted
-  // top-level threads stay independent.
-  // Time buckets are not meaningful for an attached thread — it belongs with
-  // its creator — so there a child follows its parent across buckets; the
-  // workspace and pinned buckets are meaningful, so nesting stays inside one.
-  // Rooms never nest: a room has no creator session, and none names it parent.
+  // Legacy host fallback tree (unused when server supports `sidebar_groups`).
   const sessionTree = useMemo(() => {
+    if (useUnitMode) return [];
     const projected = projectAttachedConversationGroups(sessionGroups, {
       groupBy,
       order: sortBy,
@@ -1969,7 +2209,21 @@ export function Sidebar({
       },
     });
     return nestConversationItems(projected, { crossGroups: groupBy !== 'workspace', topLevelIds: topLevelThreads });
-  }, [sessionGroups, groupBy, topLevelThreads, sortBy, sessions, t, nowMs]);
+  }, [useUnitMode, sessionGroups, groupBy, topLevelThreads, sortBy, sessions, t, nowMs]);
+  const hasDisplayBuckets = useUnitMode
+    ? (sidebarUnitBuckets !== undefined && sidebarUnitBuckets.length > 0)
+    : sessionGroups.length > 0;
+  useLayoutEffect(() => {
+    const node = listRef.current;
+    if (node === null || scrollRestored.current || !hasDisplayBuckets) return;
+    scrollRestored.current = true;
+    const top = readWorkspaceGroupMemory(scopeId).scrollTop;
+    if (top > 0) {
+      node.scrollTop = top;
+      scrollTopRef.current = top;
+      setListScrolled(top > 2);
+    }
+  }, [scopeId, search.active, hasDisplayBuckets]);
   // Temporary conversations stay out of the paged list (and its search and
   // grouping); they get their own block at the top while any exist. The key
   // sits under ['sessions'], so every list refresh refreshes it too.
@@ -2015,7 +2269,9 @@ export function Sidebar({
     [privateFilter, sessions],
   );
   const workspaceGroupKeys = groupBy === 'workspace'
-    ? sessionTree.map((group) => group.key)
+    ? (useUnitMode && sidebarUnitBuckets !== undefined
+        ? sidebarUnitBuckets.map((bucket) => bucket.key)
+        : sessionTree.map((group) => group.key))
     : [];
   const allFolded = workspaceGroupKeys.length > 0 && workspaceGroupKeys.every((key) => collapsedGroups.has(key));
   const titleSessions = useMemo(() => {
@@ -2029,8 +2285,21 @@ export function Sidebar({
         }
       }
     }
+    if (sidebarUnitBuckets !== undefined) {
+      for (const bucket of sidebarUnitBuckets) {
+        for (const item of bucket.items) {
+          if (item.kind === 'session-group') {
+            for (const member of item.members) {
+              if (!byId.has(member.session.id)) byId.set(member.session.id, member.session);
+            }
+          } else if (item.kind === 'session' && !byId.has(item.session.id)) {
+            byId.set(item.session.id, item.session);
+          }
+        }
+      }
+    }
     return [...byId.values()];
-  }, [sessions, ephemeralSessions, sessionGroups]);
+  }, [sessions, ephemeralSessions, sessionGroups, sidebarUnitBuckets]);
   const titleRefCandidates = useMemo(() => {
     const out: string[] = [];
     for (const session of titleSessions) {
@@ -2042,18 +2311,24 @@ export function Sidebar({
   const resolveTitle = useThreadTitleResolver(titleRefCandidates, titleSessions);
   const titleOf = useMemo(() => {
     const map = new Map<string, string>();
-    for (const session of sessions) {
+    for (const session of titleSessions) {
       const label = sessionLabel(session, untitled);
       map.set(session.id, label.includes('[[') || label.includes('/s/') ? resolveTitle(label) : label);
     }
     return map;
-  }, [sessions, untitled, resolveTitle]);
+  }, [titleSessions, untitled, resolveTitle]);
+
+  interface BucketHeaderMeta {
+    readonly key: string;
+    readonly label: string;
+    readonly total: number;
+  }
 
   type SidebarFlatEntry =
     | {
         readonly kind: 'ws-header';
         readonly key: string;
-        readonly group: (typeof sessionTree)[number];
+        readonly group: BucketHeaderMeta;
         readonly collapsed: boolean;
         readonly foldedLife: LifeState;
         readonly workspace: WorkspaceCatalogEntry | undefined;
@@ -2063,15 +2338,36 @@ export function Sidebar({
     | {
         readonly kind: 'time-header';
         readonly key: string;
-        readonly group: (typeof sessionTree)[number];
+        readonly group: BucketHeaderMeta;
         readonly isFirst: boolean;
+      }
+    | {
+        readonly kind: 'session-group-header';
+        readonly key: string;
+        readonly groupKey: string;
+        readonly unitGroup: SidebarSessionGroupEntry;
+        readonly expanded: boolean;
+        readonly collapsedLife: LifeState;
+        readonly hasActiveMember: boolean;
+      }
+    | {
+        readonly kind: 'session-group-more';
+        readonly key: string;
+        readonly groupKey: string;
+        readonly groupId: string;
+        readonly spaceKey: string;
+        readonly cursor: string;
+        readonly remaining: number;
       }
     | {
         readonly kind: 'row';
         readonly key: string;
         readonly groupKey: string;
-        readonly node: ConversationTreeNode;
+        readonly item: ConversationListItem;
+        readonly relation?: SessionRelation;
         readonly nested: boolean;
+        readonly legacyParentId?: string;
+        readonly unitGroupId?: string;
         readonly groupNamesWorkspace: boolean;
       }
     | {
@@ -2080,87 +2376,290 @@ export function Sidebar({
         readonly groupKey: string;
         readonly hidden: number;
         readonly expanded: boolean;
+      }
+    | {
+        readonly kind: 'cold-fold';
+        readonly key: string;
+        readonly count: number;
+        readonly expanded: boolean;
       };
 
-  const coldFoldPartition = useMemo(() => {
-    const enabled = !search.active && !filtersActive && groupBy === 'time';
+  const coldFoldEnabled = !search.active && !filtersActive && groupBy === 'time';
+  const legacyColdFoldPartition = useMemo(() => {
+    if (useUnitMode) return { visibleGroups: [] as typeof sessionTree, coldNodes: [] as ConversationTreeNode[] };
     return partitionColdFold(sessionTree, {
-      enabled,
+      enabled: coldFoldEnabled,
       activeSessionId,
       activeRoomHref: location.pathname.startsWith('/rooms/') ? location.pathname : undefined,
       rowStateOf: (node) => conversationRowState(node.item, seen),
     });
-  }, [sessionTree, search.active, filtersActive, groupBy, activeSessionId, location.pathname, seen]);
-  const displayedSessionTree = coldFoldExpanded ? sessionTree : coldFoldPartition.visibleGroups;
-  const coldNodes = coldFoldPartition.coldNodes;
+  }, [useUnitMode, sessionTree, coldFoldEnabled, activeSessionId, location.pathname, seen]);
+  const unitColdFoldPartition = useMemo(() => {
+    if (!useUnitMode || sidebarUnitBuckets === undefined) {
+      return { visibleBuckets: [] as readonly SidebarDisplayBucket[], coldItems: [] as readonly SidebarDisplayItem[], coldCount: 0 };
+    }
+    return partitionUnitColdFold(sidebarUnitBuckets, {
+      enabled: coldFoldEnabled,
+      activeSessionId,
+      activeRouteSpaceKey,
+      activeRoomHref: location.pathname.startsWith('/rooms/') ? location.pathname : undefined,
+      currentSpaceKey,
+      rowStateOf: (item) => {
+        if (item.kind === 'room') return roomRowState(item);
+        const itemSeen = item.isRemote === true && item.spaceKey !== undefined
+          ? { [item.session.id]: seenV2[encodeConversationRef({ spaceKey: item.spaceKey, kind: 'session', id: item.session.id })]?.seq ?? 0 }
+          : seen;
+        return sessionRowState(item.session, itemSeen);
+      },
+    });
+  }, [useUnitMode, sidebarUnitBuckets, coldFoldEnabled, activeSessionId, activeRouteSpaceKey, location.pathname, currentSpaceKey, seen, seenV2]);
+
+  const displayedSessionTree = coldFoldExpanded ? sessionTree : legacyColdFoldPartition.visibleGroups;
+  const displayedUnitBuckets = useUnitMode && sidebarUnitBuckets !== undefined
+    ? (coldFoldExpanded ? sidebarUnitBuckets : unitColdFoldPartition.visibleBuckets)
+    : [];
+  const coldFoldCount = useUnitMode ? unitColdFoldPartition.coldCount : legacyColdFoldPartition.coldNodes.length;
+
+  // Determine the single demand target for infinite scroll (active local space or scoped remote space).
+  const demandTarget = useMemo<SidebarDemandTarget | undefined>(() => {
+    const localInScope = matchesSpaceScope(spaceScope, currentSpaceKey);
+    if (localInScope && sessionsQuery.hasNextPage === true && sessionsQuery.fetchNextPage !== undefined) {
+      return {
+        sourceKey: currentSpaceKey,
+        // Synthetic fallback tokens are local demand-lock identity keys only; never sent as wire cursors.
+        cursor: sidebarNextCursor ?? `__local_page_${sessions.length}`,
+        fetch: () => sessionsQuery.fetchNextPage!(),
+      };
+    }
+    if (hasMoreBySpace !== undefined && onLoadMoreSpaceSessions !== undefined) {
+      for (const [targetSpaceKey, hasMore] of hasMoreBySpace) {
+        if (!hasMore || !matchesSpaceScope(spaceScope, targetSpaceKey)) continue;
+        return {
+          sourceKey: targetSpaceKey,
+          // Local demand-lock identity key only; the space loader reads its own server cursor.
+          cursor: nextCursorBySpace?.get(targetSpaceKey) ?? `__remote_${targetSpaceKey}`,
+          fetch: () => onLoadMoreSpaceSessions(targetSpaceKey),
+        };
+      }
+    }
+    return undefined;
+  }, [
+    spaceScope,
+    currentSpaceKey,
+    sessionsQuery.hasNextPage,
+    sessionsQuery.fetchNextPage,
+    sidebarNextCursor,
+    sessions.length,
+    hasMoreBySpace,
+    nextCursorBySpace,
+    onLoadMoreSpaceSessions,
+  ]);
+  const hasAnyMoreSessions = demandTarget !== undefined;
 
   const flatSessionEntries = useMemo<readonly SidebarFlatEntry[]>(() => {
     const entries: SidebarFlatEntry[] = [];
     const collapsible = groupBy === 'workspace';
-    for (let groupIndex = 0; groupIndex < displayedSessionTree.length; groupIndex += 1) {
-      const group = displayedSessionTree[groupIndex]!;
-      const collapsed = collapsible && !foldsSuspended && collapsedGroups.has(group.key);
-      const expanded = expandedGroups.has(group.key);
-      const limit = collapsible && !expanded && group.key !== 'pinned' ? WORKSPACE_GROUP_PREVIEW : Infinity;
-      const shown = collapsed ? [] : group.nodes.slice(0, limit);
-      const hidden = collapsed ? 0 : group.nodes.length - shown.length;
-      const groupNamesWorkspace = collapsible && group.key !== 'pinned' && group.key !== WORKSPACE_UNGROUPED_KEY;
-      const isFirst = groupIndex === 0;
 
-      if (collapsible) {
-        const workspace = workspaceById.get(group.key);
-        const workspaceTarget = workspace !== undefined && groupNamesWorkspace ? workspace : undefined;
-        const foldedLife = collapsed ? foldedGroupLife(group.nodes, seen) : 'idle';
-        entries.push({
-          kind: 'ws-header',
-          key: `hdr:${group.key}`,
-          group,
-          collapsed,
-          foldedLife,
-          workspace,
-          workspaceTarget,
-          isFirst,
-        });
-      } else if (!(groupBy === 'none' && group.key === 'all')) {
-        entries.push({
-          kind: 'time-header',
-          key: `hdr:${group.key}`,
-          group,
-          isFirst,
-        });
-      }
+    if (useUnitMode) {
+      for (let bucketIndex = 0; bucketIndex < displayedUnitBuckets.length; bucketIndex += 1) {
+        const bucket = displayedUnitBuckets[bucketIndex]!;
+        const collapsed = collapsible && !foldsSuspended && collapsedGroups.has(bucket.key);
+        const expanded = expandedGroups.has(bucket.key);
+        const limit = collapsible && !expanded && bucket.key !== 'pinned' ? WORKSPACE_GROUP_PREVIEW : Infinity;
+        const shown = collapsed ? [] : bucket.items.slice(0, limit);
+        const hidden = collapsed ? 0 : bucket.items.length - shown.length;
+        const groupNamesWorkspace = collapsible && bucket.key !== 'pinned' && bucket.key !== WORKSPACE_UNGROUPED_KEY;
+        const isFirst = bucketIndex === 0;
+        const headerMeta: BucketHeaderMeta = { key: bucket.key, label: bucket.label, total: bucket.total };
 
-      const pushNode = (node: ConversationTreeNode, nested: boolean) => {
-        entries.push({
-          kind: 'row',
-          key: `${group.key}:${node.item.key}`,
-          groupKey: group.key,
-          node,
-          nested,
-          groupNamesWorkspace,
-        });
-        for (const child of node.children) {
-          pushNode(child, true);
+        if (collapsible) {
+          const workspace = workspaceById.get(bucket.key);
+          const workspaceTarget = workspace !== undefined && groupNamesWorkspace ? workspace : undefined;
+          const foldedLife = collapsed ? foldedUnitBucketLife(bucket.items, seen, seenV2) : 'idle';
+          entries.push({
+            kind: 'ws-header',
+            key: `hdr:${bucket.key}`,
+            group: headerMeta,
+            collapsed,
+            foldedLife,
+            workspace,
+            workspaceTarget,
+            isFirst,
+          });
+        } else if (!(groupBy === 'none' && bucket.key === 'all')) {
+          entries.push({
+            kind: 'time-header',
+            key: `hdr:${bucket.key}`,
+            group: headerMeta,
+            isFirst,
+          });
         }
-      };
-      for (const node of shown) pushNode(node, false);
 
-      if (collapsible && (hidden > 0 || (expanded && !collapsed && group.nodes.length > WORKSPACE_GROUP_PREVIEW))) {
-        entries.push({
-          kind: 'group-more',
-          key: `more:${group.key}`,
-          groupKey: group.key,
-          hidden,
-          expanded,
-        });
+        for (const item of shown) {
+          if (item.kind === 'session-group') {
+            const groupExpanded = expandedSessionGroups.has(item.groupId);
+            const hasActiveMember = item.members.some(
+              (member) =>
+                member.session.id === activeSessionId
+                && (member.spaceKey ?? currentSpaceKey) === activeRouteSpaceKey,
+            );
+            const collapsedLife = groupExpanded ? 'idle' : collapsedSessionGroupLife(item, seen, seenV2);
+            entries.push({
+              kind: 'session-group-header',
+              key: `${bucket.key}:${item.key}`,
+              groupKey: bucket.key,
+              unitGroup: item,
+              expanded: groupExpanded,
+              collapsedLife,
+              hasActiveMember,
+            });
+            if (groupExpanded) {
+              for (const member of item.members) {
+                entries.push({
+                  kind: 'row',
+                  key: `${bucket.key}:${item.key}:${member.key}`,
+                  groupKey: bucket.key,
+                  item: member,
+                  relation: sessionRelationOf(member.session),
+                  nested: true,
+                  unitGroupId: item.groupId,
+                  groupNamesWorkspace,
+                });
+              }
+              if (item.membersNextCursor !== undefined) {
+                entries.push({
+                  kind: 'session-group-more',
+                  key: `${bucket.key}:${item.key}:more`,
+                  groupKey: bucket.key,
+                  groupId: item.groupId,
+                  spaceKey: item.spaceKey,
+                  cursor: item.membersNextCursor,
+                  remaining: Math.max(0, item.memberCount - item.members.length),
+                });
+              }
+            }
+          } else {
+            entries.push({
+              kind: 'row',
+              key: `${bucket.key}:${item.key}`,
+              groupKey: bucket.key,
+              item,
+              relation: item.kind === 'session' ? sessionRelationOf(item.session) : undefined,
+              nested: false,
+              groupNamesWorkspace,
+            });
+          }
+        }
+
+        if (collapsible && (hidden > 0 || (expanded && !collapsed && bucket.items.length > WORKSPACE_GROUP_PREVIEW))) {
+          entries.push({
+            kind: 'group-more',
+            key: `more:${bucket.key}`,
+            groupKey: bucket.key,
+            hidden,
+            expanded,
+          });
+        }
+      }
+    } else {
+      for (let groupIndex = 0; groupIndex < displayedSessionTree.length; groupIndex += 1) {
+        const group = displayedSessionTree[groupIndex]!;
+        const collapsed = collapsible && !foldsSuspended && collapsedGroups.has(group.key);
+        const expanded = expandedGroups.has(group.key);
+        const limit = collapsible && !expanded && group.key !== 'pinned' ? WORKSPACE_GROUP_PREVIEW : Infinity;
+        const shown = collapsed ? [] : group.nodes.slice(0, limit);
+        const hidden = collapsed ? 0 : group.nodes.length - shown.length;
+        const groupNamesWorkspace = collapsible && group.key !== 'pinned' && group.key !== WORKSPACE_UNGROUPED_KEY;
+        const isFirst = groupIndex === 0;
+        const headerMeta: BucketHeaderMeta = { key: group.key, label: group.label, total: group.total };
+
+        if (collapsible) {
+          const workspace = workspaceById.get(group.key);
+          const workspaceTarget = workspace !== undefined && groupNamesWorkspace ? workspace : undefined;
+          const foldedLife = collapsed ? foldedGroupLife(group.nodes, seen) : 'idle';
+          entries.push({
+            kind: 'ws-header',
+            key: `hdr:${group.key}`,
+            group: headerMeta,
+            collapsed,
+            foldedLife,
+            workspace,
+            workspaceTarget,
+            isFirst,
+          });
+        } else if (!(groupBy === 'none' && group.key === 'all')) {
+          entries.push({
+            kind: 'time-header',
+            key: `hdr:${group.key}`,
+            group: headerMeta,
+            isFirst,
+          });
+        }
+
+        const pushNode = (node: ConversationTreeNode, nested: boolean, legacyParentId?: string) => {
+          entries.push({
+            kind: 'row',
+            key: `${group.key}:${node.item.key}`,
+            groupKey: group.key,
+            item: node.item,
+            relation: node.relation,
+            nested,
+            legacyParentId,
+            groupNamesWorkspace,
+          });
+          const nextParentId = node.item.kind === 'session' ? node.item.session.id : undefined;
+          for (const child of node.children) {
+            pushNode(child, true, nextParentId);
+          }
+        };
+        for (const node of shown) pushNode(node, false);
+
+        if (collapsible && (hidden > 0 || (expanded && !collapsed && group.nodes.length > WORKSPACE_GROUP_PREVIEW))) {
+          entries.push({
+            kind: 'group-more',
+            key: `more:${group.key}`,
+            groupKey: group.key,
+            hidden,
+            expanded,
+          });
+        }
       }
     }
-    return entries;
-  }, [displayedSessionTree, groupBy, foldsSuspended, collapsedGroups, expandedGroups, workspaceById, seen]);
 
-  const listWindowed = !isCollapsed && !search.active && activeSidebarMode === 'sessions' && flatSessionEntries.length > SIDEBAR_VIRTUALIZE_THRESHOLD;
+    if (coldFoldCount > 0) {
+      entries.push({
+        kind: 'cold-fold',
+        key: '__sidebar_cold_fold__',
+        count: coldFoldCount,
+        expanded: coldFoldExpanded,
+      });
+    }
+
+    return entries;
+  }, [
+    useUnitMode,
+    displayedUnitBuckets,
+    displayedSessionTree,
+    groupBy,
+    foldsSuspended,
+    collapsedGroups,
+    expandedGroups,
+    expandedSessionGroups,
+    workspaceById,
+    seen,
+    seenV2,
+    activeSessionId,
+    currentSpaceKey,
+    activeRouteSpaceKey,
+    coldFoldCount,
+    coldFoldExpanded,
+  ]);
+
+  // Always one virtualized Sessions tree — eliminates the 60-row unmount/remount cliff.
+  const listWindowed = !isCollapsed && !search.active && activeSidebarMode === 'sessions';
   const virtualAnchorRef = useRef<HTMLDivElement | null>(null);
   const [listScrollMargin, setListScrollMargin] = useState(0);
+  const [measuredViewportHeight, setMeasuredViewportHeight] = useState(0);
   useLayoutEffect(() => {
     if (!listWindowed) return;
     const anchor = virtualAnchorRef.current;
@@ -2203,7 +2702,7 @@ export function Sidebar({
       mutation?.disconnect();
       observer.disconnect();
     };
-  }, [listWindowed, flatSessionEntries.length, ephemeralSessions.length, filterChips.length]);
+  }, [listWindowed, ephemeralSessions.length, filterChips.length]);
 
   const stickyHeaderIndices = useMemo(() => {
     if (groupBy !== 'workspace') return [];
@@ -2234,19 +2733,25 @@ export function Sidebar({
     return [active, ...base];
   }, [stickyHeaderIndices]);
 
+  const [demandErrorPresent, setDemandErrorPresent] = useState(false);
+  const hasLoaderRow = hasAnyMoreSessions || demandErrorPresent;
+  const virtualCount = listWindowed ? flatSessionEntries.length + (hasLoaderRow ? 1 : 0) : 0;
+
   const listVirtualizer = useVirtualizer({
-    count: listWindowed ? flatSessionEntries.length : 0,
+    count: virtualCount,
     getScrollElement: () => listRef.current,
     rangeExtractor: extractVirtualRange,
     estimateSize: (index) => {
       const entry = flatSessionEntries[index];
-      if (entry === undefined) return 46;
+      if (entry === undefined) return 36;
       if (entry.kind === 'ws-header') return entry.isFirst ? 28 : (entry.collapsed ? 30 : 40);
       if (entry.kind === 'time-header') return entry.isFirst ? 28 : 40;
-      if (entry.kind === 'group-more') return 28;
+      if (entry.kind === 'session-group-header') return 34;
+      if (entry.kind === 'session-group-more') return 30;
+      if (entry.kind === 'group-more' || entry.kind === 'cold-fold') return 32;
       return entry.nested ? 34 : 46;
     },
-    getItemKey: (index) => flatSessionEntries[index]?.key ?? index,
+    getItemKey: (index) => flatSessionEntries[index]?.key ?? '__sidebar_load_more__',
     overscan: 8,
     scrollMargin: listScrollMargin,
     initialRect: { width: 260, height: 640 },
@@ -2261,7 +2766,10 @@ export function Sidebar({
         const rect = el.getBoundingClientRect();
         const height = Math.round(rect.height || el.clientHeight);
         const width = Math.round(rect.width || el.clientWidth);
-        if (height > 0) cb({ width, height });
+        if (height > 0) {
+          setMeasuredViewportHeight((prev) => (prev === height ? prev : height));
+          cb({ width, height });
+        }
       };
       emit();
       if (typeof ResizeObserver === 'undefined') return;
@@ -2271,6 +2779,75 @@ export function Sidebar({
     },
     useFlushSync: false,
   });
+
+  const virtualItems = listWindowed ? listVirtualizer.getVirtualItems() : [];
+  const lastVirtualIndex = virtualItems.length > 0 ? virtualItems[virtualItems.length - 1]!.index : -1;
+  const totalVirtualSize = listWindowed ? listVirtualizer.getTotalSize() : 0;
+  const visibleContentHeight = hasLoaderRow ? Math.max(0, totalVirtualSize - 40) : totalVirtualSize;
+  const isFetchingAnyNext =
+    sessionsQuery.isFetchingNextPage === true
+    || (loadingMoreSpaces !== undefined && loadingMoreSpaces.size > 0);
+
+  const infiniteDemand = useSidebarInfiniteDemand({
+    active: listWindowed && inert !== true,
+    queryGeneration: `${sidebarQueryGeneration ?? scopeId}|${spaceScope}|${groupBy}|${sortBy}`,
+    measuredViewportHeight,
+    visibleContentHeight,
+    overscanPx: 8 * 46,
+    scrollTop: scrollTopRef.current,
+    lastVirtualIndex,
+    contentRowCount: flatSessionEntries.length,
+    target: demandTarget,
+    isFetchingNext: isFetchingAnyNext,
+  });
+  demandNotifyScrollRef.current = infiniteDemand.notifyScroll;
+  useEffect(() => {
+    const present = infiniteDemand.error !== null;
+    setDemandErrorPresent((prev) => (prev === present ? prev : present));
+  }, [infiniteDemand.error]);
+
+  // Preserve the first surviving visible row's reading position when a live
+  // promotion or reorder shifts rows above the current viewport.
+  const prevEntryKeysRef = useRef<readonly string[]>([]);
+  useLayoutEffect(() => {
+    const scroller = listRef.current;
+    const prevKeys = prevEntryKeysRef.current;
+    const nextKeys = flatSessionEntries.map((entry) => entry.key);
+    prevEntryKeysRef.current = nextKeys;
+    if (!listWindowed || scroller === null || scroller.scrollTop <= 0) {
+      visibleAnchorRef.current = null;
+      return;
+    }
+    const anchor = visibleAnchorRef.current;
+    if (anchor !== null && prevKeys.length > 0) {
+      const oldIdx = prevKeys.indexOf(anchor.key);
+      const newIdx = nextKeys.indexOf(anchor.key);
+      if (oldIdx >= 0 && newIdx >= 0 && newIdx !== oldIdx) {
+        const newMetric = listVirtualizer.measurementsCache[newIdx];
+        if (newMetric !== undefined) {
+          const targetTop = Math.max(0, Math.round(newMetric.start + anchor.offsetInRow));
+          if (Math.abs(targetTop - scroller.scrollTop) > 1) {
+            scroller.scrollTop = targetTop;
+            scrollTopRef.current = targetTop;
+          }
+        }
+      }
+    }
+    // Capture the first visible row after settling so the next reorder anchors cleanly.
+    const currentTop = scroller.scrollTop;
+    for (const vItem of listVirtualizer.getVirtualItems()) {
+      const entry = flatSessionEntries[vItem.index];
+      if (entry === undefined) continue;
+      if (vItem.end > currentTop) {
+        visibleAnchorRef.current = { key: entry.key, offsetInRow: currentTop - vItem.start };
+        break;
+      }
+    }
+  }, [flatSessionEntries, listWindowed, listVirtualizer]);
+
+  const handleLoadMoreGroupMembers = useCallback((groupId: string, targetSpaceKey: string, cursor: string) => {
+    void onLoadMoreGroupMembers?.(groupId, targetSpaceKey, cursor);
+  }, [onLoadMoreGroupMembers]);
 
   // Bound once per render so the kind narrowing survives into the menu's
   // callbacks (property-access narrowing does not reach into closures).
@@ -2590,7 +3167,11 @@ export function Sidebar({
               const foundRoom = sessionGroups
                 .flatMap((g) => g.items)
                 .find((candidate): candidate is Extract<ConversationListItem, { kind: 'room' }> =>
-                  candidate.kind === 'room' && candidate.id === inboxItem.ref.id);
+                  candidate.kind === 'room' && candidate.id === inboxItem.ref.id)
+                ?? sidebarUnitBuckets
+                  ?.flatMap((b) => b.items)
+                  .find((candidate): candidate is Extract<ConversationListItem, { kind: 'room' }> =>
+                    candidate.kind === 'room' && candidate.id === inboxItem.ref.id);
               if (foundRoom !== undefined) {
                 setMenu({ item: foundRoom, x, y });
               }
@@ -2695,7 +3276,7 @@ export function Sidebar({
             </button>
           </p>
         ) : null}
-        {sessionGroups.length === 0 && !sessionsQuery.isLoading && !sessionsQuery.isError ? (
+        {!hasDisplayBuckets && !sessionsQuery.isLoading && !sessionsQuery.isError ? (
           <div className="px-2 pt-4" data-sidebar-empty>
             <p className="text-[12.5px] leading-relaxed text-ink-soft">
               {filtersActive ? t('sidebar.noFilterMatches') : t('sidebar.noSessions')}
@@ -2772,7 +3353,7 @@ export function Sidebar({
                   onOpen={() => { openSessionRow(session); }}
                   onMenu={() => undefined}
                   onTogglePin={() => undefined}
-                  seen={seen}
+                  seenSeq={seen[session.id] ?? 0}
                 />
               </div>
             ))}
@@ -2801,9 +3382,29 @@ export function Sidebar({
             ref={virtualAnchorRef}
             data-session-list-virtualized="true"
             className="relative"
-            style={{ height: listVirtualizer.getTotalSize() }}
+            style={{ height: totalVirtualSize }}
           >
-            {listVirtualizer.getVirtualItems().map((virtualRow) => {
+            {virtualItems.map((virtualRow) => {
+              const isLoaderRow = virtualRow.index >= flatSessionEntries.length;
+              if (isLoaderRow) {
+                return (
+                  <div
+                    key="__sidebar_load_more__"
+                    data-index={virtualRow.index}
+                    ref={listVirtualizer.measureElement}
+                    className="absolute inset-x-0 top-0"
+                    style={{ transform: `translateY(${virtualRow.start - listScrollMargin}px)` }}
+                  >
+                    <SidebarLoadMoreRow
+                      hasMore={hasAnyMoreSessions}
+                      isFetching={infiniteDemand.isFetching}
+                      error={infiniteDemand.error}
+                      onLoadMore={() => { infiniteDemand.requestNextPage('manual'); }}
+                      onRetry={() => { infiniteDemand.requestNextPage('retry'); }}
+                    />
+                  </div>
+                );
+              }
               const entry = flatSessionEntries[virtualRow.index];
               if (entry === undefined) return null;
               const scrollOffset = listVirtualizer.scrollOffset ?? 0;
@@ -2826,6 +3427,9 @@ export function Sidebar({
               if (entry.kind === 'ws-header') {
                 content = (
                   <div
+                    id={bucketHeaderDomId(entry.group.key)}
+                    role="group"
+                    aria-label={entry.group.label}
                     data-session-group-block={entry.group.key}
                     data-session-group-folded={entry.collapsed ? '' : undefined}
                     className={isActiveSticky || entry.isFirst ? '' : entry.collapsed ? 'pt-0.5' : 'pt-3'}
@@ -2851,15 +3455,57 @@ export function Sidebar({
                 );
               } else if (entry.kind === 'time-header') {
                 content = (
-                  <div data-session-group-block={entry.group.key} className={entry.isFirst ? '' : 'pt-3'}>
+                  <div
+                    id={bucketHeaderDomId(entry.group.key)}
+                    role="group"
+                    aria-label={entry.group.label}
+                    data-session-group-block={entry.group.key}
+                    className={entry.isFirst ? '' : 'pt-3'}
+                  >
                     <p data-session-group={entry.group.key} className="flex min-h-7 w-full shrink-0 items-center gap-2 px-2 py-1.5 text-left text-[12px] leading-4 font-medium text-section-ink">
                       <span className="min-w-0 truncate">{entry.group.label}</span>
                     </p>
                   </div>
                 );
+              } else if (entry.kind === 'session-group-header') {
+                const rawTitle = entry.unitGroup.title.trim() !== '' ? entry.unitGroup.title : untitled;
+                const displayTitle = rawTitle.includes('[[') || rawTitle.includes('/s/') ? resolveTitle(rawTitle) : rawTitle;
+                content = (
+                  <div
+                    data-session-group-key={entry.groupKey}
+                    aria-labelledby={groupBy === 'none' && entry.groupKey === 'all' ? undefined : bucketHeaderDomId(entry.groupKey)}
+                  >
+                    <SessionGroupHeaderRow
+                      group={entry.unitGroup}
+                      title={displayTitle}
+                      expanded={entry.expanded}
+                      hasActiveMember={entry.hasActiveMember}
+                      collapsedLife={entry.collapsedLife}
+                      showPin={groupBy === 'none'}
+                      onToggle={toggleSessionGroupExpanded}
+                    />
+                  </div>
+                );
+              } else if (entry.kind === 'session-group-more') {
+                content = (
+                  <div
+                    data-session-group-key={entry.groupKey}
+                    aria-labelledby={groupBy === 'none' && entry.groupKey === 'all' ? undefined : bucketHeaderDomId(entry.groupKey)}
+                  >
+                    <SessionGroupMoreRow
+                      groupId={entry.groupId}
+                      spaceKey={entry.spaceKey}
+                      cursor={entry.cursor}
+                      remaining={entry.remaining}
+                      loading={loadingGroupIds?.has(entry.groupId) === true}
+                      error={groupMemberErrors?.get(entry.groupId)}
+                      onLoadMore={handleLoadMoreGroupMembers}
+                    />
+                  </div>
+                );
               } else if (entry.kind === 'group-more') {
                 content = (
-                  <div className="pt-0.5">
+                  <div className="pt-0.5" data-session-group-key={entry.groupKey}>
                     <button
                       type="button"
                       data-session-group-more={entry.groupKey}
@@ -2870,9 +3516,28 @@ export function Sidebar({
                     </button>
                   </div>
                 );
+              } else if (entry.kind === 'cold-fold') {
+                content = (
+                  <div className="pt-1" data-sidebar-cold-fold-wrap>
+                    <button
+                      type="button"
+                      data-sidebar-cold-fold={entry.expanded ? 'expanded' : 'collapsed'}
+                      aria-expanded={entry.expanded}
+                      onClick={() => { setColdFoldExpanded((v) => !v); }}
+                      className="row-interactive flex h-7 w-full items-center gap-1.5 px-2 text-left text-[12px] font-medium text-ink-faint hover:text-ink"
+                    >
+                      <DisclosureChevron open={entry.expanded} size={12} className="shrink-0" />
+                      <span className="truncate">
+                        {entry.expanded
+                          ? t('sidebar.coldFold.collapse')
+                          : t('sidebar.coldFold.label', { count: entry.count })}
+                      </span>
+                    </button>
+                  </div>
+                );
               } else {
-                const { node, nested, groupNamesWorkspace } = entry;
-                const item = node.item;
+                const { item, relation, nested, legacyParentId, unitGroupId, groupNamesWorkspace, groupKey } = entry;
+                const bucketLabelId = groupBy === 'none' && groupKey === 'all' ? undefined : bucketHeaderDomId(groupKey);
                 if (item.kind === 'room') {
                   const rowSpaceKey = item.spaceKey ?? currentSpaceKey;
                   const roomLocation = workspaceNameById.get(item.workspace_id)
@@ -2880,7 +3545,12 @@ export function Sidebar({
                   const remoteSpaceName = item.isRemote === true && spaceScope === ALL_SPACE_SCOPE ? item.spaceName : undefined;
                   const remoteOffline = item.isRemote === true && healthBySpace?.get(rowSpaceKey)?.state === 'offline';
                   content = (
-                    <div data-session-node="root" className="py-px">
+                    <div
+                      data-session-node="root"
+                      data-session-group-key={groupKey}
+                      aria-labelledby={bucketLabelId}
+                      className="py-px"
+                    >
                       <RoomConversationRow
                         item={item}
                         active={location.pathname === item.href}
@@ -2906,14 +3576,22 @@ export function Sidebar({
                   const session = item.session;
                   const rowSpaceKey = item.spaceKey ?? currentSpaceKey;
                   const isRemoteRow = item.isRemote === true;
-                  const rowSeen = isRemoteRow
-                    ? { [session.id]: seenV2[encodeConversationRef({ spaceKey: rowSpaceKey, kind: 'session', id: session.id })]?.seq ?? 0 }
-                    : seen;
+                  const rowSeenSeq = isRemoteRow
+                    ? (seenV2[encodeConversationRef({ spaceKey: rowSpaceKey, kind: 'session', id: session.id })]?.seq ?? 0)
+                    : (seen[session.id] ?? 0);
                   const remoteSpaceName = isRemoteRow && spaceScope === ALL_SPACE_SCOPE ? item.spaceName : undefined;
                   const remoteOffline = isRemoteRow && healthBySpace?.get(rowSpaceKey)?.state === 'offline';
+                  const memberShowPin = groupBy === 'none' || unitGroupId !== undefined;
                   content = (
-                    <div data-session-node={nested ? 'thread' : 'root'} className="relative py-px">
-                      {nested ? (
+                    <div
+                      data-session-node={nested ? 'thread' : 'root'}
+                      data-session-group-key={groupKey}
+                      data-session-threads={legacyParentId}
+                      data-sidebar-unit-group-member={unitGroupId}
+                      aria-labelledby={bucketLabelId}
+                      className="relative py-px"
+                    >
+                      {unitGroupId !== undefined ? (
                         <span aria-hidden className="pointer-events-none absolute top-0 bottom-0 left-[13px] w-px bg-hairline" />
                       ) : null}
                       <SessionRow
@@ -2924,15 +3602,15 @@ export function Sidebar({
                         resolveTitle={resolveTitle}
                         activity={isRemoteRow ? undefined : activity.byId.get(session.id)}
                         anchorFor={activity.anchorFor}
-                        relation={node.relation}
+                        relation={relation}
                         nested={nested}
                         showLocation={!groupNamesWorkspace}
-                        showPin={groupBy === 'none'}
+                        showPin={memberShowPin}
                         remoteSpaceName={remoteSpaceName}
                         remoteOffline={remoteOffline}
-                        parentTitle={node.relation === undefined
+                        parentTitle={relation === undefined
                           ? undefined
-                          : titleOf.get(node.relation.parentId) ?? t('sidebar.thread.unknownParent')}
+                          : titleOf.get(relation.parentId) ?? t('sidebar.thread.unknownParent')}
                         onOpen={() => { openSessionRow(session, rowSpaceKey); }}
                         selected={!isRemoteRow && selected.has(session.id)}
                         onToggleSelect={isRemoteRow || session.archived === true || isSubagentSession(session) ? undefined : () => { toggleSelected(session); }}
@@ -2941,7 +3619,7 @@ export function Sidebar({
                             toggle && current?.item.key === item.key ? null : { item, x, y });
                         }}
                         onTogglePin={() => { togglePin(session, rowSpaceKey); }}
-                        seen={rowSeen}
+                        seenSeq={rowSeenSeq}
                         justRenamed={justRenamed?.key === item.key}
                         archiving={pendingArchives.has(item.key)}
                         archiveError={archiveErrors.get(item.key)}
@@ -2956,208 +3634,16 @@ export function Sidebar({
                   data-index={virtualRow.index}
                   ref={isActiveSticky ? undefined : listVirtualizer.measureElement}
                   data-sticky-active={isActiveSticky ? '' : undefined}
-                  className={isActiveSticky ? 'sticky top-0 z-[2] bg-canvas' : 'absolute inset-x-0'}
+                  className={isActiveSticky ? 'sticky top-0 z-[2] bg-canvas' : 'absolute inset-x-0 top-0'}
                   style={isActiveSticky
                     ? (stickyPushY < 0 ? { transform: `translateY(${stickyPushY}px)` } : undefined)
-                    : { top: virtualRow.start - listScrollMargin }}
+                    : { transform: `translateY(${virtualRow.start - listScrollMargin}px)` }}
                 >
                   {content}
                 </div>
               );
             })}
           </div>
-        ) : displayedSessionTree.map((group) => {
-          // In the workspace view every bucket, Pinned included, uses the one
-          // workspace header: fold, count, remembered state. Pinned keeps
-          // every row visible (those are the sessions asked to stay on top).
-          const collapsible = groupBy === 'workspace';
-          const collapsed = collapsible && !foldsSuspended && collapsedGroups.has(group.key);
-          const expanded = expandedGroups.has(group.key);
-          const limit = collapsible && !expanded && group.key !== 'pinned' ? WORKSPACE_GROUP_PREVIEW : Infinity;
-          const shown = collapsed ? [] : group.nodes.slice(0, limit);
-          const hidden = collapsed ? 0 : group.nodes.length - shown.length;
-          // Only a real workspace bucket names the location in its header;
-          // Pinned and Ungrouped are organizational buckets, not places.
-          const groupNamesWorkspace = collapsible && group.key !== 'pinned' && group.key !== WORKSPACE_UNGROUPED_KEY;
-          const renderRow = (node: ConversationTreeNode, nested: boolean) => {
-            const item = node.item;
-            const rowSpaceKey = item.spaceKey ?? currentSpaceKey;
-            const isRemoteRow = item.isRemote === true;
-            const remoteSpaceName = isRemoteRow && spaceScope === ALL_SPACE_SCOPE ? item.spaceName : undefined;
-            const remoteOffline = isRemoteRow && healthBySpace?.get(rowSpaceKey)?.state === 'offline';
-            if (item.kind === 'room') {
-              // Location line, like a thread row's cwd: the resolved workspace
-              // name when registered, else the room's own root path shortened.
-              const roomLocation = workspaceNameById.get(item.workspace_id)
-                ?? (item.room.workspace === '' ? undefined : shortCwd(item.room.workspace));
-              return (
-                <div key={item.key} data-session-node="root">
-                  <RoomConversationRow
-                    item={item}
-                    active={location.pathname === item.href}
-                    menuOpen={menu?.item.key === item.key}
-                    showLocation={!groupNamesWorkspace}
-                    showPin={groupBy === 'none'}
-                    location={roomLocation}
-                    remoteSpaceName={remoteSpaceName}
-                    remoteOffline={remoteOffline}
-                    onOpen={() => { openRoomRow(item.room, item.href, rowSpaceKey); }}
-                    onMenu={(x, y, toggle) => {
-                      setMenu((current) =>
-                        toggle && current?.item.key === item.key ? null : { item, x, y });
-                    }}
-                    onTogglePin={() => { toggleRoomPin(item); }}
-                    justRenamed={justRenamed?.key === item.key}
-                    archiving={pendingArchives.has(item.key)}
-                    archiveError={archiveErrors.get(item.key)}
-                  />
-                </div>
-              );
-            }
-            const session = item.session;
-            const threads = node.children;
-            const rowSeen = isRemoteRow
-              ? { [session.id]: seenV2[encodeConversationRef({ spaceKey: rowSpaceKey, kind: 'session', id: session.id })]?.seq ?? 0 }
-              : seen;
-            return (
-              <div key={item.key} data-session-node={nested ? 'thread' : 'root'}>
-                <SessionRow
-                  session={session}
-                  active={session.id === activeSessionId && rowSpaceKey === activeRouteSpaceKey}
-                  menuOpen={menu?.item.key === item.key}
-                  untitled={untitled}
-                  resolveTitle={resolveTitle}
-                  activity={isRemoteRow ? undefined : activity.byId.get(session.id)}
-                  anchorFor={activity.anchorFor}
-                  relation={node.relation}
-                  nested={nested}
-                  showLocation={!groupNamesWorkspace}
-                  showPin={groupBy === 'none'}
-                  remoteSpaceName={remoteSpaceName}
-                  remoteOffline={remoteOffline}
-                  parentTitle={node.relation === undefined
-                    ? undefined
-                    : titleOf.get(node.relation.parentId) ?? t('sidebar.thread.unknownParent')}
-                  onOpen={() => { openSessionRow(session, rowSpaceKey); }}
-                  selected={!isRemoteRow && selected.has(session.id)}
-                  onToggleSelect={isRemoteRow || session.archived === true || isSubagentSession(session) ? undefined : () => { toggleSelected(session); }}
-                  onMenu={(x, y, toggle) => {
-                    setMenu((current) =>
-                      toggle && current?.item.key === item.key ? null : { item, x, y });
-                  }}
-                  onTogglePin={() => { togglePin(session, rowSpaceKey); }}
-                  seen={rowSeen}
-                  justRenamed={justRenamed?.key === item.key}
-                  archiving={pendingArchives.has(item.key)}
-                  archiveError={archiveErrors.get(item.key)}
-                />
-                {threads.length > 0 ? (
-                  <div data-session-threads={session.id} className="relative mt-0.5 flex flex-col gap-0.5">
-                    <span aria-hidden className="pointer-events-none absolute top-1.5 bottom-1.5 left-[13px] w-px bg-hairline" />
-                    {threads.map((child) => renderRow(child, true))}
-                  </div>
-                ) : null}
-              </div>
-            );
-          };
-          // The workspace view gives every bucket (workspaces, Pinned,
-          // Ungrouped) one header, WorkspaceGroupHeader: fold, count, the
-          // current-workspace mark, pin, and — for a registered workspace —
-          // a new-session plus. Time buckets keep the plain T5 label, 28px
-          // tall. A folded group still says when something inside needs you
-          // or is running.
-          const foldedLife = collapsed ? foldedGroupLife(group.nodes, seen) : 'idle';
-          if (collapsible) {
-            const workspace = workspaceById.get(group.key);
-            const workspaceTarget = workspace !== undefined && groupNamesWorkspace ? workspace : undefined;
-            return (
-              <div
-                key={group.key}
-                data-session-group-block={group.key}
-                data-session-group-folded={collapsed ? '' : undefined}
-                // Folded workspaces stack like a list of places; an open one
-                // takes a full step of air (S4) so its rows read as its own.
-                className={`flex flex-col gap-0.5 ${collapsed ? 'not-first:mt-0.5' : 'not-first:mt-3'}`}
-                role="group"
-                aria-label={group.label}
-              >
-                <WorkspaceGroupHeader
-                  groupKey={group.key}
-                  label={group.label}
-                  count={group.total}
-                  totalCount={filtersActive ? (group.key === 'pinned' ? pinnedTotal : workspaceTotals.get(group.key)) : undefined}
-                  collapsed={collapsed}
-                  foldable={!foldsSuspended}
-                  current={group.key === activeWorkspaceId}
-                  foldedLife={foldedLife}
-                  workspace={workspace}
-                  pinBusy={workspacePinBusy}
-                  onToggle={() => { toggleGroupCollapsed(group.key); }}
-                  onTogglePin={workspace === undefined ? undefined : () => { toggleWorkspacePin(workspace); }}
-                  onNewInWorkspace={workspaceTarget === undefined ? undefined : () => {
-                    void navigate(`/new?workspace=${encodeURIComponent(workspaceTarget.id)}`);
-                  }}
-                />
-                {shown.map((node) => renderRow(node, false))}
-                {hidden > 0 || (expanded && !collapsed && group.nodes.length > WORKSPACE_GROUP_PREVIEW) ? (
-                  <button
-                    type="button"
-                    data-session-group-more={group.key}
-                    onClick={() => { toggleGroupExpanded(group.key); }}
-                    className="row-interactive h-7 self-start pr-2 pl-6 text-[12px] text-ink-faint hover:text-ink"
-                  >
-                    {hidden > 0 ? t('sidebar.showMoreInGroup', { count: hidden }) : t('sidebar.showLessInGroup')}
-                  </button>
-                ) : null}
-              </div>
-            );
-          }
-          const headerClass = 'flex min-h-7 w-full shrink-0 items-center gap-2 px-2 py-1.5 text-left text-[12px] leading-4 font-medium text-section-ink';
-          return (
-            <div
-              key={group.key}
-              data-session-group-block={group.key}
-              className="flex flex-col gap-0.5 not-first:mt-3"
-              role="group"
-              aria-label={group.label}
-            >
-              {groupBy === 'none' && group.key === 'all' ? null : (
-                <p data-session-group={group.key} className={headerClass}>
-                  <span className="min-w-0 truncate">{group.label}</span>
-                </p>
-              )}
-              {shown.map((node) => renderRow(node, false))}
-            </div>
-          );
-        })}
-        {coldNodes.length > 0 ? (
-          <div className="mt-2" data-sidebar-cold-fold-wrap>
-            <button
-              type="button"
-              data-sidebar-cold-fold={coldFoldExpanded ? 'expanded' : 'collapsed'}
-              aria-expanded={coldFoldExpanded}
-              onClick={() => { setColdFoldExpanded((v) => !v); }}
-              className="row-interactive flex h-7 w-full items-center gap-1.5 px-2 text-left text-[12px] font-medium text-ink-faint hover:text-ink"
-            >
-              <DisclosureChevron open={coldFoldExpanded} size={12} className="shrink-0" />
-              <span className="truncate">
-                {coldFoldExpanded
-                  ? t('sidebar.coldFold.collapse')
-                  : t('sidebar.coldFold.label', { count: coldNodes.length })}
-              </span>
-            </button>
-          </div>
-        ) : null}
-        {sessionsQuery.hasNextPage ? (
-          <button
-            type="button"
-            data-session-load-more
-            disabled={sessionsQuery.isFetchingNextPage}
-            onClick={() => void sessionsQuery.fetchNextPage?.()}
-            className="mt-1 h-8 w-full rounded-lg px-2 text-center text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink-soft disabled:opacity-60"
-          >
-            {sessionsQuery.isFetchingNextPage ? t('sidebar.loadingMore') : t('sidebar.loadMore')}
-          </button>
         ) : null}
       </div>
       )}
@@ -3227,8 +3713,15 @@ export function Sidebar({
           copyLinkHref={menuItem.href}
           isRemote={menuItem.isRemote === true}
           title={resolveTitle(sessionLabel(menuItem.session, untitled))}
-          topLevel={topLevelThreads.has(menuItem.id)}
-          onToggleThreadDisplay={() => { toggleThreadDisplay(menuItem.id); }}
+          topLevel={sidebarGroupsEnabled ? undefined : topLevelThreads.has(menuItem.id)}
+          onToggleThreadDisplay={sidebarGroupsEnabled ? undefined : () => { toggleThreadDisplay(menuItem.id); }}
+          extraTopEntries={sidebarGroupsEnabled && groupedSessionKeyToGroupId.has(menuItem.key) && menuItem.session.archived !== true
+            ? [{
+                key: 'detach-group',
+                label: t('sidebar.group.detachMember'),
+                run: () => detachGroupMember(menuItem.session, menuItem.spaceKey),
+              }]
+            : undefined}
           scopeId={scopeId}
           activeSessionId={activeSessionId}
           x={menu!.x}
@@ -3343,6 +3836,12 @@ export function Sidebar({
                       })),
                     },
               );
+              queryClient.setQueriesData<SidebarUnitPagesData>({ queryKey: ['sessions', 'sidebar-units'] }, (old) =>
+                patchSidebarUnitRow(old, target.id, (row) => ({ ...row, title: nextTitle })),
+              );
+              queryClient.setQueriesData<SidebarUnitPagesData>({ queryKey: ['sessions', 'sidebar-units-pinned'] }, (old) =>
+                patchSidebarUnitRow(old, target.id, (row) => ({ ...row, title: nextTitle })),
+              );
               if (queryClient.getQueryData(['session', target.id]) !== undefined) {
                 queryClient.setQueryData<Session>(['session', target.id], (old) =>
                   old === undefined ? old : mergeUpdated(old),
@@ -3422,6 +3921,7 @@ export function Sidebar({
         <WorktreeArchiveDialog
           session={{ ...confirmArchiveWorktree, worktree: confirmArchiveWorktree.worktree }}
           excludeSessionIds={[...topLevelThreads].filter((id) => id !== confirmArchiveWorktree.id)}
+          includeAttached={!sidebarGroupsEnabled}
           onClose={() => { setConfirmArchiveWorktree(null); }}
           onArchiveFailed={() => { refreshSessions(); }}
           onArchived={(result) => {
@@ -3430,9 +3930,11 @@ export function Sidebar({
             void queryClient.invalidateQueries({ queryKey: ['archived-sessions'] }).catch(() => undefined);
             refreshSessions();
             const archivedSet = new Set<string>([archivedRootId]);
-            for (const candidate of sessions) {
-              if (sessionRelationOf(candidate)?.parentId === archivedRootId && !topLevelThreads.has(candidate.id)) {
-                archivedSet.add(candidate.id);
+            if (!sidebarGroupsEnabled) {
+              for (const candidate of sessions) {
+                if (sessionRelationOf(candidate)?.parentId === archivedRootId && !topLevelThreads.has(candidate.id)) {
+                  archivedSet.add(candidate.id);
+                }
               }
             }
             navigateAwayFromArchived(archivedSet);
@@ -3453,7 +3955,7 @@ export function Sidebar({
  * are a single indented line. Weight is reserved for state (unread / needs
  * you / active), never for hierarchy.
  */
-function SessionRow({
+const SessionRow = memo(function SessionRow({
   session,
   active,
   menuOpen,
@@ -3471,7 +3973,7 @@ function SessionRow({
   onOpen,
   onMenu,
   onTogglePin,
-  seen,
+  seenSeq = 0,
   temporary = false,
   selected = false,
   onToggleSelect,
@@ -3488,11 +3990,11 @@ function SessionRow({
   anchorFor: (entry: ActivityEntry) => number | undefined;
   /** Where this session came from, when its metadata records a creator. */
   relation?: SessionRelation;
-  /** True while the row sits indented under the session it came from. */
+  /** True while the row sits indented under the session it came from or inside a group. */
   nested?: boolean;
   /** False when the grouping already says where the session lives. */
   showLocation?: boolean;
-  /** True only when no Pinned group exists to say it. */
+  /** True when no Pinned group exists or to mark a pinned member inside a group. */
   showPin?: boolean;
   /** Subtle remote computer label shown only in `All computers` scope for remote rows. */
   remoteSpaceName?: string;
@@ -3502,8 +4004,8 @@ function SessionRow({
   onOpen: () => void;
   onMenu: (x: number, y: number, toggle: boolean) => void;
   onTogglePin: () => void;
-  /** Local read-state marks; drives the unread state. */
-  seen: SessionSeenMap;
+  /** Primitive read-state watermark for this session; preserves memoization across unrelated rows. */
+  seenSeq?: number;
   /** A temporary conversation: no pin, no menu (end or keep it from its header). */
   temporary?: boolean;
   /** Part of the Ctrl/⌘-click selection (pull into a room). */
@@ -3523,7 +4025,7 @@ function SessionRow({
   const status = sessionStatusOf(session);
   // Row states: blocked, cleanup pending, running, finished-unseen, caught up.
   // Weight and marker carry the difference; the active row still wins on lift.
-  const rowState = sessionRowState(session, seen);
+  const rowState = sessionRowState(session, { [session.id]: seenSeq });
   const label = resolveTitle(
     sessionLabel(session, untitled, nested && relation?.kind === 'fork' ? parentTitle : undefined),
   );
@@ -3552,16 +4054,6 @@ function SessionRow({
               ...activity.runningTasks.map((task) => `· ${task.description.trim() || task.command || task.id}`)]
           : []),
       ];
-  const relationNote = relation !== undefined && parentTitle !== undefined
-    ? t(
-        relation.kind === 'branch'
-          ? 'sidebar.thread.branchedFrom'
-          : relation.kind === 'fork'
-            ? 'sidebar.thread.forkedFrom'
-            : 'sidebar.thread.from',
-        { title: parentTitle },
-      )
-    : undefined;
   // A worktree session lives in its source repository; the checkout path is Kiki's own.
   const locationPath = session.worktree?.source_root ?? session.metadata.cwd;
   const location = !nested && showLocation && locationPath !== '' ? shortCwd(locationPath) : undefined;
@@ -3577,7 +4069,7 @@ function SessionRow({
     : archiveError !== undefined
       ? { kind: 'archive-error' as const, text: archiveError }
       : undefined;
-  const fact: { kind: 'needs-you' | 'cleanup-pending' | 'failed' | 'live' | 'archiving' | 'archive-error' | 'relation'; text: string; detail?: string } | undefined = archiveStatus !== undefined
+  const fact: { kind: 'needs-you' | 'cleanup-pending' | 'failed' | 'live' | 'archiving' | 'archive-error'; text: string; detail?: string } | undefined = archiveStatus !== undefined
     ? archiveStatus
     : rowState === 'cleanup-pending'
       ? { kind: 'cleanup-pending', text: t('sidebar.rowState.cleanupPending') }
@@ -3589,9 +4081,7 @@ function SessionRow({
         ? { kind: 'failed', text: failedLabel(session, t) }
       : status === 'running'
         ? { kind: 'live', text: runningText, detail: runningDetail.length > 0 ? runningDetail.join('\n') : undefined }
-        : relationNote !== undefined
-          ? { kind: 'relation', text: relationNote }
-          : undefined;
+        : undefined;
   // Which client drives an externally driven session. Origin, workspace and
   // current state stay beside one another with independent truncation.
   const externalSource = readExternalClientMark(session.metadata)?.clientName;
@@ -3761,9 +4251,6 @@ function SessionRow({
                 // Said in place, next to the row it belongs to. Not red: the
                 // row is intact and usable, this one attempt did not land.
                 <span data-session-archive-error className="min-w-0 truncate" title={fact.text}>{fact.text}</span>
-              ) : fact.kind === 'relation' ? (
-                // Could not nest (the creator is filtered out or not loaded).
-                <span data-session-relation-note={relation?.kind} className="min-w-0 truncate">{fact.text}</span>
               ) : null}
               <WorktreeMark worktree={session.worktree} className={fact === undefined && location === undefined ? 'max-w-full' : 'max-w-[40%] shrink-0'} />
               {remoteSpaceName !== undefined ? (
@@ -3838,7 +4325,7 @@ function SessionRow({
       )}
     </div>
   );
-}
+});
 
 /**
  * A room row is a thread row with one kind glyph: the `#` the room page's
@@ -3846,7 +4333,7 @@ function SessionRow({
  * unread carry the emphasis), same trailing time that yields to the hover
  * actions, same one-fact second line. A room never nests and never hosts.
  */
-function RoomConversationRow({
+const RoomConversationRow = memo(function RoomConversationRow({
   item,
   active,
   menuOpen,
@@ -4075,7 +4562,7 @@ function RoomConversationRow({
       </div>
     </div>
   );
-}
+});
 
 /** A row-menu entry (thread and room menus). Inside the phone's bottom sheet
  * the sheet's own rule resizes it for a thumb. */
@@ -4371,7 +4858,7 @@ function RoomMenuEntries({ item, onClose, onTogglePin, onTogglePause, onRename, 
  * marks what inside needs you or is running. Toggle, plus, and pin are
  * sibling buttons, never nested.
  */
-function WorkspaceGroupHeader({
+const WorkspaceGroupHeader = memo(function WorkspaceGroupHeader({
   groupKey,
   label,
   count,
@@ -4489,7 +4976,7 @@ function WorkspaceGroupHeader({
       )}
     </div>
   );
-}
+});
 
 /** A revocable trace for one active filter: the body reopens the filter
  * menu, the × resets that one filter. Two sibling buttons, not nested. */

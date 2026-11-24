@@ -28,6 +28,7 @@ export interface WorktreeArchiveResult {
 export function WorktreeArchiveDialog({
   session,
   excludeSessionIds,
+  includeAttached = true,
   onClose,
   onArchived,
   onArchiveFailed,
@@ -36,6 +37,8 @@ export function WorktreeArchiveDialog({
   /** Explicitly promoted-to-top-level threads to hold back; the caller owns
    *  that preference for the current space. */
   excludeSessionIds: readonly string[];
+  /** When false, archive only this session (`include_attached: false`). */
+  includeAttached?: boolean;
   onClose: () => void;
   onArchived: (result: WorktreeArchiveResult | null) => void;
   /** A partial failure may have archived part of the family before rejecting,
@@ -65,10 +68,14 @@ export function WorktreeArchiveDialog({
   const confirm = () => {
     setBusy(true);
     setError(null);
-    // Same family archive as every other thread, with the same explicit
-    // exclusions. Archiving the conversation never removes a checkout on its
+    // Archiving the conversation never removes a checkout on its
     // own: the checkbox below is still the only thing that can.
-    void client.archiveSession(session.id, { include_attached: true, exclude_session_ids: [...excludeSessionIds] })
+    void client.archiveSession(
+      session.id,
+      includeAttached
+        ? { include_attached: true, exclude_session_ids: [...excludeSessionIds] }
+        : { include_attached: false },
+    )
       .then(async () => {
         if (!removeWorktree) return null;
         try {
