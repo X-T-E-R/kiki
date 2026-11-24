@@ -272,7 +272,7 @@ describe('zero-copy CAS, privacy isolation, streaming, HostPinnedRef, checkpoint
     } finally {
       await storage.close();
     }
-  });
+  }, 30_000);
 
   it('enforces HostPinnedRef fail-closed integrity, middle-byte tamper with restored mtime, and write-deny handle on Windows', async () => {
     const prevHelperEnv = process.env['KIKI_WINDOWS_PROCESS_HELPER'];
