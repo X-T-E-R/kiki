@@ -232,7 +232,7 @@ export async function mirrorAgentRun(
     const resolveTaskId = options.resolveTaskId;
     const child = turn === undefined || resolveTaskId === undefined || finished ? undefined : agentLifecycle?.get(run.agentId);
     if (turn === undefined || resolveTaskId === undefined || child === undefined) return;
-    phaseSubscription = child.accessor.get(IAgentLoopService)?.hooks.onWillBeginStep.register(
+    phaseSubscription = child.accessor.get(IAgentLoopService)?.hooks?.onWillBeginStep.register(
       `subagent-phase:${run.agentId}:${turn.id}`, async (step, next) => {
         const phase = step.continuedParentPhase;
         if (step.turnId === turn.id && phase !== undefined) {
