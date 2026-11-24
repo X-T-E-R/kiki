@@ -347,7 +347,9 @@ export async function runScenarioS21StorageZeroCopy(options = {}) {
           undefined,
           blobSvc,
         );
-        const execution = await tool.resolveExecution({ path: src, full_resolution: true });
+        const execution = await tool.resolveExecution(
+          idx % 2 === 0 ? { path: src } : { path: src, full_resolution: true },
+        );
         const toolResult = 'execute' in execution
           ? await execution.execute({
               turnId: 1,

@@ -302,7 +302,10 @@ export async function resolvePromptMediaFiles(
           knownAbsentInSessionMedia.add(fileId);
         }
         const releasePin = store.pin?.(fileId);
-        if (releasePin !== undefined) pinReleases.push(releasePin);
+        if (releasePin !== undefined) {
+          if (discarded) releasePin();
+          else pinReleases.push(releasePin);
+        }
         return store.get(fileId);
       })();
       resolvedFiles.set(fileId, pending);
@@ -617,15 +620,23 @@ export async function resolvePromptMediaFiles(
   try {
     const slots: (PreparedSlot | undefined)[] = Array.from({ length: input.length });
     let nextIndex = 0;
+    let failed = false;
     const concurrency = Math.min(6, input.length);
-    await Promise.all(
+    const settled = await Promise.allSettled(
       Array.from({ length: concurrency }, async () => {
-        while (nextIndex < input.length) {
+        while (!failed && nextIndex < input.length) {
           const index = nextIndex++;
-          slots[index] = await preparePart(input[index]!);
+          try {
+            slots[index] = await preparePart(input[index]!);
+          } catch (error) {
+            failed = true;
+            throw error;
+          }
         }
       }),
     );
+    const rejected = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (rejected !== undefined) throw rejected.reason;
     for (let index = 0; index < slots.length; index += 1) {
       sourceStarts.push(content.length);
       const slot = slots[index]!;

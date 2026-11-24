@@ -1,5 +1,5 @@
 
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { ServicesAccessor } from '#/_base/di/instantiation';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -8,11 +8,13 @@ import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ISessionIndex, ISessionIndexMirror, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { buildSessionSummary } from '#/app/sessionIndex/sessionIndexSource';
+import { detachSessionSharedCasAliases } from '#/app/storageGovernance/storageGovernanceService';
 import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
 import { ErrorCodes, isError2 } from '#/errors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { FORKED_FROM_KEY, PROMOTED_FROM_KEY, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { normalizeSessionMeta, encodeSessionMeta, withoutAgentStatistics } from '#/session/sessionMetadata/sessionMetadataService';
 
@@ -25,6 +27,7 @@ function archiveServices(accessor: ServicesAccessor) {
   return {
     index: accessor.get(ISessionIndex),
     docs: accessor.get(IAtomicDocumentStore),
+    storage: accessor.get(IFileSystemStorageService),
     bootstrap: accessor.get(IBootstrapService),
     mirror: accessor.get(ISessionIndexMirror),
     event: accessor.get(IEventService),
@@ -156,7 +159,7 @@ export function updateColdSessionProfile(
 }
 
 async function applyColdProfilePatch(
-  { index, docs, bootstrap, mirror }: ArchiveServices,
+  { index, docs, storage, bootstrap, mirror }: ArchiveServices,
   usageFacts: IUsageFactStore | undefined,
   sessionId: string,
   patch: ColdSessionProfilePatch,
@@ -201,6 +204,12 @@ async function applyColdProfilePatch(
   }
   const encoded = encodeSessionMeta(nextMeta);
   await docs.set(metaScope, 'state.json', encoded, { cooperative: true });
+  if (patch.private === true) {
+    const statePath = storage.pathFor(metaScope, 'state.json');
+    if (statePath !== undefined) {
+      await detachSessionSharedCasAliases(dirname(statePath));
+    }
+  }
   if (legacyMetaScope !== undefined) await docs.delete(legacyMetaScope, 'state.json');
   const updatedSummary = buildSessionSummary({ ...encoded, id: sessionId, workspaceId: summary.workspaceId, cwd });
   if (patch.private === false && usageFacts !== undefined) {

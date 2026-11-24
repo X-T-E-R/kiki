@@ -44,6 +44,7 @@ export class PluginMediaService extends Service implements IPluginMediaService {
   private readonly active = new Map<string, { controller: AbortController; result: Promise<MediaJob> }>();
   private readonly progress = new Map<string, NonNullable<import('#/app/plugin/pluginHostService').PluginMediaCallContext['onProgress']>>();
   private readonly pinnedInputHashes = new Map<string, number>();
+  private stageInputGate: Promise<void> = Promise.resolve();
   private activeDiscoveries = 0;
   private readonly scope: string;
   private readonly cache: string;
@@ -54,6 +55,20 @@ export class PluginMediaService extends Service implements IPluginMediaService {
   private readonly blobs?: IBlobStore;
 
   async stageInput(key: string, name: string, source: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<string> {
+    const previous = this.stageInputGate;
+    let releaseGate!: () => void;
+    this.stageInputGate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    await previous.catch(() => undefined);
+    try {
+      return await this.stageInputSerialized(key, name, source, signal);
+    } finally {
+      releaseGate();
+    }
+  }
+
+  private async stageInputSerialized(key: string, name: string, source: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<string> {
     const inputHash = hash(key);
     const scope = `${this.cache}/inputs/${inputHash}`;
     const filename = path.basename(name);

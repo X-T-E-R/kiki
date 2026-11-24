@@ -809,6 +809,7 @@ export class StorageGovernanceService {
         }
 
         let publishedCasPath = casInode !== undefined ? cas.objectPath(rawSha256) : undefined;
+        let casVerified = false;
         const committedInodes = new Set<string>();
         if (casInode !== undefined) committedInodes.add(casInode);
 
@@ -891,6 +892,25 @@ export class StorageGovernanceService {
               });
               continue;
             }
+            if (publishedCasPath !== undefined && !casVerified) {
+              const casDigest = await digestFileSha256(publishedCasPath, signal).catch(() => undefined);
+              if (casDigest !== rawSha256) {
+                skippedFiles += 1;
+                items.push({
+                  path: entry.path,
+                  sessionId: entry.sessionId,
+                  agentId: entry.agentId,
+                  key: entry.key,
+                  size: entry.size,
+                  rawSha256,
+                  inodeKey: entry.inodeKey,
+                  phase: 'failed',
+                  reason: 'corrupt_cas_object',
+                });
+                continue;
+              }
+              casVerified = true;
+            }
             if (publishedCasPath === undefined) {
               const stored = await cas.putFromFile(entry.path, { signal });
               if (stored.sha256 !== rawSha256) {
@@ -909,6 +929,7 @@ export class StorageGovernanceService {
                 continue;
               }
               publishedCasPath = cas.objectPath(rawSha256)!;
+              casVerified = true;
             }
             const tempAlias = `${entry.path}.dedup.${process.pid}.${randomUUID()}`;
             try {
@@ -1193,6 +1214,10 @@ export class StorageGovernanceService {
                 (await lstat(join(ckptDir, COLD_CHECKPOINT_ARCHIVE_GZ_KEY)).catch(() => undefined)) !== undefined;
               if (!hasArchive) continue;
               scannedCount += 1;
+              if (!isExplicitPublic) {
+                skippedCount += 1;
+                continue;
+              }
               eligibleCount += 1;
               if (!apply) continue;
               let sessionLock;
@@ -1207,6 +1232,16 @@ export class StorageGovernanceService {
                 continue;
               }
               try {
+                const lockedMeta = await readSessionMetadata(sessionDir);
+                const lockedPublic =
+                  lockedMeta !== undefined &&
+                  typeof lockedMeta.id === 'string' &&
+                  lockedMeta.id.length > 0 &&
+                  lockedMeta.private === false;
+                if (!lockedPublic) {
+                  skippedCount += 1;
+                  continue;
+                }
                 const result = await rehydrateColdReplayCheckpoint(agentDir, REPLAY_ABI_VERSION, signal);
                 if (result.restored) {
                   rehydratedCount += 1;
