@@ -16,7 +16,6 @@ import {
   QUOTA_REFRESH_CONCURRENCY,
   quotaEngineScopeOf,
   readCachedHarnessQuota,
-  runWithConcurrency,
   signedOutProviderIds,
   useProviderQuotas,
   type HarnessQuotaActionId,
@@ -26,6 +25,7 @@ import { useConnection } from '../../../state/connection';
 import type { Feedback } from '../../controls';
 import { engineQuotaSourceOf } from '../../settings/ExternalEnginesSection';
 import { asConfigRecord, EXECUTORS_QUERY_KEY, useExecutorCatalogQuery } from '../../settings/profileEditor/engines';
+import { runInQuotaScopeRefreshSlot } from './quotaModel';
 
 const EMPTY_PLUGIN_QUOTA_SOURCES: readonly PluginHarnessQuotaSnapshot[] = [];
 
@@ -76,6 +76,16 @@ export function useQuotaPanelState() {
   const [savingEngineSourceIds, setSavingEngineSourceIds] = useState<ReadonlySet<string>>(() => new Set());
   const autoRefreshedScopeRef = useRef<string | undefined>(undefined);
   const mountedRef = useRef(true);
+  const inFlightPluginReadsRef = useRef(new Map<string, Promise<void>>());
+  const inFlightNativeReadsRef = useRef(new Map<string, Promise<unknown>>());
+  const refreshGateKey = `${scopeId}:${meta?.server_id ?? ''}`;
+
+  const runInSharedRefreshSlot = useCallback(
+    <T,>(work: () => Promise<T>): Promise<T> =>
+      runInQuotaScopeRefreshSlot(refreshGateKey, work, QUOTA_REFRESH_CONCURRENCY),
+    [refreshGateKey],
+  );
+
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
@@ -90,9 +100,27 @@ export function useQuotaPanelState() {
     });
   }, []);
 
+  const refreshNativeSource = useCallback((sourceId: string): Promise<unknown> => {
+    const existing = inFlightNativeReadsRef.current.get(sourceId);
+    if (existing !== undefined) return existing;
+
+    setActiveRefreshSourceIds((prev) => (prev.includes(sourceId) ? prev : [...prev, sourceId]));
+    const task = runInSharedRefreshSlot(async () => quotas.refreshSource(sourceId)).finally(() => {
+      inFlightNativeReadsRef.current.delete(sourceId);
+      if (mountedRef.current) {
+        setActiveRefreshSourceIds((prev) => prev.filter((id) => id !== sourceId));
+      }
+    });
+    inFlightNativeReadsRef.current.set(sourceId, task);
+    return task;
+  }, [quotas, runInSharedRefreshSlot]);
+
   const refreshPluginSource = useCallback(async (pluginSourceId: string) => {
     const api = client.klient?.rest?.harnessQuota;
     if (api === undefined) return;
+    const existing = inFlightPluginReadsRef.current.get(pluginSourceId);
+    if (existing !== undefined) return existing;
+
     setRefreshingPluginIds((prev) => new Set(prev).add(pluginSourceId));
     setPluginErrors((prev) => {
       if (!(pluginSourceId in prev)) return prev;
@@ -100,31 +128,40 @@ export function useQuotaPanelState() {
       delete next[pluginSourceId];
       return next;
     });
-    try {
-      const updated = await api.read(pluginSourceId);
-      queryClient.setQueryData(pluginQuotaKey, (current: { readonly sources: readonly PluginHarnessQuotaSnapshot[] } | undefined) =>
-        mergeHarnessQuotaSnapshots(current, updated.sources),
-      );
-    } catch (error) {
-      const message = errorText(locale, error);
-      setPluginErrors((prev) => ({ ...prev, [pluginSourceId]: message }));
-      queryClient.setQueryData(pluginQuotaKey, (current: { readonly sources: readonly PluginHarnessQuotaSnapshot[] } | undefined) => {
-        if (current === undefined) return current;
-        return {
-          sources: current.sources.map((entry) =>
-            entry.id === pluginSourceId ? { ...entry, readings: undefined, error: HARNESS_QUOTA_UNAVAILABLE_MESSAGE } : entry,
-          ),
-        };
-      });
-      throw error;
-    } finally {
-      setRefreshingPluginIds((prev) => {
-        const next = new Set(prev);
-        next.delete(pluginSourceId);
-        return next;
-      });
-    }
-  }, [client, locale, pluginQuotaKey, queryClient]);
+    const task = runInSharedRefreshSlot(async () => {
+      try {
+        const updated = await api.read(pluginSourceId);
+        queryClient.setQueryData(pluginQuotaKey, (current: { readonly sources: readonly PluginHarnessQuotaSnapshot[] } | undefined) =>
+          mergeHarnessQuotaSnapshots(current, updated.sources),
+        );
+      } catch (error) {
+        const message = errorText(locale, error);
+        if (mountedRef.current) {
+          setPluginErrors((prev) => ({ ...prev, [pluginSourceId]: message }));
+        }
+        queryClient.setQueryData(pluginQuotaKey, (current: { readonly sources: readonly PluginHarnessQuotaSnapshot[] } | undefined) => {
+          if (current === undefined) return current;
+          return {
+            sources: current.sources.map((entry) =>
+              entry.id === pluginSourceId ? { ...entry, readings: undefined, error: HARNESS_QUOTA_UNAVAILABLE_MESSAGE } : entry,
+            ),
+          };
+        });
+        throw error;
+      } finally {
+        inFlightPluginReadsRef.current.delete(pluginSourceId);
+        if (mountedRef.current) {
+          setRefreshingPluginIds((prev) => {
+            const next = new Set(prev);
+            next.delete(pluginSourceId);
+            return next;
+          });
+        }
+      }
+    });
+    inFlightPluginReadsRef.current.set(pluginSourceId, task);
+    return task;
+  }, [client, locale, pluginQuotaKey, queryClient, runInSharedRefreshSlot]);
 
   const performPluginAction = useCallback(async (
     pluginSourceId: string,
@@ -243,25 +280,17 @@ export function useQuotaPanelState() {
     }
     if (nativeTargets.length === 0 && pluginTargets.size === 0) return;
 
-    const nativeIds = nativeTargets.map((s) => s.id);
-    if (nativeIds.length > 0) {
-      setActiveRefreshSourceIds((prev) => [...new Set([...prev, ...nativeIds])]);
-    }
-    const tasks: Array<() => Promise<void>> = [
-      ...nativeTargets.map((target) => async () => {
+    const tasks: Array<Promise<void>> = [
+      ...nativeTargets.map(async (target) => {
         try {
-          await quotas.refreshSource(target.id);
+          await refreshNativeSource(target.id);
         } catch (error) {
           if (mountedRef.current) {
             setSourceFeedbacks((prev) => ({ ...prev, [target.id]: { tone: 'error', text: errorText(locale, error) } }));
           }
-        } finally {
-          if (mountedRef.current) {
-            setActiveRefreshSourceIds((prev) => prev.filter((id) => id !== target.id));
-          }
         }
       }),
-      ...[...pluginTargets].map((pluginId) => async () => {
+      ...[...pluginTargets].map(async (pluginId) => {
         try {
           await refreshPluginSource(pluginId);
         } catch {
@@ -269,7 +298,7 @@ export function useQuotaPanelState() {
         }
       }),
     ];
-    void runWithConcurrency(tasks, QUOTA_REFRESH_CONCURRENCY);
+    void Promise.all(tasks);
   }, [
     arranged.engines,
     arranged.enginesPending,
@@ -281,7 +310,7 @@ export function useQuotaPanelState() {
     pluginCatalogError,
     pluginErrors,
     pluginQuotaSources,
-    quotas,
+    refreshNativeSource,
     refreshPluginSource,
     scopeId,
     signedOut,
@@ -306,31 +335,31 @@ export function useQuotaPanelState() {
       return;
     }
     setRefreshingAll(true);
-    setActiveRefreshSourceIds(targets.map((s) => s.id));
     setSourceFeedbacks((prev) => {
       const next = { ...prev };
       for (const target of targets) delete next[target.id];
       return next;
     });
-    const tasks: Array<() => Promise<void>> = [
-      ...targets.map((target) => async () => {
+    const tasks: Array<Promise<void>> = [
+      ...targets.map(async (target) => {
         try {
-          await quotas.refreshSource(target.id);
+          await refreshNativeSource(target.id);
         } catch (error) {
-          setSourceFeedbacks((prev) => ({ ...prev, [target.id]: { tone: 'error', text: errorText(locale, error) } }));
-        } finally {
-          setActiveRefreshSourceIds((prev) => prev.filter((id) => id !== target.id));
+          if (mountedRef.current) {
+            setSourceFeedbacks((prev) => ({ ...prev, [target.id]: { tone: 'error', text: errorText(locale, error) } }));
+          }
         }
       }),
-      ...[...pluginTargets].map((pluginId) => async () => {
+      ...[...pluginTargets].map(async (pluginId) => {
         try { await refreshPluginSource(pluginId); } catch { /* Captured in pluginErrors */ }
       }),
     ];
     try {
-      await runWithConcurrency(tasks, QUOTA_REFRESH_CONCURRENCY);
+      await Promise.all(tasks);
     } finally {
-      setRefreshingAll(false);
-      setActiveRefreshSourceIds([]);
+      if (mountedRef.current) {
+        setRefreshingAll(false);
+      }
     }
   };
 
@@ -360,6 +389,7 @@ export function useQuotaPanelState() {
     pluginActionFeedbacks,
     savingEngineSourceIds,
     clearFeedback,
+    refreshSource: refreshNativeSource,
     refreshPluginSource,
     performPluginAction,
     handleSelectEngineQuotaSource,

@@ -68,10 +68,14 @@ function bucket(startAt: number, groups: UsageGroupWire[]): UsageTrendBucketWire
 }
 
 describe('parseUsageFilters', () => {
-  it('defaults to local today / hour rhythm / model with no query', () => {
+  it('defaults to rolling last 24 hours / hour rhythm / model with no query', () => {
     expect(parseUsageFilters('')).toEqual(USAGE_FILTER_DEFAULTS);
-    expect(USAGE_FILTER_DEFAULTS.range).toBe('today');
+    expect(USAGE_FILTER_DEFAULTS.range).toBe('last_24_hours');
     expect(USAGE_FILTER_DEFAULTS.granularity).toBe('hour');
+    expect(parseUsageFilters('?range=24h').range).toBe('last_24_hours');
+    expect(parseUsageFilters('?range=7d')).toMatchObject({ range: 'last_7_days', granularity: 'day' });
+    expect(parseUsageFilters('?range=30d')).toMatchObject({ range: 'last_30_days', granularity: 'day' });
+    expect(parseUsageFilters('?range=1m')).toMatchObject({ range: 'last_30_days', granularity: 'day' });
   });
 
   it('parses every axis from the URL and sanitizes legacy five_hour granularity to range default', () => {
@@ -124,13 +128,13 @@ describe('parseUsageFilters', () => {
   it('drops unknown values individually instead of failing the whole URL', () => {
     const filters = parseUsageFilters('?granularity=hourly&range=bogus&group_by=team');
     expect(filters.granularity).toBe('hour');
-    expect(filters.range).toBe('today');
+    expect(filters.range).toBe('last_24_hours');
     expect(filters.groupBy).toBe('model');
   });
 
   it('accepts custom only with valid bounds', () => {
-    expect(parseUsageFilters('?range=custom').range).toBe('today');
-    expect(parseUsageFilters('?range=custom&start_at=2000&end_at=1000').range).toBe('today');
+    expect(parseUsageFilters('?range=custom').range).toBe('last_24_hours');
+    expect(parseUsageFilters('?range=custom&start_at=2000&end_at=1000').range).toBe('last_24_hours');
     const valid = parseUsageFilters('?range=custom&start_at=1000&end_at=2000');
     expect(valid).toMatchObject({ range: 'custom', startAt: 1000, endAt: 2000 });
   });
@@ -233,7 +237,7 @@ describe('stored filters', () => {
     localStorage.setItem(USAGE_FILTERS_STORAGE_KEY, '{nope');
     expect(readStoredUsageFilters()).toBeUndefined();
     localStorage.setItem(USAGE_FILTERS_STORAGE_KEY, JSON.stringify({ range: 'forever' }));
-    expect(readStoredUsageFilters()?.range).toBe('today');
+    expect(readStoredUsageFilters()?.range).toBe('last_24_hours');
   });
 });
 
@@ -626,6 +630,23 @@ describe('comparison windows', () => {
       nowMs,
     );
     expect(custom).toEqual({ startAt: 1000, endAt: 2000 });
+
+    const rolling24h = usageRangeWindow({ ...USAGE_FILTER_DEFAULTS, range: 'last_24_hours' }, offsetMinutes, nowMs)!;
+    expect(rolling24h.endAt - rolling24h.startAt).toBe(24 * 3_600_000);
+    expect(rolling24h.startAt).toBeLessThanOrEqual(nowMs);
+    expect(rolling24h.endAt).toBeGreaterThan(nowMs);
+
+    const rolling30d = usageRangeWindow({ ...USAGE_FILTER_DEFAULTS, range: 'last_30_days' }, offsetMinutes, nowMs)!;
+    expect(rolling30d.endAt).toBe(localMidnight(8));
+    expect((rolling30d.endAt - rolling30d.startAt) / 86_400_000).toBe(30);
+
+    const wire24h = buildUsageApiQuery(
+      { ...USAGE_FILTER_DEFAULTS, range: 'last_24_hours' },
+      { timezoneOffsetMinutes: offsetMinutes, nowMs },
+    );
+    expect(wire24h['range']).toBe('custom');
+    expect(wire24h['start_at']).toBe(rolling24h.startAt);
+    expect(wire24h['end_at']).toBe(rolling24h.endAt);
   });
 
   it('starts this_week on Monday (not Sunday) in both host calendar and explicit timezone offsets', () => {

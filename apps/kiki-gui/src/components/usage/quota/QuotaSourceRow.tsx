@@ -25,13 +25,13 @@ export const QUOTA_SMALL_BUTTON =
 export const QUOTA_ICON_BUTTON =
   'inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:min-w-11';
 
-function KindTag({ kind }: { readonly kind: ProviderQuotaSource['kind'] }) {
+export function KindTag({ kind }: { readonly kind: ProviderQuotaSource['kind'] }) {
   const { t } = useI18n();
   if (kind === 'provider' || kind === 'executor') return null;
   return <span className="shrink-0 text-[11px] text-ink-faint">{t(`usage.quota.kind.${kind}` as I18nKey)}</span>;
 }
 
-function SourceAccountSubtitle({
+export function SourceAccountSubtitle({
   source,
   settingsHref,
   showSettingsLink,
@@ -45,7 +45,7 @@ function SourceAccountSubtitle({
   const rawTitle = [source.account_label, source.source.label].filter(Boolean).join(' · ');
   if (accountDisplay === undefined && !showSettingsLink) return null;
   return (
-    <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11.5px] text-ink-faint">
+    <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-sans tracking-normal text-[11.5px] text-[var(--kiki-chart-muted)]">
       {accountDisplay !== undefined ? (
         <span className="min-w-0 truncate" title={rawTitle}>{accountDisplay}</span>
       ) : null}
@@ -63,7 +63,7 @@ function SourceAccountSubtitle({
   );
 }
 
-function RowActionsMenu({
+export function RowActionsMenu({
   source,
   settingsHref,
   localUsageHref,
@@ -217,16 +217,28 @@ export function AttentionQuotaRow({
 
   const message = signedOut ? t('usage.quota.signedOut') : source.message ?? source.reason;
   const canRefresh = source.supported && source.enabled && !signedOut;
-  const surfaceTone = status === 'auth_required' ? 'bg-attention/[0.06]' : 'bg-danger/[0.055]';
-  const dotTone = status === 'auth_required' ? 'bg-attention' : 'bg-danger';
-  const statusTextTone = status === 'auth_required' ? 'text-attention' : 'text-danger';
+  const statusTextTone = status === 'auth_required'
+    ? 'text-[var(--kiki-chart-warn-text)]'
+    : 'text-[var(--kiki-chart-danger-text)]';
 
   return (
-    <section data-quota-item={source.id} className={`space-y-2 rounded-lg px-4 py-3 ${surfaceTone}`}>
+    <section
+      data-quota-item={source.id}
+      className={`space-y-2 border-l-2 pl-4 pr-3 py-3 ${
+        status === 'auth_required'
+          ? 'border-[var(--kiki-chart-3)] bg-attention/[0.05]'
+          : 'border-[var(--kiki-chart-danger)] bg-danger/[0.045]'
+      }`}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotTone}`} />
+            <span
+              aria-hidden
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                status === 'auth_required' ? 'bg-[var(--kiki-chart-3)]' : 'bg-[var(--kiki-chart-danger)]'
+              }`}
+            />
             <h3 className="truncate font-sans text-[13px] font-[510] text-ink">{source.label}</h3>
             <KindTag kind={source.kind} />
             <span className={`shrink-0 text-[11.5px] font-medium ${statusTextTone}`} data-quota-status={status}>

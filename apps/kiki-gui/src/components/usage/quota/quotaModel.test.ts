@@ -7,6 +7,8 @@ import {
   meterPrimaryReading,
   normalizeMeterLabel,
   parseWindowDurationSeconds,
+  partitionPoolWindows,
+  quotaPercentToAngleDeg,
   splitSeatIdentity,
   summarizePoolHealth,
 } from './quotaModel';
@@ -209,5 +211,168 @@ describe('quotaModel', () => {
       primary: 'Work',
       secondary: 'work@example.test',
     });
+  });
+
+  it('classifies a low + unknown seat as partial_unknown and increments unknownSeats instead of readySeats', () => {
+    const now = Date.parse('2026-11-24T12:00:00Z');
+    const groups: HarnessQuotaAccountGroup[] = [
+      {
+        accountId: 'seat-low-unknown',
+        accountLabel: 'Seat Low Unknown',
+        showAccountId: false,
+        readings: [
+          { accountId: 'seat-low-unknown', pool: 'Claude / GPT', window: '5h', remaining: 14, unit: 'percent', resetAt: '2026-11-24T14:00:00Z' },
+          { accountId: 'seat-low-unknown', pool: 'Weekly Cap', window: '7d', unit: 'percent' },
+        ],
+      },
+    ];
+    const summary = summarizePoolHealth(groups, 'Quota', now);
+    expect(classifySeatHealth(groups[0]!.readings, summary.poolByKey, 'Quota')).toBe('partial_unknown');
+    expect(summary.readySeats).toBe(0);
+    expect(summary.unknownSeats).toBe(1);
+  });
+
+  it('maps 240deg calibration angles monotonically from 150deg (0%) to 390deg (100%)', () => {
+    expect(quotaPercentToAngleDeg(0)).toBe(150);
+    expect(quotaPercentToAngleDeg(25)).toBe(210);
+    expect(quotaPercentToAngleDeg(50)).toBe(270);
+    expect(quotaPercentToAngleDeg(75)).toBe(330);
+    expect(quotaPercentToAngleDeg(100)).toBe(390);
+  });
+
+  it('partitions multi-window harness pools into tightest short outer arc, longer cap inner arc, and visible sibling windows', () => {
+    const now = Date.parse('2026-11-24T12:00:00Z');
+    const groups: HarnessQuotaAccountGroup[] = [
+      {
+        accountId: 'seat-01',
+        accountLabel: 'Seat 01',
+        showAccountId: false,
+        readings: [
+          { accountId: 'seat-01', pool: 'Gemini 4', window: '5h', remaining: 71, unit: 'percent', resetAt: '2026-11-24T15:00:00Z' },
+          { accountId: 'seat-01', pool: 'Claude / GPT', window: '5h', remaining: 14, unit: 'percent', resetAt: '2026-11-24T14:00:00Z' },
+          { accountId: 'seat-01', pool: 'Weekly Cap', window: '7d', remaining: 42, unit: 'percent', resetAt: '2026-11-27T12:00:00Z' },
+        ],
+      },
+    ];
+    const summary = summarizePoolHealth(groups, 'Quota', now);
+    const partition = partitionPoolWindows(summary.pools, now);
+    expect(partition).not.toBeNull();
+    expect(partition!.outerWindow.pool.label).toBe('Claude / GPT');
+    expect(partition!.outerWindow.remainingPercent).toBe(14);
+    expect(partition!.innerWindow?.pool.label).toBe('Weekly Cap');
+    expect(partition!.innerWindow?.remainingPercent).toBe(42);
+    expect(partition!.worstWindow.pool.label).toBe('Claude / GPT');
+    expect(partition!.siblingWindows.map((s) => `${s.pool.label}:${s.remainingPercent}`)).toEqual(['Gemini 4:71']);
+  });
+
+  it('keeps sub-1% fractional readings (0.4%) usable and non-exhausted across reading, seat, and pool summaries', () => {
+    const now = Date.parse('2026-11-24T12:00:00Z');
+    const groups: HarnessQuotaAccountGroup[] = [
+      {
+        accountId: 'seat-frac',
+        accountLabel: 'Seat Frac',
+        showAccountId: false,
+        readings: [
+          {
+            accountId: 'seat-frac',
+            pool: 'Claude / GPT',
+            window: '5h',
+            remaining: 0.4,
+            unit: 'percent',
+            resetAt: '2026-11-24T14:00:00Z',
+          },
+        ],
+      },
+    ];
+    const summary = summarizePoolHealth(groups, 'Quota', now);
+    expect(summary.readySeats).toBe(1);
+    expect(summary.pools[0]?.usableSeatCount).toBe(1);
+    expect(summary.pools[0]?.allExhausted).toBe(false);
+    expect(summary.pools[0]?.tightestPercent).toBe(0.4);
+    expect(classifySeatHealth(groups[0]!.readings, summary.poolByKey, 'Quota')).toBe('low');
+
+    const moneyDisplay = meterPrimaryReading(
+      {
+        id: 'kimi-bal',
+        label: 'Remaining balance',
+        unit: 'money',
+        unit_label: 'USD',
+        currency: 'USD',
+        used: 18.4,
+        limit: 100,
+        remaining: 81.6,
+        scope: 'account',
+      },
+      'Unknown',
+    );
+    expect(moneyDisplay.remainingPercent).toBeCloseTo(81.6, 5);
+    expect(moneyDisplay.secondaryText).toBe('82%');
+  });
+
+  it('identifies an exhausted 7d cap as worstWindow even when the 5h outerWindow is healthy', () => {
+    const now = Date.parse('2026-11-24T12:00:00Z');
+    const groups: HarnessQuotaAccountGroup[] = [
+      {
+        accountId: 'seat-01',
+        accountLabel: 'Seat 01',
+        showAccountId: false,
+        readings: [
+          { accountId: 'seat-01', pool: 'Burst', window: '5h', remaining: 78, unit: 'percent', resetAt: '2026-11-24T16:00:00Z' },
+          { accountId: 'seat-01', pool: 'Weekly Cap', window: '7d', remaining: 0, unit: 'percent', resetAt: '2026-11-27T12:00:00Z' },
+        ],
+      },
+    ];
+    const summary = summarizePoolHealth(groups, 'Quota', now);
+    const partition = partitionPoolWindows(summary.pools, now)!;
+    expect(partition.outerWindow.pool.label).toBe('Burst');
+    expect(partition.innerWindow?.pool.label).toBe('Weekly Cap');
+    expect(partition.worstWindow.pool.label).toBe('Weekly Cap');
+    expect(partition.worstWindow.remainingPercent).toBe(0);
+    expect(partition.worstBucket).toBe(0);
+  });
+
+  it('hands off refresh slots directly so synchronous same-microtask arrivals never exceed concurrency 4 across scope gates', async () => {
+    const { runInQuotaScopeRefreshSlot } = await import('./quotaModel');
+    const flush = () => new Promise<void>((r) => { setTimeout(r, 0); });
+    const scopeKey = 'test-scope-concurrency-4';
+    let inFlight = 0;
+    let peak = 0;
+    const resolvers: Array<() => void> = [];
+
+    const launch = () =>
+      runInQuotaScopeRefreshSlot(scopeKey, async () => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise<void>((resolve) => {
+          resolvers.push(resolve);
+        });
+        inFlight -= 1;
+      });
+
+    // Fill 4 active slots + 1 queued waiter
+    const p1 = launch();
+    const p2 = launch();
+    const p3 = launch();
+    const p4 = launch();
+    const p5 = launch();
+    await flush();
+    expect(inFlight).toBe(4);
+    expect(resolvers).toHaveLength(4);
+
+    // Release slot 1 and immediately enqueue p6 in the same synchronous turn
+    resolvers.shift()!();
+    const p6 = launch();
+    await flush();
+    expect(peak).toBe(4);
+    expect(inFlight).toBe(4);
+
+    // Drain remaining tasks
+    while (resolvers.length > 0) {
+      resolvers.shift()!();
+      await flush();
+    }
+    await Promise.all([p1, p2, p3, p4, p5, p6]);
+    expect(peak).toBe(4);
+    expect(inFlight).toBe(0);
   });
 });

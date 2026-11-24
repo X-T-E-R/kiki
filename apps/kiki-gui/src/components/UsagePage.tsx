@@ -5,7 +5,7 @@
  * header's `⋯`.
  */
 
-import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
@@ -34,9 +34,7 @@ import {
   usageBucketCompareWindow,
   usageCompareWindow,
   usageDetailViewToSearch,
-  usagePointChange,
   usageRangeWindow,
-  usageRatioChange,
   usageSourceFilterValue,
   usageSourceKey,
   usageTokenTotalIsUnknown,
@@ -66,7 +64,8 @@ import { UsageReliabilityDetails } from './usage/UsageReliabilityDetails';
 import { UsageRescanActiveBadge, UsageRescanControl } from './usage/UsageRescanControl';
 import { UsageSessionPanel, type UsageSessionTraceRequest } from './usage/UsageSessionPanel';
 import { UsageSources, type UsageSourcePrior } from './usage/UsageSources';
-import { TrendChart } from './usage/UsageTrend';
+import { buildCompositionModel } from './usage/usageChartPalette';
+import { UsageHeroStage } from './usage/UsageHeroStage';
 import {
   buildUsageMultiApiQuery,
   isSourceRowFilterActive,
@@ -79,11 +78,8 @@ import {
   usageMultiFiltersToSearch,
   type UsageMultiFilters,
 } from './usage/usageFilterModel';
-import { avgCostPerTurn, computeCacheSavingsUsd, summarizeActivityCounts } from './usage/usageMetrics';
+import { computeCacheSavingsUsd } from './usage/usageMetrics';
 import {
-  bucketCost,
-  CompareCell,
-  formatCachePercent,
   formatPercent,
   KnownSubtotalMarker,
 } from './usage/usageShared';
@@ -129,224 +125,6 @@ function isAdvanceableImport(reliability: UsageResponseWire['reliability']): boo
     (reliability.import_progress !== undefined ||
       reliability.incomplete_reason === 'deadline' ||
       reliability.incomplete_reason === 'record_budget')
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Minimalist 4-Figure Editorial KPI Band
-// ---------------------------------------------------------------------------
-
-function Kpi({ id, label, value, valueAction, hint, title, dataValue, hero = false }: {
-  readonly id: string;
-  readonly label: string;
-  readonly value: ReactNode;
-  readonly valueAction?: ReactNode;
-  readonly hint?: ReactNode;
-  readonly title?: string;
-  readonly dataValue?: string;
-  readonly hero?: boolean;
-}) {
-  const valueProps = dataValue === undefined ? {} : { [dataValue]: true };
-  return (
-    <section
-      data-usage-kpi={id}
-      title={title}
-      className="flex min-w-0 flex-col py-1 lg:px-5 first:lg:pl-0 last:lg:pr-0"
-    >
-      <p className="text-[11.5px] font-medium text-ink-faint">{label}</p>
-      <div className="mt-1.5 flex min-w-0 items-center gap-1.5">
-        <div
-          {...valueProps}
-          className={`flex min-w-0 items-baseline gap-1.5 truncate font-display leading-tight text-ink tabular-nums ${
-            hero ? 'text-[28px]' : 'text-[22px]'
-          }`}
-        >
-          {value}
-        </div>
-        {valueAction}
-      </div>
-      {hint !== undefined ? <div className="mt-2 min-h-4 text-[12px] leading-snug text-ink-faint">{hint}</div> : null}
-    </section>
-  );
-}
-
-function UsageKpiBand({
-  summary,
-  trend,
-  rangeWindow,
-  incomplete,
-  comparing,
-  prior,
-  unpricedCount,
-  onOpenPricing,
-  cacheSavingsUsd,
-}: {
-  readonly summary: UsageResponseWire['summary'];
-  readonly trend: readonly UsageTrendBucketWire[];
-  readonly rangeWindow: UsageWindow | null;
-  readonly incomplete: boolean;
-  readonly comparing: boolean;
-  readonly prior: UsageResponseWire['summary'] | undefined;
-  readonly unpricedCount: number;
-  readonly onOpenPricing: () => void;
-  readonly cacheSavingsUsd: number | undefined;
-}) {
-  const { t, tp, time } = useI18n();
-
-  const costUnknown = summary.cost_unknown || incomplete;
-  const totalTokens = totalTokensOf(summary);
-  const tokensUnknown = usageTokenTotalIsUnknown(summary) || (incomplete && totalTokens === 0);
-  const cacheHit = cacheHitRateOf(summary);
-  const input = summary.tokens.input_other + summary.tokens.input_cache_read + summary.tokens.input_cache_creation;
-
-  const tokenCompositionTitle = !tokensUnknown && input > 0
-    ? [
-        `${t('usage.tokens.cacheRead')}: ${time.formatTokens(summary.tokens.input_cache_read)}`,
-        `${t('usage.tokens.cacheWrite')}: ${time.formatTokens(summary.tokens.input_cache_creation)}`,
-        `${t('usage.composition.fresh')}: ${time.formatTokens(summary.tokens.input_other)}`,
-      ].join(' · ')
-    : undefined;
-
-  const rangeDays = rangeWindow !== null
-    ? Math.max(1, Math.round((rangeWindow.endAt - rangeWindow.startAt) / 86_400_000))
-    : 1;
-  const dailyAvgTokens = !tokensUnknown && totalTokens > 0 && rangeDays >= 2
-    ? totalTokens / rangeDays
-    : undefined;
-
-  const tokensOutcome = comparing && prior !== undefined
-    ? usageRatioChange(totalTokens, totalTokensOf(prior))
-    : undefined;
-  const costOutcome = comparing && prior !== undefined
-    ? (summary.cost_unknown && summary.cost_usd_estimated === 0) || (prior.cost_unknown && prior.cost_usd_estimated === 0)
-      ? usageRatioChange(Number.NaN, Number.NaN)
-      : usageRatioChange(summary.cost_usd_estimated, prior.cost_usd_estimated)
-    : undefined;
-  const cacheOutcome = comparing && prior !== undefined
-    ? usagePointChange(cacheHit, cacheHitRateOf(prior))
-    : undefined;
-
-  const bucketActivity = useMemo(() => summarizeActivityCounts(trend), [trend]);
-  const turns = typeof summary.turn_count === 'number' ? summary.turn_count : bucketActivity.turns;
-  const requests = typeof summary.request_count === 'number' ? summary.request_count : bucketActivity.requests;
-  const hasTurns = typeof summary.turn_count === 'number' || bucketActivity.hasTurns;
-  const hasRequests = typeof summary.request_count === 'number' || bucketActivity.hasRequests;
-  const activity = { turns, requests, hasTurns, hasRequests };
-  const perTurnCost = avgCostPerTurn(summary, activity);
-
-  const blendedPerMillion = !tokensUnknown && totalTokens > 0 && !costUnknown
-    ? (summary.cost_usd_estimated / totalTokens) * 1_000_000
-    : undefined;
-  const costTitleParts = [
-    ...(blendedPerMillion !== undefined ? [t('usage.kpi.blendedPerM', { cost: formatCostUsd(blendedPerMillion) })] : []),
-    ...(unpricedCount > 0 ? [tp('usage.kpi.unpricedCount', unpricedCount)] : []),
-  ];
-  const costTitle = costTitleParts.length > 0 ? costTitleParts.join(' · ') : undefined;
-
-  return (
-    <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-y border-hairline py-4 lg:grid-cols-4 lg:gap-x-0 lg:divide-x lg:divide-hairline">
-      <Kpi
-        id="tokens"
-        hero
-        label={t('usage.kpi.totalTokens')}
-        dataValue="data-usage-summary-tokens"
-        title={tokenCompositionTitle}
-        value={<span className="tracking-[-0.015em]">{tokensUnknown ? '—' : time.formatTokens(totalTokens)}</span>}
-        valueAction={summary.tokens_unknown === true ? (
-          <span
-            title={t('usage.accounting.knownSubtotal')}
-            aria-label={t('usage.accounting.knownSubtotal')}
-            className="inline-flex h-6 w-6 shrink-0 items-center justify-center text-amber-ink/85"
-          >
-            <Icon name="partial" size={14} />
-          </span>
-        ) : undefined}
-        hint={(
-          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-            {tokensOutcome !== undefined ? <CompareCell outcome={tokensOutcome} /> : null}
-            <span data-usage-summary-input-output className="tabular-nums">
-              {tokensUnknown
-                ? '—'
-                : [
-                    t('usage.kpi.inputOutput', {
-                      input: time.formatTokens(input),
-                      output: time.formatTokens(summary.tokens.output),
-                    }),
-                    ...(dailyAvgTokens !== undefined ? [t('usage.kpi.dailyAvg', { tokens: time.formatTokens(dailyAvgTokens) })] : []),
-                  ].join(' · ')}
-            </span>
-          </div>
-        )}
-      />
-
-      <Kpi
-        id="cache"
-        label={t('usage.kpi.cacheHit')}
-        dataValue="data-usage-summary-cache"
-        title={t('usage.cacheHitHint')}
-        value={<span className="tracking-[-0.015em]">{tokensUnknown ? '—' : formatCachePercent(cacheHit)}</span>}
-        hint={(cacheOutcome !== undefined || cacheSavingsUsd !== undefined) ? (
-          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-            {cacheOutcome !== undefined ? <CompareCell outcome={cacheOutcome} points /> : null}
-            {cacheSavingsUsd !== undefined ? (
-              <span data-usage-cache-savings className="text-ink-soft tabular-nums">
-                {t('usage.kpi.cacheSaved', { cost: formatCostUsd(cacheSavingsUsd) })}
-              </span>
-            ) : null}
-          </div>
-        ) : undefined}
-      />
-
-      <Kpi
-        id="activity"
-        label={t('usage.kpi.activity')}
-        dataValue="data-usage-summary-activity"
-        value={
-          hasTurns && hasRequests ? (
-            <span className="inline-flex min-w-0 items-baseline gap-1">
-              <span className="font-display text-[22px] tracking-[-0.015em] text-ink tabular-nums">{formatGrouped(requests)}</span>
-              <span className="font-sans text-[13px] font-normal tracking-normal text-ink-soft">{t('usage.kpi.requestsUnit')}</span>
-              <span aria-hidden className="px-0.5 font-sans text-[13px] font-normal tracking-normal text-ink-faint">·</span>
-              <span className="font-display text-[22px] tracking-[-0.015em] text-ink tabular-nums">{formatGrouped(turns)}</span>
-              <span className="font-sans text-[13px] font-normal tracking-normal text-ink-soft">{t('usage.kpi.turnsUnit')}</span>
-            </span>
-          ) : hasTurns ? (
-            <span className="inline-flex min-w-0 items-baseline gap-1">
-              <span className="font-display text-[22px] tracking-[-0.015em] text-ink tabular-nums">{formatGrouped(turns)}</span>
-              <span className="font-sans text-[13px] font-normal tracking-normal text-ink-soft">{t('usage.kpi.turnsUnit')}</span>
-            </span>
-          ) : (
-            <span className="font-sans text-[15px] font-medium tracking-normal text-ink">
-              {tp('usage.sessionChip', summary.session_count)}
-            </span>
-          )
-        }
-        hint={perTurnCost !== undefined ? (
-          <span className="tabular-nums">{t('usage.kpi.avgPerTurn', { cost: formatCostUsd(perTurnCost) })}</span>
-        ) : undefined}
-      />
-
-      <Kpi
-        id="cost"
-        label={t('usage.kpi.estimatedCost')}
-        dataValue="data-usage-summary-cost"
-        title={costTitle}
-        value={<span className="tracking-[-0.015em]">{costUnknown && tokensUnknown && summary.cost_usd_estimated === 0 ? '—' : formatCostUsd(summary.cost_usd_estimated)}</span>}
-        valueAction={unpricedCount > 0 ? (
-          <button
-            type="button"
-            data-usage-unpriced-trigger
-            onClick={onOpenPricing}
-            title={[tp('usage.kpi.unpricedCount', unpricedCount), t('usage.reliability.setPrices'), ...(blendedPerMillion !== undefined ? [t('usage.kpi.blendedPerM', { cost: formatCostUsd(blendedPerMillion) })] : [])].join(' · ')}
-            aria-label={`${tp('usage.kpi.unpricedCount', unpricedCount)} · ${t('usage.reliability.setPrices')}`}
-            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-amber-ink/85 transition-colors hover:bg-amber-card hover:text-amber-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11"
-          >
-            <Icon name="partial" size={14} />
-          </button>
-        ) : undefined}
-        hint={costOutcome !== undefined ? <CompareCell outcome={costOutcome} /> : undefined}
-      />
-    </div>
   );
 }
 
@@ -662,6 +440,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const panel = usagePanelFromSearch(location.search);
   const selectPanel = (next: UsagePanel) => {
     const params = new URLSearchParams(location.search);
+    const prevTab = params.get('tab');
+    if (prevTab === 'quotas' || prevTab === 'quota') params.delete('tab');
     params.set('panel', next);
     setSearchParams(params, { replace: true });
   };
@@ -681,12 +461,16 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   }, [singleFilters]);
 
   const localUsageDate = localDateKey(usageNowMs);
+  const localUsageHour = Math.floor(usageNowMs / 3_600_000);
+  const usageTimeAnchor = filters.range === 'last_24_hours' ? String(localUsageHour) : localUsageDate;
   const timezoneOffsetMinutes = browserTimezoneOffsetMinutes();
 
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const metric: UsageMetric = METRIC_SEARCH_TO_METRIC[searchParams.get('metric') ?? ''] ?? 'tokens';
   const sortBy: 'tokens' | 'cost' = metric === 'cost' ? 'cost' : 'tokens';
   const [hoveredSourceKey, setHoveredSourceKey] = useState<string | null>(null);
+  const [pinnedSourceKey, setPinnedSourceKey] = useState<string | null>(null);
+  const activeHighlightKey = hoveredSourceKey ?? pinnedSourceKey;
   const [drilldownReturn, setDrilldownReturn] = useState<{
     readonly range: UsageMultiFilters['range'];
     readonly granularity: UsageMultiFilters['granularity'];
@@ -774,6 +558,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   };
 
   const selectSourceAxisTab = (nextGroup: UsageGroupBy) => {
+    setPinnedSourceKey(null);
+    setHoveredSourceKey(null);
     const nextFilters: UsageMultiFilters = { ...filters, groupBy: nextGroup, advancedDimension: undefined };
     writeStoredUsageFilters(toSingleUsageFilters(nextFilters));
     const searchWithFilters = usageMultiFiltersToSearch(nextFilters, location.search);
@@ -864,11 +650,17 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   };
 
   const usageQuery = useInfiniteQuery({
-    queryKey: ['usage-v2', scopeId, filters, sortBy, localUsageDate, timezoneOffsetMinutes],
+    queryKey: ['usage-v2', scopeId, filters, sortBy, usageTimeAnchor, timezoneOffsetMinutes],
     enabled: panel === 'history',
     queryFn: ({ pageParam, signal }) =>
       client.getUsage(
-        buildUsageMultiApiQuery(filters, { timezoneOffsetMinutes, sortBy, pageSize: SESSION_PAGE_SIZE, pageToken: pageParam }),
+        buildUsageMultiApiQuery(filters, {
+          timezoneOffsetMinutes,
+          sortBy,
+          pageSize: SESSION_PAGE_SIZE,
+          pageToken: pageParam,
+          nowMs: usageNowMs,
+        }),
         { signal },
       ),
     initialPageParam: undefined as string | undefined,
@@ -882,8 +674,11 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       const unfinished = query.state.data?.pages.some(({ reliability }) => !reliability.complete &&
         (reliability.incomplete_reason === 'deadline' || reliability.incomplete_reason === 'record_budget'));
       if (unfinished) return 250;
-      const isTodayDefault = filters.range === 'today' && filters.includeArchived && !usageMultiFiltersHaveScope(filters);
-      return isTodayDefault ? 60_000 : false;
+      const isLiveDefault =
+        (filters.range === 'last_24_hours' || filters.range === 'today') &&
+        filters.includeArchived &&
+        !usageMultiFiltersHaveScope(filters);
+      return isLiveDefault ? 60_000 : false;
     },
   });
 
@@ -906,8 +701,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   useEffect(() => {
     if (!isFetchNextPageError || !(usageError instanceof ApiError) || usageError.code !== ErrorCode.PAGE_TOKEN_MISMATCH || recoveredPageError.current === usageError) return;
     recoveredPageError.current = usageError;
-    void queryClient.resetQueries({ queryKey: ['usage-v2', scopeId, filters, sortBy, localUsageDate, timezoneOffsetMinutes], exact: true });
-  }, [usageError, isFetchNextPageError, queryClient, scopeId, filters, sortBy, localUsageDate, timezoneOffsetMinutes]);
+    void queryClient.resetQueries({ queryKey: ['usage-v2', scopeId, filters, sortBy, usageTimeAnchor, timezoneOffsetMinutes], exact: true });
+  }, [usageError, isFetchNextPageError, queryClient, scopeId, filters, sortBy, usageTimeAnchor, timezoneOffsetMinutes]);
 
   const loadedPageCount = usageData?.pages.length ?? 0;
   const locatedSession =
@@ -958,22 +753,38 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     }
     return usageRangeWindow(singleFilters, timezoneOffsetMinutes, usageNowMs);
   }, [serverRange?.start_at, serverRange?.end_at, singleFilters, timezoneOffsetMinutes, usageNowMs]);
-  const compareWindow = useMemo(() => {
+  const periodCompareWindow = useMemo(() => {
     if (!comparing || rangeWindow === null) return null;
-    return selectedBucket === undefined || selectedBucket === null
-      ? usageCompareWindow(rangeWindow, timezoneOffsetMinutes, usageNowMs)
-      : usageBucketCompareWindow(rangeWindow, selectedBucket, timezoneOffsetMinutes, usageNowMs);
+    return usageCompareWindow(rangeWindow, timezoneOffsetMinutes, usageNowMs);
+  }, [comparing, rangeWindow, timezoneOffsetMinutes, usageNowMs]);
+  const bucketCompareWindow = useMemo(() => {
+    if (!comparing || rangeWindow === null || selectedBucket === undefined || selectedBucket === null) return null;
+    return usageBucketCompareWindow(rangeWindow, selectedBucket, timezoneOffsetMinutes, usageNowMs);
   }, [comparing, rangeWindow, selectedBucket, timezoneOffsetMinutes, usageNowMs]);
   const compareQuery = useQuery({
-    queryKey: ['usage-v2', scopeId, 'compare', filters, compareWindow, localUsageDate, timezoneOffsetMinutes],
-    enabled: panel === 'history' && compareWindow !== null && mainComplete && !isPlaceholderData && !isUsageError,
+    queryKey: ['usage-v2', scopeId, 'compare-period', filters, periodCompareWindow, localUsageDate, timezoneOffsetMinutes],
+    enabled: panel === 'history' && periodCompareWindow !== null && mainComplete && !isPlaceholderData && !isUsageError,
     retry: false,
     queryFn: ({ signal }) =>
       client.getUsage(
         buildUsageMultiApiQuery(filters, {
           timezoneOffsetMinutes,
           pageSize: 1,
-          window: compareWindow ?? undefined,
+          window: periodCompareWindow ?? undefined,
+        }),
+        { signal },
+      ),
+  });
+  const bucketCompareQuery = useQuery({
+    queryKey: ['usage-v2', scopeId, 'compare-bucket', filters, bucketCompareWindow, localUsageDate, timezoneOffsetMinutes],
+    enabled: panel === 'history' && bucketCompareWindow !== null && mainComplete && !isPlaceholderData && !isUsageError,
+    retry: false,
+    queryFn: ({ signal }) =>
+      client.getUsage(
+        buildUsageMultiApiQuery(filters, {
+          timezoneOffsetMinutes,
+          pageSize: 1,
+          window: bucketCompareWindow ?? undefined,
         }),
         { signal },
       ),
@@ -982,10 +793,11 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     if (panel === 'history') return;
     void queryClient.cancelQueries({ queryKey: ['usage-v2'] });
   }, [panel, queryClient]);
+  const activeSourceCompareData = bucketCompareWindow !== null ? bucketCompareQuery.data : compareQuery.data;
   const priorSource: UsageSourcePrior | undefined = comparing
     ? {
-        priorByKey: new Map(aggregateSourceRows(compareQuery.data?.trend ?? [], filters.groupBy, metric).map((row) => [row.key, row])),
-        complete: compareQuery.data?.reliability.complete === true,
+        priorByKey: new Map(aggregateSourceRows(activeSourceCompareData?.trend ?? [], filters.groupBy, metric).map((row) => [row.key, row])),
+        complete: activeSourceCompareData?.reliability.complete === true,
       }
     : undefined;
 
@@ -1192,11 +1004,24 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const [pricingOpen, setPricingOpen] = useState(false);
 
   const groupBy = filters.groupBy;
-  const sourceTrend = selectedBucket === undefined ? trend : [selectedBucket];
+  const sourceTrend = useMemo(
+    () => (selectedBucket === undefined ? trend : [selectedBucket]),
+    [selectedBucket, trend],
+  );
   const sourceScopeLabel = selectedBucket === undefined
     ? t('usage.sources.wholeRange')
     : `${t('usage.sources.selectedPeriod')} · ${bucketLabel(selectedBucket, filters.granularity, locale)}`;
-  const sourceSubtotal = sourceTrend.reduce((sum, bucket) => sum + bucketCost(bucket), 0);
+  const ringSourceRows = useMemo(
+    () => aggregateSourceRows(tab === 'sources' ? sourceTrend : trend, groupBy, metric),
+    [tab, sourceTrend, trend, groupBy, metric],
+  );
+  const ringComposition = useMemo(
+    () => buildCompositionModel(ringSourceRows, metric),
+    [ringSourceRows, metric],
+  );
+  const togglePinSourceKey = useCallback((key: string) => {
+    setPinnedSourceKey((prev) => (prev === key ? null : key));
+  }, []);
 
   const openTrace = (row: UsageSourceRow | undefined) => {
     const window: UsageWindow | null = rangeWindow === null
@@ -1276,7 +1101,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
         <PricingPanel models={reliability?.unknown_price_models ?? []} onClose={() => { setPricingOpen(false); }} />
       ) : null}
       <main ref={scrollRef} onScroll={handleScroll} data-usage-scroll style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-3 pb-10 lg:px-6">
-        <div className={`mx-auto ${PAGE_WIDTH.dashboard} space-y-5`} data-usage-page>
+        <div className={`mx-auto ${PAGE_WIDTH.dashboard} space-y-3.5 sm:space-y-5`} data-usage-page>
           <UsageNavigation panel={panel} onChange={selectPanel} quotaAttentionCount={quotaAttentionCount} />
           {panel === 'export' ? (
             <UsageExportPanel />
@@ -1344,57 +1169,53 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                   </div>
                 ) : null}
 
-                {summary !== undefined ? (
-                  <UsageKpiBand
-                    summary={summary}
-                    trend={trend}
-                    rangeWindow={rangeWindow}
-                    incomplete={!firstPage.reliability.complete}
-                    comparing={comparing}
-                    prior={compareQuery.data?.summary}
-                    unpricedCount={unpricedCount}
-                    onOpenPricing={() => { setPricingOpen(true); }}
-                    cacheSavingsUsd={cacheSavingsUsd}
-                  />
-                ) : null}
-
-                {trend.length === 0 ? (firstPage.reliability.complete ? (
-                  <p data-usage-empty className="py-8 text-center text-[13px] text-ink-faint">
-                    {filters.range === 'all' && !usageMultiFiltersHaveScope(filters) ? t('usage.emptyAll') : t('usage.empty')}
-                  </p>
-                ) : null) : (
-                  <TrendChart
-                    trend={trend}
-                    filters={singleFilters}
-                    rangeWindow={rangeWindow}
-                    nowMs={usageNowMs}
-                    groupBy={groupBy}
-                    metric={metric}
-                    onMetricChange={applyMetric}
-                    onGranularityChange={(granularity) => { applyFilters({ ...filters, granularity }); }}
-                    selectedKey={selectedBucketKey}
-                    onSelect={selectBucketKeyWithSnapshot}
-                    onDrilldownDay={drilldownDay}
-                    highlightedSourceKey={hoveredSourceKey}
-                    labelForKey={(key) => {
-                      if (legacyDimension !== undefined) {
-                        const group = trendGroupByKey.get(key);
-                        return dimensionKeyLabelLegacy(
-                          {
-                            key,
-                            modelAlias: group?.model_alias ?? null,
-                            profileName: group?.profile_name ?? null,
-                            agentId: group?.agent_id ?? null,
-                          },
-                          legacyDimension,
-                          sourceLookups,
-                          sessionTitle,
-                        );
-                      }
-                      return sourceKeyToLabel(key, groupBy, trendGroupBySourceKey, sourceLookups);
-                    }}
-                  />
-                )}
+                <UsageHeroStage
+                  summary={summary}
+                  trend={trend}
+                  sourceRows={ringSourceRows}
+                  composition={ringComposition}
+                  singleFilters={singleFilters}
+                  rangeWindow={rangeWindow}
+                  incomplete={!firstPage.reliability.complete}
+                  complete={firstPage.reliability.complete}
+                  emptyMessage={filters.range === 'all' && !usageMultiFiltersHaveScope(filters) ? t('usage.emptyAll') : t('usage.empty')}
+                  comparing={comparing}
+                  prior={compareQuery.data?.summary}
+                  unpricedCount={unpricedCount}
+                  onOpenPricing={() => { setPricingOpen(true); }}
+                  cacheSavingsUsd={cacheSavingsUsd}
+                  nowMs={usageNowMs}
+                  groupBy={groupBy}
+                  metric={metric}
+                  onMetricChange={applyMetric}
+                  onGranularityChange={(granularity) => { applyFilters({ ...filters, granularity }); }}
+                  selectedBucketKey={selectedBucketKey}
+                  selectedBucket={selectedBucket}
+                  showScopedBucketInRing={tab === 'sources'}
+                  onSelectBucketKey={selectBucketKeyWithSnapshot}
+                  onDrilldownDay={drilldownDay}
+                  activeHighlightKey={activeHighlightKey}
+                  pinnedSourceKey={pinnedSourceKey}
+                  onHoverSourceKey={setHoveredSourceKey}
+                  onTogglePinSourceKey={togglePinSourceKey}
+                  labelForKey={(key) => {
+                    if (legacyDimension !== undefined) {
+                      const group = trendGroupByKey.get(key);
+                      return dimensionKeyLabelLegacy(
+                        {
+                          key,
+                          modelAlias: group?.model_alias ?? null,
+                          profileName: group?.profile_name ?? null,
+                          agentId: group?.agent_id ?? null,
+                        },
+                        legacyDimension,
+                        sourceLookups,
+                        sessionTitle,
+                      );
+                    }
+                    return sourceKeyToLabel(key, groupBy, trendGroupBySourceKey, sourceLookups);
+                  }}
+                />
 
                 {firstPage.reliability.complete || trend.length > 0 ? (
                   <section data-usage-detail className="space-y-3">
@@ -1453,19 +1274,9 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                         <div className="flex flex-wrap items-center gap-2 pb-1">
                           <button
                             type="button"
-                            data-usage-clear-bucket
-                            onClick={() => { selectBucketKeyWithSnapshot(null); }}
-                            className="inline-flex h-7 items-center gap-1.5 rounded-full border border-selected-ink/40 bg-panel px-2.5 text-[11.5px] text-ink transition-colors hover:border-selected-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
-                          >
-                            <span data-usage-source-scope>{bucketLabel(selectedBucket, filters.granularity, locale)}</span>
-                            <span data-usage-source-subtotal className="font-semibold tabular-nums">{formatCostUsd(sourceSubtotal)}</span>
-                            <Icon name="close" size={12} className="text-ink-faint" />
-                          </button>
-                          <button
-                            type="button"
                             data-usage-open-sessions
                             onClick={() => { openTrace(undefined); }}
-                            className="text-[12px] text-ink-soft underline decoration-hairline underline-offset-3 hover:text-ink"
+                            className="text-[12px] text-[var(--kiki-chart-label)] underline decoration-hairline underline-offset-3 hover:text-ink pointer-coarse:min-h-11 pointer-coarse:px-2"
                           >
                             {t('usage.sources.openSessions')}
                           </button>
@@ -1509,12 +1320,15 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                       ) : null}
                     </div>
 
-                    {compareQuery.isError ? (
+                    {(compareQuery.isError || (bucketCompareWindow !== null && bucketCompareQuery.isError)) ? (
                       <p data-usage-compare-error className={NOTICE_AMBER}>
                         {t('usage.compare.loadFailed')}{' '}
                         <button
                           type="button"
-                          onClick={() => { void compareQuery.refetch(); }}
+                          onClick={() => {
+                            if (compareQuery.isError) void compareQuery.refetch();
+                            if (bucketCompareWindow !== null && bucketCompareQuery.isError) void bucketCompareQuery.refetch();
+                          }}
                           className="underline underline-offset-2"
                         >
                           {t('usage.compare.retry')}
@@ -1537,6 +1351,9 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                         }}
                         onOpenSessions={openTrace}
                         onHoverSource={setHoveredSourceKey}
+                        highlightedKey={activeHighlightKey}
+                        tailKeys={ringComposition.tailKeys}
+                        colorByKey={ringComposition.colorByKey}
                       />
                     ) : tab === 'sessions' ? (
                       <SessionsTab

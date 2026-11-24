@@ -52,10 +52,10 @@ const FACET_ICON: Record<UsageFacetKind, IconName> = {
   profile: 'agent',
 };
 
-const QUICK_RANGE_PRESETS: readonly Exclude<UsageRangePreset, 'custom' | 'this_week'>[] = [
-  'today',
+const QUICK_RANGE_PRESETS: readonly ('last_24_hours' | 'last_7_days' | 'last_30_days' | 'all')[] = [
+  'last_24_hours',
   'last_7_days',
-  'this_month',
+  'last_30_days',
   'all',
 ];
 
@@ -901,13 +901,17 @@ export function UsageFilterBar({
     </div>
   );
 
+  const isCalendarPreset =
+    filters.range === 'today' ||
+    filters.range === 'this_week' ||
+    filters.range === 'this_month';
   const customRangeLabel =
     filters.range === 'custom'
       ? (formatCompactDateRange(filters.startAt, filters.endAt, locale) ?? t('usage.range.custom'))
-      : filters.range === 'this_week'
-        ? t('usage.rangeShort.this_week')
+      : isCalendarPreset
+        ? t(`usage.rangeShort.${filters.range}`)
         : t('usage.range.custom');
-  const isCustomOrCalendarPreset = filters.range === 'custom' || filters.range === 'this_week';
+  const isCustomOrCalendarPreset = filters.range === 'custom' || isCalendarPreset;
 
   return (
     <div data-anchor="usage-filter" data-usage-filters className="space-y-2 pt-0.5">

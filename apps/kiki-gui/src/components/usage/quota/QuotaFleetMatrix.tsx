@@ -13,6 +13,7 @@ import {
 } from '../../../lib/providerQuota';
 import { DisclosureChevron } from '../../icons';
 import { AnchoredPopover, usePopover } from '../../overlays/AnchoredPopover';
+import { QuotaFuelMicroBar } from './QuotaArcGauge';
 import {
   classifySeatHealth,
   computeRemainingPace,
@@ -23,7 +24,7 @@ import {
   type FleetPoolBottleneckItem,
   type SeatHealthState,
 } from './quotaModel';
-import { QuotaFuelTrack, QuotaPaceCaption } from './QuotaWindowMeter';
+import { QuotaPaceCaption } from './QuotaWindowMeter';
 
 function columnSequenceSignature(readings: readonly HarnessQuotaReading[], defaultPoolLabel: string): string {
   return readings.map((reading) => readingPoolKey(reading, defaultPoolLabel)).join('|');
@@ -32,10 +33,10 @@ function columnSequenceSignature(readings: readonly HarnessQuotaReading[], defau
 const SEAT_DOT_CLASS: Record<SeatHealthState, string> = {
   ready: 'bg-success',
   low: 'bg-amber-rule',
-  skipped_exhausted: 'bg-ink/35',
+  skipped_exhausted: 'bg-[var(--kiki-gauge-tick)]',
   blocking_exhausted: 'bg-danger',
-  partial_unknown: 'bg-ink/25',
-  unknown: 'bg-ink/25',
+  partial_unknown: 'bg-[var(--kiki-gauge-tick)]',
+  unknown: 'bg-[var(--kiki-gauge-tick)]',
 };
 
 function accountSeatDotClass(
@@ -193,7 +194,7 @@ export function PluginAccountsMatrix({
             isLongFleet ? 'sticky top-0 z-10 bg-paper/95 py-2 backdrop-blur-[4px]' : 'pb-2'
           }`}
         >
-          <span className="text-[11px] text-ink-faint">
+          <span className="font-sans tracking-normal text-[11px] text-[var(--kiki-chart-muted)]">
             {t('usage.quota.summary.seats', { count: accountGroups.length })}
           </span>
           <div className={cellsGridClass}>
@@ -226,7 +227,7 @@ export function PluginAccountsMatrix({
                   </span>
                 </div>
                 {seatIdentity.secondary !== undefined ? (
-                  <p className="mt-0.5 truncate pl-3.5 text-[11px] text-ink-faint" title={seatIdentity.secondary}>
+                  <p className="mt-0.5 truncate pl-3.5 font-sans tracking-normal text-[11px] text-[var(--kiki-chart-muted)]" title={seatIdentity.secondary}>
                     {compactIdentifier(seatIdentity.secondary)}
                   </p>
                 ) : null}
@@ -301,9 +302,9 @@ function MatrixColumnHeader({
   return (
     <div className="relative min-w-0 text-[11.5px]">
       <div className="flex items-center justify-between gap-1.5">
-        <span className="min-w-0 truncate font-medium text-ink-soft" title={poolLabel}>
+        <span className="min-w-0 truncate font-sans tracking-normal font-medium text-[var(--kiki-chart-label)]" title={poolLabel}>
           {poolLabel}
-          {reading.window ? <span className="font-normal text-ink-faint"> · {reading.window}</span> : null}
+          {reading.window ? <span className="font-normal text-[var(--kiki-chart-muted)]"> · {reading.window}</span> : null}
         </span>
         {foldModels ? (
           <button
@@ -391,14 +392,12 @@ export function PluginQuotaBucketCell({
 
   const valueTone =
     val.kind === 'unknown'
-      ? 'text-ink-faint'
+      ? 'text-[var(--kiki-chart-muted)]'
       : mutedSkipped
-        ? 'text-ink-faint'
+        ? 'text-[var(--kiki-chart-muted)]'
         : val.exhausted || (remainingPct !== undefined && remainingPct <= 5) || pace?.state === 'depleting'
-          ? 'font-medium text-danger'
-          : tier === 'critical' || tier === 'low' || pace?.state === 'fast'
-            ? 'font-medium text-amber-ink'
-            : 'font-medium text-ink';
+          ? 'font-semibold text-ink'
+          : 'font-medium text-ink';
 
   return (
     <div
@@ -409,23 +408,32 @@ export function PluginQuotaBucketCell({
       data-reading-read-at={distinctReadAt}
       title={mutedSkipped ? t('usage.quota.seatExhaustedSkipped') : undefined}
     >
-      <div className="flex items-baseline justify-between gap-2">
-        <span
-          className={`min-w-0 truncate text-ink-soft ${showPoolLabel === 'mobileOnly' ? 'md:hidden' : ''}`}
-          title={poolLabel}
-        >
-          {poolLabel}
-          {reading.window ? <span className="text-ink-faint" data-bucket-window> · {reading.window}</span> : null}
-        </span>
+      <div className={`font-sans tracking-normal text-[11px] text-[var(--kiki-chart-label)] ${showPoolLabel === 'mobileOnly' ? 'md:hidden' : ''}`}>
+        <span className="truncate" title={poolLabel}>{poolLabel}</span>
+        {reading.window ? <span className="text-[var(--kiki-chart-muted)]" data-bucket-window> · {reading.window}</span> : null}
+      </div>
 
-        <span className={`flex shrink-0 items-baseline gap-2 tabular-nums ${showPoolLabel === 'mobileOnly' ? 'md:w-full md:justify-between' : ''}`}>
+      <div className="flex items-center gap-2.5">
+        {remainingPct !== undefined ? (
+          <QuotaFuelMicroBar
+            remainingPercent={remainingPct}
+            pace={pace}
+            muted={mutedSkipped}
+            width={64}
+            dataAttr="data-bucket-progress"
+          />
+        ) : val.kind === 'unknown' || alignTrack ? (
+          <QuotaFuelMicroBar unknown width={64} />
+        ) : null}
+
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 tabular-nums">
           {val.kind === 'unknown' ? (
-            <span className="text-[11.5px] text-ink-faint" data-reading-state="unknown">
+            <span className="font-sans tracking-normal text-[12px] text-[var(--kiki-chart-muted)]" data-reading-state="unknown">
               {t('usage.quota.status.unknown')}
             </span>
           ) : (
             <span
-              className={`text-[11.5px] ${valueTone}`}
+              className={`text-[13px] ${valueTone}`}
               data-reading-state={val.exhausted ? 'exhausted' : 'available'}
             >
               {val.value}
@@ -433,25 +441,14 @@ export function PluginQuotaBucketCell({
           )}
           {resetShort !== undefined && reading.resetAt ? (
             <span
-              className="text-[10.5px] text-ink-faint"
+              className="text-[11px] text-[var(--kiki-chart-muted)]"
               title={resetFull ? t('usage.quota.stripReset', { time: resetFull }) : reading.resetAt}
             >
               {resetShort}
             </span>
           ) : null}
-        </span>
+        </div>
       </div>
-
-      {remainingPct !== undefined ? (
-        <QuotaFuelTrack
-          remainingPercent={remainingPct}
-          pace={pace}
-          muted={mutedSkipped}
-          dataAttr="data-bucket-progress"
-        />
-      ) : alignTrack ? (
-        <div aria-hidden className="h-1.5 w-full rounded-full border border-dashed border-hairline/80" />
-      ) : null}
 
       <QuotaPaceCaption pace={pace} />
 

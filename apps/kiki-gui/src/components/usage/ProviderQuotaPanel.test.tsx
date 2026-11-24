@@ -1111,4 +1111,202 @@ describe('ProviderQuotaPanel', () => {
     await click(container, '[data-quota-account-action="toggle_pause"][data-quota-account-action-target="acc-2"]');
     expect(harnessQuotaPerformAction).toHaveBeenCalledWith('plugin:magpie/agy', { action: 'toggle_pause', account_id: 'acc-2' });
   });
+
+  it('ranks endangered sources into overview calibration dials, prints sibling windows visibly, and omits fake rings on limit===null balances', async () => {
+    const nowIso = new Date(Date.now() - 2_000).toISOString();
+    const reset2h = new Date(Date.now() + 2 * 3_600_000).toISOString();
+    const reset3h = new Date(Date.now() + 3 * 3_600_000).toISOString();
+    const reset3d = new Date(Date.now() + 3 * 86_400_000).toISOString();
+    const reset4h = new Date(Date.now() + 4 * 3_600_000).toISOString();
+
+    client.listExecutors.mockResolvedValue({
+      items: [
+        { id: 'agy-cli', name: 'AGY CLI', kind: 'cli', enabled: true, detected: true, ready: true, version: '1.0' },
+        { id: 'codex', name: 'Codex', kind: 'cli', enabled: true, detected: true, ready: true, version: '1.0' },
+      ],
+    });
+    client.getConfig.mockResolvedValue({
+      raw: {
+        agent_executor_overrides: {
+          'agy-cli': { show_in_profile_list: true, quota_source: 'plugin:magpie/agy' },
+          codex: { show_in_profile_list: true, quota_source: 'plugin:magpie/codex' },
+        },
+      },
+    });
+    harnessQuotaCached.mockResolvedValue({
+      sources: [
+        {
+          id: 'plugin:magpie/agy',
+          label: 'Magpie AGY Pool',
+          engineIds: ['agy-cli'],
+          minRefreshIntervalMs: 300_000,
+          readAt: nowIso,
+          readings: [
+            { accountId: 'seat-1', accountLabel: 'Seat 01', pool: 'Gemini 4', window: '5h', remaining: 71, unit: 'percent' as const, resetAt: reset3h },
+            { accountId: 'seat-1', accountLabel: 'Seat 01', pool: 'Claude / GPT', window: '5h', remaining: 14, unit: 'percent' as const, resetAt: reset2h },
+            { accountId: 'seat-1', accountLabel: 'Seat 01', pool: 'Weekly Cap', window: '7d', remaining: 42, unit: 'percent' as const, resetAt: reset3d },
+            { accountId: 'seat-2', accountLabel: 'Seat 02', pool: 'Gemini 4', window: '5h', remaining: 88, unit: 'percent' as const, resetAt: reset3h },
+            { accountId: 'seat-2', accountLabel: 'Seat 02', pool: 'Claude / GPT', window: '5h', remaining: 90, unit: 'percent' as const, resetAt: reset3h },
+            { accountId: 'seat-2', accountLabel: 'Seat 02', pool: 'Weekly Cap', window: '7d', remaining: 80, unit: 'percent' as const, resetAt: reset3d },
+          ],
+        },
+        {
+          id: 'plugin:magpie/codex',
+          label: 'Magpie Codex Pool',
+          engineIds: ['codex'],
+          minRefreshIntervalMs: 300_000,
+          readAt: nowIso,
+          readings: [
+            { accountId: 'c-1', accountLabel: 'Codex 01', pool: 'Codex Plus', window: '5h', remaining: 64, unit: 'percent' as const, resetAt: reset4h },
+          ],
+        },
+      ],
+    });
+
+    show([
+      source({
+        id: 'provider:kimi',
+        provider_id: 'kimi',
+        label: 'Kimi Official',
+        meters: [meter({
+          id: 'bal',
+          label: 'Remaining balance',
+          unit: 'money',
+          currency: 'USD',
+          used: 18,
+          limit: 100,
+          remaining: 82,
+          scope: 'account',
+        })],
+      }),
+      source({
+        id: 'provider:anthropic',
+        provider_id: 'anthropic',
+        label: 'Anthropic Pro',
+        meters: [meter({
+          id: 'prepaid',
+          label: 'Prepaid credits',
+          unit: 'money',
+          currency: 'USD',
+          used: 142,
+          limit: 200,
+          remaining: 58,
+          scope: 'account',
+        })],
+      }),
+      source({
+        id: 'provider:deepseek',
+        provider_id: 'deepseek',
+        label: 'DeepSeek API',
+        meters: [meter({
+          id: 'wallet',
+          label: 'Balance',
+          unit: 'money',
+          unit_label: 'CNY',
+          currency: 'CNY',
+          used: null,
+          limit: null,
+          remaining: 82.4,
+          scope: 'account',
+        })],
+      }),
+      source({
+        id: 'executor:agy-cli',
+        provider_id: 'agy-cli',
+        label: 'AGY CLI',
+        kind: 'executor',
+        supported: false,
+        status: 'unsupported',
+        meters: [],
+      }),
+      source({
+        id: 'executor:codex',
+        provider_id: 'codex',
+        label: 'Codex',
+        kind: 'executor',
+        supported: false,
+        status: 'unsupported',
+        meters: [],
+      }),
+    ]);
+
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+    // Top 3 dials (>=800px default): AGY CLI (14% depleting), Anthropic Pro (29% low), Codex (64% fast burn)
+    const dials = [...container.querySelectorAll<HTMLElement>('[data-quota-overview-dials] [data-quota-dial]')].map(
+      (el) => el.dataset['quotaDial'],
+    );
+    expect(dials).toEqual(['engine:agy-cli', 'provider:anthropic', 'engine:codex']);
+
+    // AGY CLI dial visibly prints outer (Claude / GPT), inner (Weekly Cap), AND sibling (Gemini 4)
+    const agyDial = container.querySelector('[data-quota-dial="engine:agy-cli"]')!;
+    expect(agyDial.textContent).toContain('Claude / GPT');
+    expect(agyDial.textContent).toContain('Weekly Cap');
+    expect(agyDial.textContent).toContain('Gemini 4');
+    expect(agyDial.textContent).toContain('71%');
+
+    // DeepSeek (limit: null) renders clean typography with zero progress gauge
+    const deepseekRow = container.querySelector('[data-quota-item="provider:deepseek"]')!;
+    expect(deepseekRow.textContent).toContain('82.40 CNY');
+    expect(deepseekRow.querySelector('[data-quota-progress]')).toBeNull();
+  });
+
+  it('caps combined mount + header refresh concurrency at <= 4 with in-flight deduplication', async () => {
+    const resolvers: Array<() => void> = [];
+    let inFlight = 0;
+    let peakInFlight = 0;
+
+    refreshSource.mockImplementation(async (id: string) => {
+      inFlight += 1;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      await new Promise<void>((resolve) => { resolvers.push(resolve); });
+      inFlight -= 1;
+      return source({ id, provider_id: id.replace('provider:', ''), status: 'ready', checked_at: '2026-11-24T12:00:00Z' });
+    });
+
+    const sixNeverFetched = Array.from({ length: 6 }, (_, idx) =>
+      source({
+        id: `provider:p${idx}`,
+        provider_id: `p${idx}`,
+        label: `Provider ${idx}`,
+        status: 'unknown',
+        checked_at: undefined,
+        data_as_of: undefined,
+        meters: [],
+      }),
+    );
+    show(sixNeverFetched);
+    client.listProviders.mockResolvedValue({
+      items: sixNeverFetched.map((s) => ({
+        id: s.provider_id,
+        label: s.label,
+        protocol: 'openai',
+        capabilities: [],
+        configured: true,
+        auth_state: 'ready',
+      })),
+    });
+
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
+    expect(peakInFlight).toBeLessThanOrEqual(4);
+
+    // Click Header Refresh while mount auto-refresh still holds all 4 slots:
+    const headerBtn = container.querySelector<HTMLButtonElement>('[data-quota-refresh-button]')!;
+    await act(async () => { headerBtn.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
+    expect(peakInFlight).toBeLessThanOrEqual(4);
+
+    while (resolvers.length > 0) {
+      const batch = resolvers.splice(0);
+      await act(async () => {
+        for (const r of batch) r();
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+    expect(inFlight).toBe(0);
+    // In-flight deduplication prevented duplicate concurrent calls for already-queued sources:
+    expect(refreshSource).toHaveBeenCalledTimes(6);
+  });
 });

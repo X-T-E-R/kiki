@@ -2,6 +2,7 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../../i18n';
 import {
   compactQuotaMeterLabel,
+  formatQuotaPercentNumber,
   formatQuotaResetDuration,
   formatQuotaResetShort,
   formatWindowPeriod,
@@ -10,6 +11,7 @@ import {
   type ProviderQuotaMeter,
   type ProviderQuotaStatus,
 } from '../../../lib/providerQuota';
+import { QuotaFuelMicroBar } from './QuotaArcGauge';
 import {
   computeRemainingPace,
   formatPaceEta,
@@ -18,59 +20,6 @@ import {
   parseWindowDurationSeconds,
   type RemainingPace,
 } from './quotaModel';
-
-/**
- * Unified 6px remaining-fuel bar with optional expected-pace tick (CodexBar-inspired, inverted to Remaining Fuel).
- */
-export function QuotaFuelTrack({
-  remainingPercent,
-  pace,
-  muted = false,
-  dataAttr = 'data-quota-progress',
-}: {
-  readonly remainingPercent: number;
-  readonly pace?: RemainingPace | null;
-  readonly muted?: boolean;
-  readonly dataAttr?: 'data-quota-progress' | 'data-bucket-progress';
-}) {
-  const pct = Math.max(0, Math.min(100, Math.round(remainingPercent)));
-  const tier = quotaFuelTier(pct);
-
-  let barTone = 'bg-ink/68';
-  if (muted) {
-    barTone = 'bg-ink/25';
-  } else if (pct <= 5 || pace?.state === 'depleting') {
-    barTone = 'bg-danger';
-  } else if (tier === 'critical' || tier === 'low' || pace?.state === 'fast') {
-    barTone = 'bg-amber-rule';
-  }
-
-  const containerProps = dataAttr === 'data-quota-progress'
-    ? { 'data-quota-progress': true, 'data-remaining-percent': pct }
-    : { 'data-bucket-progress': true };
-
-  return (
-    <div
-      className="relative h-1.5 w-full rounded-full bg-ink/[0.07]"
-      {...containerProps}
-    >
-      <div className="h-full w-full overflow-hidden rounded-full">
-        <div
-          className={`h-full rounded-full transition-all duration-200 ${barTone}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      {pace !== null && pace !== undefined && !muted ? (
-        <span
-          aria-hidden
-          data-quota-pace-tick
-          className="pointer-events-none absolute top-1/2 h-2.5 w-[1.5px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink/45"
-          style={{ left: `${Math.max(2, Math.min(98, pace.expectedRemainingPct))}%` }}
-        />
-      ) : null}
-    </div>
-  );
-}
 
 export function QuotaPaceCaption({ pace }: { readonly pace: RemainingPace | null | undefined }) {
   const { t, locale } = useI18n();
@@ -81,7 +30,11 @@ export function QuotaPaceCaption({ pace }: { readonly pace: RemainingPace | null
   return (
     <p
       data-quota-pace={pace.state}
-      className={`text-[11px] tabular-nums ${pace.state === 'depleting' ? 'text-danger' : 'text-amber-ink'}`}
+      className={`font-sans tracking-normal text-[11px] tabular-nums ${
+        pace.state === 'depleting'
+          ? 'text-[var(--kiki-chart-danger-text)]'
+          : 'text-[var(--kiki-chart-warn-text)]'
+      }`}
     >
       {text}
     </p>
@@ -92,10 +45,15 @@ export function QuotaWindowMeter({
   meter,
   sourceStatus,
   nowMs = Date.now(),
+  dialRepresented = false,
+  swatchColor,
 }: {
   readonly meter: ProviderQuotaMeter;
   readonly sourceStatus: ProviderQuotaStatus;
   readonly nowMs?: number;
+  /** When true, the meter's ratio is already drawn on the parent QuotaCalibrationDial arc. */
+  readonly dialRepresented?: boolean;
+  readonly swatchColor?: string;
 }) {
   const { t, locale } = useI18n();
   const periodLabel = meter.window?.label ?? formatWindowPeriod(meter.window?.duration_seconds);
@@ -120,17 +78,18 @@ export function QuotaWindowMeter({
     : null;
 
   const primaryTone = display.unknown
-    ? 'text-ink-faint'
+    ? 'text-[var(--kiki-chart-muted)]'
     : muted
-      ? 'font-medium text-ink-soft'
-      : display.exhausted || tier === 'critical' || pace?.state === 'depleting'
-        ? 'font-medium text-danger'
-        : tier === 'low' || pace?.state === 'fast'
-          ? 'font-medium text-amber-ink'
-          : 'font-medium text-ink';
+      ? 'font-medium text-[var(--kiki-chart-label)]'
+      : display.exhausted || (display.remainingPercent !== undefined && display.remainingPercent <= 5) || pace?.state === 'depleting'
+        ? 'font-semibold text-ink'
+        : 'font-medium text-ink';
 
   const resetShort = formatQuotaResetShort(resetTime, nowMs);
   const resetFull = formatQuotaResetDuration(resetTime, locale);
+  const pctRaw = display.remainingPercent !== undefined
+    ? Math.max(0, Math.min(100, display.remainingPercent))
+    : undefined;
 
   return (
     <div
@@ -140,33 +99,55 @@ export function QuotaWindowMeter({
       data-meter-detail={display.hoverDetail}
       title={display.hoverDetail ?? normalizedLabel.rawTitle}
     >
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <span className="flex min-w-0 items-baseline gap-1.5">
-          <span className="truncate text-ink-soft" title={normalizedLabel.rawTitle ?? compactLabel}>
-            {normalizedLabel.display}
-          </span>
-          {periodSuffix ? <span className="shrink-0 text-ink-faint">· {periodSuffix}</span> : null}
-          {meter.scope === 'team' ? (
-            <span className="shrink-0 text-[11px] text-ink-faint">· {t('usage.quota.scope.team')}</span>
-          ) : null}
-          {status !== 'ready' ? (
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          {!dialRepresented && display.showBar && pctRaw !== undefined ? (
+            <QuotaFuelMicroBar
+              remainingPercent={pctRaw}
+              pace={pace}
+              muted={muted}
+              width={72}
+              dataAttr="data-quota-progress"
+            />
+          ) : !dialRepresented && display.unknown ? (
+            <QuotaFuelMicroBar unknown width={72} />
+          ) : dialRepresented && display.showBar && pctRaw !== undefined ? (
             <span
-              className={`shrink-0 rounded px-1 py-px text-[10px] font-medium ${badge.toneClass}`}
-              data-meter-status={status}
-              title={t(badge.labelKey as I18nKey)}
-            >
-              {status === 'stale' ? '◷' : t(badge.labelKey as I18nKey)}
-            </span>
+              data-quota-progress
+              data-remaining-percent={formatQuotaPercentNumber(pctRaw)}
+              className="inline-flex h-2 w-2 shrink-0 rounded-full"
+              style={{ backgroundColor: swatchColor ?? 'var(--kiki-chart-1)' }}
+            />
           ) : null}
-        </span>
+
+          <span className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5 font-sans tracking-normal">
+            <span className="truncate text-[var(--kiki-chart-label)]" title={normalizedLabel.rawTitle ?? compactLabel}>
+              {normalizedLabel.display}
+            </span>
+            {periodSuffix ? <span className="shrink-0 text-[var(--kiki-chart-muted)]">· {periodSuffix}</span> : null}
+            {meter.scope === 'team' ? (
+              <span className="shrink-0 text-[11px] text-[var(--kiki-chart-muted)]">· {t('usage.quota.scope.team')}</span>
+            ) : null}
+            {status !== 'ready' ? (
+              <span
+                className={`shrink-0 rounded px-1 py-px text-[10px] font-medium ${badge.toneClass}`}
+                data-meter-status={status}
+                title={t(badge.labelKey as I18nKey)}
+              >
+                {status === 'stale' ? '◷' : t(badge.labelKey as I18nKey)}
+              </span>
+            ) : null}
+          </span>
+        </div>
+
         <span className="flex shrink-0 items-baseline gap-x-2 tabular-nums">
-          <span className={`text-[12px] ${primaryTone}`}>{display.primaryText}</span>
+          <span className={`text-[12.5px] ${primaryTone}`}>{display.primaryText}</span>
           {display.secondaryText !== undefined ? (
-            <span className="text-[11px] text-ink-faint">{display.secondaryText}</span>
+            <span className="text-[11px] text-[var(--kiki-chart-muted)]">{display.secondaryText}</span>
           ) : null}
           {resetShort !== undefined && resetTime ? (
             <span
-              className="text-[11px] text-ink-faint"
+              className="text-[11px] text-[var(--kiki-chart-muted)]"
               title={resetFull ? t('usage.quota.stripReset', { time: resetFull }) : resetTime}
             >
               {resetShort}
@@ -174,11 +155,8 @@ export function QuotaWindowMeter({
           ) : null}
         </span>
       </div>
-      {display.showBar && display.remainingPercent !== undefined ? (
-        <QuotaFuelTrack remainingPercent={display.remainingPercent} pace={pace} muted={muted} />
-      ) : null}
       <QuotaPaceCaption pace={pace} />
-      {meter.message ? <p className="text-[11px] text-danger">{meter.message}</p> : null}
+      {meter.message ? <p className="font-sans tracking-normal text-[11px] text-[var(--kiki-chart-danger-text)]">{meter.message}</p> : null}
     </div>
   );
 }

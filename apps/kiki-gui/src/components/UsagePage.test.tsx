@@ -305,12 +305,18 @@ beforeEach(() => {
 });
 
 describe('UsagePage (V2)', () => {
-  it('opens today with one primary usage request and no cross-tab strip, session, or quota reads', async () => {
+  it('opens rolling 24h with one primary usage request and no cross-tab strip, session, or quota reads', async () => {
     let complete!: (response: UsageResponseWire) => void;
     getUsage.mockImplementation(() => new Promise<UsageResponseWire>((resolve) => { complete = resolve; }));
     const { container, root, queryClient } = await renderPage('/usage?panel=history', { flush: false });
     expect(getUsage).toHaveBeenCalledTimes(1);
-    expect(getUsage.mock.calls[0]?.[0]).toMatchObject({ range: 'today', page_size: 25 });
+    expect(getUsage.mock.calls[0]?.[0]).toMatchObject({
+      range: 'custom',
+      granularity: 'hour',
+      start_at: expect.any(Number),
+      end_at: expect.any(Number),
+      page_size: 25,
+    });
     expect(getUsage.mock.calls[0]?.[1]).toEqual({ signal: expect.any(AbortSignal) });
     expect(container.querySelector('[data-usage-summary-cost]')).toBeNull();
     await act(async () => { complete(usageResponse({ summaryCost: 8.75 })); });
@@ -585,7 +591,7 @@ describe('UsagePage (V2)', () => {
     const { container, root } = await renderPage('/usage?panel=history&range=last_7_days', { flush: false });
     expect(signals).toHaveLength(1);
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-axis="range"] [data-axis-value="this_month"]')!.click();
+      container.querySelector<HTMLButtonElement>('[data-axis="range"] [data-axis-value="last_30_days"]')!.click();
       await Promise.resolve();
     });
     expect(signals).toHaveLength(2);
@@ -614,15 +620,17 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
   });
 
-  it('defaults historical usage to local today without an all-history notice', async () => {
+  it('defaults historical usage to rolling last 24 hours without an all-history notice', async () => {
     const { container } = await renderPage();
     const main = mainCalls();
     expect(main.length).toBeGreaterThan(0);
-    expect(main[0]?.[0]).toMatchObject({
+    const q = main[0]?.[0] as Record<string, unknown>;
+    expect(q).toMatchObject({
       granularity: 'hour',
-      range: 'today',
+      range: 'custom',
       dimension: 'model',
     });
+    expect(Number(q['end_at']) - Number(q['start_at'])).toBe(24 * 3_600_000);
     expect(container.querySelector('[data-usage-all-history]')).toBeNull();
     await openReliability(container);
     expect(document.body.querySelector('[data-usage-reliability]')?.textContent).toContain('Deleted sessions are not included');
@@ -641,7 +649,7 @@ describe('UsagePage (V2)', () => {
     ['all', { range: 'all' }],
     ['last_7_days', { range: 'last_7_days' }],
     ['custom', { range: 'custom', startAt: 1000, endAt: 2000 }],
-  ] as const)('always defaults a query-less visit to today despite stored %s', async (_label, storedRange) => {
+  ] as const)('always defaults a query-less visit to rolling 24h despite stored %s', async (_label, storedRange) => {
     localStorage.setItem(
       USAGE_FILTERS_STORAGE_KEY,
       JSON.stringify({
@@ -655,15 +663,15 @@ describe('UsagePage (V2)', () => {
     const { container } = await renderPage();
     const main = mainCalls();
     expect(main.length).toBeGreaterThan(0);
-    expect(main[0]?.[0]).toMatchObject({
+    const q = main[0]?.[0] as Record<string, unknown>;
+    expect(q).toMatchObject({
       granularity: 'hour',
-      range: 'today',
+      range: 'custom',
       dimension: 'model',
       include_archived: 'true',
     });
-    expect((main[0]?.[0] as Record<string, unknown>)['workspace.id']).toBeUndefined();
-    expect((main[0]?.[0] as Record<string, unknown>)['start_at']).toBeUndefined();
-    expect((main[0]?.[0] as Record<string, unknown>)['end_at']).toBeUndefined();
+    expect((q as Record<string, unknown>)['workspace.id']).toBeUndefined();
+    expect(Number(q['end_at']) - Number(q['start_at'])).toBe(24 * 3_600_000);
     expect(container.querySelector('[data-usage-all-history]')).toBeNull();
   });
 
@@ -1225,6 +1233,10 @@ describe('UsagePage (V2)', () => {
     expect(bucketCompare['start_at']).toBe(bucketStart - (serverEnd - serverStart));
     expect(bucketCompare['end_at']).toBe(bucketEnd - (serverEnd - serverStart));
 
+    // Whole-period KPI delta (+200% for $15 vs $5) remains anchored to the full prior period even while a bucket is selected:
+    const inlineCostKpi = container.querySelector('[data-usage-kpi="cost"]');
+    expect(inlineCostKpi?.textContent).toContain('+200%');
+
     await act(async () => { root.unmount(); });
   });
 
@@ -1353,12 +1365,24 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
   });
 
-  it('drills down from a 7-day daily bar into hourly view and restores via breadcrumb or Escape', async () => {
+  it('scopes ring and sources in-place on single-click of a 7d/30d daily bucket while keeping period KPIs, then drills down to hourly via explicit action or double-click', async () => {
     const { container, root } = await renderPage('/usage?range=last_7_days');
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const dayBar = container.querySelector<HTMLButtonElement>('[data-usage-trend] [data-bucket]')!;
     expect(dayBar).not.toBeNull();
+
     await act(async () => { dayBar.click(); });
+    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(mainCalls().at(-1)?.[0]).toMatchObject({ range: 'last_7_days', granularity: 'day' });
+    expect(container.querySelector('[data-usage-source-scope]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-source-subtotal]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-clear-bucket]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-kpi="cost"]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-kpi="tokens"]')).not.toBeNull();
+
+    const drilldownBtn = container.querySelector<HTMLButtonElement>('[data-usage-drilldown-day]');
+    expect(drilldownBtn).not.toBeNull();
+    await act(async () => { drilldownBtn!.click(); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(mainCalls().at(-1)?.[0]).toMatchObject({ range: 'custom', granularity: 'hour' });
     const backBtn = container.querySelector<HTMLButtonElement>('[data-usage-drilldown-back]');
@@ -1872,7 +1896,7 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
     });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(container.querySelector('[data-usage-filter-chips]')).toBeNull();
-    expect(mainCalls().at(-1)?.[0]).toMatchObject({ range: 'today', dimension: 'model' });
+    expect(mainCalls().at(-1)?.[0]).toMatchObject({ range: 'custom', granularity: 'hour', dimension: 'model' });
     expect((mainCalls().at(-1)?.[0] as Record<string, unknown>)['model']).toBeUndefined();
     await act(async () => { root.unmount(); });
   });
@@ -2462,6 +2486,340 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
     expect(filteredRows).toHaveLength(1);
     expect(filteredRows[0]?.getAttribute('data-usage-session')).toBe('s_scale_7777');
     expect(filteredRows[0]?.textContent).toContain('7778');
+
+    await act(async () => { root.unmount(); });
+  });
+
+  it('routes ?tab=quotas and ?tab=quota to the Quotas panel while explicit panel= takes precedence', async () => {
+    const { usagePanelFromSearch } = await import('./UsageNavigation');
+    expect(usagePanelFromSearch('?tab=quotas')).toBe('quota');
+    expect(usagePanelFromSearch('?tab=quota')).toBe('quota');
+    expect(usagePanelFromSearch('?panel=history&tab=quotas')).toBe('history');
+    expect(usagePanelFromSearch('?panel=realtime&tab=quota')).toBe('realtime');
+  });
+
+  it('maintains non-crossing Hermite ribbon stacks, breaks at zero/in-progress gaps, and links ring + sources', async () => {
+    const { computeTrendGeometry, hermiteSmoothstep } = await import('./usage/usageTrendMath');
+    const { buildCompositionModel, USAGE_RING_OTHER_KEY } = await import('./usage/usageChartPalette');
+
+    expect(hermiteSmoothstep(0)).toBe(0);
+    expect(hermiteSmoothstep(0.5)).toBe(0.5);
+    expect(hermiteSmoothstep(1)).toBe(1);
+
+    const nowMs = Date.parse('2026-11-24T15:30:00Z');
+    const mkGroup = (fresh: number, cacheRead: number, cost: number) => ({
+      model: 'm1',
+      tokens: {
+        input_other: fresh,
+        output: 0,
+        input_cache_read: cacheRead,
+        input_cache_creation: 0,
+      },
+      cost_usd_estimated: cost,
+      cost_unknown: false,
+      tokens_unknown: false,
+    });
+    const buckets = [
+      {
+        key: '08:00',
+        label: '08:00',
+        start_at: Date.parse('2026-11-24T08:00:00Z'),
+        end_at: Date.parse('2026-11-24T09:00:00Z'),
+        groups: [mkGroup(90_000, 10_000, 1)],
+      },
+      {
+        key: '09:00',
+        label: '09:00',
+        start_at: Date.parse('2026-11-24T09:00:00Z'),
+        end_at: Date.parse('2026-11-24T10:00:00Z'),
+        groups: [mkGroup(10_000, 90_000, 1)],
+      },
+      {
+        key: '10:00',
+        label: '10:00',
+        start_at: Date.parse('2026-11-24T10:00:00Z'),
+        end_at: Date.parse('2026-11-24T11:00:00Z'),
+        groups: [],
+      },
+      {
+        key: '11:00',
+        label: '11:00',
+        start_at: Date.parse('2026-11-24T11:00:00Z'),
+        end_at: Date.parse('2026-11-24T12:00:00Z'),
+        groups: [mkGroup(100_000, 376_600, 2)],
+      },
+      {
+        key: '12:00',
+        label: '12:00',
+        start_at: Date.parse('2026-11-24T12:00:00Z'),
+        end_at: Date.parse('2026-11-24T13:00:00Z'),
+        groups: [],
+      },
+      {
+        key: '15:00',
+        label: '15:00',
+        start_at: Date.parse('2026-11-24T15:00:00Z'),
+        end_at: Date.parse('2026-11-24T16:00:00Z'),
+        groups: [mkGroup(50_000, 150_000, 1)],
+      },
+    ];
+
+    const geom = computeTrendGeometry({
+      buckets: buckets as never,
+      metric: 'tokens',
+      groupBy: 'model',
+      highlightedKey: null,
+      nowMs,
+      width: 600,
+      height: 172,
+      padTop: 22,
+      padBottom: 6,
+    });
+
+    expect(geom.runs).toHaveLength(1);
+    expect(geom.isolatedPoints.map((p) => p.key)).toEqual(['11:00']);
+    expect(geom.inProgressPoints.map((p) => p.key)).toEqual(['15:00']);
+    for (const pt of geom.points) {
+      expect(pt.yLower).toBeGreaterThanOrEqual(pt.yTotal);
+    }
+
+    const comp = buildCompositionModel(
+      ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7'].map((k, idx) => ({
+        key: k,
+        totalTokens: (7 - idx) * 1000,
+        costUsdEstimated: 7 - idx,
+        costUnknown: false,
+        tokensUnknown: false,
+        cacheHitRate: 0.5,
+      })) as never,
+      'tokens',
+    );
+    expect(comp.slices).toHaveLength(6);
+    expect(comp.slices.at(-1)?.key).toBe(USAGE_RING_OTHER_KEY);
+    expect([...comp.tailKeys]).toEqual(['m6', 'm7']);
+    const sweepSum = comp.slices.reduce((acc, s) => acc + (s.endAngleDeg - s.startAngleDeg), 0);
+    expect(sweepSum).toBeCloseTo(360, 5);
+
+    const { container, root } = await renderPage('/usage?panel=history');
+    expect(container.querySelector('[data-usage-trend]')?.getAttribute('data-usage-trend-rendered-mode')).toBe('ribbon');
+    const barsBtn = container.querySelector<HTMLButtonElement>('[data-usage-trend-mode="bars"]')!;
+    await act(async () => { barsBtn.click(); });
+    expect(container.querySelector('[data-usage-trend]')?.getAttribute('data-usage-trend-rendered-mode')).toBe('bars');
+
+    const firstSliceBtn = container.querySelector<HTMLButtonElement>('[data-usage-ring-slice]');
+    if (firstSliceBtn) {
+      const sliceKey = firstSliceBtn.getAttribute('data-usage-ring-slice')!;
+      await act(async () => { firstSliceBtn.click(); });
+      const sourceRow = container.querySelector<HTMLElement>(`[data-usage-breakdown-row="${sliceKey}"]`);
+      expect(sourceRow?.getAttribute('data-usage-row-highlighted')).toBe('true');
+    }
+
+    await act(async () => { root.unmount(); });
+  });
+
+  it('positions sparse weekly buckets chronologically (50, 150, 550) with gap breaks and separates cache missing-input from 0% and unpriced cost', async () => {
+    const { computeTrendGeometry } = await import('./usage/usageTrendMath');
+    const { USAGE_RING_OTHER_KEY } = await import('./usage/usageChartPalette');
+    const weekMs = 7 * 86_400_000;
+    const baseMs = Date.parse('2026-09-07T00:00:00Z');
+    const mkGroup = (fresh: number, cached: number, cost: number, costUnknown = false) => ({
+      key: 'model:claude-sonnet-4.5',
+      model_alias: 'claude-sonnet-4.5',
+      provider: 'anthropic',
+      tokens: {
+        input_other: fresh,
+        output: 100,
+        input_cache_read: cached,
+        input_cache_creation: 0,
+      },
+      tokens_unknown: false,
+      cost_usd_estimated: cost,
+      cost_unknown: costUnknown,
+    });
+
+    const sparseWeeks = [0, 1, 5].map((wk) => ({
+      key: `wk:${wk}`,
+      start_at: baseMs + wk * weekMs,
+      end_at: baseMs + (wk + 1) * weekMs,
+      groups: [mkGroup(50_000, 100_000, 1.5)],
+    }));
+
+    const sparseGeom = computeTrendGeometry({
+      buckets: sparseWeeks as never,
+      metric: 'tokens',
+      groupBy: 'model',
+      nowMs: baseMs + 10 * weekMs,
+      width: 600,
+    });
+    expect(sparseGeom.points.map((p) => Math.round(p.x))).toEqual([50, 150, 550]);
+    expect(sparseGeom.runs).toHaveLength(1);
+    expect(sparseGeom.runs[0]!.points.map((p) => p.key)).toEqual(['wk:0', 'wk:1']);
+    expect(sparseGeom.isolatedPoints.map((p) => p.key)).toEqual(['wk:5']);
+
+    // Cache mode: zero-input bucket = missing_gap (no ribbon join), positive-input 0 cache_read = measured_zero (joins ribbon)
+    const cacheBuckets = [
+      {
+        key: 'zero-input',
+        start_at: baseMs,
+        end_at: baseMs + 3_600_000,
+        groups: [mkGroup(0, 0, 0)],
+      },
+      {
+        key: 'measured-0pct',
+        start_at: baseMs + 3_600_000,
+        end_at: baseMs + 7_200_000,
+        groups: [mkGroup(10_000, 0, 0.2)],
+      },
+      {
+        key: 'measured-50pct',
+        start_at: baseMs + 7_200_000,
+        end_at: baseMs + 10_800_000,
+        groups: [mkGroup(10_000, 10_000, 0.2)],
+      },
+    ];
+    const cacheGeom = computeTrendGeometry({
+      buckets: cacheBuckets as never,
+      metric: 'cache',
+      groupBy: 'model',
+      nowMs: baseMs + 20_000_000,
+      width: 300,
+    });
+    expect(cacheGeom.points.map((p) => p.pointState)).toEqual(['missing_gap', 'measured_zero', 'positive']);
+    expect(cacheGeom.points[0]!.joinsRibbon).toBe(false);
+    expect(cacheGeom.points[1]!.joinsRibbon).toBe(true);
+    expect(cacheGeom.runs).toHaveLength(1);
+    expect(cacheGeom.runs[0]!.points.map((p) => p.key)).toEqual(['measured-0pct', 'measured-50pct']);
+
+    // Cost mode: all-unpriced positive-token bucket is 'unknown' (not measured zero / empty)
+    const unpricedBuckets = [
+      {
+        key: 'unpriced',
+        start_at: baseMs,
+        end_at: baseMs + 3_600_000,
+        groups: [mkGroup(20_000, 0, 0, true)],
+      },
+    ];
+    const costGeom = computeTrendGeometry({
+      buckets: unpricedBuckets as never,
+      metric: 'cost',
+      groupBy: 'model',
+      nowMs: baseMs + 20_000_000,
+      width: 300,
+    });
+    expect(costGeom.points[0]!.pointState).toBe('unknown');
+    expect(costGeom.points[0]!.isUnknown).toBe(true);
+    expect(costGeom.points[0]!.isEmpty).toBe(false);
+    expect(costGeom.points[0]!.total).toBeNull();
+
+    // Tail (__other) row focus highlights the __other ring legend chip instead of dimming all slices:
+    getUsage.mockImplementation(async () =>
+      usageResponse({
+        trendBuckets: [
+          {
+            key: String(baseMs),
+            start_at: baseMs,
+            end_at: baseMs + 86_400_000,
+            groups: ['m1', 'm2', 'm3', 'm4', 'm5', 'm6'].map((m, idx) => ({
+              key: m,
+              tokens: tokens((6 - idx) * 10_000, 1_000),
+              tokens_unknown: false,
+              cost_usd_estimated: 6 - idx,
+              cost_unknown: false,
+              provider: 'anthropic',
+              model_alias: m,
+              agent_id: null,
+              parent_agent_id: null,
+              profile_name: 'default',
+            })),
+            drilldown: { sessions: [], sessions_truncated: false },
+          },
+        ],
+      }),
+    );
+    const { container, root } = await renderPage('/usage?panel=history');
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const tailRow = [...container.querySelectorAll<HTMLElement>('[data-usage-breakdown-row]')].find(
+      (r) => r.textContent?.includes('m6'),
+    );
+    expect(tailRow).toBeDefined();
+    const tailRowBtn = tailRow!.querySelector<HTMLElement>('button');
+    expect(tailRowBtn).not.toBeNull();
+    await act(async () => { tailRowBtn!.focus(); });
+    const otherSliceBtn = container.querySelector<HTMLElement>(`[data-usage-ring-slice="${USAGE_RING_OTHER_KEY}"]`);
+    expect(otherSliceBtn).not.toBeNull();
+    expect(otherSliceBtn!.className).toContain('bg-ink/[0.06]');
+    expect(otherSliceBtn!.className).not.toContain('opacity-80');
+
+    await act(async () => { root.unmount(); });
+  });
+
+  it('switches rolling 24h / 7d / 30d in the primary bar, keeps calendar presets in the calendar popover, and shows — for unpriced zero-subtotal cost', async () => {
+    getUsage.mockImplementation(async () =>
+      usageResponse({
+        summaryTokens: tokens(50_000, 5_000),
+        summaryCost: 0,
+        costUnknown: true,
+        trendBuckets: [
+          {
+            key: 'b-unpriced',
+            start_at: Date.parse('2026-11-24T10:00:00Z'),
+            end_at: Date.parse('2026-11-24T11:00:00Z'),
+            groups: [
+              {
+                key: 'local-unpriced',
+                tokens: tokens(50_000, 5_000),
+                tokens_unknown: false,
+                cost_usd_estimated: 0,
+                cost_unknown: true,
+                provider: 'local',
+                model_alias: 'local-unpriced',
+                agent_id: null,
+                parent_agent_id: null,
+                profile_name: 'default',
+              },
+            ],
+            drilldown: { sessions: [], sessions_truncated: false },
+          },
+        ],
+      }),
+    );
+
+    const { container, root } = await renderPage('/usage?panel=history&metric=cost');
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    // Primary range bar exposes 24h / 7d / 30d / All
+    const quickValues = [...container.querySelectorAll('[data-axis="range"] [data-axis-value]')].map((el) =>
+      el.getAttribute('data-axis-value'),
+    );
+    expect(quickValues).toEqual(['last_24_hours', 'last_7_days', 'last_30_days', 'all', 'custom']);
+    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toBe('—');
+
+    // Selecting the unpriced bucket also renders — in scoped bucket summary (never $0.00)
+    const bucketBtn = container.querySelector<HTMLButtonElement>('[data-bucket="b-unpriced"]')!;
+    await act(async () => { bucketBtn.click(); });
+    expect(container.querySelector('[data-usage-source-subtotal]')?.textContent).toBe('—');
+
+    // Switching to 30d requests a 30-day rolling window at daily granularity
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-axis="range"] [data-axis-value="last_30_days"]')!.click();
+    });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const q30 = mainCalls().at(-1)?.[0] as Record<string, unknown>;
+    expect(q30).toMatchObject({ range: 'custom', granularity: 'day' });
+    expect(Math.round((Number(q30['end_at']) - Number(q30['start_at'])) / 86_400_000)).toBe(30);
+
+    // Calendar popover preserves calendar presets (Today / This week / This month) and highlights the calendar pill
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-usage-custom-range-trigger]')!.click();
+    });
+    const thisMonthPreset = document.body.querySelector<HTMLButtonElement>('[data-calendar-preset="this_month"]');
+    expect(thisMonthPreset).not.toBeNull();
+    await act(async () => { thisMonthPreset!.click(); });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const calTrigger = container.querySelector<HTMLButtonElement>('[data-usage-custom-range-trigger]')!;
+    expect(calTrigger.getAttribute('aria-pressed')).toBe('true');
+    expect(calTrigger.textContent).toContain('Month');
+    expect(mainCalls().at(-1)?.[0]).toMatchObject({ range: 'this_month', granularity: 'day' });
 
     await act(async () => { root.unmount(); });
   });
