@@ -237,6 +237,7 @@ interface HostCapabilities {
   checkDesktopUpdate?: (channel?: UpdateChannel) => Promise<DesktopUpdate | null>;
   mutateDesktopUpdateState?: (mutation: DesktopUpdateMutation) => Promise<DesktopUpdateState>;
   onTrayNewSession?: (callback: () => void) => () => void;
+  onSubscribeUrl?: (callback: (url: string) => void) => () => void;
   setTheme?: (resolved: ResolvedTheme) => Promise<void>;
   /** Apply native webview zoom (`1` is 100%); returns `true` when applied natively. */
   setZoom?: (factor: number) => Promise<boolean>;

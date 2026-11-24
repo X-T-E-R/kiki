@@ -3189,6 +3189,29 @@ fn requested_home(args: &[String]) -> Result<Option<PathBuf>, String> {
 const TRAY_LOGON_RETRY_LIMIT: usize = 10;
 const TRAY_LOGON_RETRY_DELAY: Duration = Duration::from_millis(1500);
 
+fn requested_subscribe_url<S: AsRef<str>>(args: &[S]) -> Option<String> {
+    for arg in args.iter().skip(1) {
+        let raw = arg.as_ref().trim();
+        let Ok(parsed) = Url::parse(raw) else { continue; };
+        if !parsed.scheme().eq_ignore_ascii_case("kiki") { continue; }
+        let host_is_subscribe = parsed.host_str().map(|host| host.eq_ignore_ascii_case("subscribe")).unwrap_or(false);
+        let path_is_subscribe = parsed.path().trim_matches('/').eq_ignore_ascii_case("subscribe");
+        if !host_is_subscribe && !path_is_subscribe { continue; }
+        for (key, value) in parsed.query_pairs() {
+            if key == "url" {
+                let candidate = value.trim();
+                let Ok(target) = Url::parse(candidate) else { continue; };
+                let allowed = target.scheme() == "https"
+                    || (target.scheme() == "http" && matches!(target.host_str(), Some("localhost" | "127.0.0.1" | "::1" | "[::1]")));
+                if allowed {
+                    return Some(target.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn is_background_launch_args<S: AsRef<str>>(args: &[S]) -> bool {
     let mut index = 1;
     while index < args.len() {
@@ -4342,7 +4365,14 @@ pub fn run() {
             if result < 0 { eprintln!("Kiki could not set the work mode taskbar identity: 0x{:x}", result); }
         }
     }
-    let window_mode_script = format!("window.__KIKI_WINDOW_MODE__ = {};", serde_json::to_string(&window_mode).expect("window mode is serializable"));
+    let initial_subscribe_url = requested_subscribe_url(&launch_args);
+    let mut window_mode_script = format!("window.__KIKI_WINDOW_MODE__ = {};", serde_json::to_string(&window_mode).expect("window mode is serializable"));
+    if let Some(subscribe_url) = initial_subscribe_url {
+        window_mode_script.push_str(&format!(
+            "\nwindow.__KIKI_SUBSCRIBE_URL__ = {};",
+            serde_json::to_string(&subscribe_url).expect("subscribe url is serializable")
+        ));
+    }
     let preset_window = selected_preset.is_some();
 
     let app = tauri::Builder::default()
@@ -4352,6 +4382,9 @@ pub fn run() {
         // requested in background/tray mode.
         .plugin(tauri_plugin_single_instance::init(move |app, args, _cwd| {
             let quiet_background = is_background_launch_args(&args);
+            if let Some(subscribe_url) = requested_subscribe_url(&args) {
+                let _ = app.emit_to("main", "kiki://subscribe-url", subscribe_url);
+            }
             if !quiet_background {
                 if let Ok(Some(home)) = requested_home(&args).map(|home| if preset_window { None } else { home }) {
                     if let Ok(id) = read_desktop_space(&home).map(|space| space.map(|space| space.home_id)) {

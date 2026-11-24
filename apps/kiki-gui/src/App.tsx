@@ -1160,6 +1160,19 @@ function NormalApp() {
     setSidebarOpen(false);
   }, [location.pathname, location.search]);
 
+  // Route `?subscribe=<url>` query links and desktop `kiki://subscribe?url=...`
+  // deep links to Settings -> Spaces so the subscription panel opens pre-filled.
+  useEffect(() => {
+    if (location.pathname === '/settings/spaces') return;
+    const subscribe = new URLSearchParams(location.search).get('subscribe')?.trim();
+    if (!subscribe) return;
+    void navigate(`/settings/spaces?subscribe=${encodeURIComponent(subscribe)}`, { replace: true });
+  }, [location.pathname, location.search, navigate]);
+
+  useEffect(() => host.onSubscribeUrl?.((url) => {
+    void navigate(`/settings/spaces?subscribe=${encodeURIComponent(url)}`);
+  }), [host, navigate]);
+
   // Escape closes the mobile sidebar drawer (the backdrop swallows pointer
   // events, so the key must be handled globally while it is open).
   // Registers with uiBusy so SessionView global abort yields, and prevents

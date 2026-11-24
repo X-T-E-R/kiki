@@ -64,6 +64,10 @@ export const portableSpaceEndpointSchema = z.discriminatedUnion('kind', [
     ref: z.string().min(1).max(256).optional(),
     subpath: z.string().min(1).max(512).optional(),
   }).strict(),
+  z.object({
+    kind: z.literal('url'),
+    url: z.url().max(4096),
+  }).strict(),
 ]);
 export type PortableSpaceEndpoint = z.infer<typeof portableSpaceEndpointSchema>;
 
@@ -141,6 +145,11 @@ export const portableSpaceSourceRecordSchema = z.object({
   gitBranch: z.string().optional(),
   updatedAt: z.string().optional(),
   lastSyncedAt: z.string().optional(),
+  autoSync: z.boolean().optional(),
+  etag: z.string().max(512).optional(),
+  lastCheckedAt: z.string().optional(),
+  lastSyncError: z.string().max(1024).optional(),
+  managedIds: z.array(z.string().min(1).max(512)).optional(),
 }).strict();
 export type PortableSpaceSourceRecord = z.infer<typeof portableSpaceSourceRecordSchema>;
 
@@ -158,9 +167,37 @@ export const portableSpaceRegisterSourceInputSchema = z.object({
   label: z.string().min(1).max(256).optional(),
   endpoint: portableSpaceEndpointSchema,
   linkToSpaceId: z.union([z.literal('main'), z.string().regex(/^h-[a-z0-9-]+$/)]).optional(),
+  autoSync: z.boolean().optional(),
   unlock: portableSpaceUnlockSchema.optional(),
 }).strict();
 export type PortableSpaceRegisterSourceInput = z.infer<typeof portableSpaceRegisterSourceInputSchema>;
+
+export const portableSpaceSubscribeInputSchema = z.object({
+  url: z.url().max(4096),
+  label: z.string().min(1).max(256).optional(),
+  linkToSpaceId: z.union([z.literal('main'), z.string().regex(/^h-[a-z0-9-]+$/)]).default('main'),
+  autoSync: z.boolean().default(true),
+  unlock: portableSpaceUnlockSchema.optional(),
+  createBackup: z.boolean().default(true),
+}).strict();
+export type PortableSpaceSubscribeInput = z.infer<typeof portableSpaceSubscribeInputSchema>;
+
+export const portableSpaceSubscriptionSyncInputSchema = z.object({
+  force: z.boolean().default(false),
+  createBackup: z.boolean().default(true),
+}).strict();
+export type PortableSpaceSubscriptionSyncInput = z.infer<typeof portableSpaceSubscriptionSyncInputSchema>;
+
+export const portableSpaceSubscriptionSyncResultSchema = z.object({
+  source: portableSpaceSourceRecordSchema,
+  status: z.enum(['updated', 'not_modified', 'error']),
+  appliedIds: z.array(z.string()),
+  deletedIds: z.array(z.string()),
+  skippedIds: z.array(z.string()),
+  backupPath: z.string().optional(),
+  error: z.string().optional(),
+}).strict();
+export type PortableSpaceSubscriptionSyncResult = z.infer<typeof portableSpaceSubscriptionSyncResultSchema>;
 
 export const portableSpaceRemoveSourceResponseSchema = z.object({
   removed: z.literal(true),

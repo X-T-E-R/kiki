@@ -114,6 +114,33 @@ function onTrayNewSession(callback: () => void): () => void {
   };
 }
 
+function onSubscribeUrl(callback: (url: string) => void): () => void {
+  let unsubscribed = false;
+  let unlisten: (() => void) | undefined;
+  const pending = (globalThis as { __KIKI_SUBSCRIBE_URL__?: unknown }).__KIKI_SUBSCRIBE_URL__;
+  if (typeof pending === 'string' && pending.trim() !== '') {
+    queueMicrotask(() => {
+      if (unsubscribed) return;
+      const current = (globalThis as { __KIKI_SUBSCRIBE_URL__?: unknown }).__KIKI_SUBSCRIBE_URL__;
+      if (typeof current !== 'string' || current.trim() === '') return;
+      delete (globalThis as { __KIKI_SUBSCRIBE_URL__?: unknown }).__KIKI_SUBSCRIBE_URL__;
+      callback(current.trim());
+    });
+  }
+  void listen<unknown>('kiki://subscribe-url', (event) => {
+    if (!unsubscribed && typeof event.payload === 'string' && event.payload.trim() !== '') {
+      callback(event.payload.trim());
+    }
+  }).then((fn) => {
+    if (unsubscribed) fn();
+    else unlisten = fn;
+  }, () => undefined);
+  return () => {
+    unsubscribed = true;
+    unlisten?.();
+  };
+}
+
 /**
  * Tauri intercepts HTML5 drag-and-drop by default, so OS file drops arrive as
  * native window events with absolute paths. Only the `drop` phase carries
@@ -409,6 +436,7 @@ export const tauriHost: TauriHostAdapter = {
     };
   },
   onTrayNewSession,
+  onSubscribeUrl,
   onFileDrop,
   /**
    * The desktop space this window belongs to. Older desktop builds have no

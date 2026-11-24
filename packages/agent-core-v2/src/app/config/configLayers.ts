@@ -38,6 +38,11 @@ const PORTABLE_DEFAULT_DOMAINS = new Set([
   'pluginSettings',
   'requestGovernance',
   'nbSearch',
+  'errorTelemetry',
+  'retry',
+  'disabledSkills',
+  'disabledNamedProfiles',
+  'skipBuiltinProfileInstallation',
 ]);
 
 const MACHINE_ONLY_DOMAINS = new Set([
@@ -160,7 +165,7 @@ export function classifyConfigSyncScope(
       return 'machine';
     }
     const snakeSegment = segment.replaceAll(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
-    if (MACHINE_KEY_PATTERN.test(snakeSegment)) return 'machine';
+    if (snakeSegment !== 'display_name' && MACHINE_KEY_PATTERN.test(snakeSegment)) return 'machine';
   }
   if (MACHINE_ONLY_DOMAINS.has(camelDomain)) return 'machine';
   const section = registry?.getSection(camelDomain);
@@ -186,6 +191,9 @@ function filterConfigBySyncScope(
   const out: Record<string, unknown> = {};
   const visit = (domain: string, value: unknown, path: readonly string[]): unknown => {
     if (isPlainObject(value)) {
+      if (Object.keys(value).length === 0) {
+        return classifyConfigSyncScope(domain, path, registry) === targetScope ? {} : undefined;
+      }
       const childOut: Record<string, unknown> = {};
       for (const [key, entry] of Object.entries(value)) {
         const filtered = visit(domain, entry, [...path, key]);

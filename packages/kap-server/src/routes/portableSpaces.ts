@@ -4,7 +4,7 @@ import {
   portableSpaceApplyInputSchema, portableSpaceDeltaInputSchema, portableSpaceExportInputSchema,
   portableSpaceForkInputSchema, portableSpaceInspectInputSchema, portableSpaceMutateInputSchema,
   portableSpacePackUnpackInputSchema, portableSpacePreviewInputSchema, portableSpaceRegisterSourceInputSchema,
-  portableSpaceRekeyInputSchema,
+  portableSpaceRekeyInputSchema, portableSpaceSubscribeInputSchema, portableSpaceSubscriptionSyncInputSchema,
 } from '@kiki/protocol';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { authenticatedAuthorization } from '../middleware/auth';
@@ -36,6 +36,10 @@ export function registerPortableSpaceRoutes(app: FastifyInstance, service: Porta
 
   app.get(`${ROOT}/sources`, (req, reply) => handle(req, reply, () => service.list()));
   post('sources', portableSpaceRegisterSourceInputSchema, (input) => service.register(input));
+  post('subscribe', portableSpaceSubscribeInputSchema, (input) => service.subscribe(input));
+  app.post<{ Params: { id: string } }>(`${ROOT}/sources/:id/sync`, { bodyLimit: 128 * 1024 }, (req, reply) =>
+    handle(req, reply, () => service.syncSubscription(req.params.id, portableSpaceSubscriptionSyncInputSchema.parse(req.body ?? {}))),
+  );
   app.delete<{ Params: { id: string } }>(`${ROOT}/sources/:id`, (req, reply) => handle(req, reply, () => service.remove(req.params.id)));
   post('inspect', portableSpaceInspectInputSchema, (input) => service.inspect(input));
   post('export', portableSpaceExportInputSchema, (input) => service.export(input));

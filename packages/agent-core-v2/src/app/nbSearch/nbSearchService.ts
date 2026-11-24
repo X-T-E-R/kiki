@@ -13,6 +13,8 @@ import { nbSearchConfigurationViewSchema, nbSearchKeyUsageViewSchema, type NbSea
 
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { IConfigService } from '#/app/config/config';
+import { CREDENTIALS_POOL_SECTION } from '#/app/config/credentialPool';
+import { PROVIDERS_SECTION } from '#/app/kosongConfig/configSection';
 import { LifecycleScope } from '#/app/scopes';
 import { Error2, ErrorCodes } from '#/errors';
 
@@ -36,7 +38,12 @@ export class NbSearchService implements INbSearchService {
     @INbSearchSourceStore private readonly sources: INbSearchSourceStore,
   ) {
     this.#configListener = config.onDidChangeConfiguration((event) => {
-      if (event.domain !== NB_SEARCH_SECTION && event.domain !== NB_SEARCH_SOURCE_SECTION) return;
+      if (
+        event.domain !== NB_SEARCH_SECTION
+        && event.domain !== NB_SEARCH_SOURCE_SECTION
+        && event.domain !== PROVIDERS_SECTION
+        && event.domain !== CREDENTIALS_POOL_SECTION
+      ) return;
       this.#generation++;
       this.#descriptionSnapshot = undefined;
       this.#preparing = undefined;

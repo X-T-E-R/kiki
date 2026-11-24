@@ -46,6 +46,8 @@ export interface PortableSpacesCardProps {
   readonly mainPath: string;
   readonly externalExportRequest?: PortableExportRequest | null;
   readonly onClearExternalExport?: () => void;
+  readonly initialSubscribeUrl?: string | null;
+  readonly onClearInitialSubscribe?: () => void;
 }
 
 export function PortableSpacesCard({
@@ -55,6 +57,8 @@ export function PortableSpacesCard({
   mainPath,
   externalExportRequest,
   onClearExternalExport,
+  initialSubscribeUrl,
+  onClearInitialSubscribe,
 }: PortableSpacesCardProps) {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
@@ -63,6 +67,8 @@ export function PortableSpacesCard({
 
   const [exportPanel, setExportPanel] = useState<PortableExportRequest | null>(null);
   const [linkOpen, setLinkOpen] = useState(false);
+  const [pendingSubscribeUrl, setPendingSubscribeUrl] = useState<string | null>(null);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
   const [packDialog, setPackDialog] = useState<{ source: PortableSpaceSourceRecord; action: 'pack' | 'unpack' } | null>(null);
   const [menu, setMenu] = useState<{ source: PortableSpaceSourceRecord; anchor: DOMRect; anchorElement: HTMLElement } | null>(null);
   const [detailTab, setDetailTab] = useState<PortableDetailTab>('contents');
@@ -77,6 +83,14 @@ export function PortableSpacesCard({
       onClearExternalExport?.();
     }
   }, [externalExportRequest, onClearExternalExport]);
+
+  useEffect(() => {
+    if (initialSubscribeUrl !== undefined && initialSubscribeUrl !== null && initialSubscribeUrl.trim() !== '') {
+      setPendingSubscribeUrl(initialSubscribeUrl.trim());
+      setLinkOpen(true);
+      onClearInitialSubscribe?.();
+    }
+  }, [initialSubscribeUrl, onClearInitialSubscribe]);
 
   const items = sourcesQuery.data?.items ?? [];
   const deviceRecipient = sourcesQuery.data?.deviceRecipient;
@@ -113,7 +127,39 @@ export function PortableSpacesCard({
       .catch((error: unknown) => { setFeedback({ tone: 'error', text: errorText(locale, error) }); });
   };
 
+  const syncSubscriptionNow = (source: PortableSpaceSourceRecord) => {
+    if (syncingId !== null) return;
+    setSyncingId(source.id);
+    setFeedback(null);
+    void portableSpacesApi(client, { token })
+      .syncSubscription(source.id, { force: false, createBackup: true })
+      .then((result) => {
+        refresh();
+        if (result.status === 'error') {
+          const text = t('st.portable.syncError', { error: result.error ?? 'Unknown error' });
+          setFeedback({ tone: 'error', text });
+          pushToast({ tone: 'error', text });
+        } else if (result.status === 'not_modified') {
+          const text = t('st.portable.syncNotModified', { name: source.label });
+          setFeedback({ tone: 'info', text });
+          pushToast({ tone: 'info', text });
+        } else {
+          const count = result.appliedIds.length + result.deletedIds.length;
+          const text = t('st.portable.syncUpdated', { name: source.label, count });
+          setFeedback({ tone: 'success', text });
+          pushToast({ tone: 'success', text });
+        }
+      })
+      .catch((error: unknown) => {
+        setFeedback({ tone: 'error', text: errorText(locale, error) });
+      })
+      .finally(() => {
+        setSyncingId(null);
+      });
+  };
+
   const kindBadgeText = (source: PortableSpaceSourceRecord): string => {
+    if (source.endpoint.kind === 'url') return t('st.portable.badge.url');
     if (source.spaceMode === 'overlay') return t('st.portable.badge.overlay');
     if (source.endpoint.kind === 'git') return t('st.portable.badge.git');
     if (source.format === 'age') return '.kiki.age';
@@ -166,7 +212,8 @@ export function PortableSpacesCard({
 
   const renderRow = (source: PortableSpaceSourceRecord) => {
     const subtitle = endpointSubtitle(source.endpoint, source.gitBranch);
-    const iconName = source.endpoint.kind === 'git' ? 'branch' : source.format === 'age' ? 'lock' : 'folder';
+    const isUrl = source.endpoint.kind === 'url';
+    const iconName = isUrl ? 'web' : source.endpoint.kind === 'git' ? 'branch' : source.format === 'age' ? 'lock' : 'folder';
     const isPlainSecret = source.secretMode === 'plain';
     return (
       <div
@@ -192,6 +239,14 @@ export function PortableSpacesCard({
             >
               {kindBadgeText(source)}
             </span>
+            {isUrl && source.autoSync !== false ? (
+              <span
+                data-portable-autosync-badge={source.id}
+                className="shrink-0 rounded bg-ink/[0.04] px-1.5 py-px text-[11px] text-ink-faint"
+              >
+                {t('st.portable.autoSyncBadge')}
+              </span>
+            ) : null}
             <span
               data-portable-secret-badge={source.id}
               className={`shrink-0 rounded px-1.5 py-px text-[11px] ${
@@ -202,9 +257,25 @@ export function PortableSpacesCard({
             </span>
           </div>
           <p className="truncate font-mono text-[11.5px] text-ink-faint" title={subtitle}>{subtitle}</p>
+          {isUrl && source.lastSyncError ? (
+            <p className="truncate text-[11.5px] text-danger-ink" data-portable-sync-error={source.id}>
+              {t('st.portable.syncError', { error: source.lastSyncError })}
+            </p>
+          ) : null}
         </div>
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          {isUrl ? (
+            <button
+              type="button"
+              data-portable-sync-now={source.id}
+              disabled={syncingId !== null}
+              className={SECONDARY_BUTTON}
+              onClick={() => { syncSubscriptionNow(source); }}
+            >
+              {syncingId === source.id ? t('st.portable.syncing') : t('st.portable.syncNow')}
+            </button>
+          ) : null}
           <button
             type="button"
             data-portable-compare={source.id}
@@ -213,16 +284,18 @@ export function PortableSpacesCard({
           >
             {t('st.portable.compare')}
           </button>
-          <button
-            type="button"
-            data-portable-apply={source.id}
-            className={SECONDARY_BUTTON}
-            onClick={() => {
-              openDetail(source, 'compare', { mode: 'merge', right: { kind: 'live', spaceId: MAIN_SPACE_ID } });
-            }}
-          >
-            {t('st.portable.apply')}
-          </button>
+          {!isUrl ? (
+            <button
+              type="button"
+              data-portable-apply={source.id}
+              className={SECONDARY_BUTTON}
+              onClick={() => {
+                openDetail(source, 'compare', { mode: 'merge', right: { kind: 'live', spaceId: MAIN_SPACE_ID } });
+              }}
+            >
+              {t('st.portable.apply')}
+            </button>
+          ) : null}
           <button
             type="button"
             data-portable-menu={source.id}
@@ -376,11 +449,19 @@ export function PortableSpacesCard({
         <LinkSourcePanel
           client={client}
           token={token}
-          onClose={() => { setLinkOpen(false); }}
-          onDone={(record) => {
+          initialKind={pendingSubscribeUrl !== null ? 'url' : undefined}
+          initialTarget={pendingSubscribeUrl ?? undefined}
+          onClose={() => {
             setLinkOpen(false);
+            setPendingSubscribeUrl(null);
+          }}
+          onDone={(record, syncResult) => {
+            setLinkOpen(false);
+            setPendingSubscribeUrl(null);
             refresh();
-            const text = t('st.portable.linkDone', { name: record.label });
+            const text = syncResult !== undefined
+              ? t('st.portable.subscribeDone', { name: record.label, count: syncResult.appliedIds.length + syncResult.deletedIds.length })
+              : t('st.portable.linkDone', { name: record.label });
             setFeedback({ tone: 'success', text });
             pushToast({ tone: 'success', text });
           }}

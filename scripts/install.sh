@@ -31,6 +31,7 @@ Options:
   --base-url <url>          Pinned download root URL (env: KIKI_DOWNLOAD_BASE_URL)
   --install-dir <dir>       Install directory (default: $HOME/.local/bin, env: KIKI_INSTALL_DIR)
   --apply <source>          Hydrate a space after install (repeatable)
+  --subscribe <url>         Subscribe to a remote HTTPS pack after install (repeatable)
   --override                Pass --override to kiki space apply
   --home <dir>              Pass --home <dir> to kiki space apply
   -y, --yes                 Skip confirmation prompts (default for --apply)
@@ -313,6 +314,7 @@ main() {
   apply_override=0
   apply_home=""
   apply_count=0
+  subscribe_urls=""
 
   remaining=$#
   while [ "$remaining" -gt 0 ]; do
@@ -378,6 +380,20 @@ main() {
         [ -n "$val" ] || die "--apply requires a non-empty source"
         set -- "$@" "$val"
         apply_count=$((apply_count + 1))
+        ;;
+      --subscribe)
+        [ "$remaining" -gt 0 ] || die "--subscribe requires a URL"
+        [ -n "$1" ] || die "--subscribe requires a non-empty URL"
+        subscribe_urls="${subscribe_urls}${subscribe_urls:+
+}$1"
+        shift
+        remaining=$((remaining - 1))
+        ;;
+      --subscribe=*)
+        val="${arg#--subscribe=}"
+        [ -n "$val" ] || die "--subscribe requires a non-empty URL"
+        subscribe_urls="${subscribe_urls}${subscribe_urls:+
+}$val"
         ;;
       --override)
         apply_override=1
@@ -486,6 +502,17 @@ main() {
     fi
     set -- "$@" --yes
     "$kiki_bin" space apply "$@"
+  fi
+
+  if [ -n "$subscribe_urls" ]; then
+    printf '%s\n' "$subscribe_urls" | while IFS= read -r sub_url; do
+      [ -n "$sub_url" ] || continue
+      if [ -n "$apply_home" ]; then
+        "$kiki_bin" space subscribe "$sub_url" --home "$apply_home" --yes
+      else
+        "$kiki_bin" space subscribe "$sub_url" --yes
+      fi
+    done
   fi
 }
 

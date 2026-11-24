@@ -355,4 +355,162 @@ describe('portable Space CLI', () => {
     await parse(noCredentialsExport.dependencies, 'export', './space-dir', '--include-secrets-plain', '--no-credentials');
     expect(noCredentialsExport.requests[0]?.body).toMatchObject({ secretMode: 'none' });
   });
+
+  it('parses https archive/subscription URLs as url endpoints and runs kiki space subscribe', async () => {
+    expect(parsePortableEndpoint('https://api.example.test/api/sub/abc123.tgz')).toEqual({
+      kind: 'url',
+      url: 'https://api.example.test/api/sub/abc123.tgz',
+    });
+    expect(parsePortableEndpoint('https://github.com/org/kiki-dotfiles.git')).toEqual({
+      kind: 'git',
+      repo: 'https://github.com/org/kiki-dotfiles.git',
+    });
+
+    const harness = makeHarness((path) => {
+      if (path.endsWith('/subscribe')) {
+        return {
+          source: {
+            id: 'sub-1',
+            label: 'Lab Pack',
+            endpoint: { kind: 'url', url: 'https://api.example.test/api/sub/abc123.tgz' },
+            linkedSpaceId: 'main',
+            format: 'tgz',
+            autoSync: true,
+            etag: '"v1"',
+            managedIds: ['config:providers.axon'],
+          },
+          status: 'updated',
+          appliedIds: ['config:providers.axon'],
+          deletedIds: [],
+          skippedIds: [],
+        };
+      }
+      if (path.endsWith('/inspect')) {
+        return {
+          endpoint: { kind: 'url', url: 'https://api.example.test/api/sub/abc123.tgz' },
+          label: 'Lab Pack',
+          format: 'tgz',
+          spaceMode: 'full',
+          secretMode: 'none',
+          encryptionMode: 'none',
+          recipients: [],
+          unset: [],
+          domains: [],
+          items: [],
+        };
+      }
+      return sourceList();
+    });
+
+    await parse(harness.dependencies, 'subscribe', 'https://api.example.test/api/sub/abc123.tgz', '--label', 'Lab Pack', '--json');
+    expect(harness.requests[0]).toMatchObject({
+      path: '/api/spaces/portable/subscribe',
+      method: 'POST',
+      body: {
+        url: 'https://api.example.test/api/sub/abc123.tgz',
+        label: 'Lab Pack',
+        linkToSpaceId: 'main',
+        autoSync: true,
+        createBackup: true,
+      },
+    });
+
+    await parse(harness.dependencies, 'inspect', 'https://api.example.test/api/sub/abc123.tgz', '--json');
+    expect(harness.requests[1]).toMatchObject({
+      path: '/api/spaces/portable/inspect',
+      body: {
+        endpoint: { kind: 'url', url: 'https://api.example.test/api/sub/abc123.tgz' },
+      },
+    });
+  });
+
+  it('routes kiki space sync --force on a registered URL subscription to subscription sync and masks long tokens in text output', async () => {
+    const tokenUrl = 'https://api.example.test/api/sub/0123456789abcdef0123456789abcdef.tgz';
+    const harness = makeHarness((path) => {
+      if (path === '/api/spaces/portable/sources') {
+        return {
+          deviceRecipient: 'age1example',
+          knownRecipients: [],
+          items: [
+            {
+              id: 'sub-url-1',
+              label: 'Lab Pack',
+              endpoint: { kind: 'url', url: tokenUrl },
+              linkedSpaceId: 'main',
+              format: 'tgz',
+              autoSync: true,
+              etag: '"v1"',
+            },
+          ],
+        };
+      }
+      if (path === '/api/spaces/portable/sources/sub-url-1/sync') {
+        return {
+          source: {
+            id: 'sub-url-1',
+            label: 'Lab Pack',
+            endpoint: { kind: 'url', url: tokenUrl },
+            linkedSpaceId: 'main',
+            format: 'tgz',
+            autoSync: true,
+            etag: '"v2"',
+          },
+          status: 'updated',
+          appliedIds: ['config:models.gemini-4-neon'],
+          deletedIds: [],
+          skippedIds: [],
+        };
+      }
+      return sourceList();
+    });
+
+    await parse(harness.dependencies, 'sync', 'sub-url-1', '--force');
+    expect(harness.requests.at(-1)).toMatchObject({
+      path: '/api/spaces/portable/sources/sub-url-1/sync',
+      method: 'POST',
+      body: { force: true, createBackup: true },
+    });
+    const textOut = harness.stdout.join('');
+    expect(textOut).not.toContain('0123456789abcdef0123456789abcdef');
+    expect(textOut).toContain('0123...cdef.tgz');
+
+    const failHarness = makeHarness((path) => {
+      if (path === '/api/spaces/portable/sources') {
+        return {
+          deviceRecipient: 'age1example',
+          knownRecipients: [],
+          items: [
+            {
+              id: 'sub-url-err',
+              label: 'Broken Pack',
+              endpoint: { kind: 'url', url: tokenUrl },
+              linkedSpaceId: 'main',
+              format: 'tgz',
+              autoSync: true,
+            },
+          ],
+        };
+      }
+      if (path === '/api/spaces/portable/sources/sub-url-err/sync') {
+        return {
+          source: {
+            id: 'sub-url-err',
+            label: 'Broken Pack',
+            endpoint: { kind: 'url', url: tokenUrl },
+            linkedSpaceId: 'main',
+            format: 'tgz',
+            autoSync: true,
+            lastSyncError: 'Subscription fetch failed with HTTP 503',
+          },
+          status: 'error',
+          appliedIds: [],
+          deletedIds: [],
+          skippedIds: [],
+          error: 'Subscription fetch failed with HTTP 503',
+        };
+      }
+      return sourceList();
+    });
+    await expect(parse(failHarness.dependencies, 'sync', 'sub-url-err')).rejects.toThrow(/HTTP 503/);
+  });
 });

@@ -104,7 +104,7 @@ export function PortableSpaceDetail({
     });
   };
 
-  const isReadOnly = source.endpoint.kind === 'git';
+  const isReadOnly = source.endpoint.kind === 'git' || source.endpoint.kind === 'url';
 
   const updateInspectCache = (
     next: PortableSpaceInspectResult,
@@ -189,7 +189,7 @@ export function PortableSpaceDetail({
             className="flex min-w-0 items-center gap-2 font-display text-[18px] font-semibold text-ink outline-none"
           >
             <Icon
-              name={source.endpoint.kind === 'git' ? 'branch' : source.format === 'age' ? 'lock' : 'folder'}
+              name={source.endpoint.kind === 'url' ? 'web' : source.endpoint.kind === 'git' ? 'branch' : source.format === 'age' ? 'lock' : 'folder'}
               size={16}
               className="text-ink-soft"
             />

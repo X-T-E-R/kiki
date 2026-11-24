@@ -15,18 +15,26 @@ import { sameUnit } from './mergeEngine';
 import { checkedPath, git, gitRemote, missing, pathFormat, readBounded, readTree, scratch, writeFileAtomic, writeTree } from './spaceFiles';
 import { packTarGz, safePortablePath, unpackTarGz } from './tarArchive';
 import { encodeToml, filesFromUnits, FORK, object, parseToml, PLAIN, RECIPIENTS, SEALED, toUnitsWithExcluded, type ForkBase, type PortableSpaceTree, type Units } from './treeProjection';
+import { defaultLabelForSubscriptionUrl, fetchSubscriptionArchive, sanitizeRemoteSubscriptionFiles, type UrlFetchOptions } from './urlSubscription';
 
 export const NO_SESSIONS = { mode: 'none' } as const;
+const REMOTE_ARCHIVE_LIMITS = { maxExpandedBytes: 32 * 1024 * 1024, maxFiles: 1024 } as const;
 export interface LoadOptions {
   unlock?: PortableSpaceUnlock;
   sessions?: PortableSpaceSessionSelection;
   targetPlatform?: 'win32' | 'darwin' | 'linux';
   includeMemories?: boolean;
   includeCredentials?: boolean;
+  ifNoneMatch?: string;
+  signal?: AbortSignal;
 }
 export interface LoadedSpaceTree extends PortableSpaceTree {
   matchedPassphrase?: string;
+  etag?: string;
 }
+export type LoadedUrlTreeResult =
+  | { readonly status: 'not_modified'; readonly etag?: string }
+  | { readonly status: 'ok'; readonly tree: LoadedSpaceTree; readonly etag?: string };
 export interface WriteOptions {
   format?: PortableSpaceFormat;
   secretMode?: PortableSpaceSecretMode;
@@ -69,6 +77,7 @@ function readFork(bytes: Buffer | undefined): ForkBase | undefined {
 export function endpointKey(endpoint: PortableSpaceEndpoint): string {
   if (endpoint.kind === 'live') return `live:${endpoint.spaceId}`;
   if (endpoint.kind === 'git') return `git:${gitRemote(endpoint.repo)}#${endpoint.ref ?? ''}/${endpoint.subpath ?? ''}`;
+  if (endpoint.kind === 'url') return `url:${endpoint.url}`;
   const path = resolve(endpoint.path).replaceAll('\\', '/');
   return `${endpoint.kind}:${process.platform === 'win32' ? path.toLowerCase() : path}`;
 }
@@ -91,7 +100,11 @@ export class SpaceEndpoints {
   readonly home: string;
   readonly recipientsFile: string;
 
-  constructor(readonly live: LiveServices, readonly sync: SyncService) {
+  constructor(
+    readonly live: LiveServices,
+    readonly sync: SyncService,
+    private readonly urlFetchOptions?: Pick<UrlFetchOptions, 'fetchFn' | 'lookupFn' | 'allowLoopback'>,
+  ) {
     this.home = live.bootstrap.homeDir;
     this.recipientsFile = join(this.home, 'credentials', 'space-recipients.txt');
   }
@@ -116,6 +129,9 @@ export class SpaceEndpoints {
       if (endpoint.spaceId !== (this.live.bootstrap.spaceId ?? 'main')) throw new Error(`Connect to Space ${endpoint.spaceId} to write its live Home`);
       if (this.live.bootstrap.configReadOnly) throw new Error('This live Home is read-only');
       return;
+    }
+    if (endpoint.kind === 'url') {
+      throw new Error('URL subscription endpoints are read-only');
     }
     if (endpoint.kind === 'git') {
       const branch = endpoint.ref;
@@ -174,7 +190,124 @@ export class SpaceEndpoints {
     return files;
   }
 
+  private async decodeArchiveBytes(
+    bytes: Buffer,
+    nameHint: string,
+    unlock?: PortableSpaceUnlock,
+    remoteUrl = false,
+  ): Promise<{
+    files: Map<string, Buffer>;
+    format: PortableSpaceFormat;
+    encryptionMode: PortableSpaceTree['encryptionMode'];
+    matchedPassphrase?: string;
+  }> {
+    let encryptionMode: PortableSpaceTree['encryptionMode'] = 'none';
+    let matchedPassphrase: string | undefined;
+    const format: PortableSpaceFormat = pathFormat(nameHint) === 'age'
+      || bytes.subarray(0, 21).toString('ascii') === 'age-encryption.org/v1'
+      || bytes.subarray(0, 14).toString('ascii') === '-----BEGIN AGE'
+      ? 'age'
+      : 'tgz';
+    const unpackOptions = remoteUrl ? REMOTE_ARCHIVE_LIMITS : undefined;
+    let files: Map<string, Buffer>;
+    if (format === 'age') {
+      const decoded = await decodeAge(bytes, unlock, this.sync);
+      encryptionMode = decoded.mode;
+      if (decoded.mode === 'passphrase') matchedPassphrase = decoded.matchedPassphrase;
+      files = unpackTarGz(decoded.bytes, unpackOptions);
+    } else if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+      files = unpackTarGz(bytes, unpackOptions);
+    } else {
+      files = this.legacy(bytes);
+    }
+    return { files, format, encryptionMode, matchedPassphrase };
+  }
+
+  private async buildLoadedTree(
+    rawFiles: Map<string, Buffer>,
+    format: PortableSpaceFormat,
+    encryptionMode: PortableSpaceTree['encryptionMode'],
+    matchedPassphrase: string | undefined,
+    label: string,
+    options: LoadOptions,
+    remoteUrl = false,
+    etag?: string,
+  ): Promise<LoadedSpaceTree> {
+    const files = new Map(rawFiles);
+    let effectiveEncryption = encryptionMode;
+    let effectivePassphrase = matchedPassphrase;
+    const sealed = files.get(SEALED);
+    if (sealed) {
+      if (files.has(PLAIN)) throw new Error('Portable Space contains both plain and sealed credentials');
+      if (options.includeCredentials !== false) {
+        const decoded = await decodeAge(sealed, options.unlock, this.sync);
+        if (format !== 'age') {
+          effectiveEncryption = decoded.mode;
+          if (decoded.mode === 'passphrase') effectivePassphrase = decoded.matchedPassphrase;
+        }
+        files.set(PLAIN, decoded.bytes);
+      }
+      files.delete(SEALED);
+    }
+    const sanitized = remoteUrl ? sanitizeRemoteSubscriptionFiles(files) : { files, excluded: [] };
+    const { units, excluded: projectedExcluded } = toUnitsWithExcluded(sanitized.files, this.live.registry);
+    const excluded = [...sanitized.excluded, ...projectedExcluded];
+    for (const [id, item] of units) if (item.domain === 'memories' && options.includeMemories === false || item.domain === 'credentials' && options.includeCredentials === false) units.delete(id);
+    const overlay = parseToml(sanitized.files.get('overlay.toml'));
+    const unset = overlay['unset'] ?? [];
+    if (sanitized.files.has('overlay.toml') && (overlay['schema'] !== 1 || overlay['mode'] !== 'overlay' || !Array.isArray(unset) || unset.some((item) => typeof item !== 'string' || item.length === 0))) throw new Error('Invalid portable overlay.toml');
+    const recipients = parseRecipients(sanitized.files.get(RECIPIENTS)?.toString('utf8') ?? '');
+    return {
+      units,
+      excluded: excluded.length ? excluded : undefined,
+      unset: new Set(unset as string[]),
+      overlay: overlay['mode'] === 'overlay',
+      recipients,
+      format,
+      secretMode: [...units.values()].some((item) => item.domain === 'credentials') ? (sealed || format === 'age' ? 'sealed' : 'plain') : 'none',
+      encryptionMode: effectiveEncryption,
+      matchedPassphrase: effectivePassphrase,
+      label: label.slice(0, 256) || 'Portable Space',
+      fork: readFork(sanitized.files.get(FORK)),
+      etag,
+    };
+  }
+
+  async loadUrl(
+    endpoint: Extract<PortableSpaceEndpoint, { kind: 'url' }>,
+    options: LoadOptions = {},
+  ): Promise<LoadedUrlTreeResult> {
+    const fetched = await fetchSubscriptionArchive(endpoint.url, {
+      ifNoneMatch: options.ifNoneMatch,
+      fetchFn: this.urlFetchOptions?.fetchFn,
+      lookupFn: this.urlFetchOptions?.lookupFn,
+      allowLoopback: this.urlFetchOptions?.allowLoopback,
+      signal: options.signal,
+    });
+    if (fetched.status === 'not_modified') {
+      return { status: 'not_modified', etag: fetched.etag };
+    }
+    const pathname = new URL(endpoint.url).pathname;
+    const decoded = await this.decodeArchiveBytes(fetched.bytes, pathname, options.unlock, true);
+    const tree = await this.buildLoadedTree(
+      decoded.files,
+      decoded.format,
+      decoded.encryptionMode,
+      decoded.matchedPassphrase,
+      defaultLabelForSubscriptionUrl(endpoint.url),
+      options,
+      true,
+      fetched.etag,
+    );
+    return { status: 'ok', tree, etag: fetched.etag };
+  }
+
   async load(endpoint: PortableSpaceEndpoint, options: LoadOptions = {}): Promise<LoadedSpaceTree> {
+    if (endpoint.kind === 'url') {
+      const result = await this.loadUrl(endpoint, { ...options, ifNoneMatch: undefined });
+      if (result.status !== 'ok') throw new Error('Unexpected 304 response while loading URL source');
+      return result.tree;
+    }
     let files: Map<string, Buffer>;
     let format: PortableSpaceFormat = 'dir';
     let encryptionMode: PortableSpaceTree['encryptionMode'] = 'none';
@@ -204,39 +337,15 @@ export class SpaceEndpoints {
       case 'archive': {
         label = basename(resolve(endpoint.path));
         const bytes = await readBounded(endpoint.path);
-        format = pathFormat(endpoint.path) === 'age' || bytes.subarray(0, 21).toString('ascii') === 'age-encryption.org/v1' || bytes.subarray(0, 14).toString('ascii') === '-----BEGIN AGE' ? 'age' : 'tgz';
-        if (format === 'age') {
-          const decoded = await decodeAge(bytes, options.unlock, this.sync);
-          encryptionMode = decoded.mode;
-          if (decoded.mode === 'passphrase') matchedPassphrase = decoded.matchedPassphrase;
-          files = unpackTarGz(decoded.bytes);
-        } else if (bytes[0] === 0x1f && bytes[1] === 0x8b) files = unpackTarGz(bytes);
-        else files = this.legacy(bytes);
+        const decoded = await this.decodeArchiveBytes(bytes, endpoint.path, options.unlock);
+        files = decoded.files;
+        format = decoded.format;
+        encryptionMode = decoded.encryptionMode;
+        matchedPassphrase = decoded.matchedPassphrase;
         break;
       }
     }
-    const sealed = files.get(SEALED);
-    if (sealed) {
-      if (files.has(PLAIN)) throw new Error('Portable Space contains both plain and sealed credentials');
-      if (options.includeCredentials !== false) {
-        const decoded = await decodeAge(sealed, options.unlock, this.sync);
-        if (format !== 'age') {
-          encryptionMode = decoded.mode;
-          if (decoded.mode === 'passphrase') matchedPassphrase = decoded.matchedPassphrase;
-        }
-        files.set(PLAIN, decoded.bytes);
-      }
-      files.delete(SEALED);
-    }
-    const { units, excluded } = toUnitsWithExcluded(files, this.live.registry);
-    for (const [id, item] of units) if (item.domain === 'memories' && options.includeMemories === false || item.domain === 'credentials' && options.includeCredentials === false) units.delete(id);
-    const overlay = parseToml(files.get('overlay.toml'));
-    const unset = overlay['unset'] ?? [];
-    if (files.has('overlay.toml') && (overlay['schema'] !== 1 || overlay['mode'] !== 'overlay' || !Array.isArray(unset) || unset.some((item) => typeof item !== 'string' || item.length === 0))) throw new Error('Invalid portable overlay.toml');
-    const recipients = parseRecipients(files.get(RECIPIENTS)?.toString('utf8') ?? '');
-    return { units, excluded: excluded.length ? excluded : undefined, unset: new Set(unset as string[]), overlay: overlay['mode'] === 'overlay', recipients, format,
-      secretMode: [...units.values()].some((item) => item.domain === 'credentials') ? (sealed || format === 'age' ? 'sealed' : 'plain') : 'none',
-      encryptionMode, matchedPassphrase, label: label.slice(0, 256) || 'Portable Space', fork: readFork(files.get(FORK)) };
+    return this.buildLoadedTree(files, format, encryptionMode, matchedPassphrase, label, options, false);
   }
 
   async destination(input: string): Promise<PortableSpaceEndpoint> {

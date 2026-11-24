@@ -24,6 +24,9 @@ import {
   portableSpacePreviewResultSchema,
   portableSpaceRekeyInputSchema,
   portableSpaceSourcesListResponseSchema,
+  portableSpaceSubscribeInputSchema,
+  portableSpaceSubscriptionSyncInputSchema,
+  portableSpaceSubscriptionSyncResultSchema,
   type PortableSpaceApplyInput,
   type PortableSpaceEndpoint,
   type PortableSpaceEncryption,
@@ -116,6 +119,8 @@ type SpaceOptions = {
   readonly overlay?: boolean;
   readonly dir?: boolean;
   readonly apply?: boolean;
+  readonly autoSync?: boolean;
+  readonly force?: boolean;
 };
 
 type JsonParser<T> = { parse(value: unknown): T };
@@ -204,16 +209,28 @@ function parseGitEndpoint(value: string, branch?: string, subpath?: string): Por
   }));
 }
 
+function isSubscriptionUrl(raw: string): boolean {
+  if (!URL.canParse(raw)) return false;
+  const parsed = new URL(raw);
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+  return isArchivePath(parsed.pathname) || parsed.pathname.includes('/api/sub/');
+}
+
 export function parsePortableEndpoint(value: string | undefined, options: { readonly kind?: PortableEndpointKind; readonly branch?: string; readonly subpath?: string } = {}): PortableSpaceEndpoint {
   if (value === undefined || value.trim() === '') return { kind: 'live', spaceId: 'main' };
   const raw = value.trim();
-  const explicit = /^(live|dir|archive|git):(.*)$/su.exec(raw);
+  const explicit = /^(live|dir|archive|git|url):(.*)$/su.exec(raw);
   if (explicit !== null) {
     const kind = explicit[1]! as PortableEndpointKind;
     const payload = explicit[2]!;
     if (kind === 'live') return portableSpaceEndpointSchema.parse({ kind, spaceId: payload || 'main' });
     if (kind === 'git') return parseGitEndpoint(payload, options.branch, options.subpath);
+    if (kind === 'url') return portableSpaceEndpointSchema.parse({ kind, url: payload });
     return portableSpaceEndpointSchema.parse({ kind, path: resolveLocalPath(payload) });
+  }
+  if (options.kind === 'url') return portableSpaceEndpointSchema.parse({ kind: 'url', url: raw });
+  if (options.kind !== 'git' && options.branch === undefined && options.subpath === undefined && isSubscriptionUrl(raw)) {
+    return portableSpaceEndpointSchema.parse({ kind: 'url', url: raw });
   }
   if (options.kind === 'git' || raw.startsWith('github:') || raw.startsWith('git@') || raw.startsWith('ssh://') || raw.startsWith('git://') || raw.startsWith('https://') || raw.startsWith('http://')) {
     return parseGitEndpoint(raw, options.branch, options.subpath);
@@ -362,8 +379,39 @@ async function withConnection<T>(command: Command, dependencies: SpaceCommandDep
   return action(connection, options);
 }
 
+function maskSubscriptionUrl(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    const maskedPath = parsed.pathname.split('/').map((segment) => {
+      const match = /^([a-z0-9_-]{16,})(\.(?:kiki\.)?(?:tgz|tar\.gz|age))?$/iu.exec(segment);
+      if (match === null) return segment;
+      const token = match[1]!;
+      const ext = match[2] ?? '';
+      return `${token.slice(0, 4)}...${token.slice(-4)}${ext}`;
+    }).join('/');
+    return `${parsed.origin}${maskedPath}`;
+  } catch {
+    return rawUrl;
+  }
+}
+
+function redactSubscriptionUrlsInValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => redactSubscriptionUrlsInValue(item));
+  if (value === null || typeof value !== 'object') return value;
+  const record = value as Record<string, unknown>;
+  if (record['kind'] === 'url' && typeof record['url'] === 'string') {
+    return { ...record, url: maskSubscriptionUrl(record['url']) };
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(record)) {
+    out[key] = redactSubscriptionUrlsInValue(entry);
+  }
+  return out;
+}
+
 function outputReceipt(value: unknown, options: SpaceOptions, dependencies: SpaceCommandDependencies): void {
-  writeJson(value, dependencies, options.json === true);
+  const rendered = options.json === true ? value : redactSubscriptionUrlsInValue(value);
+  writeJson(rendered, dependencies, options.json === true);
 }
 
 async function confirm(message: string, dependencies: SpaceCommandDependencies): Promise<void> {
@@ -430,7 +478,7 @@ function endpointNeedsSourceLookup(value: string | undefined): boolean {
   if (value === undefined || value.trim() === '') return false;
   const raw = value.trim();
   if (raw === 'main' || /^h-[a-z0-9-]+$/u.test(raw)) return false;
-  if (/^(?:live|dir|archive|git):/u.test(raw) || raw.startsWith('github:') || raw.startsWith('git@') || raw.startsWith('ssh://') || raw.startsWith('git://') || raw.startsWith('http://') || raw.startsWith('https://')) return false;
+  if (/^(?:live|dir|archive|git|url):/u.test(raw) || raw.startsWith('github:') || raw.startsWith('git@') || raw.startsWith('ssh://') || raw.startsWith('git://') || raw.startsWith('http://') || raw.startsWith('https://')) return false;
   if (isArchivePath(raw) || isAbsolute(raw) || raw.startsWith('./') || raw.startsWith('../') || raw.includes('/') || raw.includes('\\')) return false;
   return true;
 }
@@ -644,7 +692,7 @@ async function runMutation(targetValue: string | undefined, actions: readonly Po
 async function runEdit(targetValue: string, subpath: string | undefined, command: Command, dependencies: SpaceCommandDependencies): Promise<void> {
   const options = asOptions(command);
   const target = endpointFromOption(targetValue, options);
-  if (target.kind === 'git') throw new Error('Edit a local checkout instead of the Git URL.');
+  if (target.kind === 'git' || target.kind === 'url') throw new Error('Edit a local Portable Space rather than a remote URL.');
   const file = (subpath ?? 'config.toml').replaceAll('\\', '/');
   if (isAbsolute(file) || file.split('/').some((part) => !part || part === '.' || part === '..' || part.includes(':'))) throw new Error('Editor subpath must be relative to the portable Space');
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'kiki-space-edit-'));
@@ -875,11 +923,95 @@ export function registerSpaceCommand(program: Command, dependencies: SpaceComman
     .action(async (destination: string, _options: SpaceOptions, command: Command) => runExport(undefined, destination, command, dependencies));
   addSourceOptions(space.command('diff <left> [right]').description('Preview portable Space changes without applying them.')).option('--stat', 'Show change counts and paths only.').action(async (left: string, right: string | undefined, _options: SpaceOptions, command: Command) => runPreview([left], right, command, dependencies));
   addSourceOptions(space.command('apply [sources...]').description('Preview and apply portable Space layers.')).option('--preview-token <token>', 'Apply an existing preview token.').option('--selected <id>', 'Apply only this preview item.', collect, []).action(async (sources: string[], _options: SpaceOptions, command: Command) => runApply(sources, undefined, command, dependencies));
-  addSourceOptions(space.command('sync [left] [right]').description('Preview and apply a bidirectional synchronization merge.')).option('--selected <id>', 'Apply only this preview item.', collect, []).action(async (left: string | undefined, right: string | undefined, _options: SpaceOptions, command: Command) => runApply([left ?? await defaultLinked(command)], right, command, dependencies, 'sync'));
+  addSourceOptions(space.command('sync [left] [right]').description('Preview and apply a bidirectional synchronization merge, or sync a URL subscription.'))
+    .option('--selected <id>', 'Apply only this preview item.', collect, [])
+    .option('--force', 'Force re-fetch of a URL subscription, bypassing cached ETag.')
+    .action(async (left: string | undefined, right: string | undefined, _options: SpaceOptions, command: Command) => {
+      const options = asOptions(command);
+      const syncUrlSource = async (sourceId: string) => {
+        await withConnection(command, dependencies, async (connection) => {
+          const body = portableSpaceSubscriptionSyncInputSchema.parse({
+            force: options.force === true,
+            createBackup: options.backup !== false,
+          });
+          const receipt = await portableSpaceRequest(connection, `sources/${encodeURIComponent(sourceId)}/sync`, {
+            method: 'POST',
+            body,
+            parse: portableSpaceSubscriptionSyncResultSchema,
+            fetch: dependencies.fetch,
+          });
+          outputReceipt(receipt, options, dependencies);
+          if (receipt.status === 'error') {
+            throw new Error(receipt.error ?? 'URL subscription sync failed');
+          }
+        });
+      };
+      if (right === undefined && left === undefined) {
+        const linked = await withConnection(command, dependencies, async (connection) => {
+          const result = await portableSpaceRequest(connection, 'sources', { parse: portableSpaceSourcesListResponseSchema, fetch: dependencies.fetch });
+          const items = result.items.filter((item) => item.linkedSpaceId === (options.space ?? 'main'));
+          if (items.length !== 1) throw new Error('Specify a source ID unless exactly one source is linked to this Home');
+          return items[0]!;
+        });
+        if (linked.endpoint.kind === 'url') {
+          await syncUrlSource(linked.id);
+          return;
+        }
+        await runApply([linked.endpoint], right, command, dependencies, 'sync');
+        return;
+      }
+      if (right === undefined && left !== undefined) {
+        const trimmed = left.trim();
+        const maybeUrlOrId = options.force === true
+          || /^https?:\/\//iu.test(trimmed)
+          || trimmed.startsWith('url:')
+          || (!trimmed.includes('/') && !trimmed.includes('\\') && !trimmed.includes('.'));
+        if (maybeUrlOrId) {
+          const matchedId = await withConnection(command, dependencies, async (connection) => {
+            const catalog = await portableSpaceRequest(connection, 'sources', { parse: portableSpaceSourcesListResponseSchema, fetch: dependencies.fetch });
+            const normalizedUrl = trimmed.startsWith('url:') ? trimmed.slice(4) : trimmed;
+            return catalog.items.find((item) => item.endpoint.kind === 'url' && (item.id === trimmed || item.endpoint.url === normalizedUrl))?.id;
+          });
+          if (matchedId !== undefined) {
+            await syncUrlSource(matchedId);
+            return;
+          }
+        }
+      }
+      await runApply([left ?? await defaultLinked(command)], right, command, dependencies, 'sync');
+    });
   commonOptions(space.command('pack <source> <destination>').description('Pack a directory into an age or tgz archive.')).action(async (source: string, destination: string, _options: SpaceOptions, command: Command) => runPackUnpack('pack', source, destination, command, dependencies));
   commonOptions(space.command('unpack <source> <destination>').description('Unpack an archive; credentials are sealed by default.')).action(async (source: string, destination: string, _options: SpaceOptions, command: Command) => runPackUnpack('unpack', source, destination, command, dependencies));
   commonOptions(space.command('fork <source> <destination>').description('Fork a Space into a new directory or archive.')).option('--overlay', 'Fork as an overlay.').option('--domain <domain>', 'Portable domain; may be repeated.', collect, []).option('--pick <id>', 'Select one item; may be repeated.', collect, []).option('--unset <key>', 'Record an overlay unset; may be repeated.', collect, []).action(async (source: string, destination: string, _options: SpaceOptions, command: Command) => runFork(source, destination, command, dependencies));
   commonOptions(space.command('clone <remoteTarget>').description('Install Kiki if needed and hydrate an SSH or CCP host.')).option('--session <current|id>', 'Carry one session.').option('--channel <channel>', 'Installer channel: stable or beta.').action(async (remote: string, _options: SpaceOptions, command: Command) => runClone(remote, command, dependencies));
+  commonOptions(space.command('subscribe <url>').description('Subscribe to a remote HTTPS portable Space pack with automatic managed updates.'))
+    .option('--label <name>', 'Subscription display label.')
+    .option('--link-to <spaceId>', 'Link this subscription to a live Space.')
+    .option('--no-auto-sync', 'Disable automatic periodic background sync.')
+    .option('--no-backup', 'Skip the live Home backup.')
+    .action(async (url: string, _options: SpaceOptions, command: Command) => {
+      const options = asOptions(command);
+      await withConnection(command, dependencies, async (connection) => {
+        const body = portableSpaceSubscribeInputSchema.parse(compactObject({
+          url: url.trim(),
+          label: options.label,
+          linkToSpaceId: options.linkTo ?? options.space ?? 'main',
+          autoSync: options.autoSync !== false,
+          unlock: unlockFromOptions(options),
+          createBackup: options.backup !== false,
+        }));
+        const receipt = await portableSpaceRequest(connection, 'subscribe', {
+          method: 'POST',
+          body,
+          parse: portableSpaceSubscriptionSyncResultSchema,
+          fetch: dependencies.fetch,
+        });
+        outputReceipt(receipt, options, dependencies);
+        if (receipt.status === 'error') {
+          throw new Error(receipt.error ?? 'URL subscription failed');
+        }
+      });
+    });
   commonOptions(space.command('link <source>').description('Register a portable Space source.')).option('--label <name>', 'Source label.').option('--link-to <spaceId>', 'Link this source to a live Space.').action(async (source: string, _options: SpaceOptions, command: Command) => {
     const options = asOptions(command);
     await withConnection(command, dependencies, async (connection) => {

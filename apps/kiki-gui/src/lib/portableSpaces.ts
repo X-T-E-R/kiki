@@ -16,6 +16,7 @@ import {
   portableSpaceRemoveSourceResponseSchema,
   portableSpaceSourceRecordSchema,
   portableSpaceSourcesListResponseSchema,
+  portableSpaceSubscriptionSyncResultSchema,
   type PortableSpaceApplyInput,
   type PortableSpaceApplyReceipt,
   type PortableSpaceDomain,
@@ -36,6 +37,9 @@ import {
   type PortableSpaceRemoveSourceResponse,
   type PortableSpaceSourceRecord,
   type PortableSpaceSourcesListResponse,
+  type PortableSpaceSubscribeInput,
+  type PortableSpaceSubscriptionSyncInput,
+  type PortableSpaceSubscriptionSyncResult,
 } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
@@ -44,6 +48,8 @@ import type { KikiClient } from './client';
 export interface PortableSpacesApi {
   listSources(signal?: AbortSignal): Promise<PortableSpaceSourcesListResponse>;
   registerSource(input: PortableSpaceRegisterSourceInput, signal?: AbortSignal): Promise<PortableSpaceSourceRecord>;
+  subscribe(input: PortableSpaceSubscribeInput, signal?: AbortSignal): Promise<PortableSpaceSubscriptionSyncResult>;
+  syncSubscription(id: string, input?: Partial<PortableSpaceSubscriptionSyncInput>, signal?: AbortSignal): Promise<PortableSpaceSubscriptionSyncResult>;
   removeSource(id: string, signal?: AbortSignal): Promise<PortableSpaceRemoveSourceResponse>;
   inspect(input: PortableSpaceInspectInput, signal?: AbortSignal): Promise<PortableSpaceInspectResult>;
   exportSpace(input: PortableSpaceExportInput, signal?: AbortSignal): Promise<PortableSpaceExportReceipt>;
@@ -105,6 +111,10 @@ export function portableSpacesApi(client: KikiClient, options?: { readonly token
       requestPortable(client, 'GET', '/spaces/portable/sources', portableSpaceSourcesListResponseSchema, { signal, token }),
     registerSource: (body, signal) =>
       requestPortable(client, 'POST', '/spaces/portable/sources', portableSpaceSourceRecordSchema, { body, signal, token }),
+    subscribe: (body, signal) =>
+      requestPortable(client, 'POST', '/spaces/portable/subscribe', portableSpaceSubscriptionSyncResultSchema, { body, signal, token }),
+    syncSubscription: (id, body, signal) =>
+      requestPortable(client, 'POST', `/spaces/portable/sources/${encodeURIComponent(id)}/sync`, portableSpaceSubscriptionSyncResultSchema, { body: body ?? {}, signal, token }),
     removeSource: (id, signal) =>
       requestPortable(client, 'DELETE', `/spaces/portable/sources/${encodeURIComponent(id)}`, portableSpaceRemoveSourceResponseSchema, { signal, token }),
     inspect: (body, signal) =>
@@ -220,6 +230,24 @@ export function endpointKey(endpoint: PortableSpaceEndpoint): string {
       return `archive:${endpoint.path}`;
     case 'git':
       return `git:${endpoint.repo}#${endpoint.ref ?? ''}#${endpoint.subpath ?? ''}`;
+    case 'url':
+      return `url:${endpoint.url}`;
+  }
+}
+
+function maskSubscriptionUrl(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    const maskedPath = parsed.pathname.split('/').map((segment) => {
+      const match = /^([a-z0-9_-]{16,})(\.(?:kiki\.)?(?:tgz|tar\.gz|age))?$/iu.exec(segment);
+      if (match === null) return segment;
+      const token = match[1]!;
+      const ext = match[2] ?? '';
+      return `${token.slice(0, 4)}…${token.slice(-4)}${ext}`;
+    }).join('/');
+    return `${parsed.origin}${maskedPath}`;
+  } catch {
+    return rawUrl;
   }
 }
 
@@ -235,6 +263,8 @@ export function endpointSubtitle(endpoint: PortableSpaceEndpoint, gitBranch?: st
       const suffix = [ref ? `@${ref}` : '', endpoint.subpath ? `/${endpoint.subpath.replace(/^\/+/u, '')}` : ''].join('');
       return `${endpoint.repo}${suffix}`;
     }
+    case 'url':
+      return maskSubscriptionUrl(endpoint.url);
   }
 }
 
@@ -258,6 +288,8 @@ export function endpointCliArg(endpoint: PortableSpaceEndpoint): string {
       }
       return endpoint.ref ? `${base}#${endpoint.ref}` : base;
     }
+    case 'url':
+      return endpoint.url;
   }
 }
 

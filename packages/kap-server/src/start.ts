@@ -14,6 +14,7 @@ import {
   IAppendLogStore,
   IConfigRegistry,
   IConfigService,
+  IErrorTelemetryService,
   IEventService,
   IFileSystemStorageService,
   ILogService,
@@ -322,6 +323,7 @@ export interface ServerStartOptions {
   readonly serverVersion?: string;
   readonly buildId?: string;
   readonly buildChannel?: string;
+  readonly allowLoopbackSubscriptions?: boolean;
 }
 
 export interface ServerExitReceipt {
@@ -1560,7 +1562,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   meshServiceRef = meshService;
   registerMeshRoutes(app, meshService);
   registerSyncRoutes(app, syncService);
-  registerPortableSpaceRoutes(app, new PortableSpaceService(new SpaceEndpoints({
+  const portableSpaces = new PortableSpaceService(new SpaceEndpoints({
     bootstrap: bootstrapInfo,
     config: core.accessor.get(IConfigService),
     registry: core.accessor.get(IConfigRegistry),
@@ -1572,8 +1574,14 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     sessions: core.accessor.get(ISessionManager),
     index: core.accessor.get(ISessionIndex),
     logs: core.accessor.get(IAppendLogStore),
-  }, syncService)), localOwnerToken);
-  app.addHook('preClose', async () => { await meshService.close(); });
+  }, syncService, opts.allowLoopbackSubscriptions ? { allowLoopback: true } : undefined));
+  registerPortableSpaceRoutes(app, portableSpaces, localOwnerToken);
+  portableSpaces.startAutoSync();
+  app.addHook('preClose', async () => {
+    await portableSpaces.stopAutoSync();
+    await core.accessor.get(IErrorTelemetryService).shutdown();
+    await meshService.close();
+  });
   const pairingHooks: { current?: PairingHooks } = {};
   const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web, () => peerListeners?.urls().length ? peerTls?.tlsFingerprint : undefined, mintPanelDocument, () => syncService.peekDeviceRecipient());
   threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal, peerBridgeRegistry);

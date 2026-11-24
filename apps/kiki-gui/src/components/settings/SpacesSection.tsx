@@ -77,6 +77,20 @@ export function SpacesSection() {
   const mainSpacePath = controlSpaces.data?.find((item) => item.id === MAIN_SPACE_ID)?.path ?? '';
   const [portableExportRequest, setPortableExportRequest] = useState<PortableExportRequest | null>(null);
   const clearPortableExport = useCallback(() => { setPortableExportRequest(null); }, []);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [initialSubscribeUrl, setInitialSubscribeUrl] = useState<string | null>(null);
+  const clearInitialSubscribe = useCallback(() => { setInitialSubscribeUrl(null); }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const subscribe = params.get('subscribe')?.trim();
+    if (!subscribe) return;
+    setInitialSubscribeUrl(subscribe);
+    params.delete('subscribe');
+    const nextSearch = params.toString();
+    void navigate(`${location.pathname}${nextSearch ? `?${nextSearch}` : ''}`, { replace: true });
+  }, [location.pathname, location.search, navigate]);
   return (
     <>
       {inRemoteScope ? (
@@ -99,6 +113,8 @@ export function SpacesSection() {
           mainPath={mainSpacePath}
           externalExportRequest={portableExportRequest}
           onClearExternalExport={clearPortableExport}
+          initialSubscribeUrl={initialSubscribeUrl}
+          onClearInitialSubscribe={clearInitialSubscribe}
         />
         <RemoteConnectionsSection />
         {sub ? <SpaceCredentialsCard client={controlClient} onEnterMain={() => openLocalSpace(MAIN_SPACE_ID, mode)} /> : null}

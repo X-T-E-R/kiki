@@ -182,6 +182,8 @@ const hostMock = {
 const apiMocks: Record<keyof PortableSpacesApi, ReturnType<typeof vi.fn>> = {
   listSources: vi.fn(),
   registerSource: vi.fn(),
+  subscribe: vi.fn(),
+  syncSubscription: vi.fn(),
   removeSource: vi.fn(),
   inspect: vi.fn(),
   exportSpace: vi.fn(),
@@ -617,6 +619,61 @@ describe('PortableSpacesCard & workflows', () => {
     hostMock.pickDirectory.mockRejectedValueOnce(new Error('Native directory picker unavailable'));
     await click('[data-portable-link-browse]');
     expect(document.body.textContent).toContain('Native directory picker unavailable');
+  });
+
+  it('subscribes via initialSubscribeUrl and triggers Sync now on URL subscriptions', async () => {
+    const urlSource: PortableSpaceSourceRecord = {
+      id: 'src-url-1',
+      label: 'Lab Pack',
+      endpoint: { kind: 'url', url: 'https://api.example.test/api/sub/pack.tgz' },
+      linkedSpaceId: 'main',
+      format: 'tgz',
+      spaceMode: 'full',
+      secretMode: 'plain',
+      encryptionMode: 'none',
+      autoSync: true,
+      etag: '"v1"',
+      lastSyncedAt: '2026-11-24T00:00:00.000Z',
+    };
+    apiMocks.subscribe.mockResolvedValue({
+      source: urlSource,
+      status: 'updated',
+      appliedIds: ['config:providers.axon', 'config:models.gemini-4-neon'],
+      deletedIds: [],
+      skippedIds: [],
+    });
+    apiMocks.syncSubscription.mockResolvedValue({
+      source: urlSource,
+      status: 'not_modified',
+      appliedIds: [],
+      deletedIds: [],
+      skippedIds: [],
+    });
+    apiMocks.listSources.mockResolvedValue({
+      ...SOURCES_RESPONSE,
+      items: [urlSource, ...SOURCES_RESPONSE.items],
+    });
+
+    await renderNode(
+      <PortableSpacesCard
+        client={fakeClient}
+        spaces={SPACES}
+        mainPath="/home/me/.kiki"
+        initialSubscribeUrl="https://api.example.test/api/sub/pack.tgz"
+      />,
+    );
+
+    const targetInput = document.querySelector<HTMLInputElement>('[data-portable-link-target]');
+    expect(targetInput?.value).toBe('https://api.example.test/api/sub/pack.tgz');
+    await click('[data-portable-link-submit]');
+    expect(apiMocks.subscribe).toHaveBeenCalledWith(expect.objectContaining({
+      url: 'https://api.example.test/api/sub/pack.tgz',
+      autoSync: true,
+    }));
+
+    expect(document.querySelector('[data-portable-kind-badge="src-url-1"]')?.textContent).toBe('Subscription');
+    await click('[data-portable-sync-now="src-url-1"]');
+    expect(apiMocks.syncSubscription).toHaveBeenCalledWith('src-url-1', { force: false, createBackup: true });
   });
 });
 
