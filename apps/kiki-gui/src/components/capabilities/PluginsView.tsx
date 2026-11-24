@@ -15,7 +15,7 @@
 
 import { useCallback, useMemo, useRef, useState } from 'react';
 
-import { errorText, type I18nKey, type Locale } from '@kiki/session-core/i18n';
+import { type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import type { PluginMarketplaceEntry, PluginSummary } from '../../lib/client';
@@ -26,7 +26,7 @@ import { Icon, Spinner } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { AddSourceDialog, CatalogSourceField } from './AddSourceDialog';
 import { MediaSourcesView } from '../media/MediaSourcesView';
-import { InstalledList } from './InstalledList';
+import { InstalledList, PluginLoadFailure, describePluginLoadError } from './InstalledList';
 import { InstallFlow, type InstallRequest } from './InstallFlow';
 import { PluginCard } from './PluginCard';
 import { PluginDetail } from './PluginDetail';
@@ -34,131 +34,6 @@ import { CapabilitySection, Disclosure, EmptyNote, QUIET_BUTTON, RowGrid, Search
 import { useInstalledPlugins, usePluginGithubUpdates, usePluginMarketplace, usePluginRecommendations, type PluginSubject } from './usePlugins';
 
 
-
-const ZOD_ISSUE_SHAPE = /"code"\s*:\s*"(invalid_type|too_small|too_big|invalid_enum_value|invalid_value|unrecognized_keys?)"/;
-const REDACT_URL = /\b(?:https?|wss?|file|ftp):\/\/[^\s)"'`<>]+/gi;
-const REDACT_CREDENTIAL = /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+|\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})|\b(?:token|password|passwd|secret|api[_-]?key|authorization)\s*[:=]\s*[^\s,;)"']+/gi;
-
-interface SanitizedPluginError {
-  readonly summary: string;
-  readonly diagnostic?: string;
-}
-
-function sanitizeText(input: string): string {
-  return input
-    .replace(REDACT_URL, '[url]')
-    .replace(REDACT_CREDENTIAL, '[redacted]')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function formatZodIssues(issues: readonly unknown[]): string | undefined {
-  const lines: string[] = [];
-  for (const rawIssue of issues.slice(0, 5)) {
-    if (typeof rawIssue !== 'object' || rawIssue === null) continue;
-    const issue = rawIssue as {
-      readonly path?: readonly unknown[];
-      readonly code?: unknown;
-      readonly expected?: unknown;
-    };
-    const path = Array.isArray(issue.path)
-      ? issue.path
-          .map((segment) => String(segment).replace(/[^A-Za-z0-9_.-]/g, ''))
-          .filter((segment) => segment !== '')
-          .join('.')
-          .slice(0, 64)
-      : '';
-    const code = typeof issue.code === 'string'
-      ? issue.code.replace(/[^A-Za-z0-9_-]/g, '')
-      : 'invalid_value';
-    const expected = typeof issue.expected === 'string'
-      ? issue.expected.replace(/[^A-Za-z0-9_|-]/g, '').slice(0, 32)
-      : '';
-    const detail = expected !== '' ? `${code} (${expected})` : code;
-    lines.push(path !== '' ? `${path}: ${detail}` : detail);
-  }
-  return lines.length > 0 ? lines.join('\n') : undefined;
-}
-
-function extractStringifiedZodDiagnostic(raw: string): string | undefined {
-  const start = raw.indexOf('[');
-  const end = raw.lastIndexOf(']');
-  if (start !== -1 && end > start) {
-    try {
-      const parsed: unknown = JSON.parse(raw.slice(start, end + 1));
-      if (Array.isArray(parsed)) {
-        const formatted = formatZodIssues(parsed);
-        if (formatted !== undefined) return formatted;
-      }
-    } catch {
-      // Truncated JSON payload: fall back to safe field/code token extraction below.
-    }
-  }
-  const codeMatch = /"code"\s*:\s*"([A-Za-z0-9_-]+)"/.exec(raw);
-  const expectedMatch = /"expected"\s*:\s*"([A-Za-z0-9_|-]+)"/.exec(raw);
-  const pathMatch = /"path"\s*:\s*\[([^\]]*)\]/.exec(raw);
-  const path = pathMatch?.[1]
-    ?.split(',')
-    .map((part) => part.replace(/[\s"']/g, '').replace(/[^A-Za-z0-9_.-]/g, ''))
-    .filter((part) => part !== '')
-    .join('.')
-    .slice(0, 64) ?? '';
-  const code = codeMatch?.[1] ?? 'invalid_payload';
-  const expected = expectedMatch?.[1] ?? '';
-  const detail = expected !== '' ? `${code} (${expected})` : code;
-  return path !== '' ? `${path}: ${detail}` : detail;
-}
-
-function describePluginLoadError(
-  error: unknown,
-  locale: Locale,
-  serverDataText: string,
-  unknownErrorText: string,
-): SanitizedPluginError {
-  if (
-    typeof error === 'object'
-    && error !== null
-    && (error as { name?: unknown }).name === 'ZodError'
-    && Array.isArray((error as { issues?: unknown }).issues)
-  ) {
-    return {
-      summary: serverDataText,
-      diagnostic: formatZodIssues((error as { issues: readonly unknown[] }).issues),
-    };
-  }
-  if (error instanceof SyntaxError) {
-    return { summary: serverDataText, diagnostic: 'SyntaxError' };
-  }
-  const rawMessage = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-  if (ZOD_ISSUE_SHAPE.test(rawMessage)) {
-    return {
-      summary: serverDataText,
-      diagnostic: extractStringifiedZodDiagnostic(rawMessage),
-    };
-  }
-  const localized = errorText(locale, error);
-  if (ZOD_ISSUE_SHAPE.test(localized) || /^[\[{]\s*"/.test(localized.trim())) {
-    return {
-      summary: serverDataText,
-      diagnostic: extractStringifiedZodDiagnostic(rawMessage || localized),
-    };
-  }
-  const cleaned = sanitizeText(localized);
-  const summary = cleaned === ''
-    ? unknownErrorText
-    : cleaned.length > 140
-      ? `${cleaned.slice(0, 137)}…`
-      : cleaned;
-  const code = typeof error === 'object' && error !== null && typeof (error as { code?: unknown }).code === 'number'
-    ? (error as { code: number }).code
-    : undefined;
-  const diagnostic = code !== undefined
-    ? `code ${code}`
-    : cleaned.length > 140
-      ? cleaned.slice(0, 280)
-      : undefined;
-  return { summary, diagnostic };
-}
 
 function findScrollContainer(anchor: HTMLElement | null): HTMLElement | null {
   if (anchor === null) return null;
@@ -332,9 +207,6 @@ export function PluginsView({
   const shelves = shelveCatalog(entries, activeQuery, relevant);
   const enabledCount = installed.filter((plugin) => plugin.enabled).length;
   const attention = installed.filter((plugin) => plugin.state === 'error' || plugin.hasErrors || updates.has(plugin.id)).length;
-  const installedFailure = installedQuery.isError
-    ? describePluginLoadError(installedQuery.error, locale, t('err.serverData'), t('common.unknownError'))
-    : undefined;
   const marketFailure = marketQuery.isError
     ? describePluginLoadError(marketQuery.error, locale, t('err.serverData'), t('common.unknownError'))
     : undefined;
@@ -404,15 +276,7 @@ export function PluginsView({
         ) : null}
       </div>
 
-      {tab === 'installed' && installedFailure !== undefined && !inSettings ? (
-        <PluginLoadFailure
-          dataAttr="data-plugins-installed-error"
-          summary={t('st.plugins.loadFailed', { detail: installedFailure.summary })}
-          diagnostic={installedFailure.diagnostic}
-          retrying={installedQuery.isFetching}
-          onRetry={() => { void installedQuery.refetch(); }}
-        />
-      ) : tab === 'installed' && !installedQuery.isPending && !installedQuery.isError && installed.length === 0 ? (
+      {tab === 'installed' && !installedQuery.isPending && !installedQuery.isError && installed.length === 0 ? (
         <div data-plugins-installed-empty className="space-y-2">
           <p className="text-[13px] text-ink-soft">{t('cap.installed.empty')}</p>
           <div className="flex flex-wrap items-center gap-2">
@@ -528,57 +392,6 @@ export function PluginsView({
         </>
       )}
       {sheets}
-    </div>
-  );
-}
-
-function PluginLoadFailure({
-  dataAttr,
-  summary,
-  diagnostic,
-  retrying,
-  onRetry,
-}: {
-  readonly dataAttr: 'data-plugins-installed-error' | 'data-plugins-catalog-error';
-  readonly summary: string;
-  readonly diagnostic?: string;
-  readonly retrying: boolean;
-  readonly onRetry: () => void;
-}) {
-  const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  return (
-    <div
-      {...{ [dataAttr]: '' }}
-      className="space-y-2.5 border-l-2 border-danger/55 py-1 pl-3.5"
-    >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <p role="alert" className="min-w-0 flex-1 text-[13px] leading-5 text-ink">
-          {summary}
-        </p>
-        <button
-          type="button"
-          data-settings-retry
-          disabled={retrying}
-          onClick={onRetry}
-          className={`${SECONDARY_BUTTON} inline-flex shrink-0 items-center gap-1.5`}
-        >
-          {retrying ? <Spinner label={t('common.retry')} size={12} /> : null}
-          <span>{t('common.retry')}</span>
-        </button>
-      </div>
-      {diagnostic !== undefined ? (
-        <Disclosure
-          label={t('cap.detail.diagnostics')}
-          open={open}
-          onToggle={() => { setOpen((value) => !value); }}
-          dataAttrs={{ 'data-plugins-error-diagnostics': '' }}
-        >
-          <pre className="max-h-32 overflow-auto rounded-md bg-ink/[0.04] px-3 py-2 font-mono text-[11.5px] leading-5 whitespace-pre-wrap text-ink-soft">
-            {diagnostic}
-          </pre>
-        </Disclosure>
-      ) : null}
     </div>
   );
 }

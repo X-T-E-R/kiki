@@ -9,7 +9,7 @@
  * per workspace (the management plane addresses project layers by cwd).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
@@ -19,12 +19,9 @@ import { useI18n } from '../../i18n';
 import { toolDisplayName } from '../../lib/pluginCatalog';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, InlineError, type Feedback } from '../controls';
-import { McpConfigManager } from '../settings/McpConfigManager';
+import { McpConfigManager, type McpAddIntent } from '../settings/McpConfigManager';
 
-export interface McpAddIntent {
-  readonly id: number;
-  readonly kind: 'new' | 'assist';
-}
+export type { McpAddIntent };
 
 function pathKey(path: string): string | undefined {
   const windows = /^(?:[A-Za-z]:[\\/]|\\\\|\/\/)/.test(path);
@@ -60,18 +57,18 @@ export function findMcpWorkspace(cwd: string, workspaces: readonly WorkspaceCata
 
 export function McpView({
   cwd,
+  externalAddControls = false,
   addIntent,
   onConsumeAddIntent,
 }: {
   readonly cwd: string;
+  readonly externalAddControls?: boolean;
   readonly addIntent?: McpAddIntent;
   readonly onConsumeAddIntent?: (id: number) => void;
 }) {
   const { client, klient } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const containerRef = useRef<HTMLDivElement>(null);
-  const consumedIntentIdRef = useRef(0);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [trustBusy, setTrustBusy] = useState(false);
 
@@ -163,18 +160,8 @@ export function McpView({
     onRestart: restart,
   }), [restart, runtimeQuery.data?.servers, toolsByServer]);
 
-  useEffect(() => {
-    if (addIntent === undefined || addIntent.id === consumedIntentIdRef.current || configQuery.isLoading) return;
-    const selector = addIntent.kind === 'assist' ? '[data-mcp-ask-kiki]' : '[data-mcp-add]';
-    const button = containerRef.current?.querySelector<HTMLButtonElement>(selector);
-    if (button === null || button === undefined) return;
-    consumedIntentIdRef.current = addIntent.id;
-    if (!button.disabled) button.click();
-    onConsumeAddIntent?.(addIntent.id);
-  }, [addIntent, configQuery.isLoading, configQuery.data, onConsumeAddIntent]);
-
   return (
-    <div ref={containerRef} className="min-w-0 space-y-3" data-mcp-view>
+    <div className="min-w-0 space-y-3" data-mcp-view>
       {matchedWorkspace !== undefined && (trustQuery.data !== undefined || trustQuery.isError) ? (
         <div
           data-workspace-trust-strip
@@ -230,6 +217,9 @@ export function McpView({
         error={configQuery.error}
         onEcho={(servers) => { queryClient.setQueryData(['mcp-managed-servers', cwd], servers); }}
         runtime={runtime}
+        externalAddControls={externalAddControls}
+        addIntent={addIntent}
+        onConsumeAddIntent={onConsumeAddIntent}
       />
       <FeedbackLine feedback={feedback} />
     </div>

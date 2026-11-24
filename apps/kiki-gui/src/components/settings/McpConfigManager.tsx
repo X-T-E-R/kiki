@@ -141,6 +141,11 @@ function humanizeMcpError(raw: string, locale: string): string {
   return firstLine.replace(/\s+at\s+\S+.*$/, '').trim() || firstLine.trim();
 }
 
+export interface McpAddIntent {
+  readonly id: number;
+  readonly kind: 'new' | 'assist';
+}
+
 export function McpConfigManager({
   cwd,
   entries,
@@ -148,6 +153,9 @@ export function McpConfigManager({
   error,
   onEcho,
   runtime,
+  externalAddControls = false,
+  addIntent,
+  onConsumeAddIntent,
 }: {
   cwd: string;
   entries: readonly McpManagedServer[];
@@ -156,6 +164,11 @@ export function McpConfigManager({
   onEcho: (servers: readonly McpManagedServer[]) => void;
   /** Runtime status, tools and restart; absent → configuration only. */
   runtime?: McpRuntimeView;
+  /** When true (Capabilities page), header Add menu owns New server / Ask Kiki so inline toolbar/empty buttons are omitted. */
+  externalAddControls?: boolean;
+  /** Typed add intent from the host's unified Add menu (consumed once per id). */
+  addIntent?: McpAddIntent;
+  onConsumeAddIntent?: (id: number) => void;
 }) {
   const { klient, client, scopeId } = useConnection();
   const { t, tp, locale } = useI18n();
@@ -584,7 +597,32 @@ export function McpConfigManager({
     { id: 'name', label: t('st.list.sort.name'), compare: (a, b) => a.name.localeCompare(b.name) },
   ], [t]);
   // Attention leads in the default order; `useListView` keeps that stable.
-  const view = useListView({ listId: 'mcp-servers', items: attentionFirst, keyOf, textOf, filters, sorts });
+  const baseView = useListView({ listId: 'mcp-servers', items: attentionFirst, keyOf, textOf, filters, sorts });
+  const [shortQuery, setShortQuery] = useState('');
+  const view = useMemo(() => {
+    if (baseView.tools.search) return baseView;
+    const needles = shortQuery.trim().toLowerCase().split(/\s+/).filter((word) => word !== '');
+    const visible = needles.length === 0
+      ? baseView.visible
+      : baseView.visible.filter((entry) => {
+        const hay = textOf(entry).filter((part): part is string => part !== undefined && part !== '').join('\n').toLowerCase();
+        return needles.every((needle) => hay.includes(needle));
+      });
+    return {
+      ...baseView,
+      query: shortQuery,
+      setQuery: setShortQuery,
+      visible,
+      narrowed: baseView.narrowed || needles.length > 0,
+      clear: () => {
+        setShortQuery('');
+        baseView.clear();
+      },
+    };
+  }, [baseView, shortQuery, textOf]);
+  useEffect(() => {
+    if (baseView.tools.search && shortQuery !== '') setShortQuery('');
+  }, [baseView.tools.search, shortQuery]);
   const toolbarView = useMemo(() => ({
     ...view,
     tools: {
@@ -592,6 +630,47 @@ export function McpConfigManager({
       search: attentionFirst.length > 0,
     },
   }), [attentionFirst.length, view]);
+
+  const canAskKiki = !(askingKiki || saving || resetting) && (cwd !== '' || kikiFallbackWorkspace.resolved);
+
+  const triggerAskKiki = useCallback(() => {
+    if (!canAskKiki) return;
+    void askKiki({
+      skill: 'kiki-ops',
+      promptKey: 'st.mcp.askKiki.prompt',
+      // A path is not an address: the address travels in `location`, and
+      // this line is only so the user can read where Kiki will work.
+      context: cwd === '' ? undefined : t('st.mcp.askKiki.context', { target: cwd }),
+      // The management plane addresses project layers by cwd, so an MCP
+      // session must land in that directory. That path is the only
+      // identifier here; no form value ever rides along.
+      location: cwd === '' ? kikiFallbackWorkspace.location : { kind: 'cwd', cwd },
+    });
+  }, [askKiki, canAskKiki, cwd, kikiFallbackWorkspace.location, t]);
+
+  const consumedIntentIdRef = useRef(0);
+  useEffect(() => {
+    if (addIntent === undefined || addIntent.id === consumedIntentIdRef.current) return;
+    if (addIntent.kind === 'new') {
+      if (loading) return;
+      consumedIntentIdRef.current = addIntent.id;
+      onConsumeAddIntent?.(addIntent.id);
+      if (saving || resetting) return;
+      // Duplicate new-server click while a clean blank draft is already open: keep the single editor.
+      if (draft !== null && draft.original === undefined && !dirty) return;
+      if (dirty) {
+        if (guard?.confirmDiscard !== undefined) {
+          guard.confirmDiscard(`mcp-editor:${scopeId}:${cwd}`, () => { setDraft(mcpDraft()); });
+        }
+        return;
+      }
+      setDraft(mcpDraft());
+      return;
+    }
+    consumedIntentIdRef.current = addIntent.id;
+    onConsumeAddIntent?.(addIntent.id);
+    triggerAskKiki();
+  }, [addIntent, cwd, dirty, draft, guard, loading, onConsumeAddIntent, resetting, saving, scopeId, triggerAskKiki]);
 
   // One handoff element, rendered beside whichever add verb is on screen.
   const askKikiButton = (
@@ -602,19 +681,7 @@ export function McpConfigManager({
       // A cwd is known up front; without one the fallback must still resolve.
       disabled={cwd === '' && !kikiFallbackWorkspace.resolved}
       testId="data-mcp-ask-kiki"
-      onAsk={() => {
-        void askKiki({
-          skill: 'kiki-ops',
-          promptKey: 'st.mcp.askKiki.prompt',
-          // A path is not an address: the address travels in `location`, and
-          // this line is only so the user can read where Kiki will work.
-          context: cwd === '' ? undefined : t('st.mcp.askKiki.context', { target: cwd }),
-          // The management plane addresses project layers by cwd, so an MCP
-          // session must land in that directory. That path is the only
-          // identifier here; no form value ever rides along.
-          location: cwd === '' ? kikiFallbackWorkspace.location : { kind: 'cwd', cwd },
-        });
-      }}
+      onAsk={triggerAskKiki}
     />
   );
 
@@ -635,7 +702,7 @@ export function McpConfigManager({
       {entries.length > 0 ? (
         <ListToolbar view={toolbarView} total={entries.length} filters={filters} sorts={sorts}
           searchLabel={t('st.mcp.search')} searchPlaceholder={t('st.mcp.searchPlaceholder')}
-          actions={
+          actions={externalAddControls ? undefined : (
             // Both verbs that add a server, with the handoff beside whichever
             // one is on screen, so it is never a button floating on its own row.
             <>
@@ -650,7 +717,7 @@ export function McpConfigManager({
               </button>
               {askKikiButton}
             </>
-          } />
+          )} />
       ) : null}
       {/* Add and edit share one side panel: the list stays where it was. */}
       {draft !== null ? (
@@ -793,7 +860,7 @@ export function McpConfigManager({
       {!loading && entries.length === 0 && draft === null ? (
         <div data-capability-empty>
           <ListEmpty kind="none" title={t('st.mcp.empty')} body={t('st.mcp.emptyBody')}
-            action={
+            action={externalAddControls ? undefined : (
               <div className="flex flex-wrap items-center justify-center gap-2">
                 <button
                   type="button"
@@ -806,7 +873,7 @@ export function McpConfigManager({
                 </button>
                 {askKikiButton}
               </div>
-            } />
+            )} />
         </div>
       ) : null}
       {error !== null ? <InlineError error={error} /> : null}

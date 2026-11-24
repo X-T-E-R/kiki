@@ -252,7 +252,32 @@ function SkillsViewInner({
     }));
   }, [allSkills, t]);
 
-  const view = useListView({ listId: 'cap-skills', items: allSkills, keyOf, textOf, filters });
+  const baseView = useListView({ listId: 'cap-skills', items: allSkills, keyOf, textOf, filters });
+  const [shortQuery, setShortQuery] = useState('');
+  const view = useMemo(() => {
+    if (baseView.tools.search) return baseView;
+    const needles = shortQuery.trim().toLowerCase().split(/\s+/).filter((word) => word !== '');
+    const visible = needles.length === 0
+      ? baseView.visible
+      : baseView.visible.filter((skill) => {
+        const hay = textOf(skill).filter((part): part is string => part !== undefined && part !== '').join('\n').toLowerCase();
+        return needles.every((needle) => hay.includes(needle));
+      });
+    return {
+      ...baseView,
+      query: shortQuery,
+      setQuery: setShortQuery,
+      visible,
+      narrowed: baseView.narrowed || needles.length > 0,
+      clear: () => {
+        setShortQuery('');
+        baseView.clear();
+      },
+    };
+  }, [baseView, shortQuery]);
+  useEffect(() => {
+    if (baseView.tools.search && shortQuery !== '') setShortQuery('');
+  }, [baseView.tools.search, shortQuery]);
   const toolbarView = useMemo(() => ({
     ...view,
     tools: {

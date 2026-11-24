@@ -234,6 +234,8 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
     void queryClient.invalidateQueries({ queryKey: ['tools'] });
   };
 
+  const mcpAssistDisabled = (workspace?.root ?? '') === '' && !workspacesQuery.isSuccess;
+
   const addControl = (
     <div className="relative">
       <button
@@ -251,6 +253,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
       {addMenu ? (
         <AddMenu
           anchor={addTriggerRef}
+          mcpAssistDisabled={mcpAssistDisabled}
           onClose={() => { setAddMenu(false); }}
           onPick={(kind) => {
             setAddMenu(false);
@@ -260,6 +263,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
               setSkillsSourcesRequest((count) => count + 1);
             }
             if (kind === 'mcp' || kind === 'mcp-assist') {
+              if (kind === 'mcp-assist' && mcpAssistDisabled) return;
               intentSeqRef.current += 1;
               setTab('mcp');
               setMcpAddIntent({ id: intentSeqRef.current, kind: kind === 'mcp-assist' ? 'assist' : 'new' });
@@ -345,6 +349,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
                 workspaceId={workspaceId}
                 workspaceRoot={workspace?.root}
                 skillsSourcesRequest={skillsSourcesRequest}
+                externalMcpAddControls
                 mcpAddIntent={mcpAddIntent}
                 onConsumeMcpAddIntent={consumeMcpAddIntent}
                 onOpenPanel={openPanel}
@@ -393,6 +398,7 @@ export function CapabilityTabBody({
   workspaceId,
   workspaceRoot,
   skillsSourcesRequest,
+  externalMcpAddControls = false,
   mcpAddIntent,
   onConsumeMcpAddIntent,
   onOpenPanel,
@@ -407,6 +413,7 @@ export function CapabilityTabBody({
   readonly workspaceId: string;
   readonly workspaceRoot?: string;
   readonly skillsSourcesRequest?: number;
+  readonly externalMcpAddControls?: boolean;
   readonly mcpAddIntent?: McpAddIntent;
   readonly onConsumeMcpAddIntent?: (id: number) => void;
   readonly onOpenPanel?: (pluginId: string, panelId: string) => void;
@@ -421,14 +428,24 @@ export function CapabilityTabBody({
 }) {
   if (tab === 'plugins') return <PluginsView route={route} onRoute={onRoute} workspaceRoot={workspaceRoot} onOpenPanel={onOpenPanel} onOpenImportHistory={onOpenImportHistory} sessionId={sessionId} onOpenSettings={onOpenSettings} />;
   if (tab === 'skills') return <SkillsView workspaceId={workspaceId} onOpenPlugin={onOpenPlugin} openSourcesRequest={skillsSourcesRequest} />;
-  if (tab === 'mcp') return <McpView cwd={workspaceRoot ?? ''} addIntent={mcpAddIntent} onConsumeAddIntent={onConsumeMcpAddIntent} />;
+  if (tab === 'mcp') {
+    return (
+      <McpView
+        cwd={workspaceRoot ?? ''}
+        externalAddControls={externalMcpAddControls}
+        addIntent={mcpAddIntent}
+        onConsumeAddIntent={onConsumeMcpAddIntent}
+      />
+    );
+  }
   return <ToolsView />;
 }
 
 type AddMenuKind = 'plugin' | 'skill' | 'mcp' | 'mcp-assist';
 
-function AddMenu({ anchor, onClose, onPick }: {
+function AddMenu({ anchor, mcpAssistDisabled, onClose, onPick }: {
   readonly anchor: React.RefObject<HTMLButtonElement | null>;
+  readonly mcpAssistDisabled?: boolean;
   readonly onClose: () => void;
   readonly onPick: (kind: AddMenuKind) => void;
 }) {
@@ -458,11 +475,11 @@ function AddMenu({ anchor, onClose, onPick }: {
       window.removeEventListener('mousedown', onDown);
     };
   }, [anchor, onClose]);
-  const items: readonly { kind: AddMenuKind; label: string; hint: string }[] = [
+  const items: readonly { kind: AddMenuKind; label: string; hint: string; disabled?: boolean }[] = [
     { kind: 'plugin', label: t('cap.add.plugin'), hint: t('cap.add.pluginHint') },
     { kind: 'skill', label: t('st.caps.addDir'), hint: t('st.caps.sourcesButton') },
     { kind: 'mcp', label: t('cap.add.mcp'), hint: t('cap.add.mcpHint') },
-    { kind: 'mcp-assist', label: t('st.mcp.askKiki'), hint: t('st.mcp.askKikiAria') },
+    { kind: 'mcp-assist', label: t('st.mcp.askKiki'), hint: t('st.mcp.askKikiAria'), disabled: mcpAssistDisabled === true },
   ];
   const onMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const buttons = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []);
@@ -522,9 +539,12 @@ function AddMenu({ anchor, onClose, onPick }: {
                 key={item.kind}
                 type="button"
                 role="menuitem"
+                disabled={item.disabled}
                 data-capabilities-add-item={item.kind}
+                data-mcp-add={item.kind === 'mcp' ? '' : undefined}
+                data-mcp-ask-kiki={item.kind === 'mcp-assist' ? '' : undefined}
                 onClick={() => { onPick(item.kind); }}
-                className="flex min-h-10 w-full flex-col items-start justify-center rounded-lg px-3 py-2 text-left transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                className="flex min-h-10 w-full flex-col items-start justify-center rounded-lg px-3 py-2 text-left transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent pointer-coarse:min-h-11"
               >
                 <span className="text-[13px] text-ink">{item.label}</span>
                 <span className="text-[12px] leading-4 text-ink-faint">{item.hint}</span>

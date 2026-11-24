@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { McpManagedServer } from '@kiki/session-core/transport';
 import { readDraft, resetDraftMemoryForTests, writeDraft } from '@kiki/session-core/composer';
 import { I18nProvider } from '../../i18n';
-import { McpConfigManager } from './McpConfigManager';
+import { McpConfigManager, type McpAddIntent, type McpRuntimeView } from './McpConfigManager';
 import { pickOption } from './testControls';
 
 const mcp = vi.hoisted(() => ({
@@ -613,6 +613,142 @@ describe('handing MCP configuration to Kiki', () => {
     await click(ask);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
+    expect(createSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('Capabilities atomic cutover (externalAddControls, typed addIntent, and runtime/transport search)', () => {
+  async function renderControlled(opts: {
+    entries?: readonly McpManagedServer[];
+    cwd?: string;
+    runtime?: McpRuntimeView;
+    externalAddControls?: boolean;
+    addIntent?: McpAddIntent;
+    onConsumeAddIntent?: (id: number) => void;
+  }) {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const renderWith = async (next: typeof opts) => {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <MemoryRouter>
+                <McpConfigManager
+                  cwd={next.cwd ?? '/tmp/fixture'}
+                  entries={next.entries ?? [remote, readOnly]}
+                  loading={false}
+                  error={null}
+                  onEcho={vi.fn()}
+                  runtime={next.runtime}
+                  externalAddControls={next.externalAddControls ?? true}
+                  addIntent={next.addIntent}
+                  onConsumeAddIntent={next.onConsumeAddIntent}
+                />
+              </MemoryRouter>
+            </I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+    };
+    await renderWith(opts);
+    return { body: document.body as HTMLDivElement, rerender: renderWith };
+  }
+
+  it('preserves runtime tool name and transport search via toolbarView', async () => {
+    const runtime: McpRuntimeView = {
+      servers: [
+        { id: 'remote', name: 'remote', transport: 'http', status: 'connected', tool_count: 2 },
+        { id: 'plugin-remote', name: 'plugin-remote', transport: 'sse', status: 'connected', tool_count: 1 },
+      ],
+      toolsByServer: new Map([
+        ['remote', ['query_metrics', 'tail_logs']],
+        ['plugin-remote', ['fetch_docs']],
+      ]),
+      onRestart: vi.fn(),
+    };
+    const { body } = await renderControlled({ runtime, externalAddControls: true });
+
+    const search = body.querySelector<HTMLInputElement>('[data-mcp-manager] input[type="search"]')!;
+    expect(search).not.toBeNull();
+    expect(body.querySelector('[data-mcp-manager] [data-mcp-add]')).toBeNull();
+    expect(body.querySelector('[data-mcp-manager] [data-mcp-ask-kiki]')).toBeNull();
+
+    await change(search, 'tail_logs');
+    expect([...body.querySelectorAll('[data-mcp-server]')].map((el) => el.getAttribute('data-mcp-server'))).toEqual(['remote']);
+
+    await change(search, 'sse');
+    expect([...body.querySelectorAll('[data-mcp-server]')].map((el) => el.getAttribute('data-mcp-server'))).toEqual(['plugin-remote']);
+  });
+
+  it('omits inline empty-state add buttons in externalAddControls mode while keeping standalone Settings buttons', async () => {
+    const { body } = await renderControlled({ entries: [], externalAddControls: true });
+    expect(body.querySelector('[data-capability-empty]')).not.toBeNull();
+    expect(body.querySelector('[data-mcp-manager] [data-mcp-add]')).toBeNull();
+    expect(body.querySelector('[data-mcp-manager] [data-mcp-ask-kiki]')).toBeNull();
+  });
+
+  it('consumes typed new intent once, handles duplicate clicks, and protects unsaved drafts', async () => {
+    const onConsume = vi.fn();
+    const { body, rerender } = await renderControlled({ onConsumeAddIntent: onConsume });
+
+    await rerender({ onConsumeAddIntent: onConsume, addIntent: { id: 1, kind: 'new' } });
+    expect(onConsume).toHaveBeenCalledWith(1);
+    expect(body.querySelectorAll('[data-mcp-editor]').length).toBe(1);
+
+    // Duplicate new click while clean blank draft is open keeps the single editor open.
+    await rerender({ onConsumeAddIntent: onConsume, addIntent: { id: 2, kind: 'new' } });
+    expect(onConsume).toHaveBeenCalledWith(2);
+    expect(body.querySelectorAll('[data-mcp-editor]').length).toBe(1);
+
+    // Unsaved draft is never silently overwritten by another new intent.
+    const nameInput = body.querySelector<HTMLInputElement>('[data-mcp-editor] input')!;
+    await change(nameInput, 'my-unsaved-server');
+    await rerender({ onConsumeAddIntent: onConsume, addIntent: { id: 3, kind: 'new' } });
+    expect(onConsume).toHaveBeenCalledWith(3);
+    expect(body.querySelector<HTMLInputElement>('[data-mcp-editor] input')!.value).toBe('my-unsaved-server');
+  });
+
+  it('handles typed assist intent with zero secrets, unsaved-draft preservation, duplicate-click guard, and missing-scope refusal', async () => {
+    let resolveSession!: (value: { id: string }) => void;
+    createSession.mockImplementationOnce(() => new Promise((resolve) => { resolveSession = resolve; }));
+    const onConsume = vi.fn();
+    const { body, rerender } = await renderControlled({ entries: [envRemote, readOnly], onConsumeAddIntent: onConsume });
+
+    // Open and dirty a draft first so assist must preserve it.
+    await rerender({ entries: [envRemote, readOnly], onConsumeAddIntent: onConsume, addIntent: { id: 1, kind: 'new' } });
+    await change(body.querySelector<HTMLInputElement>('[data-mcp-editor] input')!, 'draft-kept');
+
+    // Fire two assist intents while the first session creation is in flight.
+    await rerender({ entries: [envRemote, readOnly], onConsumeAddIntent: onConsume, addIntent: { id: 2, kind: 'assist' } });
+    await rerender({ entries: [envRemote, readOnly], onConsumeAddIntent: onConsume, addIntent: { id: 3, kind: 'assist' } });
+    expect(createSession).toHaveBeenCalledTimes(1);
+    expect(createSession).toHaveBeenCalledWith({ metadata: { cwd: '/tmp/fixture' } });
+
+    await act(async () => {
+      resolveSession({ id: 'mcp-assist-typed' });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const draft = readDraft('mcp-assist-typed');
+    expect(draft).toMatch(/^\/kiki-ops /);
+    expect(draft).toContain('Configuration goes to: /tmp/fixture');
+    expect(draft).not.toContain('MCP_TOKEN');
+    expect(draft).not.toContain('fixture=old');
+    expect(body.querySelector<HTMLInputElement>('[data-mcp-editor] input')!.value).toBe('draft-kept');
+
+    // Missing scope / failed workspace catalog refuses to create a session.
+    createSession.mockReset();
+    listWorkspaces.mockRejectedValue(new Error('list unavailable'));
+    listWorkspaceCatalog.mockRejectedValue(new Error('list unavailable'));
+    const failConsume = vi.fn();
+    const { rerender: rerenderNoScope } = await renderControlled({ cwd: '', onConsumeAddIntent: failConsume });
+    await rerenderNoScope({ cwd: '', onConsumeAddIntent: failConsume, addIntent: { id: 4, kind: 'assist' } });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(failConsume).toHaveBeenCalledWith(4);
     expect(createSession).not.toHaveBeenCalled();
   });
 });
