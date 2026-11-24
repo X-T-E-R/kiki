@@ -434,7 +434,7 @@ describe('ThreadCommunicationService', () => {
       const active = await prompts.enqueue({ id: 'original-task', message: { role: 'user', content: [{ type: 'text', text: 'Original work' }], toolCalls: [], origin: { kind: 'user' } } });
       await active.launched;
       const receipt = await service.sendRoomMessage({ target, roomId: 'room-example', content: 'Review the room contract', idempotencyKey: 'room-test', targeted: true, queueWhenBusy, requireCommunication: true });
-      expect(resume).toHaveBeenCalledWith('target');
+      expect(resume).toHaveBeenCalledWith('target', { priority: 'background' });
       expect(receipt.delivery).toBe('pending');
       expect(prompts.list().active?.id).toBe('original-task');
       expect(prompts.list().pending.map((item) => item.id)).toContain(receipt.messageId);
@@ -749,7 +749,7 @@ describe('ThreadCommunicationService', () => {
     const normalResume = resume.getMockImplementation()!;
     resume.mockImplementation((id, ...rest) => id === 'source' ? new Promise(() => {}) : normalResume(id, ...rest));
     await expect(service.listThreads()).resolves.toMatchObject({ threads: expect.any(Array) });
-    await vi.waitFor(() => { expect(resume).toHaveBeenCalledWith('source'); });
+    await vi.waitFor(() => { expect(resume).toHaveBeenCalledWith('source', { priority: 'background' }); });
     await expect(service.readThread({ thread: target })).resolves.toMatchObject({ turns: [] });
     await expect(service.sendMessage({ target, content: 'new', idempotencyKey: 'new', deliveryTimeoutMs: 30 }))
       .resolves.toMatchObject({ delivery: 'delivered' });
@@ -922,7 +922,7 @@ describe('ThreadCommunicationService', () => {
         },
       }),
     });
-    expect(resume).toHaveBeenCalledWith('target');
+    expect(resume).toHaveBeenCalledWith('target', { priority: 'background' });
   });
 
   it('steers a queued message into the running target turn and acks it', async () => {

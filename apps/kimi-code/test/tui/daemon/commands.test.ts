@@ -152,7 +152,7 @@ describe('daemon command registry', () => {
       expect(entry?.argumentHint).toBe(command.argumentHint);
     }
     expect(entries.find((entry) => entry.name === 'undo')).toMatchObject({
-      aliases: [],
+      aliases: ['rewind'],
       argumentHint: undefined,
       disabled: false,
     });
