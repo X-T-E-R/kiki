@@ -19,7 +19,7 @@ import {
 import { FeedbackLine, type Feedback } from '../../controls';
 import { DisclosureChevron, Icon } from '../../icons';
 import { engineQuotaSourceOf } from '../../settings/ExternalEnginesSection';
-import { QuotaCalibrationDial, QuotaMiniArc, resolveQuotaArcStroke } from './QuotaArcGauge';
+import { QuotaCalibrationDial, QuotaFuelMicroBar, resolveQuotaArcStroke } from './QuotaArcGauge';
 import {
   computeRemainingPace,
   meterPrimaryReading,
@@ -853,7 +853,7 @@ export function QuotaOverviewDials({
                 className="flex min-h-11 w-full items-center justify-between gap-3 py-2 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink"
               >
                 <div className="flex min-w-0 items-center gap-2.5">
-                  <QuotaMiniArc remainingPercent={pct} pace={pace} size={32} />
+                  <QuotaFuelMicroBar remainingPercent={pct} pace={pace} width={56} />
                   <div className="min-w-0">
                     <div className="flex items-baseline gap-2">
                       <span className="truncate font-sans tracking-normal text-[12.5px] font-[550] text-ink">

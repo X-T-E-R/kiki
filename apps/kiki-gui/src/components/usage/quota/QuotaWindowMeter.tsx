@@ -11,7 +11,7 @@ import {
   type ProviderQuotaMeter,
   type ProviderQuotaStatus,
 } from '../../../lib/providerQuota';
-import { QuotaMiniArc } from './QuotaArcGauge';
+import { QuotaFuelMicroBar } from './QuotaArcGauge';
 import {
   computeRemainingPace,
   formatPaceEta,
@@ -100,17 +100,17 @@ export function QuotaWindowMeter({
       title={display.hoverDetail ?? normalizedLabel.rawTitle}
     >
       <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2.5">
           {!dialRepresented && display.showBar && pctRaw !== undefined ? (
-            <QuotaMiniArc
+            <QuotaFuelMicroBar
               remainingPercent={pctRaw}
               pace={pace}
               muted={muted}
-              size={30}
+              width={72}
               dataAttr="data-quota-progress"
             />
           ) : !dialRepresented && display.unknown ? (
-            <QuotaMiniArc unknown size={30} />
+            <QuotaFuelMicroBar unknown width={72} />
           ) : dialRepresented && display.showBar && pctRaw !== undefined ? (
             <span
               data-quota-progress

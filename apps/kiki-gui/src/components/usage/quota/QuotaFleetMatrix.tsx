@@ -13,7 +13,7 @@ import {
 } from '../../../lib/providerQuota';
 import { DisclosureChevron } from '../../icons';
 import { AnchoredPopover, usePopover } from '../../overlays/AnchoredPopover';
-import { QuotaMiniArc } from './QuotaArcGauge';
+import { QuotaFuelMicroBar } from './QuotaArcGauge';
 import {
   classifySeatHealth,
   computeRemainingPace,
@@ -408,47 +408,45 @@ export function PluginQuotaBucketCell({
       data-reading-read-at={distinctReadAt}
       title={mutedSkipped ? t('usage.quota.seatExhaustedSkipped') : undefined}
     >
+      <div className={`font-sans tracking-normal text-[11px] text-[var(--kiki-chart-label)] ${showPoolLabel === 'mobileOnly' ? 'md:hidden' : ''}`}>
+        <span className="truncate" title={poolLabel}>{poolLabel}</span>
+        {reading.window ? <span className="text-[var(--kiki-chart-muted)]" data-bucket-window> · {reading.window}</span> : null}
+      </div>
+
       <div className="flex items-center gap-2.5">
         {remainingPct !== undefined ? (
-          <QuotaMiniArc
+          <QuotaFuelMicroBar
             remainingPercent={remainingPct}
             pace={pace}
             muted={mutedSkipped}
-            size={34}
+            width={64}
             dataAttr="data-bucket-progress"
           />
         ) : val.kind === 'unknown' || alignTrack ? (
-          <QuotaMiniArc unknown size={34} />
+          <QuotaFuelMicroBar unknown width={64} />
         ) : null}
 
-        <div className="min-w-0 flex-1 space-y-0.5">
-          <div className={`font-sans tracking-normal text-[11px] text-[var(--kiki-chart-label)] ${showPoolLabel === 'mobileOnly' ? 'md:hidden' : ''}`}>
-            <span className="truncate" title={poolLabel}>{poolLabel}</span>
-            {reading.window ? <span className="text-[var(--kiki-chart-muted)]" data-bucket-window> · {reading.window}</span> : null}
-          </div>
-
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 tabular-nums">
-            {val.kind === 'unknown' ? (
-              <span className="font-sans tracking-normal text-[12px] text-[var(--kiki-chart-muted)]" data-reading-state="unknown">
-                {t('usage.quota.status.unknown')}
-              </span>
-            ) : (
-              <span
-                className={`text-[13px] ${valueTone}`}
-                data-reading-state={val.exhausted ? 'exhausted' : 'available'}
-              >
-                {val.value}
-              </span>
-            )}
-            {resetShort !== undefined && reading.resetAt ? (
-              <span
-                className="text-[11px] text-[var(--kiki-chart-muted)]"
-                title={resetFull ? t('usage.quota.stripReset', { time: resetFull }) : reading.resetAt}
-              >
-                {resetShort}
-              </span>
-            ) : null}
-          </div>
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 tabular-nums">
+          {val.kind === 'unknown' ? (
+            <span className="font-sans tracking-normal text-[12px] text-[var(--kiki-chart-muted)]" data-reading-state="unknown">
+              {t('usage.quota.status.unknown')}
+            </span>
+          ) : (
+            <span
+              className={`text-[13px] ${valueTone}`}
+              data-reading-state={val.exhausted ? 'exhausted' : 'available'}
+            >
+              {val.value}
+            </span>
+          )}
+          {resetShort !== undefined && reading.resetAt ? (
+            <span
+              className="text-[11px] text-[var(--kiki-chart-muted)]"
+              title={resetFull ? t('usage.quota.stripReset', { time: resetFull }) : reading.resetAt}
+            >
+              {resetShort}
+            </span>
+          ) : null}
         </div>
       </div>
 

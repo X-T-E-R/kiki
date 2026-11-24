@@ -10,6 +10,7 @@ import {
   groupHarnessQuotaReadings,
   isSourceLocked,
   pluginQuotaSnapshotStatus,
+  quotaFuelTier,
   quotaSettingsHref,
   type HarnessQuotaActionDeclaration,
   type HarnessQuotaActionId,
@@ -21,7 +22,6 @@ import { FeedbackLine, type Feedback } from '../../controls';
 import { DisclosureChevron, Icon } from '../../icons';
 import { SearchableSelect } from '../../SearchableSelect';
 import { engineHealth, engineQuotaSourceOf, type EngineHealth } from '../../settings/ExternalEnginesSection';
-import { QuotaMiniArc } from './QuotaArcGauge';
 import { computeRemainingPace, summarizePoolHealth } from './quotaModel';
 import { PluginAccountsMatrix, SingleAccountPluginRow } from './QuotaFleetMatrix';
 import { QUOTA_ICON_BUTTON, QUOTA_ROW_GRID, QUOTA_SMALL_BUTTON } from './QuotaSourceRow';
@@ -595,7 +595,7 @@ function FleetPoolSummaryRow({
       data-quota-fleet-summary={engineId}
       aria-expanded={expanded}
       onClick={onToggle}
-      className={`grid w-full gap-x-5 gap-y-2 rounded-md py-0.5 text-left transition-colors hover:bg-ink/[0.025] focus-visible:outline-2 focus-visible:outline-selected-ink ${colsClass}`}
+      className={`grid w-full gap-x-5 gap-y-1.5 rounded-md py-1 text-left transition-colors hover:bg-ink/[0.025] focus-visible:outline-2 focus-visible:outline-selected-ink ${colsClass}`}
     >
       {pools.map((pool) => {
         const pct = pool.tightestPercent;
@@ -608,43 +608,55 @@ function FleetPoolSummaryRow({
               nowMs,
             })
           : null;
+        const tier = pct !== undefined ? quotaFuelTier(pct) : undefined;
+        const isCritical =
+          pool.allExhausted ||
+          (pct !== undefined && (pct <= 15 || tier === 'critical')) ||
+          pace?.state === 'depleting';
+        const isWarn = !isCritical && (tier === 'low' || pace?.state === 'fast');
         const tone = pct === undefined
           ? 'text-[var(--kiki-chart-muted)]'
-          : pool.allExhausted || pct <= 5 || pace?.state === 'depleting'
-            ? 'font-semibold text-ink'
-            : 'font-medium text-ink';
+          : isCritical
+            ? 'font-semibold text-[var(--kiki-chart-danger-text)]'
+            : isWarn
+              ? 'font-semibold text-[var(--kiki-chart-warn-text)]'
+              : 'font-semibold text-ink';
+        const dotColor = isCritical
+          ? 'var(--kiki-chart-danger)'
+          : isWarn
+            ? 'var(--kiki-chart-3)'
+            : undefined;
         const resetFull = formatQuotaResetDuration(pool.tightestResetAt, locale);
         return (
-          <div key={pool.key} className="flex min-w-0 items-center gap-2.5 text-[12px]">
-            {pct !== undefined ? (
-              <QuotaMiniArc
-                remainingPercent={pct}
-                pace={pace}
-                size={30}
-                dataAttr="data-bucket-progress"
-              />
-            ) : pool.fallbackValue === undefined ? (
-              <QuotaMiniArc unknown size={30} />
-            ) : null}
-            <div className="min-w-0 flex-1 space-y-0.5">
-              <div className="truncate font-sans tracking-normal text-[11px] text-[var(--kiki-chart-label)]">
-                {pool.label}
-                {pool.window ? <span className="text-[var(--kiki-chart-muted)]"> · {pool.window}</span> : null}
-              </div>
-              <div className="flex items-baseline gap-1.5 tabular-nums">
-                <span className={`text-[12.5px] ${tone}`}>
-                  {pct !== undefined ? `${formatQuotaPercentNumber(pct)}%` : (pool.fallbackValue ?? t('usage.quota.status.unknown'))}
+          <div
+            key={pool.key}
+            data-bucket-progress={pct !== undefined ? true : undefined}
+            className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px]"
+          >
+            <span className="inline-flex min-w-0 items-center gap-1.5 font-sans tracking-normal text-[11.5px] text-[var(--kiki-chart-label)]">
+              {dotColor !== undefined ? (
+                <span
+                  aria-hidden
+                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: dotColor }}
+                />
+              ) : null}
+              <span className="truncate" title={pool.label}>{pool.label}</span>
+              {pool.window ? <span className="shrink-0 text-[var(--kiki-chart-muted)]">· {pool.window}</span> : null}
+            </span>
+            <span className="inline-flex shrink-0 items-baseline gap-1.5 tabular-nums">
+              <span className={`text-[12.5px] ${tone}`}>
+                {pct !== undefined ? `${formatQuotaPercentNumber(pct)}%` : (pool.fallbackValue ?? t('usage.quota.status.unknown'))}
+              </span>
+              {pool.tightestResetShort !== undefined ? (
+                <span
+                  className="text-[11px] text-[var(--kiki-chart-muted)]"
+                  title={resetFull ? t('usage.quota.stripReset', { time: resetFull }) : pool.tightestResetAt}
+                >
+                  {pool.tightestResetShort}
                 </span>
-                {pool.tightestResetShort !== undefined ? (
-                  <span
-                    className="text-[10.5px] text-[var(--kiki-chart-muted)]"
-                    title={resetFull ? t('usage.quota.stripReset', { time: resetFull }) : pool.tightestResetAt}
-                  >
-                    {pool.tightestResetShort}
-                  </span>
-                ) : null}
-              </div>
-            </div>
+              ) : null}
+            </span>
           </div>
         );
       })}
