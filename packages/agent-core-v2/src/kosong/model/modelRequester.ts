@@ -1,7 +1,10 @@
 import type { ImageURLPart, Message, StreamedMessagePart, VideoURLPart } from '#/kosong/contract/message';
 import type { LLMStreamTapObserver, PreBaselineRequestPatch } from '#/kosong/contract/extensionHooks';
 import type {
+  AnthropicProvenBreakpoint,
+  AnthropicThreadDisposition,
   FinishReason,
+  ProviderCacheEvidence,
   ResponseFormat,
   RequestParams,
   SamplingOptions,
@@ -77,6 +80,12 @@ export interface ModelRequestParams {
   readonly responsesTransport?: ResponsesRequestTransport;
   /** Resolves the live agent-owned transport after admission, once per send attempt. A callback returning undefined selects HTTP instead of responsesTransport; omitting the callback preserves the direct transport. */
   readonly resolveResponsesTransport?: () => ResponsesTransportSelection | undefined;
+  readonly forceFullResponsesInput?: boolean;
+  readonly responsesAuxiliaryNonCommitting?: boolean;
+  readonly inheritedAnthropicBreakpoints?: readonly AnthropicProvenBreakpoint[];
+  readonly anthropicThreadDisposition?: AnthropicThreadDisposition;
+  readonly anthropicThinkingBudgetOverride?: number;
+  readonly onProviderCacheEvidence?: (evidence: ProviderCacheEvidence) => void;
   readonly attribution?: RequestAttribution;
   readonly retry?: 'never';
   readonly unmarkedOpaquePolicy?: import('./reasoningOrigin').UnmarkedOpaqueReasoningPolicy;

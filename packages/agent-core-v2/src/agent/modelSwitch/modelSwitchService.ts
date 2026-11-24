@@ -151,7 +151,20 @@ export class AgentModelSwitchService extends Disposable implements IAgentModelSw
         if (budget <= 0) throw new Error2(ErrorCodes.CONTEXT_OVERFLOW, 'The target model cannot fit its system prompt, tools and reserved output space.');
       }
       const summary = active.input.mode === 'compact'
-        ? await this.compaction.prepareModelSwitchSummary(history, signal, options.onSummarizing === undefined ? undefined : () => options.onSummarizing!(active.receipt))
+        ? typeof this.compaction.prepareSummary === 'function'
+          ? await this.compaction.prepareSummary({
+              authorizedHistory: history,
+              compactCount: history.length,
+              disposition: 'model_switch',
+              scope: {
+                sessionId: this.session.sessionId,
+                agentId: this.scope.agentId,
+                windowEpoch: oldEpoch,
+                allowSourceCacheEnvelope: true,
+              },
+              onSummarizing: options.onSummarizing === undefined ? undefined : () => options.onSummarizing!(active.receipt),
+            }, signal)
+          : await this.compaction.prepareModelSwitchSummary(history, signal, options.onSummarizing === undefined ? undefined : () => options.onSummarizing!(active.receipt))
         : undefined;
       signal.throwIfAborted();
       let messages: readonly ContextMessage[] | undefined;

@@ -10,6 +10,12 @@ import {
   REQUIRED_ORCHESTRATOR_TOOLS,
 } from './twin/chained-workload.mjs';
 import { streamPacedAnthropicResponse } from './twin/stream-writer.mjs';
+import {
+  CompactionCacheOracle,
+  inspectAnthropicBreakpoints,
+  validateAnthropicThinkingBudget,
+} from './twin/compaction-cache-oracle.mjs';
+import { createTwinProtocolExtension } from './twin/compaction-twin-protocols.mjs';
 
 const ANTHROPIC_THREADS_BETA = 'message-threads-2026-08-12';
 const MAX_CACHE_CONTROL_BREAKPOINTS = 4;
@@ -687,6 +693,18 @@ export async function createContractTwinServer(options = {}) {
   };
 
   let msgSeq = 0;
+  const cacheOracle = new CompactionCacheOracle();
+  const consumedThreads = new Set();
+  const protocolExt = createTwinProtocolExtension({
+    cacheOracle,
+    recordViolation,
+    counters,
+    sendJson,
+    nextSeq: () => {
+      msgSeq += 1;
+      return msgSeq;
+    },
+  });
 
   function recordToolIssued(name, id) {
     counters.toolCallsIssued += 1;
@@ -856,7 +874,8 @@ export async function createContractTwinServer(options = {}) {
     res.end();
   }
 
-  async function sendAnthropicSuccess(res, req, { model, replyText, messageId, stream, barrierId, streamHoldMs = 0 }) {
+  async function sendAnthropicSuccess(res, req, { model, replyText, messageId, stream, barrierId, streamHoldMs = 0, usage = null }) {
+    const resolvedUsage = usage ?? { input_tokens: 48, output_tokens: 16 };
     if (!stream) {
       counters.succeededResponses += 1;
       sendJson(res, 200, {
@@ -867,7 +886,7 @@ export async function createContractTwinServer(options = {}) {
         content: [{ type: 'text', text: replyText }],
         stop_reason: 'end_turn',
         stop_sequence: null,
-        usage: { input_tokens: 48, output_tokens: 16 },
+        usage: resolvedUsage,
       });
       return;
     }
@@ -889,7 +908,12 @@ export async function createContractTwinServer(options = {}) {
             content: [],
             stop_reason: null,
             stop_sequence: null,
-            usage: { input_tokens: 48, output_tokens: 1 },
+            usage: {
+              input_tokens: resolvedUsage.input_tokens ?? 48,
+              ...(resolvedUsage.cache_read_input_tokens !== undefined ? { cache_read_input_tokens: resolvedUsage.cache_read_input_tokens } : {}),
+              ...(resolvedUsage.cache_creation_input_tokens !== undefined ? { cache_creation_input_tokens: resolvedUsage.cache_creation_input_tokens } : {}),
+              output_tokens: 1,
+            },
           },
         },
       },
@@ -1323,7 +1347,11 @@ export async function createContractTwinServer(options = {}) {
       return;
     }
 
-    const authHeader = extractHeader(req.headers, 'authorization') ?? extractHeader(req.headers, 'x-api-key');
+    const authHeader =
+      extractHeader(req.headers, 'authorization') ??
+      extractHeader(req.headers, 'x-api-key') ??
+      extractHeader(req.headers, 'x-goog-api-key') ??
+      (/[?&]key=[^&]+/u.test(req.url ?? '') ? 'query-key' : undefined);
     if (requireAuthHeader && (!authHeader || authHeader.trim().length === 0)) {
       const v = recordViolation(401, 'missing_auth_header', 'Missing Authorization or x-api-key header', { urlPath });
       sendJson(res, 401, { type: 'error', error: { type: 'authentication_error', code: v.code, message: v.message } });
@@ -1331,8 +1359,9 @@ export async function createContractTwinServer(options = {}) {
     }
 
     const contentLengthHeader = Number(extractHeader(req.headers, 'content-length') ?? '0');
-    const isAnthropic = urlPath.includes('/messages');
-    const isResponsesApi = urlPath.includes('/responses');
+    const isGemini = urlPath.includes(':generateContent') || urlPath.includes(':streamGenerateContent');
+    const isAnthropic = !isGemini && urlPath.includes('/messages');
+    const isResponsesApi = !isGemini && urlPath.includes('/responses');
 
     const chunks = [];
     let earlyRejected = false;
@@ -1388,6 +1417,11 @@ export async function createContractTwinServer(options = {}) {
           if (!body || typeof body !== 'object' || Array.isArray(body)) {
             const v = recordViolation(400, 'invalid_body_object', 'Request body must be a JSON object', { urlPath });
             sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', code: v.code, message: v.message } });
+            return;
+          }
+
+          if (isGemini) {
+            protocolExt.handleGeminiRequest(req, res, { urlPath, body });
             return;
           }
 
@@ -1461,18 +1495,33 @@ export async function createContractTwinServer(options = {}) {
               return;
             }
 
-            const cacheControlCount = countCacheControlBreakpoints({
-              system: body.system,
-              tools: body.tools,
-              messages: body.messages,
-            });
-            if (cacheControlCount > MAX_CACHE_CONTROL_BREAKPOINTS) {
+            const bpInspection = inspectAnthropicBreakpoints(body);
+            if (bpInspection.total > MAX_CACHE_CONTROL_BREAKPOINTS) {
               const v = recordViolation(
                 400,
                 'cache_control_limit_exceeded',
-                `cache_control breakpoints (${cacheControlCount}) exceeded Anthropic hard limit of ${MAX_CACHE_CONTROL_BREAKPOINTS}`,
-                { cacheControlCount },
+                `cache_control breakpoints (${bpInspection.total}) exceeded Anthropic hard limit of ${MAX_CACHE_CONTROL_BREAKPOINTS}`,
+                { cacheControlCount: bpInspection.total, positions: bpInspection.positions },
               );
+              sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', code: v.code, message: v.message } });
+              return;
+            }
+            if (!bpInspection.ttlOrderValid) {
+              const v = recordViolation(
+                400,
+                'cache_control_ttl_order_invalid',
+                'Anthropic cache_control TTL order violation: 1h breakpoints must precede 5m breakpoints',
+                { positions: bpInspection.positions },
+              );
+              sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', code: v.code, message: v.message } });
+              return;
+            }
+            const thinkingCheck = validateAnthropicThinkingBudget(body);
+            if (!thinkingCheck.ok) {
+              const v = recordViolation(400, thinkingCheck.code, thinkingCheck.message, {
+                max_tokens: body.max_tokens,
+                thinking: body.thinking,
+              });
               sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', code: v.code, message: v.message } });
               return;
             }
@@ -1480,6 +1529,8 @@ export async function createContractTwinServer(options = {}) {
             const betaTokens = parseBetaTokens(extractHeader(req.headers, 'anthropic-beta'), body.betas);
             let effectiveMessages = body.messages;
             let effectiveTools = Array.isArray(body.tools) ? body.tools : [];
+            let effectiveSystem = body.system;
+            let isThreadContinue = false;
             if (body.thread !== undefined || betaTokens.has(ANTHROPIC_THREADS_BETA)) {
               if (!body.thread || typeof body.thread !== 'object') {
                 const v = recordViolation(422, 'missing_thread_param', `Header ${ANTHROPIC_THREADS_BETA} sent without valid body.thread object`);
@@ -1491,10 +1542,24 @@ export async function createContractTwinServer(options = {}) {
                 effectiveMessages = body.messages;
               } else if (body.thread.type === 'continue') {
                 counters.threadContinues += 1;
+                isThreadContinue = true;
                 const prevId = body.thread.previous_message_id;
                 if (typeof prevId !== 'string' || prevId.length === 0) {
                   const v = recordViolation(422, 'invalid_previous_message_id', 'thread.continue missing previous_message_id');
                   sendJson(res, 422, { type: 'error', error: { type: 'invalid_request_error', code: v.code, message: v.message } });
+                  return;
+                }
+                if (consumedThreads.has(prevId)) {
+                  const v = recordViolation(400, 'thread_already_continued', `thread.continue previous_message_id "${prevId}" has already been continued`, { prevId });
+                  sendJson(res, 400, {
+                    type: 'error',
+                    error: {
+                      type: 'invalid_request_error',
+                      code: 'thread_already_continued',
+                      details: { error_code: 'thread_already_continued' },
+                      message: v.message,
+                    },
+                  });
                   return;
                 }
                 const prevThread = threadStore.get(prevId);
@@ -1511,9 +1576,39 @@ export async function createContractTwinServer(options = {}) {
                   });
                   return;
                 }
+                consumedThreads.add(prevId);
                 effectiveMessages = [...prevThread.messages, ...body.messages];
                 if (effectiveTools.length === 0 && Array.isArray(prevThread.tools)) {
                   effectiveTools = prevThread.tools;
+                }
+                if (effectiveSystem === undefined && prevThread.system !== undefined) {
+                  effectiveSystem = prevThread.system;
+                }
+                const combinedContinueBp = inspectAnthropicBreakpoints({
+                  tools: effectiveTools,
+                  system: effectiveSystem,
+                  messages: body.messages,
+                  cache_control: body.cache_control,
+                });
+                if (combinedContinueBp.total > MAX_CACHE_CONTROL_BREAKPOINTS) {
+                  const v = recordViolation(
+                    400,
+                    'cache_control_limit_exceeded',
+                    `thread.continue effective cache_control breakpoints (${combinedContinueBp.total}) exceeded Anthropic hard limit of ${MAX_CACHE_CONTROL_BREAKPOINTS}`,
+                    { cacheControlCount: combinedContinueBp.total, positions: combinedContinueBp.positions },
+                  );
+                  sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', code: v.code, message: v.message } });
+                  return;
+                }
+                if (!combinedContinueBp.ttlOrderValid) {
+                  const v = recordViolation(
+                    400,
+                    'cache_control_ttl_order_invalid',
+                    'thread.continue Anthropic cache_control TTL order violation: 1h breakpoints must precede 5m breakpoints',
+                    { positions: combinedContinueBp.positions },
+                  );
+                  sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', code: v.code, message: v.message } });
+                  return;
                 }
               } else {
                 const v = recordViolation(422, 'invalid_thread_type', `Unsupported thread.type "${String(body.thread.type)}"`);
@@ -2014,12 +2109,64 @@ export async function createContractTwinServer(options = {}) {
               }
             }
 
-            const replyText = `Twin OK [${messageId}]`;
+            const armedAnthropic = protocolExt.consumeArmedAction('anthropic');
+            if (armedAnthropic?.kind === 'context_overflow') {
+              sendJson(res, 400, {
+                type: 'error',
+                error: { type: 'invalid_request_error', code: 'prompt_too_long', message: 'prompt is too long: input exceeds context window' },
+              });
+              return;
+            }
+            if (armedAnthropic?.kind === 'http_413') {
+              counters.early413Rejected += 1;
+              sendJson(res, 413, {
+                type: 'error',
+                error: { type: 'invalid_request_error', code: 'request_body_too_large', message: 'Request entity too large; reduce media attachments.' },
+              });
+              return;
+            }
+            if (armedAnthropic?.kind === 'thread_not_found') {
+              sendJson(res, 400, {
+                type: 'error',
+                error: {
+                  type: 'invalid_request_error',
+                  code: 'thread_not_found',
+                  details: { error_code: 'thread_not_found' },
+                  message: 'Injected thread_not_found error',
+                },
+              });
+              return;
+            }
+
+            const anthropicAudit = cacheOracle.evaluate({
+              protocol: 'anthropic',
+              body,
+              effectiveMessages,
+              effectiveTools,
+              effectiveSystem,
+              incrementalTransport: isThreadContinue ? 'anthropic_thread_continue' : null,
+              requestMeta: { messageId, threadType: body.thread?.type ?? null, breakpointCount: bpInspection.total },
+            });
+
+            if (armedAnthropic?.kind === 'tool_call_violation') {
+              protocolExt.sendAnthropicToolViolation(res, {
+                model: body.model,
+                messageId,
+                mixedText: armedAnthropic.mixedText,
+                toolName: armedAnthropic.toolName ?? 'Read',
+                stream: body.stream !== false,
+                usage: anthropicAudit.providerUsage,
+              });
+              return;
+            }
+
+            const replyText = armedAnthropic?.replyText ?? `Twin OK [${messageId}]`;
             const barrierId = detectBarrierId(promptText);
             const streamHoldMs = detectStreamHoldMs(latestUser.text);
             threadStore.set(messageId, {
               messages: [...effectiveMessages, { role: 'assistant', content: [{ type: 'text', text: replyText }] }],
               tools: effectiveTools,
+              system: effectiveSystem,
               createdAt: Date.now(),
             });
             if (threadStore.size > 4096) {
@@ -2033,6 +2180,7 @@ export async function createContractTwinServer(options = {}) {
               stream: body.stream !== false,
               barrierId,
               streamHoldMs,
+              usage: anthropicAudit.providerUsage,
             });
             return;
           }
@@ -2059,10 +2207,10 @@ export async function createContractTwinServer(options = {}) {
             });
             return;
           }
-          sendOpenAiSuccess(res, {
+          protocolExt.handleOpenAiWithOracle(req, res, {
             isResponsesApi,
             model: body.model,
-            replyText: `Twin OK [${messageId}]`,
+            body,
             messageId,
             stream: body.stream !== false,
           });
@@ -2074,6 +2222,7 @@ export async function createContractTwinServer(options = {}) {
   }
 
   const httpServer = http.createServer(handleRequest);
+  const wsRuntime = protocolExt.attachResponsesWebSocket(httpServer);
   await new Promise((resolve, reject) => {
     httpServer.once('error', reject);
     httpServer.listen(0, '127.0.0.1', resolve);
@@ -2102,10 +2251,25 @@ export async function createContractTwinServer(options = {}) {
     httpPort,
     httpBaseUrl: `http://127.0.0.1:${httpPort}`,
     httpV1BaseUrl: `http://127.0.0.1:${httpPort}/v1`,
+    wsBaseUrl: `ws://127.0.0.1:${httpPort}`,
+    wsResponsesUrl: `ws://127.0.0.1:${httpPort}/v1/responses`,
     h2Port,
     h2BaseUrl: h2Port ? `https://127.0.0.1:${h2Port}` : null,
     h2V1BaseUrl: h2Port ? `https://127.0.0.1:${h2Port}/v1` : null,
     tlsCert,
+    armNextAction: (action) => protocolExt.armAction(action),
+    clearArmedActions: () => protocolExt.clearArmedActions(),
+    getWireAuditLog: () => cacheOracle.getAuditLog(),
+    verifyWarmContinuation: (opts) => cacheOracle.verifyWarmContinuation(opts),
+    clearWireAuditLog: () => {
+      cacheOracle.auditLog.length = 0;
+    },
+    resetCacheOracle: () => {
+      cacheOracle.reset();
+      consumedThreads.clear();
+      protocolExt.resetProtocolState();
+    },
+    getWsStats: () => protocolExt.getWsStats(),
     setWorkspaceDir: (dir) => {
       workspaceDir = dir;
     },
@@ -2200,9 +2364,13 @@ export async function createContractTwinServer(options = {}) {
       scopeAttempts.clear();
       scopeAttemptTimestamps.clear();
       toolIdToName.clear();
+      consumedThreads.clear();
+      cacheOracle.reset();
+      protocolExt.resetProtocolState();
       for (const k of Object.keys(counters)) counters[k] = 0;
     },
     close: async () => {
+      wsRuntime.close();
       for (const tl of tickLoops.values()) {
         tl.stopped = true;
         if (tl.waiter) {

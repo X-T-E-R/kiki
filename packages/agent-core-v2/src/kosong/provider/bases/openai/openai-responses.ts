@@ -1699,12 +1699,15 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
             suppressUserAgent: options?.requestIdentity?.suppressUserAgent,
             signal: options?.signal,
             forceFullInput: options?.forceFullResponsesInput,
+            auxiliaryNonCommitting: options?.responsesAuxiliaryNonCommitting,
             baselinePolicyKey: options?.responsesBaselinePolicyKey,
             canonicalOutput: (output) => projectRepresentableResponseOutput(output, this._model, this._toolMessageConversion),
             onFullInput: (input) => { fullInput = input; },
           });
           return guardRequestDelivery(new OpenAIResponsesStreamedMessage(response, true, this._convertErrorHook,
-            (id, message) => transport.commitResponse(id, convertMessage(message, this._model, this._toolMessageConversion)), transportDiagnostics), true);
+            options?.responsesAuxiliaryNonCommitting === true
+              ? undefined
+              : (id, message) => transport.commitResponse(id, convertMessage(message, this._model, this._toolMessageConversion)), transportDiagnostics), true);
         } catch (error) {
           if (isAbortError(error)) throw error;
           if (!(error instanceof ResponsesWebSocketError && error.safeHttpFallback)) {

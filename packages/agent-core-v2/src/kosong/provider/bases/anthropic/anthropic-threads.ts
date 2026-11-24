@@ -1,7 +1,10 @@
 import { createHash, type Hash } from 'node:crypto';
 
 import { APIError as AnthropicAPIError } from '@anthropic-ai/sdk';
-import type { MessageParam } from '@anthropic-ai/sdk/resources/messages/messages.js';
+import type { ContentBlockParam, MessageParam } from '@anthropic-ai/sdk/resources/messages/messages.js';
+
+import type { AnthropicThreadDisposition } from '#/kosong/contract/provider';
+import { anthropicBreakpointKey, assertAnthropicBreakpointsValid } from './anthropic-cache-breakpoints';
 
 export const MESSAGE_THREADS_BETA = 'message-threads-2026-08-12';
 
@@ -46,6 +49,11 @@ export interface PrepareAnthropicThreadInput {
   readonly messages: readonly MessageParam[];
   readonly baseBetas: readonly string[];
   readonly fixedHash: string;
+  readonly allowedBreakpoints?: ReadonlySet<string>;
+  readonly fixedBreakpointCount?: number;
+  readonly serverFixedBreakpointCount?: number;
+  readonly serverSawFiveMinute?: boolean;
+  readonly threadDisposition?: AnthropicThreadDisposition;
 }
 
 export interface PreparedAnthropicThreadRequest {
@@ -110,11 +118,23 @@ export function withoutCacheControl<T>(value: T): T {
 
 /**
  * Strips stale `cache_control` markers from earlier prefix messages on a `create` or replay
- * request while keeping the newest message's cache marker intact.
+ * request while keeping either the selected breakpoint whitelist or the newest message's marker intact.
  */
 export function sanitizeCreateMessagesCacheControl(
   messages: readonly MessageParam[],
+  allowedBreakpoints?: ReadonlySet<string>,
 ): MessageParam[] {
+  if (allowedBreakpoints !== undefined) {
+    return messages.map((message, messageIndex) => {
+      if (!Array.isArray(message.content)) return withoutCacheControl(message);
+      const nextContent: ContentBlockParam[] = message.content.map((block, blockIndex) =>
+        allowedBreakpoints.has(anthropicBreakpointKey(messageIndex, blockIndex))
+          ? block
+          : withoutCacheControl(block),
+      );
+      return { ...message, content: nextContent };
+    });
+  }
   if (messages.length <= 1) return [...messages];
   const lastIndex = messages.length - 1;
   return messages.map((message, index) =>
@@ -484,6 +504,10 @@ export class AnthropicThreadTracker {
   }
 
   prepare(input: PrepareAnthropicThreadInput): PreparedAnthropicThreadRequest {
+    const disposition = input.threadDisposition ?? 'turn';
+    if (disposition === 'auxiliary_readonly' || disposition === 'auxiliary_force_create') {
+      return this.buildCreate(input, false);
+    }
     const state = this.entries.get(input.scopeKey);
     if (state !== undefined && state.fixedHash === input.fixedHash) {
       const hasDelta = input.messages.length > state.prefixCount;
@@ -493,16 +517,27 @@ export class AnthropicThreadTracker {
         (hasDelta || resumesUnfinished) &&
         hashThreadMessages(input.messages.slice(0, state.prefixCount)) === state.prefixHash
       ) {
-        this.entries.delete(input.scopeKey);
         const { system: _system, tools: _tools, ...rest } = input.baseBody;
+        const deltaRaw = input.messages.slice(state.prefixCount);
+        const deltaMessages =
+          input.fixedBreakpointCount !== undefined && input.fixedBreakpointCount >= 4
+            ? deltaRaw.map((msg) => withoutCacheControl(msg))
+            : deltaRaw;
+        const continueBody: Record<string, unknown> = {
+          ...rest,
+          messages: deltaMessages,
+          thread: { type: 'continue', previous_message_id: state.responseId },
+        };
+        assertAnthropicBreakpointsValid(
+          continueBody,
+          input.serverFixedBreakpointCount ?? 0,
+          input.serverSawFiveMinute ?? false,
+        );
+        this.entries.delete(input.scopeKey);
         return {
           kind: 'continue',
           scopeKey: input.scopeKey,
-          body: {
-            ...rest,
-            messages: input.messages.slice(state.prefixCount),
-            thread: { type: 'continue', previous_message_id: state.responseId },
-          },
+          body: continueBody,
           betas: [...state.createBetas],
           replacesLostThread: state.replacesLostThread,
           fixedHash: input.fixedHash,
@@ -518,7 +553,7 @@ export class AnthropicThreadTracker {
     replacesLostThread: boolean,
   ): PreparedAnthropicThreadRequest {
     const betas = mergeBetaTokens(input.baseBetas, [MESSAGE_THREADS_BETA]);
-    const messages = sanitizeCreateMessagesCacheControl(input.messages);
+    const messages = sanitizeCreateMessagesCacheControl(input.messages, input.allowedBreakpoints);
     return {
       kind: 'create',
       scopeKey: input.scopeKey,
@@ -535,14 +570,14 @@ export class AnthropicThreadTracker {
   }
 
   buildUnthreaded(
-    input: Pick<PrepareAnthropicThreadInput, 'baseBody' | 'messages' | 'baseBetas'>,
+    input: Pick<PrepareAnthropicThreadInput, 'baseBody' | 'messages' | 'baseBetas' | 'allowedBreakpoints'>,
   ): PreparedUnthreadedAnthropicRequest {
     const { thread: _thread, ...rest } = input.baseBody;
     return {
       kind: 'unthreaded',
       body: {
         ...rest,
-        messages: sanitizeCreateMessagesCacheControl(input.messages),
+        messages: sanitizeCreateMessagesCacheControl(input.messages, input.allowedBreakpoints),
       },
       betas: stripBetaToken(input.baseBetas, MESSAGE_THREADS_BETA),
     };

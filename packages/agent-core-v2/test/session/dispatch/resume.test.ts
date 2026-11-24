@@ -1156,7 +1156,7 @@ describe('compact resume lifecycle retention (CM-001)', () => {
     const operationId = `retained-compact-${outcome}`;
     const failure = new Error('Summary preparation failed');
     let release!: () => void;
-    vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareModelSwitchSummary').mockImplementation(async (_history, signal) => new Promise<string>((resolve, reject) => {
+    vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareSummary').mockImplementation(async (_input, signal) => new Promise<string>((resolve, reject) => {
       release = () => { if (outcome === 'failure') reject(failure); else resolve('Prepared summary.'); };
       signal.addEventListener('abort', () => { reject(signal.reason); }, { once: true });
     }));

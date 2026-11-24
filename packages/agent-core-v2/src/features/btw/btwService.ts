@@ -216,9 +216,21 @@ export class SessionBranchService extends Service implements ISessionBranchServi
       estimateText: (text) => tokenCounting.estimateText(text),
       summarize: seedMode === 'compact'
         ? async (settled, compactCount) => {
-            const slice = settled.slice(0, compactCount);
             const compactor = parent.accessor.get(IAgentFullCompactionService);
-            return compactor.prepareModelSwitchSummary(slice, signal);
+            if (typeof compactor.prepareSummary === 'function') {
+              return compactor.prepareSummary({
+                authorizedHistory: settled,
+                compactCount,
+                disposition: 'branch_seed',
+                scope: {
+                  sessionId: this.session.sessionId,
+                  agentId: parentAgentId,
+                  windowEpoch: parentEpoch,
+                  allowSourceCacheEnvelope: true,
+                },
+              }, signal);
+            }
+            return compactor.prepareModelSwitchSummary(settled.slice(0, compactCount), signal);
           }
         : undefined,
     });

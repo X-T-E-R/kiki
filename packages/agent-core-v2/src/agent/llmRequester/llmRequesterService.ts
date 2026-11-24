@@ -76,7 +76,8 @@ import { readGenerateContinuationToken, readGenerateFailureUsage } from '#/koson
 import type { ResponsesTransportSelection, ResponsesTransportDiagnostics } from '#/kosong/contract/responsesTransport';
 import { matchesProviderTarget } from '#/kosong/provider/providerTarget';
 import { safeResponsesTransportDiagnostics } from '#/kosong/contract/streamDiagnostics';
-import { type ResponseFormat, type ThinkingEffort } from '#/kosong/contract/provider';
+import { type AnthropicThreadDisposition, type ProviderCacheEvidence, type ResponseFormat, type ThinkingEffort } from '#/kosong/contract/provider';
+import { inferAnthropicModelProfile } from '#/kosong/provider/bases/anthropic/anthropic-profile';
 import { type Tool } from '#/kosong/contract/tool';
 import { emptyUsage, inputTotal, type TokenUsage } from '#/kosong/contract/usage';
 import { ILogService, type LogContext } from '#/_base/log/log';
@@ -162,6 +163,8 @@ import {
   type AgentLLMRequestPartHandler,
   type AgentLLMRequestSource,
   type AgentLLMRequestTask,
+  type LLMRequestCacheInheritanceOptions,
+  type LLMRequestCacheInheritanceStatus,
   type PreparedTurnRequestConfig,
 } from './llmRequester';
 import type { LLMRequestTrace } from '#/kosong/contract/requestTrace';
@@ -170,7 +173,20 @@ import {
   type ToolCallIdResponseNormalizer,
 } from './toolCallIdNormalizer';
 import { projectDynamicToolSchemas } from './dynamicToolProjection';
-import { PromptCacheWindow } from './promptCacheWindow';
+import { applyExtensionUpdatesSnapshot, PromptCacheWindow } from './promptCacheWindow';
+import {
+  applyMediaReplacements,
+  captureMediaReplacements,
+  fingerprintCanonicalMessage,
+  isForcedToolChoice,
+  matchesTurnCacheEnvelopeScope,
+  resolveCompactionBudget,
+  verifyEnvelopePrefix,
+  type TurnCacheEnvelope,
+  type TurnCacheEnvelopeScope,
+  type TurnCacheEnvelopeSummary,
+  type TurnCacheExtensionUpdate,
+} from './turnCacheEnvelope';
 import {
   hashAdvertisedProfiles,
   LlmRequest,
@@ -226,6 +242,28 @@ interface RequestIdentityAttemptContext {
   readonly hostRequestHeaders: Readonly<Record<string, string>>;
 }
 
+interface ColdCompactionFrozenSnapshot {
+  readonly scope: TurnCacheEnvelopeScope;
+  readonly turnKey: string;
+  readonly systemPrompt: string;
+  readonly tools: readonly Tool[];
+  readonly toolChoice?: import('#/kosong/contract/provider').ToolChoice;
+  readonly responseFormat?: ResponseFormat;
+  readonly thinkingEffort: ThinkingEffort;
+  readonly thinkingKeep?: string;
+  readonly sampling?: import('#/kosong/contract/provider').SamplingOptions;
+  readonly serviceTier?: import('#/kosong/model/parameters').OptionalParameter<import('#/kosong/contract/provider').ServiceTier>;
+  readonly baseRequestParams?: import('#/kosong/contract/provider').RequestParams;
+  readonly maxCompletionTokens?: number;
+  readonly thinkingBudgetOverride?: number;
+  readonly maxContextTokens: number;
+  readonly extensionBaselineText: string;
+  readonly extensionUpdates: readonly TurnCacheExtensionUpdate[];
+  readonly requestIdentityPolicy: ResolvedRequestIdentityPolicy;
+  preBaselinePatchCaptured: boolean;
+  preBaselinePatch?: PreBaselineRequestPatch;
+}
+
 interface ResolvedLLMRequest {
   readonly requester: ModelRequester;
   readonly model: Model;
@@ -240,6 +278,24 @@ interface ResolvedLLMRequest {
   readonly contextMessages: readonly Message[];
   readonly source: AgentLLMRequestSource | undefined;
   readonly logFields: AgentLLMRequestLogFields;
+  readonly turnKey: string;
+  readonly envelopeScope: TurnCacheEnvelopeScope;
+  readonly maxContextTokens: number;
+  readonly extensionBaselineText: string;
+  readonly extensionUpdates: readonly TurnCacheExtensionUpdate[];
+  readonly anchorApplied: boolean;
+  readonly cognitionRevision?: number;
+  readonly bindingRevision?: string;
+  readonly anchorSteps?: number;
+  readonly anchorScope?: 'turn' | 'session';
+  readonly cacheInheritance?: LLMRequestCacheInheritanceOptions;
+  readonly matchedEnvelope?: TurnCacheEnvelope;
+  readonly cacheInheritanceStatus?: LLMRequestCacheInheritanceStatus;
+  readonly coldFreezeKey?: string;
+  readonly frozenColdPreBaselinePatch?: {
+    readonly captured: boolean;
+    readonly patch: PreBaselineRequestPatch | undefined;
+  };
 }
 
 interface ToolsetDigest {
@@ -271,7 +327,7 @@ interface TurnRequestConfig {
   readonly promptPrepared: boolean;
   readonly cognition?: import('#/agent/cognition/cognitionConfig').CognitionBinding;
   readonly providerConfig: ProviderConfig | undefined;
-  readonly requestIdentity: ResolvedRequestIdentityPolicy;
+  requestIdentity?: ResolvedRequestIdentityPolicy;
 }
 
 export const llmRequesterLastConfigLogSignatureKey = defineState<string | undefined>(
@@ -309,6 +365,9 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
   private readonly responsesTransports = new Set<ResponsesWebSocketTransport>();
   private responsesTransportModel: Model | undefined;
   private responsesTransportKey: string | undefined;
+  private responsesTransportGeneration = 0;
+  private lastTurnEnvelope: TurnCacheEnvelope | undefined;
+  private readonly coldCompactionSnapshots = new Map<string, ColdCompactionFrozenSnapshot>();
 
   armAnthropicResponseCapture(input: AnthropicResponseCaptureInput): AnthropicResponseCaptureStatus {
     if (input?.sessionId !== this.sessionContext.sessionId || input?.agentId !== this.agentContext.agentId) {
@@ -369,6 +428,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
   ) {
     super();
     this._register(toDisposable(() => {
+      this.invalidateTurnCacheEnvelope();
       this.responsesTransport?.dispose();
       this.responsesTransport = undefined;
       for (const transport of this.responsesTransports) transport.dispose();
@@ -385,6 +445,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     this._register(this.eventBus.subscribe(ToolResultEvent, (event) => { this.endpointVault.discard(this.agentContext.agentId, [event.toolCallId]); }));
     this._register(this.eventBus.subscribe(ContextSpliced, (event) => {
       if (event.deleteCount > 0) {
+        this.invalidateTurnCacheEnvelope();
         this.closeResponsesTransport();
         this.promptCacheWindow = undefined;
       }
@@ -392,14 +453,26 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     const onDidSectionChange = this.config.onDidSectionChange;
     if (onDidSectionChange !== undefined) {
       this._register(onDidSectionChange(({ domain }) => {
-        if (isResponsesTransportConfigSection(domain)) this.closeResponsesTransport();
+        if (isResponsesTransportConfigSection(domain)) {
+          this.invalidateTurnCacheEnvelope();
+          this.closeResponsesTransport();
+        }
       }));
     }
-    this._register(this.providers.onDidChangeProviders(() => this.closeResponsesTransport()));
-    this._register(this.providers.onDidChangeDefaultProvider(() => this.closeResponsesTransport()));
+    this._register(this.providers.onDidChangeProviders(() => {
+      this.invalidateTurnCacheEnvelope();
+      this.closeResponsesTransport();
+    }));
+    this._register(this.providers.onDidChangeDefaultProvider(() => {
+      this.invalidateTurnCacheEnvelope();
+      this.closeResponsesTransport();
+    }));
     const onDidChangeModels = this.modelService.onDidChangeModels;
     if (onDidChangeModels !== undefined) {
-      this._register(onDidChangeModels(() => this.closeResponsesTransport()));
+      this._register(onDidChangeModels(() => {
+        this.invalidateTurnCacheEnvelope();
+        this.closeResponsesTransport();
+      }));
     }
   }
 
@@ -427,11 +500,30 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     return this.states.get(llmRequesterEmittedThinkingEffortWarningsKey);
   }
 
+  private invalidateTurnCacheEnvelope(): void {
+    this.lastTurnEnvelope = undefined;
+    this.coldCompactionSnapshots.clear();
+  }
+
+  getTurnCacheEnvelopeSummary(): TurnCacheEnvelopeSummary | undefined {
+    const env = this.lastTurnEnvelope;
+    if (env === undefined) return undefined;
+    return {
+      id: env.id,
+      turnId: env.turnId,
+      step: env.step,
+      windowEpoch: env.scope.windowEpoch,
+      prefixMessageCount: env.prefixMessageCount,
+      modelAlias: env.scope.modelAlias,
+    };
+  }
+
   private closeResponsesTransport(): void {
     const transport = this.responsesTransport;
     this.responsesTransport = undefined;
     this.responsesTransportModel = undefined;
     this.responsesTransportKey = undefined;
+    this.responsesTransportGeneration += 1;
     if (transport === undefined) return;
     this.responsesTransports.add(transport);
     void transport.retire().then(() => {
@@ -440,10 +532,51 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
   }
 
   private ensureResponsesTransport(
-    request: Pick<ResolvedLLMRequest, 'model' | 'modelAlias' | 'source' | 'identity'>,
+    request: Pick<ResolvedLLMRequest, 'model' | 'modelAlias' | 'source' | 'identity' | 'cacheInheritance' | 'matchedEnvelope'>,
+    incrementalEligible = false,
   ): ResponsesTransportSelection | undefined {
     if (this._store.isDisposed) throw createAbortError();
     const model = request.model;
+    const inheritanceMode = request.cacheInheritance?.mode ?? 'none';
+    if (inheritanceMode === 'last_turn_envelope_readonly') {
+      return undefined;
+    }
+    if (inheritanceMode === 'last_turn_envelope_exclusive') {
+      if (
+        !incrementalEligible ||
+        request.source?.type !== 'operation' ||
+        request.source.requestKind !== 'full_compaction' ||
+        request.matchedEnvelope === undefined ||
+        model.protocol !== 'openai_responses'
+      ) {
+        return undefined;
+      }
+      const current = this.profile.getRuntimeModel(
+        request.modelAlias,
+        this.profile.getRecipeModelSettings(request.modelAlias),
+      );
+      const config = current?.responsesWebSocket;
+      if (
+        current?.protocol !== 'openai_responses' ||
+        config === undefined ||
+        config.targets.length === 0 ||
+        (model.baseUrl !== undefined && !matchesProviderTarget(`${model.baseUrl.replace(/\/$/, '')}/responses`, config.targets))
+      ) {
+        return undefined;
+      }
+      const key = responsesTransportKey({ ...model, responsesWebSocket: config }, request.identity);
+      if (
+        this.responsesTransport !== undefined &&
+        this.responsesTransport.isActive() &&
+        !this.responsesTransport.isInFlight() &&
+        this.responsesTransportGeneration === request.matchedEnvelope.transportGeneration &&
+        this.responsesTransportModel === model &&
+        this.responsesTransportKey === key
+      ) {
+        return { transport: this.responsesTransport, config };
+      }
+      return undefined;
+    }
     const current = request.source?.type === 'turn' && model.protocol === 'openai_responses'
       ? this.profile.getRuntimeModel(request.modelAlias, this.profile.getRecipeModelSettings(request.modelAlias)) : undefined;
     const config = current?.responsesWebSocket;
@@ -458,6 +591,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       this.responsesTransportModel = model;
       this.responsesTransportKey = key;
       this.responsesTransport = new ResponsesWebSocketTransport();
+      this.responsesTransportGeneration += 1;
     }
     return { transport: this.responsesTransport, config };
   }
@@ -484,6 +618,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     const invalidated = this.turnConfigs.size;
     this.turnConfigs.clear();
     this.promptCacheWindow = undefined;
+    this.invalidateTurnCacheEnvelope();
     this.closeResponsesTransport();
     return invalidated;
   }
@@ -522,7 +657,10 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         `Cannot issue model request while required plugin state reducers are unresolved: ${unresolvedPlugins.join(', ')}`,
       );
     }
-    if (overrides.source?.type !== 'turn') this.closeResponsesTransport();
+    const inheritanceMode = overrides.cacheInheritance?.mode ?? 'none';
+    if (overrides.source?.type !== 'turn' && inheritanceMode === 'none') {
+      this.closeResponsesTransport();
+    }
     const startedAt = Date.now();
     trace.set(undefined);
     try {
@@ -624,13 +762,17 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     this.retryAttribution = { key: retryKey, value: attribution };
     this.toolCallIdNormalizer.seedFrom(this.context.get());
     const { messages: shaped, sourceIndexes } = this.toolSelect.shapeHistory(request.messages);
+    const matchedEnvelope = request.matchedEnvelope;
+    const isReadonlyCompaction = request.cacheInheritance?.requireTextOnly === true;
     const recoveredStrip = this.mediaStripSnapshotForTurn(request.source);
     let policy: ProjectionPolicy | undefined =
-      recoveredStrip !== undefined
-        ? { media: { strip: recoveredStrip } }
-        : this.isRecoveryTurn(this.mediaDegradedTurns, request.source)
-          ? { media: 'degraded' }
-          : undefined;
+      matchedEnvelope !== undefined
+        ? matchedEnvelope.projectionPolicy
+        : recoveredStrip !== undefined
+          ? { media: { strip: recoveredStrip } }
+          : this.isRecoveryTurn(this.mediaDegradedTurns, request.source)
+            ? { media: 'degraded' }
+            : undefined;
     if (request.model.capabilities.audio_in !== true) policy = { ...policy, audio: 'omit_unsupported' };
     const captureMediaStripPolicy = (): { readonly strip: MediaStripSnapshot } => {
       const snapshot = this.projector.captureMediaStripSnapshot(shaped);
@@ -643,6 +785,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     let malformedFunctionCallRetry = 0;
     let lastAttemptMediaAttachments: readonly SentMediaAttachment[] = [];
     let poisonedMediaRetryCount = 0;
+    let lastNonDegradedProjected: readonly Message[] | undefined;
     const run = async (
       policy: ProjectionPolicy | undefined,
       params: ModelRequestParams,
@@ -655,21 +798,31 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       const fields =
         projection === undefined ? request.logFields : { ...request.logFields, projection };
       const pluginService = this.plugins?.current;
-      const projectionDecision = pluginService === undefined
-        ? { strategy: 'passthrough' as const }
-        : await pluginService.resolveRequestProjection({
-            modelAlias: request.modelAlias,
-            modelId: request.model.id,
-            modelName: request.model.name,
-            workspaceId: this.sessionContext.workspaceId,
-            sessionId: this.sessionContext.sessionId,
-          });
+      const projectionDecision = matchedEnvelope !== undefined
+        ? { strategy: matchedEnvelope.pluginProjectionStrategy, pluginId: undefined }
+        : pluginService === undefined
+          ? { strategy: 'passthrough' as const }
+          : await pluginService.resolveRequestProjection({
+              modelAlias: request.modelAlias,
+              modelId: request.model.id,
+              modelName: request.model.name,
+              workspaceId: this.sessionContext.workspaceId,
+              sessionId: this.sessionContext.sessionId,
+            });
       let projectedBatches = 0;
       let projectedMessages = 0;
+      const useExactMediaReplacements =
+        matchedEnvelope !== undefined &&
+        matchedEnvelope.projectionPolicy?.media === 'degraded' &&
+        policy?.media === 'degraded' &&
+        matchedEnvelope.mediaReplacements !== undefined;
+      const projectionBasePolicy: ProjectionPolicy | undefined = useExactMediaReplacements
+        ? { ...policy, media: undefined }
+        : policy;
       const effectivePolicy: ProjectionPolicy | undefined =
         projectionDecision.strategy !== 'passthrough'
           ? {
-              ...policy,
+              ...projectionBasePolicy,
               toolResultAppendix: projectionDecision.strategy === 'tool_result_trailing_text'
                 ? 'trailing_user_text'
                 : 'host_auto_injections',
@@ -679,15 +832,27 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
                 projectedMessages = stats.projectedMessages;
               },
             }
-          : policy;
-      const projected = this.projector.project(shaped, effectivePolicy);
-      pluginService?.recordRequestProjectionOutcome({
-        pluginId: projectionDecision.pluginId,
-        matched: projectionDecision.strategy !== 'passthrough',
-        projectedBatches,
-        projectedMessages,
-      });
-      const unmarkedOpaquePolicy = this.unmarkedOpaquePolicyFor(request.model);
+          : projectionBasePolicy;
+      const rawProjected = this.projector.project(shaped, effectivePolicy);
+      if (policy?.media === undefined) lastNonDegradedProjected = rawProjected;
+      const projected = useExactMediaReplacements
+        ? applyMediaReplacements(rawProjected, matchedEnvelope.mediaReplacements)
+        : rawProjected;
+      const unmodifiedForMediaDiff =
+        source?.type === 'turn' && policy?.media === 'degraded'
+          ? (lastNonDegradedProjected ?? shaped)
+          : undefined;
+      if (matchedEnvelope === undefined) {
+        pluginService?.recordRequestProjectionOutcome({
+          pluginId: projectionDecision.pluginId,
+          matched: projectionDecision.strategy !== 'passthrough',
+          projectedBatches,
+          projectedMessages,
+        });
+      }
+      const unmarkedOpaquePolicy = matchedEnvelope !== undefined
+        ? matchedEnvelope.unmarkedOpaquePolicy
+        : this.unmarkedOpaquePolicyFor(request.model);
       const resolvedMessages = await this.mediaResolver.resolve(
         projected,
         request.requester,
@@ -719,6 +884,41 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           request.tools.length > 0,
         ),
       };
+      let effectiveCacheStatus: LLMRequestCacheInheritanceStatus | undefined = request.cacheInheritanceStatus;
+      let canUseIncremental = false;
+      let inheritedAnthropicBreakpoints: readonly import('#/kosong/contract/provider').AnthropicProvenBreakpoint[] | undefined;
+      let anthropicThreadDisposition: AnthropicThreadDisposition | undefined;
+      let responsesAuxiliaryNonCommitting: boolean | undefined;
+      let forceFullResponsesInput: boolean | undefined;
+      if (matchedEnvelope !== undefined) {
+        const prefixCheck = verifyEnvelopePrefix(matchedEnvelope, input.messages);
+        if (!prefixCheck.inputPrefixMatched && effectiveCacheStatus === 'warm_envelope') {
+          effectiveCacheStatus = 'envelope_prefix_mismatch';
+        }
+        canUseIncremental =
+          request.cacheInheritance?.mode === 'last_turn_envelope_exclusive' &&
+          request.cacheInheritance.forceFullIncremental !== true &&
+          effectiveCacheStatus === 'warm_envelope' &&
+          prefixCheck.responsePrefixMatched;
+        inheritedAnthropicBreakpoints = prefixCheck.inputPrefixMatched
+          ? matchedEnvelope.providerEvidence?.anthropic?.messageBreakpoints
+          : undefined;
+        anthropicThreadDisposition =
+          request.cacheInheritance?.mode === 'last_turn_envelope_readonly'
+            ? 'auxiliary_readonly'
+            : canUseIncremental
+              ? 'auxiliary_exclusive'
+              : 'auxiliary_force_create';
+        responsesAuxiliaryNonCommitting = true;
+        forceFullResponsesInput = !canUseIncremental;
+      } else if (request.cacheInheritance !== undefined && request.cacheInheritance.mode !== 'none') {
+        anthropicThreadDisposition =
+          request.cacheInheritance.mode === 'last_turn_envelope_readonly'
+            ? 'auxiliary_readonly'
+            : 'auxiliary_force_create';
+        responsesAuxiliaryNonCommitting = true;
+        forceFullResponsesInput = true;
+      }
       this.warnAboutAnthropicThinkingEffort(request);
       const logInput: LLMRequestLogInput = {
         protocol: request.model.protocol,
@@ -731,7 +931,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         systemPrompt: input.systemPrompt,
         tools: input.tools,
         messages: input.messages,
-        fields,
+        fields: effectiveCacheStatus === undefined ? fields : { ...fields, cacheInheritance: effectiveCacheStatus },
       };
       this.logRequest(logInput);
       this.recordRequest(logInput);
@@ -743,6 +943,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       let finish: Extract<ModelRequestEvent, { type: 'finish' }> | undefined;
       let handlingPart = false;
       let toolCallIds = this.toolCallIdNormalizer.beginResponse();
+      let capturedProviderEvidence: ProviderCacheEvidence | undefined;
 
       const setTraceId = (traceId: string | null | undefined): void => {
         const normalized = traceId ?? undefined;
@@ -758,27 +959,51 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       const rawResponseObserver = observedCapture === undefined ? undefined : new DeferredResponseCapture(observedCapture);
       const extensions = this.extensions?.current;
       const extensionSignal = signal ?? new AbortController().signal;
+      let appliedPreBaselinePatch: PreBaselineRequestPatch | undefined;
       try {
-        const preBaselinePatch = extensions?.hasRequestPolicies === true
-          ? await extensions.collectPreBaselinePatch(frozenExtensionSnapshot({
-              sessionId: this.sessionContext.sessionId, agentId: this.agentContext.agentId,
-              turnId: source?.turnId, step: source?.type === 'turn' ? source.step : undefined,
-              logicalRequestId: attribution.logicalRequestId, modelId: request.model.id,
-              modelName: request.model.name, protocol: request.model.protocol, providerType: request.model.providerType,
-              ...input, thinkingEffort: params.thinkingEffort,
-              maxCompletionTokens: params.maxCompletionTokens, sampling: params.sampling,
-              serviceTier: typeof params.serviceTier === 'string' ? params.serviceTier : undefined,
-            }), extensionSignal)
-          : undefined;
+        if (matchedEnvelope !== undefined) {
+          appliedPreBaselinePatch = matchedEnvelope.preBaselinePatch;
+        } else if (request.frozenColdPreBaselinePatch?.captured === true) {
+          appliedPreBaselinePatch = request.frozenColdPreBaselinePatch.patch;
+        } else {
+          appliedPreBaselinePatch = extensions?.hasRequestPolicies === true
+            ? await extensions.collectPreBaselinePatch(frozenExtensionSnapshot({
+                sessionId: this.sessionContext.sessionId, agentId: this.agentContext.agentId,
+                turnId: source?.turnId, step: source?.type === 'turn' ? source.step : undefined,
+                logicalRequestId: attribution.logicalRequestId, modelId: request.model.id,
+                modelName: request.model.name, protocol: request.model.protocol, providerType: request.model.providerType,
+                ...input, thinkingEffort: params.thinkingEffort,
+                maxCompletionTokens: params.maxCompletionTokens, sampling: params.sampling,
+                serviceTier: typeof params.serviceTier === 'string' ? params.serviceTier : undefined,
+              }), extensionSignal)
+            : undefined;
+          if (request.coldFreezeKey !== undefined) {
+            const snapshot = this.coldCompactionSnapshots.get(request.coldFreezeKey);
+            if (snapshot !== undefined) {
+              snapshot.preBaselinePatchCaptured = true;
+              snapshot.preBaselinePatch = appliedPreBaselinePatch;
+            }
+          }
+        }
         const requestParams: ModelRequestParams & {
           readonly attribution: typeof attribution;
           readonly preBaselinePatch?: PreBaselineRequestPatch;
           readonly streamTaps?: readonly LLMStreamTapObserver[];
         } = {
           ...params,
-          preBaselinePatch,
+          preBaselinePatch: appliedPreBaselinePatch,
           streamTaps: extensions?.activeStreamTaps(),
           unmarkedOpaquePolicy,
+          resolveResponsesTransport: () => this.ensureResponsesTransport(request, canUseIncremental),
+          forceFullResponsesInput: forceFullResponsesInput ?? params.forceFullResponsesInput,
+          responsesAuxiliaryNonCommitting: responsesAuxiliaryNonCommitting ?? params.responsesAuxiliaryNonCommitting,
+          inheritedAnthropicBreakpoints,
+          anthropicThreadDisposition,
+          onProviderCacheEvidence: source?.type === 'turn'
+            ? (evidence) => {
+                capturedProviderEvidence = evidence;
+              }
+            : undefined,
           usedContextTokensTrusted: params.usedContextTokensTrusted === true &&
             this.tokenCounting.isCurrentContextMeasured() &&
             isUnchangedModelHistory(this.context.get(), request.messages) &&
@@ -786,11 +1011,13 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           onTraceId: setTraceId,
           onRequestAttempt,
           rawResponseObserver,
-          toolCallIngress: (call) => {
-            const sanitized = this.endpointVault.scrub(this.agentContext.agentId, call);
-            responseRedacted ||= sanitized.arguments !== call.arguments;
-            return sanitized;
-          },
+          toolCallIngress: isReadonlyCompaction
+            ? undefined
+            : (call) => {
+                const sanitized = this.endpointVault.scrub(this.agentContext.agentId, call);
+                responseRedacted ||= sanitized.arguments !== call.arguments;
+                return sanitized;
+              },
           attribution,
           retry,
         };
@@ -887,6 +1114,62 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         for (const failure of errors) this.log.warn('Extension settled response observer failed', { ...failure });
       }
 
+      if (source?.type === 'turn' && malformedFunctionCallRetry === 0) {
+        const mediaReplacements = unmodifiedForMediaDiff === undefined
+          ? undefined
+          : captureMediaReplacements(unmodifiedForMediaDiff, projected);
+        const effectiveMax =
+          capturedProviderEvidence?.anthropic?.effectiveMaxTokens ??
+          capturedProviderEvidence?.effectiveMaxCompletionTokens ??
+          params.maxCompletionTokens;
+        const effectiveThinkingBudget = capturedProviderEvidence?.anthropic?.effectiveThinkingBudget;
+        const projectedResponse = projectMessagesForModelTarget(
+          [message],
+          request.model,
+          { unmarkedOpaquePolicy },
+        )[0] ?? message;
+        this.lastTurnEnvelope = Object.freeze({
+          id: randomUUID(),
+          scope: request.envelopeScope,
+          turnId: source.turnId,
+          step: source.step ?? 1,
+          turnKey: request.turnKey,
+          systemPrompt: input.systemPrompt,
+          anchorApplied: request.anchorApplied,
+          cognitionRevision: request.cognitionRevision,
+          bindingRevision: request.bindingRevision,
+          anchorSteps: request.anchorSteps,
+          anchorScope: request.anchorScope,
+          tools: input.tools,
+          toolChoice: params.toolChoice,
+          responseFormat: input.responseFormat,
+          thinkingEffort: params.thinkingEffort ?? request.thinkingEffort,
+          thinkingKeep: params.thinkingKeep,
+          sampling: params.sampling,
+          serviceTier: params.serviceTier,
+          baseRequestParams: stripRequestIdentityBodyParams(stripKikiReservedRequestParams(params.requestParams)),
+          preBaselinePatch: appliedPreBaselinePatch,
+          effectiveMaxCompletionTokens: effectiveMax,
+          effectiveThinkingBudget,
+          effectiveUsedContextTokens: params.usedContextTokens,
+          maxContextTokens: request.maxContextTokens,
+          extensionBaselineText: request.extensionBaselineText,
+          extensionUpdates: request.extensionUpdates,
+          projectionPolicy: policy,
+          mediaReplacements: mediaReplacements && mediaReplacements.length > 0 ? mediaReplacements : undefined,
+          pluginProjectionStrategy: projectionDecision.strategy,
+          unmarkedOpaquePolicy,
+          requestIdentityPolicy: request.identity.policy,
+          prefixMessageCount: input.messages.length,
+          prefixFingerprints: input.messages.map((msg) => fingerprintCanonicalMessage(msg)),
+          responseFingerprint: fingerprintCanonicalMessage(projectedResponse),
+          providerMessageId: finish.id,
+          providerEvidence: capturedProviderEvidence,
+          transportGeneration: this.responsesTransportGeneration,
+          settledAt: Date.now(),
+        });
+      }
+
       return {
         message,
         usage: usage ?? emptyUsage(),
@@ -898,6 +1181,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         providerMessageId: finish.id,
         timing,
         traceId: finish.traceId,
+        cacheInheritanceStatus: effectiveCacheStatus,
       };
     };
 
@@ -910,6 +1194,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         request.requester,
         request.messages,
         request.source,
+        request.turnKey,
       );
       params = {
         ...params,
@@ -931,7 +1216,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         });
         const bufferedOperation = source?.type === 'operation' && onPart === noopOnPart;
         const eligibleDiscardScope = source?.type === 'turn' || bufferedOperation || (source?.type === 'operation' && onAttemptRetry !== undefined);
-        const malformedFunctionCall = eligibleDiscardScope && isRetryableMalformedFunctionCallError(error);
+        const malformedFunctionCall = !isReadonlyCompaction && eligibleDiscardScope && isRetryableMalformedFunctionCallError(error);
         const missingTerminal = eligibleDiscardScope && isRetryableMissingTerminalError(error);
         const uncommittedOverload = eligibleDiscardScope && isRetryableUncommittedStreamOverloadError(error);
         const discardRetry = malformedFunctionCall || missingTerminal || uncommittedOverload;
@@ -1220,6 +1505,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     requester: ModelRequester,
     messages: readonly Message[],
     source: AgentLLMRequestSource | undefined,
+    explicitTurnKey?: string,
   ): Promise<RequestIdentityProjection> {
     const sessionScope = resolveRequestIdentitySessionScope({
       policy: identity.policy,
@@ -1244,7 +1530,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     const snapshot = hasRequestIdentityDimensions(dimensions)
       ? await this.requestIdentities.snapshot({
           agentId: this.agentContext.agentId,
-          turnKey: requestIdentityTurnKey(source),
+          turnKey: explicitTurnKey ?? requestIdentityTurnKey(source),
           parentAgentId: identity.parentAgentId,
           parentTurnKey: identity.parentTurnKey,
           rootAgentId: identity.rootAgentId,
@@ -1291,20 +1577,344 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     });
   }
 
+  private buildEnvelopeScope(
+    resolved: ProfileModelContext,
+    model: Model,
+    bindingRevision: string | undefined,
+    providerConfig: ProviderConfig | undefined,
+  ): TurnCacheEnvelopeScope {
+    const profileData = this.profile.data();
+    const activeTools = this.toolSelect
+      .shapeTools(this.tools.list())
+      .map((tool) => [tool.name, tool.parameters ?? EMPTY_TOOL_PARAMETERS, tool.deferred]);
+    const activeToolPolicyKey = createHash('sha256')
+      .update(JSON.stringify([profileData.toolOverride ?? null, profileData.disallowedTools ?? null, profileData.activeToolNames ?? null, activeTools]))
+      .digest('hex');
+    const endpointKey = createHash('sha256')
+      .update(JSON.stringify(
+        profileData.endpoint === undefined
+          ? null
+          : {
+              baseUrl: profileData.endpoint.base_url,
+              model: profileData.endpoint.model,
+              providerType: profileData.endpoint.provider_type,
+              capabilities: profileData.endpoint.capabilities,
+              requestParams: profileData.endpoint.request_params ?? null,
+            },
+      ))
+      .digest('hex');
+    const principalKey = createHash('sha256')
+      .update(JSON.stringify({
+        oauthKey: providerConfig?.oauth?.key ?? null,
+        oauthStorage: providerConfig?.oauth?.storage ?? null,
+        apiKeyHash: providerConfig?.apiKey === undefined
+          ? null
+          : createHash('sha256').update(providerConfig.apiKey).digest('hex'),
+        requestIdentity: providerConfig?.requestIdentity ?? null,
+        profileName: profileData.profileName ?? null,
+        profileDefinitionId: profileData.profileDefinitionId ?? null,
+        routeId: profileData.routeId ?? null,
+      }))
+      .digest('hex');
+    return {
+      sessionId: this.sessionContext.sessionId,
+      agentId: this.agentContext.agentId,
+      windowEpoch: this.states.get(contextWindowEpochKey),
+      modelAlias: resolved.modelAlias,
+      modelId: model.id,
+      modelName: model.name,
+      protocol: model.protocol,
+      providerName: model.providerName,
+      providerType: model.providerType,
+      baseUrl: model.baseUrl,
+      adapterBindingKey: this.protocolAdapters?.current?.adapterCacheKey?.(model.protocol, model.providerType),
+      endpointPresent: profileData.endpoint !== undefined,
+      endpointKey,
+      bindingRevision,
+      toolOverrideKey: JSON.stringify(profileData.toolOverride ?? null),
+      activeToolPolicyKey,
+      principalKey,
+    };
+  }
+
   private async resolveRequest(
     overrides: AgentLLMRequestOverrides,
   ): Promise<ResolvedLLMRequest> {
+    await this.identityCatalog.ready;
+    const cacheInheritance = overrides.cacheInheritance;
+    const wantsEnvelope =
+      cacheInheritance !== undefined &&
+      cacheInheritance.mode !== 'none';
+    const turnConfig = wantsEnvelope ? undefined : this.resolveTurnConfig(overrides.source);
+    const resolved = turnConfig?.resolved ?? this.profile.resolveModelContext();
+    const cognitionForScope = turnConfig?.cognition ?? await this.profile.getCognitionBinding();
+    const bindingRevision =
+      this.profile.data().boundProfile?.promptBase?.promptDiagnostics?.binding_revision ??
+      this.profile.getCognitionSnapshot()?.bindingRevision ??
+      cognitionForScope.bindingRevision;
+    const requester = this.profile.getRuntimeRequester(
+      resolved.modelAlias,
+      turnConfig?.cognition?.modelSettings ??
+        turnConfig?.cognition?.recipe?.resolved.model ??
+        this.profile.getRecipeModelSettings(resolved.modelAlias),
+    );
+    const scopeProviderConfig =
+      turnConfig?.providerConfig ??
+      this.config.get<ProvidersSection>(PROVIDERS_SECTION)?.[requester.model.providerName];
+    const envelopeScope = this.buildEnvelopeScope(resolved, requester.model, bindingRevision, scopeProviderConfig);
+    const allowWarmEnvelope = cacheInheritance?.allowWarmEnvelope !== false;
+    const candidateEnvelope = wantsEnvelope && allowWarmEnvelope ? this.lastTurnEnvelope : undefined;
+    const matchedEnvelope =
+      candidateEnvelope !== undefined && matchesTurnCacheEnvelopeScope(candidateEnvelope, envelopeScope).ok
+        ? candidateEnvelope
+        : undefined;
+
+    if (matchedEnvelope !== undefined) {
+      await this.identityCatalog.ready;
+      const agentMeta = (await this.sessionMetadata.read()).agents?.[this.agentContext.agentId];
+      const providerConfig = this.config.get<ProvidersSection>(PROVIDERS_SECTION)?.[requester.model.providerName];
+      validateRequestIdentityHeaderCollisions(providerConfig);
+      preflightRequestIdentityProjection(matchedEnvelope.requestIdentityPolicy, requester.model.protocol);
+      const rawMessages = overrides.messages ?? this.context.get();
+      const isKimiProvider = isKimiProviderFamily(requester.model.providerType, this.protocolAdapters?.current);
+      const hostIdentity = this.identity.current();
+      const isBranch = this.agentContext.isBranch === true || agentMeta?.labels?.['branch'] === 'true' ? true : undefined;
+      const identity: RequestIdentityAttemptContext = {
+        policy: matchedEnvelope.requestIdentityPolicy,
+        parentAgentId: subagentParentAgentId(agentMeta),
+        subagentKind: isBranch === true ? undefined : isSubagentMeta(agentMeta) ? 'agent' : undefined,
+        isBranch,
+        ...requestIdentitySpawnContext(agentMeta),
+        isKimiProvider,
+        hostRequestHeaders: this.profile.data().endpoint !== undefined ? {} : isKimiProvider
+          ? hostIdentity.upstreamRequestHeaders
+          : hostIdentity.requestHeaders,
+      };
+      const projectedMessages = applyExtensionUpdatesSnapshot(
+        matchedEnvelope.extensionUpdates,
+        rawMessages,
+        cacheInheritance?.baseHistoryLength,
+      );
+      const identityProjection = await this.resolveIdentityProjection(
+        identity,
+        requester,
+        rawMessages,
+        overrides.source,
+        matchedEnvelope.turnKey,
+      );
+      const effectiveToolChoice = overrides.toolChoice ?? matchedEnvelope.toolChoice;
+      const mergedRequestParams = withIdentityParams(
+        matchedEnvelope.baseRequestParams,
+        identityProjection.params,
+      );
+      if (cacheInheritance?.requireTextOnly === true && isForcedToolChoice(effectiveToolChoice, mergedRequestParams)) {
+        throw new Error2(
+          ErrorCodes.COMPACTION_UNABLE,
+          'Compaction summary requires text-only output, which is incompatible with a forced tool_choice configuration.',
+          { details: { reason: 'compaction_forced_tool_choice_incompatible' } },
+        );
+      }
+      const estimatedInputTokens = this.tokenCounting.requestSize({
+        systemPrompt: matchedEnvelope.systemPrompt,
+        tools: providerVisibleTools(matchedEnvelope.tools),
+        messages: projectedMessages,
+      });
+      const hasAnthropicBudgetThinking =
+        requester.model.protocol === 'anthropic' &&
+        (matchedEnvelope.effectiveThinkingBudget !== undefined ||
+          (matchedEnvelope.thinkingEffort !== 'off' && inferAnthropicModelProfile(requester.model.name).mode === 'budget'));
+      const budget = resolveCompactionBudget({
+        protocol: requester.model.protocol,
+        maxContextTokens: matchedEnvelope.maxContextTokens,
+        estimatedInputTokens,
+        lockedMaxCompletionTokens: matchedEnvelope.effectiveMaxCompletionTokens,
+        lockedThinkingBudget: matchedEnvelope.effectiveThinkingBudget,
+        hasAnthropicBudgetThinking,
+        fallbackMaxCompletionTokens: overrides.maxOutputSize ?? resolved.maxOutputSize,
+      });
+      if (budget.mode === 'overflow') {
+        throw new APIContextOverflowError(
+          400,
+          'Compaction request exceeds the remaining model context window for the required output and thinking budget.',
+        );
+      }
+      const status: LLMRequestCacheInheritanceStatus =
+        budget.mode === 'size_degraded' ? 'size_degraded' : 'warm_envelope';
+      const params: ModelRequestParams = {
+        thinkingEffort: overrides.thinkingEffort ?? matchedEnvelope.thinkingEffort,
+        thinkingKeep: matchedEnvelope.thinkingKeep,
+        toolChoice: effectiveToolChoice,
+        sampling: matchedEnvelope.sampling,
+        serviceTier: matchedEnvelope.serviceTier,
+        cacheKey: identityProjection.cacheKey,
+        requestParams: mergedRequestParams,
+        maxCompletionTokens: budget.maxCompletionTokens,
+        anthropicThinkingBudgetOverride: budget.thinkingBudgetOverride,
+        maxContextTokens: matchedEnvelope.maxContextTokens,
+        usedContextTokens: undefined,
+        usedContextTokensTrusted: false,
+        headers: identityProjection.headers,
+        requestIdentity: identityProjection.wire,
+      };
+      const request: ResolvedLLMRequest = {
+        requester,
+        model: requester.model,
+        params,
+        identity,
+        modelAlias: resolved.modelAlias,
+        thinkingEffort: matchedEnvelope.thinkingEffort,
+        systemPrompt: matchedEnvelope.systemPrompt,
+        tools: matchedEnvelope.tools,
+        responseFormat: overrides.responseFormat ?? matchedEnvelope.responseFormat,
+        messages: projectedMessages,
+        contextMessages: [...rawMessages],
+        source: overrides.source,
+        turnKey: matchedEnvelope.turnKey,
+        envelopeScope,
+        maxContextTokens: matchedEnvelope.maxContextTokens,
+        extensionBaselineText: matchedEnvelope.extensionBaselineText,
+        extensionUpdates: matchedEnvelope.extensionUpdates,
+        anchorApplied: matchedEnvelope.anchorApplied,
+        cognitionRevision: matchedEnvelope.cognitionRevision,
+        bindingRevision: matchedEnvelope.bindingRevision,
+        anchorSteps: matchedEnvelope.anchorSteps,
+        anchorScope: matchedEnvelope.anchorScope,
+        cacheInheritance,
+        matchedEnvelope,
+        cacheInheritanceStatus: status,
+        logFields: {
+          ...logFieldsForSource(overrides.source),
+          anchorApplied: matchedEnvelope.anchorApplied,
+          cognitionRevision: matchedEnvelope.cognitionRevision,
+          bindingRevision: matchedEnvelope.bindingRevision,
+          anchorSteps: matchedEnvelope.anchorSteps,
+          anchorScope: matchedEnvelope.anchorScope,
+          cacheInheritance: status,
+        },
+      };
+      return {
+        ...request,
+        params: {
+          ...params,
+          resolveResponsesTransport: () => this.ensureResponsesTransport(request, false),
+        },
+      };
+    }
+
+    const coldStatus: LLMRequestCacheInheritanceStatus | undefined = wantsEnvelope
+      ? !allowWarmEnvelope || this.lastTurnEnvelope === undefined
+        ? 'cold_no_envelope'
+        : 'envelope_scope_mismatch'
+      : undefined;
+    const coldFreezeKey = wantsEnvelope ? cacheInheritance?.coldFreezeKey : undefined;
+    const existingCold = coldFreezeKey === undefined ? undefined : this.coldCompactionSnapshots.get(coldFreezeKey);
+    if (existingCold !== undefined && JSON.stringify(existingCold.scope) === JSON.stringify(envelopeScope)) {
+      await this.identityCatalog.ready;
+      const agentMeta = (await this.sessionMetadata.read()).agents?.[this.agentContext.agentId];
+      const providerConfig = this.config.get<ProvidersSection>(PROVIDERS_SECTION)?.[requester.model.providerName];
+      validateRequestIdentityHeaderCollisions(providerConfig);
+      preflightRequestIdentityProjection(existingCold.requestIdentityPolicy, requester.model.protocol);
+      const rawMessages = overrides.messages ?? this.context.get();
+      const isKimiProvider = isKimiProviderFamily(requester.model.providerType, this.protocolAdapters?.current);
+      const hostIdentity = this.identity.current();
+      const isBranch = this.agentContext.isBranch === true || agentMeta?.labels?.['branch'] === 'true' ? true : undefined;
+      const identity: RequestIdentityAttemptContext = {
+        policy: existingCold.requestIdentityPolicy,
+        parentAgentId: subagentParentAgentId(agentMeta),
+        subagentKind: isBranch === true ? undefined : isSubagentMeta(agentMeta) ? 'agent' : undefined,
+        isBranch,
+        ...requestIdentitySpawnContext(agentMeta),
+        isKimiProvider,
+        hostRequestHeaders: this.profile.data().endpoint !== undefined ? {} : isKimiProvider
+          ? hostIdentity.upstreamRequestHeaders
+          : hostIdentity.requestHeaders,
+      };
+      const projectedMessages = applyExtensionUpdatesSnapshot(
+        existingCold.extensionUpdates,
+        rawMessages,
+        cacheInheritance?.baseHistoryLength,
+      );
+      const identityProjection = await this.resolveIdentityProjection(
+        identity,
+        requester,
+        rawMessages,
+        overrides.source,
+        existingCold.turnKey,
+      );
+      const effectiveToolChoice = overrides.toolChoice ?? existingCold.toolChoice;
+      const mergedRequestParams = withIdentityParams(existingCold.baseRequestParams, identityProjection.params);
+      if (cacheInheritance?.requireTextOnly === true && isForcedToolChoice(effectiveToolChoice, mergedRequestParams)) {
+        throw new Error2(
+          ErrorCodes.COMPACTION_UNABLE,
+          'Compaction summary requires text-only output, which is incompatible with a forced tool_choice configuration.',
+          { details: { reason: 'compaction_forced_tool_choice_incompatible' } },
+        );
+      }
+      const params: ModelRequestParams = {
+        thinkingEffort: overrides.thinkingEffort ?? existingCold.thinkingEffort,
+        thinkingKeep: existingCold.thinkingKeep,
+        toolChoice: effectiveToolChoice,
+        sampling: existingCold.sampling,
+        serviceTier: existingCold.serviceTier,
+        cacheKey: identityProjection.cacheKey,
+        requestParams: mergedRequestParams,
+        maxCompletionTokens: existingCold.maxCompletionTokens,
+        anthropicThinkingBudgetOverride: existingCold.thinkingBudgetOverride,
+        maxContextTokens: existingCold.maxContextTokens,
+        usedContextTokens: undefined,
+        usedContextTokensTrusted: false,
+        headers: identityProjection.headers,
+        requestIdentity: identityProjection.wire,
+      };
+      const request: ResolvedLLMRequest = {
+        requester,
+        model: requester.model,
+        params,
+        identity,
+        modelAlias: resolved.modelAlias,
+        thinkingEffort: existingCold.thinkingEffort,
+        systemPrompt: existingCold.systemPrompt,
+        tools: existingCold.tools,
+        responseFormat: overrides.responseFormat ?? existingCold.responseFormat,
+        messages: projectedMessages,
+        contextMessages: [...rawMessages],
+        source: overrides.source,
+        turnKey: existingCold.turnKey,
+        envelopeScope,
+        maxContextTokens: existingCold.maxContextTokens,
+        extensionBaselineText: existingCold.extensionBaselineText,
+        extensionUpdates: existingCold.extensionUpdates,
+        anchorApplied: false,
+        cognitionRevision: cognitionForScope.revision,
+        bindingRevision,
+        cacheInheritance,
+        cacheInheritanceStatus: coldStatus,
+        coldFreezeKey,
+        frozenColdPreBaselinePatch: {
+          captured: existingCold.preBaselinePatchCaptured,
+          patch: existingCold.preBaselinePatch,
+        },
+        logFields: {
+          ...logFieldsForSource(overrides.source),
+          cacheInheritance: coldStatus,
+        },
+      };
+      return {
+        ...request,
+        params: {
+          ...params,
+          resolveResponsesTransport: () => undefined,
+        },
+      };
+    }
+
     if (overrides.tools === undefined && this.defaultTools().some((tool) => tool.name === 'WebSearch' || tool.name === 'FetchURL')) {
       await this.nbSearch.prepareToolDescriptions();
     }
     await this.profile.preparePromptConfiguration();
     const promptConfig = this.config.get<PromptConfig>(PROMPT_SECTION);
-    const turnConfig = this.resolveTurnConfig(overrides.source);
-    const resolved = turnConfig?.resolved ?? this.profile.resolveModelContext();
     const baseParams = turnConfig?.params ?? this.profile.resolveRequestParams();
     const agentMeta = (await this.sessionMetadata.read()).agents?.[this.agentContext.agentId];
-    const requester = this.profile.getRuntimeRequester(resolved.modelAlias,
-      turnConfig?.cognition?.modelSettings ?? turnConfig?.cognition?.recipe?.resolved.model ?? this.profile.getRecipeModelSettings(resolved.modelAlias));
     const useServerOutputDefault = (requester.model.protocol === 'openai' || requester.model.protocol === 'openai_responses') &&
       !isKimiProviderFamily(requester.model.providerType, this.protocolAdapters?.current);
     const usedContextTokens = overrides.messages === undefined ? this.tokenCounting.get().measured : undefined;
@@ -1339,6 +1949,9 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     const requestIdentity =
       turnConfig?.requestIdentity ??
       this.resolveRequestIdentityPolicy(resolved, providerConfig);
+    if (turnConfig !== undefined && turnConfig.requestIdentity === undefined) {
+      turnConfig.requestIdentity = requestIdentity;
+    }
     validateRequestIdentityHeaderCollisions(providerConfig);
     preflightRequestIdentityProjection(requestIdentity, requester.model.protocol);
 
@@ -1357,15 +1970,17 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         ? hostIdentity.upstreamRequestHeaders
         : hostIdentity.requestHeaders,
     };
+    const turnKey = requestIdentityTurnKey(overrides.source);
     const identityProjection = await this.resolveIdentityProjection(
       identity,
       requester,
       messages,
       overrides.source,
+      turnKey,
     );
     const resolvedSystemPrompt =
       overrides.systemPrompt ?? turnConfig?.systemPrompt ?? this.profile.getSystemPrompt();
-    const cognition = turnConfig?.cognition ?? await this.profile.getCognitionBinding();
+    const cognition = cognitionForScope;
     const anchoredPrompt = await this.cognitionAnchor.project({
       sourceType: overrides.source?.type,
       turnId: overrides.source?.type === 'turn' ? overrides.source.turnId : undefined,
@@ -1377,21 +1992,17 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       ? turnConfig?.promptFields ?? this.profile.getPromptFieldSnapshot()
       : this.profile.getPromptFieldSnapshot({ anchor: true });
     const promptVariables = customPromptVariables(this.profile.data().boundProfile?.promptBase?.inputs?.variables ?? promptConfig?.variables);
-    const params: ModelRequestParams = {
-      ...baseParams,
-      thinkingEffort: overrides.thinkingEffort ?? baseParams.thinkingEffort,
-      toolChoice: overrides.toolChoice ?? baseParams.toolChoice,
-      cacheKey: identityProjection.cacheKey,
-      requestParams: withIdentityParams(
-        stripRequestIdentityBodyParams(stripKikiReservedRequestParams(baseParams.requestParams)),
-        identityProjection.params,
-      ),
-      ...budgetParams,
-      usedContextTokens: useServerOutputDefault ? usedContextTokens : budgetParams?.usedContextTokens,
-      usedContextTokensTrusted: overrides.messages === undefined && this.tokenCounting.isCurrentContextMeasured(),
-      headers: identityProjection.headers,
-      requestIdentity: identityProjection.wire,
-    };
+    const baseCleanRequestParams = stripRequestIdentityBodyParams(stripKikiReservedRequestParams(baseParams.requestParams));
+    const effectiveToolChoice = overrides.toolChoice ?? baseParams.toolChoice;
+    const mergedRequestParams = withIdentityParams(baseCleanRequestParams, identityProjection.params);
+    if (cacheInheritance?.requireTextOnly === true && isForcedToolChoice(effectiveToolChoice, mergedRequestParams)) {
+      throw new Error2(
+        ErrorCodes.COMPACTION_UNABLE,
+        'Compaction summary requires text-only output, which is incompatible with a forced tool_choice configuration.',
+        { details: { reason: 'compaction_forced_tool_choice_incompatible' } },
+      );
+    }
+    const maxContextTokens = baseParams.maxContextTokens ?? resolved.modelCapabilities.max_context_tokens ?? requester.model.maxContextSize;
     const sections = await this.extensions?.current?.renderPromptSections({
       sessionId: this.sessionContext.sessionId, agentId: this.agentContext.agentId, workspaceId: this.sessionContext.workspaceId,
       profileName: this.profile.data().profileName, modelAlias: resolved.modelAlias, workspaceRoot: this.sessionContext.cwd,
@@ -1399,18 +2010,98 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     const windowKey = JSON.stringify([
       this.states.get(contextWindowEpochKey),
       turnConfig === undefined ? this.profile.data().renderGeneration : turnConfig.renderGeneration,
-      this.profile.data().boundProfile?.promptBase?.promptDiagnostics?.binding_revision ?? this.profile.getCognitionSnapshot()?.bindingRevision ?? cognition.bindingRevision,
+      bindingRevision,
     ]);
     if (this.promptCacheWindow?.key !== windowKey) this.promptCacheWindow = new PromptCacheWindow(windowKey);
     const extensionProjection = overrides.source?.type === 'turn' && overrides.systemPrompt === undefined
       ? this.promptCacheWindow.projectExtensions(sections?.text ?? '', messages)
       : { text: sections?.text ?? '', messages: [...messages] };
+    const extensionSnapshot = overrides.source?.type === 'turn' && overrides.systemPrompt === undefined
+      ? this.promptCacheWindow.snapshotExtensions()
+      : undefined;
     const systemPrompt = anchoredPrompt ?? (overrides.systemPrompt !== undefined
       ? appendSharedPromptField(
           injectDelegationContext(resolvedSystemPrompt, this.profile.data().boundProfile?.promptBase?.delegationSnippet),
           promptFields, promptVariables,
         )
       : resolvedSystemPrompt);
+    const fullSystemPrompt = extensionProjection.text ? `${systemPrompt}\n\n${extensionProjection.text}` : systemPrompt;
+    const resolvedTools = this.toolsForRequest(overrides, promptFields, promptVariables, this.promptCacheWindow);
+
+    let effectiveMaxCompletionTokensParam = budgetParams?.maxCompletionTokens ?? baseParams.maxCompletionTokens;
+    let coldThinkingBudgetOverride: number | undefined;
+    if (wantsEnvelope && maxContextTokens > 0) {
+      const estimatedInputTokens = this.tokenCounting.requestSize({
+        systemPrompt: fullSystemPrompt,
+        tools: providerVisibleTools(resolvedTools),
+        messages: extensionProjection.messages,
+      });
+      const effectiveEffort = overrides.thinkingEffort ?? baseParams.thinkingEffort ?? resolved.thinkingLevel;
+      const hasAnthropicBudgetThinking =
+        requester.model.protocol === 'anthropic' &&
+        effectiveEffort !== 'off' &&
+        inferAnthropicModelProfile(requester.model.name).mode === 'budget';
+      const coldBudget = resolveCompactionBudget({
+        protocol: requester.model.protocol,
+        maxContextTokens,
+        estimatedInputTokens,
+        lockedMaxCompletionTokens: effectiveMaxCompletionTokensParam,
+        hasAnthropicBudgetThinking,
+      });
+      if (coldBudget.mode === 'overflow') {
+        throw new APIContextOverflowError(
+          400,
+          'Compaction request exceeds the remaining model context window for the required output and thinking budget.',
+        );
+      }
+      effectiveMaxCompletionTokensParam = coldBudget.maxCompletionTokens;
+      coldThinkingBudgetOverride = coldBudget.thinkingBudgetOverride;
+    }
+
+    const params: ModelRequestParams = {
+      ...baseParams,
+      thinkingEffort: overrides.thinkingEffort ?? baseParams.thinkingEffort,
+      toolChoice: effectiveToolChoice,
+      cacheKey: identityProjection.cacheKey,
+      requestParams: mergedRequestParams,
+      ...budgetParams,
+      maxCompletionTokens: effectiveMaxCompletionTokensParam,
+      anthropicThinkingBudgetOverride: coldThinkingBudgetOverride,
+      usedContextTokens: useServerOutputDefault ? usedContextTokens : budgetParams?.usedContextTokens,
+      usedContextTokensTrusted: overrides.messages === undefined && this.tokenCounting.isCurrentContextMeasured(),
+      headers: identityProjection.headers,
+      requestIdentity: identityProjection.wire,
+    };
+    const extensionBaselineText = extensionSnapshot?.baseline ?? extensionProjection.text;
+    const extensionUpdates = extensionSnapshot?.updates ?? [];
+    if (coldFreezeKey !== undefined) {
+      if (this.coldCompactionSnapshots.size >= 8) {
+        const oldest = this.coldCompactionSnapshots.keys().next().value;
+        if (oldest !== undefined) this.coldCompactionSnapshots.delete(oldest);
+      }
+      this.coldCompactionSnapshots.set(coldFreezeKey, {
+        scope: envelopeScope,
+        turnKey,
+        systemPrompt: fullSystemPrompt,
+        tools: resolvedTools,
+        toolChoice: effectiveToolChoice,
+        responseFormat: overrides.responseFormat,
+        thinkingEffort: overrides.thinkingEffort ?? baseParams.thinkingEffort ?? resolved.thinkingLevel,
+        thinkingKeep: baseParams.thinkingKeep,
+        sampling: baseParams.sampling,
+        serviceTier: baseParams.serviceTier,
+        baseRequestParams: baseCleanRequestParams,
+        maxCompletionTokens: effectiveMaxCompletionTokensParam,
+        thinkingBudgetOverride: coldThinkingBudgetOverride,
+        maxContextTokens,
+        extensionBaselineText,
+        extensionUpdates,
+        requestIdentityPolicy: requestIdentity,
+        preBaselinePatchCaptured: false,
+      });
+    }
+    const anchorSteps = cognition.config?.anchor === undefined ? undefined : cognition.config.anchorSteps ?? 1;
+    const anchorScope = cognition.config?.anchor === undefined ? undefined : cognition.config.anchorScope ?? 'session';
     const request: ResolvedLLMRequest = {
       requester,
       model: requester.model,
@@ -1418,19 +2109,33 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       identity,
       modelAlias: resolved.modelAlias,
       thinkingEffort: resolved.thinkingLevel,
-      systemPrompt: extensionProjection.text ? `${systemPrompt}\n\n${extensionProjection.text}` : systemPrompt,
-      tools: this.toolsForRequest(overrides, promptFields, promptVariables, this.promptCacheWindow),
+      systemPrompt: fullSystemPrompt,
+      tools: resolvedTools,
       responseFormat: overrides.responseFormat,
       messages: extensionProjection.messages,
       contextMessages: [...messages],
       source: overrides.source,
+      turnKey,
+      envelopeScope,
+      maxContextTokens,
+      extensionBaselineText,
+      extensionUpdates,
+      anchorApplied: anchoredPrompt !== undefined,
+      cognitionRevision: cognition.revision,
+      bindingRevision,
+      anchorSteps,
+      anchorScope,
+      cacheInheritance,
+      cacheInheritanceStatus: coldStatus,
+      coldFreezeKey,
       logFields: {
         ...logFieldsForSource(overrides.source),
         anchorApplied: anchoredPrompt !== undefined,
         cognitionRevision: cognition.revision,
         bindingRevision: cognition.bindingRevision,
-        anchorSteps: cognition.config?.anchor === undefined ? undefined : cognition.config.anchorSteps ?? 1,
-        anchorScope: cognition.config?.anchor === undefined ? undefined : cognition.config.anchorScope ?? 'session',
+        anchorSteps,
+        anchorScope,
+        ...(coldStatus === undefined ? {} : { cacheInheritance: coldStatus }),
       },
     };
     return {
@@ -1491,7 +2196,6 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         cognition: this.profile.getCognitionSnapshot(),
         promptPrepared: preparePrompt,
         providerConfig,
-        requestIdentity: this.resolveRequestIdentityPolicy(resolved, providerConfig),
       };
       this.turnConfigs.set(turnId, snapshot);
     }

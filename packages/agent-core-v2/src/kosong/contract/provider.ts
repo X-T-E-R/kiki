@@ -110,13 +110,42 @@ export interface RawResponseObserver {
   end(outcome: string): void;
 }
 
+export interface AnthropicProvenBreakpoint {
+  readonly messageIndex: number;
+  readonly blockIndex: number;
+  readonly role: 'user' | 'assistant';
+  readonly blockDigest: string;
+  readonly ttl?: '5m' | '1h';
+}
+
+export interface ProviderCacheEvidence {
+  readonly effectiveMaxCompletionTokens?: number;
+  readonly anthropic?: {
+    readonly messageBreakpoints: readonly AnthropicProvenBreakpoint[];
+    readonly fixedBreakpointCount: number;
+    readonly effectiveMaxTokens?: number;
+    readonly effectiveThinkingBudget?: number;
+  };
+}
+
+export type AnthropicThreadDisposition =
+  | 'turn'
+  | 'auxiliary_exclusive'
+  | 'auxiliary_readonly'
+  | 'auxiliary_force_create';
+
 export interface GenerateOptions {
   readonly toolCallIngress?: (call: import('./message').ToolCall) => import('./message').ToolCall;
   rawResponseObserver?: RawResponseObserver;
   streamTaps?: readonly LLMStreamTapObserver[];
   deterministicVendorFields?: Readonly<Record<string, TransportJsonValue>>;
   forceFullResponsesInput?: boolean;
+  responsesAuxiliaryNonCommitting?: boolean;
   responsesBaselinePolicyKey?: string;
+  inheritedAnthropicBreakpoints?: readonly AnthropicProvenBreakpoint[];
+  anthropicThreadDisposition?: AnthropicThreadDisposition;
+  anthropicThinkingBudgetOverride?: number;
+  onProviderCacheEvidence?: (evidence: ProviderCacheEvidence) => void;
   signal?: AbortSignal;
   auth?: ProviderRequestAuth;
   responseFormat?: ResponseFormat;

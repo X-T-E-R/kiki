@@ -212,7 +212,7 @@ describe('model switch integration with current prompt projections', () => {
     const restored = await createHost();
     await restored.ctx.restore(records);
     const engine = restored.ctx.get(IAgentModelSwitchService);
-    const summary = vi.spyOn(restored.ctx.get(IAgentFullCompactionService), 'prepareModelSwitchSummary');
+    const summary = vi.spyOn(restored.ctx.get(IAgentFullCompactionService), 'prepareSummary');
     expect(engine.get(input.operationId)).toMatchObject({ state: 'preparing' });
     const update = restored.metadata.updateAgent.bind(restored.metadata);
     vi.spyOn(restored.metadata, 'updateAgent').mockRejectedValueOnce(new Error('cold metadata unavailable')).mockImplementation(update);
@@ -408,7 +408,7 @@ describe('failed switch mode recovery', () => {
   it.each(['direct', 'fresh'] as const)('serializes competing %s recovery before the first queue update settles', async (mode) => {
     const { ctx } = await createHost();
     const service = ctx.get(IAgentPromptService);
-    vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareModelSwitchSummary').mockRejectedValue(new Error('old model offline'));
+    vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareSummary').mockRejectedValue(new Error('old model offline'));
     const operationId = 'concurrent-mode';
     expect(await service.switchModel({ operationId, model: NEW, mode: 'compact' })).toMatchObject({ state: 'failed' });
     const dispatcher = ctx.get(IEventDispatcher);
@@ -445,7 +445,7 @@ describe('failed switch mode recovery', () => {
   it('recovers failed compact as fresh under the original operation and dependent prompt identities', async () => {
     const { ctx, profile } = await createHost();
     const service = ctx.get(IAgentPromptService);
-    const summary = vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareModelSwitchSummary').mockRejectedValue(new Error('old model offline'));
+    const summary = vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareSummary').mockRejectedValue(new Error('old model offline'));
     const operationId = 'compact-to-fresh';
     expect(await service.switchModel({ operationId, model: NEW, mode: 'compact' })).toMatchObject({ state: 'failed' });
     const dependent = await service.enqueue({ id: 'original-dependent', message: { role: 'user', content: [{ type: 'text', text: 'Continue the original task.' }], toolCalls: [] }, execution: { afterModelSwitch: operationId } });
