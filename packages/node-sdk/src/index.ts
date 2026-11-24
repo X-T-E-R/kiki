@@ -7,6 +7,21 @@ export { configurePluginIsolationWorkerRuntime } from '#/plugin-isolation-worker
 export { configureMailboxWorkerRuntime } from '@kiki/agent-core-v2/persistence/backends/sqliteMailbox/protocol';
 export { assertMailboxStartupReady, createMailboxMigrationService } from '#/storage-migration';
 export type { MailboxMigrationOptions, MailboxMigrationPhase, MailboxMigrationProgress, MailboxMigrationService, MailboxMigrationSource, MailboxMigrationStatus, MailboxRecoveryCleanupPlan } from '#/storage-migration';
+export { createStorageGovernanceService, RETIRED_STORAGE_ALLOWLIST, StorageGovernanceService } from '#/storage-governance';
+export type {
+  CleanRetiredItemResult,
+  DeduplicateItemRecord,
+  RetiredRootStatus,
+  StorageBucketStats,
+  StorageCleanRetiredOptions,
+  StorageCleanRetiredReport,
+  StorageDeduplicateOptions,
+  StorageDeduplicateReport,
+  StorageSlimCheckpointsOptions,
+  StorageSlimCheckpointsReport,
+  StorageStatusReport,
+  WorkspaceStorageEntry,
+} from '#/storage-governance';
 export { KimiHarness } from '#/kimi-harness';
 export type { KimiHarnessExitReceipt, KimiHarnessRuntimeOptions } from '#/kimi-harness';
 export { Session } from '#/session';

@@ -79,6 +79,7 @@ interface FilesReply {
 
 const DEFAULT_UPLOAD_MAX_CONCURRENCY = 8;
 const DEFAULT_UPLOAD_MAX_QUEUE = 64;
+const DEFAULT_STAGED_UPLOAD_TTL_SEC = 24 * 60 * 60;
 
 function readPositiveIntEnv(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name];
@@ -213,7 +214,7 @@ export function registerFilesRoutes(app: FilesRouteHost, core: Scope): void {
           const meta = await store.save(source, filePart.filename, () => ({
             name: readFieldString(filePart.fields['name']) ?? filePart.filename,
             mimeType: filePart.mimetype,
-            expiresInSec: readFieldNumber(filePart.fields['expires_in_sec']),
+            expiresInSec: readFieldNumber(filePart.fields['expires_in_sec']) ?? DEFAULT_STAGED_UPLOAD_TTL_SEC,
             sessionId: readFieldString(filePart.fields['session_id']),
           }));
           reply.send(okEnvelope(meta, req.id));

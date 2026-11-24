@@ -3,7 +3,12 @@ import type { ResolvedImagePolicy } from '#/kosong/provider/providerImagePolicy'
 import type { ContentPart } from '#/kosong/contract/message';
 import { VideoUploadUnsupportedError } from '#/kosong/contract/errors';
 import { inlineVideoPart, isVideoUploadAuthError } from '#/agent/media/videoUpload';
-import { compressAudioForModel, compressVideoForModel } from '#/agent/media/av-compress';
+import { compressAudioForModel, compressVideoForModel, resolveAvInlineByteBudget } from '#/agent/media/av-compress';
+import type { IAgentBlobService } from '#/agent/blob/agentBlobService';
+import {
+  HOST_PINNED_MIN_BYTES,
+  formatHostPinnedUrl,
+} from '#/agent/media/hostPinnedMedia';
 import type { ImageDeliveryLimits } from '#/agent/media/imageConfigBridge';
 import type { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
@@ -25,7 +30,7 @@ import {
   detectFileType,
   sniffImageDimensions,
 } from '#/agent/media/file-type';
-import { validateMediaBytesIntegrity } from '#/agent/media/mediaIntegrity';
+import { validateMediaBytesIntegrity, validateMediaFileIntegrity } from '#/agent/media/mediaIntegrity';
 import {
   IMAGE_BYTE_BUDGET,
   MAX_IMAGE_DECODE_BYTES,
@@ -106,7 +111,7 @@ interface ImageDelivery {
 }
 
 interface AvDelivery {
-  readonly kind: 'untouched' | 'compressed' | 'full';
+  readonly kind: 'untouched' | 'compressed' | 'full' | 'host_pinned';
   readonly byteLength: number;
   readonly mimeType: string;
 }
@@ -161,6 +166,8 @@ function buildMediaNote(input: {
     );
   } else if (avDelivery?.kind === 'full') {
     parts.push('Sent at original quality; local pre-compression skipped.');
+  } else if (avDelivery?.kind === 'host_pinned') {
+    parts.push('Referenced via non-archived host-pinned handle; becomes unavailable if the source file changes or is deleted.');
   }
   if (input.kind === 'image' && input.dimensions && delivery?.kind !== 'crop') {
     parts.push(
@@ -231,6 +238,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     private readonly imagePolicy?: ResolvedImagePolicy,
     private readonly cpuWorker?: ICpuWorkerService,
     private readonly imageLimits?: ImageDeliveryLimits,
+    private readonly blobService?: IAgentBlobService,
   ) {
     this.description = buildDescription(capabilities);
     this.compressTelemetry =
@@ -355,7 +363,23 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
           } catch (error) {
             return { isError: true, output: error instanceof Error ? error.message : String(error) };
           }
-          return tagSshResult(await this.execution(args, path, lease.runtime.fs!, env, ctx?.signal), inspected);
+          return tagSshResult(
+            await this.execution(
+              args,
+              path,
+              lease.runtime.fs!,
+              env,
+              !inspected.identity.runtimeId.startsWith('ssh:'),
+              [
+                workspace.workspaceDir,
+                ...workspace.additionalDirs,
+                ...(workspace.definitionReadRoots ?? []),
+                ...(workspace.sessionAttachmentsReadRoot === undefined ? [] : [workspace.sessionAttachmentsReadRoot]),
+              ],
+              ctx?.signal,
+            ),
+            inspected,
+          );
         } finally {
           lease.dispose();
         }
@@ -368,6 +392,8 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     safePath: string,
     fs: IHostFileSystem,
     env: HostEnvironmentInfo,
+    isLocalRuntime = true,
+    allowedRoots: readonly string[] = [],
     signal?: AbortSignal,
   ): Promise<ExecutableToolResult> {
     if (!args.path) {
@@ -501,9 +527,24 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
         };
       }
 
-      const mediaData = data ?? Buffer.from(await fs.readBytes(safePath));
+      let dimensions: { readonly width: number; readonly height: number } | null = null;
+      let mediaPart: ContentPart;
+      let delivery: ImageDelivery | undefined;
+      let avDelivery: AvDelivery | undefined;
+      if (args.pin_host_file === true && fileType.kind === 'image') {
+        return {
+          isError: true,
+          output: 'pin_host_file applies only to unmodified local audio or video files (>= 4 MiB).',
+        };
+      }
       if (fileType.kind === 'video' || fileType.kind === 'audio') {
-        const integrity = validateMediaBytesIntegrity(mediaData, fileType.mimeType);
+        const integrity = data !== undefined
+          ? validateMediaBytesIntegrity(data, fileType.mimeType)
+          : await validateMediaFileIntegrity(
+              (offset, length) => fs.readBytes(safePath, length, offset),
+              stat.size,
+              fileType.mimeType,
+            );
         if (!integrity.valid) {
           return {
             isError: true,
@@ -512,12 +553,94 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
               'If an encoder or writer is still producing this file, wait until it finishes before calling ReadMediaFile again.',
           };
         }
-      }
-      let dimensions = fileType.kind === 'image' ? sniffImageDimensions(mediaData) : null;
-      let mediaPart: ContentPart;
-      let delivery: ImageDelivery | undefined;
-      let avDelivery: AvDelivery | undefined;
-      if (fileType.kind === 'image') {
+        if (args.pin_host_file === true) {
+          if (!isLocalRuntime) {
+            return {
+              isError: true,
+              output: 'pin_host_file is only supported for local files, not SSH targets. Omit pin_host_file to archive into session storage.',
+            };
+          }
+          if (stat.size < HOST_PINNED_MIN_BYTES) {
+            return {
+              isError: true,
+              output: `pin_host_file requires files >= ${String(HOST_PINNED_MIN_BYTES)} bytes. Omit pin_host_file to archive smaller files.`,
+            };
+          }
+          if (this.blobService?.registerHostPinnedRef === undefined) {
+            return {
+              isError: true,
+              output: 'pin_host_file is unavailable in this runtime context. Omit pin_host_file to archive into session storage.',
+            };
+          }
+          const pinned = await this.blobService.registerHostPinnedRef({
+            path: safePath,
+            mimeType: fileType.mimeType,
+            allowedRoots,
+            signal,
+          });
+          const pinnedUrl = formatHostPinnedUrl(pinned.refId);
+          mediaPart = fileType.kind === 'video'
+            ? { type: 'video_url', videoUrl: { url: pinnedUrl } }
+            : { type: 'audio_url', audioUrl: { url: pinnedUrl } };
+          avDelivery = {
+            kind: 'host_pinned',
+            byteLength: pinned.size,
+            mimeType: pinned.mimeType,
+          };
+        } else {
+          const inlineBudget = resolveAvInlineByteBudget();
+          const canStreamArchiveDirectly =
+            isLocalRuntime &&
+            this.blobService?.offloadFile !== undefined &&
+            (args.full_resolution === true || stat.size <= inlineBudget) &&
+            (fileType.kind === 'audio' || this.videoUploader === undefined);
+          if (canStreamArchiveDirectly) {
+            const refUrl = await this.blobService!.offloadFile!(fileType.mimeType, safePath, { signal });
+            mediaPart = fileType.kind === 'video'
+              ? { type: 'video_url', videoUrl: { url: refUrl } }
+              : { type: 'audio_url', audioUrl: { url: refUrl } };
+            avDelivery = {
+              kind: args.full_resolution === true ? 'full' : 'untouched',
+              byteLength: stat.size,
+              mimeType: fileType.mimeType,
+            };
+          } else {
+            const mediaData = data ?? Buffer.from(await fs.readBytes(safePath));
+            if (fileType.kind === 'video') {
+              const videoOutcome = await this.videoContentPart(
+                mediaData,
+                fileType.mimeType,
+                safePath,
+                args.full_resolution === true,
+                signal,
+              );
+              mediaPart = await this.maybeDehydratePart(videoOutcome.part, signal);
+              avDelivery = videoOutcome.avDelivery;
+            } else if (args.full_resolution === true) {
+              mediaPart = await this.buildAudioPart(mediaData, fileType.mimeType, signal);
+              avDelivery = {
+                kind: 'full',
+                byteLength: mediaData.length,
+                mimeType: fileType.mimeType,
+              };
+            } else {
+              const compressed = await compressAudioForModel(mediaData, fileType.mimeType, { signal });
+              const useCompressed =
+                compressed.changed && validateMediaBytesIntegrity(compressed.data, compressed.mimeType).valid;
+              const finalAudioBytes = useCompressed ? compressed.data : mediaData;
+              const finalAudioMime = useCompressed ? compressed.mimeType : fileType.mimeType;
+              mediaPart = await this.buildAudioPart(finalAudioBytes, finalAudioMime, signal);
+              avDelivery = {
+                kind: useCompressed ? 'compressed' : 'untouched',
+                byteLength: finalAudioBytes.length,
+                mimeType: finalAudioMime,
+              };
+            }
+          }
+        }
+      } else {
+        const mediaData = data ?? Buffer.from(await fs.readBytes(safePath));
+        dimensions = sniffImageDimensions(mediaData);
         if (args.region !== undefined) {
           const outcome = await cropImageForModel(mediaData, fileType.mimeType, args.region, {
             maxEdge: imageDeliveryLimits.maxEdge,
@@ -531,11 +654,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
           if (!outcome.ok) {
             return { isError: true, output: `Cannot read region from "${args.path}": ${outcome.error}` };
           }
-          const base64 = Buffer.from(outcome.data).toString('base64');
-          mediaPart = {
-            type: 'image_url',
-            imageUrl: { url: `data:${outcome.mimeType};base64,${base64}` },
-          };
+          mediaPart = await this.buildImagePart(outcome.data, outcome.mimeType, signal);
           delivery = {
             kind: 'crop',
             width: outcome.width,
@@ -553,11 +672,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
               output: buildFullResolutionLimitError(args.path, mediaData.length),
             };
           }
-          const base64 = mediaData.toString('base64');
-          mediaPart = {
-            type: 'image_url',
-            imageUrl: { url: `data:${fileType.mimeType};base64,${base64}` },
-          };
+          mediaPart = await this.buildImagePart(mediaData, fileType.mimeType, signal);
           delivery = {
             kind: 'full',
             width: dimensions?.width ?? 0,
@@ -589,11 +704,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
               }),
             };
           }
-          const base64 = Buffer.from(compressed.data).toString('base64');
-          mediaPart = {
-            type: 'image_url',
-            imageUrl: { url: `data:${compressed.mimeType};base64,${base64}` },
-          };
+          mediaPart = await this.buildImagePart(compressed.data, compressed.mimeType, signal);
           delivery = {
             kind: compressed.changed ? 'downsampled' : 'untouched',
             width: compressed.width,
@@ -605,43 +716,6 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
             dimensions = { width: compressed.originalWidth, height: compressed.originalHeight };
           }
         }
-      } else if (fileType.kind === 'video') {
-        const videoOutcome = await this.videoContentPart(
-          mediaData,
-          fileType.mimeType,
-          safePath,
-          args.full_resolution === true,
-          signal,
-        );
-        mediaPart = videoOutcome.part;
-        avDelivery = videoOutcome.avDelivery;
-      } else if (args.full_resolution === true) {
-        mediaPart = {
-          type: 'audio_url',
-          audioUrl: { url: `data:${fileType.mimeType};base64,${mediaData.toString('base64')}` },
-        };
-        avDelivery = {
-          kind: 'full',
-          byteLength: mediaData.length,
-          mimeType: fileType.mimeType,
-        };
-      } else {
-        const compressed = await compressAudioForModel(mediaData, fileType.mimeType, { signal });
-        const useCompressed =
-          compressed.changed && validateMediaBytesIntegrity(compressed.data, compressed.mimeType).valid;
-        const finalAudioBytes = useCompressed ? compressed.data : mediaData;
-        const finalAudioMime = useCompressed ? compressed.mimeType : fileType.mimeType;
-        mediaPart = {
-          type: 'audio_url',
-          audioUrl: {
-            url: `data:${finalAudioMime};base64,${Buffer.from(finalAudioBytes).toString('base64')}`,
-          },
-        };
-        avDelivery = {
-          kind: useCompressed ? 'compressed' : 'untouched',
-          byteLength: finalAudioBytes.length,
-          mimeType: finalAudioMime,
-        };
       }
 
       const tag = fileType.kind;
@@ -670,5 +744,38 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
         output: `Failed to read ${args.path}: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
+  }
+
+  private async buildImagePart(
+    bytes: Uint8Array,
+    mimeType: string,
+    signal: AbortSignal | undefined,
+  ): Promise<ContentPart> {
+    if (this.blobService?.offloadBytes !== undefined && bytes.byteLength >= 3072) {
+      const url = await this.blobService.offloadBytes(mimeType, bytes, { signal });
+      return { type: 'image_url', imageUrl: { url } };
+    }
+    const base64 = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
+    return { type: 'image_url', imageUrl: { url: `data:${mimeType};base64,${base64}` } };
+  }
+
+  private async buildAudioPart(
+    bytes: Uint8Array,
+    mimeType: string,
+    signal: AbortSignal | undefined,
+  ): Promise<ContentPart> {
+    if (this.blobService?.offloadBytes !== undefined && bytes.byteLength >= 3072) {
+      const url = await this.blobService.offloadBytes(mimeType, bytes, { signal });
+      return { type: 'audio_url', audioUrl: { url } };
+    }
+    const base64 = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
+    return { type: 'audio_url', audioUrl: { url: `data:${mimeType};base64,${base64}` } };
+  }
+
+  private async maybeDehydratePart(part: ContentPart, signal: AbortSignal | undefined): Promise<ContentPart> {
+    if (this.blobService === undefined) return part;
+    signal?.throwIfAborted();
+    const offloaded = await this.blobService.offloadParts([part]);
+    return offloaded[0] ?? part;
   }
 }

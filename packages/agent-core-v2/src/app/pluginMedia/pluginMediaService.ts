@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -7,11 +8,13 @@ import { Service } from '#/_base/di/service';
 import { toErrorMessage } from '#/_base/errors/errorMessage';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { IInstantiationService, type ServiceIdentifier } from '#/_base/di/instantiation';
+import { IInstantiationService, ref, type LiveRef, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IBlobStore } from '#/persistence/interface/blobStore';
+import { IContentAddressedStore } from '#/persistence/interface/contentAddressedStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IConfigService, ConfigTarget } from '#/app/config/config';
 import { PLUGINS_SECTION, type PluginsSection } from '#/app/plugin/configSection';
@@ -28,25 +31,60 @@ import { mediaSourceUpdateSchema, mediaScriptSourceInputSchema, mediaSourceSetti
 const prefix = '';
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const activeStates = new Set(['running', 'pending']);
+const PLUGIN_MEDIA_INPUTS_MAX_BYTES = 256 * 1024 * 1024;
+const PLUGIN_MEDIA_INPUTS_MAX_ENTRIES = 512;
+const PLUGIN_MEDIA_INPUTS_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export class PluginMediaService extends Service implements IPluginMediaService {
   declare readonly _serviceBrand: undefined;
   readonly ready: Promise<void>;
   private readonly active = new Map<string, { controller: AbortController; result: Promise<MediaJob> }>();
   private readonly progress = new Map<string, NonNullable<import('#/app/plugin/pluginHostService').PluginMediaCallContext['onProgress']>>();
+  private readonly pinnedInputHashes = new Set<string>();
+  private activeDiscoveries = 0;
   private readonly scope: string;
   private readonly cache: string;
   private shuttingDown = false;
   private readonly usage?: IPluginUsageService;
   private readonly sessions?: ISessionIndex;
+  private readonly blobs?: IBlobStore;
 
   async stageInput(key: string, name: string, source: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<string> {
-    const scope = `${this.cache}/inputs/${hash(key)}`;
+    const inputHash = hash(key);
+    const scope = `${this.cache}/inputs/${inputHash}`;
     const filename = path.basename(name);
-    await this.storage.writeStream(scope, filename, source, { atomic: true, signal });
-    const location = this.storage.pathFor(scope, filename);
-    if (location === undefined) throw new Error('Media input snapshots require the host file storage backend');
-    return location;
+    this.pinnedInputHashes.add(inputHash);
+    try {
+      const pinned = await this.collectPinnedInputHashes();
+      const budgetBefore = await this.sweepInputsCache(pinned, 0);
+      const maxIncoming = PLUGIN_MEDIA_INPUTS_MAX_BYTES - budgetBefore.pinnedBytes;
+      if (maxIncoming <= 0) {
+        throw new Error('Plugin media input cache budget (256 MiB) exceeded by active pinned inputs');
+      }
+      let written = 0;
+      const metered = (async function* (): AsyncIterable<Uint8Array> {
+        for await (const chunk of source) {
+          signal.throwIfAborted();
+          written += chunk.byteLength;
+          if (written > maxIncoming) {
+            throw new Error('Plugin media input exceeds 256 MiB input cache budget');
+          }
+          yield chunk;
+        }
+      })();
+      try {
+        await this.storage.writeStream(scope, filename, metered, { atomic: true, signal });
+      } catch (error) {
+        await this.storage.delete(scope, filename).catch(() => undefined);
+        throw error;
+      }
+      const location = this.storage.pathFor(scope, filename);
+      if (location === undefined) throw new Error('Media input snapshots require the host file storage backend');
+      await this.sweepInputsCache(pinned, 0);
+      return location;
+    } finally {
+      this.pinnedInputHashes.delete(inputHash);
+    }
   }
 
   constructor(
@@ -58,10 +96,12 @@ export class PluginMediaService extends Service implements IPluginMediaService {
     @IInstantiationService instantiation: IInstantiationService,
     @IPluginService private readonly plugins: IPluginService,
     @IPluginSettingsService private readonly settings: IPluginSettingsService,
+    @ref(IContentAddressedStore) private readonly casRef?: LiveRef<IContentAddressedStore>,
   ) {
     super();
     this.usage = optionalService(instantiation, IPluginUsageService);
     this.sessions = optionalService(instantiation, ISessionIndex);
+    this.blobs = optionalService(instantiation, IBlobStore);
     this.scope = `${bootstrap.scope('store')}/plugin-media-v1`;
     this.cache = `${bootstrap.scope('cache')}/plugin-media-v1`;
     this._register(instantiation.onWillDispose(() => {
@@ -206,8 +246,16 @@ export class PluginMediaService extends Service implements IPluginMediaService {
 
   private async discover(provider: string, action: 'describe' | 'voices', query: unknown, scope?: MediaScopeContext) {
     await this.assertProviderAllowed(provider, scope);
-    const stagingDir = await this.staging('discovery');
-    return this.hosts.requestMediaProvider(provider, action, query, AbortSignal.timeout(60_000), { jobId: 'discovery', stagingDir });
+    this.activeDiscoveries += 1;
+    try {
+      const stagingDir = await this.staging('discovery');
+      return await this.hosts.requestMediaProvider(provider, action, query, AbortSignal.timeout(60_000), { jobId: 'discovery', stagingDir });
+    } finally {
+      this.activeDiscoveries = Math.max(0, this.activeDiscoveries - 1);
+      if (this.activeDiscoveries === 0) {
+        await this.removeStagingDirectory('discovery');
+      }
+    }
   }
 
   private async filterScopedProviders<T extends { readonly provider: string }>(
@@ -318,8 +366,9 @@ export class PluginMediaService extends Service implements IPluginMediaService {
     const current = this.active.get(id);
     if (current !== undefined) return current.result;
     const controller = new AbortController();
-    const result = this.execute(id, controller.signal).finally(() => {
+    const result = this.execute(id, controller.signal).finally(async () => {
       if (this.active.get(id)?.controller === controller) { this.active.delete(id); this.progress.delete(id); }
+      await this.maybeCleanupJobStaging(id).catch(() => undefined);
     });
     this.active.set(id, { controller, result });
     void result.catch(() => {});
@@ -352,7 +401,9 @@ export class PluginMediaService extends Service implements IPluginMediaService {
       }
     }
     const record = await this.stored(id);
-    return (await this.save({ ...record, view: { ...record.view, cancellation, can_resume: cancellation.remote !== 'cancelled' && record.view.can_resume } })).view;
+    const saved = (await this.save({ ...record, view: { ...record.view, cancellation, can_resume: cancellation.remote !== 'cancelled' && record.view.can_resume } })).view;
+    await this.maybeCleanupJobStaging(id).catch(() => undefined);
+    return saved;
   }
 
   private async execute(id: string, signal: AbortSignal): Promise<MediaJob> {
@@ -421,7 +472,17 @@ export class PluginMediaService extends Service implements IPluginMediaService {
   }
 
   private async materialize(record: StoredMediaJob, outcome: MediaOutcome, signal: AbortSignal): Promise<StoredMediaJob> {
-    const media = new ScopedMediaStore(record.owner.mediaScope, this.storage, this.documents);
+    const session = await this.sessions?.get(record.owner.sessionId).catch(() => undefined);
+    const allowSharedCas = session !== undefined && session.private === false;
+    const media = new ScopedMediaStore(
+      record.owner.mediaScope,
+      this.storage,
+      this.documents,
+      this.blobs,
+      undefined,
+      this.casRef?.current,
+      allowSharedCas,
+    );
     const stagingScope = `${this.cache}/${record.view.job_id}`;
     const base = await this.staging(record.view.job_id);
     for (const draft of outcome.artifacts ?? []) {
@@ -463,6 +524,114 @@ export class PluginMediaService extends Service implements IPluginMediaService {
     return path.dirname(location);
   }
 
+  private async maybeCleanupJobStaging(id: string): Promise<void> {
+    if (this.active.has(id)) return;
+    const record = await this.documents.get<StoredMediaJob>(this.scope, `${prefix}${id}.json`).catch(() => undefined);
+    if (record === undefined) return;
+    if (record.view.can_resume || activeStates.has(record.view.state)) return;
+    if (record.view.state === 'partial' || record.view.state === 'unknown') return;
+    if (record.view.state === 'succeeded') {
+      const allMaterialized =
+        record.view.artifacts.length > 0 &&
+        record.view.artifacts.every((artifact) => artifact.complete && typeof artifact.file_id === 'string' && artifact.file_id.length > 0);
+      if (!allMaterialized) return;
+    }
+    await this.removeStagingDirectory(id);
+  }
+
+  private async removeStagingDirectory(id: string): Promise<void> {
+    const scope = `${this.cache}/${id}`;
+    const readyPath = this.storage.pathFor(scope, '.ready');
+    if (readyPath !== undefined) {
+      await rm(path.dirname(readyPath), { recursive: true, force: true }).catch(() => undefined);
+      return;
+    }
+    const entries = await this.storage.list(scope).catch(() => []);
+    for (const entry of entries) {
+      await this.storage.delete(scope, entry).catch(() => undefined);
+    }
+  }
+
+  private async collectPinnedInputHashes(): Promise<Set<string>> {
+    const pinned = new Set<string>(this.pinnedInputHashes);
+    const records = await this.readAll().catch(() => []);
+    const inputsBase = this.storage.pathFor(`${this.cache}/inputs`, '');
+    for (const record of records) {
+      if (!activeStates.has(record.view.state) && !record.view.can_resume && !this.active.has(record.view.job_id)) {
+        continue;
+      }
+      const serialized = JSON.stringify(record.input);
+      if (inputsBase !== undefined) {
+        const matches = serialized.matchAll(/[a-f0-9]{64}/g);
+        for (const match of matches) pinned.add(match[0]);
+      }
+    }
+    return pinned;
+  }
+
+  private async sweepInputsCache(
+    pinned: ReadonlySet<string>,
+    reserveBytes: number,
+  ): Promise<{ readonly totalBytes: number; readonly pinnedBytes: number }> {
+    const inputsDir = this.storage.pathFor(`${this.cache}/inputs`, '');
+    if (inputsDir === undefined) return { totalBytes: 0, pinnedBytes: 0 };
+    let entries;
+    try {
+      entries = await readdir(inputsDir, { withFileTypes: true });
+    } catch {
+      return { totalBytes: 0, pinnedBytes: 0 };
+    }
+    const now = Date.now();
+    const candidates: Array<{
+      readonly name: string;
+      readonly fullPath: string;
+      readonly bytes: number;
+      readonly mtimeMs: number;
+      readonly pinned: boolean;
+      readonly expired: boolean;
+    }> = [];
+    let totalBytes = 0;
+    let pinnedBytes = 0;
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const fullPath = path.join(inputsDir, entry.name);
+      const measured = await measureEntryTree(fullPath);
+      const isPinned = pinned.has(entry.name);
+      const expired = !isPinned && now - measured.mtimeMs > PLUGIN_MEDIA_INPUTS_MAX_AGE_MS;
+      totalBytes += measured.bytes;
+      if (isPinned) pinnedBytes += measured.bytes;
+      candidates.push({
+        name: entry.name,
+        fullPath,
+        bytes: measured.bytes,
+        mtimeMs: measured.mtimeMs,
+        pinned: isPinned,
+        expired,
+      });
+    }
+    let remainingCount = candidates.length;
+    for (const item of candidates) {
+      if (!item.expired) continue;
+      await rm(item.fullPath, { recursive: true, force: true }).catch(() => undefined);
+      totalBytes = Math.max(0, totalBytes - item.bytes);
+      remainingCount = Math.max(0, remainingCount - 1);
+    }
+    const targetBytes = Math.max(0, PLUGIN_MEDIA_INPUTS_MAX_BYTES - reserveBytes);
+    if (totalBytes <= targetBytes && remainingCount <= PLUGIN_MEDIA_INPUTS_MAX_ENTRIES) {
+      return { totalBytes, pinnedBytes };
+    }
+    const evictable = candidates
+      .filter((item) => !item.pinned && !item.expired)
+      .sort((a, b) => a.mtimeMs - b.mtimeMs);
+    for (const item of evictable) {
+      if (totalBytes <= targetBytes && remainingCount <= PLUGIN_MEDIA_INPUTS_MAX_ENTRIES) break;
+      await rm(item.fullPath, { recursive: true, force: true }).catch(() => undefined);
+      totalBytes = Math.max(0, totalBytes - item.bytes);
+      remainingCount = Math.max(0, remainingCount - 1);
+    }
+    return { totalBytes, pinnedBytes };
+  }
+
   private async readAll(): Promise<StoredMediaJob[]> {
     const records: StoredMediaJob[] = [];
     for (const key of await this.documents.list(this.scope, prefix)) {
@@ -487,6 +656,26 @@ export class PluginMediaService extends Service implements IPluginMediaService {
     for (const execution of this.active.values()) execution.controller.abort(new Error('Host shutdown'));
     return super.dispose();
   }
+}
+
+async function measureEntryTree(targetPath: string): Promise<{ readonly bytes: number; readonly mtimeMs: number }> {
+  let info;
+  try {
+    info = await stat(targetPath);
+  } catch {
+    return { bytes: 0, mtimeMs: 0 };
+  }
+  if (!info.isDirectory()) return { bytes: info.size, mtimeMs: info.mtimeMs };
+  let bytes = 0;
+  let mtimeMs = info.mtimeMs;
+  const children = await readdir(targetPath, { withFileTypes: true }).catch(() => []);
+  for (const child of children) {
+    if (child.isSymbolicLink()) continue;
+    const measured = await measureEntryTree(path.join(targetPath, child.name));
+    bytes += measured.bytes;
+    if (measured.mtimeMs > mtimeMs) mtimeMs = measured.mtimeMs;
+  }
+  return { bytes, mtimeMs };
 }
 
 function optionalService<T>(instantiation: IInstantiationService, id: ServiceIdentifier<T>): T | undefined {

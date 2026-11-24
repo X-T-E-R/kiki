@@ -81,12 +81,19 @@ async function readHostPlanCheckpoint(
   signal?: AbortSignal,
 ): Promise<PlanCheckpointSeed | undefined> {
   signal?.throwIfAborted();
-  const ckptPath = join(agentDir, 'replay-checkpoints', 'engine-v1');
+  let ckptPath = join(agentDir, 'replay-checkpoints', 'engine-v1');
+  let isProjection = false;
   let ckptStat: Awaited<ReturnType<IHostFileSystem['stat']>>;
   try {
     ckptStat = await hostFs.stat(ckptPath);
   } catch {
-    return undefined;
+    ckptPath = join(agentDir, 'replay-checkpoints', 'cold-projection-v1.json');
+    isProjection = true;
+    try {
+      ckptStat = await hostFs.stat(ckptPath);
+    } catch {
+      return undefined;
+    }
   }
   if (!ckptStat.isFile) return undefined;
   const cacheKey = `${ckptPath}:${ckptStat.size}:${ckptStat.mtimeMs ?? 0}:${size}:${mtimeMs}`;
@@ -102,14 +109,15 @@ async function readHostPlanCheckpoint(
     return undefined;
   }
   signal?.throwIfAborted();
-  let checkpoint: HostCheckpointEnvelope | undefined;
+  let checkpoint: (HostCheckpointEnvelope & { readonly projectedGraph?: HostCheckpointEnvelope['graph'] }) | undefined;
   try {
-    checkpoint = JSON.parse(raw) as HostCheckpointEnvelope;
+    checkpoint = JSON.parse(raw) as HostCheckpointEnvelope & { readonly projectedGraph?: HostCheckpointEnvelope['graph'] };
   } catch {
     cacheHostCheckpoint(cacheKey, null);
     return undefined;
   }
-  if (checkpoint?.format !== 1 || checkpoint.replayAbi !== REPLAY_ABI_VERSION) {
+  const graph = isProjection ? checkpoint?.projectedGraph : checkpoint?.graph;
+  if (checkpoint?.format !== 1 || checkpoint.replayAbi !== REPLAY_ABI_VERSION || graph === undefined) {
     cacheHostCheckpoint(cacheKey, null);
     return undefined;
   }
@@ -142,7 +150,7 @@ async function readHostPlanCheckpoint(
     return undefined;
   }
   try {
-    const states = decodeReplayCheckpointStates(checkpoint.graph, new Set([planKey.name]));
+    const states = decodeReplayCheckpointStates(graph, new Set([planKey.name]));
     const planState = states.get(planKey.name) as PlanState | undefined;
     if (planState === undefined) {
       cacheHostCheckpoint(cacheKey, null);

@@ -1,12 +1,13 @@
-import { extname } from 'node:path';
+import { extname, join } from 'node:path';
 import { Readable } from 'node:stream';
 
-
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { isFileId } from '#/app/file/fileService';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IBlobStore } from '#/persistence/interface/blobStore';
+import { IContentAddressedStore } from '#/persistence/interface/contentAddressedStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
@@ -24,14 +25,41 @@ import {
   type SessionMediaMaterializeInput,
 } from './sessionMediaStore';
 
+const MEDIA_STREAM_CHUNK_BYTES = 64 * 1024;
+const SHA256_RE = /^[0-9a-f]{64}$/u;
+
 interface SessionMediaMetadata {
   readonly version: 1;
   readonly key: string;
   readonly name: string;
   readonly mediaType: string;
+  readonly sha256?: string;
 }
 
 const parseAgentBlobRef = parseAgentMediaBlobRef;
+
+async function readHeadBytes(
+  stream: AsyncIterable<Uint8Array>,
+  maxBytes: number,
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for await (const chunk of stream) {
+    chunks.push(chunk);
+    total += chunk.byteLength;
+    if (total >= maxBytes) break;
+  }
+  const capped = Math.min(total, maxBytes);
+  const out = new Uint8Array(capped);
+  let offset = 0;
+  for (const chunk of chunks) {
+    const take = Math.min(chunk.byteLength, capped - offset);
+    out.set(chunk.subarray(0, take), offset);
+    offset += take;
+    if (offset >= capped) break;
+  }
+  return out;
+}
 
 export class ScopedMediaStore implements ISessionMediaStore {
   declare readonly _serviceBrand: undefined;
@@ -42,7 +70,14 @@ export class ScopedMediaStore implements ISessionMediaStore {
     private readonly documents: IAtomicDocumentStore,
     private readonly blobs?: IBlobStore,
     private readonly sessionScope?: string,
+    private readonly cas?: IContentAddressedStore,
+    private readonly allowSharedCas: boolean | (() => boolean) = false,
   ) {}
+
+  isSharedCasEnabled(): boolean {
+    if (this.cas === undefined) return false;
+    return typeof this.allowSharedCas === 'function' ? this.allowSharedCas() === true : this.allowSharedCas === true;
+  }
 
   pathFor(fileId: string, ext: string): string | undefined {
     if (!isFileId(fileId)) return undefined;
@@ -79,7 +114,7 @@ export class ScopedMediaStore implements ISessionMediaStore {
       if (size === undefined) return undefined;
       return {
         path: this.storage.pathFor(scope, key), name: key, mediaType: 'audio/wav', size,
-        stream: (range) => this.storage.readStream(scope, key, range),
+        stream: (range) => this.storage.readStream(scope, key, range, { chunkBytes: MEDIA_STREAM_CHUNK_BYTES }),
       };
     }
     const blob = await this.openAgentBlob(fileId);
@@ -105,7 +140,8 @@ export class ScopedMediaStore implements ISessionMediaStore {
       name: metadata?.name ?? key,
       mediaType: metadata?.mediaType ?? this.mediaTypeForKey(key),
       size,
-      stream: (range) => this.storage.readStream(this.scope, key, range),
+      sha256: metadata?.sha256,
+      stream: (range) => this.storage.readStream(this.scope, key, range, { chunkBytes: MEDIA_STREAM_CHUNK_BYTES }),
     };
   }
 
@@ -113,21 +149,41 @@ export class ScopedMediaStore implements ISessionMediaStore {
     if (!isFileId(input.fileId)) return undefined;
     const ext = extname(input.name) || (mediaExtensionForMime(input.mimeType) ?? '.bin');
     const key = this.keyFor(input.fileId, ext);
-    const existingSize = await this.storage.size(this.scope, key);
-    if (existingSize !== input.size) {
-      const source = (input.data !== undefined ? Readable.from([input.data]) : input.stream()) as NodeJS.ReadableStream & AsyncIterable<Uint8Array>;
-      await this.storage.writeStream(this.scope, key, source, {
-        atomic: true,
-        signal: input.signal,
-      });
+    let sha256: string | undefined;
+    if (this.isSharedCasEnabled() && this.cas !== undefined) {
+      const stored = input.data !== undefined
+        ? await this.cas.putBytes(input.data, { signal: input.signal })
+        : await this.cas.putStream(input.stream() as AsyncIterable<Uint8Array>, { signal: input.signal });
+      sha256 = stored.sha256;
+      await this.cas.linkAlias(stored.sha256, this.scope, key, { signal: input.signal });
+    } else {
+      const existingSize = await this.storage.size(this.scope, key);
+      if (existingSize !== input.size) {
+        const source = (input.data !== undefined ? Readable.from([input.data]) : input.stream()) as NodeJS.ReadableStream & AsyncIterable<Uint8Array>;
+        await this.storage.writeStream(this.scope, key, source, {
+          atomic: true,
+          signal: input.signal,
+        });
+      }
     }
     await this.documents.set(this.scope, this.metadataKey(input.fileId), {
       version: 1,
       key,
       name: input.name,
       mediaType: input.mimeType,
+      sha256,
     });
     return this.storage.pathFor(this.scope, key);
+  }
+
+  async linkAttachmentAlias(fileId: string, dir: string, targetName: string): Promise<string | undefined> {
+    if (!this.isSharedCasEnabled() || this.cas === undefined || !isFileId(fileId)) return undefined;
+    const storedMetadata = await this.documents.get<unknown>(this.scope, this.metadataKey(fileId));
+    const metadata = this.isMetadataFor(storedMetadata, fileId) ? storedMetadata : undefined;
+    if (metadata?.sha256 === undefined || !SHA256_RE.test(metadata.sha256)) return undefined;
+    const targetPath = join(dir, targetName);
+    await this.cas.linkAliasToPath(metadata.sha256, targetPath);
+    return targetPath;
   }
 
   private async readAgentBlob(
@@ -142,7 +198,24 @@ export class ScopedMediaStore implements ISessionMediaStore {
   private async openAgentBlob(fileId: string): Promise<SessionMediaFile | undefined> {
     const ref = parseAgentBlobRef(fileId);
     if (ref === undefined || this.blobs === undefined || this.sessionScope === undefined) return undefined;
-    const data = await this.blobs.get(`${this.sessionScope}/agents/${ref.agentId}/blobs`, ref.hash);
+    const blobScope = `${this.sessionScope}/agents/${ref.agentId}/blobs`;
+    if (this.blobs.size !== undefined) {
+      const size = await this.blobs.size(blobScope, ref.hash);
+      if (size === undefined || size <= 0) return undefined;
+      const headEnd = Math.min(MEDIA_SNIFF_BYTES - 1, size - 1);
+      const header = await readHeadBytes(this.blobs.getStream(blobScope, ref.hash, { start: 0, end: headEnd }), MEDIA_SNIFF_BYTES);
+      const type = detectFileType(fileId, header, 'media');
+      if (type.kind !== 'image' && type.kind !== 'video' && type.kind !== 'audio') return undefined;
+      const blobs = this.blobs;
+      return {
+        path: undefined,
+        name: fileId,
+        mediaType: type.mimeType,
+        size,
+        stream: (range) => blobs.getStream(blobScope, ref.hash, range),
+      };
+    }
+    const data = await this.blobs.get(blobScope, ref.hash);
     if (data === undefined) return undefined;
     const bytes = Buffer.from(data);
     const type = detectFileType(fileId, bytes.subarray(0, MEDIA_SNIFF_BYTES), 'media');
@@ -182,7 +255,8 @@ export class ScopedMediaStore implements ISessionMediaStore {
       typeof candidate.name === 'string' &&
       candidate.name.length > 0 &&
       typeof candidate.mediaType === 'string' &&
-      candidate.mediaType.length > 0
+      candidate.mediaType.length > 0 &&
+      (candidate.sha256 === undefined || (typeof candidate.sha256 === 'string' && SHA256_RE.test(candidate.sha256)))
     );
   }
 
@@ -211,7 +285,18 @@ export class SessionMediaStoreService extends ScopedMediaStore {
     @IFileSystemStorageService storage: IFileSystemStorageService,
     @IAtomicDocumentStore documents: IAtomicDocumentStore,
     @IBlobStore blobs: IBlobStore,
-  ) { super(sessionContext.scope('media'), storage, documents, blobs, sessionContext.scope()); }
+    @ref(IContentAddressedStore) casRef?: LiveRef<IContentAddressedStore>,
+  ) {
+    super(
+      sessionContext.scope('media'),
+      storage,
+      documents,
+      blobs,
+      sessionContext.scope(),
+      casRef?.current,
+      () => sessionContext.ephemeral === false && typeof sessionContext.isPrivate === 'function' && sessionContext.isPrivate() === false,
+    );
+  }
 }
 
 registerScopedService(

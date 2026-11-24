@@ -22,6 +22,7 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { join } from 'pathe';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 
 import { IImageConfigBridge } from './imageConfigBridge';
@@ -52,6 +53,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
     @ISessionContext private readonly session?: ISessionContext,
     @ref(ICpuWorkerService) private readonly cpuWorkerRef?: LiveRef<ICpuWorkerService>,
     @ref(IImageConfigBridge) private readonly imageConfigRef?: LiveRef<IImageConfigBridge>,
+    @ref(IAgentBlobService) private readonly blobServiceRef?: LiveRef<IAgentBlobService>,
   ) {
     super();
     this.states.contributeState(mediaRegisteredKeyKey);
@@ -182,6 +184,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
           return imageConfigRef.current?.readByteBudget;
         },
       },
+      blobService: this.blobServiceRef?.current,
     });
   }
 }

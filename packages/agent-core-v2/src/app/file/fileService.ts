@@ -42,6 +42,8 @@ export interface IFileService {
   save(source: Readable, filename: string, options: () => SaveOptions): Promise<FileMeta>;
   get(fileId: string): Promise<GetResult>;
   delete(fileId: string): Promise<void>;
+  pin?(fileId: string): () => void;
+  promoteToCas?(fileId: string, expectedSessionId?: string): Promise<string | undefined>;
 }
 
 export const IFileService: ServiceIdentifier<IFileService> = createDecorator<IFileService>('fileService');

@@ -740,10 +740,12 @@ export * from '#/persistence/interface/appendLogStore';
 export * from '#/persistence/interface/atomicDocumentStore';
 export * from '#/persistence/interface/queryStore';
 export * from '#/persistence/interface/blobStore';
+export * from '#/persistence/interface/contentAddressedStore';
 export * from '#/persistence/backends/node-fs/fileStorageService';
 export * from '#/persistence/backends/node-fs/appendLogStore';
 export * from '#/persistence/backends/node-fs/atomicDocumentStore';
 export * from '#/persistence/backends/node-fs/blobStoreService';
+export * from '#/persistence/backends/node-fs/contentAddressedStoreService';
 export * from '#/persistence/backends/node-fs/projectLocalConfigService';
 export * from '#/persistence/backends/node-fs/sparseFile';
 export * from '#/persistence/coldSegmentLog';
@@ -752,6 +754,8 @@ export * from '#/persistence/retainedJournal';
 export * from '#/app/coldCompaction/configSection';
 export * from '#/app/coldCompaction/coldCompaction';
 export * from '#/app/coldCompaction/coldCompactionService';
+export * from '#/app/storageGovernance/storageGovernanceService';
+export * from '#/session/replayCheckpointArchive';
 import '#/persistence/backends/sqlite/flag';
 export { drainQueryStoreDisposals } from '#/persistence/queryStoreDisposals';
 export * from '#/persistence/backends/sqlite/sqliteQueryStore';
@@ -814,6 +818,7 @@ export {
   persistOriginalImage,
   sessionMediaOriginalsDir,
 } from '#/agent/media/image-originals';
+export * from '#/agent/media/hostPinnedMedia';
 export * from '#/app/edit/fileEdit';
 export * from '#/app/edit/fileEditService';
 export * from '#/app/edit/editService';

@@ -20,6 +20,7 @@ export interface SessionMediaFile {
   readonly name: string;
   readonly mediaType: string;
   readonly size: number;
+  readonly sha256?: string;
   readonly stream: (range?: SessionMediaReadRange) => AsyncIterable<Uint8Array>;
 }
 
@@ -35,6 +36,10 @@ export interface ISessionMediaStore {
   open(fileId: string, variant?: 'wav'): Promise<SessionMediaFile | undefined>;
 
   materialize(input: SessionMediaMaterializeInput): Promise<string | undefined>;
+
+  linkAttachmentAlias?(fileId: string, dir: string, targetName: string): Promise<string | undefined>;
+
+  isSharedCasEnabled?(): boolean;
 }
 
 export const ISessionMediaStore: ServiceIdentifier<ISessionMediaStore> =

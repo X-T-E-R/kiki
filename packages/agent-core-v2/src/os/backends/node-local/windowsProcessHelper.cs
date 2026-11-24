@@ -5,6 +5,7 @@ using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Threading;
@@ -78,6 +79,24 @@ public static class WindowsProcessHelper
         public uint FileAttributes;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public uint CreationTimeLow;
+        public uint CreationTimeHigh;
+        public uint LastAccessTimeLow;
+        public uint LastAccessTimeHigh;
+        public uint LastWriteTimeLow;
+        public uint LastWriteTimeHigh;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
     const uint FSCTL_SET_SPARSE = 0x000900C4;
     const uint FSCTL_SET_ZERO_DATA = 0x000980C8;
     const uint GENERIC_READ = 0x80000000;
@@ -86,7 +105,11 @@ public static class WindowsProcessHelper
     const uint FILE_WRITE_ATTRIBUTES = 0x0100;
     const uint OPEN_EXISTING = 3;
     const uint INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF;
+    const uint FILE_ATTRIBUTE_DIRECTORY = 0x00000010;
     const uint FILE_ATTRIBUTE_SPARSE_FILE = 0x00000200;
+    const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
+    const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+    const uint FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000;
     const uint MOVEFILE_REPLACE_EXISTING = 0x00000001;
     const uint MOVEFILE_WRITE_THROUGH = 0x00000008;
     const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
@@ -127,6 +150,8 @@ public static class WindowsProcessHelper
     static extern uint GetFileAttributesW(string lpFileName);
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     static extern bool MoveFileExW(string lpExistingFileName, string lpNewFileName, uint dwFlags);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetFileInformationByHandle(SafeFileHandle hFile, out ByHandleFileInformation lpFileInformation);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool GetFileInformationByHandleEx(SafeFileHandle hFile, int FileInformationClass, out FileBasicInfo lpFileInformation, uint dwBufferSize);
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -426,9 +451,129 @@ public static class WindowsProcessHelper
         return 0;
     }
 
+    static int RunPinnedReader()
+    {
+        var utf8NoBom = new UTF8Encoding(false);
+        using (var reader = new StreamReader(Console.OpenStandardInput(), utf8NoBom))
+        using (var errWriter = new StreamWriter(Console.OpenStandardError(), utf8NoBom))
+        {
+            errWriter.AutoFlush = true;
+            string line = reader.ReadLine();
+            if (string.IsNullOrEmpty(line))
+            {
+                errWriter.WriteLine("err\tinvalid_request\tempty");
+                return 2;
+            }
+            string[] parts = line.Split('\t');
+            if (parts.Length < 7)
+            {
+                errWriter.WriteLine("err\tinvalid_request\tfields");
+                return 2;
+            }
+            string mode = parts[0];
+            string path = Encoding.UTF8.GetString(Convert.FromBase64String(parts[1]));
+            string expectedSha = parts[2];
+            string expectedSizeRaw = parts[3];
+            string expectedIdentity = parts[4];
+            long start = long.Parse(parts[5], System.Globalization.CultureInfo.InvariantCulture);
+            long end = long.Parse(parts[6], System.Globalization.CultureInfo.InvariantCulture);
+            string lp = LongPath(path);
+            using (SafeFileHandle handle = CreateFileW(lp, GENERIC_READ, FileShare.Read, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OPEN_REPARSE_POINT, IntPtr.Zero))
+            {
+                if (handle.IsInvalid)
+                {
+                    int winErr = Marshal.GetLastWin32Error();
+                    string code = (winErr == 2 || winErr == 3) ? "not_found" : (winErr == 32 || winErr == 33) ? "sharing_violation" : "open_failed";
+                    errWriter.WriteLine("err\t" + code + "\t" + winErr);
+                    return 1;
+                }
+                ByHandleFileInformation info;
+                if (!GetFileInformationByHandle(handle, out info))
+                {
+                    errWriter.WriteLine("err\tstat_failed\t" + Marshal.GetLastWin32Error());
+                    return 1;
+                }
+                if ((info.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
+                {
+                    errWriter.WriteLine("err\treparse_or_directory\t" + info.FileAttributes);
+                    return 1;
+                }
+                long fileSize = ((long)info.FileSizeHigh << 32) | (long)info.FileSizeLow;
+                string identity = info.VolumeSerialNumber.ToString("x8") + ":" + info.FileIndexHigh.ToString("x8") + ":" + info.FileIndexLow.ToString("x8");
+                if (expectedSizeRaw != "-")
+                {
+                    long expectedSize = long.Parse(expectedSizeRaw, System.Globalization.CultureInfo.InvariantCulture);
+                    if (fileSize != expectedSize)
+                    {
+                        errWriter.WriteLine("err\tsize_mismatch\t" + fileSize);
+                        return 1;
+                    }
+                }
+                if (expectedIdentity != "-" && !string.Equals(identity, expectedIdentity, StringComparison.OrdinalIgnoreCase))
+                {
+                    errWriter.WriteLine("err\tidentity_mismatch\t" + identity);
+                    return 1;
+                }
+                using (var fs = new FileStream(handle, FileAccess.Read, 65536, false))
+                using (var sha = SHA256.Create())
+                {
+                    byte[] buffer = new byte[65536];
+                    long hashed = 0;
+                    int read;
+                    while ((read = fs.Read(buffer, 0, buffer.Length)) > 0)
+                    {
+                        sha.TransformBlock(buffer, 0, read, null, 0);
+                        hashed += read;
+                    }
+                    sha.TransformFinalBlock(new byte[0], 0, 0);
+                    if (hashed != fileSize)
+                    {
+                        errWriter.WriteLine("err\tshort_read\t" + hashed);
+                        return 1;
+                    }
+                    byte[] hashBytes = sha.Hash;
+                    var sb = new StringBuilder(hashBytes.Length * 2);
+                    for (int i = 0; i < hashBytes.Length; i++) sb.Append(hashBytes[i].ToString("x2"));
+                    string actualSha = sb.ToString();
+                    if (expectedSha != "-" && !string.Equals(actualSha, expectedSha, StringComparison.OrdinalIgnoreCase))
+                    {
+                        errWriter.WriteLine("err\tdigest_mismatch\t" + actualSha);
+                        return 1;
+                    }
+                    errWriter.WriteLine("ok\t" + actualSha + "\t" + fileSize + "\t" + identity + "\t" + hashed);
+                    if (mode == "inspect") return 0;
+                    if (mode != "stream")
+                    {
+                        errWriter.WriteLine("err\tinvalid_mode\t" + mode);
+                        return 2;
+                    }
+                    long rangeStart = start < 0 ? 0 : start;
+                    long rangeEnd = end < 0 ? fileSize - 1 : Math.Min(end, fileSize - 1);
+                    if (rangeStart >= fileSize || rangeEnd < rangeStart) return 0;
+                    fs.Seek(rangeStart, SeekOrigin.Begin);
+                    long remaining = rangeEnd - rangeStart + 1;
+                    using (var stdout = Console.OpenStandardOutput())
+                    {
+                        while (remaining > 0)
+                        {
+                            int toRead = (int)Math.Min((long)buffer.Length, remaining);
+                            int got = fs.Read(buffer, 0, toRead);
+                            if (got <= 0) return 1;
+                            stdout.Write(buffer, 0, got);
+                            remaining -= got;
+                        }
+                        stdout.Flush();
+                    }
+                    return 0;
+                }
+            }
+        }
+    }
+
     public static int Main(string[] args)
     {
         if (args.Length == 2 && args[0] == "--sparse-worker" && args[1] == "v1") return RunSparseWorker();
+        if (args.Length == 2 && args[0] == "--pinned-reader" && args[1] == "v1") return RunPinnedReader();
         if (args.Length != 1) return 2;
         const int UnreleasedExit = 6;
         bool releaseCompleted = false;

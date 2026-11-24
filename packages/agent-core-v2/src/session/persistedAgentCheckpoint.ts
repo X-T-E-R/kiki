@@ -18,6 +18,12 @@ import { decodeReplayCheckpointStates, type ReplayCheckpointGraph } from '#/stat
 import { REPLAY_ABI_VERSION, verifyReplayCheckpointWire, type ReplayCheckpointWire } from '#/state/eventDispatcherService';
 import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
 import { JOURNAL_BOUNDARY_HASH_BYTES, JOURNAL_HEAD_HASH_BYTES } from '#/wire/wire';
+import {
+  COLD_CHECKPOINT_ARCHIVE_GZ_KEY,
+  COLD_CHECKPOINT_ARCHIVE_ZST_KEY,
+  COLD_CHECKPOINT_PROJECTION_KEY,
+  readCheckpointStatesFromStorage,
+} from './replayCheckpointArchive';
 
 interface Checkpoint {
   readonly format: number;
@@ -31,7 +37,8 @@ interface DecodedCheckpoint {
   readonly states: ReadonlyMap<string, unknown>;
 }
 
-const LIGHTWEIGHT_STATE_NAMES = new Set([
+/** Lightweight replayable state names materialized into cold leaf checkpoint projections. */
+export const LIGHTWEIGHT_STATE_NAMES = new Set([
   tokenCountingKey.name,
   turnKey.name,
   panelAccountingKey.name,
@@ -71,26 +78,36 @@ export async function readPersistedCheckpointStatToken(
   if (checkpointPath === undefined) {
     return { token: 'untracked', distinguishable: false };
   }
+  const keys = [
+    CHECKPOINT_KEY,
+    COLD_CHECKPOINT_PROJECTION_KEY,
+    COLD_CHECKPOINT_ARCHIVE_ZST_KEY,
+    COLD_CHECKPOINT_ARCHIVE_GZ_KEY,
+  ] as const;
   try {
-    if (typeof storage.stat === 'function') {
-      const info = await storage.stat(checkpointScope, CHECKPOINT_KEY);
-      if (info === undefined) return { token: 'none', distinguishable: true };
-      return {
-        token: `${info.size}:${info.revision}:${info.identity ?? ''}`,
-        distinguishable: true,
-      };
+    for (const key of keys) {
+      if (typeof storage.stat === 'function') {
+        const info = await storage.stat(checkpointScope, key);
+        if (info !== undefined) {
+          return {
+            token: `${key}:${info.size}:${info.revision}:${info.identity ?? ''}`,
+            distinguishable: true,
+          };
+        }
+      } else {
+        const [ckptSize, ckptMtime] = await Promise.all([
+          storage.size(checkpointScope, key),
+          storage.mtime(checkpointScope, key),
+        ]);
+        if (ckptSize !== undefined || ckptMtime !== undefined) {
+          return {
+            token: `${key}:${ckptSize ?? -1}:${ckptMtime ?? -1}`,
+            distinguishable: true,
+          };
+        }
+      }
     }
-    const [ckptSize, ckptMtime] = await Promise.all([
-      storage.size(checkpointScope, CHECKPOINT_KEY),
-      storage.mtime(checkpointScope, CHECKPOINT_KEY),
-    ]);
-    if (ckptSize === undefined && ckptMtime === undefined) {
-      return { token: 'none', distinguishable: true };
-    }
-    return {
-      token: `${ckptSize ?? -1}:${ckptMtime ?? -1}`,
-      distinguishable: true,
-    };
+    return { token: 'none', distinguishable: true };
   } catch {
     return { token: 'untracked', distinguishable: false };
   }
@@ -128,15 +145,17 @@ async function decodeCheckpointSource(
     );
   }
   const checkpoint = await docs?.get<Checkpoint>(checkpointScope, checkpointKey);
-  if (checkpoint?.format !== 1 || checkpoint.replayAbi !== REPLAY_ABI_VERSION) return undefined;
-  try {
-    return {
-      wire: checkpoint.wire,
-      states: decodeReplayCheckpointStates(checkpoint.graph, names),
-    };
-  } catch {
-    return undefined;
+  if (checkpoint?.format === 1 && checkpoint.replayAbi === REPLAY_ABI_VERSION) {
+    try {
+      return {
+        wire: checkpoint.wire,
+        states: decodeReplayCheckpointStates(checkpoint.graph, names),
+      };
+    } catch {
+      return undefined;
+    }
   }
+  return readCheckpointStatesFromStorage(storage, checkpointScope, names, REPLAY_ABI_VERSION);
 }
 
 export async function readPersistedAgentCheckpoint(

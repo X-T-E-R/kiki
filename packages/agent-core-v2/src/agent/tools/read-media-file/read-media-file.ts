@@ -44,6 +44,13 @@ export const ReadMediaFileInputSchema = z.object({
         '(use region for files that large). For inline video and audio, skips automatic ffmpeg ' +
         'compression when the file exceeds the inline byte budget.',
     ),
+  pin_host_file: z
+    .boolean()
+    .optional()
+    .describe(
+      'Explicitly reference an unmodified local audio or video file (>= 4 MiB) without archiving a copy into session storage. ' +
+        'Fails closed if the platform lacks a write-deny read handle or if the source file later changes or is deleted.',
+    ),
 });
 
 export type ReadMediaFileInput = z.infer<typeof ReadMediaFileInputSchema>;

@@ -513,7 +513,7 @@ describe('server-v2 /api prompts', () => {
     expect(listed.body.data.queued).toHaveLength(0);
   });
 
-  it('compresses inline base64 image prompts into session media-originals', async () => {
+  it('compresses inline base64 image prompts into session attachments without media-originals', async () => {
     const id = await createSession(fixture.home as string);
     await createMainAgent(id);
     const bigPng = solidPng(3600, 1800);
@@ -538,7 +538,8 @@ describe('server-v2 /api prompts', () => {
     if (caption?.type !== 'text') throw new Error('expected compression caption');
     const pathMatch = /saved at "([^"]+)"/.exec(caption.text);
     expect(pathMatch).not.toBeNull();
-    expect(pathMatch![1]!.replaceAll('\\', '/')).toContain('/media-originals/');
+    expect(pathMatch![1]!.replaceAll('\\', '/')).toContain('/attachments/');
+    expect(pathMatch![1]!.replaceAll('\\', '/')).not.toContain('/media-originals/');
     expect((await realpath(pathMatch![1]!)).startsWith(await realpath(fixture.home as string))).toBe(true);
     expect(await readFile(pathMatch![1]!)).toEqual(bigPng);
 

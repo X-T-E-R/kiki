@@ -3,7 +3,27 @@ import { createReadStream } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { Readable } from 'node:stream';
 
-import { ErrorCodes, IHostFileSystem, isError2, SessionIndexReconcilePendingError, type Scope } from '@kiki/agent-core-v2';
+import {
+  ErrorCodes,
+  HostPinnedSourceChangedError,
+  HostPinnedUnsupportedError,
+  IAtomicDocumentStore,
+  IBootstrapService,
+  IHostFileSystem,
+  ISessionContext,
+  ISessionIndex,
+  ISessionManager,
+  isError2,
+  isHostPinnedRefId,
+  openVerifiedHostPinnedStream,
+  parseHostPinnedUrl,
+  readHostPinnedRefRecord,
+  SessionIndexReconcilePendingError,
+  sessionScopeOf,
+  verifyHostPinnedRef,
+  workspacePersistenceScope,
+  type Scope,
+} from '@kiki/agent-core-v2';
 import { MEDIA_SNIFF_BYTES, sniffMediaFromMagic } from '@kiki/agent-core-v2/agent/media/file-type';
 import type { SessionMediaFile } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
 import { ErrorCode } from '@kiki/protocol';
@@ -29,6 +49,8 @@ const DEFAULT_MAX_GRANTS = 512;
 const ID_RE = /^[a-f0-9]{64}$/u;
 const openSchema = z.object({ path: z.string().min(1).max(4096) }).strict();
 const sessionOpenSchema = z.object({ file_id: z.string().min(1).max(4096) }).strict();
+const hostPinnedOpenSchema = z.object({ ref_id: z.string().min(1).max(128) }).strict();
+const BARE_SHA256_RE = /^[a-f0-9]{64}$/iu;
 
 function readPositiveIntEnv(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name];
@@ -94,7 +116,19 @@ interface SessionGrant {
   activeStreams: number;
 }
 
-type MediaGrant = HostGrant | SessionGrant;
+interface HostPinnedGrant {
+  readonly kind: 'host_pinned';
+  readonly sessionId: string;
+  readonly sessionScope: string;
+  readonly refId: string;
+  readonly mime: string;
+  readonly size: number;
+  readonly expiresAt: number;
+  lastAccessedAt: number;
+  activeStreams: number;
+}
+
+type MediaGrant = HostGrant | SessionGrant | HostPinnedGrant;
 
 function mediaExtension(path: string): string {
   const base = path.replaceAll('\\', '/').split('/').at(-1) ?? path;
@@ -210,6 +244,12 @@ function sendError(error: unknown, reply: FastifyReply): unknown {
   if (error instanceof AdmissionError) {
     status = error.status;
     message = error.reason;
+  } else if (error instanceof HostPinnedSourceChangedError) {
+    status = 404;
+    message = 'media_source_changed_or_missing';
+  } else if (error instanceof HostPinnedUnsupportedError) {
+    status = 400;
+    message = 'host_pinned_unsupported';
   } else if (error instanceof z.ZodError) {
     status = 400;
     message = 'invalid_media_preview_request';
@@ -321,7 +361,8 @@ export function registerHostMediaPreviewRoutes(
     reply: FastifyReply,
     grant:
       | Omit<HostGrant, 'expiresAt' | 'lastAccessedAt' | 'activeStreams'>
-      | Omit<SessionGrant, 'expiresAt' | 'lastAccessedAt' | 'activeStreams'>,
+      | Omit<SessionGrant, 'expiresAt' | 'lastAccessedAt' | 'activeStreams'>
+      | Omit<HostPinnedGrant, 'expiresAt' | 'lastAccessedAt' | 'activeStreams'>,
   ): unknown => {
     sweep();
     const maxGrants = configuredMaxGrants();
@@ -341,18 +382,30 @@ export function registerHostMediaPreviewRoutes(
           lastAccessedAt: now,
           activeStreams: 0,
         }
-      : {
-          kind: 'session',
-          sessionId: grant.sessionId,
-          fileId: grant.fileId,
-          mime: grant.mime,
-          size: grant.size,
-          persistable: grant.persistable,
-          expiresAt,
-          boundIp: grant.boundIp,
-          lastAccessedAt: now,
-          activeStreams: 0,
-        };
+      : grant.kind === 'host_pinned'
+        ? {
+            kind: 'host_pinned',
+            sessionId: grant.sessionId,
+            sessionScope: grant.sessionScope,
+            refId: grant.refId,
+            mime: grant.mime,
+            size: grant.size,
+            expiresAt,
+            lastAccessedAt: now,
+            activeStreams: 0,
+          }
+        : {
+            kind: 'session',
+            sessionId: grant.sessionId,
+            fileId: grant.fileId,
+            mime: grant.mime,
+            size: grant.size,
+            persistable: grant.persistable,
+            expiresAt,
+            boundIp: grant.boundIp,
+            lastAccessedAt: now,
+            activeStreams: 0,
+          };
     grants.set(id, stored);
     return reply.send(okEnvelope({
       preview_id: id,
@@ -417,6 +470,9 @@ export function registerHostMediaPreviewRoutes(
         if (sessionId.length === 0) throw new AdmissionError(400, 'invalid_media_preview_request');
         const body = sessionOpenSchema.parse(req.body);
         fileId = body.file_id;
+        if (fileId.startsWith('hostref:') || BARE_SHA256_RE.test(fileId) || isAbsolute(fileId)) {
+          throw new AdmissionError(404, 'media_preview_not_found');
+        }
         opened = await openSessionMedia(core, sessionId, fileId, transcriptService, signal);
         if (signal.aborted) return;
         if (!opened.sessionExists || opened.file === undefined) throw new AdmissionError(404, 'media_preview_not_found');
@@ -435,6 +491,46 @@ export function registerHostMediaPreviewRoutes(
         return sendError(error, reply);
       } finally {
         await reportLeaseRelease(req, sessionId, fileId, opened?.operation === undefined ? undefined : () => opened?.operation?.dispose());
+      }
+    },
+    req,
+  ));
+  app.post('/api/sessions/:sessionId/host-pinned-playback', async (req, reply) => withReplyCloseSignal(
+    reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+    async (signal) => {
+      try {
+        requireLocalClient(req);
+        if (
+          !allowExternalHostPaths ||
+          authenticatedAuthorization(req) === undefined ||
+          peerAudience(req) !== undefined ||
+          webPrincipal(req) !== undefined
+        ) {
+          throw new AdmissionError(403, 'media_preview_forbidden');
+        }
+        const sessionId = (req.params as { sessionId: string }).sessionId;
+        if (sessionId.length === 0) throw new AdmissionError(400, 'invalid_media_preview_request');
+        const body = hostPinnedOpenSchema.parse(req.body);
+        const parsedUrl = parseHostPinnedUrl(body.ref_id);
+        const refId = parsedUrl?.refId ?? (isHostPinnedRefId(body.ref_id) ? body.ref_id : undefined);
+        if (refId === undefined) throw new AdmissionError(404, 'media_source_changed_or_missing');
+        const sessionScope = await resolveSessionScopeForPinned(core, sessionId);
+        if (sessionScope === undefined) throw new AdmissionError(404, 'media_source_changed_or_missing');
+        const documents = core.accessor.get(IAtomicDocumentStore);
+        const record = await readHostPinnedRefRecord(documents, sessionScope, sessionId, refId);
+        if (record === undefined) throw new AdmissionError(404, 'media_source_changed_or_missing');
+        await verifyHostPinnedRef(record, signal);
+        if (signal.aborted) return;
+        return issue(req, reply, {
+          kind: 'host_pinned',
+          sessionId,
+          sessionScope,
+          refId: record.refId,
+          mime: record.mimeType,
+          size: record.size,
+        });
+      } catch (error) {
+        return sendError(error, reply);
       }
     },
     req,
@@ -461,7 +557,7 @@ export function registerHostMediaPreviewRoutes(
         if (!remoteMediaPlaybackEnabled()) requireLocalClient(req);
         throw new AdmissionError(404, 'media_preview_not_found');
       }
-      if (grant.kind === 'host') {
+      if (grant.kind === 'host' || grant.kind === 'host_pinned') {
         requireLocalClient(req);
       } else if (grant.boundIp !== undefined) {
         if (req.ip !== grant.boundIp) throw new AdmissionError(403, 'media_preview_requires_local_connection');
@@ -475,6 +571,7 @@ export function registerHostMediaPreviewRoutes(
         }
       };
       if (grant.kind === 'host') return await sendHost(hostFs, grant, req, reply, onStreamClosed);
+      if (grant.kind === 'host_pinned') return await sendHostPinned(core, grant, req, reply, onStreamClosed);
       return await sendSession(core, transcriptService, grant, req, reply, onStreamClosed);
     } catch (error) {
       return sendError(error, reply);
@@ -598,6 +695,98 @@ async function sendSession(
         if (opened !== undefined) {
           await reportLeaseRelease(req, grant.sessionId, grant.fileId, () => opened?.operation?.dispose());
         }
+      }
+    }
+  }, req);
+}
+
+async function resolveSessionScopeForPinned(core: Scope, sessionId: string): Promise<string | undefined> {
+  try {
+    const manager = core.accessor?.get(ISessionManager);
+    const live = manager?.get(sessionId);
+    if (live !== undefined) {
+      return live.accessor.get(ISessionContext).scope();
+    }
+  } catch {
+  }
+  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  if (summary === undefined) return undefined;
+  return sessionScopeOf(
+    workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), summary.workspaceId),
+    summary.id,
+  );
+}
+
+async function sendHostPinned(
+  core: Scope,
+  grant: HostPinnedGrant,
+  req: FastifyRequest,
+  reply: FastifyReply,
+  onStreamClosed: () => void,
+): Promise<unknown> {
+  return withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
+    grant.activeStreams += 1;
+    let releasedStream = false;
+    const releaseStream = (): void => {
+      if (releasedStream) return;
+      releasedStream = true;
+      grant.activeStreams = Math.max(0, grant.activeStreams - 1);
+      onStreamClosed();
+    };
+    let verified: Awaited<ReturnType<typeof openVerifiedHostPinnedStream>> | undefined;
+    let streamSent = false;
+    try {
+      const documents = core.accessor.get(IAtomicDocumentStore);
+      const record = await readHostPinnedRefRecord(documents, grant.sessionScope, grant.sessionId, grant.refId);
+      if (record === undefined) throw new HostPinnedSourceChangedError('manifest_missing');
+      const etag = `"pinned-${record.refId}-${record.sha256}"`;
+      const rawRange = pickHeader(req.headers, 'range');
+      const ifRange = pickHeader(req.headers, 'if-range');
+      const effectiveRaw = ifRange === undefined || ifRange.trim() === etag ? rawRange : undefined;
+      if (unsatisfiableRange(effectiveRaw, record.size)) {
+        await verifyHostPinnedRef(record, signal);
+        if (signal.aborted) {
+          releaseStream();
+          return;
+        }
+        reply.type(record.mimeType);
+        applyRange(reply, rawRange, record.size, 'private, no-store', ifRange, etag);
+        releaseStream();
+        return await reply.send('');
+      }
+      const parsed = parseRangeHeader(effectiveRaw, record.size);
+      verified = await openVerifiedHostPinnedStream(record, {
+        range: parsed === null ? undefined : { start: parsed.start, end: parsed.end },
+        signal,
+      });
+      if (signal.aborted) {
+        verified.close();
+        releaseStream();
+        return;
+      }
+      reply.type(record.mimeType);
+      applyRange(reply, rawRange, verified.size, 'private, no-store', ifRange, etag);
+      const handle = verified;
+      const cleanup = (): void => {
+        handle.close();
+        releaseStream();
+      };
+      handle.stream.on('error', () => {
+        cleanup();
+      });
+      handle.stream.once('close', cleanup);
+      reply.raw.once('finish', cleanup);
+      reply.raw.once('close', cleanup);
+      streamSent = true;
+      return await reply.send(handle.stream);
+    } catch (error) {
+      verified?.close();
+      releaseStream();
+      throw error;
+    } finally {
+      if (!streamSent) {
+        verified?.close();
+        releaseStream();
       }
     }
   }, req);

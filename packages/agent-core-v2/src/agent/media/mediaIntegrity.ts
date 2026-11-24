@@ -133,6 +133,97 @@ function validateIsoBmff(bytes: Uint8Array): MediaIntegrityResult {
 }
 
 /**
+ * Validates container-level structural integrity using positioned slice reads so
+ * large local media files never need to be buffered wholly into memory.
+ */
+export async function validateMediaFileIntegrity(
+  readSlice: (offset: number, length: number) => Promise<Uint8Array>,
+  size: number,
+  mimeType: string,
+): Promise<MediaIntegrityResult> {
+  if (size <= 0) {
+    return { valid: false, reason: 'media payload is empty (0 bytes)' };
+  }
+  const mime = normalizeMime(mimeType);
+  if (ISO_BMFF_MIMES.has(mime)) {
+    if (size < 16) {
+      return { valid: false, reason: 'ISO BMFF container is truncated (fewer than 16 bytes)' };
+    }
+    let offset = 0;
+    let hasMoov = false;
+    let boxes = 0;
+    while (offset < size) {
+      if (++boxes > 65_536) {
+        return { valid: false, reason: 'ISO BMFF container exceeds top-level box limit' };
+      }
+      if (offset + 8 > size) {
+        return { valid: false, reason: 'ISO BMFF container has a truncated box header' };
+      }
+      const headerLen = Math.min(16, size - offset);
+      const header = await readSlice(offset, headerLen);
+      if (header.byteLength < 8) {
+        return { valid: false, reason: 'ISO BMFF container has a truncated box header' };
+      }
+      const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
+      const size32 = view.getUint32(0, false);
+      const boxType = asciiAt(header, 4, 4);
+      if (offset === 0 && !ISO_BMFF_INITIAL_BOX_TYPES.has(boxType)) {
+        return { valid: false, reason: `unrecognized ISO BMFF header box '${boxType}'` };
+      }
+      let headerSize: number;
+      let boxSize: number;
+      if (size32 === 1) {
+        if (offset + 16 > size || header.byteLength < 16) {
+          return { valid: false, reason: `ISO BMFF '${boxType}' box has a truncated 64-bit size header` };
+        }
+        const high = view.getUint32(8, false);
+        const low = view.getUint32(12, false);
+        headerSize = 16;
+        boxSize = high * 4294967296 + low;
+        if (!Number.isSafeInteger(boxSize) || boxSize < headerSize) {
+          return { valid: false, reason: `ISO BMFF '${boxType}' box has an invalid 64-bit size` };
+        }
+      } else if (size32 === 0) {
+        headerSize = 8;
+        boxSize = size - offset;
+      } else {
+        headerSize = 8;
+        boxSize = size32;
+        if (boxSize < headerSize) {
+          return { valid: false, reason: `ISO BMFF '${boxType}' box has an invalid size (${String(boxSize)})` };
+        }
+      }
+      if (boxType === 'uuid') {
+        headerSize += 16;
+        if (boxSize < headerSize) {
+          return { valid: false, reason: 'ISO BMFF \'uuid\' box is truncated before its 16-byte usertype' };
+        }
+      }
+      const end = offset + boxSize;
+      if (end > size) {
+        return {
+          valid: false,
+          reason: `ISO BMFF '${boxType}' box is truncated (declared end ${String(end)} exceeds ${String(size)} bytes)`,
+        };
+      }
+      if (boxType === 'moov' && boxSize >= 8) {
+        hasMoov = true;
+      }
+      offset = end;
+    }
+    if (!hasMoov) {
+      return {
+        valid: false,
+        reason: 'ISO BMFF container is missing its moov metadata atom (file may be unfinalized or truncated)',
+      };
+    }
+    return { valid: true };
+  }
+  const head = await readSlice(0, Math.min(64, size));
+  return validateMediaBytesIntegrity(head, mimeType);
+}
+
+/**
  * Validates container-level structural integrity of encoded media bytes before
  * admitting them into conversation history or sending them to a model provider.
  */
