@@ -891,10 +891,20 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   };
   const settleFailed = metricsSettle.isError && !isCancelledMetricsRead(metricsSettle.error);
   const settleError = settleFailed ? (
-    <p role="status" data-metrics-settle-error className="text-[12px] leading-relaxed text-ink-faint">
-      {t(SETTLED_METRICS_KEY)}
-      <button type="button" className="ml-1.5 font-medium text-ink-soft transition-colors hover:text-ink" onClick={() => { setSettleBlock(undefined); void metricsSettle.refetch(); }}>{t('common.retry')}</button>
-    </p>
+    <div
+      role="status"
+      data-metrics-settle-error
+      className="mt-2 flex items-center justify-between gap-2 rounded-md bg-ink/[0.03] px-2.5 py-1.5 text-[11.5px] leading-snug text-ink-soft"
+    >
+      <span className="min-w-0 flex-1">{t(SETTLED_METRICS_KEY)}</span>
+      <button
+        type="button"
+        className="min-h-7 shrink-0 rounded-md px-2 text-[11.5px] font-medium text-ink transition-colors hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-3"
+        onClick={() => { setSettleBlock(undefined); void metricsSettle.refetch(); }}
+      >
+        {t('common.retry')}
+      </button>
+    </div>
   ) : null;
   if (part === 'usage') {
     return <>

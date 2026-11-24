@@ -41,6 +41,7 @@ const {
   getSessionCaps,
   setSessionCap,
   connection,
+  controllerRegistryRef,
 } = vi.hoisted(() => {
   const readCapabilities = vi.fn();
   const getUsage = vi.fn();
@@ -76,12 +77,23 @@ const {
     klient,
     client,
   };
-  return { readCapabilities, getUsage, getConfig, getSessionCaps, setSessionCap, connection };
+  const controllerRegistryRef = {
+    current: null as null | {
+      subscribe: (listener: () => void) => () => void;
+      snapshot: () => number;
+      [Symbol.iterator]: () => Iterator<{
+        sessionId: string;
+        subscribeAgent: (agentId: string, listener: () => void) => () => void;
+        getAgentState: (agentId: string) => unknown;
+      }>;
+    },
+  };
+  return { readCapabilities, getUsage, getConfig, getSessionCaps, setSessionCap, connection, controllerRegistryRef };
 });
 vi.mock('../../state/connection', () => ({
   useConnection: () => connection,
   useOptionalConnection: () => connection,
-  useOptionalControllerRegistry: () => null,
+  useOptionalControllerRegistry: () => controllerRegistryRef.current,
 }));
 
 const full: AgentCapabilitiesResponse = {
@@ -1175,5 +1187,121 @@ describe('SessionEnvironmentControls & SessionPluginsPanel disabled folding', ()
     await act(async () => { toggle.click(); });
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelectorAll('[data-rail-plugin]')).toHaveLength(4);
+  });
+
+  it('omits the plugins heading and wrapper when plugin usage is unsupported or truly empty without store actions', async () => {
+    getUsage.mockRejectedValue(unsupported());
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <SessionEnvironmentControls sessionId="sess-unsupported" />
+            </I18nProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await settle();
+    expect(container.querySelector('[data-rail-control-group="plugins"]')).toBeNull();
+
+    getUsage.mockResolvedValue(pluginAnswer({ plugins: [] }));
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <SessionEnvironmentControls sessionId="sess-empty" />
+            </I18nProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await settle();
+    expect(container.querySelector('[data-rail-control-group="plugins"]')).toBeNull();
+  });
+
+  it('keeps the plugins heading and retry button when plugin usage fails to load', async () => {
+    getUsage.mockRejectedValue(new Error('network timeout'));
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <SessionEnvironmentControls sessionId="sess-error" />
+            </I18nProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await settle();
+    expect(container.querySelector('[data-rail-control-group="plugins"]')).not.toBeNull();
+    expect(container.querySelector('[data-rail-plugins-unavailable] button')).not.toBeNull();
+  });
+
+  it('shows bound persona identity with Edit and Memory links on main beside profile/model, and omits it on subagents', async () => {
+    const makeRegistry = (persona?: { id: string; name: string }) => {
+      const cachedState = {
+        session: {
+          id: 'sess-persona',
+          agent_config: persona === undefined ? {} : { persona },
+        },
+        model: 'kiki-pro',
+      };
+      const controller = {
+        sessionId: 'sess-persona',
+        subscribeAgent: () => () => {},
+        getAgentState: () => cachedState,
+      };
+      return {
+        subscribe: () => () => {},
+        snapshot: () => 1,
+        [Symbol.iterator]: function* () { yield controller; },
+      };
+    };
+
+    const renderHead = async (agentId: string, persona?: { id: string; name: string }) => {
+      controllerRegistryRef.current = makeRegistry(persona);
+      queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      await act(async () => {
+        root.render(
+          <MemoryRouter>
+            <QueryClientProvider client={queryClient}>
+              <I18nProvider>
+                <ProfileHead
+                  sessionId="sess-persona"
+                  agentId={agentId}
+                  label={agentId === 'main' ? 'main' : 'worker-1'}
+                  fallbackModel="kiki-pro"
+                  workspaceId="ws_1"
+                />
+              </I18nProvider>
+            </QueryClientProvider>
+          </MemoryRouter>,
+        );
+      });
+      await settle();
+    };
+
+    try {
+      await renderHead('main', { id: 'persona-xiaoyou', name: '小柚' });
+      const binding = container.querySelector('[data-rail-persona-binding="persona-xiaoyou"]');
+      expect(binding).not.toBeNull();
+      expect(binding?.textContent).toContain('小柚');
+      expect(binding?.querySelector<HTMLAnchorElement>('[data-rail-persona-edit]')?.getAttribute('href')).toBe('/personas?persona=persona-xiaoyou&view=settings');
+      expect(binding?.querySelector<HTMLAnchorElement>('[data-rail-persona-memory]')?.getAttribute('href')).toBe('/memory?persona=persona-xiaoyou&workspace=ws_1');
+      expect(container.textContent).toContain('kiki-pro');
+
+      await renderHead('worker-1', { id: 'persona-xiaoyou', name: '小柚' });
+      expect(container.querySelector('[data-rail-persona-binding]')).toBeNull();
+
+      await renderHead('main', undefined);
+      expect(container.querySelector('[data-rail-persona-binding]')).toBeNull();
+    } finally {
+      controllerRegistryRef.current = null;
+    }
   });
 });

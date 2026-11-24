@@ -14,6 +14,7 @@ import { ApiError, API_CODES } from '@kiki/session-core/transport';
 import { useOptionalConnection } from '../state/connection';
 import { resourceActions, resourceMutability, type PreviewEnvironment, type PreviewResource } from '../state/previewResource';
 import { hostFileResource, mediaRefResource } from '../state/previewWorkspace';
+import { openAttachmentDirectly, resolveDirectLocalMediaRef } from './attachmentDirectOpen';
 import { Icon } from './icons';
 import { imagePreviewDownloadName, imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
@@ -1302,12 +1303,31 @@ export function useMediaRefMenu(item: MediaRef, label: string, sessionIdOverride
       }),
     [item, sessionId, preview?.cwd, label],
   );
+  const directLocalPath = useMemo(
+    () => resolveDirectLocalMediaRef(item, { localKikiComputer, cwd: preview?.cwd }),
+    [item, localKikiComputer, preview?.cwd],
+  );
   const openItem = useCallback(() => {
     if (preview === null) return;
-    if ((item.kind === 'image' || item.kind === 'video') && item.path !== undefined) preview.openAttachment(item);
-    else if (item.path !== undefined) preview.openFile(item.path);
-    else if (item.fileId !== undefined || item.url !== undefined) preview.openAttachment(item);
-  }, [item, preview]);
+    if ((item.kind === 'image' || item.kind === 'video') && item.path !== undefined) {
+      preview.openAttachment(item);
+      return;
+    }
+    if (item.fileId !== undefined) {
+      openAttachmentDirectly({
+        localPath: directLocalPath,
+        preview,
+        client: connection?.client,
+        openCopy: () => { preview.openAttachment(item); },
+      });
+      return;
+    }
+    if (item.path !== undefined) {
+      preview.openFile(item.path);
+      return;
+    }
+    if (item.url !== undefined) preview.openAttachment(item);
+  }, [connection?.client, directLocalPath, item, preview]);
   const canOpen = (item.path !== undefined || item.fileId !== undefined || item.url !== undefined) && preview !== null;
   const entries = useMemo(
     () =>

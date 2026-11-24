@@ -55,6 +55,8 @@ export const transcriptZh = {
   'message.deliverySwitchFailed': '投递方式没有切换：{detail}',
   'message.deliveryUnconfirmed': '送达未确认 · 查看过程',
   'message.failed': '消息未发出 · 查看过程',
+  'message.failure.mediaUnsupported': '当前启用的信道不支持发送这类媒体',
+  'message.failure.mediaUnsupportedKind': '当前启用的信道不支持发送{kind}',
   'message.handoff': '{from} → {to}：{text}',
   'message.internal': '内部',
   'message.internalPartial': '本对话部分送达',

@@ -327,13 +327,25 @@ try {
   check(failedNotes.some((note) => note.id === 'channel-failed-im:matrix-room' && note.text.includes('im:matrix-room：未送达')),
     `the failed channel is not named: ${JSON.stringify(failedNotes)}`);
 
-  // 7. A send refused for unsupported media is recoverable: the process holds
-  //    the refusal in full.
+  // 7. A send refused for unsupported media shows a localized collapsed
+  //    summary, reveals the full raw refusal on expand, and keeps it in Process.
   const refused = page.locator('[data-block-id="tool-t7-send"] [data-message-status="failed"]');
   check(await refused.count() === 1, 'the refused send is not a failed row');
-  const refusal = await page.locator('[data-block-id="tool-t7-send"] [data-message-failure-detail]').textContent().catch(() => null);
-  report.dom.refused = { reason: refusal };
-  check((refusal ?? '').includes('media_unsupported'), `the refusal reason is not shown with the failed row: ${refusal}`);
+  const refusalBtn = page.locator('[data-block-id="tool-t7-send"] [data-message-failure-detail]');
+  const collapsedRefusal = await refusalBtn.textContent().catch(() => null);
+  report.dom.refused = { collapsed: collapsedRefusal };
+  check(
+    (collapsedRefusal ?? '').includes('不支持') && !(collapsedRefusal ?? '').includes('media_unsupported'),
+    `the collapsed refusal is not localized: ${collapsedRefusal}`,
+  );
+  await refusalBtn.click();
+  await page.waitForSelector('[data-block-id="tool-t7-send"] [data-message-failure-detail][aria-expanded="true"]', { timeout: STEP_TIMEOUT });
+  const expandedRefusal = await refusalBtn.textContent().catch(() => null);
+  report.dom.refused.expanded = expandedRefusal;
+  check(
+    (expandedRefusal ?? '').includes('media_unsupported') && (expandedRefusal ?? '').includes('video/mp4'),
+    `the expanded refusal lost the raw diagnostic or MIME: ${expandedRefusal}`,
+  );
   await page.locator('[data-block-id="tool-t7-send"] button').first().click();
   await page.waitForSelector('[data-timeline-view-option="process"][aria-checked="true"]', { timeout: STEP_TIMEOUT });
   await page.waitForTimeout(400);

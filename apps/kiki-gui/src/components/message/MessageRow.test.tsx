@@ -34,7 +34,15 @@ const previewProbe = vi.hoisted(() => ({
   openImage: vi.fn(),
   openUrl: vi.fn(async () => {}),
   workspaceEnabled: false,
+  connection: null as Record<string, unknown> | null,
 }));
+vi.mock('../../state/connection', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../state/connection')>();
+  return {
+    ...original,
+    useOptionalConnection: () => previewProbe.connection,
+  };
+});
 vi.mock('../mediaPreviewContext', async (importOriginal) => {
   const original = await importOriginal<typeof import('../mediaPreviewContext')>();
   return {
@@ -354,7 +362,7 @@ describe('attachment media kinds', () => {
     expect(card?.innerHTML).not.toContain('C:/Users/sender/secret/index.html');
   });
 
-  it('carries a trusted origin only when sourceId is present across file, image, video, and audio kinds', () => {
+  it('carries a trusted origin only when sourceId is present across file, image, video, and audio kinds', async () => {
     const sourceId = 'b'.repeat(64);
     const fileWithSource: MessageAttachment = {
       blobId: 'blob-file-src',
@@ -381,120 +389,170 @@ describe('attachment media kinds', () => {
     const videoWithoutSource: MessageAttachment = { ...clip, blobId: 'blob-vid-nosrc' };
     const audioWithoutSource: MessageAttachment = { ...voice, blobId: 'blob-aud-nosrc' };
 
-    previewProbe.openAttachment.mockClear();
-    previewProbe.openFile.mockClear();
-    const withSourceContainer = draw(message({
-      attachments: [fileWithSource, imageWithSource, videoWithSource, audioWithSource],
-    }));
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-media');
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const previewHostFile = vi.fn(async () => ({ content: 'ok', totalBytes: 2, truncated: false, lossless: true }));
+    previewProbe.connection = {
+      scopeId: 'local',
+      spaceKey: 'local',
+      connectionSource: 'desktop',
+      client: {
+        baseUrl: 'http://127.0.0.1:8787',
+        klient: {},
+        previewHostFile,
+        readingOptions: () => ({}),
+        readSessionMediaPreviewBytes: vi.fn(async (_sid: string, fileId: string) => ({
+          bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+          mime: fileId.includes('vid') ? 'video/mp4' : 'image/png',
+          name: fileId,
+        })),
+        readSessionMediaBytes: vi.fn(async () => { throw new Error('offline'); }),
+      },
+    };
+    try {
+      previewProbe.openAttachment.mockClear();
+      previewProbe.openFile.mockClear();
+      const withSourceContainer = draw(message({
+        attachments: [fileWithSource, imageWithSource, videoWithSource, audioWithSource],
+      }));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
 
-    const fileTitleEl = withSourceContainer.querySelector<HTMLElement>('[data-message-attachment="blob-file-src"] span[title]');
-    expect(fileTitleEl?.getAttribute('title')).toBe('/workspace/docs/notes.md');
+      const fileTitleEl = withSourceContainer.querySelector<HTMLElement>('[data-message-attachment="blob-file-src"] span[title]');
+      expect(fileTitleEl?.getAttribute('title')).toBe('/workspace/docs/notes.md');
 
-    act(() => {
-      withSourceContainer.querySelector<HTMLButtonElement>('[data-message-attachment="blob-file-src"] [data-message-attachment-open]')?.click();
-    });
-    expect(previewProbe.openFile).toHaveBeenLastCalledWith('/workspace/docs/notes.md');
+      await act(async () => {
+        withSourceContainer.querySelector<HTMLButtonElement>('[data-message-attachment="blob-file-src"] [data-message-attachment-open]')?.click();
+        await Promise.resolve();
+      });
+      expect(previewProbe.openFile).toHaveBeenLastCalledWith('/workspace/docs/notes.md');
 
-    // Right-clicking AttachmentCard raises the unified file context menu with copy-path and open-preview.
-    const fileCard = withSourceContainer.querySelector<HTMLElement>('[data-message-attachment="blob-file-src"]')!;
-    act(() => {
-      fileCard.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 50 }));
-    });
-    const fileMenu = document.body.querySelector('[data-file-link-menu]');
-    expect(fileMenu).not.toBeNull();
-    expect(fileMenu?.querySelector('[data-menu-item="open-preview"]')).not.toBeNull();
-    expect(fileMenu?.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
-    act(() => {
-      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    });
+      // Missing/unreadable local file falls back silently to preserved session copy with trusted origin intact.
+      previewHostFile.mockRejectedValueOnce(new Error('ENOENT'));
+      await act(async () => {
+        withSourceContainer.querySelector<HTMLButtonElement>('[data-message-attachment="blob-file-src"] [data-message-attachment-open]')?.click();
+        await Promise.resolve();
+      });
+      expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          kind: 'file',
+          fileId: 'blob-file-src',
+          sourceId,
+          origin: { path: '/workspace/docs/notes.md', trusted: true },
+        }),
+      );
 
-    const imgBtn = withSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="image"] button');
-    expect(imgBtn).not.toBeNull();
-    act(() => { imgBtn?.click(); });
-    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        kind: 'image',
-        fileId: 'blob-img-src',
-        sourceId,
-        path: undefined,
-        origin: { path: '/workspace/assets/cover.png', trusted: true },
-      }),
-      'main',
-    );
+      // Right-clicking AttachmentCard raises the unified file context menu with copy-path and open-preview.
+      const fileCard = withSourceContainer.querySelector<HTMLElement>('[data-message-attachment="blob-file-src"]')!;
+      act(() => {
+        fileCard.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 50 }));
+      });
+      const fileMenu = document.body.querySelector('[data-file-link-menu]');
+      expect(fileMenu).not.toBeNull();
+      expect(fileMenu?.querySelector('[data-menu-item="open-preview"]')).not.toBeNull();
+      expect(fileMenu?.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
+      act(() => {
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      });
 
-    const vidBtn = withSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="video"] button');
-    expect(vidBtn).not.toBeNull();
-    act(() => { vidBtn?.click(); });
-    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        kind: 'video',
-        fileId: 'blob-vid-src',
-        sourceId,
-        path: undefined,
-        origin: { path: '/workspace/assets/take.mp4', trusted: true },
-      }),
-    );
+      const imgBtn = withSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="image"] button');
+      expect(imgBtn).not.toBeNull();
+      act(() => { imgBtn?.click(); });
+      expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          kind: 'image',
+          fileId: 'blob-img-src',
+          sourceId,
+          path: undefined,
+          origin: { path: '/workspace/assets/cover.png', trusted: true },
+        }),
+        'main',
+      );
 
-    const audBtn = withSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="audio"] [data-message-media-failed]');
-    expect(audBtn).not.toBeNull();
-    // Right-clicking AudioAttachment raises the unified file context menu.
-    act(() => {
-      audBtn!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 50, clientY: 60 }));
-    });
-    const audioMenu = document.body.querySelector('[data-file-link-menu]');
-    expect(audioMenu).not.toBeNull();
-    expect(audioMenu?.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
-    act(() => {
-      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    });
-    act(() => { audBtn?.click(); });
-    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        kind: 'audio',
-        fileId: 'blob-aud-src',
-        sourceId,
-        path: undefined,
-        origin: { path: '/workspace/assets/note.wav', trusted: true },
-      }),
-    );
+      const vidBtn = withSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="video"] button');
+      expect(vidBtn).not.toBeNull();
+      act(() => { vidBtn?.click(); });
+      expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          kind: 'video',
+          fileId: 'blob-vid-src',
+          sourceId,
+          path: undefined,
+          origin: { path: '/workspace/assets/take.mp4', trusted: true },
+        }),
+      );
 
-    previewProbe.openAttachment.mockClear();
-    const withoutSourceContainer = draw(message({
-      attachments: [fileWithoutSource, imageWithoutSource, videoWithoutSource, audioWithoutSource],
-    }));
+      const audBtn = withSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="audio"] [data-message-media-failed]');
+      expect(audBtn).not.toBeNull();
+      // Right-clicking AudioAttachment raises the unified file context menu.
+      act(() => {
+        audBtn!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 50, clientY: 60 }));
+      });
+      const audioMenu = document.body.querySelector('[data-file-link-menu]');
+      expect(audioMenu).not.toBeNull();
+      expect(audioMenu?.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
+      act(() => {
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      });
+      act(() => { audBtn?.click(); });
+      expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          kind: 'audio',
+          fileId: 'blob-aud-src',
+          sourceId,
+          path: undefined,
+          origin: { path: '/workspace/assets/note.wav', trusted: true },
+        }),
+      );
 
-    const uploadCard = withoutSourceContainer.querySelector<HTMLElement>('[data-message-attachment="blob-file-upload"]');
-    expect(uploadCard?.innerHTML).not.toContain('f_upload_0001');
-    expect(uploadCard?.querySelector<HTMLElement>('span[title]')?.getAttribute('title')).toBe('upload.pdf');
+      previewProbe.openAttachment.mockClear();
+      const withoutSourceContainer = draw(message({
+        attachments: [fileWithoutSource, imageWithoutSource, videoWithoutSource, audioWithoutSource],
+      }));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
 
-    act(() => {
-      withoutSourceContainer.querySelector<HTMLButtonElement>('[data-message-attachment="blob-file-upload"] [data-message-attachment-open]')?.click();
-    });
-    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
-      expect.objectContaining({ kind: 'file', fileId: 'blob-file-upload', sourceId: undefined, origin: undefined }),
-    );
+      const uploadCard = withoutSourceContainer.querySelector<HTMLElement>('[data-message-attachment="blob-file-upload"]');
+      expect(uploadCard?.innerHTML).not.toContain('f_upload_0001');
+      expect(uploadCard?.querySelector<HTMLElement>('span[title]')?.getAttribute('title')).toBe('upload.pdf');
 
-    act(() => {
-      withoutSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="image"] button')?.click();
-    });
-    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
-      expect.objectContaining({ kind: 'image', fileId: 'blob-img-nosrc', sourceId: undefined, origin: undefined }),
-      'main',
-    );
+      act(() => {
+        withoutSourceContainer.querySelector<HTMLButtonElement>('[data-message-attachment="blob-file-upload"] [data-message-attachment-open]')?.click();
+      });
+      expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: 'file', fileId: 'blob-file-upload', sourceId: undefined, origin: undefined }),
+      );
 
-    act(() => {
-      withoutSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="video"] button')?.click();
-    });
-    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
-      expect.objectContaining({ kind: 'video', fileId: 'blob-vid-nosrc', sourceId: undefined, origin: undefined }),
-    );
+      act(() => {
+        withoutSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="image"] button')?.click();
+      });
+      expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: 'image', fileId: 'blob-img-nosrc', sourceId: undefined, origin: undefined }),
+        'main',
+      );
 
-    act(() => {
-      withoutSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="audio"] [data-message-media-failed]')?.click();
-    });
-    expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
-      expect.objectContaining({ kind: 'audio', fileId: 'blob-aud-nosrc', sourceId: undefined, origin: undefined }),
-    );
+      act(() => {
+        withoutSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="video"] button')?.click();
+      });
+      expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: 'video', fileId: 'blob-vid-nosrc', sourceId: undefined, origin: undefined }),
+      );
+
+      act(() => {
+        withoutSourceContainer.querySelector<HTMLButtonElement>('[data-message-media="audio"] [data-message-media-failed]')?.click();
+      });
+      expect(previewProbe.openAttachment).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: 'audio', fileId: 'blob-aud-nosrc', sourceId: undefined, origin: undefined }),
+      );
+    } finally {
+      previewProbe.connection = null;
+      createObjectURL.mockRestore();
+      revokeObjectURL.mockRestore();
+    }
   });
 
   it('gives legacy Office files (.doc, .xls, .ppt) honest badges distinct from OOXML', () => {
@@ -693,6 +751,27 @@ describe('failed message error disclosure', () => {
     act(() => { toggle.click(); });
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(toggle.textContent).toContain(fullDetail);
+    expect(container.querySelector('[data-copy-state]')).not.toBeNull();
+  });
+
+  it('localizes collapsed media_unsupported refusal while preserving the raw token and MIME in expanded detail', () => {
+    const rawDetail = 'media_unsupported: No enabled channel supports video (video/mp4).';
+    const container = draw(message({
+      status: 'failed',
+      text: '',
+      deliveredTo: [],
+      failureDetail: rawDetail,
+    }));
+    const toggle = container.querySelector<HTMLButtonElement>('[data-message-failure-detail]')!;
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toBe('当前启用的信道不支持发送视频');
+    expect(toggle.textContent).not.toContain('media_unsupported');
+
+    act(() => { toggle.click(); });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle.textContent).toContain('media_unsupported');
+    expect(toggle.textContent).toContain('video/mp4');
     expect(container.querySelector('[data-copy-state]')).not.toBeNull();
   });
 });

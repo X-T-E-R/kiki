@@ -29,7 +29,7 @@
  *   instead of implying that switching it off here stops that service.
  */
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { Link, useLocation } from 'react-router-dom';
 
@@ -70,9 +70,13 @@ type UsageRead = UseQueryResult<PluginUsageResponse, Error>;
 export function SessionPluginsPanel({
   sessionId,
   showStoreActions = true,
+  hideWhenEmpty = false,
+  renderWrapper,
 }: {
   readonly sessionId: string;
   readonly showStoreActions?: boolean;
+  readonly hideWhenEmpty?: boolean;
+  readonly renderWrapper?: (content: ReactNode) => ReactNode;
 }) {
   const { t, locale } = useI18n();
   const location = useLocation();
@@ -219,6 +223,19 @@ export function SessionPluginsPanel({
 
   if (unsupported) return null;
 
+  const hasApplyStatus =
+    read.data?.apply_state === 'pending' ||
+    (read.data?.apply_state === 'failed' && (read.data?.errors?.length ?? 0) > 0);
+  const omitEmptySection =
+    hideWhenEmpty &&
+    !showStoreActions &&
+    read.isSuccess &&
+    !read.isError &&
+    !read.isPending &&
+    items.length === 0 &&
+    !hasApplyStatus;
+  if (omitEmptySection) return null;
+
   const renderRow = (item: PluginUsageItem) => (
     <PluginUsageRow
       key={item.id}
@@ -232,7 +249,7 @@ export function SessionPluginsPanel({
     />
   );
 
-  return (
+  const body = (
     <>
       {/* The control block owns the fold and heading; this component owns the
           plugin rows and their read/write states. */}
@@ -311,6 +328,8 @@ export function SessionPluginsPanel({
       ) : null}
     </>
   );
+
+  return renderWrapper === undefined ? body : <>{renderWrapper(body)}</>;
 }
 
 /** The scope line: the server's own name for this workspace, plus entry points. */

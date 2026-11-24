@@ -238,14 +238,16 @@ function AttachmentCard({
   const style = SUBTYPE_STYLE[subtype];
   const detail = attachmentDetail(attachment, subtype, readable, t);
   const openable = preview !== null && readable;
+  const localKikiComputer = connection === null ? true : isOnKikiComputer(connection);
   const { origin, localPath } = useMemo(
     () => resolveDirectLocalAttachment(attachment, {
       readable,
       remote,
+      localKikiComputer,
       isHtml: subtype === 'html',
       cwd: preview?.cwd,
     }),
-    [attachment, readable, remote, subtype, preview?.cwd],
+    [attachment, readable, remote, localKikiComputer, subtype, preview?.cwd],
   );
   const ref = useMemo(
     () => messageMediaRef(attachment, kind, subtype === 'html' ? localPath : undefined, origin),
@@ -526,6 +528,35 @@ export function MessageAttachmentView({ attachment, readable }: { readonly attac
   );
 }
 
+function collapsedFailureSummary(
+  raw: string,
+  t: ReturnType<typeof useI18n>['t'],
+): { readonly text: string; readonly localized: boolean } {
+  const mediaMatch = /^media_unsupported\b[:\s-]*(.*)$/iu.exec(raw.trim());
+  if (mediaMatch !== null) {
+    const rest = (mediaMatch[1] ?? '').toLowerCase();
+    const kindKey: I18nKey | undefined =
+      /\bvideo\b|video\//u.test(rest)
+        ? 'message.media.video'
+        : /\bvoice\b/u.test(rest)
+          ? 'message.media.voice'
+          : /\baudio\b|audio\//u.test(rest)
+            ? 'message.media.audio'
+            : /\bimage\b|image\//u.test(rest)
+              ? 'message.media.image'
+              : /\bfile\b/u.test(rest)
+                ? 'message.media.file'
+                : undefined;
+    return {
+      text: kindKey === undefined
+        ? t('message.failure.mediaUnsupported')
+        : t('message.failure.mediaUnsupportedKind', { kind: t(kindKey) }),
+      localized: true,
+    };
+  }
+  return { text: plainFailure(raw) ?? raw, localized: false };
+}
+
 export const MessageRow = memo(function MessageRow({
   block,
   speaker,
@@ -575,6 +606,8 @@ export const MessageRow = memo(function MessageRow({
   const unconfirmed = block.status === 'pending' || block.reached === 'unconfirmed';
 
   if (block.status === 'failed' || block.status === 'cancelled') {
+    const collapsedFailure =
+      block.failureDetail === undefined ? undefined : collapsedFailureSummary(block.failureDetail, t);
     return (
       <div data-message-row={block.id} data-message-status={block.status} className="flex flex-col">
         <div className="flex min-w-0 items-center gap-2">
@@ -593,7 +626,7 @@ export const MessageRow = memo(function MessageRow({
         <div className="flex gap-2">
           <span className={MESSAGE_FACE} />
           <div className="min-w-0 flex-1">
-            {block.failureDetail === undefined ? null : (
+            {block.failureDetail === undefined || collapsedFailure === undefined ? null : (
               <div className="flex max-w-full min-w-0 items-start gap-1">
                 <button
                   type="button"
@@ -601,10 +634,14 @@ export const MessageRow = memo(function MessageRow({
                   aria-expanded={failureOpen}
                   title={failureOpen ? undefined : block.failureDetail}
                   onClick={() => { setFailureOpen((value) => !value); }}
-                  className="flex max-w-full min-w-0 flex-1 cursor-pointer items-start gap-1 rounded-sm py-0.5 text-left font-mono text-[11.5px] leading-relaxed text-ink-faint transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-accent"
+                  className={`flex max-w-full min-w-0 flex-1 cursor-pointer items-start gap-1 rounded-sm py-0.5 text-left leading-relaxed text-ink-faint transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-accent ${
+                    failureOpen || !collapsedFailure.localized
+                      ? 'font-mono text-[11.5px]'
+                      : 'text-[12px]'
+                  }`}
                 >
                   <span className={failureOpen ? 'min-w-0 flex-1 break-words whitespace-pre-wrap' : 'min-w-0 flex-1 truncate'}>
-                    {failureOpen ? block.failureDetail : (plainFailure(block.failureDetail) ?? block.failureDetail)}
+                    {failureOpen ? block.failureDetail : collapsedFailure.text}
                   </span>
                   <DisclosureChevron open={failureOpen} className="mt-1 shrink-0" />
                 </button>

@@ -37,6 +37,7 @@ import { useMediaPreview } from '../mediaPreviewContext';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
 import { useSessionMediaPlayback } from '../useSessionMediaPlayback';
 import { DocumentTabView } from './DocumentTabView';
+import { PreviewHeaderActionsPortal, usePreviewHeaderSlot } from './PreviewHeaderSlot';
 import {
   BODY_ACTION_CLASS,
   CAPTION_ACTION_CLASS,
@@ -408,13 +409,23 @@ export function PreviewAttachmentView({
   );
 
   const phoneForm = environment.phoneForm === true;
+  const headerSlot = usePreviewHeaderSlot();
+  const useUnifiedHead = visible && headerSlot.unifiedHead && headerSlot.actionsSlot !== null;
+  const compact = phoneForm || headerSlot.widthTier === 'compact';
+  const wide = !compact && headerSlot.widthTier === 'wide';
   const hasRenderedToggle = html || markdown;
+  const canOpenCurrent = actionIds.has('open-current-file') && trustedPath !== undefined && onOpenCurrentFile !== undefined;
+  const canDownload = actionIds.has('download');
+  const showOpenCurrentInline = !compact && canOpenCurrent;
+  const showRenderedToggleInline = !compact && hasRenderedToggle && actionIds.has('rendered-source');
+  const showDownloadInline = canDownload && (wide || compact || (!showOpenCurrentInline && !showRenderedToggleInline));
+
   const moreEntries = useMemo<readonly MiniMenuEntry[]>(() => {
     const list: MiniMenuEntry[] = [];
     for (const action of actions) {
       if (
         action.id === 'open-current-file' &&
-        phoneForm &&
+        !showOpenCurrentInline &&
         trustedPath !== undefined &&
         onOpenCurrentFile !== undefined
       ) {
@@ -423,12 +434,18 @@ export function PreviewAttachmentView({
           label: t('preview.openCurrentFile'),
           run: () => { onOpenCurrentFile(trustedPath); },
         });
-      } else if (action.id === 'rendered-source' && phoneForm && hasRenderedToggle) {
+      } else if (action.id === 'rendered-source' && !showRenderedToggleInline && hasRenderedToggle) {
         const nextMode = mode === 'rendered' ? 'source' : 'rendered';
         list.push({
           key: 'rendered-source',
           label: nextMode === 'source' ? t('preview.switchToSource') : t('preview.switchToRendered'),
           run: () => { setMode(nextMode); },
+        });
+      } else if (action.id === 'download' && canDownload && !showDownloadInline) {
+        list.push({
+          key: 'download',
+          label: t('media.download'),
+          run: () => { void downloadAttachment(); },
         });
       } else if (action.id === 'find-in-file' && textPreview) {
         list.push({
@@ -486,13 +503,11 @@ export function PreviewAttachmentView({
       }
     }
     return list;
-  }, [actions, activeDraftKey, sessionId, trustedPath, workspaceRoot, decodedText, host, isCopy, t, phoneForm, onOpenCurrentFile, hasRenderedToggle, mode, textPreview, markdown]);
+  }, [actions, activeDraftKey, canDownload, sessionId, trustedPath, workspaceRoot, decodedText, host, isCopy, t, showOpenCurrentInline, showRenderedToggleInline, showDownloadInline, onOpenCurrentFile, hasRenderedToggle, mode, textPreview, markdown, downloadAttachment]);
 
   const sizeBytes = load.status === 'ready' ? load.bytes.byteLength : size;
-  const canOpenCurrent = actionIds.has('open-current-file') && trustedPath !== undefined && onOpenCurrentFile !== undefined;
-  const canDownload = actionIds.has('download');
 
-  const copyNoticeNode = !phoneForm && isCopy ? (
+  const copyNoticeNode = !compact && isCopy ? (
     <span className="flex min-w-0 items-center gap-1 text-[10.5px] text-ink-faint">
       <span className="truncate" data-preview-copy-notice>{t('preview.sentCopyNotice')}</span>
       {sizeBytes !== undefined ? (
@@ -501,7 +516,7 @@ export function PreviewAttachmentView({
     </span>
   ) : null;
 
-  const openCurrentButton = !phoneForm && canOpenCurrent ? (
+  const openCurrentButton = showOpenCurrentInline ? (
     <button
       type="button"
       data-open-current-file
@@ -522,11 +537,67 @@ export function PreviewAttachmentView({
         const rect = event.currentTarget.getBoundingClientRect();
         setMoreAnchor({ x: rect.right, y: rect.bottom + 4 });
       }}
-      className={phoneForm ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink' : HEADER_ACTION_CLASS}
+      className={
+        phoneForm
+          ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
+          : 'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11'
+      }
     >
-      <Icon name="more" size={phoneForm ? 16 : 12} />
+      <Icon name="more" size={phoneForm ? 16 : 14} />
     </button>
   ) : null;
+
+  const attachmentToolbarControls = (
+    <div className="flex shrink-0 items-center gap-1.5">
+      {wide && !isCopy && sizeBytes !== undefined ? (
+        <span className="shrink-0 font-mono text-[11px] text-ink-faint">
+          {formatBytes(sizeBytes)}
+        </span>
+      ) : null}
+      {openCurrentButton}
+      {showRenderedToggleInline ? (
+        <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
+          {(['rendered', 'source'] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              data-preview-mode={option}
+              data-md-mode={markdown ? option : undefined}
+              data-html-mode={html ? option : undefined}
+              aria-pressed={mode === option}
+              onClick={() => { setMode(option); }}
+              className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
+                mode === option
+                  ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                  : 'text-ink-faint hover:text-ink-soft'
+              }`}
+            >
+              {option === 'rendered' ? t('preview.rendered') : t('preview.source')}
+            </button>
+          ))}
+        </span>
+      ) : null}
+      {showDownloadInline ? (
+        <button
+          type="button"
+          title={t('media.download')}
+          aria-label={t('media.download')}
+          data-download-file
+          onClick={() => { void downloadAttachment(); }}
+          className={
+            phoneForm
+              ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
+              : compact
+                ? 'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11'
+                : HEADER_ACTION_CLASS
+          }
+        >
+          <Icon name="arrowDown" size={phoneForm ? 16 : 12} />
+        </button>
+      ) : null}
+      {moreButton}
+    </div>
+  );
 
   return (
     <div
@@ -579,57 +650,23 @@ export function PreviewAttachmentView({
         />
       ) : (
         <>
-          <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-hairline px-3 py-1.5">
-            <div className="min-w-[8rem] flex-1">
-              <span className="block truncate font-mono text-[11px] text-ink-faint" title={trustedPath ?? name}>
-                {name}
-              </span>
-              {copyNoticeNode}
-            </div>
-            <div className="ml-auto flex shrink-0 items-center gap-1.5">
-              {!phoneForm && !isCopy && sizeBytes !== undefined ? (
-                <span className="shrink-0 font-mono text-[11px] text-ink-faint">
-                  {formatBytes(sizeBytes)}
+          {useUnifiedHead ? (
+            <PreviewHeaderActionsPortal active={visible}>
+              {attachmentToolbarControls}
+            </PreviewHeaderActionsPortal>
+          ) : (
+            <div data-preview-secondary-bar className="flex shrink-0 items-center gap-x-2 border-b border-hairline px-3 py-1.5">
+              <div className="min-w-0 flex-1">
+                <span className="block truncate font-mono text-[11px] text-ink-faint" title={trustedPath ?? name}>
+                  {name}
                 </span>
-              ) : null}
-              {openCurrentButton}
-              {!phoneForm && hasRenderedToggle && actionIds.has('rendered-source') ? (
-                <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
-                  {(['rendered', 'source'] as const).map((option) => (
-                    <button
-                      key={option}
-                      type="button"
-                      data-preview-mode={option}
-                      data-md-mode={markdown ? option : undefined}
-                      data-html-mode={html ? option : undefined}
-                      aria-pressed={mode === option}
-                      onClick={() => { setMode(option); }}
-                      className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
-                        mode === option
-                          ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
-                          : 'text-ink-faint hover:text-ink-soft'
-                      }`}
-                    >
-                      {option === 'rendered' ? t('preview.rendered') : t('preview.source')}
-                    </button>
-                  ))}
-                </span>
-              ) : null}
-              {canDownload ? (
-                <button
-                  type="button"
-                  title={t('media.download')}
-                  aria-label={t('media.download')}
-                  data-download-file
-                  onClick={() => { void downloadAttachment(); }}
-                  className={phoneForm ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink' : HEADER_ACTION_CLASS}
-                >
-                  <Icon name="arrowDown" size={phoneForm ? 16 : 12} />
-                </button>
-              ) : null}
-              {moreButton}
+                {copyNoticeNode}
+              </div>
+              <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                {attachmentToolbarControls}
+              </div>
             </div>
-          </div>
+          )}
           {transfer.status !== 'idle' ? (
             <div
               role={transfer.status === 'failed' ? 'alert' : 'status'}

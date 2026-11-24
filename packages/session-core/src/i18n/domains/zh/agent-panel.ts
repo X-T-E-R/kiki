@@ -788,6 +788,8 @@ export const agentPanelZh = {
   'rail.ownerMain': '主智能体',
   'rail.ownerOverview': '概览',
   'rail.panelOf': '{name} 的面板',
+  'rail.persona.edit': '编辑',
+  'rail.persona.memory': '记忆',
   'rail.plugins.addHere': '加入',
   'rail.plugins.addSource': '从来源添加',
   'rail.plugins.appService': '共享 home 后台',

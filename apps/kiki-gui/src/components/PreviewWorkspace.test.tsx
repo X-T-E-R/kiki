@@ -563,7 +563,7 @@ describe('PreviewWorkspace', () => {
     await openFile(probe.container, '/work/docs/long.md');
     const panel = workspace().querySelector('[data-preview-tabpanel="/work/docs/long.md"]')!;
     await act(async () => {
-      panel.querySelector('[data-md-mode="source"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      workspace().querySelector('[data-md-mode="source"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     const editor = () => panel.querySelector('[data-testid="editor"]') as HTMLTextAreaElement;
     expect(editor().value).toContain('# Hidden ending');
@@ -1006,6 +1006,7 @@ describe('PreviewWorkspace file ops & 加入对话', () => {
   );
 
   it('the @ button appends @<relative path> to the session draft', async () => {
+    localStorage.setItem('kiki.previewPanelWidth', '640');
     const probe = makeRoot();
     await renderSettled(
       probe.root,
@@ -1029,6 +1030,7 @@ describe('PreviewWorkspace file ops & 加入对话', () => {
   });
 
   it('the @ button quotes paths containing whitespace (posix cwd)', async () => {
+    localStorage.setItem('kiki.previewPanelWidth', '640');
     FILES['/work/docs/design spec.md'] = '# Draft\n';
     const probe = makeRoot();
     await renderSettled(
@@ -1046,6 +1048,7 @@ describe('PreviewWorkspace file ops & 加入对话', () => {
   });
 
   it('the @ button quotes spaced paths under a Windows cwd', async () => {
+    localStorage.setItem('kiki.previewPanelWidth', '640');
     FILES['C:\\work\\my dir\\a b.txt'] = 'hi\n';
     const probe = makeRoot();
     await renderSettled(
@@ -1522,6 +1525,7 @@ describe('PreviewWorkspace media tabs', () => {
   });
 
   it('places the opener pair beside the binary download, plus a caption reveal icon', async () => {
+    localStorage.setItem('kiki.previewPanelWidth', '640');
     hostMock.desktop = true;
     const probe = makeRoot();
     await renderSettled(
@@ -1534,9 +1538,9 @@ describe('PreviewWorkspace media tabs', () => {
     const panel = workspace().querySelector('[data-preview-tabpanel="/work/bundles/release.zip"]')!;
     expect(panel.textContent).toContain('This kind of file cannot be previewed yet.');
     expect(panel.querySelector('[data-download-file]')?.textContent).toBe('Download');
-    // Two reveal affordances: the caption-strip icon (tooltip/aria label) and
+    // Two reveal affordances: the unified head icon (tooltip/aria label) and
     // the text button beside the download.
-    const reveals = [...panel.querySelectorAll<HTMLElement>('[data-reveal-file]')];
+    const reveals = [...workspace().querySelectorAll<HTMLElement>('[data-reveal-file]')];
     expect(reveals).toHaveLength(2);
     expect(reveals[0]!.getAttribute('aria-label')).toBe('Show in folder');
     expect(reveals[1]!.textContent).toBe('Show in folder');
@@ -1554,6 +1558,7 @@ describe('PreviewWorkspace media tabs', () => {
   });
 
   it('adds the opener pair beside the text tab download and wires the clicks', async () => {
+    localStorage.setItem('kiki.previewPanelWidth', '640');
     hostMock.desktop = true;
     const probe = makeRoot();
     await renderSettled(
@@ -1563,11 +1568,11 @@ describe('PreviewWorkspace media tabs', () => {
       </MediaPreviewProvider>,
     );
     await openFile(probe.container, 'src/server.ts');
-    const panel = workspace().querySelector('[data-preview-tabpanel="/work/src/server.ts"]')!;
-    expect(panel.querySelector('[data-download-file]')).not.toBeNull();
-    const openButton = panel.querySelector<HTMLElement>('[data-open-default-app]')!;
+    const ws = workspace();
+    expect(ws.querySelector('[data-download-file]')).not.toBeNull();
+    const openButton = ws.querySelector<HTMLElement>('[data-open-default-app]')!;
     expect(openButton.textContent).toBe('Open');
-    const revealButton = panel.querySelector<HTMLElement>('[data-reveal-file]')!;
+    const revealButton = ws.querySelector<HTMLElement>('[data-reveal-file]')!;
     expect(revealButton.getAttribute('aria-label')).toBe('Show in folder');
     await act(async () => {
       openButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -2117,7 +2122,7 @@ describe('PreviewWorkspace tab keyboard & menu focus', () => {
         tabs={options.tabs}
         active={options.active}
         dirtyPaths={new Set()}
-        width={400}
+        width={560}
         onActivate={onActivate}
         onClose={vi.fn()}
         onCloseOthers={vi.fn()}
@@ -2429,6 +2434,7 @@ describe('PreviewWorkspace attachment actions & copy marking (#29)', () => {
     hostMock.desktop = true;
     connectionMock.connectionSource = 'desktop';
     connectionMock.scopeId = 'local';
+    localStorage.setItem('kiki.previewPanelWidth', '640');
     const probe = makeRoot();
     await renderSettled(
       probe.root,
@@ -2688,9 +2694,9 @@ describe('PreviewWorkspace attachment actions & copy marking (#29)', () => {
     await openFile(probe.container, '/work/legacy-gbk.txt');
     await settle();
     const gbkPanel = probe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/work/legacy-gbk.txt"]')!;
-    expect(gbkPanel.querySelector('[data-edit-button]')).toBeNull();
-    expect(gbkPanel.querySelector('[data-save-button]')).toBeNull();
-    expect(gbkPanel.querySelector('[data-readonly-reason]')?.textContent).toBe('Read-only: not UTF-8 text');
+    expect(probe.container.querySelector('[data-edit-button]')).toBeNull();
+    expect(probe.container.querySelector('[data-save-button]')).toBeNull();
+    expect(probe.container.querySelector('[data-readonly-reason]')?.textContent).toBe('Read-only: not UTF-8 text');
     expect(gbkPanel.textContent).not.toContain('Open in the desktop app to edit.');
 
     await openFile(probe.container, '/work/elf-bin');
@@ -3283,10 +3289,10 @@ describe('PreviewWorkspace attachment actions & copy marking (#29)', () => {
       expect(picker.textContent).toContain('notes.md');
       expect(picker.textContent).toContain('▾ · 5');
 
-      // Header keeps name + single primary download action + ⋯
+      // Header keeps name + single primary download action + ⋯ in unified 48px head
       const mdPanel = phoneProbe.container.querySelector<HTMLElement>('[data-preview-tabpanel="/work/notes.md"]')!;
-      expect(mdPanel.querySelector('[data-download-file]')).not.toBeNull();
-      const moreBtn = mdPanel.querySelector<HTMLButtonElement>('[data-header-more]')!;
+      expect(phoneProbe.container.querySelector('[data-download-file]')).not.toBeNull();
+      const moreBtn = phoneProbe.container.querySelector<HTMLButtonElement>('[data-header-more]')!;
       expect(moreBtn).not.toBeNull();
 
       await act(async () => {
@@ -4209,6 +4215,85 @@ describe('WorkspacePanelsControl direct 1-click inline buttons', () => {
     } finally {
       globalThis.ResizeObserver = prevResizeObserver;
       cleanup();
+    }
+  });
+});
+
+describe('PreviewWorkspace unified 48px head & container-width action priority (W6)', () => {
+  it('adapts single-tab unified head and action priority across 320, 390, 480, and 640px widths without remounting on single/multi transitions', async () => {
+    const probe = makeRoot();
+    const renderAtWidth = async (width: number, tabList: string[], active: string) => {
+      await renderSettled(
+        probe.root,
+        <PreviewWorkspace
+          tabs={tabList}
+          active={active}
+          cwd="/work"
+          sessionId="sess-tier"
+          dirtyPaths={new Set()}
+          width={width}
+          onActivate={vi.fn()}
+          onClose={vi.fn()}
+          onCloseOthers={vi.fn()}
+          onCloseAll={vi.fn()}
+          onMove={vi.fn()}
+          onCollapse={vi.fn()}
+          onWidthChange={vi.fn()}
+          onOpenImage={vi.fn()}
+          reportDirty={vi.fn()}
+          scrollPositions={{}}
+          onScrollPosition={vi.fn()}
+        />,
+      );
+    };
+    const ws = () => probe.container.querySelector<HTMLElement>('[data-preview-workspace]')!;
+
+    // 480px single tab: unified 48px head (zero secondary bar), Rendered/Source inline, mention/download in More.
+    await renderAtWidth(480, ['/work/docs/design.md'], '/work/docs/design.md');
+    expect(ws().getAttribute('data-preview-width-tier')).toBe('medium');
+    expect(ws().querySelector('[data-preview-secondary-bar]')).toBeNull();
+    expect(ws().querySelector('[data-md-mode="source"]')).not.toBeNull();
+    expect(ws().querySelector('[data-mention-file]')).toBeNull();
+    expect(ws().querySelector('[data-download-file]')).toBeNull();
+    const mediumMore = ws().querySelector<HTMLButtonElement>('[data-header-more]')!;
+    expect(mediumMore).not.toBeNull();
+    await act(async () => { mediumMore.click(); });
+    expect(document.querySelector('[data-menu-item="add-to-chat"]')).not.toBeNull();
+    expect(document.querySelector('[data-menu-item="download"]')).not.toBeNull();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+
+    // Switch to source mode and verify the mounted editor element survives single -> multi -> single transition.
+    await act(async () => {
+      ws().querySelector('[data-md-mode="source"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const editorBefore = ws().querySelector('[data-testid="editor"]');
+    expect(editorBefore).not.toBeNull();
+
+    await renderAtWidth(480, ['/work/docs/design.md', '/work/src/server.ts'], '/work/docs/design.md');
+    expect(ws().querySelector('[data-preview-secondary-bar]')).not.toBeNull();
+    expect(ws().querySelector('[data-testid="editor"]')).toBe(editorBefore);
+
+    await renderAtWidth(480, ['/work/docs/design.md'], '/work/docs/design.md');
+    expect(ws().querySelector('[data-preview-secondary-bar]')).toBeNull();
+    expect(ws().querySelector('[data-testid="editor"]')).toBe(editorBefore);
+
+    // 640px wide: mention & download are inline.
+    await renderAtWidth(640, ['/work/docs/design.md'], '/work/docs/design.md');
+    expect(ws().getAttribute('data-preview-width-tier')).toBe('wide');
+    expect(ws().querySelector('[data-mention-file]')).not.toBeNull();
+    expect(ws().querySelector('[data-download-file]')).not.toBeNull();
+
+    // 390px and 320px compact: tab picker + 1 primary action + More, zero tablist or secondary bar.
+    for (const narrow of [390, 320]) {
+      await renderAtWidth(narrow, ['/work/docs/design.md', '/work/src/server.ts'], '/work/docs/design.md');
+      expect(ws().getAttribute('data-preview-width-tier')).toBe('compact');
+      expect(ws().querySelector('[role="tablist"]')).toBeNull();
+      expect(ws().querySelector('[data-preview-tab-picker]')).not.toBeNull();
+      expect(ws().querySelector('[data-preview-secondary-bar]')).toBeNull();
+      expect(ws().querySelector('[data-download-file]')).not.toBeNull();
+      expect(ws().querySelector('[data-header-more]')).not.toBeNull();
     }
   });
 });

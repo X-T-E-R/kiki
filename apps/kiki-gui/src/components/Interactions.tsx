@@ -781,29 +781,37 @@ export function ApprovalCard({
         ) : null}
       </div>
       {explainAuto && answered === null ? (
-        <p data-auto-explain className="mt-1 text-[12px] leading-relaxed text-ink-soft">
-          {t('firstRun.auto.explain')}{' '}
-          {onAskEveryStep !== undefined ? (
-            <button
-              type="button"
-              data-auto-explain-manual
-              onClick={() => { acknowledgeAuto(); setAutoManualPicked(true); onAskEveryStep(); }}
-              className={`${TEXT_ACTION} mr-2`}
-            >
-              {t('firstRun.auto.manual')}
+        <div
+          data-auto-explain
+          className="mt-1.5 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1 rounded-md bg-ink/[0.03] px-2 py-1.5 text-[11px] leading-snug text-ink-soft"
+        >
+          <span className="min-w-0 flex-1">{t('firstRun.auto.explain')}</span>
+          <span className="flex shrink-0 items-center gap-2 whitespace-nowrap">
+            {onAskEveryStep !== undefined ? (
+              <button
+                type="button"
+                data-auto-explain-manual
+                onClick={() => { acknowledgeAuto(); setAutoManualPicked(true); onAskEveryStep(); }}
+                className={TEXT_ACTION}
+              >
+                {t('firstRun.auto.manual')}
+              </button>
+            ) : null}
+            <button type="button" data-auto-explain-ok onClick={acknowledgeAuto} className={TEXT_ACTION}>
+              {t('firstRun.auto.ok')}
             </button>
-          ) : null}
-          <button type="button" data-auto-explain-ok onClick={acknowledgeAuto} className={TEXT_ACTION}>
-            {t('firstRun.auto.ok')}
-          </button>
-        </p>
+          </span>
+        </div>
       ) : autoManualPicked && answered === null ? (
-        <p data-auto-explain-future className="mt-1 text-[12px] leading-relaxed text-ink-soft">
-          {t('firstRun.auto.future')}{' '}
-          <Link to={settingsCardRoute('permissions', 'st-card-permission-defaults')} className={TEXT_ACTION}>
+        <div
+          data-auto-explain-future
+          className="mt-1.5 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1 rounded-md bg-ink/[0.03] px-2 py-1.5 text-[11px] leading-snug text-ink-soft"
+        >
+          <span className="min-w-0 flex-1">{t('firstRun.auto.future')}</span>
+          <Link to={settingsCardRoute('permissions', 'st-card-permission-defaults')} className={`${TEXT_ACTION} shrink-0 whitespace-nowrap`}>
             {t('st.title')}
           </Link>
-        </p>
+        </div>
       ) : null}
       {/* What: the file and the action on it, or the tool and its action;
           then the exact command/target or the change itself. */}

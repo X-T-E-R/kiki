@@ -24,8 +24,9 @@ import { documentSourceFor, sheetsOf, useDocumentPreview, type DocumentPreviewCo
 import { PreviewAssetImage } from './PreviewAssetImage';
 import { RendererInstall } from './RendererInstall';
 import { PdfPageView } from './PdfPageView';
+import { PreviewHeaderActionsPortal, usePreviewHeaderSlot } from './PreviewHeaderSlot';
 import { HeaderFileActions } from './ResourceHeader';
-import { HEADER_ACTION_CLASS, INK_BUTTON_CLASS } from './shared';
+import { INK_BUTTON_CLASS } from './shared';
 
 export type DocumentTabSource =
   | { readonly kind: 'workspace'; readonly path: string; readonly runtimeId?: string }
@@ -149,6 +150,10 @@ export function DocumentTabView({
 }: DocumentTabViewProps) {
   const { t, locale } = useI18n();
   const phoneMode = usePhoneMode();
+  const headerSlot = usePreviewHeaderSlot();
+  const useUnifiedHead = active && headerSlot.unifiedHead && headerSlot.actionsSlot !== null;
+  const compact = phoneMode || headerSlot.widthTier === 'compact';
+  const wide = !compact && headerSlot.widthTier === 'wide';
   // The client is a prop, not a context read: the tab already knows which
   // session owns the file, and a caller outside the live connection (a test, a
   // proof run) must be able to supply the same client the shell would.
@@ -173,21 +178,18 @@ export function DocumentTabView({
     : (state.kind === 'ready' ? state.response.source.name : undefined) ?? source.name ?? basenameOf(source.fileId);
   const path = source.kind === 'workspace' ? source.path : name;
 
-  const header = (
-    <div className={CAPTION}>
-      <div className="min-w-0 flex-1">
-        <span className="block truncate font-mono text-[11px] text-ink-faint" title={path}>
-          {phoneMode ? name : path}
-        </span>
-        {headerSubtitle}
-      </div>
-      {state.kind === 'ready' && state.response.kind === 'ready' ? <PageControl controller={controller} response={state.response} /> : null}
-      {!phoneMode && state.kind === 'ready' && state.response.kind === 'text' ? (
+  const readyNav = state.kind === 'ready' && state.response.kind === 'ready'
+    ? <PageControl controller={controller} response={state.response} />
+    : null;
+  const docActions = (
+    <>
+      {!compact ? readyNav : null}
+      {wide && state.kind === 'ready' && state.response.kind === 'text' ? (
         <span className="shrink-0 rounded-[3px] bg-hairline/60 px-1.5 py-0.5 text-[10.5px] font-medium text-ink-soft" data-preview-fidelity="source">
           {t('preview.fidelitySource')}
         </span>
       ) : null}
-      {source.kind === 'workspace' && phoneMode ? (
+      {source.kind === 'workspace' ? (
         <HeaderFileActions
           path={source.path}
           name={name}
@@ -196,21 +198,10 @@ export function DocumentTabView({
           canDownload={state.kind === 'ready' && onDownload !== undefined}
           readFailed={state.kind === 'failed'}
           onReload={retry}
+          widthTier={headerSlot.widthTier}
         />
       ) : (
         <>
-          {source.kind === 'workspace' ? (
-            <button
-              type="button"
-              title={t('preview.reloadFile')}
-              aria-label={t('preview.reloadFile')}
-              data-header-reload
-              onClick={retry}
-              className={HEADER_ACTION_CLASS}
-            >
-              <Icon name="refresh" size={12} />
-            </button>
-          ) : null}
           {state.kind === 'ready' && onDownload !== undefined ? (
             <button
               type="button"
@@ -230,6 +221,29 @@ export function DocumentTabView({
         </>
       )}
       {headerActions}
+    </>
+  );
+
+  const header = useUnifiedHead ? (
+    <>
+      <PreviewHeaderActionsPortal active={active}>
+        {docActions}
+      </PreviewHeaderActionsPortal>
+      {compact && readyNav !== null ? (
+        <div className="flex h-9 shrink-0 items-center justify-center border-b border-hairline px-3">
+          {readyNav}
+        </div>
+      ) : null}
+    </>
+  ) : (
+    <div data-preview-secondary-bar className={CAPTION}>
+      <div className="min-w-0 flex-1">
+        <span className="block truncate font-mono text-[11px] text-ink-faint" title={path}>
+          {compact ? name : path}
+        </span>
+        {headerSubtitle}
+      </div>
+      {docActions}
     </div>
   );
 
