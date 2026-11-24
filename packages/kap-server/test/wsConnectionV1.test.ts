@@ -1992,4 +1992,124 @@ describe('WsConnectionV1 cursor replay ordering', () => {
       activity: 'idle',
     });
   });
+
+  it('propagates detachedTranscriptAgents into replay after partial unsubscribe_v2 and caps oversized outbound frames', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ws-detach-replay-'));
+    try {
+      const listeners = new Map<string, Set<(event: unknown) => void>>([
+        ['main', new Set()],
+        ['child_1', new Set()],
+      ]);
+      const makeBus = (agentId: string) => ({
+        subscribe: (fn: (event: unknown) => void) => {
+          listeners.get(agentId)!.add(fn);
+          return { dispose: () => { listeners.get(agentId)!.delete(fn); } };
+        },
+      });
+      const liveAgents = ['main', 'child_1'].map((id) => ({
+        id,
+        accessor: { get: (token: unknown) => (token === IEventBus ? makeBus(id) : undefined) },
+      }));
+      const sessionHandle = {
+        accessor: {
+          get: (token: unknown) => {
+            if (token === IAgentLifecycleService) {
+              return { list: () => liveAgents, onDidCreate: () => ({ dispose: () => {} }), onDidDispose: () => ({ dispose: () => {} }) };
+            }
+            if (token === ISessionActivityView) {
+              return { state: () => ({ busy: false, executing: false, mainTurnActive: false, pendingInteraction: false }), onDidChange: () => ({ dispose: () => {} }) };
+            }
+            if (token === ISessionInteractionService) {
+              return {
+                listPending: () => [],
+                onDidChangePending: () => ({ dispose: () => {} }),
+                onDidResolve: () => ({ dispose: () => {} }),
+                acquireConsumer: () => {},
+                releaseConsumer: () => {},
+              };
+            }
+            return undefined;
+          },
+        },
+      };
+      const core = {
+        accessor: {
+          get: (token: unknown) => {
+            if (token === IEventService) return { subscribe: () => ({ dispose: () => {} }) };
+            if (token === ISessionManager) {
+              return {
+                get: (sid: string) => (sid === 's_det' ? sessionHandle : undefined),
+                acquire: async (sid: string) => (sid === 's_det' ? { handle: sessionHandle, dispose: async () => {} } : undefined),
+              };
+            }
+            return undefined;
+          },
+        },
+      };
+      const broadcaster = new SessionEventBroadcaster({ eventsDir: dir, core: core as never });
+      const sock = new FakeSocket();
+      const conn = makeConn(sock, { broadcaster });
+
+      sock.emit('message', JSON.stringify({
+        type: 'subscribe_v2',
+        id: 'sub-1',
+        payload: { session_id: 's_det', transcript: { main: 'delta', child_1: 'delta' }, transcript_coverage_version: 2 },
+      }));
+      await vi.waitFor(() => {
+        expect(sock.frames().some((f) => (f as { id?: string }).id === 'sub-1')).toBe(true);
+      });
+      sock.emit('message', JSON.stringify({
+        type: 'unsubscribe_v2',
+        id: 'unsub-1',
+        payload: { session_id: 's_det', agent_ids: ['child_1'] },
+      }));
+      await vi.waitFor(() => {
+        expect(sock.frames().some((f) => (f as { id?: string }).id === 'unsub-1')).toBe(true);
+      });
+      expect(conn.subscriptions.get('s_det')?.detachedTranscriptAgents?.has('child_1')).toBe(true);
+
+      const cursorBefore = await broadcaster.getCursor('s_det');
+      const huge = 'X'.repeat(300 * 1024);
+      for (const fn of listeners.get('child_1')!) {
+        fn({ type: 'tool.result', agentId: 'child_1', toolCallId: 'c1', output: huge });
+      }
+      const cursorAfter = await broadcaster.getCursor('s_det');
+      expect(cursorAfter.seq).toBe(cursorBefore.seq + 1);
+
+      const replayWithDetach = await broadcaster.getBufferedSince(
+        's_det',
+        cursorBefore,
+        undefined,
+        conn.subscriptions.get('s_det')?.transcriptGrades,
+        true,
+        conn.subscriptions.get('s_det')?.detachedTranscriptAgents,
+      );
+      expect(replayWithDetach.resyncRequired).toBe('journal_gap');
+
+      const slowSock = new FakeSocket();
+      const warn = vi.fn();
+      const slowConn = makeConn(slowSock, {
+        broadcaster,
+        maxOutboundBufferBytes: 1024,
+        logger: { warn },
+      });
+      slowConn.send({
+        type: 'tool.result',
+        seq: 1,
+        session_id: 's_det',
+        timestamp: new Date().toISOString(),
+        payload: { output: 'Y'.repeat(16 * 1024 * 1024) },
+      });
+      expect(slowSock.terminateCalls).toBe(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'slow_consumer', cause: 'queued_bytes' }),
+        'terminating unhealthy websocket connection',
+      );
+
+      conn.close();
+      await broadcaster.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

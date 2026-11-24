@@ -336,11 +336,14 @@ export class SessionViewHttpConnection {
       return;
     }
     const replay = await timeSessionViewPhase('attach_replay', fields,
-      () => broadcaster.getBufferedSince(fields.sessionId, input.sessionCursor, undefined, input.transcriptGrades), timing);
+      () => broadcaster.getBufferedSince(fields.sessionId, input.sessionCursor, undefined, input.transcriptGrades, false, undefined, { wantsRosterHints: true }), timing);
     if (upgrading || replay.resyncRequired !== false) {
       target.sendControl({ type: 'resync_required', payload: { reason: upgrading ? 'epoch_changed' : replay.resyncRequired, current_seq: replay.currentSeq, epoch: replay.epoch } });
     } else {
       for (const { envelope } of replay.events) target.replay(envelope);
+      if (replay.rosterHints !== undefined) {
+        for (const hint of replay.rosterHints) target.replay(hint);
+      }
     }
     await timeSessionViewPhase('attach_drain', fields, () => target.drain(), timing);
     await timeSessionViewPhase('attach_seed', fields, () => broadcaster.flushTranscriptSeed(fields.sessionId, target), timing);

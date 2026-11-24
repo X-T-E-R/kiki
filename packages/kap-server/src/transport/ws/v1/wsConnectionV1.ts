@@ -20,6 +20,7 @@ import {
 import {
   acceptsTranscriptCoverage,
   detachGrades,
+  gradeFor,
   requestsTranscript,
   TRANSCRIPT_CLIENT_UPGRADE_MESSAGE,
   TRANSCRIPT_COVERAGE_VERSION,
@@ -33,6 +34,7 @@ import { withSessionOperation } from '../../../lib/sessionOperationLease';
 import { RemoteConnectionsChanged } from '../../../services/connections/events';
 import type { CredentialValidator } from '../../../services/auth/credentials';
 import type { IConnectionRegistry } from '../connectionRegistry';
+import { encodeJsonValueBounded } from './boundedJsonEncoder';
 import {
   type EventEnvelope,
   type JournalLogger,
@@ -144,6 +146,7 @@ export class WsConnectionV1 implements BroadcastTarget {
   private readonly pendingAttaches = new Set<string>();
   private readonly replayHolds = new Set<string>();
   private readonly heldDuringReplay = new Map<string, EventEnvelope[]>();
+  private readonly heldSessionBytes = new Map<string, number>();
   private heldBytes = 0;
   private lastFragmentProgressAt = 0;
   /**
@@ -257,10 +260,12 @@ export class WsConnectionV1 implements BroadcastTarget {
     if (this.closed) return;
     const sessionId = envelope.session_id;
     if (sessionId === undefined) return;
-    const serialized = serializeOutboundFrame(envelope);
+    const serialized = serializeOutboundFrame(envelope, this.maxOutboundBufferBytes);
     const held = this.heldDuringReplay.get(sessionId);
     if (held === undefined) this.heldDuringReplay.set(sessionId, [envelope]);
     else held.push(envelope);
+    const prevSessionBytes = this.heldSessionBytes.get(sessionId) ?? 0;
+    this.heldSessionBytes.set(sessionId, prevSessionBytes + serialized.bytes);
     this.heldBytes += serialized.bytes;
     if (this.outboundBytes + this.heldBytes > this.maxOutboundBufferBytes) {
       this.terminateSlowOrSilent('slow_consumer', {
@@ -278,13 +283,16 @@ export class WsConnectionV1 implements BroadcastTarget {
   }
 
   private discardReplayHeld(sid?: string): void {
-    if (sid === undefined) this.heldDuringReplay.clear();
-    else this.heldDuringReplay.delete(sid);
-    let total = 0;
-    for (const frames of this.heldDuringReplay.values()) {
-      for (const frame of frames) total += serializeOutboundFrame(frame).bytes;
+    if (sid === undefined) {
+      this.heldDuringReplay.clear();
+      this.heldSessionBytes.clear();
+      this.heldBytes = 0;
+      return;
     }
-    this.heldBytes = total;
+    this.heldDuringReplay.delete(sid);
+    const removed = this.heldSessionBytes.get(sid) ?? 0;
+    this.heldSessionBytes.delete(sid);
+    this.heldBytes = Math.max(0, this.heldBytes - removed);
   }
 
   private fragmenting = false;
@@ -569,10 +577,19 @@ export class WsConnectionV1 implements BroadcastTarget {
       this.broadcaster.unsubscribeTranscript(sid, this, agentIds);
       const nextGrades =
         agentIds === undefined ? undefined : detachGrades(existing.transcriptGrades, agentIds);
+      let detachedTranscriptAgents: ReadonlySet<string> | undefined;
+      if (nextGrades !== undefined && this.transcriptOnlySessions.has(sid)) {
+        const merged = new Set<string>(existing.detachedTranscriptAgents);
+        for (const id of agentIds ?? []) {
+          if (id !== '*') merged.add(id);
+        }
+        if (merged.size > 0) detachedTranscriptAgents = merged;
+      }
       if (nextGrades === undefined) this.transcriptOnlySessions.delete(sid);
       this.subscriptions.set(sid, {
         agentFilter: existing.agentFilter,
         transcriptGrades: nextGrades,
+        detachedTranscriptAgents,
       });
     }
 
@@ -839,6 +856,16 @@ export class WsConnectionV1 implements BroadcastTarget {
     const { accepted, resyncRequired, serverCursors, notFound } = collectors;
     const prior = this.subscriptions.get(sid);
     const effectiveTranscriptOnly = transcriptOnly ?? this.transcriptOnlySessions.has(sid);
+    let effectiveDetached: ReadonlySet<string> | undefined;
+    if (effectiveTranscriptOnly && prior?.detachedTranscriptAgents !== undefined && prior.detachedTranscriptAgents.size > 0) {
+      const retained = new Set<string>();
+      for (const id of prior.detachedTranscriptAgents) {
+        if (transcriptGrades === undefined || gradeFor(transcriptGrades, id) === 'off') {
+          retained.add(id);
+        }
+      }
+      if (retained.size > 0) effectiveDetached = retained;
+    }
     this.pendingAttaches.add(sid);
     if (cursor !== undefined) this.replayHolds.add(sid);
     let attached = false;
@@ -859,14 +886,27 @@ export class WsConnectionV1 implements BroadcastTarget {
       }
       subscribedInBroadcaster = true;
       if (cursor !== undefined) {
-        await this.replay(sid, cursor, filter, transcriptGrades, effectiveTranscriptOnly, resyncRequired, serverCursors);
+        await this.replay(
+          sid,
+          cursor,
+          filter,
+          transcriptGrades,
+          effectiveTranscriptOnly,
+          effectiveDetached,
+          resyncRequired,
+          serverCursors,
+        );
         await this.broadcaster.flushTranscriptSeed(sid, this);
       } else {
         const current = await this.broadcaster.getCursor(sid);
         serverCursors[sid] = { seq: current.seq, epoch: current.epoch };
       }
       if (this.closed) return;
-      this.subscriptions.set(sid, { agentFilter: filter, transcriptGrades });
+      this.subscriptions.set(sid, {
+        agentFilter: filter,
+        transcriptGrades,
+        detachedTranscriptAgents: effectiveDetached,
+      });
       if (transcriptOnly === true) this.transcriptOnlySessions.add(sid);
       else if (transcriptOnly === false) this.transcriptOnlySessions.delete(sid);
       accepted.push(sid);
@@ -904,6 +944,7 @@ export class WsConnectionV1 implements BroadcastTarget {
     filter: AgentFilter | undefined,
     transcriptGrades: TranscriptGradeSpec | undefined,
     transcriptOnly: boolean,
+    detachedTranscriptAgents: ReadonlySet<string> | undefined,
     resyncRequired: string[],
     serverCursors: Record<string, { seq: number; epoch?: string }>,
   ): Promise<void> {
@@ -913,6 +954,7 @@ export class WsConnectionV1 implements BroadcastTarget {
       filter,
       transcriptGrades,
       transcriptOnly,
+      detachedTranscriptAgents,
     );
     this.replayHolds.delete(sid);
     const held = this.takeReplayHeld(sid);
@@ -975,9 +1017,13 @@ export class WsConnectionV1 implements BroadcastTarget {
 
   private enqueueOutbound(msg: unknown): boolean {
     if (this.closed) return false;
-    const serialized = serializeOutboundFrame(msg);
     const type = typeof msg === 'object' && msg !== null && 'type' in msg ? msg.type : undefined;
-    if ((type === 'transcript.reset' || type === 'transcript.ops') &&
+    const isFragmentableTranscript = type === 'transcript.reset' || type === 'transcript.ops';
+    const maxSerializeBytes = isFragmentableTranscript
+      ? Math.max(this.maxOutboundBufferBytes, 7 * 1024 * 1024)
+      : this.maxOutboundBufferBytes;
+    const serialized = serializeOutboundFrame(msg, maxSerializeBytes);
+    if (isFragmentableTranscript &&
         serialized.bytes > Math.min(64 * 1024, this.maxOutboundBufferBytes) &&
         serialized.text !== undefined && !this.fragmenting) {
       this.flush();
@@ -1186,13 +1232,18 @@ export class WsConnectionV1 implements BroadcastTarget {
   }
 }
 
-function serializeOutboundFrame(value: unknown): { text?: string; bytes: number } {
-  try {
-    const text = JSON.stringify(value);
-    return { text, bytes: text === undefined ? 0 : Buffer.byteLength(text) };
-  } catch {
-    return { bytes: Number.POSITIVE_INFINITY };
+function serializeOutboundFrame(
+  value: unknown,
+  maxBytes: number,
+): { text?: string; bytes: number } {
+  const encoded = encodeJsonValueBounded(value, maxBytes);
+  if (encoded.ok) {
+    return { text: encoded.buffer.toString('utf8'), bytes: encoded.bytes };
   }
+  if (encoded.reason === 'exceeded') {
+    return { bytes: encoded.omittedBytesAtLeast };
+  }
+  return { bytes: Number.POSITIVE_INFINITY };
 }
 
 function terminalAttachmentKey(sessionId: string, terminalId: string): string {
