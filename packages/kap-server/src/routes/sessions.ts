@@ -489,6 +489,10 @@ export function registerSessionsRoutes(
     },
     async (req, reply) => {
       const body = req.body;
+      if (body.mcp_servers !== undefined && (peerAudience(req) !== undefined || webPrincipal(req) !== undefined)) {
+        sendMappedError(reply as Parameters<typeof sendMappedError>[0], req, new AdmissionError(403, 'local_owner_required'));
+        return;
+      }
       const hasKnownSession = async (sessionId: string, signal?: AbortSignal): Promise<boolean> => {
         if (core.accessor.get(ISessionManager).get(sessionId) !== undefined) return true;
         return (await core.accessor.get(ISessionIndex).get(sessionId, undefined, signal)) !== undefined;
@@ -597,6 +601,27 @@ export function registerSessionsRoutes(
                 throw new Error2(ErrorCodes.REQUEST_INVALID, toErrorMessage(error));
               });
           }
+          const sessionMcpServers = body.mcp_servers === undefined
+            ? undefined
+            : Object.fromEntries(
+                Object.entries(body.mcp_servers).map(([name, cfg]) => {
+                  const { inherit: _inherit, ...rest } = cfg;
+                  return [name, rest];
+                }),
+              );
+          const sessionMcpInherit = body.mcp_servers === undefined
+            ? undefined
+            : new Set(
+                Object.entries(body.mcp_servers)
+                  .filter(([, cfg]) => cfg.inherit === true)
+                  .map(([name]) => name),
+              );
+          const sessionUserTools = body.user_tools?.map((tool) => ({
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.input_schema,
+            inherit: tool.inherit ?? false,
+          }));
           const handle = await core.accessor.get(ISessionManager).create({
             workspaceId: touched.id,
             workDir,
@@ -604,6 +629,9 @@ export function registerSessionsRoutes(
             ephemeral: body.ephemeral,
             private: body.private ?? (personaState?.hidden === true ? true : undefined),
             delivery: body.delivery ?? persona?.definition.delivery,
+            mcpServers: sessionMcpServers,
+            mcpServerInherit: sessionMcpInherit,
+            userTools: sessionUserTools,
             worktree: worktree === undefined ? undefined : {
               worktreeId: worktree.id, branch: worktree.branch,
               sourceRoot: worktree.repo.sourceRoot, baseRef: worktree.base.ref,
@@ -653,9 +681,13 @@ export function registerSessionsRoutes(
           if (body.metadata !== undefined) {
             const metadata = handle.accessor.get(ISessionMetadata);
             const current = externalConnectionId === undefined ? undefined : await metadata.read();
-            const custom = externalConnectionId === undefined ? body.metadata : {
-              ...current?.custom, ...body.metadata, externalClient: current?.custom?.['externalClient'],
-            };
+            const custom = externalConnectionId === undefined
+              ? body.metadata
+              : {
+                  ...current?.custom,
+                  ...body.metadata,
+                  externalClient: current?.custom?.['externalClient'],
+                };
             await metadata.update({ custom });
           }
           if (body.persona !== undefined && body.persona_home === true && body.ephemeral !== true) {

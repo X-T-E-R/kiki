@@ -66,6 +66,7 @@ import {
   sessionEphemeralMcpServersSeed,
   sessionPluginMcpServersSeed,
 } from '#/session/mcp/ephemeralMcpServers';
+import { sessionDeclaredUserToolsSeed } from '#/agent/userTool/userTool';
 import { sessionAgentProfileCatalogSeed } from '#/session/sessionAgentProfileCatalog/agentProfileCatalogSeed';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { DEFAULT_AGENT_PROFILE_NAME, type AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -596,7 +597,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             }],
             [ISessionMcpHandle, this.workspaceMcp.sessionHandle()],
             [ISessionWorkspaceInfo, this.workspaceDirs.sessionInfo()],
-            ...sessionEphemeralMcpServersSeed(opts.mcpServers ?? {}),
+            ...sessionEphemeralMcpServersSeed(opts.mcpServers ?? {}, opts.mcpServerInherit),
+            ...sessionDeclaredUserToolsSeed(opts.userTools ?? []),
             ...sessionPluginMcpServersSeed({
               allNames: Object.keys(allPluginMcpServers),
               enabled: sessionPluginMcpServers,
@@ -649,8 +651,16 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       const sessionMetadata = handle.accessor.get(ISessionMetadata);
       await phase('materialize_metadata', () => sessionMetadata.ready);
       metadata = sessionMetadata;
-      if (opts.private !== undefined && metadata.snapshot().private !== opts.private) {
-        await metadata.update({ private: opts.private }, { touchUpdatedAt: false });
+      const currentMeta = metadata.snapshot();
+      const metaPatch: Partial<SessionMeta> = {};
+      if (opts.private !== undefined && currentMeta.private !== opts.private) {
+        (metaPatch as { private?: boolean }).private = opts.private;
+      }
+      if (opts.userTools !== undefined && opts.userTools.length > 0 && currentMeta.declaredUserTools === undefined) {
+        (metaPatch as { declaredUserTools?: readonly import('#/agent/userTool/userTool').UserToolRegistration[] }).declaredUserTools = opts.userTools.map((tool) => ({ ...tool }));
+      }
+      if (Object.keys(metaPatch).length > 0) {
+        await metadata.update(metaPatch, { touchUpdatedAt: false });
       }
       await phase('materialize_tool_policy', () => handle.accessor.get(ISessionToolPolicy).ready);
       await phase('materialize_delivery', () => handle.accessor.get(ISessionDeliveryService).ready);
@@ -737,12 +747,15 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const workDir = summary.cwd ?? this.workspaceContext.cwd;
 
     const phase = <T>(name: string, action: () => Promise<T>) => timeRestorePhase(this.log, { sessionId, workspaceId: this.workspaceId }, name, action);
+    const persistedMeta = await this.docs.get<SessionMeta>(this.sessionScope(sessionId), 'state.json');
+    const persistedDeclaredUserTools = persistedMeta?.declaredUserTools;
     const handle = await phase('session_materialize', () => this.materializeSession({
       sessionId,
       workDir,
       additionalDirs: opts?.additionalDirs,
       waitForSessionMs: opts?.waitForSessionMs,
       mcpServers: opts?.mcpServers,
+      userTools: persistedDeclaredUserTools,
     }));
     try {
       const agents = handle.accessor.get(IAgentLifecycleService);

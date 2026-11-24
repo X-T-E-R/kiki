@@ -5,6 +5,7 @@ import type { BindAgentInput } from '#/agent/profile/profile';
 import type { SessionWorktree } from '#/app/git/worktreeModel';
 import type { SessionSeedCarry, SessionSeedMode } from '#/features/btw/seedBuilder';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
+import type { UserToolRegistration } from '#/agent/userTool/userTool';
 
 export type SessionCreateSource = 'startup' | 'resume' | 'fork';
 
@@ -28,6 +29,15 @@ export interface CreateSessionOptions {
    * the session closes. Not carried over by fork or resume.
    */
   readonly mcpServers?: Readonly<Record<string, McpServerConfig>>;
+  /**
+   * Subset of `mcpServers` keys that subagents inherit by default.
+   * Ephemeral session MCP servers not listed here default to opt-in (`inherit: false`).
+   */
+  readonly mcpServerInherit?: ReadonlySet<string>;
+  /**
+   * Session-declared user tools registered on turn 0 without mutating wire history.
+   */
+  readonly userTools?: readonly UserToolRegistration[];
 }
 
 export interface ForkSessionOptions {

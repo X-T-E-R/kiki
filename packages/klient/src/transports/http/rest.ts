@@ -10,6 +10,7 @@ import type {
 } from '../../core/facade/http-rest.js';
 import { personaAvatarForm, personaCardForm } from './persona-form.js';
 import { createOutputLayerFacade } from './output-layer.js';
+import { createRawSubstrateFacade } from './raw-substrate.js';
 import { createConnectionsFacade } from './connections.js';
 import { createMeshFacade } from './mesh.js';
 import { createSyncFacade } from './sync.js';
@@ -104,6 +105,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     threadBridges: createThreadBridgesFacade(transport),
     usageExport: createUsageExportFacade(transport),
     providerQuotas: createProviderQuotaFacade(transport),
+    raw: createRawSubstrateFacade(transport),
     healthz: async (baseUrlOverride) => {
       try {
         const data = await transport.json<{ readonly ok?: boolean } | null>('/healthz', {

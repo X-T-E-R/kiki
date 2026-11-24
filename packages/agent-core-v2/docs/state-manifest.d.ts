@@ -246,6 +246,7 @@ export interface WorkspaceStateSnapshot {
           readonly matcher?: string;
           readonly command: string;
           readonly timeout?: number;
+          readonly failClosed?: boolean;
           readonly cwd?: string;
           readonly env?: Record<string, string>;
         }[];
@@ -297,6 +298,7 @@ export interface WorkspaceStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -336,6 +338,7 @@ export interface WorkspaceStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -383,6 +386,7 @@ export interface WorkspaceStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -422,6 +426,7 @@ export interface WorkspaceStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -461,6 +466,7 @@ export interface WorkspaceStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -502,6 +508,7 @@ export interface WorkspaceStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -541,6 +548,7 @@ export interface WorkspaceStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -580,6 +588,7 @@ export interface WorkspaceStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -936,6 +945,13 @@ export interface SessionStateSnapshot {
       readonly contextTokens?: number;
       readonly toolCallCount?: number;
     }>>;
+    readonly declaredUserTools?: readonly /* UserToolRegistration — packages/agent-core-v2/src/agent/userTool/userTool.ts */ {
+      readonly name: string;
+      readonly description: string;
+      readonly parameters: Record<string, unknown>;
+      readonly disclosure?: 'inline' | 'deferred';
+      readonly inherit?: boolean;
+    }[];
     readonly custom?: Record<string, unknown>;
     readonly sshHosts?: Readonly<Record<string, string>>;
     readonly lastTurnReason?: 'cancelled' | 'completed' | 'failed';
@@ -1015,6 +1031,7 @@ export interface SessionStateSnapshot {
           readonly matcher?: string;
           readonly command: string;
           readonly timeout?: number;
+          readonly failClosed?: boolean;
           readonly cwd?: string;
           readonly env?: Record<string, string>;
         }[];
@@ -1066,6 +1083,7 @@ export interface SessionStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -1105,6 +1123,7 @@ export interface SessionStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -1152,6 +1171,7 @@ export interface SessionStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -1191,6 +1211,7 @@ export interface SessionStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -1230,6 +1251,7 @@ export interface SessionStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -1271,6 +1293,7 @@ export interface SessionStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -1310,6 +1333,7 @@ export interface SessionStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -1349,6 +1373,7 @@ export interface SessionStateSnapshot {
         readonly matcher?: string;
         readonly command: string;
         readonly timeout?: number;
+        readonly failClosed?: boolean;
         readonly cwd?: string;
         readonly env?: Record<string, string>;
       }[];
@@ -4324,6 +4349,7 @@ export interface AgentStateSnapshot {
     readonly heldCancelledTurns: Readonly<Record<number, true>>;
     readonly authorizedInputTurnId?: number;
     readonly anchorTurnIds: readonly number[];
+    readonly activeTurnIds?: readonly number[];
     readonly lastEnded?: {
       readonly turnId: number;
       readonly reason: 'cancelled' | 'completed' | 'failed' | 'blocked';
@@ -9293,6 +9319,7 @@ export interface AgentStateSnapshot {
         readonly goalFollowUpTiming?: 'subagents_done' | 'tasks_done';
         readonly goalInitialStatus?: 'paused' | 'active';
         readonly goalControl?: 'resume' | 'pause' | 'cancel';
+        readonly outputSchema?: Record<string, unknown>;
       };
       deferredDisabledTools?: string[];
       contentRanges?: {
@@ -9734,7 +9761,8 @@ export interface AgentStateSnapshot {
     readonly name: string;
     readonly description: string;
     readonly parameters: Record<string, unknown>;
-    readonly disclosure?: 'deferred' | 'inline';
+    readonly disclosure?: 'inline' | 'deferred';
+    readonly inherit?: boolean;
   }>;
   // src/features/btw/branchOps.ts
   // replayable · durable — folds: AgentBranchSealed

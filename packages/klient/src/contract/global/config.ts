@@ -8,10 +8,10 @@ import {
   AnthropicMessageThreadsSystemSchema,
   RequestCompressionLayerSchema,
   RequestCompressionSystemSchema,
+  RequestIdentityPolicySchema,
   ResponsesWebSocketLayerSchema,
   ResponsesWebSocketSystemSchema,
-} from '@kiki/agent-core-v2/kosong/provider/requestCompression';
-import { RequestIdentityPolicySchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
+} from './engine-schemas.js';
 import { z } from 'zod';
 
 import { noResult } from '../helpers.js';

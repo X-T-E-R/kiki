@@ -301,13 +301,20 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private optionsValue: ProfileServiceOptions = {};
   private endpointRequester: { key: string; requester: import('#/kosong/model/modelRequester').ModelRequester } | undefined;
+  private readonly extraActiveTools = new Set<string>();
 
   private get activeToolNames(): ActiveToolsState {
-    return (
-      this.profileState.toolOverride?.tools ??
-      this.activeToolNamesOverlay ??
-      this.baseActiveToolNames
-    );
+    const override = this.profileState.toolOverride?.tools;
+    if (override !== undefined && override.length === 0) return override;
+    const base = override ?? this.activeToolNamesOverlay ?? this.baseActiveToolNames;
+    if (base === undefined || this.extraActiveTools.size === 0) return base;
+    let merged: string[] | undefined;
+    for (const name of this.extraActiveTools) {
+      if (base.includes(name)) continue;
+      merged ??= [...base];
+      merged.push(name);
+    }
+    return merged ?? base;
   }
 
   private get baseActiveToolNames(): ActiveToolsState {
@@ -3542,12 +3549,14 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   addActiveTool(name: string): void {
+    this.extraActiveTools.add(name);
     const activeToolNames = this.activeToolNames;
     if (activeToolNames === undefined || activeToolNames.includes(name)) return;
     this.activeToolNamesOverlay = [...activeToolNames, name];
   }
 
   removeActiveTool(name: string): void {
+    this.extraActiveTools.delete(name);
     const activeToolNames = this.activeToolNames;
     if (activeToolNames === undefined || !activeToolNames.includes(name)) return;
     this.activeToolNamesOverlay = activeToolNames.filter((candidate) => candidate !== name);

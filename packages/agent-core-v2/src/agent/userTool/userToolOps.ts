@@ -35,7 +35,8 @@ function equalRegistration(a: UserToolRegistration, b: UserToolRegistration): bo
     a.name === b.name &&
     a.description === b.description &&
     a.parameters === b.parameters &&
-    a.disclosure === b.disclosure
+    a.disclosure === b.disclosure &&
+    a.inherit === b.inherit
   );
 }
 
@@ -50,6 +51,7 @@ export const userToolKey = defineState('userTool', (): UserToolModelState => new
       description: e.description,
       parameters: e.parameters,
       disclosure: e.disclosure,
+      inherit: e.inherit,
     });
   })
   .on(ToolsUnregisterUserTool, (s, e) => {

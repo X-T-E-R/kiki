@@ -424,7 +424,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         lastScanned = summary.id;
         const enabled = workspaceAdmission.get(summary.workspaceId) === true;
         const ownPrivateSession = summary.id === input.caller?.sessionId && summary.workspaceId === input.caller?.workspaceId;
-        if (!enabled || summary.private === true && !ownPrivateSession) continue;
+        const isEphemeral = typeof this.sessionManager.isEphemeral === 'function' && this.sessionManager.isEphemeral(summary.id) === true;
+        if (!enabled || isEphemeral || (summary.private === true && !ownPrivateSession)) continue;
         threads.push(this.toThreadSummary(summary));
         if (threads.length > limit) break;
       }

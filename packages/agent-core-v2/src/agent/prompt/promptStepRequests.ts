@@ -1,4 +1,5 @@
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import type { ResponseFormat } from '#/kosong/contract/provider';
 import { newMessageId } from '#/agent/contextMemory/messageId';
 import type { MessageDeliveryOrigin } from '#/agent/contextMemory/messageDelivery';
 import { StepRequest, type StepRequestOptions, type TurnSeed } from '#/agent/loop/stepRequest';
@@ -65,6 +66,7 @@ export class PromptStepRequest extends UserMessageStepRequest {
     private readonly recordBatch?: () => void,
     private readonly hookMessages: readonly ContextMessage[] = [],
     private readonly parentReceiptManaged?: boolean,
+    private readonly responseFormat?: ResponseFormat,
   ) {
     super(message, captions, reminders, { admission: 'newTurn', deliveryOrigin }, batch);
   }
@@ -75,6 +77,7 @@ export class PromptStepRequest extends UserMessageStepRequest {
       origin: this.message.origin ?? { kind: 'unknown' },
       promptId: this.promptId ?? this.message.id,
       parentReceiptManaged: this.parentReceiptManaged,
+      responseFormat: this.responseFormat,
     };
   }
 

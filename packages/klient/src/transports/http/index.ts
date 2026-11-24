@@ -5,6 +5,11 @@ import { createConnectionTransport } from './connections.js';
 export { HTTP_REQUEST_BODY_LIMIT_BYTES } from './limits.js';
 export { createConnectionTransport };
 export type { ConnectionsFacade } from '../../core/facade/connections.js';
+export type {
+  RawGlobalEventsStreamOptions,
+  RawSessionEventsStreamOptions,
+  RawSubstrateFacade,
+} from '../../core/facade/raw-substrate.js';
 
 export {
   HTTP_TRANSPORT_TIMEOUT_REASON,

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { ContentPart } from '#/kosong/contract/message';
+import type { ResponseFormat } from '#/kosong/contract/provider';
 import type { MessageDeliveryOrigin } from '#/agent/contextMemory/messageDelivery';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 
@@ -17,6 +18,7 @@ export interface TurnSeed {
   readonly input: readonly ContentPart[];
   readonly origin: PromptOrigin;
   readonly promptId?: string;
+  readonly responseFormat?: ResponseFormat;
 }
 
 export interface StepRequestOptions {

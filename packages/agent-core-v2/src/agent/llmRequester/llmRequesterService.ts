@@ -76,7 +76,7 @@ import { readGenerateContinuationToken, readGenerateFailureUsage } from '#/koson
 import type { ResponsesTransportSelection, ResponsesTransportDiagnostics } from '#/kosong/contract/responsesTransport';
 import { matchesProviderTarget } from '#/kosong/provider/providerTarget';
 import { safeResponsesTransportDiagnostics } from '#/kosong/contract/streamDiagnostics';
-import { type ThinkingEffort } from '#/kosong/contract/provider';
+import { type ResponseFormat, type ThinkingEffort } from '#/kosong/contract/provider';
 import { type Tool } from '#/kosong/contract/tool';
 import { emptyUsage, inputTotal, type TokenUsage } from '#/kosong/contract/usage';
 import { ILogService, type LogContext } from '#/_base/log/log';
@@ -235,6 +235,7 @@ interface ResolvedLLMRequest {
   readonly thinkingEffort: ThinkingEffort;
   readonly systemPrompt: string;
   readonly tools: readonly Tool[];
+  readonly responseFormat?: ResponseFormat;
   readonly messages: Message[];
   readonly contextMessages: readonly Message[];
   readonly source: AgentLLMRequestSource | undefined;
@@ -711,6 +712,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       const input = {
         systemPrompt: request.systemPrompt,
         tools: request.tools,
+        responseFormat: request.responseFormat,
         messages: withMalformedFunctionCallRetryNudge(
           targetMessages,
           malformedFunctionCallRetry,
@@ -1418,6 +1420,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       thinkingEffort: resolved.thinkingLevel,
       systemPrompt: extensionProjection.text ? `${systemPrompt}\n\n${extensionProjection.text}` : systemPrompt,
       tools: this.toolsForRequest(overrides, promptFields, promptVariables, this.promptCacheWindow),
+      responseFormat: overrides.responseFormat,
       messages: extensionProjection.messages,
       contextMessages: [...messages],
       source: overrides.source,

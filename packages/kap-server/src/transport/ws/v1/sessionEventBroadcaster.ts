@@ -29,6 +29,7 @@ import {
   ISessionInteractionService,
   ISessionIndex,
   ISessionManager,
+  ISessionMetadata,
   IWireService,
   MAIN_AGENT_ID,
   SyncDescriptor,
@@ -71,6 +72,7 @@ import {
 } from '@kiki/transcript';
 
 import { toWireApproval } from '../../../routes/approvals';
+import { toWirePendingUserTool } from '../../../routes/interactions';
 import { toWireQuestion } from '../../../routes/questions';
 import {
   cachedMessageCount,
@@ -111,6 +113,16 @@ export interface BufferedSinceResult {
   epoch: string;
 }
 
+export interface RawSessionTarget {
+  readonly wantsDeltas?: boolean;
+  send(envelope: EventEnvelope): void;
+  onEvicted?(info: { readonly epoch: string; readonly seq: number }): void;
+}
+
+export interface GlobalRawTarget {
+  send(envelope: EventEnvelope, hidden: boolean): void;
+}
+
 export interface SessionSnapshotState {
   seq: number;
   epoch: string;
@@ -122,6 +134,7 @@ export interface SessionSnapshotState {
   subagents: SnapshotSubagent[];
   pendingApprovals: ReturnType<typeof toWireApproval>[];
   pendingQuestions: ReturnType<typeof toWireQuestion>[];
+  pendingUserTools: ReturnType<typeof toWirePendingUserTool>[];
   currentPromptId?: string;
   status?: NonNullable<ReturnType<typeof readLegacyStatus>>;
   historyPromise?: Promise<CapturedContextMessageHistory>;
@@ -195,6 +208,7 @@ interface SessionState {
   deferredWork?: SessionActivityState;
   readonly tail: Array<{ seq: number; envelope: EventEnvelope }>;
   readonly targets: Map<BroadcastTarget, TargetSubscription>;
+  readonly rawTargets: Set<RawSessionTarget>;
   readonly interactionConsumers: Map<BroadcastTarget, string>;
   interactionService?: ISessionInteractionService;
   queue: Promise<void>;
@@ -220,6 +234,12 @@ async function disposeSessionState(state: SessionState): Promise<void> {
   for (const seed of state.pendingTranscriptSeeds.values()) seed.diagnostics.abort();
   for (const subscription of state.targets.values()) await subscription.residencyLease?.dispose();
   state.targets.clear();
+  for (const rawTarget of Array.from(state.rawTargets)) {
+    try {
+      rawTarget.onEvicted?.({ epoch: state.journal.epoch, seq: state.journal.seq });
+    } catch {}
+  }
+  state.rawTargets.clear();
   for (const d of state.lifecycleDisposables) await d.dispose();
   for (const d of state.agentDisposables.values()) await d.dispose();
   state.roster.clear(state.sessionId);
@@ -261,6 +281,11 @@ export class SessionEventBroadcaster {
    * session's `event.session.work_changed` — without subscribing to anything.
    */
   private readonly globalTargets = new Set<BroadcastTarget>();
+  private readonly globalRawTargets = new Set<GlobalRawTarget>();
+  private readonly knownPrivateSessionIds = new Set<string>();
+  private readonly globalRawRing: Array<{ seq: number; envelope: EventEnvelope; hidden: boolean }> = [];
+  private globalRawSeq = 0;
+  private readonly globalRawEpoch = crypto.randomUUID();
   /**
    * Single-flight guard for session activation: without it, two concurrent
    * activations (WS subscribe racing a REST snapshot / replay / resync) each
@@ -391,6 +416,121 @@ export class SessionEventBroadcaster {
   /** Drop a closed connection from the global fan-out set. Idempotent. */
   removeGlobalTarget(target: BroadcastTarget): void {
     this.globalTargets.delete(target);
+  }
+
+  /** Register an ephemeral stateless reader for R2 `/api/events`. */
+  addGlobalRawTarget(target: GlobalRawTarget): void {
+    this.globalRawTargets.add(target);
+  }
+
+  /** Unregister a stateless R2 `/api/events` reader. */
+  removeGlobalRawTarget(target: GlobalRawTarget): void {
+    this.globalRawTargets.delete(target);
+  }
+
+  /** Replay buffered global events strictly after `cursor`, or report resync required. */
+  getGlobalBufferedSince(cursor: SessionCursor, scopedSessionId?: string): BufferedSinceResult {
+    const currentSeq = this.globalRawSeq;
+    const epoch = this.globalRawEpoch;
+    if (cursor.epoch !== undefined && cursor.epoch !== epoch) {
+      return { events: [], resyncRequired: 'epoch_changed', currentSeq, epoch };
+    }
+    if (cursor.seq > currentSeq) {
+      return { events: [], resyncRequired: 'epoch_changed', currentSeq, epoch };
+    }
+    if (cursor.seq === currentSeq) {
+      return { events: [], resyncRequired: false, currentSeq, epoch };
+    }
+    const oldest = this.globalRawRing[0]?.seq;
+    if (oldest === undefined || oldest > cursor.seq + 1) {
+      return { events: [], resyncRequired: 'buffer_overflow', currentSeq, epoch };
+    }
+    return {
+      events: this.globalRawRing
+        .filter((item) => item.seq > cursor.seq && (scopedSessionId !== undefined ? item.envelope.session_id === scopedSessionId : !item.hidden))
+        .map(({ seq, envelope }) => ({ seq, envelope })),
+      resyncRequired: false,
+      currentSeq,
+      epoch,
+    };
+  }
+
+  /** Publish a completed work episode onto the stateless global stream. */
+  publishGlobalEpisodeCompleted(episode: { readonly session_id: string; readonly episode_id: string; readonly completed_at: number }): void {
+    const envelope: EventEnvelope = {
+      type: 'event.session.episode_completed',
+      seq: 0,
+      session_id: episode.session_id,
+      timestamp: new Date(episode.completed_at).toISOString(),
+      payload: {
+        type: 'event.session.episode_completed',
+        session_id: episode.session_id,
+        episode_id: episode.episode_id,
+        completed_at: episode.completed_at,
+      },
+    };
+    this.recordAndEmitGlobalRaw(envelope);
+  }
+
+  private isHiddenForPublicGlobal(sessionId: string | undefined, envelope?: EventEnvelope): boolean {
+    if (sessionId === undefined || sessionId === GLOBAL_SESSION_ID || sessionId.length === 0) return false;
+    const payload = envelope?.payload;
+    if (typeof payload === 'object' && payload !== null) {
+      const record = payload as Record<string, unknown>;
+      if (record['private'] === true || record['ephemeral'] === true) {
+        this.knownPrivateSessionIds.add(sessionId);
+        return true;
+      }
+      if (record['private'] === false) {
+        this.knownPrivateSessionIds.delete(sessionId);
+      }
+    }
+    try {
+      const manager = this.opts.core.accessor.get(ISessionManager);
+      if (manager.isEphemeral(sessionId)) {
+        this.knownPrivateSessionIds.add(sessionId);
+        return true;
+      }
+      const live = manager.get(sessionId);
+      if (live !== undefined) {
+        if (live.accessor.get(ISessionContext).ephemeral === true || live.accessor.get(ISessionMetadata).snapshot().private === true) {
+          this.knownPrivateSessionIds.add(sessionId);
+          return true;
+        }
+        this.knownPrivateSessionIds.delete(sessionId);
+        return false;
+      }
+    } catch {
+      return true;
+    }
+    return this.knownPrivateSessionIds.has(sessionId);
+  }
+
+  private recordAndEmitGlobalRaw(source: EventEnvelope): void {
+    const seq = ++this.globalRawSeq;
+    const envelope: EventEnvelope = {
+      ...source,
+      seq,
+      epoch: this.globalRawEpoch,
+    };
+    const hidden = this.isHiddenForPublicGlobal(envelope.session_id, envelope);
+    this.globalRawRing.push({ seq, envelope, hidden });
+    while (this.globalRawRing.length > this.maxBufferSize) this.globalRawRing.shift();
+    for (const target of this.globalRawTargets) {
+      try {
+        target.send(envelope, hidden);
+      } catch {}
+    }
+  }
+
+  /** Attach an ephemeral stateless R2 session event stream target without creating persistent subscriber state. */
+  async attachRawSessionTarget(sessionId: string, target: RawSessionTarget): Promise<() => void> {
+    const state = await this.ensureState(sessionId);
+    if (state === undefined) return () => {};
+    state.rawTargets.add(target);
+    return () => {
+      state.rawTargets.delete(target);
+    };
   }
 
   /** Publishes an ACL-scoped `event.plugin.topic` frame to authorized WebSocket targets. */
@@ -1570,6 +1710,7 @@ export class SessionEventBroadcaster {
         subagents: [],
         pendingApprovals: [],
         pendingQuestions: [],
+        pendingUserTools: [],
       };
     }
     const captureMessages = options.captureMessages !== false;
@@ -1591,6 +1732,7 @@ export class SessionEventBroadcaster {
         subagents: structuredClone(state.roster.get(sessionId)),
         pendingApprovals: structuredClone(state.interactionService?.listPending('approval').map((interaction) => toWireApproval(interaction, sessionId)) ?? []),
         pendingQuestions: structuredClone(state.interactionService?.listPending('question').map((interaction) => toWireQuestion(interaction, sessionId)) ?? []),
+        pendingUserTools: structuredClone(state.interactionService?.listPending('user_tool').map((interaction) => toWirePendingUserTool(interaction, sessionId)) ?? []),
         currentPromptId: readCurrentPromptId(mainAgent),
         status: structuredClone(readSnapshotStatus(mainAgent)),
       };
@@ -1759,6 +1901,7 @@ export class SessionEventBroadcaster {
       contextMessages: [],
       tail: [],
       targets: new Map(),
+      rawTargets: new Set(),
       interactionConsumers: new Map(),
       interactionService: session.accessor.get(ISessionInteractionService),
       queue: Promise.resolve(),
@@ -1812,6 +1955,7 @@ export class SessionEventBroadcaster {
       contextMessages: [],
       tail: [],
       targets: new Map(),
+      rawTargets: new Set(),
       interactionConsumers: new Map(),
       queue: Promise.resolve(),
       agentDisposables: new Map(),
@@ -2137,6 +2281,27 @@ export class SessionEventBroadcaster {
     if (state === undefined) return;
     if (TRANSCRIPT_ONLY_STATE_EVENT_TYPES.has(event.type)) return;
 
+    if (event.type === 'context.undone') {
+      const undo = event as unknown as {
+        readonly turns?: number;
+        readonly fromTurnId?: number;
+        readonly cutToTurnId?: number;
+        readonly removedTurnIds?: readonly number[];
+      };
+      const projectedUndo = {
+        type: 'context.undo',
+        agentId,
+        sessionId,
+        agent_id: agentId,
+        turns: undo.turns ?? 1,
+        ...(undo.cutToTurnId === undefined ? {} : { cut_to_turn_id: undo.cutToTurnId }),
+        ...(undo.fromTurnId === undefined ? {} : { from_turn_id: undo.fromTurnId }),
+        removed_turn_ids: undo.removedTurnIds ?? [],
+      } as unknown as Event;
+      this.enqueueDurable(state, projectedUndo);
+      return;
+    }
+
     if (event.type === 'context.append_loop_event') {
       if (agentId === MAIN_AGENT_ID) {
         this.enqueueContextLoopEvent(
@@ -2175,19 +2340,27 @@ export class SessionEventBroadcaster {
       event.type === 'thinking.delta' ||
       event.type === 'tool_call.delta'
     ) {
-      let hasLegacyDeltaRecipient = false;
-      for (const sub of state.targets.values()) {
-        if (sub.transcriptGrades === undefined) {
-          hasLegacyDeltaRecipient = true;
-          break;
-        }
-        const grade = gradeFor(sub.transcriptGrades, agentId);
-        if (grade === 'off' && (!sub.transcriptOnly || sub.detachedTranscriptAgents?.has(agentId) === true)) {
-          hasLegacyDeltaRecipient = true;
+      let hasDeltaRecipient = false;
+      for (const rawTarget of state.rawTargets) {
+        if (rawTarget.wantsDeltas === true) {
+          hasDeltaRecipient = true;
           break;
         }
       }
-      if (!hasLegacyDeltaRecipient) return;
+      if (!hasDeltaRecipient) {
+        for (const sub of state.targets.values()) {
+          if (sub.transcriptGrades === undefined) {
+            hasDeltaRecipient = true;
+            break;
+          }
+          const grade = gradeFor(sub.transcriptGrades, agentId);
+          if (grade === 'off' && (!sub.transcriptOnly || sub.detachedTranscriptAgents?.has(agentId) === true)) {
+            hasDeltaRecipient = true;
+            break;
+          }
+        }
+      }
+      if (!hasDeltaRecipient) return;
     }
 
     let wireEvent: Event;
@@ -2396,6 +2569,7 @@ export class SessionEventBroadcaster {
     }
 
     if (isGlobalEvent(event.type)) {
+      this.recordAndEmitGlobalRaw(envelope);
       const recipients = new Set<BroadcastTarget>(this.globalTargets);
       for (const target of this.allTargets()) recipients.add(target);
       for (const target of recipients) {
@@ -2404,7 +2578,19 @@ export class SessionEventBroadcaster {
         } catch {
         }
       }
+      if (envelope.session_id === state.sessionId) {
+        for (const rawTarget of state.rawTargets) {
+          try {
+            rawTarget.send(envelope);
+          } catch {}
+        }
+      }
     } else {
+      for (const rawTarget of state.rawTargets) {
+        try {
+          rawTarget.send(envelope);
+        } catch {}
+      }
       for (const [target, sub] of targets) {
         if (!matchesAgentFilter(envelope, sub.agentFilter)) continue;
         try {
@@ -2681,6 +2867,13 @@ function interactionRequestedEvent(interaction: Interaction, sessionId: string):
         sessionId,
         ...toWireApproval(interaction, sessionId),
       } as unknown as Event;
+    case 'user_tool':
+      return {
+        type: 'tool.requires_action',
+        agentId,
+        sessionId,
+        ...toWirePendingUserTool(interaction, sessionId),
+      } as unknown as Event;
     default:
       return undefined;
   }
@@ -2729,6 +2922,19 @@ function interactionResolvedEvent(
         scope: r?.scope,
         feedback: r?.feedback,
         selected_label: r?.selectedLabel,
+        resolved_at: resolvedAt,
+      } as unknown as Event;
+    }
+    case 'user_tool': {
+      const r = typeof response === 'object' && response !== null
+        ? (response as { readonly isError?: boolean })
+        : undefined;
+      return {
+        type: 'tool.action_resolved',
+        agentId,
+        sessionId,
+        interaction_id: id,
+        is_error: r?.isError === true,
         resolved_at: resolvedAt,
       } as unknown as Event;
     }

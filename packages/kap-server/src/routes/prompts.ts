@@ -1,6 +1,13 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { sessionAccessToken } from '../services/sessionAccess/access';
+import { sessionAccessStore, sessionAccessToken } from '../services/sessionAccess/access';
+import {
+  attachTurnBudgetCharging,
+  awaitPromptLookupResult,
+  createPromptWaitObserver,
+  trackInflightWaitResult,
+  type PromptWaitObserver,
+} from './promptWait';
 import { sendMappedError as dispatchMappedError, type MappedErrorSpec } from './_error';
 
 import {
@@ -19,6 +26,7 @@ import {
   IAgentToolPolicyService,
   IAgentPromptService,
   IAgentSkillService,
+  IAgentUsageService,
   IEventBus,
   IEventDispatcher,
   IEventService,
@@ -84,6 +92,7 @@ import {
   modelSwitchReceiptSchema,
   queuedModelSwitchSchema,
   modelSwitchActionSchema,
+  validateSupportedOutputSchema,
   type PromptSkillActivation,
 } from '@kiki/protocol';
 import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
@@ -161,9 +170,10 @@ const authProviderDetailsSchema = z.object({ provider_id: z.string() });
 const authModelDetailsSchema = z.object({ model_id: z.string(), provider_id: z.string() }).partial();
 
 function promptPayloadFingerprint(payload: z.infer<typeof promptSubmissionSchema>): string {
-  const canonical = JSON.stringify(payload, (_key, value: unknown) =>
+  const { wait: _wait, include_thinking: _includeThinking, ...stablePayload } = payload;
+  const canonical = JSON.stringify(stablePayload, (_key, value: unknown) =>
     value !== null && typeof value === 'object' && !Array.isArray(value)
-      ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0))
+      ? Object.fromEntries(Object.entries(value).toSorted(([left], [right]) => left < right ? -1 : left > right ? 1 : 0))
       : value,
   );
   return createHash('sha256').update(canonical).digest('hex');
@@ -688,6 +698,10 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       let reservation: PromptReservation | undefined;
       let lease: SessionOperationLease | undefined;
       let enqueued = false;
+      let budgetRelease: (() => void) | undefined;
+      let budgetAttachedToTurn = false;
+      let waitObserver: PromptWaitObserver | undefined;
+      let submittedHandle: PromptHandle | undefined;
       let retryContentRanges: readonly import('@kiki/agent-core-v2').PromptContentRange[] | undefined;
       const log = core.accessor.get(ILogService);
       const logContext = { sessionId: session_id, agentId: req.body.agent_id ?? 'main', promptId: req.body.prompt_id, requestId: req.id };
@@ -712,6 +726,39 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         return reply.send(okEnvelope(data, req.id));
       };
       try {
+        if (req.body.admission === 'durable' && req.body.wait === true) {
+          reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'wait=true cannot be combined with admission="durable"', req.id));
+          return;
+        }
+        if (req.body.output_schema !== undefined) {
+          const schemaIssues = validateSupportedOutputSchema(req.body.output_schema);
+          if (schemaIssues.length > 0) {
+            reply.send(
+              errEnvelope(
+                ErrorCode.VALIDATION_FAILED,
+                `Unsupported output_schema: ${schemaIssues.map((i) => `${i.path || '$'}: ${i.message}`).join('; ')}`,
+                req.id,
+              ),
+            );
+            return;
+          }
+        }
+        const accessToken = sessionAccessToken(req);
+        const accessStore = sessionAccessStore(req);
+        if (accessToken !== undefined && accessStore !== undefined && ingressExecution === undefined) {
+          const estimatedTokens = Math.max(1, Math.ceil(JSON.stringify(req.body.content).length / 4));
+          const budget = accessStore.admitBudget(accessToken, estimatedTokens);
+          if (!budget.ok) {
+            const fastifyReply = reply as unknown as { code?(status: number): { send(payload: unknown): unknown }; send(payload: unknown): unknown };
+            if (fastifyReply.code !== undefined) {
+              fastifyReply.code(429).send(errEnvelope(ErrorCode.RATE_LIMITED, budget.reason, req.id));
+            } else {
+              fastifyReply.send(errEnvelope(ErrorCode.RATE_LIMITED, budget.reason, req.id));
+            }
+            return;
+          }
+          budgetRelease = budget.release;
+        }
         if (req.body.admission === 'durable' && ingressExecution === undefined) {
           const body = { ...req.body, admission: undefined };
           sendResult(await ingress.submit(session_id, body, promptPayloadFingerprint(body), steerTarget));
@@ -808,7 +855,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
             req.body.goal_initial_status === undefined &&
             req.body.goal_control === undefined &&
             req.body.persona_greeting_reply === undefined &&
-            req.body.after_model_switch === undefined
+            req.body.after_model_switch === undefined &&
+            req.body.output_schema === undefined
             ? undefined
             : {
                 execution: req.body.execution,
@@ -825,6 +873,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
                 goalInitialStatus: req.body.goal_initial_status,
                 goalControl: req.body.goal_control,
                 personaGreetingReply: req.body.persona_greeting_reply,
+                outputSchema: req.body.output_schema,
               };
         validatePromptRuntimeControls(resolved.accessor, execution);
         let deferredDisabledTools: readonly string[] | undefined;
@@ -885,24 +934,47 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           }
           signal?.throwIfAborted();
           const token = sessionAccessToken(req);
-          const handle = await subphase('reservation_submit', () => admission.reservation.submit({
-            role: 'user',
-            content: parts,
-            toolCalls: [],
-            origin: token === undefined ? { kind: 'user' } : { kind: 'user', via: { client: token.client.name, channel: token.channel } },
-          }, execution, deferredDisabledTools, req.body.append_timing));
+          const tokenStore = sessionAccessStore(req);
+          const usageService = resolved.accessor.get(IAgentUsageService);
+          if (req.body.wait === true) {
+            waitObserver = createPromptWaitObserver(
+              resolved.events,
+              usageService,
+              req.body.include_thinking === true,
+            );
+          }
+          let handle: PromptHandle;
+          try {
+            handle = await subphase('reservation_submit', () => admission.reservation.submit({
+              role: 'user',
+              content: parts,
+              toolCalls: [],
+              origin: token === undefined ? { kind: 'user' } : { kind: 'user', via: { client: token.client.name, channel: token.channel } },
+            }, execution, deferredDisabledTools, req.body.append_timing));
+          } catch (submitError) {
+            waitObserver?.dispose();
+            waitObserver = undefined;
+            throw submitError;
+          }
           enqueued = true;
+          submittedHandle = handle;
+          if (token !== undefined && tokenStore !== undefined) {
+            budgetAttachedToTurn = true;
+            attachTurnBudgetCharging(handle, usageService, core, token, tokenStore, budgetRelease);
+          }
           const staging = preparedMedia;
           void Promise.race([handle.launched, handle.completion]).then(
             () => staging?.discard(),
             () => staging?.discard(),
           );
-          if (retryFingerprint !== undefined) {
-            const receipt = await subphase('receipt_lookup', () => promptRetryFor(resolved.prompt).lookup(handle.id, retryFingerprint));
-            if (receipt === undefined) throw new Error2(ErrorCodes.INTERNAL, 'Prompt receipt is missing.');
-            return projectPromptRetryReceipt(handle.id, receipt, req.body.content);
-          }
-          return promptSubmitResultSchema.parse(projectPromptHandle(handle));
+          const baseReceipt = retryFingerprint !== undefined
+            ? await (async () => {
+                const receipt = await subphase('receipt_lookup', () => promptRetryFor(resolved.prompt).lookup(handle.id, retryFingerprint));
+                if (receipt === undefined) throw new Error2(ErrorCodes.INTERNAL, 'Prompt receipt is missing.');
+                return projectPromptRetryReceipt(handle.id, receipt, req.body.content);
+              })()
+            : promptSubmitResultSchema.parse(projectPromptHandle(handle));
+          return baseReceipt;
         } catch (error) {
           if (!enqueued) admission.fail(error);
           throw error;
@@ -963,12 +1035,37 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         };
         const result = retryPromptId === undefined || retryFingerprint === undefined ? await submitAndDeliver()
           : await promptRetryFor(resolved.prompt).run(retryPromptId, retryFingerprint, submitAndDeliver);
+        if (req.body.wait === true) {
+          const contextMemory = resolved.accessor.get(IAgentContextMemoryService);
+          const turnResult = waitObserver !== undefined && submittedHandle !== undefined
+            ? await (async () => {
+                const tracked = trackInflightWaitResult(
+                  resolved.prompt,
+                  submittedHandle.id,
+                  waitObserver.awaitResult(submittedHandle, contextMemory, {
+                    outputSchema: req.body.output_schema,
+                    includeThinking: req.body.include_thinking === true,
+                  }),
+                );
+                return signal === undefined ? await tracked : await abortable(tracked, signal);
+              })()
+            : await awaitPromptLookupResult(resolved.prompt, resolved.events, contextMemory, result.prompt_id, {
+                outputSchema: req.body.output_schema,
+                includeThinking: req.body.include_thinking === true,
+                signal,
+              });
+          waitObserver = undefined;
+          sendResult({ ...result, turn_result: turnResult });
+          return;
+        }
         sendResult(result);
       } catch (error) {
         if (!enqueued) await preparedMedia?.discard();
         if (ingressExecution !== undefined || (isError2(error) && error.code === ErrorCodes.WORK_ADMISSION_FENCED)) throw error;
         sendMappedError(reply, req, error);
       } finally {
+        waitObserver?.dispose();
+        if (!budgetAttachedToTurn) budgetRelease?.();
         await reservation?.dispose();
         await lease?.dispose();
       }

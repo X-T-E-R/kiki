@@ -1,6 +1,6 @@
 import { createDecorator } from '#/_base/di/instantiation';
 import type { AnthropicResponseCaptureInput, AnthropicResponseCaptureStatus } from './anthropicResponseCapture';
-import type { FinishReason, ThinkingEffort, ToolChoice } from '#/kosong/contract/provider';
+import type { FinishReason, ResponseFormat, ThinkingEffort, ToolChoice } from '#/kosong/contract/provider';
 import type { Message, StreamedMessagePart } from '#/kosong/contract/message';
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
@@ -48,6 +48,7 @@ export interface AgentLLMRequestOverrides {
   maxOutputSize?: number;
   thinkingEffort?: ThinkingEffort;
   toolChoice?: ToolChoice;
+  responseFormat?: ResponseFormat;
   retry?: 'never';
   onAttemptRetry?: (mode: AgentLLMAttemptRetryMode) => void;
   onRequestAttempt?: () => void;
