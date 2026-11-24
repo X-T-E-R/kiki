@@ -41,3 +41,4 @@ export * from './runtime/controller';
 export * from './runtime/supervisor';
 export * from './runtime/releases';
 export * from './runtime/runtimeStore';
+export { installStdioEpipeGuard, isBenignStdioError, safeWriteStream } from './lib/stdioGuard';

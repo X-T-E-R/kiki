@@ -287,7 +287,11 @@ export function spawnWindowsSearch(ssh: SSHKaos, args: readonly string[]): IHost
       const copy = async (source: NodeJS.ReadableStream, target: PassThrough) => {
         for await (const chunk of source) await write(target, chunk as Buffer);
       };
-      await Promise.all([copy(remote.stdout, stdout), copy(remote.stderr, stderr)]);
+      const copyOut = copy(remote.stdout, stdout);
+      const copyErr = copy(remote.stderr, stderr);
+      copyOut.catch(() => {});
+      copyErr.catch(() => {});
+      await Promise.all([copyOut, copyErr]);
       finish(await remote.wait());
     } catch (error) {
       if (!controller.signal.aborted) { stderr.write(error instanceof Error ? error.message : String(error)); finish(2); }

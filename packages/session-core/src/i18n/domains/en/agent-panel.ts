@@ -42,6 +42,7 @@ export const agentPanelEn = {
   'activity.reason.cancelled': 'Stopped',
   'activity.reason.completed': 'Finished',
   'activity.reason.failed': 'Failed',
+  'activity.reason.interrupted': 'Interrupted by restart',
   'activity.reason.question': 'Awaiting answer',
   'activity.reason.running': 'Working',
   'activity.reviewInThread': 'Review in thread',

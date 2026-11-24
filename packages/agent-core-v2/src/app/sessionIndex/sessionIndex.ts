@@ -5,7 +5,7 @@ import type { TokenUsage } from '#/kosong/contract/usage';
 import type { SessionWorktree } from '#/app/git/worktreeModel';
 import type { Page } from '#/persistence/interface/queryStore';
 import type { UsageFactTotals } from '#/agent/usage/usageFact';
-import type { SessionExecutionPhase } from '#/session/sessionMetadata/sessionMetadata';
+import type { SessionExecutionPhase, SessionInterruptedWork } from '#/session/sessionMetadata/sessionMetadata';
 
 export const PARENT_SESSION_ID_KEY = 'parent_session_id';
 
@@ -43,6 +43,8 @@ export interface SessionSummary {
   readonly executionPhase?: SessionExecutionPhase;
   readonly custom?: Record<string, unknown>;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+  readonly interruptedWork?: SessionInterruptedWork;
+  readonly activeRunBootId?: string;
   readonly usage?: SessionUsageSummary;
   readonly executorId?: string;
   readonly negotiated?: NegotiatedExecutorCapabilities;

@@ -304,7 +304,7 @@ describe('SessionBranchService completion metadata', () => {
       delegator: undefined,
       userLabel: undefined,
       labels: { branch: 'true', profileName: 'agent' },
-      binding: { profile: 'agent', route: undefined },
+      binding: { profile: 'agent', route: undefined, allowParentNotify: true },
     });
 
     const boundOptions = resolvePersistedAgentCreateOptions(

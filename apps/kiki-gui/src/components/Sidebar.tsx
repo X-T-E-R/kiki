@@ -1714,6 +1714,36 @@ export function Sidebar({
       });
   };
 
+  const [recoveringInterrupted, setRecoveringInterrupted] = useState(false);
+
+  const handleRecoverAllInterrupted = useCallback(async (items: readonly UnifiedInboxItem[]) => {
+    if (recoveringInterrupted || items.length === 0) return;
+    setRecoveringInterrupted(true);
+    setActionError(null);
+    const touchedRemoteIds = new Set<string>();
+    let touchedLocal = false;
+    try {
+      await Promise.allSettled(
+        items.map(async (item) => {
+          if (item.ref.kind !== 'session') return;
+          const remoteConnId = remoteConnIdOf(item.spaceKey);
+          const targetClient = clientForSpace(item.spaceKey);
+          await targetClient.recoverSession(item.sessionId);
+          if (remoteConnId !== undefined) touchedRemoteIds.add(remoteConnId);
+          else touchedLocal = true;
+        }),
+      );
+      if (touchedLocal) refreshSessions();
+      for (const remoteConnId of touchedRemoteIds) {
+        void onRefreshRemoteSpace?.(remoteConnId);
+      }
+    } catch (error: unknown) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRecoveringInterrupted(false);
+    }
+  }, [clientForSpace, onRefreshRemoteSpace, recoveringInterrupted, refreshSessions]);
+
   const restore = (session: Session, itemSpaceKey?: string) => {
     setMenu(null);
     setActionError(null);
@@ -2623,6 +2653,8 @@ export function Sidebar({
           onArchiveItem={inboxTriage.archiveItem}
           onRestoreItem={inboxTriage.restoreItem}
           onUndo={inboxTriage.undoLast}
+          onRecoverAllInterrupted={handleRecoverAllInterrupted}
+          recoveringInterrupted={recoveringInterrupted}
         />
       </div>
       ) : (

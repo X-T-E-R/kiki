@@ -5587,6 +5587,17 @@ export function projectAgentTranscriptView(
     if (gap !== undefined) turnGaps[item.turnId] = gap;
   }
   const incompleteTurnIds = Object.keys(turnGaps);
+  const deliveredAgentMessages: Record<string, string> = {};
+  for (const item of snapshot.items) {
+    if (item.kind !== 'marker' || item.marker !== 'agent_message.delivered') continue;
+    const parsed = agentMessageDeliveredEventSchema.safeParse(item.payload);
+    if (!parsed.success) continue;
+    const { messageId, deliveredAt } = parsed.data;
+    const prevDelivered = deliveredAgentMessages[messageId];
+    if (prevDelivered === undefined || deliveredAt < prevDelivered) {
+      deliveredAgentMessages[messageId] = deliveredAt;
+    }
+  }
   return {
     ...previous,
     version: previous.version + 1,
@@ -5638,7 +5649,9 @@ export function projectAgentTranscriptView(
     // Every loaded turn that failed, not just the tail: its partial text is not
     // a reply the reader received, whatever the prompt window still holds.
     failedTurnIds: keepEqual(previous.failedTurnIds, snapshot.items.flatMap((item) => (item.kind === 'turn' && item.state === 'failed' ? [item.turnId] : []))),
-    nonUserTurnIds: keepEqual(previous.nonUserTurnIds ?? [], snapshot.items.flatMap((item) => (item.kind === 'turn' && item.origin.kind !== 'user' ? [item.turnId] : []))),
+    deliveredAgentMessages: keepEqual(previous.deliveredAgentMessages ?? {}, deliveredAgentMessages),
+    lostTaskCount: (Array.isArray(snapshot.tasks) ? snapshot.tasks : [...snapshot.tasks.values()]).filter((task) => task.state === 'lost').length,
+    nonUserTurnIds: keepEqual(previous.nonUserTurnIds ?? [], snapshot.items.flatMap((item) => (item.kind === 'turn' && item.origin !== undefined && item.origin.kind !== 'user' ? [item.turnId] : []))),
     turnRetry: turnRetryFromItem(lastTurn),
   };
 }

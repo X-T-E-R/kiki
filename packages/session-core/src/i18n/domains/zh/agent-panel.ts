@@ -42,6 +42,7 @@ export const agentPanelZh = {
   'activity.reason.cancelled': '已停止',
   'activity.reason.completed': '已完成',
   'activity.reason.failed': '已失败',
+  'activity.reason.interrupted': '重启中断',
   'activity.reason.question': '待回答',
   'activity.reason.running': '运行中',
   'activity.reviewInThread': '进对话查看',

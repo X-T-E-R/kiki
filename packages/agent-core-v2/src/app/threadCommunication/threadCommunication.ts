@@ -1,4 +1,5 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import type { Event } from '#/_base/event';
 
 export interface ThreadRef {
   readonly hostId: string;
@@ -172,6 +173,15 @@ export interface WaitThreadsResult {
   readonly timedOut: boolean;
 }
 
+export interface ThreadMessageDeliveryEvent {
+  readonly messageId: string;
+  readonly sourceSessionId?: string;
+  readonly targetSessionId: string;
+  readonly delivery: 'delivered' | 'undeliverable';
+  readonly updatedAt: number;
+  readonly reason?: string;
+}
+
 /** `threadCommunication` domain — local peer-thread coordination contract (App scope). Defines
  *  host-qualified Thread references, bounded list/read/wait views, durable send receipts, and
  *  workspace override management. A Thread is an existing Session, and agent identities never
@@ -183,6 +193,7 @@ export interface WaitThreadsResult {
 export interface IThreadCommunicationService {
   readonly _serviceBrand: undefined;
   readonly hostId: string;
+  readonly onDidChangeMessageDelivery?: Event<ThreadMessageDeliveryEvent>;
 
   listMessages(input?: ListThreadMessagesInput): Promise<ListThreadMessagesResult>;
   listThreads(input?: ListThreadsInput): Promise<ListThreadsResult>;

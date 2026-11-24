@@ -446,6 +446,9 @@ export class EgoBrowserRuntime {
     let cleanup: Promise<void> | undefined;
     let stop: (() => void) | undefined;
     const work = Promise.all([child.wait(), stdoutPromise, stderrPromise]);
+    stdoutPromise.catch(() => {});
+    stderrPromise.catch(() => {});
+    work.catch(() => {});
     const cancelled = signal === undefined ? undefined : new Promise<never>((_resolve, reject) => {
       stop = () => {
         cleanup ??= child.kill().then(async () => { await child.dispose(); });

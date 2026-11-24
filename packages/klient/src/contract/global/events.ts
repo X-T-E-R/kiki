@@ -11,9 +11,11 @@ import {
   remoteConnectionsChangedPayloadSchema,
   roomChangeEventSchema,
   sessionAttentionCursorSchema,
+  threadMessageDeliveryPayloadSchema,
   type RemoteConnectionsChangedEvent,
   type RoomChangeEvent,
   type SessionWorkChangedEvent,
+  type ThreadMessageDeliveryPayload,
 } from '@kiki/protocol';
 
 import type { ConfigChangedEvent } from '@kiki/agent-core-v2/app/config/config';
@@ -64,6 +66,7 @@ export type RemoteConnectionsChangedPayload = Omit<RemoteConnectionsChangedEvent
 /** Public event name → payload type. Keys must stay in sync with `globalEvents`. */
 export interface KlientEventPayloads {
   'room.changed': RoomChangeEvent;
+  'thread.messageDelivery': ThreadMessageDeliveryPayload;
   'remoteConnections.changed': RemoteConnectionsChangedPayload;
   'config.changed': ConfigChangedEvent;
   'config.sectionChanged': ConfigChangedEvent;
@@ -163,6 +166,12 @@ export const globalEvents = {
   }), 'kind', 'type', 'schema'),
   'room.changed': {
     kind: 'emitter', service: 'roomService', event: 'onDidChange', schema: roomChangeEventSchema,
+  },
+  'thread.messageDelivery': {
+    kind: 'emitter',
+    service: 'threadCommunicationService',
+    event: 'onDidChangeMessageDelivery',
+    schema: threadMessageDeliveryPayloadSchema,
   },
   'connections.changed': {
     kind: 'bus', type: 'event.remote_connections.changed',

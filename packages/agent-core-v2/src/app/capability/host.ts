@@ -41,6 +41,7 @@ export async function runCommand(
       collect(proc.stderr),
       proc.wait().catch(() => -1),
     ] as const);
+    work.catch(() => {});
     let timer: NodeJS.Timeout | undefined;
     const timed = options.timeout === undefined
       ? work

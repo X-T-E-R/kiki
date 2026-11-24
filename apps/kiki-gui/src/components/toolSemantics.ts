@@ -77,6 +77,10 @@ export interface SemanticContext {
   readonly threadTitle: (sessionId: string) => string | undefined;
   /** A room's name from the room list the client already holds, if anything. */
   readonly roomName?: (roomId: string) => string | undefined;
+  /** Live or replayed delivery state for AgentSend / AgentNotify message IDs. */
+  readonly agentMessageDelivery?: (messageId: string) => 'delivered' | undefined;
+  /** Live or reconciled delivery state for ThreadSend message IDs. */
+  readonly threadMessageDelivery?: (messageId: string) => 'delivered' | 'undeliverable' | undefined;
 }
 
 type Rec = Record<string, unknown>;
@@ -384,12 +388,15 @@ function describeThread(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
     }
     case 'ThreadSend': {
       const content = str(args['content']);
-      const delivery = str(result?.['delivery']);
+      const rawDelivery = str(result?.['delivery']);
       // A room send and a peer send are different destinations, so they get
       // different rows: a room has no thread to name, no queue to wait in, and
       // `delivered` only means the room recorded the line.
       const room = str(args['room']);
-      if (room !== undefined) return roomSend(block, ctx, room, content, delivery);
+      if (room !== undefined) return roomSend(block, ctx, room, content, rawDelivery);
+      const messageId = str(result?.['messageId']) ?? str(result?.['message_id']);
+      const liveDelivery = messageId === undefined ? undefined : ctx.threadMessageDelivery?.(messageId);
+      const delivery = rawDelivery === 'pending' && liveDelivery !== undefined ? liveDelivery : rawDelivery;
       const id = threadSessionId(args['thread']);
       return {
         icon: 'thread',
@@ -512,7 +519,12 @@ function describeAgent(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
       const target = rec(result?.['target']);
       const agentId = str(target?.['agent_id']) ?? block.agentRefs?.[0]?.agentId;
       const message = str(args['message']);
-      const status = str(result?.['status']);
+      const messageId = str(result?.['message_id']) ?? str(result?.['messageId']);
+      const rawStatus = str(result?.['status']);
+      const status =
+        rawStatus === 'queued' && messageId !== undefined && ctx.agentMessageDelivery?.(messageId) === 'delivered'
+          ? 'delivered'
+          : rawStatus;
       return {
         icon: 'agent',
         verb: t(block.name === 'AgentSend' ? 'tc.sem.agent.send' : 'tc.sem.agent.notify'),
@@ -1285,6 +1297,16 @@ const DESCRIBERS: Record<string, (block: ToolBlock, ctx: SemanticContext) => Too
 /** Tools that have a semantic describer (the rest keep the generic row). */
 export function hasToolSemantics(name: string): boolean {
   return THREAD_TOOLS.has(name) || name in DESCRIBERS;
+}
+
+/** Extract the messageId of a peer ThreadSend call whose persisted receipt is still `pending`. */
+export function extractPendingThreadMessageId(block: ToolBlock): string | undefined {
+  if (block.name !== 'ThreadSend') return undefined;
+  const args = rec(block.args);
+  if (str(args?.['room']) !== undefined) return undefined;
+  const result = rec(outputJson(block.output));
+  if (str(result?.['delivery']) !== 'pending') return undefined;
+  return str(result?.['messageId']) ?? str(result?.['message_id']);
 }
 
 /** The semantic reading of a built-in tool call, or undefined for any other tool. */

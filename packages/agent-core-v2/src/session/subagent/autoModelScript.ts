@@ -36,9 +36,13 @@ export async function runAutoModelScript(
     deadline.signal.throwIfAborted();
     const stdout = readSelectorOutput(proc.stdout);
     const stderr = drain(proc.stderr);
+    const work = Promise.all([proc.wait(), stdout, stderr]);
+    stdout.catch(() => {});
+    stderr.catch(() => {});
+    work.catch(() => {});
     proc.stdin.on('error', () => {});
     proc.stdin.end(JSON.stringify(input));
-    const [exitCode, output] = await abortable(Promise.all([proc.wait(), stdout, stderr]), deadline.signal);
+    const [exitCode, output] = await abortable(work, deadline.signal);
     if (exitCode !== 0) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Model selector script exited unsuccessfully.', { details: { exitCode } });
     try {
       return JSON.parse(output) as unknown;

@@ -1,0 +1,39 @@
+const STDIO_GUARD_INSTALLED = Symbol.for('kiki.stdioEpipeGuardInstalled');
+
+const BENIGN_STDIO_ERROR_CODES = new Set(['EPIPE', 'ERR_STREAM_DESTROYED', 'EOF']);
+
+/** Returns true when a stream error indicates the parent pipe closed cleanly. */
+export function isBenignStdioError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null | undefined)?.code;
+  return typeof code === 'string' && BENIGN_STDIO_ERROR_CODES.has(code);
+}
+
+/** Installs an idempotent error listener absorbing closed-pipe errors on stdio streams. */
+export function installStdioEpipeGuard(
+  streams: readonly NodeJS.WritableStream[] = [process.stdout, process.stderr],
+): void {
+  for (const stream of streams) {
+    const tagged = stream as NodeJS.WritableStream & { [STDIO_GUARD_INSTALLED]?: boolean };
+    if (tagged[STDIO_GUARD_INSTALLED] === true) continue;
+    tagged[STDIO_GUARD_INSTALLED] = true;
+    stream.on('error', (error: unknown) => {
+      if (isBenignStdioError(error)) return;
+      if (stream.listenerCount('error') <= 1) throw error;
+    });
+  }
+}
+
+/** Writes to a writable stream without propagating closed-pipe errors. */
+export function safeWriteStream(stream: NodeJS.WritableStream, chunk: string | Uint8Array): void {
+  const candidate = stream as NodeJS.WritableStream & { readonly destroyed?: boolean; readonly writableEnded?: boolean };
+  if (candidate.destroyed === true || candidate.writableEnded === true || !candidate.writable) return;
+  try {
+    stream.write(chunk, (error) => {
+      if (error !== null && error !== undefined && !isBenignStdioError(error) && stream.listenerCount('error') === 0) {
+        return;
+      }
+    });
+  } catch (error) {
+    if (!isBenignStdioError(error)) throw error;
+  }
+}

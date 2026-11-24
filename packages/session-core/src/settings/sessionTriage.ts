@@ -69,6 +69,7 @@ const VALID_REASONS: ReadonlySet<string> = new Set<InboxReason>([
   'approval',
   'question',
   'budget',
+  'interrupted',
   'completed',
   'failed',
   'cancelled',

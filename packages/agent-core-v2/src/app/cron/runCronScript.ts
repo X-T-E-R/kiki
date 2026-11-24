@@ -31,9 +31,13 @@ export async function runCronScript(
     });
     const stdout = readBounded(proc.stdout, CRON_SCRIPT_OUTPUT_BYTES);
     const stderr = readBounded(proc.stderr, 0);
+    const work = Promise.all([proc.wait(), stdout, stderr]);
+    stdout.catch(() => {});
+    stderr.catch(() => {});
+    work.catch(() => {});
     proc.stdin.on('error', () => {});
     proc.stdin.end(JSON.stringify(input));
-    const [exitCode, output] = await abortable(Promise.all([proc.wait(), stdout, stderr]), deadline.signal);
+    const [exitCode, output] = await abortable(work, deadline.signal);
     result = exitCode === 0 ? { outcome: 'allowed', exitCode, stdout: output }
       : exitCode > 0 ? { outcome: 'skipped', reason: 'exit_code', exitCode }
         : { outcome: 'error', reason: 'process_failed' };

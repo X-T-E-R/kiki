@@ -359,6 +359,7 @@ export function bindSessionTranscript(
       event.type === 'permission.set_mode' ||
       event.type === 'turn.cancel' ||
       event.type === 'branch.base' ||
+      event.type === 'agent_message.delivered' ||
       (event.type === 'executor.runtime.update' && event['kind'] === 'usage')
     ) {
       return;

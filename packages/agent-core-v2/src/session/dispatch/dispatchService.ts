@@ -40,6 +40,7 @@ import { IAgentTaskService } from '#/agent/task/task';
 import { SubagentTask, type SubagentHandle } from '#/agent/tools/agent/subagent-task';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IConfigService } from '#/app/config/config';
+import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
 import { fillLeasePins, spawnConstraintOrigin } from '#/app/agentProfileCatalog/applySubagentLease';
 import { resolveSubagentTarget } from '#/app/agentProfileCatalog/subagentDispatch';
@@ -491,7 +492,23 @@ export class SessionDispatchService implements ISessionDispatchService {
         labels: labelsFromAgentMeta(meta),
         delegator: childDelegator,
       }));
-    const data = child.accessor.get(IAgentProfileService).data();
+    const childProfile = child.accessor.get(IAgentProfileService);
+    const currentData = childProfile.data();
+    if (
+      live === undefined &&
+      meta.labels?.['branch'] === 'true' &&
+      (currentData.executorId ?? 'native') === 'native' &&
+      (currentData.modelAlias === undefined || currentData.modelAlias.length === 0)
+    ) {
+      await childProfile.bind({
+        profile: currentData.profileName ?? meta.labels['profileName'] ?? DEFAULT_AGENT_PROFILE_NAME,
+        route: currentData.routeId,
+        model: meta.model,
+        thinking: meta.thinkingEffort,
+        allowParentNotify: currentData.allowParentNotify ?? true,
+      });
+    }
+    const data = childProfile.data();
     if (live === undefined && childDelegator.kind === 'agent') {
       const delegator = this.requireHandle(childDelegator.agentId, 'Delegator agent');
       child
@@ -585,7 +602,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     const release = reservation ?? (() => {});
     let cleanup = (): void => {};
     try {
-      const branchMailbox = requestInput.kind === 'mailbox' && meta?.labels?.['branch'] === 'true' && meta.labels['branchInitiator'] === 'agent';
+      const branchMailbox = requestInput.kind === 'mailbox' && meta?.labels?.['branch'] === 'true';
       const requester = !branchMailbox && delegator?.kind === 'agent' && options.requesterAgentId === undefined
         ? this.requireHandle(delegator.agentId, 'Delegator agent')
         : undefined;

@@ -1083,6 +1083,13 @@ export class KikiClient {
     return this.run(() => this.rest.sessions.restore(sessionId));
   }
 
+  recoverSession(
+    sessionId: string,
+    body?: import('@kiki/protocol').RecoverSessionRequest,
+  ): Promise<import('@kiki/protocol').RecoverSessionResponse> {
+    return this.run(() => this.rest.sessions.recover(sessionId, body));
+  }
+
   /**
    * Permanently remove one archived conversation, its attached archived family
    * members included. `exclude_session_ids` is the same hold-back the family

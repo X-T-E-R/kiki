@@ -173,6 +173,38 @@ export const sessionAttentionCursorSchema = /* @__PURE__ */ z.object({
 
 export type SessionAttentionCursor = z.infer<typeof sessionAttentionCursorSchema>;
 
+export const sessionInterruptedTargetSchema = /* @__PURE__ */ z.object({
+  agent_id: z.string().min(1),
+  label: z.string().optional(),
+  kind: z.enum(['main', 'branch', 'subagent']),
+  reason: z.enum(['recovery', 'lost_task', 'branch_interrupted']),
+  lost_tasks: z.number().int().nonnegative().optional(),
+});
+export type SessionInterruptedTarget = z.infer<typeof sessionInterruptedTargetSchema>;
+
+export const sessionInterruptedWorkSchema = /* @__PURE__ */ z.object({
+  interrupted_at: isoDateTimeSchema,
+  main_interrupted: z.boolean().optional(),
+  lost_tasks: z.number().int().nonnegative().optional(),
+  interrupted_branches: z.number().int().nonnegative().optional(),
+  targets: z.array(sessionInterruptedTargetSchema).optional(),
+});
+export type SessionInterruptedWork = z.infer<typeof sessionInterruptedWorkSchema>;
+
+export const recoverSessionRequestSchema = /* @__PURE__ */ z.object({
+  agent_id: z.string().min(1).optional(),
+}).strict();
+export type RecoverSessionRequest = z.infer<typeof recoverSessionRequestSchema>;
+
+export const recoverSessionResponseSchema = /* @__PURE__ */ z.object({
+  session_id: z.string().min(1),
+  agent_id: z.string().min(1),
+  status: z.enum(['recovered', 'already_running', 'nothing_to_recover']),
+  prompt_id: z.string().min(1).optional(),
+  recovered_targets: z.array(sessionInterruptedTargetSchema),
+});
+export type RecoverSessionResponse = z.infer<typeof recoverSessionResponseSchema>;
+
 export const sessionSchema = /* @__PURE__ */ z.object({
   executor_id: z.string().optional(),
   negotiated: executorCapabilitiesSchema.shape.negotiated,
@@ -210,6 +242,7 @@ export const sessionSchema = /* @__PURE__ */ z.object({
    *  decide how to present it (e.g. an "aborted" tag when `!busy` and the
    *  reason is cancelled/failed). */
   last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),
+  interrupted_work: sessionInterruptedWorkSchema.optional(),
   execution_phase: z.enum(['running', 'pausing', 'paused', 'resuming', 'failed']).optional(),
   archived: z.boolean().optional(),
   ephemeral: z.boolean().optional(),

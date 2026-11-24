@@ -23,7 +23,7 @@ import { isExternalClientMain } from '@kiki/agent-core-v2/session/sessionMetadat
 import { canonicalWorkspaceRoot } from '@kiki/agent-core-v2/_base/utils/paths';
 import { IBotService } from '@kiki/agent-core-v2/app/bot/bot';
 import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
-import type { AgentMeta, SessionForkedFrom, SessionMeta, SessionPromotedFrom } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import type { AgentMeta, SessionForkedFrom, SessionInterruptedWork, SessionMeta, SessionPromotedFrom } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import type { NegotiatedExecutorCapabilities } from '@kiki/agent-core-v2/app/agentExecutor/capabilities';
 import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
 import { ISessionDeliveryService } from '@kiki/agent-core-v2/session/delivery/delivery';
@@ -185,6 +185,7 @@ import { parseActionSuffix } from './action-suffix';
 import { applyAgentRuntimeControls, applySessionAgentConfig } from './sessionAgentConfig';
 import { updateSessionProfile } from './sessionProfile';
 import { registerPersonaSettingsRoutes } from './personaSettings';
+import { registerSessionRecoverRoute, toWireInterruptedWork } from './sessionRecover';
 import { boundedListPreview } from '../transport/klient/boundedContent';
 import { jsonBytes } from '@kiki/transcript';
 import {
@@ -400,6 +401,7 @@ export function registerSessionsRoutes(
   externalClients?: import('../externalClients/host').ExternalClientHost,
 ): void {
   registerPersonaSettingsRoutes(app, core);
+  registerSessionRecoverRoute(app, core);
   const overlayResourcesBySession = new Map<string, Set<string>>();
   const pendingOverlayCleanups = new Set<Promise<void>>();
   const createReceipts = new SessionCreateReceiptStore(core);
@@ -2112,6 +2114,8 @@ export interface SessionWireFields {
   readonly worktree?: { readonly worktreeId: string; readonly branch: string; readonly sourceRoot: string; readonly baseRef: string };
   readonly custom?: Record<string, unknown>;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+  readonly interruptedWork?: SessionInterruptedWork;
+  readonly activeRunBootId?: string;
   readonly delivery?: 'reply' | 'message';
   readonly agents?: Readonly<Record<string, AgentMeta>>;
   readonly forkedFrom?: string;
@@ -2159,6 +2163,7 @@ export function toWireSession(
     pending_interaction: facts.pendingInteraction,
     last_turn_reason:
       facts.lastTurnReason ?? (facts.live === false ? fields.lastTurnReason : undefined),
+    interrupted_work: toWireInterruptedWork(fields, facts.busy),
     execution_phase: fields.executionPhase,
     archived: fields.archived,
     private: fields.private,

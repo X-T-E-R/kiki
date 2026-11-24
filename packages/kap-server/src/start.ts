@@ -1,3 +1,4 @@
+import { installStdioEpipeGuard } from './lib/stdioGuard';
 import {
   bootstrap,
   drainQueryStoreDisposals,
@@ -442,6 +443,7 @@ const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 58627;
 
 export async function startServer(opts: ServerStartOptions): Promise<RunningServer> {
+  installStdioEpipeGuard();
   if (process.platform === 'win32') {
     try {
       setPriority(0, osConstants.priority.PRIORITY_ABOVE_NORMAL);
@@ -950,6 +952,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       { run: () => core.accessor.get(IThreadMailboxStore).close() },
       { run: () => core.accessor.get(IHomeRuntimeService).close() },
       { run: () => roomChangeSubscription.dispose() },
+      { run: () => threadDeliverySubscription?.dispose() },
       { run: () => personaChangeSubscription.dispose() },
       { run: () => configWarningSubscription.dispose() },
       { run: () => pluginChangeSubscription.dispose() },
@@ -1063,6 +1066,9 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   });
   const roomChangeSubscription = core.accessor.get(IRoomService).onDidChange((change) => {
     broadcaster.publishRoomChanged(change);
+  });
+  const threadDeliverySubscription = core.accessor.get(IThreadCommunicationService).onDidChangeMessageDelivery?.((change) => {
+    broadcaster.publishThreadMessageDelivery(change);
   });
   class PersonaChanged extends Event2<{ readonly payload: Record<string, never> }> {
     static override readonly type = 'event.persona.changed';

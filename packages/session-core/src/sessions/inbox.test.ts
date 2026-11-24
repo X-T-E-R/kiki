@@ -412,4 +412,52 @@ describe('buildUnifiedInbox', () => {
     expect(viewingArchived.active).toEqual([]);
     expect(viewingArchived.archived.map((item) => item.sessionId)).toEqual(['active-archived']);
   });
+
+  it('surfaces idle restart-interrupted sessions as needsYou interrupted and suppresses while busy', () => {
+    const interruptedWork = {
+      interrupted_at: '2026-01-01T02:00:00.000Z',
+      main_interrupted: true,
+      lost_tasks: 2,
+    };
+    const idleInterrupted = session({
+      id: 's-interrupted',
+      busy: false,
+      interrupted_work: interruptedWork,
+      updated_at: '2026-01-01T02:00:00.000Z',
+    });
+    const busyRecovered = session({
+      id: 's-running',
+      busy: true,
+      executing: true,
+      interrupted_work: interruptedWork,
+      updated_at: '2026-01-01T03:00:00.000Z',
+    });
+    const flat = buildInboxModel([idleInterrupted, busyRecovered], {});
+    expect(flat.needsYou).toHaveLength(1);
+    expect(flat.needsYou[0]).toMatchObject({
+      sessionId: 's-interrupted',
+      reason: 'interrupted',
+      interruptedWork,
+    });
+    expect(flat.running.map((item) => item.sessionId)).toEqual(['s-running']);
+
+    const unified = buildUnifiedInbox(
+      [
+        { kind: 'session', spaceKey: 'main', spaceName: 'Main', isRemote: false, session: idleInterrupted },
+        { kind: 'session', spaceKey: 'main', spaceName: 'Main', isRemote: false, session: busyRecovered },
+      ],
+      {},
+      {},
+      Date.parse('2026-01-01T04:00:00.000Z'),
+    );
+    expect(unified.active).toHaveLength(1);
+    expect(unified.active[0]).toMatchObject({
+      sessionId: 's-interrupted',
+      reason: 'interrupted',
+      needsYou: true,
+      interruptedWork,
+    });
+    expect(unified.needsYouCount).toBe(1);
+    expect(unified.working.map((item) => item.sessionId)).toEqual(['s-running']);
+  });
 });

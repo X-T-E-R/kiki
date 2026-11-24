@@ -5377,6 +5377,26 @@ boundExecution,
         });
       });
   }, [client, locale, seedCompactionProgress, sessionId, t]);
+  const [recoveringInterruption, setRecoveringInterruption] = useState(false);
+  const handleRecoverInterruption = useCallback(() => {
+    if (recoveringInterruption || state.busy) return;
+    setRecoveringInterruption(true);
+    void client
+      .recoverSession(sessionId)
+      .then(() => {
+        void queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined);
+      })
+      .catch((error: unknown) => {
+        pushToast({
+          tone: 'error',
+          text: sessionActionErrorText(locale, error),
+        });
+      })
+      .finally(() => {
+        setRecoveringInterruption(false);
+      });
+  }, [client, locale, queryClient, recoveringInterruption, sessionId, state.busy]);
+
   const handleContinueFailedTurn = useCallback(() => {
     if (state.busy || actions === null) return;
     revealOwnSend(false);
@@ -6053,6 +6073,9 @@ boundExecution,
     onContinueFailedTurn: handleContinueFailedTurn,
     onRetryFailedTurn: handleRetryFailedTurn,
     onRetryCompaction: handleRetryCompaction,
+    interruptedWork: state.session?.interrupted_work,
+    onRecoverInterruption: handleRecoverInterruption,
+    recoveringInterruption,
   }), [
     timelineView, timelineState, wsStatus,
     mainTimelineActions.loadOlder, mainTimelineActions.resolveApproval,
@@ -6060,7 +6083,8 @@ boundExecution,
     handleCancelQueuedChips, mainTimelineActions.retryLoad, retryPendingSubmission,
     forest, openAgent, transcriptRowActionsWithBranch, forkLineage.byBlockId,
     openForkSession, openAgentRoute, handleContinueFailedTurn, handleRetryFailedTurn,
-    handleRetryCompaction,
+    handleRetryCompaction, state.session?.interrupted_work, handleRecoverInterruption,
+    recoveringInterruption,
   ]);
   const mainDockNode = useMemo(() => (
     <>

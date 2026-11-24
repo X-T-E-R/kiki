@@ -12186,4 +12186,84 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
     expect(anchorAfter).not.toBeNull();
     expect(Math.abs(anchorAfter!.getBoundingClientRect().top - topBefore)).toBeLessThanOrEqual(4);
   });
+
+  it('routes recovery-cancelled turn tail and lost-task recovery bar to onRecoverInterruption without regenerating', async () => {
+    const { root, container } = makeRoot();
+    const onRecoverInterruption = vi.fn();
+    const onResumeStopped = vi.fn();
+    const baseBlocks = [
+      userBlock({ id: 'u-rec', text: 'Long prompt that must not be duplicated', turnId: 't1', userMessageId: 'u-rec' }),
+      assistantBlock('a-rec', 'Partial work before restart', { turnId: 't1', stepId: 's0', messageId: 'a-rec' }),
+    ];
+
+    // Case 1: turnTail cancelled by restart recovery -> clicks [data-interruption-recover] -> lossless recovery, NOT regenerate.
+    await renderSettled(
+      root,
+      <Transcript
+        state={transcriptState(baseBlocks, {
+          busy: false,
+          turnTail: {
+            state: 'cancelled',
+            cancellation: 'recovery',
+            turnId: 't1',
+            endedAt: '2026-01-01T00:00:02.000Z',
+            durationMs: undefined,
+            ttftMs: undefined,
+            usage: undefined,
+            tokensPerSecond: undefined,
+          },
+        })}
+        onLoadOlder={async () => false}
+        onResolveApproval={noopActions}
+        onAnswerQuestion={noopActions}
+        onDismissQuestion={noopActions}
+        rowActions={{
+          disabled: false,
+          onEditMessage: vi.fn(),
+          onRegenerate: vi.fn(),
+          onFork: vi.fn(),
+          onResumeStopped,
+        }}
+        onRecoverInterruption={onRecoverInterruption}
+      />,
+    );
+    const tailRecoverBtn = container.querySelector<HTMLButtonElement>('[data-turn-tail-resume][data-interruption-recover]');
+    expect(tailRecoverBtn).not.toBeNull();
+    await act(async () => { tailRecoverBtn!.click(); });
+    expect(onRecoverInterruption).toHaveBeenCalledTimes(1);
+    expect(onResumeStopped).not.toHaveBeenCalled();
+
+    // Case 2: main turn completed, yet 2 background child tasks were lost on restart -> compact single-line recovery strip renders.
+    onRecoverInterruption.mockClear();
+    await renderSettled(
+      root,
+      <Transcript
+        state={transcriptState(baseBlocks, {
+          busy: false,
+          turnTail: {
+            state: 'completed',
+            turnId: 't1',
+            endedAt: '2026-01-01T00:00:02.000Z',
+            durationMs: undefined,
+            ttftMs: undefined,
+            usage: undefined,
+            tokensPerSecond: undefined,
+          },
+          lostTaskCount: 2,
+        })}
+        onLoadOlder={async () => false}
+        onResolveApproval={noopActions}
+        onAnswerQuestion={noopActions}
+        onDismissQuestion={noopActions}
+        onRecoverInterruption={onRecoverInterruption}
+      />,
+    );
+    const bar = container.querySelector('[data-interruption-recovery]');
+    expect(bar).not.toBeNull();
+    expect(bar?.textContent).toContain('2');
+    const barRecoverBtn = bar?.querySelector<HTMLButtonElement>('[data-interruption-recover]');
+    expect(barRecoverBtn).not.toBeNull();
+    await act(async () => { barRecoverBtn!.click(); });
+    expect(onRecoverInterruption).toHaveBeenCalledTimes(1);
+  });
 });

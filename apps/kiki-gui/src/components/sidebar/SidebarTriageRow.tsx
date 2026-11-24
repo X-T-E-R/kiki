@@ -52,6 +52,7 @@ function stateLabelKey(reason: InboxReason):
   | 'sidebar.inbox.state.approval'
   | 'sidebar.inbox.state.question'
   | 'sidebar.inbox.state.budget'
+  | 'sidebar.inbox.state.interrupted'
   | 'sidebar.inbox.state.completed'
   | 'sidebar.inbox.state.failed'
   | 'sidebar.inbox.state.cancelled'
@@ -63,6 +64,8 @@ function stateLabelKey(reason: InboxReason):
       return 'sidebar.inbox.state.question';
     case 'budget':
       return 'sidebar.inbox.state.budget';
+    case 'interrupted':
+      return 'sidebar.inbox.state.interrupted';
     case 'failed':
       return 'sidebar.inbox.state.failed';
     case 'cancelled':

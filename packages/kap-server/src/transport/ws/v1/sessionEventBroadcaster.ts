@@ -413,6 +413,39 @@ export class SessionEventBroadcaster {
     }
   }
 
+  publishThreadMessageDelivery(change: {
+    readonly messageId: string;
+    readonly sourceSessionId?: string;
+    readonly targetSessionId: string;
+    readonly delivery: 'delivered' | 'undeliverable';
+    readonly updatedAt: number;
+    readonly reason?: string;
+  }): void {
+    const event = {
+      type: 'event.thread.message_delivery' as const,
+      message_id: change.messageId,
+      source_session_id: change.sourceSessionId,
+      target_session_id: change.targetSessionId,
+      delivery: change.delivery,
+      updated_at: change.updatedAt,
+      reason: change.reason,
+      agentId: 'main',
+      sessionId: GLOBAL_SESSION_ID,
+    };
+    const envelope: EventEnvelope = {
+      type: event.type,
+      seq: 0,
+      session_id: GLOBAL_SESSION_ID,
+      timestamp: new Date().toISOString(),
+      payload: event,
+    };
+    for (const target of this.globalTargets) {
+      try {
+        target.send(envelope, 'immediate');
+      } catch {}
+    }
+  }
+
   /** Drop a closed connection from the global fan-out set. Idempotent. */
   removeGlobalTarget(target: BroadcastTarget): void {
     this.globalTargets.delete(target);
@@ -2778,6 +2811,7 @@ const TRANSCRIPT_PROJECTED_EVENT_TYPES: ReadonlySet<string> = new Set([
   'subagent.completed',
   'subagent.failed',
   'subagent.suspended',
+  'agent_message.delivered',
   'compaction.started',
   'compaction.blocked',
   'compaction.cancelled',

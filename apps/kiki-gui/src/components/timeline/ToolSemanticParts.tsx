@@ -5,7 +5,7 @@
  * history search differ only in what they say, never in how it is set.
  */
 
-import { useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { QueryClientContext } from '@tanstack/react-query';
 
 import type { Session } from '@kiki/protocol';
@@ -46,9 +46,108 @@ function useKnownSessionTitles(): (sessionId: string) => string | undefined {
   }, [queryClient]);
 }
 
+interface TranscriptDeliveryValue {
+  readonly deliveredAgentMessages?: Readonly<Record<string, string>>;
+  readonly threadDeliveryById: Readonly<Record<string, 'delivered' | 'undeliverable'>>;
+}
+
+const EMPTY_THREAD_DELIVERY: Readonly<Record<string, 'delivered' | 'undeliverable'>> = {};
+const TranscriptDeliveryContext = createContext<TranscriptDeliveryValue>({
+  threadDeliveryById: EMPTY_THREAD_DELIVERY,
+});
+
+const THREAD_RECONCILE_PAGE_LIMIT = 5;
+
+export function TranscriptDeliveryProvider({
+  sessionId,
+  deliveredAgentMessages,
+  pendingThreadMessageIds,
+  children,
+}: {
+  readonly sessionId?: string;
+  readonly deliveredAgentMessages?: Readonly<Record<string, string>>;
+  readonly pendingThreadMessageIds?: readonly string[];
+  readonly children: ReactNode;
+}) {
+  const api = useOptionalConnection()?.client;
+  const [threadDeliveryById, setThreadDeliveryById] = useState<Readonly<Record<string, 'delivered' | 'undeliverable'>>>(EMPTY_THREAD_DELIVERY);
+  const reconciledRef = useRef<{ sessionId: string | undefined; ids: Set<string> }>({ sessionId, ids: new Set() });
+
+  useEffect(() => {
+    setThreadDeliveryById(EMPTY_THREAD_DELIVERY);
+    reconciledRef.current = { sessionId, ids: new Set() };
+  }, [sessionId]);
+
+  useEffect(() => {
+    const events = api?.klient?.events;
+    if (events === undefined) return;
+    const sub = events.on('thread.messageDelivery', (event) => {
+      if (sessionId !== undefined && event.sourceSessionId !== undefined && event.sourceSessionId !== sessionId && event.targetSessionId !== sessionId) {
+        return;
+      }
+      setThreadDeliveryById((prev) =>
+        prev[event.messageId] === event.delivery ? prev : { ...prev, [event.messageId]: event.delivery },
+      );
+    });
+    return () => { sub.dispose(); };
+  }, [api, sessionId]);
+
+  const pendingKey = useMemo(
+    () => (pendingThreadMessageIds === undefined || pendingThreadMessageIds.length === 0 ? '' : pendingThreadMessageIds.join('\u0000')),
+    [pendingThreadMessageIds],
+  );
+
+  useEffect(() => {
+    if (sessionId === undefined || pendingKey === '') return;
+    const threads = api?.klient?.global?.threads;
+    if (threads === undefined) return;
+    const ids = pendingKey.split('\u0000');
+    const tracker = reconciledRef.current.sessionId === sessionId
+      ? reconciledRef.current
+      : (reconciledRef.current = { sessionId, ids: new Set() });
+    const unseen = ids.filter((id) => !tracker.ids.has(id) && threadDeliveryById[id] === undefined);
+    if (unseen.length === 0) return;
+    for (const id of unseen) tracker.ids.add(id);
+    const remaining = new Set(unseen);
+    let cancelled = false;
+    void (async () => {
+      let cursor: string | undefined;
+      for (let page = 0; page < THREAD_RECONCILE_PAGE_LIMIT && remaining.size > 0 && !cancelled; page += 1) {
+        const res = await threads.messages({ sessionId, cursor, limit: 100 });
+        if (cancelled) return;
+        const updates: Record<string, 'delivered' | 'undeliverable'> = {};
+        for (const msg of res.items) {
+          if (!remaining.has(msg.messageId)) continue;
+          remaining.delete(msg.messageId);
+          if (msg.delivery === 'delivered' || msg.delivery === 'undeliverable') {
+            updates[msg.messageId] = msg.delivery;
+          }
+        }
+        if (Object.keys(updates).length > 0) {
+          setThreadDeliveryById((prev) => ({ ...prev, ...updates }));
+        }
+        if (res.nextCursor === undefined) break;
+        cursor = res.nextCursor;
+      }
+    })().catch(() => {
+      if (!cancelled) {
+        for (const id of unseen) tracker.ids.delete(id);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [api, sessionId, pendingKey, threadDeliveryById]);
+
+  const value = useMemo<TranscriptDeliveryValue>(
+    () => ({ deliveredAgentMessages, threadDeliveryById }),
+    [deliveredAgentMessages, threadDeliveryById],
+  );
+  return <TranscriptDeliveryContext.Provider value={value}>{children}</TranscriptDeliveryContext.Provider>;
+}
+
 export function useSemanticContext(): SemanticContext {
   const { t, tp, locale } = useI18n();
   const threadTitle = useKnownSessionTitles();
+  const delivery = useContext(TranscriptDeliveryContext);
   // The room list, warmed once and then read from the cache — the same shape as
   // the thread titles above, so a room send names its room in a session the user
   // opened directly, not only where the sidebar already ran. A surface with no
@@ -59,8 +158,11 @@ export function useSemanticContext(): SemanticContext {
     () => ({
       t, tp, locale, threadTitle,
       roomName: (roomId: string) => { const hit = rooms.lookup(roomId); return hit.exists ? hit.name : undefined; },
+      agentMessageDelivery: (messageId: string) =>
+        delivery.deliveredAgentMessages?.[messageId] !== undefined ? 'delivered' : undefined,
+      threadMessageDelivery: (messageId: string) => delivery.threadDeliveryById[messageId],
     }),
-    [t, tp, locale, threadTitle, rooms],
+    [t, tp, locale, threadTitle, rooms, delivery],
   );
 }
 

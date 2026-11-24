@@ -117,7 +117,9 @@ async function countRemoteNewlines(ssh: SSHKaos, path: string, signal?: AbortSig
       if (await process!.wait() !== 0 || !/^\s*\d+\s*$/.test(output)) throw new Error('Remote line count failed');
       return output;
     };
-    const count = Number(await abortable(read(), deadline.signal));
+    const work = read();
+    work.catch(() => {});
+    const count = Number(await abortable(work, deadline.signal));
     if (!Number.isSafeInteger(count)) throw new Error('Invalid remote line count');
     return count;
   } finally {

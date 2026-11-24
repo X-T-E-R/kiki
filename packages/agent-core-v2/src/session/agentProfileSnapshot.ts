@@ -496,6 +496,7 @@ export function resolvePersistedAgentCreateOptions(
       binding: {
         profile: snapshot?.profileName ?? metadata?.labels?.['profileName'] ?? DEFAULT_AGENT_PROFILE_NAME,
         route: snapshot?.routeId,
+        allowParentNotify: true,
       },
     };
   }

@@ -2,6 +2,7 @@ import { Service } from '#/_base/di/service';
 import { ref, type LiveRef, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
 import { withoutRestoreAttempt } from '#/session/agentLifecycle/restoreTiming';
+import { ISessionBranchService } from '#/features/btw/btw';
 import { AUTONOMOUS_RECEIPT_POLICY_LABEL, hasReceiptWork, isBranchReceiptOwner, observeAutonomousReceipts, type ReceiptDelivery, type ReceiptObserver } from './autonomousReceipt';
 import { readPendingAutonomousReceipts } from './autonomousReceiptRecovery';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
@@ -228,13 +229,23 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
   }
 
   private hasDescendantReceiptWork(agentId: string): boolean {
-    for (const [childId, directParent] of this.parentIds) {
-      let parent: string | undefined = directParent;
+    const isDescendant = (candidateId: string): boolean => {
+      let parent = this.parentIds.get(candidateId);
       while (parent !== undefined && parent !== agentId) parent = this.parentIds.get(parent);
-      if (parent === undefined) continue;
+      return parent === agentId;
+    };
+    for (const receipt of this.pendingReceipts) {
+      if (isDescendant(receipt.child.id)) return true;
+    }
+    for (const [childId] of this.parentIds) {
+      if (!isDescendant(childId)) continue;
       const handle = this.agentLifecycle.get(childId);
-      if (handle !== undefined && (hasReceiptWork(handle) ||
-        Object.keys(handle.accessor.get(IAgentStateService).get(autonomousReceiptsKey).pending).length > 0)) return true;
+      if (handle === undefined) continue;
+      if (hasReceiptWork(handle) ||
+        Object.keys(handle.accessor.get(IAgentStateService).get(autonomousReceiptsKey).pending).length > 0 ||
+        optionalFromHandle(handle, ISessionBranchService)?.isFolding(childId) === true) {
+        return true;
+      }
     }
     return false;
   }
@@ -347,7 +358,7 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
         });
         opts.signal.throwIfAborted();
       }
-      const branchMailbox = request.kind === 'mailbox' && isBranchReceiptOwner(this.metadata.snapshot().agents?.[agentId]);
+      const branchMailbox = request.kind === 'mailbox' && this.metadata.snapshot().agents?.[agentId]?.labels?.['branch'] === 'true';
       const run = await handle.accessor
         .get(IAgentExecutionService)
         .run(request, {

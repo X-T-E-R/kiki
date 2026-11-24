@@ -823,6 +823,8 @@ export interface SessionViewState {
    * loaded window.
    */
   readonly failedTurnIds?: readonly string[];
+  readonly deliveredAgentMessages?: Readonly<Record<string, string>>;
+  readonly lostTaskCount?: number;
   readonly turnRetry: TurnRetryInfo | undefined;
   readonly pendingInteraction: SessionPendingInteraction;
   readonly activePromptId: string | undefined;

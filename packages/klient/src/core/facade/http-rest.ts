@@ -482,6 +482,7 @@ export interface HttpRestFacade {
     applyPersonaSettings(sessionId: string, input?: import('@kiki/protocol').ApplyPersonaSettingsRequest): Promise<import('@kiki/protocol').SessionPersonaSettings>;
     archive(sessionId: string, options?: import('@kiki/protocol').ArchiveSessionRequest): Promise<ArchiveSessionResponse>;
     restore(sessionId: string): Promise<RestoreSessionResponse>;
+    recover(sessionId: string, body?: import('@kiki/protocol').RecoverSessionRequest): Promise<import('@kiki/protocol').RecoverSessionResponse>;
     deleteArchived(sessionId: string, options?: import('@kiki/protocol').DeleteArchivedSessionRequest): Promise<import('@kiki/protocol').DeleteArchivedSessionsResponse>;
     deleteAllArchived(): Promise<import('@kiki/protocol').DeleteArchivedSessionsResponse>;
     goal(sessionId: string): Promise<GoalSnapshot | null>;

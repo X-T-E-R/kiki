@@ -207,8 +207,11 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
   const profile = profileService.data();
   const parentSteering = profileService.getParentSteering?.() ?? (typeof previous?.parentSteering === 'string' && previous.parentSteering.trim().length > 0 ? previous.parentSteering.trim() : undefined);
   const profileName = profile.profileName ?? previous?.labels?.['profileName'] ?? 'subagent';
+  const lostChildTaskCount = branch ? countLostSubtreeTasks(child, meta.agents) : 0;
   const description = branch
-    ? `Branch ${child.id} ${receipt.outcome === undefined ? 'went idle without Merge' : `${receipt.outcome} before Merge`}`
+    ? lostChildTaskCount > 0
+      ? `Branch ${child.id} interrupted before Merge (${lostChildTaskCount} child ${lostChildTaskCount === 1 ? 'task' : 'tasks'} lost)`
+      : `Branch ${child.id} ${receipt.outcome === undefined ? 'went idle without Merge' : `${receipt.outcome} before Merge`}`
     : previous?.taskId === undefined || previous.taskId === taskId
     ? `Continue ${profileName} agent`
     : `Continue ${profileName} agent after ${previous.taskId} (${previous.status ?? 'ended'})`;
@@ -246,8 +249,13 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
     ? `${description}.\n${result}\nUse HistoryRead({ agent_id: "${child.id}", turn: ${receipt.turnId} }) to inspect this turn, or AgentSend({ target: "${child.id}", message }) to continue.`
     : result;
   const info = {
-    kind: 'agent' as const, status: receipt.outcome === 'failed' ? 'failed' as const : receipt.outcome === 'cancelled' ? 'killed' as const : 'completed' as const,
-    stopReason: receipt.error,
+    kind: 'agent' as const,
+    status: receipt.outcome === 'failed'
+      ? 'failed' as const
+      : (receipt.outcome === 'cancelled' || (branch && lostChildTaskCount > 0))
+        ? 'killed' as const
+        : 'completed' as const,
+    stopReason: receipt.error ?? (branch && lostChildTaskCount > 0 ? `${lostChildTaskCount} child ${lostChildTaskCount === 1 ? 'task' : 'tasks'} lost` : undefined),
     taskId, description, detached: true, startedAt: receipt.startedAt, endedAt: receipt.endedAt, ownerAgentId: parentId,
     goalId: previous?.taskId === undefined ? undefined : tasks?.getTask(previous.taskId)?.goalId,
     agentId: child.id, profile: profileName,
@@ -279,4 +287,46 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
     agentName: profileName,
     response: result,
   });
+}
+
+function countLostSubtreeTasks(
+  root: IAgentScopeHandle,
+  agents: Readonly<Record<string, AgentMeta>> | undefined,
+): number {
+  const lifecycle = root.accessor.get(IAgentLifecycleService);
+  const subtreeIds = new Set<string>([root.id]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const [id, meta] of Object.entries(agents ?? {})) {
+      if (subtreeIds.has(id)) continue;
+      if (meta.parentAgentId !== null && meta.parentAgentId !== undefined && subtreeIds.has(meta.parentAgentId)) {
+        subtreeIds.add(id);
+        grew = true;
+      }
+    }
+    for (const handle of lifecycle.list()) {
+      if (subtreeIds.has(handle.id)) continue;
+      const parentId = optionalFromHandle(handle, IAgentScopeContext)?.parentAgentId;
+      if (parentId !== undefined && subtreeIds.has(parentId)) {
+        subtreeIds.add(handle.id);
+        grew = true;
+      }
+    }
+  }
+  const seenTaskIds = new Set<string>();
+  let lost = 0;
+  for (const agentId of subtreeIds) {
+    const handle = lifecycle.get(agentId);
+    if (handle === undefined) continue;
+    const taskService = optionalFromHandle(handle, IAgentTaskService);
+    if (taskService === undefined) continue;
+    for (const task of taskService.list(false)) {
+      if (task.status !== 'lost') continue;
+      if (seenTaskIds.has(task.taskId)) continue;
+      seenTaskIds.add(task.taskId);
+      lost += 1;
+    }
+  }
+  return lost;
 }

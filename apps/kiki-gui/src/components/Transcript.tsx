@@ -36,7 +36,7 @@ import { isUndoAnchorOrigin, type TextPresentation, type ContentRef, type GoalMa
 import { defaultRangeExtractor, elementScroll, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 import { useStickToBottom } from 'use-stick-to-bottom';
 
-import type { ApprovalDecision, QuestionAnswer, SessionSeedMode } from '@kiki/protocol';
+import type { ApprovalDecision, QuestionAnswer, SessionInterruptedWork, SessionSeedMode } from '@kiki/protocol';
 import { getSubagentScaleConfig } from '../lib/subagentScaleConfig';
 import { cssZoomFactor } from '../lib/uiZoom';
 import type { TimelineOffshootItem } from './fork/forkLineageModel';
@@ -210,6 +210,8 @@ import { ThreadRefText } from './ThreadRefChip';
 import { PeerThreadSource } from './PeerThreadSource';
 import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentToolCalls';
 import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './ToolCard';
+import { TranscriptDeliveryProvider } from './timeline/ToolSemanticParts';
+import { extractPendingThreadMessageId } from './toolSemantics';
 import { DisclosureChevron, Icon, OutcomeMark, Spinner } from './icons';
 import { Wordmark } from './Wordmark';
 import { useAutomaticContentRead, useContentContinuation, useTranscriptDetail, useTranscriptController, useTranscriptTarget } from './transcriptDetail';
@@ -5130,6 +5132,46 @@ const CANCELLATION_LABEL_KEY = {
  * End-of-turn readout (deepseek-harness's turn tail, MIT): end clock ·
  * Ran for … · TTFT … · output decode throughput.
  */
+function InterruptionRecoveryLine({
+  summary,
+  recovering,
+  disabled,
+  onRecover,
+}: {
+  summary: string;
+  recovering: boolean;
+  disabled: boolean;
+  onRecover: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div
+      data-interruption-recovery
+      role="status"
+      aria-live="polite"
+      className="anim-enter min-h-7 py-1 text-amber-ink [contain:layout_style]"
+    >
+      <div className="flex items-center gap-3">
+        <span className="h-px flex-1 bg-amber-rule/30" />
+        <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
+          <span className="text-[12px] font-semibold text-amber-ink">{summary}</span>
+          <span aria-hidden className="text-[12px] text-amber-ink">·</span>
+          <button
+            type="button"
+            data-interruption-recover
+            onClick={onRecover}
+            disabled={recovering || disabled}
+            className="min-h-6 rounded-md px-1 text-[12px] font-semibold text-amber-ink underline underline-offset-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-amber-rule/15 disabled:cursor-default disabled:no-underline disabled:opacity-60"
+          >
+            {recovering ? t('transcript.recoveringInterruption') : t('transcript.recoverInterruption')}
+          </button>
+        </div>
+        <span className="h-px flex-1 bg-amber-rule/30" />
+      </div>
+    </div>
+  );
+}
+
 const TAIL_ACTION = 'min-h-6 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-60';
 
 export const TurnTailLine = memo(function TurnTailLine({
@@ -5137,6 +5179,8 @@ export const TurnTailLine = memo(function TurnTailLine({
   gap: replyGap,
   onResume,
   resumeDisabled = false,
+  resumeIsRecovery = false,
+  recoveringInterruption = false,
   onRetry,
   retryDisabled = false,
   onContinueFailed,
@@ -5154,6 +5198,9 @@ export const TurnTailLine = memo(function TurnTailLine({
   /** Present when the stopped turn can be re-run (cancelled tails only). */
   onResume?: () => void;
   resumeDisabled?: boolean;
+  /** True when the resume action invokes lossless restart recovery rather than prompt regeneration. */
+  resumeIsRecovery?: boolean;
+  recoveringInterruption?: boolean;
   /** Present when this turn's message can be sent again. */
   onRetry?: () => void;
   retryDisabled?: boolean;
@@ -5258,12 +5305,15 @@ export const TurnTailLine = memo(function TurnTailLine({
               <button
                 type="button"
                 data-turn-tail-resume
+                data-interruption-recover={resumeIsRecovery ? 'true' : undefined}
                 onClick={onResume}
-                disabled={resumeDisabled}
-                title={t('transcript.resumeTitle')}
+                disabled={resumeDisabled || (resumeIsRecovery && recoveringInterruption)}
+                title={resumeIsRecovery ? t('transcript.interruptedByRestart') : t('transcript.resumeTitle')}
                 className="min-h-6 rounded-md px-1 text-[12px] font-semibold text-amber-ink underline underline-offset-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-amber-rule/15 disabled:cursor-default disabled:no-underline disabled:opacity-60"
               >
-                {t('transcript.resume')}
+                {resumeIsRecovery
+                  ? (recoveringInterruption ? t('transcript.recoveringInterruption') : t('transcript.recoverInterruption'))
+                  : t('transcript.resume')}
               </button>
             </>
           ) : null}
@@ -5481,6 +5531,9 @@ export const Transcript = memo(function Transcript({
   onContinueFailedTurn,
   onRetryFailedTurn,
   onRetryCompaction,
+  interruptedWork,
+  onRecoverInterruption,
+  recoveringInterruption = false,
 }: {
   state: SessionViewState;
   agentId?: string;
@@ -5535,6 +5588,11 @@ export const Transcript = memo(function Transcript({
   onRetryFailedTurn?: (failedUserBlock: UserBlock | undefined) => void;
   /** 1-click inline recovery for an unresolved `compaction.failed` notice. */
   onRetryCompaction?: (strategy: 'summarize' | 'relay') => void;
+  /** Session-level persisted restart interruption summary, when present. */
+  interruptedWork?: SessionInterruptedWork;
+  /** 1-click lossless restart recovery via `POST /sessions/:id/recover`. */
+  onRecoverInterruption?: () => void;
+  recoveringInterruption?: boolean;
 }) {
   const { t } = useI18n();
   const controller = useTranscriptController();
@@ -6602,10 +6660,36 @@ export const Transcript = memo(function Transcript({
     priorHistoryShapeRef.current = { resetVersion: state.transcriptResetVersion, length: virtualNodes.length };
   }, [state.transcriptResetVersion, virtualNodes.length]);
   const seatHeight = useConversationSeatHeight();
+  const isRecoveryCancelledTail =
+    state.turnTail?.state === 'cancelled' && state.turnTail.cancellation === 'recovery';
+  const lostTaskCount = state.lostTaskCount ?? 0;
+  const interruptedBranchCount =
+    agentId === 'main' ? (interruptedWork?.interrupted_branches ?? 0) : 0;
+  const effectiveLostTasks = Math.max(
+    lostTaskCount,
+    agentId === 'main' ? (interruptedWork?.lost_tasks ?? 0) : 0,
+  );
+  const hasInterruptedWork =
+    isRecoveryCancelledTail
+    || effectiveLostTasks > 0
+    || interruptedBranchCount > 0
+    || (agentId === 'main' && interruptedWork !== undefined);
+  const showInterruptionRecoveryLine =
+    !turnBusy
+    && !readOnly
+    && !isRecoveryCancelledTail
+    && hasInterruptedWork
+    && onRecoverInterruption !== undefined;
+  const interruptionRecoverySummary = effectiveLostTasks > 0
+    ? t('transcript.interruptedTasksSummary', { count: effectiveLostTasks })
+    : interruptedBranchCount > 0
+      ? t('transcript.interruptedBranchesSummary', { count: interruptedBranchCount })
+      : t('transcript.interruptedByRestart');
   const hasTailContent =
     (view === 'message' && presence !== undefined)
     || (showTurnStatus && view !== 'message')
     || (!turnBusy && state.turnTail !== undefined)
+    || showInterruptionRecoveryLine
     || state.refreshing === true;
   const [tailSlotElement, setTailSlotElement] = useState<HTMLDivElement | null>(null);
   const handleTailSlotRef = useCallback((node: HTMLDivElement | null) => {
@@ -8064,6 +8148,16 @@ export const Transcript = memo(function Transcript({
     requestOlderAtReadingAnchor,
   ]);
 
+  const pendingThreadMessageIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const block of state.blocks) {
+      if (block.kind !== 'tool') continue;
+      const messageId = extractPendingThreadMessageId(block);
+      if (messageId !== undefined) ids.push(messageId);
+    }
+    return ids;
+  }, [state.blocks]);
+
   if (loadError !== undefined && (!loaded || timelineBlocks.length === 0)) {
     return (
       <div ref={surfaceRef} role="alert" className="flex flex-1 flex-col items-center justify-center gap-4 px-6">
@@ -8114,6 +8208,11 @@ export const Transcript = memo(function Transcript({
 
   return (
     <AgentRefResolutionProvider value={agentRefResolution}>
+    <TranscriptDeliveryProvider
+      sessionId={state.sessionId}
+      deliveredAgentMessages={state.deliveredAgentMessages}
+      pendingThreadMessageIds={pendingThreadMessageIds}
+    >
     <InvocationContext.Provider value={invocationContext}>
     <NestedFoldContext.Provider value={nestedFolds}>
     <PromptOutcomeActionsContext.Provider value={promptOutcomeActions}>
@@ -8368,8 +8467,14 @@ export const Transcript = memo(function Transcript({
                     <TurnTailLine
                       tail={state.turnTail}
                       gap={replyGap}
-                      onResume={resumeStopped}
+                      onResume={
+                        isRecoveryCancelledTail && !readOnly && onRecoverInterruption !== undefined
+                          ? onRecoverInterruption
+                          : resumeStopped
+                      }
                       resumeDisabled={rowActions?.disabled === true}
+                      resumeIsRecovery={isRecoveryCancelledTail && !readOnly && onRecoverInterruption !== undefined}
+                      recoveringInterruption={recoveringInterruption}
                       onRetry={tailRetry}
                       retryDisabled={promptOutcomeActions.disabled === true}
                       onContinueFailed={!readOnly && onContinueFailedTurn !== undefined ? onContinueFailedTurn : undefined}
@@ -8377,6 +8482,16 @@ export const Transcript = memo(function Transcript({
                       failedHasWork={failedTurnHasWork}
                       errorOpen={tailErrorOpen}
                       onToggleErrorOpen={handleToggleTailErrorOpen}
+                    />
+                  </div>
+                ) : null}
+                {showInterruptionRecoveryLine ? (
+                  <div className={AGENT_LANE}>
+                    <InterruptionRecoveryLine
+                      summary={interruptionRecoverySummary}
+                      recovering={recoveringInterruption}
+                      disabled={rowActions?.disabled === true}
+                      onRecover={onRecoverInterruption}
                     />
                   </div>
                 ) : null}
@@ -8468,6 +8583,7 @@ export const Transcript = memo(function Transcript({
     </PromptOutcomeActionsContext.Provider>
     </NestedFoldContext.Provider>
     </InvocationContext.Provider>
+    </TranscriptDeliveryProvider>
     </AgentRefResolutionProvider>
   );
 });
