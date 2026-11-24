@@ -58,6 +58,7 @@ import {
   type Block,
   type DisplayNode,
   type SessionViewState,
+  type SystemBlock,
   type ToolBlock,
 } from '@kiki/session-core/session';
 import { writeSettings } from '@kiki/session-core/settings';

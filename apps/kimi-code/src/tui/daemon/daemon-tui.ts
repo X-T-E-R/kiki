@@ -1,7 +1,7 @@
 import { access, readFile, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 
-import { Container, Spacer, Text, TuiAltScreen, type Component, type Terminal } from '@kiki/pi-tui';
+import { Container, Spacer, Text, type Component, type Terminal } from '@kiki/pi-tui';
 import {
   sameWorkDir,
   type BackgroundTaskInfo,
@@ -4175,7 +4175,7 @@ export class DaemonTUI {
       }
       this.setAppState({ screenMode: entered.mode, mouse: entered.effectiveMouse });
     }
-    if (!this.state.screenController.openTranscriptSearch()) {
+    if (!(await this.state.screenController.openTranscriptSearch())) {
       this.showStatus('Close the active overlay before searching the transcript.', 'error');
     }
   }

@@ -2152,7 +2152,7 @@ describe('ThreadCommunicationService', () => {
         const list = pendingByTarget.get(key);
         const next = list?.shift();
         if (next === undefined) return undefined;
-        return { message: next, consumerId: input.consumerId, hostEpoch: 'epoch-1', fence: 1, leaseUntil: Date.now() + input.leaseMs };
+        return { message: next, consumerId: input.consumerId, hostEpoch: 1, fence: 1, leaseUntil: Date.now() + input.leaseMs };
       },
       acknowledgeDelivery: async () => true,
     });
@@ -2301,7 +2301,7 @@ describe('ThreadCommunicationService', () => {
         const list = pendingByTarget.get(key);
         const next = list?.shift();
         if (next === undefined) return undefined;
-        return { message: next, consumerId: input.consumerId, hostEpoch: 'epoch-1', fence: 1, leaseUntil: Date.now() + input.leaseMs };
+        return { message: next, consumerId: input.consumerId, hostEpoch: 1, fence: 1, leaseUntil: Date.now() + input.leaseMs };
       },
       acknowledgeDelivery: async () => true,
     };

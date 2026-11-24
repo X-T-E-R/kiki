@@ -24,7 +24,6 @@ import type { ExecutorCatalogItem } from '@kiki/protocol';
 
 import type {
   SlashArgumentCompleter,
-  SlashArgumentContext,
   SlashArgumentHintProvider,
 } from '#/tui/components/editor/file-mention-provider';
 import { CURRENT_MARK } from '#/tui/constant/symbols';
