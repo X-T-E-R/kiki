@@ -450,13 +450,16 @@ export function TrendChart({
                 }))
                 .filter((entry) => entry.value > 0)
                 .slice(0, 3);
+          const anchorPct = plotWidth > 0 && pt !== undefined ? (pt.x / plotWidth) * 100 : hoverRatio * 100;
+          const tooltipLeft = anchorPct > 55
+            ? `clamp(0.5rem, calc(${anchorPct.toFixed(2)}% - 14.75rem), max(0.5rem, calc(100% - 14.5rem)))`
+            : `clamp(0.5rem, calc(${anchorPct.toFixed(2)}% + 0.75rem), max(0.5rem, calc(100% - 14.5rem)))`;
           return (
             <div
               aria-hidden
               data-usage-trend-tooltip
-              className={`pointer-events-none absolute top-1 z-20 w-56 max-w-[calc(100%-1rem)] rounded-lg bg-panel/96 px-3 py-2 text-[11.5px] shadow-[var(--kiki-sheet-shadow)] backdrop-blur-xs transition-opacity duration-100 ${
-                hoverRatio > 0.55 ? 'left-2' : 'right-2'
-              }`}
+              style={{ left: tooltipLeft }}
+              className="pointer-events-none absolute top-1 z-20 w-56 max-w-[calc(100%-1rem)] rounded-lg bg-panel/96 px-3 py-2 text-[11.5px] shadow-[var(--kiki-sheet-shadow)] backdrop-blur-xs transition-opacity duration-100"
             >
               <div className="flex items-baseline justify-between gap-2">
                 <span className="truncate font-medium text-ink">
