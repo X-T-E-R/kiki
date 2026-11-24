@@ -9398,4 +9398,38 @@ describe('terminal-facing transcript facts', () => {
     }), { cold: false });
     expect(liveCleared.planMode).toBe(false);
   });
+
+  it('projects agent_message.delivered markers into deliveredAgentMessages and counts lost tasks', () => {
+    const projected = projectAgentTranscriptView(createViewState(session.id), 'main', emptySnapshot({
+      items: [
+        {
+          kind: 'marker',
+          markerId: 'agent_message.delivered:msg-1',
+          marker: 'agent_message.delivered',
+          at: '2026-01-01T00:00:05.000Z',
+          payload: {
+            type: 'agent_message.delivered',
+            messageId: 'msg-1',
+            targetAgentId: 'worker-1',
+            status: 'delivered',
+            deliveredAt: '2026-01-01T00:00:05.000Z',
+          },
+        },
+      ],
+      tasks: [
+        {
+          taskId: 'task-lost-1',
+          kind: 'subagent',
+          state: 'lost',
+          description: 'Lost child',
+          detached: false,
+          outputTail: '',
+          startedAt: '2026-01-01T00:00:01.000Z',
+          endedAt: '2026-01-01T00:00:05.000Z',
+        },
+      ],
+    }));
+    expect(projected.deliveredAgentMessages).toEqual({ 'msg-1': '2026-01-01T00:00:05.000Z' });
+    expect(projected.lostTaskCount).toBe(1);
+  });
 });

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { setPriority } from 'node:os';
+import { safeWriteStream } from '../../lib/stdioGuard';
 import { resolve, sep } from 'node:path';
 import { isSea } from 'node:sea';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -352,7 +353,7 @@ export class SqliteSearchHost {
         KIKI_SEARCH_INDEX_SUBAGENTS: this.options.indexSubagents ? '1' : '0' },
     });
     this.child = child;
-    child.stderr?.on('data', (data: Buffer) => process.stderr.write(data));
+    child.stderr?.on('data', (data: Buffer) => { safeWriteStream(process.stderr, data); });
     try { if (child.pid) setPriority(child.pid, 10); } catch {}
     this.lastPong = Date.now();
     child.on('message', (message: IndexerEvent) => {

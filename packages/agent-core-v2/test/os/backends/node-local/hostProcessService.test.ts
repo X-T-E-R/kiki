@@ -1075,6 +1075,28 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
     }
   }, 20_000);
 
+  it('waits for helper exit when control pipe closes before child exit during dispose without setting cleanupPending', async () => {
+    const proc = await spawnOwned(process.execPath, ['-e', 'process.exit(1)'], { ownedProcessLifetime: 'owner' });
+    proc.stdin.end();
+    expect(await proc.wait()).toBe(1);
+    const raw = proc as unknown as {
+      control: { destroy: () => void };
+      controlClosed: boolean;
+      helperGone: boolean;
+    };
+    raw.control.destroy();
+    const taskId = tasks.registerTask(new ProcessTask(proc, 'node -e exit 1', 'control close before exit race'), { detached: true });
+    await vi.waitFor(() => {
+      expect(tasks.getTask(taskId)).toMatchObject({
+        taskId,
+        status: 'failed',
+        exitCode: 1,
+        cleanupPending: undefined,
+      });
+    }, { timeout: 5_000 });
+    expect(raw.helperGone).toBe(true);
+  }, 15_000);
+
   it('does not treat root exit as a clean tree while a job descendant is still alive', async () => {
     const file = join(directory, 'live-descendant.txt');
     const command = `${quote(process.execPath.replaceAll('\\', '/'))} ${quote(join(directory, 'tree.cjs').replaceAll('\\', '/'))} ${quote(file.replaceAll('\\', '/'))} >/dev/null 2>&1 & sleep 0.4`;

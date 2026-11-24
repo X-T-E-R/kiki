@@ -1,10 +1,12 @@
 import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { getHeapStatistics } from 'node:v8';
+import { installStdioEpipeGuard } from '@kiki/kap-server';
 
 export function installServerDiagnostics(homeDir: string): {
   record(event: string, details?: Record<string, unknown>): void;
 } {
+  installStdioEpipeGuard();
   const directory = join(homeDir, 'logs');
   const path = join(directory, 'server-runtime.log');
   const record = (event: string, details?: Record<string, unknown>): void => {

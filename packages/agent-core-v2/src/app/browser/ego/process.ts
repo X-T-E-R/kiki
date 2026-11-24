@@ -50,6 +50,9 @@ export async function runEgoDetectionCommand(
   let cleanup: Promise<void> | undefined;
   let stop: (() => void) | undefined;
   const work = Promise.all([child.wait(), stdout, stderr]);
+  stdout.catch(() => {});
+  stderr.catch(() => {});
+  work.catch(() => {});
   const cancelled = new Promise<never>((_resolve, reject) => {
     stop = () => {
       cleanup ??= child.kill().then(() => child.dispose());

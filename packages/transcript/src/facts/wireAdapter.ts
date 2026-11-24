@@ -3049,6 +3049,10 @@ export function transcriptWireFactId(record: TranscriptWireRecord, ordinal?: num
     const recordId = stringOf(record['recordId']);
     if (recordId !== undefined) return `external.text:${recordId}`;
   }
+  if (record.type === 'agent_message.delivered') {
+    const messageId = stringOf(record['messageId']);
+    if (messageId !== undefined) return `agent_message.delivered:${messageId}`;
+  }
   const explicit =
     stringOf(record['id']) ?? stringOf(record['uuid']) ?? stringOf(record['goalId']);
   if (explicit !== undefined) return explicit;

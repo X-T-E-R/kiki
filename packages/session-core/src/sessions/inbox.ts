@@ -53,7 +53,7 @@ export type InboxSource = Pick<
   | 'last_turn_reason'
   | 'last_prompt'
 > &
-  Partial<Pick<Session, 'agent_config' | 'metadata' | 'usage' | 'attention_cursor'>> & {
+  Partial<Pick<Session, 'agent_config' | 'metadata' | 'usage' | 'attention_cursor' | 'interrupted_work'>> & {
     readonly roomId?: string;
     readonly needsYouReason?: 'budget';
   };
@@ -63,6 +63,7 @@ export type InboxReason =
   | 'approval'
   | 'question'
   | 'budget'
+  | 'interrupted'
   | 'completed'
   | 'failed'
   | 'cancelled'
@@ -93,6 +94,8 @@ export interface InboxItem {
   readonly model?: string;
   /** Recorded turn count when > 0. */
   readonly turnCount?: number;
+  /** Unrecovered interruption metadata when the host restarted mid-work. */
+  readonly interruptedWork?: Session['interrupted_work'];
 }
 
 export interface InboxModel {
@@ -255,6 +258,10 @@ export function buildInboxModel(
       needsYou.push({ ...base, reason: session.needsYouReason });
       continue;
     }
+    if (!session.busy && session.interrupted_work !== undefined) {
+      needsYou.push({ ...base, reason: 'interrupted', interruptedWork: session.interrupted_work });
+      continue;
+    }
     if (isActivelyRunning(session)) {
       running.push({ ...base, reason: 'running' });
       continue;
@@ -407,6 +414,7 @@ export interface UnifiedInboxItem {
   readonly personaName?: string;
   readonly model?: string;
   readonly turnCount?: number;
+  readonly interruptedWork?: Session['interrupted_work'];
 }
 
 export interface UnifiedInboxModel {
@@ -561,7 +569,10 @@ export function buildUnifiedInbox(
       const attentionCursor = sessionAttentionCursor(session);
       const semantic = hasSemanticAttentionCursor(session);
       const pending = pendingKindOf(session);
-      const needsYouReason: InboxReason | undefined = pending !== 'none' ? pending : session.needsYouReason;
+      const needsYouReason: InboxReason | undefined =
+        pending !== 'none'
+          ? pending
+          : session.needsYouReason ?? (!session.busy && session.interrupted_work !== undefined ? 'interrupted' : undefined);
       const needsYou = needsYouReason !== undefined;
       const activelyRunning = !needsYou && isActivelyRunning(session);
       const unread = !session.busy && isConversationUnread(attentionCursor, seenMap[encodedKey], semantic);
@@ -606,6 +617,7 @@ export function buildUnifiedInbox(
         personaName,
         model,
         turnCount,
+        interruptedWork: session.busy ? undefined : session.interrupted_work,
       });
       continue;
     }

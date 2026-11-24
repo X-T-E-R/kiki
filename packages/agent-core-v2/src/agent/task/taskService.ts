@@ -190,6 +190,8 @@ interface ManagedTask extends BufferedTaskOutput {
   stopCleanup?: Promise<void>;
   cleanupFailure?: unknown;
   cleanupGeneration: number;
+  cleanupReverifyTimer?: ReturnType<typeof setTimeout>;
+  cleanupReverifyAttempts?: number;
   persistWriteQueue: Promise<void>;
   notificationPromise?: Promise<void>;
   timeoutHandle?: ReturnType<typeof setTimeout>;
@@ -202,6 +204,7 @@ interface ManagedTask extends BufferedTaskOutput {
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 
 const TERMINAL_OUTPUT_TAIL_BYTES = 4 * 1024;
+const CLEANUP_REVERIFY_DELAYS_MS = [15_000, 30_000, 60_000] as const;
 
 const MAX_TASK_OUTPUT_BYTES = 16 * 1024 * 1024;
 
@@ -1557,6 +1560,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         if (forceStop === undefined && entry.cleanupFailure !== undefined) throw entry.cleanupFailure instanceof Error ? entry.cleanupFailure : new Error(errorMessage(entry.cleanupFailure), { cause: entry.cleanupFailure });
         await forceStop?.();
         entry.cleanupFailure = undefined;
+        this.clearCleanupReverifyTimer(entry);
+        entry.cleanupReverifyAttempts = 0;
         this.fireWorkChange();
       } catch (error) {
         await this.retainCleanupFailure(entry, error);
@@ -1619,6 +1624,32 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     this.log.error('task cleanup failed; execution retained without terminal receipt', { taskId: entry.taskId, error });
     await this.persistLive(entry);
     entry.foregroundRelease?.resolve('terminal');
+    this.scheduleCleanupReverify(entry);
+  }
+
+  private clearCleanupReverifyTimer(entry: ManagedTask): void {
+    if (entry.cleanupReverifyTimer !== undefined) {
+      clearTimeout(entry.cleanupReverifyTimer);
+      entry.cleanupReverifyTimer = undefined;
+    }
+  }
+
+  private scheduleCleanupReverify(entry: ManagedTask): void {
+    this.clearCleanupReverifyTimer(entry);
+    if (this.restoreDisposed) return;
+    const attempt = entry.cleanupReverifyAttempts ?? 0;
+    const delayMs = CLEANUP_REVERIFY_DELAYS_MS[attempt];
+    if (delayMs === undefined) return;
+    const generation = entry.cleanupGeneration;
+    entry.cleanupReverifyAttempts = attempt + 1;
+    const timer = setTimeout(() => {
+      if (entry.cleanupReverifyTimer === timer) entry.cleanupReverifyTimer = undefined;
+      if (this.restoreDisposed || entry.cleanupFailure === undefined || entry.cleanupGeneration !== generation) return;
+      if (entry.stopping !== undefined) return;
+      void this.stop(entry.taskId, undefined).catch(() => {});
+    }, delayMs);
+    timer.unref?.();
+    entry.cleanupReverifyTimer = timer;
   }
 
   async stopAll(reason?: string): Promise<readonly AgentTaskInfo[]> {
@@ -1689,6 +1720,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     for (const pending of this.pendingWaitDeliveries.values()) pending.cleanup();
     this.pendingWaitDeliveries.clear();
     if (hadPendingWaitDeliveries) this.fireWorkChange();
+    for (const entry of this.tasks.values()) {
+      this.clearCleanupReverifyTimer(entry);
+    }
     if (!this.keepAliveOnExit()) {
       for (const entry of this.tasks.values()) {
         if (TERMINAL_STATUSES.has(entry.status) && entry.cleanupFailure === undefined) continue;

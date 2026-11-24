@@ -1754,6 +1754,20 @@ function ChildAgentWorkspace({
 
   const handleComposerSendRef = useRef(handleComposerSend);
   handleComposerSendRef.current = handleComposerSend;
+  const [recoveringInterruption, setRecoveringInterruption] = useState(false);
+  const handleRecoverInterruption = useCallback(() => {
+    if (recoveringInterruption || composerDisabled) return;
+    setRecoveringInterruption(true);
+    void client
+      .recoverSession(sessionId, { agent_id: agentId })
+      .then(() => {
+        void queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        setRecoveringInterruption(false);
+      });
+  }, [agentId, client, composerDisabled, queryClient, recoveringInterruption, sessionId]);
   const handleContinueFailedTurn = useCallback(() => {
     void handleComposerSendRef.current(locale === 'zh' ? '继续' : 'Continue', []);
   }, [locale]);
@@ -1806,6 +1820,8 @@ function ChildAgentWorkspace({
         onCancelQueued: handleCancelQueued,
         onContinueFailedTurn: composerDisabled ? undefined : handleContinueFailedTurn,
         onRetryFailedTurn: composerDisabled ? undefined : handleRetryFailedTurn,
+        onRecoverInterruption: composerDisabled ? undefined : handleRecoverInterruption,
+        recoveringInterruption,
         visible: transcriptVisible,
       }}
       annotations={annotationSurface}

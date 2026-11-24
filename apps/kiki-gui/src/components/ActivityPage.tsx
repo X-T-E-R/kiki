@@ -99,6 +99,7 @@ const REASON_LABEL: Record<InboxReason, string> = {
   approval: 'activity.reason.approval',
   question: 'activity.reason.question',
   budget: 'activity.reason.budget',
+  interrupted: 'activity.reason.interrupted',
   completed: 'activity.reason.completed',
   failed: 'activity.reason.failed',
   cancelled: 'activity.reason.cancelled',

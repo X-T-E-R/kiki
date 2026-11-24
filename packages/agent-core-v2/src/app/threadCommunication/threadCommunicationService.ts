@@ -4,6 +4,7 @@ import { setImmediate as yieldToEventLoop, setTimeout as delay } from 'node:time
 import { createKimiDeviceId } from '@kiki/oauth';
 
 import { Disposable, DisposableStore, toDisposable } from '#/_base/di/lifecycle';
+import { Emitter, type Event } from '#/_base/event';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ILogService } from '#/_base/log/log';
@@ -40,6 +41,7 @@ import {
   type ListThreadMessagesInput,
   type ListThreadMessagesResult,
   type ThreadCommunicationMessage,
+  type ThreadMessageDeliveryEvent,
   type ThreadMessageEndpoint,
   type CreateBridgedThreadInput,
   type CreateBridgedThreadResult,
@@ -213,6 +215,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     return this.connector;
   }
 
+  private readonly messageDeliveryEmitter = this._register(new Emitter<ThreadMessageDeliveryEvent>());
+  readonly onDidChangeMessageDelivery: Event<ThreadMessageDeliveryEvent> = this.messageDeliveryEmitter.event;
   private readonly observedSessions = new Map<string, DisposableStore>();
   private readonly observedSessionKeysById = new Map<string, string>();
   private recovery: Promise<void> | undefined;
@@ -1697,6 +1701,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         requestId: threadMailboxClaimRequestId('thread-ack', claim),
         signal: this.mailboxController.signal,
       });
+      if (changed) this.emitMessageDelivery(claim, 'delivered');
       return changed ? 'delivered' : 'pending';
     } catch (error) {
       if (claim.message.producer.kind !== 'bridged_peer') throw error;
@@ -1728,7 +1733,30 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       requestId: threadMailboxClaimRequestId('thread-undeliverable-activity', claim),
       signal: this.mailboxController.signal,
     });
+    this.emitMessageDelivery(claim, 'undeliverable', reason);
     return 'undeliverable';
+  }
+
+  private emitMessageDelivery(
+    claim: ThreadDeliveryClaim,
+    delivery: 'delivered' | 'undeliverable',
+    reason?: string,
+  ): void {
+    const producer = claim.message.producer;
+    const sourceSessionId =
+      producer.kind === 'peer_thread' || producer.kind === 'bridged_peer'
+        ? producer.source.sessionId
+        : producer.kind === 'room'
+          ? producer.sender?.sessionId
+          : undefined;
+    this.messageDeliveryEmitter.fire({
+      messageId: claim.message.messageId,
+      sourceSessionId,
+      targetSessionId: claim.message.target.sessionId,
+      delivery,
+      updatedAt: Date.now(),
+      reason,
+    });
   }
 
   private ensureRecovery(): Promise<void> {

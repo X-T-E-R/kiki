@@ -8,6 +8,7 @@ REST session: GET /sessions/{sessionId}
 REST sessionUpdate: PATCH /sessions/{sessionId}
 REST sessionArchive: POST /sessions/{sessionId}:archive
 REST sessionRestore: POST /sessions/{sessionId}:restore
+REST sessionRecover: POST /sessions/{sessionId}/recover
 REST sessionFork: POST /sessions/{sessionId}:fork
 REST sessionBtw: POST /sessions/{sessionId}:btw
 REST sessionBranch: POST /sessions/{sessionId}:branch
@@ -367,6 +368,7 @@ SUBSCRIBE service=roomService event=any; scope and ids unconstrained
 SUBSCRIBE service=sessionExecutionControl event=onDidChange scope=session; workspaceId/agentId absent; sessionId nonempty
 SUBSCRIBE service=sessionMetadata event=any; scope and ids unconstrained
 SUBSCRIBE service=sessionSkillCatalog event=any; scope and ids unconstrained
+SUBSCRIBE service=threadCommunicationService event=onDidChangeMessageDelivery scope=core; workspaceId/sessionId/agentId absent
 WEB PATH /api/remote-connections*: GET /api/remote-connections or ^\/api\/remote-connections\/[0-9a-f-]{36}\/(?:call|download|upload|events|html-preview)$
 WEB PATH /api/runtime-switch: GET only
 WEB PATH /api/web-access*: only /api/web-access/session,/api/web-access/logout,/api/web-access/exchange

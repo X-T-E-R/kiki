@@ -248,7 +248,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     }
     const sentWhileCancelling = handle.accessor.get(IAgentExecutionService).status().state === 'cancelling';
     if (waitForRunningDelivery !== true) {
-      await this.armBackgroundDelivery(acceptance.message, idleWake, input.sourceAgentId, child, sourceTurnId, sentWhileCancelling);
+      await this.armBackgroundDelivery(acceptance.message, idleWake, input.sourceAgentId, child, sourceTurnId, sentWhileCancelling, handle);
       return acceptance;
     }
     const resumed = await this.deliverOrWake(
@@ -267,7 +267,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       idleWake !== undefined &&
       !this.withheld.has(acceptance.message.messageId)
     ) {
-      void this.armBackgroundDelivery(acceptance.message, idleWake, input.sourceAgentId, child, sourceTurnId, sentWhileCancelling).catch((error: unknown) => {
+      void this.armBackgroundDelivery(acceptance.message, idleWake, input.sourceAgentId, child, sourceTurnId, sentWhileCancelling, handle).catch((error: unknown) => {
         this.reportContinuationFailure(input.sourceAgentId, acceptance.message.messageId, input.targetAgentId, error).catch(onUnexpectedError);
       });
     }
@@ -289,11 +289,40 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     child: DispatchChild | undefined,
     sourceTurnId?: number,
     sentWhileCancelling = false,
+    fallbackHandle?: IAgentScopeHandle,
   ): Promise<void> {
-    const lease = await this.sessions.acquire?.(this.session.sessionId, 'agent-message-delivery');
+    if (this.sessions.acquire === undefined) {
+      const targetHandle = fallbackHandle ?? this.lifecycle.get(message.targetAgentId);
+      if (targetHandle === undefined) return;
+      void this.deliverOrWake(
+        targetHandle,
+        message,
+        idleWake,
+        sourceAgentId,
+        child?.agent === targetHandle ? child : undefined,
+        true,
+        sourceTurnId,
+        sentWhileCancelling,
+      ).catch((error: unknown) => this.reportContinuationFailure(
+        sourceAgentId,
+        message.messageId,
+        message.targetAgentId,
+        error,
+      )).catch(onUnexpectedError);
+      return;
+    }
+    const lease = await this.sessions.acquire(this.session.sessionId, 'agent-message-delivery');
     if (lease === undefined) return;
     try {
-      const pinnedHandle = lease.handle.accessor.get(IAgentLifecycleService).get(message.targetAgentId);
+      let pinnedHandle = lease.handle.accessor.get(IAgentLifecycleService).get(message.targetAgentId);
+      let resolvedChild = child;
+      if (pinnedHandle === undefined && idleWake === 'owned-child') {
+        resolvedChild = await this.dispatch.resolveOwnedChild(
+          { kind: 'agent', agentId: sourceAgentId },
+          message.targetAgentId,
+        );
+        pinnedHandle = resolvedChild.agent;
+      }
       if (pinnedHandle === undefined) {
         await lease.dispose();
         return;
@@ -303,7 +332,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         message,
         idleWake,
         sourceAgentId,
-        child?.agent === pinnedHandle ? child : undefined,
+        resolvedChild?.agent === pinnedHandle ? resolvedChild : undefined,
         true,
         sourceTurnId,
         sentWhileCancelling,

@@ -2598,6 +2598,27 @@ export const roomChangedEventSchema = /* @__PURE__ */ z.object({
 });
 export type RoomChangedEvent = z.infer<typeof roomChangedEventSchema>;
 
+export const threadMessageDeliveryPayloadSchema = /* @__PURE__ */ z.object({
+  messageId: z.string().min(1),
+  sourceSessionId: z.string().min(1).optional(),
+  targetSessionId: z.string().min(1),
+  delivery: z.enum(['delivered', 'undeliverable']),
+  updatedAt: z.number(),
+  reason: z.string().optional(),
+});
+export type ThreadMessageDeliveryPayload = z.infer<typeof threadMessageDeliveryPayloadSchema>;
+
+export const threadMessageDeliveryEventSchema = /* @__PURE__ */ z.object({
+  type: z.literal('event.thread.message_delivery'),
+  message_id: z.string().min(1),
+  source_session_id: z.string().min(1).optional(),
+  target_session_id: z.string().min(1),
+  delivery: z.enum(['delivered', 'undeliverable']),
+  updated_at: z.number(),
+  reason: z.string().optional(),
+});
+export type ThreadMessageDeliveryEvent = z.infer<typeof threadMessageDeliveryEventSchema>;
+
 export const eventSchema = agentEventSchema.and(
   z.object({
     agentId: z.string(),

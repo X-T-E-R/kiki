@@ -2889,6 +2889,84 @@ describe('SessionController transcript authority', () => {
     } finally { controller.close(); }
   });
 
+  it('does not let a stale ready clear refreshing while a queued grade raise microtask is still pending', async () => {
+    const { controller } = await openTranscriptController();
+    try {
+      controller.handleTranscript(resetEvent('main', userTurnSnapshot({ assistantText: 'initial' }), 2));
+      controller.retainAgentView('workspace:child-1', 'child-1', 'delta');
+      controller.setFocusedAgent('child-1');
+      await Promise.resolve();
+      controller.releaseAgentView('workspace:child-1');
+      controller.setFocusedAgent('main');
+      expect(controller.getState().refreshing).toBe(true);
+      controller.handleSignal({
+        type: 'ready',
+        generation: 1,
+        reconnected: false,
+        currentSessionCursor: { epoch: 'epoch-canonical', seq: 2 },
+      });
+      expect(controller.getState().refreshing).toBe(true);
+      await Promise.resolve();
+      controller.handleTranscript(resetEvent('main', userTurnSnapshot({ assistantText: 'raised' }), 3));
+      expect(controller.getState().refreshing).toBe(false);
+    } finally {
+      controller.close();
+    }
+  });
+
+  it('does not stick refreshing=true on a same-microtask delta -> turn -> delta grade bounce', async () => {
+    const { controller, socket } = await openTranscriptController();
+    try {
+      controller.handleTranscript(resetEvent('main', userTurnSnapshot({ assistantText: 'steady' }), 2));
+      controller.handleSignal({ type: 'ready', generation: 1, reconnected: false, currentSessionCursor: { seq: 2, epoch: 'epoch-1' } });
+      expect(controller.getState()).toMatchObject({ transcriptReady: true, refreshing: false });
+      const callsBefore = socket.setTranscriptGrades.mock.calls.length;
+      // Same-microtask bounce: focus leaves main and returns before the queued microtask fires.
+      controller.setFocusedAgent('child-1');
+      controller.setFocusedAgent('main');
+      expect(controller.getState().refreshing).toBe(false);
+      await Promise.resolve();
+      expect(socket.setTranscriptGrades.mock.calls.length).toBe(callsBefore);
+      expect(controller.getState().refreshing).toBe(false);
+    } finally { controller.close(); }
+  });
+
+  it('does not leave refreshing=true when seedAgentFirstScreen resolves after WS ready already landed', async () => {
+    let resolvePage: ((value: unknown) => void) | undefined;
+    const fixture = bootstrapViewFixture();
+    vi.mocked(fixture.channel.transcriptPage).mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePage = resolve;
+    }));
+    const { scheduler, flushAll } = manualScheduler();
+    const controller = new SessionController({} as KikiClient, fixture.view, 'session_test', { scheduler });
+    try {
+      const opening = controller.open();
+      fixture.send({
+        type: 'snapshot',
+        generation: 1,
+        snapshot: {
+          session: { id: 'session_test', workspace_id: 'ws-1', title: 'Test', created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', busy: false, main_turn_active: false, pending_interaction: 'none', archived: false, agent_config: { model: 'test' }, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0, turn_count: 0 }, permission_rules: [], message_count: 0, last_seq: 1 },
+          epoch: 'epoch-1',
+          as_of_seq: 1,
+          subagents: [],
+          events: [],
+        },
+      } as unknown as SessionViewSignal);
+      await opening;
+      controller.retainAgentView('workspace:child-late', 'child-late', 'delta');
+      await waitFor(() => resolvePage !== undefined);
+      // WS ready lands before the fast HTTP first-screen page returns.
+      fixture.send({ type: 'ready', generation: 1, reconnected: false, currentSessionCursor: { seq: 2, epoch: 'epoch-1' } });
+      resolvePage!(transcriptPage('child-late', [answeredTurn(0, 'late page')], { has_more: false }));
+      await waitFor(() => {
+        controller.flushFrames();
+        flushAll();
+        return controller.getAgentState('child-late').blocks.some((b) => b.kind === 'assistant' && b.text === 'late page');
+      });
+      expect(controller.getAgentState('child-late').refreshing).toBe(false);
+    } finally { controller.close(); }
+  });
+
   it('catches up after a reconnect when the drop hit a streaming subagent while main was idle', async () => {
     const { controller, client } = await openTranscriptController();
     try {

@@ -508,6 +508,7 @@ export class SendNowError extends Error {
 export class SessionController {
   private readonly client: SessionTransport;
   private viewHandle: SessionViewSubscription | undefined;
+  private viewAttachPending = false;
   private connectionGeneration: number | undefined;
   private viewAttachment = 0;
   private openGeneration = 0;
@@ -1136,6 +1137,7 @@ export class SessionController {
     this.droppedLiveAgents.clear();
     const previous = this.viewHandle;
     this.viewHandle = undefined;
+    this.viewAttachPending = false;
     previous?.close();
     const qualifiedCursors = [...this.timelines.values()].flatMap(({ agentId, cursor }) =>
       cursor !== undefined && this.hasTranscriptBaseline(agentId) ? [[agentId, cursor] as const] : []);
@@ -1148,6 +1150,7 @@ export class SessionController {
     const onSignal = (signal: SessionViewSignal) => {
       if (attachment === this.viewAttachment) this.handleSignal(signal);
     };
+    this.viewAttachPending = true;
     this.viewHandle = bootstrap && this.view.bootstrap !== undefined
       ? this.view.bootstrap(input, onSignal) : this.view.subscribe(input, onSignal);
     if (bootstrap && this.bootstrapOpening === undefined) this.viewHandle.updateSessionCursor(this.shell.cursor);
@@ -1220,6 +1223,7 @@ export class SessionController {
       this.writeView(MAIN_AGENT_ID, { ...main, loadingOlder: false, olderError: undefined });
     }
     this.viewAttachment += 1;
+    this.viewAttachPending = false;
     this.viewHandle?.close();
     this.viewHandle = undefined;
   }
@@ -1397,6 +1401,7 @@ export class SessionController {
       this.main.view = { ...main, loadingOlder: false, olderError: undefined };
     }
     this.viewAttachment += 1;
+    this.viewAttachPending = false;
     this.viewHandle?.close();
     this.viewHandle = undefined;
   }
@@ -1633,9 +1638,15 @@ export class SessionController {
       const before = GRADE_RANK[gradeFor(previous, timeline.agentId)];
       const after = GRADE_RANK[gradeFor(nextGrades, timeline.agentId)];
       if (before === after) continue;
-      // A raise re-seeds the agent: until its baseline (or the attachment's
-      // `ready`) lands, the window shows what it holds.
-      timeline.refreshing = this.viewHandle !== undefined && after > before && after > GRADE_RANK.off && timeline.appliedGrade !== undefined;
+      // Only mark refreshing when the currently held baseline is strictly below
+      // the requested grade; a same-microtask dip-and-return never lowered the
+      // baseline, so it must not leave refreshing stuck if the microtask no-ops.
+      const needsRaise =
+        this.viewHandle !== undefined &&
+        after > GRADE_RANK.off &&
+        timeline.appliedGrade !== undefined &&
+        GRADE_RANK[timeline.appliedGrade] < after;
+      timeline.refreshing = needsRaise;
       this.publishProjectedAgent(timeline.agentId, timeline.store);
     }
     const handle = this.viewHandle;
@@ -1647,8 +1658,29 @@ export class SessionController {
       this.scheduledTranscriptGrades = undefined;
       if (this.closed || this.isSuspended || this.viewHandle !== handle) return;
       if (Object.keys(scheduled.previous).length === Object.keys(this.transcriptGrades).length &&
-        Object.entries(this.transcriptGrades).every(([id, grade]) => scheduled.previous[id] === grade)) return;
+        Object.entries(this.transcriptGrades).every(([id, grade]) => scheduled.previous[id] === grade)) {
+        for (const timeline of this.timelines.values()) {
+          if (timeline.refreshing && this.hasTranscriptBaseline(timeline.agentId)) {
+            this.settleRefresh(timeline.agentId);
+          }
+        }
+        return;
+      }
       this.lowerBaselinesTo(this.transcriptGrades);
+      for (const timeline of this.storeTimelines) {
+        const after = GRADE_RANK[gradeFor(this.transcriptGrades, timeline.agentId)];
+        const needsRaise =
+          after > GRADE_RANK.off &&
+          timeline.appliedGrade !== undefined &&
+          GRADE_RANK[timeline.appliedGrade] < after;
+        if (needsRaise && !timeline.refreshing) {
+          timeline.refreshing = true;
+          this.publishProjectedAgent(timeline.agentId, timeline.store);
+        } else if (!needsRaise && timeline.refreshing) {
+          this.settleRefresh(timeline.agentId);
+        }
+      }
+      this.viewAttachPending = true;
       handle.setTranscriptGrades(this.transcriptGrades);
       if (this.view.bootstrap !== undefined) {
         for (const [id, grade] of Object.entries(this.transcriptGrades)) {
@@ -1752,7 +1784,10 @@ export class SessionController {
           timeline.cursor = mark;
         }
         timeline.appliedGrade ??= 'turn';
-        timeline.refreshing = this.viewHandle !== undefined;
+        timeline.refreshing =
+          this.viewHandle !== undefined &&
+          this.viewAttachPending &&
+          !this.hasTranscriptBaseline(agentId);
         if (page.read !== undefined) timeline.historyRead = page.read;
         this.forestDirtyAgents.add(agentId);
         this.publishProjectedAgent(agentId, store, {
@@ -1808,6 +1843,7 @@ export class SessionController {
     switch (signal.type) {
       case 'status':
         if (signal.status !== 'open') this.handleWsDrop();
+        else if (this.viewHandle !== undefined) this.viewAttachPending = true;
         return;
       case 'snapshot': {
         if (this.bootstrapOpening?.attachment !== this.viewAttachment) return;
@@ -1835,8 +1871,16 @@ export class SessionController {
         return;
       }
       case 'ready':
-        // The attachment is seeded: whatever a raise was waiting for has come.
-        for (const { agentId } of this.timelines.values()) this.settleRefresh(agentId);
+        // The attachment is seeded: whatever a raise was waiting for has come,
+        // unless a newer grade update is already queued in the microtask.
+        if (this.scheduledTranscriptGrades === undefined) {
+          this.viewAttachPending = false;
+          for (const { agentId } of this.timelines.values()) this.settleRefresh(agentId);
+        } else {
+          for (const { agentId } of this.timelines.values()) {
+            if (this.hasTranscriptBaseline(agentId)) this.settleRefresh(agentId);
+          }
+        }
         if (this.resyncInFlight) return;
         if (this.shell.cursor.epoch !== undefined && signal.currentSessionCursor.epoch !== this.shell.cursor.epoch) {
           this.handleSubscribeRejected(signal.generation);
@@ -1884,6 +1928,7 @@ export class SessionController {
         });
         if (signal.recoverable) void this.resync();
         else {
+          this.viewAttachPending = false;
           for (const { agentId } of this.timelines.values()) this.settleRefresh(agentId);
           this.clearResyncTimer();
           this.clearRewriteHold();
@@ -2383,10 +2428,11 @@ export class SessionController {
       // is cleared as main's is: the resync cancelled those reads.
       for (const timeline of this.timelines.values()) {
         const { agentId, view } = timeline;
+        timeline.refreshing = false;
         if (agentId === MAIN_AGENT_ID || view === undefined) continue;
         const transcriptReady = retainedReady.has(agentId);
-        if (view.transcriptReady === transcriptReady && !view.loadingOlder && view.olderError === undefined) continue;
-        timeline.view = { ...view, version: view.version + 1, transcriptReady, loadingOlder: false, olderError: undefined };
+        if (view.transcriptReady === transcriptReady && view.refreshing !== true && !view.loadingOlder && view.olderError === undefined) continue;
+        timeline.view = { ...view, version: view.version + 1, transcriptReady, refreshing: false, loadingOlder: false, olderError: undefined };
         this.dirtyAgents.add(agentId);
       }
       const transcriptReady = retainedReady.has(MAIN_AGENT_ID);
@@ -2400,6 +2446,7 @@ export class SessionController {
           {
             ...this.applyTranscriptShellSnapshot(snapshot),
             transcriptReady,
+            refreshing: false,
             loadingOlder: false,
             olderError: undefined,
           },
@@ -2429,6 +2476,7 @@ export class SessionController {
         });
         if (retryable) this.scheduleResyncRetry();
         else {
+          for (const { agentId } of this.timelines.values()) this.settleRefresh(agentId);
           this.clearRewriteHold();
           this.hardResyncQueued = false;
           this.rewriteResyncQueued = false;
@@ -4466,8 +4514,14 @@ export class SessionController {
     this.observeCanonicalTodoRead(agentId, previousTodo, result.accepted, batch.cursor);
     this.recordToolCountSpan(agentId, priorCursor, resumeCursor, result.toolCallCountDelta);
     this.noteAppliedOps(this.timeline(agentId), result.accepted, resumeCursor, this.timelines.get(agentId)?.appliedGrade ?? gradeFor(this.transcriptGrades, agentId));
-    this.timeline(agentId).cursor = resumeCursor;
-    if (this.hasTranscriptBaseline(agentId)) this.viewHandle?.updateTranscriptCursor(agentId, resumeCursor);
+    const appliedTimeline = this.timeline(agentId);
+    appliedTimeline.cursor = resumeCursor;
+    if (this.hasTranscriptBaseline(agentId)) {
+      this.viewHandle?.updateTranscriptCursor(agentId, resumeCursor);
+      if (appliedTimeline.refreshing && appliedTimeline.stale.size === 0) {
+        this.settleRefresh(agentId);
+      }
+    }
     const adoptedCount = this.adoptToolCountObservation(agentId);
     if (result.accepted.length > 0 || adoptedCount) {
       for (const op of result.accepted) {

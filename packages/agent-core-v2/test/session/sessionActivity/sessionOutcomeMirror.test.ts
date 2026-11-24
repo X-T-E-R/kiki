@@ -374,4 +374,49 @@ describe('SessionOutcomeMirror (Session scope)', () => {
     ended('completed');
     expect(writes).toEqual(['failed', 'completed']);
   });
+
+  it('preserves branch-only interruption across restore when main is idle and activeRunBootId is stale', async () => {
+    const patches: Array<Record<string, unknown>> = [];
+    const branchOnly = host.child(LifecycleScope.Session, 'session-branch-only', [
+      stubPair(ISessionMetadata, {
+        read: async () => ({
+          id: 'session-branch-only',
+          createdAt: 1,
+          updatedAt: 2,
+          archived: false,
+          activeRunBootId: 'previous-boot-id',
+          activeRunAgentIds: ['branch-1'],
+          agents: {
+            main: { type: 'main' },
+            'branch-1': { type: 'sub', displayName: 'Side Branch', labels: { branch: 'true' } },
+          },
+        }) as unknown as SessionMeta,
+        getAgentExecutor: async () => undefined,
+        update: async (patch: Record<string, unknown>) => {
+          patches.push(patch);
+        },
+      } as unknown as ISessionMetadata),
+    ]);
+    const branchLifecycle = branchOnly.accessor.get(IAgentLifecycleService) as unknown as FakeAgentLifecycle;
+    branchOnly.accessor.get(ISessionOutcomeMirror);
+    branchLifecycle.addMain();
+    await tick();
+    for (const hook of branchLifecycle.restoreHooks) await hook(undefined, async () => {});
+    expect(patches).toContainEqual(
+      expect.objectContaining({
+        activeRunBootId: undefined,
+        activeRunAgentIds: undefined,
+        interruptedWork: expect.objectContaining({
+          interruptedBranches: 1,
+          targets: [
+            expect.objectContaining({
+              agentId: 'branch-1',
+              kind: 'branch',
+              reason: 'branch_interrupted',
+            }),
+          ],
+        }),
+      }),
+    );
+  });
 });

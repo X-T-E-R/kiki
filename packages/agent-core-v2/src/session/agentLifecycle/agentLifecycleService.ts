@@ -747,7 +747,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       });
     }
     const sourceData = source.accessor.get(IAgentProfileService).data();
+    const isBranch = opts?.labels?.['branch'] === 'true';
     const override = opts?.binding;
+    const branchAllowParentNotify = isBranch ? (override?.allowParentNotify ?? true) : override?.allowParentNotify;
     const overrideBinding =
       override?.execution !== undefined || override?.profile !== undefined || override?.route !== undefined
         ? {
@@ -756,6 +758,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
             route: override.route,
             model: override.model ?? (override.execution === undefined ? sourceData.modelAlias : undefined),
             thinking: override.thinking ?? (override.execution === undefined ? sourceData.thinkingLevel : undefined),
+            allowParentNotify: branchAllowParentNotify,
           }
         : sourceData.profileName === undefined && sourceData.execution === undefined &&
             (override?.model !== undefined || override?.thinking !== undefined)
@@ -763,6 +766,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
               profile: opts?.labels?.['profileName'] ?? DEFAULT_AGENT_PROFILE_NAME,
               model: override.model,
               thinking: override.thinking === null ? undefined : override.thinking,
+              allowParentNotify: branchAllowParentNotify,
             }
           : undefined;
     if (overrideBinding === undefined && sourceData.endpoint !== undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Ad-hoc endpoint credentials cannot be inherited by a session branch. Select a catalog model before branching.');
@@ -782,7 +786,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     });
     const childProfile = child.accessor.get(IAgentProfileService);
     if (overrideBinding === undefined && (sourceData.profileName !== undefined || sourceData.execution !== undefined)) {
-      childProfile.applyBindingSnapshot(sourceData);
+      childProfile.applyBindingSnapshot(
+        isBranch ? { ...sourceData, allowParentNotify: branchAllowParentNotify } : sourceData,
+      );
       const dynamicPrompt = source.accessor.get(IAgentStateService).get(dynamicPromptKey);
       if (dynamicPrompt !== undefined) await child.accessor.get(IEventDispatcher).dispatch(new ProfileDynamicSnapshot(dynamicPrompt));
       if (override?.model !== undefined) await childProfile.setModel(override.model);

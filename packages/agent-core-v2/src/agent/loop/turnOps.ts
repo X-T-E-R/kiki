@@ -32,6 +32,13 @@ export interface TurnModelState {
   };
 }
 
+/** True when the latest observed turn opened without a matching `TurnEnded` fact (crash/restart interruption). */
+export function hasUnfinishedTurn(state: TurnModelState | undefined): boolean {
+  if (state === undefined || state.activeTurnIds === undefined || state.activeTurnIds.length === 0) return false;
+  const maxActive = Math.max(...state.activeTurnIds);
+  return state.lastEnded === undefined || maxActive > state.lastEnded.turnId;
+}
+
 const turnLineageSchema = z.object({
   replacesMessageId: z.string().optional(),
   parentMessageId: z.string().optional(),

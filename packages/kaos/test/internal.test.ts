@@ -24,6 +24,29 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 }
 
 describe('BufferedReadable', () => {
+  it('absorbs underlying source errors when drained with an error listener and resume()', async () => {
+    const uncaught: unknown[] = [];
+    const onUncaught = (error: unknown): void => {
+      uncaught.push(error);
+    };
+    process.on('uncaughtException', onUncaught);
+    try {
+      const source = new PassThrough();
+      const buffered = new BufferedReadable(source);
+      const seenErrors: Error[] = [];
+      buffered.on('error', (error: Error) => {
+        seenErrors.push(error);
+      });
+      buffered.resume();
+      source.destroy(new Error('ssh stderr channel reset'));
+      await defer();
+      expect(seenErrors.map((err) => err.message)).toEqual(['ssh stderr channel reset']);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off('uncaughtException', onUncaught);
+    }
+  });
+
   it('preserves source backpressure until the consumer starts reading', () => {
     const source = new PassThrough({ highWaterMark: 64 * 1024 });
     const buffered = new BufferedReadable(source);

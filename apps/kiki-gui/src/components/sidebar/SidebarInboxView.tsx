@@ -40,6 +40,8 @@ export interface SidebarInboxViewProps {
   readonly onArchiveItem: (item: UnifiedInboxItem) => void;
   readonly onRestoreItem: (item: UnifiedInboxItem) => void;
   readonly onUndo: () => boolean;
+  readonly onRecoverAllInterrupted?: (items: readonly UnifiedInboxItem[]) => Promise<void> | void;
+  readonly recoveringInterrupted?: boolean;
 }
 
 export function SidebarInboxView({
@@ -57,6 +59,8 @@ export function SidebarInboxView({
   onArchiveItem,
   onRestoreItem,
   onUndo,
+  onRecoverAllInterrupted,
+  recoveringInterrupted = false,
 }: SidebarInboxViewProps) {
   const isSpaceOffline = (spaceKey: string) => healthBySpace?.get(spaceKey)?.state === 'offline';
   const { t } = useI18n();
@@ -149,6 +153,10 @@ export function SidebarInboxView({
   ]);
 
   const hasDrawers = inbox.working.length > 0 || inbox.snoozed.length > 0 || inbox.archived.length > 0;
+  const interruptedItems = useMemo(
+    () => inbox.active.filter((item) => item.reason === 'interrupted' && item.ref.kind === 'session'),
+    [inbox.active],
+  );
 
   return (
     <div
@@ -157,6 +165,26 @@ export function SidebarInboxView({
       aria-label={t('sidebar.inbox.aria')}
       className="flex min-h-full flex-col pt-1"
     >
+      {interruptedItems.length > 0 && onRecoverAllInterrupted !== undefined ? (
+        <div className="mb-1 px-1">
+          <button
+            type="button"
+            data-recover-all-interrupted
+            disabled={recoveringInterrupted}
+            onClick={() => { void onRecoverAllInterrupted(interruptedItems); }}
+            className="flex h-7 w-full items-center justify-between gap-2 rounded-md border border-amber-rule/45 bg-amber-rule/[0.08] px-2 text-left text-[12px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/[0.14] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-60"
+          >
+            <span className="flex min-w-0 items-center gap-1.5 truncate">
+              <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-rule" />
+              <span className="truncate">
+                {recoveringInterrupted
+                  ? t('sidebar.inbox.recovering')
+                  : t('sidebar.inbox.recoverAll', { count: interruptedItems.length })}
+              </span>
+            </span>
+          </button>
+        </div>
+      ) : null}
       {inbox.active.length > 0 ? (
         <div ref={activeListRef} data-inbox-active-list className="flex flex-col gap-0.5">
           {inbox.active.map((item) => (

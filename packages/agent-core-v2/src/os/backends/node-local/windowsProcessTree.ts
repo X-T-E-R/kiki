@@ -278,8 +278,16 @@ class WindowsProcessTree implements IHostProcess {
     if (this.response !== undefined) throw this.killError('control', 'Windows process ownership operation is already in progress. Retry TaskStop.');
     if (this.helperGone || this.controlClosed || this.control.destroyed || this.control.writable === false) {
       this.markControlClosed();
+      if (!this.helperGone && !this.releaseAttempted) {
+        try {
+          await this.withDeadline(this.helperExited.promise, 'control');
+        } catch (error) {
+          throw this.closedControlError(error);
+        }
+      }
       const recovered = this.responseAfterControlLoss(command);
       if (recovered !== undefined) return recovered;
+      if (command === 'release' && this.helperGone && !this.releaseAttempted) return 'terminated';
       throw this.closedControlError();
     }
     const response = deferred<string>();
@@ -290,8 +298,8 @@ class WindowsProcessTree implements IHostProcess {
       this.control.write(`${command}\n`, (error) => {
         if (!error) return;
         this.markControlClosed();
-        if (command === 'release' && this.awaitingReleaseProof()) {
-          this.releaseWriteError = error;
+        if (this.awaitingReleaseProof()) {
+          if (command === 'release') this.releaseWriteError = error;
           return;
         }
         this.settlePendingControlLoss(error);
@@ -323,7 +331,10 @@ class WindowsProcessTree implements IHostProcess {
   }
 
   private awaitingReleaseProof(): boolean {
-    return this.pendingCommand === 'release' && this.releaseExitCapable && !this.releaseConfirmed && !this.helperGone;
+    return (
+      (this.pendingCommand === 'release' && this.releaseExitCapable && !this.releaseConfirmed && !this.helperGone) ||
+      (this.pendingCommand !== undefined && !this.releaseAttempted && !this.helperGone)
+    );
   }
 
   private responseAfterControlLoss(command: 'kill' | 'release' | 'retain'): string | undefined {

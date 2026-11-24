@@ -101,6 +101,7 @@ export class WorktreeService implements IWorktreeService {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const work = Promise.all([collect(proc.stdout), collect(proc.stderr), proc.wait()]);
+        work.catch(() => {});
         const limit = this.config.get<WorktreeConfig>(WORKTREE_SECTION).gitTimeoutMs;
         const timeout = new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error(`git command timed out: ${args[0]}`)), limit);

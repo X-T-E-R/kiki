@@ -96,6 +96,7 @@ const PEER_SCOPED_EMITTER_RULES: readonly (PeerSubscriptionScopeRule & { service
   { service: 'modelService', event: 'onDidChangeModels', scope: 'core', workspaceId: 'absent', sessionId: 'absent', agentId: 'absent' },
   { service: 'pluginService', event: 'onDidReload', scope: 'core', workspaceId: 'absent', sessionId: 'absent', agentId: 'absent' },
   { service: 'sessionExecutionControl', event: 'onDidChange', scope: 'session', workspaceId: 'absent', sessionId: 'nonempty', agentId: 'absent' },
+  { service: 'threadCommunicationService', event: 'onDidChangeMessageDelivery', scope: 'core', workspaceId: 'absent', sessionId: 'absent', agentId: 'absent' },
 ];
 const WEB_RUNTIME_SWITCH_PATH = '/api/runtime-switch';
 const WEB_DENIED_PATH_PATTERN = /^\/api\/(?:debug|klient\/(?:delegation|context)|external-delegation|thread-bridge|thread-bridges|usage-export|external-clients|session-access|shutdown|mesh|sync)(?:\/|$)/;
@@ -107,6 +108,7 @@ const PEER_EXECUTE_OPERATIONS = new Set([
   'promptReplace',
   'promptSteer',
   'steer',
+  'sessionRecover',
   'skillActivate',
   'approval',
   'messageEdit',

@@ -1,6 +1,6 @@
 import { basename, sep } from 'node:path';
 
-import { FORKED_FROM_KEY, parseSessionExecutionPhase, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { FORKED_FROM_KEY, parseSessionExecutionPhase, parseSessionInterruptedWork, type AgentMeta, type SessionInterruptedWork } from '#/session/sessionMetadata/sessionMetadata';
 import { readCachedColdSessionMeta } from '#/session/sessionMetadata/coldSessionMetaRead';
 import { workspaceRootKey } from '#/_base/utils/workdir-slug';
 import { ILogService } from '#/_base/log/log';
@@ -141,6 +141,8 @@ export function buildSessionSummary(fields: {
   forkedFrom?: string;
   custom?: Record<string, unknown>;
   lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+  interruptedWork?: SessionInterruptedWork;
+  activeRunBootId?: string;
   usage?: SessionUsageSummary;
   agents?: Readonly<Record<string, AgentMeta>>;
 }): SessionSummary {
@@ -168,6 +170,8 @@ export function buildSessionSummary(fields: {
     executionPhase: fields.executionPhase,
     custom,
     lastTurnReason: fields.lastTurnReason,
+    interruptedWork: fields.interruptedWork,
+    activeRunBootId: fields.activeRunBootId,
     usage: fields.private === true ? undefined : parseSessionUsageSummary(fields.usage),
     executorId: fields.agents?.['main']?.executor,
     negotiated: fields.agents?.['main']?.negotiated,
@@ -210,6 +214,8 @@ export function summaryEquals(a: SessionSummary, b: SessionSummary): boolean {
     a.archivedAt === b.archivedAt &&
     a.executionPhase === b.executionPhase &&
     a.lastTurnReason === b.lastTurnReason &&
+    JSON.stringify(a.interruptedWork) === JSON.stringify(b.interruptedWork) &&
+    a.activeRunBootId === b.activeRunBootId &&
     JSON.stringify(a.custom) === JSON.stringify(b.custom) &&
     JSON.stringify(a.usage) === JSON.stringify(b.usage) &&
     a.executorId === b.executorId &&
@@ -377,6 +383,8 @@ function summaryFromMetadata(
     forkedFrom: nonEmptyString(meta['forkedFrom']),
     custom,
     lastTurnReason: parseTurnOutcome(meta['lastTurnReason']),
+    interruptedWork: parseSessionInterruptedWork(meta['interruptedWork']),
+    activeRunBootId: nonEmptyString(meta['activeRunBootId']),
     usage: parseSessionUsageSummary(meta['usage']),
     agents: meta['agents'] !== null && typeof meta['agents'] === 'object' && !Array.isArray(meta['agents'])
       ? meta['agents'] as Readonly<Record<string, AgentMeta>> : undefined,

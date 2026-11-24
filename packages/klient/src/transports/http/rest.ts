@@ -278,6 +278,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       restore: (sessionId: string) => transport.json('/sessions/' + encodeURIComponent(sessionId) + ':restore', {
         method: 'POST', body: {}, timeoutMs: 0,
       }),
+      recover: (sessionId: string, body = {}) => transport.json<import('@kiki/protocol').RecoverSessionResponse>(
+        `/sessions/${encodeURIComponent(sessionId)}/recover`,
+        { method: 'POST', body },
+      ),
       deleteArchived: async (sessionId: string, options = {}) => deleteArchivedSessionsResponseSchema.parse(await transport.json('/sessions/' + encodeURIComponent(sessionId) + ':delete-archived', {
         method: 'POST', body: deleteArchivedSessionRequestSchema.parse(options), timeoutMs: 0,
       })),

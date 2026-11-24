@@ -66,6 +66,22 @@ const declaredUserToolSchema = /* @__PURE__ */ z.object({
   inherit: z.boolean().optional(),
 });
 
+const sessionInterruptedTargetSchema = /* @__PURE__ */ z.object({
+  agentId: z.string(),
+  label: z.string().optional(),
+  kind: z.enum(['main', 'branch', 'subagent']),
+  reason: z.enum(['recovery', 'lost_task', 'branch_interrupted']),
+  lostTasks: z.number().optional(),
+});
+
+const sessionInterruptedWorkSchema = /* @__PURE__ */ z.object({
+  interruptedAt: z.number(),
+  mainInterrupted: z.boolean().optional(),
+  lostTasks: z.number().optional(),
+  interruptedBranches: z.number().optional(),
+  targets: z.array(sessionInterruptedTargetSchema).optional(),
+});
+
 export const sessionMetaSchema = /* @__PURE__ */ z.object({
   id: z.string(),
   version: z.number().optional(),
@@ -89,6 +105,11 @@ export const sessionMetaSchema = /* @__PURE__ */ z.object({
   custom: z.record(z.string(), z.unknown()).optional(),
   sshHosts: z.record(z.string(), z.string()).optional(),
   lastTurnReason: z.enum(['completed', 'cancelled', 'failed']).optional(),
+  interruptedWork: sessionInterruptedWorkSchema.optional(),
+  activeRunBootId: z.string().optional(),
+  activeRunAgentIds: z.array(z.string()).optional(),
+  lastRecoveredAt: z.number().optional(),
+  recoveredLostTaskIds: z.array(z.string()).optional(),
 });
 
 /** `Partial<Omit<SessionMeta, 'id' | 'createdAt'>>` — every key optional. */
@@ -112,6 +133,11 @@ export const sessionMetaPatchSchema = /* @__PURE__ */ z.object({
   custom: z.record(z.string(), z.unknown()).optional(),
   sshHosts: z.record(z.string(), z.string()).optional(),
   lastTurnReason: z.enum(['completed', 'cancelled', 'failed']).optional(),
+  interruptedWork: sessionInterruptedWorkSchema.optional(),
+  activeRunBootId: z.string().optional(),
+  activeRunAgentIds: z.array(z.string()).optional(),
+  lastRecoveredAt: z.number().optional(),
+  recoveredLostTaskIds: z.array(z.string()).optional(),
 });
 
 /** `keyof SessionMeta` — keep in sync with `sessionMetaSchema`. */
@@ -138,6 +164,11 @@ export const sessionMetaKeySchema = /* @__PURE__ */ z.enum([
   'custom',
   'sshHosts',
   'lastTurnReason',
+  'interruptedWork',
+  'activeRunBootId',
+  'activeRunAgentIds',
+  'lastRecoveredAt',
+  'recoveredLostTaskIds',
   'usage',
 ]);
 

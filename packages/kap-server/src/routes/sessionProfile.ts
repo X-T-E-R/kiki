@@ -61,6 +61,8 @@ export async function updateSessionProfile(
     delivery: meta.delivery,
     agents: meta.agents,
     lastTurnReason: meta.lastTurnReason,
+    interruptedWork: meta.interruptedWork,
+    activeRunBootId: meta.activeRunBootId,
     custom: meta.custom,
   };
 }

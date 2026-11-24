@@ -1714,6 +1714,41 @@ export function Sidebar({
       });
   };
 
+  const [recoveringInterrupted, setRecoveringInterrupted] = useState(false);
+
+  const handleRecoverAllInterrupted = useCallback(async (items: readonly UnifiedInboxItem[]) => {
+    if (recoveringInterrupted || items.length === 0) return;
+    setRecoveringInterrupted(true);
+    setActionError(null);
+    const touchedRemoteIds = new Set<string>();
+    let touchedLocal = false;
+    try {
+      const results = await Promise.allSettled(
+        items.map(async (item) => {
+          if (item.ref.kind !== 'session') return;
+          const remoteConnId = remoteConnIdOf(item.spaceKey);
+          const targetClient = clientForSpace(item.spaceKey);
+          await targetClient.recoverSession(item.sessionId);
+          if (remoteConnId !== undefined) touchedRemoteIds.add(remoteConnId);
+          else touchedLocal = true;
+        }),
+      );
+      if (touchedLocal) refreshSessions();
+      for (const remoteConnId of touchedRemoteIds) {
+        void onRefreshRemoteSpace?.(remoteConnId);
+      }
+      const rejected = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+      if (rejected.length > 0) {
+        const detail = rejected[0]!.reason instanceof Error ? rejected[0]!.reason.message : String(rejected[0]!.reason);
+        setActionError(rejected.length === 1 ? detail : `${detail} (+${rejected.length - 1})`);
+      }
+    } catch (error: unknown) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRecoveringInterrupted(false);
+    }
+  }, [clientForSpace, onRefreshRemoteSpace, recoveringInterrupted, refreshSessions]);
+
   const restore = (session: Session, itemSpaceKey?: string) => {
     setMenu(null);
     setActionError(null);
@@ -2623,6 +2658,8 @@ export function Sidebar({
           onArchiveItem={inboxTriage.archiveItem}
           onRestoreItem={inboxTriage.restoreItem}
           onUndo={inboxTriage.undoLast}
+          onRecoverAllInterrupted={handleRecoverAllInterrupted}
+          recoveringInterrupted={recoveringInterrupted}
         />
       </div>
       ) : (

@@ -145,6 +145,8 @@ async function readStreamText(stream: NodeJS.ReadableStream): Promise<string> {
 async function probePosixRg(ssh: SSHKaos): Promise<string | undefined> {
   const proc = await ssh.execWithEnv(['sh', '-c', POSIX_RG_LOOKUP]);
   try {
+    proc.stderr.on('error', () => {});
+    proc.stderr.resume();
     const [stdout, exitCode] = await Promise.all([readStreamText(proc.stdout), proc.wait()]);
     if (exitCode !== 0) return undefined;
     const match = /^KIKI_SSH_RG_PATH=(\/[^\r\n]+)$/m.exec(stdout);

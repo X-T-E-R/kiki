@@ -129,6 +129,70 @@ export const SESSION_META_VERSION = 2;
 export type SessionTitleKind = 'replaceable' | 'generated' | 'custom';
 export type SessionExecutionPhase = 'running' | 'pausing' | 'paused' | 'resuming' | 'failed';
 
+export interface SessionInterruptedTarget {
+  readonly agentId: string;
+  readonly label?: string;
+  readonly kind: 'main' | 'branch' | 'subagent';
+  readonly reason: 'recovery' | 'lost_task' | 'branch_interrupted';
+  readonly lostTasks?: number;
+}
+
+export interface SessionInterruptedWork {
+  readonly interruptedAt: number;
+  readonly mainInterrupted?: boolean;
+  readonly lostTasks?: number;
+  readonly interruptedBranches?: number;
+  readonly targets?: readonly SessionInterruptedTarget[];
+}
+
+export function parseSessionInterruptedWork(value: unknown): SessionInterruptedWork | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const interruptedAt = record['interruptedAt'];
+  if (typeof interruptedAt !== 'number' || !Number.isFinite(interruptedAt) || interruptedAt < 0) return undefined;
+  const mainInterrupted = record['mainInterrupted'] === true ? true : undefined;
+  const lostTasks =
+    typeof record['lostTasks'] === 'number' && Number.isInteger(record['lostTasks']) && record['lostTasks'] > 0
+      ? record['lostTasks']
+      : undefined;
+  const interruptedBranches =
+    typeof record['interruptedBranches'] === 'number' &&
+    Number.isInteger(record['interruptedBranches']) &&
+    record['interruptedBranches'] > 0
+      ? record['interruptedBranches']
+      : undefined;
+  let targets: SessionInterruptedTarget[] | undefined;
+  if (Array.isArray(record['targets'])) {
+    const parsedTargets: SessionInterruptedTarget[] = [];
+    for (const item of record['targets']) {
+      if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
+      const entry = item as Record<string, unknown>;
+      const agentId = typeof entry['agentId'] === 'string' && entry['agentId'].length > 0 ? entry['agentId'] : undefined;
+      const kind = entry['kind'] === 'main' || entry['kind'] === 'branch' || entry['kind'] === 'subagent' ? entry['kind'] : undefined;
+      const reason =
+        entry['reason'] === 'recovery' || entry['reason'] === 'lost_task' || entry['reason'] === 'branch_interrupted'
+          ? entry['reason']
+          : undefined;
+      if (agentId === undefined || kind === undefined || reason === undefined) continue;
+      parsedTargets.push({
+        agentId,
+        label: typeof entry['label'] === 'string' && entry['label'].length > 0 ? entry['label'] : undefined,
+        kind,
+        reason,
+        lostTasks:
+          typeof entry['lostTasks'] === 'number' && Number.isInteger(entry['lostTasks']) && entry['lostTasks'] > 0
+            ? entry['lostTasks']
+            : undefined,
+      });
+    }
+    if (parsedTargets.length > 0) targets = parsedTargets;
+  }
+  if (mainInterrupted === undefined && lostTasks === undefined && interruptedBranches === undefined && targets === undefined) {
+    return undefined;
+  }
+  return { interruptedAt, mainInterrupted, lostTasks, interruptedBranches, targets };
+}
+
 export function parseSessionExecutionPhase(value: unknown): SessionExecutionPhase | undefined {
   return value === 'running' || value === 'pausing' || value === 'paused' || value === 'resuming' || value === 'failed'
     ? value
@@ -158,6 +222,11 @@ export interface SessionMeta {
   readonly custom?: Record<string, unknown>;
   readonly sshHosts?: Readonly<Record<string, string>>;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+  readonly interruptedWork?: SessionInterruptedWork;
+  readonly activeRunBootId?: string;
+  readonly activeRunAgentIds?: readonly string[];
+  readonly lastRecoveredAt?: number;
+  readonly recoveredLostTaskIds?: readonly string[];
   readonly usage?: SessionUsageSummary;
 }
 
