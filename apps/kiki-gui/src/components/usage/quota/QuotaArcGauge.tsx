@@ -50,7 +50,7 @@ function PaceRadialTick({
         x2={outer.x}
         y2={outer.y}
         stroke="var(--color-paper)"
-        strokeWidth="3.25"
+        strokeWidth="4"
         strokeLinecap="round"
       />
       <line
@@ -59,7 +59,7 @@ function PaceRadialTick({
         x2={outer.x}
         y2={outer.y}
         stroke="var(--color-ink)"
-        strokeWidth="1.65"
+        strokeWidth="1.9"
         strokeLinecap="round"
       />
     </g>
@@ -136,22 +136,20 @@ export function QuotaCalibrationDial({
               y1={p0.y}
               x2={p1.x}
               y2={p1.y}
-              stroke={major ? 'var(--color-hairline-strong)' : 'var(--color-hairline)'}
-              strokeWidth={major ? '1.35' : '1'}
+              stroke={major ? 'var(--kiki-gauge-tick)' : 'var(--kiki-gauge-track)'}
+              strokeWidth={major ? '1.45' : '1.05'}
             />
           );
         })}
 
-        {/* Outer 240deg Track */}
         <path
           d={outerArcD}
           fill="none"
-          stroke="var(--color-hairline)"
-          strokeWidth="9"
+          stroke="var(--kiki-gauge-track)"
+          strokeWidth="6"
           strokeLinecap="butt"
         />
 
-        {/* Outer Active Arc (0 fill at 0%, full 240deg at 100%) */}
         {pctOuter > 0 ? (
           <path
             d={outerArcD}
@@ -159,31 +157,28 @@ export function QuotaCalibrationDial({
             pathLength={100}
             strokeDasharray={`${pctOuterArc} 100`}
             stroke={outerStroke}
-            strokeOpacity={muted ? 0.55 : 1}
-            strokeWidth="9"
+            strokeWidth="9.5"
             strokeLinecap="butt"
           />
         ) : null}
 
-        {/* Outer Expected-Time Pace Tick */}
         {outerPace !== null && outerPace !== undefined && !muted ? (
           <PaceRadialTick
             cx={cx}
             cy={cy}
             radius={rOuter}
-            halfSpan={6.25}
+            halfSpan={7.25}
             expectedRemainingPct={outerPace.expectedRemainingPct}
           />
         ) : null}
 
-        {/* Optional Inner Concentric 240deg Cap Ring */}
         {innerArcD !== undefined && pctInner !== undefined ? (
           <>
             <path
               d={innerArcD}
               fill="none"
-              stroke="var(--color-hairline)"
-              strokeWidth="6"
+              stroke="var(--kiki-gauge-track)"
+              strokeWidth="4.25"
               strokeLinecap="butt"
             />
             {pctInner > 0 && pctInnerArc !== undefined && innerStroke !== undefined ? (
@@ -193,8 +188,7 @@ export function QuotaCalibrationDial({
                 pathLength={100}
                 strokeDasharray={`${pctInnerArc} 100`}
                 stroke={innerStroke}
-                strokeOpacity={muted ? 0.55 : 1}
-                strokeWidth="6"
+                strokeWidth="6.5"
                 strokeLinecap="butt"
               />
             ) : null}
@@ -203,7 +197,7 @@ export function QuotaCalibrationDial({
                 cx={cx}
                 cy={cy}
                 radius={rInner}
-                halfSpan={4.5}
+                halfSpan={5.25}
                 expectedRemainingPct={innerPace.expectedRemainingPct}
               />
             ) : null}
@@ -271,8 +265,8 @@ export function QuotaMiniArc({
         <path
           d={arcD}
           fill="none"
-          stroke={unknown ? 'var(--color-hairline-strong)' : 'var(--color-hairline)'}
-          strokeWidth="3.2"
+          stroke={unknown ? 'var(--kiki-gauge-tick)' : 'var(--kiki-gauge-track)'}
+          strokeWidth="2.4"
           strokeLinecap="butt"
           strokeDasharray={unknown ? '2.5 2.5' : undefined}
         />
@@ -283,15 +277,14 @@ export function QuotaMiniArc({
             pathLength={100}
             strokeDasharray={`${pctArc} 100`}
             stroke={activeStroke}
-            strokeOpacity={muted ? 0.48 : 1}
-            strokeWidth="3.2"
+            strokeWidth="3.5"
             strokeLinecap="butt"
           />
         ) : null}
         {!unknown && pct !== undefined && pace !== null && pace !== undefined && !muted ? (() => {
           const deg = quotaPercentToAngleDeg(pace.expectedRemainingPct);
-          const p0 = polarPoint(cx, cy, r - 2.6, deg);
-          const p1 = polarPoint(cx, cy, r + 2.6, deg);
+          const p0 = polarPoint(cx, cy, r - 3.1, deg);
+          const p1 = polarPoint(cx, cy, r + 3.1, deg);
           return (
             <g data-quota-pace-tick>
               <line
@@ -300,7 +293,7 @@ export function QuotaMiniArc({
                 x2={p1.x}
                 y2={p1.y}
                 stroke="var(--color-paper)"
-                strokeWidth="2.4"
+                strokeWidth="2.8"
                 strokeLinecap="round"
               />
               <line
@@ -309,7 +302,7 @@ export function QuotaMiniArc({
                 x2={p1.x}
                 y2={p1.y}
                 stroke="var(--color-ink)"
-                strokeWidth="1.25"
+                strokeWidth="1.45"
                 strokeLinecap="round"
               />
             </g>

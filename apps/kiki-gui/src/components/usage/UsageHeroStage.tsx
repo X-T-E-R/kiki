@@ -225,6 +225,8 @@ export function UsageHeroStage({
             : metric === 'cache'
               ? formatCachePercent(bCache)
               : time.formatTokens(bTok);
+        const canExpandHours =
+          singleFilters.granularity === 'day' && (bTok > 0 || bCost > 0 || bUnknown);
         return {
           scopeLabel: bucketLabel(selectedBucket, singleFilters.granularity, locale),
           primaryFigure,
@@ -232,6 +234,7 @@ export function UsageHeroStage({
           costUnknown: bCostHasUnknown,
           costAllUnknown: bCostAllUnknown,
           onClear: () => { onSelectBucketKey(null); },
+          onDrilldownDay: canExpandHours ? () => { onDrilldownDay(selectedBucket); } : undefined,
         };
       })()
     : undefined;
@@ -246,9 +249,13 @@ export function UsageHeroStage({
           label: t('usage.kpi.estimatedCost'),
           title: costTitle,
           value: (
-            <span className="inline-flex items-baseline gap-1.5">
-              <span>{costFormatted}</span>
-              {costOutcome !== undefined ? <CompareCell outcome={costOutcome} /> : null}
+            <span className="flex flex-col items-center leading-tight">
+              <span className="max-w-full truncate">{costFormatted}</span>
+              {costOutcome !== undefined ? (
+                <span className="mt-0.5 font-sans text-[10.5px] leading-none">
+                  <CompareCell outcome={costOutcome} />
+                </span>
+              ) : null}
             </span>
           ),
           valueAction: costUnknownBadge,
@@ -260,9 +267,13 @@ export function UsageHeroStage({
             label: t('usage.kpi.cacheHit'),
             title: t('usage.cacheHitHint'),
             value: (
-              <span className="inline-flex items-baseline gap-1.5">
-                <span>{cacheFormatted}</span>
-                {cacheOutcome !== undefined ? <CompareCell outcome={cacheOutcome} points /> : null}
+              <span className="flex flex-col items-center leading-tight">
+                <span className="max-w-full truncate">{cacheFormatted}</span>
+                {cacheOutcome !== undefined ? (
+                  <span className="mt-0.5 font-sans text-[10.5px] leading-none">
+                    <CompareCell outcome={cacheOutcome} points />
+                  </span>
+                ) : null}
               </span>
             ),
           }
@@ -272,9 +283,13 @@ export function UsageHeroStage({
             label: t('usage.kpi.totalTokens'),
             title: tokenCompositionTitle,
             value: (
-              <span className="inline-flex items-baseline gap-1.5">
-                <span>{tokensFormatted}</span>
-                {tokensOutcome !== undefined ? <CompareCell outcome={tokensOutcome} /> : null}
+              <span className="flex flex-col items-center leading-tight">
+                <span className="max-w-full truncate">{tokensFormatted}</span>
+                {tokensOutcome !== undefined ? (
+                  <span className="mt-0.5 font-sans text-[10.5px] leading-none">
+                    <CompareCell outcome={tokensOutcome} />
+                  </span>
+                ) : null}
               </span>
             ),
             valueAction: tokensPartialBadge,

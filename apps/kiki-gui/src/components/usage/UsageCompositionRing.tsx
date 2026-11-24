@@ -23,6 +23,7 @@ export interface ScopedBucketRingSummary {
   readonly costUnknown?: boolean;
   readonly costAllUnknown?: boolean;
   readonly onClear: () => void;
+  readonly onDrilldownDay?: () => void;
 }
 
 export function UsageCompositionRing({
@@ -60,11 +61,11 @@ export function UsageCompositionRing({
   readonly labelForKey: (key: string) => string;
 }) {
   const { t } = useI18n();
-  const size = 184;
-  const cx = 92;
-  const cy = 92;
-  const rInner = 58;
-  const rOuter = 80;
+  const size = 188;
+  const cx = 94;
+  const cy = 94;
+  const rInner = 66;
+  const rOuter = 82;
   const rMid = (rInner + rOuter) / 2;
   const bandWidth = rOuter - rInner;
 
@@ -87,7 +88,7 @@ export function UsageCompositionRing({
       className="flex min-w-0 flex-col items-center"
     >
       <div
-        className="relative flex h-[116px] w-[116px] shrink-0 items-center justify-center sm:h-[172px] sm:w-[172px] @min-[800px]/usage:h-[184px] @min-[800px]/usage:w-[184px]"
+        className="relative flex h-[144px] w-[144px] shrink-0 items-center justify-center sm:h-[176px] sm:w-[176px] @min-[800px]/usage:h-[188px] @min-[800px]/usage:w-[188px]"
         onMouseLeave={() => { onHoverKey(null); }}
       >
         <svg
@@ -101,8 +102,8 @@ export function UsageCompositionRing({
               <path
                 d={describeOpen240Arc(cx, cy, rMid)}
                 fill="none"
-                stroke="var(--color-hairline)"
-                strokeWidth={bandWidth * 0.72}
+                stroke="var(--kiki-gauge-track)"
+                strokeWidth={bandWidth * 0.55}
                 strokeLinecap="butt"
               />
               {[0, 0.25, 0.5, 0.75, 1].map((tick) => {
@@ -116,8 +117,8 @@ export function UsageCompositionRing({
                     y1={innerTick.y}
                     x2={outerTick.x}
                     y2={outerTick.y}
-                    stroke="var(--color-hairline-strong)"
-                    strokeWidth="1.25"
+                    stroke="var(--kiki-gauge-tick)"
+                    strokeWidth="1.35"
                   />
                 );
               })}
@@ -128,7 +129,7 @@ export function UsageCompositionRing({
                   pathLength={100}
                   strokeDasharray={`${cachePct} 100`}
                   stroke="var(--kiki-chart-4)"
-                  strokeWidth={bandWidth * 0.72}
+                  strokeWidth={bandWidth * 0.8}
                   strokeLinecap="butt"
                 />
               ) : null}
@@ -139,7 +140,7 @@ export function UsageCompositionRing({
               cy={cy}
               r={rMid}
               fill="none"
-              stroke="var(--color-hairline)"
+              stroke="var(--kiki-gauge-track)"
               strokeWidth="1.5"
               strokeDasharray="3 3"
             />
@@ -203,21 +204,20 @@ export function UsageCompositionRing({
           )}
         </svg>
 
-        {/* Focal Center Readout */}
-        <div className="pointer-events-none absolute inset-[18px] flex flex-col items-center justify-center text-center sm:inset-[28px] @min-[800px]/usage:inset-[30px]">
+        <div className="pointer-events-none absolute inset-[31px] flex flex-col items-center justify-center text-center sm:inset-[35px] @min-[800px]/usage:inset-[38px]">
           {scopedBucket !== undefined ? (
             <>
               <button
                 type="button"
                 data-usage-clear-bucket
                 onClick={scopedBucket.onClear}
-                className="pointer-events-auto inline-flex min-h-6 max-w-full items-center gap-1 rounded-full bg-ink/[0.06] px-2 py-0.5 text-[10.5px] font-medium text-ink transition-colors hover:bg-ink/[0.12] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+                className="pointer-events-auto inline-flex min-h-5 max-w-[78px] items-center gap-1 rounded-full bg-ink/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-ink transition-colors hover:bg-ink/[0.12] focus-visible:outline-2 focus-visible:outline-selected-ink sm:min-h-6 sm:max-w-[110px] sm:px-2 sm:text-[10.5px] pointer-coarse:-my-2 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
               >
                 <span data-usage-source-scope className="truncate">{scopedBucket.scopeLabel}</span>
                 <Icon name="close" size={12} className="shrink-0 text-[var(--kiki-chart-label)]" />
               </button>
-              <div className="mt-0.5 flex max-w-full items-center justify-center gap-1">
-                <div className="max-w-full truncate font-display text-[18px] leading-tight text-ink tabular-nums sm:text-[22px]">
+              <div className="mt-0.5 flex max-w-full items-center justify-center gap-0.5">
+                <div className="max-w-full truncate font-display text-[16.5px] leading-tight text-ink tabular-nums sm:text-[21px]">
                   {scopedBucket.primaryFigure}
                 </div>
                 {metric === 'cost' && scopedBucket.costUnknown ? (
@@ -228,7 +228,7 @@ export function UsageCompositionRing({
               </div>
               <span
                 data-usage-source-subtotal
-                className="mt-0.5 inline-flex max-w-full items-center gap-0.5 truncate text-[11px] font-medium text-ink tabular-nums sm:text-[11.5px]"
+                className="mt-0.5 inline-flex max-w-full items-center gap-0.5 truncate text-[10.5px] font-medium text-ink tabular-nums sm:text-[11.5px]"
               >
                 <span className="truncate">{scopedBucket.subtotalCostText}</span>
                 {metric !== 'cost' && scopedBucket.costUnknown ? (
@@ -244,24 +244,38 @@ export function UsageCompositionRing({
               title={periodHero.title}
               className="flex max-w-full flex-col items-center justify-center"
             >
-              <span className="max-w-full truncate font-sans text-[10.5px] font-medium tracking-normal text-[var(--kiki-chart-label)] sm:text-[11px]">
+              <span className="max-w-full truncate font-sans text-[10px] font-medium tracking-normal text-[var(--kiki-chart-label)] sm:text-[11px]">
                 {periodHero.label}
               </span>
-              <div className="mt-0.5 flex max-w-full items-center justify-center gap-1">
+              <div className="mt-0.5 flex max-w-full items-center justify-center gap-0.5">
                 <div
                   {...summaryAttrProps}
-                  className="max-w-full truncate font-display text-[21px] leading-tight text-ink tabular-nums sm:text-[25px]"
+                  className="max-w-full truncate font-display text-[17.5px] leading-tight text-ink tabular-nums sm:text-[24px]"
                 >
                   {periodHero.value}
                 </div>
                 {periodHero.valueAction !== undefined ? (
-                  <span className="pointer-events-auto shrink-0">{periodHero.valueAction}</span>
+                  <span className="pointer-events-auto shrink-0 flex items-center pointer-coarse:-my-2.5 pointer-coarse:-mr-2">
+                    {periodHero.valueAction}
+                  </span>
                 ) : null}
               </div>
             </div>
           )}
         </div>
       </div>
+
+      {scopedBucket?.onDrilldownDay !== undefined ? (
+        <button
+          type="button"
+          data-usage-drilldown-day
+          onClick={scopedBucket.onDrilldownDay}
+          className="mt-1.5 inline-flex min-h-7 items-center gap-1 rounded-full border border-hairline-strong bg-paper px-2.5 py-0.5 font-sans tracking-normal text-[11.5px] font-medium text-ink transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-3.5"
+        >
+          <span>{t('usage.trend.drilldownHourAction')}</span>
+          <Icon name="arrowRight" size={12} className="shrink-0 text-[var(--kiki-chart-label)]" />
+        </button>
+      ) : null}
 
       {/* Wrap-safe Period KPI Subtitle */}
       {subtitleContent !== undefined ? (

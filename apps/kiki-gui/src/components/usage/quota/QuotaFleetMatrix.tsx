@@ -33,10 +33,10 @@ function columnSequenceSignature(readings: readonly HarnessQuotaReading[], defau
 const SEAT_DOT_CLASS: Record<SeatHealthState, string> = {
   ready: 'bg-success',
   low: 'bg-amber-rule',
-  skipped_exhausted: 'bg-ink/35',
+  skipped_exhausted: 'bg-[var(--kiki-gauge-tick)]',
   blocking_exhausted: 'bg-danger',
-  partial_unknown: 'bg-ink/25',
-  unknown: 'bg-ink/25',
+  partial_unknown: 'bg-[var(--kiki-gauge-tick)]',
+  unknown: 'bg-[var(--kiki-gauge-tick)]',
 };
 
 function accountSeatDotClass(

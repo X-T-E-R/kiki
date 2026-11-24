@@ -1365,12 +1365,24 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
   });
 
-  it('drills down from a 7-day daily bar into hourly view and restores via breadcrumb or Escape', async () => {
+  it('scopes ring and sources in-place on single-click of a 7d/30d daily bucket while keeping period KPIs, then drills down to hourly via explicit action or double-click', async () => {
     const { container, root } = await renderPage('/usage?range=last_7_days');
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const dayBar = container.querySelector<HTMLButtonElement>('[data-usage-trend] [data-bucket]')!;
     expect(dayBar).not.toBeNull();
+
     await act(async () => { dayBar.click(); });
+    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(mainCalls().at(-1)?.[0]).toMatchObject({ range: 'last_7_days', granularity: 'day' });
+    expect(container.querySelector('[data-usage-source-scope]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-source-subtotal]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-clear-bucket]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-kpi="cost"]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-kpi="tokens"]')).not.toBeNull();
+
+    const drilldownBtn = container.querySelector<HTMLButtonElement>('[data-usage-drilldown-day]');
+    expect(drilldownBtn).not.toBeNull();
+    await act(async () => { drilldownBtn!.click(); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(mainCalls().at(-1)?.[0]).toMatchObject({ range: 'custom', granularity: 'hour' });
     const backBtn = container.querySelector<HTMLButtonElement>('[data-usage-drilldown-back]');

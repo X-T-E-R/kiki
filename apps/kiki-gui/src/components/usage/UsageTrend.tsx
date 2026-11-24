@@ -182,7 +182,7 @@ export function TrendChart({
     return colorByKey?.get(key) ?? USAGE_SERIES_COLORS[idx % USAGE_SERIES_COLORS.length]!;
   };
 
-  const plotHeight = plotWidth < 460 ? 112 : PLOT_HEIGHT;
+  const plotHeight = plotWidth < 460 ? 104 : PLOT_HEIGHT;
   const currentNow = nowMs ?? Date.now();
   const geometry = useMemo(
     () =>
@@ -296,12 +296,17 @@ export function TrendChart({
   const triggerBucketAt = (index: number) => {
     const bucket = displayTrend[index];
     if (bucket === undefined || bucket.key.startsWith('empty:')) return;
-    const total = numericTotals[index] ?? 0;
-    if (canDrilldown && total > 0) {
-      onDrilldownDay(bucket);
-      return;
-    }
     onSelect(selectedKey === bucket.key ? null : bucket.key);
+  };
+
+  const drilldownBucketAt = (index: number) => {
+    if (!canDrilldown) return;
+    const bucket = displayTrend[index];
+    if (bucket === undefined || bucket.key.startsWith('empty:')) return;
+    const total = numericTotals[index] ?? 0;
+    if (total > 0 || bucketTokenTotalIsUnknown(bucket)) {
+      onDrilldownDay(bucket);
+    }
   };
 
   const stepBucket = (delta: -1 | 1) => {
@@ -620,6 +625,7 @@ export function TrendChart({
                     onFocus={() => { setHoveredIndex(index); }}
                     onBlur={() => { setHoveredIndex((prev) => (prev === index ? null : prev)); }}
                     onClick={() => { triggerBucketAt(index); }}
+                    onDoubleClick={() => { drilldownBucketAt(index); }}
                     title={title}
                     style={{
                       left: `${leftPct}%`,

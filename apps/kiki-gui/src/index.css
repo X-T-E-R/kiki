@@ -135,6 +135,8 @@
   --kiki-chart-muted: #443e38;
   --kiki-chart-danger-text: #6e1b06;
   --kiki-chart-warn-text: #543b05;
+  --kiki-gauge-track: #8d8477;
+  --kiki-gauge-tick: #736b5f;
 }
 
 /* Inkstone: cool charcoal surfaces, warm white text and copper actions.
@@ -196,6 +198,8 @@
   --kiki-chart-muted: #dedad1;
   --kiki-chart-danger-text: #ffe6df;
   --kiki-chart-warn-text: #fbf0d9;
+  --kiki-gauge-track: #77868e;
+  --kiki-gauge-tick: #92a0a8;
 }
 
 html,
