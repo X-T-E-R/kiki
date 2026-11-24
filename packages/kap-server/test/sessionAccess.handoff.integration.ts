@@ -4,7 +4,7 @@ import { request as httpRequest } from 'node:http';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { IConfigService } from '@kiki/agent-core-v2';
+import { IConfigService, ISessionManager } from '@kiki/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { ExternalClientStore } from '../src/externalClients/store';
@@ -238,15 +238,17 @@ describe('session access terminal hand-off over the real server', () => {
     expect(result).toMatchObject({
       expires_at: now + 3_600_000,
       session_id,
-      scopes: ['read', 'prompt', 'abort'],
+      scopes: ['read', 'prompt', 'abort', 'interact', 'control'],
       server_id: server.serverId,
       server_version: expect.any(String),
-      session_access: 1,
+      session_access: 2,
     });
-    const listing = successful(await requestAt<{ tokens: Array<{ session_id: string; scopes: string[]; client: { name: string; version?: string }; channel: string }> }>(base, 'GET', '/api/session-access'));
+    const listing = successful(await requestAt<{ version: number; terminal_control: boolean; tokens: Array<{ session_id: string; scopes: string[]; client: { name: string; version?: string }; channel: string }> }>(base, 'GET', '/api/session-access'));
+    expect(listing.version).toBe(2);
+    expect(listing.terminal_control).toBe(true);
     expect(listing.tokens).toContainEqual(expect.objectContaining({
       session_id,
-      scopes: ['read', 'prompt', 'abort'],
+      scopes: ['read', 'prompt', 'abort', 'interact', 'control'],
       client: { name: 'example-terminal', version: '1.2.3' },
       channel: 'terminal',
     }));
@@ -335,7 +337,7 @@ describe('session access terminal hand-off over the real server', () => {
     const tickets: TicketAndVerifier[] = [];
     for (let index = 0; index < 9; index += 1) tickets.push(await issueTicket(session_id, holder_id));
     expectInvalidTicket(await exchange(tickets[0]!.ticket, tickets[0]!.verifier));
-    expect(successful(await exchange(tickets[8]!.ticket, tickets[8]!.verifier))).toMatchObject({ session_id, scopes: ['read', 'prompt', 'abort'] });
+    expect(successful(await exchange(tickets[8]!.ticket, tickets[8]!.verifier))).toMatchObject({ session_id, scopes: ['read', 'prompt', 'abort', 'interact', 'control'] });
   });
 
   it('preserves tokens when the holder reconnects inside grace and revokes them after a later disconnect', async () => {
@@ -355,6 +357,39 @@ describe('session access terminal hand-off over the real server', () => {
     await delay(presenceGraceMs * 2);
     expectInvalidTicket(await exchange(pendingTicket.ticket, pendingTicket.verifier));
     expect((await requestAt(base, 'GET', `/api/sessions/${session_id}`, undefined, { token: terminal.token })).status).toBe(401);
+  });
+
+  it('aborts an in-flight v2 control request when holder presence is lost after grace', async () => {
+    const session_id = await createSession();
+    const holder_id = newHolderId();
+    const presence = await openPresenceAt(base, holder_id);
+    const ticket = await issueTicket(session_id, holder_id);
+    const terminal = successful(await exchange(ticket.ticket, ticket.verifier)) as { token: string };
+    const manager = server.core.accessor.get(ISessionManager);
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const acquire = manager.acquire!.bind(manager);
+    const pending = vi.spyOn(manager, 'acquire').mockImplementationOnce(async (...args) => {
+      entered();
+      await gate;
+      return acquire(...args);
+    });
+    try {
+      const inflight = requestAt(base, 'POST', `/api/sessions/${session_id}/profile`, { agent_config: { plan_mode: true } }, { token: terminal.token })
+        .catch((error: unknown) => error);
+      await started;
+      await presence.close();
+      await delay(presenceGraceMs * 2);
+      expect(await inflight).toBeInstanceOf(Error);
+      expect(pending.mock.calls[0]![3]!.aborted).toBe(true);
+      release();
+      await Promise.allSettled([pending.mock.results[0]!.value]);
+    } finally {
+      release();
+      pending.mockRestore();
+    }
   });
 
   it('selectively and wholly releases tickets and tokens and closes attached WebSocket connections', async () => {
@@ -405,6 +440,23 @@ describe('session access terminal hand-off over the real server', () => {
     expectInvalidTicket(await exchange(pendingTicket.ticket, pendingTicket.verifier));
     expect((await requestAt(base, 'GET', `/api/sessions/${session_id}`, undefined, { token: ownerToken })).status).toBe(200);
     expect((await requestAt(base, 'GET', `/api/sessions/${session_id}`, undefined, { token: terminalToken.token })).status).toBe(401);
+  });
+
+  it('narrows terminal scopes and revokes live control terminal tokens when terminalControl is disabled', async () => {
+    const session_id = await createSession();
+    const holder_id = newHolderId();
+    await openPresenceAt(base, holder_id);
+    const firstTicket = await issueTicket(session_id, holder_id);
+    const firstToken = successful(await exchange(firstTicket.ticket, firstTicket.verifier)) as { token: string; scopes: string[] };
+    expect(firstToken.scopes).toEqual(['read', 'prompt', 'abort', 'interact', 'control']);
+
+    await server.core.accessor.get(IConfigService).set('sessionAccess', { enabled: true, terminalHandoff: true, terminalControl: false });
+    expect((await requestAt(base, 'GET', `/api/sessions/${session_id}`, undefined, { token: firstToken.token })).status).toBe(401);
+
+    const secondTicket = await issueTicket(session_id, holder_id);
+    const secondToken = successful(await exchange(secondTicket.ticket, secondTicket.verifier)) as { token: string; scopes: string[] };
+    expect(secondToken.scopes).toEqual(['read', 'prompt', 'abort']);
+    expect((await requestAt(base, 'POST', `/api/sessions/${session_id}/profile`, { agent_config: { plan_mode: true } }, { token: secondToken.token })).status).toBe(403);
   });
 
   it('disables tickets, presence, release, and exchange when session access is off', async () => {

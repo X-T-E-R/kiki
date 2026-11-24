@@ -23,10 +23,19 @@ export async function applySessionAgentConfig(
   session: ISessionScopeHandle,
   agentConfig: SessionAgentConfigPartial,
 ): Promise<void> {
+  if (
+    agentConfig.thinking !== undefined &&
+    agentConfig.thinking_effort !== undefined &&
+    agentConfig.thinking !== agentConfig.thinking_effort
+  ) {
+    throw new Error2(ErrorCodes.REQUEST_INVALID, 'Conflicting thinking and thinking_effort values');
+  }
+  const requestedThinking =
+    agentConfig.thinking !== undefined ? agentConfig.thinking : agentConfig.thinking_effort;
   const agent = await ensureMainAgent(session);
 
   const profile = agent.accessor.get(IAgentProfileService);
-  const execution = agentConfig.execution ?? ((agentConfig.model !== undefined || agentConfig.thinking !== undefined) && agentConfig.profile === undefined
+  const execution = agentConfig.execution ?? ((agentConfig.model !== undefined || requestedThinking !== undefined) && agentConfig.profile === undefined
     ? profile.data().execution?.selection : undefined);
   let selectionConsumed = false;
   if (execution !== undefined) {
@@ -35,7 +44,7 @@ export async function applySessionAgentConfig(
     }
     await profile.bind({ execution: { ...execution, overrides: { ...execution.overrides,
       permission_mode: agentConfig.permission_mode ?? execution.overrides?.permission_mode,
-    } }, model: agentConfig.model || undefined, thinking: agentConfig.thinking });
+    } }, model: agentConfig.model || undefined, thinking: requestedThinking });
     const permission = profile.data().execution?.effective.permission_mode;
     if (permission !== undefined) agent.accessor.get(IAgentPermissionModeService).setMode(permission);
     selectionConsumed = true;
@@ -52,15 +61,15 @@ export async function applySessionAgentConfig(
         personaOverrides: current.personaId === undefined ? undefined : {
           ...personaRest, profile: agentConfig.profile,
           model: agentConfig.model === undefined || agentConfig.model === '' ? current.personaOverrides?.model : agentConfig.model,
-          ...(agentConfig.thinking === null ? {}
-            : { thinking: agentConfig.thinking ?? previousPersonaThinking }),
+          ...(requestedThinking === null ? {}
+            : { thinking: requestedThinking ?? previousPersonaThinking }),
         },
         profile: agentConfig.profile,
         model: requestedModel ?? (current.modelAlias === '' ? undefined : current.modelAlias),
-        thinking: agentConfig.thinking === undefined ? current.thinkingLevel : agentConfig.thinking,
-        strictThinking: typeof agentConfig.thinking === 'string',
+        thinking: requestedThinking === undefined ? current.thinkingLevel : requestedThinking,
+        strictThinking: typeof requestedThinking === 'string',
       });
-      thinkingConsumed = agentConfig.thinking !== undefined;
+      thinkingConsumed = requestedThinking !== undefined;
     } catch (error) {
       if (error instanceof ProfileError) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, error.message);
@@ -74,7 +83,7 @@ export async function applySessionAgentConfig(
   if (!selectionConsumed && agentConfig.model !== undefined && agentConfig.model !== '') {
     await profile.setModel(agentConfig.model);
   }
-  if (agentConfig.thinking === null && !thinkingConsumed) {
+  if (requestedThinking === null && !thinkingConsumed) {
     const bound = profile.data();
     const sameProfile = agentConfig.profile === undefined || agentConfig.profile === (bound.profileName ?? DEFAULT_AGENT_PROFILE_NAME);
     if (bound.execution !== undefined && sameProfile) {
@@ -94,8 +103,8 @@ export async function applySessionAgentConfig(
     } else {
       profile.restoreDefaultThinking();
     }
-  } else if (typeof agentConfig.thinking === 'string' && !thinkingConsumed) {
-    profile.setThinking(agentConfig.thinking);
+  } else if (typeof requestedThinking === 'string' && !thinkingConsumed) {
+    profile.setThinking(requestedThinking);
   }
   await applyAgentRuntimeControls(agent, agentConfig);
   if (agentConfig.goal_objective !== undefined) {

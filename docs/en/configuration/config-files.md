@@ -33,7 +33,7 @@ Reloading a file and applying a setting have different timing:
 | Setting | When it takes effect |
 | --- | --- |
 | [`request_governance`](#request-governance) | Re-evaluates waiting requests and agent admissions as soon as the edit is loaded; active work finishes normally |
-| [`session_access`](#session-access) | Applies immediately; setting `enabled = false` revokes all active tokens and rejects token requests; `terminal_handoff = false` clears tickets, refuses ticket requests and exchange, and revokes terminal-channel tokens without affecting owner-issued tokens |
+| [`session_access`](#session-access) | Applies immediately; setting `enabled = false` revokes all active tokens and rejects token requests; `terminal_handoff = false` clears tickets, refuses ticket requests and exchange, and revokes terminal-channel tokens without affecting owner-issued tokens; `terminal_control = false` revokes live terminal tokens holding `interact` or `control` and narrows future terminal exchanges to `read`, `prompt`, and `abort` |
 | [`cpu_workers`](#cpu-workers) | Next process start; the pool reads the section when the App service is created |
 | [`session_residency`](#session-residency) | The next restore or eviction decision; changing restore limits wakes queued restores, but does not interrupt an active restore. The sweep timer interval is set when the service starts |
 | [`transcript_memory`](#transcript-memory) | The next cache admission, eviction, or residency-maintenance pass; an in-progress read is not canceled |
@@ -315,7 +315,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `nb_search` | `table` | — | Built-in search and retrieval module behind `WebSearch` and `FetchURL` → [`nb_search`](#nb-search) |
 | `permission` | `table` | — | Permission rules and reviewer → [`permission`](#permission) |
 | `interaction` | `table` | — | Whether agent questions block the turn → [`interaction`](#interaction) |
-| `session_access` | `table` | Both settings default to `true` | Session access tokens and their terminal-handoff status → [`[session_access]`](#session-access) |
+| `session_access` | `table` | All settings default to `true` | Session access tokens, terminal hand-off, and terminal dialog controls → [`[session_access]`](#session-access) |
 | `hooks` | `array<table>` | — | Lifecycle hooks; see [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | Custom agent identity → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | Prompt field overrides and custom variables → [`prompt`](#prompt) |
@@ -1345,17 +1345,19 @@ In the desktop GUI, open **Settings → Agents → Prompt fields** to edit this 
 
 ## `[session_access]`
 
-`[session_access]` controls owner-issued tokens that grant a local program fixed access to one session and the terminal hand-off channel. Both settings take effect immediately. Turning `enabled` off revokes all active tokens and disables the hand-off routes; `GET /api/session-access` remains available to the local owner. Turning `terminal_handoff` off clears pending tickets and revokes terminal-channel tokens without affecting owner-channel tokens. Tokens and tickets are held in memory and become invalid after a server restart. See [Session access tokens](../server/rest-api.md#session-access-tokens), especially [Terminal hand-off](../server/rest-api.md#session-access-terminal-handoff), and [kiki session-access](../reference/command.md#kiki-session-access) for CLI management.
+`[session_access]` controls owner-issued tokens that grant a local program fixed access to one session and the terminal hand-off channel. All three settings take effect immediately. Turning `enabled` off revokes all active tokens and disables the hand-off routes; `GET /api/session-access` remains available to the local owner. Turning `terminal_handoff` off clears pending tickets and revokes terminal-channel tokens without affecting owner-channel tokens. Turning `terminal_control` off revokes live terminal-channel tokens holding `interact` or `control` and narrows future terminal exchanges to `read`, `prompt`, and `abort`. Tokens and tickets are held in memory and become invalid after a server restart. See [Session access tokens](../server/rest-api.md#session-access-tokens), especially [Terminal hand-off](../server/rest-api.md#session-access-terminal-handoff), and [kiki session-access](../reference/command.md#kiki-session-access) for CLI management.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `true` | Whether session access is enabled; `false` revokes all active tokens and disables token-management, ticket, presence, and release routes. `GET /api/session-access` remains available to the local owner, and exchange returns the generic `invalid_ticket` error |
 | `terminal_handoff` | `boolean` | `true` | Whether terminal hand-off is enabled; `false` clears pending tickets, refuses ticket issuance with HTTP 403 (`session_access_disabled`), and makes exchange return HTTP 401 with code `40101` and `msg: "invalid_ticket"`. Owner-channel tokens keep working |
+| `terminal_control` | `boolean` | `true` | Whether terminal-exchanged tokens receive `interact` and `control` scopes in addition to `read`, `prompt`, and `abort`; flipping to `false` immediately revokes live terminal tokens that hold `interact` or `control` without affecting owner-channel tokens |
 
 ```toml
 [session_access]
 enabled = true
 terminal_handoff = true
+terminal_control = true
 ```
 
 ## `[request_governance]`

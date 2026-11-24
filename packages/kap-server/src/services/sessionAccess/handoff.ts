@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { IConfigService, ISessionManager, type IDisposable, type Scope } from '@kiki/agent-core-v2';
 import { SESSION_ACCESS_SECTION } from './configSection';
-import { digest, type SessionAccessClient, type SessionAccessStore } from './store';
+import { digest, type SessionAccessClient, type SessionAccessScope, type SessionAccessStore } from './store';
 
 interface Ticket {
   readonly session_id: string;
@@ -26,6 +26,10 @@ export class SessionAccessHandoff {
       if (!config.enabled || !config.terminalHandoff) {
         this.tickets.clear();
         tokens.revokeWhere((token) => token.channel === 'terminal');
+      } else if (!config.terminalControl) {
+        tokens.revokeWhere((token) =>
+          token.channel === 'terminal' && (token.scopes.includes('interact') || token.scopes.includes('control')),
+        );
       }
       if (!config.enabled) this.closePresence();
     }));
@@ -72,7 +76,10 @@ export class SessionAccessHandoff {
     if (ticket === undefined || ticket.expires_at <= this.tokens.now() || !this.present(ticket.holder_id)) return undefined;
     const challenge = createHash('sha256').update(verifier, 'ascii').digest('base64url');
     if (challenge !== ticket.challenge) return undefined;
-    return this.tokens.issue({ session_id: ticket.session_id, scopes: ['read', 'prompt', 'abort'], client, channel: 'terminal', holder_id: ticket.holder_id, ttl_seconds: 3600 });
+    const scopes: SessionAccessScope[] = this.tokens.config().terminalControl
+      ? ['read', 'prompt', 'abort', 'interact', 'control']
+      : ['read', 'prompt', 'abort'];
+    return this.tokens.issue({ session_id: ticket.session_id, scopes, client, channel: 'terminal', holder_id: ticket.holder_id, ttl_seconds: 3600 });
   }
 
   release(holderId: string, sessionId?: string): number {

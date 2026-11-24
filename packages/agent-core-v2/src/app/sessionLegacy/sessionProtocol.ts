@@ -50,6 +50,7 @@ export const sessionAgentConfigPartialSchema = z.strictObject({
   model: z.string().optional(),
   profile: z.string().min(1).optional(),
   thinking: promptThinkingSchema.optional(),
+  thinking_effort: promptThinkingSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
   plan_mode: z.boolean().optional(),
   plan_gate: promptPlanGateSchema.optional(),

@@ -64,6 +64,8 @@ import { registerSearchRoutes } from './search';
 import { registerSshRoutes } from './ssh';
 import { registerBrowserRoutes } from './browser';
 import { registerSessionMediaRoutes } from './sessionMedia';
+import { registerSessionModelsRoutes } from './sessionModels';
+import type { ProviderQuotaService } from '../usage/quota/service';
 import { registerDocumentPreviewRoutes } from './documentPreview';
 import { registerSessionExportRoute } from './sessionExport';
 import { liveWireSession, registerSessionsRoutes, sendSessionError } from './sessions';
@@ -115,6 +117,7 @@ export interface RegisterApiV1RoutesOptions {
   readonly guiStore: IGuiStoreService;
   readonly notifications: NotificationService;
   readonly imSessions?: ImSessionBridge;
+  readonly providerQuota?: ProviderQuotaService;
   /** Directory holding user theme/skin files; `<homeDir>/themes` in production. */
   readonly themesDir: string;
   readonly onShutdown: () => void;
@@ -232,6 +235,11 @@ export async function registerApiV1Routes(
         opts.onWorkspaceServed,
         opts.leaseRegistry,
         opts.externalClients,
+      );
+      registerSessionModelsRoutes(
+        apiV1 as unknown as Parameters<typeof registerSessionModelsRoutes>[0],
+        core,
+        opts.providerQuota,
       );
       registerAutoCompactRoutes(apiV1 as unknown as Parameters<typeof registerAutoCompactRoutes>[0], core);
       registerContextStrategyRoutes(apiV1 as unknown as Parameters<typeof registerContextStrategyRoutes>[0], core);

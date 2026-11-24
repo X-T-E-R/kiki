@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import { ensureServer, parseDuration, type ServerConnection } from './serve';
 import { resolveKikiHome } from './home';
 
-const SESSION_ACCESS_SCOPES = ['read', 'prompt', 'abort'] as const;
+const SESSION_ACCESS_SCOPES = ['read', 'prompt', 'abort', 'interact', 'control', 'llm'] as const;
 type SessionAccessScope = typeof SESSION_ACCESS_SCOPES[number];
 
 interface SessionAccessEnvelope<T> {
@@ -31,7 +31,7 @@ async function sessionAccessRequest<T>(
 function parseScopes(value: string): SessionAccessScope[] {
   const scopes = value.split(',').map((scope) => scope.trim());
   if (scopes.length === 0 || scopes.some((scope) => !SESSION_ACCESS_SCOPES.includes(scope as SessionAccessScope))) {
-    throw new Error('Invalid --scope. Choose one or more of: read, prompt, abort.');
+    throw new Error(`Invalid --scope. Choose one or more of: ${SESSION_ACCESS_SCOPES.join(', ')}.`);
   }
   if (new Set(scopes).size !== scopes.length) throw new Error('--scope must not repeat a scope.');
   return scopes as SessionAccessScope[];
@@ -71,7 +71,7 @@ export function registerSessionAccessCommand(program: Command): void {
 
   group.command('issue')
     .requiredOption('--session <id>', 'Session to grant access to.')
-    .requiredOption('--scope <scopes>', 'Comma-separated scopes: read,prompt,abort.', parseScopes)
+    .requiredOption('--scope <scopes>', 'Comma-separated scopes: read,prompt,abort,interact,control,llm.', parseScopes)
     .requiredOption('--name <client>', 'Name for the client receiving the token.')
     .option('--ttl <dur>', 'Token lifetime from 60s through 24h, e.g. 120, 90s, or 1h (default 1h).')
     .description('Issue a session-scoped access token; its secret is printed once.')

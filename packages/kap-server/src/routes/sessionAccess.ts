@@ -22,8 +22,15 @@ export function registerSessionAccessRoutes(app: FastifyInstance, core: Scope, s
   const path = '/api/session-access';
   app.get(path, async (request, reply) => {
     await store.ready;
-    const { enabled, terminalHandoff } = store.config();
-    return reply.send(okEnvelope({ version: 1, enabled, terminal_handoff: terminalHandoff, server_id, tokens: store.list() }, request.id));
+    const { enabled, terminalHandoff, terminalControl } = store.config();
+    return reply.send(okEnvelope({
+      version: 2,
+      enabled,
+      terminal_handoff: terminalHandoff,
+      terminal_control: terminalControl,
+      server_id,
+      tokens: store.list(),
+    }, request.id));
   });
   app.post(`${path}/tokens`, async (request, reply) => {
     await store.ready;
@@ -51,7 +58,7 @@ export function registerSessionAccessRoutes(app: FastifyInstance, core: Scope, s
       ...(persistent === true ? { persistent: true } : {}),
       server_id,
       server_version,
-      session_access: 1,
+      session_access: 2,
     }, request.id));
   });
   app.delete<{ Params: { token_id: string } }>(`${path}/tokens/:token_id`, async (request, reply) => {

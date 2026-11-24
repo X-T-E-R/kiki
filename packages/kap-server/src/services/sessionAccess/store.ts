@@ -13,7 +13,7 @@ import { SESSION_ACCESS_SECTION, type SessionAccessConfig } from './configSectio
 const PERSISTED_SCOPE = 'server';
 const PERSISTED_KEY = 'session-access-tokens.json';
 
-export const sessionAccessScopesSchema = z.array(z.enum(['read', 'prompt', 'abort', 'llm', 'interact'])).min(1);
+export const sessionAccessScopesSchema = z.array(z.enum(['read', 'prompt', 'abort', 'llm', 'interact', 'control'])).min(1);
 export const sessionAccessClientSchema = z.object({
   name: z.string().min(1).max(64).regex(/^[\x20-\x7e]+$/),
   version: z.string().max(32).optional(),

@@ -173,7 +173,7 @@ describe('kiki session-access CLI', () => {
       const endpoint = `http://127.0.0.1:${server.port}`;
 
       await run(['--home', home, 'list']);
-      expect(JSON.parse(output)).toMatchObject({ version: 1, enabled: true, tokens: [] });
+      expect(JSON.parse(output)).toMatchObject({ version: 2, enabled: true, terminal_control: true, tokens: [] });
       const attachment = await mocks.ensureServer.mock.results[0]?.value;
       expect(attachment).toMatchObject({ url: endpoint, token: server.localOwnerToken });
 
@@ -188,13 +188,13 @@ describe('kiki session-access CLI', () => {
       const sessionId = createdEnvelope.data?.id;
       if (typeof sessionId !== 'string') throw new Error('Expected the server to create a session.');
 
-      await run(['--home', home, 'issue', '--session', sessionId, '--scope', 'read,prompt,abort', '--name', 'cli-integration']);
+      await run(['--home', home, 'issue', '--session', sessionId, '--scope', 'read,prompt,abort,interact,control', '--name', 'cli-integration']);
       const issued = JSON.parse(output) as { token: string; session_id: string; scopes: string[]; session_access: number };
       expect(issued).toMatchObject({
         token: expect.stringMatching(/^ksa_[A-Za-z0-9_-]{43}$/),
         session_id: sessionId,
-        scopes: ['read', 'prompt', 'abort'],
-        session_access: 1,
+        scopes: ['read', 'prompt', 'abort', 'interact', 'control'],
+        session_access: 2,
       });
       expect(output.split(issued.token).length - 1).toBe(1);
 
@@ -206,7 +206,7 @@ describe('kiki session-access CLI', () => {
       expect(listedToken).toMatchObject({
         id: expect.stringMatching(/^sat_/),
         session_id: sessionId,
-        scopes: ['read', 'prompt', 'abort'],
+        scopes: ['read', 'prompt', 'abort', 'interact', 'control'],
         client: { name: 'cli-integration' },
         channel: 'owner',
       });

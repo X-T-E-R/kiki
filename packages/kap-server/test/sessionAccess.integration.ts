@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { request as httpRequest } from 'node:http';
-import { getLiveSessionById, IAgentLifecycleService, IAgentLoopService, IAgentProfileService, IModelService, ISessionAgentProfileCatalog, SessionAgentProfileCatalogService, AGENT_PROFILE_SOURCE_PRIORITY, ISessionMediaStore, ISessionContext, IBlobStore, IBootstrapService, agentScopeOf, sessionScopeOf, workspacePersistenceScope, IAgentExecutorRegistry, closeSessionById, IWorkAdmissionService, IFileSystemStorageService, IAgentContextMemoryService, IAgentTokenCountingService } from '@kiki/agent-core-v2';
+import { getLiveSessionById, IAgentLifecycleService, IAgentLoopService, IAgentProfileService, IModelService, IProviderService, ISessionAgentProfileCatalog, SessionAgentProfileCatalogService, AGENT_PROFILE_SOURCE_PRIORITY, ISessionMediaStore, ISessionContext, IBlobStore, IBootstrapService, agentScopeOf, sessionScopeOf, workspacePersistenceScope, IAgentExecutorRegistry, closeSessionById, IWorkAdmissionService, IFileSystemStorageService, IAgentContextMemoryService, IAgentTokenCountingService, ISessionApprovalService, ISessionInteractionService, ISessionQuestionService, IAgentFullCompactionService, IAgentConversationUndoService } from '@kiki/agent-core-v2';
 import { describe, expect, it, vi } from 'vitest';
 import { startServer } from '../src/start';
 import { bearerToken } from './helpers/auth';
@@ -17,13 +17,14 @@ interface SessionAccessIssue {
   scopes: string[];
   server_id: string;
   server_version: string;
-  session_access: 1;
+  session_access: 2;
 }
 
 interface SessionAccessListing {
-  version: 1;
+  version: 2;
   enabled: boolean;
   terminal_handoff: boolean;
+  terminal_control: boolean;
   server_id: string;
   tokens: Array<{
     id: string;
@@ -118,7 +119,7 @@ describe('server-v2 session access REST integration', () => {
 
   async function issueToken(
     sessionId: string,
-    scopes: Array<'read' | 'prompt' | 'abort'>,
+    scopes: Array<'read' | 'prompt' | 'abort' | 'interact' | 'control'>,
     clientName = 'rest-fixture',
     ttlSeconds?: number,
   ): Promise<SessionAccessIssue> {
@@ -131,7 +132,7 @@ describe('server-v2 session access REST integration', () => {
     const issued = await request<SessionAccessIssue>('POST', '/api/session-access/tokens', bearerToken(fixture.server!), body);
     expect(issued.status).toBe(200);
     expect(issued.body.code, issued.body.msg).toBe(0);
-    expect(issued.body.data).toMatchObject({ session_id: sessionId, scopes, server_id: expect.any(String), server_version: expect.any(String), session_access: 1 });
+    expect(issued.body.data).toMatchObject({ session_id: sessionId, scopes, server_id: expect.any(String), server_version: expect.any(String), session_access: 2 });
     expect(issued.body.data.token).toMatch(/^ksa_[A-Za-z0-9_-]{43}$/);
     return issued.body.data;
   }
@@ -143,7 +144,7 @@ describe('server-v2 session access REST integration', () => {
 
     const listed = await request<SessionAccessListing>('GET', '/api/session-access', bearerToken(fixture.server!));
     expect(listed.body.code).toBe(0);
-    expect(listed.body.data).toMatchObject({ version: 1, enabled: true, terminal_handoff: true });
+    expect(listed.body.data).toMatchObject({ version: 2, enabled: true, terminal_handoff: true, terminal_control: true });
     expect(listed.body.data.tokens).toHaveLength(2);
     expect(listed.body.data.tokens).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: expect.stringMatching(/^sat_/), session_id: sessionId, scopes: ['read'], client: { name: 'rest-fixture', version: '1' }, channel: 'owner' }),
@@ -201,6 +202,8 @@ describe('server-v2 session access REST integration', () => {
       `/api/sessions/${sessionId}/profile`,
       `/api/sessions/${sessionId}/runtime`,
       `/api/sessions/${sessionId}/skills`,
+      `/api/sessions/${sessionId}/models`,
+      `/api/sessions/${sessionId}/agents/main/model-switches`,
       `/api/usage/sessions/${sessionId}/accounting`,
       `/api/sessions/${sessionId}/approvals?status=pending`,
       `/api/sessions/${sessionId}/questions?status=pending`,
@@ -621,6 +624,359 @@ describe('server-v2 session access REST integration', () => {
     for (const suffix of ['approvals/example:approve', 'questions/example:answer', 'prompts/example:replace', 'prompts/example:abort', 'model', 'permission_mode']) {
       expect((await request('POST', `/api/sessions/${sessionId}/${suffix}`, token.token, {})).status).toBe(403);
     }
+  });
+
+  it('supports v2 terminal-exchanged dialog controls end-to-end without leaking secrets or resuming cold sessions', async () => {
+    const core = fixture.server!.core;
+    const providers = core.accessor.get(IProviderService);
+    const models = core.accessor.get(IModelService);
+    const secretApiKey = 'sk-super-secret-fixture-key-987654321';
+    const privateBaseUrl = 'https://private-gateway.internal.example.test/v1';
+    await providers.set('fixture-secret-provider', {
+      type: 'openai',
+      baseUrl: privateBaseUrl,
+      apiKey: secretApiKey,
+      customHeaders: { 'x-internal-secret': 'header-secret-token' },
+    });
+    await models.set('stub', {
+      ...models.get('stub'),
+      provider: 'fixture-secret-provider',
+      displayName: 'Stub Primary',
+      supportEfforts: ['off', 'medium', 'high'],
+      capabilities: ['thinking', 'tool_use'],
+    });
+    await models.set('stub-alt', {
+      ...models.get('stub-alt'),
+      provider: 'fixture-secret-provider',
+      displayName: 'Stub Alternate',
+      supportEfforts: ['off', 'low', 'high'],
+      capabilities: ['thinking', 'image_in'],
+    });
+
+    const sessionId = await fixture.createSession(fixture.home!, false);
+    const holder_id = randomBytes(16).toString('base64url');
+    const presence = await fetch(`${fixture.base}/api/session-access/holders/${holder_id}/presence`, {
+      headers: { authorization: `Bearer ${bearerToken(fixture.server!)}` },
+    });
+    expect(presence.status).toBe(200);
+    const reader = presence.body!.getReader();
+    try {
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain('event: ready');
+      const verifier = randomBytes(32).toString('base64url');
+      const ticket = await fixture.call<{ ticket: string }>('POST', '/api/session-access/tickets', {
+        session_id: sessionId,
+        holder_id,
+        challenge: createHash('sha256').update(verifier, 'ascii').digest('base64url'),
+      });
+      expect(ticket.body.code).toBe(0);
+      const exchanged = await fetch(`${fixture.base}/api/session-access/exchange`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ticket: ticket.body.data.ticket, verifier, client: { name: 'terminal-v2-fixture' } }),
+      });
+      const issued = await exchanged.json() as Envelope<SessionAccessIssue>;
+      expect(issued.code).toBe(0);
+      expect(issued.data.session_access).toBe(2);
+      expect(issued.data.scopes).toEqual(['read', 'prompt', 'abort', 'interact', 'control']);
+      const token = issued.data.token;
+
+      const session = getLiveSessionById(core.accessor, sessionId)!;
+      expect(session.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+      const preTurnModels = await request<{
+        executor_id: string;
+        current: { model: string | null; model_name: string | null; thinking: boolean | null; thinking_effort: string | null; permission_mode: string | null; plan_mode: boolean };
+        models: Array<{ id: string; name: string; provider_id?: string; capabilities: string[]; supports_thinking: boolean; thinking_efforts: string[]; context_length?: number }>;
+        quota_summary: unknown;
+      }>('GET', `/api/sessions/${sessionId}/models`, token);
+      expect(preTurnModels.status).toBe(200);
+      expect(preTurnModels.body.code, preTurnModels.body.msg).toBe(0);
+      expect(preTurnModels.body.data.executor_id).toBe('native');
+      expect(preTurnModels.body.data.current).toMatchObject({
+        model: 'stub',
+        model_name: 'Stub Primary',
+        plan_mode: false,
+      });
+      expect(preTurnModels.body.data.models).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: 'stub',
+          name: 'Stub Primary',
+          provider_id: 'fixture-secret-provider',
+          supports_thinking: true,
+          thinking_efforts: ['off', 'medium', 'high'],
+        }),
+        expect.objectContaining({
+          id: 'stub-alt',
+          name: 'Stub Alternate',
+          provider_id: 'fixture-secret-provider',
+          supports_thinking: true,
+          thinking_efforts: ['off', 'low', 'high'],
+        }),
+      ]));
+      const serializedModels = JSON.stringify(preTurnModels.body.data);
+      expect(serializedModels).not.toContain(secretApiKey);
+      expect(serializedModels).not.toContain(privateBaseUrl);
+      expect(serializedModels).not.toContain('header-secret-token');
+      expect(session.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+
+      const preTurnCatalog = session.accessor.get(ISessionAgentProfileCatalog) as SessionAgentProfileCatalogService;
+      preTurnCatalog.setContribution('v2-model-deny', {
+        profiles: [{ ...preTurnCatalog.getDefault(), denyModels: ['stub-alt'] }],
+      }, AGENT_PROFILE_SOURCE_PRIORITY.explicit);
+      const restrictedModels = await request<typeof preTurnModels.body.data>('GET', `/api/sessions/${sessionId}/models`, token);
+      expect(restrictedModels.body.code).toBe(0);
+      expect(restrictedModels.body.data.models.map((item) => item.id)).toContain('stub');
+      expect(restrictedModels.body.data.models.map((item) => item.id)).not.toContain('stub-alt');
+      preTurnCatalog.removeContribution('v2-model-deny');
+      expect(session.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+
+      await closeSessionById(core.accessor, sessionId);
+      expect(getLiveSessionById(core.accessor, sessionId)).toBeUndefined();
+      const coldModels = await request<typeof preTurnModels.body.data>('GET', `/api/sessions/${sessionId}/models`, token);
+      expect(coldModels.status).toBe(200);
+      expect(coldModels.body.code).toBe(0);
+      expect(coldModels.body.data.current.model).toBe('stub');
+      expect(JSON.stringify(coldModels.body.data)).not.toContain(secretApiKey);
+      expect(JSON.stringify(coldModels.body.data)).not.toContain(privateBaseUrl);
+      expect(getLiveSessionById(core.accessor, sessionId)).toBeUndefined();
+
+      const coldSwitchList = await request<unknown[]>('GET', `/api/sessions/${sessionId}/agents/main/model-switches`, token);
+      expect(coldSwitchList.body, coldSwitchList.body.msg).toMatchObject({ code: 0, data: [] });
+      const coldSwitchGet = await request<unknown>('GET', `/api/sessions/${sessionId}/agents/main/model-switches/missing-op`, token);
+      expect(coldSwitchGet.body, coldSwitchGet.body.msg).toMatchObject({ code: 0, data: null });
+      expect(getLiveSessionById(core.accessor, sessionId)).toBeUndefined();
+
+      const updatedProfile = await request<Record<string, unknown>>('POST', `/api/sessions/${sessionId}/profile`, token, {
+        agent_config: {
+          model: 'stub-alt',
+          thinking_effort: 'high',
+          permission_mode: 'manual',
+          plan_mode: true,
+        },
+      });
+      expect(updatedProfile.status).toBe(200);
+      expect(updatedProfile.body.code, updatedProfile.body.msg).toBe(0);
+      const afterProfileModels = await request<typeof preTurnModels.body.data>('GET', `/api/sessions/${sessionId}/models`, token);
+      expect(afterProfileModels.body.code).toBe(0);
+      expect(afterProfileModels.body.data.current).toMatchObject({
+        model: 'stub-alt',
+        model_name: 'Stub Alternate',
+        thinking: true,
+        thinking_effort: 'high',
+        permission_mode: 'manual',
+        plan_mode: true,
+      });
+
+      const queuedSwitch = await request<{ operationId: string; toModel: string; state: string }>(
+        'POST',
+        `/api/sessions/${sessionId}/agents/main/model-switches`,
+        token,
+        { operationId: 'v2-switch-1', model: 'stub', mode: 'direct', thinking: 'medium' },
+      );
+      expect(queuedSwitch.status).toBe(200);
+      expect(queuedSwitch.body.code, queuedSwitch.body.msg).toBe(0);
+      expect(queuedSwitch.body.data).toMatchObject({ operationId: 'v2-switch-1', toModel: 'stub' });
+      const switchRead = await request<{ operationId: string; toModel: string }>(
+        'GET',
+        `/api/sessions/${sessionId}/agents/main/model-switches/v2-switch-1`,
+        token,
+      );
+      expect(switchRead.body).toMatchObject({ code: 0, data: { operationId: 'v2-switch-1', toModel: 'stub' } });
+      const switchList = await request<Array<{ input: { operationId: string } }>>(
+        'GET',
+        `/api/sessions/${sessionId}/agents/main/model-switches`,
+        token,
+      );
+      expect(switchList.body.code).toBe(0);
+
+      const liveSession = getLiveSessionById(core.accessor, sessionId)!;
+      liveSession.accessor.get(ISessionInteractionService).acquireConsumer('session-access-v2-test');
+
+      const approvalDecision = liveSession.accessor.get(ISessionApprovalService).request({
+        id: 'v2-approve-1',
+        toolCallId: 'tc-v2-approve',
+        toolName: 'Bash',
+        action: 'run',
+        display: { kind: 'command', command: 'echo ok' },
+      });
+      const resolvedApproval = await request<{ resolved: boolean }>(
+        'POST',
+        `/api/sessions/${sessionId}/approvals/v2-approve-1`,
+        token,
+        { decision: 'approved' },
+      );
+      expect(resolvedApproval.status).toBe(200);
+      expect(resolvedApproval.body).toMatchObject({ code: 0, data: { resolved: true } });
+      await expect(approvalDecision).resolves.toMatchObject({ decision: 'approved' });
+
+      const answerResult = liveSession.accessor.get(ISessionQuestionService).request({
+        id: 'q-v2-answer',
+        toolCallId: 'tc-q-answer',
+        questions: [{ question: 'Proceed?', options: [{ label: 'Yes' }, { label: 'No' }] }],
+      });
+      const answered = await request<{ resolved: boolean }>(
+        'POST',
+        `/api/sessions/${sessionId}/questions/q-v2-answer`,
+        token,
+        { answers: { q_0: { kind: 'single', option_id: 'opt_0_0' } } },
+      );
+      expect(answered.status).toBe(200);
+      expect(answered.body).toMatchObject({ code: 0, data: { resolved: true } });
+      await expect(answerResult).resolves.toMatchObject({ answers: { 'Proceed?': 'Yes' } });
+
+      const dismissResult = liveSession.accessor.get(ISessionQuestionService).request({
+        id: 'q-v2-dismiss',
+        toolCallId: 'tc-q-dismiss',
+        questions: [{ question: 'Cancel me?', options: [{ label: 'A' }] }],
+      });
+      const dismissed = await request<{ dismissed: boolean }>(
+        'POST',
+        `/api/sessions/${sessionId}/questions/q-v2-dismiss:dismiss`,
+        token,
+        {},
+      );
+      expect(dismissed.status).toBe(200);
+      expect(dismissed.body.data).toMatchObject({ dismissed: true });
+      await expect(dismissResult).resolves.toBeNull();
+
+      const main = liveSession.accessor.get(IAgentLifecycleService).get('main')!;
+      const compactSpy = vi.spyOn(main.accessor.get(IAgentFullCompactionService), 'begin').mockReturnValue(true);
+      const compacted = await request<{ accepted: boolean; source: string }>(
+        'POST',
+        `/api/sessions/${sessionId}:compact`,
+        token,
+        { instruction: 'Keep key decisions', strategy: 'summarize' },
+      );
+      expect(compacted.status).toBe(200);
+      expect(compacted.body).toMatchObject({ code: 0, data: { accepted: true, source: 'manual' } });
+      expect(compactSpy).toHaveBeenCalledWith({ source: 'manual', instruction: 'Keep key decisions', strategy: 'summarize' });
+      compactSpy.mockRestore();
+
+      const undoSpy = vi.spyOn(main.accessor.get(IAgentConversationUndoService), 'undo').mockResolvedValue(undefined as never);
+      const undone = await request<{ messages: unknown; status: unknown }>(
+        'POST',
+        `/api/sessions/${sessionId}:undo`,
+        token,
+        { count: 1 },
+      );
+      expect(undone.status).toBe(200);
+      expect(undone.body.code, undone.body.msg).toBe(0);
+      expect(undoSpy).toHaveBeenCalledWith(1);
+      undoSpy.mockRestore();
+    } finally {
+      await reader.cancel();
+    }
+  });
+
+  it('enforces v2 negative security boundaries for scopes, cross-session isolation, profile allowlists, SSH approvals, and dangerous actions', async () => {
+    const sessionId = await fixture.createSession(fixture.home!);
+    const otherSessionId = await fixture.createSession(fixture.home!);
+    const fullToken = await issueToken(sessionId, ['read', 'prompt', 'abort', 'interact', 'control']);
+    const readOnlyToken = await issueToken(sessionId, ['read']);
+    const interactOnlyToken = await issueToken(sessionId, ['interact']);
+    const controlOnlyToken = await issueToken(sessionId, ['control']);
+
+    const crossSessionDenied = [
+      await request('GET', `/api/sessions/${otherSessionId}/models`, fullToken.token),
+      await request('POST', `/api/sessions/${otherSessionId}/profile`, fullToken.token, { agent_config: { plan_mode: true } }),
+      await request('GET', `/api/sessions/${otherSessionId}/agents/main/model-switches`, fullToken.token),
+      await request('POST', `/api/sessions/${otherSessionId}/agents/main/model-switches`, fullToken.token, { operationId: 'x', model: 'stub', mode: 'direct' }),
+      await request('POST', `/api/sessions/${otherSessionId}/approvals/example`, fullToken.token, { decision: 'approved' }),
+      await request('POST', `/api/sessions/${otherSessionId}/questions/example`, fullToken.token, { answers: {} }),
+      await request('POST', `/api/sessions/${otherSessionId}:compact`, fullToken.token, {}),
+      await request('POST', `/api/sessions/${otherSessionId}:undo`, fullToken.token, {}),
+    ];
+    for (const res of crossSessionDenied) {
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ code: 40101, msg: 'session_access_scope' });
+    }
+
+    const missingScopeDenied = [
+      await request('POST', `/api/sessions/${sessionId}/profile`, readOnlyToken.token, { agent_config: { plan_mode: true } }),
+      await request('POST', `/api/sessions/${sessionId}/approvals/example`, readOnlyToken.token, { decision: 'approved' }),
+      await request('POST', `/api/sessions/${sessionId}/questions/example`, readOnlyToken.token, { answers: {} }),
+      await request('POST', `/api/sessions/${sessionId}/agents/main/model-switches`, readOnlyToken.token, { operationId: 'x', model: 'stub', mode: 'direct' }),
+      await request('POST', `/api/sessions/${sessionId}:compact`, readOnlyToken.token, {}),
+      await request('POST', `/api/sessions/${sessionId}:undo`, readOnlyToken.token, {}),
+      await request('POST', `/api/sessions/${sessionId}/profile`, interactOnlyToken.token, { agent_config: { plan_mode: true } }),
+      await request('POST', `/api/sessions/${sessionId}:compact`, interactOnlyToken.token, {}),
+      await request('POST', `/api/sessions/${sessionId}:undo`, interactOnlyToken.token, {}),
+      await request('POST', `/api/sessions/${sessionId}/approvals/example`, controlOnlyToken.token, { decision: 'approved' }),
+      await request('POST', `/api/sessions/${sessionId}/questions/example`, controlOnlyToken.token, { answers: {} }),
+    ];
+    for (const res of missingScopeDenied) {
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ code: 40101, msg: 'session_access_scope' });
+    }
+
+    const alwaysRefused = [
+      await request('POST', `/api/sessions/${sessionId}/ssh/approvals/example`, fullToken.token, { decision: 'approved' }),
+      await request('POST', `/api/sessions/${sessionId}:fork`, fullToken.token, {}),
+      await request('POST', `/api/sessions/${sessionId}:archive`, fullToken.token, {}),
+      await request('POST', `/api/sessions/${sessionId}:restore`, fullToken.token, {}),
+      await request('POST', `/api/sessions/${sessionId}:delete-archived`, fullToken.token, {}),
+      await request('POST', `/api/sessions/${sessionId}:btw`, fullToken.token, {}),
+      await request('POST', `/api/sessions/${sessionId}:branch`, fullToken.token, {}),
+      await request('GET', '/api/models', fullToken.token),
+      await request('GET', '/api/providers', fullToken.token),
+      await request('GET', '/api/config', fullToken.token),
+      await request('GET', '/api/session-access', fullToken.token),
+    ];
+    for (const res of alwaysRefused) {
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ code: 40101, msg: 'session_access_scope' });
+    }
+
+    const forbiddenProfileBodies: Array<[Record<string, unknown>, string]> = [
+      [{ title: 'hijack' }, 'title'],
+      [{ private: true }, 'private'],
+      [{ metadata: { cwd: '/tmp' } }, 'metadata'],
+      [{ delivery: 'message' }, 'delivery'],
+      [{ permission_rules: [] }, 'permission_rules'],
+      [{}, 'agent_config'],
+      [{ agent_config: {} }, 'agent_config'],
+      [{ agent_config: { profile: 'other' } }, 'agent_config.profile'],
+      [{ agent_config: { executor: 'codex' } }, 'agent_config.executor'],
+      [{ agent_config: { execution: { executor: 'codex' } } }, 'agent_config.execution'],
+      [{ agent_config: { additional_dirs: ['/etc'] } }, 'agent_config.additional_dirs'],
+      [{ agent_config: { plan_gate: 'free' } }, 'agent_config.plan_gate'],
+      [{ agent_config: { goal_objective: 'nope' } }, 'agent_config.goal_objective'],
+    ];
+    for (const [body, expectedField] of forbiddenProfileBodies) {
+      const res = await request('POST', `/api/sessions/${sessionId}/profile`, fullToken.token, body);
+      expect(res.status, expectedField).toBe(200);
+      expect(res.body.code, expectedField).toBe(40001);
+      expect(res.body.msg, expectedField).toContain(expectedField);
+    }
+
+    const badSwitchBody = await request('POST', `/api/sessions/${sessionId}/agents/main/model-switches`, fullToken.token, {
+      operationId: 'bad-1',
+      model: 'stub',
+      mode: 'direct',
+      profile: 'evil',
+    });
+    expect(badSwitchBody.status).toBe(200);
+    expect(badSwitchBody.body.code).toBe(40001);
+    expect(badSwitchBody.body.msg).toContain('profile');
+
+    const foreignAgentSwitch = await request('POST', `/api/sessions/${sessionId}/agents/unknown_child/model-switches`, fullToken.token, {
+      operationId: 'bad-agent',
+      model: 'stub',
+      mode: 'direct',
+    });
+    expect(foreignAgentSwitch.body.code).toBe(40001);
+    expect(foreignAgentSwitch.body.msg).toContain('agent_id');
+
+    const badCompactBody = await request('POST', `/api/sessions/${sessionId}:compact`, fullToken.token, { unexpected: true });
+    expect(badCompactBody.body.code).toBe(40001);
+    expect(badCompactBody.body.msg).toContain('unexpected');
+
+    const badUndoBody = await request('POST', `/api/sessions/${sessionId}:undo`, fullToken.token, { unexpected: true });
+    expect(badUndoBody.body.code).toBe(40001);
+    expect(badUndoBody.body.msg).toContain('unexpected');
+
+    const withOrigin = await request('POST', `/api/sessions/${sessionId}/profile`, fullToken.token, { agent_config: { plan_mode: true } }, { origin: 'http://example.test' });
+    expect(withOrigin.status).toBe(401);
+    expect(withOrigin.body.code).toBe(40101);
   });
 
   it('expires owner-issued tokens using the injectable session-access clock', async () => {

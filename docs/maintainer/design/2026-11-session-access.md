@@ -8,7 +8,7 @@ outline: [2, 3]
 
 This record is the canonical contract for two related pieces of work: a credential bound to one session (a **session access token**), and the TUI's state reports to terminals that support the OSC 7501 program-status protocol, which can also hand such a token to the terminal hosting the TUI. Outside programs will be written against this contract, so it is stated here once; the issues that build it refer to it.
 
-A local client may show a session, submit prompts, steer new content, cancel queued prompts, read session media, and stop a turn. The contract is deliberately client-neutral: no client name or vendor is part of Kiki's code, configuration, or docs; a client name may appear only as an example value of `client.name` in tests.
+A local client may show a session, read its sanitized model catalog and quota summary, submit prompts, steer new content, cancel queued prompts, read session media, resolve pending approvals and questions, switch model/thinking/mode controls, run compaction or undo, and stop a turn. The contract is deliberately client-neutral: no client name or vendor is part of Kiki's code, configuration, or docs; a client name may appear only as an example value of `client.name` in tests.
 
 ## Purpose
 
@@ -34,7 +34,7 @@ interface SessionAccessToken {
   id: string;                                  // public id, safe to list: "sat_" + ulid
   digest: string;                              // sha256 of the secret; the secret is never stored
   session_id: string;
-  scopes: ('read' | 'prompt' | 'abort')[];
+  scopes: ('read' | 'prompt' | 'abort' | 'llm' | 'interact' | 'control')[];
   client: { name: string; version?: string };  // name: 1–64 printable characters; version: at most 32
   channel: 'terminal' | 'owner';
   holder_id?: string;                          // terminal channel only
@@ -44,7 +44,7 @@ interface SessionAccessToken {
 ```
 
 - The secret is `ksa_` followed by base64url of 32 random bytes. A presented secret is looked up by its digest.
-- A `terminal` token always has the scopes `read`, `prompt` and `abort`, lives one hour and cannot be renewed; the terminal asks for a new ticket instead, which proves the TUI is still running and still showing that session. An `owner` token has the scopes the caller lists (at least one) and lives one hour by default; the caller may ask for 60 seconds to 24 hours with `ttl_seconds`.
+- A `terminal` token carries `read`, `prompt`, `abort`, `interact`, and `control` when `[session_access] terminal_control` is `true` (the default), or `read`, `prompt`, and `abort` when `terminal_control` is `false`. It lives one hour and cannot be renewed; the terminal asks for a new ticket instead, which proves the TUI is still running and still showing that session. An `owner` token has the scopes the caller lists (at least one) and lives one hour by default; the caller may ask for 60 seconds to 24 hours with `ttl_seconds` (persistent owner tokens may use a longer TTL and remain compatible with persisted `version: 1` token stores).
 - Nothing is persisted. A server restart invalidates every token, ticket and holder.
 - A token is revoked when its holder releases it, when its holder's presence is lost (see [Holders](#holders-and-presence)), when the owner revokes it, when its session is deleted (`ISessionManager.onDidDeleteSession`), when it expires, and when `[session_access] enabled` is switched off. Revocation closes the token's open WebSocket connections and aborts its in-flight REST requests.
 
@@ -64,15 +64,20 @@ These are the only things a token can do. Everything else is refused, and a rout
 
 | Scope | Operations |
 | --- | --- |
-| `read` | `GET /api/sessions/{id}`, `/status`, `/snapshot`, `/messages`, `/messages/{message_id}`, `/transcript`, `/transcript/ops`, `/transcript/detail`, `/transcript/details`, `/transcript/plan`, `/transcript/user-messages`, `/prompts`, `/prompts/{prompt_id}`, `/approvals`, `/questions`, `/children`, `/tasks`, `/tasks/{task_id}`, `/agent-tasks`, `/goal`, `/warnings`, `/profile`, `/runtime`, `/skills`, `/media/{file_id}`, and `/media/{file_id}/preview`; `GET /api/usage/sessions/{sessionId}/accounting`; `POST /api/klient/session-view/{id}/transcript/content`; and WebSocket `/api/ws` with the frames `client_hello`, `subscribe`, `subscribe_v2`, `unsubscribe`, `unsubscribe_v2`, `ping` and `pong`, limited to the bound session |
-| `prompt` | `POST /api/sessions/{id}/prompts` and `/prompts:steer` with the restricted new-content body below; `POST /api/sessions/{id}/prompts/{prompt_id}:cancel` for queued-only cancellation; `receipt=true` is allowed on submit and steer |
+| `read` | `GET /api/sessions/{id}`, `/status`, `/snapshot`, `/events`, `/models`, `/messages`, `/messages/{message_id}`, `/transcript`, `/transcript/ops`, `/transcript/detail`, `/transcript/details`, `/transcript/plan`, `/transcript/user-messages`, `/prompts`, `/prompts/{prompt_id}`, `/approvals`, `/questions`, `/children`, `/tasks`, `/tasks/{task_id}`, `/agent-tasks`, `/goal`, `/warnings`, `/profile`, `/runtime`, `/skills`, `/media/{file_id}`, and `/media/{file_id}/preview`; `GET /api/sessions/{id}/agents/{agent_id}/model-switches` and `/model-switches/{operation_id}`; `GET /api/usage/sessions/{sessionId}/accounting`; `GET /api/events`; `POST /api/klient/session-view/{id}/transcript/content`; and WebSocket `/api/ws` with the frames `client_hello`, `subscribe`, `subscribe_v2`, `unsubscribe`, `unsubscribe_v2`, `ping` and `pong`, limited to the bound session |
+| `prompt` | `POST /api/sessions/{id}/prompts` and `/prompts:steer` with the restricted new-content body below; `POST /api/sessions/{id}/prompts/{prompt_id}:cancel` for queued-only cancellation; `receipt=true` is allowed on submit and steer; `POST /api/sessions/{id}/interactions/{interaction_id}:respond`; `POST /api/llm:complete` |
 | `abort` | `POST /api/sessions/{id}:abort` (optional `agent_id` in body or query), matched after single-decode normalization as `^/api/sessions/([^/:]+):abort$` |
+| `interact` | `POST /api/sessions/{id}/approvals/{approval_id}` (non-SSH approvals only); `POST /api/sessions/{id}/questions/{question_id}` (answer) and `/questions/{question_id}:dismiss`; `POST /api/sessions/{id}/interactions/{interaction_id}:respond` |
+| `control` | `POST /api/sessions/{id}/profile` with the restricted `agent_config` body below; `GET /api/sessions/{id}/agents/{agent_id}/model-switches`, `GET …/model-switches/{operation_id}`, and `POST …/model-switches` (bound session agents only, strict body allowlist); `POST /api/sessions/{id}:compact` and `POST /api/sessions/{id}:undo`, matched after single-decode normalization as `^/api/sessions/([^/:]+):(compact\|undo)$` with strict body allowlists |
+| `llm` | `POST /api/llm:complete` |
+
+`GET /api/sessions/{id}/models` is cold-safe: it reads `ISessionIndex`, persisted profile snapshots, and workspace profile catalogs without resuming a cold session or creating `main`. It returns `{ executor_id, current: { model, model_name, thinking, thinking_effort, permission_mode, plan_mode }, models: [{ id, name, provider_id?, capabilities, supports_thinking, thinking_efforts, context_length? }], quota_summary: { provider_id, status, windows: [{ id, label, remaining_percent, reset_at }] } | null }`. Native sessions respect profile model constraints (`allowed_models`, `deny_models`, `restrict_models_to_menu`), external executors expose only executor-catalog models, and the response never includes API keys, OAuth tokens, headers, raw account labels/emails, or provider `base_url`s.
 
 Session media reads accept only canonical `f_*` file IDs or validated `blobref:<agentId>:<sha256>` IDs, with literal or single-decoded `%3A` colons in the path. These reads never resolve a host filesystem path. Filesystem routes, document previews, media-playback grants, and terminals remain refused. No agent-roster GET is registered.
 
 `GET …/status` resolves an unbound native model from the session's default profile, then the global default, without creating or binding main. A bound model always wins, including a saved alias that no longer resolves. `model_name: string | null` carries the configured catalog display name, or `null` when unavailable. Before Turn 1, `GET …/sessions/{id}` also reports the effective model in `agent_config.model`. An external executor whose harness chooses the model retains an unknown model rather than inheriting the native global default.
 
-Refused even though they look session-scoped: the body-addressed batch routes (`GET /api/sessions/query`, `POST /api/sessions:archive`, `:restore`, `:delete-archived`); prompt action routes other than the read point route, new-content `:steer`, and queued-only `:cancel`; the per-message action routes (`POST …/messages/{tail}`); every other `:{action}` on a session; answering approvals and questions; `/api/klient/call` and `/api/klient/events`; and every non-session surface.
+Refused even though they look session-scoped: the body-addressed batch routes (`GET /api/sessions/query`, `POST /api/sessions:archive`, `:restore`, `:delete-archived`); prompt action routes other than the read point route, new-content `:steer`, and queued-only `:cancel`; the per-message action routes (`POST …/messages/{tail}`); SSH host-trust approvals (`POST /api/sessions/{id}/ssh/approvals/{approval_id}`); session actions other than `:abort`, `:compact`, and `:undo` (in particular `:fork`, `:archive`, `:restore`, `:delete-archived`, `:btw`, `:branch`, `:fold`, `:discard`, `:tools-lock`); `/api/klient/call` and `/api/klient/events`; global `/api/models`, `/api/providers`, `/api/config`, `/api/fs`, and `/api/session-access/*` management routes; and every non-session surface.
 
 Because the router decodes parameters after matching, and the session filesystem registers a catch-all `POST /sessions/{session_id}/{tail}` (`packages/kap-server/src/routes/fs.ts`), raw paths are checked and single-decoded before admission for `ksa_` requests: encoded separators or NUL bytes (`%2F`, `%5C`, `%00`), malformed or double percent-encoding, `//`, a `.` or `..` segment, or a trailing slash are refused, and so is `HEAD`.
 
@@ -89,9 +94,17 @@ The server's auth-failure limiter exists only when it is not bound to loopback (
 
 ### Prompts sent with a token
 
-With a token, `POST …/prompts` and `POST …/prompts:steer` use the existing submit pipeline and accept only `content`, `prompt_id`, `metadata`, and `agent_id`. `content` may contain text blocks without `presentation`, or `image_url` blocks whose nested `url` is valid base64 in the form `data:image/*;base64,...`; remote URLs, non-image data URLs, malformed base64, audio/video blocks, and `presentation` are rejected. `agent_id` may be omitted, be `main`, or name an existing child or branch in the bound session. Any other field, in particular `model`, `thinking`, `permission_mode`, `plan_mode`, `plan_gate`, `profile`, `execution`, `disabled_tools`, `skills`, `goal_*`, `delivery_mode` and `admission`, is a validation error naming the field; nothing is silently dropped. The existing owner-only `:steer` body with `prompt_ids` remains unchanged, but a session-access token can use only the new-content form. Because `promptSubmissionSchema` (`packages/kap-server/src/protocol/rest-prompt.ts`) is a non-strict object that strips unknown keys, this check runs on the raw parsed body in a `preValidation` hook, before the schema.
+With a token, `POST …/prompts` and `POST …/prompts:steer` use the existing submit pipeline and accept only `content`, `prompt_id`, `metadata`, `agent_id`, `wait`, `output_schema`, and `include_thinking`. `content` may contain text blocks without `presentation`, or `image_url` blocks whose nested `url` is valid base64 in the form `data:image/*;base64,...`; remote URLs, non-image data URLs, malformed base64, audio/video blocks, and `presentation` are rejected. `agent_id` may be omitted, be `main`, or name an existing child or branch in the bound session. Any other field, in particular `model`, `thinking`, `permission_mode`, `plan_mode`, `plan_gate`, `profile`, `execution`, `disabled_tools`, `skills`, `goal_*`, `delivery_mode` and `admission`, is a validation error naming the field; nothing is silently dropped. The existing owner-only `:steer` body with `prompt_ids` remains unchanged, but a session-access token can use only the new-content form. Because `promptSubmissionSchema` (`packages/kap-server/src/protocol/rest-prompt.ts`) is a non-strict object that strips unknown keys, this check runs on the raw parsed body in a `preValidation` hook, before the schema.
 
 A prompt sent with a token, including new content sent through `:steer`, is stored with `origin: { kind: 'user', via: { client: <token.client.name>, channel } }`. It remains a user message everywhere (TUI, GUI, search, titles, undo); every consumer that switches on `origin` or compares it structurally must keep treating it so. `via` is read back through `GET …/messages` and is projected by the transcript. It must survive the fenced-outbox fallback and durable ingress replay by being persisted with the stored request; if that cannot be done cleanly, a token request refuses with the fence error instead of entering the fallback. `POST …/prompts/{prompt_id}:cancel` is the token-facing queued-only alias; it never aborts an active turn. The owner-only `:abort` contract, including `?queued_only=true`, remains unchanged.
+
+### Control mutations sent with a token
+
+With a `control`-scoped token, `POST /api/sessions/{id}/profile` enforces a `preValidation` allowlist on the raw parsed body: the top-level object may contain only `agent_config`, and `agent_config` must be a non-empty object containing only a subset of `model`, `thinking`, `thinking_effort`, `permission_mode`, and `plan_mode`. Any other top-level field (`title`, `private`, `metadata`, `delivery`, `permission_rules`) or nested key (`agent_config.profile`, `agent_config.executor`, `agent_config.execution`, `agent_config.additional_dirs`, `agent_config.plan_gate`, `agent_config.goal_*`, or unknown keys) returns the house validation envelope (HTTP 200, code `40001`) naming the rejected field.
+
+Similarly, `POST /api/sessions/{id}/agents/{agent_id}/model-switches` enforces a strict body allowlist (`operationId`, `model`, `mode`, `thinking`, `selectedFromModel`) and confines `agent_id` to `main` or an existing agent of the bound session; `POST /api/sessions/{id}:compact` allows only `instruction` and `strategy`; and `POST /api/sessions/{id}:undo` allows only `count` and `page_size`.
+
+With an `interact`-scoped token, loopback local hosts act as the local user's dialog proxy for non-SSH approvals (including interactive `requireHumanInteraction` approvals, unlike remote peer tokens) and pending questions; SSH host-trust approvals (`POST /api/sessions/{id}/ssh/approvals/{approval_id}`) remain strictly refused.
 
 ### WebSocket
 
@@ -105,14 +118,14 @@ Every route under `/api/session-access` is for the local owner only, except `exc
 
 | Route | Body → data |
 | --- | --- |
-| `GET /api/session-access` | → `{ version: 1, enabled, terminal_handoff, server_id, tokens: [{ id, session_id, scopes, client, channel, issued_at, expires_at }] }` |
+| `GET /api/session-access` | → `{ version: 2, enabled, terminal_handoff, terminal_control, server_id, tokens: [{ id, session_id, scopes, client, channel, issued_at, expires_at }] }` |
 | `POST /api/session-access/tokens` | `{ session_id, scopes, client: { name, version? }, ttl_seconds? }` → the same data as `exchange`; channel `owner`; at least one scope; the session must exist |
 | `DELETE /api/session-access/tokens/{token_id}` | Revoke one → `{ revoked: n }` |
 | `DELETE /api/session-access/tokens` | Revoke all → `{ revoked: n }` |
 | `POST /api/session-access/tickets` | `{ session_id, challenge, holder_id }` → `{ ticket, expires_at }`. `challenge` matches `^[A-Za-z0-9_-]{43}$`; `holder_id` matches `^[A-Za-z0-9_-]{16,64}$` and must have an open presence stream, otherwise HTTP 409; the session must exist. The ticket is base64url of 32 random bytes, valid 60 seconds, single use; only its digest is stored, with the session, challenge, holder and expiry. At most 8 unexpired tickets per holder; older ones are dropped. |
 | `GET /api/session-access/holders/{holder_id}/presence` | A long-lived `text/event-stream` response: one `ready` event, then silence. While it is open the holder is present. |
 | `POST /api/session-access/release` | `{ holder_id, session_id? }` → `{ revoked: n }`; revokes that holder's tickets and tokens, only for that session if given |
-| `POST /api/session-access/exchange` | **No Authorization.** `{ ticket, verifier, client: { name, version? } }` → `{ token, expires_at, session_id, scopes, server_id, server_version, session_access: 1 }` |
+| `POST /api/session-access/exchange` | **No Authorization.** `{ ticket, verifier, client: { name, version? } }` → `{ token, expires_at, session_id, scopes, server_id, server_version, session_access: 2 }` |
 
 ### Exchange
 
@@ -141,8 +154,9 @@ The `[session_access]` section in `config.toml` is registered with `registerConf
 | --- | --- | --- |
 | `enabled` | `true` | Every route except `GET /api/session-access` answers 403 `session_access_disabled`; `exchange` answers its single error; token requests are refused; live tokens are revoked through `IConfigService.onDidSectionChange` when the value flips. |
 | `terminal_handoff` | `true` | `tickets` answers 403 `session_access_disabled` and `exchange` its single error; owner-issued tokens keep working and are not revoked. |
+| `terminal_control` | `true` | `exchange` issues terminal tokens with `['read', 'prompt', 'abort']` instead of `['read', 'prompt', 'abort', 'interact', 'control']`, and flipping it to `false` revokes live terminal tokens holding `interact` or `control`; owner-issued tokens are unaffected. |
 
-The CLI is `kiki session-access list | issue --session <id> --scope read,prompt,abort --name <client> [--ttl <dur>] | revoke <token_id|--all>`, modelled on `apps/kimi-code/src/kiki/connections.ts` and registered in `apps/kimi-code/src/kiki/register.ts`. `--ttl` accepts a bare whole-second integer from 60 through 86400, or an `s`/`m`/`h` duration in the same range; it defaults to one hour. The command uses a plain `fetch` after `ensureServer`, since no klient facade exists for this surface. `issue` prints the secret once.
+The CLI is `kiki session-access list | issue --session <id> --scope read,prompt,abort,interact,control,llm --name <client> [--ttl <dur>] | revoke <token_id|--all>`, modelled on `apps/kimi-code/src/kiki/connections.ts` and registered in `apps/kimi-code/src/kiki/register.ts`. `--ttl` accepts a bare whole-second integer from 60 through 86400, or an `s`/`m`/`h` duration in the same range; it defaults to one hour. The command uses a plain `fetch` after `ensureServer`, since no klient facade exists for this surface. `issue` prints the secret once.
 
 A GUI row for listing and revoking tokens belongs in the planned "Spaces & devices" settings group and is not designed yet.
 
@@ -212,7 +226,7 @@ The TUI process has one `holder_id`, base64url of 16 random bytes. It opens its 
 
 ### Versioning
 
-`exchange` returns `session_access: 1` and reports carry `handoff=1`; the exchange payload has no capabilities array. Both version fields increase together whenever the exchange, the report keys or a token's allowed operations change incompatibly.
+`GET /api/session-access` reports `version: 2`, and `exchange` and `POST /api/session-access/tokens` return `session_access: 2` alongside the minted `scopes` array so local clients can feature-detect v2 dialog control capabilities. OSC 7501 reports retain `handoff=1` for wire compatibility with v1 terminal parsers.
 
 ## Behaviours token clients rely on
 
@@ -228,7 +242,7 @@ A client holding a token depends on behaviours of prompt submission, turn events
 
 ## Why the contract has this shape
 
-- **General names.** "Session access token", `ksa_`, `sat_`, `/api/session-access/` and `[session_access]` rather than anything named after terminals, because the owner channel serves any local program and a third channel may follow. For the same reason `exchange` returns `session_access: 1` together with `scopes`, and the configuration has two switches: one for the feature and one for the terminal channel.
+- **General names.** "Session access token", `ksa_`, `sat_`, `/api/session-access/` and `[session_access]` rather than anything named after terminals, because the owner channel serves any local program and a third channel may follow. For the same reason `exchange` returns `session_access: 2` together with `scopes`, and the configuration separates master enablement, terminal hand-off, and terminal interactive/control scopes.
 - **`via` carries the channel** as well as the client name, so prompts from the owner channel and the terminal channel can be told apart.
 - **Holders with presence**, because the TUI cannot name its own event connection to the server; presence also gives the server a way to revoke when the TUI disappears without releasing.
 - **Ephemeral sessions report status only**, the smallest rule that keeps unindexed sessions out of the hand-off.

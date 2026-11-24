@@ -225,6 +225,7 @@ export class PersistedModelSwitchReader {
   }
 
   private async source(scope: string, pinned?: PinnedLogicalRead): Promise<Source> {
+    if (pinned !== undefined && pinned.size === undefined) return { size: 0, mtimeMs: 0 };
     const path = this.host.storage.pathFor?.(scope, AGENT_WIRE_RECORD_KEY);
     if (pinned !== undefined && !pinned.sealed && path !== undefined && this.host.files !== undefined) {
       const stat = await this.host.files.stat(path);

@@ -54,8 +54,10 @@ interface Envelope<T> {
 }
 
 export interface SessionAccessConfig {
+  readonly version?: number;
   readonly enabled: boolean;
   readonly terminal_handoff: boolean;
+  readonly terminal_control?: boolean;
   readonly server_id: string;
 }
 
