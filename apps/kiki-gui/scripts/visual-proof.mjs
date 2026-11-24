@@ -6420,7 +6420,7 @@ async function scenarioUsageDashboard() {
   for (const kpiId of ['cost', 'tokens', 'cache', 'activity']) {
     await page.waitForSelector(`[data-usage-kpi="${kpiId}"]`, { timeout: 10_000 });
   }
-  await page.waitForSelector('[data-axis="range"] [data-axis-value="today"][aria-pressed="true"]', { timeout: 10_000 });
+  await page.waitForSelector('[data-axis="range"] [data-axis-value="last_24_hours"][aria-pressed="true"]', { timeout: 10_000 });
   await page.waitForSelector('[data-usage-unpriced-trigger]', { timeout: 10_000 });
   await page.waitForSelector('text=mystery-9', { timeout: 10_000 });
   await page.waitForSelector('[data-usage-trend]', { timeout: 10_000 });

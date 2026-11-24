@@ -1,8 +1,10 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useI18n } from '../../i18n';
 import { effectiveQuotaStatus, quotaLocalUsageHref, quotaSettingsHref } from '../../lib/providerQuota';
 import { Icon } from '../icons';
 import { OffQuotaSection, UnsupportedQuotaSection } from './quota/QuotaFoldSections';
+import { buildQuotaOverviewPlan, QuotaOverviewDials } from './quota/QuotaOverviewDials';
 import { EngineQuotaSection } from './quota/QuotaPoolRow';
 import { AttentionQuotaRow, LedgerQuotaRow, QUOTA_SMALL_BUTTON } from './quota/QuotaSourceRow';
 import { useQuotaPanelState } from './quota/useQuotaPanelState';
@@ -13,13 +15,96 @@ const ROW_LINK =
 export function ProviderQuotaPanel() {
   const { t, time } = useI18n();
   const state = useQuotaPanelState();
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const [panelWidth, setPanelWidth] = useState<number>(() => (
+    typeof window !== 'undefined' && window.innerWidth > 0 && window.innerWidth < 800
+      ? window.innerWidth
+      : 960
+  ));
+  const [expandedEngineIds, setExpandedEngineIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [focusWithinDials, setFocusWithinDials] = useState(false);
+  const frozenDialIdsRef = useRef<readonly string[] | null>(null);
+
+  useEffect(() => {
+    const node = panelRef.current;
+    if (!node || typeof ResizeObserver === 'undefined') return;
+    const measure = (w: number) => {
+      if (Number.isFinite(w) && w >= 240) {
+        setPanelWidth(Math.round(w));
+      }
+    };
+    measure(node.getBoundingClientRect().width);
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) measure(entry.contentRect.width);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  const toggleEngineExpand = useCallback((engineId: string) => {
+    setExpandedEngineIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(engineId)) {
+        next.delete(engineId);
+      } else {
+        next.add(engineId);
+      }
+      return next;
+    });
+  }, []);
+
+  const maxDials = panelWidth >= 800 ? 3 : 2;
+  const defaultPoolLabel = t('usage.quota.engines.defaultPool');
+  const unknownLabel = t('usage.quota.status.unknown');
+
+  const overviewPlan = useMemo(
+    () => buildQuotaOverviewPlan({
+      ledgerSources: state.arranged.ledger,
+      engineSources: state.arranged.engines,
+      signedOut: state.signedOut,
+      configRaw: state.configRaw,
+      pluginQuotaSources: state.pluginQuotaSources,
+      pluginErrors: state.pluginErrors,
+      pluginCatalogError: state.pluginCatalogError,
+      defaultPoolLabel,
+      unknownLabel,
+      nowMs: state.now,
+      maxDials,
+      frozenCandidateIds: focusWithinDials ? frozenDialIdsRef.current : null,
+    }),
+    [
+      defaultPoolLabel,
+      focusWithinDials,
+      maxDials,
+      state.arranged.engines,
+      state.arranged.ledger,
+      state.configRaw,
+      state.now,
+      state.pluginCatalogError,
+      state.pluginErrors,
+      state.pluginQuotaSources,
+      state.signedOut,
+      unknownLabel,
+    ],
+  );
+
+  useEffect(() => {
+    if (!focusWithinDials) {
+      frozenDialIdsRef.current = overviewPlan.dials.map((d) => d.candidateId);
+    }
+  }, [focusWithinDials, overviewPlan.dials]);
+
   const asOfTime = state.snapshot?.generated_at;
   const refreshAllTitle = asOfTime
     ? `${t('usage.quota.refreshAll')} · ${t('usage.quota.asOf', { time: time.relativeTime(asOfTime) })}`
     : t('usage.quota.refreshAll');
 
+  const hasDialsOrLedger =
+    overviewPlan.dials.length > 0 || overviewPlan.remainingLedgerSources.length > 0;
+
   return (
-    <div className="space-y-4" data-provider-quota-panel>
+    <div ref={panelRef} className="@container/quotas space-y-4" data-provider-quota-panel>
       <div className="flex flex-wrap items-center justify-end gap-2">
         {state.stale ? (
           <button
@@ -29,7 +114,7 @@ export function ProviderQuotaPanel() {
             title={`${t('usage.governance.stale', { time: asOfTime ? time.relativeTime(asOfTime) : '' })} · ${t('usage.execution.retryRefresh')}`}
             onClick={() => { void state.refetch(); }}
             disabled={state.isRefetching}
-            className="inline-flex h-7 w-7 items-center justify-center rounded text-amber-ink transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+            className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--kiki-chart-warn-text)] transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
           >
             <Icon name="refresh" size={14} className={state.isRefetching ? 'animate-spin' : undefined} />
           </button>
@@ -58,7 +143,7 @@ export function ProviderQuotaPanel() {
           <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />{t('usage.loading')}
         </div>
       ) : state.isError ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-danger/[0.06] px-4 py-3 text-[12.5px] text-danger" data-quota-snapshot-error>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-l-2 border-[var(--kiki-chart-danger)] bg-danger/[0.05] pl-4 pr-3 py-3 text-[12.5px] text-[var(--kiki-chart-danger-text)]" data-quota-snapshot-error>
           <p className="font-medium">{t('usage.quota.status.error')}</p>
           <button type="button" data-quota-snapshot-retry className={QUOTA_SMALL_BUTTON} onClick={() => { void state.refetch(); }}>
             {t('st.im.retry')}
@@ -114,11 +199,30 @@ export function ProviderQuotaPanel() {
                 </section>
               ) : null}
 
-              {state.arranged.ledger.length > 0 || state.showEngineSection ? (
+              {hasDialsOrLedger || state.showEngineSection ? (
                 <div className="divide-y divide-hairline border-y border-hairline">
-                  {state.arranged.ledger.length > 0 ? (
+                  {hasDialsOrLedger ? (
                     <section className="divide-y divide-hairline" data-quota-ledger>
-                      {state.arranged.ledger.map((source) => {
+                      <QuotaOverviewDials
+                        dials={overviewPlan.dials}
+                        endangeredEngineOverflow={overviewPlan.endangeredEngineOverflow}
+                        signedOut={state.signedOut}
+                        providerById={state.providerById}
+                        quotaSettingsHrefOf={(source, provider) => quotaSettingsHref(source, provider as ReturnType<typeof state.providerById>)}
+                        quotaLocalUsageHrefOf={(source, provider) => quotaLocalUsageHref(source, provider as ReturnType<typeof state.providerById>)}
+                        refreshingSourceId={state.refreshingSourceId}
+                        activeRefreshSourceIds={state.activeRefreshSourceIds}
+                        sourceFeedbacks={state.sourceFeedbacks}
+                        onClearFeedback={state.clearFeedback}
+                        onRefreshSource={state.refreshSource}
+                        onToggleSourceEnabled={state.setSourceEnabled}
+                        expandedEngineIds={expandedEngineIds}
+                        onToggleEngineExpand={toggleEngineExpand}
+                        onFocusWithinChange={setFocusWithinDials}
+                        nowMs={state.now}
+                      />
+
+                      {overviewPlan.remainingLedgerSources.map((source) => {
                         const provider = state.providerById(source.provider_id);
                         return (
                           <LedgerQuotaRow
@@ -168,6 +272,8 @@ export function ProviderQuotaPanel() {
                     onRefreshPluginSource={state.refreshPluginSource}
                     onPerformPluginAction={state.performPluginAction}
                     onRefreshNativeSource={state.refreshSource}
+                    expandedEngineIds={expandedEngineIds}
+                    onToggleEngineExpand={toggleEngineExpand}
                   />
                 </div>
               ) : null}

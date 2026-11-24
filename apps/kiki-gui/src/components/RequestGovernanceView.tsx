@@ -59,8 +59,8 @@ export function RequestGovernanceBadge({ compact = false }: { compact?: boolean 
       title={title}
       aria-label={title}
       className={compact
-        ? 'absolute -right-2 -bottom-1 whitespace-nowrap rounded bg-paper px-0.5 font-mono text-[9px] leading-3 text-ink-faint tabular-nums'
-        : 'ml-auto shrink-0 font-mono text-[11px] text-ink-faint tabular-nums'}
+        ? 'absolute -right-2 -bottom-1 whitespace-nowrap rounded bg-paper px-0.5 font-mono text-[9px] leading-3 text-[var(--kiki-chart-muted)] tabular-nums'
+        : 'ml-auto shrink-0 font-mono text-[11px] text-[var(--kiki-chart-muted)] tabular-nums'}
     >
       {label}
     </span>

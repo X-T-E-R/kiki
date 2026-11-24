@@ -1,6 +1,7 @@
 import type { Locale } from '@kiki/session-core/i18n';
 import {
   formatHarnessQuotaReading,
+  formatQuotaPercentNumber,
   formatQuotaResetShort,
   meterRemainingPercent,
   meterValue,
@@ -178,7 +179,7 @@ export function meterPrimaryReading(meter: ProviderQuotaMeter, unknownLabel: str
       : reading.value;
     return {
       primaryText: primary,
-      secondaryText: remainingPercent !== undefined ? `${remainingPercent}%` : undefined,
+      secondaryText: remainingPercent !== undefined ? `${formatQuotaPercentNumber(remainingPercent)}%` : undefined,
       hoverDetail: reading.kind === 'ratio' ? reading.value : undefined,
       remainingPercent,
       showBar: remainingPercent !== undefined,
@@ -202,7 +203,7 @@ export function meterPrimaryReading(meter: ProviderQuotaMeter, unknownLabel: str
       : reading.value;
     return {
       primaryText: primary,
-      secondaryText: remainingPercent !== undefined ? `${remainingPercent}%` : undefined,
+      secondaryText: remainingPercent !== undefined ? `${formatQuotaPercentNumber(remainingPercent)}%` : undefined,
       hoverDetail: reading.kind === 'ratio' ? reading.value : undefined,
       remainingPercent,
       showBar: remainingPercent !== undefined,
@@ -212,7 +213,7 @@ export function meterPrimaryReading(meter: ProviderQuotaMeter, unknownLabel: str
   }
 
   return {
-    primaryText: remainingPercent !== undefined ? `${remainingPercent}%` : reading.value,
+    primaryText: remainingPercent !== undefined ? `${formatQuotaPercentNumber(remainingPercent)}%` : reading.value,
     hoverDetail: remainingPercent !== undefined && reading.kind === 'ratio' ? reading.value : undefined,
     remainingPercent,
     showBar: remainingPercent !== undefined,
@@ -314,9 +315,9 @@ export function classifySeatHealth(
 
   if (!hasKnown) return 'unknown';
   if (anyBlockingExhausted) return 'blocking_exhausted';
-  if (anyLow) return 'low';
   if (anySkippedExhausted) return 'skipped_exhausted';
   if (hasUnknown) return 'partial_unknown';
+  if (anyLow) return 'low';
   return 'ready';
 }
 
@@ -421,7 +422,7 @@ export function summarizePoolHealth(
       !item.anyPositivePct &&
       !item.anyPositiveNonPct;
     const tightestPercent = item.anyPositivePct
-      ? Math.round(item.usableMinPct)
+      ? Number(item.usableMinPct.toFixed(2))
       : allExhausted
         ? 0
         : undefined;
@@ -488,4 +489,185 @@ export function splitSeatIdentity(
     primary: accountLabel,
     secondary,
   };
+}
+
+/**
+ * Constraint severity buckets for ranking QuotaOverviewDials:
+ * 0 = exhausted (0%), 1 = depleting / critical (<10%), 2 = fast_burn / low (<30%), 3 = healthy (>=30%).
+ */
+export type QuotaConstraintBucket = 0 | 1 | 2 | 3;
+
+export function quotaConstraintBucketOf(
+  remainingPercent: number,
+  pace?: RemainingPace | null,
+): QuotaConstraintBucket {
+  if (remainingPercent <= 0) return 0;
+  if (pace?.state === 'depleting' || remainingPercent < 10) return 1;
+  if (pace?.state === 'fast' || remainingPercent < 30) return 2;
+  return 3;
+}
+
+export interface EvaluatedPoolWindow {
+  readonly pool: FleetPoolBottleneckItem;
+  readonly remainingPercent: number;
+  readonly pace: RemainingPace | null;
+  readonly constraintBucket: QuotaConstraintBucket;
+}
+
+export interface PartitionedPoolWindows {
+  /** Tightest actionable short window (outer 240deg calibration arc). */
+  readonly outerWindow: EvaluatedPoolWindow;
+  /** Tightest longer cap window if a distinct longer duration tier exists (inner concentric 240deg arc). */
+  readonly innerWindow?: EvaluatedPoolWindow;
+  /** Overall worst actionable bottleneck window across all tiers (used by endangered overflow). */
+  readonly worstWindow: EvaluatedPoolWindow;
+  /** All other measured short/extra windows that MUST print visibly alongside the dial summary. */
+  readonly siblingWindows: readonly EvaluatedPoolWindow[];
+  /** Unmeasured (Unknown or non-percentage fallback) pools so nothing is hidden. */
+  readonly unmeasuredPools: readonly FleetPoolBottleneckItem[];
+  readonly worstBucket: QuotaConstraintBucket;
+  readonly worstPercent: number;
+}
+
+function compareEvaluatedWindows(a: EvaluatedPoolWindow, b: EvaluatedPoolWindow): number {
+  if (a.constraintBucket !== b.constraintBucket) return a.constraintBucket - b.constraintBucket;
+  if (a.remainingPercent !== b.remainingPercent) return a.remainingPercent - b.remainingPercent;
+  return a.pool.key.localeCompare(b.pool.key);
+}
+
+/**
+ * Partitions multi-window harness pools without assuming "one 5h + one 7d" or averaging across seats:
+ * - Outer arc = tightest actionable short window
+ * - Inner concentric arc = tightest longer cap window (when a longer duration tier exists)
+ * - Remaining short/extra windows = returned in `siblingWindows` for visible inline display.
+ */
+export function partitionPoolWindows(
+  pools: readonly FleetPoolBottleneckItem[],
+  nowMs: number = Date.now(),
+): PartitionedPoolWindows | null {
+  const measured: EvaluatedPoolWindow[] = [];
+  const unmeasuredPools: FleetPoolBottleneckItem[] = [];
+
+  for (const pool of pools) {
+    if (pool.tightestPercent === undefined) {
+      unmeasuredPools.push(pool);
+      continue;
+    }
+    const pct = Math.max(0, Math.min(100, pool.tightestPercent));
+    const resetAtMs = pool.tightestResetAt ? Date.parse(pool.tightestResetAt) : Number.NaN;
+    const pace = pool.durationSeconds !== undefined && Number.isFinite(resetAtMs)
+      ? computeRemainingPace({
+          remainingPercent: pct,
+          durationSeconds: pool.durationSeconds,
+          resetAtMs,
+          nowMs,
+        })
+      : null;
+    measured.push({
+      pool,
+      remainingPercent: pct,
+      pace,
+      constraintBucket: quotaConstraintBucketOf(pct, pace),
+    });
+  }
+
+  if (measured.length === 0) return null;
+
+  const hasSubDay = measured.some((m) => m.pool.durationSeconds === undefined || m.pool.durationSeconds < 86_400);
+  const hasMultiDay = measured.some((m) => m.pool.durationSeconds !== undefined && m.pool.durationSeconds >= 86_400);
+
+  let shortTier: EvaluatedPoolWindow[];
+  let longerTier: EvaluatedPoolWindow[];
+
+  if (hasSubDay && hasMultiDay) {
+    shortTier = measured.filter((m) => m.pool.durationSeconds === undefined || m.pool.durationSeconds < 86_400);
+    longerTier = measured.filter((m) => m.pool.durationSeconds !== undefined && m.pool.durationSeconds >= 86_400);
+  } else {
+    const finiteDurations = [...new Set(
+      measured
+        .map((m) => m.pool.durationSeconds)
+        .filter((d): d is number => d !== undefined && Number.isFinite(d)),
+    )].toSorted((a, b) => a - b);
+
+    if (finiteDurations.length >= 2) {
+      const minDur = finiteDurations[0]!;
+      shortTier = measured.filter((m) => m.pool.durationSeconds === undefined || m.pool.durationSeconds <= minDur);
+      longerTier = measured.filter((m) => m.pool.durationSeconds !== undefined && m.pool.durationSeconds > minDur);
+    } else {
+      shortTier = [...measured];
+      longerTier = [];
+    }
+  }
+
+  const sortedShort = shortTier.toSorted(compareEvaluatedWindows);
+  const sortedLonger = longerTier.toSorted(compareEvaluatedWindows);
+
+  const outerWindow = sortedShort[0] ?? sortedLonger[0]!;
+  const innerWindow = sortedShort.length > 0 ? sortedLonger[0] : sortedLonger[1];
+  const siblingWindows = [
+    ...(sortedShort.length > 0 ? sortedShort.slice(1) : []),
+    ...(sortedLonger.length > (sortedShort.length > 0 ? 1 : 2)
+      ? sortedLonger.slice(sortedShort.length > 0 ? 1 : 2)
+      : []),
+  ];
+
+  const allSorted = [...measured].toSorted(compareEvaluatedWindows);
+  const worst = allSorted[0]!;
+
+  return {
+    outerWindow,
+    innerWindow,
+    worstWindow: worst,
+    siblingWindows,
+    unmeasuredPools,
+    worstBucket: worst.constraintBucket,
+    worstPercent: worst.remainingPercent,
+  };
+}
+
+/** Screen SVG polar angle in degrees for a 240deg open dial starting at 150deg (8 o'clock) -> 390deg (4 o'clock). */
+export function quotaPercentToAngleDeg(remainingPercent: number): number {
+  const clamped = Math.max(0, Math.min(100, remainingPercent));
+  return 150 + 240 * (clamped / 100);
+}
+
+interface QuotaScopeRefreshGate {
+  active: number;
+  readonly waiters: Array<() => void>;
+}
+
+const scopeRefreshGates = new Map<string, QuotaScopeRefreshGate>();
+
+/**
+ * Scope-keyed bounded concurrency gate (`<= maxConcurrency`, default 4) with
+ * direct waiter handoff so synchronous same-microtask arrivals or panel remounts
+ * never exceed the concurrency ceiling.
+ */
+export async function runInQuotaScopeRefreshSlot<T>(
+  scopeKey: string,
+  work: () => Promise<T>,
+  maxConcurrency = 4,
+): Promise<T> {
+  let gate = scopeRefreshGates.get(scopeKey);
+  if (gate === undefined) {
+    gate = { active: 0, waiters: [] };
+    scopeRefreshGates.set(scopeKey, gate);
+  }
+  if (gate.active >= maxConcurrency) {
+    await new Promise<void>((resolve) => {
+      gate.waiters.push(resolve);
+    });
+  } else {
+    gate.active += 1;
+  }
+  try {
+    return await work();
+  } finally {
+    const nextWaiter = gate.waiters.shift();
+    if (nextWaiter !== undefined) {
+      nextWaiter();
+    } else {
+      gate.active = Math.max(0, gate.active - 1);
+    }
+  }
 }

@@ -5,11 +5,11 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../../i18n';
 import { compactIdentifier } from '../../../lib/compactIdentifier';
 import {
+  formatQuotaPercentNumber,
   formatQuotaResetDuration,
   groupHarnessQuotaReadings,
   isSourceLocked,
   pluginQuotaSnapshotStatus,
-  quotaFuelTier,
   quotaSettingsHref,
   type HarnessQuotaActionDeclaration,
   type HarnessQuotaActionId,
@@ -21,10 +21,11 @@ import { FeedbackLine, type Feedback } from '../../controls';
 import { DisclosureChevron, Icon } from '../../icons';
 import { SearchableSelect } from '../../SearchableSelect';
 import { engineHealth, engineQuotaSourceOf, type EngineHealth } from '../../settings/ExternalEnginesSection';
+import { QuotaMiniArc } from './QuotaArcGauge';
 import { computeRemainingPace, summarizePoolHealth } from './quotaModel';
 import { PluginAccountsMatrix, SingleAccountPluginRow } from './QuotaFleetMatrix';
 import { QUOTA_ICON_BUTTON, QUOTA_ROW_GRID, QUOTA_SMALL_BUTTON } from './QuotaSourceRow';
-import { QuotaFuelTrack, QuotaWindowMeter } from './QuotaWindowMeter';
+import { QuotaWindowMeter } from './QuotaWindowMeter';
 
 const ENGINE_HEALTH: Record<EngineHealth, { readonly key: I18nKey; readonly dot: string }> = {
   ready: { key: 'st.engines.statusReady', dot: 'bg-success' },
@@ -61,6 +62,8 @@ export function EngineQuotaSection({
   onRefreshPluginSource,
   onPerformPluginAction,
   onRefreshNativeSource,
+  expandedEngineIds,
+  onToggleEngineExpand,
 }: {
   readonly engines: readonly ProviderQuotaSource[];
   readonly hidden: number;
@@ -86,6 +89,8 @@ export function EngineQuotaSection({
   readonly onRefreshPluginSource: (pluginSourceId: string) => Promise<void>;
   readonly onPerformPluginAction?: (pluginSourceId: string, action: HarnessQuotaActionId, accountId?: string) => Promise<void>;
   readonly onRefreshNativeSource: (sourceId: string) => Promise<unknown>;
+  readonly expandedEngineIds?: ReadonlySet<string>;
+  readonly onToggleEngineExpand?: (engineId: string) => void;
 }) {
   const { t } = useI18n();
   if (pending || (!configError && pluginCatalogError === undefined && engines.length === 0 && hidden === 0)) return null;
@@ -141,6 +146,8 @@ export function EngineQuotaSection({
                 onRefreshPluginSource={onRefreshPluginSource}
                 onPerformPluginAction={onPerformPluginAction}
                 onRefreshNativeSource={() => onRefreshNativeSource(source.id)}
+                expanded={expandedEngineIds?.has(engineId)}
+                onToggleExpand={onToggleEngineExpand ? () => onToggleEngineExpand(engineId) : undefined}
               />
             );
           })}
@@ -175,6 +182,8 @@ function EngineQuotaRow({
   onRefreshPluginSource,
   onPerformPluginAction,
   onRefreshNativeSource,
+  expanded: controlledExpanded,
+  onToggleExpand,
 }: {
   readonly source: ProviderQuotaSource;
   readonly health: EngineHealth;
@@ -195,10 +204,20 @@ function EngineQuotaRow({
   readonly onRefreshPluginSource: (pluginSourceId: string) => Promise<void>;
   readonly onPerformPluginAction?: (pluginSourceId: string, action: HarnessQuotaActionId, accountId?: string) => Promise<void>;
   readonly onRefreshNativeSource: () => Promise<unknown>;
+  readonly expanded?: boolean;
+  readonly onToggleExpand?: () => void;
 }) {
   const { t, time, locale } = useI18n();
   const [localFeedback, setLocalFeedback] = useState<Feedback>(null);
-  const [fleetOpen, setFleetOpen] = useState(false);
+  const [uncontrolledFleetOpen, setUncontrolledFleetOpen] = useState(false);
+  const fleetOpen = controlledExpanded ?? uncontrolledFleetOpen;
+  const toggleFleetOpen = () => {
+    if (onToggleExpand !== undefined) {
+      onToggleExpand();
+    } else {
+      setUncontrolledFleetOpen((prev) => !prev);
+    }
+  };
   const engineId = source.provider_id;
   const isPluginMode = selectedSourceId !== '';
   const pStatus = isPluginMode
@@ -303,10 +322,11 @@ function EngineQuotaRow({
 
   return (
     <li
+      tabIndex={-1}
       data-quota-engine={engineId}
       data-engine-health={health}
       data-engine-quota-mode={isPluginMode ? 'plugin' : 'native'}
-      className="group space-y-2.5 py-3.5"
+      className="group space-y-2.5 py-3.5 outline-none focus-visible:ring-2 focus-visible:ring-selected-ink"
     >
       <div className={QUOTA_ROW_GRID}>
         <div className="min-w-0">
@@ -325,8 +345,8 @@ function EngineQuotaRow({
               type="button"
               data-quota-fleet-toggle={engineId}
               aria-expanded={fleetOpen}
-              onClick={() => { setFleetOpen((prev) => !prev); }}
-              className="mt-1 -ml-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-[11.5px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-2"
+              onClick={toggleFleetOpen}
+              className="mt-1 -ml-1 inline-flex items-center gap-1 rounded px-1 py-0.5 font-sans tracking-normal text-[11.5px] text-[var(--kiki-chart-label)] transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-2"
             >
               <DisclosureChevron open={fleetOpen} />
               <span className="tabular-nums">
@@ -420,7 +440,7 @@ function EngineQuotaRow({
                   pools={fleetHealth.pools}
                   expanded={fleetOpen}
                   nowMs={now}
-                  onToggle={() => { setFleetOpen((prev) => !prev); }}
+                  onToggle={toggleFleetOpen}
                 />
               ) : (
                 <SingleAccountPluginRow
@@ -483,7 +503,7 @@ function EngineQuotaRow({
                   : []),
                 ...matchingPluginSources.map((entry) => ({ value: entry.id, label: entry.label })),
               ]}
-              buttonClassName="flex h-7 max-w-[172px] items-center gap-1 rounded-md border-0 bg-transparent px-2 text-[11.5px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
+              buttonClassName="flex h-7 max-w-[172px] items-center gap-1 rounded-md border-0 bg-transparent px-2 text-[11.5px] text-[var(--kiki-chart-muted)] transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
             />
           ) : null}
           {canRefreshPlugin ? (
@@ -579,7 +599,6 @@ function FleetPoolSummaryRow({
     >
       {pools.map((pool) => {
         const pct = pool.tightestPercent;
-        const tier = pct !== undefined ? quotaFuelTier(pct) : undefined;
         const resetAtMs = pool.tightestResetAt ? Date.parse(pool.tightestResetAt) : Number.NaN;
         const pace = pct !== undefined && pool.durationSeconds !== undefined && Number.isFinite(resetAtMs)
           ? computeRemainingPace({
@@ -590,37 +609,42 @@ function FleetPoolSummaryRow({
             })
           : null;
         const tone = pct === undefined
-          ? 'text-ink-faint'
+          ? 'text-[var(--kiki-chart-muted)]'
           : pool.allExhausted || pct <= 5 || pace?.state === 'depleting'
-            ? 'font-medium text-danger'
-            : tier === 'critical' || tier === 'low' || pace?.state === 'fast'
-              ? 'font-medium text-amber-ink'
-              : 'font-medium text-ink';
+            ? 'font-semibold text-ink'
+            : 'font-medium text-ink';
         const resetFull = formatQuotaResetDuration(pool.tightestResetAt, locale);
         return (
-          <div key={pool.key} className="min-w-0 space-y-1 text-[12px]">
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="min-w-0 truncate text-ink-soft">
+          <div key={pool.key} className="flex min-w-0 items-center gap-2.5 text-[12px]">
+            {pct !== undefined ? (
+              <QuotaMiniArc
+                remainingPercent={pct}
+                pace={pace}
+                size={30}
+                dataAttr="data-bucket-progress"
+              />
+            ) : pool.fallbackValue === undefined ? (
+              <QuotaMiniArc unknown size={30} />
+            ) : null}
+            <div className="min-w-0 flex-1 space-y-0.5">
+              <div className="truncate font-sans tracking-normal text-[11px] text-[var(--kiki-chart-label)]">
                 {pool.label}
-                {pool.window ? <span className="text-ink-faint"> · {pool.window}</span> : null}
-              </span>
-              <span className="flex shrink-0 items-baseline gap-1.5 tabular-nums">
-                <span className={`text-[11.5px] ${tone}`}>
-                  {pct !== undefined ? `${pct}%` : (pool.fallbackValue ?? t('usage.quota.status.unknown'))}
+                {pool.window ? <span className="text-[var(--kiki-chart-muted)]"> · {pool.window}</span> : null}
+              </div>
+              <div className="flex items-baseline gap-1.5 tabular-nums">
+                <span className={`text-[12.5px] ${tone}`}>
+                  {pct !== undefined ? `${formatQuotaPercentNumber(pct)}%` : (pool.fallbackValue ?? t('usage.quota.status.unknown'))}
                 </span>
                 {pool.tightestResetShort !== undefined ? (
                   <span
-                    className="text-[10.5px] text-ink-faint"
+                    className="text-[10.5px] text-[var(--kiki-chart-muted)]"
                     title={resetFull ? t('usage.quota.stripReset', { time: resetFull }) : pool.tightestResetAt}
                   >
                     {pool.tightestResetShort}
                   </span>
                 ) : null}
-              </span>
+              </div>
             </div>
-            {pct !== undefined ? (
-              <QuotaFuelTrack remainingPercent={pct} pace={pace} dataAttr="data-bucket-progress" />
-            ) : null}
           </div>
         );
       })}

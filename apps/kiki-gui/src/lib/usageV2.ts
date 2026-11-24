@@ -10,9 +10,10 @@
  *     agent parent/child trees, cache hit rate, bucket labels, burn rate.
  *
  * Contract notes honored here (see the V2-b consumer contract):
- *   - the GUI no-query default range is 'today'; an explicit 'all' range still
- *     omits `range` so the server's `query.range.defaulted_to_all_history` flag
- *     is surfaced, never hidden;
+ *   - the GUI no-query default range is rolling 'last_24_hours' ('hour' buckets);
+ *     calendar presets ('today', 'this_week', 'this_month') remain available in
+ *     the calendar popover, and an explicit 'all' range omits `range` so the
+ *     server's `query.range.defaulted_to_all_history` flag is surfaced;
  *   - trend buckets arrive time-ascending, session items cost-descending;
  *   - `cost_usd_estimated` is only the priced part when `cost_unknown`;
  *   - dimension keys are modelAlias for model, 'unknown' for old records —
@@ -37,7 +38,8 @@ import { spaceStorage } from './spaceStorage';
 // ---------------------------------------------------------------------------
 
 export type UsageGranularity = UsageResponseWire['query']['granularity'];
-export type UsageRangePreset = UsageResponseWire['query']['range']['preset'];
+export type UsageWireRangePreset = UsageResponseWire['query']['range']['preset'];
+export type UsageRangePreset = UsageWireRangePreset | 'last_24_hours' | 'last_30_days';
 export type UsageDimension = UsageResponseWire['query']['dimension'];
 
 /** What the source table groups by. One axis at a time, never mixed. */
@@ -85,9 +87,11 @@ export function derivedGranularityForRange(
   endAt?: number,
 ): UsageGranularity {
   switch (range) {
+    case 'last_24_hours':
     case 'today':
       return 'hour';
     case 'last_7_days':
+    case 'last_30_days':
     case 'this_week':
     case 'this_month':
       return 'day';
@@ -111,11 +115,13 @@ export function allowedGranularitiesForRange(
   endAt?: number,
 ): readonly UsageGranularity[] {
   switch (range) {
+    case 'last_24_hours':
     case 'today':
       return ['hour'];
     case 'last_7_days':
     case 'this_week':
       return ['day', 'hour'];
+    case 'last_30_days':
     case 'this_month':
       return ['day', 'week'];
     case 'all':
@@ -146,13 +152,29 @@ export function sanitizeGranularity(
   return derivedGranularityForRange(range, startAt, endAt);
 }
 export const USAGE_RANGE_PRESETS: readonly UsageRangePreset[] = [
-  'today',
+  'last_24_hours',
   'last_7_days',
+  'last_30_days',
+  'today',
   'this_week',
   'this_month',
   'all',
   'custom',
 ];
+
+const RANGE_PRESET_ALIASES: Readonly<Record<string, UsageRangePreset>> = {
+  '24h': 'last_24_hours',
+  '7d': 'last_7_days',
+  '30d': 'last_30_days',
+  '1m': 'last_30_days',
+};
+
+export function normalizeUsageRangePreset(raw: string | null | undefined): UsageRangePreset | undefined {
+  if (typeof raw !== 'string' || raw === '') return undefined;
+  const alias = RANGE_PRESET_ALIASES[raw];
+  if (alias !== undefined) return alias;
+  return (USAGE_RANGE_PRESETS as readonly string[]).includes(raw) ? (raw as UsageRangePreset) : undefined;
+}
 export const USAGE_DIMENSIONS: readonly UsageDimension[] = [
   'model',
   'agent',
@@ -199,10 +221,10 @@ export interface UsageFilters {
   readonly endAt: number | undefined;
 }
 
-/** The no-query state: local today, hourly granularity, model grouping. */
+/** The no-query state: rolling last 24 hours, hourly granularity, model grouping. */
 export const USAGE_FILTER_DEFAULTS: UsageFilters = {
   granularity: 'hour',
-  range: 'today',
+  range: 'last_24_hours',
   groupBy: 'model',
   advancedDimension: undefined,
   workspaceId: undefined,
@@ -232,9 +254,6 @@ export function usageFiltersHaveScope(filters: UsageFilters): boolean {
 
 export const USAGE_FILTERS_STORAGE_KEY = 'kiki.usage.filters.v2';
 
-function isRangePreset(value: string): value is UsageRangePreset {
-  return (USAGE_RANGE_PRESETS as readonly string[]).includes(value);
-}
 function isGroupBy(value: string): value is UsageGroupBy {
   return (USAGE_GROUPINGS as readonly string[]).includes(value);
 }
@@ -267,7 +286,7 @@ export function parseUsageFilters(search: string): UsageFilters {
   const dimension = params.get('dimension');
   const workspace = params.get('workspace');
   const archived = params.get('include_archived');
-  const parsedRange = range !== null && isRangePreset(range) ? range : USAGE_FILTER_DEFAULTS.range;
+  const parsedRange = normalizeUsageRangePreset(range) ?? USAGE_FILTER_DEFAULTS.range;
   const startAt = parseNonnegativeInt(params.get('start_at'));
   const endAt = parseNonnegativeInt(params.get('end_at'));
   const customBoundsValid =
@@ -414,9 +433,8 @@ export function readStoredUsageFilters(): UsageFilters | undefined {
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
     const record = parsed as Record<string, unknown>;
     const rawRange = record['range'];
-    const range = typeof rawRange === 'string' && isRangePreset(rawRange)
-      ? rawRange
-      : USAGE_FILTER_DEFAULTS.range;
+    const range = (typeof rawRange === 'string' ? normalizeUsageRangePreset(rawRange) : undefined)
+      ?? USAGE_FILTER_DEFAULTS.range;
     const rawStart = record['startAt'];
     const rawEnd = record['endAt'];
     const startAt = typeof rawStart === 'number' ? rawStart : undefined;
@@ -494,6 +512,7 @@ export interface UsageApiQueryOptions {
   readonly sortBy?: 'tokens' | 'cost';
   readonly pageSize?: number;
   readonly pageToken?: string;
+  readonly nowMs?: number;
   /** Explicit window override, epoch ms [start, end). Used by prior-period reads. */
   readonly window?: { readonly startAt: number; readonly endAt: number };
 }
@@ -515,15 +534,25 @@ export function buildUsageApiQuery(
   options: UsageApiQueryOptions,
 ): Record<string, string | number | boolean | string[] | undefined> {
   const window = options.window;
-  const customWindow = window ?? (
+  const isClientRolling = filters.range === 'last_24_hours' || filters.range === 'last_30_days';
+  const rollingWindow = window === undefined && isClientRolling
+    ? (usageRangeWindow(filters, options.timezoneOffsetMinutes, options.nowMs ?? Date.now()) ?? undefined)
+    : undefined;
+  const customWindow = window ?? rollingWindow ?? (
     filters.range === 'custom' && filters.startAt !== undefined && filters.endAt !== undefined
       ? { startAt: filters.startAt, endAt: filters.endAt }
       : undefined
   );
+  const wireRange: UsageWireRangePreset | undefined =
+    window === undefined && filters.range === 'all'
+      ? undefined
+      : isClientRolling
+        ? 'custom'
+        : filters.range;
   return {
     granularity: filters.granularity,
     sort_by: options.sortBy,
-    range: window === undefined && filters.range === 'all' ? undefined : filters.range,
+    range: wireRange,
     dimension: filters.advancedDimension ?? USAGE_GROUP_BY_DIMENSION[filters.groupBy],
     'workspace.id': filters.workspaceId,
     model: filters.model,
@@ -1167,10 +1196,18 @@ export function usageRangeWindow(
     const day = local.getDate();
     const shiftDays = (delta: number): number => new Date(year, month, day + delta).getTime();
     switch (filters.range) {
+      case 'last_24_hours': {
+        const nextHour = new Date(nowMs);
+        nextHour.setMinutes(0, 0, 0);
+        const endAt = nextHour.getTime() + 3_600_000;
+        return { startAt: endAt - 24 * 3_600_000, endAt };
+      }
       case 'today':
         return { startAt: shiftDays(0), endAt: shiftDays(1) };
       case 'last_7_days':
         return { startAt: shiftDays(-6), endAt: shiftDays(1) };
+      case 'last_30_days':
+        return { startAt: shiftDays(-29), endAt: shiftDays(1) };
       case 'this_week': {
         const daysSinceMonday = (local.getDay() + 6) % 7;
         return { startAt: shiftDays(-daysSinceMonday), endAt: shiftDays(-daysSinceMonday + 7) };
@@ -1192,6 +1229,11 @@ export function usageRangeWindow(
     return shifted.getTime() - offsetMs;
   };
   switch (filters.range) {
+    case 'last_24_hours': {
+      const hourMs = 3_600_000;
+      const endAt = (Math.floor((nowMs + offsetMs) / hourMs) + 1) * hourMs - offsetMs;
+      return { startAt: endAt - 24 * hourMs, endAt };
+    }
     case 'today': {
       const startAt = midnight(nowMs);
       return { startAt, endAt: shiftDays(startAt, 1) };
@@ -1199,6 +1241,10 @@ export function usageRangeWindow(
     case 'last_7_days': {
       const endAt = shiftDays(midnight(nowMs), 1);
       return { startAt: shiftDays(endAt, -7), endAt };
+    }
+    case 'last_30_days': {
+      const endAt = shiftDays(midnight(nowMs), 1);
+      return { startAt: shiftDays(endAt, -30), endAt };
     }
     case 'this_week': {
       const daysSinceMonday = (local.getUTCDay() + 6) % 7;

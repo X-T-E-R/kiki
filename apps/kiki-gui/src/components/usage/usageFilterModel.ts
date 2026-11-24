@@ -2,11 +2,12 @@ import type { ModelCatalogItem, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import {
   derivedGranularityForRange,
+  normalizeUsageRangePreset,
   sanitizeGranularity,
   USAGE_FILTER_DEFAULTS,
   USAGE_GROUPINGS,
   USAGE_GROUP_BY_DIMENSION,
-  USAGE_RANGE_PRESETS,
+  usageRangeWindow,
   type UsageApiQueryOptions,
   type UsageFilters,
   type UsageGranularity,
@@ -15,6 +16,7 @@ import {
   type UsageRangePreset,
   type UsageResponseWire,
   type UsageSourceFilter,
+  type UsageWireRangePreset,
 } from '../../lib/usageV2';
 
 export { searchHasUsageParams as searchHasUsageMultiParams } from '../../lib/usageV2';
@@ -79,10 +81,6 @@ function dedupeNonEmpty(values: readonly string[]): string[] {
   return out;
 }
 
-function isRangePreset(value: string): value is UsageRangePreset {
-  return (USAGE_RANGE_PRESETS as readonly string[]).includes(value);
-}
-
 function isGroupBy(value: string): value is UsageGroupBy {
   return (USAGE_GROUPINGS as readonly string[]).includes(value);
 }
@@ -100,7 +98,7 @@ export function parseUsageMultiFilters(search: string): UsageMultiFilters {
   const groupBy = params.get('group_by');
   const dimension = params.get('dimension');
   const archived = params.get('include_archived');
-  const parsedRange = range !== null && isRangePreset(range) ? range : USAGE_MULTI_FILTER_DEFAULTS.range;
+  const parsedRange = normalizeUsageRangePreset(range) ?? USAGE_MULTI_FILTER_DEFAULTS.range;
   const startAt = parseNonnegativeInt(params.get('start_at'));
   const endAt = parseNonnegativeInt(params.get('end_at'));
   const customBoundsValid =
@@ -228,15 +226,25 @@ export function buildUsageMultiApiQuery(
   options: UsageApiQueryOptions,
 ): Record<string, string | number | boolean | string[] | undefined> {
   const window = options.window;
-  const customWindow = window ?? (
+  const isClientRolling = filters.range === 'last_24_hours' || filters.range === 'last_30_days';
+  const rollingWindow = window === undefined && isClientRolling
+    ? (usageRangeWindow(toSingleUsageFilters(filters), options.timezoneOffsetMinutes, options.nowMs ?? Date.now()) ?? undefined)
+    : undefined;
+  const customWindow = window ?? rollingWindow ?? (
     filters.range === 'custom' && filters.startAt !== undefined && filters.endAt !== undefined
       ? { startAt: filters.startAt, endAt: filters.endAt }
       : undefined
   );
+  const wireRange: UsageWireRangePreset | undefined =
+    window !== undefined || isClientRolling
+      ? 'custom'
+      : filters.range === 'all'
+        ? undefined
+        : filters.range;
   return {
     granularity: filters.granularity,
     sort_by: options.sortBy,
-    range: window !== undefined ? 'custom' : filters.range === 'all' ? undefined : filters.range,
+    range: wireRange,
     dimension: filters.advancedDimension ?? USAGE_GROUP_BY_DIMENSION[filters.groupBy],
     'workspace.id': wireScalarOrArray(filters.workspaceIds),
     model: wireScalarOrArray(filters.models),

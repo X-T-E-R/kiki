@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { useI18n } from '../../i18n';
-import { USAGE_RANGE_PRESETS, type UsageRangePreset } from '../../lib/usageV2';
+import { type UsageRangePreset } from '../../lib/usageV2';
 import { Toggle } from '../controls';
 import { Icon } from '../icons';
 import { ActionSheet } from '../overlays/ActionSheet';
@@ -193,35 +193,58 @@ export function UsageCalendarPopover({
   };
 
   const monthKeys = singleMonth ? [rightMonthKey] : [rightMonthKey - 1, rightMonthKey];
-  const presets = USAGE_RANGE_PRESETS.filter((p): p is Exclude<UsageRangePreset, 'custom'> => p !== 'custom');
+  const rollingPresets: readonly ('last_24_hours' | 'last_7_days' | 'last_30_days' | 'all')[] = [
+    'last_24_hours',
+    'last_7_days',
+    'last_30_days',
+    'all',
+  ];
+  const calendarPresets: readonly ('today' | 'this_week' | 'this_month')[] = [
+    'today',
+    'this_week',
+    'this_month',
+  ];
+
+  const renderPresetButton = (preset: Exclude<UsageRangePreset, 'custom'>) => {
+    const active = range === preset && draftStart === null;
+    return (
+      <button
+        key={preset}
+        type="button"
+        data-calendar-preset={preset}
+        aria-pressed={active}
+        onClick={() => {
+          setDraftStart(null);
+          setHoverDay(null);
+          onSelectPreset(preset);
+          onClose();
+        }}
+        className={`inline-flex h-7 items-center rounded-md px-2.5 text-[12px] transition-colors pointer-coarse:min-h-10 ${
+          active
+            ? 'bg-selected font-medium text-selected-ink'
+            : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+        }`}
+      >
+        {t(`usage.range.${preset}`)}
+      </button>
+    );
+  };
 
   const body = (
     <div className="space-y-3 p-1" data-usage-custom-range>
-      <div className="flex flex-wrap items-center gap-1 border-b border-hairline pb-2.5">
-        {presets.map((preset) => {
-          const active = range === preset && draftStart === null;
-          return (
-            <button
-              key={preset}
-              type="button"
-              data-calendar-preset={preset}
-              aria-pressed={active}
-              onClick={() => {
-                setDraftStart(null);
-                setHoverDay(null);
-                onSelectPreset(preset);
-                onClose();
-              }}
-              className={`inline-flex h-7 items-center rounded-md px-2.5 text-[12px] transition-colors ${
-                active
-                  ? 'bg-selected font-medium text-selected-ink'
-                  : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
-              }`}
-            >
-              {t(`usage.range.${preset}`)}
-            </button>
-          );
-        })}
+      <div className="space-y-1.5 border-b border-hairline pb-2.5">
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="mr-1 min-w-14 font-sans tracking-normal text-[11px] font-medium text-[var(--kiki-chart-muted)]">
+            {t('usage.range.rollingGroup')}
+          </span>
+          {rollingPresets.map(renderPresetButton)}
+        </div>
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="mr-1 min-w-14 font-sans tracking-normal text-[11px] font-medium text-[var(--kiki-chart-muted)]">
+            {t('usage.range.calendarGroup')}
+          </span>
+          {calendarPresets.map(renderPresetButton)}
+        </div>
       </div>
 
       <div className={`grid gap-5 ${singleMonth ? 'grid-cols-1' : 'sm:grid-cols-2'}`}>
@@ -247,7 +270,7 @@ export function UsageCalendarPopover({
                   </button>
                 ) : <span className="h-7 w-7" />}
 
-                <span className="text-[12.5px] font-semibold tracking-[-0.01em] text-ink">
+                <span className="font-sans tracking-normal text-[12.5px] font-semibold text-ink">
                   {formatMonthTitle(year, monthIndex)}
                 </span>
 
@@ -265,7 +288,7 @@ export function UsageCalendarPopover({
                 ) : <span className="h-7 w-7" />}
               </div>
 
-              <div className="grid grid-cols-7 text-center text-[10.5px] font-medium text-ink-faint">
+              <div className="grid grid-cols-7 text-center font-sans tracking-normal text-[10.5px] font-medium text-[var(--kiki-chart-muted)]">
                 {weekdays.map((wd) => (
                   <span key={wd} className="py-1">{wd}</span>
                 ))}

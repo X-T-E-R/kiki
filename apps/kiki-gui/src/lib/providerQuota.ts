@@ -137,18 +137,30 @@ export type HarnessReadingValue =
   | { readonly kind: 'known'; readonly value: string; readonly exhausted: boolean; readonly remainingPercent?: number }
   | { readonly kind: 'unknown' };
 
+/**
+ * Formats a clamped [0..100] quota percentage for display without ever rounding
+ * a positive sub-1% reading down to `0` (`0.4` -> `0.4`, `0.02` -> `0.1`, `81.6` -> `82`).
+ */
+export function formatQuotaPercentNumber(pct: number): number {
+  const clamped = Math.min(100, Math.max(0, pct));
+  if (clamped <= 0) return 0;
+  if (clamped < 1) return Math.max(0.1, Number(clamped.toFixed(1)));
+  return Math.max(1, 100 - Math.round(100 - clamped));
+}
+
 export function formatHarnessQuotaReading(reading: HarnessQuotaReading): HarnessReadingValue {
   if (reading.remaining === undefined || reading.remaining === null) {
     return { kind: 'unknown' };
   }
-  const exhausted = reading.remaining === 0;
+  const exhausted = reading.remaining <= 0;
   if (reading.unit === 'percent') {
-    const rounded = Math.round(reading.remaining);
+    const rawPct = Math.min(100, Math.max(0, reading.remaining));
+    const displayPct = formatQuotaPercentNumber(rawPct);
     return {
       kind: 'known',
-      value: `${rounded}%`,
+      value: `${displayPct}%`,
       exhausted,
-      remainingPercent: Math.min(100, Math.max(0, rounded)),
+      remainingPercent: rawPct,
     };
   }
   if (reading.unit === 'money') {
@@ -354,16 +366,16 @@ export function meterUtilization(meter: ProviderQuotaMeter): number | undefined 
  */
 export function meterRemainingPercent(meter: ProviderQuotaMeter): number | undefined {
   if (meter.unit === 'percent') {
-    if (meter.remaining !== null) return Math.min(100, Math.max(0, Math.round(meter.remaining)));
-    if (meter.used !== null) return Math.min(100, Math.max(0, 100 - Math.round(meter.used)));
+    if (meter.remaining !== null) return Math.min(100, Math.max(0, meter.remaining));
+    if (meter.used !== null) return Math.min(100, Math.max(0, 100 - meter.used));
     return undefined;
   }
   if (meter.limit !== null && meter.limit > 0) {
     if (meter.remaining !== null) {
-      return Math.min(100, Math.max(0, Math.round((meter.remaining / meter.limit) * 100)));
+      return Math.min(100, Math.max(0, (meter.remaining / meter.limit) * 100));
     }
     if (meter.used !== null) {
-      return Math.min(100, Math.max(0, 100 - Math.round((meter.used / meter.limit) * 100)));
+      return Math.min(100, Math.max(0, 100 - (meter.used / meter.limit) * 100));
     }
   }
   return undefined;

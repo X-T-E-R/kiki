@@ -1,15 +1,11 @@
 /**
- * Trend chart + the explicit session trace. The chart plots one metric over
- * time on a true, zero-filled time axis with calm ink tonal columns (zero
- * horizontal scroll overflow, zero vermilion on ordinary bars). Hovering a
- * source row below or clicking a legend item cross-highlights that slice; in
- * day view, clicking a bar drills down to hourly buckets with a back crumb.
- *
- * `DrilldownSessionList` stays as the raw-record locator for the session trace
- * panel, where each turn id still lands on `/s/{id}?turn=n`.
+ * UsageTrend — Hermite-blended non-crossing stacked ribbon & stem trajectory plot
+ * with a 1-click discrete column toggle (`曲线 | 柱状`), observed midpoint dots,
+ * vertical scrubhair tied strictly to observed buckets, and real accessible
+ * chronological `button[data-bucket]` hit columns outside `<svg role="img">`.
  */
 
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
@@ -35,23 +31,28 @@ import {
 } from '../../lib/usageV2';
 import { SettingsSegmented, SettingsSelect } from '../settings/SettingsPrimitives';
 import {
+  USAGE_OTHER_COLOR,
+  USAGE_RING_OTHER_KEY,
+  USAGE_SERIES_COLORS,
+} from './usageChartPalette';
+import {
   bucketCacheHit,
   bucketCost,
   bucketTokens,
   bucketTokenTotalIsUnknown,
   formatCachePercent,
   formatPercent,
+  KnownSubtotalMarker,
 } from './usageShared';
+import { computeTrendGeometry } from './usageTrendMath';
+import { UsageTrendPlotSvg, type UsageTrendVisualMode } from './UsageTrendPlotSvg';
 
-/** Calm paper-and-ink tonal series palette (zero vermilion on ordinary data bars). */
-const SERIES_FILLS = [
-  'bg-ink/76',
-  'bg-ink/50',
-  'bg-ink/30',
-  'bg-ink/18',
-] as const;
-const OTHER_FILL = 'bg-ink/10';
-const SERIES_LIMIT = SERIES_FILLS.length;
+export type { UsageTrendVisualMode };
+
+const SERIES_LIMIT = 4;
+const PLOT_HEIGHT = 158;
+const PAD_TOP = 20;
+const PAD_BOTTOM = 6;
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0');
@@ -96,6 +97,13 @@ export function TrendChart({
   onSelect,
   onDrilldownDay,
   highlightedSourceKey,
+  pinnedSourceKey,
+  onHoverSourceKey,
+  onTogglePinSourceKey,
+  tailKeys,
+  colorByKey,
+  overallCacheHit,
+  headerMeta,
   labelForKey,
 }: {
   readonly trend: readonly UsageTrendBucketWire[];
@@ -110,11 +118,37 @@ export function TrendChart({
   readonly onSelect: (key: string | null) => void;
   readonly onDrilldownDay?: (bucket: UsageTrendBucketWire) => void;
   readonly highlightedSourceKey?: string | null;
+  readonly pinnedSourceKey?: string | null;
+  readonly onHoverSourceKey?: (key: string | null) => void;
+  readonly onTogglePinSourceKey?: (key: string) => void;
+  readonly tailKeys?: ReadonlySet<string>;
+  readonly colorByKey?: ReadonlyMap<string, string>;
+  readonly overallCacheHit?: number | null;
+  readonly headerMeta?: ReactNode;
   readonly labelForKey: (key: string) => string;
 }) {
   const { t, locale, time } = useI18n();
+  const [visualMode, setVisualMode] = useState<UsageTrendVisualMode>('ribbon');
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  const [isolatedSeriesKey, setIsolatedSeriesKey] = useState<string | null>(null);
+  const [localIsolatedKey, setLocalIsolatedKey] = useState<string | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [plotWidth, setPlotWidth] = useState(680);
+
+  useLayoutEffect(() => {
+    const el = stageRef.current;
+    if (el === null) return;
+    const sync = () => {
+      const w = Math.round(el.getBoundingClientRect().width || el.clientWidth);
+      if (w >= 180) {
+        setPlotWidth((prev) => (prev === w ? prev : w));
+      }
+    };
+    sync();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => { ro.disconnect(); };
+  }, []);
 
   const displayTrend = useMemo(
     () => fillUsageTrendBuckets(trend, filters.granularity, rangeWindow ?? null),
@@ -126,22 +160,73 @@ export function TrendChart({
     [displayTrend, groupBy, metric],
   );
 
-  const activeHighlight = highlightedSourceKey ?? isolatedSeriesKey;
+  const activeHighlight = useMemo(() => {
+    const raw = highlightedSourceKey ?? pinnedSourceKey ?? localIsolatedKey;
+    if (raw !== null && tailKeys?.has(raw) === true) {
+      return USAGE_RING_OTHER_KEY;
+    }
+    return raw;
+  }, [highlightedSourceKey, pinnedSourceKey, localIsolatedKey, tailKeys]);
+  const activePinned = pinnedSourceKey ?? localIsolatedKey;
+
+  const toggleSeriesKey = (key: string) => {
+    if (onTogglePinSourceKey !== undefined) {
+      onTogglePinSourceKey(key);
+    } else {
+      setLocalIsolatedKey((prev) => (prev === key ? null : key));
+    }
+  };
+
+  const colorForSeries = (key: string, idx: number): string => {
+    if (key === USAGE_RING_OTHER_KEY) return USAGE_OTHER_COLOR;
+    return colorByKey?.get(key) ?? USAGE_SERIES_COLORS[idx % USAGE_SERIES_COLORS.length]!;
+  };
+
+  const plotHeight = plotWidth < 460 ? 112 : PLOT_HEIGHT;
+  const currentNow = nowMs ?? Date.now();
+  const geometry = useMemo(
+    () =>
+      computeTrendGeometry({
+        buckets: displayTrend,
+        metric,
+        groupBy,
+        nowMs: currentNow,
+        rangeWindow: rangeWindow ?? null,
+        highlightedKey: activeHighlight,
+        tailKeys,
+        width: plotWidth,
+        height: plotHeight,
+        padTop: PAD_TOP,
+        padBottom: PAD_BOTTOM,
+      }),
+    [displayTrend, metric, groupBy, currentNow, rangeWindow, activeHighlight, tailKeys, plotWidth, plotHeight],
+  );
 
   const valueOf = (group: UsageTrendBucketWire['groups'][number]) =>
     metric === 'tokens' ? totalTokensOf(group) : group.cost_usd_estimated;
-  const totals = useMemo(
-    () => displayTrend.map((bucket) => {
-      if (metric === 'cache') return bucketCacheHit(bucket) ?? 0;
-      return metric === 'tokens' ? bucketTokens(bucket) : bucketCost(bucket);
-    }),
-    [displayTrend, metric],
+
+  const numericTotals = useMemo(
+    () => geometry.points.map((pt) => pt.total ?? 0),
+    [geometry.points],
   );
-  const max = metric === 'cache' ? 1 : Math.max(0, ...totals);
-  const peakValue = Math.max(0, ...totals);
-  const peakIndex = peakValue > 0 ? totals.indexOf(peakValue) : -1;
+  const peakValue = useMemo(() => {
+    let best = 0;
+    for (const pt of geometry.points) {
+      if (pt.total !== null && pt.total > best) best = pt.total;
+    }
+    return best;
+  }, [geometry.points]);
+  const peakIndex = useMemo(
+    () => (peakValue > 0 ? geometry.points.findIndex((pt) => pt.total === peakValue) : -1),
+    [geometry.points, peakValue],
+  );
+
   const formatValue = (value: number) =>
-    metric === 'cache' ? formatCachePercent(value) : metric === 'tokens' ? time.formatTokens(value) : formatCostUsd(value);
+    metric === 'cache'
+      ? formatCachePercent(value)
+      : metric === 'tokens'
+        ? time.formatTokens(value)
+        : formatCostUsd(value);
 
   const allowedGranularities = useMemo(
     () => allowedGranularitiesForRange(filters.range, filters.startAt, filters.endAt),
@@ -159,23 +244,110 @@ export function TrendChart({
           ? 2
           : 1;
 
+  const selectedIndex = useMemo(
+    () => (selectedKey === null ? -1 : displayTrend.findIndex((b) => b.key === selectedKey)),
+    [displayTrend, selectedKey],
+  );
   const activeHoverIndex =
     hoveredIndex !== null && hoveredIndex >= 0 && hoveredIndex < bucketCount
       ? hoveredIndex
       : null;
+  const scrubIndex = activeHoverIndex ?? (selectedIndex >= 0 ? selectedIndex : null);
   const hoveredBucket = activeHoverIndex !== null ? displayTrend[activeHoverIndex] : undefined;
   const hoverRatio =
-    activeHoverIndex !== null && bucketCount > 1
-      ? activeHoverIndex / (bucketCount - 1)
+    activeHoverIndex !== null && geometry.points[activeHoverIndex] !== undefined && plotWidth > 0
+      ? geometry.points[activeHoverIndex]!.x / plotWidth
       : 0;
 
-  const currentNow = nowMs ?? Date.now();
   const canDrilldown = filters.granularity === 'day' && onDrilldownDay !== undefined;
-  const gapClass = bucketCount > 24 ? 'gap-[2px]' : 'gap-[3px]';
+  const primaryStroke = metric === 'cost'
+    ? 'var(--kiki-chart-2)'
+    : metric === 'cache'
+      ? 'var(--kiki-chart-4)'
+      : 'var(--kiki-chart-1)';
+  const highlightColor = activeHighlight !== null
+    ? (activeHighlight === USAGE_RING_OTHER_KEY
+        ? USAGE_OTHER_COLOR
+        : (colorByKey?.get(activeHighlight) ?? 'var(--kiki-chart-2)'))
+    : primaryStroke;
+
+  const plotH = geometry.yBase - geometry.padTop;
+  const cacheRefRatio = metric === 'cache' && overallCacheHit !== undefined && overallCacheHit !== null
+    ? Math.max(0, Math.min(1, overallCacheHit))
+    : null;
+  const cacheRefY = cacheRefRatio !== null ? geometry.yBase - cacheRefRatio * plotH : null;
+
+  // Coarse-pointer / narrow-screen active bucket stepper indices (non-synthetic buckets)
+  const interactiveIndices = useMemo(
+    () => displayTrend.map((b, idx) => (b.key.startsWith('empty:') ? -1 : idx)).filter((idx) => idx >= 0),
+    [displayTrend],
+  );
+  const currentStepperIdx = useMemo(() => {
+    if (interactiveIndices.length === 0) return -1;
+    if (activeHoverIndex !== null && interactiveIndices.includes(activeHoverIndex)) return activeHoverIndex;
+    if (selectedIndex >= 0 && interactiveIndices.includes(selectedIndex)) return selectedIndex;
+    for (let k = interactiveIndices.length - 1; k >= 0; k -= 1) {
+      const idx = interactiveIndices[k]!;
+      if ((numericTotals[idx] ?? 0) > 0) return idx;
+    }
+    return interactiveIndices.at(-1)!;
+  }, [interactiveIndices, selectedIndex, activeHoverIndex, numericTotals]);
+
+  const triggerBucketAt = (index: number) => {
+    const bucket = displayTrend[index];
+    if (bucket === undefined || bucket.key.startsWith('empty:')) return;
+    const total = numericTotals[index] ?? 0;
+    if (canDrilldown && total > 0) {
+      onDrilldownDay(bucket);
+      return;
+    }
+    onSelect(selectedKey === bucket.key ? null : bucket.key);
+  };
+
+  const stepBucket = (delta: -1 | 1) => {
+    if (interactiveIndices.length === 0) return;
+    const pos = interactiveIndices.indexOf(currentStepperIdx);
+    const nextPos = pos < 0 ? 0 : (pos + delta + interactiveIndices.length) % interactiveIndices.length;
+    const nextBucketIdx = interactiveIndices[nextPos]!;
+    setHoveredIndex(nextBucketIdx);
+  };
+
+  const svgAriaLabel = `${t('usage.trend.title')} · ${
+    peakIndex >= 0 && peakValue > 0
+      ? t('usage.trend.peak', { value: formatValue(peakValue) })
+      : t('usage.empty')
+  }`;
+
+  const minSlotWidth = useMemo(
+    () => (geometry.points.length > 0 ? Math.min(...geometry.points.map((p) => p.slotWidth)) : plotWidth),
+    [geometry.points, plotWidth],
+  );
+  const barColWidth = bucketCount > 0
+    ? Math.max(4, Math.min(26, minSlotWidth * 0.56))
+    : 12;
+
+  const axisTickIndices = useMemo(() => {
+    if (geometry.points.length === 0) return new Set<number>();
+    const minPxGap = filters.granularity === 'hour' ? 48 : 56;
+    const chosen: number[] = [];
+    let lastX = Number.NEGATIVE_INFINITY;
+    for (let idx = 0; idx < geometry.points.length; idx += 1) {
+      if (idx % labelEvery !== 0 && idx !== geometry.points.length - 1) continue;
+      const x = geometry.points[idx]!.x;
+      if (x - lastX >= minPxGap) {
+        chosen.push(idx);
+        lastX = x;
+      } else if (idx === geometry.points.length - 1 && chosen.length > 1 && x - geometry.points[chosen.at(-2)!]!.x >= minPxGap * 1.35) {
+        chosen[chosen.length - 1] = idx;
+        lastX = x;
+      }
+    }
+    return new Set(chosen);
+  }, [geometry.points, filters.granularity, labelEvery]);
 
   return (
-    <section data-usage-trend-card aria-label={t('usage.trend.title')}>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+    <section data-usage-trend-card aria-label={t('usage.trend.title')} className="min-w-0">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <SettingsSegmented<UsageMetric>
           ariaLabel={t('usage.trend.title')}
           dataAttr="data-trend-metric"
@@ -186,29 +358,69 @@ export function TrendChart({
             label: t(`usage.trend.metric.${candidate}`),
           }))}
         />
-        {onGranularityChange !== undefined ? (
-          allowedGranularities.length > 1 ? (
-            <span className="flex items-center">
-              <span className="sr-only">{t('usage.axis.granularity')}</span>
-              <SettingsSelect<UsageGranularity>
-                ariaLabel={t('usage.axis.granularity')}
-                dataAttr="data-axis-select"
-                value={filters.granularity}
-                onChange={onGranularityChange}
-                className="bg-transparent px-2 text-[12px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11 pointer-coarse:px-2.5"
-                choices={allowedGranularities.map((option) => ({
-                  value: option,
-                  label: t(`usage.granularity.${option}`),
-                }))}
-              />
-            </span>
-          ) : (
-            <span data-axis-select="static" data-axis-granularity-static={filters.granularity} className="text-[12px] text-ink-faint">
-              {t(`usage.granularity.${filters.granularity}`)}
-            </span>
-          )
-        ) : null}
+
+        <div className="flex flex-wrap items-center gap-2">
+          <div
+            role="group"
+            aria-label={t('usage.trend.title')}
+            data-usage-trend-mode-switch
+            className="inline-flex items-center gap-0.5 rounded-md bg-ink/[0.04] p-0.5"
+          >
+            {(['ribbon', 'bars'] as const).map((mode) => {
+              const active = visualMode === mode;
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  data-usage-trend-mode={mode}
+                  aria-pressed={active}
+                  onClick={() => { setVisualMode(mode); }}
+                  className={`h-7 rounded-[5px] px-2.5 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-3 ${
+                    active
+                      ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                      : 'text-[var(--kiki-chart-label)] hover:text-ink'
+                  }`}
+                >
+                  {t(`usage.trend.mode.${mode}`)}
+                </button>
+              );
+            })}
+          </div>
+
+          {onGranularityChange !== undefined ? (
+            allowedGranularities.length > 1 ? (
+              <span className="flex items-center">
+                <span className="sr-only">{t('usage.axis.granularity')}</span>
+                <SettingsSelect<UsageGranularity>
+                  ariaLabel={t('usage.axis.granularity')}
+                  dataAttr="data-axis-select"
+                  value={filters.granularity}
+                  onChange={onGranularityChange}
+                  className="bg-transparent px-2 text-[12px] text-[var(--kiki-chart-label)] hover:bg-ink/[0.04] hover:text-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11 pointer-coarse:px-2.5"
+                  choices={allowedGranularities.map((option) => ({
+                    value: option,
+                    label: t(`usage.granularity.${option}`),
+                  }))}
+                />
+              </span>
+            ) : (
+              <span
+                data-axis-select="static"
+                data-axis-granularity-static={filters.granularity}
+                className="px-1 text-[12px] text-[var(--kiki-chart-label)]"
+              >
+                {t(`usage.granularity.${filters.granularity}`)}
+              </span>
+            )
+          ) : null}
+        </div>
       </div>
+
+      {headerMeta !== undefined ? (
+        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-[var(--kiki-chart-label)]">
+          {headerMeta}
+        </div>
+      ) : null}
 
       <div
         className="relative"
@@ -218,13 +430,15 @@ export function TrendChart({
           const unknownTotal = bucketTokenTotalIsUnknown(hoveredBucket);
           const bTokens = bucketTokens(hoveredBucket);
           const bCost = bucketCost(hoveredBucket);
+          const bCostUnknown = hoveredBucket.groups.length > 0 && hoveredBucket.groups.every((g) => g.cost_unknown === true) && bCost === 0;
           const bCache = bucketCacheHit(hoveredBucket);
+          const pt = geometry.points[activeHoverIndex];
           const topRows = metric === 'cache'
             ? []
             : series
                 .map((key, sIdx) => ({
                   key,
-                  fill: activeHighlight === key ? 'bg-selected-ink/80' : SERIES_FILLS[sIdx]!,
+                  color: colorForSeries(key, sIdx),
                   value: hoveredBucket.groups
                     .filter((g) => usageSourceKey(g, groupBy) === key)
                     .reduce((sum, g) => sum + valueOf(g), 0),
@@ -235,22 +449,31 @@ export function TrendChart({
             <div
               aria-hidden
               data-usage-trend-tooltip
-              className={`pointer-events-none absolute top-1 z-20 w-56 max-w-[calc(100%-1rem)] rounded-lg border border-hairline-strong bg-panel/95 px-3 py-2 text-[11.5px] shadow-[var(--kiki-sheet-shadow)] backdrop-blur-xs transition-opacity duration-100 ${
+              className={`pointer-events-none absolute top-1 z-20 w-56 max-w-[calc(100%-1rem)] rounded-lg bg-panel/96 px-3 py-2 text-[11.5px] shadow-[var(--kiki-sheet-shadow)] backdrop-blur-xs transition-opacity duration-100 ${
                 hoverRatio > 0.55 ? 'left-2' : 'right-2'
               }`}
             >
               <div className="flex items-baseline justify-between gap-2">
                 <span className="truncate font-medium text-ink">
                   {bucketLabel(hoveredBucket, filters.granularity, locale)}
+                  {pt?.isInProgress ? (
+                    <span className="ml-1.5 font-normal text-[var(--kiki-chart-label)]">
+                      · {t('usage.trend.inProgress')}
+                    </span>
+                  ) : null}
                 </span>
                 <span className="shrink-0 font-semibold text-ink tabular-nums">
-                  {unknownTotal ? '—' : formatValue(totals[activeHoverIndex] ?? 0)}
+                  {unknownTotal || pt?.total === null || pt?.total === undefined
+                    ? '—'
+                    : formatValue(pt.total)}
                 </span>
               </div>
-              <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-ink-faint tabular-nums">
-                {metric !== 'cost' ? <span>{unknownTotal ? '—' : formatCostUsd(bCost)}</span> : null}
-                {metric !== 'tokens' ? <span>{unknownTotal ? '—' : time.formatTokens(bTokens)}</span> : null}
-                {metric !== 'cache' && bCache !== null ? <span>{`${t('usage.trend.metric.cache')} ${formatCachePercent(bCache)}`}</span> : null}
+              <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--kiki-chart-label)] tabular-nums">
+                {metric !== 'cost' ? <span className="text-ink">{unknownTotal || bCostUnknown ? '—' : formatCostUsd(bCost)}</span> : null}
+                {metric !== 'tokens' ? <span className="text-ink">{unknownTotal ? '—' : time.formatTokens(bTokens)}</span> : null}
+                {metric !== 'cache' && bCache !== null ? (
+                  <span>{`${t('usage.trend.metric.cache')} ${formatCachePercent(bCache)}`}</span>
+                ) : null}
                 {typeof hoveredBucket.turn_count === 'number' && hoveredBucket.turn_count > 0 ? (
                   <span>{t('usage.drilldown.turns', { count: hoveredBucket.turn_count })}</span>
                 ) : null}
@@ -259,8 +482,11 @@ export function TrendChart({
                 <ul className="mt-1.5 space-y-0.5 border-t border-hairline pt-1.5">
                   {topRows.map((entry) => (
                     <li key={entry.key} className="flex items-center justify-between gap-2 text-[11px]">
-                      <span className="flex min-w-0 items-center gap-1.5 text-ink-soft">
-                        <span className={`h-2 w-2 shrink-0 rounded-[2px] ${entry.fill}`} />
+                      <span className="flex min-w-0 items-center gap-1.5 text-[var(--kiki-chart-label)]">
+                        <span
+                          className="h-2 w-2 shrink-0 rounded-full"
+                          style={{ backgroundColor: entry.color }}
+                        />
                         <span className="truncate">{labelForKey(entry.key)}</span>
                       </span>
                       <span className="shrink-0 text-ink tabular-nums">{formatValue(entry.value)}</span>
@@ -268,8 +494,8 @@ export function TrendChart({
                   ))}
                 </ul>
               ) : null}
-              {canDrilldown && (totals[activeHoverIndex] ?? 0) > 0 ? (
-                <p className="mt-1.5 border-t border-hairline pt-1 text-[10.5px] text-ink-faint">
+              {canDrilldown && (numericTotals[activeHoverIndex] ?? 0) > 0 ? (
+                <p className="mt-1.5 border-t border-hairline pt-1 text-[10.5px] text-[var(--kiki-chart-label)]">
                   {t('usage.trend.drilldownHourHint')}
                 </p>
               ) : null}
@@ -278,79 +504,114 @@ export function TrendChart({
         })() : null}
 
         <div className="w-full" data-usage-trend-scroll>
-          <div className="relative">
-            <div aria-hidden className="pointer-events-none absolute inset-x-0 top-5 bottom-0 flex flex-col justify-between">
-              {[1, 0.5, 0].map((fraction) => (
-                <div key={fraction} className="h-px border-t border-hairline/70" />
-              ))}
-            </div>
-            <div
-              className={`relative flex h-40 w-full items-end pt-5 ${gapClass}`}
-              role="img"
-              aria-label={`${t('usage.trend.title')} · ${peakIndex >= 0 && totals[peakIndex] !== undefined && totals[peakIndex]! > 0 ? t('usage.trend.peak', { value: formatValue(totals[peakIndex]!) }) : t('usage.empty')}`}
-              data-usage-trend
-            >
+          <div
+            ref={stageRef}
+            data-usage-trend
+            data-usage-trend-rendered-mode={visualMode}
+            style={{ height: `${plotHeight}px` }}
+            className="relative w-full"
+          >
+            {/* Pure SVG Graphic Layer (strictly outside <button> ancestry) */}
+            <UsageTrendPlotSvg
+              svgAriaLabel={svgAriaLabel}
+              plotWidth={plotWidth}
+              plotHeight={plotHeight}
+              geometry={geometry}
+              visualMode={visualMode}
+              metric={metric}
+              activeHighlight={activeHighlight}
+              highlightColor={highlightColor}
+              primaryStroke={primaryStroke}
+              cacheRefY={cacheRefY}
+              overallCacheHit={overallCacheHit}
+              scrubIndex={scrubIndex}
+              selectedKey={selectedKey}
+              barColWidth={barColWidth}
+            />
+
+            {/* Single Peak Callout Label + Cache Average Label */}
+            {peakIndex >= 0 && peakValue > 0 && geometry.points[peakIndex] !== undefined ? (() => {
+              const pPt = geometry.points[peakIndex]!;
+              const leftPct = (pPt.x / plotWidth) * 100;
+              const alignClass = leftPct < 10 ? 'translate-x-0' : leftPct > 90 ? '-translate-x-full' : '-translate-x-1/2';
+              return (
+                <span
+                  aria-hidden
+                  data-usage-trend-peak
+                  style={{
+                    left: `${leftPct}%`,
+                    top: `${Math.max(1, pPt.yTotal - 18)}px`,
+                  }}
+                  className={`pointer-events-none absolute z-10 whitespace-nowrap text-[10.5px] font-medium text-ink tabular-nums ${alignClass}`}
+                >
+                  {formatValue(peakValue)}
+                </span>
+              );
+            })() : null}
+
+            {cacheRefY !== null && overallCacheHit !== null && overallCacheHit !== undefined ? (() => {
+              const peakLeftPct = peakIndex >= 0 && geometry.points[peakIndex] !== undefined
+                ? (geometry.points[peakIndex]!.x / plotWidth) * 100
+                : 50;
+              const sideClass = peakLeftPct < 24 ? 'right-1' : 'left-1';
+              const placeBelow = cacheRefY < geometry.yBase - 18;
+              const topPx = placeBelow ? cacheRefY + 4 : Math.max(2, cacheRefY - 16);
+              return (
+                <span
+                  aria-hidden
+                  style={{ top: `${topPx}px` }}
+                  className={`pointer-events-none absolute ${sideClass} z-10 rounded bg-paper/90 px-1 font-sans tracking-normal text-[10px] font-medium text-ink tabular-nums`}
+                >
+                  {t('usage.trend.cacheAverage', { value: formatCachePercent(overallCacheHit) })}
+                </span>
+              );
+            })() : null}
+
+            {geometry.inProgressPoints[0] !== undefined && geometry.inProgressPoints[0].index !== peakIndex ? (() => {
+              const ip = geometry.inProgressPoints[0];
+              const leftPct = (ip.x / plotWidth) * 100;
+              return (
+                <span
+                  aria-hidden
+                  style={{
+                    left: `${leftPct}%`,
+                    top: `${Math.max(2, ip.yTotal - 17)}px`,
+                  }}
+                  className="pointer-events-none absolute z-10 -translate-x-1/2 whitespace-nowrap font-sans text-[10px] tracking-normal text-[var(--kiki-chart-label)]"
+                >
+                  {t('usage.trend.inProgress')}
+                </span>
+              );
+            })() : null}
+
+            {/* Real Chronological Interactive Hit Columns (outside SVG role="img") */}
+            <div className="relative z-10 h-full w-full">
               {displayTrend.map((bucket, index) => {
-                const total = totals[index] ?? 0;
+                const pt = geometry.points[index]!;
                 const isSyntheticEmpty = bucket.key.startsWith('empty:');
                 const selected = !isSyntheticEmpty && selectedKey === bucket.key;
-                const dimmed = selectedKey !== null && !selected;
-                const inProgress = bucket.start_at <= currentNow && currentNow < bucket.end_at;
-                const unknownTotal = bucketTokenTotalIsUnknown(bucket);
+                const tokenUnknown = bucketTokenTotalIsUnknown(bucket);
+                const costUnknownAll = bucket.groups.length > 0 && bucket.groups.every((g) => g.cost_unknown === true) && bucketCost(bucket) === 0;
+                const leftPct = plotWidth > 0 ? (pt.slotLeft / plotWidth) * 100 : 0;
+                const widthPct = plotWidth > 0 ? (pt.slotWidth / plotWidth) * 100 : 100;
                 const title = [
                   bucketLabel(bucket, filters.granularity, locale),
-                  `${unknownTotal ? '—' : time.formatTokens(bucketTokens(bucket))} ${t('usage.col.tokens')}`,
-                  unknownTotal ? '—' : formatCostUsd(bucketCost(bucket)),
+                  `${tokenUnknown ? '—' : time.formatTokens(bucketTokens(bucket))} ${t('usage.col.tokens')}`,
+                  tokenUnknown || costUnknownAll ? '—' : formatCostUsd(bucketCost(bucket)),
                   `${t('usage.trend.metric.cache')} ${formatPercent(bucketCacheHit(bucket))}`,
+                  ...(pt.isInProgress ? [t('usage.trend.inProgress')] : []),
                   ...(typeof bucket.turn_count === 'number' && bucket.turn_count > 0 ? [t('usage.drilldown.turns', { count: bucket.turn_count })] : []),
                   ...(typeof bucket.request_count === 'number' && bucket.request_count > 0 ? [t('usage.trend.requests', { count: formatGrouped(bucket.request_count) })] : []),
-                  ...(bucket.groups.some((group) => group.tokens_unknown === true) ? [t('usage.kpi.partialUnknown')] : []),
+                  ...(bucket.groups.some((group) => group.tokens_unknown === true || group.cost_unknown === true) ? [t('usage.kpi.partialUnknown')] : []),
                 ].join(' · ');
-                const heightPct = total > 0 && max > 0 ? Math.max(3, (total / max) * 100) : 0;
-
-                // Build calm ink bar layers.
-                const highlightVal = activeHighlight !== null && metric !== 'cache' && total > 0
-                  ? bucket.groups
-                      .filter((g) => usageSourceKey(g, groupBy) === activeHighlight)
-                      .reduce((sum, g) => sum + valueOf(g), 0)
-                  : 0;
-                const cacheReadTokens = metric === 'tokens' && total > 0
-                  ? bucket.groups.reduce((sum, g) => sum + g.tokens.input_cache_read, 0)
-                  : 0;
-                const nonCacheTokens = Math.max(0, total - cacheReadTokens);
-
-                const costSegments: { key: string; fill: string; value: number }[] = [];
-                if (metric === 'cost' && total > 0 && activeHighlight === null) {
-                  let rest = total;
-                  series.forEach((key, seriesIndex) => {
-                    const value = bucket.groups
-                      .filter((group) => usageSourceKey(group, groupBy) === key)
-                      .reduce((sum, group) => sum + valueOf(group), 0);
-                    if (value > 0) {
-                      costSegments.push({ key, fill: SERIES_FILLS[seriesIndex]!, value });
-                      rest -= value;
-                    }
-                  });
-                  if (rest > total * 0.001) costSegments.push({ key: '__other', fill: OTHER_FILL, value: rest });
-                }
-
-                const showPeakTag = index === peakIndex && total > 0;
-                const handleClick = () => {
-                  if (isSyntheticEmpty) return;
-                  if (canDrilldown && total > 0) {
-                    onDrilldownDay(bucket);
-                    return;
-                  }
-                  onSelect(selected ? null : bucket.key);
-                };
 
                 return (
                   <button
                     key={bucket.key}
                     type="button"
                     data-bucket={isSyntheticEmpty ? undefined : bucket.key}
-                    data-bucket-empty={isSyntheticEmpty ? 'true' : undefined}
-                    data-bucket-in-progress={inProgress ? 'true' : undefined}
+                    data-bucket-empty={pt.isEmpty ? 'true' : undefined}
+                    data-bucket-in-progress={pt.isInProgress ? 'true' : undefined}
                     aria-pressed={selected}
                     aria-controls="usage-source-table"
                     aria-label={title}
@@ -358,143 +619,149 @@ export function TrendChart({
                     onMouseEnter={() => { setHoveredIndex(index); }}
                     onFocus={() => { setHoveredIndex(index); }}
                     onBlur={() => { setHoveredIndex((prev) => (prev === index ? null : prev)); }}
-                    onClick={handleClick}
+                    onClick={() => { triggerBucketAt(index); }}
                     title={title}
-                    className={`group relative flex h-full min-w-0 flex-1 flex-col items-center justify-end transition-opacity focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-default ${
-                      dimmed ? 'opacity-35 hover:opacity-85' : inProgress ? 'opacity-65 hover:opacity-95' : ''
-                    }`}
+                    style={{
+                      left: `${leftPct}%`,
+                      width: `${widthPct}%`,
+                    }}
+                    className="group absolute inset-y-0 flex min-w-0 items-end justify-center outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink disabled:cursor-default"
                   >
-                    <span aria-hidden className="absolute inset-x-0 inset-y-0 rounded-[3px] bg-ink/0 transition-colors group-hover:bg-ink/[0.04]" />
-                    {showPeakTag ? (
+                    <span
+                      aria-hidden
+                      className={`pointer-events-none absolute inset-x-[1px] inset-y-0 rounded-xs transition-colors ${
+                        selected ? 'bg-selected/25' : 'bg-ink/0 group-hover:bg-ink/[0.03]'
+                      }`}
+                    />
+                    {selected ? (
                       <span
                         aria-hidden
-                        data-usage-trend-peak
-                        className="pointer-events-none absolute -top-4.5 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] font-medium text-ink-faint tabular-nums"
-                      >
-                        {formatValue(total)}
-                      </span>
-                    ) : null}
-                    {total <= 0 ? (
-                      <span className="block h-[2px] w-full max-w-[28px] rounded-full bg-hairline" />
-                    ) : metric === 'cache' ? (
-                      <span
-                        className={`block w-full max-w-[28px] rounded-t-[2px] transition-colors ${selected ? 'bg-ink/75' : 'bg-ink/55 group-hover:bg-ink/70'}`}
-                        style={{ height: `${heightPct}%` }}
+                        className="pointer-events-none absolute -bottom-1.5 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-ink"
                       />
-                    ) : activeHighlight !== null ? (
-                      <span
-                        className={`flex w-full max-w-[28px] flex-col-reverse overflow-hidden rounded-t-[2px] ${selected ? 'ring-1 ring-selected-ink' : ''}`}
-                        style={{ height: `${heightPct}%` }}
-                      >
-                        {highlightVal > 0 ? (
-                          <span
-                            className="block w-full bg-selected-ink/80 transition-all duration-150"
-                            style={{ height: `${(highlightVal / total) * 100}%` }}
-                          />
-                        ) : null}
-                        {total - highlightVal > 0 ? (
-                          <span
-                            className="block w-full bg-ink/12 transition-all duration-150"
-                            style={{ height: `${((total - highlightVal) / total) * 100}%` }}
-                          />
-                        ) : null}
-                      </span>
-                    ) : metric === 'tokens' ? (
-                      <span
-                        className={`flex w-full max-w-[28px] flex-col-reverse overflow-hidden rounded-t-[2px] ${selected ? 'ring-1 ring-ink/60' : ''}`}
-                        style={{ height: `${heightPct}%` }}
-                      >
-                        {cacheReadTokens > 0 ? (
-                          <span
-                            className="block w-full bg-ink/24"
-                            style={{ height: `${(cacheReadTokens / total) * 100}%` }}
-                          />
-                        ) : null}
-                        {nonCacheTokens > 0 ? (
-                          <span
-                            className="block w-full bg-ink/72"
-                            style={{
-                              height: `${(nonCacheTokens / total) * 100}%`,
-                              ...(cacheReadTokens > 0 ? { borderBottom: '1px solid var(--color-paper)' } : {}),
-                            }}
-                          />
-                        ) : null}
-                      </span>
-                    ) : (
-                      <span
-                        className={`flex w-full max-w-[28px] flex-col-reverse overflow-hidden rounded-t-[2px] ${selected ? 'ring-1 ring-ink/60' : ''}`}
-                        style={{ height: `${heightPct}%` }}
-                      >
-                        {costSegments.map((segment, segmentIndex) => (
-                          <span
-                            key={segment.key}
-                            className={`block w-full ${segment.fill}`}
-                            style={{
-                              height: `${(segment.value / total) * 100}%`,
-                              ...(segmentIndex > 0 ? { borderTop: '1px solid transparent', backgroundClip: 'padding-box' } : {}),
-                            }}
-                          />
-                        ))}
-                      </span>
-                    )}
-                    {selected ? <span aria-hidden className="absolute -bottom-1.5 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-ink" /> : null}
+                    ) : null}
                   </button>
                 );
               })}
             </div>
           </div>
 
-          <div aria-hidden className={`mt-2 flex w-full ${gapClass}`} data-usage-trend-axis>
+          {/* Chronological X-Axis strictly aligned to pt.x */}
+          <div aria-hidden className="relative mt-2 h-4 w-full" data-usage-trend-axis>
             {displayTrend.map((bucket, index) => {
-              const showLabel =
-                index % labelEvery === 0 ||
-                (index === bucketCount - 1 && (bucketCount - 1) % labelEvery >= Math.ceil(labelEvery / 2));
+              if (!axisTickIndices.has(index)) return null;
+              const pt = geometry.points[index]!;
+              const leftPct = plotWidth > 0 ? (pt.x / plotWidth) * 100 : 50;
+              const alignClass = leftPct < 6
+                ? 'translate-x-0 text-left'
+                : leftPct > 94
+                  ? '-translate-x-full text-right'
+                  : '-translate-x-1/2 text-center';
               return (
                 <span
                   key={bucket.key}
-                  className="min-w-0 flex-1 overflow-visible whitespace-nowrap text-center text-[10px] text-ink-faint tabular-nums"
+                  style={{ left: `${leftPct}%` }}
+                  className={`absolute top-0 whitespace-nowrap text-[10.5px] text-[var(--kiki-chart-label)] tabular-nums ${alignClass}`}
                 >
-                  {showLabel ? compactAxisLabel(bucket, filters.granularity, locale, index > 0 ? displayTrend[index - 1] : undefined) : ''}
+                  {compactAxisLabel(bucket, filters.granularity, locale, index > 0 ? displayTrend[index - 1] : undefined)}
                 </span>
               );
             })}
           </div>
+
+          {/* Coarse-pointer 44px prev/activate/next controls whenever >1 interactive buckets exist */}
+          {interactiveIndices.length > 1 && currentStepperIdx >= 0 && displayTrend[currentStepperIdx] !== undefined ? (() => {
+            const stepBucketItem = displayTrend[currentStepperIdx]!;
+            const stepPt = geometry.points[currentStepperIdx]!;
+            const stepValText = stepPt.isUnknown || stepPt.total === null
+              ? '—'
+              : formatValue(stepPt.total);
+            return (
+              <div
+                data-usage-trend-mobile-stepper
+                className="mt-2 hidden items-center justify-between gap-1.5 pointer-coarse:flex"
+              >
+                <button
+                  type="button"
+                  aria-label={t('usage.trend.prevBucket')}
+                  onClick={() => { stepBucket(-1); }}
+                  className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md bg-ink/[0.04] text-ink transition-colors hover:bg-ink/[0.08] focus-visible:outline-2 focus-visible:outline-selected-ink"
+                >
+                  <Icon name="arrowLeft" size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { triggerBucketAt(currentStepperIdx); }}
+                  className="inline-flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-md bg-ink/[0.04] px-3 text-[12px] text-ink transition-colors hover:bg-ink/[0.08] focus-visible:outline-2 focus-visible:outline-selected-ink"
+                >
+                  <span className="truncate font-medium">
+                    {bucketLabel(stepBucketItem, filters.granularity, locale)}
+                  </span>
+                  <span className="shrink-0 font-semibold tabular-nums">{stepValText}</span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={t('usage.trend.nextBucket')}
+                  onClick={() => { stepBucket(1); }}
+                  className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md bg-ink/[0.04] text-ink transition-colors hover:bg-ink/[0.08] focus-visible:outline-2 focus-visible:outline-selected-ink"
+                >
+                  <Icon name="arrowRight" size={14} />
+                </button>
+              </div>
+            );
+          })() : null}
         </div>
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[12px] text-ink-soft">
+      {/* Legend & Series Isolation Strip */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-3.5 gap-y-1.5 text-[12px] text-[var(--kiki-chart-label)]">
         {metric === 'cache' ? (
           <span className="inline-flex items-center gap-1.5">
-            <span aria-hidden className="h-2 w-2 rounded-[2px] bg-ink/60" />
-            {t('usage.cacheHitHint')}
+            <span aria-hidden className="h-2 w-2 rounded-full bg-[var(--kiki-chart-4)]" />
+            <span>{t('usage.cacheHitHint')}</span>
           </span>
         ) : metric === 'tokens' ? (
           <>
-            <span className="inline-flex items-center gap-1.5 text-ink-faint">
-              <span aria-hidden className="h-2 w-2 rounded-[2px] bg-ink/72" />
-              {t('usage.composition.fresh')} / {t('usage.tokens.output')}
+            <span className="inline-flex items-center gap-1.5">
+              <span aria-hidden className="h-2 w-2 rounded-[2px] bg-[var(--kiki-chart-1)]" />
+              <span>{t('usage.composition.fresh')} / {t('usage.tokens.output')}</span>
             </span>
-            <span className="inline-flex items-center gap-1.5 text-ink-faint">
-              <span aria-hidden className="h-2 w-2 rounded-[2px] bg-ink/24" />
-              {t('usage.tokens.cacheRead')}
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                aria-hidden
+                className="h-2 w-2 rounded-[2px] border border-[var(--kiki-chart-5)]"
+                style={{ backgroundColor: 'color-mix(in srgb, var(--kiki-chart-5) 22%, var(--color-paper))' }}
+              />
+              <span>{t('usage.tokens.cacheRead')}</span>
             </span>
-            {series.length > 0 ? (
-              <span aria-hidden className="h-3 w-px bg-hairline" />
-            ) : null}
-            {series.map((key) => {
-              const isolated = isolatedSeriesKey === key;
+            {series.length > 0 ? <span aria-hidden className="h-3 w-px bg-hairline" /> : null}
+            {series.map((key, idx) => {
+              const isolated = activePinned === key;
+              const isHi = activeHighlight === key;
+              const col = colorForSeries(key, idx);
               return (
                 <button
                   key={key}
                   type="button"
                   data-usage-trend-series={key}
                   aria-pressed={isolated}
-                  onClick={() => { setIsolatedSeriesKey((prev) => (prev === key ? null : key)); }}
-                  className={`inline-flex min-w-0 max-w-52 items-center gap-1.5 rounded px-1 py-0.5 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11 pointer-coarse:px-2.5 ${
-                    isolated ? 'bg-selected/60 font-medium text-selected-ink' : activeHighlight !== null && activeHighlight !== key ? 'opacity-45' : ''
+                  onMouseEnter={() => { onHoverSourceKey?.(key); }}
+                  onMouseLeave={() => { onHoverSourceKey?.(null); }}
+                  onFocus={() => { onHoverSourceKey?.(key); }}
+                  onBlur={() => { onHoverSourceKey?.(null); }}
+                  onClick={() => { toggleSeriesKey(key); }}
+                  className={`inline-flex min-w-0 max-w-52 items-center gap-1.5 rounded px-1.5 py-0.5 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-2.5 ${
+                    isolated
+                      ? 'bg-selected/70 font-medium text-ink'
+                      : activeHighlight !== null && !isHi
+                        ? 'text-[var(--kiki-chart-muted)]'
+                        : ''
                   }`}
                 >
-                  <span aria-hidden className={`h-2 w-2 shrink-0 rounded-[2px] ${isolated || activeHighlight === key ? 'bg-selected-ink/80' : 'bg-ink/45'}`} />
+                  <span
+                    aria-hidden
+                    className={`h-2 w-2 shrink-0 rounded-full transition-opacity ${activeHighlight !== null && !isHi ? 'opacity-35' : ''}`}
+                    style={{ backgroundColor: col }}
+                  />
                   <span className="truncate">{labelForKey(key)}</span>
                 </button>
               );
@@ -502,42 +769,54 @@ export function TrendChart({
           </>
         ) : (
           <>
-            {series.map((key, index) => {
-              const isolated = isolatedSeriesKey === key;
+            {series.map((key, idx) => {
+              const isolated = activePinned === key;
+              const isHi = activeHighlight === key;
+              const col = colorForSeries(key, idx);
               return (
                 <button
                   key={key}
                   type="button"
                   data-usage-trend-series={key}
                   aria-pressed={isolated}
-                  onClick={() => { setIsolatedSeriesKey((prev) => (prev === key ? null : key)); }}
-                  className={`inline-flex min-w-0 max-w-56 items-center gap-1.5 rounded px-1 py-0.5 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11 pointer-coarse:px-2.5 ${
-                    isolated ? 'bg-selected/60 font-medium text-selected-ink' : activeHighlight !== null && activeHighlight !== key ? 'opacity-45' : ''
+                  onMouseEnter={() => { onHoverSourceKey?.(key); }}
+                  onMouseLeave={() => { onHoverSourceKey?.(null); }}
+                  onFocus={() => { onHoverSourceKey?.(key); }}
+                  onBlur={() => { onHoverSourceKey?.(null); }}
+                  onClick={() => { toggleSeriesKey(key); }}
+                  className={`inline-flex min-w-0 max-w-56 items-center gap-1.5 rounded px-1.5 py-0.5 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-2.5 ${
+                    isolated
+                      ? 'bg-selected/70 font-medium text-ink'
+                      : activeHighlight !== null && !isHi
+                        ? 'text-[var(--kiki-chart-muted)]'
+                        : ''
                   }`}
                 >
-                  <span aria-hidden className={`h-2 w-2 shrink-0 rounded-[2px] ${isolated || activeHighlight === key ? 'bg-selected-ink/80' : SERIES_FILLS[index]}`} />
+                  <span
+                    aria-hidden
+                    className={`h-2 w-2 shrink-0 rounded-full transition-opacity ${activeHighlight !== null && !isHi ? 'opacity-35' : ''}`}
+                    style={{ backgroundColor: col }}
+                  />
                   <span className="truncate">{labelForKey(key)}</span>
                 </button>
               );
             })}
             {displayTrend.some((bucket) => bucket.groups.some((group) => !series.includes(usageSourceKey(group, groupBy)))) ? (
-              <span className="inline-flex items-center gap-1.5 text-ink-faint">
-                <span aria-hidden className={`h-2 w-2 rounded-[2px] ${OTHER_FILL}`} />
-                {t('usage.trend.other')}
+              <span className="inline-flex items-center gap-1.5">
+                <span aria-hidden className="h-2 w-2 rounded-full" style={{ backgroundColor: USAGE_OTHER_COLOR }} />
+                <span>{t('usage.trend.other')}</span>
               </span>
             ) : null}
           </>
         )}
+        {metric === 'cost' && displayTrend.some((b) => b.groups.some((g) => g.cost_unknown)) ? (
+          <KnownSubtotalMarker />
+        ) : null}
       </div>
     </section>
   );
 }
 
-/**
- * Drilldown session rows with per-turn locators: the session opens the
- * session, and each returned turn id lands on `/s/{id}?turn={n}`. The wire
- * `turn_ids` are rendered, never collapsed into a bare count.
- */
 export function DrilldownSessionList({
   sessions,
   sessionTitle,
@@ -600,7 +879,6 @@ export function DrilldownSessionList({
   );
 }
 
-/** One source row's token composition, shown when the reader expands it. */
 export function SourceTokenDetails({ label, detail }: { readonly label: string; readonly detail: React.ReactNode }) {
   return (
     <div data-usage-source-details className="border-t border-dashed border-hairline px-3 py-2">
@@ -610,7 +888,6 @@ export function SourceTokenDetails({ label, detail }: { readonly label: string; 
   );
 }
 
-/** Header for the session trace: what is scoped, and how to leave. */
 export function TraceHeading({ label, onClose }: { readonly label: string; readonly onClose: () => void }) {
   const { t } = useI18n();
   return (

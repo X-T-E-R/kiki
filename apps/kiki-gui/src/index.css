@@ -124,6 +124,17 @@
 :root,
 [data-theme='light'] {
   color-scheme: light;
+  --kiki-chart-1: #34332f;
+  --kiki-chart-2: #865446;
+  --kiki-chart-3: #806018;
+  --kiki-chart-4: #526b52;
+  --kiki-chart-5: #50667a;
+  --kiki-chart-other: #716d65;
+  --kiki-chart-danger: #9c3b0e;
+  --kiki-chart-label: #35312c;
+  --kiki-chart-muted: #443e38;
+  --kiki-chart-danger-text: #6e1b06;
+  --kiki-chart-warn-text: #543b05;
 }
 
 /* Inkstone: cool charcoal surfaces, warm white text and copper actions.
@@ -173,6 +184,18 @@
   --color-primary: #EB946F;
   --color-primary-foreground: #261A14;
   --color-sidebar: #1B2226;
+
+  --kiki-chart-1: #eeeae2;
+  --kiki-chart-2: #dea387;
+  --kiki-chart-3: #e4be78;
+  --kiki-chart-4: #aac4a0;
+  --kiki-chart-5: #a9c3cf;
+  --kiki-chart-other: #bdb2a1;
+  --kiki-chart-danger: #f08c69;
+  --kiki-chart-label: #ede9e1;
+  --kiki-chart-muted: #dedad1;
+  --kiki-chart-danger-text: #ffe6df;
+  --kiki-chart-warn-text: #fbf0d9;
 }
 
 html,

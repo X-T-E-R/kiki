@@ -12,11 +12,16 @@ export type UsagePanel = 'history' | 'realtime' | 'quota' | 'export';
  * values keep their meaning (`limits` included).
  */
 export function usagePanelFromSearch(search: string): UsagePanel {
-  const panel = new URLSearchParams(search).get('panel');
+  const params = new URLSearchParams(search);
+  const panel = params.get('panel');
   if (panel === 'export') return 'export';
   if (panel === 'quota') return 'quota';
   if (panel === 'history') return 'history';
   if (panel === 'realtime' || panel === 'limits') return 'realtime';
+  if (panel === null) {
+    const tab = params.get('tab');
+    if (tab === 'quotas' || tab === 'quota') return 'quota';
+  }
   return searchHasUsageHistoryParams(search) ? 'history' : 'realtime';
 }
 
