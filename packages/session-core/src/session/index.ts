@@ -4,4 +4,5 @@ export * from './agentWorkspace';
 export * from './grouping';
 export * from './partialJson';
 export * from './sessionController';
+export * from './thinking-summary';
 export * from './transcript';

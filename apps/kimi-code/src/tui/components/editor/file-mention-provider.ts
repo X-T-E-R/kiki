@@ -39,11 +39,35 @@ const FALLBACK_UNSCANNED_DIRS = new Set([
   '.cache',
 ]);
 
+export interface SlashArgumentContext {
+  readonly canonicalName: string;
+  readonly invokedAs: string;
+  readonly argsStartCol: number;
+  readonly rawArgs: string;
+  readonly priorTokens: readonly string[];
+  readonly tokenIndex: number;
+  readonly currentToken: string;
+  readonly replaceStartCol: number;
+  readonly replaceEndCol: number;
+  readonly suffix: string;
+  readonly inputMode: 'prompt' | 'bash';
+  readonly trigger: 'typing' | 'tab';
+}
+
+export type SlashArgumentCompleter = (
+  context: SlashArgumentContext,
+) => Promise<AutocompleteItem[] | null> | AutocompleteItem[] | null;
+
+export type SlashArgumentHintProvider = (context: SlashArgumentContext) => string | undefined;
+
 export interface SlashAutocompleteCommand extends SlashCommand {
   readonly aliases?: readonly string[];
   readonly kind?: 'command' | 'skill' | 'agent';
   readonly primary?: boolean;
   readonly primaryOrder?: number;
+  readonly requiresPrompt?: boolean;
+  readonly getStructuredArgumentCompletions?: SlashArgumentCompleter;
+  readonly getInlineArgumentHint?: SlashArgumentHintProvider;
 }
 
 interface FsMentionCandidate {
@@ -95,10 +119,11 @@ export class FileMentionProvider implements AutocompleteProvider {
     lines: string[],
     cursorLine: number,
     cursorCol: number,
-    options: { signal: AbortSignal; force?: boolean },
+    options: { signal: AbortSignal; force?: boolean; trigger?: 'typing' | 'tab' },
   ): Promise<AutocompleteSuggestions | null> {
     const currentLine = lines[cursorLine] ?? '';
     const textBeforeCursor = currentLine.slice(0, cursorCol);
+    const trigger = options.trigger ?? 'typing';
 
     // `@` file / folder mentions take priority over the slash-command guards
     // below. Without this, typing `@` inside a slash command's argument text
@@ -107,18 +132,31 @@ export class FileMentionProvider implements AutocompleteProvider {
     // runs, so the file list never opens.
     const atPrefix = extractAtPrefix(textBeforeCursor);
     if (atPrefix !== null) {
+      const markDirDrillDown = (
+        res: AutocompleteSuggestions | null,
+      ): AutocompleteSuggestions | null => {
+        if (res === null) return null;
+        return {
+          ...res,
+          items: res.items.map((item) =>
+            item.value.endsWith('/') || item.value.endsWith('/"')
+              ? { ...item, intent: 'continue' as const }
+              : item,
+          ),
+        };
+      };
       // fd backs `@` completion across every root (cwd + additional dirs). Fall
       // back to the filesystem scanner when fd is unavailable, not executable
       // (e.g. the managed binary was removed or lost execute permission), or if
       // spawning it fails below. A genuine fd no-match still returns null.
       if (this.fdPath === null || !isExecutableFd(this.fdPath)) {
-        return this.getFsMentionSuggestions(atPrefix, options.signal);
+        return markDirDrillDown(await this.getFsMentionSuggestions(atPrefix, options.signal));
       }
       try {
-        return await this.inner.getSuggestions(lines, cursorLine, cursorCol, options);
+        return markDirDrillDown(await this.inner.getSuggestions(lines, cursorLine, cursorCol, options));
       } catch {
         // If fd fails to spawn unexpectedly, keep @ completion usable.
-        return this.getFsMentionSuggestions(atPrefix, options.signal);
+        return markDirDrillDown(await this.getFsMentionSuggestions(atPrefix, options.signal));
       }
     }
 
@@ -150,6 +188,7 @@ export class FileMentionProvider implements AutocompleteProvider {
 
     if (
       inlineSkillPrefix === null &&
+      trigger !== 'tab' &&
       shouldSuppressSlashArgumentCompletion(
         textBeforeCursor,
         currentLine.slice(cursorCol),
@@ -180,6 +219,7 @@ export class FileMentionProvider implements AutocompleteProvider {
               value: cmd.name,
               label: cmd.name,
               description: formatSlashCommandDescription(cmd),
+              intent: cmd.requiresPrompt === true ? ('continue' as const) : undefined,
             })),
             prefix: textBeforeCursor,
           };
@@ -228,6 +268,7 @@ export class FileMentionProvider implements AutocompleteProvider {
             value: m.cmd.name,
             label: m.label,
             description: formatSlashCommandDescription(m.cmd),
+            intent: m.cmd.requiresPrompt === true ? ('continue' as const) : undefined,
             data: m.cmd.kind === 'skill' ? { kind: 'skill' } : undefined,
           })),
           prefix: textBeforeCursor,
@@ -239,7 +280,45 @@ export class FileMentionProvider implements AutocompleteProvider {
     // command argument handling so an absolute path that happens to start with
     // a command name (e.g. `/add-dir/...`) completes inside the path instead of
     // returning the command's argument completions.
-    if (this.getInputMode() !== 'bash') {
+    if (this.getInputMode() !== 'bash' && cursorLine === 0) {
+      const structured = parseStructuredSlashArgumentContext(
+        currentLine,
+        cursorCol,
+        this.slashCommands,
+        this.getInputMode(),
+        trigger,
+      );
+      if (structured !== null) {
+        if (structured.command.getStructuredArgumentCompletions !== undefined) {
+          const items = await structured.command.getStructuredArgumentCompletions(structured.context);
+          if (items === null || items.length === 0) {
+            // Single-recognizer ownership: do not fall through to generic path completion.
+            return null;
+          }
+          return {
+            prefix: structured.context.currentToken,
+            items: items.map((item) => ({
+              ...item,
+              replaceStartCol: item.replaceStartCol ?? structured.context.replaceStartCol,
+              replaceEndCol: item.replaceEndCol ?? structured.context.replaceEndCol,
+            })),
+          };
+        }
+        if (structured.command.getArgumentCompletions !== undefined) {
+          const legacyItems = await structured.command.getArgumentCompletions(
+            structured.context.rawArgs,
+          );
+          if (legacyItems === null || legacyItems.length === 0) return null;
+          return {
+            prefix: structured.context.currentToken,
+            items: legacyItems.map((item) => ({
+              ...item,
+              replaceStartCol: item.replaceStartCol ?? structured.context.replaceStartCol,
+              replaceEndCol: item.replaceEndCol ?? structured.context.replaceEndCol,
+            })),
+          };
+        }
+      }
       const slashArgumentSuggestions = await getSlashArgumentSuggestions(this.slashCommands, textBeforeCursor);
       if (slashArgumentSuggestions !== null) {
         return slashArgumentSuggestions;
@@ -319,6 +398,22 @@ export class FileMentionProvider implements AutocompleteProvider {
     };
   }
 
+  /** Return an inline dimmed argument ghost hint for the current multi-token slash command slot. */
+  getDynamicInlineHint(lines: readonly string[], cursorLine: number, cursorCol: number): string | undefined {
+    if (this.getInputMode() === 'bash' || cursorLine !== 0) return undefined;
+    const currentLine = lines[0] ?? '';
+    if (cursorCol !== currentLine.length) return undefined;
+    const parsed = parseStructuredSlashArgumentContext(
+      currentLine,
+      cursorCol,
+      this.slashCommands,
+      'prompt',
+      'typing',
+    );
+    if (parsed === null || parsed.command.getInlineArgumentHint === undefined) return undefined;
+    return parsed.command.getInlineArgumentHint(parsed.context);
+  }
+
   applyCompletion(
     lines: string[],
     cursorLine: number,
@@ -326,6 +421,20 @@ export class FileMentionProvider implements AutocompleteProvider {
     item: AutocompleteItem,
     prefix: string,
   ): { lines: string[]; cursorLine: number; cursorCol: number } {
+    // Explicit UTF-16 replacement span produced by structured slash argument completers.
+    if (item.replaceStartCol !== undefined && item.replaceEndCol !== undefined) {
+      const currentLine = lines[cursorLine] ?? '';
+      const start = Math.max(0, Math.min(currentLine.length, item.replaceStartCol));
+      const end = Math.max(start, Math.min(currentLine.length, item.replaceEndCol));
+      const nextLine = currentLine.slice(0, start) + item.value + currentLine.slice(end);
+      const nextLines = [...lines];
+      nextLines[cursorLine] = nextLine;
+      return {
+        lines: nextLines,
+        cursorLine,
+        cursorCol: start + item.value.length,
+      };
+    }
     // Inline skill selection mid-input: pi-tui's default applyCompletion
     // treats mid-line slash prefixes as file paths and drops the `/`. Preserve
     // the slash and add a trailing space so the completed token stays a valid
@@ -659,11 +768,75 @@ function parseSlashArgumentContext(
   return { command, argumentPrefix };
 }
 
+function parseStructuredSlashArgumentContext(
+  currentLine: string,
+  cursorCol: number,
+  slashCommands: readonly SlashAutocompleteCommand[],
+  inputMode: 'prompt' | 'bash',
+  trigger: 'typing' | 'tab',
+): { readonly command: SlashAutocompleteCommand; readonly context: SlashArgumentContext } | null {
+  const textBeforeCursor = currentLine.slice(0, cursorCol);
+  if (!textBeforeCursor.startsWith('/')) return null;
+  const match = /^\/(\S+)(\s+)(.*)$/u.exec(textBeforeCursor);
+  if (match === null) return null;
+  const invokedAs = match[1]!;
+  const command = findSlashCommand(slashCommands, invokedAs);
+  if (command === undefined) return null;
+
+  const argsStartCol = 1 + invokedAs.length + match[2]!.length;
+  const rawArgs = match[3]!;
+  const suffix = currentLine.slice(cursorCol);
+
+  // Tokenize rawArgs preserving exact UTF-16 offsets (no shell quote mutation).
+  const tokens: Array<{ readonly text: string; readonly start: number; readonly end: number }> = [];
+  const tokenRegex = /\S+/gu;
+  let m: RegExpExecArray | null;
+  while ((m = tokenRegex.exec(rawArgs)) !== null) {
+    tokens.push({
+      text: m[0],
+      start: argsStartCol + m.index,
+      end: argsStartCol + m.index + m[0].length,
+    });
+  }
+
+  const endsWithSpace = rawArgs.length === 0 || /\s$/u.test(rawArgs);
+  const priorTokens = endsWithSpace
+    ? tokens.map((t) => t.text)
+    : tokens.slice(0, -1).map((t) => t.text);
+  const currentTokObj = endsWithSpace ? undefined : tokens[tokens.length - 1];
+  const currentToken = currentTokObj?.text ?? '';
+  const replaceStartCol = currentTokObj?.start ?? cursorCol;
+  const replaceEndCol = currentTokObj?.end ?? cursorCol;
+
+  return {
+    command,
+    context: {
+      canonicalName: command.name,
+      invokedAs,
+      argsStartCol,
+      rawArgs,
+      priorTokens,
+      tokenIndex: priorTokens.length,
+      currentToken,
+      replaceStartCol,
+      replaceEndCol,
+      suffix,
+      inputMode,
+      trigger,
+    },
+  };
+}
+
 function findSlashCommand(
   slashCommands: readonly SlashAutocompleteCommand[],
   commandName: string,
 ): SlashAutocompleteCommand | undefined {
-  return slashCommands.find((cmd) => cmd.name === commandName || (cmd.aliases ?? []).includes(commandName));
+  const lower = commandName.toLowerCase();
+  return slashCommands.find(
+    (cmd) =>
+      cmd.name.toLowerCase() === lower ||
+      (cmd.aliases ?? []).some((alias) => alias.toLowerCase() === lower),
+  );
 }
 
 function shouldSuppressLeadingWhitespaceSlashPath(

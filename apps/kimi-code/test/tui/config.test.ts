@@ -56,7 +56,6 @@ notification_condition = "always"
     expect(config).toEqual({
       theme: 'light',
       busySubmit: 'send_now',
-      mouse: true,
       screenMode: 'main',
       showThinking: true,
       showTimestamps: false,
@@ -106,7 +105,6 @@ command = "   "
     expect(config).toEqual({
       theme: 'auto',
       busySubmit: 'send_now',
-      mouse: true,
       screenMode: 'main',
       showThinking: true,
       showTimestamps: false,
@@ -176,7 +174,6 @@ command = "   "
     expect(await loadTuiConfig(filePath)).toEqual({
       theme: 'light',
       busySubmit: 'send_now',
-      mouse: true,
       screenMode: 'main',
       showThinking: true,
       showTimestamps: false,

@@ -11,6 +11,10 @@ export interface BusyActivityMessageInput {
   readonly now: number;
   /** The input box holds a draft, so Esc needs a second press to interrupt. */
   readonly hasDraft: boolean;
+  /** Optional active reasoning headline (omitted when showThinking is false). */
+  readonly thinkingHeadline?: string;
+  /** Optional hint when a detachable foreground task is running (>3s). */
+  readonly canBackground?: boolean;
 }
 
 export type StatusNoticeCategory = 'transient' | 'sticky' | 'error';
@@ -320,13 +324,25 @@ export function formatBusyActivityLine(input: BusyActivityMessageInput): Activit
   if (input.runningTasks > 0) {
     details.push(`${String(input.runningTasks)} ${input.runningTasks === 1 ? 'task' : 'tasks'} running`);
   }
+  if (input.canBackground === true) {
+    details.push('Ctrl+B to background');
+  }
   // Untimed output (a subagent, a cold open mid-turn) shows no fake "ago".
   if (input.hasResponded && input.lastResponseAt !== undefined) {
     const agoMs = Math.max(0, input.now - input.lastResponseAt);
     details.push(`last response ${formatElapsedDuration(agoMs)} ago`);
   }
+  const headline = input.thinkingHeadline?.trim();
+  const lead =
+    headline !== undefined && headline.length > 0
+      ? elapsed === undefined
+        ? headline
+        : `${headline} · ${elapsed}`
+      : elapsed === undefined
+        ? 'Working…'
+        : `Working ${elapsed}`;
   return {
-    lead: elapsed === undefined ? 'Working…' : `Working ${elapsed}`,
+    lead,
     tone: 'text',
     details,
     hint: input.hasDraft ? 'Esc twice to interrupt' : 'Esc to interrupt',

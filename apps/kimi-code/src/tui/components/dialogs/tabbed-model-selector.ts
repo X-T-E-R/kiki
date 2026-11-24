@@ -20,6 +20,8 @@ import {
   matchesKey,
   truncateToWidth,
   type Focusable,
+  type MouseRoutable,
+  type SgrMouseEvent,
 } from '@kiki/pi-tui';
 
 import { currentTheme } from '#/tui/theme';
@@ -56,6 +58,9 @@ export interface TabbedModelSelectorOptions {
   /** Forwarded to each inner selector; when set, Alt+S applies the choice to
    * the current session only without persisting it as the default. */
   readonly onSessionOnlySelect?: (selection: ModelSelection) => void;
+  readonly favorites?: readonly string[];
+  readonly recent?: readonly string[];
+  readonly onToggleFavorite?: (alias: string, favorited: boolean) => void;
   readonly onCancel: () => void;
 }
 
@@ -65,11 +70,13 @@ interface ModelTab {
   readonly selector: ModelSelectorComponent;
 }
 
-export class TabbedModelSelectorComponent extends Container implements Focusable {
+export class TabbedModelSelectorComponent extends Container implements Focusable, MouseRoutable {
   focused = false;
   private readonly opts: TabbedModelSelectorOptions;
   private readonly tabs: readonly ModelTab[];
   private activeIndex: number;
+  private insertedTabHeaderLines = 0;
+  private tabHeaderSplitRow = 0;
 
   constructor(opts: TabbedModelSelectorOptions) {
     super();
@@ -102,11 +109,27 @@ export class TabbedModelSelectorComponent extends Container implements Focusable
     this.tabs[this.activeIndex]?.selector.handleInput(data);
   }
 
+  routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
+    const active = this.tabs[this.activeIndex];
+    if (active === undefined) return false;
+    const adjustedLine =
+      this.insertedTabHeaderLines > 0 && line > this.tabHeaderSplitRow + this.insertedTabHeaderLines
+        ? line - this.insertedTabHeaderLines
+        : line;
+    return active.selector.routeMouse(event, adjustedLine, col);
+  }
+
+  onOutsideMouseDown(_event: SgrMouseEvent): boolean {
+    this.opts.onCancel();
+    return true;
+  }
+
   override render(width: number): string[] {
     const active = this.tabs[this.activeIndex];
     if (active === undefined) return [];
     const inner = active.selector.render(width);
     if (this.tabs.length <= 1) {
+      this.insertedTabHeaderLines = 0;
       return inner.map((line) => truncateToWidth(line, width));
     }
     // Layout: divider, title, hint, optional warning, blank, tab strip, blank,
@@ -121,6 +144,8 @@ export class TabbedModelSelectorComponent extends Container implements Focusable
     });
     const headerEnd = inner.findIndex((line) => line === '');
     const splitAt = headerEnd === -1 ? 3 : headerEnd;
+    this.tabHeaderSplitRow = splitAt;
+    this.insertedTabHeaderLines = 2;
     const out: string[] = [...inner.slice(0, splitAt + 1), stripLine, ''];
     for (let i = splitAt + 1; i < inner.length; i++) out.push(inner[i]!);
     return out.map((line) => truncateToWidth(line, width));
@@ -190,6 +215,9 @@ function makeSelector(
     providerSwitchHint: true,
     warning: opts.warning,
     thinkingControl: opts.thinkingControl,
+    favorites: opts.favorites,
+    recent: opts.recent,
+    onToggleFavorite: opts.onToggleFavorite,
     onSelect: opts.onSelect,
     onSessionOnlySelect: opts.onSessionOnlySelect,
     onCancel: opts.onCancel,

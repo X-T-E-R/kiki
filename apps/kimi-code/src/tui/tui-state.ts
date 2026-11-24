@@ -1,16 +1,10 @@
 import {
   Container,
   ProcessTerminal,
-  ScrollView,
-  TuiAltScreen,
-  TuiMainScreen,
   VStack,
   type TUI,
   type Terminal,
 } from '@kiki/pi-tui';
-
-import { clipboard } from '#/utils/clipboard/clipboard-native';
-import { openUrl } from '#/utils/open-url';
 
 import { FooterComponent } from './components/chrome/footer';
 import { GutterContainer } from './components/chrome/gutter-container';
@@ -18,8 +12,9 @@ import type { MoonLoader, SpinnerStyle } from './components/chrome/moon-loader';
 import { TodoPanelComponent } from './components/chrome/todo-panel';
 import type { SessionRow } from './components/dialogs/session-picker';
 import { CustomEditor } from './components/editor/custom-editor';
-import { DEFAULT_TUI_CONFIG } from './config';
+import { DEFAULT_TUI_CONFIG, resolveEffectiveScreenAndMouse } from './config';
 import { CHROME_GUTTER } from './constant/rendering';
+import { ScreenController } from './screen-controller';
 import { currentTheme, type Theme } from './theme';
 import { setMarkdownRenderLatex } from './utils/markdown-options';
 import { createTerminalState, type TerminalState } from './utils/terminal-state';
@@ -35,7 +30,9 @@ import {
 
 export interface TUIState {
   ui: TUI;
+  screenController: ScreenController;
   terminal: Terminal;
+  breadcrumbContainer: Container;
   transcriptContainer: Container;
   activityContainer: Container;
   todoPanelContainer: Container;
@@ -89,39 +86,12 @@ export function createTUIState(options: KimiTUIOptions, terminal: Terminal = new
   const theme = currentTheme;
 
   setMarkdownRenderLatex(initialAppState.renderLatex ?? DEFAULT_TUI_CONFIG.renderLatex ?? true);
-  const envFullScreen = process.env['KIKI_TUI_FULL_SCREEN'];
-  const fullscreen =
-    envFullScreen !== undefined
-      ? envFullScreen === '1'
-      : initialAppState.screenMode === 'alt';
-  const mouseEnabled = initialAppState.mouse ?? DEFAULT_TUI_CONFIG.mouse ?? true;
-  const ui =
-    fullscreen
-      ? new TuiAltScreen(terminal, undefined, undefined, {
-          mouse: mouseEnabled,
-          // Mouse capture takes over the terminal's native link activation, so
-          // route OSC 8 clicks through our own opener.
-          openUrl,
-          // Likewise, on Windows the terminal's native right-click paste is
-          // intercepted; feed the clipboard to the focused component as a
-          // bracketed paste instead (renderer only calls this on win32).
-          onRightClickPaste: () => {
-            const target = ui.getFocusedComponent();
-            if (!target?.handleInput || clipboard?.getText === undefined) return;
-            void clipboard
-              .getText()
-              .then((text) => {
-                if (!text || ui.getFocusedComponent() !== target) return;
-                target.handleInput?.(`\x1b[200~${text}\x1b[201~`);
-                ui.requestRender();
-              })
-              .catch(() => {});
-          },
-        })
-      : new TuiMainScreen(terminal, false, undefined, {
-          mouse: mouseEnabled,
-        });
+  const resolvedScreen = resolveEffectiveScreenAndMouse({
+    screenMode: initialAppState.screenMode,
+    mouse: initialAppState.mouse,
+  });
 
+  const breadcrumbContainer = new GutterContainer(CHROME_GUTTER, CHROME_GUTTER);
   const transcriptContainer = new GutterContainer(CHROME_GUTTER, CHROME_GUTTER);
   const activityContainer = new GutterContainer(CHROME_GUTTER, CHROME_GUTTER);
   const todoPanelContainer = new GutterContainer(CHROME_GUTTER, CHROME_GUTTER);
@@ -129,43 +99,48 @@ export function createTUIState(options: KimiTUIOptions, terminal: Terminal = new
   const queueContainer = new GutterContainer(CHROME_GUTTER, CHROME_GUTTER);
   const btwPanelContainer = new GutterContainer(CHROME_GUTTER, CHROME_GUTTER);
   const editorContainer = new GutterContainer(CHROME_GUTTER, CHROME_GUTTER);
+
+  let stateRef: TUIState | undefined;
+  const screenController = new ScreenController({
+    terminal,
+    initialMode: resolvedScreen.screenMode,
+    savedMousePreference: resolvedScreen.savedMouse,
+    containers: {
+      breadcrumbContainer,
+      transcriptContainer,
+      activityContainer,
+      todoPanelContainer,
+      queueContainer,
+      btwPanelContainer,
+      editorContainer,
+    },
+    onDockChanged: (dock) => {
+      if (stateRef !== undefined) {
+        stateRef.dockContainer = dock;
+      }
+    },
+  });
+  const ui = screenController.ui;
+
   const editor = new CustomEditor(ui, {
     disablePasteBurst: initialAppState.disablePasteBurst ?? DEFAULT_TUI_CONFIG.disablePasteBurst,
   });
-  const footer = new FooterComponent({ ...initialAppState }, () => {
-    ui.requestRender();
-  });
+  const footer = new FooterComponent(
+    {
+      ...initialAppState,
+      screenMode: resolvedScreen.screenMode,
+      mouse: resolvedScreen.effectiveMouse,
+    },
+    () => {
+      ui.requestRender();
+    },
+  );
 
-  let dockContainer: VStack | undefined;
-  if (ui instanceof TuiAltScreen) {
-    // Fullscreen (alternate screen): the transcript scrolls inside the primary
-    // ScrollView while the rest of the chrome stays docked at the bottom. The
-    // footer joins the dock later via mountFooter().
-    // Sizing contract (mirrors pi's interactive layout): the transcript starts
-    // from basis 0 and grows; the dock keeps its intrinsic height, with the
-    // editor never squeezed below its 3 rows (top border / input / bottom
-    // border) and the footer below 1 — otherwise the box outline gets clipped.
-    const scrollView = new ScrollView(transcriptContainer, {
-      follow: 'end',
-      primary: true,
-      overscroll: 'chain',
-      scrollbar: 'auto',
-    });
-    dockContainer = new VStack();
-    dockContainer.addChild(activityContainer, { shrink: 1, minSize: 0 });
-    dockContainer.addChild(todoPanelContainer, { shrink: 1, minSize: 0 });
-    dockContainer.addChild(queueContainer, { shrink: 1, minSize: 0 });
-    dockContainer.addChild(btwPanelContainer, { shrink: 1, minSize: 0 });
-    dockContainer.addChild(editorContainer, { shrink: 1, minSize: 3 });
-    const root = new VStack();
-    root.addChild(scrollView, { basis: 0, grow: 1, shrink: 1, minSize: 1 });
-    root.addChild(dockContainer, { basis: 'auto', grow: 0, shrink: 1, minSize: 1 });
-    ui.setLayoutRoot(root);
-  }
-
-  return {
+  stateRef = {
     ui,
+    screenController,
     terminal,
+    breadcrumbContainer,
     transcriptContainer,
     activityContainer,
     todoPanelContainer,
@@ -173,11 +148,15 @@ export function createTUIState(options: KimiTUIOptions, terminal: Terminal = new
     queueContainer,
     btwPanelContainer,
     editorContainer,
-    dockContainer,
+    dockContainer: screenController.getDockContainer(),
     editor,
     footer,
     theme,
-    appState: { ...initialAppState },
+    appState: {
+      ...initialAppState,
+      screenMode: resolvedScreen.screenMode,
+      mouse: resolvedScreen.effectiveMouse,
+    },
     startupState: 'pending',
     livePane: { ...INITIAL_LIVE_PANE },
     transcriptEntries: [],
@@ -195,4 +174,5 @@ export function createTUIState(options: KimiTUIOptions, terminal: Terminal = new
     queuedMessages: [],
     queuedMessageDispatchPending: false,
   };
+  return stateRef;
 }

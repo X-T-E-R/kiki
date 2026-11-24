@@ -17,6 +17,8 @@ import {
   truncateToWidth,
   visibleWidth,
   type Focusable,
+  type MouseRoutable,
+  type SgrMouseEvent,
 } from '@kiki/pi-tui';
 import type { BackgroundTaskInfo, BackgroundTaskStatus } from '@kiki/node-sdk';
 
@@ -69,7 +71,7 @@ function fitExactly(line: string, width: number): string {
   return padToWidth(s, width);
 }
 
-export class TaskOutputViewer extends Container implements Focusable {
+export class TaskOutputViewer extends Container implements Focusable, MouseRoutable {
   focused = false;
 
   private props: TaskOutputViewerProps;
@@ -151,6 +153,14 @@ export class TaskOutputViewer extends Container implements Focusable {
       this.scrollTo(this.maxScroll());
       return;
     }
+  }
+
+  routeMouse(event: SgrMouseEvent, _line: number, _col: number): boolean {
+    if (event.wheel !== null) {
+      this.scrollBy(event.wheel * 3);
+      return true;
+    }
+    return false;
   }
 
   private scrollBy(delta: number): void {

@@ -8,12 +8,16 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
   type Focusable,
+  type MouseRoutable,
+  type SgrMouseEvent,
 } from '@kiki/pi-tui';
 
 import { DEFAULT_OAUTH_PROVIDER_NAME, PRODUCT_NAME } from '#/constant/app';
 import { CURRENT_MARK, SELECT_POINTER } from '#/tui/constant/symbols';
+import { layoutHintLines } from '#/tui/components/dialogs/hint-lines';
 import { currentTheme } from '#/tui/theme';
 import { SearchableList } from '#/tui/utils/searchable-list';
+import { formatTokenCount } from '#/utils/usage/usage-format';
 
 import type { ChoiceOption } from './choice-picker';
 
@@ -88,16 +92,42 @@ export interface ModelSelectorOptions {
   /** When provided, Alt+S invokes this instead of onSelect — used to apply the
    * choice to the current session only, without persisting it as the default. */
   readonly onSessionOnlySelect?: (selection: ModelSelection) => void;
+  /** Initial favorite model aliases (sorted first at open; toggling never jumps rows). */
+  readonly favorites?: readonly string[];
+  /** Recently used model aliases (sorted after favorites at open). */
+  readonly recent?: readonly string[];
+  /** Invoked when the user presses Ctrl+F to toggle favorite status for a model alias. */
+  readonly onToggleFavorite?: (alias: string, favorited: boolean) => void;
   readonly onCancel: () => void;
 }
 
-function createModelChoices(models: Record<string, ModelAlias>): readonly ModelChoice[] {
-  return Object.entries(models).map(([alias, cfg]) => {
+function createModelChoices(
+  models: Record<string, ModelAlias>,
+  favorites?: readonly string[],
+  recent?: readonly string[],
+): readonly ModelChoice[] {
+  const favSet = new Set(favorites ?? []);
+  const recentOrder = new Map<string, number>();
+  (recent ?? []).forEach((alias, idx) => {
+    if (!recentOrder.has(alias)) recentOrder.set(alias, idx);
+  });
+  const base = Object.entries(models).map(([alias, cfg], originalIndex) => {
     const effective = effectiveModelAlias(cfg);
     const name = modelDisplayName(alias, effective);
     const provider = providerDisplayName(effective.provider);
-    return { alias, model: effective, name, provider, label: `${name} (${provider})` };
+    return {
+      choice: { alias, model: effective, name, provider, label: `${name} (${provider})` },
+      fav: favSet.has(alias) ? 0 : 1,
+      recentRank: recentOrder.get(alias) ?? Number.MAX_SAFE_INTEGER,
+      originalIndex,
+    };
   });
+  base.sort((a, b) => {
+    if (a.fav !== b.fav) return a.fav - b.fav;
+    if (a.recentRank !== b.recentRank) return a.recentRank - b.recentRank;
+    return a.originalIndex - b.originalIndex;
+  });
+  return base.map((entry) => entry.choice);
 }
 
 export function thinkingAvailability(model: ModelAlias): ThinkingAvailability {
@@ -167,22 +197,26 @@ function commitEffort(choice: ModelChoice, draft: ThinkingEffort): ThinkingEffor
  * draft for models that support it. There are no provider tabs — filtering by
  * typing a provider name replaces them. See .agents/skills/write-tui/DESIGN.md.
  */
-export class ModelSelectorComponent extends Container implements Focusable {
+export class ModelSelectorComponent extends Container implements Focusable, MouseRoutable {
   focused = false;
   private readonly opts: ModelSelectorOptions;
   private readonly list: SearchableList<ModelChoice>;
   /** Per-model thinking-effort override set by ←/→; absent → the default. */
   private readonly thinkingOverrides = new Map<string, string>();
+  /** Live favorite set; toggling updates the `*` badge without re-sorting rows. */
+  private readonly favoriteAliases: Set<string>;
+  private renderedChoiceByRow: Array<number | undefined> = [];
 
   constructor(opts: ModelSelectorOptions) {
     super();
     this.opts = opts;
-    const choices = createModelChoices(opts.models);
+    this.favoriteAliases = new Set(opts.favorites ?? []);
+    const choices = createModelChoices(opts.models, opts.favorites, opts.recent);
     const selectedValue = opts.selectedValue ?? opts.currentValue;
     const selectedIdx = choices.findIndex((choice) => choice.alias === selectedValue);
     this.list = new SearchableList({
       items: choices,
-      toSearchText: (choice) => choice.label,
+      toSearchText: (choice) => `${choice.label} ${choice.alias}`,
       pageSize: opts.pageSize,
       initialIndex: Math.max(selectedIdx, 0),
       searchable: opts.searchable === true,
@@ -267,6 +301,17 @@ export class ModelSelectorComponent extends Container implements Focusable {
       return;
     }
 
+    if (matchesKey(data, Key.ctrl('f')) && this.opts.onToggleFavorite !== undefined) {
+      const selected = this.selectedChoice();
+      if (selected !== undefined) {
+        const nextFav = !this.favoriteAliases.has(selected.alias);
+        if (nextFav) this.favoriteAliases.add(selected.alias);
+        else this.favoriteAliases.delete(selected.alias);
+        this.opts.onToggleFavorite(selected.alias, nextFav);
+      }
+      return;
+    }
+
     if (matchesKey(data, Key.alt('s')) && this.opts.onSessionOnlySelect !== undefined) {
       const selected = this.selectedChoice();
       if (selected === undefined) return;
@@ -275,6 +320,32 @@ export class ModelSelectorComponent extends Container implements Focusable {
         thinking: commitEffort(selected, this.effectiveEffort(selected)),
       });
     }
+  }
+
+  routeMouse(event: SgrMouseEvent, line: number, _col: number): boolean {
+    if (event.wheel !== null) {
+      if (event.wheel < 0) this.list.moveUp();
+      else this.list.moveDown();
+      return true;
+    }
+    if (event.leftClick) {
+      const idx = this.renderedChoiceByRow[line];
+      if (idx === undefined) return false;
+      this.list.setSelectedIndex(idx);
+      const selected = this.selectedChoice();
+      if (selected === undefined) return false;
+      this.opts.onSelect({
+        alias: selected.alias,
+        thinking: commitEffort(selected, this.effectiveEffort(selected)),
+      });
+      return true;
+    }
+    return false;
+  }
+
+  onOutsideMouseDown(_event: SgrMouseEvent): boolean {
+    this.opts.onCancel();
+    return true;
   }
 
   override render(width: number): string[] {
@@ -293,14 +364,17 @@ export class ModelSelectorComponent extends Container implements Focusable {
     if (this.opts.providerSwitchHint) hintParts.push('Tab toggle provider');
     hintParts.push('↑↓ navigate');
     if (searchable && view.query.length > 0) hintParts.push('Backspace clear');
-    hintParts.push('Enter select');
+    if (this.opts.onToggleFavorite !== undefined) hintParts.push('Ctrl+F favorite');
+    hintParts.push(this.opts.onSessionOnlySelect !== undefined ? 'Enter default' : 'Enter select');
     if (this.opts.onSessionOnlySelect !== undefined) hintParts.push('Alt+S session-only');
     hintParts.push('Esc cancel');
 
     const lines: string[] = [
       currentTheme.fg('primary', '─'.repeat(width)),
       currentTheme.boldFg('primary', this.opts.title ?? ' Select a model') + titleSuffix,
-      currentTheme.fg('textMuted', ' ' + hintParts.join(' · ')),
+      ...layoutHintLines(hintParts, Math.max(1, width - 1)).map((hintLine) =>
+        currentTheme.fg('textMuted', ` ${hintLine}`),
+      ),
     ];
     if (this.opts.warning !== undefined) {
       for (const line of wrapTextWithAnsi(this.opts.warning, Math.max(1, width - 1))) {
@@ -313,8 +387,10 @@ export class ModelSelectorComponent extends Container implements Focusable {
       lines.push(currentTheme.fg('primary', ' Search: ') + currentTheme.fg('text', view.query));
     }
 
+    this.renderedChoiceByRow = Array.from({ length: lines.length }, () => undefined);
     if (view.items.length === 0) {
       lines.push(currentTheme.fg('textMuted', '   No matches'));
+      this.renderedChoiceByRow.push(undefined);
     } else {
       // Column width for model names so the provider column lines up. Capped so
       // the provider + "← current" marker still fit on normal terminal widths.
@@ -331,16 +407,19 @@ export class ModelSelectorComponent extends Container implements Focusable {
         if (choice === undefined) continue;
         const isSelected = i === view.selectedIndex;
         const isCurrent = choice.alias === this.opts.currentValue;
+        const isFav = this.favoriteAliases.has(choice.alias);
         const pointer = isSelected ? SELECT_POINTER : ' ';
+        const favBadge = isFav ? currentTheme.fg('warning', '*') : ' ';
         const truncatedName = truncateToWidth(choice.name, nameWidth, '…');
         const namePad = ' '.repeat(Math.max(0, nameWidth - visibleWidth(truncatedName)));
-        let line = currentTheme.fg(isSelected ? 'primary' : 'textDim', `  ${pointer} `);
+        let line = currentTheme.fg(isSelected ? 'primary' : 'textDim', ` ${favBadge}${pointer} `);
         line += (isSelected ? currentTheme.boldFg('primary', truncatedName) : currentTheme.fg('text', truncatedName)) + namePad;
         line += '  ' + currentTheme.fg('textMuted', choice.provider);
         if (isCurrent) {
           line += ' ' + currentTheme.fg('success', CURRENT_MARK);
         }
         lines.push(line);
+        this.renderedChoiceByRow.push(i);
       }
     }
 
@@ -360,12 +439,18 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
     lines.push('');
     const selected = this.selectedChoice();
-    if (selected !== undefined && this.opts.thinkingControl !== false) {
-      const canSwitch = segmentsFor(selected.model).length > 1;
-      const thinkingHeader = canSwitch ? ' Thinking  (←→ to switch)' : ' Thinking';
-      lines.push(currentTheme.fg('textMuted', thinkingHeader));
-      lines.push(this.renderThinkingControl(selected));
-      lines.push('');
+    if (selected !== undefined) {
+      const detail = formatModelDetailLine(selected.model);
+      if (detail.length > 0) {
+        lines.push(currentTheme.fg('textMuted', ` ${detail}`));
+      }
+      if (this.opts.thinkingControl !== false) {
+        const canSwitch = segmentsFor(selected.model).length > 1;
+        const thinkingHeader = canSwitch ? ' Thinking  (←→ to switch)' : ' Thinking';
+        lines.push(currentTheme.fg('textMuted', thinkingHeader));
+        lines.push(this.renderThinkingControl(selected));
+        lines.push('');
+      }
     }
     lines.push(currentTheme.fg('primary', '─'.repeat(width)));
     return lines.map((line) => truncateToWidth(line, width));
@@ -401,4 +486,21 @@ export class ModelSelectorComponent extends Container implements Focusable {
     const rendered = segments.map((effort) => segment(effortLabel(effort), effort === active));
     return `  ${rendered.join('  ')}`;
   }
+}
+
+function formatModelDetailLine(model: ModelAlias): string {
+  const parts: string[] = [];
+  if (typeof model.maxContextSize === 'number' && model.maxContextSize > 0) {
+    parts.push(`Context ${formatTokenCount(model.maxContextSize)}`);
+  }
+  const caps = new Set(model.capabilities ?? []);
+  const capLabels: string[] = [];
+  if (caps.has('always_thinking')) capLabels.push('always-thinking');
+  else if (caps.has('thinking') || model.adaptiveThinking === true) capLabels.push('thinking');
+  if (caps.has('image_in')) capLabels.push('vision');
+  if (caps.has('video_in')) capLabels.push('video');
+  if (caps.has('audio_in')) capLabels.push('audio');
+  if (caps.has('tool_use')) capLabels.push('tools');
+  if (capLabels.length > 0) parts.push(capLabels.join(', '));
+  return parts.join(' · ');
 }

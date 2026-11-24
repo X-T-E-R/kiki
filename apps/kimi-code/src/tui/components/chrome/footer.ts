@@ -180,7 +180,8 @@ export type FooterAction =
   | 'tasks'
   | 'agents'
   | 'usage'
-  | 'settings';
+  | 'settings'
+  | 'mouse';
 
 interface FooterPiece {
   readonly text: string;
@@ -492,6 +493,9 @@ export class FooterComponent implements Component, MouseRoutable {
     }
     if (state.planMode) {
       modeParts.push({ text: chalk.hex(colors.primary).bold('plan'), action: 'plan' });
+    }
+    if (state.screenMode === 'alt' && state.mouse === false) {
+      modeParts.push({ text: chalk.hex(colors.textMuted)('[mouse:off]'), action: 'mouse' });
     }
     if (modeParts.length > 0) {
       const subSpans: Array<{ startOffset: number; endOffset: number; action: FooterAction }> = [];

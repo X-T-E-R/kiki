@@ -815,4 +815,38 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     expect(nodes.some((n) => n.kind === 'system' && n.id === 'watch-fail')).toBe(true);
     expect(nodes.some((n) => n.kind === 'system' && n.id === 'watch-ok')).toBe(false);
   });
+
+  it('respects opt-in protectedBlockIds barrier in groupBlocks and foldHistory without altering legacy defaults', () => {
+    const r1 = inTurn({ ...read('/w/a.ts'), id: 'r1' }, 't1');
+    const r2 = inTurn({ ...read('/w/b.ts'), id: 'r2' }, 't1');
+    const r3 = inTurn({ ...read('/w/c.ts'), id: 'r3' }, 't1');
+    const r4 = inTurn({ ...read('/w/d.ts'), id: 'r4' }, 't1');
+    const blocks: Block[] = [inTurn(text('user'), 't1'), r1, r2, r3, r4, inTurn(text('assistant'), 't1')];
+
+    // Legacy call without protectedBlockIds still groups all 4 reads and folds them.
+    const legacyGrouped = groupBlocks(blocks);
+    expect(legacyGrouped.map((n) => n.kind)).toEqual(['user', 'tool-group', 'assistant']);
+    const legacyFolded = foldHistory(legacyGrouped, undefined, { foldSingleProcess: true });
+    expect(legacyFolded.map((n) => n.kind)).toEqual(['user', 'history-fold', 'assistant']);
+
+    // Protecting r2 prevents it from joining tool-group OR history-fold, flushing before and resuming after.
+    const protectedBlockIds = new Set(['r2']);
+    const grouped = groupBlocks(blocks, { protectedBlockIds });
+    expect(grouped.map((n) => (n.kind === 'tool' ? n.id : n.kind))).toEqual([
+      'user',
+      'r1',
+      'r2',
+      'r3',
+      'r4',
+      'assistant',
+    ]);
+    const folded = foldHistory(grouped, undefined, { foldSingleProcess: true, protectedBlockIds });
+    expect(folded.map((n) => (n.kind === 'tool' ? n.id : n.kind))).toEqual([
+      'user',
+      'history-fold',
+      'r2',
+      'history-fold',
+      'assistant',
+    ]);
+  });
 });

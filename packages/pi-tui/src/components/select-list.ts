@@ -1,3 +1,4 @@
+import type { AutocompleteConfirmIntent } from "../autocomplete.ts";
 import { getKeybindings } from "../keybindings.ts";
 import type { MouseRoutable, SgrMouseEvent } from "../mouse.ts";
 import type { Component } from "../tui.ts";
@@ -14,6 +15,11 @@ export interface SelectItem {
 	value: string;
 	label: string;
 	description?: string;
+	/** Confirmation intent for autocomplete selection. */
+	intent?: AutocompleteConfirmIntent;
+	/** Optional explicit UTF-16 replacement span on the cursor line. */
+	replaceStartCol?: number;
+	replaceEndCol?: number;
 	/** Provider-specific metadata (e.g. autocomplete item markers), passed through unchanged. */
 	data?: Record<string, unknown>;
 }

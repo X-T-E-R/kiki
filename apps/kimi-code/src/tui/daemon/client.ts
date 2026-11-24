@@ -29,6 +29,7 @@ import type {
   QuestionResolveResult,
   PersonaSummary,
   Session,
+  SessionStatusResponse,
   SetSessionBranchToolsLockRequest,
   SetSessionBranchToolsLockResponse,
   UpdateSessionProfileRequest,
@@ -234,6 +235,10 @@ export class DaemonClient implements SessionTransport {
     return this.sessions.getSession(sessionId);
   }
 
+  getSessionStatus(sessionId: string): Promise<SessionStatusResponse> {
+    return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}/status`);
+  }
+
   getGoal(sessionId: string): Promise<GoalSnapshot | null> {
     return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}/goal`);
   }
@@ -351,8 +356,9 @@ export class DaemonClient implements SessionTransport {
     return this.sessions.setBranchToolsLock!(sessionId, body);
   }
 
-  undoSession(sessionId: string): Promise<unknown> {
-    return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}:undo`, { count: 1 });
+  undoSession(sessionId: string, count = 1): Promise<unknown> {
+    const safeCount = Math.max(1, Math.trunc(count));
+    return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}:undo`, { count: safeCount });
   }
 
   abortPrompt(sessionId: string, promptId: string, agentId?: string, queuedOnly?: boolean): Promise<PromptAbortResponse> {

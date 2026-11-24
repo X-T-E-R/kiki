@@ -49,6 +49,19 @@ function truncateOneLine(text: string, max: number): string {
 
 const DIFF_SUMMARY_MAX_LINES = 10;
 const CONTENT_SUMMARY_MAX_LINES = 10;
+const MAX_INLINE_PREVIEW_LINES = 18;
+
+function choiceAllowsOptionalFeedback(
+  data: ApprovalPanelData,
+  option: ApprovalPanelChoice | undefined,
+): boolean {
+  if (option === undefined) return false;
+  if (option.response === 'cancelled' || option.selected_option_id !== undefined) return false;
+  const tool = data.tool_name.toLowerCase();
+  const action = data.action.toLowerCase();
+  if (tool.includes('ssh') || action.includes('ssh')) return false;
+  return true;
+}
 
 interface BlockStyles {
   strong: (s: string) => string;
@@ -257,6 +270,9 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
   /** True while a response promise returned by the host is pending. */
   private responding = false;
   private renderedChoiceByRow: Array<number | undefined> = [];
+  private previewScrollOffset = 0;
+  private maxPreviewScroll = 0;
+  private previewEndRow = 0;
 
   /**
    * `onResponse` may return a promise; the panel then ignores every key until
@@ -301,6 +317,21 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
   private leaveFeedbackMode(): void {
     this.feedbackMode = false;
     this.feedbackInput.setValue('');
+  }
+
+  private moveSelection(delta: number): void {
+    const count = this.choiceCount();
+    if (count <= 0) return;
+    // Switching choice rows never carries a prior row's note onto another decision.
+    this.leaveFeedbackMode();
+    this.selectedIndex = (this.selectedIndex + delta + count) % count;
+  }
+
+  private scrollPreview(delta: number): void {
+    this.previewScrollOffset = Math.max(
+      0,
+      Math.min(this.maxPreviewScroll, this.previewScrollOffset + delta),
+    );
   }
 
   private submit(index: number, feedback: string = ''): void {
@@ -357,27 +388,46 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
       return;
     }
 
+    if (matchesKey(data, Key.shift('up'))) {
+      this.scrollPreview(-1);
+      return;
+    }
+    if (matchesKey(data, Key.shift('down'))) {
+      this.scrollPreview(1);
+      return;
+    }
+
     // Until armed, a key may still be one meant for the input box the panel
     // just replaced: it can move the pointer but never choose.
     if (!this.arming.admitKey()) {
       if (this.choiceCount() === 0) return;
       if (matchesKey(data, Key.up)) {
-        this.selectedIndex = (this.selectedIndex - 1 + this.choiceCount()) % this.choiceCount();
+        this.moveSelection(-1);
       } else if (matchesKey(data, Key.down)) {
-        this.selectedIndex = (this.selectedIndex + 1) % this.choiceCount();
+        this.moveSelection(1);
+      }
+      return;
+    }
+
+    if (matchesKey(data, Key.tab)) {
+      const option = this.choiceAt(this.selectedIndex);
+      if (choiceAllowsOptionalFeedback(this.request.data, option)) {
+        if (this.feedbackMode) {
+          this.leaveFeedbackMode();
+        } else {
+          this.feedbackMode = true;
+        }
       }
       return;
     }
 
     if (this.feedbackMode) {
       if (matchesKey(data, Key.up)) {
-        this.feedbackMode = false;
-        this.selectedIndex = (this.selectedIndex - 1 + this.choiceCount()) % this.choiceCount();
+        this.moveSelection(-1);
         return;
       }
       if (matchesKey(data, Key.down)) {
-        this.feedbackMode = false;
-        this.selectedIndex = (this.selectedIndex + 1) % this.choiceCount();
+        this.moveSelection(1);
         return;
       }
       this.feedbackInput.handleInput(data);
@@ -386,11 +436,11 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
 
     if (this.choiceCount() === 0) return;
     if (matchesKey(data, Key.up)) {
-      this.selectedIndex = (this.selectedIndex - 1 + this.choiceCount()) % this.choiceCount();
+      this.moveSelection(-1);
       return;
     }
     if (matchesKey(data, Key.down)) {
-      this.selectedIndex = (this.selectedIndex + 1) % this.choiceCount();
+      this.moveSelection(1);
       return;
     }
     if (matchesKey(data, Key.enter)) {
@@ -408,13 +458,13 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
   routeMouse(event: SgrMouseEvent, line: number, _col: number): boolean {
     if (this.responding) return false;
     if (event.wheel !== null) {
+      if (this.maxPreviewScroll > 0 && line < this.previewEndRow) {
+        this.scrollPreview(event.wheel < 0 ? -2 : 2);
+        return true;
+      }
       const count = this.choiceCount();
       if (count <= 0) return false;
-      this.feedbackMode = false;
-      this.selectedIndex =
-        event.wheel < 0
-          ? (this.selectedIndex - 1 + count) % count
-          : (this.selectedIndex + 1) % count;
+      this.moveSelection(event.wheel < 0 ? -1 : 1);
       return true;
     }
     if (event.leftClick) {
@@ -453,12 +503,10 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
     const visibleBlocks = dedupedBlocks.slice(0, 5);
     // Advertise Ctrl+E only when the host can open a preview.
     const canPreview = this.onOpenPreview !== undefined;
-    const hasPreviewable =
-      canPreview &&
-      visibleBlocks.some((block) => block.type === 'diff' || block.type === 'file_content');
+    const hasPreviewable = canPreview && this.findPreviewableBlocks().length > 0;
 
+    const rawPreviewLines: string[] = [];
     if (visibleBlocks.length > 0) {
-      lines.push('');
       for (const block of visibleBlocks) {
         const blockLines = renderDisplayBlock(
           block,
@@ -467,12 +515,12 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
           canPreview,
         );
         for (const line of blockLines) {
-          lines.push(indent(line));
+          rawPreviewLines.push(indent(line));
         }
       }
       const hiddenCount = dedupedBlocks.length - visibleBlocks.length;
       if (hiddenCount > 0) {
-        lines.push(
+        rawPreviewLines.push(
           indent(
             dim(
               `… +${String(hiddenCount)} more${hasPreviewable ? ' (Ctrl+E preview all)' : ''}`,
@@ -481,11 +529,32 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
         );
       }
     } else if (data.description) {
-      lines.push('');
       for (const descLine of data.description.split('\n')) {
-        lines.push(indent(dim(descLine)));
+        rawPreviewLines.push(indent(dim(descLine)));
       }
     }
+
+    this.maxPreviewScroll = Math.max(0, rawPreviewLines.length - MAX_INLINE_PREVIEW_LINES);
+    if (this.previewScrollOffset > this.maxPreviewScroll) {
+      this.previewScrollOffset = this.maxPreviewScroll;
+    }
+    if (rawPreviewLines.length > 0) {
+      lines.push('');
+      const slice = this.maxPreviewScroll > 0
+        ? rawPreviewLines.slice(this.previewScrollOffset, this.previewScrollOffset + MAX_INLINE_PREVIEW_LINES)
+        : rawPreviewLines;
+      for (const line of slice) lines.push(line);
+      if (this.maxPreviewScroll > 0) {
+        lines.push(
+          indent(
+            muted(
+              `Lines ${String(this.previewScrollOffset + 1)}–${String(this.previewScrollOffset + slice.length)} of ${String(rawPreviewLines.length)} (Shift+↑↓ or wheel to scroll)`,
+            ),
+          ),
+        );
+      }
+    }
+    this.previewEndRow = lines.length;
 
     lines.push('');
     // Unarmed choices render dim: the panel is visible but not yet taking a choice.
@@ -498,7 +567,7 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
 
       const startRow = lines.length;
       const labelWithNum = `${String(num)}. ${option.label}`;
-      if (this.feedbackMode && option.requires_feedback === true && isSelected) {
+      if (this.feedbackMode && isSelected) {
         lines.push(indent(this.renderInlineFeedbackLine(width - 2, labelWithNum)));
       } else if (!armed) {
         lines.push(indent(dim(`${isSelected ? SELECT_POINTER : ' '} ${labelWithNum}`)));
@@ -510,12 +579,17 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
 
       // Optional helper text under the label, aligned past the pointer/number.
       // Choices without a description render exactly as before.
+      const effectiveDescription =
+        option.description !== undefined && option.description.length > 0
+          ? option.description
+          : option.response === 'approved_for_session'
+            ? 'Applies to this session only'
+            : undefined;
       if (
-        option.description !== undefined &&
-        option.description.length > 0 &&
-        !(this.feedbackMode && option.requires_feedback === true && isSelected)
+        effectiveDescription !== undefined &&
+        !(this.feedbackMode && isSelected)
       ) {
-        for (const descLine of wrapTextWithAnsi(option.description, Math.max(20, width - 7))) {
+        for (const descLine of wrapTextWithAnsi(effectiveDescription, Math.max(20, width - 7))) {
           lines.push(indent(`     ${dim(descLine)}`));
         }
       }
@@ -526,12 +600,14 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
 
     lines.push('');
     const numeric = buildNumericHint(data.choices.length);
+    const canAddNote = choiceAllowsOptionalFeedback(data, this.choiceAt(this.selectedIndex));
     const hintParts = this.feedbackMode
       ? ['type feedback', 'Enter submit', 'Esc back']
       : [
           '↑↓ navigate',
           numeric.length > 0 ? `${numeric}/Enter confirm` : 'Enter confirm',
           'Esc reject',
+          ...(canAddNote ? ['Tab note'] : []),
           ...(hasPreviewable ? ['Ctrl+E preview'] : []),
         ];
     // Wrap at segment boundaries: right-truncating a single hint line hid the
@@ -545,10 +621,30 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
   }
 
   private findPreviewableBlocks(): Array<DiffDisplayBlock | FileContentDisplayBlock> {
-    return this.request.data.display.filter(
+    const direct = this.request.data.display.filter(
       (block): block is DiffDisplayBlock | FileContentDisplayBlock =>
         block.type === 'diff' || block.type === 'file_content',
     );
+    if (direct.length > 0) return direct;
+    // ExitPlanMode (or any long brief approval) previews its markdown plan body via Ctrl+E.
+    const briefs = this.request.data.display
+      .filter((block): block is Extract<DisplayBlock, { type: 'brief' }> => block.type === 'brief' && block.text.trim().length > 0)
+      .map((block) => block.text);
+    const planText = briefs.length > 0 ? briefs.join('\n\n') : this.request.data.description;
+    if (
+      (this.request.data.tool_name === 'ExitPlanMode' || planText.split('\n').length > MAX_INLINE_PREVIEW_LINES) &&
+      planText.trim().length > 0
+    ) {
+      return [
+        {
+          type: 'file_content',
+          path: this.request.data.tool_name === 'ExitPlanMode' ? 'Plan' : this.request.data.tool_name,
+          content: planText,
+          language: 'markdown',
+        },
+      ];
+    }
+    return [];
   }
 
   private choiceAt(index: number): ApprovalPanelChoice | undefined {

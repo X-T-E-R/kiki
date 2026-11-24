@@ -80,7 +80,8 @@ function isNavigationKey(data: string): boolean {
     matchesKey(data, Key.down) ||
     matchesKey(data, Key.left) ||
     matchesKey(data, Key.right) ||
-    matchesKey(data, Key.tab)
+    matchesKey(data, Key.tab) ||
+    matchesKey(data, Key.shift('tab'))
   );
 }
 
@@ -236,7 +237,7 @@ export class QuestionDialogComponent extends Container implements Focusable, Mou
       return;
     }
 
-    if (matchesKey(data, Key.left)) {
+    if (matchesKey(data, Key.left) || matchesKey(data, Key.shift('tab'))) {
       this.gotoTab(this.currentTab - 1);
       return;
     }
@@ -267,6 +268,12 @@ export class QuestionDialogComponent extends Container implements Focusable, Mou
     const questionIdx = this.currentQuestionIndex();
     if (questionIdx === undefined) return;
 
+    if (matchesKey(data, Key.shift('tab'))) {
+      this.syncOtherDraft(questionIdx);
+      this.editingOther = false;
+      this.gotoTab(this.currentTab - 1);
+      return;
+    }
     if (matchesKey(data, Key.tab)) {
       this.syncOtherDraft(questionIdx);
       this.editingOther = false;
@@ -304,7 +311,7 @@ export class QuestionDialogComponent extends Container implements Focusable, Mou
       return;
     }
 
-    if (matchesKey(data, Key.left)) {
+    if (matchesKey(data, Key.left) || matchesKey(data, Key.shift('tab'))) {
       this.gotoTab(this.currentTab - 1);
       return;
     }

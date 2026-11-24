@@ -62,6 +62,14 @@ export interface ColorPalette {
   diffAddedStrong: string;
   /** Removed lines — intra-line changed words (bold). */
   diffRemovedStrong: string;
+  /** Subtle background tint for added diff lines (skipped on ANSI-16). */
+  diffAddedBg: string;
+  /** Subtle background tint for removed diff lines (skipped on ANSI-16). */
+  diffRemovedBg: string;
+  /** Stronger background tint for intra-line added words (skipped on ANSI-16). */
+  diffAddedWordBg: string;
+  /** Stronger background tint for intra-line removed words (skipped on ANSI-16). */
+  diffRemovedWordBg: string;
   /** Line-number gutter (also approval panel/preview). */
   diffGutter: string;
   /** Meta / hunk headers. */
@@ -99,6 +107,10 @@ export const darkColors: ColorPalette = {
   diffRemoved: '#E85454',
   diffAddedStrong: '#7AD99B',
   diffRemovedStrong: '#F08585',
+  diffAddedBg: '#162A1E',
+  diffRemovedBg: '#2E1618',
+  diffAddedWordBg: '#234931',
+  diffRemovedWordBg: '#522227',
   diffGutter: '#6B6B6B',
   diffMeta: '#888888',
 
@@ -126,6 +138,10 @@ export const lightColors: ColorPalette = {
   diffRemoved: '#B91C1C',
   diffAddedStrong: '#0E7A38',
   diffRemovedStrong: '#B91C1C',
+  diffAddedBg: '#E6F7EC',
+  diffRemovedBg: '#FCEAEA',
+  diffAddedWordBg: '#BFEBD0',
+  diffRemovedWordBg: '#F6C7C7',
   diffGutter: '#737373',
   diffMeta: '#5F5F5F',
 

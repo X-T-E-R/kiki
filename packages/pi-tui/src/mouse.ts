@@ -7,7 +7,10 @@
  */
 
 export const MOUSE_TRACKING_ON = "\x1b[?1000h\x1b[?1006h";
-export const MOUSE_TRACKING_OFF = "\x1b[?1006l\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+export const MOUSE_TRACKING_BUTTON_EVENT = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+export const MOUSE_TRACKING_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+
+export type NormalizedMouseEventType = "press" | "release" | "motion" | "wheel" | "click";
 
 /** A decoded SGR or legacy X10 mouse report. */
 export interface SgrMouseEvent {
@@ -27,10 +30,12 @@ export interface SgrMouseEvent {
 	wheel: -1 | 1 | null;
 	/** True when the pointer moved (hover or drag) rather than clicked. */
 	motion: boolean;
-	/** True for a primary-button press (not motion, not release, not wheel). */
+	/** True for a primary-button press (or synthesized stationary-release click). */
 	leftClick: boolean;
 	/** True for a secondary-button press (not motion, not release, not wheel). */
 	rightClick: boolean;
+	/** Optional normalized semantic event kind (set to `'click'` on stationary-release dispatch). */
+	type?: NormalizedMouseEventType;
 }
 
 /**

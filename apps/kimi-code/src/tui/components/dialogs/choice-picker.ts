@@ -14,6 +14,7 @@ import {
   Key,
   truncateToWidth,
   visibleWidth,
+  wrapTextWithAnsi,
   type Focusable,
   type MouseRoutable,
   type SgrMouseEvent,
@@ -55,30 +56,16 @@ export interface ChoicePickerOptions {
   /** When provided, Alt+S invokes this with the selected value instead of
    * onSelect — used to apply the choice to the current session only. */
   readonly onSessionOnlySelect?: (value: string) => void;
+  /** Fired whenever the highlighted item changes (for live preview e.g. /theme). */
+  readonly onHighlightChange?: (value: string) => void;
   readonly onCancel: () => void;
 }
 
 function wrapDescription(text: string, width: number): string[] {
   const maxWidth = Math.max(1, width);
-  const words = text
-    .trim()
-    .split(/\s+/)
-    .filter((word) => word.length > 0);
-  const lines: string[] = [];
-  let current = '';
-
-  for (const word of words) {
-    const candidate = current.length === 0 ? word : `${current} ${word}`;
-    if (visibleWidth(candidate) <= maxWidth) {
-      current = candidate;
-      continue;
-    }
-    if (current.length > 0) lines.push(current);
-    current = visibleWidth(word) <= maxWidth ? word : truncateToWidth(word, maxWidth, '…');
-  }
-
-  if (current.length > 0) lines.push(current);
-  return lines;
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return [];
+  return wrapTextWithAnsi(trimmed, maxWidth);
 }
 
 export class ChoicePickerComponent extends Container implements Focusable, MouseRoutable {
@@ -86,6 +73,7 @@ export class ChoicePickerComponent extends Container implements Focusable, Mouse
   private readonly opts: ChoicePickerOptions;
   private readonly list: SearchableList<ChoiceOption>;
   private renderedItemByRow: Array<number | undefined> = [];
+  private lastHighlightedValue: string | undefined;
 
   constructor(opts: ChoicePickerOptions) {
     super();
@@ -98,11 +86,23 @@ export class ChoicePickerComponent extends Container implements Focusable, Mouse
       initialIndex: Math.max(currentIdx, 0),
       searchable: opts.searchable === true,
     });
+    this.lastHighlightedValue = this.list.selected()?.value;
+  }
+
+  private notifyHighlightIfChanged(): void {
+    const current = this.list.selected()?.value;
+    if (current !== undefined && current !== this.lastHighlightedValue) {
+      this.lastHighlightedValue = current;
+      this.opts.onHighlightChange?.(current);
+    }
   }
 
   handleInput(data: string): void {
     if (matchesKey(data, Key.escape)) {
-      if (this.list.clearQuery()) return;
+      if (this.list.clearQuery()) {
+        this.notifyHighlightIfChanged();
+        return;
+      }
       this.opts.onCancel();
       return;
     }
@@ -114,10 +114,12 @@ export class ChoicePickerComponent extends Container implements Focusable, Mouse
     // Left/Right page through the list (this picker has no horizontal control).
     if (matchesKey(data, Key.left)) {
       this.list.pageUp();
+      this.notifyHighlightIfChanged();
       return;
     }
     if (matchesKey(data, Key.right)) {
       this.list.pageDown();
+      this.notifyHighlightIfChanged();
       return;
     }
     // Enter always selects. Space selects too — but only when the list is not
@@ -129,12 +131,14 @@ export class ChoicePickerComponent extends Container implements Focusable, Mouse
       return;
     }
     this.list.handleKey(data);
+    this.notifyHighlightIfChanged();
   }
 
   routeMouse(event: SgrMouseEvent, line: number, _col: number): boolean {
     if (event.wheel !== null) {
       if (event.wheel < 0) this.list.moveUp();
       else this.list.moveDown();
+      this.notifyHighlightIfChanged();
       return true;
     }
     if (event.leftClick) {

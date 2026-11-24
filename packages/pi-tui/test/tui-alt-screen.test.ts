@@ -176,7 +176,9 @@ describe("TuiAltScreen", () => {
 				.filter((event): event is { type: "write"; data: string } => event.type === "write")
 				.map((event) => event.data)
 				.join("");
-			assert.ok(directWrites.includes("\x1b[?1003h"));
+			assert.ok(directWrites.includes("\x1b[?1002h"), "direct terminal should enable button-motion tracking");
+			assert.ok(!directWrites.includes("\x1b[?1003h"), "direct terminal should not enable all-motion hover flood");
+			assert.ok(directWrites.includes("\x1b[?1006h"), "direct terminal should enable SGR mouse encoding");
 			directTui.stop();
 
 			const multiplexers = [
@@ -1319,5 +1321,198 @@ describe("TuiAltScreen", () => {
 			assert.ok(restoreEvent.data.includes("sixth"));
 			assert.ok(restoreEvent.data.indexOf("first") < restoreEvent.data.indexOf("sixth"));
 		}
+	});
+
+	it("dispatches component clicks only on stationary release and suppresses clicks after drag selection", async () => {
+		const terminal = new RecordingTerminal(30, 4);
+		const clicks: Array<{ line: number; col: number; type?: string }> = [];
+		const copied: string[] = [];
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			copySelection: (text) => {
+				copied.push(text);
+				return "Copied via custom";
+			},
+		});
+		const widget = {
+			render: () => ["▸ Clickable header row", "body line one", "body line two"],
+			invalidate: () => {},
+			routeMouse: (event: import("../src/mouse.ts").SgrMouseEvent, line: number, col: number) => {
+				if (event.leftClick) {
+					clicks.push({ line, col, type: event.type });
+					return true;
+				}
+				return false;
+			},
+		};
+		tui.addChild(widget);
+		tui.start();
+		await terminal.waitForRender();
+
+		// Mousedown alone must NOT toggle or activate.
+		terminal.sendInput("\x1b[<0;3;1M");
+		await terminal.waitForRender();
+		assert.strictEqual(clicks.length, 0);
+
+		// Stationary release activates exactly once with normalized type='click'.
+		terminal.sendInput("\x1b[<0;3;1m");
+		await terminal.waitForRender();
+		assert.deepStrictEqual(clicks, [{ line: 0, col: 2, type: "click" }]);
+		assert.deepStrictEqual(copied, []);
+
+		// Press -> drag -> release selects text, copies once via callback, and emits zero clicks.
+		terminal.sendInput("\x1b[<0;3;1M");
+		terminal.sendInput("\x1b[<32;10;1M");
+		terminal.sendInput("\x1b[<0;10;1m");
+		await terminal.waitForRender();
+		assert.strictEqual(clicks.length, 1);
+		assert.strictEqual(copied.length, 1);
+		assert.ok(copied[0]!.length > 0);
+		assert.ok(terminal.events.every((event) => event.type !== "write" || !event.data.includes("\x1b]52;c;")));
+
+		tui.stop();
+	});
+
+	it("shows clickable scrollToEndIndicator pill when scrolled away and jumps to bottom on release", async () => {
+		const terminal = new VirtualTerminal(30, 5);
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			scrollToEndIndicator: () => "↓ Jump to latest",
+		});
+		const lines = Array.from({ length: 15 }, (_, i) => `row ${i + 1}`).join("\n");
+		tui.addChild(new Text(lines, 0, 0));
+		tui.start();
+		await terminal.waitForRender();
+		assert.strictEqual(tui.isFollowingOutput, true);
+
+		// Scroll up -> pill appears on bottom row of scroll view.
+		terminal.sendInput("\x1b[<64;1;1M");
+		await terminal.waitForRender();
+		assert.strictEqual(tui.isFollowingOutput, false);
+		const viewport = terminal.getViewport();
+		assert.ok(viewport[4]!.includes("Jump to latest"), `expected pill on row 5, got: ${JSON.stringify(viewport)}`);
+
+		// Click pill (centered around col 15, row 5 in 1-based SGR).
+		terminal.sendInput("\x1b[<0;15;5M");
+		terminal.sendInput("\x1b[<0;15;5m");
+		await terminal.waitForRender();
+		assert.strictEqual(tui.isFollowingOutput, true);
+		tui.stop();
+	});
+
+	it("keeps DEC 1004 focus reporting independent when mouse tracking is disabled", () => {
+		const terminal = new RecordingTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal, undefined, undefined, { mouse: true, focusReporting: true });
+		tui.start();
+		tui.setMouseReporting(false);
+		const afterDisable = terminal.events
+			.filter((event): event is { type: "write"; data: string } => event.type === "write")
+			.map((event) => event.data)
+			.join("");
+		assert.ok(afterDisable.includes("\x1b[?1004h"));
+		assert.ok(!afterDisable.includes("\x1b[?1004l"), "disabling mouse must not disable DEC 1004 focus reporting");
+		tui.stop();
+		const afterStop = terminal.events
+			.filter((event): event is { type: "write"; data: string } => event.type === "write")
+			.map((event) => event.data)
+			.join("");
+		assert.ok(afterStop.includes("\x1b[?1004l"), "stopping TuiAltScreen disables its owned DEC 1004");
+	});
+
+	it("cancels stationary release click when a different component replaces the target between press and release", async () => {
+		const terminal = new VirtualTerminal(40, 6);
+		const tui = new TuiAltScreen(terminal);
+		let originalClicks = 0;
+		let replacementClicks = 0;
+		const original: Component & MouseRoutable = {
+			render: () => ["Original row"],
+			invalidate: () => {},
+			routeMouse: (event) => {
+				if (event.leftClick) {
+					originalClicks += 1;
+					return true;
+				}
+				return false;
+			},
+		};
+		const replacement: Component & MouseRoutable = {
+			render: () => ["Approve dangerous action"],
+			invalidate: () => {},
+			routeMouse: (event) => {
+				if (event.leftClick) {
+					replacementClicks += 1;
+					return true;
+				}
+				return false;
+			},
+		};
+		tui.addChild(original);
+		tui.start();
+		await terminal.waitForRender();
+
+		// Press on original target at (3, 1).
+		terminal.sendInput("\x1b[<0;3;1M");
+		await terminal.waitForRender();
+		assert.strictEqual(originalClicks, 0);
+
+		// Before mouseup, an async approval panel replaces the component at (3, 1).
+		tui.removeChild(original);
+		tui.addChild(replacement);
+		tui.renderNow(true);
+
+		// Stationary release at (3, 1) MUST be cancelled — never activates replacement!
+		terminal.sendInput("\x1b[<0;3;1m");
+		await terminal.waitForRender();
+		assert.strictEqual(originalClicks, 0);
+		assert.strictEqual(replacementClicks, 0);
+
+		// Subsequent intentional press + release on replacement works normally.
+		terminal.sendInput("\x1b[<0;3;1M");
+		terminal.sendInput("\x1b[<0;3;1m");
+		await terminal.waitForRender();
+		assert.strictEqual(replacementClicks, 1);
+
+		// Same component repainted with a different action on the same row between press and release is ALSO cancelled.
+		let dynamicLabel = "Option A";
+		let dynamicClicks = 0;
+		const dynamicWidget: Component & MouseRoutable = {
+			render: () => [dynamicLabel],
+			invalidate: () => {},
+			routeMouse: (event) => {
+				if (event.leftClick) {
+					dynamicClicks += 1;
+					return true;
+				}
+				return false;
+			},
+		};
+		tui.removeChild(replacement);
+		tui.addChild(dynamicWidget);
+		tui.renderNow(true);
+		terminal.sendInput("\x1b[<0;3;1M");
+		await terminal.waitForRender();
+		dynamicLabel = "Delete everything";
+		tui.renderNow(true);
+		terminal.sendInput("\x1b[<0;3;1m");
+		await terminal.waitForRender();
+		assert.strictEqual(dynamicClicks, 0);
+
+		tui.stop();
+	});
+
+	it("routes End key to onViewportBottomKey hook when registered", async () => {
+		const terminal = new VirtualTerminal(30, 5);
+		let bottomCalls = 0;
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			onViewportBottomKey: () => {
+				bottomCalls += 1;
+				return true;
+			},
+		});
+		tui.addChild(new Text("short line", 0, 0));
+		tui.start();
+		await terminal.waitForRender();
+		terminal.sendInput("\x1b[F"); // End key
+		await terminal.waitForRender();
+		assert.strictEqual(bottomCalls, 1);
+		tui.stop();
 	});
 });

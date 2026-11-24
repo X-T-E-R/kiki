@@ -25,4 +25,9 @@ export class UndoStack<S> {
 	get length(): number {
 		return this.stack.length;
 	}
+
+	/** Return true if any stored snapshot satisfies `predicate`. */
+	some(predicate: (state: Readonly<S>) => boolean): boolean {
+		return this.stack.some(predicate);
+	}
 }

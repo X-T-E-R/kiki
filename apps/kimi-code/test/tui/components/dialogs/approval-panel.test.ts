@@ -78,7 +78,7 @@ describe('ApprovalPanelComponent', () => {
     expect(out).not.toContain('▶');
     expect(out).not.toContain('↵');
     expect(raw).toContain(
-      currentTheme.fg('textMuted', '↑↓ navigate · 1-4/Enter confirm · Esc reject'),
+      currentTheme.fg('textMuted', '↑↓ navigate · 1-4/Enter confirm · Esc reject · Tab note'),
     );
   });
 
