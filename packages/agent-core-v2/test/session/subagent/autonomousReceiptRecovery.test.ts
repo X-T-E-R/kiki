@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { ContextAppendMessage } from '#/agent/contextMemory/contextEvents';
 import { TurnEnded, TurnPrompt } from '#/agent/loop/turnOps';
+import { IAgentTaskService } from '#/agent/task/task';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { countLostSubtreeTasks } from '#/session/subagent/autonomousReceipt';
 import { readPendingAutonomousReceipts } from '#/session/subagent/autonomousReceiptRecovery';
 import { AGENT_WIRE_RECORD_KEY, createWireMetadataRecord, type WireRecord } from '#/wire/record';
 
@@ -90,5 +94,54 @@ describe('readPendingAutonomousReceipts', () => {
     } finally {
       await logs.close();
     }
+  });
+
+  it('scopes countLostSubtreeTasks to the current turn so historical pre-recovery lost rows never kill a resumed branch turn', () => {
+    const branchTasks = [
+      {
+        taskId: 'task-old-lost',
+        kind: 'agent' as const,
+        agentId: 'sub-old',
+        status: 'lost' as const,
+        description: 'Pre-recovery crashed worker',
+        ownerTurnId: 0,
+        startedAt: 100,
+        endedAt: 200,
+      },
+    ];
+    const branchServices = new Map<unknown, unknown>();
+    const branchHandle = { id: 'branch-1', accessor: { get: (id: unknown) => branchServices.get(id) } } as unknown as IAgentScopeHandle;
+    branchServices.set(IAgentTaskService, { list: () => branchTasks });
+    branchServices.set(IAgentLifecycleService, {
+      get: (id: string) => (id === 'branch-1' ? branchHandle : undefined),
+      list: () => [branchHandle],
+    });
+    const agents = {
+      'branch-1': { type: 'sub' as const, parentAgentId: 'main', labels: { branch: 'true', branchInitiator: 'agent' } },
+      'sub-old': { type: 'sub' as const, parentAgentId: 'branch-1' },
+      'sub-current': { type: 'sub' as const, parentAgentId: 'branch-1' },
+    };
+
+    expect(countLostSubtreeTasks(branchHandle, agents, { turnId: 1, startedAt: 500 })).toBe(0);
+
+    branchTasks.push({
+      taskId: 'task-current-lost',
+      kind: 'agent' as const,
+      agentId: 'sub-current',
+      status: 'lost' as const,
+      description: 'Current-turn crashed worker',
+      ownerTurnId: 1,
+      startedAt: 520,
+      endedAt: 550,
+    });
+    expect(countLostSubtreeTasks(branchHandle, agents, { turnId: 1, startedAt: 500 })).toBe(1);
+
+    expect(
+      countLostSubtreeTasks(
+        branchHandle,
+        { ...agents, 'sub-current': { ...agents['sub-current'], completedAt: 600 } },
+        { turnId: 1, startedAt: 500 },
+      ),
+    ).toBe(0);
   });
 });

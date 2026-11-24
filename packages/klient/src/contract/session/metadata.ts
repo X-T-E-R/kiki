@@ -107,6 +107,9 @@ export const sessionMetaSchema = /* @__PURE__ */ z.object({
   lastTurnReason: z.enum(['completed', 'cancelled', 'failed']).optional(),
   interruptedWork: sessionInterruptedWorkSchema.optional(),
   activeRunBootId: z.string().optional(),
+  activeRunAgentIds: z.array(z.string()).optional(),
+  lastRecoveredAt: z.number().optional(),
+  recoveredLostTaskIds: z.array(z.string()).optional(),
 });
 
 /** `Partial<Omit<SessionMeta, 'id' | 'createdAt'>>` — every key optional. */
@@ -132,6 +135,9 @@ export const sessionMetaPatchSchema = /* @__PURE__ */ z.object({
   lastTurnReason: z.enum(['completed', 'cancelled', 'failed']).optional(),
   interruptedWork: sessionInterruptedWorkSchema.optional(),
   activeRunBootId: z.string().optional(),
+  activeRunAgentIds: z.array(z.string()).optional(),
+  lastRecoveredAt: z.number().optional(),
+  recoveredLostTaskIds: z.array(z.string()).optional(),
 });
 
 /** `keyof SessionMeta` — keep in sync with `sessionMetaSchema`. */
@@ -160,6 +166,9 @@ export const sessionMetaKeySchema = /* @__PURE__ */ z.enum([
   'lastTurnReason',
   'interruptedWork',
   'activeRunBootId',
+  'activeRunAgentIds',
+  'lastRecoveredAt',
+  'recoveredLostTaskIds',
   'usage',
 ]);
 

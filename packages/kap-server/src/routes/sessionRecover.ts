@@ -107,6 +107,20 @@ function buildRecoveryReminderBody(
   return lines.join('\n');
 }
 
+const MAX_RECOVERED_LOST_TASK_IDS = 256;
+const activeRecoverBySession = new Map<string, Set<string>>();
+
+function mergeRecoveredLostTaskIds(
+  existing: readonly string[] | undefined,
+  newlyAcknowledged: readonly AgentTaskInfo[],
+): readonly string[] | undefined {
+  if (newlyAcknowledged.length === 0) return existing;
+  const merged = new Set<string>(existing ?? []);
+  for (const task of newlyAcknowledged) merged.add(task.taskId);
+  const list = [...merged];
+  return list.length > MAX_RECOVERED_LOST_TASK_IDS ? list.slice(-MAX_RECOVERED_LOST_TASK_IDS) : list;
+}
+
 /** Registers `POST /sessions/{session_id}/recover` to wake interrupted turns, lost subagent tasks, or unsealed branches idempotently without duplicating user prompts. */
 export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope): void {
   const params = z.object({ session_id: z.string().min(1) });
@@ -125,6 +139,26 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
   }, async (req, reply) => {
     const sessionId = req.params.session_id;
     const targetAgentId = req.body.agent_id ?? MAIN_AGENT_ID;
+    let inFlightTargets = activeRecoverBySession.get(sessionId);
+    if (inFlightTargets?.has(targetAgentId)) {
+      reply.send(
+        okEnvelope(
+          {
+            session_id: sessionId,
+            agent_id: targetAgentId,
+            status: 'already_running' as const,
+            recovered_targets: [],
+          },
+          req.id,
+        ),
+      );
+      return;
+    }
+    if (inFlightTargets === undefined) {
+      inFlightTargets = new Set<string>();
+      activeRecoverBySession.set(sessionId, inFlightTargets);
+    }
+    inFlightTargets.add(targetAgentId);
     try {
       await withSessionOperation(core, sessionId, async (session) => {
         if (session === undefined) {
@@ -133,6 +167,25 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
         }
         const agent = await ensureSessionAgent(core, session, targetAgentId);
         const lifecycle = session.accessor.get(IAgentLifecycleService);
+        const metadata = session.accessor.get(ISessionMetadata);
+        const meta = await metadata.read();
+        const staleBoot = meta.activeRunBootId !== undefined && meta.activeRunBootId !== currentRuntimeBootId();
+        const recoveryWatermark = meta.lastRecoveredAt ?? 0;
+        const acknowledgedLostTaskIds = new Set(meta.recoveredLostTaskIds ?? []);
+        const staleRunAgents = new Set(staleBoot ? (meta.activeRunAgentIds ?? []) : []);
+        const persistedTargetIds = new Set((meta.interruptedWork?.targets ?? []).map((entry) => entry.agentId));
+
+        if (targetAgentId === MAIN_AGENT_ID) {
+          for (const [id, agentMeta] of Object.entries(meta.agents ?? {})) {
+            if (id === MAIN_AGENT_ID) continue;
+            if (agentMeta.labels?.['branch'] !== 'true' || agentMeta.labels?.['branchSealed'] === 'true') continue;
+            if (lifecycle.get(id) !== undefined) continue;
+            if (staleBoot || staleRunAgents.has(id) || persistedTargetIds.has(id) || agentMeta.branchTurn?.outcome === 'cancelled') {
+              await ensureSessionAgent(core, session, id).catch(() => undefined);
+            }
+          }
+        }
+
         await Promise.all(
           lifecycle.list().map(async (handle) => {
             await handle.accessor.get(IAgentTaskService).resumeRestoration?.();
@@ -163,10 +216,6 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
           return;
         }
 
-        const metadata = session.accessor.get(ISessionMetadata);
-        const meta = await metadata.read();
-        const staleBoot = meta.activeRunBootId !== undefined && meta.activeRunBootId !== currentRuntimeBootId();
-
         const targets: SessionInterruptedTarget[] = [];
         const seenTargets = new Set<string>();
         const addTarget = (target: SessionInterruptedTarget): void => {
@@ -184,7 +233,8 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
             : targetMeta?.labels?.['branch'] === 'true'
               ? 'branch'
               : 'subagent';
-        if (hasUnfinishedTurn(turnState)) {
+        const targetHasUnfinished = hasUnfinishedTurn(turnState);
+        if (targetHasUnfinished) {
           addTarget({
             agent_id: targetAgentId,
             label: targetMeta?.userLabel ?? targetMeta?.displayName,
@@ -201,6 +251,7 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
           const taskService = handle.accessor.get(IAgentTaskService);
           for (const task of taskService.list(false)) {
             if (task.status !== 'lost' || seenTaskIds.has(task.taskId)) continue;
+            if (acknowledgedLostTaskIds.has(task.taskId)) continue;
             seenTaskIds.add(task.taskId);
             lostTasks.push(task);
             lostByOwner.set(handle.id, (lostByOwner.get(handle.id) ?? 0) + 1);
@@ -216,23 +267,32 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
             }
           }
         }
-        if (lostTasks.length > 0 && !seenTargets.has(targetAgentId)) {
+        const targetOwnedLostCount = lostByOwner.get(targetAgentId) ?? 0;
+        if (targetOwnedLostCount > 0 && !seenTargets.has(targetAgentId)) {
           addTarget({
             agent_id: targetAgentId,
             label: targetMeta?.userLabel ?? targetMeta?.displayName,
             kind: targetKind,
             reason: 'lost_task',
-            lost_tasks: lostByOwner.get(targetAgentId) ?? lostTasks.length,
+            lost_tasks: targetOwnedLostCount,
           });
         }
 
+        const interruptedBranchIds: string[] = [];
         if (targetAgentId === MAIN_AGENT_ID) {
           for (const [id, agentMeta] of Object.entries(meta.agents ?? {})) {
             if (id === MAIN_AGENT_ID) continue;
             if (agentMeta.labels?.['branch'] !== 'true' || agentMeta.labels?.['branchSealed'] === 'true') continue;
             const branchLost = lostByOwner.get(id) ?? 0;
-            const branchCancelled = agentMeta.branchTurn?.outcome === 'cancelled';
-            if (branchLost > 0 || branchCancelled) {
+            const branchCancelled =
+              agentMeta.branchTurn?.outcome === 'cancelled' && agentMeta.branchTurn.endedAt >= recoveryWatermark;
+            const branchHandle = lifecycle.get(id);
+            const branchStates = branchHandle?.accessor.get(IAgentStateService);
+            const branchTurnState = branchStates?.has(turnKey) ? branchStates.get(turnKey) : undefined;
+            const branchUnfinished = hasUnfinishedTurn(branchTurnState);
+            const branchRunningAtCrash = staleRunAgents.has(id);
+            if (branchLost > 0 || branchCancelled || branchUnfinished || branchRunningAtCrash) {
+              interruptedBranchIds.push(id);
               addTarget({
                 agent_id: id,
                 label: agentMeta.userLabel ?? agentMeta.displayName,
@@ -247,6 +307,12 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
         if (meta.interruptedWork?.targets !== undefined) {
           for (const persisted of meta.interruptedWork.targets) {
             if (targetAgentId !== MAIN_AGENT_ID && persisted.agentId !== targetAgentId) continue;
+            if (persisted.kind === 'branch' && !interruptedBranchIds.includes(persisted.agentId)) {
+              const branchMeta = meta.agents?.[persisted.agentId];
+              if (branchMeta?.labels?.['branch'] === 'true' && branchMeta.labels?.['branchSealed'] !== 'true') {
+                interruptedBranchIds.push(persisted.agentId);
+              }
+            }
             addTarget({
               agent_id: persisted.agentId,
               label: persisted.label,
@@ -271,7 +337,10 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
         const hasRecoveryHold = queue.hold?.reason === 'recovery';
         if (targets.length === 0 && !hasRecoveryHold) {
           if (meta.interruptedWork !== undefined || staleBoot) {
-            await metadata.update({ interruptedWork: undefined, activeRunBootId: undefined }, { touchUpdatedAt: false });
+            await metadata.update(
+              { interruptedWork: undefined, activeRunBootId: undefined, activeRunAgentIds: undefined },
+              { touchUpdatedAt: false },
+            );
             core.accessor.get(IEventService).publish(
               new SessionMetaUpdated({
                 payload: { agentId: MAIN_AGENT_ID, sessionId, patch: {} },
@@ -292,42 +361,123 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
           return;
         }
 
-        if (hasRecoveryHold) {
-          prompts.resumeRecoveredQueue();
-        }
+        const branchOnlyRecovery =
+          targetAgentId === MAIN_AGENT_ID &&
+          !targetHasUnfinished &&
+          targetOwnedLostCount === 0 &&
+          !hasRecoveryHold &&
+          meta.interruptedWork?.mainInterrupted !== true &&
+          interruptedBranchIds.length > 0;
+
         let promptId: string | undefined;
-        if (hasRecoveryHold && queue.pending.length > 0) {
-          promptId = queue.pending[0]?.id;
+        let wokeAny = false;
+        if (branchOnlyRecovery) {
+          for (const branchId of interruptedBranchIds) {
+            const branchHandle = lifecycle.get(branchId) ?? (await ensureSessionAgent(core, session, branchId).catch(() => undefined));
+            if (branchHandle === undefined) continue;
+            const branchExec = branchHandle.accessor.get(IAgentExecutionService).status().state;
+            const branchPrompts = branchHandle.accessor.get(IAgentPromptService);
+            const branchQueue = branchPrompts.list();
+            if (
+              branchExec === 'starting' ||
+              branchExec === 'running' ||
+              branchExec === 'cancelling' ||
+              branchQueue.active !== undefined ||
+              branchQueue.launching !== undefined
+            ) {
+              continue;
+            }
+            const branchLostTasks = lostTasks.filter((task) => task.ownerAgentId === branchId);
+            const branchHold = branchQueue.hold?.reason === 'recovery';
+            if (branchHold) {
+              branchPrompts.resumeRecoveredQueue();
+            }
+            if (branchHold && branchQueue.pending.length > 0) {
+              promptId ??= branchQueue.pending[0]?.id;
+              wokeAny = true;
+            } else {
+              const reminderBody = buildRecoveryReminderBody(branchId, targets, branchLostTasks);
+              const handle = await branchPrompts.enqueue({
+                message: {
+                  id: randomUUID(),
+                  role: 'user',
+                  content: [{ type: 'text', text: `<system-reminder>\n${reminderBody}\n</system-reminder>` }],
+                  toolCalls: [],
+                  origin: { kind: 'system_trigger', name: 'interruption_recovery' },
+                },
+                waitForLaunch: false,
+              });
+              promptId ??= handle.id;
+              wokeAny = true;
+            }
+          }
+          if (!wokeAny) {
+            reply.send(
+              okEnvelope(
+                {
+                  session_id: sessionId,
+                  agent_id: targetAgentId,
+                  status: 'already_running' as const,
+                  recovered_targets: [],
+                },
+                req.id,
+              ),
+            );
+            return;
+          }
         } else {
-          const reminderBody = buildRecoveryReminderBody(targetAgentId, targets, lostTasks);
-          const handle = await prompts.enqueue({
-            message: {
-              id: randomUUID(),
-              role: 'user',
-              content: [{ type: 'text', text: `<system-reminder>\n${reminderBody}\n</system-reminder>` }],
-              toolCalls: [],
-              origin: { kind: 'system_trigger', name: 'interruption_recovery' },
-            },
-            waitForLaunch: false,
-          });
-          promptId = handle.id;
+          if (hasRecoveryHold) {
+            prompts.resumeRecoveredQueue();
+          }
+          if (hasRecoveryHold && queue.pending.length > 0) {
+            promptId = queue.pending[0]?.id;
+          } else {
+            const reminderBody = buildRecoveryReminderBody(targetAgentId, targets, lostTasks);
+            const handle = await prompts.enqueue({
+              message: {
+                id: randomUUID(),
+                role: 'user',
+                content: [{ type: 'text', text: `<system-reminder>\n${reminderBody}\n</system-reminder>` }],
+                toolCalls: [],
+                origin: { kind: 'system_trigger', name: 'interruption_recovery' },
+              },
+              waitForLaunch: false,
+            });
+            promptId = handle.id;
+          }
         }
 
+        const nextRecoveredAt = Date.now();
+        const nextRecoveredLostTaskIds = mergeRecoveredLostTaskIds(meta.recoveredLostTaskIds, lostTasks);
         if (targetAgentId === MAIN_AGENT_ID) {
           await metadata.update(
-            { interruptedWork: undefined, activeRunBootId: currentRuntimeBootId() },
+            {
+              interruptedWork: undefined,
+              activeRunBootId: currentRuntimeBootId(),
+              activeRunAgentIds: branchOnlyRecovery ? interruptedBranchIds : [MAIN_AGENT_ID],
+              lastRecoveredAt: nextRecoveredAt,
+              recoveredLostTaskIds: nextRecoveredLostTaskIds,
+            },
             { touchUpdatedAt: false },
           );
-        } else if (meta.interruptedWork !== undefined) {
-          const remaining = meta.interruptedWork.targets?.filter((entry) => entry.agentId !== targetAgentId);
+        } else if (meta.interruptedWork !== undefined || lostTasks.length > 0) {
+          const remaining = meta.interruptedWork?.targets?.filter((entry) => entry.agentId !== targetAgentId);
           const nextInterruptedWork =
-            remaining !== undefined && remaining.length > 0
-              ? { ...meta.interruptedWork, targets: remaining }
-              : meta.interruptedWork.mainInterrupted === true
-                ? { ...meta.interruptedWork, targets: undefined }
-                : undefined;
+            meta.interruptedWork === undefined
+              ? undefined
+              : remaining !== undefined && remaining.length > 0
+                ? { ...meta.interruptedWork, targets: remaining }
+                : meta.interruptedWork.mainInterrupted === true
+                  ? { ...meta.interruptedWork, targets: undefined }
+                  : undefined;
           await metadata.update(
-            { interruptedWork: nextInterruptedWork, activeRunBootId: currentRuntimeBootId() },
+            {
+              interruptedWork: nextInterruptedWork,
+              activeRunBootId: currentRuntimeBootId(),
+              activeRunAgentIds: [targetAgentId],
+              lastRecoveredAt: nextRecoveredAt,
+              recoveredLostTaskIds: nextRecoveredLostTaskIds,
+            },
             { touchUpdatedAt: false },
           );
         }
@@ -352,6 +502,10 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
       });
     } catch (error) {
       reply.send(mapError(error, req.id));
+    } finally {
+      const set = activeRecoverBySession.get(sessionId);
+      set?.delete(targetAgentId);
+      if (set !== undefined && set.size === 0) activeRecoverBySession.delete(sessionId);
     }
   });
   app.post(recoverRoute.path, recoverRoute.options, recoverRoute.handler as Parameters<RecoverRouteHost['post']>[2]);

@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { CONNECTION_OPERATIONS } from '@kiki/protocol';
+import { CONNECTION_OPERATIONS, matchConnectionOperation } from '@kiki/protocol';
 import { isPeerFrameAllowed, listPeerReachableSurface } from '../src/services/connections/audience';
 
 describe('peer-reachable surface guard', () => {
@@ -15,5 +15,30 @@ describe('peer-reachable surface guard', () => {
     expect(isPeerFrameAllowed({ type })).toBe(false);
     expect(isPeerFrameAllowed({ type }, ['read', 'send'])).toBe(false);
     expect(isPeerFrameAllowed({ type }, ['execute'])).toBe(true);
+  });
+
+  it('matches POST /api/sessions/{sessionId}/recover and allows core thread delivery subscriptions', () => {
+    expect(matchConnectionOperation('POST', '/api/sessions/session-1/recover')).toEqual({
+      operation: 'sessionRecover',
+      params: { sessionId: 'session-1' },
+    });
+    expect(
+      isPeerFrameAllowed({
+        type: 'subscribe',
+        scope: 'core',
+        service: 'threadCommunicationService',
+        event: 'onDidChangeMessageDelivery',
+      }),
+    ).toBe(true);
+    expect(
+      isPeerFrameAllowed({
+        type: 'subscribe',
+        scope: 'agent',
+        sessionId: 'session-1',
+        agentId: 'main',
+        service: 'threadCommunicationService',
+        event: 'onDidChangeMessageDelivery',
+      }),
+    ).toBe(false);
   });
 });

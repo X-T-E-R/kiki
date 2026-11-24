@@ -109,6 +109,7 @@ async function countRemoteNewlines(ssh: SSHKaos, path: string, signal?: AbortSig
     process.stdin.end();
     const read = async (): Promise<string> => {
       let output = '';
+      process!.stderr.on('error', () => {});
       process!.stderr.resume();
       for await (const chunk of process!.stdout) {
         output += String(chunk);

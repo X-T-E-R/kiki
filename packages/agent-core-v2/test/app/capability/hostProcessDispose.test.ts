@@ -16,7 +16,9 @@ function createHangingProcess(): { readonly proc: IHostProcess; readonly dispose
     resolveExit = resolve;
   });
   const proc: IHostProcess = {
+    _serviceBrand: undefined,
     pid: 4242,
+    exitCode: null,
     stdin,
     stdout,
     stderr,
@@ -71,7 +73,7 @@ describe('BufferedReadable process timeout/abort disposal emits zero unhandledRe
     setTimeout(() => ac.abort(new Error('cancelled')), 20);
     const result = await runCronScript(
       hostServiceFor(() => hanging.proc),
-      { id: 'check', command: 'node', args: [], cwd: process.cwd(), timeout: 5, environment: 'isolated' },
+      { command: 'node', args: [], cwd: process.cwd(), timeout: 5, environment: 'isolated' },
       { jobId: 'job-1', cron: '* * * * *', coalescedCount: 1 },
       ac.signal,
     );

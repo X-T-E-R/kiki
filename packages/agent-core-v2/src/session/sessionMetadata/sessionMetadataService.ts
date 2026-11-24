@@ -735,6 +735,9 @@ export function normalizeSessionMeta(raw: SessionMeta, sessionId: string): Sessi
     executionPhase: parseSessionExecutionPhase(clean.executionPhase),
     interruptedWork: parseSessionInterruptedWork(clean.interruptedWork),
     activeRunBootId: typeof clean.activeRunBootId === 'string' && clean.activeRunBootId.length > 0 ? clean.activeRunBootId : undefined,
+    activeRunAgentIds: parseStringList(clean.activeRunAgentIds),
+    lastRecoveredAt: typeof clean.lastRecoveredAt === 'number' && Number.isFinite(clean.lastRecoveredAt) && clean.lastRecoveredAt >= 0 ? clean.lastRecoveredAt : undefined,
+    recoveredLostTaskIds: parseStringList(clean.recoveredLostTaskIds),
     createdAt: toEpochMs(legacyCreatedAt),
     updatedAt: toEpochMs(legacyUpdatedAt),
     archived: clean.archived === true,
@@ -773,6 +776,15 @@ function normalizeSessionTitle(
 
 function isSessionTitleKind(value: unknown): value is SessionTitleKind {
   return value === 'replaceable' || value === 'generated' || value === 'custom';
+}
+
+function parseStringList(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const parsed: string[] = [];
+  for (const item of value) {
+    if (typeof item === 'string' && item.length > 0) parsed.push(item);
+  }
+  return parsed.length > 0 ? parsed : undefined;
 }
 
 type PersistedSessionMeta = SessionMeta & { readonly isCustomTitle: boolean };

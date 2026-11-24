@@ -2889,6 +2889,31 @@ describe('SessionController transcript authority', () => {
     } finally { controller.close(); }
   });
 
+  it('does not let a stale ready clear refreshing while a queued grade raise microtask is still pending', async () => {
+    const { controller } = await openTranscriptController();
+    try {
+      controller.handleTranscript(resetEvent('main', userTurnSnapshot({ assistantText: 'initial' }), 2));
+      controller.retainAgentView('workspace:child-1', 'child-1', 'delta');
+      controller.setFocusedAgent('child-1');
+      await Promise.resolve();
+      controller.releaseAgentView('workspace:child-1');
+      controller.setFocusedAgent('main');
+      expect(controller.getState().refreshing).toBe(true);
+      controller.handleSignal({
+        type: 'ready',
+        generation: 1,
+        reconnected: false,
+        currentSessionCursor: { epoch: 'epoch-canonical', seq: 2 },
+      });
+      expect(controller.getState().refreshing).toBe(true);
+      await Promise.resolve();
+      controller.handleTranscript(resetEvent('main', userTurnSnapshot({ assistantText: 'raised' }), 3));
+      expect(controller.getState().refreshing).toBe(false);
+    } finally {
+      controller.close();
+    }
+  });
+
   it('does not stick refreshing=true on a same-microtask delta -> turn -> delta grade bounce', async () => {
     const { controller, socket } = await openTranscriptController();
     try {

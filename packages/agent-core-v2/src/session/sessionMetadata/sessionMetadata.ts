@@ -224,6 +224,9 @@ export interface SessionMeta {
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
   readonly interruptedWork?: SessionInterruptedWork;
   readonly activeRunBootId?: string;
+  readonly activeRunAgentIds?: readonly string[];
+  readonly lastRecoveredAt?: number;
+  readonly recoveredLostTaskIds?: readonly string[];
   readonly usage?: SessionUsageSummary;
 }
 

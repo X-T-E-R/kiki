@@ -3,7 +3,7 @@ export const CONNECTION_OPERATIONS = {
   sessions: ['GET', '/sessions'], sessionQuery: ['GET', '/sessions/query'], ephemeralSessions: ['GET', '/sessions/ephemeral'],
   sessionCreate: ['POST', '/sessions'], session: ['GET', '/sessions/{sessionId}'],
   sessionUpdate: ['PATCH', '/sessions/{sessionId}'], sessionArchive: ['POST', '/sessions/{sessionId}:archive'],
-  sessionRestore: ['POST', '/sessions/{sessionId}:restore'], sessionFork: ['POST', '/sessions/{sessionId}:fork'],
+  sessionRestore: ['POST', '/sessions/{sessionId}:restore'], sessionRecover: ['POST', '/sessions/{sessionId}/recover'], sessionFork: ['POST', '/sessions/{sessionId}:fork'],
   sessionBtw: ['POST', '/sessions/{sessionId}:btw'], sessionBranch: ['POST', '/sessions/{sessionId}:branch'],
   sessionFold: ['POST', '/sessions/{sessionId}:fold'], sessionDiscard: ['POST', '/sessions/{sessionId}:discard'],
   sessionToolsLock: ['POST', '/sessions/{sessionId}:tools-lock'],

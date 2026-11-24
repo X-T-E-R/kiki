@@ -1723,7 +1723,7 @@ export function Sidebar({
     const touchedRemoteIds = new Set<string>();
     let touchedLocal = false;
     try {
-      await Promise.allSettled(
+      const results = await Promise.allSettled(
         items.map(async (item) => {
           if (item.ref.kind !== 'session') return;
           const remoteConnId = remoteConnIdOf(item.spaceKey);
@@ -1736,6 +1736,11 @@ export function Sidebar({
       if (touchedLocal) refreshSessions();
       for (const remoteConnId of touchedRemoteIds) {
         void onRefreshRemoteSpace?.(remoteConnId);
+      }
+      const rejected = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+      if (rejected.length > 0) {
+        const detail = rejected[0]!.reason instanceof Error ? rejected[0]!.reason.message : String(rejected[0]!.reason);
+        setActionError(rejected.length === 1 ? detail : `${detail} (+${rejected.length - 1})`);
       }
     } catch (error: unknown) {
       setActionError(error instanceof Error ? error.message : String(error));

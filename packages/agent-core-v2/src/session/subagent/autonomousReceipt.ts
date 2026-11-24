@@ -207,7 +207,7 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
   const profile = profileService.data();
   const parentSteering = profileService.getParentSteering?.() ?? (typeof previous?.parentSteering === 'string' && previous.parentSteering.trim().length > 0 ? previous.parentSteering.trim() : undefined);
   const profileName = profile.profileName ?? previous?.labels?.['profileName'] ?? 'subagent';
-  const lostChildTaskCount = branch ? countLostSubtreeTasks(child, meta.agents) : 0;
+  const lostChildTaskCount = branch ? countLostSubtreeTasks(child, meta.agents, receipt) : 0;
   const description = branch
     ? lostChildTaskCount > 0
       ? `Branch ${child.id} interrupted before Merge (${lostChildTaskCount} child ${lostChildTaskCount === 1 ? 'task' : 'tasks'} lost)`
@@ -289,9 +289,11 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
   });
 }
 
-function countLostSubtreeTasks(
+/** Counts unresolved `lost` tasks in a branch subtree attributable to the given autonomous turn receipt. */
+export function countLostSubtreeTasks(
   root: IAgentScopeHandle,
   agents: Readonly<Record<string, AgentMeta>> | undefined,
+  receipt: Pick<AutonomousReceipt, 'turnId' | 'startedAt'>,
 ): number {
   const lifecycle = root.accessor.get(IAgentLifecycleService);
   const subtreeIds = new Set<string>([root.id]);
@@ -324,6 +326,13 @@ function countLostSubtreeTasks(
     for (const task of taskService.list(false)) {
       if (task.status !== 'lost') continue;
       if (seenTaskIds.has(task.taskId)) continue;
+      if (agentId === root.id && task.ownerTurnId !== undefined && task.ownerTurnId !== receipt.turnId) continue;
+      const taskTimestamp = task.endedAt ?? task.startedAt;
+      if (task.startedAt < receipt.startedAt && taskTimestamp < receipt.startedAt) continue;
+      if (task.kind === 'agent' && task.agentId !== undefined) {
+        const childCompletedAt = agents?.[task.agentId]?.completedAt;
+        if (childCompletedAt !== undefined && childCompletedAt > taskTimestamp) continue;
+      }
       seenTaskIds.add(task.taskId);
       lost += 1;
     }

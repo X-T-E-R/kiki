@@ -513,6 +513,7 @@ export class SSHKaos implements Kaos {
     try {
       proc = new SSHProcess(await clientExec(this._client, command));
       proc.stdin.end();
+      proc.stderr.on('error', () => {});
       proc.stderr.resume();
       const chunks: Buffer[] = [];
       for await (const chunk of proc.stdout) chunks.push(Buffer.from(chunk as Buffer));

@@ -1871,9 +1871,16 @@ export class SessionController {
         return;
       }
       case 'ready':
-        // The attachment is seeded: whatever a raise was waiting for has come.
-        this.viewAttachPending = false;
-        for (const { agentId } of this.timelines.values()) this.settleRefresh(agentId);
+        // The attachment is seeded: whatever a raise was waiting for has come,
+        // unless a newer grade update is already queued in the microtask.
+        if (this.scheduledTranscriptGrades === undefined) {
+          this.viewAttachPending = false;
+          for (const { agentId } of this.timelines.values()) this.settleRefresh(agentId);
+        } else {
+          for (const { agentId } of this.timelines.values()) {
+            if (this.hasTranscriptBaseline(agentId)) this.settleRefresh(agentId);
+          }
+        }
         if (this.resyncInFlight) return;
         if (this.shell.cursor.epoch !== undefined && signal.currentSessionCursor.epoch !== this.shell.cursor.epoch) {
           this.handleSubscribeRejected(signal.generation);

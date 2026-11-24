@@ -69,28 +69,30 @@ export function TranscriptDeliveryProvider({
   readonly pendingThreadMessageIds?: readonly string[];
   readonly children: ReactNode;
 }) {
-  const api = useOptionalConnection()?.client;
+  const connection = useOptionalConnection();
+  const api = connection?.client;
+  const wsStatus = connection?.wsStatus;
   const [threadDeliveryById, setThreadDeliveryById] = useState<Readonly<Record<string, 'delivered' | 'undeliverable'>>>(EMPTY_THREAD_DELIVERY);
-  const reconciledRef = useRef<{ sessionId: string | undefined; ids: Set<string> }>({ sessionId, ids: new Set() });
+  const [reconnectEpoch, setReconnectEpoch] = useState(0);
+  const prevWsStatusRef = useRef<string | undefined>(wsStatus);
+  const reconciledRef = useRef<{ sessionId: string | undefined; epoch: number; ids: Set<string> }>({
+    sessionId,
+    epoch: 0,
+    ids: new Set(),
+  });
 
   useEffect(() => {
     setThreadDeliveryById(EMPTY_THREAD_DELIVERY);
-    reconciledRef.current = { sessionId, ids: new Set() };
+    reconciledRef.current = { sessionId, epoch: reconnectEpoch, ids: new Set() };
   }, [sessionId]);
 
   useEffect(() => {
-    const events = api?.klient?.events;
-    if (events === undefined) return;
-    const sub = events.on('thread.messageDelivery', (event) => {
-      if (sessionId !== undefined && event.sourceSessionId !== undefined && event.sourceSessionId !== sessionId && event.targetSessionId !== sessionId) {
-        return;
-      }
-      setThreadDeliveryById((prev) =>
-        prev[event.messageId] === event.delivery ? prev : { ...prev, [event.messageId]: event.delivery },
-      );
-    });
-    return () => { sub.dispose(); };
-  }, [api, sessionId]);
+    const previous = prevWsStatusRef.current;
+    prevWsStatusRef.current = wsStatus;
+    if (wsStatus === 'open' && previous !== undefined && previous !== 'open') {
+      setReconnectEpoch((epoch) => epoch + 1);
+    }
+  }, [wsStatus]);
 
   const pendingKey = useMemo(
     () => (pendingThreadMessageIds === undefined || pendingThreadMessageIds.length === 0 ? '' : pendingThreadMessageIds.join('\u0000')),
@@ -98,13 +100,35 @@ export function TranscriptDeliveryProvider({
   );
 
   useEffect(() => {
+    if (pendingKey === '') return;
+    const events = api?.klient?.events;
+    if (events === undefined) return;
+    let sub: { dispose(): void; ready?: Promise<void> } | undefined;
+    try {
+      sub = events.on('thread.messageDelivery', (event) => {
+        if (sessionId !== undefined && event.sourceSessionId !== undefined && event.sourceSessionId !== sessionId && event.targetSessionId !== sessionId) {
+          return;
+        }
+        setThreadDeliveryById((prev) =>
+          prev[event.messageId] === event.delivery ? prev : { ...prev, [event.messageId]: event.delivery },
+        );
+      });
+      void sub.ready?.catch(() => {});
+    } catch {
+      return;
+    }
+    return () => { sub?.dispose(); };
+  }, [api, sessionId, pendingKey]);
+
+  useEffect(() => {
     if (sessionId === undefined || pendingKey === '') return;
     const threads = api?.klient?.global?.threads;
     if (threads === undefined) return;
     const ids = pendingKey.split('\u0000');
-    const tracker = reconciledRef.current.sessionId === sessionId
-      ? reconciledRef.current
-      : (reconciledRef.current = { sessionId, ids: new Set() });
+    const tracker =
+      reconciledRef.current.sessionId === sessionId && reconciledRef.current.epoch === reconnectEpoch
+        ? reconciledRef.current
+        : (reconciledRef.current = { sessionId, epoch: reconnectEpoch, ids: new Set() });
     const unseen = ids.filter((id) => !tracker.ids.has(id) && threadDeliveryById[id] === undefined);
     if (unseen.length === 0) return;
     for (const id of unseen) tracker.ids.add(id);
@@ -135,7 +159,7 @@ export function TranscriptDeliveryProvider({
       }
     });
     return () => { cancelled = true; };
-  }, [api, sessionId, pendingKey, threadDeliveryById]);
+  }, [api, sessionId, pendingKey, reconnectEpoch, threadDeliveryById]);
 
   const value = useMemo<TranscriptDeliveryValue>(
     () => ({ deliveredAgentMessages, threadDeliveryById }),

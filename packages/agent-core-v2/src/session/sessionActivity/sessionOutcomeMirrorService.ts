@@ -4,7 +4,7 @@ import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
-import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IEventBus } from '#/app/event/eventBus';
 import { AgentActivityUpdated } from '#/agent/activityView/activityView';
@@ -48,9 +48,12 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
   private lastPersisted: SessionTurnOutcome | undefined;
   private lastPersistedTurnId: number | undefined;
   private lastBootId: string | undefined;
+  private lastRunAgentIdsKey: string | undefined;
   private adopted = false;
   private turnStartedHere = false;
   private mainSubscription: DisposableStore | undefined;
+  private readonly childSubscriptions = new Map<string, DisposableStore>();
+  private readonly activeRunAgents = new Set<string>();
   private activitySubscription: DisposableStore | undefined;
   private readonly metadataReady: Promise<void>;
 
@@ -66,6 +69,7 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
         if (!this.adopted) {
           this.lastPersisted = meta.lastTurnReason;
           this.lastBootId = meta.activeRunBootId;
+          this.lastRunAgentIdsKey = meta.activeRunAgentIds?.join('\u0000');
         }
       })
       .catch(onUnexpectedError);
@@ -75,16 +79,31 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
         this.attachActivity(this.activityRef?.current);
       }));
     }
-    this.attachMain();
+    for (const handle of this.agents.list()) {
+      if (handle.id === MAIN_AGENT_ID) this.attachMain();
+      else this.attachChild(handle);
+    }
     this._register(this.agents.onDidCreate((handle) => {
       if (handle.id === MAIN_AGENT_ID) this.attachMain();
-      else void this.reconcileChildInterruption();
+      else {
+        this.attachChild(handle);
+        void this.reconcileChildInterruption();
+      }
     }));
     this._register(this.agents.onDidDispose((agentId) => {
-      if (agentId !== MAIN_AGENT_ID) return;
-      const result = this.mainSubscription?.dispose();
-      if (isPromiseLike(result)) result.catch(onUnexpectedError);
-      this.mainSubscription = undefined;
+      this.activeRunAgents.delete(agentId);
+      if (agentId === MAIN_AGENT_ID) {
+        const result = this.mainSubscription?.dispose();
+        if (isPromiseLike(result)) result.catch(onUnexpectedError);
+        this.mainSubscription = undefined;
+        return;
+      }
+      const childSub = this.childSubscriptions.get(agentId);
+      if (childSub !== undefined) {
+        this.childSubscriptions.delete(agentId);
+        const result = childSub.dispose();
+        if (isPromiseLike(result)) result.catch(onUnexpectedError);
+      }
     }));
     this._register({
       dispose: async () => {
@@ -92,6 +111,11 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
         this.activitySubscription = undefined;
         await this.mainSubscription?.dispose();
         this.mainSubscription = undefined;
+        for (const sub of this.childSubscriptions.values()) {
+          await sub.dispose();
+        }
+        this.childSubscriptions.clear();
+        this.activeRunAgents.clear();
       },
     });
   }
@@ -130,6 +154,10 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
     }
     subscription.add(
       bus.subscribe(TurnEnded, (event) => {
+        this.activeRunAgents.delete(MAIN_AGENT_ID);
+        if (this.activityRef?.current !== undefined && this.lastBootId === currentRuntimeBootId()) {
+          this.syncActiveRunAgents();
+        }
         if (event.reason === 'completed') {
           this.write('completed', { turnId: event.turnId });
           return;
@@ -152,6 +180,7 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
     subscription.add(
       bus.subscribe(TurnStarted, () => {
         this.turnStartedHere = true;
+        this.activeRunAgents.add(MAIN_AGENT_ID);
         this.write(undefined);
         if (this.activityRef?.current !== undefined) this.markRunningWork();
       }),
@@ -182,6 +211,55 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
     );
   }
 
+  private attachChild(handle: IAgentScopeHandle): void {
+    if (this.childSubscriptions.has(handle.id)) return;
+    let bus: IEventBus | undefined;
+    let dispatcher: IEventDispatcher | undefined;
+    try {
+      bus = handle.accessor.get(IEventBus);
+    } catch {
+      bus = undefined;
+    }
+    try {
+      dispatcher = handle.accessor.get(IEventDispatcher);
+    } catch {
+      dispatcher = undefined;
+    }
+    if (bus === undefined && dispatcher === undefined) return;
+    const subscription = new DisposableStore();
+    this.childSubscriptions.set(handle.id, subscription);
+    if (dispatcher !== undefined) {
+      subscription.add(
+        dispatcher.hooks.onDidRestore.register('session-outcome-mirror-child', async (_ctx, next) => {
+          await next();
+          await this.reconcileChildInterruption();
+        }),
+      );
+    }
+    if (bus !== undefined) {
+      subscription.add(
+        bus.subscribe(TurnStarted, () => {
+          this.activeRunAgents.add(handle.id);
+          if (this.activityRef?.current !== undefined) this.markRunningWork();
+        }),
+      );
+      subscription.add(
+        bus.subscribe(TurnEnded, () => {
+          this.activeRunAgents.delete(handle.id);
+          if (this.activityRef?.current !== undefined && this.lastBootId === currentRuntimeBootId()) {
+            this.syncActiveRunAgents();
+          }
+        }),
+      );
+      subscription.add(
+        bus.subscribe(TaskRestorationSettled, () => {
+          if (this.turnStartedHere) return;
+          void this.reconcileChildInterruption();
+        }),
+      );
+    }
+  }
+
   private syncActivityBootState(busy: boolean): void {
     if (busy) {
       this.markRunningWork();
@@ -192,27 +270,48 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
     }
   }
 
+  private currentActiveRunAgentIds(): readonly string[] | undefined {
+    if (this.activeRunAgents.size === 0) return undefined;
+    return [...this.activeRunAgents].sort();
+  }
+
+  private syncActiveRunAgents(): void {
+    const activeIds = this.currentActiveRunAgentIds();
+    const nextKey = activeIds?.join('\u0000');
+    if (this.lastRunAgentIdsKey === nextKey) return;
+    this.lastRunAgentIdsKey = nextKey;
+    void this.metadata.update({ activeRunAgentIds: activeIds }, { touchUpdatedAt: false }).catch(() => {});
+  }
+
   private markRunningWork(): void {
     const boot = currentRuntimeBootId();
-    const hadInterrupted =
-      typeof this.metadata.snapshot === 'function' &&
-      this.metadata.snapshot().interruptedWork !== undefined;
-    if (this.lastBootId === boot && !hadInterrupted) return;
+    const activeIds = this.currentActiveRunAgentIds();
+    const nextKey = activeIds?.join('\u0000');
+    const snapshot = typeof this.metadata.snapshot === 'function' ? this.metadata.snapshot() : undefined;
+    const hadInterrupted = snapshot?.interruptedWork !== undefined;
+    if (this.lastBootId === boot && this.lastRunAgentIdsKey === nextKey && !hadInterrupted) return;
     this.lastBootId = boot;
-    void this.metadata
-      .update(
-        hadInterrupted
-          ? { activeRunBootId: boot, interruptedWork: undefined }
-          : { activeRunBootId: boot },
-        { touchUpdatedAt: false },
-      )
-      .catch(() => {});
+    this.lastRunAgentIdsKey = nextKey;
+    const patch = hadInterrupted
+      ? {
+          activeRunBootId: boot,
+          activeRunAgentIds: activeIds,
+          interruptedWork: undefined,
+          lastRecoveredAt: Date.now(),
+        }
+      : { activeRunBootId: boot, activeRunAgentIds: activeIds };
+    void this.metadata.update(patch, { touchUpdatedAt: false }).catch(() => {});
   }
 
   private setActiveBootId(bootId: string | undefined): void {
-    if (this.lastBootId === bootId) return;
+    const activeIds = bootId === undefined ? undefined : this.currentActiveRunAgentIds();
+    const nextKey = activeIds?.join('\u0000');
+    if (this.lastBootId === bootId && this.lastRunAgentIdsKey === nextKey) return;
     this.lastBootId = bootId;
-    void this.metadata.update({ activeRunBootId: bootId }, { touchUpdatedAt: false }).catch(() => {});
+    this.lastRunAgentIdsKey = nextKey;
+    void this.metadata
+      .update({ activeRunBootId: bootId, activeRunAgentIds: activeIds }, { touchUpdatedAt: false })
+      .catch(() => {});
   }
 
   private async reconcileAfterRestore(agentStates: IAgentStateService): Promise<void> {
@@ -240,6 +339,8 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
     const meta = await this.metadata.read().catch(() => undefined);
     if (meta === undefined) return;
     const staleBoot = meta.activeRunBootId !== undefined && meta.activeRunBootId !== currentRuntimeBootId();
+    const recoveryWatermark = meta.lastRecoveredAt ?? 0;
+    const acknowledgedLostTaskIds = new Set(meta.recoveredLostTaskIds ?? []);
     const mainHandle = this.agents.get(MAIN_AGENT_ID);
     const mainStates = mainHandle?.accessor.get(IAgentStateService) as IAgentStateService | undefined;
     const mainTurnState = mainStates?.has(turnKey) ? mainStates.get(turnKey) : undefined;
@@ -272,6 +373,7 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
       if (taskService === undefined) continue;
       for (const task of taskService.list(false)) {
         if (task.status !== 'lost' || seenLostTasks.has(task.taskId)) continue;
+        if (acknowledgedLostTaskIds.has(task.taskId)) continue;
         seenLostTasks.add(task.taskId);
         lostTasks += 1;
         lostByOwner.set(handle.id, (lostByOwner.get(handle.id) ?? 0) + 1);
@@ -288,13 +390,26 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
       }
     }
 
+    const staleRunAgents = new Set(staleBoot ? (meta.activeRunAgentIds ?? []) : []);
     let interruptedBranches = 0;
     for (const [agentId, agentMeta] of Object.entries(meta.agents ?? {})) {
       if (agentId === MAIN_AGENT_ID) continue;
       if (agentMeta.labels?.['branch'] !== 'true' || agentMeta.labels?.['branchSealed'] === 'true') continue;
       const branchLost = lostByOwner.get(agentId) ?? 0;
-      const branchCancelled = agentMeta.branchTurn?.outcome === 'cancelled';
-      if (branchLost > 0 || branchCancelled) {
+      const branchCancelled =
+        agentMeta.branchTurn?.outcome === 'cancelled' && agentMeta.branchTurn.endedAt >= recoveryWatermark;
+      const branchHandle = this.agents.get(agentId);
+      let branchUnfinished = false;
+      if (branchHandle !== undefined) {
+        try {
+          const branchStates = branchHandle.accessor.get(IAgentStateService);
+          branchUnfinished = hasUnfinishedTurn(branchStates.has(turnKey) ? branchStates.get(turnKey) : undefined);
+        } catch {
+          branchUnfinished = false;
+        }
+      }
+      const branchWasRunningAtCrash = staleRunAgents.has(agentId);
+      if (branchLost > 0 || branchCancelled || branchUnfinished || branchWasRunningAtCrash) {
         interruptedBranches += 1;
         addTarget({
           agentId,
@@ -313,7 +428,10 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
     if (!hasInterrupted) {
       if (staleBoot) {
         this.lastBootId = undefined;
-        await this.metadata.update({ activeRunBootId: undefined }, { touchUpdatedAt: false }).catch(() => {});
+        this.lastRunAgentIdsKey = undefined;
+        await this.metadata
+          .update({ activeRunBootId: undefined, activeRunAgentIds: undefined }, { touchUpdatedAt: false })
+          .catch(() => {});
       }
       return;
     }
@@ -329,11 +447,14 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
       !staleBoot &&
       JSON.stringify(meta.interruptedWork) === JSON.stringify(nextWork);
     if (unchanged) return;
-    if (staleBoot) this.lastBootId = undefined;
+    if (staleBoot) {
+      this.lastBootId = undefined;
+      this.lastRunAgentIdsKey = undefined;
+    }
     await this.metadata
       .update(
         staleBoot
-          ? { interruptedWork: nextWork, activeRunBootId: undefined }
+          ? { interruptedWork: nextWork, activeRunBootId: undefined, activeRunAgentIds: undefined }
           : { interruptedWork: nextWork },
         { touchUpdatedAt: false },
       )
