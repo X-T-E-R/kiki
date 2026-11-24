@@ -49,9 +49,9 @@ import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../i18n';
 import { DisclosureChevron, Icon } from './icons';
-import { usePhoneMode } from '../lib/layoutHooks';
+import { useMediaQuery, usePhoneMode } from '../lib/layoutHooks';
 import { SettingsSelect } from './settings/SettingsPrimitives';
-import { BasisLine, historyLabel, MemoryHistoryDialog, MemoryReadView, TypeTag, ValidityLine } from './MemoryHistory';
+import { BasisLine, historyLabel, MemoryHistoryDialog, MemoryReadView, shortJournalRevision, TypeTag, ValidityLine } from './MemoryHistory';
 import { memoryApplicability, parseMemoryEntry } from './memory/memoryReceipt';
 import { continueMemory } from './memory/continueMemory';
 import {
@@ -307,18 +307,18 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
             data-memory-new
             disabled={!authority.writable}
             onClick={() => { scopeViewRef.current?.startCreate(); }}
-            className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}
+            className={`${PRIMARY_BUTTON} h-8 pointer-coarse:min-h-11`}
           >
             {t('memory.new')}
           </button>
         ) : null}
       </PageHeader>
       <div className="shrink-0 px-4 lg:px-6">
-        <div data-memory-status role="status" className={`mx-auto flex w-full ${PAGE_WIDTH.split} flex-wrap items-center gap-x-3 gap-y-1 pb-2 text-[12.5px] text-ink-soft`}>
+        <div data-memory-status role="status" className={`mx-auto flex w-full ${PAGE_WIDTH.split} flex-wrap items-center gap-x-3 gap-y-1 pb-2 text-[12px] text-ink-faint`}>
           {settingsQuery.isPending && settings === undefined ? (
             <span>{t('memory.loading')}</span>
           ) : settingsQuery.isError && settings === undefined ? null : settingsQuery.isError ? (
-            <span>{t('st.memory.loadFailed', { detail: errorText(locale, settingsQuery.error) })}</span>
+            <span className="text-ink-soft">{t('st.memory.loadFailed', { detail: errorText(locale, settingsQuery.error) })}</span>
           ) : globalEnabled ? (
             <MemoryOnSentence workspaceId={scope} />
           ) : (
@@ -328,7 +328,7 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
             <span data-memory-workspace-disabled className="font-medium text-amber-ink">{t('st.memory.workspaceDisabled')}</span>
           ) : null}
           {settings !== undefined ? <MemoryStoreStatus /> : null}
-          <button type="button" data-memory-open-settings onClick={() => { onNavigate(`/settings/memory${scope === undefined ? '' : `?workspace=${encodeURIComponent(scope)}`}`); }} className="rounded-sm font-medium text-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink">
+          <button type="button" data-memory-open-settings onClick={() => { onNavigate(`/settings/memory${scope === undefined ? '' : `?workspace=${encodeURIComponent(scope)}`}`); }} className="rounded-sm font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink sm:ml-auto">
             {t('st.memory.settingsLink')}
           </button>
         </div>
@@ -354,15 +354,19 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
         />
       ) : (
         <>
-          <div className="shrink-0 px-4 pt-1 pb-2 lg:px-6">
-            <div className={`mx-auto flex w-full ${PAGE_WIDTH.split} flex-wrap items-center gap-x-4 gap-y-2 border-b border-hairline pb-2.5`}>
-              <div role="group" aria-label={t('memory.scope.aria')} data-anchor="memory-scope" data-memory-scope-kind={mode} className="flex w-full min-w-0 items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5 md:w-auto">
+          <div className="shrink-0 px-4 lg:px-6">
+            <div className={`mx-auto flex w-full ${PAGE_WIDTH.split} flex-wrap items-end gap-x-4 gap-y-2 border-b border-hairline`}>
+              <div role="group" aria-label={t('memory.scope.aria')} data-anchor="memory-scope" data-memory-scope-kind={mode} className="flex min-w-0 items-center gap-1">
                 <button
                   type="button"
                   data-memory-kind="global"
                   aria-pressed={mode === 'global'}
                   onClick={() => { patchParams(undefined, undefined); }}
-                  className={segmentClass(mode === 'global', 'h-7 flex-1 shrink-0 px-3 text-[13px] md:flex-none')}
+                  className={`-mb-px inline-flex min-h-9 shrink-0 items-center border-b-2 px-3 py-1.5 text-[13.5px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+                    mode === 'global'
+                      ? 'border-ink font-medium text-ink'
+                      : 'border-transparent text-ink-soft hover:border-hairline-strong hover:text-ink'
+                  }`}
                 >
                   {t('memory.scope.global')}
                 </button>
@@ -371,7 +375,11 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
                   data-memory-kind="workspace"
                   aria-pressed={mode === 'workspace'}
                   onClick={() => { if (mode !== 'workspace') patchParams(workspaceOptions.find((workspace) => workspace.id === scope)?.id ?? workspaceOptions[0]?.id, undefined, 'workspace'); }}
-                  className={`${segmentClass(mode === 'workspace', 'h-7 flex-1 shrink-0 px-3 text-[13px] md:flex-none')} disabled:cursor-not-allowed disabled:opacity-60`}
+                  className={`-mb-px inline-flex min-h-9 shrink-0 items-center border-b-2 px-3 py-1.5 text-[13.5px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-60 pointer-coarse:min-h-11 ${
+                    mode === 'workspace'
+                      ? 'border-ink font-medium text-ink'
+                      : 'border-transparent text-ink-soft hover:border-hairline-strong hover:text-ink'
+                  }`}
                 >
                   {t('memory.scope.workspace')}
                 </button>
@@ -380,13 +388,17 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
                   data-memory-kind="persona"
                   aria-pressed={mode === 'persona'}
                   onClick={() => { if (mode !== 'persona') patchParams(undefined, persona?.id ?? personas[0]?.id, 'persona'); }}
-                  className={segmentClass(mode === 'persona', 'h-7 flex-1 shrink-0 px-3 text-[13px] md:flex-none')}
+                  className={`-mb-px inline-flex min-h-9 shrink-0 items-center border-b-2 px-3 py-1.5 text-[13.5px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+                    mode === 'persona'
+                      ? 'border-ink font-medium text-ink'
+                      : 'border-transparent text-ink-soft hover:border-hairline-strong hover:text-ink'
+                  }`}
                 >
                   {t('memory.scope.persona')}
                 </button>
               </div>
               {mode !== 'global' ? (
-                <div data-memory-scope-target={mode} className="flex w-full flex-wrap items-center gap-x-4 gap-y-2 md:w-auto">
+                <div data-memory-scope-target={mode} className="flex w-full flex-wrap items-center gap-x-4 gap-y-2 pb-1.5 md:w-auto">
                   {mode === 'workspace' ? (
                     <SearchableSelect
                       id="memory-workspace-picker"
@@ -528,11 +540,15 @@ function MemoryOnSentence({ workspaceId }: { readonly workspaceId?: string }) {
       {view.on && (view.kind === 'unconfigured' || view.kind === 'problem') ? (
         <span
           data-memory-advisor-state
+          role="status"
+          aria-label={`${t('memory.advisor.headerLabel')} · ${t(view.stateKey)}`}
           title={`${t('memory.advisor.headerLabel')} · ${t(view.stateKey)}`}
-          className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${view.tone === 'danger' ? 'text-danger' : 'text-amber-ink'}`}
+          className={`inline-flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11.5px] font-medium ${
+            view.tone === 'danger' ? 'bg-danger/10 text-danger' : 'bg-amber-card text-amber-ink'
+          }`}
         >
           <Icon name="partial" size={12} />
-          <span className="sr-only">{t('memory.advisor.headerLabel')} · {t(view.stateKey)}</span>
+          <span>{t('memory.advisor.headerLabel')} · {t(view.stateKey)}</span>
         </span>
       ) : null}
     </>
@@ -604,6 +620,7 @@ function MemoryScopeView({
 }) {
   const { t, tp, locale } = useI18n();
   const phone = usePhoneMode();
+  const isDesktopSplit = useMediaQuery('(min-width: 1024px)');
   const { client } = useConnection();
   const queryClient = useQueryClient();
   const { state: authorityState, kind } = useMemoryAuthority();
@@ -622,6 +639,10 @@ function MemoryScopeView({
   const [typeFilter, setTypeFilter] = useState<MemoryType | 'all'>('all');
   const [showInactive, setShowInactive] = useState(linkedInactive);
   const [selectedId, setSelectedId] = useState<string | null>(linkedEntry === null ? null : `${namespace}:${linkedEntry}`);
+  const selectionOriginRef = useRef<'none' | 'auto' | 'explicit'>(linkedEntry === null ? 'none' : 'explicit');
+  const autoSeededContextRef = useRef<string | null>(null);
+  const wasDesktopRef = useRef(isDesktopSplit);
+  const browseContextKey = `${namespace}|${debouncedSearch}|${typeFilter}|${showInactive ? '1' : '0'}|${tab}`;
   useEffect(() => {
     if (composing) return;
     const next = validateMemorySearch(search);
@@ -637,6 +658,7 @@ function MemoryScopeView({
   }, [search, composing]);
   useEffect(() => {
     if (linkedEntry === null) return;
+    selectionOriginRef.current = 'explicit';
     setSelectedId(`${namespace}:${linkedEntry}`);
     setSearch('');
     setDebouncedSearch('');
@@ -656,7 +678,13 @@ function MemoryScopeView({
     if (guard.confirmDiscard === undefined) go();
   };
   useImperativeHandle(ref, () => ({
-    startCreate: () => { leaveEditor(() => { setSelectedId(null); setCreating(true); }); },
+    startCreate: () => {
+      leaveEditor(() => {
+        selectionOriginRef.current = 'none';
+        setSelectedId(null);
+        setCreating(true);
+      });
+    },
   }));
 
   const lists = useQueries({ queries: sources.map((source) => {
@@ -780,8 +808,54 @@ function MemoryScopeView({
   const selectedEntry = selected?.entry.content_complete === false ? selectedDetail.data : selected?.entry;
   useEffect(() => {
     // Nothing is read while the store upgrades, so an absent row is not proof the entry is gone.
-    if (!upgrading && !readingEntries && !listQuery.isError && !coverageIncomplete && selectedId !== null && selected === undefined) setSelectedId(null);
+    if (!upgrading && !readingEntries && !listQuery.isError && !coverageIncomplete && selectedId !== null && selected === undefined) {
+      selectionOriginRef.current = 'none';
+      setSelectedId(null);
+    }
   }, [upgrading, readingEntries, listQuery.isError, coverageIncomplete, selectedId, selected]);
+
+  /** The entries tab is a two-pane ledger; the inbox is one reading column. */
+  const ledger = !(review && tab === 'inbox');
+
+  // On desktop split (`>= 1024px` / `lg`), seed the first visible entry once per
+  // settled browse context so the right detail pane never opens as an empty void.
+  // Never override an explicit selection, deep link, pending inbox, loading/error
+  // state, creation flow, or dirty edit.
+  useEffect(() => {
+    if (!isDesktopSplit || !ledger) return;
+    if (upgrading || listQuery.isPending || readingEntries || listQuery.isError || coverageIncomplete) return;
+    if (selectedId !== null || linkedEntry !== null || creating || guard?.dirty) return;
+    if (entries.length === 0) return;
+    if (autoSeededContextRef.current === browseContextKey) return;
+    autoSeededContextRef.current = browseContextKey;
+    selectionOriginRef.current = 'auto';
+    setSelectedId(entries[0]!.key);
+  }, [
+    isDesktopSplit,
+    ledger,
+    upgrading,
+    listQuery.isPending,
+    readingEntries,
+    listQuery.isError,
+    coverageIncomplete,
+    selectedId,
+    linkedEntry,
+    creating,
+    guard?.dirty,
+    entries,
+    browseContextKey,
+  ]);
+
+  // Narrowing from desktop split to single-column must not open a synthetic
+  // mobile detail sheet for an entry the user never explicitly clicked.
+  useEffect(() => {
+    const narrowed = wasDesktopRef.current && !isDesktopSplit;
+    wasDesktopRef.current = isDesktopSplit;
+    if (narrowed && selectionOriginRef.current === 'auto' && !creating && !guard?.dirty) {
+      selectionOriginRef.current = 'none';
+      setSelectedId(null);
+    }
+  }, [isDesktopSplit, creating, guard?.dirty]);
   const searchValidation = validateMemorySearch(search);
   const searchHint = searchValidation.kind === 'too-many-words'
     ? (locale === 'zh' ? '最多输入 10 个关键词。' : 'Use at most 10 words to search memory.')
@@ -798,7 +872,10 @@ function MemoryScopeView({
       entry={undefined}
       onDone={(entry) => {
         setCreating(false);
-        if (entry !== undefined) setSelectedId(`${targetKey(target)}:${entry.id}`);
+        if (entry !== undefined) {
+          selectionOriginRef.current = 'explicit';
+          setSelectedId(`${targetKey(target)}:${entry.id}`);
+        }
         refresh();
       }}
     />
@@ -811,17 +888,27 @@ function MemoryScopeView({
       now={now}
       onOpenSession={onOpenSession}
       onChanged={refresh}
-      onClosed={() => { setSelectedId(null); }}
+      onClosed={() => {
+        selectionOriginRef.current = 'none';
+        autoSeededContextRef.current = browseContextKey;
+        setSelectedId(null);
+      }}
       onOpenCoveredBy={
         selected.entry.covered_by !== undefined &&
         entriesByKey.has(`${targetKey(selected.source.target)}:${selected.entry.covered_by?.id}`)
-          ? () => { setSelectedId(`${targetKey(selected.source.target)}:${selected.entry.covered_by?.id}`); }
+          ? () => {
+            selectionOriginRef.current = 'explicit';
+            setSelectedId(`${targetKey(selected.source.target)}:${selected.entry.covered_by?.id}`);
+          }
           : undefined
       }
       onOpenReplacement={
         selected.entry.superseded_by !== undefined &&
         entriesByKey.has(`${targetKey(selected.source.target)}:${selected.entry.superseded_by}`)
-          ? () => { setSelectedId(`${targetKey(selected.source.target)}:${selected.entry.superseded_by}`); }
+          ? () => {
+            selectionOriginRef.current = 'explicit';
+            setSelectedId(`${targetKey(selected.source.target)}:${selected.entry.superseded_by}`);
+          }
           : undefined
       }
     />
@@ -911,7 +998,7 @@ function MemoryScopeView({
               leaveEditor(() => { setTab(candidate); });
             }}
             className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-[13px] transition-colors ${
-              active ? 'border-accent font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
+              active ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
             }`}
           >
             {t(candidate === 'entries' ? 'memory.tab.entries' : 'memory.tab.inbox')}
@@ -925,9 +1012,6 @@ function MemoryScopeView({
       })}
     </div>
   ) : null;
-
-  /** The entries tab is a two-pane ledger; the inbox is one reading column. */
-  const ledger = !(review && tab === 'inbox');
 
   return (
     <div
@@ -996,6 +1080,7 @@ function MemoryScopeView({
                       onOpenEntry={(id) => {
                         refresh();
                         setSearch(''); setDebouncedSearch(''); setTypeFilter('all'); setCreating(false);
+                        selectionOriginRef.current = 'explicit';
                         setSelectedId(`${targetKey(target)}:${id}`);
                       }}
                     />
@@ -1027,7 +1112,7 @@ function MemoryScopeView({
                               data-memory-type-filter={candidate}
                               aria-pressed={active}
                               onClick={() => { setTypeFilter(candidate as MemoryType | 'all'); }}
-                              className={`h-7 rounded-md px-2 text-[12.5px] focus-visible:outline-2 focus-visible:outline-selected-ink ${active ? 'bg-ink/[0.06] font-medium text-ink' : 'text-ink-soft hover:text-ink'}`}
+                              className={`h-7 rounded-md px-1.5 text-[12px] focus-visible:outline-2 focus-visible:outline-selected-ink ${active ? 'bg-ink/[0.06] font-medium text-ink' : 'text-ink-soft hover:text-ink'}`}
                             >
                               {t(`memory.type.${candidate}`)}
                             </button>
@@ -1113,7 +1198,13 @@ function MemoryScopeView({
                                 entry={row.entry}
                                 active={row.key === selectedId}
                                 now={now}
-                                onOpen={() => { leaveEditor(() => { setCreating(false); setSelectedId(row.key); }); }}
+                                onOpen={() => {
+                                  leaveEditor(() => {
+                                    selectionOriginRef.current = 'explicit';
+                                    setCreating(false);
+                                    setSelectedId(row.key);
+                                  });
+                                }}
                               />
                             </div>
                           )}
@@ -1133,7 +1224,18 @@ function MemoryScopeView({
                             const key = `${targetKey(group.target)}:${entry.id}`;
                             return (
                               <li key={key}>
-                                <MemoryListRow entry={entry} active={key === selectedId} now={now} onOpen={() => { leaveEditor(() => { setCreating(false); setSelectedId(key); }); }} />
+                                <MemoryListRow
+                                  entry={entry}
+                                  active={key === selectedId}
+                                  now={now}
+                                  onOpen={() => {
+                                    leaveEditor(() => {
+                                      selectionOriginRef.current = 'explicit';
+                                      setCreating(false);
+                                      setSelectedId(key);
+                                    });
+                                  }}
+                                />
                               </li>
                             );
                           })}
@@ -1168,7 +1270,14 @@ function MemoryScopeView({
                 <button
                   type="button"
                   data-memory-detail-back
-                  onClick={() => { leaveEditor(() => { setSelectedId(null); setCreating(false); }); }}
+                  onClick={() => {
+                    leaveEditor(() => {
+                      selectionOriginRef.current = 'none';
+                      autoSeededContextRef.current = browseContextKey;
+                      setSelectedId(null);
+                      setCreating(false);
+                    });
+                  }}
                   className="mb-4 text-[12px] text-ink-soft underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink lg:hidden"
                 >
                   {t('memory.back')}
@@ -1377,7 +1486,7 @@ function MemoryDetail({
             {t(entry.pinned ? 'memory.unpin' : 'memory.pin')}
           </button>
         ) : null}
-        {entry.source.session !== undefined && !editing ? (
+        {entry.source.session !== undefined && entry.source.session.trim() !== '' && entry.origin_host_id === undefined && !editing ? (
           <button type="button" data-memory-source-session title={t('memory.openSource')} onClick={() => { onOpenSession(entry.source.session!); }}
             className={QUIET_ACTION}>
             {t('memory.openSource')}
@@ -1406,9 +1515,9 @@ function MemoryDetail({
       <MemoryGovernancePanel target={target} entry={entry} />
 
       {journalQuery.isPending || journalQuery.isError || history.length > 0 ? (
-        <section data-memory-history aria-labelledby={`memory-history-${entry.id}`}>
+        <section data-memory-history aria-labelledby={`memory-history-${entry.id}`} className="border-t border-hairline pt-4">
           <h3 id={`memory-history-${entry.id}`} className={FIELD_LABEL}>{t('memory.history')}</h3>
-          {journalQuery.isPending ? <p role="status" className="mt-1.5 text-[12px] text-ink-faint">{t('memory.loading')}</p>
+          {journalQuery.isPending ? <p role="status" className="mt-2 text-[12px] text-ink-faint">{t('memory.loading')}</p>
             : journalQuery.isError ? (
               <div role="alert" className="mt-2 space-y-1">
                 <p className="text-[12px] font-medium text-danger">{t('memory.loadFailed')}</p>
@@ -1418,31 +1527,47 @@ function MemoryDetail({
                 </button>
               </div>
             )
-            : <ul className="mt-1.5 space-y-px">
-              {[...history].reverse().map((record) => (
-                <li key={`${record.operationId}:${record.at}`} className="flex min-w-0 items-center gap-2 py-1 text-[12px] text-ink-faint">
-                  <button
-                    type="button"
-                    data-memory-history-record={record.operationId}
-                    title={t('memory.history.view')}
-                    onClick={() => { setOpenHistory(record.operationId); }}
-                    className="min-w-0 flex-1 truncate rounded-sm text-left hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
-                  >
-                    {historyLabel(record.action, t)}
-                    {' · '}
-                    {t(`memory.writer.${record.writer}`)}
-                    {' · '}
-                    <RelativeTime at={record.at} />
-                  </button>
-                  {writable ? (
-                    <UndoButton
-                      record={record}
-                      busy={undoMutation.isPending}
-                      onUndo={() => { undoMutation.mutate(record.operationId); }}
+            : <ul className="relative mt-2.5 ml-1.5 space-y-1.5 border-l border-hairline pl-4">
+              {[...history].reverse().map((record, index) => {
+                const beforeShort = shortJournalRevision(record.beforeRevision);
+                const afterShort = shortJournalRevision(record.afterRevision);
+                const revTransition = beforeShort !== null || afterShort !== null
+                  ? `${beforeShort ?? '—'} → ${afterShort ?? '—'}`
+                  : null;
+                return (
+                  <li key={`${record.operationId}:${record.at}`} className="relative flex min-w-0 items-center gap-2 py-0.5 text-[12px] text-ink-faint">
+                    <span
+                      aria-hidden
+                      className={`absolute top-2 -left-[20.5px] h-2 w-2 rounded-full ring-2 ring-paper ${
+                        index === 0 ? 'bg-selected-ink' : 'bg-hairline-strong'
+                      }`}
                     />
-                  ) : null}
-                </li>
-              ))}
+                    <button
+                      type="button"
+                      data-memory-history-record={record.operationId}
+                      title={t('memory.history.view')}
+                      onClick={() => { setOpenHistory(record.operationId); }}
+                      className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-1.5 gap-y-0.5 rounded-sm text-left transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+                    >
+                      <span className="font-medium text-ink-soft">{historyLabel(record.action, t)}</span>
+                      <span aria-hidden>·</span>
+                      <span>{t(`memory.writer.${record.writer}`)}</span>
+                      <span aria-hidden>·</span>
+                      <RelativeTime at={record.at} className="tabular-nums" />
+                      {revTransition !== null ? (
+                        <span className="font-mono text-[11px] text-ink-faint/80">{revTransition}</span>
+                      ) : null}
+                    </button>
+                    {writable ? (
+                      <UndoButton
+                        record={record}
+                        busy={undoMutation.isPending}
+                        onUndo={() => { undoMutation.mutate(record.operationId); }}
+                      />
+                    ) : null}
+                  </li>
+                );
+              })}
             </ul>}
           {openHistory !== null ? (
             <MemoryHistoryDialog
@@ -1884,7 +2009,7 @@ function MemoryInbox({
 
   if (inboxWindowed) {
     return (
-      <div ref={inboxScrollRef} className="max-h-[70dvh] overflow-y-auto overscroll-y-contain rounded-xl border border-hairline bg-panel">
+      <div ref={inboxScrollRef} className="max-h-[70dvh] overflow-y-auto overscroll-y-contain border-t border-hairline">
         <ul data-memory-inbox data-memory-inbox-virtualized="true" className="relative" style={{ height: inboxVirtualizer.getTotalSize() }}>
           {inboxVirtualizer.getVirtualItems().map((virtualRow) => {
             const entry = entries[virtualRow.index];
@@ -1900,7 +2025,7 @@ function MemoryInbox({
     );
   }
   return (
-    <ul data-memory-inbox className="divide-y divide-hairline overflow-hidden rounded-xl border border-hairline bg-panel">
+    <ul data-memory-inbox className="divide-y divide-hairline border-t border-hairline">
       {entries.map((entry) => renderInboxRow(entry))}
     </ul>
   );
