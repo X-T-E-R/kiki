@@ -9,15 +9,13 @@
  * made before this change keep applying.
  */
 
-import { useRef, useSyncExternalStore, useState } from 'react';
+import { memo, useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import {
   annotationOverrideId,
-  applyAnnotationOverrides,
-  getAnnotationOverridesSnapshot,
-  subscribeAnnotationOverrides,
+  getAnnotationOverride,
+  subscribeAnnotationOverrideIds,
   writeAnnotationOverride,
-  type TimelineAnnotation,
 } from '@kiki/session-core/composer';
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
@@ -47,7 +45,18 @@ export function notePreviewText(comment: string): string {
     : `${characters.slice(0, NOTE_PREVIEW_LENGTH).join('')}…`;
 }
 
-export function SentAnnotationsBubble({
+function sameSentNotes(left: readonly SentNote[], right: readonly SentNote[]): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index]!;
+    const b = right[index]!;
+    if (a.id !== b.id || a.quote !== b.quote || a.comment !== b.comment) return false;
+  }
+  return true;
+}
+
+export const SentAnnotationsBubble = memo(function SentAnnotationsBubble({
   blockId,
   annotations,
 }: {
@@ -55,31 +64,46 @@ export function SentAnnotationsBubble({
   readonly annotations: readonly { quote: string; comment: string }[];
 }) {
   const { t, tp } = useI18n();
-  const overrides = useSyncExternalStore(
-    subscribeAnnotationOverrides,
-    getAnnotationOverridesSnapshot,
-    getAnnotationOverridesSnapshot,
-  );
   // Same id scheme as collectTimelineAnnotations: the annotation segments lead
   // the carry-over prefix, so the ordinal is the index inside `annotations`.
-  const notes: readonly SentNote[] = (() => {
-    const derived = new Map<string, TimelineAnnotation[]>();
-    derived.set(
-      blockId,
+  const baseNotes = useMemo<readonly SentNote[]>(
+    () =>
       annotations.map((annotation, ordinal) => ({
         id: annotationOverrideId(annotation.quote, annotation.comment, blockId, ordinal),
         quote: annotation.quote,
         comment: annotation.comment,
       })),
-    );
-    // Sent annotations always carry a comment; the null arm of the shared
-    // TimelineAnnotation type is the quote-only shape, which cannot occur here.
-    return (applyAnnotationOverrides(derived, overrides).get(blockId) ?? []).map((note) => ({
-      id: note.id,
-      quote: note.quote,
-      comment: note.comment ?? '',
-    }));
-  })();
+    [blockId, annotations],
+  );
+  const noteIds = useMemo(() => baseNotes.map((note) => note.id), [baseNotes]);
+  const cachedNotesRef = useRef<readonly SentNote[]>(baseNotes);
+
+  const subscribe = useCallback(
+    (listener: () => void) =>
+      noteIds.length === 0 ? () => {} : subscribeAnnotationOverrideIds(noteIds, listener),
+    [noteIds],
+  );
+
+  const getSnapshot = useCallback((): readonly SentNote[] => {
+    const next: SentNote[] = [];
+    for (let index = 0; index < baseNotes.length; index += 1) {
+      const note = baseNotes[index]!;
+      const override = getAnnotationOverride(note.id);
+      if (override?.deleted === true) continue;
+      if (override?.comment !== undefined && override.comment !== note.comment) {
+        next.push({ id: note.id, quote: note.quote, comment: override.comment });
+      } else {
+        next.push(note);
+      }
+    }
+    if (sameSentNotes(cachedNotesRef.current, next)) {
+      return cachedNotesRef.current;
+    }
+    cachedNotesRef.current = next;
+    return next;
+  }, [baseNotes]);
+
+  const notes = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   if (notes.length === 0) return null;
 
@@ -106,7 +130,7 @@ export function SentAnnotationsBubble({
       label={notePreviewText(note.comment)}
     />
   ));
-}
+});
 
 function NoteBubble({
   blockId,
@@ -127,10 +151,10 @@ function NoteBubble({
   const pop = usePopover();
 
   const saveNote = (id: string, comment: string) => {
-    writeAnnotationOverride(id, { ...getAnnotationOverridesSnapshot()[id], comment });
+    writeAnnotationOverride(id, { ...getAnnotationOverride(id), comment });
   };
   const removeNote = (id: string) => {
-    writeAnnotationOverride(id, { ...getAnnotationOverridesSnapshot()[id], deleted: true });
+    writeAnnotationOverride(id, { ...getAnnotationOverride(id), deleted: true });
   };
 
   return (

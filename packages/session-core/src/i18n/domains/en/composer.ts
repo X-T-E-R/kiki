@@ -353,6 +353,7 @@ export const composerEn = {
   'composer.sendTiming.nowHint': 'Send into the running turn — read before the next step',
   'composer.sendTiming.send': 'Send',
   'composer.sendTiming.sendHint': 'Default timing: {timing}',
+  'composer.sendTiming.sendIdleHint': 'Send immediately',
   'composer.sendTiming.timed': 'Send {timing}',
   'composer.sendTimingAria': 'Send timing',
   'composer.sendTitle': 'Send (Enter)',

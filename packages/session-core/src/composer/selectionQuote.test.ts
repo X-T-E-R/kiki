@@ -8,6 +8,7 @@ import {
   buildAnnotationBlock,
   buildAnnotationsPrefix,
   buildQuotePrefix,
+  canonicalSelectionText,
   removeAnnotation,
   removeQuote,
   selectionAnchorRect,
@@ -301,5 +302,80 @@ describe('source selection anchors', () => {
         { id: 'u', kind: 'user', text, presentation },
       ]).size).toBe(0);
     } finally { container.remove(); }
+  });
+
+  it('compensates canonical offsets for prose after collapsed code blocks carrying omitted canonical lengths', () => {
+    const fullCode = 'line1()\nline2()\nline3()\nline4()';
+    const previewCode = 'line1()\nline2()';
+    const omitted = canonicalSelectionText(fullCode.slice(previewCode.length)).length;
+    const prose = 'Trailing conclusion paragraph.';
+    const container = document.createElement('div');
+    container.innerHTML =
+      `<div data-source-block-id="b-code" data-source-version="v1">` +
+      `<div data-streamdown="code-block-body" data-source-omitted-canonical-chars="${omitted}"><pre><code>${previewCode}</code></pre></div>` +
+      `<p>${prose}</p>` +
+      `</div>`;
+    document.body.append(container);
+    try {
+      const pText = container.querySelector('p')!.firstChild!;
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.setBaseAndExtent(pText, 0, pText, 'Trailing conclusion'.length);
+      const anchor = selectionSourceAnchor(selection);
+      const expectedStart = canonicalSelectionText(fullCode).length;
+      expect(anchor).toEqual({
+        blockId: 'b-code',
+        version: 'v1',
+        start: expectedStart,
+        end: expectedStart + canonicalSelectionText('Trailing conclusion').length,
+        text: canonicalSelectionText('Trailing conclusion'),
+      });
+      const expandedText = `${fullCode}\n${prose}`;
+      expect(anchoredSelectionRange(expandedText, anchor!)).toEqual({
+        start: fullCode.length + 1,
+        end: fullCode.length + 1 + 'Trailing conclusion'.length,
+      });
+
+      // Selection starting right at the collapsed code-body end boundary must match the same canonical start.
+      const codeBody = container.querySelector('[data-streamdown="code-block-body"]')!;
+      const boundaryRange = document.createRange();
+      boundaryRange.setStart(codeBody, codeBody.childNodes.length);
+      boundaryRange.setEnd(pText, 'Trailing conclusion'.length);
+      selection.removeAllRanges();
+      selection.addRange(boundaryRange);
+      expect(selectionSourceAnchor(selection)).toEqual(anchor);
+
+      // Selection starting in trailing whitespace of the collapsed preview and selecting trailing prose must still match the same canonical start.
+      const wsContainer = document.createElement('div');
+      wsContainer.innerHTML =
+        `<div data-source-block-id="b-code" data-source-version="v1">` +
+        `<div data-streamdown="code-block-body" data-source-omitted-canonical-chars="${omitted}"><pre><code>${previewCode}   \n</code></pre></div>` +
+        `<p>${prose}</p>` +
+        `</div>`;
+      document.body.append(wsContainer);
+      try {
+        const wsCodeText = wsContainer.querySelector('code')!.firstChild!;
+        const wsProseText = wsContainer.querySelector('p')!.firstChild!;
+        const wsRange = document.createRange();
+        wsRange.setStart(wsCodeText, previewCode.length);
+        wsRange.setEnd(wsProseText, 'Trailing conclusion'.length);
+        selection.removeAllRanges();
+        selection.addRange(wsRange);
+        expect(selectionSourceAnchor(selection)).toEqual(anchor);
+      } finally {
+        wsContainer.remove();
+      }
+
+      // Selection crossing omitted lines inside the collapsed code block into trailing prose must not emit a bogus contiguous anchor.
+      const codeText = codeBody.querySelector('code')!.firstChild!;
+      const crossingRange = document.createRange();
+      crossingRange.setStart(codeText, 0);
+      crossingRange.setEnd(pText, 'Trailing'.length);
+      selection.removeAllRanges();
+      selection.addRange(crossingRange);
+      expect(selectionSourceAnchor(selection)).toBeNull();
+    } finally {
+      container.remove();
+    }
   });
 });

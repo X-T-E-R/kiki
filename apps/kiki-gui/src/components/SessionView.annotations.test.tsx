@@ -265,7 +265,8 @@ type ComposerProps = {
   attachments: readonly ComposerAttachment[];
   queueEditing: boolean;
   header?: ReactElement<{ queue: { count: number; panel: ReactElement<{ children: ReactElement<{ onEdit: (id: string) => void; onClearAll: () => void }> }> } }>;
-  annotations: readonly SelectionAnnotation[];
+  annotations?: readonly SelectionAnnotation[];
+  annotationStore?: { getSnapshot: () => readonly SelectionAnnotation[] };
   onSend: (
     text: string,
     attachments: readonly ComposerAttachment[],
@@ -290,7 +291,8 @@ function composerProps(): ComposerProps {
 }
 
 function currentAnnotations(): readonly SelectionAnnotation[] {
-  return composerProps().annotations;
+  const props = composerProps();
+  return props.annotationStore?.getSnapshot() ?? props.annotations ?? [];
 }
 
 beforeAll(() => {

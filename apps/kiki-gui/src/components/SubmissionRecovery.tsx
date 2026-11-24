@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
-import { forgetUnconfirmedSubmission, readUnconfirmedSubmissions, restorePromptToDraft, type UnconfirmedSubmission } from '@kiki/session-core/composer';
-import type { SessionViewState } from '@kiki/session-core/session';
+import {
+  forgetUnconfirmedSubmission,
+  readUnconfirmedSubmissions,
+  restorePromptToDraft,
+  subscribeUnconfirmedSubmissions,
+  type UnconfirmedSubmission,
+} from '@kiki/session-core/composer';
+import { MAIN_AGENT_ID, type SessionViewState } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
 import { ConversationDockColumn } from './ConversationDockColumn';
 import { Icon } from './icons';
@@ -18,41 +24,71 @@ function itemText(item: UnconfirmedSubmission): string {
  * put it back into the composer (the backup becomes the draft) or confirm it
  * already arrived (the backup is dropped). Nothing is ever resent.
  */
-export function SubmissionRecovery({ sessionId, state }: { readonly sessionId: string; readonly state: SessionViewState }) {
+export function SubmissionRecovery({
+  sessionId,
+  agentId = MAIN_AGENT_ID,
+  draftKey,
+  state,
+}: {
+  readonly sessionId: string;
+  readonly agentId?: string;
+  readonly draftKey?: string;
+  readonly state: SessionViewState;
+}) {
   const { t, tp } = useI18n();
-  const [items, setItems] = useState(() => readUnconfirmedSubmissions(sessionId));
+  const [items, setItems] = useState(() => readUnconfirmedSubmissions(sessionId, agentId));
   const [expanded, setExpanded] = useState<string | null>(null);
+  useEffect(() => {
+    setItems(readUnconfirmedSubmissions(sessionId, agentId));
+    setExpanded(null);
+    return subscribeUnconfirmedSubmissions(() => {
+      setItems(readUnconfirmedSubmissions(sessionId, agentId));
+    });
+  }, [sessionId, agentId]);
   useEffect(() => {
     const known = new Set([...state.queuedPromptIds, ...state.blocks.flatMap(block => block.kind === 'user' && block.steerStatus === undefined && block.promptId !== undefined ? [block.promptId] : [])]);
     if (state.activePromptId !== undefined) known.add(state.activePromptId);
     const next = items.filter(item => !known.has(item.promptId));
     if (next.length === items.length) return;
-    for (const item of items) if (known.has(item.promptId)) forgetUnconfirmedSubmission(sessionId, item.promptId);
+    for (const item of items) if (known.has(item.promptId)) forgetUnconfirmedSubmission(sessionId, item.promptId, agentId);
     setItems(next);
-  }, [sessionId, state, items]);
-  if (items.length === 0) return null;
+  }, [sessionId, agentId, state, items]);
+  const inFlightPromptIds = new Set(
+    state.blocks.flatMap(block =>
+      block.kind === 'user' &&
+      block.promptId !== undefined &&
+      (block.steerStatus === 'sending' ||
+        block.steerStatus === 'preparing' ||
+        block.steerStatus === 'waiting' ||
+        block.optimisticStatus === 'sending')
+        ? [block.promptId]
+        : [],
+    ),
+  );
+  const visibleItems = items.filter(item => !inFlightPromptIds.has(item.promptId));
+  if (visibleItems.length === 0) return null;
   const settle = (item: UnconfirmedSubmission, restore: boolean) => {
-    if (restore) restorePromptToDraft(sessionId, item.content);
-    forgetUnconfirmedSubmission(sessionId, item.promptId);
+    if (restore) restorePromptToDraft(draftKey ?? sessionId, item.content);
+    forgetUnconfirmedSubmission(sessionId, item.promptId, agentId);
     setItems(current => current.filter(entry => entry.promptId !== item.promptId));
   };
-  const single = items.length === 1;
+  const single = visibleItems.length === 1;
   return (
     <ConversationDockColumn className="pb-2" data-submission-recovery-wrapper>
       <section
         role="status"
-        aria-label={tp('sv.submissionRecovery.title', items.length)}
+        aria-label={tp('sv.submissionRecovery.title', visibleItems.length)}
         data-submission-recovery
         className="anim-enter rounded-[10px] border border-hairline bg-canvas py-1 pr-1 pl-3"
       >
         {single ? null : (
           <p className="flex min-h-7 items-center gap-2 text-[13px] text-ink-soft" title={t('sv.submissionRecovery.body')}>
             <Icon name="hold" size={14} className="text-ink-faint" />
-            {tp('sv.submissionRecovery.title', items.length)}
+            {tp('sv.submissionRecovery.title', visibleItems.length)}
           </p>
         )}
         <ul>
-          {items.map(item => {
+          {visibleItems.map(item => {
             const text = itemText(item);
             const preview = text === '' ? t('sv.fileEcho') : text.replace(/\s+/g, ' ');
             const long = text.includes('\n') || text.length > 48;

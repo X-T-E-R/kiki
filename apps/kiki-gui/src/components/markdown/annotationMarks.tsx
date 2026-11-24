@@ -279,10 +279,31 @@ export function rehypeAnnotationMarks(targets: readonly TimelineAnnotation[]) {
     return function transform(tree: HastRootLike) {
       const texts = collectTextNodes(tree);
       const ranges = resolveMarkRanges(texts.map((entry) => entry.node.value).join(''), targets);
-      const started = new Set<string>();
-      for (const entry of texts.toReversed()) {
+      if (ranges.length === 0) return;
+      const firstIndexByAnnotation = new Map<string, number>();
+      let rangeCursor = 0;
+      for (let textIndex = 0; textIndex < texts.length; textIndex += 1) {
+        const entry = texts[textIndex]!;
+        const entryEnd = entry.offset + entry.node.value.length;
+        while (rangeCursor < ranges.length && ranges[rangeCursor]!.end <= entry.offset) {
+          rangeCursor += 1;
+        }
+        if (rangeCursor >= ranges.length) break;
         if (entry.node.value.trim() === '') continue;
-        const hits = ranges.filter((range) => entry.offset < range.end && entry.offset + entry.node.value.length > range.start);
+        for (let r = rangeCursor; r < ranges.length && ranges[r]!.start < entryEnd; r += 1) {
+          const range = ranges[r]!;
+          if (!firstIndexByAnnotation.has(range.annotationId)) {
+            firstIndexByAnnotation.set(range.annotationId, textIndex);
+          }
+          if (range.end > entryEnd) break;
+        }
+      }
+      const started = new Set<string>();
+      for (let textIndex = texts.length - 1; textIndex >= 0; textIndex -= 1) {
+        const entry = texts[textIndex]!;
+        if (entry.node.value.trim() === '') continue;
+        const entryEnd = entry.offset + entry.node.value.length;
+        const hits = ranges.filter((range) => entry.offset < range.end && entryEnd > range.start);
         if (hits.length === 0) continue;
         const replacement: HastNodeLike[] = [];
         const escapedBubbles: Array<{ readonly target: AncestorLink; readonly bubble: HastElementLike }> = [];
@@ -291,7 +312,7 @@ export function rehypeAnnotationMarks(targets: readonly TimelineAnnotation[]) {
           const start = Math.max(0, range.start - entry.offset);
           const end = Math.min(entry.node.value.length, range.end - entry.offset);
           if (start > cursor) replacement.push({ type: 'text', value: entry.node.value.slice(cursor, start) });
-          const first = !texts.some((other) => other.offset < entry.offset && other.offset + other.node.value.length > range.start);
+          const first = firstIndexByAnnotation.get(range.annotationId) === textIndex;
           replacement.push(markElement(range.annotationId, entry.node.value.slice(start, end), first));
           if (!started.has(range.annotationId)) {
             started.add(range.annotationId);
@@ -317,6 +338,7 @@ export function rehypeAnnotationMarks(targets: readonly TimelineAnnotation[]) {
     };
   };
   // Streamdown's processor cache keys plugins by function name, not identity.
-  Object.defineProperty(attacher, 'name', { value: `annotationMarks:${JSON.stringify(targets)}` });
+  const structuralKey = targets.map(({ id, quote, source }) => ({ id, quote, source }));
+  Object.defineProperty(attacher, 'name', { value: `annotationMarks:${JSON.stringify(structuralKey)}` });
   return attacher;
 }

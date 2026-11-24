@@ -277,4 +277,29 @@ describe('SelectionQuoteButton', () => {
       if (originalRect !== undefined) Object.defineProperty(Range.prototype, 'getBoundingClientRect', originalRect);
     }
   });
+
+  it('ignores scroll events from unrelated sibling timelines (e.g. co-resident subagent panel)', async () => {
+    const { container } = await mount();
+    const siblingPanel = document.createElement('div');
+    document.body.append(siblingPanel);
+    try {
+      await selectSource(container);
+      expect(pill(container)).not.toBeNull();
+      // Scrolling a sibling subagent timeline must NOT close main's quote pill.
+      await act(async () => {
+        siblingPanel.dispatchEvent(new Event('scroll', { bubbles: false }));
+      });
+      expect(pill(container)).not.toBeNull();
+
+      // Nor should it close or disturb an open inline annotate editor.
+      await createAnnotation(container);
+      expect(annotateInput(container)).not.toBeNull();
+      await act(async () => {
+        siblingPanel.dispatchEvent(new Event('scroll', { bubbles: false }));
+      });
+      expect(annotateInput(container)).not.toBeNull();
+    } finally {
+      siblingPanel.remove();
+    }
+  });
 });

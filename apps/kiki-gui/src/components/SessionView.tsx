@@ -1844,9 +1844,15 @@ function PromptRecordsRemainder({ continuation }: { readonly continuation: NonNu
   );
 }
 
-/** Whether the server saved this prompt as a durable ingress record. */
-function hasDurableRecord(controller: Pick<SessionController, 'getDurableIngress'>, promptId: string): boolean {
-  return (controller.getDurableIngress?.() ?? []).some((item) => item.prompt_id === promptId);
+/** Whether the server saved this prompt as a durable ingress record for the given agent. */
+function hasDurableRecord(
+  controller: Pick<SessionController, 'getDurableIngress'>,
+  promptId: string,
+  agentId = MAIN_AGENT_ID,
+): boolean {
+  return (controller.getDurableIngress?.() ?? []).some(
+    (item) => item.prompt_id === promptId && (item.agent_id ?? MAIN_AGENT_ID) === agentId,
+  );
 }
 
 
@@ -2630,9 +2636,14 @@ export function SessionView({
     return () => { clearTimeout(timer); };
   }, [pendingSubmission]);
   const focusComposer = useCallback(() => {
-    // Return focus to the composer so the user can type the follow-up at once.
-    document.querySelector<HTMLElement>('[data-composer]')?.focus();
-  }, []);
+    // Return focus to main's own composer so co-resident child tabs cannot steal it.
+    const composers = [...document.querySelectorAll<HTMLElement>('[data-composer]')];
+    const target =
+      composers.find((node) => node.dataset['composerAgent'] === MAIN_AGENT_ID && node.dataset['composerSession'] === sessionId) ??
+      composers.find((node) => node.dataset['composerAgent'] === MAIN_AGENT_ID) ??
+      composers[0];
+    target?.focus();
+  }, [sessionId]);
 
   const queryClient = useQueryClient();
   const cachedSessionRecord = useMemo(() => {
@@ -2846,7 +2857,7 @@ export function SessionView({
             : undefined,
         sendTimingDefault: settings.defaultAppendTiming,
         sessionRecord: live.session,
-        durableIngress: live.durableIngress,
+        durableIngress: filterIngressForAgent(live.durableIngress, MAIN_AGENT_ID),
       };
     },
   });
@@ -2874,7 +2885,6 @@ export function SessionView({
     composerOwnerActive,
     timelineBlocksRef: mainTranscriptBlocksRef,
     annotations: {
-      annotations,
       setAnnotations,
       annotationsRef: draftSelectionsRef,
       surface: annotationSurface,
@@ -3695,7 +3705,8 @@ export function SessionView({
         // annotations first (blockquote + comment per segment), then the plain
         // quote as a Markdown blockquote — exactly what the transcript renders
         // back. The wire protocol stays untouched.
-        const carry = serializeSelectionCarryover(annotations, text, options?.presentation);
+        const currentAnnotations = draftSelectionsRef.current;
+        const carry = serializeSelectionCarryover(currentAnnotations, text, options?.presentation);
         const content = options?.firstMessage?.submission?.content ?? buildPromptContent(carry.quotedText, composerAttachments, carry.presentation);
         if (content === null || pendingSendRef.current) return;
         const textPart = content.find((part) => part.type === 'text');
@@ -3739,7 +3750,7 @@ export function SessionView({
           refresh: () => { void controller.refreshSession(); },
         });
         if (options?.now === true) {
-          const sentAnnotationsNow = annotations;
+          const sentAnnotationsNow = currentAnnotations;
           const sentNowIds = new Set(sentAnnotationsNow.map((annotation) => annotation.id));
           let compositionReleased = false;
           const releaseComposition = () => {
@@ -3777,8 +3788,8 @@ export function SessionView({
               onAcknowledged: releaseComposition,
             })
             .then((result) => {
-              if (result.outcome === 'failed' && hasDurableRecord(controller, result.promptId)) {
-                forgetUnconfirmedSubmission(sessionId, result.promptId);
+              if (result.outcome === 'failed' && hasDurableRecord(controller, result.promptId, MAIN_AGENT_ID)) {
+                forgetUnconfirmedSubmission(sessionId, result.promptId, MAIN_AGENT_ID);
                 releaseComposition();
                 return;
               }
@@ -3879,7 +3890,7 @@ export function SessionView({
         }
         // The captured payload, notes and identity belong to X, not whatever
         // the user composes after a failure toast appears.
-        const sentAnnotations = annotations;
+        const sentAnnotations = currentAnnotations;
         const sentIds = new Set(sentAnnotations.map((annotation) => annotation.id));
         const restoreCapturedSubmission = () => {
           if (composerOwnerActive.current) {
@@ -3916,7 +3927,9 @@ export function SessionView({
         let accepted = false;
         const submitCaptured = (first = false): Promise<void> | undefined => {
           const currentPending = pendingSubmissionRef.current;
-          const ingress = (controller.getDurableIngress?.() ?? []).find((item) => item.prompt_id === submissionId);
+          const ingress = (controller.getDurableIngress?.() ?? []).find(
+            (item) => item.prompt_id === submissionId && (item.agent_id ?? MAIN_AGENT_ID) === MAIN_AGENT_ID,
+          );
           const resume = !first && (ingress?.admission === 'failed' || ingress?.admission === 'held') && controller.resumeDurableIngress !== undefined;
           const retryingHeld = resume && ingress?.admission === 'held' && currentPending?.id === submissionId;
           if (!composerOwnerActive.current || (!first && pendingSendRef.current)) return;
@@ -3989,10 +4002,10 @@ export function SessionView({
           .then((result) => {
             clearFirstRecord();
             const admissionRejected = result.admission === 'failed' || result.admission === 'cancelled';
-            if (result.admission === 'failed' && hasDurableRecord(controller, result.prompt_id)) {
+            if (result.admission === 'failed' && hasDurableRecord(controller, result.prompt_id, MAIN_AGENT_ID)) {
               // Saved but not admitted: the message stays on the timeline as
               // a "not sent" bubble whose retry reuses this id.
-              forgetUnconfirmedSubmission(sessionId, result.prompt_id);
+              forgetUnconfirmedSubmission(sessionId, result.prompt_id, MAIN_AGENT_ID);
               releaseComposition();
               setPendingSubmission((current) => current?.id === submissionId ? undefined : current);
               pendingRecoveryRef.current = undefined;
@@ -4242,7 +4255,6 @@ boundExecution,
     liveSettings.defaultAppendTiming,
     modelSwitches.switches,
     modelSwitches.refresh,
-    annotations,
     sessionId,
     t,
     updateDraft,
@@ -5129,7 +5141,7 @@ boundExecution,
         setAnnotations(edit.savedAnnotations);
       };
       const item = queuedItems.find((entry) => entry.promptId === edit.promptId);
-      const carry = selectionCarryoverPresentation(annotations, []);
+      const carry = selectionCarryoverPresentation(draftSelectionsRef.current, []);
       const prepared = reconcileEditedThreadRefs(edit.original, { text, presentation: argumentPresentation });
       const presentation: import('@kiki/transcript').TextPresentation = {
         spans: [
@@ -5154,7 +5166,7 @@ boundExecution,
         .then(exit)
         .catch(() => undefined);
     },
-    [queueEdit, queuedItems, annotations, actions, updateDraft, handleQueueEditLeftQueue],
+    [queueEdit, queuedItems, actions, updateDraft, handleQueueEditLeftQueue],
   );
   const handleQueueEditCancel = useCallback(() => {
     const edit = queueEditRef.current;
@@ -6099,7 +6111,7 @@ boundExecution,
           onClose={handleCloseBtw}
         />
       ) : null}
-      <SubmissionRecovery sessionId={sessionId} state={state} />
+      <SubmissionRecovery sessionId={sessionId} agentId={MAIN_AGENT_ID} draftKey={sessionId} state={state} />
       <ResyncStatusBanner
         resyncing={state.resyncing} resyncFailed={state.resyncFailed}
         error={state.resyncError}

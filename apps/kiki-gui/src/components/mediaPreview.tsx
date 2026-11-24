@@ -22,6 +22,7 @@ import { createPortal } from 'react-dom';
 
 import { useI18n } from '../i18n';
 import {
+  agentDraftKey,
   appendAttachmentToDraft,
   fileToImageAttachment,
   MAX_ATTACHMENTS,
@@ -174,8 +175,8 @@ export function MediaPreviewProvider({
       : (locationContext?.location.pathname ?? (typeof window !== 'undefined' ? window.location.pathname : undefined)),
   );
   const [lightboxAnnotations, setLightboxAnnotations] = useState<Record<string, AnnotationRecord>>({});
-  const [image, setImage] = useState<{ src: string; name?: string; sourcePath?: string; client: unknown; sessionId?: string; agentId: string } | null>(null);
-  const [gallery, setGallery] = useState<{ images: readonly GalleryImage[]; selected: number; client: unknown; sessionId?: string; scopeAgentId: string; seededId?: string; seededSrc?: string } | null>(null);
+  const [image, setImage] = useState<{ src: string; name?: string; sourcePath?: string; client: unknown; sessionId?: string; agentId: string; targetAgentId?: string } | null>(null);
+  const [gallery, setGallery] = useState<{ images: readonly GalleryImage[]; selected: number; client: unknown; sessionId?: string; scopeAgentId: string; targetAgentId?: string; seededId?: string; seededSrc?: string } | null>(null);
   const registeredImages = useRef<{ client: unknown; sessionId?: string; agentId: string; images: Map<string, GalleryImage> }>({ client: clientIdentity, sessionId, agentId: snapshotAgentId, images: new Map() });
   if (registeredImages.current.client !== clientIdentity || registeredImages.current.sessionId !== sessionId || registeredImages.current.agentId !== snapshotAgentId) {
     registeredImages.current = { client: clientIdentity, sessionId, agentId: snapshotAgentId, images: new Map() };
@@ -197,42 +198,50 @@ export function MediaPreviewProvider({
     if (!entries.some((entry) => entry.id === id)) entries.push({ id, agentId, order: [Number.MAX_SAFE_INTEGER], item: canonicalGalleryItem(item, agentId) });
     return orderedGalleryImages(entries, agentId);
   }, [clientIdentity, sessionId, snapshotAgentId, sessionViewState]);
-  const openGalleryImage = useCallback((item: MediaRef, agentId = snapshotAgentId, initialSrc?: string, occurrenceId?: string) => {
-    const id = galleryImageId(item, agentId);
+  const openGalleryImage = useCallback((item: MediaRef, agentId?: string, initialSrc?: string, occurrenceId?: string) => {
+    const effectiveAgentId = agentId ?? snapshotAgentId;
+    const id = galleryImageId(item, effectiveAgentId);
     if (id === undefined) return;
-    const images = imagesFor(item, agentId);
+    const images = imagesFor(item, effectiveAgentId);
     const selected = occurrenceId === undefined ? -1 : images.findIndex((entry) => entry.occurrenceId === occurrenceId);
     const index = selected < 0 ? images.findIndex((entry) => entry.id === id) : selected;
     if (index < 0) return;
     setImage(null);
-    setGallery({ images, selected: index, client: clientIdentity, sessionId, scopeAgentId: snapshotAgentId, seededId: initialSrc === undefined ? undefined : id, seededSrc: initialSrc });
+    setGallery({ images, selected: index, client: clientIdentity, sessionId, scopeAgentId: snapshotAgentId, targetAgentId: agentId, seededId: initialSrc === undefined ? undefined : id, seededSrc: initialSrc });
   }, [clientIdentity, imagesFor, sessionId, snapshotAgentId]);
   useEffect(() => { setImage(null); setGallery(null); setLightboxAnnotations({}); }, [clientIdentity, sessionId, snapshotAgentId]);
 
-  const onAttachAnnotatedImage = useMemo(() => {
-    if (activeDraftKey === undefined) return undefined;
-    return async (blob: Blob, filename: string): Promise<boolean> => {
-      const file = new File([blob], filename, { type: blob.type || 'image/png' });
-      const attachment = await fileToImageAttachment(file);
-      const result = appendAttachmentToDraft(activeDraftKey, attachment);
-      if (!result.added) {
-        revokeAttachmentPreviewUrl(attachment);
+  const attachAnnotatedImageFor = useCallback(
+    (targetAgentId?: string) => {
+      const targetDraftKey =
+        sessionId !== undefined && sessionId !== '' && targetAgentId !== undefined && targetAgentId !== ''
+          ? agentDraftKey(connection?.scopeId, sessionId, targetAgentId)
+          : activeDraftKey;
+      if (targetDraftKey === undefined) return undefined;
+      return async (blob: Blob, filename: string): Promise<boolean> => {
+        const file = new File([blob], filename, { type: blob.type || 'image/png' });
+        const attachment = await fileToImageAttachment(file);
+        const result = appendAttachmentToDraft(targetDraftKey, attachment);
+        if (!result.added) {
+          revokeAttachmentPreviewUrl(attachment);
+          pushToast({
+            tone: 'error',
+            text:
+              result.reason === 'total_too_large'
+                ? t('attach.totalTooLarge', { max: formatBytes(MAX_TOTAL_IMAGE_BYTES) })
+                : t('attach.tooMany', { max: MAX_ATTACHMENTS }),
+          });
+          return false;
+        }
         pushToast({
-          tone: 'error',
-          text:
-            result.reason === 'total_too_large'
-              ? t('attach.totalTooLarge', { max: formatBytes(MAX_TOTAL_IMAGE_BYTES) })
-              : t('attach.tooMany', { max: MAX_ATTACHMENTS }),
+          tone: 'success',
+          text: locale === 'zh' ? '已将标注图片加入对话' : 'Annotated image added to chat',
         });
-        return false;
-      }
-      pushToast({
-        tone: 'success',
-        text: locale === 'zh' ? '已将标注图片加入对话' : 'Annotated image added to chat',
-      });
-      return true;
-    };
-  }, [activeDraftKey, locale, t]);
+        return true;
+      };
+    },
+    [activeDraftKey, connection?.scopeId, locale, sessionId, t],
+  );
   const previewKey = sessionId === undefined ? 'preview:unsessioned' : previewSnapshotKey(sessionId, snapshotAgentId);
   const visitId = useNavVisitId();
   const initialSnapshot = useMemo(
@@ -531,21 +540,25 @@ export function MediaPreviewProvider({
     () => ({
       cwd,
       sessionId,
-      openImage: (src, name) => { setGallery(null); setImage({ src, name, client: clientIdentity, sessionId, agentId: snapshotAgentId }); },
+      openImage: (src, name, targetAgentId) => {
+        setGallery(null);
+        setImage({ src, name, client: clientIdentity, sessionId, agentId: snapshotAgentId, targetAgentId });
+      },
       openGalleryImage,
       registerGalleryImage,
       openResource,
       openFile,
-      openAttachment: (item, galleryAgentId = snapshotAgentId) => {
+      openAttachment: (item, galleryAgentId) => {
+        const effectiveAgentId = galleryAgentId ?? snapshotAgentId;
         const isImage = item.kind === 'image' || item.mime?.startsWith('image/') === true;
-        const id = galleryImageId(item, galleryAgentId);
+        const id = galleryImageId(item, effectiveAgentId);
         if (isImage && id !== undefined) {
           openGalleryImage(item, galleryAgentId);
           return;
         }
         if (isImage && item.url !== undefined) {
           setGallery(null);
-          setImage({ src: item.url, name: item.name, client: clientIdentity, sessionId, agentId: snapshotAgentId });
+          setImage({ src: item.url, name: item.name, client: clientIdentity, sessionId, agentId: snapshotAgentId, targetAgentId: galleryAgentId });
           return;
         }
         openAttachmentInWorkspace(item);
@@ -685,7 +698,7 @@ export function MediaPreviewProvider({
             count={gallery.images.length}
             savedAnnotations={lightboxAnnotations}
             onAnnotationsChange={setLightboxAnnotations}
-            onAttachAnnotatedImage={onAttachAnnotatedImage}
+            onAttachAnnotatedImage={attachAnnotatedImageFor(gallery.targetAgentId)}
             onSelect={(selected) => { setGallery((current) => current === null ? null : { ...current, selected }); }}
             onClose={() => { setGallery(null); }}
           />
@@ -718,7 +731,7 @@ export function MediaPreviewProvider({
                 localKikiComputer={localKikiComputer}
                 savedAnnotations={lightboxAnnotations}
                 onAnnotationsChange={setLightboxAnnotations}
-                onAttachAnnotatedImage={onAttachAnnotatedImage}
+                onAttachAnnotatedImage={attachAnnotatedImageFor(image.targetAgentId)}
                 onClose={() => { setImage(null); }}
               />
             </Suspense>

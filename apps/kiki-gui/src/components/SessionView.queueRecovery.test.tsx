@@ -435,6 +435,67 @@ it('moves an unconfirmed send into the composer in one click, or drops it once t
   expect(container.querySelector('[data-submission-recovery]')).toBeNull();
 });
 
+it('isolates main SubmissionRecovery from subagent unconfirmed sends and restores subagent items into the child draftKey', async () => {
+  const childDraftKey = JSON.stringify(['local', 'session-example', 'sub-1']);
+  preserveSubmission({
+    sessionId: 'session-example',
+    agentId: 'sub-1',
+    promptId: 'child-unconfirmed',
+    createdAt: '2026-01-01T00:00:00Z',
+    content: [{ type: 'text', text: 'subagent only payload' }],
+  });
+  root = createRoot(container);
+  const state = createViewState('session-example');
+
+  // Main dock must NOT display or restore the subagent's unconfirmed submission.
+  await act(async () => root!.render(
+    <I18nProvider><SubmissionRecovery sessionId="session-example" agentId="main" draftKey="session-example" state={state} /></I18nProvider>,
+  ));
+  expect(container.querySelector('[data-submission-recovery]')).toBeNull();
+  expect(readUnconfirmedSubmissions('session-example', 'sub-1')).toHaveLength(1);
+
+  // Child dock displays the subagent's item and restores it strictly into the child's draftKey.
+  await act(async () => root!.render(
+    <I18nProvider><SubmissionRecovery sessionId="session-example" agentId="sub-1" draftKey={childDraftKey} state={state} /></I18nProvider>,
+  ));
+  const row = container.querySelector('[data-submission-recovery-item]')!;
+  expect(row).not.toBeNull();
+  const restoreBtn = [...row.querySelectorAll('button')].find(button => button.textContent === 'Put back in composer')!;
+  await act(async () => restoreBtn.click());
+  expect(readDraft('session-example')).toBe('');
+  expect(readDraft(childDraftKey)).toBe('subagent only payload');
+  expect(readUnconfirmedSubmissions('session-example', 'sub-1')).toEqual([]);
+
+  // A new unconfirmed backup arriving while the child dock is ALREADY mounted stays hidden while in flight,
+  // then appears immediately once steerStatus flips to unconfirmed without requiring a remount.
+  const sendingState = {
+    ...state,
+    blocks: [{ kind: 'user' as const, id: 'user-child-live', promptId: 'child-live', text: 'live unconfirmed', createdAt: '2026-01-01T00:00:01Z', steerStatus: 'sending' as const }],
+  };
+  await act(async () => {
+    preserveSubmission({
+      sessionId: 'session-example',
+      agentId: 'sub-1',
+      promptId: 'child-live',
+      createdAt: '2026-01-01T00:00:01Z',
+      content: [{ type: 'text', text: 'live unconfirmed' }],
+    });
+    root!.render(
+      <I18nProvider><SubmissionRecovery sessionId="session-example" agentId="sub-1" draftKey={childDraftKey} state={sendingState} /></I18nProvider>,
+    );
+  });
+  expect(container.querySelector('[data-submission-recovery]')).toBeNull();
+
+  const unconfirmedState = {
+    ...state,
+    blocks: [{ kind: 'user' as const, id: 'user-child-live', promptId: 'child-live', text: 'live unconfirmed', createdAt: '2026-01-01T00:00:01Z', steerStatus: 'unconfirmed' as const }],
+  };
+  await act(async () => root!.render(
+    <I18nProvider><SubmissionRecovery sessionId="session-example" agentId="sub-1" draftKey={childDraftKey} state={unconfirmedState} /></I18nProvider>,
+  ));
+  expect(container.querySelector('[data-submission-recovery-item]')?.textContent).toContain('live unconfirmed');
+});
+
 
 it('hides idle partial prompt records from the composer footer and ordinary 1-item queue, and surfaces inline header continuation during held ingress', async () => {
   fixture.queued = false;

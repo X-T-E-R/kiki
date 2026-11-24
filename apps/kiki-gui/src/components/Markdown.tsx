@@ -7,7 +7,7 @@
  * Streamdown engine. Typography lives in `.kiki-md` (`index.css` + `markdown.css`).
  */
 
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Link } from 'react-router-dom';
 import { Streamdown, defaultRemarkPlugins, defaultRehypePlugins, type Components } from 'streamdown';
 
@@ -32,7 +32,12 @@ import { KikiMarkdownPre } from './markdown/KikiCodeBlock';
 import { KikiMarkdownTable } from './markdown/KikiMarkdownTable';
 import { MarkdownFileImage } from './markdown/MarkdownFileImage';
 import { findMarkdownHeading, indexMarkdownHeadings, slugifyMarkdownHeading } from './markdown/headingNavigation';
-import { projectTextWithAnnotationMarks, rehypeAnnotationMarks } from './markdown/annotationMarks';
+import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
+import {
+  annotationMarkSignature,
+  syncDomAnnotationMarks,
+  unregisterMarkedRoot,
+} from './markdown/domAnnotationMarks';
 import { useStreamdownPlugins } from './markdown/streamdown-plugins';
 import { StaticDocument } from './markdown/staticDocument';
 import './markdown/markdown.css';
@@ -556,21 +561,73 @@ export const Markdown = memo(function Markdown({
     return () => { observer.disconnect(); cancelAnimationFrame(frame); };
   }, [documentPath, headingNavigation, mode, text]);
   const plain = isPlainProse(text) && findFileReferences(text).length === 0;
-  const plugins = useStreamdownPlugins(plain ? null : text);
+  const plugins = useStreamdownPlugins(plain ? null : text, rootRef);
   const className = preserveEdgeMargins ? 'kiki-md kiki-md--edges' : 'kiki-md';
-  // The mark plugin runs after the default sanitize/harden pair, so neither
-  // strips the injected `<mark data-annotation-ref>`; spreading the defaults
-  // back in is required because the prop REPLACES them (same rule as remark).
-  const rehypePlugins = useMemo(
-    () =>
-      annotationTargets === undefined || annotationTargets.length === 0
-        ? IMAGE_REHYPE_PLUGINS
-        : [...IMAGE_REHYPE_PLUGINS, rehypeAnnotationMarks(annotationTargets)],
-    [annotationTargets],
+  const sourceVersion = useMemo(
+    () => (sourceBlockId === undefined ? undefined : sourceTextVersion(text)),
+    [sourceBlockId, text],
   );
-  // Streamdown's memo omits components and rehypePlugins. Remount only when
-  // annotation content or the document's relative-reference scope changes.
-  const renderKey = JSON.stringify([annotationTargets ?? [], documentDirectory, documentPath]);
+  const markSignature = annotationMarkSignature(annotationTargets);
+  const annotationTargetsRef = useRef(annotationTargets);
+  annotationTargetsRef.current = annotationTargets;
+  const domMarksAppliedRef = useRef(false);
+  const remountNonceRef = useRef(0);
+  const prevContentIdentityRef = useRef<{
+    readonly text: string;
+    readonly mode: 'streaming' | 'static';
+    readonly documentDirectory: string | undefined;
+    readonly documentPath: string | undefined;
+    readonly plugins: typeof plugins;
+  } | null>(null);
+  const prevIdentity = prevContentIdentityRef.current;
+  if (
+    prevIdentity !== null &&
+    domMarksAppliedRef.current &&
+    (prevIdentity.text !== text ||
+      prevIdentity.mode !== mode ||
+      prevIdentity.documentDirectory !== documentDirectory ||
+      prevIdentity.documentPath !== documentPath ||
+      prevIdentity.plugins !== plugins)
+  ) {
+    // Remount the inner Streamdown wrapper in one container removeChild so
+    // React never reconciles text nodes previously split by DOM marks.
+    remountNonceRef.current += 1;
+    domMarksAppliedRef.current = false;
+  }
+  prevContentIdentityRef.current = { text, mode, documentDirectory, documentPath, plugins };
+  const remountNonce = remountNonceRef.current;
+
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (plain || root === null) return;
+    let observer: MutationObserver | null = null;
+    const apply = () => {
+      observer?.disconnect();
+      domMarksAppliedRef.current = syncDomAnnotationMarks(root, annotationTargetsRef.current);
+      if (observer !== null) {
+        observer.takeRecords();
+        observer.observe(root, { childList: true, subtree: true });
+      }
+    };
+    if (markSignature !== '') {
+      observer = new MutationObserver((records) => {
+        const affectsProse = records.some((record) => {
+          const target = record.target.nodeType === 1 ? record.target as Element : record.target.parentElement;
+          return target === null || target.closest('button, [data-source-ignore], .kiki-cb-tools, [data-streamdown="code-block-header"]') === null;
+        });
+        if (affectsProse) apply();
+      });
+    }
+    apply();
+    return () => {
+      observer?.disconnect();
+      unregisterMarkedRoot(root);
+    };
+  }, [markSignature, plain, remountNonce, text, mode, documentDirectory, documentPath, plugins]);
+
+  // Streamdown's memo omits components; remount only when document scope changes
+  // (or when remountNonce advances after text/plugin changes under active DOM marks).
+  const renderKey = `${remountNonce}:${documentDirectory ?? ''}:${documentPath ?? ''}`;
   const renderers = useMemo<Components>(() => {
     const next: Components = {
       ...components,
@@ -579,12 +636,11 @@ export const Markdown = memo(function Markdown({
     if (documentDirectory !== undefined) {
       next.img = (props) => <MarkdownFileImage {...props} documentDirectory={documentDirectory} />;
     }
-    if (annotationTargets?.length) next.code = ({ children, className }) => <code className={className}>{children}</code>;
     return next;
-  }, [documentDirectory, documentPath, annotationTargets]);
+  }, [documentDirectory, documentPath]);
   if (plain) {
     return (
-      <div ref={rootRef} className={className} data-source-block-id={sourceBlockId} data-source-version={sourceBlockId === undefined ? undefined : sourceTextVersion(text)}>
+      <div ref={rootRef} className={className} data-source-block-id={sourceBlockId} data-source-version={sourceVersion}>
         <p>
           {annotationTargets === undefined || annotationTargets.length === 0
             ? text
@@ -593,22 +649,20 @@ export const Markdown = memo(function Markdown({
       </div>
     );
   }
-  // Annotation offsets and ambiguity checks are document-wide; keep that
-  // path intact rather than matching a quote independently in each segment.
-  const Renderer = mode === 'static' && !annotationTargets?.length ? StaticDocument : Streamdown;
+  const Renderer = mode === 'static' ? StaticDocument : Streamdown;
   return (
-    <div ref={rootRef} className={className} data-source-block-id={sourceBlockId} data-source-version={sourceBlockId === undefined ? undefined : sourceTextVersion(text)}>
+    <div ref={rootRef} className={className} data-source-block-id={sourceBlockId} data-source-version={sourceVersion}>
       <Renderer
         key={renderKey}
-        mode={annotationTargets?.length ? 'static' : mode}
-        parseIncompleteMarkdown={mode === 'streaming' && !annotationTargets?.length}
-        parseMarkdownIntoBlocksFn={mode === 'static' || annotationTargets?.length ? staticDocumentBlock : undefined}
+        mode={mode}
+        parseIncompleteMarkdown={mode === 'streaming'}
+        parseMarkdownIntoBlocksFn={mode === 'static' ? staticDocumentBlock : undefined}
         plugins={plugins}
         // The bare remarkPlugins prop REPLACES Streamdown's defaults, so
         // spread them back in — dropping remark-gfm kills GFM tables,
         // strikethrough, task-lists, and autolinks.
         remarkPlugins={documentDirectory === undefined ? STREAM_REMARK_PLUGINS : DOCUMENT_PLUGINS}
-        rehypePlugins={rehypePlugins}
+        rehypePlugins={IMAGE_REHYPE_PLUGINS}
         components={renderers}
         // Streamdown's link safety defaults to ON and blocks any href it
         // cannot open, drawing it as a greyed "Blocked URL" chip that is not a

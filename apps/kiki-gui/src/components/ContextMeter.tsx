@@ -368,9 +368,10 @@ export function ContextMeter({
             ) : null}
           </svg>
         </span>
-        {/* On a narrow composer the calm ring alone carries "ok"; the percent
-            stays readable to screen readers and returns once it warns. */}
-        <span className={`text-[12px] tabular-nums ${warn ? 'font-medium' : '@max-[22rem]/toolbar:sr-only'}`}>{label}</span>
+        {/* On a narrow composer keep the compact 20x20 ring visible (with its
+            ok/warn/danger color and click popover) while folding the percent
+            text to screen readers so narrow toolbars stay uncrowded. */}
+        <span className={`text-[12px] tabular-nums @max-[24rem]/toolbar:sr-only ${warn ? 'font-medium' : ''}`}>{label}</span>
         {warn ? <span className="sr-only">{t('context.detailsHint')}</span> : null}
       </button>
       {compaction !== undefined ? (

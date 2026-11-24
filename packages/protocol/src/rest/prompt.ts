@@ -182,6 +182,7 @@ export const promptItemSchema = /* @__PURE__ */ z.object({
   admission_duplicate_of: z.string().optional(),
   restore_progress: z.object({ phase: z.string(), started_at: isoDateTimeSchema, elapsed_ms: z.number().int().nonnegative(), queue_position: z.number().int().positive().optional() }).optional(),
   runtime_controls: transcriptPromptRuntimeControlsSchema.optional(),
+  agent_id: z.string().min(1).optional(),
   prompt_id: z.string().min(1),
   user_message_id: z.string().min(1),
   status: promptStatusSchema,

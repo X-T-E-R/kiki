@@ -12,6 +12,8 @@ import type { ComponentProps } from 'react';
 import { cjk } from '@streamdown/cjk';
 import type { Streamdown } from 'streamdown';
 
+import { unwrapDomMarksInCodeBlocks } from './domAnnotationMarks';
+
 type PluginConfig = NonNullable<ComponentProps<typeof Streamdown>['plugins']>;
 type CodePlugin = NonNullable<PluginConfig['code']>;
 type MathPlugin = NonNullable<PluginConfig['math']>;
@@ -95,24 +97,34 @@ export function needsCodeEngine(text: string): boolean {
 
 // Code highlighting already has an async callback contract. Keep its plugin
 // identity stable so loading Shiki updates the fences, not the document parser.
-const LAZY_CODE: CodePlugin = {
-  name: 'shiki',
-  type: 'code-highlighter',
-  getThemes: () => ['github-light', 'github-dark'],
-  getSupportedLanguages: () => loaded.code?.getSupportedLanguages() ?? [],
-  supportsLanguage: (language) => loaded.code?.supportsLanguage(language) ?? true,
-  highlight(options, callback) {
-    if (loaded.code !== undefined) return loaded.code.highlight(options, callback);
-    ensure('code');
-    void codeFlight?.then((plugin) => {
-      const result = plugin?.highlight(options, callback);
-      // The maintained highlighter can return cached tokens synchronously.
-      // eslint-disable-next-line promise/no-callback-in-promise
-      if (result !== null && result !== undefined) callback?.(result);
-    });
-    return null;
-  },
-};
+function createLazyCodePlugin(rootRef?: { readonly current: HTMLElement | null }): CodePlugin {
+  return {
+    name: 'shiki',
+    type: 'code-highlighter',
+    getThemes: () => ['github-light', 'github-dark'],
+    getSupportedLanguages: () => loaded.code?.getSupportedLanguages() ?? [],
+    supportsLanguage: (language) => loaded.code?.supportsLanguage(language) ?? true,
+    highlight(options, callback) {
+      const safeCallback = callback === undefined
+        ? undefined
+        : (result: Parameters<NonNullable<typeof callback>>[0]) => {
+            unwrapDomMarksInCodeBlocks(options.code, rootRef !== undefined ? rootRef.current : undefined);
+            callback(result);
+          };
+      if (loaded.code !== undefined) return loaded.code.highlight(options, safeCallback);
+      ensure('code');
+      void codeFlight?.then((plugin) => {
+        const result = plugin?.highlight(options, safeCallback);
+        // The maintained highlighter can return cached tokens synchronously.
+        // eslint-disable-next-line promise/no-callback-in-promise
+        if (result !== null && result !== undefined) safeCallback?.(result);
+      });
+      return null;
+    },
+  };
+}
+
+const LAZY_CODE: CodePlugin = createLazyCodePlugin();
 const CJK_PLUGINS: PluginConfig = { cjk };
 const CODE_PLUGINS: PluginConfig = { cjk, code: LAZY_CODE };
 
@@ -122,7 +134,10 @@ export function useMermaidEngine(): MermaidPlugin | null {
   return loaded.mermaid ?? null;
 }
 
-export function useStreamdownPlugins(text: string | null | undefined): PluginConfig {
+export function useStreamdownPlugins(
+  text: string | null | undefined,
+  rootRef?: { readonly current: HTMLElement | null },
+): PluginConfig {
   const needs = useMemo(() => ({
     code: typeof text === 'string' && needsCodeEngine(text),
     math: typeof text === 'string' && (
@@ -132,17 +147,25 @@ export function useStreamdownPlugins(text: string | null | undefined): PluginCon
   }), [text]);
   const { code, math } = needs;
   const currentVersion = useSyncExternalStore(subscribe, getVersion, getVersion);
+  const scopedCodePlugin = useMemo(
+    () => (rootRef === undefined ? LAZY_CODE : createLazyCodePlugin(rootRef)),
+    [rootRef],
+  );
+  const scopedCodePlugins = useMemo<PluginConfig>(
+    () => (rootRef === undefined ? CODE_PLUGINS : { cjk, code: scopedCodePlugin }),
+    [rootRef, scopedCodePlugin],
+  );
 
   useEffect(() => {
     if (math) ensure('math');
   }, [math]);
 
   return useMemo(() => {
-    if (!math) return code ? CODE_PLUGINS : CJK_PLUGINS;
+    if (!math) return code ? scopedCodePlugins : CJK_PLUGINS;
     const plugins: PluginConfig = { cjk };
-    if (code) plugins.code = LAZY_CODE;
+    if (code) plugins.code = scopedCodePlugin;
     if (math && loaded.math !== undefined) plugins.math = loaded.math;
     return plugins;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code, math, currentVersion]);
+  }, [code, math, currentVersion, scopedCodePlugin, scopedCodePlugins]);
 }
