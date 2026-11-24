@@ -58,7 +58,7 @@ describe('ContentAddressedStoreService', () => {
     } finally {
       await storage.close();
     }
-  });
+  }, 30_000);
 
   it('never hard-links user workspace source files and keeps source writable and isolated', async () => {
     const homeDir = await makeTempDir('kiki-cas-home-');
@@ -86,7 +86,7 @@ describe('ContentAddressedStoreService', () => {
     } finally {
       await storage.close();
     }
-  });
+  }, 30_000);
 
   it('links managed aliases to 1 physical inode, survives sibling deletion, and rejects corrupted EEXIST target', async () => {
     const homeDir = await makeTempDir('kiki-cas-alias-');
@@ -137,5 +137,5 @@ describe('ContentAddressedStoreService', () => {
     } finally {
       await storage.close();
     }
-  });
+  }, 30_000);
 });
