@@ -414,6 +414,109 @@ describe('RoomPage', () => {
     await flush();
     expect(rooms.removeMember).toHaveBeenCalledWith('release-031', 'sess_tests');
   });
+
+  it('renders both user and member attachments honestly with copyable path and explicit unavailable-original state, issuing no extra fetches', async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    rooms.log.mockResolvedValue({
+      entries: [
+        {
+          id: 'u1',
+          at: '2026-10-01T09:00:00.000Z',
+          kind: 'message',
+          from: 'user',
+          text: '附上设计稿',
+          mentions: [],
+          attachments: [
+            { blobId: 'blob_user_1', path: 'C:/work/kiki/docs/spec.md', title: 'spec.md', mimeType: 'text/markdown', size: 2048 },
+          ],
+        },
+        {
+          id: 'b1',
+          at: '2026-10-01T09:01:00.000Z',
+          kind: 'message',
+          from: 'xiao-you',
+          text: '已核对清单。',
+          mentions: [],
+          attachments: [
+            { blobId: 'blob_bot_1', path: 'C:/work/kiki/release-checklist.txt', size: 512 },
+          ],
+        },
+      ],
+    });
+    const container = await renderRoom();
+
+    const userAtt = container.querySelector('[data-room-message="u1"] [data-room-attachment="blob_user_1"]')!;
+    const botAtt = container.querySelector('[data-room-message="b1"] [data-room-attachment="blob_bot_1"]')!;
+    expect(userAtt).not.toBeNull();
+    expect(botAtt).not.toBeNull();
+    expect(userAtt.querySelector('[data-room-attachment-unavailable]')?.textContent).toContain('房间内暂不可预览原文件');
+    expect(botAtt.querySelector('[data-room-attachment-unavailable]')?.textContent).toContain('房间内暂不可预览原文件');
+    expect(botAtt.textContent).toContain('release-checklist.txt');
+
+    // Copy button copies exact path without any unauthorized attachment fetch.
+    await act(async () => {
+      userAtt.querySelector<HTMLButtonElement>('[data-room-attachment-copy="blob_user_1"]')!.click();
+    });
+    await flush();
+    expect(writeText).toHaveBeenCalledWith('C:/work/kiki/docs/spec.md');
+
+    // Right-click menu offers copy-path and copy-name only (no dead open button).
+    await act(async () => {
+      botAtt.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 90, clientY: 140 }));
+    });
+    const menu = document.body.querySelector('[data-room-attachment-menu]')!;
+    expect(menu).not.toBeNull();
+    expect(menu.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
+    expect(menu.querySelector('[data-menu-item="copy-name"]')).not.toBeNull();
+    await act(async () => {
+      menu.querySelector<HTMLButtonElement>('[data-menu-item="copy-name"]')!.click();
+    });
+    await flush();
+    expect(writeText).toHaveBeenLastCalledWith('release-checklist.txt');
+  });
+
+  it('opens the budget editor from the header chip and enforces 1–1000 integer validation', async () => {
+    rooms.get.mockResolvedValue(roomDoc({ budgetUsed: 4, budget: { botMessagesPerUserMessage: 12 } }));
+    rooms.update.mockResolvedValue(roomDoc({ budgetUsed: 4, budget: { botMessagesPerUserMessage: 20 } }));
+    const container = await renderRoom();
+
+    const trigger = container.querySelector<HTMLButtonElement>('[data-room-budget-trigger]')!;
+    expect(trigger).not.toBeNull();
+    await act(async () => { trigger.click(); });
+    await flush();
+
+    expect(container.querySelector('[data-room-budget-used]')?.textContent).toContain('4/12');
+    const input = container.querySelector<HTMLInputElement>('[data-room-budget-input]')!;
+    const save = container.querySelector<HTMLButtonElement>('[data-room-budget-save]')!;
+    expect(save.disabled).toBe(true);
+
+    const setBudgetVal = async (val: string) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      await act(async () => {
+        setter.call(input, val);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    };
+
+    await setBudgetVal('0');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(save.disabled).toBe(true);
+
+    await setBudgetVal('1001');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(save.disabled).toBe(true);
+
+    await setBudgetVal('20');
+    expect(input.getAttribute('aria-invalid')).toBe('false');
+    expect(save.disabled).toBe(false);
+    await act(async () => { save.click(); });
+    await flush();
+    expect(rooms.update).toHaveBeenCalledWith('release-031', { budget: { botMessagesPerUserMessage: 20 } });
+  });
 });
 
 it('retains cached member sessions on transient failures and only omits missing sessions', async () => {

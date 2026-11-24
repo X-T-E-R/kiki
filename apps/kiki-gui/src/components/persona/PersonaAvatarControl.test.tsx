@@ -97,7 +97,9 @@ describe('PersonaAvatarControl', () => {
   it('shows the initial and offers upload only, until there is a picture', async () => {
     const container = await mount();
     expect(container.querySelector('[data-persona-avatar-kind="initial"]')?.textContent).toBe('Y');
-    expect(container.querySelector('[data-persona-avatar-upload]')?.textContent).toBe('Upload avatar');
+    const upload = container.querySelector('[data-persona-avatar-upload]');
+    expect(upload?.getAttribute('aria-label')).toBe('Upload avatar');
+    expect(container.querySelector('[data-persona-avatar-trigger]')).toBeNull();
     expect(container.querySelector('[data-persona-avatar-remove]')).toBeNull();
   });
 
@@ -127,16 +129,41 @@ describe('PersonaAvatarControl', () => {
     expect(toasts.at(-1)).toEqual({ tone: 'success', text: 'Avatar updated' });
   });
 
-  it('removes the picture only after confirming', async () => {
+  it('opens a named action menu for an existing picture and removes only after confirming', async () => {
     const container = await mount('data:image/png;base64,AAAA');
-    expect(container.querySelector('[data-persona-avatar-upload]')?.textContent).toBe('Change avatar');
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-avatar-remove]')!.click(); });
+    const trigger = container.querySelector<HTMLButtonElement>('[data-persona-avatar-trigger]')!;
+    expect(trigger).not.toBeNull();
+    expect(trigger.getAttribute('aria-haspopup')).toBe('menu');
+    expect(trigger.getAttribute('aria-label')).toBe('Avatar actions for Yuzu');
+    expect(document.querySelector('[data-persona-avatar-menu]')).toBeNull();
+
+    await act(async () => { trigger.click(); });
+    const menu = document.body.querySelector<HTMLElement>('[data-persona-avatar-menu]')!;
+    expect(menu).not.toBeNull();
+    expect(menu.querySelector('[data-persona-avatar-upload]')?.textContent).toBe('Change avatar');
+    const removeItem = menu.querySelector<HTMLButtonElement>('[data-persona-avatar-remove]')!;
+    expect(removeItem.textContent).toBe('Remove avatar');
+
+    await act(async () => { removeItem.click(); });
+    expect(document.body.querySelector('[data-persona-avatar-menu]')).toBeNull();
     expect(client.deletePersonaAvatar).not.toHaveBeenCalled();
     const confirm = [...document.querySelectorAll<HTMLButtonElement>('button')].filter((button) => button.textContent === 'Remove avatar').at(-1)!;
     await act(async () => { confirm.click(); });
     await flush();
     expect(client.deletePersonaAvatar).toHaveBeenCalledWith('xiao-you');
     expect(toasts.at(-1)).toEqual({ tone: 'success', text: 'Avatar removed' });
+  });
+
+  it('closes the avatar menu on Escape and returns focus to the avatar trigger', async () => {
+    const container = await mount('data:image/png;base64,AAAA');
+    const trigger = container.querySelector<HTMLButtonElement>('[data-persona-avatar-trigger]')!;
+    await act(async () => { trigger.click(); });
+    expect(document.body.querySelector('[data-persona-avatar-menu]')).not.toBeNull();
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(document.body.querySelector('[data-persona-avatar-menu]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 
   it('stages a cropped avatar locally during new-persona creation without uploading yet', async () => {

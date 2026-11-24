@@ -85,12 +85,13 @@ const walkers = {
     // Archived rows only on request.
     await page.goto(url('/personas'), { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('[data-persona-row="xiao-you"]');
-    await page.getByText('显示已归档').click();
+    await page.locator('[data-persona-show-archived]').click();
     await page.waitForSelector('[data-persona-row="standup-bot"]');
     await page.locator('[data-persona-row="dou-dou"]').click();
     await page.waitForSelector('[data-persona-editor="dou-dou"]');
     await shot(page, `personas-initial-${tag}`);
     // New persona draft.
+    await page.locator('[data-persona-new-menu-trigger]').click();
     await page.locator('[data-persona-new]').click();
     await page.waitForSelector('[data-persona-editor="new"]');
     await page.locator('[data-persona-field="name"]').fill('Orin Hale');
@@ -98,7 +99,7 @@ const walkers = {
   },
   async avatar(page, tag) {
     // Crop dialog: open a landscape picture, frame it square, then circle
-    // zoomed in; save; the editor wears it round; remove goes back to the initial.
+    // zoomed in; save; the editor wears it round; remove via named avatar menu goes back to the initial.
     await page.goto(url('/personas'), { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('[data-persona-row="dou-dou"]', { timeout: 30_000 });
     await page.locator('[data-persona-row="dou-dou"]').click();
@@ -115,7 +116,10 @@ const walkers = {
     await page.locator('[data-persona-avatar-save]').click();
     await page.waitForSelector('[data-persona-editor="dou-dou"] [data-persona-avatar-shape="circle"][data-persona-avatar-kind="image"]', { timeout: 10_000 });
     await shot(page, `avatar-saved-${tag}`);
-    await page.locator('[data-persona-avatar-remove]').click();
+    await page.locator('[data-persona-editor="dou-dou"] [data-persona-avatar-trigger]').click();
+    await page.waitForSelector('[data-persona-avatar-menu]');
+    await shot(page, `avatar-menu-${tag}`);
+    await page.locator('[data-persona-avatar-menu] [data-persona-avatar-remove]').click();
     await shot(page, `avatar-remove-confirm-${tag}`);
     await page.locator('[role="alertdialog"] button:has-text("移除头像"), [role="dialog"] button:has-text("移除头像")').last().click();
     await page.waitForSelector('[data-persona-editor="dou-dou"] [data-persona-avatar-kind="initial"]', { timeout: 10_000 });
@@ -123,6 +127,7 @@ const walkers = {
   async import(page, tag) {
     await page.goto(url('/personas'), { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('[data-persona-row="xiao-you"]', { timeout: 30_000 });
+    await page.locator('[data-persona-new-menu-trigger]').click();
     await page.locator('[data-persona-import]').click();
     await page.waitForSelector('[data-persona-import-dialog="pick"]');
     await shot(page, `import-pick-${tag}`);

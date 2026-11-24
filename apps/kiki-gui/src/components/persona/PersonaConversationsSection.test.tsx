@@ -173,4 +173,33 @@ describe('one persona\'s conversations', () => {
     for (let index = 0; index < 4; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(setHome).toHaveBeenCalledWith('xiao-you', 'topic_1');
   });
+
+  it('keeps identical fixed-track grid structure and honest loaded summary across daily, topic, room, and archived rows', async () => {
+    listSessions.mockResolvedValue({
+      items: [
+        session({ id: 'home_lin', title: '日常', updated_at: '2026-10-05T09:00:00Z' }),
+        session({ id: 'topic_1', title: '可设日常', updated_at: '2026-10-06T12:00:00Z' }),
+        session({ id: 'room_seat', title: '房间席位', metadata: { cwd: '/a', room_member_of: 'room_1' }, updated_at: '2026-10-04T08:00:00Z' }),
+        session({ id: 'old_arch', title: '已归档', archived: true, updated_at: '2026-10-01T08:00:00Z' }),
+      ],
+      has_more: false,
+    });
+    const container = await render();
+
+    const meta = container.querySelector('[data-persona-conversations-meta]')!;
+    expect(meta.textContent).toContain('4 段对话');
+    expect(meta.textContent).toContain('最近加载更新');
+
+    const rows = [...container.querySelectorAll('[data-persona-conversation-list] > li')];
+    expect(rows).toHaveLength(4);
+    for (const row of rows) {
+      expect(row.className).toContain('grid');
+      expect(row.querySelector('[data-persona-conversation-date]')).not.toBeNull();
+      expect(row.querySelector('[data-persona-conversation-menu]')).not.toBeNull();
+    }
+    expect(container.querySelector('[data-persona-set-daily="home_lin"]')).toBeNull();
+    expect(container.querySelector('[data-persona-set-daily="topic_1"]')).not.toBeNull();
+    expect(container.querySelector('[data-persona-set-daily="room_seat"]')).toBeNull();
+    expect(container.querySelector('[data-persona-set-daily="old_arch"]')).toBeNull();
+  });
 });

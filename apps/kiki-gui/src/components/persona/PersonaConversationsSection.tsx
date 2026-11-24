@@ -181,11 +181,23 @@ export function PersonaConversationsSection({
   });
 
   const total = allItems.length;
+  const latestLoadedUpdatedAt = useMemo(() => {
+    let latestIso: string | undefined;
+    let latestMs = -Infinity;
+    for (const item of allItems) {
+      const parsed = Date.parse(item.updated_at);
+      if (Number.isFinite(parsed) && parsed > latestMs) {
+        latestMs = parsed;
+        latestIso = item.updated_at;
+      }
+    }
+    return latestIso;
+  }, [allItems]);
 
   return (
     <div data-persona-conversations className="flex min-w-0 flex-col">
       <div className="flex flex-wrap items-center gap-2 pb-3">
-        <div className="w-48">
+        <div className="min-w-[136px] flex-1 sm:w-48 sm:flex-none">
           <SearchableSelect
             id="persona-conversations-workspace"
             value={workspaceFilter}
@@ -205,7 +217,7 @@ export function PersonaConversationsSection({
             onChange={(event) => { setSearch(event.target.value); }}
             placeholder={t('persona.searchConversations')}
             aria-label={t('persona.searchConversations')}
-            className="h-8 w-full rounded-md border border-hairline bg-paper pr-2 pl-6 text-[12.5px] text-ink placeholder:text-ink-faint focus:border-hairline-strong focus:outline-none"
+            className="h-8 w-full rounded-md border border-hairline bg-paper pr-2 pl-6 text-[12.5px] text-ink placeholder:text-ink-faint focus:border-hairline-strong focus:outline-none pointer-coarse:h-11"
           />
         </div>
         <button
@@ -214,12 +226,30 @@ export function PersonaConversationsSection({
           onClick={() => {
             void navigate(personaNewConversationUrl(persona.id, workspaceFilter === '' ? undefined : workspaceFilter));
           }}
-          className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink"
+          className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
         >
           <Icon name="plus" size={12} />
           <span>{t('persona.newTopic')}</span>
         </button>
       </div>
+      {total > 0 ? (
+        <div data-persona-conversations-meta className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-hairline pb-2 text-[12px] text-ink-faint tabular-nums">
+          <span>
+            {conversationsQuery.hasNextPage
+              ? t('persona.conversationsCountMore', { count: total })
+              : t('persona.conversationsCount', { count: total })}
+          </span>
+          {latestLoadedUpdatedAt !== undefined ? (
+            <>
+              <span aria-hidden>·</span>
+              <span className="inline-flex items-center gap-1">
+                <span>{t('persona.latestLoadedUpdate')}</span>
+                <RelativeTime at={latestLoadedUpdatedAt} className="text-ink-soft" />
+              </span>
+            </>
+          ) : null}
+        </div>
+      ) : null}
 
       {conversationsQuery.isPending && conversationsQuery.data === undefined ? (
         <p role="status" className="py-10 text-center text-[13px] text-ink-faint">{t('persona.conversationsLoading')}</p>
@@ -287,13 +317,13 @@ export function PersonaConversationsSection({
                   event.preventDefault();
                   openRowMenu(event.clientX, event.clientY);
                 }}
-                className="group flex items-center gap-2 border-b border-hairline py-2.5 last:border-b-0"
+                className="group grid grid-cols-[minmax(0,1fr)_2.75rem_5.25rem] items-center gap-2 border-b border-hairline py-2.5 last:border-b-0 sm:grid-cols-[minmax(0,1fr)_8.25rem_5.5rem]"
               >
                 <button
                   type="button"
                   data-persona-conversation-row={session.id}
                   onClick={() => { void navigate(roomId === undefined ? `/s/${encodeURIComponent(session.id)}` : `/rooms/${encodeURIComponent(roomId)}`); }}
-                  className="flex min-w-0 flex-1 items-start gap-2.5 text-left"
+                  className="flex min-w-0 items-start gap-2.5 rounded-md py-0.5 text-left focus-visible:outline-2 focus-visible:outline-selected-ink"
                 >
                   <span className="flex h-[19px] w-[7px] shrink-0 items-center">
                     <LifeMark
@@ -322,43 +352,50 @@ export function PersonaConversationsSection({
                       {session.archived ? <span className="shrink-0">{t('sidebar.archived')}</span> : null}
                     </span>
                   </span>
-                  <RelativeTime at={session.updated_at} className="shrink-0 text-[12px] leading-4 text-ink-faint tabular-nums" />
                 </button>
-                {canSetDaily ? (
+                <div className="flex items-center justify-end gap-1">
+                  {canSetDaily ? (
+                    <button
+                      type="button"
+                      data-persona-set-daily={session.id}
+                      aria-label={t('persona.setAsDaily')}
+                      title={t('persona.setAsDaily')}
+                      onClick={() => { changeDaily.mutate(session.id); }}
+                      disabled={changeDaily.isPending}
+                      className="max-sm:hidden shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-[12px] text-ink-soft opacity-100 transition-opacity duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11 [@media(hover:hover)_and_(pointer:fine)]:opacity-0 [@media(hover:hover)_and_(pointer:fine)]:group-hover:opacity-100 [@media(hover:hover)_and_(pointer:fine)]:group-focus-within:opacity-100"
+                    >
+                      {t('persona.setDailyShort')}
+                    </button>
+                  ) : null}
                   <button
                     type="button"
-                    data-persona-set-daily={session.id}
-                    onClick={() => { changeDaily.mutate(session.id); }}
-                    disabled={changeDaily.isPending}
-                    className="shrink-0 rounded-md px-2 py-1 text-[12px] text-ink-faint opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink [@media(hover:none)]:opacity-100"
+                    data-persona-conversation-menu={session.id}
+                    aria-haspopup="menu"
+                    aria-expanded={rowMenuOpen}
+                    aria-label={t('sidebar.sessionActionsFor', { title })}
+                    title={t('sidebar.sessionActionsFor', { title })}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (rowMenuOpen) {
+                        sessionMenu.closeSessionMenu();
+                        return;
+                      }
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      openRowMenu(rect.right + 4, rect.top);
+                    }}
+                    className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink sm:h-8 sm:w-8 pointer-coarse:h-11 pointer-coarse:w-11 ${
+                      rowMenuOpen ? 'bg-ink/[0.06] text-ink' : 'text-ink-faint'
+                    }`}
                   >
-                    {t('persona.setAsDaily')}
+                    <Icon name="more" size={14} />
                   </button>
-                ) : null}
-                <button
-                  type="button"
-                  data-persona-conversation-menu={session.id}
-                  aria-haspopup="menu"
-                  aria-expanded={rowMenuOpen}
-                  aria-label={t('sidebar.sessionActionsFor', { title })}
-                  title={t('sidebar.sessionActionsFor', { title })}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    if (rowMenuOpen) {
-                      sessionMenu.closeSessionMenu();
-                      return;
-                    }
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    openRowMenu(rect.right + 4, rect.top);
-                  }}
-                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-opacity duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink ${
-                    rowMenuOpen
-                      ? 'opacity-100'
-                      : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100'
-                  }`}
+                </div>
+                <span
+                  data-persona-conversation-date={session.id}
+                  className="justify-self-end whitespace-nowrap text-right text-[12px] leading-4 text-ink-faint tabular-nums"
                 >
-                  <Icon name="more" size={14} />
-                </button>
+                  <RelativeTime at={session.updated_at} />
+                </span>
               </li>
             );
           })}

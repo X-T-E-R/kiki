@@ -25,7 +25,13 @@ import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 const MIN_MEMBERS = 2;
 const MAX_MEMBERS = 6;
 
-export function CreateRoomDialog({ onClose }: { readonly onClose: () => void }) {
+export function CreateRoomDialog({
+  onClose,
+  initialPersonaId,
+}: {
+  readonly onClose: () => void;
+  readonly initialPersonaId?: string;
+}) {
   const { t } = useI18n();
   const { client } = useConnection();
   const api = useBotRoomApi();
@@ -39,20 +45,28 @@ export function CreateRoomDialog({ onClose }: { readonly onClose: () => void }) 
     () => sortPersonas((personasQuery.data ?? []).filter((item) => !item.archived && !item.hidden)),
     [personasQuery.data],
   );
+  const eligiblePersonaIds = useMemo(() => new Set(personas.map((item) => item.id)), [personas]);
   const workspaces = useMemo(() => sortWorkspacesByPinnedThenRecency(workspacesQuery.data?.items ?? []), [workspacesQuery.data]);
 
   const [name, setName] = useState('');
-  const [members, setMembers] = useState<readonly string[]>([]);
+  const [members, setMembers] = useState<readonly string[]>(() => {
+    const trimmed = initialPersonaId?.trim();
+    return trimmed !== undefined && trimmed !== '' ? [trimmed] : [];
+  });
   const [host, setHost] = useState<string | undefined>(undefined);
   const [workspace, setWorkspace] = useState<string | undefined>(undefined);
   const [touched, setTouched] = useState(false);
+  const selectedMembers = useMemo(
+    () => (personasQuery.isSuccess ? members.filter((id) => eligiblePersonaIds.has(id)) : members),
+    [eligiblePersonaIds, members, personasQuery.isSuccess],
+  );
   const workspaceRoot = workspace ?? workspaces[0]?.root;
-  const effectiveHost = host !== undefined && members.includes(host) ? host : members[0];
+  const effectiveHost = host !== undefined && selectedMembers.includes(host) ? host : selectedMembers[0];
 
   const create = useMutation({
     mutationFn: () => api.createRoom({
       name: name.trim(),
-      members: members.map((personaId) => ({ personaId })),
+      members: selectedMembers.map((personaId) => ({ personaId })),
       host: effectiveHost,
       workspace: workspaceRoot ?? '',
     }),
@@ -66,12 +80,15 @@ export function CreateRoomDialog({ onClose }: { readonly onClose: () => void }) 
   });
 
   const toggle = (persona: PersonaSummary) => {
-    setMembers((current) => current.includes(persona.id)
-      ? current.filter((id) => id !== persona.id)
-      : current.length >= MAX_MEMBERS ? current : [...current, persona.id]);
+    setMembers((current) => {
+      const valid = personasQuery.isSuccess ? current.filter((id) => eligiblePersonaIds.has(id)) : current;
+      return valid.includes(persona.id)
+        ? valid.filter((id) => id !== persona.id)
+        : valid.length >= MAX_MEMBERS ? valid : [...valid, persona.id];
+    });
   };
   const nameMissing = name.trim() === '';
-  const ready = !nameMissing && members.length >= MIN_MEMBERS && workspaceRoot !== undefined && !create.isPending;
+  const ready = !nameMissing && selectedMembers.length >= MIN_MEMBERS && workspaceRoot !== undefined && !create.isPending;
   const submit = () => {
     setTouched(true);
     if (ready) create.mutate();
@@ -105,21 +122,20 @@ export function CreateRoomDialog({ onClose }: { readonly onClose: () => void }) 
         <fieldset className="mt-4">
           <legend className="flex w-full items-baseline gap-2">
             <span className="text-[12.5px] font-medium text-ink-soft">{t('room.members')}</span>
-            <span className="text-[12px] text-ink-faint tabular-nums">{members.length}/{MAX_MEMBERS}</span>
+            <span className="text-[12px] text-ink-faint tabular-nums">{selectedMembers.length}/{MAX_MEMBERS}</span>
           </legend>
           <p className="mt-0.5 text-[12px] text-ink-faint">{t('room.membersHint')}</p>
           {personas.length === 0 && !personasQuery.isLoading ? (
             <p className="mt-2 text-[12.5px] text-ink-soft">{t('room.noPersonas')}</p>
           ) : (
-            <ul className="mt-2 max-h-56 space-y-px overflow-y-auto rounded-lg border border-hairline p-1">
+            <ul className="mt-2 max-h-56 divide-y divide-hairline overflow-y-auto border-y border-hairline">
               {personas.map((persona) => {
-                const index = members.indexOf(persona.id);
-                const checked = index >= 0;
-                const full = !checked && members.length >= MAX_MEMBERS;
+                const checked = selectedMembers.includes(persona.id);
+                const full = !checked && selectedMembers.length >= MAX_MEMBERS;
                 return (
                   <li key={persona.id}>
                     <label data-room-member-option={persona.id}
-                      className={`flex min-h-10 items-center gap-2 rounded-md px-2 ${checked ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'} ${full ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+                      className={`flex min-h-11 items-center gap-2.5 px-2 py-1.5 transition-colors ${checked ? 'bg-ink/[0.04]' : 'hover:bg-ink/[0.03]'} ${full ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
                       <input type="checkbox" className="h-4 w-4 shrink-0 accent-[var(--color-selected-ink)]"
                         checked={checked} disabled={full} onChange={() => { toggle(persona); }} />
                       <PersonaAvatar persona={personaAvatarOf(persona)} size={24} decorative />
@@ -138,7 +154,7 @@ export function CreateRoomDialog({ onClose }: { readonly onClose: () => void }) 
               })}
             </ul>
           )}
-          {touched && members.length < MIN_MEMBERS ? <p className="mt-1 text-[12px] text-danger">{t('room.memberCount')}</p> : null}
+          {touched && selectedMembers.length < MIN_MEMBERS ? <p className="mt-1 text-[12px] text-danger">{t('room.memberCount')}</p> : null}
         </fieldset>
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -149,8 +165,8 @@ export function CreateRoomDialog({ onClose }: { readonly onClose: () => void }) 
                 id="create-room-host"
                 ariaLabel={t('room.host')}
                 value={effectiveHost ?? ''}
-                disabled={members.length === 0}
-                options={members.map((id) => ({ value: id, label: personas.find((item) => item.id === id)?.name ?? id }))}
+                disabled={selectedMembers.length === 0}
+                options={selectedMembers.map((id) => ({ value: id, label: personas.find((item) => item.id === id)?.name ?? id }))}
                 onChange={setHost}
                 buttonClassName={FORM_SELECT_TRIGGER}
               />

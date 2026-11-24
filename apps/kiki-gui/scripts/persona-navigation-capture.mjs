@@ -142,13 +142,18 @@ async function capture() {
     console.log(`  shot ${name}.png`);
   };
 
-  const openSwitcherFromSidebar = async (page, personaName) => {
-    const row = page.locator(`[data-sidebar-persona-row]`, { hasText: personaName }).first();
+  const expandInlineFromSidebar = async (page, personaName) => {
+    const row = page.locator('[data-sidebar-persona-row]', { hasText: personaName }).first();
     await row.waitFor({ timeout: 20_000 });
-    await row.locator('[data-persona-switcher-toggle]').click();
-    await page.waitForSelector('[data-persona-conversation-switcher] [role="menuitem"]', { timeout: 10_000 });
+    const toggle = row.locator('[data-persona-switcher-toggle]');
+    await toggle.waitFor({ timeout: 10_000 });
+    if (await toggle.getAttribute('aria-expanded') !== 'true') {
+      await toggle.click();
+    }
+    const list = row.locator('[data-persona-subthreads]');
+    await list.waitFor({ timeout: 10_000 });
     await settle(page);
-    return page.locator('[data-persona-conversation-switcher]');
+    return { row, list };
   };
 
   /** The switcher a session header opens, plus the boxes the placement is
@@ -242,37 +247,33 @@ async function capture() {
   };
 
   try {
-    // 1. The 角色 group and its switcher (light, 1440).
+    // 1. The 角色 group and its inline children (light, 1440).
     {
       const page = await newPage({ width: 1440, height: 900 });
       await page.goto(link('/new'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-sidebar-personas]', { timeout: 25_000 });
       const rows = page.locator('[data-sidebar-persona-row]');
       check(await rows.count() === 3, 'the sidebar lists all three personas', `count=${await rows.count()}`);
-      const switcher = await openSwitcherFromSidebar(page, '小柚');
-      const items = switcher.locator('[role="menuitem"]');
-      check(await items.count() === 4, 'the switcher lists the daily conversation and three others', `count=${await items.count()}`);
-      check((await items.first().textContent() ?? '').includes('日常对话'), 'the daily conversation is pinned first');
-      check((await switcher.locator('[data-conversation-kind="room"]').textContent() ?? '').includes('发布房间'),
+      const { row, list } = await expandInlineFromSidebar(page, '小柚');
+      const moreBtn = list.locator('[data-persona-subthreads-more]');
+      if (await moreBtn.count() > 0) {
+        await moreBtn.click();
+        await settle(page);
+      }
+      const items = list.locator('[data-persona-subthread]');
+      check(await items.count() === 4, 'the inline list shows the daily conversation and three others', `count=${await items.count()}`);
+      check(await items.first().getAttribute('data-persona-subthread-kind') === 'daily', 'the daily conversation is pinned first');
+      check((await list.locator('[data-persona-subthread-kind="room"]').textContent() ?? '').includes('发布房间'),
         'a room seat is named by its room');
-      check(await switcher.locator('[data-conversation-item="session_daily_xiao_you"]').getAttribute('aria-current') === null,
+      check(await list.locator('[data-persona-subthread="session_daily_xiao_you"]').getAttribute('aria-current') === null,
         'no conversation claims to be current while /new is open');
-      // The sidebar trigger anchors to its own row: the panel's left edge is
-      // the row's, it hangs below it, and it stays inside the window.
-      const row = page.locator('[data-sidebar-persona-row]', { hasText: '小柚' }).first();
       const rowBox = await row.boundingBox();
-      const panelBox = await switcher.boundingBox();
+      const listBox = await list.boundingBox();
       const size = page.viewportSize();
-      check(near(panelBox.x, Math.max(8, rowBox.x)),
-        'the sidebar panel opens from the row\'s own left edge',
-        `panel=${round(panelBox.x)} row=${round(rowBox.x)}`);
-      check(panelBox.y >= rowBox.y + rowBox.height - 1,
-        'the sidebar panel hangs below the row instead of covering it',
-        `panelTop=${round(panelBox.y)} rowBottom=${round(rowBox.y + rowBox.height)}`);
-      check(panelBox.x >= 8 - 0.5 && panelBox.x + panelBox.width <= size.width - 8 + 0.5,
-        'the sidebar panel stays inside the window',
-        `left=${round(panelBox.x)} right=${round(panelBox.x + panelBox.width)} viewport=${size.width}`);
-      await shot(page, 'nav-sidebar-switcher-1440');
+      check(listBox.x >= rowBox.x && listBox.x + listBox.width <= size.width - 8 + 0.5,
+        'the inline subthread list stays indented inside the sidebar',
+        `list=${round(listBox.x)}..${round(listBox.x + listBox.width)} row=${round(rowBox.x)}`);
+      await shot(page, 'nav-sidebar-inline-1440');
       await page.close?.();
     }
 
@@ -467,14 +468,14 @@ async function capture() {
       await page.close?.();
     }
 
-    // 6. The same switcher in the dark palette (1440).
+    // 6. The same inline expansion in the dark palette (1440).
     {
       const page = await newPage({ width: 1440, height: 900 }, 'dark');
       await page.goto(link('/new'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-sidebar-personas]', { timeout: 25_000 });
       check(await setTheme(page, 'dark'), 'the dark palette really resolved');
-      await openSwitcherFromSidebar(page, '小柚');
-      await shot(page, 'nav-sidebar-switcher-1440-dark');
+      await expandInlineFromSidebar(page, '小柚');
+      await shot(page, 'nav-sidebar-inline-1440-dark');
       await page.close?.();
     }
 

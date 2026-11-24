@@ -7,7 +7,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PersonaSessionHeadsQuery, Session } from '@kiki/protocol';
-import { resetLayoutPreferencesForTests, writeLayoutPreferences } from '@kiki/session-core/settings';
+import {
+  conversationSeenSnapshot,
+  encodeConversationRef,
+  resetConversationSeen,
+  resetLayoutPreferencesForTests,
+  resetSessionSeen,
+  sessionSeenSnapshot,
+  writeLayoutPreferences,
+} from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../../i18n';
 import { buildPersonaDirectory, type PersonaDirectoryEntry } from './usePersonaDirectory';
@@ -33,16 +41,26 @@ const updatePersona = vi.hoisted(() => vi.fn(async (_id: string, patch: { pinned
   pinned: patch.pinned,
   hidden: patch.hidden,
 })));
+const updateSessionProfile = vi.hoisted(() => vi.fn(async (id: string, body: Record<string, unknown>) => ({ id, ...body })));
+const archiveSession = vi.hoisted(() => vi.fn(async () => undefined));
+const mockedConnection = vi.hoisted(() => ({
+  client: { listSessions, listPersonaSessionHeads, updatePersona, updateSessionProfile, archiveSession },
+  scopeId: 'local',
+  spaceKey: 'local:test',
+}));
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ client: { listSessions, listPersonaSessionHeads, updatePersona } }),
-  useOptionalConnection: () => undefined,
+  useConnection: () => mockedConnection,
+  useOptionalConnection: () => mockedConnection,
 }));
 vi.mock('../dirtyGuard', () => ({ useGuardedNavigate: () => navigate }));
 vi.mock('./usePersonaDirectory', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./usePersonaDirectory')>();
   return { ...actual, usePersonaDirectory: () => ({ directory: directory.entries, isLoading: false, isError: false }) };
 });
-vi.mock('../room/CreateRoomDialog', () => ({ CreateRoomDialog: () => createElement('div', { 'data-stub-room-dialog': true }) }));
+vi.mock('../room/CreateRoomDialog', () => ({
+  CreateRoomDialog: ({ initialPersonaId }: { readonly initialPersonaId?: string }) =>
+    createElement('div', { 'data-stub-room-dialog': true, 'data-initial-persona-id': initialPersonaId ?? '' }),
+}));
 
 const mounted: Root[] = [];
 const environment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
@@ -51,11 +69,15 @@ afterAll(() => { environment.IS_REACT_ACT_ENVIRONMENT = false; });
 beforeEach(() => {
   localStorage.clear();
   resetLayoutPreferencesForTests();
+  resetSessionSeen();
+  resetConversationSeen();
   navigate.mockReset();
   directory.entries = [];
   listSessions.mockReset().mockResolvedValue({ items: [] as unknown[], has_more: false });
   listPersonaSessionHeads.mockReset().mockResolvedValue({});
   updatePersona.mockClear();
+  updateSessionProfile.mockClear();
+  archiveSession.mockClear();
 });
 afterEach(async () => {
   for (const root of mounted.splice(0)) await act(async () => { root.unmount(); });
@@ -446,7 +468,8 @@ describe('reliable persona conversation discovery and unified inline expansion',
     expect(lifeMarks).toEqual(['done', 'done']);
     expect(includedContainer.querySelector('[data-persona-subthreads-more="xiao-you"]')?.textContent).toContain('+4');
 
-    // 3. `filters.private: 'only'`: requests private_only: true and excludes public conversations.
+    // 3. `filters.private: 'only'`: requests private_only: true, excludes public conversations,
+    // and keeps the singleton filtered target one-click without [1 ▾] or a duplicate inline child.
     writeLayoutPreferences({ filters: { status: [], workspaces: [], archived: 'hide', private: 'only' } });
     listPersonaSessionHeads.mockResolvedValue({
       'xiao-you': {
@@ -461,8 +484,17 @@ describe('reliable persona conversation discovery and unified inline expansion',
       expect.any(Object),
     );
     expect(onlyPrivateContainer.querySelector('[data-persona-unread-count="1"]')).not.toBeNull();
-    expect(subthreadIds(onlyPrivateContainer)).toEqual(['topic_private_unread']);
-    expect(onlyPrivateContainer.querySelector('[data-persona-switcher-toggle="xiao-you"]')?.getAttribute('data-persona-thread-count')).toBe('1');
+    expect(onlyPrivateContainer.querySelector('[data-persona-switcher-toggle="xiao-you"]')).toBeNull();
+    expect(onlyPrivateContainer.querySelector('[data-persona-subthreads="xiao-you"]')).toBeNull();
+
+    navigate.mockClear();
+    await act(async () => { onlyPrivateContainer.querySelector<HTMLButtonElement>('[data-persona-primary="xiao-you"]')!.click(); });
+    expect(navigate).toHaveBeenCalledWith('/s/topic_private_unread');
+
+    await act(async () => { onlyPrivateContainer.querySelector<HTMLButtonElement>('[data-persona-menu-toggle="xiao-you"]')!.click(); });
+    const privateMenu = document.body.querySelector('[data-persona-row-menu]')!;
+    expect(privateMenu.querySelector('[data-menu-item="mark-read"]')).not.toBeNull();
+    expect(privateMenu.querySelector('[data-menu-item="session-actions"]')).not.toBeNull();
   });
 
   it('keeps loaded conversations visible while server queries are still in flight or reject', async () => {
@@ -610,33 +642,138 @@ describe('collapsible and count-bounded persona group', () => {
     expect(navigate).toHaveBeenCalledWith('/s/session_review');
   });
 
-  it('makes single-thread personas expandable and opens the unified session context menu on subthreads without bubbling to the persona row menu', async () => {
+  it('opens a single-thread persona directly without [1 ▾] or an indented child while keeping pin, rename, and archive reachable for the sole session', async () => {
     directory.entries = [
       persona({ id: 'xiao-you', name: '小柚', homeSessionId: 'home_only' }),
     ];
     const homeSession = hers({ id: 'home_only', title: '小柚 · 每日复盘', updated_at: '2026-11-17T09:00:00Z' });
-    const container = await render([homeSession], undefined, '/');
+    const container = await render([homeSession], 'home_only', '/');
     await flush();
 
-    // Even with a single conversation (count === 1), the count badge is an interactive toggle button.
-    const toggle = container.querySelector<HTMLButtonElement>('[data-persona-switcher-toggle="xiao-you"][data-persona-thread-count="1"]');
-    expect(toggle).not.toBeNull();
+    // Zero [1 ▾] toggle and zero duplicate indented child even while active.
+    expect(container.querySelector('[data-persona-switcher-toggle="xiao-you"]')).toBeNull();
     expect(container.querySelector('[data-persona-subthreads="xiao-you"]')).toBeNull();
+    const primary = container.querySelector<HTMLButtonElement>('[data-persona-primary="xiao-you"]')!;
+    expect(primary.getAttribute('aria-current')).toBe('page');
+    await act(async () => { primary.click(); });
+    expect(navigate).toHaveBeenCalledWith('/p/xiao-you/daily');
 
-    await act(async () => { toggle!.click(); });
-    expect(toggle!.getAttribute('aria-expanded')).toBe('true');
-    expect(subthreadIds(container, 'xiao-you')).toEqual(['home_only']);
+    // Open the persona row menu and enter Conversation actions for the sole session.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-menu-toggle="xiao-you"]')!.click(); });
+    const rowMenu = document.body.querySelector('[data-persona-row-menu]')!;
+    expect(rowMenu).not.toBeNull();
+    await act(async () => { rowMenu.querySelector<HTMLButtonElement>('[data-menu-item="session-actions"]')!.click(); });
 
-    // Right-clicking the subthread opens the unified session menu (and NOT the parent persona row menu).
-    const subthread = container.querySelector<HTMLButtonElement>('[data-persona-subthread="home_only"]')!;
+    const sessionMenu = document.body.querySelector('[data-session-menu]')!;
+    expect(sessionMenu).not.toBeNull();
+    expect(sessionMenu.querySelector('[data-menu-item="pin"]')).not.toBeNull();
+    expect(sessionMenu.querySelector('[data-menu-item="rename"]')).not.toBeNull();
+    expect(sessionMenu.querySelector('[data-menu-item="archive"]')).not.toBeNull();
+
+    // Pin targets the sole session (not persona pin).
+    await act(async () => { sessionMenu.querySelector<HTMLButtonElement>('[data-menu-item="pin"]')!.click(); });
+    await flush();
+    expect(updateSessionProfile).toHaveBeenCalledWith('home_only', expect.objectContaining({ metadata: expect.objectContaining({ 'kiki.pinned': true }) }));
+
+    // Re-open and exercise Rename on the sole session.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-menu-toggle="xiao-you"]')!.click(); });
+    await act(async () => { document.body.querySelector<HTMLButtonElement>('[data-persona-row-menu] [data-menu-item="session-actions"]')!.click(); });
+    await act(async () => { document.body.querySelector<HTMLButtonElement>('[data-session-menu] [data-menu-item="rename"]')!.click(); });
+    const renameInput = document.body.querySelector<HTMLInputElement>('[data-session-rename-input]')!;
+    expect(renameInput).not.toBeNull();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(renameInput, '每日复盘 · 重命名');
+      renameInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { document.body.querySelector<HTMLButtonElement>('[data-session-rename-save]')!.click(); });
+    await flush();
+    expect(updateSessionProfile).toHaveBeenCalledWith('home_only', { title: '每日复盘 · 重命名' });
+
+    // Re-open and exercise Archive on the sole session.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-menu-toggle="xiao-you"]')!.click(); });
+    await act(async () => { document.body.querySelector<HTMLButtonElement>('[data-persona-row-menu] [data-menu-item="session-actions"]')!.click(); });
+    await act(async () => { document.body.querySelector<HTMLButtonElement>('[data-session-menu] [data-menu-item="archive"]')!.click(); });
+    await flush();
+    expect(archiveSession).toHaveBeenCalledWith('home_only', expect.objectContaining({ include_attached: true }));
+  });
+
+  it('opens the unified session context menu on multi-thread subthreads without bubbling to the persona row menu', async () => {
+    directory.entries = [
+      persona({ id: 'xiao-you', name: '小柚', homeSessionId: 'home_only' }),
+    ];
+    const homeSession = hers({ id: 'home_only', title: '小柚 · 每日复盘', updated_at: '2026-11-17T09:00:00Z' });
+    const topicSession = hers({ id: 'topic_two', title: '小柚 · 发布核对', updated_at: '2026-11-17T10:00:00Z' });
+    const container = await render([homeSession, topicSession], undefined, '/');
+    await flush();
+
+    const toggle = container.querySelector<HTMLButtonElement>('[data-persona-switcher-toggle="xiao-you"][data-persona-thread-count="2"]')!;
+    expect(toggle).not.toBeNull();
+    await act(async () => { toggle.click(); });
+    expect(subthreadIds(container, 'xiao-you')).toEqual(['home_only', 'topic_two']);
+
+    const subthread = container.querySelector<HTMLButtonElement>('[data-persona-subthread="topic_two"]')!;
     await act(async () => {
       subthread.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 90 }));
     });
     expect(document.body.querySelector('[data-persona-row-menu]')).toBeNull();
     const sessionMenu = document.body.querySelector('[data-session-menu]');
     expect(sessionMenu).not.toBeNull();
+    expect(sessionMenu?.querySelector('[data-menu-item="set-daily"]')).not.toBeNull();
     expect(sessionMenu?.querySelector('[data-menu-item="pin"]')).not.toBeNull();
     expect(sessionMenu?.querySelector('[data-menu-item="rename"]')).not.toBeNull();
     expect(sessionMenu?.querySelector('[data-menu-item="archive"]')).not.toBeNull();
+  });
+
+  it('offers all-conversations, scoped memory, prefilled room creation, and scoped mark-read without clearing unresolved waits', async () => {
+    const unreadSession = hers({ id: 'topic_unread', title: '小柚 · 未读', last_seq: 6, updated_at: '2026-11-17T10:00:00Z' });
+    const waitingSession = hers({
+      id: 'topic_waiting',
+      title: '小柚 · 待批准',
+      last_seq: 9,
+      pending_interaction: 'approval',
+      updated_at: '2026-11-17T11:00:00Z',
+    });
+    directory.entries = [
+      persona({
+        id: 'xiao-you',
+        name: '小柚',
+        homeSessionId: 'home_lin',
+        life: 'waiting',
+        unreadCount: 1,
+        unreadSessionIds: ['topic_unread'],
+      }),
+    ];
+    const container = await render([unreadSession, waitingSession], undefined, '/', { topic_unread: 2, topic_waiting: 4 });
+    await flush();
+
+    // Header room button opens generic CreateRoomDialog with no preselection.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-room-create]')!.click(); });
+    expect(container.querySelector('[data-stub-room-dialog]')?.getAttribute('data-initial-persona-id')).toBe('');
+
+    // Persona row menu offers All conversations, Memory, Create room (prefilled), and Mark as read.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-menu-toggle="xiao-you"]')!.click(); });
+    const menu = document.body.querySelector('[data-persona-row-menu]')!;
+    expect(menu.querySelector('[data-menu-item="all-conversations"]')?.textContent).toContain('3');
+    await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="all-conversations"]')!.click(); });
+    expect(navigate).toHaveBeenCalledWith('/personas?persona=xiao-you&view=conversations');
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-menu-toggle="xiao-you"]')!.click(); });
+    await act(async () => { document.body.querySelector<HTMLButtonElement>('[data-persona-row-menu] [data-menu-item="memory"]')!.click(); });
+    expect(navigate).toHaveBeenCalledWith('/memory?persona=xiao-you');
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-menu-toggle="xiao-you"]')!.click(); });
+    await act(async () => { document.body.querySelector<HTMLButtonElement>('[data-persona-row-menu] [data-menu-item="create-room"]')!.click(); });
+    expect(container.querySelector('[data-stub-room-dialog]')?.getAttribute('data-initial-persona-id')).toBe('xiao-you');
+
+    // Mark as read only marks the known eligible unread session, never the approval-waiting session.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-menu-toggle="xiao-you"]')!.click(); });
+    await act(async () => { document.body.querySelector<HTMLButtonElement>('[data-persona-row-menu] [data-menu-item="mark-read"]')!.click(); });
+    expect(sessionSeenSnapshot()['topic_unread']).toBe(6);
+    expect(sessionSeenSnapshot()['topic_waiting']).toBeUndefined();
+    const unreadKey = encodeConversationRef({ spaceKey: 'local:test', kind: 'session', id: 'topic_unread' });
+    const waitingKey = encodeConversationRef({ spaceKey: 'local:test', kind: 'session', id: 'topic_waiting' });
+    expect(conversationSeenSnapshot()[unreadKey]?.seq).toBe(6);
+    expect(conversationSeenSnapshot()[waitingKey]).toBeUndefined();
   });
 });
