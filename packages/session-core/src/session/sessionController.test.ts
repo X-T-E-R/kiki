@@ -434,6 +434,22 @@ describe('SessionController prompt runtime projection', () => {
       ['child-restore-1', 'agent-7'],
       ['main-restore-1', undefined],
     ]);
+    // Updating a second child prompt must not misattribute main's existing
+    // `agent_id: undefined` durable ingress record to the child agent.
+    client.submitPrompt.mockResolvedValueOnce({
+      prompt_id: 'child-restore-2', user_message_id: 'child-restore-2', status: 'queued',
+      content: [{ type: 'text', text: 'second child wake' }], created_at: '2026-01-01T00:00:02.000Z', admission: 'restoring',
+    });
+    await controller.sendPromptNow({
+      agentId: 'agent-7',
+      promptId: 'child-restore-2',
+      text: 'second child wake',
+    });
+    expect(controller.getDurableIngress().map((entry) => [entry.prompt_id, entry.agent_id])).toEqual([
+      ['child-restore-1', 'agent-7'],
+      ['main-restore-1', undefined],
+      ['child-restore-2', 'agent-7'],
+    ]);
     controller.close();
   });
 

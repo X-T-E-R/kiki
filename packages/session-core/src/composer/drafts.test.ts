@@ -9,6 +9,7 @@ import { preserveSubmission, readUnconfirmedSubmissions, forgetUnconfirmedSubmis
 import { configureSpaceStorage } from '../storage/spaceStorage';
 import { addAnnotation, removeAnnotation } from './selectionQuote';
 import {
+  agentDraftKey,
   appendAttachmentToDraft,
   appendToDraft,
   beginPendingSubmissionFlight,
@@ -797,12 +798,46 @@ describe('unacknowledged submissions', () => {
     }
   });
 
+  it('isolates unconfirmed submissions by agentId so subagent sends never leak into main recovery', () => {
+    preserveSubmission({
+      sessionId: 'session-iso',
+      agentId: 'main',
+      promptId: 'shared-id',
+      content: [{ type: 'text', text: 'main prompt' }],
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    preserveSubmission({
+      sessionId: 'session-iso',
+      agentId: 'sub-1',
+      promptId: 'shared-id',
+      content: [{ type: 'text', text: 'subagent prompt' }],
+      createdAt: '2026-01-01T00:00:01.000Z',
+    });
+
+    expect(readUnconfirmedSubmissions('session-iso', 'main').map((item) => item.agentId)).toEqual(['main']);
+    expect(readUnconfirmedSubmissions('session-iso', 'sub-1').map((item) => item.agentId)).toEqual(['sub-1']);
+
+    forgetUnconfirmedSubmission('session-iso', 'shared-id', 'sub-1');
+    expect(readUnconfirmedSubmissions('session-iso', 'sub-1')).toEqual([]);
+    expect(readUnconfirmedSubmissions('session-iso', 'main').map((item) => item.promptId)).toEqual(['shared-id']);
+
+    forgetUnconfirmedSubmission('session-iso', 'shared-id', 'main');
+    expect(readUnconfirmedSubmissions('session-iso')).toEqual([]);
+  });
+
   it('resolves active draft keys for main, branch, and subagent targets and appends attachments', () => {
     expect(resolveActiveDraftKey('local', 'sess-1')).toBe('sess-1');
     expect(resolveActiveDraftKey('local', 'sess-1', 'main')).toBe('sess-1');
     expect(resolveActiveDraftKey('local', 'sess-1', 'branch-1')).toBe(JSON.stringify(['local', 'sess-1', 'branch-1']));
+    expect(resolveActiveDraftKey(undefined, 'sess-1', 'sub-1')).toBe(JSON.stringify(['', 'sess-1', 'sub-1']));
+    expect(resolveActiveDraftKey('', 'sess-1', 'sub-1')).toBe(JSON.stringify(['', 'sess-1', 'sub-1']));
+    expect(agentDraftKey(undefined, 'sess-1', 'sub-1')).toBe(JSON.stringify(['', 'sess-1', 'sub-1']));
+    expect(agentDraftKey('', 'sess-1', 'main')).toBe('sess-1');
     expect(resolveActiveDraftKey('local', 'sess-1', '/s/sess-1/agent/sub-2')).toBe(
       JSON.stringify(['local', 'sess-1', 'sub-2']),
+    );
+    expect(resolveActiveDraftKey('remote-1', 'sess-1', '/p/conn-1/s/sess-1/agent/sub-2')).toBe(
+      JSON.stringify(['remote-1', 'sess-1', 'sub-2']),
     );
     expect(resolveActiveDraftKey('local', 'sess-1', '/s/other-sess/agent/sub-2')).toBe('sess-1');
 

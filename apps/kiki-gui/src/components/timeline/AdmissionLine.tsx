@@ -264,7 +264,9 @@ export function useAdmissionScope({ ingress, agentId = DEFAULT_AGENT_ID, blocks,
   const onRetry = useCallback((promptId: string) => {
     if (controller === null) return;
     if (retryPending?.(promptId) === true) return;
-    const item = [...(controller.getDurableIngress?.() ?? []), ...records].find((entry) => entry.prompt_id === promptId);
+    const item = [...(controller.getDurableIngress?.() ?? []), ...records].find(
+      (entry) => entry.prompt_id === promptId && (entry.agent_id ?? DEFAULT_AGENT_ID) === agentId,
+    );
     if (item === undefined) return;
     const itemAgentId = item.agent_id ?? agentId;
     run(promptId, () => itemAgentId !== DEFAULT_AGENT_ID
@@ -273,7 +275,9 @@ export function useAdmissionScope({ ingress, agentId = DEFAULT_AGENT_ID, blocks,
   }, [agentId, controller, records, retryPending, run]);
   const onCancel = useCallback((promptId: string) => {
     if (controller === null) return;
-    const item = [...(controller.getDurableIngress?.() ?? []), ...records].find((entry) => entry.prompt_id === promptId);
+    const item = [...(controller.getDurableIngress?.() ?? []), ...records].find(
+      (entry) => entry.prompt_id === promptId && (entry.agent_id ?? DEFAULT_AGENT_ID) === agentId,
+    );
     const itemAgentId = item?.agent_id ?? agentId;
     run(promptId, () => itemAgentId !== DEFAULT_AGENT_ID
       ? controller.abortPrompt(promptId, itemAgentId)

@@ -4630,17 +4630,98 @@ describe('Composer send-timing menu', () => {
   };
 
   it.each([
-    { label: 'while idle', props: { busy: false } },
     { label: 'in queue-edit mode', props: { busy: true, queueEditing: true, onQueueEditConfirm: vi.fn() } },
+    { label: 'in message-edit mode', props: { busy: false, messageEditing: true } },
+    { label: 'when sendTimingDefault is omitted', props: { busy: false, sendTimingDefault: undefined } },
   ])('stays closed and hides caret $label', async ({ props }) => {
     const { container } = await renderComposer({ value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn(), ...props });
     expect(menu(container)).toBeNull();
     await hoverOpen(container);
     expect(menu(container)).toBeNull();
-    if (!props.busy) {
-      expect(sendButton(container).getAttribute('aria-haspopup')).toBeNull();
-      expect(container.querySelector('button[aria-label="Send timing"]')).toBeNull();
-    }
+    expect(sendButton(container).getAttribute('aria-haspopup')).toBeNull();
+    expect(container.querySelector('[data-send-timing-caret]')).toBeNull();
+  });
+
+  it('shows the split caret while idle with default, subagents_done, and tasks_done (omitting send-now and agent_idle)', async () => {
+    const onSend = vi.fn();
+    const onSendNow = vi.fn();
+    const { container, rerender } = await renderComposer({
+      busy: false,
+      busySendsNow: true,
+      value: 'hello',
+      sendTimingDefault: 'agent_idle',
+      onSend,
+      onSendNow,
+    });
+    const caret = container.querySelector<HTMLButtonElement>('[data-send-timing-caret]');
+    expect(caret).not.toBeNull();
+    expect(sendButton(container).getAttribute('aria-haspopup')).toBe('menu');
+
+    // Hovering the plain Send button while idle stays quiet; clicking the caret opens the menu.
+    await hoverOpen(container);
+    expect(menu(container)).toBeNull();
+
+    await click(caret!);
+    expect(menu(container)).not.toBeNull();
+    expect(container.querySelector('[data-send-timing="now"]')).toBeNull();
+    expect(container.querySelector('[data-send-timing="agent_idle"]')).toBeNull();
+    expect(rowLabels(container)).toEqual([
+      'SendSend immediately',
+      'Send after subagentsStarts once the running subagents finish',
+      'Send after tasksStarts once every running task finishes',
+    ]);
+
+    await click(menuRow(container, 'tasks_done'));
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('hello', [], { appendTiming: 'tasks_done' });
+    expect(onSendNow).not.toHaveBeenCalled();
+    expect(menu(container)).toBeNull();
+
+    await rerender({
+      busy: false,
+      busySendsNow: true,
+      value: 'again',
+      sendTimingDefault: 'agent_idle',
+      onSend,
+      onSendNow,
+    });
+    const nextCaret = container.querySelector<HTMLButtonElement>('[data-send-timing-caret]')!;
+
+    // Moving from caret to plain Send before the 180ms hover delay expires cancels the pending open.
+    await act(async () => {
+      nextCaret.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    await act(async () => {
+      nextCaret.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: sendButton(container) }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 260)); });
+    expect(menu(container)).toBeNull();
+
+    // Keyboard activation (detail === 0) on the caret focuses the first row, and Escape returns focus to the caret.
+    nextCaret.focus();
+    await act(async () => {
+      nextCaret.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }));
+    });
+    expect(menu(container)).not.toBeNull();
+    expect(document.activeElement).toBe(menuRow(container, 'default'));
+    await act(async () => {
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(menu(container)).toBeNull();
+    expect(document.activeElement).toBe(nextCaret);
+  });
+
+  it('keeps the compact context meter ring visible on narrow toolbars even at low usage', async () => {
+    const { container } = await renderComposer({
+      value: '',
+      contextUsage: { used: 10_000, limit: 200_000 },
+    });
+    const meter = container.querySelector<HTMLElement>('[data-context-meter]');
+    expect(meter).not.toBeNull();
+    const wrapper = meter!.closest<HTMLElement>('.flex.shrink-0.items-center');
+    expect(wrapper?.className).toContain('@max-[17.5rem]/toolbar:hidden');
+    expect(wrapper?.className).not.toContain('@max-[26.25rem]/toolbar:hidden');
+    const percentSpan = meter!.querySelector<HTMLElement>('span.tabular-nums');
+    expect(percentSpan?.className).toContain('@max-[24rem]/toolbar:sr-only');
   });
 
   it('leads with send-now and offers all three deferred timings where a busy plain send already steers (busySendsNow)', async () => {

@@ -127,25 +127,55 @@ export function selectionSourceAnchor(selection: Selection): SelectionSourceAnch
   const blockId = source.dataset['sourceBlockId'];
   const version = source.dataset['sourceVersion'];
   if (blockId === undefined || version === undefined) return null;
-  const walker = source.ownerDocument.createTreeWalker(source, 4);
   let prefix = '';
   let selected = '';
-  let node: Node | null;
-  while ((node = walker.nextNode()) !== null) {
-    if (node.parentElement?.closest('button, [data-source-ignore], .kiki-cb-tools, [data-streamdown="code-block-header"]') !== null) continue;
-    const value = node.textContent ?? '';
-    const length = value.length;
-    const start = range.comparePoint(node, 0);
-    const end = range.comparePoint(node, length);
-    if (end === -1) prefix += value;
-    else if (start !== 1) {
-      const from = node === range.startContainer ? range.startOffset : 0;
-      const to = node === range.endContainer ? range.endOffset : length;
-      prefix += value.slice(0, from);
-      selected += value.slice(from, to);
+  let hasCanonicalSelected = false;
+  let omittedBefore = 0;
+  let pendingOmittedGap = false;
+  let crossedOmittedGap = false;
+  const visit = (parent: Node): void => {
+    for (let child = parent.firstChild; child !== null; child = child.nextSibling) {
+      if (child.nodeType === 3) {
+        const value = child.textContent ?? '';
+        const length = value.length;
+        const start = range.comparePoint(child, 0);
+        const end = range.comparePoint(child, length);
+        if (end === -1) prefix += value;
+        else if (start !== 1) {
+          const from = child === range.startContainer ? range.startOffset : 0;
+          const to = child === range.endContainer ? range.endOffset : length;
+          prefix += value.slice(0, from);
+          const slice = value.slice(from, to);
+          if (canonicalSelectionText(slice) !== '') {
+            if (pendingOmittedGap) crossedOmittedGap = true;
+            hasCanonicalSelected = true;
+          }
+          selected += slice;
+        }
+        continue;
+      }
+      if (child.nodeType === 1) {
+        const el = child as Element;
+        if (el.matches('button, [data-source-ignore], .kiki-cb-tools, [data-streamdown="code-block-header"]')) continue;
+        visit(el);
+        const omittedRaw = el.getAttribute('data-source-omitted-canonical-chars');
+        if (omittedRaw !== null) {
+          const omitted = Number(omittedRaw);
+          if (Number.isSafeInteger(omitted) && omitted > 0) {
+            const gapPos = range.comparePoint(el, el.childNodes.length);
+            if (gapPos === -1 || (gapPos === 0 && !hasCanonicalSelected)) {
+              omittedBefore += omitted;
+            } else if (gapPos === 0) {
+              pendingOmittedGap = true;
+            }
+          }
+        }
+      }
     }
-  }
-  const start = canonicalSelectionText(prefix).length;
+  };
+  visit(source);
+  if (crossedOmittedGap) return null;
+  const start = canonicalSelectionText(prefix).length + omittedBefore;
   const text = canonicalSelectionText(selected);
   return text === '' ? null : { blockId, version, start, end: start + text.length, text };
 }

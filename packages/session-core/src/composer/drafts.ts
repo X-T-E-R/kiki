@@ -729,12 +729,29 @@ export function resetInputHistoryForTests(): void {
  * stored text — one channel that works whether or not that session's composer
  * is currently mounted.
  */
-const AGENT_ROUTE_RE = /^\/s\/([^/]+)\/agent\/([^/]+)/;
+const AGENT_ROUTE_RE = /^\/(?:p\/[^/]+\/)?s\/([^/]+)\/agent\/([^/]+)/;
+
+/**
+ * Canonical draft/composer storage key for one conversation target:
+ * main sessions key on `sessionId`; branches and subagents always key on
+ * `JSON.stringify([scopeId ?? '', sessionId, agentId])`, even when `scopeId` is
+ * empty/absent, so child drafts and annotations never collide with `main`.
+ */
+export function agentDraftKey(
+  scopeId: string | undefined,
+  sessionId: string,
+  agentId?: string,
+): string {
+  if (agentId === undefined || agentId === '' || agentId === 'main') {
+    return sessionId;
+  }
+  return JSON.stringify([scopeId ?? '', sessionId, agentId]);
+}
 
 /**
  * Resolve the draft/composer storage key for the currently viewed conversation:
- * main sessions key on `sessionId`; routed branches and subagents key on
- * `JSON.stringify([scopeId, sessionId, agentId])` (matching `AgentWorkspace`).
+ * main sessions key on `sessionId`; routed branches and subagents key via
+ * `agentDraftKey` (matching `AgentWorkspace`).
  */
 export function resolveActiveDraftKey(
   scopeId: string | undefined,
@@ -761,10 +778,7 @@ export function resolveActiveDraftKey(
       agentId = agentIdOrPathname;
     }
   }
-  if (agentId !== undefined && scopeId !== undefined && scopeId !== '') {
-    return JSON.stringify([scopeId, sessionId, agentId]);
-  }
-  return sessionId;
+  return agentDraftKey(scopeId, sessionId, agentId);
 }
 
 /**
@@ -848,7 +862,9 @@ export function restorePromptToDraft(sessionId: string, content: readonly import
   writeComposerState(sessionId, {
     attachments: [...(previous.attachments ?? []), ...restored],
     annotations: previous.annotations ?? [],
+    quotes: previous.quotes,
     quote: previous.quote,
+    quoteSource: previous.quoteSource,
     permissionMode: previous.permissionMode,
     planMode: previous.planMode,
     planGate: previous.planGate,
@@ -857,6 +873,7 @@ export function restorePromptToDraft(sessionId: string, content: readonly import
     effortOverride: previous.effortOverride,
     modelChoice: previous.modelChoice,
     effortChoice: previous.effortChoice,
+    modelSwitchMode: previous.modelSwitchMode,
     execution: previous.execution,
   });
   for (const listener of appendListeners) listener(sessionId, restored);

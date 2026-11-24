@@ -561,7 +561,7 @@ export const Markdown = memo(function Markdown({
     return () => { observer.disconnect(); cancelAnimationFrame(frame); };
   }, [documentPath, headingNavigation, mode, text]);
   const plain = isPlainProse(text) && findFileReferences(text).length === 0;
-  const plugins = useStreamdownPlugins(plain ? null : text);
+  const plugins = useStreamdownPlugins(plain ? null : text, rootRef);
   const className = preserveEdgeMargins ? 'kiki-md kiki-md--edges' : 'kiki-md';
   const sourceVersion = useMemo(
     () => (sourceBlockId === undefined ? undefined : sourceTextVersion(text)),
@@ -610,8 +610,12 @@ export const Markdown = memo(function Markdown({
       }
     };
     if (markSignature !== '') {
-      observer = new MutationObserver(() => {
-        apply();
+      observer = new MutationObserver((records) => {
+        const affectsProse = records.some((record) => {
+          const target = record.target.nodeType === 1 ? record.target as Element : record.target.parentElement;
+          return target === null || target.closest('button, [data-source-ignore], .kiki-cb-tools, [data-streamdown="code-block-header"]') === null;
+        });
+        if (affectsProse) apply();
       });
     }
     apply();

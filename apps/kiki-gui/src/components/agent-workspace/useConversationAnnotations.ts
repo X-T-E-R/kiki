@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useSyncExternalStore, type Dispatch, type RefObject, type SetStateAction } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type Dispatch, type RefObject, type SetStateAction } from 'react';
 import {
   collectDraftAnnotationTargets,
   createAnnotation,
@@ -71,7 +71,9 @@ export function updateStoredAnnotations(
     ...saved,
     attachments: saved.attachments ?? [],
     quotes: [],
-    annotations: update(saved.annotations ?? []),
+    quote: null,
+    quoteSource: undefined,
+    annotations: update(normalizeStoredAnnotations(saved)),
     permissionMode: saved.permissionMode,
     planMode: saved.planMode,
     planGate: saved.planGate,
@@ -129,6 +131,7 @@ export function useSubscribedAnnotations(
 
 export interface UseConversationAnnotationsResult {
   readonly setAnnotations: Dispatch<SetStateAction<readonly SelectionAnnotation[]>>;
+  readonly hydrateAnnotations: (next: readonly SelectionAnnotation[]) => void;
   readonly annotationsRef: RefObject<readonly SelectionAnnotation[]>;
   readonly containerRef: RefObject<HTMLDivElement | null>;
   readonly onAnnotate: (text: string, comment: string, source?: SelectionSourceAnchor | null) => string;
@@ -136,6 +139,31 @@ export interface UseConversationAnnotationsResult {
   readonly onUpdate: (id: string, comment: string) => void;
   readonly onLocate: (annotation: SelectionAnnotation) => void;
   readonly surface: ConversationAnnotationSurface;
+}
+
+function sameAnnotationList(
+  left: readonly SelectionAnnotation[],
+  right: readonly SelectionAnnotation[],
+): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index]!;
+    const b = right[index]!;
+    if (
+      a.id !== b.id ||
+      a.quote !== b.quote ||
+      a.comment !== b.comment ||
+      a.source?.blockId !== b.source?.blockId ||
+      a.source?.version !== b.source?.version ||
+      a.source?.start !== b.source?.start ||
+      a.source?.end !== b.source?.end ||
+      a.source?.text !== b.source?.text
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function useConversationAnnotations(options: {
@@ -159,16 +187,21 @@ export function useConversationAnnotations(options: {
   const persistRef = useRef(persistComposerState);
   persistRef.current = persistComposerState;
   const storeRef = useRef<{
+    storageKey: string;
     items: readonly SelectionAnnotation[];
+    pendingNotify: boolean;
     readonly listeners: Set<() => void>;
     readonly api: ConversationAnnotationStore;
     readonly publish: (next: readonly SelectionAnnotation[]) => void;
+    readonly notifyAll: () => void;
   } | null>(null);
   if (storeRef.current === null) {
     const initial = normalizeStoredAnnotations(readComposerState(storageKey));
     const listeners = new Set<() => void>();
     const record = {
+      storageKey,
       items: initial,
+      pendingNotify: false,
       listeners,
       api: {
         getSnapshot: () => record.items,
@@ -182,12 +215,36 @@ export function useConversationAnnotations(options: {
       publish: (next: readonly SelectionAnnotation[]) => {
         if (record.items === next) return;
         record.items = next;
+        record.pendingNotify = false;
+        for (const listener of listeners) listener();
+      },
+      notifyAll: () => {
+        if (!record.pendingNotify) return;
+        record.pendingNotify = false;
         for (const listener of listeners) listener();
       },
     };
     storeRef.current = record;
   }
   const annotationsRef = useRef(storeRef.current.items);
+  if (storeRef.current.storageKey !== storageKey) {
+    const reloaded = normalizeStoredAnnotations(readComposerState(storageKey));
+    storeRef.current.storageKey = storageKey;
+    if (!sameAnnotationList(storeRef.current.items, reloaded)) {
+      storeRef.current.items = reloaded;
+      storeRef.current.pendingNotify = true;
+    }
+    annotationsRef.current = storeRef.current.items;
+  }
+  useLayoutEffect(() => {
+    storeRef.current?.notifyAll();
+  }, [storageKey]);
+  const hydrateAnnotations = useCallback((next: readonly SelectionAnnotation[]) => {
+    const record = storeRef.current;
+    if (record === null || sameAnnotationList(record.items, next)) return;
+    annotationsRef.current = next;
+    record.publish(next);
+  }, []);
   const setAnnotations: Dispatch<SetStateAction<readonly SelectionAnnotation[]>> = useCallback((action) => {
     const record = storeRef.current;
     if (record === null) return;
@@ -260,6 +317,7 @@ export function useConversationAnnotations(options: {
 
   return {
     setAnnotations,
+    hydrateAnnotations,
     annotationsRef,
     containerRef,
     onAnnotate,

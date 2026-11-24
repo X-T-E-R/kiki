@@ -1844,9 +1844,15 @@ function PromptRecordsRemainder({ continuation }: { readonly continuation: NonNu
   );
 }
 
-/** Whether the server saved this prompt as a durable ingress record. */
-function hasDurableRecord(controller: Pick<SessionController, 'getDurableIngress'>, promptId: string): boolean {
-  return (controller.getDurableIngress?.() ?? []).some((item) => item.prompt_id === promptId);
+/** Whether the server saved this prompt as a durable ingress record for the given agent. */
+function hasDurableRecord(
+  controller: Pick<SessionController, 'getDurableIngress'>,
+  promptId: string,
+  agentId = MAIN_AGENT_ID,
+): boolean {
+  return (controller.getDurableIngress?.() ?? []).some(
+    (item) => item.prompt_id === promptId && (item.agent_id ?? MAIN_AGENT_ID) === agentId,
+  );
 }
 
 
@@ -2630,9 +2636,14 @@ export function SessionView({
     return () => { clearTimeout(timer); };
   }, [pendingSubmission]);
   const focusComposer = useCallback(() => {
-    // Return focus to the composer so the user can type the follow-up at once.
-    document.querySelector<HTMLElement>('[data-composer]')?.focus();
-  }, []);
+    // Return focus to main's own composer so co-resident child tabs cannot steal it.
+    const composers = [...document.querySelectorAll<HTMLElement>('[data-composer]')];
+    const target =
+      composers.find((node) => node.dataset['composerAgent'] === MAIN_AGENT_ID && node.dataset['composerSession'] === sessionId) ??
+      composers.find((node) => node.dataset['composerAgent'] === MAIN_AGENT_ID) ??
+      composers[0];
+    target?.focus();
+  }, [sessionId]);
 
   const queryClient = useQueryClient();
   const cachedSessionRecord = useMemo(() => {
@@ -2846,7 +2857,7 @@ export function SessionView({
             : undefined,
         sendTimingDefault: settings.defaultAppendTiming,
         sessionRecord: live.session,
-        durableIngress: live.durableIngress,
+        durableIngress: filterIngressForAgent(live.durableIngress, MAIN_AGENT_ID),
       };
     },
   });
@@ -3777,8 +3788,8 @@ export function SessionView({
               onAcknowledged: releaseComposition,
             })
             .then((result) => {
-              if (result.outcome === 'failed' && hasDurableRecord(controller, result.promptId)) {
-                forgetUnconfirmedSubmission(sessionId, result.promptId);
+              if (result.outcome === 'failed' && hasDurableRecord(controller, result.promptId, MAIN_AGENT_ID)) {
+                forgetUnconfirmedSubmission(sessionId, result.promptId, MAIN_AGENT_ID);
                 releaseComposition();
                 return;
               }
@@ -3916,7 +3927,9 @@ export function SessionView({
         let accepted = false;
         const submitCaptured = (first = false): Promise<void> | undefined => {
           const currentPending = pendingSubmissionRef.current;
-          const ingress = (controller.getDurableIngress?.() ?? []).find((item) => item.prompt_id === submissionId);
+          const ingress = (controller.getDurableIngress?.() ?? []).find(
+            (item) => item.prompt_id === submissionId && (item.agent_id ?? MAIN_AGENT_ID) === MAIN_AGENT_ID,
+          );
           const resume = !first && (ingress?.admission === 'failed' || ingress?.admission === 'held') && controller.resumeDurableIngress !== undefined;
           const retryingHeld = resume && ingress?.admission === 'held' && currentPending?.id === submissionId;
           if (!composerOwnerActive.current || (!first && pendingSendRef.current)) return;
@@ -3989,10 +4002,10 @@ export function SessionView({
           .then((result) => {
             clearFirstRecord();
             const admissionRejected = result.admission === 'failed' || result.admission === 'cancelled';
-            if (result.admission === 'failed' && hasDurableRecord(controller, result.prompt_id)) {
+            if (result.admission === 'failed' && hasDurableRecord(controller, result.prompt_id, MAIN_AGENT_ID)) {
               // Saved but not admitted: the message stays on the timeline as
               // a "not sent" bubble whose retry reuses this id.
-              forgetUnconfirmedSubmission(sessionId, result.prompt_id);
+              forgetUnconfirmedSubmission(sessionId, result.prompt_id, MAIN_AGENT_ID);
               releaseComposition();
               setPendingSubmission((current) => current?.id === submissionId ? undefined : current);
               pendingRecoveryRef.current = undefined;
@@ -6074,7 +6087,7 @@ boundExecution,
           onClose={handleCloseBtw}
         />
       ) : null}
-      <SubmissionRecovery sessionId={sessionId} state={state} />
+      <SubmissionRecovery sessionId={sessionId} agentId={MAIN_AGENT_ID} draftKey={sessionId} state={state} />
       <ResyncStatusBanner
         resyncing={state.resyncing} resyncFailed={state.resyncFailed}
         error={state.resyncError}

@@ -13,16 +13,17 @@
  * in full without a click.
  */
 
-import { useEffect, useRef, useState, type ComponentProps, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type ReactElement, type ReactNode } from 'react';
 import { CodeBlock } from 'streamdown';
 
+import { canonicalSelectionText } from '@kiki/session-core/composer';
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import { afterPaint } from '../../lib/afterPaint';
 import { usePhoneMode } from '../../lib/layoutHooks';
 import { pushToast } from '../../lib/toasts';
 import { Icon } from '../icons';
-import { unwrapDomAnnotationMarks } from './domAnnotationMarks';
+import { registerCodeBlockBody, unwrapDomAnnotationMarks } from './domAnnotationMarks';
 import { useMermaidEngine } from './streamdown-plugins';
 
 /** A settled fence longer than this collapses behind "View more". */
@@ -116,14 +117,24 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
   const canCollapse = isIncomplete !== true && totalLines > COLLAPSE_AFTER_LINES;
   const collapsed = canCollapse && !expanded;
   const plainPhonePreview = collapsed && phoneMode;
+  const previewCode = plainPhonePreview ? lines.slice(0, PREVIEW_LINES).join('\n') : code;
+  const omittedCanonicalChars = plainPhonePreview
+    ? canonicalSelectionText(code.slice(previewCode.length)).length
+    : 0;
   const [highlight, setHighlight] = useState(false);
   const annotated = hasAnnotation(children);
   const canHighlight = !plainPhonePreview && !annotated && language !== 'text' && language !== 'mermaid';
+  const usesAsyncHighlight = !annotated && !plainPhonePreview && highlight && canHighlight;
 
   useEffect(() => {
     if (!canHighlight || highlight) return;
     return afterPaint(() => { setHighlight(true); });
   }, [canHighlight, highlight]);
+
+  useLayoutEffect(() => {
+    if (!usesAsyncHighlight || bodyRef.current === null) return;
+    return registerCodeBlockBody(code, bodyRef.current);
+  }, [usesAsyncHighlight, code, language]);
 
   useEffect(() => () => {
     if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
@@ -183,8 +194,12 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
         {annotated ? (
           <div data-streamdown="code-block-body"><pre className="font-mono whitespace-pre">{children}</pre></div>
         ) : plainPhonePreview || !highlight || !canHighlight ? (
-          <div data-streamdown="code-block-body" data-plain-preview={plainPhonePreview || undefined}>
-            <pre className="font-mono whitespace-pre"><code>{plainPhonePreview ? lines.slice(0, PREVIEW_LINES).join('\n') : code}</code></pre>
+          <div
+            data-streamdown="code-block-body"
+            data-plain-preview={plainPhonePreview || undefined}
+            data-source-omitted-canonical-chars={omittedCanonicalChars > 0 ? String(omittedCanonicalChars) : undefined}
+          >
+            <pre className="font-mono whitespace-pre"><code>{previewCode}</code></pre>
           </div>
         ) : (
           <CodeBlock code={code} language={language as never} isIncomplete={isIncomplete ?? false} />

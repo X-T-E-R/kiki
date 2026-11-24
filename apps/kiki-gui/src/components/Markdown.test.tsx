@@ -18,6 +18,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { I18nProvider } from '../i18n';
 import { Markdown } from './Markdown';
+import { registerCodeBlockBody, syncDomAnnotationMarks, unwrapDomAnnotationMarks, unwrapDomMarksInCodeBlocks } from './markdown/domAnnotationMarks';
+import { canonicalSelectionText, sourceTextVersion } from '@kiki/session-core/composer';
 import { MediaArtifactList } from './media/MediaArtifactList';
 import { MediaPart } from './mediaParts';
 import { FilePathLink, MediaPreviewProvider } from './mediaPreview';
@@ -919,5 +921,100 @@ describe('mobile reading & containment', () => {
     });
     expect(openFile).toHaveBeenNthCalledWith(1, { path: '/work/repo/docs/LICENSE' });
     expect(openFile).toHaveBeenNthCalledWith(2, { path: '/work/repo/Makefile' });
+  });
+
+  it('preserves anchored annotations below a collapsed phone code block via omitted canonical char compensation', async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: (query: string) => ({
+        matches: query.includes('(pointer: coarse)') && query.includes('(max-width: 639px)'),
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      }),
+    });
+    try {
+      const codeLines = Array.from({ length: 46 }, (_, i) => `const row_${i} = ${i};`).join('\n');
+      const trailingProse = 'Important conclusion after long code block.';
+      const md = `\`\`\`ts\n${codeLines}\n\`\`\`\n\n${trailingProse}`;
+      const start = canonicalSelectionText(codeLines).length;
+      const quote = 'Important conclusion';
+      const anchorText = canonicalSelectionText(quote);
+      const probe = makeRoot();
+      await renderSettled(
+        probe.root,
+        <Markdown
+          mode="static"
+          text={md}
+          sourceBlockId="block-long-code"
+          annotationTargets={[
+            {
+              id: 'ta-after-code',
+              quote,
+              comment: 'check this',
+              source: {
+                blockId: 'block-long-code',
+                version: sourceTextVersion(md),
+                start,
+                end: start + anchorText.length,
+                text: anchorText,
+              },
+            },
+          ]}
+        />,
+      );
+      expect(probe.container.querySelector('[data-plain-preview="true"]')).not.toBeNull();
+      const mark = probe.container.querySelector<HTMLElement>('mark[data-annotation-ref="ta-after-code"]');
+      expect(mark).not.toBeNull();
+      expect(mark?.textContent).toBe(quote);
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
+    }
+  });
+
+  it('scopes Shiki code-block unwrapping to the owning root even when two timelines share identical code, and restores focus after unwrap+resync', () => {
+    const sharedCode = 'const sharedVal = 1;';
+    const mainRoot = document.createElement('div');
+    mainRoot.innerHTML = `<div class="kiki-cb-body"><pre><code>${sharedCode}</code></pre></div>`;
+    const subRoot = document.createElement('div');
+    subRoot.innerHTML = `<div class="kiki-cb-body"><pre><code>${sharedCode}</code></pre></div>`;
+    document.body.append(mainRoot, subRoot);
+    const mainBody = mainRoot.querySelector<HTMLElement>('.kiki-cb-body')!;
+    const subBody = subRoot.querySelector<HTMLElement>('.kiki-cb-body')!;
+    const unregisterMain = registerCodeBlockBody(sharedCode, mainBody);
+    const unregisterSub = registerCodeBlockBody(sharedCode, subBody);
+    try {
+      expect(syncDomAnnotationMarks(mainRoot, [{ id: 'ann-main', quote: 'sharedVal', comment: null }])).toBe(true);
+      expect(syncDomAnnotationMarks(subRoot, [{ id: 'ann-sub', quote: 'sharedVal', comment: null }])).toBe(true);
+      const mainMark = mainRoot.querySelector<HTMLElement>('mark[data-annotation-ref="ann-main"]')!;
+      mainMark.focus();
+      expect(document.activeElement).toBe(mainMark);
+
+      // Async Shiki highlight finishing in subRoot for IDENTICAL code must NOT unwrap mainRoot's mark or drop main's focus.
+      unwrapDomMarksInCodeBlocks(sharedCode, subRoot);
+      expect(subRoot.querySelector('mark[data-annotation-ref="ann-sub"]')).toBeNull();
+      expect(mainRoot.querySelector('mark[data-annotation-ref="ann-main"]')).toBe(mainMark);
+      expect(document.activeElement).toBe(mainMark);
+
+      // Focus inside a root that IS unwrapped by Shiki is recovered once syncDomAnnotationMarks re-runs.
+      expect(syncDomAnnotationMarks(subRoot, [{ id: 'ann-sub', quote: 'sharedVal', comment: null }])).toBe(true);
+      const subMark = subRoot.querySelector<HTMLElement>('mark[data-annotation-ref="ann-sub"]')!;
+      subMark.focus();
+      expect(document.activeElement).toBe(subMark);
+      unwrapDomAnnotationMarks(subBody);
+      expect(document.activeElement).toBe(document.body);
+      expect(syncDomAnnotationMarks(subRoot, [{ id: 'ann-sub', quote: 'sharedVal', comment: null }])).toBe(true);
+      expect(document.activeElement?.getAttribute('data-annotation-ref')).toBe('ann-sub');
+    } finally {
+      unregisterMain();
+      unregisterSub();
+      mainRoot.remove();
+      subRoot.remove();
+    }
   });
 });

@@ -707,10 +707,11 @@ export function Composer({
     skills?: readonly PromptSkillActivation[],
   ) => void | Promise<unknown>;
   /**
-   * The session's configured default queue timing. When set, hovering the
-   * send button of a BUSY composer floats a menu that sends once with the
-   * picked timing (plain / now / deferred queue timings) without changing the
-   * default. Omit to drop the menu.
+   * The session's configured default queue timing. When set and not editing an
+   * existing message or queue entry, the send button renders a split caret
+   * menu for one-shot timing picks (immediate/default, send now when busy, or
+   * deferred after subagents/tasks) without changing the session default.
+   * Omit to drop the menu.
    */
   sendTimingDefault?: DeferredAppendTiming;
   /**
@@ -2943,6 +2944,8 @@ export function Composer({
   const sendTimingRootRef = useRef<HTMLDivElement | null>(null);
   const sendTimingPanelRef = useRef<HTMLDivElement | null>(null);
   const sendButtonRef = useRef<HTMLButtonElement | null>(null);
+  const sendTimingCaretRef = useRef<HTMLButtonElement | null>(null);
+  const sendTimingTriggerRef = useRef<'send' | 'caret'>('send');
   const sendTimingMenuId = useId();
   const [sendTimingOpen, setSendTimingOpen] = useState(false);
   useEffect(() => subscribeFloatingGroup(COMPOSER_FLOATING_GROUP, 'composer-send-timing', () => {
@@ -2956,7 +2959,7 @@ export function Composer({
   /** Where keyboard-opened focus lands once the menu renders. */
   const sendTimingFocusRef = useRef<'first' | 'last' | null>(null);
   const sendTimingAvailable =
-    sendTimingDefault !== undefined && busy && !queueEditing && canSend && !takenOver;
+    sendTimingDefault !== undefined && !queueEditing && !messageEditing && canSend && !takenOver;
   // A pending engine/profile switch cannot join the running turn (the active
   // turn cannot rebind), so "send now" silently degrades to an ordinary queue
   // entry. While one is pending, name the real result where the choice is
@@ -2981,7 +2984,16 @@ export function Composer({
   const closeSendTiming = (refocus = false) => {
     clearSendTimingTimers();
     setSendTimingOpen(false);
-    if (refocus) sendButtonRef.current?.focus();
+    if (refocus) {
+      const trigger = sendTimingTriggerRef.current === 'caret' ? sendTimingCaretRef.current : sendButtonRef.current;
+      (trigger ?? sendButtonRef.current)?.focus();
+    }
+  };
+  const cancelPendingSendTimingOpen = () => {
+    if (sendTimingOpenTimerRef.current !== null) {
+      clearTimeout(sendTimingOpenTimerRef.current);
+      sendTimingOpenTimerRef.current = null;
+    }
   };
   // Hover intent: a short delay keeps a sweep across the button from flashing
   // the menu; a slightly longer leave grace bridges the gap into the panel.
@@ -3026,10 +3038,11 @@ export function Composer({
   // The menu-button key contract: ↑/↓ on the resting send button opens the
   // menu and lands on the first/last row; once open, usePopover's handler on
   // the root walks rows and Escape refocuses the button.
-  const onSendTimingButtonKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+  const onSendTimingButtonKeyDown = (event: KeyboardEvent<HTMLButtonElement>, source: 'send' | 'caret' = 'send') => {
     if (!sendTimingAvailable || sendTimingOpen) return;
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
     event.preventDefault();
+    sendTimingTriggerRef.current = source;
     sendTimingFocusRef.current = event.key === 'ArrowUp' ? 'last' : 'first';
     setSendTimingOpen(true);
   };
@@ -4311,7 +4324,8 @@ export function Composer({
               } : undefined}
               timing={sendTimingAvailable && sendTimingDefault !== undefined ? {
                 defaultTiming: sendTimingDefault,
-                canSendNow: onSendNow !== undefined && !sendNowDegrades,
+                canSendNow: busy && onSendNow !== undefined && !sendNowDegrades,
+                busy,
                 busySendsNow,
                 onPick: (choice: SendTimingChoice) => {
                   if (choice === 'default') send();
@@ -4358,7 +4372,7 @@ export function Composer({
             </div>
             <div className="ml-1 flex shrink-0 items-center gap-1">
               {contextUsage !== undefined ? (
-                <div className={keepContextOnNarrow ? 'flex shrink-0 items-center' : 'flex shrink-0 items-center @max-[26.25rem]/toolbar:hidden'}>
+                <div className={keepContextOnNarrow ? 'flex shrink-0 items-center' : 'flex shrink-0 items-center @max-[17.5rem]/toolbar:hidden'}>
                   <ContextMeter
                     used={contextUsage.used}
                     limit={contextUsage.limit}
@@ -4466,7 +4480,7 @@ export function Composer({
                 ref={sendTimingRootRef}
                 data-send-timing-root
                 className="relative flex items-center"
-                onMouseEnter={openSendTimingOnHover}
+                onMouseEnter={busy ? openSendTimingOnHover : undefined}
                 onMouseLeave={closeSendTimingOnLeave}
                 onBlur={onSendTimingBlur}
                 onKeyDown={sendTimingKeys}
@@ -4528,14 +4542,20 @@ export function Composer({
                 </button>
                 {sendTimingAvailable ? (
                   <button
+                    ref={sendTimingCaretRef}
                     type="button"
                     data-send-timing-caret=""
                     aria-label={t('composer.sendTimingAria')}
                     aria-haspopup="menu"
                     aria-expanded={sendTimingOpen}
                     aria-controls={sendTimingOpen ? sendTimingMenuId : undefined}
-                    onClick={() => {
+                    onMouseEnter={openSendTimingOnHover}
+                    onMouseLeave={!busy ? cancelPendingSendTimingOpen : undefined}
+                    onKeyDown={(event) => { onSendTimingButtonKeyDown(event, 'caret'); }}
+                    onClick={(event) => {
                       if (sendTimingOpen) { closeSendTiming(); return; }
+                      sendTimingTriggerRef.current = 'caret';
+                      if (event.detail === 0) sendTimingFocusRef.current = 'first';
                       setSendTimingOpen(true);
                     }}
                     className={`flex h-8 w-6 shrink-0 cursor-pointer items-center justify-center transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-8 ${
@@ -4590,7 +4610,8 @@ export function Composer({
                           <p className={POPOVER_LABEL_CLASS}>{t('composer.sendTimingAria')}</p>
                           <SendTimingRows
                             defaultTiming={sendTimingDefault}
-                            canSendNow={onSendNow !== undefined && !sendNowDegrades}
+                            canSendNow={busy && onSendNow !== undefined && !sendNowDegrades}
+                            busy={busy}
                             busySendsNow={busySendsNow}
                             onPick={(choice) => {
                               closeSendTiming();

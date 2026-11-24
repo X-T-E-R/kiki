@@ -23,6 +23,31 @@ const BUBBLE_PATH_D =
   'M3 3.5h10c.6 0 1 .4 1 1v6c0 .6-.4 1-1 1H8.2L5 13.8v-2.3H3c-.6 0-1-.4-1-1v-6c0-.6.4-1 1-1z';
 
 const markedRoots = new Set<HTMLElement>();
+const codeBlockBodiesByCode = new Map<string, Set<HTMLElement>>();
+const highlightedCodeBodies = new WeakSet<HTMLElement>();
+const pendingRefocusByRoot = new WeakMap<HTMLElement, string>();
+
+function owningMarkedRoot(container: ParentNode): HTMLElement | null {
+  if (container instanceof HTMLElement && markedRoots.has(container)) return container;
+  for (const root of markedRoots) {
+    if (root.contains(container)) return root;
+  }
+  return null;
+}
+
+function captureFocusedMarkBeforeUnwrap(container: ParentNode): void {
+  const doc = container.ownerDocument;
+  const active = doc?.activeElement;
+  if (!(active instanceof HTMLElement) || !container.contains(active)) return;
+  const annotationId = active.closest<HTMLElement>('[data-annotation-ref]')?.getAttribute('data-annotation-ref');
+  if (annotationId === undefined || annotationId === null) return;
+  const owner = owningMarkedRoot(container);
+  if (owner !== null) pendingRefocusByRoot.set(owner, annotationId);
+}
+
+function hasShikiHighlightedTokens(body: HTMLElement): boolean {
+  return body.querySelector('code span[style]') !== null;
+}
 
 /** Structural mark signature; intentionally omits `comment` because marks never render comment prose. */
 export function annotationMarkSignature(
@@ -50,6 +75,7 @@ export function unwrapDomAnnotationMarks(container: ParentNode): boolean {
   const bubbles = container.querySelectorAll(`[${DOM_BUBBLE_ATTR}]`);
   const marks = container.querySelectorAll(`mark[${DOM_MARK_ATTR}]`);
   if (bubbles.length === 0 && marks.length === 0) return false;
+  captureFocusedMarkBeforeUnwrap(container);
   for (let index = 0; index < bubbles.length; index += 1) {
     bubbles[index]!.remove();
   }
@@ -70,15 +96,96 @@ export function unwrapDomAnnotationMarks(container: ParentNode): boolean {
   return true;
 }
 
-/** Unwrap marks inside code blocks before async Shiki highlighting reconciles `<code>` children. */
-export function unwrapDomMarksInCodeBlocks(): void {
+/** Register a live code-block body waiting on Shiki so async highlighting only unwraps its own matching body. */
+export function registerCodeBlockBody(code: string, body: HTMLElement): () => void {
+  highlightedCodeBodies.delete(body);
+  let set = codeBlockBodiesByCode.get(code);
+  if (set === undefined) {
+    set = new Set<HTMLElement>();
+    codeBlockBodiesByCode.set(code, set);
+  }
+  set.add(body);
+  return () => {
+    highlightedCodeBodies.delete(body);
+    const current = codeBlockBodiesByCode.get(code);
+    if (current === undefined) return;
+    current.delete(body);
+    if (current.size === 0) codeBlockBodiesByCode.delete(code);
+  };
+}
+
+/**
+ * Unwrap DOM marks inside code blocks before async Shiki highlighting reconciles `<code>` children.
+ * When `code` is supplied, only matching unhighlighted `.kiki-cb-body` elements are touched so
+ * sibling timelines (e.g. main beside a newly opened subagent) keep their marks and focus intact.
+ */
+export function unwrapDomMarksInCodeBlocks(code?: string, scopeRoot?: HTMLElement | null): void {
+  if (scopeRoot === null) return;
+  if (scopeRoot !== undefined) {
+    if (!scopeRoot.isConnected) return;
+    if (code !== undefined) {
+      const bodies = codeBlockBodiesByCode.get(code);
+      if (bodies !== undefined && bodies.size > 0) {
+        let matched = false;
+        for (const body of bodies) {
+          if (!body.isConnected) {
+            bodies.delete(body);
+            highlightedCodeBodies.delete(body);
+            continue;
+          }
+          if (!scopeRoot.contains(body)) continue;
+          matched = true;
+          if (highlightedCodeBodies.has(body) || hasShikiHighlightedTokens(body)) {
+            highlightedCodeBodies.add(body);
+            continue;
+          }
+          highlightedCodeBodies.add(body);
+          unwrapDomAnnotationMarks(body);
+        }
+        if (bodies.size === 0) codeBlockBodiesByCode.delete(code);
+        if (matched) return;
+      }
+    }
+    const codeBodies = scopeRoot.querySelectorAll<HTMLElement>('.kiki-cb-body');
+    for (let index = 0; index < codeBodies.length; index += 1) {
+      const body = codeBodies[index]!;
+      if (highlightedCodeBodies.has(body) || hasShikiHighlightedTokens(body)) {
+        highlightedCodeBodies.add(body);
+        continue;
+      }
+      if (code === undefined || (body.textContent ?? '').replace(/\n$/, '') === code) {
+        highlightedCodeBodies.add(body);
+        unwrapDomAnnotationMarks(body);
+      }
+    }
+    return;
+  }
+  if (code !== undefined) {
+    const bodies = codeBlockBodiesByCode.get(code);
+    if (bodies === undefined || bodies.size === 0) return;
+    for (const body of bodies) {
+      if (!body.isConnected) {
+        bodies.delete(body);
+        highlightedCodeBodies.delete(body);
+        continue;
+      }
+      if (highlightedCodeBodies.has(body) || hasShikiHighlightedTokens(body)) {
+        highlightedCodeBodies.add(body);
+        continue;
+      }
+      highlightedCodeBodies.add(body);
+      unwrapDomAnnotationMarks(body);
+    }
+    if (bodies.size === 0) codeBlockBodiesByCode.delete(code);
+    return;
+  }
   if (markedRoots.size === 0) return;
   for (const root of markedRoots) {
     if (!root.isConnected) {
       markedRoots.delete(root);
       continue;
     }
-    const codeBodies = root.querySelectorAll('.kiki-cb-body');
+    const codeBodies = root.querySelectorAll<HTMLElement>('.kiki-cb-body');
     for (let index = 0; index < codeBodies.length; index += 1) {
       unwrapDomAnnotationMarks(codeBodies[index]!);
     }
@@ -87,6 +194,7 @@ export function unwrapDomMarksInCodeBlocks(): void {
 
 export function unregisterMarkedRoot(root: HTMLElement): void {
   markedRoots.delete(root);
+  pendingRefocusByRoot.delete(root);
 }
 
 function createMarkElement(
@@ -180,31 +288,35 @@ function collectDomTextNodes(root: HTMLElement): {
   const texts: CollectedDomText[] = [];
   const chunks: string[] = [];
   let offset = 0;
-  const stack: Node[] = [];
-  for (let child = root.lastChild; child !== null; child = child.previousSibling) {
-    stack.push(child);
-  }
-  while (stack.length > 0) {
-    const node = stack.pop()!;
-    const nodeType = node.nodeType;
-    if (nodeType === 3) {
-      const textNode = node as Text;
-      const value = textNode.nodeValue;
-      if (value !== null && value.length > 0) {
-        texts.push({ node: textNode, value, offset, end: offset + value.length });
-        chunks.push(value);
-        offset += value.length;
+  const visit = (parent: Node): void => {
+    for (let child = parent.firstChild; child !== null; child = child.nextSibling) {
+      const nodeType = child.nodeType;
+      if (nodeType === 3) {
+        const textNode = child as Text;
+        const value = textNode.nodeValue;
+        if (value !== null && value.length > 0) {
+          texts.push({ node: textNode, value, offset, end: offset + value.length });
+          chunks.push(value);
+          offset += value.length;
+        }
+        continue;
       }
-      continue;
-    }
-    if (nodeType === 1) {
-      const element = node as Element;
-      if (isIgnoredElement(element)) continue;
-      for (let child = element.lastChild; child !== null; child = child.previousSibling) {
-        stack.push(child);
+      if (nodeType === 1) {
+        const element = child as Element;
+        if (isIgnoredElement(element)) continue;
+        visit(element);
+        const omittedRaw = element.getAttribute('data-source-omitted-canonical-chars');
+        if (omittedRaw !== null) {
+          const omitted = Number(omittedRaw);
+          if (Number.isSafeInteger(omitted) && omitted > 0) {
+            chunks.push('\u0000'.repeat(omitted));
+            offset += omitted;
+          }
+        }
       }
     }
-  }
+  };
+  visit(root);
   return { texts, fullText: chunks.join('') };
 }
 
@@ -216,7 +328,21 @@ export function syncDomAnnotationMarks(
   root: HTMLElement,
   targets: readonly TimelineAnnotation[] | undefined,
 ): boolean {
+  const doc = root.ownerDocument;
+  const active = doc.activeElement;
+  const directFocusedId =
+    active instanceof HTMLElement && root.contains(active)
+      ? active.closest<HTMLElement>('[data-annotation-ref]')?.getAttribute('data-annotation-ref') ?? null
+      : null;
+  const pendingFocusedId =
+    directFocusedId === null && (active === null || active === doc.body)
+      ? pendingRefocusByRoot.get(root) ?? null
+      : null;
+  const focusedAnnotationId = directFocusedId ?? pendingFocusedId;
+  pendingRefocusByRoot.delete(root);
+
   unwrapDomAnnotationMarks(root);
+  pendingRefocusByRoot.delete(root);
   if (targets === undefined || targets.length === 0) {
     markedRoots.delete(root);
     return false;
@@ -275,7 +401,6 @@ export function syncDomAnnotationMarks(
     return false;
   }
 
-  const doc = root.ownerDocument;
   const escapedBubbles: Array<{ readonly target: Element; readonly bubble: HTMLElement }> = [];
   const hitIndices = [...hitsByTextIndex.keys()];
 
@@ -324,5 +449,11 @@ export function syncDomAnnotationMarks(
   }
 
   markedRoots.add(root);
+  if (focusedAnnotationId !== null) {
+    const focusTarget = [...root.querySelectorAll<HTMLElement>(`mark[${DOM_MARK_ATTR}][tabindex="0"]`)].find(
+      (mark) => mark.getAttribute('data-annotation-ref') === focusedAnnotationId,
+    );
+    focusTarget?.focus({ preventScroll: true });
+  }
   return true;
 }

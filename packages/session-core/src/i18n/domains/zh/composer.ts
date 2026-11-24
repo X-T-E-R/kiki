@@ -353,6 +353,7 @@ export const composerZh = {
   'composer.sendTiming.nowHint': '送入当前轮次 — 下一步开始时读入本轮',
   'composer.sendTiming.send': '发送',
   'composer.sendTiming.sendHint': '默认时机：{timing}',
+  'composer.sendTiming.sendIdleHint': '立即发送',
   'composer.sendTiming.timed': '{timing}发送',
   'composer.sendTimingAria': '发送时机',
   'composer.sendTitle': '发送（Enter）',

@@ -118,6 +118,8 @@ export class TranscriptAnnotationTargetStore {
 
   private readonly blockListeners = new Map<string, Set<() => void>>();
   private readonly annotationListeners = new Map<string, Set<() => void>>();
+  private readonly pendingNotifyBlocks = new Set<string>();
+  private readonly pendingNotifyAnnotations = new Set<string>();
 
   private unsubOverrides: (() => void) | null = null;
   private unsubDraftStore: (() => void) | null = null;
@@ -231,6 +233,21 @@ export class TranscriptAnnotationTargetStore {
 
   isDraftAnnotation(annotationId: string): boolean {
     return this.draftIds.has(annotationId);
+  }
+
+  /** Flush render-phase mark/annotation changes to subscribed rows after commit. */
+  flushPendingNotifications(): void {
+    if (this.pendingNotifyBlocks.size === 0 && this.pendingNotifyAnnotations.size === 0) return;
+    const blocks = [...this.pendingNotifyBlocks];
+    const annotations = [...this.pendingNotifyAnnotations];
+    this.pendingNotifyBlocks.clear();
+    this.pendingNotifyAnnotations.clear();
+    for (let index = 0; index < blocks.length; index += 1) {
+      this.notifyBlock(blocks[index]!);
+    }
+    for (let index = 0; index < annotations.length; index += 1) {
+      this.notifyAnnotation(annotations[index]!);
+    }
   }
 
   private rebuildDraftIds(drafts: readonly TimelineAnnotation[]): void {
@@ -367,7 +384,7 @@ export class TranscriptAnnotationTargetStore {
     }
 
     const changedAnnotationIds: string[] = [];
-    if (notify && this.annotationListeners.size > 0) {
+    if (this.annotationListeners.size > 0) {
       for (const annotationId of this.annotationListeners.keys()) {
         if (!sameAnnotation(this.liveById.get(annotationId), nextLiveById.get(annotationId))) {
           changedAnnotationIds.push(annotationId);
@@ -376,12 +393,24 @@ export class TranscriptAnnotationTargetStore {
     }
     this.liveById = nextLiveById;
 
-    if (!notify) return;
+    if (!notify) {
+      for (let index = 0; index < changedBlocks.length; index += 1) {
+        this.pendingNotifyBlocks.add(changedBlocks[index]!);
+      }
+      for (let index = 0; index < changedAnnotationIds.length; index += 1) {
+        this.pendingNotifyAnnotations.add(changedAnnotationIds[index]!);
+      }
+      return;
+    }
     for (let index = 0; index < changedBlocks.length; index += 1) {
-      this.notifyBlock(changedBlocks[index]!);
+      const blockId = changedBlocks[index]!;
+      this.pendingNotifyBlocks.delete(blockId);
+      this.notifyBlock(blockId);
     }
     for (let index = 0; index < changedAnnotationIds.length; index += 1) {
-      this.notifyAnnotation(changedAnnotationIds[index]!);
+      const annotationId = changedAnnotationIds[index]!;
+      this.pendingNotifyAnnotations.delete(annotationId);
+      this.notifyAnnotation(annotationId);
     }
   }
 

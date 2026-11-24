@@ -5584,7 +5584,7 @@ export const Transcript = memo(function Transcript({
       : state.blocks;
   const loadError = state.loadError ?? (!loaded && state.resyncFailed ? state.resyncError?.message : undefined);
   const sessionIdForLocate = state.sessionId === '' ? undefined : state.sessionId;
-  const activeDraftKey = useActiveDraftKey(sessionIdForLocate);
+  const activeDraftKey = useActiveDraftKey(sessionIdForLocate, agentId);
   const retryDraftKey = activeDraftKey ?? sessionIdForLocate;
   // Failed / aborted prompts: send again puts the text back in the active
   // workspace's composer (main session, subagent, or branch) without rewriting
@@ -5620,6 +5620,9 @@ export const Transcript = memo(function Transcript({
   }
   const annotationStore = annotationStoreRef.current;
   annotationStore.syncInputs(blocks, timelineBlocks, draftAnnotationStore, draftAnnotations);
+  useLayoutEffect(() => {
+    annotationStore.flushPendingNotifications();
+  });
   useEffect(
     () => annotationStore.bindSubscriptions(draftAnnotationStore),
     [annotationStore, draftAnnotationStore],

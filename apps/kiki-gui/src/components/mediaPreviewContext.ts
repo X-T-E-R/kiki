@@ -23,7 +23,7 @@ export interface MediaPreviewApi {
   /** Session workspace cwd; anchors relative file links. */
   readonly cwd: string | undefined;
   /** Open the fullscreen image lightbox for a ready URL (data:/blob:/http). */
-  readonly openImage: (src: string, name?: string) => void;
+  readonly openImage: (src: string, name?: string, agentId?: string) => void;
   /** Canonical source remains valid when virtualized thumbnails unmount. */
   readonly openGalleryImage?: (item: MediaRef, agentId?: string, initialSrc?: string, occurrenceId?: string) => void;
   /** Retain source descriptors, never a thumbnail's expiring blob URL. */

@@ -87,6 +87,7 @@ import type { ModelSwitchDialog } from '../model-switch/ModelSwitchDialog';
 import { useModelSwitches, type ModelSwitchesHandle } from '../model-switch/useModelSwitches';
 import { useExecutorCatalog } from '../settings/profileEditor/engines';
 import { useContextMeterAutoCompact } from '../useContextMeterAutoCompact';
+import { filterIngressForAgent } from '../timeline/AdmissionLine';
 import { agentContinuationAvailable, useAgentTimeline, type AgentTimelineResult } from './useAgentTimeline';
 import {
   normalizeStoredAnnotations,
@@ -417,15 +418,36 @@ export function useAgentWorkspaceCore(
   });
 
   // ---- 2. Draft, attachments, annotations & pending-submission recovery ----
-  const [draft, setDraftState] = useState<string>(() => (syncInitialDraft ? readDraft(storageKey) : ''));
+  const [draftBucket, setDraftBucket] = useState<{ readonly key: string; readonly text: string }>(() => ({
+    key: storageKey,
+    text: syncInitialDraft ? readDraft(storageKey) : '',
+  }));
+  const draft = draftBucket.key === storageKey ? draftBucket.text : readDraft(storageKey);
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  const setDraftState = useCallback((text: string) => {
+    setDraftBucket((previous) => (previous.key === storageKey && previous.text === text ? previous : { key: storageKey, text }));
+  }, [storageKey]);
 
-  const [attachments, setAttachmentsState] = useState<readonly ComposerAttachment[]>(
-    () => initialAttachments ?? readComposerState(storageKey).attachments ?? [],
-  );
+  const [attachmentsBucket, setAttachmentsBucket] = useState<{
+    readonly key: string;
+    readonly items: readonly ComposerAttachment[];
+  }>(() => ({
+    key: storageKey,
+    items: initialAttachments ?? readComposerState(storageKey).attachments ?? [],
+  }));
+  const attachments = attachmentsBucket.key === storageKey
+    ? attachmentsBucket.items
+    : (readComposerState(storageKey).attachments ?? []);
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
+  const setAttachmentsState = useCallback<Dispatch<SetStateAction<readonly ComposerAttachment[]>>>((action) => {
+    setAttachmentsBucket((previous) => {
+      const base = previous.key === storageKey ? previous.items : (readComposerState(storageKey).attachments ?? []);
+      const next = typeof action === 'function' ? action(base) : action;
+      return previous.key === storageKey && next === previous.items ? previous : { key: storageKey, items: next };
+    });
+  }, [storageKey]);
 
   const timelineBlocksRef = useRef<readonly Block[]>(timeline.state.blocks);
   timelineBlocksRef.current = timeline.state.blocks;
@@ -503,19 +525,35 @@ export function useAgentWorkspaceCore(
     });
   }, [storageKey]);
 
+  const syncedStorageKeyRef = useRef(storageKey);
   useEffect(() => {
     composerOwnerActive.current = true;
-    if (!syncInitialDraft) {
-      const stored = readDraft(storageKey);
-      draftRef.current = stored;
-      setDraftState(stored);
+    const keyChanged = syncedStorageKeyRef.current !== storageKey;
+    syncedStorageKeyRef.current = storageKey;
+    const storedDraft = readDraft(storageKey);
+    if (!syncInitialDraft || keyChanged) {
+      draftRef.current = storedDraft;
+      setDraftState(storedDraft);
+    }
+    if (keyChanged) {
+      const storedAttachments = readComposerState(storageKey).attachments ?? [];
+      attachmentsRef.current = storedAttachments;
+      setAttachmentsBucket({ key: storageKey, items: storedAttachments });
+      const savedPending = readPendingSubmission(storageKey);
+      pendingSendRef.current =
+        savedPending !== undefined &&
+        savedPending.scope === sendScope &&
+        !savedPending.retryInvalidated &&
+        savedPending.draftText === storedDraft
+          ? savedPending
+          : null;
     }
     return () => {
       composerOwnerActive.current = false;
       onBeforeFlushUnmountRef.current?.();
       flushDrafts();
     };
-  }, [storageKey, syncInitialDraft]);
+  }, [storageKey, sendScope, syncInitialDraft, setDraftState]);
 
   useEffect(
     () =>
@@ -537,19 +575,24 @@ export function useAgentWorkspaceCore(
           const nextAttachments = chrome.attachments ?? [];
           attachmentsRef.current = nextAttachments;
           setAttachmentsState(nextAttachments);
-          annotations.setAnnotations(normalizeStoredAnnotations(chrome));
-        } else if (restoredAttachments !== undefined) {
-          const nextAttachments = [...attachmentsRef.current, ...restoredAttachments];
-          attachmentsRef.current = nextAttachments;
-          setAttachmentsState(nextAttachments);
+          annotations.hydrateAnnotations(normalizeStoredAnnotations(chrome));
+        } else {
+          if (restoredAttachments !== undefined) {
+            const nextAttachments = [...attachmentsRef.current, ...restoredAttachments];
+            attachmentsRef.current = nextAttachments;
+            setAttachmentsState(nextAttachments);
+          }
+          if (persistComposerState) {
+            annotations.hydrateAnnotations(normalizeStoredAnnotations(chrome));
+          }
         }
         onDraftAppendedRef.current?.({ text: restored, restoredAttachments, chrome });
       }),
-    [storageKey, sendScope, syncInitialDraft, annotations.setAnnotations],
+    [storageKey, sendScope, syncInitialDraft, persistComposerState, annotations.hydrateAnnotations, setDraftState, setAttachmentsState],
   );
 
   useEffect(() => {
-    if (!persistComposerState) return;
+    if (!persistComposerState || attachmentsBucket.key !== storageKey) return;
     const chrome = readComposerState(storageKey);
     writeComposerState(storageKey, {
       attachments,
@@ -752,7 +795,11 @@ export function useAgentWorkspaceCore(
     setNowReceiptTick((tick) => tick + 1);
   }, []);
 
-  const ingressForReceipts = execution.durableIngress ?? timeline.state.durableIngress ?? [];
+  const rawIngressForReceipts = execution.durableIngress ?? timeline.state.durableIngress;
+  const ingressForReceipts = useMemo(
+    () => filterIngressForAgent(rawIngressForReceipts, agentId) ?? [],
+    [rawIngressForReceipts, agentId],
+  );
   useEffect(() => {
     const tracked = nowReceiptsRef.current;
     if (tracked.size === 0) return;
