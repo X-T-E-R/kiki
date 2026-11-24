@@ -847,6 +847,12 @@ export class ToolCallComponent extends Container implements MouseRoutable {
     this.rebuildBody();
   }
 
+  private onToggleExpanded: ((expanded: boolean) => void) | undefined;
+
+  setOnToggleExpanded(listener: ((expanded: boolean) => void) | undefined): void {
+    this.onToggleExpanded = listener;
+  }
+
   isExpanded(): boolean {
     return this.expanded;
   }
@@ -858,6 +864,7 @@ export class ToolCallComponent extends Container implements MouseRoutable {
     const isExpandHintRow = rowText.includes('Ctrl+O to expand');
     if (!isHeaderRow && !isExpandHintRow) return false;
     this.setExpanded(!this.expanded);
+    this.onToggleExpanded?.(this.expanded);
     this.ui?.requestRender();
     return true;
   }
@@ -918,6 +925,37 @@ export class ToolCallComponent extends Container implements MouseRoutable {
     while (this.progressLines.length > ToolCallComponent.MAX_PROGRESS_LINES) {
       this.progressLines.shift();
     }
+    this.rebuildBody();
+    this.notifySnapshotChange();
+    this.ui?.requestRender();
+  }
+
+  /**
+   * Overwrite the live progress lines with the current canonical snapshot
+   * (`ToolBlock.progressText`), avoiding duplication across streaming deltas
+   * and transcript resyncs.
+   */
+  setProgressSnapshot(text: string | undefined): void {
+    if (this.result !== undefined) {
+      if (this.progressLines.length === 0) return;
+      this.progressLines = [];
+      this.progressStatusRows = 0;
+      this.rebuildBody();
+      this.notifySnapshotChange();
+      return;
+    }
+    const nextLines =
+      text === undefined || text.length === 0
+        ? []
+        : text.split('\n').slice(-ToolCallComponent.MAX_PROGRESS_LINES);
+    if (
+      nextLines.length === this.progressLines.length &&
+      nextLines.every((line, index) => line === this.progressLines[index])
+    ) {
+      return;
+    }
+    this.progressLines = nextLines;
+    this.progressStatusRows = nextLines.length;
     this.rebuildBody();
     this.notifySnapshotChange();
     this.ui?.requestRender();

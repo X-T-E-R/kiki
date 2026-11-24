@@ -13,11 +13,14 @@ import {
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import {
   effectiveSubagentStatus,
+  extractThinkingSummary,
   foldHistory,
+  formatThinkingDuration,
   groupBlocks,
   groupHasRunning,
   groupSummary,
   isLiveSubagentStatus,
+  isReadStep,
   readSubagentEndings,
   stepObject,
   type AgentForest,
@@ -34,7 +37,9 @@ import type {
   MessageBlock,
   NoticeBlock,
   ShellBlock,
+  SubagentBlock,
   SystemBlock,
+  ThinkingBlock,
   ToolBlock,
   UserBlock,
 } from '@kiki/session-core/session/transcript/types';
@@ -42,6 +47,11 @@ import type {
 import type { ResolvedBlockContinuationMeta } from './content-continuation';
 import { ImageThumbnail } from '#/tui/components/media/image-thumbnail';
 import { AssistantMessageComponent } from '#/tui/components/messages/assistant-message';
+import {
+  LiveSubagentCardComponent,
+  LiveSubagentGroupComponent,
+  type LiveSubagentRowData,
+} from '#/tui/components/messages/live-subagent-rows';
 import { ThinkingComponent } from '#/tui/components/messages/thinking';
 import { ToolCallComponent } from '#/tui/components/messages/tool-call';
 import { UserMessageComponent } from '#/tui/components/messages/user-message';
@@ -60,6 +70,24 @@ interface MountedBlock {
   metaKey?: string;
 }
 
+interface DisclosureScopeState {
+  readonly expandedFolds: Set<string>;
+  readonly expandedFoldMembers: Set<string>;
+  readonly expandedBlocks: Set<string>;
+  readonly collapsedLiveGroups: Set<string>;
+  readonly thinkingTimings: Map<string, { readonly firstLiveAt: number; settledAt?: number }>;
+}
+
+function createDisclosureScope(): DisclosureScopeState {
+  return {
+    expandedFolds: new Set<string>(),
+    expandedFoldMembers: new Set<string>(),
+    expandedBlocks: new Set<string>(),
+    collapsedLiveGroups: new Set<string>(),
+    thinkingTimings: new Map(),
+  };
+}
+
 export class DaemonTranscriptRenderer {
   private readonly mounted = new Map<string, MountedBlock>();
   /** Client-only notes, each shown after the block that was last when it was added. */
@@ -69,23 +97,87 @@ export class DaemonTranscriptRenderer {
   private lastIngress: readonly import('@kiki/protocol').PromptItem[] | undefined;
   private context: TranscriptContext = {};
   private readonly summaries = new Map<string, TranscriptSummary>();
-  private readonly expandedFolds = new Set<string>();
+  private readonly liveSubagentGroups = new Map<string, LiveSubagentGroupComponent>();
+  private readonly scopeStore = new Map<string, DisclosureScopeState>();
+  private scopeKey = 'default';
+  private scopeState: DisclosureScopeState = createDisclosureScope();
   private expanded = false;
   private showThinking = true;
   private showTimestamps = false;
+  private readonly onInspectSubagent?: (subagentId: string) => void;
 
   constructor(
     private readonly container: Container,
     private readonly ui?: TUI,
     private readonly workDir?: string,
-    options?: { readonly showThinking?: boolean; readonly showTimestamps?: boolean },
+    options?: {
+      readonly showThinking?: boolean;
+      readonly showTimestamps?: boolean;
+      readonly onInspectSubagent?: (subagentId: string) => void;
+    },
   ) {
+    this.scopeStore.set(this.scopeKey, this.scopeState);
     if (options?.showThinking !== undefined) {
       this.showThinking = options.showThinking;
     }
     if (options?.showTimestamps !== undefined) {
       this.showTimestamps = options.showTimestamps;
     }
+    this.onInspectSubagent = options?.onInspectSubagent;
+  }
+
+  /** Switch disclosure and timing scope on session or focused-agent change. */
+  setScope(scopeKey: string): void {
+    if (this.scopeKey === scopeKey) return;
+    this.scopeKey = scopeKey;
+    let state = this.scopeStore.get(scopeKey);
+    if (state === undefined) {
+      state = createDisclosureScope();
+      this.scopeStore.set(scopeKey, state);
+    }
+    this.scopeState = state;
+    // Clear stale block references from the previous agent/session so we never
+    // prune the new scope's disclosure state against the old agent's blocks.
+    this.lastBlocks = undefined;
+    this.lastSourceBlocks = undefined;
+  }
+
+  /** Compute the rendered line offset of a mounted block in the transcript container. */
+  getBlockLineOffset(blockId: string, width: number): number | undefined {
+    const mounted = this.mounted.get(blockId);
+    if (mounted === undefined) return undefined;
+    const renderWidth = Math.max(1, width);
+    let offset = 0;
+    for (const child of this.container.children) {
+      if (child === mounted.component) return offset;
+      offset += child.render(renderWidth).length;
+    }
+    return undefined;
+  }
+
+  /** Return the latest complete headline of a currently streaming thinking block, respecting `showThinking`. */
+  getActiveThinkingHeadline(): string | undefined {
+    if (!this.showThinking || this.lastBlocks === undefined) return undefined;
+    for (let i = this.lastBlocks.length - 1; i >= 0; i -= 1) {
+      const block = this.lastBlocks[i]!;
+      if (block.kind === 'thinking' && block.streaming) {
+        return extractThinkingSummary(block.text, { streaming: true });
+      }
+      if (block.kind === 'assistant' && block.text.trim().length > 0) {
+        return undefined;
+      }
+      if (block.kind === 'user') {
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+
+  /** Return IDs of blocks locally expanded by user clicks (for continuation loading). */
+  getLocallyExpandedBlockIds(): ReadonlySet<string> {
+    const ids = new Set<string>(this.scopeState.expandedBlocks);
+    for (const id of this.scopeState.expandedFoldMembers) ids.add(id);
+    return ids;
   }
 
   /**
@@ -160,9 +252,19 @@ export class DaemonTranscriptRenderer {
   }
 
   setExpanded(expanded: boolean): void {
-    if (this.expanded === expanded && this.expandedFolds.size === 0) return;
+    if (
+      this.expanded === expanded &&
+      this.scopeState.expandedFolds.size === 0 &&
+      this.scopeState.expandedFoldMembers.size === 0 &&
+      this.scopeState.expandedBlocks.size === 0
+    ) {
+      return;
+    }
     this.expanded = expanded;
-    this.expandedFolds.clear();
+    this.scopeState.expandedFolds.clear();
+    this.scopeState.expandedFoldMembers.clear();
+    this.scopeState.expandedBlocks.clear();
+    this.scopeState.collapsedLiveGroups.clear();
     for (const { component } of this.mounted.values()) {
       if (
         component instanceof ToolCallComponent ||
@@ -174,18 +276,83 @@ export class DaemonTranscriptRenderer {
       }
     }
     this.mountChildren();
+    this.context.onLocalExpandChanged?.(this.getLocallyExpandedBlockIds());
     this.ui?.requestRender();
   }
 
-  toggleFold(foldId: string): void {
-    if (this.expandedFolds.has(foldId)) this.expandedFolds.delete(foldId);
-    else this.expandedFolds.add(foldId);
+  toggleFold(foldId: string, leafIds?: readonly string[]): void {
+    const isCurrentlyExpanded =
+      this.scopeState.expandedFolds.has(foldId) ||
+      (leafIds !== undefined && leafIds.some((id) => this.scopeState.expandedFoldMembers.has(id)));
+    if (isCurrentlyExpanded) {
+      this.scopeState.expandedFolds.delete(foldId);
+      if (leafIds !== undefined) {
+        for (const id of leafIds) {
+          this.scopeState.expandedFoldMembers.delete(id);
+          this.scopeState.expandedBlocks.delete(id);
+        }
+      }
+    } else {
+      this.scopeState.expandedFolds.add(foldId);
+      if (leafIds !== undefined) {
+        for (const id of leafIds) this.scopeState.expandedFoldMembers.add(id);
+      }
+    }
+    this.mountChildren();
+    this.context.onLocalExpandChanged?.(this.getLocallyExpandedBlockIds());
+    this.ui?.requestRender();
+  }
+
+  isFoldExpanded(foldId: string, leafIds?: readonly string[]): boolean {
+    if (this.expanded) return true;
+    if (this.scopeState.expandedFolds.has(foldId)) return true;
+    if (leafIds !== undefined && leafIds.some((id) => this.scopeState.expandedFoldMembers.has(id))) {
+      return true;
+    }
+    return false;
+  }
+
+  private setBlockExpanded(blockId: string, expanded: boolean): void {
+    if (expanded) {
+      this.scopeState.expandedBlocks.add(blockId);
+    } else {
+      this.scopeState.expandedBlocks.delete(blockId);
+    }
+    this.context.onLocalExpandChanged?.(this.getLocallyExpandedBlockIds());
     this.mountChildren();
     this.ui?.requestRender();
   }
 
-  isFoldExpanded(foldId: string): boolean {
-    return this.expanded || this.expandedFolds.has(foldId);
+  private observeThinkingTimings(blocks: readonly Block[]): void {
+    const now = Date.now();
+    const presentIds = new Set<string>();
+    for (const block of blocks) {
+      presentIds.add(block.id);
+      if (block.kind !== 'thinking') continue;
+      const existing = this.scopeState.thinkingTimings.get(block.id);
+      if (block.streaming) {
+        if (existing === undefined) {
+          this.scopeState.thinkingTimings.set(block.id, { firstLiveAt: now });
+        }
+      } else if (existing !== undefined && existing.settledAt === undefined) {
+        existing.settledAt = now;
+      }
+    }
+    // Prune dead disclosure IDs after authoritative history removal (e.g. /undo)
+    for (const id of this.scopeState.expandedBlocks) {
+      if (!presentIds.has(id)) this.scopeState.expandedBlocks.delete(id);
+    }
+    for (const id of this.scopeState.expandedFoldMembers) {
+      if (!presentIds.has(id)) this.scopeState.expandedFoldMembers.delete(id);
+    }
+  }
+
+  private getThinkingDurationMs(block: ThinkingBlock): number | undefined {
+    const timing = this.scopeState.thinkingTimings.get(block.id);
+    if (timing === undefined) return undefined;
+    if (block.streaming) return Math.max(0, Date.now() - timing.firstLiveAt);
+    if (timing.settledAt !== undefined) return Math.max(0, timing.settledAt - timing.firstLiveAt);
+    return undefined;
   }
 
   setShowThinking(showThinking: boolean): void {
@@ -212,7 +379,10 @@ export class DaemonTranscriptRenderer {
     for (const mounted of this.mounted.values()) disposeComponent(mounted.component);
     this.mounted.clear();
     this.summaries.clear();
-    this.expandedFolds.clear();
+    this.liveSubagentGroups.clear();
+    this.scopeStore.clear();
+    this.scopeState = createDisclosureScope();
+    this.scopeStore.set(this.scopeKey, this.scopeState);
     this.notes.length = 0;
     this.lastBlocks = undefined;
     this.lastSourceBlocks = undefined;
@@ -220,8 +390,87 @@ export class DaemonTranscriptRenderer {
     this.container.clear();
   }
 
+  private buildProtectedBlockIds(
+    blocks: readonly Block[],
+    latestCardIdByAgent: ReadonlyMap<string, string>,
+  ): ReadonlySet<string> {
+    const protectedIds = new Set<string>();
+    const pendingApprovalToolCallIds = new Set<string>();
+    for (const block of blocks) {
+      if (block.kind === 'approval' && block.resolution === undefined) {
+        const toolCallId = block.request.tool_call_id;
+        if (typeof toolCallId === 'string' && toolCallId.length > 0) {
+          pendingApprovalToolCallIds.add(toolCallId);
+        }
+      }
+    }
+    const liveTurnId = this.context.liveTurnId;
+    for (const block of blocks) {
+      if (block.kind === 'thinking') {
+        if (block.streaming || this.scopeState.expandedBlocks.has(block.id)) {
+          protectedIds.add(block.id);
+        }
+        continue;
+      }
+      if (block.kind === 'tool') {
+        const matchesPendingApproval = pendingApprovalToolCallIds.has(block.toolCallId);
+        const isLiveMutating =
+          liveTurnId !== undefined && block.turnId === liveTurnId && !isReadStep(block);
+        if (
+          block.status === 'running' ||
+          matchesPendingApproval ||
+          isLiveMutating ||
+          this.scopeState.expandedBlocks.has(block.id)
+        ) {
+          protectedIds.add(block.id);
+        }
+        continue;
+      }
+      if (block.kind === 'shell') {
+        const isLiveShell = liveTurnId !== undefined && block.turnId === liveTurnId;
+        if (!block.done || isLiveShell || this.scopeState.expandedBlocks.has(block.id)) {
+          protectedIds.add(block.id);
+        }
+        continue;
+      }
+      if (block.kind === 'subagent') {
+        const status = effectiveSubagentStatus(block, this.context.forest, latestCardIdByAgent);
+        if (isLiveSubagentStatus(status)) {
+          protectedIds.add(block.id);
+        }
+      }
+    }
+    return protectedIds;
+  }
+
+  private buildSubagentRowData(
+    block: SubagentBlock,
+    latestCardIdByAgent: ReadonlyMap<string, string>,
+  ): LiveSubagentRowData {
+    const status = effectiveSubagentStatus(block, this.context.forest, latestCardIdByAgent);
+    const isLatestRun = latestCardIdByAgent.get(block.subagentId) === block.id;
+    const forestNode = isLatestRun ? this.context.forest?.byId[block.subagentId] : undefined;
+    const error = forestNode?.error ?? block.error;
+    const activity = isLiveSubagentStatus(status)
+      ? (forestNode?.status ?? status)
+      : undefined;
+    return {
+      blockId: block.id,
+      subagentId: block.subagentId,
+      name: block.name,
+      description: block.description,
+      summary: block.summary,
+      status,
+      isLive: isLiveSubagentStatus(status),
+      activity,
+      error,
+      expanded: this.expanded || this.scopeState.expandedBlocks.has(block.id),
+    };
+  }
+
   /** Re-mount children only when the component sequence actually changed. */
   private mountChildren(): void {
+    this.observeThinkingTimings(this.lastBlocks ?? []);
     const {
       displayBlocks: blocks,
       leadingSuppressedIds,
@@ -236,19 +485,30 @@ export class DaemonTranscriptRenderer {
           note.afterBlockId === undefined || leadingSuppressedIds.has(note.afterBlockId),
       )
       .map((note) => note.component);
-    const nodes = this.expanded
-      ? blocks
-      : foldHistory(
-          readSubagentEndings(groupBlocks(blocks), this.context.tasks ?? []),
-          this.context.liveTurnId,
-          { forest: this.context.forest, foldSingleProcess: true },
-        );
     const latestCardIdByAgent = new Map<string, string>();
     for (const block of blocks) {
       if (block.kind === 'subagent') latestCardIdByAgent.set(block.subagentId, block.id);
     }
+    const protectedBlockIds = this.expanded
+      ? undefined
+      : this.buildProtectedBlockIds(blocks, latestCardIdByAgent);
+    const nodes = this.expanded
+      ? blocks
+      : foldHistory(
+          readSubagentEndings(
+            groupBlocks(blocks, { protectedBlockIds }),
+            this.context.tasks ?? [],
+          ),
+          this.context.liveTurnId,
+          {
+            forest: this.context.forest,
+            foldSingleProcess: true,
+            protectedBlockIds,
+          },
+        );
     const visible = new Set<string>();
     const summaries = new Set<string>();
+    const liveGroups = new Set<string>();
     const appendNotes = (ids: ReadonlySet<string>) => {
       if (ids.size === 0) return;
       const matchIds = new Set(ids);
@@ -265,18 +525,26 @@ export class DaemonTranscriptRenderer {
     };
     const mountLeaf = (block: Block, forceExpandInner = false): void => {
       visible.add(block.id);
-      const mounted = this.updateOrCreate(block, forceExpandInner);
+      const mounted = this.updateOrCreate(block, forceExpandInner, latestCardIdByAgent);
       components.push(mounted.component);
       appendNotes(new Set([block.id]));
     };
     const mountSummary = (node: DisplayNode, expanded: boolean): void => {
       summaries.add(node.id);
+      const leafIds = memberIds(node);
       let summary = this.summaries.get(node.id);
       if (summary === undefined) {
-        summary = new TranscriptSummary(() => this.toggleFold(node.id));
+        summary = new TranscriptSummary(() => this.toggleFold(node.id, leafIds));
         this.summaries.set(node.id, summary);
+      } else {
+        summary.setOnToggle(() => this.toggleFold(node.id, leafIds));
       }
-      summary.setSummary(summarizeNode(node, this.context.forest, latestCardIdByAgent), expanded);
+      summary.setSummary(
+        summarizeNode(node, this.context.forest, latestCardIdByAgent, (b) =>
+          this.getThinkingDurationMs(b),
+        ),
+        expanded,
+      );
       components.push(summary);
     };
     const mountFoldMembers = (node: DisplayNode, forceExpandInner: boolean): void => {
@@ -293,7 +561,8 @@ export class DaemonTranscriptRenderer {
       mountLeaf(node, forceExpandInner);
     };
     const mountCompactGroup = (node: HistoryFold | ToolGroup | SubagentGroup | MediaRun): void => {
-      const individuallyExpanded = this.expandedFolds.has(node.id);
+      const leafIds = memberIds(node);
+      const individuallyExpanded = this.isFoldExpanded(node.id, leafIds);
       if (individuallyExpanded) {
         mountSummary(node, true);
         const expandThoughtOnly =
@@ -313,9 +582,37 @@ export class DaemonTranscriptRenderer {
       }
       mountSummary(node, false);
       const surfacedIds = new Set(surfaced.map((block) => block.id));
-      const hiddenIds = new Set(memberIds(node).filter((id) => !surfacedIds.has(id)));
+      const hiddenIds = new Set(leafIds.filter((id) => !surfacedIds.has(id)));
       appendNotes(hiddenIds);
       for (const block of surfaced) mountLeaf(block);
+    };
+    const mountLiveSubagentGroup = (node: SubagentGroup): void => {
+      liveGroups.add(node.id);
+      const rows = node.members.map((member) => this.buildSubagentRowData(member, latestCardIdByAgent));
+      const groupExpanded = !this.scopeState.collapsedLiveGroups.has(node.id);
+      let group = this.liveSubagentGroups.get(node.id);
+      if (group === undefined) {
+        group = new LiveSubagentGroupComponent(
+          rows,
+          groupExpanded,
+          () => {
+            if (this.scopeState.collapsedLiveGroups.has(node.id)) {
+              this.scopeState.collapsedLiveGroups.delete(node.id);
+            } else {
+              this.scopeState.collapsedLiveGroups.add(node.id);
+            }
+            this.mountChildren();
+            this.ui?.requestRender();
+          },
+          (blockId, nextExpanded) => this.setBlockExpanded(blockId, nextExpanded),
+          this.context.onInspectAgent ?? this.onInspectSubagent,
+        );
+        this.liveSubagentGroups.set(node.id, group);
+      } else {
+        group.update(rows, groupExpanded);
+      }
+      components.push(group);
+      appendNotes(new Set(memberIds(node)));
     };
     const append = (node: DisplayNode): void => {
       switch (node.kind) {
@@ -329,9 +626,19 @@ export class DaemonTranscriptRenderer {
           }
           mountCompactGroup(node);
           return;
-        case 'subagent-group':
+        case 'subagent-group': {
+          const hasLiveChild = node.members.some((member) =>
+            isLiveSubagentStatus(
+              effectiveSubagentStatus(member, this.context.forest, latestCardIdByAgent),
+            ),
+          );
+          if (hasLiveChild) {
+            mountLiveSubagentGroup(node);
+            return;
+          }
           mountCompactGroup(node);
           return;
+        }
         case 'media-run':
           if (node.latest) {
             node.members.forEach(append);
@@ -339,19 +646,21 @@ export class DaemonTranscriptRenderer {
           }
           mountCompactGroup(node);
           return;
-        case 'subagent-ended':
+        case 'subagent-ended': {
+          const leafIds = memberIds(node);
           if (this.expanded) {
             mountLeaf(node.note, true);
             return;
           }
-          if (this.expandedFolds.has(node.id)) {
+          if (this.isFoldExpanded(node.id, leafIds)) {
             mountSummary(node, true);
             mountLeaf(node.note, true);
             return;
           }
           mountSummary(node, false);
-          appendNotes(new Set(memberIds(node)));
+          appendNotes(new Set(leafIds));
           return;
+        }
         default:
           mountLeaf(node);
           return;
@@ -364,6 +673,9 @@ export class DaemonTranscriptRenderer {
       this.mounted.delete(id);
     }
     for (const id of this.summaries.keys()) if (!summaries.has(id)) this.summaries.delete(id);
+    for (const id of this.liveSubagentGroups.keys()) {
+      if (!liveGroups.has(id)) this.liveSubagentGroups.delete(id);
+    }
     const children = this.container.children;
     if (
       components.length === children.length &&
@@ -402,19 +714,37 @@ export class DaemonTranscriptRenderer {
     return false;
   }
 
-  private updateOrCreate(block: Block, forceExpandInner = false): MountedBlock {
+  private updateOrCreate(
+    block: Block,
+    forceExpandInner = false,
+    latestCardIdByAgent: ReadonlyMap<string, string> = new Map(),
+  ): MountedBlock {
     const mounted = this.mounted.get(block.id);
-    const effectiveExpanded = this.expanded || forceExpandInner;
+    const effectiveExpanded =
+      this.expanded || forceExpandInner || this.scopeState.expandedBlocks.has(block.id);
     const meta =
       block.kind === 'tool' || block.kind === 'shell'
         ? this.context.resolveBlockMeta?.(block)
         : undefined;
-    const nextMetaKey = serializeMetaKey(meta, effectiveExpanded);
+    const subagentRow =
+      block.kind === 'subagent'
+        ? this.buildSubagentRowData(block, latestCardIdByAgent)
+        : undefined;
+    const nextMetaKey =
+      subagentRow !== undefined
+        ? JSON.stringify([
+            subagentRow.status,
+            subagentRow.isLive,
+            subagentRow.activity,
+            subagentRow.error,
+            subagentRow.expanded,
+          ])
+        : serializeMetaKey(meta, effectiveExpanded);
     if (mounted?.block === block && mounted.metaKey === nextMetaKey) {
-      if (
-        forceExpandInner &&
-        (mounted.component instanceof ThinkingComponent || mounted.component instanceof ProcessDetail)
-      ) {
+      if (mounted.component instanceof ThinkingComponent) {
+        mounted.component.setDurationMs(this.getThinkingDurationMs(block as ThinkingBlock));
+        if (forceExpandInner) mounted.component.setExpanded(true);
+      } else if (mounted.component instanceof ProcessDetail && forceExpandInner) {
         mounted.component.setExpanded(true);
       }
       return mounted;
@@ -422,30 +752,57 @@ export class DaemonTranscriptRenderer {
     if (
       mounted !== undefined &&
       mounted.kind === block.kind &&
-      !requiresReplacement(mounted.block, block, mounted.metaKey, nextMetaKey)
+      !requiresReplacement(mounted.block, block, mounted.metaKey, nextMetaKey) &&
+      !(block.kind === 'subagent' && subagentRow !== undefined && subagentRow.isLive !== (mounted.component instanceof LiveSubagentCardComponent))
     ) {
-      updateMountedBlock(mounted.component, block, meta);
+      if (mounted.component instanceof LiveSubagentCardComponent && subagentRow !== undefined) {
+        mounted.component.update(subagentRow);
+      } else {
+        updateMountedBlock(
+          mounted.component,
+          block,
+          meta,
+          block.kind === 'thinking' ? this.getThinkingDurationMs(block) : undefined,
+        );
+      }
       if (
-        forceExpandInner &&
-        (mounted.component instanceof ThinkingComponent || mounted.component instanceof ProcessDetail)
+        mounted.component instanceof ThinkingComponent ||
+        mounted.component instanceof ProcessDetail ||
+        mounted.component instanceof ToolCallComponent
       ) {
-        mounted.component.setExpanded(true);
+        mounted.component.setExpanded(effectiveExpanded);
       }
       mounted.block = block;
       mounted.metaKey = nextMetaKey;
       return mounted;
     }
     if (mounted !== undefined) disposeComponent(mounted.component);
-    const component = createBlockComponent(block, this.ui, this.workDir, meta, effectiveExpanded);
-    if (
-      component instanceof ToolCallComponent ||
-      component instanceof DaemonUserMessageComponent ||
-      component instanceof ThinkingComponent ||
-      component instanceof ProcessDetail
-    ) {
+    const component =
+      block.kind === 'subagent' && subagentRow !== undefined && subagentRow.isLive
+        ? new LiveSubagentCardComponent(
+            subagentRow,
+            (blockId, nextExpanded) => this.setBlockExpanded(blockId, nextExpanded),
+            this.context.onInspectAgent ?? this.onInspectSubagent,
+          )
+        : createBlockComponent(
+            block,
+            this.ui,
+            this.workDir,
+            meta,
+            effectiveExpanded,
+            block.kind === 'thinking' ? this.getThinkingDurationMs(block) : undefined,
+          );
+    if (component instanceof ThinkingComponent) {
       component.setExpanded(effectiveExpanded);
-    }
-    if (component instanceof DaemonUserMessageComponent) {
+      component.setOnToggleExpanded((nextExpanded) => this.setBlockExpanded(block.id, nextExpanded));
+    } else if (component instanceof ToolCallComponent) {
+      component.setExpanded(effectiveExpanded);
+      component.setOnToggleExpanded((nextExpanded) => this.setBlockExpanded(block.id, nextExpanded));
+    } else if (component instanceof ProcessDetail) {
+      component.setExpanded(effectiveExpanded);
+      component.setOnToggleExpanded((nextExpanded) => this.setBlockExpanded(block.id, nextExpanded));
+    } else if (component instanceof DaemonUserMessageComponent) {
+      component.setExpanded(effectiveExpanded);
       component.setShowTimestamp(this.showTimestamps);
     }
     const next: MountedBlock = {
@@ -465,14 +822,18 @@ export function createBlockComponent(
   workDir?: string,
   meta?: ResolvedBlockContinuationMeta,
   expanded = false,
+  thinkingDurationMs?: number,
 ): Component {
   switch (block.kind) {
     case 'user':
       return new DaemonUserMessageComponent(block);
     case 'assistant':
       return new DaemonAssistantMessageComponent(block.text, block.streaming, block.media);
-    case 'thinking':
-      return new ThinkingComponent(block.text, true, block.streaming ? 'live' : 'finalized', ui);
+    case 'thinking': {
+      const comp = new ThinkingComponent(block.text, true, block.streaming ? 'live' : 'finalized', ui);
+      comp.setDurationMs(thinkingDurationMs);
+      return comp;
+    }
     case 'tool':
       return createToolComponent(block, ui, workDir, meta);
     case 'message':
@@ -531,6 +892,8 @@ export interface TranscriptContext {
   readonly ingress?: readonly import('@kiki/protocol').PromptItem[];
   readonly toolMetaRevision?: number;
   readonly resolveBlockMeta?: (block: ToolBlock | ShellBlock) => ResolvedBlockContinuationMeta | undefined;
+  readonly onInspectAgent?: (subagentId: string) => void;
+  readonly onLocalExpandChanged?: (expandedBlockIds: ReadonlySet<string>) => void;
 }
 
 interface SummaryDisplay {
@@ -544,7 +907,11 @@ class TranscriptSummary implements Component, MouseRoutable {
   private display: SummaryDisplay = { lead: '' };
   private expanded = false;
 
-  constructor(private readonly onToggle: () => void) {}
+  constructor(private onToggle: () => void) {}
+
+  setOnToggle(onToggle: () => void): void {
+    this.onToggle = onToggle;
+  }
 
   setSummary(display: SummaryDisplay, expanded: boolean): void {
     this.display = display;
@@ -681,10 +1048,28 @@ function summarizeMediaRun(node: MediaRun): SummaryDisplay {
   };
 }
 
+function latestThoughtSummary(
+  node: HistoryFold,
+  resolveDurationMs?: (block: ThinkingBlock) => number | undefined,
+  headingOnly = false,
+): { readonly headline?: string; readonly duration?: string } {
+  let latest: ThinkingBlock | undefined;
+  for (const member of collectLeafBlocks(node)) {
+    if (member.kind === 'thinking') latest = member;
+  }
+  if (latest === undefined) return {};
+  const headline = extractThinkingSummary(latest.text, {
+    streaming: headingOnly ? true : latest.streaming,
+  });
+  const duration = formatThinkingDuration(resolveDurationMs?.(latest));
+  return { headline, duration };
+}
+
 function summarizeNode(
   node: DisplayNode,
   forest?: AgentForest,
   latestCardIdByAgent?: ReadonlyMap<string, string>,
+  resolveThinkingDurationMs?: (block: ThinkingBlock) => number | undefined,
 ): SummaryDisplay {
   if (node.kind === 'history-fold') {
     const sentCount = node.sentMessages?.reduce((sum, item) => sum + item.count, 0) ?? 0;
@@ -696,8 +1081,22 @@ function summarizeNode(
       sentCount === 0 &&
       node.thoughts > 0
     ) {
+      const thought = latestThoughtSummary(node, resolveThinkingDurationMs);
+      const leadParts: string[] = [
+        thought.headline !== undefined
+          ? `Thought: ${thought.headline}`
+          : node.thoughts === 1
+            ? 'Thought'
+            : `Thought · ${node.thoughts} thoughts`,
+      ];
+      if (thought.headline !== undefined && node.thoughts > 1) {
+        leadParts.push(`${String(node.thoughts)} thoughts`);
+      }
+      if (thought.duration !== undefined) {
+        leadParts.push(thought.duration);
+      }
       return {
-        lead: node.thoughts === 1 ? 'Thought' : `Thought · ${node.thoughts} thoughts`,
+        lead: leadParts.join(' · '),
       };
     }
     const parts = ['Worked'];
@@ -710,10 +1109,20 @@ function summarizeNode(
       parts.push(`messaged ${names}`);
     }
     if (node.notes > 0) parts.push(`${node.notes} ${node.notes === 1 ? 'note' : 'notes'}`);
+    const actionDetail = summarizeFoldActions(node);
+    const thoughtInfo =
+      node.thoughts > 0 ? latestThoughtSummary(node, resolveThinkingDurationMs, true) : undefined;
+    const thoughtDetail =
+      thoughtInfo?.headline !== undefined
+        ? thoughtInfo.duration !== undefined
+          ? `thought: ${thoughtInfo.headline} (${thoughtInfo.duration})`
+          : `thought: ${thoughtInfo.headline}`
+        : undefined;
+    const detail = [actionDetail, thoughtDetail].filter((part): part is string => part !== undefined).join(' · ');
     return {
       lead: parts.join(' · '),
       errorBadge: node.failed > 0 ? `${node.failed} failed` : undefined,
-      detail: summarizeFoldActions(node),
+      detail: detail.length > 0 ? detail : undefined,
     };
   }
   if (node.kind === 'tool-group') {
@@ -739,6 +1148,7 @@ function summarizeNode(
 
 class ProcessDetail implements Component, MouseRoutable {
   private expanded = false;
+  private onToggleExpanded: ((expanded: boolean) => void) | undefined;
   private readonly detail = new Text('', 2, 0);
 
   constructor(
@@ -747,6 +1157,10 @@ class ProcessDetail implements Component, MouseRoutable {
     private readonly tone: 'text' | 'textDim' | 'error' = 'textDim',
     private readonly ui?: TUI,
   ) {}
+
+  setOnToggleExpanded(listener: ((expanded: boolean) => void) | undefined): void {
+    this.onToggleExpanded = listener;
+  }
 
   setExpanded(expanded: boolean): void {
     this.expanded = expanded;
@@ -760,13 +1174,25 @@ class ProcessDetail implements Component, MouseRoutable {
   routeMouse(event: SgrMouseEvent, line: number, _col: number): boolean {
     if (!event.leftClick || this.body === this.summary || line !== 0) return false;
     this.setExpanded(!this.expanded);
+    this.onToggleExpanded?.(this.expanded);
     this.ui?.requestRender();
     return true;
   }
 
   render(width: number): string[] {
-    if (this.expanded) return this.detail.render(width);
     const expandable = this.body !== this.summary;
+    if (this.expanded) {
+      if (!expandable) return this.detail.render(width);
+      const header = truncateToWidth(
+        `  ${currentTheme.fg('primary', FOLD_EXPANDED_MARK)} ${currentTheme.fg(this.tone, this.summary)}`,
+        Math.max(1, width),
+        '…',
+      );
+      const bodyLines = this.detail.render(width);
+      // Avoid repeating the summary line when body starts with it verbatim.
+      const rest = bodyLines.length > 0 && this.body.startsWith(`${this.summary}\n`) ? bodyLines.slice(1) : bodyLines;
+      return [header, ...rest];
+    }
     const prefix = expandable ? `  ${currentTheme.fg('textMuted', FOLD_COLLAPSED_MARK)} ` : '  ';
     return [truncateToWidth(`${prefix}${currentTheme.fg(this.tone, this.summary)}`, width, '…')];
   }
@@ -1165,6 +1591,7 @@ function updateMountedBlock(
   component: Component,
   block: Block,
   meta?: ResolvedBlockContinuationMeta,
+  thinkingDurationMs?: number,
 ): void {
   switch (block.kind) {
     case 'assistant':
@@ -1175,12 +1602,14 @@ function updateMountedBlock(
     case 'thinking': {
       const thinking = component as ThinkingComponent;
       thinking.setText(block.text);
+      thinking.setDurationMs(thinkingDurationMs);
       if (!block.streaming) thinking.finalize();
       return;
     }
     case 'tool': {
       const tool = component as ToolCallComponent;
       tool.updateToolCall(toolCallData(block, meta));
+      tool.setProgressSnapshot(block.status === 'running' ? block.progressText : undefined);
       const result = toolResultData(block, meta);
       if (result !== undefined) tool.setResult(result);
       return;
@@ -1217,19 +1646,28 @@ function createToolComponent(
   meta?: ResolvedBlockContinuationMeta,
 ): ToolCallComponent {
   const result = toolResultData(block, meta);
-  return new ToolCallComponent(toolCallData(block, meta), result, ui, workDir);
+  const component = new ToolCallComponent(toolCallData(block, meta), result, ui, workDir);
+  if (block.status === 'running' && typeof block.progressText === 'string' && block.progressText.length > 0) {
+    component.setProgressSnapshot(block.progressText);
+  }
+  return component;
 }
 
 function toolCallData(
   block: ToolBlock,
   meta?: ResolvedBlockContinuationMeta,
 ): ToolCallBlockData {
+  const rawArgsText = typeof block.argsText === 'string' ? block.argsText : '';
+  const args = asRecord(block.args, rawArgsText);
+  const streamingArguments =
+    block.status === 'running' && rawArgsText.length > 0 ? rawArgsText : undefined;
   return {
     id: block.toolCallId,
     name: block.name,
-    args: asRecord(block.args, block.argsText),
+    args,
     description: block.description,
     display: block.display,
+    streamingArguments,
     result: toolResultData(block, meta),
     turnId: block.turnId,
   };

@@ -4766,3 +4766,117 @@ describe("Editor narrow width rendering", () => {
 		assert.doesNotThrow(() => editor.render(-1));
 	});
 });
+
+describe("Editor click-to-cursor, atomic placeholders, and autocomplete intents", () => {
+	it("positions cursor from painted cells across CJK, ZWJ emoji, wrapped lines, and atomic placeholders", () => {
+		const editor = new Editor(createTestTUI(), defaultEditorTheme, { paddingX: 2 });
+		editor.setAtomicPlaceholders(["[image #1]"]);
+		editor.setText("你好 [image #1] a👨‍👩‍👧‍👦b");
+		editor.render(40);
+
+		const makeClick = (col: number) => ({
+			button: 0,
+			col,
+			row: 1,
+			release: false,
+			wheel: null,
+			motion: false,
+			leftClick: true,
+			rightClick: false,
+			type: "click" as const,
+		});
+
+		// Left padding is 2: '你' occupies cells 2..3, '好' occupies 4..5, ' ' at 6, '[image #1]' at 7..16
+		// Clicking either cell of '好' (col 4 or 5) snaps to index 1 ('好' start)
+		assert.strictEqual(editor.routeMouse(makeClick(4), 1, 4), true);
+		assert.deepStrictEqual(editor.getCursor(), { line: 0, col: 1 });
+		assert.strictEqual(editor.routeMouse(makeClick(5), 1, 5), true);
+		assert.deepStrictEqual(editor.getCursor(), { line: 0, col: 1 });
+
+		// Clicking middle of registered atomic placeholder '[image #1]' snaps to its start (index 3)
+		assert.strictEqual(editor.routeMouse(makeClick(11), 1, 11), true);
+		assert.deepStrictEqual(editor.getCursor(), { line: 0, col: 3 });
+
+		// Clicking past end of line snaps to line end
+		assert.strictEqual(editor.routeMouse(makeClick(35), 1, 35), true);
+		assert.deepStrictEqual(editor.getCursor(), { line: 0, col: "你好 [image #1] a👨‍👩‍👧‍👦b".length });
+	});
+
+	it("deletes registered atomic placeholder in one Backspace while leaving hand-typed lookalike as plain text", () => {
+		const editor = new Editor(createTestTUI(), defaultEditorTheme);
+		editor.setAtomicPlaceholders(["[image #1]"]);
+		editor.setText("hi [image #1]");
+		editor.handleInput("\x7f"); // Backspace
+		assert.strictEqual(editor.getText(), "hi ");
+		assert.strictEqual(editor.hasPlaceholderInUndoStack("[image #1]"), true);
+
+		// Hand-typed lookalike not registered deletes one char at a time
+		editor.setText("hi [image #2]");
+		editor.handleInput("\x7f");
+		assert.strictEqual(editor.getText(), "hi [image #2");
+	});
+
+	it("honors AutocompleteConfirmIntent (runOnEnter, insert, continue) and rejects stale menu confirmation", async () => {
+		const submitted: string[] = [];
+		const editor = new Editor(createTestTUI(), defaultEditorTheme);
+		editor.onSubmit = (text) => submitted.push(text);
+		let stage = 1;
+		editor.setAutocompleteProvider({
+			async getSuggestions(lines, _line, col) {
+				const text = (lines[0] ?? "").slice(0, col);
+				if (text === "/plugins ") {
+					stage = 1;
+					return {
+						prefix: "",
+						items: [{ value: "enable ", label: "enable", intent: "continue" }],
+					};
+				}
+				if (text === "/plugins enable ") {
+					stage = 2;
+					return {
+						prefix: "",
+						items: [{ value: "my-plugin", label: "my-plugin", intent: "insert" }],
+					};
+				}
+				if (text === "/model ") {
+					return {
+						prefix: "",
+						items: [{ value: "gpt-5", label: "gpt-5", intent: "runOnEnter" }],
+					};
+				}
+				return null;
+			},
+			applyCompletion(lines, cursorLine, cursorCol, item) {
+				const line = lines[cursorLine] ?? "";
+				const next = line.slice(0, cursorCol) + item.value + line.slice(cursorCol);
+				const nextLines = [...lines];
+				nextLines[cursorLine] = next;
+				return { lines: nextLines, cursorLine, cursorCol: cursorCol + item.value.length };
+			},
+		});
+
+		editor.setText("/plugins ");
+		editor.triggerExplicitTabAutocomplete();
+		await new Promise((r) => setTimeout(r, 15));
+		assert.strictEqual(stage, 1);
+
+		// Enter on intent='continue' inserts 'enable ' and re-triggers stage 2 without submitting
+		editor.handleInput("\r");
+		await new Promise((r) => setTimeout(r, 15));
+		assert.strictEqual(editor.getText(), "/plugins enable ");
+		assert.deepStrictEqual(submitted, []);
+		assert.strictEqual(stage, 2);
+
+		// Enter on intent='insert' inserts 'my-plugin' without submitting
+		editor.handleInput("\r");
+		assert.strictEqual(editor.getText(), "/plugins enable my-plugin");
+		assert.deepStrictEqual(submitted, []);
+
+		// Enter on intent='runOnEnter' at end-of-buffer submits once
+		editor.setText("/model ");
+		editor.triggerExplicitTabAutocomplete();
+		await new Promise((r) => setTimeout(r, 15));
+		editor.handleInput("\r");
+		assert.deepStrictEqual(submitted, ["/model gpt-5"]);
+	});
+});

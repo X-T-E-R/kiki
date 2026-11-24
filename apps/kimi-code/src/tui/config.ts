@@ -64,6 +64,8 @@ export const TuiConfigFileSchema = z.object({
   render_latex: z.boolean().optional(),
   disable_paste_burst: z.boolean().optional(),
   cache_expiry_hint: z.boolean().optional(),
+  favorite_models: z.array(z.string()).optional(),
+  recent_models: z.array(z.string()).optional(),
   editor: z
     .object({
       command: z.string().optional(),
@@ -97,6 +99,8 @@ export const TuiConfigSchema = z.object({
   /** Present in every normalized config; optional only so hand-built test
    * fixtures from before this field existed still typecheck. */
   cacheExpiryHint: z.boolean().optional(),
+  favoriteModels: z.array(z.string()).optional(),
+  recentModels: z.array(z.string()).optional(),
   editorCommand: z.string().nullable(),
   notifications: NotificationsConfigSchema,
   /** Present in every normalized config; optional only so hand-built test
@@ -116,7 +120,6 @@ export const DEFAULT_NOTIFICATIONS_CONFIG: NotificationsConfig = {
 export const DEFAULT_TUI_CONFIG: TuiConfig = TuiConfigSchema.parse({
   theme: 'auto',
   busySubmit: 'send_now',
-  mouse: true,
   screenMode: 'main',
   showThinking: true,
   showTimestamps: false,
@@ -127,6 +130,33 @@ export const DEFAULT_TUI_CONFIG: TuiConfig = TuiConfigSchema.parse({
   notifications: DEFAULT_NOTIFICATIONS_CONFIG,
   statusLine: DEFAULT_STATUS_LINE_CONFIG,
 });
+
+export interface ResolvedScreenAndMouse {
+  readonly screenMode: ScreenMode;
+  readonly effectiveMouse: boolean;
+  readonly savedMouse: boolean | undefined;
+  readonly envOverride: ScreenMode | undefined;
+}
+
+/**
+ * Resolve effective screen mode and mouse capture state.
+ * - Default first launch: `main` with effective mouse OFF (never hijacks host scrollback).
+ * - Explicit fullscreen (`alt`): mouse ON unless saved preference is explicitly `false`.
+ * - Legacy persisted `main + mouse=true` does not reactivate main mouse capture; the saved
+ *   preference is remembered for `alt`.
+ */
+export function resolveEffectiveScreenAndMouse(
+  config: Pick<TuiConfig, 'screenMode' | 'mouse'>,
+  env: NodeJS.ProcessEnv = process.env,
+): ResolvedScreenAndMouse {
+  const rawEnv = env['KIKI_TUI_FULL_SCREEN'];
+  const envOverride: ScreenMode | undefined =
+    rawEnv === '1' ? 'alt' : rawEnv === '0' ? 'main' : undefined;
+  const screenMode: ScreenMode = envOverride ?? config.screenMode ?? 'main';
+  const savedMouse = config.mouse;
+  const effectiveMouse = screenMode === 'alt' && (savedMouse ?? true);
+  return { screenMode, effectiveMouse, savedMouse, envOverride };
+}
 
 /**
  * Thrown by `loadTuiConfig` when the on-disk TOML cannot be parsed.
@@ -240,10 +270,9 @@ export function normalizeTuiConfig(
         return known;
       })
       .map((item) => item as StatusLineItem) ?? null;
-  return TuiConfigSchema.parse({
+  const normalized: Record<string, unknown> = {
     theme: config.theme ?? DEFAULT_TUI_CONFIG.theme,
     busySubmit: config.busy_submit ?? DEFAULT_TUI_CONFIG.busySubmit,
-    mouse: config.mouse ?? DEFAULT_TUI_CONFIG.mouse,
     screenMode: config.screen_mode ?? DEFAULT_TUI_CONFIG.screenMode,
     showThinking: config.show_thinking ?? DEFAULT_TUI_CONFIG.showThinking,
     showTimestamps: config.show_timestamps ?? DEFAULT_TUI_CONFIG.showTimestamps,
@@ -263,7 +292,11 @@ export function normalizeTuiConfig(
           ? null
           : statusLineCommand,
     },
-  });
+  };
+  if (config.mouse !== undefined) normalized['mouse'] = config.mouse;
+  if (config.favorite_models !== undefined) normalized['favoriteModels'] = config.favorite_models;
+  if (config.recent_models !== undefined) normalized['recentModels'] = config.recent_models;
+  return TuiConfigSchema.parse(normalized);
 }
 
 export function renderTuiConfig(config: TuiConfig): string {
@@ -291,19 +324,31 @@ export function renderTuiConfig(config: TuiConfig): string {
 `;
   const busySubmit = config.busySubmit ?? 'send_now';
   const screenMode = config.screenMode ?? 'main';
+  const mouseLine =
+    config.mouse === undefined
+      ? '# mouse = true # auto (on in alt, off in main) — set true | false to override fullscreen mouse capture (Alt+M toggles)'
+      : `mouse = ${String(config.mouse)} # true | false — fullscreen SGR mouse click & wheel reporting (Alt+M toggles)`;
+  const modelListLines: string[] = [];
+  if (config.favoriteModels !== undefined && config.favoriteModels.length > 0) {
+    modelListLines.push(`favorite_models = ${JSON.stringify(config.favoriteModels)}`);
+  }
+  if (config.recentModels !== undefined && config.recentModels.length > 0) {
+    modelListLines.push(`recent_models = ${JSON.stringify(config.recentModels)}`);
+  }
+  const modelListBlock = modelListLines.length > 0 ? `\n${modelListLines.join('\n')}` : '';
   return `# ~/.kiki/tui.toml
 # Client preferences for kimi-code.
 # Agent/runtime settings stay in ~/.kiki/config.toml.
 
 theme = "${escapeTomlBasicString(config.theme)}" # "auto" | "dark" | "light" | custom theme name
 busy_submit = "${busySubmit}" # "send_now" | "queue" — plain Enter behavior while a turn runs
-mouse = ${String(config.mouse !== false)} # true | false — SGR mouse click & wheel reporting (Alt+M toggles)
+${mouseLine}
 screen_mode = "${screenMode}" # "main" | "alt" — native scrollback vs fullscreen alternate screen
 show_thinking = ${String(config.showThinking !== false)} # true | false — render thinking traces
 show_timestamps = ${String(config.showTimestamps === true)} # true | false — show prompt timestamps
 render_latex = ${String(config.renderLatex !== false)} # false keeps LaTeX math in assistant messages as raw source
 disable_paste_burst = ${String(config.disablePasteBurst)} # true disables non-bracketed paste-burst fallback
-cache_expiry_hint = ${String(config.cacheExpiryHint !== false)} # false disables the "cache expired" dialog on resume / idle submit
+cache_expiry_hint = ${String(config.cacheExpiryHint !== false)} # false disables the "cache expired" dialog on resume / idle submit${modelListBlock}
 
 [editor]
 command = "${escapeTomlBasicString(config.editorCommand ?? '')}" # Empty uses $VISUAL / $EDITOR

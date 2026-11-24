@@ -24,10 +24,12 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
   type Focusable,
+  type MouseRoutable,
+  type SgrMouseEvent,
 } from '@kiki/pi-tui';
 
 import { highlightLines, langFromPath } from '#/tui/components/media/code-highlight';
-import { renderDiffLinesClustered } from '#/tui/components/media/diff-preview';
+import { renderDiffLinesClustered, renderSplitDiffLines } from '#/tui/components/media/diff-preview';
 import type { DiffDisplayBlock, FileContentDisplayBlock } from '#/tui/interactions/types';
 import { currentTheme } from '#/tui/theme';
 import { printableChar } from '#/tui/utils/printable-key';
@@ -56,7 +58,7 @@ function fitExactly(line: string, width: number): string {
   return padToWidth(s, width);
 }
 
-export class ApprovalPreviewViewer extends Container implements Focusable {
+export class ApprovalPreviewViewer extends Container implements Focusable, MouseRoutable {
   focused = false;
 
   private readonly props: ApprovalPreviewViewerProps;
@@ -67,14 +69,33 @@ export class ApprovalPreviewViewer extends Container implements Focusable {
   private headerTitle: string;
   /** Index of the topmost visible line. */
   private scrollTop = 0;
+  /** Toggle for wide-terminal side-by-side split diff (`>= 130` cols). */
+  private splitDiff = false;
+  private lastBuildWidth = 0;
+  private lastBuildSplit = false;
 
   constructor(props: ApprovalPreviewViewerProps, terminal: Terminal) {
     super();
     this.props = props;
     this.terminal = terminal;
-    const built = buildBody(props.block, props.blocks);
+    const built = buildBody(props.block, props.blocks, false, terminal.columns);
     this.bodyLines = built.lines;
     this.headerTitle = built.title;
+    this.lastBuildWidth = terminal.columns;
+    this.lastBuildSplit = false;
+  }
+
+  private hasDiffContent(): boolean {
+    if (this.props.block.type === 'diff') return true;
+    return this.props.blocks?.some((item) => item.type === 'diff') === true;
+  }
+
+  routeMouse(event: SgrMouseEvent, _line: number, _col: number): boolean {
+    if (event.wheel !== null) {
+      this.scrollBy(event.wheel * 3);
+      return true;
+    }
+    return false;
   }
 
   handleInput(data: string): void {
@@ -114,6 +135,12 @@ export class ApprovalPreviewViewer extends Container implements Focusable {
       this.scrollTo(this.maxScroll());
       return;
     }
+    if ((k === 't' || k === 'T') && this.hasDiffContent()) {
+      this.splitDiff = !this.splitDiff;
+      this.wrapped = undefined;
+      super.invalidate();
+      return;
+    }
   }
 
   private scrollBy(delta: number): void {
@@ -121,9 +148,11 @@ export class ApprovalPreviewViewer extends Container implements Focusable {
   }
 
   override invalidate(): void {
-    const built = buildBody(this.props.block, this.props.blocks);
+    const built = buildBody(this.props.block, this.props.blocks, this.splitDiff, this.terminal.columns);
     this.bodyLines = built.lines;
     this.headerTitle = built.title;
+    this.lastBuildWidth = this.terminal.columns;
+    this.lastBuildSplit = this.splitDiff;
     this.wrapped = undefined;
   }
 
@@ -143,6 +172,15 @@ export class ApprovalPreviewViewer extends Container implements Focusable {
   }
 
   override render(width: number): string[] {
+    const effectiveSplit = this.splitDiff && width >= 130 && this.hasDiffContent();
+    if (effectiveSplit !== this.lastBuildSplit || (effectiveSplit && width !== this.lastBuildWidth)) {
+      const built = buildBody(this.props.block, this.props.blocks, effectiveSplit, Math.max(1, width - 4));
+      this.bodyLines = built.lines;
+      this.headerTitle = built.title;
+      this.lastBuildWidth = width;
+      this.lastBuildSplit = effectiveSplit;
+      this.wrapped = undefined;
+    }
     if (this.wrapped?.width !== width) {
       this.wrapped = { width, lines: this.bodyLines.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width - 4))) };
     }
@@ -197,11 +235,15 @@ export class ApprovalPreviewViewer extends Container implements Focusable {
       'textMuted',
       ` ${String(lineFrom)}-${String(lineTo)} / ${String(total)} (${String(percent)}%) `,
     );
+    const splitHint = this.hasDiffContent() && width >= 130
+      ? `  ${key('t')} ${dim(this.splitDiff ? 'unified' : 'split')}`
+      : '';
     const keys =
       `${key('↑↓')} ${dim('line')}  ` +
       `${key('PgUp/PgDn')} ${dim('page')}  ` +
-      `${key('g/G')} ${dim('top/bot')}  ` +
-      `${key('Q/Esc/Ctrl+E')} ${dim('cancel')}`;
+      `${key('g/G')} ${dim('top/bot')}` +
+      splitHint +
+      `  ${key('Q/Esc/Ctrl+E')} ${dim('cancel')}`;
     const left = ` ${keys}`;
     const leftW = visibleWidth(left);
     const rightW = visibleWidth(position);
@@ -220,30 +262,42 @@ interface BuiltBody {
 function buildBody(
   block: ApprovalPreviewBlock,
   blocks?: readonly ApprovalPreviewBlock[],
+  splitDiff = false,
+  innerWidth = 100,
 ): BuiltBody {
   if (blocks !== undefined && blocks.length > 1) {
     const diffBlocks = blocks.filter((item): item is DiffDisplayBlock => item.type === 'diff');
     if (diffBlocks.length > 1) {
-      return buildMultiDiffBody(diffBlocks);
+      return buildMultiDiffBody(diffBlocks, splitDiff, innerWidth);
     }
   }
   if (block.type === 'diff') {
-    return buildDiffBody(block);
+    return buildDiffBody(block, splitDiff, innerWidth);
   }
   return buildFileContentBody(block);
 }
 
-function buildMultiDiffBody(blocks: readonly DiffDisplayBlock[]): BuiltBody {
+function buildMultiDiffBody(
+  blocks: readonly DiffDisplayBlock[],
+  splitDiff = false,
+  innerWidth = 100,
+): BuiltBody {
   const lines: string[] = [];
   let firstHeader = '';
   for (let idx = 0; idx < blocks.length; idx++) {
     const item = blocks[idx];
     if (item === undefined) continue;
-    const rendered = renderDiffLinesClustered(item.old_text, item.new_text, item.path, {
-      contextLines: 3,
-      oldStart: item.old_start ?? 1,
-      newStart: item.new_start ?? 1,
-    });
+    const rendered = splitDiff
+      ? renderSplitDiffLines(item.old_text, item.new_text, item.path, innerWidth, {
+          contextLines: 3,
+          oldStart: item.old_start ?? 1,
+          newStart: item.new_start ?? 1,
+        })
+      : renderDiffLinesClustered(item.old_text, item.new_text, item.path, {
+          contextLines: 3,
+          oldStart: item.old_start ?? 1,
+          newStart: item.new_start ?? 1,
+        });
     const [header = '', ...rest] = rendered;
     if (idx === 0) firstHeader = stripLeadingSpace(header);
     if (idx > 0) lines.push('');
@@ -259,21 +313,31 @@ function buildMultiDiffBody(blocks: readonly DiffDisplayBlock[]): BuiltBody {
   return { lines, title };
 }
 
-function buildDiffBody(block: DiffDisplayBlock): BuiltBody {
+function buildDiffBody(
+  block: DiffDisplayBlock,
+  splitDiff = false,
+  innerWidth = 100,
+): BuiltBody {
   // renderDiffLinesClustered emits a `+N -M path` header on its first line
   // followed by every changed line plus surrounding context. We pull the
   // header out into the viewer chrome so the body is purely scrollable diff
   // content; this also means we don't double-render the path.
-  const rendered = renderDiffLinesClustered(
-    block.old_text,
-    block.new_text,
-    block.path,
-    {
-      contextLines: 3,
-      oldStart: block.old_start ?? 1,
-      newStart: block.new_start ?? 1,
-    },
-  );
+  const rendered = splitDiff
+    ? renderSplitDiffLines(block.old_text, block.new_text, block.path, innerWidth, {
+        contextLines: 3,
+        oldStart: block.old_start ?? 1,
+        newStart: block.new_start ?? 1,
+      })
+    : renderDiffLinesClustered(
+        block.old_text,
+        block.new_text,
+        block.path,
+        {
+          contextLines: 3,
+          oldStart: block.old_start ?? 1,
+          newStart: block.new_start ?? 1,
+        },
+      );
   const [header = '', ...rest] = rendered;
   return { lines: rest, title: stripLeadingSpace(header) };
 }

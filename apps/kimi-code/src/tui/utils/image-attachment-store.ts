@@ -230,6 +230,10 @@ export class ImageAttachmentStore {
     return this.byId.get(id);
   }
 
+  placeholders(): string[] {
+    return [...this.byId.values()].map((item) => item.placeholder);
+  }
+
   /**
    * Drop every attachment and return the staged daemon file ids to delete.
    * Uploads with an outstanding retain are excluded: a stashed/queued draft

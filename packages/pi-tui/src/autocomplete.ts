@@ -217,10 +217,17 @@ async function walkDirectoryWithFd(
 	});
 }
 
+export type AutocompleteConfirmIntent = "insert" | "continue" | "runOnEnter";
+
 export interface AutocompleteItem {
 	value: string;
 	label: string;
 	description?: string;
+	/** Confirmation intent for Enter/Tab/pointer selection. */
+	intent?: AutocompleteConfirmIntent;
+	/** Optional explicit UTF-16 replacement span on the cursor line. */
+	replaceStartCol?: number;
+	replaceEndCol?: number;
 	/** Provider-specific metadata forwarded unchanged to applyCompletion. */
 	data?: Record<string, unknown>;
 }
@@ -251,7 +258,7 @@ export interface AutocompleteProvider {
 		lines: string[],
 		cursorLine: number,
 		cursorCol: number,
-		options: { signal: AbortSignal; force?: boolean },
+		options: { signal: AbortSignal; force?: boolean; trigger?: "typing" | "tab" },
 	): Promise<AutocompleteSuggestions | null>;
 
 	// Apply the selected item

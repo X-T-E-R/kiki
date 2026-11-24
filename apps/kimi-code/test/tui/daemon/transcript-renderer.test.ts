@@ -1214,13 +1214,12 @@ describe('DaemonTranscriptRenderer', () => {
     ]);
 
     const compact = frame();
-    expect(compact).toContain('▸ Thought');
-    expect(compact).not.toContain('Secret chain of thought');
+    expect(compact).toContain('▸ Thought: Secret chain of thought line 1');
+    expect(compact).not.toContain('Secret line 2');
     expect(compact).toContain('▸ Worked · 1 step · read alpha.txt');
     expect(compact).not.toContain('content-of-alpha.txt');
     expect(compact).toContain('▸ Worked · 3 steps · 1 thought · 1 failed');
     expect(compact).toContain('missing.txt does not exist');
-    expect(compact).not.toContain('Turn 3 private reasoning');
     expect(compact).not.toContain('Used Read (beta.txt)');
 
     // Clicking only the first fold (▸ Thought) expands just turn 1 without affecting turn 2 or turn 3.
@@ -1230,15 +1229,14 @@ describe('DaemonTranscriptRenderer', () => {
     expect(typeof thoughtSummary?.routeMouse).toBe('function');
     expect(thoughtSummary.routeMouse!({ leftClick: true }, 0, 4)).toBe(true);
     const afterClick = frame();
-    expect(afterClick).toContain('▾ Thought');
-    expect(afterClick).toContain('Secret chain of thought line 1');
+    expect(afterClick).toContain('▾ Thought: Secret chain of thought line 1');
+    expect(afterClick).toContain('Secret line 2');
     expect(afterClick).toContain('▸ Worked · 1 step · read alpha.txt');
-    expect(afterClick).not.toContain('Turn 3 private reasoning');
 
     // Clicking the same header collapses turn 1 back cleanly.
     expect(thoughtSummary.routeMouse!({ leftClick: true }, 0, 4)).toBe(true);
-    expect(frame()).toContain('▸ Thought');
-    expect(frame()).not.toContain('Secret chain of thought line 1');
+    expect(frame()).toContain('▸ Thought: Secret chain of thought line 1');
+    expect(frame()).not.toContain('Secret line 2');
   });
 
   it('summarizes live subagent-group and historical media-run cleanly and supports click expand', () => {
@@ -1297,19 +1295,24 @@ describe('DaemonTranscriptRenderer', () => {
 
     const compact = frame();
     expect(compact).toContain('▸ Viewed · 2 images · shot.png, chart.png');
-    expect(compact).toContain('▸ Agents · 2/3 done · 1 failed · explore, reviewer, worker');
+    // Live subagent group renders readable per-child rows for active & failed peers rather than squashing them.
+    expect(compact).toContain('▾ Agents · 3 (1 active, 1 done, 1 failed)');
+    expect(compact).toContain('reviewer');
+    expect(compact).toContain('Task for reviewer');
     expect(compact).toContain('worker');
+    expect(compact).toContain('worker crashed');
+    expect(compact).toContain('1 finished peer');
     expect(compact).not.toContain('Task for explore');
-    expect(compact).not.toContain('Task for reviewer');
 
-    const agentSummary = container.children.find((child) => strip(child.render(100).join('\n')).includes('▸ Agents ·')) as {
+    // Clicking the live group header collapses healthy active rows while still keeping failure visible.
+    const liveGroup = container.children.find((child) => strip(child.render(100).join('\n')).includes('▾ Agents ·')) as {
       routeMouse?: (event: { leftClick: boolean }, line: number, col: number) => boolean;
     };
-    expect(agentSummary.routeMouse!({ leftClick: true }, 0, 4)).toBe(true);
-    const expandedAgents = frame();
-    expect(expandedAgents).toContain('▾ Agents · 2/3 done · 1 failed');
-    expect(expandedAgents).toContain('Task for explore');
-    expect(expandedAgents).toContain('Task for reviewer');
+    expect(liveGroup.routeMouse!({ leftClick: true }, 1, 4)).toBe(true);
+    const collapsedAgents = frame();
+    expect(collapsedAgents).toContain('▸ Agents · 3 (1 active, 1 done, 1 failed)');
+    expect(collapsedAgents).toContain('worker crashed');
+    expect(collapsedAgents).not.toContain('Task for reviewer');
   });
 
   it('gates forest failure status and error to the latest subagent card when a resumed subagent fails later', () => {

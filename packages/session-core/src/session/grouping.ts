@@ -612,6 +612,14 @@ export function readSubagentEndings(
   return out;
 }
 
+export interface GroupBlocksOptions {
+  /**
+   * Optional block IDs that must never be coalesced into a `ToolGroup`.
+   * Absent or empty preserves exact legacy grouping behavior for all callers.
+   */
+  readonly protectedBlockIds?: ReadonlySet<string>;
+}
+
 export interface FoldOptions {
   /**
    * Blocks of the live turn that must stay where they are: the reader has
@@ -632,6 +640,12 @@ export interface FoldOptions {
    * holding it open as `newest`. Defaults to `false` (`HISTORY_FOLD_MIN = 2`).
    */
   readonly foldSingleProcess?: boolean;
+  /**
+   * Optional block IDs that act as a hard barrier against folding or media-run
+   * coalescing, irrespective of turn. Absent or empty preserves exact legacy
+   * folding behavior (including GUI virtual rows and tests).
+   */
+  readonly protectedBlockIds?: ReadonlySet<string>;
 }
 
 function latestSubagentCardIds(nodes: readonly DisplayNode[]): ReadonlyMap<string, string> {
@@ -649,12 +663,24 @@ function latestSubagentCardIds(nodes: readonly DisplayNode[]): ReadonlyMap<strin
   return latest;
 }
 
+function nodeHasProtectedId(node: DisplayNode, protectedBlockIds: ReadonlySet<string>): boolean {
+  if (protectedBlockIds.has(node.id)) return true;
+  if (node.kind === 'tool-group') {
+    return node.members.some((member) => protectedBlockIds.has(member.id));
+  }
+  if (node.kind === 'subagent-ended') {
+    return protectedBlockIds.has(node.note.id);
+  }
+  return false;
+}
+
 /** Media runs and live subagent groups: rows of their own, never folded. */
 function gatherRows(
   nodes: readonly DisplayNode[],
   live: string | undefined,
   forest: AgentForest | undefined,
   latestCardIdByAgent: ReadonlyMap<string, string>,
+  protectedBlockIds?: ReadonlySet<string>,
 ): DisplayNode[] {
   let lastBlockingTailIndex = -1;
   if (live !== undefined) {
@@ -670,12 +696,23 @@ function gatherRows(
   let index = 0;
   while (index < nodes.length) {
     const node = nodes[index]!;
-    if (node.kind === 'tool' && isMediaTool(node)) {
+    if (
+      node.kind === 'tool' &&
+      isMediaTool(node) &&
+      !(protectedBlockIds?.has(node.id) === true)
+    ) {
       const turn = normTurn(node.turnId);
       const members: ToolBlock[] = [];
       while (index < nodes.length) {
         const next = nodes[index]!;
-        if (next.kind !== 'tool' || !isMediaTool(next) || normTurn(next.turnId) !== turn) break;
+        if (
+          next.kind !== 'tool' ||
+          !isMediaTool(next) ||
+          normTurn(next.turnId) !== turn ||
+          protectedBlockIds?.has(next.id) === true
+        ) {
+          break;
+        }
         members.push(next);
         index += 1;
       }
@@ -722,8 +759,12 @@ export function foldHistory(
 ): DisplayNode[] {
   const live = normTurn(liveTurnId);
   const forest = options.forest;
+  const protectedBlockIds =
+    options.protectedBlockIds !== undefined && options.protectedBlockIds.size > 0
+      ? options.protectedBlockIds
+      : undefined;
   const latestCardIdByAgent = forest === undefined ? new Map<string, string>() : latestSubagentCardIds(nodes);
-  const rows = gatherRows(nodes, live, forest, latestCardIdByAgent);
+  const rows = gatherRows(nodes, live, forest, latestCardIdByAgent, protectedBlockIds);
   // The newest row of the live turn, when it is process (the one the reader
   // is watching arrive); a message at the end already closes the stretch.
   let newest: string | undefined;
@@ -757,6 +798,11 @@ export function foldHistory(
   };
   for (const node of rows) {
     if (node.kind === 'history-fold' || node.kind === 'subagent-group' || node.kind === 'media-run') {
+      flush();
+      out.push(node);
+      continue;
+    }
+    if (protectedBlockIds !== undefined && nodeHasProtectedId(node, protectedBlockIds)) {
       flush();
       out.push(node);
       continue;
@@ -893,7 +939,14 @@ export function isReadStep(block: Block): block is ToolBlock {
   return READ_VERBS.has(stepObject(block).verb) && !isMediaTool(block);
 }
 
-export function groupBlocks(blocks: readonly Block[]): DisplayNode[] {
+export function groupBlocks(
+  blocks: readonly Block[],
+  options?: GroupBlocksOptions,
+): DisplayNode[] {
+  const protectedBlockIds =
+    options?.protectedBlockIds !== undefined && options.protectedBlockIds.size > 0
+      ? options.protectedBlockIds
+      : undefined;
   const nodes: DisplayNode[] = [];
   let run: ToolBlock[] = [];
 
@@ -926,7 +979,7 @@ export function groupBlocks(blocks: readonly Block[]): DisplayNode[] {
   };
 
   for (const block of blocks) {
-    if (isReadStep(block)) {
+    if (isReadStep(block) && !(protectedBlockIds?.has(block.id) === true)) {
       if (run.length > 0 && normTurn(run[0]?.turnId) !== normTurn(block.turnId)) flush();
       run.push(block);
     } else {

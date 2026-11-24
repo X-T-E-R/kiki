@@ -263,7 +263,7 @@ describe("SGR mouse parsing & routing", () => {
 		ui.stop();
 	});
 
-	it("routes clicks inside ScrollView content in TuiAltScreen before text selection", () => {
+	it("routes clicks inside ScrollView content in TuiAltScreen on stationary release", () => {
 		const term = new VirtualTerminal(80, 20);
 		const ui = new TuiAltScreen(term, false, undefined, { mouse: true });
 		const transcript = new Container();
@@ -284,11 +284,16 @@ describe("SGR mouse parsing & routing", () => {
 
 		// Viewport height is 20: dock takes 1 row (row 19), scrollView takes rows 0..18 (19 rows).
 		// Total content in transcript = 15 + 1 = 16 rows (< 19), so block is at row 15 (1-indexed 16).
+		// Press alone must not toggle (drag-selection safety).
 		term.sendInput("\x1b[<0;3;16M");
+		assert.strictEqual(block.expanded, false);
+		term.sendInput("\x1b[<0;3;16m");
 		assert.strictEqual(block.expanded, true);
 
 		// Click dock at row 19 (1-indexed 20)
 		term.sendInput("\x1b[<0;3;20M");
+		assert.strictEqual(dock.expanded, false);
+		term.sendInput("\x1b[<0;3;20m");
 		assert.strictEqual(dock.expanded, true);
 		ui.stop();
 	});

@@ -978,6 +978,34 @@ export abstract class TuiBase extends Container implements TUI {
 		return this.routeOverlayMouse(event);
 	}
 
+	protected findOverlayHitTarget(
+		col: number,
+		row: number,
+	): { readonly component: Component; readonly localLine: number } | undefined {
+		if (this.overlayStack.length === 0) return undefined;
+		const termWidth = Math.max(1, this.terminal.columns);
+		const termHeight = Math.max(1, this.terminal.rows);
+		const visibleEntries = this.overlayStack.filter((e) => this.isOverlayVisible(e));
+		if (visibleEntries.length === 0) return undefined;
+		visibleEntries.sort((a, b) => b.focusOrder - a.focusOrder);
+
+		for (const entry of visibleEntries) {
+			const { component, options } = entry;
+			const { width, maxHeight } = this.resolveOverlayLayout(options, 0, termWidth, termHeight);
+			const rawHeight = component.render(width).length;
+			const height = maxHeight !== undefined ? Math.min(rawHeight, maxHeight) : rawHeight;
+			const { row: overlayRow, col: overlayCol } = this.resolveOverlayLayout(options, height, termWidth, termHeight);
+
+			if (col >= overlayCol && col < overlayCol + width && row >= overlayRow && row < overlayRow + height) {
+				return { component, localLine: row - overlayRow };
+			}
+			if (!options?.nonCapturing) {
+				return { component, localLine: -1 };
+			}
+		}
+		return undefined;
+	}
+
 	protected routeOverlayMouse(event: SgrMouseEvent): boolean {
 		if (this.overlayStack.length === 0) return false;
 		const termWidth = Math.max(1, this.terminal.columns);

@@ -152,6 +152,7 @@ function driver(
     readonly model?: string | null;
     readonly thinking?: string | null;
     readonly ephemeral?: boolean;
+    readonly screenMode?: 'main' | 'alt';
   } = {},
 ) {
   // Submitting through the editor persists input history under KIKI_HOME;
@@ -175,7 +176,10 @@ function driver(
         agentFiles: sources.agentFiles ?? [],
         skillsDirs: sources.skillsDirs ?? [],
       },
-      tuiConfig: DEFAULT_TUI_CONFIG,
+      tuiConfig:
+        sources.screenMode === undefined
+          ? DEFAULT_TUI_CONFIG
+          : { ...DEFAULT_TUI_CONFIG, screenMode: sources.screenMode },
       version: '1.0.0',
       workDir: 'C:\\repo',
     },
@@ -2661,7 +2665,7 @@ describe('DaemonTUI commands', () => {
     expect(internal.client.setThinking).toHaveBeenCalledWith('session-1', 'high');
     expect(tui.state.appState.thinkingEffort).toBe('high');
     expect(configFacade.getAll).toHaveBeenCalledOnce();
-    expect(transcriptText(tui)).toContain('example-flag');
+    expect(tui.state.editorContainer.render(90).join('\n')).toContain('example-flag');
     expect(internal.showStatus).toHaveBeenCalledWith(
       'Unknown command: /custom',
       'error',
@@ -3943,9 +3947,13 @@ describe('DaemonTUI commands', () => {
     it('routes SGR mouse clicks and wheel across transcript blocks, footer pills, settings, and protected approvals, and toggles mouse reporting', async () => {
       vi.useFakeTimers();
       try {
-        const { tui, internal, controllerState } = driver();
+        const { tui, internal, controllerState } = driver(false, { screenMode: 'alt' });
         const writes: string[] = [];
         let inputHandler: ((data: string) => void) | undefined;
+        const clickAt = (col: number, row: number): void => {
+          inputHandler?.(`\u001B[<0;${String(col)};${String(row)}M`);
+          inputHandler?.(`\u001B[<0;${String(col)};${String(row)}m`);
+        };
         vi.spyOn(tui.state.terminal, 'columns', 'get').mockReturnValue(100);
         vi.spyOn(tui.state.terminal, 'rows', 'get').mockReturnValue(45);
         vi.spyOn(tui.state.terminal, 'start').mockImplementation((onInput) => {
@@ -3963,8 +3971,8 @@ describe('DaemonTUI commands', () => {
         (internal as unknown as { mountFooter(): void }).mountFooter();
         tui.state.ui.start();
 
-        // Starting TUI with default mouse=true enables SGR mouse reporting (`?1000h?1006h`).
-        expect(writes.join('')).toContain('\u001B[?1000h\u001B[?1006h');
+        // Fullscreen alt mode enables SGR button-event mouse reporting (`?1000h?1002h?1006h`).
+        expect(writes.join('')).toContain('\u001B[?1000h\u001B[?1002h\u001B[?1006h');
 
         // Render transcript with multi-line Thinking + Bash ToolCall blocks.
         controllerState.blocks = [
@@ -3990,9 +3998,14 @@ describe('DaemonTUI commands', () => {
 
         const strip = (s: string) => s.replaceAll(/\u001B\[[0-?]*[ -/]*[@-~]/g, '').replaceAll(/\u001B\]8;;.*?\u0007/g, '');
         const getFrameLines = () => {
-          const state = (tui.state.ui as unknown as {
-            captureRenderState(): { previousLines: string[]; previousViewportTop: number };
-          }).captureRenderState();
+          const ui = tui.state.ui as unknown as {
+            previousScreen?: readonly string[];
+            captureRenderState?: () => { previousLines: string[]; previousViewportTop: number };
+          };
+          if (Array.isArray(ui.previousScreen)) {
+            return ui.previousScreen.map(strip);
+          }
+          const state = ui.captureRenderState!();
           const all = state.previousLines.map(strip);
           return all.length > 45 ? all.slice(state.previousViewportTop) : all;
         };
@@ -4003,8 +4016,8 @@ describe('DaemonTUI commands', () => {
         expect(lines.some((line) => line.includes('Reasoning step 9'))).toBe(false);
         expect(tui.state.toolOutputExpanded).toBe(false);
 
-        // Left-click Thinking header row (1-indexed SGR col=5, row=thinkingRow+1) expands ONLY that block!
-        inputHandler?.(`\u001B[<0;5;${String(thinkingRow + 1)}M`);
+        // Stationary left-click Thinking header row (1-indexed SGR col=5, row=thinkingRow+1) expands ONLY that block!
+        clickAt(5, thinkingRow + 1);
         tui.state.ui.renderNow();
         lines = getFrameLines();
         expect(lines.some((line) => line.includes('Reasoning step 9'))).toBe(true);
@@ -4018,18 +4031,18 @@ describe('DaemonTUI commands', () => {
         expect(tui.state.toolOutputExpanded).toBe(true);
         expect(lines.some((line) => line.includes('output line 18'))).toBe(true);
 
-        // Left-clicking the model pill in the Footer opens the `/model` ChoicePicker.
+        // Left-clicking the model pill in the Footer opens the `/model` TabbedModelSelector.
         const footerRow = lines.findIndex((line) => line.includes('model-a'));
         expect(footerRow).toBeGreaterThanOrEqual(0);
         const modelCol = lines[footerRow]!.indexOf('model-a') + 2; // 1-indexed inside `model-a`
-        inputHandler?.(`\u001B[<0;${String(modelCol)};${String(footerRow + 1)}M`);
+        clickAt(modelCol, footerRow + 1);
         await vi.waitFor(() =>
           expect(tui.state.editorContainer.render(100).join('\n')).toContain('Model'),
         );
         expect(tui.state.ui.getFocusedComponent()).not.toBe(tui.state.editor);
 
-        // Outside click above the picker dismisses ChoicePicker back to editor.
-        inputHandler?.('\u001B[<0;2;1M');
+        // Outside click above the picker dismisses ModelSelector back to editor.
+        clickAt(2, 1);
         expect(tui.state.ui.getFocusedComponent()).toBe(tui.state.editor);
 
         // Open `/settings` dialog, click `Busy Enter behavior` to toggle to `Queue`, then outside-click to close.
@@ -4039,7 +4052,7 @@ describe('DaemonTUI commands', () => {
         const busySettingRow = lines.findIndex((line) => line.includes('Busy Enter behavior'));
         expect(busySettingRow).toBeGreaterThanOrEqual(0);
         expect(tui.state.appState.busySubmit).toBe('send_now');
-        inputHandler?.(`\u001B[<0;6;${String(busySettingRow + 1)}M`);
+        clickAt(6, busySettingRow + 1);
         expect(tui.state.appState.busySubmit).toBe('queue');
 
         // Wheel down inside `/settings` moves selection without closing.
@@ -4047,7 +4060,7 @@ describe('DaemonTUI commands', () => {
         expect(tui.state.ui.getFocusedComponent()).not.toBe(tui.state.editor);
 
         // Outside click dismisses `/settings`.
-        inputHandler?.('\u001B[<0;2;1M');
+        clickAt(2, 1);
         expect(tui.state.ui.getFocusedComponent()).toBe(tui.state.editor);
 
         // Mount an ApprovalPanel and verify outside click does NOT accidentally dismiss it,
@@ -4077,7 +4090,7 @@ describe('DaemonTUI commands', () => {
         expect(approvalPanel).not.toBe(tui.state.editor);
 
         // Outside click on row 1 must NOT dismiss ApprovalPanel!
-        inputHandler?.('\u001B[<0;2;1M');
+        clickAt(2, 1);
         expect(tui.state.ui.getFocusedComponent()).toBe(approvalPanel);
         expect(internal.client.resolveApproval).not.toHaveBeenCalled();
 
@@ -4087,7 +4100,7 @@ describe('DaemonTUI commands', () => {
         lines = getFrameLines();
         const approveRow = lines.findIndex((line) => line.includes('1. Approve once'));
         expect(approveRow).toBeGreaterThanOrEqual(0);
-        inputHandler?.(`\u001B[<0;6;${String(approveRow + 1)}M`);
+        clickAt(6, approveRow + 1);
         await vi.waitFor(() =>
           expect(internal.client.resolveApproval).toHaveBeenCalledWith(
             'session-1',
@@ -4110,7 +4123,7 @@ describe('DaemonTUI commands', () => {
         writes.length = 0;
         await internal.handleSlash('/mouse on');
         expect(tui.state.appState.mouse).toBe(true);
-        expect(writes.join('')).toContain('\u001B[?1000h\u001B[?1006h');
+        expect(writes.join('')).toContain('\u001B[?1000h\u001B[?1002h\u001B[?1006h');
         expect(internal.showStatus).toHaveBeenCalledWith(
           'Mouse reporting on',
           { transient: true },

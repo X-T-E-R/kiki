@@ -1,14 +1,22 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { access, readFile, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 
 import { Container, Spacer, Text, TuiAltScreen, type Component, type Terminal } from '@kiki/pi-tui';
-import { sameWorkDir, type PermissionMode } from '@kiki/node-sdk';
+import {
+  sameWorkDir,
+  type BackgroundTaskInfo,
+  type ExperimentalFeatureState,
+  type ModelAlias,
+  type PermissionMode,
+  type PluginInfo,
+  type PluginSummary,
+} from '@kiki/node-sdk';
 import { ErrorCode, type ManagedUsageResult, type MessageContent, type PromptStatus, type UpdateSessionProfileRequest } from '@kiki/protocol';
 
 import type { SessionViewSignal } from '@kiki/klient/session-view';
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 import { sortThinkingEffortsForDisplay } from '@kiki/session-core/settings/thinkingEffort';
-import { latestTurnId } from '@kiki/session-core/session';
+import { extractThinkingSummary, latestTurnId } from '@kiki/session-core/session';
 import { SendNowError, SessionController } from '@kiki/session-core/session/sessionController';
 import { newSteerPromptId } from '@kiki/session-core/session/transcript/steer';
 import type {
@@ -19,28 +27,77 @@ import type {
 } from '@kiki/session-core/session/transcript/types';
 
 import { ActivityLineComponent, type ActivityLineParts } from '#/tui/components/chrome/activity-line';
+import { AgentBreadcrumbComponent, type AgentBreadcrumbSegment } from '#/tui/components/chrome/agent-breadcrumb';
 import type { FooterAction } from '#/tui/components/chrome/footer';
 import { GutterContainer } from '#/tui/components/chrome/gutter-container';
+import { QueueBannerComponent, type QueueBannerItem } from '#/tui/components/chrome/queue-banner';
 import { WelcomeComponent } from '#/tui/components/chrome/welcome';
+import { AgentTreePickerComponent, type AgentTreeEntry } from '#/tui/components/dialogs/agent-tree-picker';
 import {
   ApprovalPanelComponent,
   type ApprovalPanelResponse,
 } from '#/tui/components/dialogs/approval-panel';
 import { ApprovalPreviewViewer } from '#/tui/components/dialogs/approval-preview';
 import { ChoicePickerComponent } from '#/tui/components/dialogs/choice-picker';
+import {
+  CommandPaletteComponent,
+  type CommandPaletteEntry,
+} from '#/tui/components/dialogs/command-palette';
+import { ExperimentsSelectorComponent } from '#/tui/components/dialogs/experiments-selector';
+import {
+  HistorySearchDialogComponent,
+  type HistorySearchEntry,
+} from '#/tui/components/dialogs/history-search-dialog';
+import { McpDialogComponent, type McpDialogItem } from '#/tui/components/dialogs/mcp-dialog';
+import { segmentsFor } from '#/tui/components/dialogs/model-selector';
 import { PermissionSelectorComponent } from '#/tui/components/dialogs/permission-selector';
+import {
+  PluginInstallTrustConfirmComponent,
+  PluginMcpSelectorComponent,
+  PluginRemoveConfirmComponent,
+  PluginsPanelComponent,
+} from '#/tui/components/dialogs/plugins-selector';
 import { HelpPanelComponent } from '#/tui/components/dialogs/help-panel';
 import { QuestionDialogComponent } from '#/tui/components/dialogs/question-dialog';
 import { SessionPickerComponent, type SessionRow } from '#/tui/components/dialogs/session-picker';
 import { SettingsDialogComponent } from '#/tui/components/dialogs/settings-dialog';
+import { ShortcutsOverlayComponent } from '#/tui/components/dialogs/shortcuts-overlay';
+import { TabbedModelSelectorComponent } from '#/tui/components/dialogs/tabbed-model-selector';
+import { TaskOutputViewer } from '#/tui/components/dialogs/task-output-viewer';
+import { TasksBrowserApp, type TasksFilter } from '#/tui/components/dialogs/tasks-browser';
+import { ThemeSelectorComponent } from '#/tui/components/dialogs/theme-selector';
+import {
+  UndoSelectorComponent,
+  type RewindAction,
+  type UndoChoice,
+} from '#/tui/components/dialogs/undo-selector';
 import { FileMentionProvider } from '#/tui/components/editor/file-mention-provider';
+import { ContextPanelComponent } from '#/tui/components/messages/context-panel';
 import { GoalStatusMessageComponent } from '#/tui/components/messages/goal-panel';
 import {
   buildUsageReportLines,
   UsagePanelComponent,
   type ManagedUsageReport,
 } from '#/tui/components/messages/usage-panel';
-import { saveTuiConfig, type TuiConfig } from '#/tui/config';
+import {
+  resolveEffectiveScreenAndMouse,
+  saveTuiConfig,
+  type BusySubmitMode,
+  type ScreenMode,
+  type TuiConfig,
+} from '#/tui/config';
+import { CopyPickerComponent, extractCopyTargets, type CopyTarget } from '#/tui/utils/code-blocks';
+import {
+  createDaemonArgumentCompletions,
+  type CachedPersonaEntry,
+  type CachedPluginEntry,
+  type CachedProviderEntry,
+  type CachedTaskEntry,
+  type DaemonCompletionSnapshot,
+  type LazyCompletionResource,
+} from './command-completions';
+import { buildDaemonSettingsItems, type DaemonSettingsHost } from './daemon-settings';
+import { buildActiveShortcutGroups } from './daemon-shortcuts';
 import {
   CTRL_C_HINT,
   CTRL_D_HINT,
@@ -203,8 +260,26 @@ export class DaemonTUI {
   private nextFileAttachmentId = 1;
   private focusedAgentId = 'main';
   private pendingConfirm:
-    | { readonly kind: 'ctrl-c' | 'ctrl-d' | 'escape' | 'draft-cleared'; readonly timer: ReturnType<typeof setTimeout> }
+    | { readonly kind: 'ctrl-c' | 'ctrl-d' | 'escape' | 'draft-cleared' | 'rewind'; readonly timer: ReturnType<typeof setTimeout> }
     | undefined;
+  private readonly queueBanner = new QueueBannerComponent();
+  private readonly agentBreadcrumb: AgentBreadcrumbComponent;
+  private readonly queuedPreviewById = new Map<string, string>();
+  private readonly queuedPreviewFetching = new Set<string>();
+  private readonly clearedDrafts: Array<{ readonly text: string; readonly mode: 'prompt' | 'bash' }> = [];
+  private readonly loadedHistoryEntries: string[] = [];
+  private unqueueInFlight = false;
+  private cachedPlugins: readonly CachedPluginEntry[] = [];
+  private cachedTasks: readonly CachedTaskEntry[] = [];
+  private cachedPersonas: readonly CachedPersonaEntry[] = [];
+  private cachedProviders: readonly CachedProviderEntry[] = [];
+  private cachedConfigDomains: readonly string[] = [];
+  private cachedWebSessionIds: readonly string[] = [];
+  private readonly lazyCacheInFlight = new Set<string>();
+  private readonly lazyCacheFetchedAt = new Map<string, number>();
+  private configPersistChain: Promise<void> = Promise.resolve();
+  private themePreviewGeneration = 0;
+  private mcpAuthAbort: AbortController | undefined;
   private startupOverridesPending = true;
   private runModel: string | undefined;
   private preferredThinking: string | undefined;
@@ -272,6 +347,43 @@ export class DaemonTUI {
       process.env,
       startup.programStatus,
     );
+    this.agentBreadcrumb = new AgentBreadcrumbComponent(
+      (agentId) => {
+        void this.openAgentTranscript(agentId).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      (branchId) => {
+        void this.mergeSpecificBranch(branchId, '').catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+    );
+    this.state.screenController.setCanSwitchGuard(() => {
+      if (this.state.externalEditorRunning) {
+        return 'Cannot switch screen mode while the external editor is running.';
+      }
+      if (this.state.editorContainer.children[0] !== this.state.editor) {
+        return 'Close the active dialog before switching screen mode.';
+      }
+      return undefined;
+    });
+    this.state.screenController.setOnAllTakeoversClosed(() => {
+      if (
+        this.state.editorContainer.children[0] === this.state.editor &&
+        this.state.ui.getFocusedComponent() !== this.state.editor
+      ) {
+        this.state.ui.setFocus(this.state.editor);
+      }
+      this.deliverDeferredInteraction();
+    });
+    this.state.screenController.setOnClipboardStatus((message, tone) => {
+      this.showStatus(message, { tone, transient: true });
+    });
+    this.state.screenController.setOnTransientReaderExited((result) => {
+      this.setAppState({ screenMode: result.mode, mouse: result.effectiveMouse });
+      this.showStatus('Returned to main scrollback.', { transient: true });
+    });
     this.state.ui.addInputListener((data) => this.programStatus.input(data));
     this.state.transcriptContainer.addChild(this.transcriptBody);
     this.renderer = new DaemonTranscriptRenderer(
@@ -281,6 +393,11 @@ export class DaemonTUI {
       {
         showThinking: startup.tuiConfig.showThinking !== false,
         showTimestamps: startup.tuiConfig.showTimestamps === true,
+        onInspectSubagent: (agentId) => {
+          void this.openAgentTranscript(agentId).catch((error: unknown) => {
+            this.showStatus(formatErrorMessage(error), 'error');
+          });
+        },
       },
     );
     this.buildLayout();
@@ -314,6 +431,8 @@ export class DaemonTUI {
     this.state.editorContainer.addChild(this.state.editor);
     this.state.ui.setFocus(this.state.editor);
     this.state.todoPanelContainer.addChild(this.state.todoPanel);
+    this.state.queueContainer.addChild(this.queueBanner);
+    this.state.breadcrumbContainer.addChild(this.agentBreadcrumb);
     this.mountFooter();
     if (this.startup.startupNotice !== undefined) this.showStatus(this.startup.startupNotice);
     this.sessionReady = this.refreshAgentCommands().then(() => this.initializeSession());
@@ -430,18 +549,17 @@ export class DaemonTUI {
     });
     await cleanup(() => this.state.terminal.drainInput());
     await cleanup(() => {
+      this.mcpAuthAbort?.abort();
+      this.mcpAuthAbort = undefined;
+    });
+    await cleanup(() => {
       this.state.ui.stop();
     });
     if (failure !== undefined) throw failure;
   }
 
   private buildLayout(): void {
-    if (this.state.ui instanceof TuiAltScreen) return;
-    this.state.ui.clear();
-    this.state.ui.addChild(this.state.transcriptContainer);
-    this.state.ui.addChild(this.state.activityContainer);
-    this.state.ui.addChild(this.state.todoPanelContainer);
-    this.state.ui.addChild(this.state.editorContainer);
+    // ScreenController owns both main and alt layouts and preserves them across live switches.
   }
 
   private mountFooter(): void {
@@ -450,11 +568,7 @@ export class DaemonTUI {
     });
     const wrap = new GutterContainer(CHROME_GUTTER, CHROME_GUTTER);
     wrap.addChild(this.state.footer);
-    if (this.state.dockContainer !== undefined) {
-      this.state.dockContainer.addChild(wrap, { shrink: 1, minSize: 1 });
-    } else {
-      this.state.ui.addChild(wrap);
-    }
+    this.state.screenController.mountFooter(wrap);
   }
 
   private handleFooterAction(action: FooterAction): void {
@@ -495,6 +609,9 @@ export class DaemonTUI {
         return;
       case 'settings':
         this.showSettingsDialog();
+        return;
+      case 'mouse':
+        this.applyMouseReporting(!this.state.screenController.getEffectiveMouse());
         return;
     }
   }
@@ -567,14 +684,31 @@ export class DaemonTUI {
     // reflex, an IME cancel, a split arrow-key sequence). A second Esc within
     // the window interrupts and leaves the draft in place. Idle: nothing.
     editor.onEscape = () => {
-      const armed = this.pendingConfirm?.kind === 'escape';
+      if (this.state.screenController.isTransientReaderActive()) {
+        this.clearPendingConfirm();
+        void this.exitTransientReader();
+        return;
+      }
+      const armedEscape = this.pendingConfirm?.kind === 'escape';
+      const armedRewind = this.pendingConfirm?.kind === 'rewind';
       this.clearPendingConfirm();
       if (editor.restoreHistoryDraft()) return;
       const busy = this.focusedAgentId === 'main'
         ? this.controller?.getState().busy === true
         : this.controller?.getAgentState(this.focusedAgentId).busy === true;
-      if (!busy) return;
-      if (editor.getText().length === 0 || armed) {
+      if (!busy) {
+        if (editor.getText().length === 0 && editor.inputMode === 'prompt') {
+          if (armedRewind) {
+            void this.showRewindPicker().catch((error: unknown) => {
+              this.showStatus(formatErrorMessage(error), 'error');
+            });
+          } else if (this.collectUndoChoices().length > 0) {
+            this.armConfirm('rewind');
+          }
+        }
+        return;
+      }
+      if (editor.getText().length === 0 || armedEscape) {
         void this.abortActivePrompt();
         return;
       }
@@ -625,10 +759,58 @@ export class DaemonTUI {
       void this.steerPrompt().catch((error: unknown) => this.showSubmissionError(error));
     };
     editor.onToggleMouse = () => {
-      this.applyMouseReporting(this.state.appState.mouse === false);
+      this.applyMouseReporting(!this.state.screenController.getEffectiveMouse());
+    };
+    editor.onCtrlP = () => {
+      this.showCommandPalette();
+      return true;
+    };
+    editor.onCtrlR = () => {
+      this.showHistorySearch();
+      return true;
+    };
+    editor.onCtrlF = () => {
+      void this.openTranscriptSearch().catch((error: unknown) => {
+        this.showStatus(formatErrorMessage(error), 'error');
+      });
+      return true;
+    };
+    editor.onQuestionMark = () => {
+      this.showShortcutsOverlay();
+      return true;
+    };
+    editor.onAltArrowEmpty = (direction) => {
+      void this.cycleFocusedAgent(direction).catch((error: unknown) => {
+        this.showStatus(formatErrorMessage(error), 'error');
+      });
+      return true;
+    };
+    editor.onAltUpEmpty = () => {
+      if (this.focusedAgentId !== 'main') return false;
+      if ((this.controller?.getState().queuedPromptIds.length ?? 0) === 0) return false;
+      void this.unqueuePrompt().catch((error: unknown) => {
+        this.showStatus(formatErrorMessage(error), 'error');
+      });
+      return true;
+    };
+    editor.onAltT = () => {
+      void this.cycleThinkingEffort().catch((error: unknown) => {
+        this.showStatus(formatErrorMessage(error), 'error');
+      });
+      return true;
+    };
+    editor.onPageUpMain = () => {
+      if (this.state.screenController.getMode() !== 'main') return false;
+      void this.enterTransientReader(1).catch((error: unknown) => {
+        this.showStatus(formatErrorMessage(error), 'error');
+      });
+      return true;
     };
     editor.onCtrlB = () => {
-      if (this.controller?.getState().busy !== true) return false;
+      const focusedBusy = this.focusedAgentId === 'main'
+        ? this.controller?.getState().busy === true
+        : this.controller?.getAgentState(this.focusedAgentId).busy === true;
+      if (!focusedBusy) return false;
       void this.detachForegroundTasks().catch((error: unknown) => {
         this.showStatus(formatErrorMessage(error), 'error');
       });
@@ -700,7 +882,10 @@ export class DaemonTUI {
   private async loadInputHistory(): Promise<string | undefined> {
     try {
       const entries = await loadInputHistory(getInputHistoryFile(this.startup.workDir));
-      for (const entry of entries) this.state.editor.addToHistory(entry.content);
+      for (const entry of entries) {
+        this.state.editor.addToHistory(entry.content);
+        this.loadedHistoryEntries.push(entry.content);
+      }
       return entries.at(-1)?.content;
     } catch {
       // History is a convenience: an unreadable file must not block startup.
@@ -720,6 +905,9 @@ export class DaemonTUI {
     const file = getInputHistoryFile(this.startup.workDir);
     this.inputHistory = this.inputHistory.then(async (last) => {
       this.state.editor.addToHistory(entry);
+      if (this.loadedHistoryEntries.at(-1) !== entry) {
+        this.loadedHistoryEntries.push(entry);
+      }
       // A read-only or full home directory must not turn every submit into an error.
       await appendInputHistory(file, entry, last).catch(() => false);
       return entry;
@@ -775,6 +963,7 @@ export class DaemonTUI {
         dimensions.height,
       );
       this.state.editor.insertTextAtCursor?.(`${attachment.placeholder} `);
+      this.syncEditorAtomicPlaceholders();
       this.state.ui.requestRender();
       attachment.pending = this.client.klient.global.files
         .save({
@@ -811,6 +1000,7 @@ export class DaemonTUI {
       media.filename,
     );
     this.state.editor.insertTextAtCursor?.(`${attachment.placeholder} `);
+    this.syncEditorAtomicPlaceholders();
     this.state.ui.requestRender();
     attachment.pending = readFile(media.sourcePath)
       .then((data) =>
@@ -841,10 +1031,12 @@ export class DaemonTUI {
   }
 
   private async handleInterrupt(kind: 'ctrl-c'): Promise<void> {
-    // A draft is always cleared first (Ctrl+- restores it), and clearing never
-    // arms exit, so the shell habit of pressing Ctrl-C twice to drop a line
-    // cannot quit the app.
-    if (this.state.editor.getText().length > 0) {
+    // A draft is always cleared first (Ctrl+- restores it and Ctrl+R recalls it),
+    // and clearing never arms exit, so the shell habit of pressing Ctrl-C twice
+    // to drop a line cannot quit the app.
+    const currentText = this.state.editor.getText();
+    if (currentText.length > 0) {
+      this.pushClearedDraft(currentText, this.state.editor.inputMode);
       this.state.editor.setText('', { preservePasteRegistry: true });
       this.armConfirm('draft-cleared');
       return;
@@ -893,25 +1085,74 @@ export class DaemonTUI {
   }
 
   private async unqueuePrompt(): Promise<void> {
+    if (this.unqueueInFlight) return;
+    if (this.focusedAgentId !== 'main') {
+      this.showStatus('Switch to main conversation before unqueuing (/branch main).', 'error');
+      return;
+    }
     const controller = this.controller;
     const id = controller?.getState().queuedPromptIds.at(-1);
     if (controller === undefined || id === undefined) {
       this.showStatus('Nothing is queued.', { transient: true });
       return;
     }
-    const content = await controller.readQueuedPromptContent(id);
-    if (content === undefined) {
-      this.showStatus('That message has already started.', { transient: true });
-      return;
+    const startAgent = this.focusedAgentId;
+    const startDraft = this.state.editor.getText();
+    this.unqueueInFlight = true;
+    try {
+      const content = await controller.readQueuedPromptContent(id);
+      if (content === undefined) {
+        this.showStatus('That message has already started.', { transient: true });
+        return;
+      }
+      if (this.controller !== controller) return;
+      const withdrawn = await controller.abortPrompt(id);
+      if (!withdrawn) {
+        this.showStatus('That message has already started.', { transient: true });
+        return;
+      }
+      this.queuedPreviewById.delete(id);
+      if (
+        this.controller !== controller ||
+        this.focusedAgentId !== startAgent ||
+        this.state.editor.getText() !== startDraft
+      ) {
+        const text = content
+          .filter((part) => part.type === 'text')
+          .map((part) => part.text)
+          .join('\n\n');
+        if (text.trim().length > 0) {
+          this.pushClearedDraft(text, 'prompt');
+        }
+        this.showStatus(
+          'Withdrew queued prompt (saved to Ctrl+R history because draft or conversation changed).',
+          { transient: true },
+        );
+        return;
+      }
+      this.restorePromptDraft(content, true);
+    } finally {
+      this.unqueueInFlight = false;
     }
-    if (this.controller !== controller) return;
-    const withdrawn = await controller.abortPrompt(id);
-    if (this.controller !== controller) return;
-    if (!withdrawn) {
-      this.showStatus('That message has already started.', { transient: true });
-      return;
+  }
+
+  private pushClearedDraft(text: string, mode: 'prompt' | 'bash'): void {
+    const trimmed = text.trim();
+    if (trimmed.length === 0) return;
+    const last = this.clearedDrafts.at(-1);
+    if (last?.text === trimmed && last.mode === mode) return;
+    this.clearedDrafts.push({ text: trimmed, mode });
+    if (this.clearedDrafts.length > 10) {
+      this.clearedDrafts.shift();
     }
-    this.restorePromptDraft(content, true);
+  }
+
+  private syncEditorAtomicPlaceholders(): void {
+    const placeholders: string[] = [
+      ...this.imageAttachments.placeholders(),
+      ...[...this.fileAttachments.values()].map((attachment) => attachment.placeholder),
+    ];
+    this.state.editor.setAtomicPlaceholders(placeholders);
   }
 
   private confirmExit(kind: 'ctrl-c' | 'ctrl-d'): void {
@@ -932,7 +1173,15 @@ export class DaemonTUI {
     }, kind === 'escape' ? INTERRUPT_CONFIRM_WINDOW_MS : EXIT_CONFIRM_WINDOW_MS);
     this.pendingConfirm = { kind, timer };
     this.state.footer.setTransientHint(
-      kind === 'draft-cleared' ? 'Ctrl+- to restore' : kind === 'ctrl-c' ? CTRL_C_HINT : kind === 'ctrl-d' ? CTRL_D_HINT : ESC_INTERRUPT_HINT,
+      kind === 'draft-cleared'
+        ? 'Ctrl+- to restore'
+        : kind === 'rewind'
+          ? 'Press Esc again to open /rewind'
+          : kind === 'ctrl-c'
+            ? CTRL_C_HINT
+            : kind === 'ctrl-d'
+              ? CTRL_D_HINT
+              : ESC_INTERRUPT_HINT,
     );
     this.state.ui.requestRender();
   }
@@ -1030,21 +1279,180 @@ export class DaemonTUI {
     this.sourceOverlaySessionId = undefined;
   }
 
+  private getFocusedBlocks(): readonly Block[] {
+    const controller = this.controller;
+    if (controller === undefined) return [];
+    return this.focusedAgentId === 'main'
+      ? controller.getState().blocks
+      : controller.getAgentState(this.focusedAgentId).blocks;
+  }
+
+  private getCompletionSnapshot(): DaemonCompletionSnapshot {
+    const controller = this.controller;
+    const forest = controller?.getForest();
+    const sessionAgents = Object.values(forest?.byId ?? {}).map((node) => ({
+      id: node.agentId,
+      label: node.label ?? node.name ?? node.agentId,
+      status: node.status,
+    }));
+    const liveTasks: CachedTaskEntry[] = (controller?.getState().tasks ?? []).map((task) => ({
+      id: task.id,
+      status: task.status,
+      description: task.description,
+    }));
+    const copyCandidates = extractCopyTargets(this.getFocusedBlocks()).codeBlocks.map(
+      (block, index) => ({
+        index: index + 1,
+        preview: block.preview,
+      }),
+    );
+    const goalRawStatus = this.state.appState.goal?.status;
+    const goalStatus =
+      goalRawStatus === 'active'
+        ? ('running' as const)
+        : goalRawStatus === 'paused'
+          ? ('paused' as const)
+          : undefined;
+    return {
+      workDir: this.startup.workDir,
+      currentModel: this.state.appState.model,
+      availableModels: this.state.appState.availableModels,
+      recentModels: this.currentTuiConfig.recentModels ?? [],
+      currentThinkingEffort: this.state.appState.thinkingEffort,
+      currentPermissionMode: this.state.appState.permissionMode,
+      currentTheme: this.state.appState.theme,
+      effectiveMouse: this.state.screenController.getEffectiveMouse(),
+      screenMode: this.state.screenController.getMode(),
+      currentAgentProfile: this.state.appState.agentProfile,
+      availableAgentProfiles: [...this.agentProfileCommands.values()].map((name) => ({ name })),
+      focusedAgentId: this.focusedAgentId,
+      sessionAgents,
+      plugins: this.cachedPlugins,
+      tasks: liveTasks.length > 0 ? liveTasks : this.cachedTasks,
+      personas: this.cachedPersonas,
+      providers: this.cachedProviders,
+      configDomains: this.cachedConfigDomains,
+      webSessionIds: this.cachedWebSessionIds,
+      goalStatus,
+      copyCandidates,
+      sessionId: controller?.sessionId,
+      requestLazyRefresh: (resource) => this.triggerLazyCompletionRefresh(resource),
+    };
+  }
+
+  private triggerLazyCompletionRefresh(kind: LazyCompletionResource): void {
+    const LAZY_CACHE_TTL_MS = 5_000;
+    const lastFetched = this.lazyCacheFetchedAt.get(kind) ?? 0;
+    if (this.stopped || this.lazyCacheInFlight.has(kind) || Date.now() - lastFetched < LAZY_CACHE_TTL_MS) {
+      return;
+    }
+    this.lazyCacheInFlight.add(kind);
+    const done = (): void => {
+      this.lazyCacheFetchedAt.set(kind, Date.now());
+      this.lazyCacheInFlight.delete(kind);
+      if (!this.stopped) {
+        this.state.editor.refreshSlashAutocomplete();
+      }
+    };
+    switch (kind) {
+      case 'plugins':
+        void this.client.klient.global.plugins
+          .list()
+          .then((items) => {
+            this.cachedPlugins = items.map((item) => ({
+              id: item.id,
+              name: item.displayName,
+              enabled: item.globalEnabled,
+            }));
+          })
+          .catch(() => {})
+          .finally(done);
+        return;
+      case 'tasks': {
+        const sid = this.controller?.sessionId;
+        if (sid === undefined) {
+          done();
+          return;
+        }
+        void this.client.klient
+          .session(sid)
+          .agent('main')
+          .getTasks({ activeOnly: false, limit: 100 })
+          .then((items) => {
+            this.cachedTasks = items.map((item) => ({
+              id: item.taskId,
+              status: item.status,
+              description: item.description,
+            }));
+          })
+          .catch(() => {})
+          .finally(done);
+        return;
+      }
+      case 'personas':
+        void this.client
+          .listPersonas()
+          .then((items) => {
+            this.cachedPersonas = items
+              .filter((item) => !item.archived)
+              .map((item) => ({ id: item.id, name: item.name }));
+          })
+          .catch(() => {})
+          .finally(done);
+        return;
+      case 'providers':
+        void this.client.klient.global.kosong
+          .listProviders()
+          .then((items) => {
+            this.cachedProviders = items.map((item) => ({ id: item.id, description: item.status }));
+          })
+          .catch(() => {})
+          .finally(done);
+        return;
+      case 'configDomains':
+        void this.client.klient.global.config
+          .getAll()
+          .then((all) => {
+            if (all !== null && typeof all === 'object') {
+              this.cachedConfigDomains = Object.keys(all as Record<string, unknown>);
+            }
+          })
+          .catch(() => {})
+          .finally(done);
+        return;
+      case 'webSessions':
+        void this.client
+          .listSessions(20)
+          .then((page) => {
+            this.cachedWebSessionIds = page.items.map((item) => item.id);
+          })
+          .catch(() => {})
+          .finally(done);
+        return;
+    }
+  }
+
   private setupAutocomplete(): void {
-    const commands = daemonAutocompleteCommands(this.skillCommands, this.agentProfileCommands);
+    const bindings = createDaemonArgumentCompletions(() => this.getCompletionSnapshot());
+    const commands = daemonAutocompleteCommands(
+      this.skillCommands,
+      this.agentProfileCommands,
+      bindings,
+    );
     const skillCommandNames = new Set(
       [...this.skillCommands.values()].map((skill) => skill.commandName),
     );
-    this.state.editor.setAutocompleteProvider(
-      new FileMentionProvider(
-        commands,
-        this.startup.workDir,
-        this.fdPath,
-        this.startup.additionalDirs ?? [],
-        () => this.state.appState.inputMode,
-        skillCommandNames,
-      ),
+    const provider = new FileMentionProvider(
+      commands,
+      this.startup.workDir,
+      this.fdPath,
+      this.startup.additionalDirs ?? [],
+      () => this.state.appState.inputMode,
+      skillCommandNames,
     );
+    this.state.editor.setAutocompleteProvider(provider);
+    this.state.editor.dynamicArgumentHint = (lines, cursorLine, cursorCol) =>
+      provider.getDynamicInlineHint(lines, cursorLine, cursorCol);
     this.state.editor.setArgumentHints(
       new Map(
         commands.flatMap((command) => {
@@ -1166,6 +1574,9 @@ export class DaemonTUI {
     }
     this.releaseAttachmentSettlementController(sessionId);
     this.focusedAgentId = 'main';
+    this.queuedPreviewById.clear();
+    this.queuedPreviewFetching.clear();
+    this.renderer.setScope(`${sessionId}:main`);
     this.setAppState({
       model: this.startupOverridesPending ? this.startup.cliOptions.model ?? '' : '',
       agentProfile: this.startupOverridesPending ? this.startup.agentProfile : undefined,
@@ -1324,9 +1735,112 @@ export class DaemonTUI {
         (task) => task.kind === 'subagent' && task.status === 'running',
       ).length,
     });
+    this.syncQueueBanner(view);
+    this.syncAgentBreadcrumb();
     // Mount (or hold back) approvals first: the activity line reports which.
     this.syncInteractionBlocks(view.blocks);
     this.renderActivityState(view);
+  }
+
+  private syncQueueBanner(view: SessionViewState): void {
+    const controller = this.controller;
+    if (controller === undefined) {
+      this.queueBanner.setItems([]);
+      return;
+    }
+    const items: QueueBannerItem[] = [];
+    const seenIds = new Set<string>();
+    for (const steer of controller.getPendingSteers(this.focusedAgentId)) {
+      if (steer.promptId !== undefined) seenIds.add(steer.promptId);
+      items.push({
+        id: steer.promptId ?? `steer:${steer.text}`,
+        phase: 'steering',
+        preview: steer.text,
+      });
+    }
+    if (this.focusedAgentId === 'main') {
+      const queuedIds = view.queuedPromptIds ?? [];
+      for (const promptId of queuedIds) {
+        if (seenIds.has(promptId)) continue;
+        seenIds.add(promptId);
+        const cached = this.queuedPreviewById.get(promptId);
+        if (cached === undefined && !this.queuedPreviewFetching.has(promptId)) {
+          this.queuedPreviewFetching.add(promptId);
+          void controller
+            .readQueuedPromptContent(promptId)
+            .then((content) => {
+              this.queuedPreviewFetching.delete(promptId);
+              if (this.controller !== controller || content === undefined) return;
+              const text = content
+                .filter((part) => part.type === 'text')
+                .map((part) => part.text)
+                .join(' ')
+                .trim();
+              this.queuedPreviewById.set(promptId, text.length > 0 ? text : '[attachment]');
+              this.syncQueueBanner(controller.getState());
+              this.state.ui.requestRender();
+            })
+            .catch(() => {
+              this.queuedPreviewFetching.delete(promptId);
+            });
+        }
+        items.push({
+          id: promptId,
+          phase: 'queued',
+          preview: cached ?? 'Queued message…',
+        });
+      }
+      for (const id of [...this.queuedPreviewById.keys()]) {
+        if (!queuedIds.includes(id)) this.queuedPreviewById.delete(id);
+      }
+    }
+    this.queueBanner.setItems(items);
+  }
+
+  private syncAgentBreadcrumb(): void {
+    const forest = this.controller?.getForest();
+    const byId = forest?.byId ?? {};
+    const focusedId = this.focusedAgentId;
+    const path: AgentBreadcrumbSegment[] = [];
+    if (focusedId === 'main') {
+      path.push({ id: 'main', label: 'main', kind: 'main' });
+    } else {
+      const chain: AgentBreadcrumbSegment[] = [];
+      const visited = new Set<string>();
+      let cursor: string | undefined = focusedId;
+      while (cursor !== undefined && cursor !== 'main' && !visited.has(cursor)) {
+        visited.add(cursor);
+        const currentNode: (typeof byId)[string] | undefined = byId[cursor];
+        const isBranch = currentNode?.isBranch === true;
+        chain.push({
+          id: cursor,
+          label: currentNode?.label ?? currentNode?.name ?? cursor,
+          kind: isBranch ? 'branch' : 'child',
+          phase: currentNode?.status,
+        });
+        cursor = currentNode?.parentAgentId;
+      }
+      path.push({ id: 'main', label: 'main', kind: 'main' }, ...chain.reverse());
+    }
+    let activePeerCount = 0;
+    for (const [id, node] of Object.entries(byId)) {
+      if (id === 'main') continue;
+      if (node.isBranch === true && node.branchSealed !== true) activePeerCount += 1;
+      else if (node.status === 'running' || node.busy) {
+        activePeerCount += 1;
+      }
+    }
+    const focusedNode = byId[focusedId];
+    const canMergeFocusedBranch =
+      focusedId !== 'main' &&
+      focusedNode?.isBranch === true &&
+      focusedNode.branchSealed !== true;
+    this.agentBreadcrumb.setState({
+      focusedAgentId: focusedId,
+      path,
+      activePeerCount,
+      canMergeFocusedBranch,
+    });
   }
 
   private clearStatusNotice(): void {
@@ -1404,6 +1918,20 @@ export class DaemonTUI {
     } else if (view.busy) {
       currentActivityKind = 'busy';
       const runningTasks = view.tasks?.filter((task) => task.status === 'running').length ?? 0;
+      const canBackground =
+        view.tasks?.some(
+          (task) => task.status === 'running' && (task as { detached?: boolean }).detached === false,
+        ) === true;
+      const streamingThinking =
+        this.state.appState.showThinking !== false
+          ? (view.blocks ?? []).findLast(
+              (block) => block.kind === 'thinking' && block.streaming,
+            )
+          : undefined;
+      const thinkingHeadline =
+        streamingThinking?.kind === 'thinking'
+          ? extractThinkingSummary(streamingThinking.text, { streaming: true })
+          : undefined;
       this.activityHasDraft = this.state.editor.getText().length > 0;
       activityLine = formatBusyActivityLine({
         runningTasks,
@@ -1412,6 +1940,8 @@ export class DaemonTUI {
         lastResponseAt: trackerState.lastResponseAt,
         now,
         hasDraft: this.activityHasDraft,
+        thinkingHeadline,
+        canBackground,
       });
       if (view.queuedPromptIds.length > 0) {
         activityLine = {
@@ -1623,7 +2153,7 @@ export class DaemonTUI {
 
   private async detachForegroundTasks(): Promise<void> {
     const controller = this.controller!;
-    const agent = this.client.klient.session(controller.sessionId).agent('main');
+    const agent = this.client.klient.session(controller.sessionId).agent(this.focusedAgentId);
     const tasks = await agent.getTasks({ activeOnly: true });
     const foreground = tasks.filter((task) => task.status === 'running' && task.detached === false);
     const results = await Promise.all(foreground.map((task) => agent.detachTask(task.taskId)));
@@ -1940,6 +2470,7 @@ export class DaemonTUI {
     if (uploadIds.length === 0) return;
     for (const id of prepared.imageAttachmentIds) this.imageAttachments.remove(id);
     for (const id of prepared.fileAttachmentIds) this.fileAttachments.delete(id);
+    this.syncEditorAtomicPlaceholders();
     const turnId = identity.turnId === undefined ? undefined : String(identity.turnId);
     const key = identity.promptId === undefined
       ? `turn:${controller.sessionId}:${turnId}`
@@ -1972,11 +2503,13 @@ export class DaemonTUI {
   private handoffPreparedMediaToExpiry(prepared: PreparedDaemonPrompt): void {
     for (const id of prepared.imageAttachmentIds) this.imageAttachments.remove(id);
     for (const id of prepared.fileAttachmentIds) this.fileAttachments.delete(id);
+    this.syncEditorAtomicPlaceholders();
   }
 
   private async releasePreparedMedia(prepared: PreparedDaemonPrompt): Promise<void> {
     for (const id of prepared.imageAttachmentIds) this.imageAttachments.remove(id);
     for (const id of prepared.fileAttachmentIds) this.fileAttachments.delete(id);
+    this.syncEditorAtomicPlaceholders();
     await Promise.allSettled(
       [...prepared.mediaUploadIds, ...prepared.fileUploadIds].map((fileId) =>
         this.client.klient.global.files.delete(fileId),
@@ -2121,6 +2654,7 @@ export class DaemonTUI {
     ];
     this.fileAttachments.clear();
     this.nextFileAttachmentId = 1;
+    this.syncEditorAtomicPlaceholders();
     await Promise.allSettled(
       uploadIds.filter((fileId) => !this.unconfirmedUploadIds.has(fileId))
         .map((fileId) => this.client.klient.global.files.delete(fileId)),
@@ -2205,6 +2739,18 @@ export class DaemonTUI {
         return;
       case 'mouse':
         this.handleMouseCommand(args);
+        return;
+      case 'screen':
+        await this.handleScreenCommand(args);
+        return;
+      case 'palette':
+        this.showCommandPalette();
+        return;
+      case 'find':
+        await this.openTranscriptSearch(args);
+        return;
+      case 'context':
+        await this.showContextBreakdown();
         return;
       case 'expand':
         this.toggleToolOutput();
@@ -2302,7 +2848,15 @@ export class DaemonTUI {
         await this.handleSettingsCommand(args);
         return;
       case 'undo':
-        await this.undoLastTurn();
+        if (this.focusedAgentId !== 'main') {
+          this.showStatus('Switch to main conversation before undoing (/branch main).', 'error');
+          return;
+        }
+        if (rawToken.toLowerCase() === 'rewind') {
+          await this.showRewindPicker();
+        } else {
+          await this.undoLastTurn();
+        }
         return;
       case 'attach':
         await this.attachFile(args);
@@ -2323,7 +2877,7 @@ export class DaemonTUI {
         await this.handleMergeCommand(args);
         return;
       case 'copy':
-        await this.copyLastAssistantMessage();
+        await this.handleCopyCommand(args);
         return;
       case 'editor':
         this.configureEditor(args);
@@ -2332,7 +2886,8 @@ export class DaemonTUI {
         await this.activateInitSkill();
         return;
       case 'theme':
-        await this.applyTheme(args);
+        if (args === '') this.showThemePicker();
+        else await this.applyTheme(args, true);
         return;
       case 'help':
         this.mountEditorReplacement(new HelpPanelComponent({
@@ -2399,7 +2954,11 @@ export class DaemonTUI {
     return available;
   }
 
-  private async applyModel(model: string): Promise<void> {
+  private async applyModel(
+    model: string,
+    explicitThinking?: string,
+    persistAsDefault?: boolean,
+  ): Promise<void> {
     const models = await this.refreshModels();
     const choice = models.find((item) => item.id === model);
     if (choice === undefined) throw new Error(`Model "${model}" was not found.`);
@@ -2408,15 +2967,35 @@ export class DaemonTUI {
     const capabilities = this.state.appState.availableModels[this.state.appState.model]?.capabilities ?? [];
     if (this.preferredThinking === undefined && (currentEffort !== 'off'
         || capabilities.includes('thinking') && !capabilities.includes('always_thinking'))) this.preferredThinking = currentEffort;
-    const thinkingEffort = thinkingEffortForModel(this.preferredThinking, choice);
+    const thinkingEffort = explicitThinking ?? thinkingEffortForModel(this.preferredThinking, choice);
     const session = await this.client.setModel(controller.sessionId, model, thinkingEffort);
     this.runModel = model;
+    if (explicitThinking !== undefined) this.preferredThinking = explicitThinking;
     controller.handleSessionRecord(session);
     const contextTokens = this.state.appState.contextTokens;
     this.setAppState({ model, thinkingEffort, maxContextTokens: choice.max_context_size,
       contextUsage: choice.max_context_size > 0 ? contextTokens / choice.max_context_size : 0 });
+    this.recordRecentModel(model);
     const { config, kosong } = this.client.klient.global;
-    if (!(await config.get<string | undefined>('defaultModel'))) await kosong.setDefaultModel(model);
+    if (persistAsDefault === true) {
+      await kosong.setDefaultModel(model);
+    } else if (persistAsDefault === undefined && !(await config.get<string | undefined>('defaultModel'))) {
+      await kosong.setDefaultModel(model);
+    }
+  }
+
+  private recordRecentModel(alias: string): void {
+    const existing = this.currentTuiConfig.recentModels ?? [];
+    const next = [alias, ...existing.filter((item) => item !== alias)].slice(0, 8);
+    this.persistTuiConfigPatch({ recentModels: next });
+  }
+
+  private toggleFavoriteModel(alias: string, favorited: boolean): void {
+    const existing = this.currentTuiConfig.favoriteModels ?? [];
+    const next = favorited
+      ? [alias, ...existing.filter((item) => item !== alias)]
+      : existing.filter((item) => item !== alias);
+    this.persistTuiConfigPatch({ favoriteModels: next });
   }
 
   private async applyThinking(thinking: string): Promise<void> {
@@ -2531,29 +3110,229 @@ export class DaemonTUI {
       return;
     }
     const tasks = await agent.getTasks({ activeOnly: false, limit: 100 });
-    const picker = new ChoicePickerComponent({
-      title: 'Background tasks',
-      options: tasks.map((task) => ({
-        value: task.taskId,
-        label: task.description,
-        description: `${task.status} · ${task.taskId}`,
-      })),
-      onSelect: (id) => {
-        this.restoreEditor();
+    this.cachedTasks = tasks.map((task) => ({
+      id: task.taskId,
+      status: task.status,
+      description: task.description,
+    }));
+    this.openTasksBrowser(controller, tasks);
+  }
+
+  private openTasksBrowser(
+    controller: SessionController,
+    initialTasks: readonly BackgroundTaskInfo[],
+  ): void {
+    const agent = this.client.klient.session(controller.sessionId).agent('main');
+    let tasks: readonly BackgroundTaskInfo[] = initialTasks;
+    let filter: TasksFilter = 'all';
+    let selectedTaskId: string | undefined = initialTasks.find((t) => t.detached !== false)?.taskId;
+    let tailOutput: string | undefined;
+    let tailLoading = false;
+    let flashMessage: string | undefined;
+    let closed = false;
+    let endBrowserTakeover: (() => void) | undefined;
+    let pollTimer: ReturnType<typeof setInterval> | undefined;
+    let outputPollTimer: ReturnType<typeof setTimeout> | undefined;
+    let tailRequestGen = 0;
+    let viewerOpen = false;
+
+    const pushProps = (): void => {
+      if (closed) return;
+      browser.setProps({
+        tasks,
+        filter,
+        selectedTaskId,
+        tailOutput,
+        tailLoading,
+        flashMessage,
+        onSelect: (id) => {
+          selectedTaskId = id;
+          flashMessage = undefined;
+          loadTail(id);
+        },
+        onToggleFilter: () => {
+          filter = filter === 'all' ? 'active' : 'all';
+          pushProps();
+        },
+        onRefresh: () => {
+          void refreshTasks();
+        },
+        onCancel: () => {
+          closeBrowser();
+        },
+        onStopConfirmed: (id) => {
+          void agent
+            .stopTask({ taskId: id })
+            .then(() => {
+              flashMessage = `Stopped ${id}.`;
+              return refreshTasks();
+            })
+            .catch((error: unknown) => {
+              flashMessage = formatErrorMessage(error);
+              pushProps();
+            });
+        },
+        onStopIgnored: (_id, reason) => {
+          flashMessage = reason === 'terminal' ? 'Task already ended.' : undefined;
+          pushProps();
+        },
+        onOpenOutput: (id) => {
+          openFullOutput(id);
+        },
+      });
+      this.state.ui.requestRender();
+    };
+
+    const loadTail = (taskId: string | undefined): void => {
+      if (taskId === undefined) {
+        tailOutput = undefined;
+        tailLoading = false;
+        pushProps();
+        return;
+      }
+      const gen = ++tailRequestGen;
+      tailLoading = true;
+      pushProps();
+      void agent
+        .getTaskOutput({ taskId, tail: 8_192 })
+        .then((out) => {
+          if (closed || gen !== tailRequestGen) return;
+          tailOutput = out;
+          tailLoading = false;
+          pushProps();
+        })
+        .catch((error: unknown) => {
+          if (closed || gen !== tailRequestGen) return;
+          tailOutput = `[error loading output: ${formatErrorMessage(error)}]`;
+          tailLoading = false;
+          pushProps();
+        });
+    };
+
+    const refreshTasks = async (): Promise<void> => {
+      if (closed) return;
+      try {
+        tasks = await agent.getTasks({ activeOnly: false, limit: 100 });
+        this.cachedTasks = tasks.map((task) => ({
+          id: task.taskId,
+          status: task.status,
+          description: task.description,
+        }));
+        if (selectedTaskId === undefined || !tasks.some((t) => t.taskId === selectedTaskId)) {
+          selectedTaskId = tasks.find((t) => t.detached !== false)?.taskId;
+        }
+        if (selectedTaskId !== undefined && !viewerOpen) loadTail(selectedTaskId);
+        else pushProps();
+      } catch (error) {
+        flashMessage = formatErrorMessage(error);
+        pushProps();
+      }
+    };
+
+    const openFullOutput = (taskId: string): void => {
+      let viewerClosed = false;
+      let viewerRequestGen = 0;
+      let wasRunning = tasks.find((t) => t.taskId === taskId)?.status === 'running';
+      let endViewerTakeover: (() => void) | undefined;
+      viewerOpen = true;
+      const closeViewer = (): void => {
+        if (viewerClosed) return;
+        viewerClosed = true;
+        viewerOpen = false;
+        if (outputPollTimer !== undefined) {
+          clearTimeout(outputPollTimer);
+          outputPollTimer = undefined;
+        }
+        endViewerTakeover?.();
+        if (!closed && selectedTaskId !== undefined) {
+          loadTail(selectedTaskId);
+        }
+      };
+      const viewer = new TaskOutputViewer(
+        {
+          taskId,
+          info: tasks.find((t) => t.taskId === taskId),
+          output: tailOutput ?? '',
+          onClose: closeViewer,
+        },
+        this.state.terminal,
+      );
+      endViewerTakeover = this.state.screenController.beginTakeover(viewer);
+      const scheduleNextFetch = (): void => {
+        if (viewerClosed || closed) return;
+        const info = tasks.find((t) => t.taskId === taskId);
+        if (info === undefined || info.status !== 'running') {
+          if (wasRunning) {
+            wasRunning = false;
+            fetchViewerOutput(false);
+          }
+          return;
+        }
+        wasRunning = true;
+        outputPollTimer = setTimeout(() => {
+          outputPollTimer = undefined;
+          fetchViewerOutput(true);
+        }, 1_500);
+        outputPollTimer.unref?.();
+      };
+      const fetchViewerOutput = (continuePolling: boolean): void => {
+        const gen = ++viewerRequestGen;
         void agent
-          .getTaskOutput({ taskId: id, tail: 20_000 })
-          .then((output) => {
-            this.showResult(output);
+          .getTaskOutput({ taskId, tail: 65_536 })
+          .then((out) => {
+            if (viewerClosed || closed || gen !== viewerRequestGen) return;
+            const info = tasks.find((t) => t.taskId === taskId);
+            viewer.setProps({ taskId, info, output: out, onClose: closeViewer });
+            this.state.ui.requestRender();
           })
-          .catch((error: unknown) => {
-            this.showStatus(formatErrorMessage(error), 'error');
+          .catch(() => {})
+          .finally(() => {
+            if (continuePolling) scheduleNextFetch();
           });
+      };
+      fetchViewerOutput(true);
+    };
+
+    const closeBrowser = (): void => {
+      if (closed) return;
+      closed = true;
+      if (pollTimer !== undefined) {
+        clearInterval(pollTimer);
+        pollTimer = undefined;
+      }
+      if (outputPollTimer !== undefined) {
+        clearTimeout(outputPollTimer);
+        outputPollTimer = undefined;
+      }
+      endBrowserTakeover?.();
+    };
+
+    const browser = new TasksBrowserApp(
+      {
+        tasks,
+        filter,
+        selectedTaskId,
+        tailOutput,
+        tailLoading,
+        flashMessage,
+        onSelect: () => {},
+        onToggleFilter: () => {},
+        onRefresh: () => {},
+        onCancel: closeBrowser,
+        onStopConfirmed: () => {},
+        onOpenOutput: () => {},
       },
-      onCancel: () => {
-        this.restoreEditor();
-      },
-    });
-    this.mountEditorReplacement(picker);
+      this.state.terminal,
+    );
+    endBrowserTakeover = this.state.screenController.beginTakeover(browser);
+    pushProps();
+    if (selectedTaskId !== undefined) loadTail(selectedTaskId);
+    pollTimer = setInterval(() => {
+      if (tasks.some((t) => t.status === 'running')) {
+        void refreshTasks();
+      }
+    }, 2_000);
+    pollTimer.unref?.();
   }
 
   private async forkCurrentSession(title: string): Promise<void> {
@@ -2568,12 +3347,7 @@ export class DaemonTUI {
     const plugins = this.client.klient.global.plugins;
     const [action, rest] = splitFirst(args);
     if (action === '') {
-      const items = await plugins.list();
-      this.showResult(
-        items
-          .map((item) => `${item.id} · ${item.globalEnabled ? 'enabled' : 'disabled'} · ${item.state}`)
-          .join('\n') || 'No plugins installed.',
-      );
+      await this.showPluginsPanel();
       return;
     }
     if (action === 'marketplace') {
@@ -2696,13 +3470,307 @@ export class DaemonTUI {
 
   private async showMcpStatus(): Promise<void> {
     const controller = await this.ensureSession();
-    const servers = await this.client.klient
-      .session(controller.sessionId)
-      .agent('main')
-      .getMcpServers();
-    this.showResult(
-      servers.map((server) => `${server.name} · ${server.status}`).join('\n') || 'No MCP servers configured.',
-    );
+    const agent = this.client.klient.session(controller.sessionId).agent('main');
+    const [servers, capabilities, authStatuses] = await Promise.all([
+      agent.getMcpServers(),
+      agent.listMcpSessionCapabilities?.().catch(() => undefined) ?? Promise.resolve(undefined),
+      this.client.klient.global.mcp?.authStatuses?.({ cwd: this.startup.workDir, verify: false }).catch(() => undefined)
+        ?? Promise.resolve(undefined),
+    ]);
+
+    let built = buildMcpDialogItems(servers, capabilities, authStatuses);
+    if (built.items.length === 0) {
+      this.showResult('No MCP servers configured.');
+      return;
+    }
+
+    const refreshDialog = async (dialog: McpDialogComponent): Promise<void> => {
+      const [nextServers, nextCaps, nextAuth] = await Promise.all([
+        agent.getMcpServers(),
+        agent.listMcpSessionCapabilities?.().catch(() => undefined) ?? Promise.resolve(undefined),
+        this.client.klient.global.mcp?.authStatuses?.({ cwd: this.startup.workDir, verify: false }).catch(() => undefined)
+          ?? Promise.resolve(undefined),
+      ]);
+      built = buildMcpDialogItems(nextServers, nextCaps, nextAuth);
+      dialog.setItems(built.items);
+      this.state.ui.requestRender();
+    };
+
+    const dialog = new McpDialogComponent({
+      items: built.items,
+      onSetOverride: (locatorKey, override) => {
+        if (agent.setMcpSessionOverride === undefined) {
+          this.showStatus('MCP session overrides are unavailable on this daemon.', 'error');
+          return;
+        }
+        const realLocator = built.locatorsByKey.get(locatorKey);
+        if (realLocator === undefined) {
+          this.showStatus(`Cannot change session override for ${locatorKey}: server locator unavailable.`, 'error');
+          return;
+        }
+        void agent
+          .setMcpSessionOverride({ locator: realLocator, override })
+          .then(() => refreshDialog(dialog))
+          .catch((error: unknown) => this.showStatus(formatErrorMessage(error), 'error'));
+      },
+      onReconnect: (runtimeName) => {
+        if (agent.reconnectMcpServer === undefined) return;
+        this.showStatus(`Reconnecting MCP server ${runtimeName}…`, { transient: true });
+        void agent
+          .reconnectMcpServer(runtimeName)
+          .then(() => {
+            this.showStatus(`Reconnected ${runtimeName}.`, { transient: true });
+            return refreshDialog(dialog);
+          })
+          .catch((error: unknown) => this.showStatus(formatErrorMessage(error), 'error'));
+      },
+      onAuth: (locatorKey) => {
+        const mcpGlobal = this.client.klient.global.mcp;
+        if (mcpGlobal?.beginAuth === undefined) return;
+        const realLocator = built.locatorsByKey.get(locatorKey);
+        if (realLocator === undefined) {
+          this.showStatus(`Cannot start authorization for ${locatorKey}: server locator unavailable.`, 'error');
+          return;
+        }
+        this.mcpAuthAbort?.abort();
+        const abort = new AbortController();
+        this.mcpAuthAbort = abort;
+        void mcpGlobal
+          .beginAuth({ locator: realLocator, cwd: this.startup.workDir })
+          .then(async (flow) => {
+            if (abort.signal.aborted) return;
+            if (flow.status === 'already-authorized') {
+              this.showStatus(`MCP server ${locatorKey} is already authorized.`, { transient: true });
+              await refreshDialog(dialog);
+              return;
+            }
+            if (flow.status === 'authorization-required') {
+              if (flow.authorizationUrl.length > 0) {
+                openUrl(flow.authorizationUrl);
+                this.showStatus(`Opened MCP sign-in in browser for ${locatorKey}.`);
+              }
+              if (mcpGlobal.completeAuth !== undefined) {
+                await mcpGlobal.completeAuth({ flowId: flow.flowId }, { signal: abort.signal });
+                if (abort.signal.aborted) return;
+                this.showStatus(`MCP authorization completed for ${locatorKey}.`, { transient: true });
+                await refreshDialog(dialog);
+              }
+            }
+          })
+          .catch((error: unknown) => {
+            if (!abort.signal.aborted) this.showStatus(formatErrorMessage(error), 'error');
+          });
+      },
+      onCancel: () => {
+        this.mcpAuthAbort?.abort();
+        this.mcpAuthAbort = undefined;
+        this.restoreEditor();
+      },
+    });
+    this.mountEditorReplacement(dialog);
+  }
+
+  private async showPluginsPanel(
+    initialTab?: 'installed' | 'official' | 'third-party' | 'custom',
+    selectedId?: string,
+    pluginHint?: { readonly id: string; readonly text: string },
+  ): Promise<void> {
+    const plugins = this.client.klient.global.plugins;
+    const [installed, capabilities] = await Promise.all([
+      plugins.list(),
+      this.client.klient.global.capabilities?.list?.().catch(() => undefined) ?? Promise.resolve(undefined),
+    ]);
+    this.cachedPlugins = installed.map((item) => ({
+      id: item.id,
+      name: item.displayName,
+      enabled: item.globalEnabled,
+    }));
+    const installedIds = new Set(installed.map((item) => item.id));
+    const pluginConfig = await this.client.klient.global.config
+      .get<{ readonly marketplace_url?: string }>('plugins')
+      .catch(() => undefined);
+
+    const panel = new PluginsPanelComponent({
+      installed,
+      installedIds,
+      capabilities,
+      catalogIsDefault: pluginConfig?.marketplace_url === undefined,
+      initialTab,
+      selectedId,
+      pluginHint,
+      onRequestMarketplace: () => {
+        panel.setMarketplaceLoading();
+        this.state.ui.requestRender();
+        void loadPluginMarketplace({
+          workDir: this.startup.workDir,
+          configSource: pluginConfig?.marketplace_url,
+        })
+          .then((market) => {
+            panel.setMarketplace(market.plugins, market.source);
+            this.state.ui.requestRender();
+          })
+          .catch((error: unknown) => {
+            panel.setMarketplaceError(formatErrorMessage(error));
+            this.state.ui.requestRender();
+          });
+      },
+      onSelect: (selection) => {
+        void this.handlePluginsPanelSelection(panel, selection, installed).catch((error: unknown) => {
+          panel.clearInstalling();
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      onCancel: () => {
+        this.restoreEditor();
+      },
+    });
+    this.mountEditorReplacement(panel);
+  }
+
+  private async handlePluginsPanelSelection(
+    panel: PluginsPanelComponent,
+    selection: Parameters<NonNullable<ConstructorParameters<typeof PluginsPanelComponent>[0]['onSelect']>>[0],
+    installed: readonly PluginSummary[],
+  ): Promise<void> {
+    const plugins = this.client.klient.global.plugins;
+    const syncAfterPluginMutation = async (): Promise<void> => {
+      await this.controller?.resync();
+      await this.refreshAgentCommands();
+      if (this.controller !== undefined) await this.refreshSkillCommands(this.controller.sessionId);
+    };
+    switch (selection.kind) {
+      case 'open-url':
+        openUrl(selection.url);
+        this.showStatus(`Opened ${selection.label} in browser.`, { transient: true });
+        return;
+      case 'toggle':
+        await plugins.setEnabled({ id: selection.id, enabled: selection.enabled });
+        await syncAfterPluginMutation();
+        await this.showPluginsPanel('installed', selection.id, {
+          id: selection.id,
+          text: selection.enabled ? 'enabled' : 'disabled',
+        });
+        return;
+      case 'reload':
+        await plugins.reload();
+        await syncAfterPluginMutation();
+        await this.showPluginsPanel('installed');
+        this.showStatus('Reloaded plugins.', { transient: true });
+        return;
+      case 'details': {
+        const info = await plugins.info(selection.id);
+        this.restoreEditor();
+        this.showResult(
+          [
+            `Plugin: ${info.displayName} (${info.id})`,
+            `Source: ${info.source ?? 'local'}`,
+            `State: ${info.state} · enabled: ${String(info.globalEnabled)}`,
+            `MCP servers: ${String(info.enabledMcpServerCount)}/${String(info.mcpServerCount)}`,
+          ].join('\n'),
+        );
+        return;
+      }
+      case 'mcp': {
+        const info = await plugins.info(selection.id);
+        this.showPluginMcpDialog(info);
+        return;
+      }
+      case 'remove': {
+        const target = installed.find((item) => item.id === selection.id);
+        const confirm = new PluginRemoveConfirmComponent({
+          id: selection.id,
+          displayName: target?.displayName ?? selection.id,
+          onDone: (result) => {
+            if (result.kind !== 'confirm') {
+              void this.showPluginsPanel('installed', selection.id);
+              return;
+            }
+            void plugins
+              .remove(selection.id)
+              .then(() => syncAfterPluginMutation())
+              .then(() => this.showPluginsPanel('installed'))
+              .then(() => this.showStatus(`Removed plugin ${selection.id}.`, { transient: true }))
+              .catch((error: unknown) => this.showStatus(formatErrorMessage(error), 'error'));
+          },
+        });
+        this.mountEditorReplacement(confirm);
+        return;
+      }
+      case 'install':
+      case 'install-source': {
+        const source = selection.kind === 'install' ? selection.entry.source : selection.source;
+        const label = selection.kind === 'install' ? selection.entry.displayName : source;
+        panel.setInstalling(label);
+        this.state.ui.requestRender();
+        const plan = await plugins.preview({ source });
+        const runInstall = async (consent: boolean): Promise<void> => {
+          await plugins.install({ source, fingerprint: plan.fingerprint, consent });
+          await syncAfterPluginMutation();
+          await this.showPluginsPanel('installed', plan.id, { id: plan.id, text: 'installed' });
+          this.showStatus(`Installed plugin ${plan.id}.`, { transient: true });
+        };
+        if (!plan.consentRequired) {
+          await runInstall(false);
+          return;
+        }
+        const daemonIdentity = this.connection.serverId
+          ? `${this.connection.url} (daemon ${this.connection.serverId})`
+          : this.connection.url;
+        const trust = new PluginInstallTrustConfirmComponent({
+          label: `${label} (${plan.id})`,
+          notice:
+            `Third-party plugin not reviewed by Kimi. Source: ${source} · ` +
+            `Contributions: ${plan.contributions.join(', ') || 'none'} · ` +
+            `Fingerprint: ${plan.fingerprint} · Target daemon: ${daemonIdentity}. ` +
+            'It can bundle MCP servers, skills, or files that run code and access your workspace. ' +
+            'Install only if you trust the source and fingerprint.',
+          onDone: (result) => {
+            if (result.kind !== 'confirm') {
+              void this.showPluginsPanel('installed');
+              return;
+            }
+            void runInstall(true).catch((error: unknown) => {
+              this.showStatus(formatErrorMessage(error), 'error');
+              this.restoreEditor();
+            });
+          },
+        });
+        this.mountEditorReplacement(trust);
+        return;
+      }
+    }
+  }
+
+  private showPluginMcpDialog(
+    info: PluginInfo,
+    selectedServer?: string,
+    serverHint?: { readonly server: string; readonly text: string },
+  ): void {
+    const picker = new PluginMcpSelectorComponent({
+      info,
+      selectedServer,
+      serverHint,
+      onSelect: (sel) => {
+        if (sel.kind === 'back') {
+          void this.showPluginsPanel('installed', info.id);
+          return;
+        }
+        void this.client.klient.global.plugins
+          .setMcpServerEnabled({ id: sel.pluginId, server: sel.server, enabled: sel.enabled })
+          .then(() => this.client.klient.global.plugins.info(sel.pluginId))
+          .then((updated) => {
+            this.showPluginMcpDialog(updated, sel.server, {
+              server: sel.server,
+              text: sel.enabled ? 'enabled' : 'disabled',
+            });
+          })
+          .catch((error: unknown) => this.showStatus(formatErrorMessage(error), 'error'));
+      },
+      onCancel: () => {
+        this.restoreEditor();
+      },
+    });
+    this.mountEditorReplacement(picker);
   }
 
   private async handleGoalCommand(args: string): Promise<void> {
@@ -2747,17 +3815,42 @@ export class DaemonTUI {
 
   private persistTuiConfigPatch(patch: Partial<TuiConfig>): void {
     this.currentTuiConfig = { ...this.currentTuiConfig, ...patch };
-    if (this.startup.tuiConfigPath !== undefined) {
-      void saveTuiConfig(this.currentTuiConfig, this.startup.tuiConfigPath).catch((error: unknown) => {
-        this.showStatus(`Failed to save tui.toml: ${formatErrorMessage(error)}`, 'error');
-      });
+    const path = this.startup.tuiConfigPath;
+    if (path !== undefined) {
+      const snapshot = { ...this.currentTuiConfig };
+      this.configPersistChain = this.configPersistChain
+        .then(() => saveTuiConfig(snapshot, path))
+        .catch((error: unknown) => {
+          this.showStatus(`Failed to save tui.toml: ${formatErrorMessage(error)}`, 'error');
+        });
     }
   }
 
   private applyMouseReporting(enabled: boolean): void {
-    this.state.ui.setMouseReporting(enabled);
-    this.setAppState({ mouse: enabled });
+    const mode = this.state.screenController.getMode();
+    if (mode === 'main') {
+      if (enabled) {
+        void this.switchScreenMode('alt', false, true)
+          .then((switched) => {
+            if (switched) {
+              this.state.screenController.setSavedMousePreference(true);
+              this.persistTuiConfigPatch({ mouse: true });
+            }
+          })
+          .catch((error: unknown) => {
+            this.showStatus(formatErrorMessage(error), 'error');
+          });
+        return;
+      }
+      this.state.screenController.setSavedMousePreference(false);
+      this.persistTuiConfigPatch({ mouse: false });
+      this.setAppState({ mouse: false });
+      this.showStatus('Mouse reporting off — drag to select text', { transient: true });
+      return;
+    }
+    this.state.screenController.setSavedMousePreference(enabled);
     this.persistTuiConfigPatch({ mouse: enabled });
+    this.setAppState({ mouse: enabled });
     this.showStatus(
       enabled ? 'Mouse reporting on' : 'Mouse reporting off — drag to select text',
       { transient: true },
@@ -2767,7 +3860,7 @@ export class DaemonTUI {
   private handleMouseCommand(args: string): void {
     const normalized = args.trim().toLowerCase();
     if (normalized === '') {
-      this.applyMouseReporting(this.state.appState.mouse === false);
+      this.applyMouseReporting(!this.state.screenController.getEffectiveMouse());
       return;
     }
     if (normalized === 'on' || normalized === 'true' || normalized === 'enable') {
@@ -2781,198 +3874,155 @@ export class DaemonTUI {
     this.showStatus('/mouse expects on, off, or no arguments.', 'error');
   }
 
-  private showSettingsDialog(): void {
-    const runAsync = (promise: Promise<void>): void => {
-      void promise.catch((error: unknown) => {
-        this.showStatus(formatErrorMessage(error), 'error');
+  private async handleScreenCommand(args: string): Promise<void> {
+    const normalized = args.trim().toLowerCase();
+    const current = this.state.screenController.getMode();
+    if (normalized === '') {
+      const modeDesc = current === 'alt' ? 'alt (fullscreen)' : 'main (native scrollback)';
+      this.showStatus(`Screen mode: ${modeDesc} · use /screen alt or /screen main`, {
+        transient: true,
       });
+      return;
+    }
+    let target: ScreenMode;
+    if (normalized === 'alt' || normalized === 'fullscreen') {
+      target = 'alt';
+    } else if (normalized === 'main' || normalized === 'scrollback') {
+      target = 'main';
+    } else {
+      this.showStatus('/screen expects alt, main, or no arguments.', 'error');
+      return;
+    }
+    await this.switchScreenMode(target, true);
+  }
+
+  private async switchScreenMode(
+    target: ScreenMode,
+    persist: boolean,
+    mouseOverride?: boolean,
+  ): Promise<boolean> {
+    const result = await this.state.screenController.switchScreen(target, {
+      transient: false,
+      mouseOverride,
+    });
+    if (!result.switched && result.reason !== undefined) {
+      this.showStatus(result.reason, 'error');
+      return false;
+    }
+    this.setAppState({
+      screenMode: result.mode,
+      mouse: result.effectiveMouse,
+    });
+    if (persist) {
+      this.persistTuiConfigPatch({ screenMode: result.mode });
+    }
+    const { envOverride } = resolveEffectiveScreenAndMouse(this.currentTuiConfig);
+    const envNote =
+      persist && envOverride !== undefined && envOverride !== result.mode
+        ? ` (KIKI_TUI_FULL_SCREEN=${process.env['KIKI_TUI_FULL_SCREEN']} will override on next launch)`
+        : '';
+    this.showStatus(
+      result.mode === 'alt'
+        ? `Switched to fullscreen alt screen (mouse ${result.effectiveMouse ? 'on' : 'off'})${envNote}.`
+        : `Switched to main scrollback screen${envNote}.`,
+      { transient: true },
+    );
+    return true;
+  }
+
+  private async enterTransientReader(scrollUpPages = 1): Promise<void> {
+    const result = await this.state.screenController.enterTransientReader(scrollUpPages);
+    if (!result.switched && result.reason !== undefined) {
+      this.showStatus(result.reason, 'error');
+      return;
+    }
+    this.setAppState({ screenMode: result.mode, mouse: result.effectiveMouse });
+    this.showStatus('Fullscreen transcript reader · End or Esc to return to main scrollback', {
+      transient: true,
+    });
+  }
+
+  private async exitTransientReader(): Promise<void> {
+    const result = await this.state.screenController.exitTransientReader();
+    this.setAppState({ screenMode: result.mode, mouse: result.effectiveMouse });
+    this.showStatus('Returned to main scrollback.', { transient: true });
+  }
+
+  private async openTranscriptSearch(_initialQuery = ''): Promise<void> {
+    if (this.state.screenController.getMode() === 'main') {
+      const entered = await this.state.screenController.enterTransientReader(0);
+      if (!entered.switched && entered.reason !== undefined) {
+        this.showStatus(entered.reason, 'error');
+        return;
+      }
+      this.setAppState({ screenMode: entered.mode, mouse: entered.effectiveMouse });
+    }
+    if (!this.state.screenController.openTranscriptSearch()) {
+      this.showStatus('Close the active overlay before searching the transcript.', 'error');
+    }
+  }
+
+  private createSettingsHost(): DaemonSettingsHost {
+    return {
+      getAppState: () => this.state.appState,
+      getScreenMode: () => this.state.screenController.getMode(),
+      getEffectiveMouse: () => this.state.screenController.getEffectiveMouse(),
+      setBusySubmit: (mode: BusySubmitMode) => {
+        this.setAppState({ busySubmit: mode });
+        this.persistTuiConfigPatch({ busySubmit: mode });
+        this.state.ui.requestRender();
+      },
+      setMouseReporting: (enabled: boolean) => {
+        if (enabled && this.state.screenController.getMode() === 'main') {
+          this.restoreEditor();
+        }
+        this.applyMouseReporting(enabled);
+      },
+      switchScreenMode: async (mode: ScreenMode) => {
+        this.restoreEditor();
+        await this.switchScreenMode(mode, true);
+      },
+      setShowThinking: (enabled: boolean) => {
+        this.renderer.setShowThinking(enabled);
+        this.setAppState({ showThinking: enabled });
+        this.persistTuiConfigPatch({ showThinking: enabled });
+        this.state.ui.requestRender();
+      },
+      setShowTimestamps: (enabled: boolean) => {
+        this.renderer.setShowTimestamps(enabled);
+        this.setAppState({ showTimestamps: enabled });
+        this.persistTuiConfigPatch({ showTimestamps: enabled });
+        this.state.ui.requestRender();
+      },
+      setRenderLatex: (enabled: boolean) => {
+        setMarkdownRenderLatex(enabled);
+        this.setAppState({ renderLatex: enabled });
+        this.persistTuiConfigPatch({ renderLatex: enabled });
+        this.state.ui.invalidate();
+        this.state.ui.requestRender(true);
+      },
+      setNotifications: (next: TuiConfig['notifications']) => {
+        this.setAppState({ notifications: next });
+        this.persistTuiConfigPatch({ notifications: next });
+        this.state.ui.requestRender();
+      },
+      applyTheme: async (theme: string) => {
+        await this.applyTheme(theme, true);
+      },
+      applyPermission: (mode) => this.applyPermission(mode),
+      applyPlanMode: (enabled) => this.applyPlanMode(enabled),
+      openPermissionPicker: () => this.showPermissionPicker(),
+      openModelPicker: () => this.showModelPicker(),
+      openThinkingPicker: () => this.showThinkingPicker(),
+      showRedactedConfigJson: () => this.handleSettingsCommand('json'),
+      closeDialog: () => this.restoreEditor(),
+      onError: (error) => this.showStatus(formatErrorMessage(error), 'error'),
     };
+  }
+
+  private showSettingsDialog(): void {
     const dialog = new SettingsDialogComponent({
-      items: [
-        {
-          id: 'busy_submit',
-          label: 'Busy Enter behavior',
-          description: 'Send now steers the running turn; Queue waits for the next turn',
-          getValue: () =>
-            (this.state.appState.busySubmit ?? 'send_now') === 'send_now' ? 'Send now' : 'Queue',
-          getValueTone: () => 'primary',
-          onActivate: () => {
-            const next =
-              (this.state.appState.busySubmit ?? 'send_now') === 'send_now' ? 'queue' : 'send_now';
-            this.setAppState({ busySubmit: next });
-            this.persistTuiConfigPatch({ busySubmit: next });
-            this.state.ui.requestRender();
-          },
-        },
-        {
-          id: 'mouse',
-          label: 'Mouse reporting',
-          description: 'Click & wheel navigation (Alt+M toggles for native drag selection)',
-          getValue: () => (this.state.appState.mouse !== false ? 'enabled' : 'disabled'),
-          onActivate: () => {
-            const next = this.state.appState.mouse === false;
-            this.state.ui.setMouseReporting(next);
-            this.setAppState({ mouse: next });
-            this.persistTuiConfigPatch({ mouse: next });
-            this.state.ui.requestRender();
-          },
-        },
-        {
-          id: 'screen_mode',
-          label: 'Screen mode',
-          description: 'Applies on next launch',
-          getValue: () =>
-            (this.state.appState.screenMode ?? 'main') === 'alt'
-              ? 'Fullscreen alt'
-              : 'Main scrollback',
-          getValueTone: () => 'primary',
-          onActivate: () => {
-            const next = (this.state.appState.screenMode ?? 'main') === 'alt' ? 'main' : 'alt';
-            this.setAppState({ screenMode: next });
-            this.persistTuiConfigPatch({ screenMode: next });
-            this.state.ui.requestRender();
-          },
-        },
-        {
-          id: 'show_thinking',
-          label: 'Show thinking',
-          description: 'Render model reasoning traces in the transcript',
-          getValue: () => (this.state.appState.showThinking !== false ? 'enabled' : 'disabled'),
-          onActivate: () => {
-            const next = this.state.appState.showThinking === false;
-            this.renderer.setShowThinking(next);
-            this.setAppState({ showThinking: next });
-            this.persistTuiConfigPatch({ showThinking: next });
-            this.state.ui.requestRender();
-          },
-        },
-        {
-          id: 'show_timestamps',
-          label: 'Prompt timestamps',
-          description: 'Show HH:MM:SS above user prompts',
-          getValue: () => (this.state.appState.showTimestamps === true ? 'enabled' : 'disabled'),
-          onActivate: () => {
-            const next = this.state.appState.showTimestamps !== true;
-            this.renderer.setShowTimestamps(next);
-            this.setAppState({ showTimestamps: next });
-            this.persistTuiConfigPatch({ showTimestamps: next });
-            this.state.ui.requestRender();
-          },
-        },
-        {
-          id: 'render_latex',
-          label: 'LaTeX math',
-          description: 'Format inline and block LaTeX equations in assistant replies',
-          getValue: () => (this.state.appState.renderLatex !== false ? 'enabled' : 'disabled'),
-          onActivate: () => {
-            const next = this.state.appState.renderLatex === false;
-            setMarkdownRenderLatex(next);
-            this.setAppState({ renderLatex: next });
-            this.persistTuiConfigPatch({ renderLatex: next });
-            this.state.ui.invalidate();
-            this.state.ui.requestRender(true);
-          },
-        },
-        {
-          id: 'notifications',
-          label: 'Notifications',
-          description: 'Terminal bell / desktop notification when turns finish or need input',
-          getValue: () => {
-            const n = this.state.appState.notifications;
-            if (!n.enabled) return 'disabled';
-            return n.condition === 'always' ? 'Always' : 'Unfocused';
-          },
-          getValueTone: () =>
-            this.state.appState.notifications.enabled ? 'success' : 'textDim',
-          onActivate: () => {
-            const cur = this.state.appState.notifications;
-            const next = !cur.enabled
-              ? { enabled: true, condition: 'unfocused' as const }
-              : cur.condition === 'unfocused'
-                ? { enabled: true, condition: 'always' as const }
-                : { enabled: false, condition: cur.condition };
-            this.setAppState({ notifications: next });
-            this.persistTuiConfigPatch({ notifications: next });
-            this.state.ui.requestRender();
-          },
-        },
-        {
-          id: 'theme',
-          label: 'Theme',
-          description: 'Cycle auto, dark, and light color palettes',
-          getValue: () => this.state.appState.theme,
-          getValueTone: () => 'primary',
-          onActivate: () => {
-            const order = ['auto', 'dark', 'light'] as const;
-            const curIdx = order.indexOf(this.state.appState.theme as (typeof order)[number]);
-            const next = order[(curIdx + 1) % order.length]!;
-            this.persistTuiConfigPatch({ theme: next });
-            runAsync(this.applyTheme(next));
-          },
-        },
-        {
-          id: 'permission',
-          label: 'Permission mode',
-          description: 'Open permission selector (or Space to cycle)',
-          getValue: () => this.state.appState.permissionMode,
-          getValueTone: () => 'primary',
-          onActivate: (trigger) => {
-            if (trigger === 'space') {
-              const modes: readonly PermissionMode[] = ['manual', 'auto', 'review', 'yolo'];
-              const idx = modes.indexOf(this.state.appState.permissionMode);
-              const next = modes[(idx + 1) % modes.length]!;
-              runAsync(this.applyPermission(next));
-              return;
-            }
-            this.restoreEditor();
-            this.showPermissionPicker();
-          },
-        },
-        {
-          id: 'plan',
-          label: 'Plan mode',
-          description: 'Read-only planning mode (Shift+Tab)',
-          getValue: () => (this.state.appState.planMode ? 'enabled' : 'disabled'),
-          onActivate: () => {
-            runAsync(this.applyPlanMode(!this.state.appState.planMode));
-          },
-        },
-        {
-          id: 'model',
-          label: 'Model',
-          description: 'Switch active LLM model',
-          getValue: () =>
-            this.state.appState.model === '' ? 'not selected' : this.state.appState.model,
-          getValueTone: () => (this.state.appState.model === '' ? 'textDim' : 'primary'),
-          onActivate: () => {
-            this.restoreEditor();
-            runAsync(this.showModelPicker());
-          },
-        },
-        {
-          id: 'effort',
-          label: 'Thinking effort',
-          description: 'Adjust model reasoning budget',
-          getValue: () => this.state.appState.thinkingEffort,
-          getValueTone: () =>
-            this.state.appState.thinkingEffort === 'off' ? 'textDim' : 'primary',
-          onActivate: () => {
-            this.restoreEditor();
-            runAsync(this.showThinkingPicker());
-          },
-        },
-        {
-          id: 'config_json',
-          label: 'View redacted daemon config',
-          description: 'Print redacted config JSON to the transcript (/settings json)',
-          getValue: () => 'open',
-          getValueTone: () => 'textMuted',
-          onActivate: () => {
-            this.restoreEditor();
-            runAsync(this.handleSettingsCommand('json'));
-          },
-        },
-      ],
+      items: buildDaemonSettingsItems(this.createSettingsHost()),
       onCancel: () => {
         this.restoreEditor();
       },
@@ -2984,6 +4034,365 @@ export class DaemonTUI {
       },
     });
     this.mountEditorReplacement(dialog);
+  }
+
+  private showCommandPalette(): void {
+    const settingsItems = buildDaemonSettingsItems(this.createSettingsHost());
+    const settingsById = new Map(settingsItems.map((item) => [item.id, item]));
+    const commands = daemonHelpCommands();
+    const otherScreen: ScreenMode = this.state.screenController.getMode() === 'alt' ? 'main' : 'alt';
+    const entries: CommandPaletteEntry[] = [
+      { id: 'cmd:model', category: 'Suggested', label: '/model', description: 'Switch active model & effort', shortcut: '/model' },
+      { id: `cmd:screen ${otherScreen}`, category: 'Suggested', label: `/screen ${otherScreen}`, description: otherScreen === 'alt' ? 'Switch to fullscreen alt screen' : 'Switch to main scrollback screen', shortcut: '/screen' },
+      { id: 'cmd:find', category: 'Suggested', label: '/find', description: 'Search transcript', shortcut: 'Ctrl+F' },
+      { id: 'cmd:rewind', category: 'Suggested', label: '/rewind', description: 'Jump, fork, or undo turns', shortcut: 'Esc Esc' },
+      { id: 'cmd:context', category: 'Suggested', label: '/context', description: 'Inspect context window breakdown', shortcut: '/context' },
+      { id: 'cmd:tasks', category: 'Suggested', label: '/tasks', description: 'Browse background tasks & live output', shortcut: '/tasks' },
+      { id: 'cmd:agents', category: 'Suggested', label: '/agents', description: 'Inspect agent & branch tree', shortcut: 'Alt+←/→' },
+    ];
+    for (const cmd of commands) {
+      const disabled = cmd.disabled;
+      entries.push({
+        id: `cmd:${cmd.name}`,
+        category: 'Commands',
+        label: `/${cmd.name}`,
+        description: cmd.description,
+        disabledReason: disabled ? cmd.description : undefined,
+        searchText: `${cmd.name} ${cmd.argumentHint ?? ''} ${cmd.description}`,
+      });
+    }
+    for (const setting of settingsItems) {
+      entries.push({
+        id: `setting:${setting.id}`,
+        category: 'Settings',
+        label: `${setting.label}: ${setting.getValue()}`,
+        description: setting.description,
+        searchText: `${setting.label} ${setting.id} ${setting.description}`,
+      });
+    }
+    for (const skill of this.skillCommands.values()) {
+      entries.push({
+        id: `skill:${skill.commandName}`,
+        category: 'Skills',
+        label: `/${skill.commandName}`,
+        description: skill.description,
+        searchText: `${skill.commandName} ${skill.name} ${skill.description}`,
+      });
+    }
+    for (const profile of this.agentProfileCommands.values()) {
+      entries.push({
+        id: `profile:${profile}`,
+        category: 'Agents',
+        label: `/${profile}`,
+        description: `Send prompt with agent profile ${profile}`,
+        searchText: profile,
+      });
+    }
+
+    const palette = new CommandPaletteComponent({
+      entries,
+      onSelect: (entry) => {
+        if (entry.disabledReason !== undefined) {
+          this.showStatus(`${entry.label} is unavailable: ${entry.disabledReason}`, 'error');
+          return;
+        }
+        this.restoreEditor();
+        if (entry.id.startsWith('setting:')) {
+          const item = settingsById.get(entry.id.slice('setting:'.length));
+          item?.onActivate('enter');
+          return;
+        }
+        if (entry.id.startsWith('profile:') || entry.id.startsWith('skill:')) {
+          this.state.editor.setText(`${entry.label} `);
+          this.state.ui.requestRender();
+          return;
+        }
+        const cmdName = entry.id.slice('cmd:'.length);
+        void this.handleSlash(`/${cmdName}`).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      onCancel: () => {
+        this.restoreEditor();
+      },
+    });
+    this.mountEditorReplacement(palette);
+  }
+
+  private showShortcutsOverlay(): void {
+    const groups = buildActiveShortcutGroups({
+      screenMode: this.state.screenController.getMode(),
+      mouseEnabled: this.state.screenController.getEffectiveMouse(),
+      busySubmit: this.state.appState.busySubmit ?? 'send_now',
+      ctrlPBoundToHistory: false,
+    });
+    const overlay = new ShortcutsOverlayComponent({
+      groups,
+      onInsertLiteralQuestion: () => {
+        this.restoreEditor();
+        this.state.editor.insertTextAtCursor?.('?');
+        this.state.ui.requestRender();
+      },
+      onOpenPalette: () => {
+        this.restoreEditor();
+        this.showCommandPalette();
+      },
+      onOpenHelp: () => {
+        this.restoreEditor();
+        void this.handleSlash('/help').catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      onCancel: () => {
+        this.restoreEditor();
+      },
+    });
+    this.mountEditorReplacement(overlay);
+  }
+
+  private showHistorySearch(): void {
+    const editor = this.state.editor;
+    const savedText = editor.getText();
+    const savedMode = editor.inputMode;
+
+    const entries: HistorySearchEntry[] = [];
+    const seen = new Set<string>();
+    for (let i = this.clearedDrafts.length - 1; i >= 0; i--) {
+      const draft = this.clearedDrafts[i]!;
+      const key = `${draft.mode}:${draft.text}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push({ text: draft.text, source: 'cleared-draft', mode: draft.mode });
+    }
+    for (let i = this.loadedHistoryEntries.length - 1; i >= 0; i--) {
+      const raw = this.loadedHistoryEntries[i]!;
+      const isBash = raw.startsWith('!');
+      const text = isBash ? raw.slice(1) : raw;
+      const mode: 'prompt' | 'bash' = isBash ? 'bash' : 'prompt';
+      const key = `${mode}:${text}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push({ text, source: 'history', mode });
+    }
+
+    const dialog = new HistorySearchDialogComponent({
+      entries,
+      onAccept: (entry) => {
+        this.restoreEditor();
+        editor.setInputMode(entry.mode ?? 'prompt');
+        editor.setText(entry.text, { preservePasteRegistry: true });
+        this.state.ui.requestRender();
+      },
+      onCancel: () => {
+        this.restoreEditor();
+        editor.setInputMode(savedMode);
+        editor.setText(savedText, { preservePasteRegistry: true });
+        this.state.ui.requestRender();
+      },
+    });
+    this.mountEditorReplacement(dialog);
+  }
+
+  private async showContextBreakdown(): Promise<void> {
+    const controller = this.controller;
+    if (controller === undefined) {
+      this.renderer.addNote(
+        new PanelNoteComponent(
+          new ContextPanelComponent({
+            targetLabel: 'main',
+            contextTokens: 0,
+            unavailableReason: 'No active session.',
+          }),
+        ),
+      );
+      return;
+    }
+    const targetLabel = this.focusedAgentId === 'main' ? 'main' : `main (viewing ${this.focusedAgentId})`;
+    try {
+      const status = await this.client.getSessionStatus(controller.sessionId);
+      const breakdown = status.context_breakdown
+        ? {
+            systemTokens: status.context_breakdown.system_tokens,
+            toolsTokens: status.context_breakdown.tools_tokens,
+            messagesTokens: status.context_breakdown.messages_tokens,
+            estimated: true as const,
+          }
+        : undefined;
+      this.renderer.addNote(
+        new PanelNoteComponent(
+          new ContextPanelComponent({
+            targetLabel,
+            contextTokens: status.context_tokens,
+            maxContextTokens: status.max_context_tokens,
+            breakdown,
+            unavailableReason: breakdown === undefined ? 'Session is cold or provider did not report breakdown.' : undefined,
+          }),
+        ),
+      );
+    } catch (error) {
+      this.renderer.addNote(
+        new PanelNoteComponent(
+          new ContextPanelComponent({
+            targetLabel,
+            contextTokens: this.state.appState.contextTokens,
+            maxContextTokens: this.state.appState.maxContextTokens > 0 ? this.state.appState.maxContextTokens : undefined,
+            unavailableReason: formatErrorMessage(error),
+          }),
+        ),
+      );
+    }
+  }
+
+  private collectUndoChoices(): UndoChoice[] {
+    const blocks = this.controller?.getState().blocks ?? [];
+    const users = blocks.filter(
+      (block): block is Extract<Block, { kind: 'user' }> => block.kind === 'user',
+    );
+    const total = users.length;
+    return users.map((block, index) => {
+      const count = total - index;
+      const firstLine = block.text.split('\n')[0]?.trim() ?? '[empty message]';
+      return {
+        id: block.id,
+        count,
+        input: block.text,
+        label: `#${String(index + 1)} ${firstLine}`,
+        messageId: block.userMessageId,
+      };
+    });
+  }
+
+  private async showRewindPicker(): Promise<void> {
+    if (this.focusedAgentId !== 'main') {
+      this.showStatus('Switch to main conversation before rewinding (/branch main).', 'error');
+      return;
+    }
+    const controller = this.controller;
+    if (controller === undefined) {
+      this.showStatus('No active session to rewind.', { transient: true });
+      return;
+    }
+    const choices = this.collectUndoChoices();
+    if (choices.length === 0) {
+      this.showStatus('No turns available to rewind.', { transient: true });
+      return;
+    }
+    const latestUserIdAtOpen = choices.at(-1)?.id;
+    const restoreUndonePrompt = (choice: UndoChoice, topIdBeforeUndo: string | undefined): void => {
+      if (
+        topIdBeforeUndo === latestUserIdAtOpen &&
+        this.state.editor.getText() === '' &&
+        choice.input.trim().length > 0
+      ) {
+        this.state.editor.setText(choice.input);
+      }
+    };
+    const picker = new UndoSelectorComponent({
+      choices,
+      onSelect: (choice) => {
+        const topIdBeforeUndo = controller.getState().blocks.findLast((b) => b.kind === 'user')?.id;
+        this.restoreEditor();
+        void this.undoLastTurn(choice.count)
+          .then(() => {
+            restoreUndonePrompt(choice, topIdBeforeUndo);
+          })
+          .catch((error: unknown) => {
+            this.showStatus(formatErrorMessage(error), 'error');
+          });
+      },
+      onAction: async (choice: UndoChoice, action: RewindAction) => {
+        if (action === 'jump') {
+          const width = Math.max(1, this.state.terminal.columns - 2);
+          const lineOffset = this.renderer.getBlockLineOffset(choice.id, width);
+          if (lineOffset === undefined) {
+            picker.releaseSubmitLock();
+            this.showStatus('Target message is not mounted in the current transcript view.', 'error');
+            return;
+          }
+          this.restoreEditor();
+          const jumped = await this.state.screenController.scrollToTranscriptLine(lineOffset);
+          if (!jumped) {
+            this.showStatus('Unable to jump to that message right now.', 'error');
+            return;
+          }
+          this.setAppState({
+            screenMode: this.state.screenController.getMode(),
+            mouse: this.state.screenController.getEffectiveMouse(),
+          });
+          this.showStatus(`Jumped to ${choice.label}.`, { transient: true });
+          return;
+        }
+        if (action === 'fork') {
+          if (!choice.messageId) {
+            picker.releaseSubmitLock();
+            this.showStatus('Canonical message id unavailable for targeted fork.', 'error');
+            return;
+          }
+          try {
+            const forked = await this.client.forkSession(controller.sessionId, {
+              through_message_id: choice.messageId,
+            });
+            this.restoreEditor();
+            await this.openSession(forked.id);
+            this.showStatus(`Forked session ${forked.id} from ${choice.label}.`);
+          } catch (error) {
+            picker.releaseSubmitLock();
+            this.showStatus(formatErrorMessage(error), 'error');
+          }
+          return;
+        }
+        try {
+          const topIdBeforeUndo = controller.getState().blocks.findLast((b) => b.kind === 'user')?.id;
+          await this.undoLastTurn(choice.count);
+          this.restoreEditor();
+          restoreUndonePrompt(choice, topIdBeforeUndo);
+          this.showStatus(
+            `Undid last ${String(choice.count)} ${choice.count === 1 ? 'turn' : 'turns'} (conversation only; files unchanged).`,
+            { transient: true },
+          );
+        } catch (error) {
+          picker.releaseSubmitLock();
+          this.showStatus(formatErrorMessage(error), 'error');
+        }
+      },
+      onCancel: () => {
+        this.restoreEditor();
+      },
+    });
+    this.mountEditorReplacement(picker);
+  }
+
+  private async cycleFocusedAgent(direction: 'left' | 'right'): Promise<void> {
+    const controller = this.controller;
+    if (controller === undefined) return;
+    const forest = controller.getForest();
+    const ids = ['main', ...Object.keys(forest?.byId ?? {}).filter((id) => id !== 'main')];
+    if (ids.length <= 1) return;
+    const cur = Math.max(0, ids.indexOf(this.focusedAgentId));
+    const delta = direction === 'left' ? -1 : 1;
+    const nextId = ids[(cur + delta + ids.length) % ids.length]!;
+    await this.openAgentTranscript(nextId, controller);
+    this.showStatus(`Switched conversation to ${nextId}.`, { transient: true });
+  }
+
+  private async cycleThinkingEffort(): Promise<void> {
+    const modelId = this.state.appState.model;
+    const model = this.state.appState.availableModels[modelId];
+    if (model === undefined) {
+      this.showStatus('Select a model before toggling thinking effort.', 'error');
+      return;
+    }
+    const segments = segmentsFor(model);
+    if (segments.length <= 1) {
+      this.showStatus(`Thinking effort is fixed (${segments[0] ?? 'off'}) for ${modelId}.`, {
+        transient: true,
+      });
+      return;
+    }
+    const curIdx = segments.indexOf(this.state.appState.thinkingEffort);
+    const next = segments[(curIdx + 1) % segments.length]!;
+    await this.applyThinking(next);
+    this.showStatus(`Thinking effort: ${next}`, { transient: true });
   }
 
   private async handleSettingsCommand(args: string): Promise<void> {
@@ -3008,9 +4417,10 @@ export class DaemonTUI {
     this.showStatus(`Updated daemon config domain ${domain}.`);
   }
 
-  private async undoLastTurn(): Promise<void> {
+  private async undoLastTurn(count = 1): Promise<void> {
     const controller = await this.ensureSession();
-    await this.client.undoSession(controller.sessionId);
+    if (count > 1) await this.client.undoSession(controller.sessionId, count);
+    else await this.client.undoSession(controller.sessionId);
     await controller.resync({ rewrite: true });
   }
 
@@ -3044,14 +4454,60 @@ export class DaemonTUI {
     };
     this.fileAttachments.set(id, attachment);
     this.state.editor.insertTextAtCursor?.(`${attachment.placeholder} `);
+    this.syncEditorAtomicPlaceholders();
     this.state.ui.requestRender();
   }
 
   private async showExperiments(): Promise<void> {
     const flags = await this.client.klient.global.flags.list();
-    this.showResult(
-      flags.map((flag) => `${flag.enabled ? 'on' : 'off'} · ${flag.id} · ${flag.source}`).join('\n')
-        || 'No experimental features registered.',
+    if (flags.length === 0) {
+      this.showResult('No experimental features registered.');
+      return;
+    }
+    const selector = new ExperimentsSelectorComponent({
+      features: flags as readonly ExperimentalFeatureState[],
+      onApply: (changes) => {
+        this.restoreEditor();
+        void this.applyExperimentalFlags(changes).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      onCancel: () => {
+        this.restoreEditor();
+      },
+    });
+    this.mountEditorReplacement(selector);
+  }
+
+  private async applyExperimentalFlags(
+    changes: readonly { readonly id: string; readonly enabled: boolean }[],
+  ): Promise<void> {
+    if (changes.length === 0) return;
+    const config = this.client.klient.global.config;
+    const patch: Record<string, boolean> = {};
+    for (const change of changes) {
+      patch[change.id] = change.enabled;
+    }
+    await config.set({ domain: 'experimental', patch });
+    await config.reload();
+    const verified = await this.client.klient.global.flags.list().catch(() => undefined);
+    await this.controller?.resync();
+    const overridden = verified
+      ? changes.filter((c) => {
+          const current = verified.find((f) => f.id === c.id);
+          return current !== undefined && current.enabled !== c.enabled;
+        })
+      : [];
+    if (overridden.length > 0) {
+      this.showStatus(
+        `Saved experimental flags (${overridden.map((c) => c.id).join(', ')} overridden by environment).`,
+        { transient: true },
+      );
+      return;
+    }
+    this.showStatus(
+      `Applied ${String(changes.length)} experimental ${changes.length === 1 ? 'flag' : 'flags'} and reloaded daemon config.`,
+      { transient: true },
     );
   }
 
@@ -3210,6 +4666,16 @@ export class DaemonTUI {
     if (targetBranchId === undefined) {
       throw new Error('No open branch to merge. Open one with /branch first.');
     }
+    await this.mergeSpecificBranch(targetBranchId, summary, controller);
+  }
+
+  private async mergeSpecificBranch(
+    targetBranchId: string,
+    summary: string,
+    existingController?: SessionController,
+  ): Promise<void> {
+    const controller = existingController ?? (await this.ensureSession());
+    if (this.controller !== controller) return;
     const folded = await this.client.foldBranch(controller.sessionId, {
       branch_id: targetBranchId,
       summary: summary === '' ? undefined : summary,
@@ -3226,26 +4692,134 @@ export class DaemonTUI {
       await this.openAgentTranscript('main', controller);
       if (this.controller !== controller) return;
     }
+    this.syncAgentBreadcrumb();
     this.showStatus(`Merged ${targetBranchId} into main.`);
   }
 
-  private async copyLastAssistantMessage(): Promise<void> {
-    const message = this.controller?.getState().blocks.findLast(
-      (block) => block.kind === 'assistant' && !block.streaming,
-    );
-    if (message?.kind !== 'assistant') throw new Error('No completed assistant message to copy.');
-    // Over SSH the native clipboard is the remote machine's, so the copy goes
-    // out as an OSC 52 request for the user's own terminal to carry out. A
-    // terminal may ignore that request without saying so, and the wording
-    // must not claim more than was done.
-    const channel = await copyTextToClipboard(message.text);
+  private async handleCopyCommand(args: string): Promise<void> {
+    const blocks = this.getFocusedBlocks();
+    const { codeBlocks, allTargets } = extractCopyTargets(blocks);
+    const trimmed = args.trim();
+    if (trimmed !== '') {
+      const num = Number(trimmed);
+      if (!Number.isInteger(num) || num < 1 || num > codeBlocks.length) {
+        throw new Error(
+          codeBlocks.length === 0
+            ? 'No code blocks found in completed assistant messages.'
+            : `/copy expects a code block number between 1 and ${String(codeBlocks.length)}.`,
+        );
+      }
+      await this.copyTargetText(codeBlocks[num - 1]!);
+      return;
+    }
+    if (allTargets.length === 0) {
+      throw new Error('No completed assistant message to copy.');
+    }
+    if (codeBlocks.length === 0) {
+      await this.copyTargetText(allTargets[0]!);
+      return;
+    }
+    const picker = new CopyPickerComponent({
+      targets: allTargets,
+      onCopy: (target) => {
+        this.restoreEditor();
+        void this.copyTargetText(target).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      onWriteFile: (target, filePath) => {
+        this.restoreEditor();
+        void this.writeCopyTargetToFile(target, filePath).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      onCancel: () => {
+        this.restoreEditor();
+      },
+    });
+    this.mountEditorReplacement(picker);
+  }
+
+  private async copyTargetText(target: CopyTarget): Promise<void> {
+    const channel = await copyTextToClipboard(target.text);
     if (channel === 'failed') throw new Error('Clipboard access is unavailable.');
     this.showStatus(
       channel === 'osc52'
-        ? 'Sent the last assistant message to your terminal\'s clipboard (OSC 52).'
-        : 'Copied the last assistant message.',
+        ? `Sent ${target.label} to your terminal's clipboard (OSC 52).`
+        : `Copied ${target.label}.`,
       { transient: true },
     );
+  }
+
+  private async writeCopyTargetToFile(target: CopyTarget, filePath: string): Promise<void> {
+    const absolutePath = resolve(this.startup.workDir, filePath);
+    const exists = await access(absolutePath).then(() => true, () => false);
+    if (!exists) {
+      await writeFile(absolutePath, target.text, 'utf8');
+      this.showStatus(`Wrote ${target.label} to ${absolutePath}`, { transient: true });
+      return;
+    }
+    const confirm = new ChoicePickerComponent({
+      title: `Overwrite existing file ${absolutePath}?`,
+      options: [
+        { value: 'cancel', label: 'Cancel', description: 'Keep existing file untouched.' },
+        { value: 'overwrite', label: 'Overwrite file', tone: 'danger', description: 'Replace file contents.' },
+      ],
+      onSelect: (choice) => {
+        this.restoreEditor();
+        if (choice !== 'overwrite') return;
+        void writeFile(absolutePath, target.text, 'utf8')
+          .then(() => this.showStatus(`Wrote ${target.label} to ${absolutePath}`, { transient: true }))
+          .catch((error: unknown) => this.showStatus(formatErrorMessage(error), 'error'));
+      },
+      onCancel: () => {
+        this.restoreEditor();
+      },
+    });
+    this.mountEditorReplacement(confirm);
+  }
+
+  private showThemePicker(): void {
+    const snapshotPalette = { ...currentTheme.palette };
+    const snapshotTheme = this.state.appState.theme;
+    const baseGen = ++this.themePreviewGeneration;
+
+    const picker = new ThemeSelectorComponent({
+      currentValue: snapshotTheme,
+      onHighlightChange: (candidate) => {
+        const gen = ++this.themePreviewGeneration;
+        void getColorPalette(candidate as AppState['theme'])
+          .then((palette) => {
+            if (this.themePreviewGeneration !== gen || this.stopped) return;
+            currentTheme.setPalette(palette);
+            this.state.ui.invalidate();
+            this.state.ui.requestRender(true);
+          })
+          .catch((error: unknown) => {
+            if (this.themePreviewGeneration !== gen) return;
+            this.showStatus(`Theme preview failed: ${formatErrorMessage(error)}`, 'error');
+          });
+      },
+      onSelect: (theme) => {
+        this.themePreviewGeneration = baseGen + 10_000;
+        this.restoreEditor();
+        void this.applyTheme(theme, true).catch((error: unknown) => {
+          currentTheme.setPalette(snapshotPalette);
+          this.state.ui.invalidate();
+          this.state.ui.requestRender(true);
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      onCancel: () => {
+        this.themePreviewGeneration = baseGen + 10_000;
+        currentTheme.setPalette(snapshotPalette);
+        this.setAppState({ theme: snapshotTheme });
+        this.state.ui.invalidate();
+        this.state.ui.requestRender(true);
+        this.restoreEditor();
+      },
+    });
+    this.mountEditorReplacement(picker);
   }
 
   private configureEditor(command: string): void {
@@ -3261,7 +4835,7 @@ export class DaemonTUI {
     await this.client.activateSkill(controller.sessionId, 'init');
   }
 
-  private async applyTheme(theme: string): Promise<void> {
+  private async applyTheme(theme: string, persist = false): Promise<void> {
     if (theme === '') {
       this.showStatus(this.state.appState.theme);
       return;
@@ -3269,6 +4843,9 @@ export class DaemonTUI {
     const palette = await getColorPalette(theme as AppState['theme']);
     currentTheme.setPalette(palette);
     this.setAppState({ theme: theme as AppState['theme'] });
+    if (persist) {
+      this.persistTuiConfigPatch({ theme });
+    }
     // Transcript sync no longer invalidates the tree, so cached, already
     // coloured lines must be dropped here for the new palette to show.
     this.state.ui.invalidate();
@@ -3315,18 +4892,25 @@ export class DaemonTUI {
       this.showStatus('No models configured. Run /login or configure a provider.', { transient: true });
       return;
     }
-    const picker = new ChoicePickerComponent({
-      title: 'Select a model',
-      options: models.map((item) => ({
-        value: item.id,
-        label: item.display_name ?? item.id,
-        description: item.provider_id,
-      })),
+    const modelRecord: Record<string, ModelAlias> = { ...this.state.appState.availableModels };
+    const picker = new TabbedModelSelectorComponent({
+      models: modelRecord,
       currentValue: this.state.appState.model,
-      searchable: true,
-      onSelect: (model) => {
+      currentThinkingEffort: this.state.appState.thinkingEffort,
+      favorites: this.currentTuiConfig.favoriteModels,
+      recent: this.currentTuiConfig.recentModels,
+      onToggleFavorite: (alias, favorited) => {
+        this.toggleFavoriteModel(alias, favorited);
+      },
+      onSelect: (selection) => {
         this.restoreEditor();
-        void this.applyModel(model).catch((error: unknown) => {
+        void this.applyModel(selection.alias, selection.thinking, true).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      onSessionOnlySelect: (selection) => {
+        this.restoreEditor();
+        void this.applyModel(selection.alias, selection.thinking, false).catch((error: unknown) => {
           this.showStatus(formatErrorMessage(error), 'error');
         });
       },
@@ -3407,36 +4991,77 @@ export class DaemonTUI {
     const roster = await this.client.klient.session(controller.sessionId).agents();
     const forest = controller.getForest();
     const ids = new Set(['main', ...Object.keys(roster), ...Object.keys(forest?.byId ?? {})]);
-    const picker = new ChoicePickerComponent({
-      title: 'Agent transcripts',
-      options: [...ids].map((agentId) => {
-        const meta = roster[agentId];
-        const node = forest?.byId[agentId];
-        const isBranch = node?.isBranch === true || meta?.labels?.['branch'] === 'true';
-        const sealed = node?.branchSealed === true || meta?.labels?.['branchSealed'] === 'true';
-        const locked = node?.toolsLocked === true || meta?.labels?.['toolsLocked'] === 'true';
-        const kindTag = isBranch
-          ? sealed
-            ? 'branch · merged'
-            : locked
-              ? 'branch · read-only'
-              : 'branch'
-          : undefined;
-        return {
-          value: agentId,
-          label: node?.label ?? node?.name ?? meta?.userLabel ?? meta?.displayName ?? agentId,
-          description: [kindTag, node?.status, node?.model ?? meta?.model, agentId]
-            .filter((value): value is string => value !== undefined)
-            .join(' · '),
-        };
-      }),
-      currentValue: this.focusedAgentId,
-      searchable: true,
+    const childrenByParent = new Map<string, string[]>();
+    for (const id of ids) {
+      if (id === 'main') continue;
+      const parentId = forest?.byId[id]?.parentAgentId ?? 'main';
+      const parentKey = ids.has(parentId) ? parentId : 'main';
+      const bucket = childrenByParent.get(parentKey) ?? [];
+      bucket.push(id);
+      childrenByParent.set(parentKey, bucket);
+    }
+    const entries: AgentTreeEntry[] = [];
+    const visited = new Set<string>();
+    const visit = (agentId: string, depth: number): void => {
+      if (visited.has(agentId)) return;
+      visited.add(agentId);
+      const meta = roster[agentId];
+      const node = forest?.byId[agentId];
+      const isBranch = node?.isBranch === true || meta?.labels?.['branch'] === 'true';
+      const branchSealed = node?.branchSealed === true || meta?.labels?.['branchSealed'] === 'true';
+      const toolsLocked = node?.toolsLocked === true || meta?.labels?.['toolsLocked'] === 'true';
+      const status = node?.status;
+      const isRunning = status === 'running' || node?.busy === true;
+      entries.push({
+        id: agentId,
+        parentId: node?.parentAgentId,
+        depth,
+        label: node?.label ?? node?.name ?? meta?.userLabel ?? meta?.displayName ?? agentId,
+        kind: agentId === 'main' ? 'main' : isBranch ? 'branch' : 'child',
+        status,
+        model: node?.model ?? meta?.model,
+        isBranch,
+        branchSealed,
+        toolsLocked,
+        isRunning,
+      });
+      for (const childId of childrenByParent.get(agentId) ?? []) {
+        visit(childId, depth + 1);
+      }
+    };
+    visit('main', 0);
+    for (const id of ids) visit(id, 1);
+
+    const picker = new AgentTreePickerComponent({
+      entries,
+      currentAgentId: this.focusedAgentId,
       onSelect: (agentId) => {
         this.restoreEditor();
         void this.openAgentTranscript(agentId).catch((error: unknown) => {
           this.showStatus(formatErrorMessage(error), 'error');
         });
+      },
+      onMergeBranch: (branchId) => {
+        this.restoreEditor();
+        void this.mergeSpecificBranch(branchId, '', controller).catch((error: unknown) => {
+          this.showStatus(formatErrorMessage(error), 'error');
+        });
+      },
+      onStopAgent: (agentId) => {
+        this.restoreEditor();
+        const target = this.client.klient.session(controller.sessionId).agent(agentId);
+        const executorId = forest?.byId[agentId]?.executorId;
+        const stopCall =
+          executorId !== undefined && executorId !== 'native'
+            ? target.cancelExecution()
+            : target.cancel();
+        void stopCall
+          .then(() => {
+            this.showStatus(`Requested stop for ${agentId}.`, { transient: true });
+          })
+          .catch((error: unknown) => {
+            this.showStatus(formatErrorMessage(error), 'error');
+          });
       },
       onCancel: () => {
         this.restoreEditor();
@@ -3454,13 +5079,19 @@ export class DaemonTUI {
     this.focusedControllerDispose?.();
     this.focusedControllerDispose = undefined;
     this.focusedAgentId = agentId;
+    this.renderer.setScope(`${controller.sessionId}:${agentId}`);
     this.contentContinuations.setTarget(controller, agentId);
     controller.setFocusedAgent(agentId);
+    this.syncAgentBreadcrumb();
+    this.syncQueueBanner(controller.getState());
     if (agentId === 'main') {
       this.renderTranscript(controller.getState());
       return;
     }
-    const render = () => this.renderTranscript(controller.getAgentState(agentId));
+    const render = () => {
+      this.syncAgentBreadcrumb();
+      this.renderTranscript(controller.getAgentState(agentId));
+    };
     this.focusedControllerDispose = controller.subscribeAgent(agentId, render);
     render();
   }
@@ -3613,7 +5244,16 @@ export class DaemonTUI {
     const interaction = firstPendingInteraction(blocks);
     if (interaction === undefined) {
       this.interactionDeferred = false;
-      if (this.activeInteractionId !== undefined) this.restoreEditor();
+      if (this.activeInteractionId !== undefined) {
+        if (this.state.screenController.isTakeoverActive()) {
+          // Remove the stale approval/question panel from the underlying editor container
+          // without stealing focus from the active full-screen takeover.
+          this.state.editorContainer.clear();
+          this.state.editorContainer.addChild(this.state.editor);
+        } else {
+          this.restoreEditor();
+        }
+      }
       this.activeInteractionId = undefined;
       return;
     }
@@ -3624,12 +5264,15 @@ export class DaemonTUI {
         ? interaction.request.action
         : interaction.request.questions[0]?.question,
     });
-    // Never replace a dialog the user opened (a picker, /help): the keys they
+    // Never replace a dialog the user opened (a picker, /help) or a full-screen
+    // takeover (/tasks, TaskOutputViewer, ApprovalPreviewViewer): the keys they
     // are pressing for it would land on the approval. The status line says a
-    // request is waiting; restoreEditor() shows it once their dialog closes.
+    // request is waiting; restoreEditor() / takeover close shows it immediately
+    // before the editor can take another keystroke.
     if (
-      this.activeInteractionId === undefined &&
-      this.state.editorContainer.children[0] !== this.state.editor
+      this.state.screenController.isTakeoverActive() ||
+      (this.activeInteractionId === undefined &&
+        this.state.editorContainer.children[0] !== this.state.editor)
     ) {
       this.interactionDeferred = true;
       return;
@@ -3829,12 +5472,22 @@ export class DaemonTUI {
     this.state.editorContainer.addChild(this.state.editor);
     this.state.ui.setFocus(this.state.editor);
     this.state.ui.requestRender();
-    if (this.interactionDeferred && this.controller !== undefined) {
-      this.interactionDeferred = false;
-      const view = this.controller.getState();
-      this.syncInteractionBlocks(view.blocks);
-      this.renderActivityState(view);
+    this.deliverDeferredInteraction();
+  }
+
+  private deliverDeferredInteraction(): void {
+    if (
+      !this.interactionDeferred ||
+      this.controller === undefined ||
+      this.state.screenController.isTakeoverActive() ||
+      this.state.editorContainer.children[0] !== this.state.editor
+    ) {
+      return;
     }
+    this.interactionDeferred = false;
+    const view = this.controller.getState();
+    this.syncInteractionBlocks(view.blocks);
+    this.renderActivityState(view);
   }
 
   /**
@@ -4196,7 +5849,7 @@ function createOptions(input: DaemonTUIStartupInput): KimiTUIOptions {
       stepRetry: null,
       theme: input.tuiConfig.theme,
       busySubmit: input.tuiConfig.busySubmit ?? 'send_now',
-      mouse: input.tuiConfig.mouse ?? true,
+      mouse: input.tuiConfig.mouse,
       screenMode: input.tuiConfig.screenMode ?? 'main',
       showThinking: input.tuiConfig.showThinking ?? true,
       showTimestamps: input.tuiConfig.showTimestamps ?? false,
@@ -4225,5 +5878,153 @@ function createOptions(input: DaemonTUIStartupInput): KimiTUIOptions {
       agentFiles: input.cliOptions.agentFiles,
       startupNotice: input.startupNotice,
     },
+  };
+}
+
+type StructuredMcpLocator =
+  | { readonly source: 'global'; readonly name: string }
+  | { readonly source: 'plugin'; readonly pluginId: string; readonly serverName: string };
+
+function isStructuredMcpLocator(value: unknown): value is StructuredMcpLocator {
+  if (value === null || typeof value !== 'object') return false;
+  const obj = value as Record<string, unknown>;
+  if (obj['source'] === 'global' && typeof obj['name'] === 'string' && obj['name'].length > 0) {
+    return true;
+  }
+  if (
+    obj['source'] === 'plugin' &&
+    typeof obj['pluginId'] === 'string' &&
+    obj['pluginId'].length > 0 &&
+    typeof obj['serverName'] === 'string' &&
+    obj['serverName'].length > 0
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function formatMcpLocatorKey(locator: StructuredMcpLocator): string {
+  return locator.source === 'global'
+    ? `global:${locator.name}`
+    : `plugin:${locator.pluginId}:${locator.serverName}`;
+}
+
+function canOAuthForAuthStatus(authStatus: string | undefined): boolean {
+  return (
+    authStatus === 'oauth-required' ||
+    authStatus === 'oauth-expired' ||
+    authStatus === 'oauth-authorized'
+  );
+}
+
+function buildMcpDialogItems(
+  servers: readonly { readonly name: string; readonly status: string; readonly toolCount?: number; readonly error?: string }[],
+  capabilities: readonly unknown[] | undefined,
+  authStatuses: readonly unknown[] | undefined,
+): { readonly items: McpDialogItem[]; readonly locatorsByKey: Map<string, StructuredMcpLocator> } {
+  const locatorsByKey = new Map<string, StructuredMcpLocator>();
+  const liveByName = new Map(servers.map((s) => [s.name, s]));
+  const authByName = new Map<string, string>();
+  if (Array.isArray(authStatuses)) {
+    for (const raw of authStatuses) {
+      if (raw === null || typeof raw !== 'object') continue;
+      const entry = raw as Record<string, unknown>;
+      const name = typeof entry['name'] === 'string' ? entry['name'] : undefined;
+      const authStatus = typeof entry['authStatus'] === 'string' ? entry['authStatus'] : undefined;
+      if (name !== undefined && authStatus !== undefined) {
+        authByName.set(name, authStatus);
+      }
+    }
+  }
+
+  if (Array.isArray(capabilities) && capabilities.length > 0) {
+    const runtimeNameCounts = new Map<string, number>();
+    for (const raw of capabilities) {
+      if (raw === null || typeof raw !== 'object') continue;
+      const rn = (raw as Record<string, unknown>)['runtimeName'];
+      if (typeof rn === 'string') {
+        runtimeNameCounts.set(rn, (runtimeNameCounts.get(rn) ?? 0) + 1);
+      }
+    }
+
+    const items: McpDialogItem[] = [];
+    for (const raw of capabilities) {
+      if (raw === null || typeof raw !== 'object') continue;
+      const cap = raw as Record<string, unknown>;
+      const structuredLocator = isStructuredMcpLocator(cap['locator']) ? cap['locator'] : undefined;
+      const locatorKey = structuredLocator
+        ? formatMcpLocatorKey(structuredLocator)
+        : typeof cap['runtimeName'] === 'string'
+          ? cap['runtimeName']
+          : String(items.length);
+      if (structuredLocator !== undefined) {
+        locatorsByKey.set(locatorKey, structuredLocator);
+      }
+      const runtimeName = typeof cap['runtimeName'] === 'string' ? cap['runtimeName'] : undefined;
+      const displayName =
+        structuredLocator?.source === 'plugin'
+          ? `${structuredLocator.pluginId}/${structuredLocator.serverName}`
+          : structuredLocator?.source === 'global'
+            ? structuredLocator.name
+            : (runtimeName ?? locatorKey);
+      const origin = typeof cap['origin'] === 'string' ? cap['origin'] : 'global';
+      const rawOverride = cap['override'];
+      const override: 'on' | 'off' | 'inherit' =
+        rawOverride === 'on' || rawOverride === 'off' || rawOverride === 'inherit'
+          ? rawOverride
+          : 'inherit';
+      const capConnection = typeof cap['connection'] === 'string' ? cap['connection'] : undefined;
+      // Only merge live runtime stats when the runtimeName uniquely identifies this entry
+      // or the capability itself reports an active runtime connection.
+      const uniqueRuntime = runtimeName !== undefined && runtimeNameCounts.get(runtimeName) === 1;
+      const live =
+        runtimeName !== undefined &&
+        (uniqueRuntime || capConnection === 'connected' || capConnection === 'connecting' || capConnection === 'failed')
+          ? liveByName.get(runtimeName)
+          : undefined;
+      const connection = capConnection ?? live?.status ?? 'unavailable';
+      const authStatus =
+        typeof cap['authStatus'] === 'string'
+          ? cap['authStatus']
+          : uniqueRuntime && runtimeName !== undefined
+            ? authByName.get(runtimeName)
+            : undefined;
+      items.push({
+        locator: locatorKey,
+        runtimeName,
+        displayName,
+        origin,
+        override,
+        connection,
+        authStatus,
+        toolCount: live?.toolCount,
+        error: (typeof cap['error'] === 'string' ? cap['error'] : undefined) ?? live?.error,
+        canAuth: structuredLocator !== undefined && canOAuthForAuthStatus(authStatus),
+        canReconnect:
+          runtimeName !== undefined &&
+          (uniqueRuntime || capConnection === 'connected' || capConnection === 'connecting' || capConnection === 'failed'),
+      });
+    }
+    if (items.length > 0) return { items, locatorsByKey };
+  }
+
+  return {
+    items: servers.map((server) => {
+      const authStatus = authByName.get(server.name);
+      return {
+        locator: server.name,
+        runtimeName: server.name,
+        displayName: server.name,
+        origin: 'session',
+        override: 'inherit',
+        connection: server.status,
+        authStatus,
+        toolCount: server.toolCount,
+        error: server.error,
+        canAuth: false,
+        canReconnect: true,
+      };
+    }),
+    locatorsByKey,
   };
 }

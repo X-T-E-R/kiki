@@ -4,12 +4,15 @@
 
 import {
   Editor,
+  getKeybindings,
   isKeyRelease,
+  isKeyRepeat,
   matchesKey,
   Key,
   SelectList,
   visibleWidth,
   type SelectItem,
+  type SgrMouseEvent,
   type TUI,
 } from '@kiki/pi-tui';
 
@@ -18,7 +21,7 @@ import { createEditorTheme } from '#/tui/theme/pi-tui-theme';
 import { printableChar } from '#/tui/utils/printable-key';
 import { readClipboardText as readSystemClipboardText } from '#/utils/clipboard/clipboard-text';
 
-import { extractAtPrefix } from './file-mention-provider';
+import { extractAtPrefix, extractInlineSkillPrefix } from './file-mention-provider';
 import { findInlineSkillTokens } from '../../utils/inline-skill-tokens';
 import { WrappingSelectList } from './wrapping-select-list';
 
@@ -100,6 +103,36 @@ function stripSgr(s: string): string {
   return s.replace(ANSI_SGR, '');
 }
 
+// Explicit modified arrow encodings (rejecting legacy ESC b/f/p aliases).
+// oxlint-disable-next-line no-control-regex -- ESC (\x1b) is required to match CSI
+const EXPLICIT_ALT_LEFT_RE = /^\u001B\[1;3(?::\d+)?D$/u;
+// oxlint-disable-next-line no-control-regex -- ESC (\x1b) is required to match CSI
+const EXPLICIT_ALT_RIGHT_RE = /^\u001B\[1;3(?::\d+)?C$/u;
+// oxlint-disable-next-line no-control-regex -- ESC (\x1b) is required to match CSI
+const EXPLICIT_ALT_UP_RE = /^\u001B\[1;3(?::\d+)?A$/u;
+// oxlint-disable-next-line no-control-regex -- ESC (\x1b) is required to match Kitty CSI-u shifted `?`
+const KITTY_QUESTION_MARK_RE = /^\u001B\[(?:63|47:63);2(?::1)?u$/u;
+
+function isExplicitAltLeft(data: string): boolean {
+  return EXPLICIT_ALT_LEFT_RE.test(data) || data === '\u001B\u001B[D';
+}
+
+function isExplicitAltRight(data: string): boolean {
+  return EXPLICIT_ALT_RIGHT_RE.test(data) || data === '\u001B\u001B[C';
+}
+
+function isExplicitAltUp(data: string): boolean {
+  return EXPLICIT_ALT_UP_RE.test(data) || data === '\u001B\u001B[A';
+}
+
+function isDiscreteQuestionMark(data: string): boolean {
+  if (data.includes(BRACKET_PASTE_START)) return false;
+  if (KITTY_QUESTION_MARK_RE.test(data)) return true;
+  if (data.length === 1 && printableChar(data) === '?') return true;
+  if (data.startsWith('\u001B[') && printableChar(data) === '?') return true;
+  return false;
+}
+
 interface CustomEditorOptions {
   disablePasteBurst?: boolean;
 }
@@ -134,6 +167,28 @@ export class CustomEditor extends Editor {
   public onUpArrowEmpty?: () => boolean;
   public onDownArrowEmpty?: () => boolean;
   public onShiftTab?: () => void;
+  /** Empty normal prompt Ctrl+P (only fires when unclaimed by user history/cursor bindings). */
+  public onCtrlP?: () => boolean;
+  /** Focused composer Ctrl+R reverse history search (honors mode & draft). */
+  public onCtrlR?: () => boolean;
+  /** Empty normal prompt Ctrl+F transcript find (nonempty keeps forward-char). */
+  public onCtrlF?: () => boolean;
+  /** Discrete `?` on empty normal prompt opens grouped shortcuts overlay. */
+  public onQuestionMark?: () => boolean;
+  /** Explicit Alt+Left / Alt+Right on empty normal prompt cycles main/branches/children. */
+  public onAltArrowEmpty?: (direction: 'left' | 'right') => boolean;
+  /** Unambiguous Alt+Up (`CSI 1;3A`) on empty normal prompt withdraws queued prompt. */
+  public onAltUpEmpty?: () => boolean;
+  /** Actual Alt+T chord cycles active model thinking effort (plain `†` stays text). */
+  public onAltT?: () => boolean;
+  /** PageUp delivered to editor in main screen opens transient alt reader. */
+  public onPageUpMain?: () => boolean;
+  /** Dynamic multi-stage inline ghost hint provider (e.g. from FileMentionProvider). */
+  public dynamicArgumentHint?: (
+    lines: readonly string[],
+    cursorLine: number,
+    cursorCol: number,
+  ) => string | undefined;
   /** 'bash' when entering a `!` shell command. The `!` is never part of the
    *  text buffer — it is a separate mode + prompt symbol (see handleInput). */
   public inputMode: 'prompt' | 'bash' = 'prompt';
@@ -224,6 +279,21 @@ export class CustomEditor extends Editor {
     if (this.inputMode === mode) return;
     this.inputMode = mode;
     this.onInputModeChange?.(mode);
+  }
+
+  /** Re-query autocomplete after an asynchronous lazy cache refresh completes. */
+  public refreshSlashAutocomplete(): void {
+    if (this.inputMode === 'bash') return;
+    if (this.isShowingAutocomplete()) {
+      this.requestAutocomplete({ force: false, explicitTab: false });
+      return;
+    }
+    const { line, col } = this.getCursor();
+    if (line !== 0) return;
+    const textBeforeCursor = this.getLines()[0]?.slice(0, col) ?? '';
+    if (textBeforeCursor.startsWith('/') && textBeforeCursor.includes(' ')) {
+      this.requestAutocomplete({ force: false, explicitTab: false });
+    }
   }
 
   private expandPasteMarkerAtCursor(): boolean {
@@ -334,9 +404,26 @@ export class CustomEditor extends Editor {
     });
   }
 
+  override routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
+    // CustomEditor wraps super.render() with a 1-column left side border (`│`),
+    // so subtract 1 column before forwarding to Editor's painted-cell hit map.
+    return super.routeMouse(event, line, Math.max(0, col - 1));
+  }
+
   private computeArgumentHint(): string | undefined {
     // Argument hints describe slash commands, which do not exist in bash mode.
     if (this.inputMode === 'bash') return undefined;
+    const { line, col } = this.getCursor();
+    if (line !== 0) return undefined;
+    const lines = this.getLines();
+    const currentLine = lines[0] ?? '';
+    if (col !== currentLine.length) return undefined;
+    if (this.dynamicArgumentHint !== undefined) {
+      const dynamicHint = this.dynamicArgumentHint(lines, line, col);
+      if (dynamicHint !== undefined && dynamicHint.length > 0) {
+        return currentLine.endsWith(' ') ? dynamicHint : ` ${dynamicHint}`;
+      }
+    }
     const text = this.getText();
     const match = /^\/(\S+)( ?)$/.exec(text);
     if (match === null) return undefined;
@@ -345,10 +432,6 @@ export class CustomEditor extends Editor {
     if (cmd === undefined) return undefined;
     const hint = this.argumentHints.get(cmd);
     if (hint === undefined) return undefined;
-    const { line, col } = this.getCursor();
-    if (line !== 0) return undefined;
-    const currentLine = this.getLines()[0] ?? '';
-    if (col !== currentLine.length) return undefined;
     return trailingSpace.length > 0 ? hint : ` ${hint}`;
   }
 
@@ -466,6 +549,80 @@ export class CustomEditor extends Editor {
       return;
     }
 
+    const isRepeat = isKeyRepeat(normalized);
+    const isEmptyNormalPrompt = this.inputMode === 'prompt' && this.getText() === '';
+    const kb = getKeybindings();
+
+    if (!isRepeat && matchesKey(normalized, Key.alt('t')) && this.onAltT !== undefined) {
+      if (this.onAltT()) return;
+    }
+
+    if (!isRepeat && !this.isShowingAutocomplete() && matchesKey(normalized, Key.ctrl('r'))) {
+      if (this.onCtrlR?.() === true) return;
+    }
+
+    if (
+      !isRepeat &&
+      isEmptyNormalPrompt &&
+      !this.isShowingAutocomplete() &&
+      matchesKey(normalized, Key.ctrl('p'))
+    ) {
+      // Honor explicit user bindings (e.g. ctrl+p mapped to historyPrevious/cursorUp) even when empty.
+      const claimedByUserBinding =
+        kb.matches(normalized, 'tui.editor.historyPrevious') ||
+        kb.matches(normalized, 'tui.editor.cursorUp') ||
+        kb.matches(normalized, 'tui.select.up');
+      if (!claimedByUserBinding && this.onCtrlP?.() === true) {
+        return;
+      }
+    }
+
+    if (
+      !isRepeat &&
+      isEmptyNormalPrompt &&
+      !this.isShowingAutocomplete() &&
+      matchesKey(normalized, Key.ctrl('f'))
+    ) {
+      if (this.onCtrlF?.() === true) return;
+    }
+
+    if (
+      !isRepeat &&
+      isEmptyNormalPrompt &&
+      !this.isShowingAutocomplete() &&
+      isDiscreteQuestionMark(normalized)
+    ) {
+      if (this.onQuestionMark?.() === true) return;
+    }
+
+    if (
+      !isRepeat &&
+      isEmptyNormalPrompt &&
+      !this.isShowingAutocomplete() &&
+      this.onAltArrowEmpty !== undefined
+    ) {
+      if (isExplicitAltLeft(normalized) && this.onAltArrowEmpty('left')) return;
+      if (isExplicitAltRight(normalized) && this.onAltArrowEmpty('right')) return;
+    }
+
+    if (
+      !isRepeat &&
+      isEmptyNormalPrompt &&
+      !this.isShowingAutocomplete() &&
+      isExplicitAltUp(normalized)
+    ) {
+      if (this.onAltUpEmpty?.() === true) return;
+    }
+
+    if (
+      !isRepeat &&
+      !this.isShowingAutocomplete() &&
+      matchesKey(normalized, Key.pageUp) &&
+      this.onPageUpMain !== undefined
+    ) {
+      if (this.onPageUpMain()) return;
+    }
+
     if (matchesKey(normalized, Key.ctrl('b'))) {
       // Only consume the key when the handler actually detached something;
       // otherwise fall through so readline's backward-char still works at the
@@ -524,10 +681,24 @@ export class CustomEditor extends Editor {
       return;
     }
 
-    // Swallow Tab while the autocomplete dropdown is closed so it does not
-    // trigger pi-tui's built-in file completion. When the dropdown is open,
-    // fall through so pi-tui can still accept the selected item with Tab.
+    // Context-aware explicit Tab when the dropdown is closed:
+    // - Empty draft or ordinary prose: do nothing (never enumerate cwd on bare Tab).
+    // - Valid completion contexts (slash command/arg, `@` mention, inline `/skill`,
+    //   or bash path): explicitly trigger autocomplete with `trigger: 'tab'`.
     if (matchesKey(normalized, Key.tab) && !this.isShowingAutocomplete()) {
+      const { line, col } = this.getCursor();
+      const currentLine = this.getLines()[line] ?? '';
+      const textBeforeCursor = currentLine.slice(0, col);
+      const isSlashContext = this.inputMode === 'prompt' && line === 0 && textBeforeCursor.startsWith('/');
+      const isAtContext = extractAtPrefix(textBeforeCursor) !== null;
+      const isInlineSkill =
+        this.inputMode === 'prompt' && extractInlineSkillPrefix(textBeforeCursor, line) !== null;
+      const isBashPath = this.inputMode === 'bash' && textBeforeCursor.trim().length > 0;
+      if (isSlashContext || isAtContext || isInlineSkill) {
+        this.triggerExplicitTabAutocomplete();
+      } else if (isBashPath) {
+        this.requestAutocomplete({ force: true, explicitTab: true });
+      }
       return;
     }
 

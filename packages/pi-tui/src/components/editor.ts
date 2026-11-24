@@ -42,21 +42,50 @@ function segmentWithMarkers(
 	text: string,
 	baseSegmenter: Intl.Segmenter,
 	validIds: Set<number>,
+	atomicPlaceholders?: ReadonlySet<string>,
 ): Iterable<Intl.SegmentData> {
-	// Fast path: no paste markers in the text or no valid IDs.
-	if (validIds.size === 0 || !text.includes("[paste #")) {
+	const hasPasteIds = validIds.size > 0 && text.includes("[paste #");
+	const hasAtomic = atomicPlaceholders !== undefined && atomicPlaceholders.size > 0;
+	// Fast path: no markers in the text.
+	if (!hasPasteIds && !hasAtomic) {
 		return baseSegmenter.segment(text);
 	}
 
-	// Find all marker spans with valid IDs.
+	// Find all marker spans with valid IDs or registered atomic placeholder tokens.
 	const markers: Array<{ start: number; end: number }> = [];
-	for (const m of text.matchAll(PASTE_MARKER_REGEX)) {
-		const id = Number.parseInt(m[1]!, 10);
-		if (!validIds.has(id)) continue;
-		markers.push({ start: m.index, end: m.index + m[0].length });
+	if (hasPasteIds) {
+		for (const m of text.matchAll(PASTE_MARKER_REGEX)) {
+			const id = Number.parseInt(m[1]!, 10);
+			if (!validIds.has(id)) continue;
+			markers.push({ start: m.index, end: m.index + m[0].length });
+		}
+	}
+	if (hasAtomic && atomicPlaceholders) {
+		for (const token of atomicPlaceholders) {
+			if (!token || !text.includes(token)) continue;
+			let searchFrom = 0;
+			while (searchFrom < text.length) {
+				const idx = text.indexOf(token, searchFrom);
+				if (idx < 0) break;
+				markers.push({ start: idx, end: idx + token.length });
+				searchFrom = idx + token.length;
+			}
+		}
 	}
 	if (markers.length === 0) {
 		return baseSegmenter.segment(text);
+	}
+	if (markers.length > 1) {
+		markers.sort((a, b) => a.start - b.start || b.end - a.end);
+		// Keep non-overlapping spans (earliest / longest wins).
+		const deduped: Array<{ start: number; end: number }> = [];
+		for (const span of markers) {
+			const prev = deduped[deduped.length - 1];
+			if (prev && span.start < prev.end) continue;
+			deduped.push(span);
+		}
+		markers.length = 0;
+		markers.push(...deduped);
 	}
 
 	// Build merged segment list.
@@ -234,6 +263,8 @@ interface EditorSnapshot {
 
 interface LayoutLine {
 	text: string;
+	logicalLine: number;
+	startCol: number;
 	hasCursor: boolean;
 	cursorPos?: number;
 }
@@ -322,11 +353,20 @@ export class Editor implements Component, Focusable, MouseRoutable {
 	private autocompleteMaxVisible: number = 5;
 	private autocompleteStartRow: number = -1;
 	private autocompleteRowCount: number = 0;
+	private autocompleteSnapshot?: { text: string; line: number; col: number };
 	protected autocompleteAbort?: AbortController;
 	protected autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
 	private autocompleteRequestTask: Promise<void> = Promise.resolve();
 	private autocompleteStartToken: number = 0;
 	private autocompleteRequestId: number = 0;
+
+	// Last painted editor text layout for accurate click-to-cursor hit-testing
+	private lastPaintedContentRows: Array<{ logicalLine: number; startCol: number; text: string }> = [];
+	private lastPaintedPaddingX: number = 0;
+	private lastPaintedTopBorderRows: number = 1;
+
+	// Registered non-paste atomic placeholders (e.g. [image #1], [file #1 foo.ts])
+	private atomicPlaceholders: Set<string> = new Set();
 
 	// Paste tracking for large pastes
 	protected pastes: Map<number, string> = new Map();
@@ -405,9 +445,40 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		return new Set(this.pastes.keys());
 	}
 
-	/** Segment text with paste-marker awareness, only merging markers with valid IDs. */
+	/** Segment text with paste-marker & registered atomic-placeholder awareness. */
 	private segment(text: string, mode: "word" | "grapheme"): Iterable<Intl.SegmentData> {
-		return segmentWithMarkers(text, mode === "word" ? wordSegmenter : graphemeSegmenter, this.validPasteIds());
+		return segmentWithMarkers(
+			text,
+			mode === "word" ? wordSegmenter : graphemeSegmenter,
+			this.validPasteIds(),
+			this.atomicPlaceholders,
+		);
+	}
+
+	/** Replace the set of registered atomic placeholder tokens (e.g. `[image #1]`, `[file #1 foo.ts]`). */
+	setAtomicPlaceholders(tokens: Iterable<string>): void {
+		this.atomicPlaceholders = new Set([...tokens].filter((t) => t.length > 0));
+	}
+
+	/** Register one atomic placeholder token. */
+	addAtomicPlaceholder(token: string): void {
+		if (token.length > 0) this.atomicPlaceholders.add(token);
+	}
+
+	/** Remove one atomic placeholder token from the active registry. */
+	removeAtomicPlaceholder(token: string): void {
+		this.atomicPlaceholders.delete(token);
+	}
+
+	/** Return true if any undo snapshot still contains `token` (protects staged attachments). */
+	hasPlaceholderInUndoStack(token: string): boolean {
+		if (!token) return false;
+		return this.undoStack.some((snapshot) => snapshot.state.lines.some((line) => line.includes(token)));
+	}
+
+	/** Explicitly open autocomplete on Tab without triggering force-file enumeration on empty/prose drafts. */
+	triggerExplicitTabAutocomplete(): void {
+		this.requestAutocomplete({ force: false, explicitTab: true });
 	}
 
 	getPaddingX(): number {
@@ -615,6 +686,13 @@ export class Editor implements Component, Focusable, MouseRoutable {
 
 		// Get visible lines slice
 		const visibleLines = layoutLines.slice(this.scrollOffset, this.scrollOffset + maxVisibleLines);
+		this.lastPaintedContentRows = visibleLines.map((l) => ({
+			logicalLine: l.logicalLine,
+			startCol: l.startCol,
+			text: l.text,
+		}));
+		this.lastPaintedPaddingX = paddingX;
+		this.lastPaintedTopBorderRows = 1;
 
 		const result: string[] = [];
 		const leftPadding = " ".repeat(paddingX);
@@ -703,23 +781,53 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		return result;
 	}
 
-	routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
-		if (!this.autocompleteState || !this.autocompleteList) {
+	private positionCursorFromPaintedCell(line: number, col: number): boolean {
+		const rowIdx = line - this.lastPaintedTopBorderRows;
+		if (rowIdx < 0 || rowIdx >= this.lastPaintedContentRows.length) {
 			return false;
 		}
-		if (event.wheel !== null) {
-			return this.autocompleteList.routeMouse(event, line - this.autocompleteStartRow, col - this.paddingX);
+		const painted = this.lastPaintedContentRows[rowIdx]!;
+		const targetVisualCol = Math.max(0, col - this.lastPaintedPaddingX);
+		let cellStart = 0;
+		let targetOffsetInRow = painted.text.length;
+		for (const seg of this.segment(painted.text, "grapheme")) {
+			const segWidth = visibleWidth(seg.segment);
+			const cellEnd = cellStart + segWidth;
+			if (targetVisualCol < cellEnd) {
+				targetOffsetInRow = seg.index;
+				break;
+			}
+			cellStart = cellEnd;
 		}
-		if (event.leftClick) {
-			if (
-				this.autocompleteStartRow >= 0 &&
-				line >= this.autocompleteStartRow &&
-				line < this.autocompleteStartRow + this.autocompleteRowCount
-			) {
+		const logicalLine = this.state.lines[painted.logicalLine] ?? "";
+		const targetCol = Math.max(0, Math.min(logicalLine.length, painted.startCol + targetOffsetInRow));
+		this.state.cursorLine = painted.logicalLine;
+		this.setCursorCol(targetCol);
+		this.lastAction = null;
+		return true;
+	}
+
+	routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
+		if (this.autocompleteState && this.autocompleteList) {
+			if (event.wheel !== null) {
 				return this.autocompleteList.routeMouse(event, line - this.autocompleteStartRow, col - this.paddingX);
 			}
-			this.cancelAutocomplete();
-			return true;
+			if (event.leftClick) {
+				if (
+					this.autocompleteStartRow >= 0 &&
+					line >= this.autocompleteStartRow &&
+					line < this.autocompleteStartRow + this.autocompleteRowCount
+				) {
+					return this.autocompleteList.routeMouse(event, line - this.autocompleteStartRow, col - this.paddingX);
+				}
+				this.cancelAutocomplete();
+				this.positionCursorFromPaintedCell(line, col);
+				return true;
+			}
+			return false;
+		}
+		if (event.leftClick) {
+			return this.positionCursorFromPaintedCell(line, col);
 		}
 		return false;
 	}
@@ -818,20 +926,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 			if (kb.matches(data, "tui.input.tab")) {
 				const selected = this.autocompleteList.getSelectedItem();
 				if (selected && this.autocompleteProvider) {
-					this.pushUndoSnapshot();
-					this.lastAction = null;
-					const result = this.autocompleteProvider.applyCompletion(
-						this.state.lines,
-						this.state.cursorLine,
-						this.state.cursorCol,
-						selected,
-						this.autocompletePrefix,
-					);
-					this.state.lines = result.lines;
-					this.state.cursorLine = result.cursorLine;
-					this.setCursorCol(result.cursorCol);
-					this.cancelAutocomplete();
-					if (this.onChange) this.onChange(this.getText());
+					this.confirmAutocompleteSelection(selected, "tab");
 				}
 				return;
 			}
@@ -839,31 +934,11 @@ export class Editor implements Component, Focusable, MouseRoutable {
 			if (kb.matches(data, "tui.select.confirm")) {
 				const selected = this.autocompleteList.getSelectedItem();
 				if (selected && this.autocompleteProvider) {
-					this.pushUndoSnapshot();
-					this.lastAction = null;
-					const result = this.autocompleteProvider.applyCompletion(
-						this.state.lines,
-						this.state.cursorLine,
-						this.state.cursorCol,
-						selected,
-						this.autocompletePrefix,
-					);
-					this.state.lines = result.lines;
-					this.state.cursorLine = result.cursorLine;
-					this.setCursorCol(result.cursorCol);
-
-					// Slash-command completions submit on confirm (Enter runs the
-					// command); inline completions marked by the provider (e.g. an
-					// inline skill token mid-prompt) are content edits, so confirm
-					// behaves like Tab and never submits.
-					if (this.autocompletePrefix.startsWith("/") && selected.data?.["inlineSkill"] !== true) {
-						this.cancelAutocomplete();
-						// Fall through to submit
-					} else {
-						this.cancelAutocomplete();
-						if (this.onChange) this.onChange(this.getText());
+					const outcome = this.confirmAutocompleteSelection(selected, "enter");
+					if (outcome === "submitted" || outcome === "applied") {
 						return;
 					}
+					// Stale menu was cancelled; fall through so Enter submits current text normally.
 				}
 			}
 		}
@@ -1067,6 +1142,8 @@ export class Editor implements Component, Focusable, MouseRoutable {
 			// Empty editor
 			layoutLines.push({
 				text: "",
+				logicalLine: 0,
+				startCol: 0,
 				hasCursor: true,
 				cursorPos: 0,
 			});
@@ -1084,12 +1161,16 @@ export class Editor implements Component, Focusable, MouseRoutable {
 				if (isCurrentLine) {
 					layoutLines.push({
 						text: line,
+						logicalLine: i,
+						startCol: 0,
 						hasCursor: true,
 						cursorPos: this.state.cursorCol,
 					});
 				} else {
 					layoutLines.push({
 						text: line,
+						logicalLine: i,
+						startCol: 0,
 						hasCursor: false,
 					});
 				}
@@ -1132,12 +1213,16 @@ export class Editor implements Component, Focusable, MouseRoutable {
 					if (hasCursorInChunk) {
 						layoutLines.push({
 							text: chunk.text,
+							logicalLine: i,
+							startCol: chunk.startIndex,
 							hasCursor: true,
 							cursorPos: adjustedCursorPos,
 						});
 					} else {
 						layoutLines.push({
 							text: chunk.text,
+							logicalLine: i,
+							startCol: chunk.startIndex,
 							hasCursor: false,
 						});
 					}
@@ -2471,7 +2556,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 			this.state.lines,
 			this.state.cursorLine,
 			this.state.cursorCol,
-			{ signal: controller.signal, force: options.force },
+			{ signal: controller.signal, force: options.force, trigger: options.explicitTab ? "tab" : "typing" },
 		);
 
 		if (!this.isAutocompleteRequestCurrent(requestId, controller, snapshotText, snapshotLine, snapshotCol)) {
@@ -2501,6 +2586,9 @@ export class Editor implements Component, Focusable, MouseRoutable {
 			this.state.cursorLine = result.cursorLine;
 			this.setCursorCol(result.cursorCol);
 			if (this.onChange) this.onChange(this.getText());
+			if (item.intent === "continue") {
+				this.tryTriggerAutocomplete(true);
+			}
 			this.tui.requestRender();
 			return;
 		}
@@ -2525,8 +2613,28 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		);
 	}
 
-	private confirmAutocompleteItem(selected: SelectItem): void {
-		if (!this.autocompleteProvider) return;
+	private isAutocompleteMenuFresh(): boolean {
+		const snap = this.autocompleteSnapshot;
+		if (!snap) return true;
+		return (
+			this.getText() === snap.text &&
+			this.state.cursorLine === snap.line &&
+			this.state.cursorCol === snap.col
+		);
+	}
+
+	private confirmAutocompleteSelection(
+		selected: SelectItem,
+		source: "enter" | "tab" | "pointer",
+	): "stale" | "applied" | "submitted" {
+		if (!this.autocompleteProvider) return "stale";
+		// Reject stale menus on Enter so an outdated dropdown never consumes a
+		// submit after text or cursor changed; Tab may still accept a visibly
+		// highlighted mention while its async refresh is pending.
+		if (source === "enter" && !this.isAutocompleteMenuFresh()) {
+			this.cancelAutocomplete();
+			return "stale";
+		}
 		const prefix = this.autocompletePrefix;
 		this.pushUndoSnapshot();
 		this.lastAction = null;
@@ -2541,22 +2649,64 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		this.state.cursorLine = result.cursorLine;
 		this.setCursorCol(result.cursorCol);
 		this.cancelAutocomplete();
-		if (prefix.startsWith("/") && selected.data?.["inlineSkill"] !== true) {
-			if (!this.disableSubmit) {
-				this.submitValue();
-			} else if (this.onChange) {
-				this.onChange(this.getText());
+
+		const isInlineSkill = selected.data?.["inlineSkill"] === true;
+		const intent = isInlineSkill ? "insert" : selected.intent;
+
+		if (source === "tab") {
+			if (this.onChange) this.onChange(this.getText());
+			if (intent === "continue") {
+				this.tryTriggerAutocomplete(true);
 			}
-			return;
+			return "applied";
 		}
+
+		if (intent === "continue") {
+			if (this.onChange) this.onChange(this.getText());
+			this.tryTriggerAutocomplete(source === "pointer");
+			return "applied";
+		}
+
+		if (intent === "insert") {
+			if (this.onChange) this.onChange(this.getText());
+			return "applied";
+		}
+
+		if (source === "pointer" && intent === "runOnEnter") {
+			// Frame Audit §4: pointer selection of an argument inserts or continues,
+			// never executes side-effectful commands.
+			if (this.onChange) this.onChange(this.getText());
+			return "applied";
+		}
+
+		const shouldSubmit =
+			intent === "runOnEnter" ||
+			(intent === undefined && prefix.startsWith("/") && !isInlineSkill);
+
+		if (shouldSubmit) {
+			const atEndOfBuffer =
+				this.state.cursorLine === this.state.lines.length - 1 &&
+				this.state.cursorCol === (this.state.lines[this.state.cursorLine]?.length ?? 0);
+			if (!this.disableSubmit && (intent !== "runOnEnter" || atEndOfBuffer)) {
+				this.submitValue();
+				return "submitted";
+			}
+		}
+
 		if (this.onChange) this.onChange(this.getText());
+		return "applied";
 	}
 
 	private applyAutocompleteSuggestions(suggestions: AutocompleteSuggestions, state: "regular" | "force"): void {
 		this.autocompletePrefix = suggestions.prefix;
+		this.autocompleteSnapshot = {
+			text: this.getText(),
+			line: this.state.cursorLine,
+			col: this.state.cursorCol,
+		};
 		const list = this.createAutocompleteList(suggestions.prefix, suggestions.items);
 		list.onSelect = (item) => {
-			this.confirmAutocompleteItem(item);
+			this.confirmAutocompleteSelection(item, "pointer");
 		};
 		list.onCancel = () => {
 			this.cancelAutocomplete();
@@ -2585,6 +2735,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		this.autocompleteState = null;
 		this.autocompleteList = undefined;
 		this.autocompletePrefix = "";
+		this.autocompleteSnapshot = undefined;
 	}
 
 	protected cancelAutocomplete(): void {

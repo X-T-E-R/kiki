@@ -3,6 +3,7 @@
 export { Marked, type Token, type Tokens } from "marked";
 // Autocomplete support
 export {
+	type AutocompleteConfirmIntent,
 	type AutocompleteItem,
 	type AutocompleteProvider,
 	type AutocompleteSuggestions,
@@ -79,13 +80,16 @@ export {
 	isMouseRoutable,
 	isMouseSequence,
 	isPaddedHitContainer,
+	MOUSE_TRACKING_BUTTON_EVENT,
 	MOUSE_TRACKING_OFF,
 	MOUSE_TRACKING_ON,
 	type MouseRoutable,
+	type NormalizedMouseEventType,
 	type PaddedHitContainer,
 	parseSgrMouse,
 	type SgrMouseEvent,
 } from "./mouse.ts";
+export { terminalAcceleratesWheel, WheelScrollAccelerator, type WheelScrollLines } from "./wheel-scroll.ts";
 // Input buffering for batch splitting
 export { StdinBuffer, type StdinBufferEventMap, type StdinBufferOptions } from "./stdin-buffer.ts";
 // Terminal interface and implementations

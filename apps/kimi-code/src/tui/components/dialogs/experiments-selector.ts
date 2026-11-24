@@ -5,6 +5,8 @@ import {
   truncateToWidth,
   visibleWidth,
   type Focusable,
+  type MouseRoutable,
+  type SgrMouseEvent,
 } from '@kiki/pi-tui';
 import type { ExperimentalFeatureState } from '@kiki/node-sdk';
 
@@ -26,7 +28,7 @@ export interface ExperimentsSelectorOptions {
   readonly onCancel: () => void;
 }
 
-export class ExperimentsSelectorComponent extends Container implements Focusable {
+export class ExperimentsSelectorComponent extends Container implements Focusable, MouseRoutable {
   focused = false;
 
   private readonly opts: ExperimentsSelectorOptions;
@@ -38,7 +40,7 @@ export class ExperimentsSelectorComponent extends Container implements Focusable
     this.opts = opts;
     this.list = new SearchableList({
       items: opts.features,
-      toSearchText: (feature) => `${feature.title} ${feature.id} ${feature.description}`,
+      toSearchText: (feature) => `${feature.title ?? feature.id} ${feature.id} ${feature.description ?? ''}`,
       searchable: true,
     });
   }
@@ -61,6 +63,20 @@ export class ExperimentsSelectorComponent extends Container implements Focusable
       return;
     }
     this.list.handleKey(data);
+  }
+
+  routeMouse(event: SgrMouseEvent, _line: number, _col: number): boolean {
+    if (event.wheel !== null) {
+      if (event.wheel < 0) this.list.moveUp();
+      else this.list.moveDown();
+      return true;
+    }
+    return false;
+  }
+
+  onOutsideMouseDown(_event: SgrMouseEvent): boolean {
+    this.opts.onCancel();
+    return true;
   }
 
   override render(width: number): string[] {
@@ -165,7 +181,8 @@ export class ExperimentsSelectorComponent extends Container implements Focusable
   ): string[] {
     const pointer = selected ? SELECT_POINTER : ' ';
     const prefix = currentTheme.fg(selected ? 'primary' : 'textDim', `  ${pointer} `);
-    const label = selected ? currentTheme.boldFg('primary', feature.title) : currentTheme.fg('text', feature.title);
+    const title = feature.title ?? feature.id;
+    const label = selected ? currentTheme.boldFg('primary', title) : currentTheme.fg('text', title);
     const enabled = this.effectiveEnabled(feature);
     const status = enabled ? 'enabled' : 'disabled';
     const statusText = enabled ? currentTheme.fg('success', status) : currentTheme.fg('textDim', status);
@@ -177,7 +194,7 @@ export class ExperimentsSelectorComponent extends Container implements Focusable
       currentTheme.fg('textMuted', `    ${detail}`),
     ];
     const descriptionWidth = Math.max(1, width - 4);
-    for (const line of wrapText(feature.description, descriptionWidth)) {
+    for (const line of wrapText(feature.description ?? '', descriptionWidth)) {
       lines.push(currentTheme.fg('textMuted', `    ${line}`));
     }
     return lines;

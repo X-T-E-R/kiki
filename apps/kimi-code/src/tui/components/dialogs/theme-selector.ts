@@ -12,6 +12,7 @@ const THEME_OPTIONS: readonly ChoiceOption[] = [
 export interface ThemeSelectorOptions {
   readonly currentValue: ThemeName;
   readonly onSelect: (theme: ThemeName) => void;
+  readonly onHighlightChange?: (theme: ThemeName) => void;
   readonly onCancel: () => void;
 }
 
@@ -29,6 +30,11 @@ export class ThemeSelectorComponent extends ChoicePickerComponent {
       onSelect: (value) => {
         opts.onSelect(value);
       },
+      onHighlightChange: opts.onHighlightChange === undefined
+        ? undefined
+        : (value) => {
+            opts.onHighlightChange?.(value);
+          },
       onCancel: opts.onCancel,
     });
   }
