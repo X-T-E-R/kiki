@@ -89,6 +89,14 @@ export const sidebarRowGroupOriginSchema = /* @__PURE__ */ z.object({
 });
 export type SidebarRowGroupOrigin = z.infer<typeof sidebarRowGroupOriginSchema>;
 
+export const sidebarExternalClientMarkSchema = /* @__PURE__ */ z.object({
+  driver: z.literal('external'),
+  connectionId: z.string().min(1).max(256),
+  clientName: z.string().min(1).max(256),
+  sessionRef: z.string().min(1).max(512),
+});
+export type SidebarExternalClientMark = z.infer<typeof sidebarExternalClientMarkSchema>;
+
 export const sidebarRowSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
   workspace_id: workspaceIdSchema,
@@ -119,6 +127,10 @@ export const sidebarRowSchema = /* @__PURE__ */ z.object({
   forked_from: sessionForkedFromSchema.optional(),
   promoted_from: sessionPromotedFromSchema.optional(),
   created_by_session_id: z.string().min(1).optional(),
+  created_by_agent_id: z.string().min(1).optional(),
+  child_session_kind: z.string().min(1).optional(),
+  parent_session_id: z.string().min(1).optional(),
+  external_client: sidebarExternalClientMarkSchema.optional(),
   last_seq: z.number().int().nonnegative(),
   attention_cursor: sessionAttentionCursorSchema.optional(),
   group_id: z.string().min(1).optional(),

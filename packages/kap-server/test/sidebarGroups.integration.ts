@@ -160,9 +160,25 @@ describe('sidebar routes, zero-disk cold watermarks, PortableSpace, and ThreadBr
       }
     };
 
-    await writeCold('grp_open', 200_000, { custom: { [SESSION_GROUP_ID_KEY]: 'grp_demo_1' } }, { seq: 7, attn: 4 });
+    await writeCold('grp_open', 200_000, {
+      custom: {
+        [SESSION_GROUP_ID_KEY]: 'grp_demo_1',
+        externalClient: {
+          driver: 'external',
+          connectionId: 'conn_ext_1',
+          clientName: 'Vibe42',
+          sessionRef: 'v42:1',
+        },
+      },
+    }, { seq: 7, attn: 4 });
     await writeCold('grp_child_old', 100_000, {
-      custom: { [SESSION_GROUP_ID_KEY]: 'grp_demo_1', [CREATED_BY_SESSION_ID_KEY]: 'grp_open' },
+      custom: {
+        [SESSION_GROUP_ID_KEY]: 'grp_demo_1',
+        [CREATED_BY_SESSION_ID_KEY]: 'grp_open',
+        created_by_agent_id: 'agent-7',
+        child_session_kind: 'child',
+        parent_session_id: 'grp_open',
+      },
     }, { seq: 5, attn: 2 });
 
     for (let i = 0; i < 49; i += 1) {
@@ -223,8 +239,17 @@ describe('sidebar routes, zero-disk cold watermarks, PortableSpace, and ThreadBr
       expect(groupUnit.members.map((m) => m.id)).toEqual(['grp_open', 'grp_child_old']);
       expect(groupUnit.members[0]!.last_seq).toBe(7);
       expect(groupUnit.members[0]!.attention_cursor).toEqual({ epoch: 'ep_grp_open', seq: 4 });
+      expect(groupUnit.members[0]!.external_client).toEqual({
+        driver: 'external',
+        connectionId: 'conn_ext_1',
+        clientName: 'Vibe42',
+        sessionRef: 'v42:1',
+      });
       expect(groupUnit.members[1]!.last_seq).toBe(5);
       expect(groupUnit.members[1]!.attention_cursor).toEqual({ epoch: 'ep_grp_child_old', seq: 2 });
+      expect(groupUnit.members[1]!.created_by_agent_id).toBe('agent-7');
+      expect(groupUnit.members[1]!.child_session_kind).toBe('child');
+      expect(groupUnit.members[1]!.parent_session_id).toBe('grp_open');
     }
 
     const badCursorRes = await fetch(

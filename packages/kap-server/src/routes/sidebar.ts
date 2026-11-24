@@ -27,6 +27,7 @@ import {
   sidebarGroupMembersResponseSchema,
   sidebarSessionsQuerySchema,
   sidebarSessionsPageSchema,
+  type SidebarExternalClientMark,
   type SidebarRow,
   type SidebarRowGroupOrigin,
   type SidebarSessionsSort,
@@ -122,6 +123,23 @@ function decodeBase64UrlJson(token: string): unknown {
 function stringField(record: Readonly<Record<string, unknown>> | undefined, key: string): string | undefined {
   const value = record?.[key];
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function extractExternalClient(custom: Readonly<Record<string, unknown>> | undefined): SidebarExternalClientMark | undefined {
+  const raw = custom?.['externalClient'];
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const obj = raw as Record<string, unknown>;
+  if (obj['driver'] !== 'external') return undefined;
+  const connectionId = stringField(obj, 'connectionId');
+  const clientName = stringField(obj, 'clientName');
+  const sessionRef = stringField(obj, 'sessionRef');
+  if (connectionId === undefined || clientName === undefined || sessionRef === undefined) return undefined;
+  return {
+    driver: 'external',
+    connectionId,
+    clientName,
+    sessionRef,
+  };
 }
 
 function extractGroupOrigin(custom: Readonly<Record<string, unknown>> | undefined): SidebarRowGroupOrigin | undefined {
@@ -369,6 +387,22 @@ async function projectSidebarRow(
     ))
       ? rawCreatedBy
       : undefined;
+  const rawParentSessionId = stringField(summary.custom, 'parent_session_id');
+  const parentSessionId =
+    rawParentSessionId !== undefined &&
+    (await isProvenanceSourceEligible(
+      core,
+      provenanceVisibility,
+      visibleInPage,
+      filter,
+      rawParentSessionId,
+      signal,
+    ))
+      ? rawParentSessionId
+      : undefined;
+  const createdByAgentId = stringField(summary.custom, 'created_by_agent_id');
+  const childSessionKind = stringField(summary.custom, 'child_session_kind');
+  const externalClient = extractExternalClient(summary.custom);
   return {
     id: summary.id,
     workspace_id: summary.workspaceId,
@@ -406,6 +440,10 @@ async function projectSidebarRow(
     ...(forkedFrom !== undefined ? { forked_from: forkedFrom } : {}),
     ...(promotedFrom !== undefined ? { promoted_from: promotedFrom } : {}),
     ...(createdBySessionId !== undefined ? { created_by_session_id: createdBySessionId } : {}),
+    ...(createdByAgentId !== undefined ? { created_by_agent_id: createdByAgentId } : {}),
+    ...(childSessionKind !== undefined ? { child_session_kind: childSessionKind } : {}),
+    ...(parentSessionId !== undefined ? { parent_session_id: parentSessionId } : {}),
+    ...(externalClient !== undefined ? { external_client: externalClient } : {}),
     last_seq: cursor?.seq ?? 0,
     ...(toAttentionCursor(cursor) !== undefined ? { attention_cursor: toAttentionCursor(cursor) } : {}),
     ...(groupId !== undefined ? { group_id: groupId } : {}),

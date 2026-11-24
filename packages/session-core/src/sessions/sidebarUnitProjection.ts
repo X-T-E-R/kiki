@@ -57,26 +57,10 @@ export function sidebarRowToSession(row: SidebarRow): Session {
   if (row.created_by_session_id !== undefined) metadata['created_by_session_id'] = row.created_by_session_id;
   if (row.group_id !== undefined) metadata['kiki.group_id'] = row.group_id;
   if (row.group_detached === true) metadata['kiki.group_detached'] = true;
-  // Forward-compatible preservation of optional subagent/branch/external-client wire fields
-  // once projected by `sidebarRowSchema` + `kap-server/routes/sidebar.ts`.
-  const ext = row as SidebarRow & {
-    readonly child_session_kind?: unknown;
-    readonly parent_session_id?: unknown;
-    readonly created_by_agent_id?: unknown;
-    readonly external_client?: unknown;
-  };
-  if (typeof ext.child_session_kind === 'string' && ext.child_session_kind !== '') {
-    metadata['child_session_kind'] = ext.child_session_kind;
-  }
-  if (typeof ext.parent_session_id === 'string' && ext.parent_session_id !== '') {
-    metadata['parent_session_id'] = ext.parent_session_id;
-  }
-  if (typeof ext.created_by_agent_id === 'string' && ext.created_by_agent_id !== '') {
-    metadata['created_by_agent_id'] = ext.created_by_agent_id;
-  }
-  if (ext.external_client !== undefined && typeof ext.external_client === 'object' && ext.external_client !== null) {
-    metadata['externalClient'] = ext.external_client;
-  }
+  if (row.child_session_kind !== undefined) metadata['child_session_kind'] = row.child_session_kind;
+  if (row.parent_session_id !== undefined) metadata['parent_session_id'] = row.parent_session_id;
+  if (row.created_by_agent_id !== undefined) metadata['created_by_agent_id'] = row.created_by_agent_id;
+  if (row.external_client !== undefined) metadata['externalClient'] = row.external_client;
 
   return {
     id: row.id,
