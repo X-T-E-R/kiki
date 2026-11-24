@@ -9,7 +9,7 @@
  * jumping to its owning plugin, and toggling per-skill `disabled_skills` state.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
@@ -32,7 +32,7 @@ import { FeedbackLine, InlineError, Toggle, type Feedback } from '../controls';
 import { Icon } from '../icons';
 import { MediaPreviewProvider } from '../mediaPreview';
 import { useMediaPreview } from '../mediaPreviewContext';
-import { SettingsDraftFooter } from '../settings/SettingsPrimitives';
+import { SettingsDraftFooter, SettingsLoadFailure } from '../settings/SettingsPrimitives';
 import { useSavedTick } from '../settings/useSavedTick';
 import {
   groupItems,
@@ -57,12 +57,12 @@ const GROUP_TITLE_KEYS: Record<SkillGroupId, 'cap.group.plugin' | 'cap.group.pro
   other: 'cap.group.other',
 };
 
-const SOURCE_BADGE_KEYS: Record<SkillGroupId, 'cap.skills.source.plugin' | 'cap.skills.sourceBadge.project' | 'cap.skills.source.user' | 'cap.skills.sourceBadge.extra' | 'cap.skills.source.builtin' | 'cap.skills.source.other'> = {
-  plugin: 'cap.skills.source.plugin',
-  project: 'cap.skills.sourceBadge.project',
-  user: 'cap.skills.source.user',
-  extra: 'cap.skills.sourceBadge.extra',
-  builtin: 'cap.skills.source.builtin',
+const JUMP_LABEL_KEYS: Record<SkillGroupId, 'cap.source.plugin' | 'cap.source.project' | 'cap.source.user' | 'cap.source.extra' | 'cap.source.builtin' | 'cap.skills.source.other'> = {
+  plugin: 'cap.source.plugin',
+  project: 'cap.source.project',
+  user: 'cap.source.user',
+  extra: 'cap.source.extra',
+  builtin: 'cap.source.builtin',
   other: 'cap.skills.source.other',
 };
 
@@ -76,16 +76,32 @@ function pluginIdFromSkill(skill: SkillDescriptor): string | undefined {
   return match?.[1];
 }
 
+function findScrollContainer(anchor: HTMLElement | null): HTMLElement | null {
+  if (anchor === null) return null;
+  const marked = anchor.closest<HTMLElement>('[data-settings-scroll]');
+  if (marked !== null) return marked;
+  for (let node = anchor.parentElement; node !== null; node = node.parentElement) {
+    const overflowY = getComputedStyle(node).overflowY;
+    if (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') {
+      return node;
+    }
+  }
+  return null;
+}
+
 export function SkillsView({
   workspaceId,
   onOpenPlugin,
   defaultSourcesOpen = false,
+  openSourcesRequest,
   inSettings = false,
 }: {
   readonly workspaceId: string;
   /** Plugin-sourced skills link to their plugin when the host can show it. */
   readonly onOpenPlugin?: (pluginId: string) => void;
   readonly defaultSourcesOpen?: boolean;
+  /** Monotonic request counter from Capabilities header Add menu to open Sources & folders. */
+  readonly openSourcesRequest?: number;
   readonly inSettings?: boolean;
 }) {
   const existingPreview = useMediaPreview();
@@ -94,6 +110,7 @@ export function SkillsView({
       workspaceId={workspaceId}
       onOpenPlugin={onOpenPlugin}
       defaultSourcesOpen={defaultSourcesOpen}
+      openSourcesRequest={openSourcesRequest}
       inSettings={inSettings}
     />
   );
@@ -109,22 +126,38 @@ function SkillsViewInner({
   workspaceId,
   onOpenPlugin,
   defaultSourcesOpen,
+  openSourcesRequest,
   inSettings,
 }: {
   readonly workspaceId: string;
   readonly onOpenPlugin?: (pluginId: string) => void;
   readonly defaultSourcesOpen: boolean;
+  readonly openSourcesRequest?: number;
   readonly inSettings: boolean;
 }) {
   const { client } = useConnection();
-  const { t, locale } = useI18n();
+  const { t, tp, locale } = useI18n();
   const queryClient = useQueryClient();
   const preview = useMediaPreview();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const handledSourcesRequestRef = useRef(0);
+  const pendingJumpGroupRef = useRef<string | null>(null);
   const canManageConfig = typeof client.getConfig === 'function' && typeof client.patchConfig === 'function';
 
   const [sourcesOpen, setSourcesOpen] = useState(defaultSourcesOpen);
   const [togglingSkills, setTogglingSkills] = useState<Readonly<Record<string, boolean>>>({});
   const [optimisticEnabled, setOptimisticEnabled] = useState<Readonly<Record<string, boolean>>>({});
+
+  useEffect(() => {
+    if (openSourcesRequest === undefined || openSourcesRequest === 0 || openSourcesRequest === handledSourcesRequestRef.current) return;
+    handledSourcesRequestRef.current = openSourcesRequest;
+    if (!canManageConfig) return;
+    setSourcesOpen(true);
+    requestAnimationFrame(() => {
+      const panel = rootRef.current?.querySelector<HTMLElement>('[data-skills-sources-panel]');
+      panel?.scrollIntoView?.({ block: 'nearest' });
+    });
+  }, [canManageConfig, openSourcesRequest]);
 
   const skillsQuery = useQuery({
     queryKey: ['workspace-skills', workspaceId],
@@ -151,7 +184,7 @@ function SkillsViewInner({
     return set;
   }, [configQuery.data?.disabled_skills]);
 
-  const isSkillEnabled = (skill: SkillDescriptor): boolean => {
+  const isSkillEnabled = useCallback((skill: SkillDescriptor): boolean => {
     const normalized = normalizeSkillKey(skill.name);
     if (Object.hasOwn(optimisticEnabled, normalized)) {
       return optimisticEnabled[normalized]!;
@@ -160,7 +193,7 @@ function SkillsViewInner({
       return !disabledSkillSet.has(normalized);
     }
     return skill.enabled !== false;
-  };
+  }, [configQuery.data?.disabled_skills, disabledSkillSet, optimisticEnabled]);
 
   const toggleSkillEnabled = async (skill: SkillDescriptor, nextEnabled: boolean) => {
     if (!canManageConfig) return;
@@ -214,7 +247,7 @@ function SkillsViewInner({
     const present = new Set(allSkills.map((skill) => skillGroupId(skill.source, skill.plugin_id)));
     return SKILL_GROUP_ORDER.filter((id) => present.has(id)).map((id) => ({
       id,
-      label: t(SOURCE_BADGE_KEYS[id]),
+      label: t(JUMP_LABEL_KEYS[id]),
       test: (skill: SkillDescriptor) => skillGroupId(skill.source, skill.plugin_id) === id,
     }));
   }, [allSkills, t]);
@@ -238,6 +271,70 @@ function SkillsViewInner({
     [allSkills, view.visible, t],
   );
 
+  const visibleGroups = useMemo(
+    () => (view.narrowed ? groups.filter((group) => group.items.length > 0) : groups),
+    [groups, view.narrowed],
+  );
+
+  const enabledCount = useMemo(
+    () => allSkills.reduce((sum, skill) => sum + (isSkillEnabled(skill) ? 1 : 0), 0),
+    [allSkills, isSkillEnabled],
+  );
+
+  const scrollGroupIntoView = useCallback((groupKey: string) => {
+    const root = rootRef.current;
+    if (root === null) return;
+    const section = root.querySelector<HTMLElement>(`[data-list-group="${groupKey}"]`);
+    if (section === null) return;
+    const toggle = section.querySelector<HTMLButtonElement>(`[data-list-group-toggle="${groupKey}"]`);
+    const align = () => {
+      const scroller = findScrollContainer(root);
+      if (scroller !== null) {
+        const toolbar = root.querySelector<HTMLElement>('[data-list-toolbar]');
+        const toolbarHeight = toolbar !== null ? Math.round(toolbar.getBoundingClientRect().height) : 0;
+        const scrollerRect = scroller.getBoundingClientRect();
+        const sectionRect = section.getBoundingClientRect();
+        const targetTop = Math.max(0, Math.round(scroller.scrollTop + sectionRect.top - scrollerRect.top - toolbarHeight - 8));
+        scroller.scrollTo({ top: targetTop, behavior: 'auto' });
+      } else {
+        section.scrollIntoView?.({ block: 'start' });
+      }
+    };
+    align();
+    toggle?.focus({ preventScroll: true });
+    // Preceding virtualized groups settle their measured row heights after a scroll jump;
+    // one follow-up frame keeps the actual labelled heading pinned cleanly below the toolbar.
+    requestAnimationFrame(() => {
+      align();
+    });
+  }, []);
+
+  const jumpToGroup = (groupKey: string) => {
+    if (view.isFolded(groupKey)) {
+      pendingJumpGroupRef.current = groupKey;
+      view.toggleFold(groupKey);
+      return;
+    }
+    scrollGroupIntoView(groupKey);
+  };
+
+  useEffect(() => {
+    const target = pendingJumpGroupRef.current;
+    if (target === null || view.isFolded(target)) return;
+    pendingJumpGroupRef.current = null;
+    scrollGroupIntoView(target);
+  });
+
+  const prevQueryRef = useRef(view.query);
+  useEffect(() => {
+    if (prevQueryRef.current === view.query) return;
+    prevQueryRef.current = view.query;
+    const scroller = findScrollContainer(rootRef.current);
+    if (scroller !== null && scroller.scrollTop > 0) {
+      scroller.scrollTo({ top: 0, behavior: 'auto' });
+    }
+  }, [view.query]);
+
   const openSkillDoc = (skill: SkillDescriptor) => {
     if (skill.source === 'builtin') preview?.openBuiltinSkill(skill.name);
     else preview?.openFile(skill.path);
@@ -249,13 +346,15 @@ function SkillsViewInner({
       type="button"
       data-skills-sources-toggle
       aria-expanded={sourcesOpen}
+      aria-label={t('st.caps.sourcesButton')}
+      title={t('st.caps.sourcesButton')}
       onClick={() => { setSourcesOpen((open) => !open); }}
-      className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5 ${
+      className={`${SECONDARY_BUTTON} inline-flex items-center justify-center gap-1.5 px-2.5 sm:px-3 pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${
         sourcesOpen ? 'bg-ink/[0.08] text-ink' : ''
       }`}
     >
       <Icon name="folder" size={14} className="text-ink-soft" />
-      <span>{t('st.caps.sourcesButton')}</span>
+      <span className="hidden sm:inline">{t('st.caps.sourcesButton')}</span>
       {extraDirCount > 0 ? (
         <span className="rounded bg-ink/[0.06] px-1 text-[11px] text-ink-soft tabular-nums">{extraDirCount}</span>
       ) : null}
@@ -264,6 +363,7 @@ function SkillsViewInner({
 
   return (
     <div
+      ref={rootRef}
       className="min-w-0 space-y-3"
       data-skills-view
       data-in-settings={inSettings ? '' : undefined}
@@ -279,6 +379,46 @@ function SkillsViewInner({
         />
       ) : sourcesTrigger !== null ? (
         <div className="flex items-center justify-end">{sourcesTrigger}</div>
+      ) : null}
+
+      {allSkills.length > 0 && visibleGroups.length > 0 ? (
+        <div
+          data-skills-shelf-rail
+          className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 border-b border-hairline/70 pb-2.5 text-[12px]"
+        >
+          <span
+            data-skills-shelf-scope={view.narrowed ? 'filtered' : 'workspace'}
+            className="shrink-0 text-ink-faint tabular-nums"
+          >
+            {view.narrowed
+              ? tp('cap.skills.matches', view.visible.length, { total: allSkills.length })
+              : `${t('cap.workspace')} · ${t('cap.state.on')} ${enabledCount}/${allSkills.length}`}
+          </span>
+          <nav
+            aria-label={t('cap.skills.sourceFilter')}
+            data-skills-jump-rail
+            className="-mx-2 flex min-w-0 flex-wrap items-center gap-0.5 sm:mx-0 sm:-mr-2"
+          >
+            {visibleGroups.map((group) => {
+              const id = group.key as SkillGroupId;
+              const label = t(JUMP_LABEL_KEYS[id]);
+              return (
+                <button
+                  key={group.key}
+                  type="button"
+                  data-skills-jump={group.key}
+                  onClick={() => { jumpToGroup(group.key); }}
+                  className="inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                >
+                  <span>{label}</span>
+                  <span className="text-[11.5px] text-ink-faint tabular-nums">
+                    {view.narrowed ? `${group.items.length}/${group.total}` : group.items.length}
+                  </span>
+                </button>
+              );
+            })}
+          </nav>
+        </div>
       ) : null}
 
       {sourcesOpen && canManageConfig ? <SkillsSourcesPanel /> : null}
@@ -299,7 +439,11 @@ function SkillsViewInner({
       ) : skillsQuery.isPending ? (
         <p className="text-[13px] text-ink-faint" role="status">{t('cap.loadingSkills')}</p>
       ) : skillsQuery.isError ? (
-        <InlineError error={skillsQuery.error} />
+        <SettingsLoadFailure
+          message={errorText(locale, skillsQuery.error)}
+          retrying={skillsQuery.isFetching}
+          onRetry={() => { void skillsQuery.refetch(); }}
+        />
       ) : allSkills.length === 0 ? (
         <ListEmpty kind="none" title={t('cap.skills.none')} body={t('cap.skills.noneBody')} />
       ) : view.visible.length === 0 ? (
@@ -310,7 +454,7 @@ function SkillsViewInner({
           onClear={view.clear}
         />
       ) : (
-        groups.map((group) => (
+        visibleGroups.map((group) => (
           <ListGroup
             key={group.key}
             groupKey={group.key}
@@ -458,7 +602,7 @@ function SkillsSourcesPanel() {
   return (
     <div
       data-skills-sources-panel
-      className="space-y-3 rounded-lg border border-hairline bg-panel px-4 py-3.5"
+      className="space-y-3 rounded-lg bg-ink/[0.03] px-4 py-3.5"
     >
       <div className="grid gap-2 sm:grid-cols-2 sm:gap-4">
         <div className="flex min-h-8 items-center justify-between gap-2">
@@ -576,7 +720,7 @@ function SkillsSourcesPanel() {
 }
 
 const ACTION_ICON_BTN =
-  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink';
+  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11';
 
 function SkillRow({
   skill,
@@ -690,7 +834,7 @@ function SkillRow({
       )}
 
       <div className="flex shrink-0 items-center gap-1">
-        <span className="hidden items-center gap-0.5 opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] min-[640px]:flex group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+        <span className="hidden items-center gap-0.5 opacity-100 transition-opacity duration-[var(--kiki-motion-quick)] min-[640px]:flex [@media(hover:hover)_and_(pointer:fine)]:opacity-0 [@media(hover:hover)_and_(pointer:fine)]:group-hover:opacity-100 [@media(hover:hover)_and_(pointer:fine)]:group-focus-within:opacity-100">
           {canPreview ? (
             <button
               type="button"

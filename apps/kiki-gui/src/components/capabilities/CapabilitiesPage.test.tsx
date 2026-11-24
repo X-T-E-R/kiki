@@ -5,7 +5,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { PluginUsageTarget, Workspace } from '@kiki/protocol';
+import type { PluginUsageTarget, SkillDescriptor, Workspace } from '@kiki/protocol';
 import { writeLastSessionId } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../../i18n';
@@ -13,6 +13,11 @@ import { CapabilitiesPage } from './CapabilitiesPage';
 
 const client = vi.hoisted(() => ({
   listWorkspaceCatalog: vi.fn<() => Promise<{ items: Workspace[] }>>(),
+  listWorkspaceSkills: vi.fn<(id: string) => Promise<{ skills: SkillDescriptor[] }>>(),
+  getConfig: vi.fn<() => Promise<Record<string, unknown>>>(),
+  patchConfig: vi.fn<(body: Record<string, unknown>) => Promise<Record<string, unknown>>>(),
+  listMcpServers: vi.fn<() => Promise<{ servers: unknown[] }>>(),
+  listTools: vi.fn<() => Promise<{ tools: unknown[] }>>(),
   listPlugins: vi.fn(),
   listPluginMarketplace: vi.fn(),
   recommendPlugins: vi.fn(),
@@ -52,6 +57,13 @@ beforeEach(() => {
   localStorage.clear();
   localStorage.setItem('kiki.locale', 'en');
   client.listWorkspaceCatalog.mockReset().mockResolvedValue({ items: [workspaceAlpha] });
+  client.listWorkspaceSkills.mockReset().mockResolvedValue({
+    skills: [{ name: 'release-check', description: 'Run checks', path: 'C:/work/alpha/.kimi/skills/release-check/SKILL.md', source: 'project' }],
+  });
+  client.getConfig.mockReset().mockResolvedValue({ extra_skill_dirs: [], disabled_skills: [] });
+  client.patchConfig.mockReset().mockImplementation(async (body) => body);
+  client.listMcpServers.mockReset().mockResolvedValue({ servers: [] });
+  client.listTools.mockReset().mockResolvedValue({ tools: [] });
   client.listPlugins.mockReset().mockResolvedValue({
     plugins: [
       {
@@ -170,5 +182,145 @@ describe('CapabilitiesPage workspace-scoped plugin panel opening', () => {
     await settle();
 
     expect(client.getPluginPanelDocument).toHaveBeenCalledWith('kiki-phone', 'preview', { session_id: 'sess_fallback' });
+  });
+});
+
+describe('CapabilitiesPage shelf core, plugin error sanitization, and keyboard add menu', () => {
+  it('never issues overview fan-out queries for unloaded tabs on initial Plugins render', async () => {
+    await renderPage('/capabilities');
+    await settle();
+
+    expect(client.listPlugins).toHaveBeenCalledTimes(1);
+    expect(client.listWorkspaceSkills).not.toHaveBeenCalled();
+    expect(client.listMcpServers).not.toHaveBeenCalled();
+    expect(client.listTools).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-plugins-installed-summary]')?.textContent).toBe('1 plugins · 1 enabled');
+  });
+
+  it('replaces raw Zod JSON plugin failures with clean summary, sanitized diagnostics, and working retry', async () => {
+    const rawZodDump = new Error(
+      '[ { "expected": "boolean", "code": "invalid_type", "path": [ 0, "globalEnabled" ], "message": "Invalid input: expected boolean, received undefined" } ]',
+    );
+    client.listPlugins
+      .mockRejectedValueOnce(rawZodDump)
+      .mockResolvedValueOnce({
+        plugins: [
+          {
+            id: 'kiki-phone',
+            displayName: 'Kiki Phone',
+            version: '1.0.0',
+            enabled: true,
+            defaultEnabled: false,
+            state: 'ok',
+            hasErrors: false,
+            source: 'local',
+            skillCount: 0,
+            hookCount: 0,
+            mcpServerCount: 0,
+          },
+        ],
+      });
+
+    await renderPage('/capabilities');
+    await settle();
+
+    const errorBox = container.querySelector('[data-plugins-installed-error]')!;
+    expect(errorBox).not.toBeNull();
+    const alert = errorBox.querySelector('[role="alert"]')!;
+    expect(alert.textContent).toContain("Couldn't load installed plugins: The server returned data Kiki could not read");
+    expect(alert.textContent).not.toContain('"invalid_type"');
+    expect(alert.textContent).not.toContain('globalEnabled');
+
+    const diag = errorBox.querySelector('[data-plugins-error-diagnostics]')!;
+    expect(diag.getAttribute('data-open')).toBe('false');
+    await act(async () => {
+      diag.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click();
+    });
+    expect(diag.getAttribute('data-open')).toBe('true');
+    expect(diag.textContent).toContain('0.globalEnabled: invalid_type (boolean)');
+    expect(diag.textContent).not.toContain('"expected"');
+
+    await act(async () => {
+      errorBox.querySelector<HTMLButtonElement>('[data-settings-retry]')!.click();
+    });
+    await settle();
+
+    expect(container.querySelector('[data-plugins-installed-error]')).toBeNull();
+    expect(container.querySelector('[data-plugin-row="kiki-phone"]')).not.toBeNull();
+  });
+
+  it('redacts URLs and credentials on marketplace load failures and recovers into shelf navigation on retry', async () => {
+    client.listPluginMarketplace
+      .mockRejectedValueOnce(
+        new Error('Upstream failed at https://user:pass@secret.example.test/catalog.json?token=abc with Bearer sk-secretToken12345'),
+      )
+      .mockResolvedValueOnce({
+        configured: true,
+        entries: [
+          { id: 'kiki-office', tier: 'official', displayName: 'Kiki Office', description: 'Docs', version: '1.0.0', source: 'https://example.test/office.zip' },
+          { id: 'notes', tier: 'curated', displayName: 'Notes', description: 'Notes', version: '1.0.0', source: 'https://example.test/notes.zip' },
+        ],
+      });
+
+    await renderPage('/capabilities?view=market');
+    await settle();
+
+    const errorBox = container.querySelector('[data-plugins-catalog-error]')!;
+    expect(errorBox).not.toBeNull();
+    expect(errorBox.textContent).not.toContain('sk-secretToken12345');
+    expect(errorBox.textContent).not.toContain('user:pass');
+    expect(errorBox.textContent).not.toContain('secret.example.test');
+    expect(errorBox.textContent).not.toContain('token=abc');
+
+    await act(async () => {
+      errorBox.querySelector<HTMLButtonElement>('[data-settings-retry]')!.click();
+    });
+    await settle();
+
+    expect(container.querySelector('[data-plugins-catalog-error]')).toBeNull();
+    expect(container.querySelector('[data-plugins-shelf-rail]')).not.toBeNull();
+    expect(container.querySelector('[data-plugins-shelf-jump="plugins-shelf-official"]')).not.toBeNull();
+    expect(container.querySelector('[data-plugins-shelf-jump="plugins-shelf-community"]')).not.toBeNull();
+  });
+
+  it('supports keyboard navigation and Escape focus restoration in the Add menu, and opens Skills sources via typed intent', async () => {
+    await renderPage('/capabilities');
+    await settle();
+
+    const trigger = container.querySelector<HTMLButtonElement>('[data-capabilities-add]')!;
+    await act(async () => { trigger.click(); });
+    await settle();
+
+    const menu = document.querySelector<HTMLElement>('[data-capabilities-add-menu]')!;
+    expect(menu).not.toBeNull();
+    const items = Array.from(menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+    expect(items.map((item) => item.getAttribute('data-capabilities-add-item'))).toEqual(['plugin', 'skill', 'mcp', 'mcp-assist']);
+    expect(document.activeElement).toBe(items[0]);
+
+    await act(async () => {
+      menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(items[1]);
+
+    await act(async () => {
+      menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(items[3]);
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(document.querySelector('[data-capabilities-add-menu]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    await act(async () => { trigger.click(); });
+    await settle();
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-capabilities-add-item="skill"]')!.click();
+    });
+    await settle();
+
+    expect(container.querySelector('[data-capabilities-page]')?.getAttribute('data-capabilities-page')).toBe('skills');
+    expect(container.querySelector('[data-skills-sources-panel]')).not.toBeNull();
   });
 });

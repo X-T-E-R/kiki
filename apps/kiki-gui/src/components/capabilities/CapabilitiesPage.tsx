@@ -12,7 +12,7 @@
  * same views (`CapabilityTabBody`), so there is one implementation of each.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Popover } from '@base-ui/react/popover';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -33,7 +33,7 @@ import { PAGE_WIDTH, PageHeader, PageMoreMenu } from '../PageChrome';
 import { POPOVER_SURFACE_CLASS, SearchableSelect } from '../SearchableSelect';
 import { AddSourceDialog } from './AddSourceDialog';
 import { InstallFlow, type InstallRequest } from './InstallFlow';
-import { McpView } from './McpView';
+import { McpView, type McpAddIntent } from './McpView';
 import { PluginPanelHost } from './PluginPanelHost';
 import { PluginsView, type PluginsRoute } from './PluginsView';
 import { SkillsView } from './SkillsView';
@@ -145,9 +145,15 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
   const { workspaces, workspace, workspaceId, setWorkspaceId, query: workspacesQuery } = useCapabilityWorkspace();
   const [addMenu, setAddMenu] = useState(false);
   const addTriggerRef = useRef<HTMLButtonElement>(null);
+  const intentSeqRef = useRef(0);
+  const [skillsSourcesRequest, setSkillsSourcesRequest] = useState(0);
+  const [mcpAddIntent, setMcpAddIntent] = useState<McpAddIntent | undefined>(undefined);
   const [adding, setAdding] = useState(false);
   const [install, setInstall] = useState<InstallRequest | null>(null);
   const [settingsPluginId, setSettingsPluginId] = useState<string | null>(null);
+  const consumeMcpAddIntent = useCallback((id: number) => {
+    setMcpAddIntent((current) => (current?.id === id ? undefined : current));
+  }, []);
   const panel = params.get('panel');
   const [panelPluginId, panelId] = panel?.split(':') ?? [];
   const rawSession = params.get('session');
@@ -249,13 +255,14 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
           onPick={(kind) => {
             setAddMenu(false);
             if (kind === 'plugin') setAdding(true);
-            if (kind === 'mcp') { setTab('mcp'); requestAnimationFrame(() => { document.querySelector<HTMLButtonElement>('[data-mcp-add]')?.click(); }); }
             if (kind === 'skill') {
               setTab('skills');
-              requestAnimationFrame(() => {
-                const btn = document.querySelector<HTMLButtonElement>('[data-skills-sources-toggle]');
-                if (btn?.getAttribute('aria-expanded') === 'false') btn.click();
-              });
+              setSkillsSourcesRequest((count) => count + 1);
+            }
+            if (kind === 'mcp' || kind === 'mcp-assist') {
+              intentSeqRef.current += 1;
+              setTab('mcp');
+              setMcpAddIntent({ id: intentSeqRef.current, kind: kind === 'mcp-assist' ? 'assist' : 'new' });
             }
           }}
         />
@@ -337,6 +344,9 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
                 onRoute={setRoute}
                 workspaceId={workspaceId}
                 workspaceRoot={workspace?.root}
+                skillsSourcesRequest={skillsSourcesRequest}
+                mcpAddIntent={mcpAddIntent}
+                onConsumeMcpAddIntent={consumeMcpAddIntent}
                 onOpenPanel={openPanel}
                 onOpenPlugin={(id) => { setRoute({ view: 'detail', id }); }}
                 sessionId={sessionId}
@@ -382,6 +392,9 @@ export function CapabilityTabBody({
   onRoute,
   workspaceId,
   workspaceRoot,
+  skillsSourcesRequest,
+  mcpAddIntent,
+  onConsumeMcpAddIntent,
   onOpenPanel,
   onOpenPlugin,
   onOpenImportHistory,
@@ -393,6 +406,9 @@ export function CapabilityTabBody({
   readonly onRoute: (next: PluginsRoute) => void;
   readonly workspaceId: string;
   readonly workspaceRoot?: string;
+  readonly skillsSourcesRequest?: number;
+  readonly mcpAddIntent?: McpAddIntent;
+  readonly onConsumeMcpAddIntent?: (id: number) => void;
   readonly onOpenPanel?: (pluginId: string, panelId: string) => void;
   readonly onOpenPlugin?: (pluginId: string) => void;
   /** The built-in import-history page; a source plugin hands its source to it. */
@@ -404,36 +420,70 @@ export function CapabilityTabBody({
   readonly onOpenSettings?: (pluginId: string) => void;
 }) {
   if (tab === 'plugins') return <PluginsView route={route} onRoute={onRoute} workspaceRoot={workspaceRoot} onOpenPanel={onOpenPanel} onOpenImportHistory={onOpenImportHistory} sessionId={sessionId} onOpenSettings={onOpenSettings} />;
-  if (tab === 'skills') return <SkillsView workspaceId={workspaceId} onOpenPlugin={onOpenPlugin} />;
-  if (tab === 'mcp') return <McpView cwd={workspaceRoot ?? ''} />;
+  if (tab === 'skills') return <SkillsView workspaceId={workspaceId} onOpenPlugin={onOpenPlugin} openSourcesRequest={skillsSourcesRequest} />;
+  if (tab === 'mcp') return <McpView cwd={workspaceRoot ?? ''} addIntent={mcpAddIntent} onConsumeAddIntent={onConsumeMcpAddIntent} />;
   return <ToolsView />;
 }
+
+type AddMenuKind = 'plugin' | 'skill' | 'mcp' | 'mcp-assist';
 
 function AddMenu({ anchor, onClose, onPick }: {
   readonly anchor: React.RefObject<HTMLButtonElement | null>;
   readonly onClose: () => void;
-  readonly onPick: (kind: 'plugin' | 'mcp' | 'skill') => void;
+  readonly onPick: (kind: AddMenuKind) => void;
 }) {
   const { t } = useI18n();
+  const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const unregister = registerOverlay('capabilities-add-menu');
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    const frame = requestAnimationFrame(() => {
+      menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    });
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+        anchor.current?.focus();
+      }
+    };
     const onDown = (event: MouseEvent) => {
       if (!(event.target instanceof Element) || event.target.closest('[data-capabilities-add-menu],[data-capabilities-add]') === null) onClose();
     };
     window.addEventListener('keydown', onKey);
     window.addEventListener('mousedown', onDown);
     return () => {
+      cancelAnimationFrame(frame);
       unregister();
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('mousedown', onDown);
     };
-  }, [onClose]);
-  const items: readonly { kind: 'plugin' | 'mcp' | 'skill'; label: string; hint: string }[] = [
+  }, [anchor, onClose]);
+  const items: readonly { kind: AddMenuKind; label: string; hint: string }[] = [
     { kind: 'plugin', label: t('cap.add.plugin'), hint: t('cap.add.pluginHint') },
-    { kind: 'skill', label: t('st.caps.addDir'), hint: t('st.caps.extraDirsHint') },
+    { kind: 'skill', label: t('st.caps.addDir'), hint: t('st.caps.sourcesButton') },
     { kind: 'mcp', label: t('cap.add.mcp'), hint: t('cap.add.mcpHint') },
+    { kind: 'mcp-assist', label: t('st.mcp.askKiki'), hint: t('st.mcp.askKikiAria') },
   ];
+  const onMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const buttons = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []);
+    if (buttons.length === 0) return;
+    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      buttons[(index + 1 + buttons.length) % buttons.length]?.focus();
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      buttons[(index - 1 + buttons.length) % buttons.length]?.focus();
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      buttons[0]?.focus();
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      buttons[buttons.length - 1]?.focus();
+    } else if (event.key === 'Tab') {
+      onClose();
+    }
+  };
   return (
     <Popover.Root
       open
@@ -459,10 +509,12 @@ function AddMenu({ anchor, onClose, onPick }: {
           style={{ zIndex: floatingSurfaceZIndex(anchor.current) }}
         >
           <Popover.Popup
+            ref={menuRef}
             role="menu"
             data-capabilities-add-menu
             initialFocus={false}
             finalFocus={false}
+            onKeyDown={onMenuKeyDown}
             className={`anim-enter w-64 p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
           >
             {items.map((item) => (
@@ -472,7 +524,7 @@ function AddMenu({ anchor, onClose, onPick }: {
                 role="menuitem"
                 data-capabilities-add-item={item.kind}
                 onClick={() => { onPick(item.kind); }}
-                className="flex w-full flex-col items-start rounded-lg px-3 py-2 text-left transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink"
+                className="flex min-h-10 w-full flex-col items-start justify-center rounded-lg px-3 py-2 text-left transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
               >
                 <span className="text-[13px] text-ink">{item.label}</span>
                 <span className="text-[12px] leading-4 text-ink-faint">{item.hint}</span>

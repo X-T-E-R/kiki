@@ -13,9 +13,9 @@
  * sub-view of both, so every surface shows the same state.
  */
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 
-import { errorText, type I18nKey } from '@kiki/session-core/i18n';
+import { errorText, type I18nKey, type Locale } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import type { PluginMarketplaceEntry, PluginSummary } from '../../lib/client';
@@ -34,6 +34,144 @@ import { CapabilitySection, Disclosure, EmptyNote, QUIET_BUTTON, RowGrid, Search
 import { useInstalledPlugins, usePluginGithubUpdates, usePluginMarketplace, usePluginRecommendations, type PluginSubject } from './usePlugins';
 
 
+
+const ZOD_ISSUE_SHAPE = /"code"\s*:\s*"(invalid_type|too_small|too_big|invalid_enum_value|invalid_value|unrecognized_keys?)"/;
+const REDACT_URL = /\b(?:https?|wss?|file|ftp):\/\/[^\s)"'`<>]+/gi;
+const REDACT_CREDENTIAL = /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+|\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})|\b(?:token|password|passwd|secret|api[_-]?key|authorization)\s*[:=]\s*[^\s,;)"']+/gi;
+
+interface SanitizedPluginError {
+  readonly summary: string;
+  readonly diagnostic?: string;
+}
+
+function sanitizeText(input: string): string {
+  return input
+    .replace(REDACT_URL, '[url]')
+    .replace(REDACT_CREDENTIAL, '[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function formatZodIssues(issues: readonly unknown[]): string | undefined {
+  const lines: string[] = [];
+  for (const rawIssue of issues.slice(0, 5)) {
+    if (typeof rawIssue !== 'object' || rawIssue === null) continue;
+    const issue = rawIssue as {
+      readonly path?: readonly unknown[];
+      readonly code?: unknown;
+      readonly expected?: unknown;
+    };
+    const path = Array.isArray(issue.path)
+      ? issue.path
+          .map((segment) => String(segment).replace(/[^A-Za-z0-9_.-]/g, ''))
+          .filter((segment) => segment !== '')
+          .join('.')
+          .slice(0, 64)
+      : '';
+    const code = typeof issue.code === 'string'
+      ? issue.code.replace(/[^A-Za-z0-9_-]/g, '')
+      : 'invalid_value';
+    const expected = typeof issue.expected === 'string'
+      ? issue.expected.replace(/[^A-Za-z0-9_|-]/g, '').slice(0, 32)
+      : '';
+    const detail = expected !== '' ? `${code} (${expected})` : code;
+    lines.push(path !== '' ? `${path}: ${detail}` : detail);
+  }
+  return lines.length > 0 ? lines.join('\n') : undefined;
+}
+
+function extractStringifiedZodDiagnostic(raw: string): string | undefined {
+  const start = raw.indexOf('[');
+  const end = raw.lastIndexOf(']');
+  if (start !== -1 && end > start) {
+    try {
+      const parsed: unknown = JSON.parse(raw.slice(start, end + 1));
+      if (Array.isArray(parsed)) {
+        const formatted = formatZodIssues(parsed);
+        if (formatted !== undefined) return formatted;
+      }
+    } catch {
+      // Truncated JSON payload: fall back to safe field/code token extraction below.
+    }
+  }
+  const codeMatch = /"code"\s*:\s*"([A-Za-z0-9_-]+)"/.exec(raw);
+  const expectedMatch = /"expected"\s*:\s*"([A-Za-z0-9_|-]+)"/.exec(raw);
+  const pathMatch = /"path"\s*:\s*\[([^\]]*)\]/.exec(raw);
+  const path = pathMatch?.[1]
+    ?.split(',')
+    .map((part) => part.replace(/[\s"']/g, '').replace(/[^A-Za-z0-9_.-]/g, ''))
+    .filter((part) => part !== '')
+    .join('.')
+    .slice(0, 64) ?? '';
+  const code = codeMatch?.[1] ?? 'invalid_payload';
+  const expected = expectedMatch?.[1] ?? '';
+  const detail = expected !== '' ? `${code} (${expected})` : code;
+  return path !== '' ? `${path}: ${detail}` : detail;
+}
+
+function describePluginLoadError(
+  error: unknown,
+  locale: Locale,
+  serverDataText: string,
+  unknownErrorText: string,
+): SanitizedPluginError {
+  if (
+    typeof error === 'object'
+    && error !== null
+    && (error as { name?: unknown }).name === 'ZodError'
+    && Array.isArray((error as { issues?: unknown }).issues)
+  ) {
+    return {
+      summary: serverDataText,
+      diagnostic: formatZodIssues((error as { issues: readonly unknown[] }).issues),
+    };
+  }
+  if (error instanceof SyntaxError) {
+    return { summary: serverDataText, diagnostic: 'SyntaxError' };
+  }
+  const rawMessage = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  if (ZOD_ISSUE_SHAPE.test(rawMessage)) {
+    return {
+      summary: serverDataText,
+      diagnostic: extractStringifiedZodDiagnostic(rawMessage),
+    };
+  }
+  const localized = errorText(locale, error);
+  if (ZOD_ISSUE_SHAPE.test(localized) || /^[\[{]\s*"/.test(localized.trim())) {
+    return {
+      summary: serverDataText,
+      diagnostic: extractStringifiedZodDiagnostic(rawMessage || localized),
+    };
+  }
+  const cleaned = sanitizeText(localized);
+  const summary = cleaned === ''
+    ? unknownErrorText
+    : cleaned.length > 140
+      ? `${cleaned.slice(0, 137)}…`
+      : cleaned;
+  const code = typeof error === 'object' && error !== null && typeof (error as { code?: unknown }).code === 'number'
+    ? (error as { code: number }).code
+    : undefined;
+  const diagnostic = code !== undefined
+    ? `code ${code}`
+    : cleaned.length > 140
+      ? cleaned.slice(0, 280)
+      : undefined;
+  return { summary, diagnostic };
+}
+
+function findScrollContainer(anchor: HTMLElement | null): HTMLElement | null {
+  if (anchor === null) return null;
+  const marked = anchor.closest<HTMLElement>('[data-settings-scroll]');
+  if (marked !== null) return marked;
+  for (let node = anchor.parentElement; node !== null; node = node.parentElement) {
+    const overflowY = getComputedStyle(node).overflowY;
+    if (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') {
+      return node;
+    }
+  }
+  return null;
+}
 
 export type PluginsRoute =
   | { readonly view: 'market' }
@@ -71,6 +209,7 @@ export function PluginsView({
 }) {
   const { t, tp, locale, time } = useI18n();
   const { client, scopeId } = useConnection();
+  const rootRef = useRef<HTMLDivElement>(null);
   // The entry exists only where the server offers the import routes, so a build
   // without them shows no dead control.
   const importAvailable = useImportHistoryEnabled(client, scopeId).enabled === true;
@@ -81,6 +220,22 @@ export function PluginsView({
   const [install, setInstall] = useState<InstallRequest | null>(null);
   const [adding, setAdding] = useState(false);
   const [advanced, setAdvanced] = useState(false);
+
+  const jumpToShelf = useCallback((elementId: string) => {
+    const root = rootRef.current;
+    if (root === null) return;
+    const section = root.querySelector<HTMLElement>(`[data-capability-section="${elementId}"]`);
+    if (section === null) return;
+    const scroller = findScrollContainer(root);
+    if (scroller !== null) {
+      const scrollerRect = scroller.getBoundingClientRect();
+      const sectionRect = section.getBoundingClientRect();
+      const targetTop = Math.max(0, Math.round(scroller.scrollTop + sectionRect.top - scrollerRect.top - 12));
+      scroller.scrollTo({ top: targetTop, behavior: 'auto' });
+    } else {
+      section.scrollIntoView?.({ block: 'start' });
+    }
+  }, []);
 
   const installed = installedQuery.data?.plugins ?? [];
   const entries = marketQuery.data?.entries ?? [];
@@ -175,13 +330,23 @@ export function PluginsView({
   const filtering = activeQuery.trim() !== '';
   const relevant = new Set((recommendQuery.data?.entries ?? []).map((entry) => entry.id));
   const shelves = shelveCatalog(entries, activeQuery, relevant);
+  const enabledCount = installed.filter((plugin) => plugin.enabled).length;
   const attention = installed.filter((plugin) => plugin.state === 'error' || plugin.hasErrors || updates.has(plugin.id)).length;
+  const installedFailure = installedQuery.isError
+    ? describePluginLoadError(installedQuery.error, locale, t('err.serverData'), t('common.unknownError'))
+    : undefined;
+  const marketFailure = marketQuery.isError
+    ? describePluginLoadError(marketQuery.error, locale, t('err.serverData'), t('common.unknownError'))
+    : undefined;
+  const githubFailure = githubQuery.isError
+    ? describePluginLoadError(githubQuery.error, locale, t('err.serverData'), t('common.unknownError'))
+    : undefined;
   const updateCheck = hasGithub ? (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 text-[12px] leading-[18px]" data-plugins-update-check={githubQuery.isFetching ? 'checking' : githubQuery.isError ? 'failed' : 'checked'}>
       {githubQuery.isFetching ? (
         <span className="flex items-center gap-2 text-ink-faint" role="status"><Spinner label={t('cap.updates.checking')} size={12} />{t('cap.updates.checking')}</span>
-      ) : githubQuery.isError ? (
-        <span className="text-danger" role="alert">{t('cap.updates.failed', { detail: errorText(locale, githubQuery.error) })}</span>
+      ) : githubFailure !== undefined ? (
+        <span className="text-danger" role="alert">{t('cap.updates.failed', { detail: githubFailure.summary })}</span>
       ) : githubQuery.dataUpdatedAt > 0 ? (
         <span className="text-ink-faint">{t('cap.updates.checked', { time: time.relativeTime(new Date(githubQuery.dataUpdatedAt).toISOString()) })}</span>
       ) : null}
@@ -194,7 +359,7 @@ export function PluginsView({
   ) : undefined;
 
   return (
-    <div className="min-w-0 space-y-6" data-plugins-view={route.view}>
+    <div ref={rootRef} className="min-w-0 space-y-6" data-plugins-view={route.view}>
       <div className="flex flex-wrap items-center gap-2.5">
         <Segmented
           value={tab}
@@ -211,6 +376,11 @@ export function PluginsView({
             { value: 'market', label: t('cap.plugins.market') },
           ]}
         />
+        {tab === 'installed' && !inSettings && !installedQuery.isPending && !installedQuery.isError && installed.length > 0 ? (
+          <span className="ml-auto text-[12px] text-ink-faint tabular-nums" data-plugins-installed-summary>
+            {t('st.plugins.summary', { total: installed.length, enabled: enabledCount })}
+          </span>
+        ) : null}
         {tab === 'market' && searchable ? (
           <div className="min-w-[180px] flex-1">
             <SearchField
@@ -234,7 +404,15 @@ export function PluginsView({
         ) : null}
       </div>
 
-      {tab === 'installed' && !installedQuery.isPending && !installedQuery.isError && installed.length === 0 ? (
+      {tab === 'installed' && installedFailure !== undefined && !inSettings ? (
+        <PluginLoadFailure
+          dataAttr="data-plugins-installed-error"
+          summary={t('st.plugins.loadFailed', { detail: installedFailure.summary })}
+          diagnostic={installedFailure.diagnostic}
+          retrying={installedQuery.isFetching}
+          onRetry={() => { void installedQuery.refetch(); }}
+        />
+      ) : tab === 'installed' && !installedQuery.isPending && !installedQuery.isError && installed.length === 0 ? (
         <div data-plugins-installed-empty className="space-y-2">
           <p className="text-[13px] text-ink-soft">{t('cap.installed.empty')}</p>
           <div className="flex flex-wrap items-center gap-2">
@@ -272,15 +450,48 @@ export function PluginsView({
           ) : null}
           {marketQuery.isPending ? (
             <p className="flex items-center gap-2 text-[13px] text-ink-faint" role="status"><Spinner label={t('cap.loading')} />{t('cap.plugins.loadingCatalog')}</p>
-          ) : marketQuery.isError ? (
-            <div className="space-y-2" data-plugins-catalog-error>
-              <p role="alert" className="text-[13px] text-ink-soft">{t('cap.market.loadFailed', { detail: errorText(locale, marketQuery.error) })}</p>
-              <button type="button" className={SECONDARY_BUTTON} onClick={() => { void marketQuery.refetch(); }}>{t('common.retry')}</button>
-            </div>
+          ) : marketFailure !== undefined ? (
+            <PluginLoadFailure
+              dataAttr="data-plugins-catalog-error"
+              summary={t('cap.market.loadFailed', { detail: marketFailure.summary })}
+              diagnostic={marketFailure.diagnostic}
+              retrying={marketQuery.isFetching}
+              onRetry={() => { void marketQuery.refetch(); }}
+            />
           ) : marketQuery.data?.configured === false ? (
             <EmptyNote title={t('cap.plugins.noCatalog')} body={t('cap.plugins.noCatalogBody')} />
           ) : (
             <div className="space-y-8">
+              {!filtering && shelves.length > 1 ? (
+                <div className="-mt-2 border-b border-hairline/70 pb-2.5">
+                  <nav
+                    aria-label={t('cap.plugins.views')}
+                    data-plugins-shelf-rail
+                    className="-mx-2 flex flex-wrap items-center gap-0.5"
+                  >
+                    {shelves.map((shelf) => {
+                      const sectionId = shelf.group === undefined
+                        ? `plugins-shelf-${shelf.id}`
+                        : `plugins-shelf-${shelf.id}-${shelf.group}`;
+                      const heading = shelf.group === undefined
+                        ? t(SHELF_TITLE[shelf.id])
+                        : groupHeading(shelf.group, shelf.entries, t);
+                      return (
+                        <button
+                          key={sectionId}
+                          type="button"
+                          data-plugins-shelf-jump={sectionId}
+                          onClick={() => { jumpToShelf(sectionId); }}
+                          className="inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                        >
+                          <span>{heading}</span>
+                          <span className="text-[11.5px] text-ink-faint tabular-nums">{shelf.entries.length}</span>
+                        </button>
+                      );
+                    })}
+                  </nav>
+                </div>
+              ) : null}
               {shelves.map((shelf) => (
                 <CatalogShelfSection
                   key={shelf.group ?? shelf.id}
@@ -317,6 +528,57 @@ export function PluginsView({
         </>
       )}
       {sheets}
+    </div>
+  );
+}
+
+function PluginLoadFailure({
+  dataAttr,
+  summary,
+  diagnostic,
+  retrying,
+  onRetry,
+}: {
+  readonly dataAttr: 'data-plugins-installed-error' | 'data-plugins-catalog-error';
+  readonly summary: string;
+  readonly diagnostic?: string;
+  readonly retrying: boolean;
+  readonly onRetry: () => void;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      {...{ [dataAttr]: '' }}
+      className="space-y-2.5 border-l-2 border-danger/55 py-1 pl-3.5"
+    >
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <p role="alert" className="min-w-0 flex-1 text-[13px] leading-5 text-ink">
+          {summary}
+        </p>
+        <button
+          type="button"
+          data-settings-retry
+          disabled={retrying}
+          onClick={onRetry}
+          className={`${SECONDARY_BUTTON} inline-flex shrink-0 items-center gap-1.5`}
+        >
+          {retrying ? <Spinner label={t('common.retry')} size={12} /> : null}
+          <span>{t('common.retry')}</span>
+        </button>
+      </div>
+      {diagnostic !== undefined ? (
+        <Disclosure
+          label={t('cap.detail.diagnostics')}
+          open={open}
+          onToggle={() => { setOpen((value) => !value); }}
+          dataAttrs={{ 'data-plugins-error-diagnostics': '' }}
+        >
+          <pre className="max-h-32 overflow-auto rounded-md bg-ink/[0.04] px-3 py-2 font-mono text-[11.5px] leading-5 whitespace-pre-wrap text-ink-soft">
+            {diagnostic}
+          </pre>
+        </Disclosure>
+      ) : null}
     </div>
   );
 }
