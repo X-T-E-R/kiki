@@ -3880,7 +3880,7 @@ function repeatsTurnFailure(turn: { readonly state?: string; readonly error?: st
   const failure = turn.error?.trim();
   const notice = message.trim();
   if (failure === undefined || failure === '' || notice === '') return false;
-  return failure === notice || failure.includes(notice) || notice.includes(failure);
+  return failure === notice || failure.includes(notice);
 }
 
 // The main transcript renders the tail turn's failure in its turn tail; earlier
@@ -3890,10 +3890,23 @@ function dropTailTurnFailureNotices(
   tail: { readonly kind: string; readonly turnId?: string; readonly state?: string; readonly error?: string } | undefined,
 ): void {
   if (tail?.kind !== 'turn' || tail.turnId === undefined || tail.state !== 'failed') return;
+  const lastUserIndex = blocks.findLastIndex((block) => block.kind === 'user');
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
     const block = blocks[index]!;
-    if (block.kind === 'notice' && block.tone === 'danger' && block.turnId === tail.turnId &&
-      block.id.startsWith('agent-frame-') && repeatsTurnFailure(tail, block.text)) {
+    if (
+      block.kind === 'notice' &&
+      block.tone === 'danger' &&
+      block.compactionPhase === undefined &&
+      block.compactionFailure === undefined &&
+      block.taskRef === undefined &&
+      (block.turnId === tail.turnId || (block.turnId === undefined && index > lastUserIndex)) &&
+      (
+        (block.id.startsWith('agent-frame-') && repeatsTurnFailure(tail, block.text)) ||
+        block.i18n?.key === 'notice.turnFailedDetail' ||
+        block.i18n?.key === 'notice.turnFailed' ||
+        block.i18n?.key === 'notice.promptFailed'
+      )
+    ) {
       blocks.splice(index, 1);
     }
   }

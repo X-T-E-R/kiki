@@ -44,10 +44,10 @@ const READER_SCROLL_KEYS: ReadonlySet<string> = new Set([
 
 function readRowHeight(element: HTMLElement, entry?: ResizeObserverEntry): number {
   const boxSize = entry?.borderBoxSize?.[0]?.blockSize;
-  if (boxSize !== undefined && boxSize > 0) return boxSize;
+  if (boxSize !== undefined && boxSize > 0) return Math.ceil(boxSize);
   const rectHeight = element.getBoundingClientRect().height;
-  if (rectHeight > 0) return rectHeight / cssZoomFactor();
-  return element.offsetHeight;
+  if (rectHeight > 0) return Math.ceil(rectHeight / cssZoomFactor());
+  return Math.ceil(element.offsetHeight);
 }
 
 /**

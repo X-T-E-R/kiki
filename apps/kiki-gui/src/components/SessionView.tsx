@@ -2378,73 +2378,147 @@ export function SessionView({
   // preference is untouched, so widening the window restores the inline rail.
   const [narrowRailOpen, setNarrowRailOpen] = useState(false);
 
+  const previewRef = useRef<MediaPreviewApi | null>(null);
   const previewOpen = previewPresentation?.open === true;
   const previewMaximized = previewPresentation?.maximized === true;
-  // Docked rail yields automatically when preview maximizes or when viewport
-  // is in the 1024–1359px preview-priority band with an open docked preview,
-  // without mutating `layoutPrefs.railOpen`.
-  const dockedRailYielded =
-    !isNarrowScreen && (previewMaximized || (isPreviewPriorityBand && previewOpen));
+  // Maximized preview keeps the inspector as a row overlay. In the 1024–1359px
+  // preview-priority band, Preview and Inspector share the docked right
+  // secondary stage instead of layering a scrim over the conversation.
+  const maximizedRailYielded = !isNarrowScreen && previewMaximized;
+  const priorityBandSwap = !isNarrowScreen && !previewMaximized && isPreviewPriorityBand;
+  const dockedRailYielded = maximizedRailYielded || (priorityBandSwap && previewOpen);
   const railRegimeKey = isNarrowScreen
     ? 'narrow'
     : previewMaximized
       ? 'maximized'
-      : isPreviewPriorityBand && previewOpen
-        ? 'priority-docked'
-        : 'docked';
+      : 'docked';
   const [yieldedRailState, setYieldedRailState] = useState<{ regime: string; open: boolean }>({
     regime: railRegimeKey,
     open: false,
   });
+  const [priorityRailActive, setPriorityRailActive] = useState(false);
+  const [priorityRestorePreviewOnClose, setPriorityRestorePreviewOnClose] = useState(false);
+  const prevPreviewOpenRef = useRef(previewOpen);
+  useEffect(() => {
+    const becameOpen = previewOpen && !prevPreviewOpenRef.current;
+    prevPreviewOpenRef.current = previewOpen;
+    if (!priorityBandSwap) {
+      if (priorityRestorePreviewOnClose && !isNarrowScreen && !previewMaximized) {
+        setPriorityRestorePreviewOnClose(false);
+        setPriorityRailActive(false);
+        const api = previewRef.current;
+        if (api !== null && api.previewTabCount > 0 && !api.previewPanelOpen) {
+          api.togglePreviewPanel?.();
+        }
+      } else if (priorityRailActive || priorityRestorePreviewOnClose) {
+        setPriorityRailActive(false);
+        setPriorityRestorePreviewOnClose(false);
+      }
+      return;
+    }
+    if (becameOpen && (priorityRailActive || priorityRestorePreviewOnClose)) {
+      setPriorityRailActive(false);
+      setPriorityRestorePreviewOnClose(false);
+    }
+  }, [priorityBandSwap, previewOpen, priorityRailActive, priorityRestorePreviewOnClose, isNarrowScreen, previewMaximized]);
   const yieldedRailOverlayOpen =
-    dockedRailYielded && yieldedRailState.regime === railRegimeKey && yieldedRailState.open;
+    maximizedRailYielded && yieldedRailState.regime === railRegimeKey && yieldedRailState.open;
 
   const railOpen = isNarrowScreen
     ? narrowRailOpen
-    : dockedRailYielded
+    : maximizedRailYielded
       ? yieldedRailOverlayOpen
-      : userRailOpen;
+      : priorityBandSwap
+        ? (previewOpen ? false : (priorityRailActive || userRailOpen))
+        : userRailOpen;
   // The rail works at every width now (an overlay layer below lg), so its
   // entry points — the header toggle, the session title, the preview tab —
   // render unconditionally.
   const railAvailable = true;
   const toggleRail = useCallback(() => {
-    // Wide, yielded-overlay, and narrow remember separately: overlay layers
-    // are transient per regime/visit, while docked rail writes layoutPrefs.
+    // Wide, maximized-overlay, priority-band swap, and narrow remember
+    // separately: transient swaps never corrupt layoutPrefs.railOpen.
     if (isNarrowScreen) {
       setNarrowRailOpen((value) => !value);
       return;
     }
-    if (dockedRailYielded) {
+    if (maximizedRailYielded) {
       setYieldedRailState((current) => ({
         regime: railRegimeKey,
         open: current.regime === railRegimeKey ? !current.open : true,
       }));
       return;
     }
+    if (priorityBandSwap) {
+      if (previewOpen) {
+        previewRef.current?.togglePreviewPanel?.();
+        setPriorityRailActive(true);
+        setPriorityRestorePreviewOnClose(true);
+        return;
+      }
+      if (priorityRestorePreviewOnClose) {
+        setPriorityRailActive(false);
+        setPriorityRestorePreviewOnClose(false);
+        const api = previewRef.current;
+        if (api !== null && api.previewTabCount > 0 && !api.previewPanelOpen) {
+          api.togglePreviewPanel?.();
+        }
+        return;
+      }
+      if (priorityRailActive) {
+        setPriorityRailActive(false);
+        writeLayoutPreferences({ railOpen: false });
+        return;
+      }
+    }
     writeLayoutPreferences({ railOpen: !userRailOpen });
-  }, [isNarrowScreen, dockedRailYielded, railRegimeKey, userRailOpen]);
+  }, [
+    isNarrowScreen,
+    maximizedRailYielded,
+    priorityBandSwap,
+    previewOpen,
+    priorityRestorePreviewOnClose,
+    priorityRailActive,
+    railRegimeKey,
+    userRailOpen,
+  ]);
   const closeRail = useCallback(() => {
     if (isNarrowScreen) {
       setNarrowRailOpen(false);
       return;
     }
-    if (dockedRailYielded) {
+    if (maximizedRailYielded) {
       setYieldedRailState({ regime: railRegimeKey, open: false });
       return;
     }
+    if (priorityBandSwap && priorityRestorePreviewOnClose) {
+      setPriorityRailActive(false);
+      setPriorityRestorePreviewOnClose(false);
+      const api = previewRef.current;
+      if (api !== null && api.previewTabCount > 0 && !api.previewPanelOpen) {
+        api.togglePreviewPanel?.();
+      }
+      return;
+    }
+    if (priorityRailActive) setPriorityRailActive(false);
     writeLayoutPreferences({ railOpen: false });
-  }, [isNarrowScreen, dockedRailYielded, railRegimeKey]);
+  }, [isNarrowScreen, maximizedRailYielded, priorityBandSwap, priorityRestorePreviewOnClose, priorityRailActive, railRegimeKey]);
   const ensureDockedRailOpen = useCallback(() => {
     setYieldedRailState({ regime: railRegimeKey, open: false });
+    if (priorityBandSwap && previewOpen) {
+      previewRef.current?.togglePreviewPanel?.();
+      setPriorityRailActive(true);
+      setPriorityRestorePreviewOnClose(true);
+      return;
+    }
     if (!userRailOpen) writeLayoutPreferences({ railOpen: true });
-  }, [railRegimeKey, userRailOpen]);
+  }, [priorityBandSwap, previewOpen, railRegimeKey, userRailOpen]);
   // The phone's back closes the rail layer before route navigation. The
   // session shell's rail never opens below lg, so the layer only arms where
   // an open is possible — otherwise its unwinding `history.back()` would
   // consume the route itself on a narrow → wide hop.
   useLayerHistory('session-rail', narrowRailOpen && isNarrowScreen, closeRail);
-  const railIsOverlay = isNarrowScreen || dockedRailYielded;
+  const railIsOverlay = isNarrowScreen || maximizedRailYielded;
   const overlayRailOpen = railIsOverlay && railOpen;
   const previewCoversMain = isNarrowScreen || previewMaximized;
   // Focused panel-tab agent: the active agent panel tab in the preview
@@ -4618,7 +4692,6 @@ boundExecution,
   // not broken by unrelated state publishes.
   const forest = useStableForest(forestRaw);
 
-  const previewRef = useRef<MediaPreviewApi | null>(null);
   // Opening an agent as a preview tab keeps the page; the two branches that
   // swap the page for another visit ask the dirty guard first, so an unsaved
   // preview buffer is never dropped silently.

@@ -695,9 +695,86 @@ describe('sent image loading and recovery', () => {
     await renderSettled(root, <MediaPreviewProvider sessionId="session"><MediaPartList media={[{ kind: 'image', name: 'broken.png', url: 'data:image/png;base64,AAAA' }]} /></MediaPreviewProvider>);
     await act(async () => { container.querySelector('img')?.dispatchEvent(new Event('error')); });
     expect(container.querySelector('img')).toBeNull();
-    expect(container.querySelector('[data-media-broken="decode"]')?.textContent).toContain('broken.png could not be shown');
+    expect(container.querySelector('[data-media-broken="decode"]')?.textContent).toContain('broken.png');
+    expect(container.querySelector('[data-media-broken="decode"]')?.textContent).toContain('Cannot preview');
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-media-broken]')?.click(); });
     expect(container.querySelector('img')).not.toBeNull();
+  });
+
+  it('classifies permanent 404/40407 missing media as a quiet non-retryable chip, retries transient failures in place, and classifies audio decode errors as decode', async () => {
+    mocks.readSessionMediaPreviewBytes.mockRejectedValueOnce(new ApiError({ code: 40407, msg: 'opaque server code', data: null }));
+    const missing = makeRoot();
+    await renderSettled(
+      missing.root,
+      <MediaPreviewProvider sessionId="session">
+        <MediaPartList media={[{ kind: 'image', fileId: 'gone-40407', mime: 'image/png', name: 'gone.png' }]} />
+      </MediaPreviewProvider>,
+    );
+    const missingChip = missing.container.querySelector('[data-media-failure-kind="missing"]');
+    expect(missingChip).not.toBeNull();
+    expect(missingChip?.tagName).toBe('SPAN');
+    expect(missingChip?.textContent).toContain('gone.png');
+    expect(missing.container.querySelector('[data-media-retry]')).toBeNull();
+
+    mocks.readSessionMediaPreviewBytes
+      .mockRejectedValueOnce(new Error('network unavailable'))
+      .mockResolvedValueOnce({ bytes: new Uint8Array([1, 2, 3]), mime: 'image/png' });
+    const transient = makeRoot();
+    await renderSettled(
+      transient.root,
+      <MediaPreviewProvider sessionId="session">
+        <MediaPartList media={[{ kind: 'image', fileId: 'flaky-1', mime: 'image/png', name: 'flaky.png' }]} />
+      </MediaPreviewProvider>,
+    );
+    const retryBtn = transient.container.querySelector<HTMLButtonElement>('[data-media-failure-kind="transient"][data-media-retry]');
+    expect(retryBtn).not.toBeNull();
+    await act(async () => { retryBtn!.click(); });
+    expect(mocks.readSessionMediaPreviewBytes).toHaveBeenCalledTimes(3);
+    expect(transient.container.querySelector('img')).not.toBeNull();
+
+    mocks.openMediaPlayback.mockResolvedValueOnce({
+      preview_id: 'audio-tok-1',
+      url: '/media-preview/audio-tok-1',
+      mime: 'audio/mpeg',
+      size: 1024,
+      expires_at: Date.now() + 60_000,
+    });
+    mocks.closeMediaPlayback.mockResolvedValueOnce(undefined);
+    const audioRoot = makeRoot();
+    await renderSettled(
+      audioRoot.root,
+      <MediaPreviewProvider sessionId="session">
+        <MediaPartList media={[{ kind: 'audio', fileId: 'audio-decode-1', mime: 'audio/mpeg', name: 'corrupt.mp3' }]} />
+      </MediaPreviewProvider>,
+    );
+    const audioEl = audioRoot.container.querySelector('audio')!;
+    expect(audioEl).not.toBeNull();
+    Object.defineProperty(audioEl, 'error', { configurable: true, value: { code: 3 } });
+    await act(async () => { audioEl.dispatchEvent(new Event('error')); });
+    const decodeChip = audioRoot.container.querySelector('[data-media-failure-kind="decode"]');
+    expect(decodeChip).not.toBeNull();
+    expect(decodeChip?.textContent).toContain('corrupt.mp3');
+
+    mocks.openMediaPlayback.mockResolvedValueOnce({
+      preview_id: 'audio-tok-net',
+      url: '/media-preview/audio-tok-net',
+      mime: 'audio/mpeg',
+      size: 1024,
+      expires_at: Date.now() + 60_000,
+    });
+    mocks.closeMediaPlayback.mockResolvedValueOnce(undefined);
+    const audioNetRoot = makeRoot();
+    await renderSettled(
+      audioNetRoot.root,
+      <MediaPreviewProvider sessionId="session">
+        <MediaPartList media={[{ kind: 'audio', fileId: 'audio-net-1', mime: 'audio/mpeg', name: 'stream.mp3' }]} />
+      </MediaPreviewProvider>,
+    );
+    const audioNetEl = audioNetRoot.container.querySelector('audio')!;
+    expect(audioNetEl).not.toBeNull();
+    Object.defineProperty(audioNetEl, 'error', { configurable: true, value: { code: 2 } });
+    await act(async () => { audioNetEl.dispatchEvent(new Event('error')); });
+    expect(audioNetRoot.container.querySelector('[data-media-failure-kind="transient"][data-media-retry]')).not.toBeNull();
   });
 
   it('opens a failed thumbnail directly as an original and retries a missing saved source', async () => {

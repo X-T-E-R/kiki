@@ -74,9 +74,16 @@ export function useGalleryImage(item: MediaRef, attachmentIndex = 0, agentId?: s
   };
 }
 
+export type MediaFailureKind = 'missing' | 'decode' | 'preview_unavailable' | 'transient';
+
 type SessionMediaLoad =
   | { readonly status: 'loading'; readonly thumbnailUrl?: string }
-  | { readonly status: 'failed'; readonly thumbnailUrl?: string; readonly previewUnavailable?: boolean }
+  | {
+      readonly status: 'failed';
+      readonly thumbnailUrl?: string;
+      readonly previewUnavailable?: boolean;
+      readonly failureKind?: MediaFailureKind;
+    }
   | {
       readonly status: 'ready';
       readonly bytes: Uint8Array;
@@ -411,6 +418,76 @@ export function isMediaPreviewUnavailable(error: unknown): boolean {
     error instanceof Error && /exceeds its byte budget|preview_budget_exceeded|HTTP 413|HTTP 415/i.test(error.message);
 }
 
+export function classifyMediaFailure(
+  error: unknown,
+  previewOnly = false,
+  _kind?: MediaRef['kind'] | 'audio' | 'file',
+): MediaFailureKind {
+  if (error instanceof ApiError) {
+    const code = error.code;
+    const reason = error.reason;
+    if (
+      code === API_CODES.SESSION_NOT_FOUND ||
+      code === 404 ||
+      code === 410 ||
+      code === 40404 ||
+      code === 40407 ||
+      code === 40409 ||
+      code === 40402 ||
+      reason === 'media_preview_not_found' ||
+      reason === 'file_not_found'
+    ) {
+      return 'missing';
+    }
+    if (code === 415) return 'decode';
+    if (
+      code === 413 ||
+      reason === 'preview_budget_exceeded' ||
+      (previewOnly && code === API_CODES.REQUEST_INVALID)
+    ) {
+      return 'preview_unavailable';
+    }
+    if (
+      code === API_CODES.SESSION_BUSY ||
+      code === 503 ||
+      code === 40923 ||
+      code === API_CODES.TIMEOUT ||
+      code === -1 ||
+      (code >= 500 && code < 600)
+    ) {
+      return 'transient';
+    }
+  }
+  if (typeof error === 'object' && error !== null && !(error instanceof Error)) {
+    const rec = error as { readonly code?: unknown; readonly status?: unknown; readonly reason?: unknown };
+    const code = typeof rec.code === 'number' ? rec.code : typeof rec.status === 'number' ? rec.status : undefined;
+    if (code === 404 || code === 410 || code === 40407 || code === 40409 || code === 40402 || rec.reason === 'media_preview_not_found') {
+      return 'missing';
+    }
+    if (code === 415) return 'decode';
+    if (code === 413 || rec.reason === 'preview_budget_exceeded') return 'preview_unavailable';
+    if (code === 503 || code === 40923 || (code !== undefined && code >= 500 && code < 600)) return 'transient';
+  }
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string'
+          ? (error as { message: string }).message
+          : '';
+  if (/\b(?:ENOENT|ENOTDIR|FILE_NOT_FOUND|SESSION_NOT_FOUND|HTTP 404|HTTP 410|40407|40409|40402|not found|no longer available)\b/i.test(message)) {
+    return 'missing';
+  }
+  if (/\b(?:MEDIA_ERR_DECODE|HTTP 415|unsupported media|decode)\b/i.test(message)) {
+    return 'decode';
+  }
+  if (/\b(?:HTTP 413|preview_budget_exceeded|exceeds its byte budget|preview unavailable|preview_unavailable)\b/i.test(message)) {
+    return 'preview_unavailable';
+  }
+  return 'transient';
+}
+
 export function useSessionMedia(
   item: MediaRef,
   sessionId: string | undefined,
@@ -439,7 +516,7 @@ export function useSessionMedia(
     if (!enabled) { setLoad({ status: 'loading' }); return; }
     const hasSessionMedia = sessionId !== undefined && item.fileId !== undefined;
     if (client === undefined || (!hasSessionMedia && hostPath === undefined) || (previewOnly && item.kind !== 'image' && item.kind !== 'video')) {
-      setLoad({ status: 'failed' });
+      setLoad({ status: 'failed', failureKind: !hasSessionMedia && hostPath === undefined ? 'missing' : 'transient' });
       return;
     }
     const cacheKey = sessionMediaCacheKey(scopeKey, sessionId, item.fileId, hostPath, previewOnly, item.mime);
@@ -542,7 +619,7 @@ export function useSessionMedia(
         const { bytes, mime, name, etag } = result;
         if (bytes.byteLength === 0) {
           revokeObject();
-          setLoad(thumbnailUrl === undefined ? { status: 'failed' } : { status: 'failed', thumbnailUrl });
+          setLoad(thumbnailUrl === undefined ? { status: 'failed', failureKind: 'decode' } : { status: 'failed', thumbnailUrl, failureKind: 'decode' });
           return;
         }
         const mediaType = effectiveMediaMime(bytes, mime, item.mime, item.kind);
@@ -573,10 +650,11 @@ export function useSessionMedia(
         }
         revokeObject();
         const previewUnavailable = previewOnly && item.kind === 'video' && isMediaPreviewUnavailable(error);
+        const failureKind = classifyMediaFailure(error, previewOnly, item.kind);
         setLoad(
           thumbnailUrl === undefined
-            ? { status: 'failed', previewUnavailable }
-            : { status: 'failed', thumbnailUrl, previewUnavailable },
+            ? { status: 'failed', previewUnavailable, failureKind }
+            : { status: 'failed', thumbnailUrl, previewUnavailable, failureKind },
         );
       });
     };
@@ -690,7 +768,17 @@ export function useMessageImageMenu(item: MediaRef, src: string | undefined, lab
   return { openMenu, menuElement };
 }
 
-function SessionMediaThumb({ item, size = 'default', onOpen }: { item: MediaRef; size?: MediaThumbSize; onOpen?: () => void }) {
+function SessionMediaThumb({
+  item,
+  size = 'default',
+  onOpen,
+  onStripFailure,
+}: {
+  item: MediaRef;
+  size?: MediaThumbSize;
+  onOpen?: () => void;
+  onStripFailure?: (kind: MediaFailureKind) => void;
+}) {
   const { t } = useI18n();
   const preview = useMediaPreview();
   const [hostRef, visible] = useVisibleOnce();
@@ -698,16 +786,34 @@ function SessionMediaThumb({ item, size = 'default', onOpen }: { item: MediaRef;
   const load = useSessionMedia(item, preview?.sessionId, visible, true, attempt);
   const [failedUrl, setFailedUrl] = useState<string>();
   const failedRef = useRef(false);
-  failedRef.current = load.status === 'failed' || (load.status === 'ready' && failedUrl === load.url);
+  const isDecodeFailed = load.status === 'ready' && failedUrl === load.url;
+  const isBroken = (load.status === 'failed' && !(item.kind === 'video' && load.previewUnavailable === true)) || isDecodeFailed;
+  const resolvedFailureKind: MediaFailureKind | undefined = isDecodeFailed
+    ? 'decode'
+    : load.status === 'failed'
+      ? (load.failureKind ?? 'transient')
+      : undefined;
+  failedRef.current = load.status === 'failed' || isDecodeFailed;
   useMediaReady(mediaOutcomeKey({ sessionId: preview?.sessionId, url: item.url, fileId: item.fileId, path: item.path }), () => {
     if (!failedRef.current) return;
     setFailedUrl(undefined);
     setAttempt((value) => value + 1);
   });
+  useEffect(() => {
+    if (size === 'strip' && isBroken && resolvedFailureKind !== undefined) {
+      onStripFailure?.(resolvedFailureKind);
+    }
+  }, [size, isBroken, resolvedFailureKind, onStripFailure]);
   const fallback = item.kind === 'image' ? t('media.image') : t('media.attachment');
   const name = attachmentName(item, load.status === 'ready' ? load.name : undefined, fallback);
   const readyUrl = load.status === 'ready' && failedUrl !== load.url ? load.url : undefined;
   const imageMenu = useMessageImageMenu(item, readyUrl, name);
+  const originalPath = item.path ?? item.origin?.path;
+  const openOriginal = () => { if (onOpen !== undefined) onOpen(); else preview?.openAttachment(item); };
+  const retryLoad = () => {
+    setFailedUrl(undefined);
+    setAttempt((value) => value + 1);
+  };
   let body: ReactNode;
   if (item.kind === 'video' && load.status === 'failed' && load.previewUnavailable === true) {
     body = (
@@ -716,7 +822,7 @@ function SessionMediaThumb({ item, size = 'default', onOpen }: { item: MediaRef;
         data-media-video-placeholder
         title={name}
         aria-label={name}
-        onClick={() => { if (onOpen !== undefined) onOpen(); else preview?.openAttachment(item); }}
+        onClick={openOriginal}
         onContextMenu={imageMenu.openMenu}
         className={`flex ${THUMB_SIZE[size].slot} flex-col items-center justify-center gap-1.5 ${THUMB_SIZE[size].frame} border border-hairline bg-panel px-2 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
       >
@@ -726,8 +832,20 @@ function SessionMediaThumb({ item, size = 'default', onOpen }: { item: MediaRef;
         {size === 'strip' ? null : <span className="max-w-full truncate font-mono text-[11px]">{name}</span>}
       </button>
     );
-  } else if (load.status === 'failed' || load.status === 'ready' && failedUrl === load.url) {
-    body = <MediaLoadFailure name={name} decode={load.status === 'ready'} size={size} onRetry={() => { if (onOpen !== undefined) onOpen(); else preview?.openAttachment(item); }} />;
+  } else if (isBroken) {
+    if (size === 'strip') return null;
+    body = (
+      <MediaLoadFailure
+        name={name}
+        decode={isDecodeFailed}
+        failureKind={resolvedFailureKind}
+        size={size}
+        title={originalPath ?? name}
+        onRetry={retryLoad}
+        onOpen={openOriginal}
+        onContextMenu={imageMenu.openMenu}
+      />
+    );
   } else if (load.status === 'loading') {
     body = (
       <span
@@ -737,31 +855,157 @@ function SessionMediaThumb({ item, size = 'default', onOpen }: { item: MediaRef;
         {size === 'strip' ? null : t('preview.loading')}
       </span>
     );
-  } else {
+  } else if (load.status === 'ready') {
     body = (
       <button
         type="button"
         title={name}
-        onClick={() => { if (onOpen !== undefined) onOpen(); else preview?.openAttachment(item); }}
+        onClick={openOriginal}
         onContextMenu={imageMenu.openMenu}
         className={`block overflow-hidden ${THUMB_SIZE[size].frame} transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
       >
         <img src={load.url} alt={name} referrerPolicy="no-referrer" decoding="async" onError={() => { setFailedUrl(load.url); }} className={`${THUMB_SIZE[size].img} object-cover`} />
       </button>
     );
+  } else {
+    body = null;
   }
   return <span ref={hostRef} className="inline-flex">{body}{imageMenu.menuElement}</span>;
 }
 
-export function MediaLoadFailure({ name, decode, size = 'default', onRetry }: { name: string; decode: boolean; size?: MediaThumbSize; onRetry: () => void }) {
-  const { t } = useI18n();
+export function MediaLoadFailure({
+  name,
+  decode,
+  failureKind,
+  size = 'default',
+  title,
+  onRetry,
+  onOpen,
+  onContextMenu,
+  retryDataAttr,
+}: {
+  readonly name: string;
+  readonly decode: boolean;
+  readonly failureKind?: MediaFailureKind;
+  readonly size?: MediaThumbSize;
+  readonly title?: string;
+  readonly onRetry?: () => void;
+  readonly onOpen?: () => void;
+  readonly onContextMenu?: (event: React.MouseEvent) => void;
+  readonly retryDataAttr?: Record<string, string | undefined>;
+}) {
+  const { t, locale } = useI18n();
+  if (size === 'strip') return null;
+  const kind: MediaFailureKind = failureKind ?? (decode ? 'decode' : 'transient');
   const safeName = imagePreviewLabel({ name }, t('media.attachment'));
-  const label = decode ? t('media.unavailable', { name: safeName }) : t('preview.failed');
+  const statusText =
+    kind === 'missing'
+      ? (locale === 'zh' ? '原文件已不在' : 'Original file unavailable')
+      : kind === 'decode'
+        ? (locale === 'zh' ? '无法预览' : 'Cannot preview')
+        : kind === 'preview_unavailable'
+          ? (locale === 'zh' ? '文件过大' : 'File too large')
+          : (locale === 'zh' ? '暂时无法加载' : 'Temporarily unavailable');
+  const tooltip = title !== undefined && title !== '' ? title : safeName;
+  const chipClass = 'inline-flex h-7 max-w-full items-center gap-1.5 rounded-md border border-hairline bg-ink/[0.03] px-2.5 text-[12px] text-ink-soft';
+  const brokenAttr = kind === 'decode' ? 'decode' : 'read';
+
+  if (kind === 'missing') {
+    return (
+      <span
+        data-media-broken={brokenAttr}
+        data-media-failure-kind="missing"
+        title={tooltip}
+        onContextMenu={onContextMenu}
+        className={chipClass}
+      >
+        <Icon name="file" size={12} className="shrink-0 text-ink-faint" />
+        <span className="min-w-0 truncate font-mono">{safeName}</span>
+        <span aria-hidden className="shrink-0 text-ink-faint">·</span>
+        <span className="shrink-0 text-ink-faint">{statusText}</span>
+      </span>
+    );
+  }
+
+  const interactiveChipClass = `${chipClass} cursor-pointer transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`;
+
+  if (kind === 'transient') {
+    if (onRetry === undefined) {
+      return (
+        <span
+          data-media-broken={brokenAttr}
+          data-media-failure-kind="transient"
+          title={tooltip}
+          onContextMenu={onContextMenu}
+          className={chipClass}
+        >
+          <Icon name="file" size={12} className="shrink-0 text-ink-faint" />
+          <span className="min-w-0 truncate font-mono">{safeName}</span>
+          <span aria-hidden className="shrink-0 text-ink-faint">·</span>
+          <span className="shrink-0 text-ink-faint">{statusText}</span>
+        </span>
+      );
+    }
+    return (
+      <button
+        type="button"
+        data-media-broken={brokenAttr}
+        data-media-failure-kind="transient"
+        data-media-retry
+        {...retryDataAttr}
+        title={tooltip}
+        aria-label={`${safeName} · ${statusText} · ${t('transcript.detail.retry')}`}
+        onClick={onRetry}
+        onContextMenu={onContextMenu}
+        className={interactiveChipClass}
+      >
+        <Icon name="file" size={12} className="shrink-0 text-ink-faint" />
+        <span className="min-w-0 truncate font-mono">{safeName}</span>
+        <span aria-hidden className="shrink-0 text-ink-faint">·</span>
+        <span className="shrink-0 text-ink-faint">{statusText}</span>
+        <Icon name="refresh" size={12} className="ml-0.5 shrink-0 text-ink-soft" />
+      </button>
+    );
+  }
+
+  const secondaryAction = onOpen ?? onRetry;
+  const actionLabel =
+    kind === 'preview_unavailable'
+      ? (locale === 'zh' ? '打开原文件' : 'Open original')
+      : (locale === 'zh' ? '打开' : 'Open');
+  if (secondaryAction === undefined) {
+    return (
+      <span
+        data-media-broken={brokenAttr}
+        data-media-failure-kind={kind}
+        title={tooltip}
+        onContextMenu={onContextMenu}
+        className={chipClass}
+      >
+        <Icon name="file" size={12} className="shrink-0 text-ink-faint" />
+        <span className="min-w-0 truncate font-mono">{safeName}</span>
+        <span aria-hidden className="shrink-0 text-ink-faint">·</span>
+        <span className="shrink-0 text-ink-faint">{statusText}</span>
+      </span>
+    );
+  }
   return (
-    <button type="button" data-media-broken={decode ? 'decode' : 'read'} onClick={onRetry} title={safeName} aria-label={`${label} · ${t('transcript.detail.retry')}`}
-      className={`flex ${THUMB_SIZE[size].slot} flex-col items-center justify-center gap-1 ${THUMB_SIZE[size].frame} border border-dashed border-hairline-strong bg-panel p-2 text-[11px] text-ink-faint hover:border-accent focus-visible:outline-2 focus-visible:outline-selected-ink`}>
-      <Icon name={size === 'strip' ? 'warning' : 'file'} size={size === 'strip' ? 12 : 16} className={size === 'strip' ? 'text-danger/80' : undefined} />
-      {size === 'strip' ? null : <>{decode ? null : <span className="max-w-full truncate">{safeName}</span>}<span>{label}</span><span className="text-accent">{t('transcript.detail.retry')}</span></>}
+    <button
+      type="button"
+      data-media-broken={brokenAttr}
+      data-media-failure-kind={kind}
+      data-media-open
+      {...retryDataAttr}
+      title={tooltip}
+      onClick={secondaryAction}
+      onContextMenu={onContextMenu}
+      className={interactiveChipClass}
+    >
+      <Icon name="file" size={12} className="shrink-0 text-ink-faint" />
+      <span className="min-w-0 truncate font-mono">{safeName}</span>
+      <span aria-hidden className="shrink-0 text-ink-faint">·</span>
+      <span className="shrink-0 text-ink-faint">{statusText}</span>
+      <span className="ml-0.5 shrink-0 text-[11.5px] font-medium text-ink">{actionLabel}</span>
     </button>
   );
 }
@@ -810,10 +1054,19 @@ function AudioPart({ item }: { item: MediaRef }) {
   if (resolvedSrc !== undefined && (stickySrc?.key !== mediaKey || stickySrc.url !== resolvedSrc)) {
     setStickySrc({ key: mediaKey, url: resolvedSrc });
   }
-  const src = resolvedSrc ?? (playback.status !== 'failed' && stickySrc?.key === mediaKey ? stickySrc.url : undefined);
-  const failed = src === undefined && (playback.status === 'failed' || (needBlobFallback && load.status === 'failed'));
+  const [audioFailedState, setAudioFailedState] = useState<{ readonly key: string; readonly kind: 'decode' | 'transient' } | null>(null);
+  const audioErrorKind = audioFailedState?.key === mediaKey ? audioFailedState.kind : undefined;
+  const audioDecodeFailed = audioErrorKind === 'decode';
+  const src = audioErrorKind !== undefined ? undefined : (resolvedSrc ?? (playback.status !== 'failed' && stickySrc?.key === mediaKey ? stickySrc.url : undefined));
+  const failed = src === undefined && (audioErrorKind !== undefined || playback.status === 'failed' || (needBlobFallback && load.status === 'failed'));
+  const audioFailureKind: MediaFailureKind =
+    audioErrorKind ??
+    (needBlobFallback && load.status === 'failed'
+      ? (load.failureKind ?? 'transient')
+      : 'transient');
   const label = attachmentName(item, undefined, t('media.attachment'));
   const audioMenu = useMediaRefMenu(item, label);
+  const originalPath = item.path ?? item.origin?.path;
   return (
     <span ref={hostRef} className="inline-flex max-w-full" onContextMenu={audioMenu.openMenu}>
       {src !== undefined ? (
@@ -826,22 +1079,26 @@ function AudioPart({ item }: { item: MediaRef }) {
           onEnded={(event) => { unregisterInlineMediaElement(event.currentTarget); }}
           onError={(event) => {
             unregisterInlineMediaElement(event.currentTarget);
+            const errCode = event.currentTarget.error?.code;
+            const isNetwork = errCode === 1 || errCode === 2;
+            setAudioFailedState({ key: mediaKey, kind: isNetwork ? 'transient' : 'decode' });
             if (playback.status === 'ready') playback.fail();
           }}
           className="h-10 max-w-full"
         />
       ) : failed ? (
-        <button
-          type="button"
-          data-media-broken="read"
-          onClick={() => { setAttempt((value) => value + 1); }}
-          title={label}
-          className="inline-flex h-10 max-w-full items-center gap-2 rounded-lg border border-dashed border-hairline-strong bg-panel px-3 text-[12px] text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
-        >
-          <Icon name="warning" size={14} className="shrink-0 text-danger/80" />
-          <span className="min-w-0 truncate font-mono">{label}</span>
-          <span className="shrink-0 text-accent">{t('transcript.detail.retry')}</span>
-        </button>
+        <MediaLoadFailure
+          name={label}
+          decode={audioDecodeFailed}
+          failureKind={audioFailureKind}
+          title={originalPath ?? label}
+          onRetry={() => {
+            setAudioFailedState(null);
+            setAttempt((value) => value + 1);
+          }}
+          onOpen={audioFailureKind === 'decode' && preview !== null ? () => { preview.openAttachment(item); } : undefined}
+          onContextMenu={audioMenu.openMenu}
+        />
       ) : !visible || playback.status === 'loading' || hostPreview.status === 'loading' || (needBlobFallback && load.status === 'loading') ? (
         <span aria-busy="true" className="block h-10 w-[220px] max-w-full animate-pulse rounded-lg bg-ink/[0.06] motion-reduce:animate-none" />
       ) : (
@@ -1129,8 +1386,8 @@ function FileChip({ item }: { item: MediaRef }) {
 }
 
 /** Host media uses the same bounded source-preview and explicit-original UI. */
-function HostMediaThumb({ item, size = 'default', onOpen }: { item: MediaRef & { kind: 'image' | 'video'; path: string }; size?: MediaThumbSize; onOpen?: () => void }) {
-  return <SessionMediaThumb item={item} size={size} onOpen={onOpen} />;
+function HostMediaThumb({ item, size = 'default', onOpen, onStripFailure }: { item: MediaRef & { kind: 'image' | 'video'; path: string }; size?: MediaThumbSize; onOpen?: () => void; onStripFailure?: (kind: MediaFailureKind) => void }) {
+  return <SessionMediaThumb item={item} size={size} onOpen={onOpen} onStripFailure={onStripFailure} />;
 }
 
 export type MediaThumbSize = 'default' | 'strip' | 'preview';
@@ -1237,7 +1494,7 @@ function InlineUrlVideo({
   );
 }
 
-function UrlMediaPart({ item, size, onOpen }: { item: MediaRef & { url: string }; size: MediaThumbSize; onOpen?: () => void }) {
+function UrlMediaPart({ item, size, onOpen, onStripFailure }: { item: MediaRef & { url: string }; size: MediaThumbSize; onOpen?: () => void; onStripFailure?: (kind: MediaFailureKind) => void }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
   const client = useOptionalConnection()?.client;
@@ -1258,16 +1515,30 @@ function UrlMediaPart({ item, size, onOpen }: { item: MediaRef & { url: string }
   const name = attachmentName(item, undefined, fallback);
   const downloadName = safeImagePreviewName({ name: item.name, path: item.path });
   const imageFailed = failed === source;
+  useEffect(() => {
+    if (size === 'strip' && imageFailed) onStripFailure?.('decode');
+  }, [size, imageFailed, onStripFailure]);
   const imageMenu = useMessageImageMenu(item, item.kind === 'image' && !imageFailed ? item.url : undefined, name);
   if (!LOADABLE_MEDIA_URL.test(item.url)) return <FileChip item={item} />;
-  const body = imageFailed ? <MediaLoadFailure name={name} decode size={size} onRetry={() => { setFailed(null); setAttempt((value) => value + 1); }} />
+  if (imageFailed && size === 'strip') return null;
+  const body = imageFailed ? (
+    <MediaLoadFailure
+      name={name}
+      decode
+      failureKind="decode"
+      size={size}
+      title={item.path ?? item.origin?.path ?? name}
+      onRetry={() => { setFailed(null); setAttempt((value) => value + 1); }}
+      onContextMenu={imageMenu.openMenu}
+    />
+  )
     : !visible ? <span aria-busy="true" className={`${THUMB_SIZE[size].slot} ${THUMB_SIZE[size].frame}`} />
     : item.kind === 'video' ? <InlineUrlVideo url={item.url} name={name} byteSize={item.size} size={size} attempt={attempt} onError={() => { setFailed(source); }} />
     : <button type="button" onClick={() => { if (onOpen !== undefined) onOpen(); else preview?.openImage(item.url, downloadName); }} onContextMenu={imageMenu.openMenu} title={name} className={`block overflow-hidden ${THUMB_SIZE[size].frame} transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-selected-ink`}><img key={attempt} src={item.url} alt={name} referrerPolicy="no-referrer" decoding="async" onError={() => { setFailed(source); }} className={`${THUMB_SIZE[size].img} object-cover`} /></button>;
   return <span ref={hostRef} className="inline-flex">{body}{imageMenu.menuElement}</span>;
 }
 
-function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNullable<MediaRef['detail']> }; size: MediaThumbSize }) {
+function DeferredMediaPart({ item, size, onStripFailure }: { item: MediaRef & { detail: NonNullable<MediaRef['detail']> }; size: MediaThumbSize; onStripFailure?: (kind: MediaFailureKind) => void }) {
   const { t } = useI18n();
   const detail = useTranscriptDetail({ agentId: item.detail.agentId, kind: 'attachment', id: item.detail.attachmentId });
   const name = attachmentName(item, undefined, item.kind === 'image' ? t('media.image') : t('media.attachment'));
@@ -1277,6 +1548,8 @@ function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNulla
   const target = useMemo(() => ({ client, sessionId: preview?.sessionId, agentId: item.detail.agentId, id: item.detail.attachmentId }), [client, preview?.sessionId, item.detail.agentId, item.detail.attachmentId]);
   const attempted = useRef<typeof target | undefined>(undefined);
   const status = detail.status?.status;
+  const deferredFailureKind: MediaFailureKind | undefined =
+    status === 'error' ? classifyMediaFailure(detail.status?.message, false, item.kind) : undefined;
   const isOmittedPlaceholder = item.kind === 'file' && item.mime === undefined && item.size === undefined &&
     (item.name === undefined || item.origin !== undefined);
   const autoHydrate = item.kind === 'image' || item.kind === 'video' || item.kind === 'audio' || isOmittedPlaceholder;
@@ -1285,9 +1558,29 @@ function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNulla
     attempted.current = target;
     detail.request();
   }, [visible, autoHydrate, detail.request, target, status]);
+  useEffect(() => {
+    if (size === 'strip' && status === 'error' && deferredFailureKind !== undefined) {
+      onStripFailure?.(deferredFailureKind);
+    }
+  }, [size, status, deferredFailureKind, onStripFailure]);
   if (detail.request === undefined) return <FileChip item={item} />;
   const label = status === 'loading' ? t('media.detail.loading', { name }) : status === 'error' ? t('media.detail.failed', { name }) : t('media.detail.open', { name });
   const meta = item.size !== undefined ? formatBytes(item.size) : item.mime;
+  if (status === 'error') {
+    if (size === 'strip') return null;
+    return (
+      <span ref={hostRef} className="inline-flex" data-media-deferred="error">
+        <MediaLoadFailure
+          name={name}
+          decode={deferredFailureKind === 'decode'}
+          failureKind={deferredFailureKind}
+          size={size}
+          title={item.path ?? item.origin?.path ?? name}
+          onRetry={detail.request}
+        />
+      </span>
+    );
+  }
   if (size === 'strip') {
     const hydrating = status === 'loading' || (status === undefined && autoHydrate);
     return (
@@ -1303,10 +1596,10 @@ function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNulla
         className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} ${
           hydrating
             ? 'animate-pulse bg-ink/[0.06] text-ink-faint motion-reduce:animate-none'
-            : `border border-dashed ${status === 'error' ? 'border-danger/60 text-danger' : 'border-hairline-strong text-ink-faint'} bg-panel`
-        } transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
+            : 'border border-hairline bg-ink/[0.03] text-ink-faint'
+        } transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
       >
-        {hydrating ? null : <Icon name={status === 'error' ? 'warning' : 'file'} size={12} />}
+        {hydrating ? null : <Icon name="file" size={12} />}
       </button>
     );
   }
@@ -1320,7 +1613,7 @@ function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNulla
       aria-busy={status === 'loading'}
       aria-label={label}
       title={label}
-      className={`flex ${THUMB_SIZE[size].slot} flex-col items-start justify-between gap-1 ${THUMB_SIZE[size].frame} border border-dashed ${status === 'error' ? 'border-danger/60' : 'border-hairline-strong'} bg-panel p-2 text-left transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-default motion-reduce:transition-none`}
+      className={`flex ${THUMB_SIZE[size].slot} flex-col items-start justify-between gap-1 ${THUMB_SIZE[size].frame} border border-hairline bg-panel p-2 text-left transition-colors hover:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-default motion-reduce:transition-none`}
     >
       <span className="flex w-full min-w-0 items-center gap-1.5 text-ink-faint">
         <Icon name="file" size={14} />
@@ -1328,16 +1621,22 @@ function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNulla
       </span>
       <span className="w-full min-w-0">
         <span className="block truncate font-mono text-[12px] text-ink" title={name}>{name}</span>
-        <span className={`mt-0.5 flex items-center gap-1.5 text-[12px] font-medium ${status === 'error' ? 'text-danger' : 'text-accent-ink'}`}>
+        <span className="mt-0.5 flex items-center gap-1.5 text-[12px] font-medium text-accent-ink">
           {status === 'loading' ? <span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" /> : null}
-          {status === 'loading' ? t('preview.loading') : status === 'error' ? t('transcript.detail.retry') : t('media.detail.action')}
+          {status === 'loading' ? t('preview.loading') : t('media.detail.action')}
         </span>
       </span>
     </button>
   );
 }
 
-interface MediaPartProps { item: MediaRef; agentId?: string; size?: MediaThumbSize; galleryIndex?: number }
+interface MediaPartProps {
+  item: MediaRef;
+  agentId?: string;
+  size?: MediaThumbSize;
+  galleryIndex?: number;
+  onStripFailure?: (kind: MediaFailureKind) => void;
+}
 
 export function MediaPart(props: MediaPartProps) {
   const { item } = props;
@@ -1347,7 +1646,7 @@ export function MediaPart(props: MediaPartProps) {
   return <LoadedMediaPart {...props} />;
 }
 
-function LoadedMediaPart({ item, agentId, size = 'default', galleryIndex = 0 }: MediaPartProps) {
+function LoadedMediaPart({ item, agentId, size = 'default', galleryIndex = 0, onStripFailure }: MediaPartProps) {
   const order = useMediaGalleryOrder();
   const openImage = useGalleryImage(item, galleryIndex, agentId);
   const hasLoadableMedia =
@@ -1355,25 +1654,25 @@ function LoadedMediaPart({ item, agentId, size = 'default', galleryIndex = 0 }: 
     item.fileId !== undefined ||
     (item.url !== undefined && LOADABLE_MEDIA_URL.test(item.url));
   if (item.detail !== undefined && !hasLoadableMedia) {
-    return <DeferredMediaPart item={{ ...item, detail: item.detail }} size={size} />;
+    return <DeferredMediaPart item={{ ...item, detail: item.detail }} size={size} onStripFailure={onStripFailure} />;
   }
   if (item.blobHash !== undefined) {
     const savedItem = canonicalGalleryItem({ ...item, name: item.name ?? safeImagePreviewName({ path: item.path }) }, order?.agentId ?? agentId ?? 'main');
     return savedItem.kind === 'audio'
       ? <AudioPart item={savedItem} />
-      : <SessionMediaThumb item={savedItem} size={size} onOpen={item.kind === 'image' ? openImage : undefined} />;
+      : <SessionMediaThumb item={savedItem} size={size} onOpen={item.kind === 'image' ? openImage : undefined} onStripFailure={onStripFailure} />;
   }
   if (item.kind === 'image') {
-    if (item.fileId !== undefined) return <SessionMediaThumb item={item} size={size} onOpen={openImage} />;
-    if (item.url !== undefined) return <UrlMediaPart item={{ ...item, url: item.url }} size={size} onOpen={openImage} />;
-    if (item.path !== undefined) return <HostMediaThumb item={{ ...item, kind: 'image', path: item.path }} size={size} onOpen={openImage} />;
+    if (item.fileId !== undefined) return <SessionMediaThumb item={item} size={size} onOpen={openImage} onStripFailure={onStripFailure} />;
+    if (item.url !== undefined) return <UrlMediaPart item={{ ...item, url: item.url }} size={size} onOpen={openImage} onStripFailure={onStripFailure} />;
+    if (item.path !== undefined) return <HostMediaThumb item={{ ...item, kind: 'image', path: item.path }} size={size} onOpen={openImage} onStripFailure={onStripFailure} />;
     return <FileChip item={item} />;
   }
   if (item.kind === 'audio') return <AudioPart item={item} />;
   if (item.kind === 'video') {
-    if (item.fileId !== undefined) return <SessionMediaThumb item={item} size={size} />;
-    if (item.url !== undefined) return <UrlMediaPart item={{ ...item, url: item.url }} size={size} />;
-    if (item.path !== undefined) return <HostMediaThumb item={{ ...item, kind: 'video', path: item.path }} size={size} />;
+    if (item.fileId !== undefined) return <SessionMediaThumb item={item} size={size} onStripFailure={onStripFailure} />;
+    if (item.url !== undefined) return <UrlMediaPart item={{ ...item, url: item.url }} size={size} onStripFailure={onStripFailure} />;
+    if (item.path !== undefined) return <HostMediaThumb item={{ ...item, kind: 'video', path: item.path }} size={size} onStripFailure={onStripFailure} />;
     return <FileChip item={item} />;
   }
   return <FileChip item={item} />;

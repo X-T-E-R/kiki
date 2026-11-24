@@ -314,9 +314,11 @@ function WorkspaceSurface({
       {/* Below lg the session shell's shared rail never mounts: the routed
           agent page carries it as its own drawer there, so a header toggle
           would open an inspector with no agent context behind it. When the
-          docked rail yields to maximized or priority-band preview, both the
-          scrim and the drawer portal into `slots.rail` so they sit outside
-          an inert `.conversation-center` and add zero flex gap to the row. */}
+          docked rail yields to maximized preview, both the scrim and the
+          drawer portal into `slots.rail` so they sit outside an inert
+          `.conversation-center` and add zero flex gap to the row. In the
+          1024–1359px preview-priority band, Preview and Inspector share the
+          docked secondary stage inline with zero scrim. */}
       {slots.rail !== null && railOpen && railAsDrawer
         ? createPortal(
             <>

@@ -315,8 +315,28 @@ function hasCommandSummary(block: ToolBlock, summary: string): boolean {
  * A done row still announces itself to assistive tech through a visually
  * hidden label, so the silence is visual only.
  */
-function StatusIcon({ block }: { block: ToolBlock }) {
+function StatusIcon({
+  block,
+  calmed = false,
+  superseded = false,
+}: {
+  block: ToolBlock;
+  calmed?: boolean;
+  superseded?: boolean;
+}) {
   const { t } = useI18n();
+  if (calmed && block.status === 'error') {
+    const title = toolErrorFullText(block) ?? t('transcript.failedAria');
+    return (
+      <span
+        aria-label={t('transcript.failedAria')}
+        title={title}
+        className={superseded ? 'text-ink-faint' : 'text-danger/80'}
+      >
+        <Icon name="warning" size={12} />
+      </span>
+    );
+  }
   const reasonText =
     block.status === 'stopped' && typeof block.output === 'string' && block.output.trim() !== ''
       ? block.output
@@ -413,7 +433,7 @@ function ExternalOutput({ output, agentId, island = false }: { output: unknown; 
 }
 
 /** The result well: engine content parts, canonical result media, or both. */
-function OutputView({ output, media, agentId, outputPending = false, island = false, external = false }: {
+function OutputView({ output, media, agentId, outputPending = false, island = false, external = false, superseded = false }: {
   output: unknown;
   /** Canonical result media from the frame's own attachment references. */
   media?: readonly MediaRef[];
@@ -422,6 +442,8 @@ function OutputView({ output, media, agentId, outputPending = false, island = fa
   island?: boolean;
   /** A foreign engine's payload: it carries its own body and artifacts. */
   external?: boolean;
+  /** Superseded/historical failure tone downgrade for nested media job views. */
+  superseded?: boolean;
 }) {
   const { t } = useI18n();
   if (external) return <div data-tool-record-field="output"><ExternalOutput output={output} agentId={agentId} island={island} /></div>;
@@ -444,7 +466,7 @@ function OutputView({ output, media, agentId, outputPending = false, island = fa
   }
   // A body the window omitted still leaves its media known: the references
   // name the file, so show it beside whatever text survived.
-  const body = outputBody(output, agentId, island, t);
+  const body = outputBody(output, agentId, island, t, superseded);
   if (body === null) return resultList;
   if (resultList === null) return <>{body}</>;
   return (
@@ -456,7 +478,7 @@ function OutputView({ output, media, agentId, outputPending = false, island = fa
 }
 
 /** The text/JSON reading of a result, with its media handled above. */
-function outputBody(output: unknown, agentId: string, island: boolean, t: Translate): ReactNode {
+function outputBody(output: unknown, agentId: string, island: boolean, t: Translate, superseded = false): ReactNode {
   if (output === undefined || output === null) return null;
   // The media plugin's `generate` or `voice` result:
   // A short generation shows its files right here; a long one shows where it
@@ -464,7 +486,7 @@ function outputBody(output: unknown, agentId: string, island: boolean, t: Transl
   // before the string branch so a serialized job is never shown as raw JSON.
   const mediaResult = readMediaJobResult(output);
   if (mediaResult !== undefined) {
-    return <MediaJobView job={mediaResult.job} delivery={mediaResult.delivery} agentId={agentId} />;
+    return <MediaJobView job={mediaResult.job} delivery={mediaResult.delivery} agentId={agentId} superseded={superseded} />;
   }
   if (typeof output === 'string') return <ReadableToolText text={output} className={wellClass(island)} />;
   if (typeof output === 'object') {
@@ -511,6 +533,9 @@ export const ToolCard = memo(function ToolCard({
   agentNames,
   onOpenAgent,
   nested = false,
+  calmed = false,
+  superseded = false,
+  calmedErrorSummary,
 }: {
   block: ToolBlock;
   agentId?: string;
@@ -519,6 +544,12 @@ export const ToolCard = memo(function ToolCard({
   onOpenAgent?: (agentId: string) => void;
   /** Rendered inside a folded read run's spine. */
   nested?: boolean;
+  /** Render error rows with quiet paper-and-ink chrome instead of a red wash. */
+  calmed?: boolean;
+  /** Historical/superseded failure: mute the warning mark too. */
+  superseded?: boolean;
+  /** Optional humanized single-line summary for a calmed failure row. */
+  calmedErrorSummary?: string;
 }) {
   const { t, tp, time, locale } = useI18n();
   const transcriptTarget = useTranscriptTarget();
@@ -614,7 +645,11 @@ ${engineError}`;
       {commandCwd !== undefined && commandCwd !== '' ? <span className="text-ink-faint">{` · ${commandCwd}`}</span> : null}
     </span>
   ) : errorSummary !== undefined ? (
-    <span title={errorTitle} className={codedError === undefined ? 'font-mono' : undefined}>{errorSummary}</span>
+    calmed && calmedErrorSummary !== undefined ? (
+      <span title={errorTitle} className={superseded ? 'text-ink-faint' : 'text-ink-soft'}>{calmedErrorSummary}</span>
+    ) : (
+      <span title={errorTitle} className={codedError === undefined ? 'font-mono' : undefined}>{errorSummary}</span>
+    )
   ) : block.status === 'stopped' ? (
     <span
       title={typeof block.output === 'string' && block.output.trim() !== '' ? block.output : t('transcript.stopped')}
@@ -639,7 +674,7 @@ ${engineError}`;
   // Tone comes from the outcome, not the tool: a failure lights the whole
   // line, a stop washes it amber, success stays as quiet as a Read.
   const tone: ActivityTone =
-    block.status === 'error' ? 'danger' : block.status === 'stopped' ? 'warn' : 'plain';
+    block.status === 'error' ? (calmed ? 'plain' : 'danger') : block.status === 'stopped' ? 'warn' : 'plain';
   // Only a frame-measured duration is this tool's own; a turn-level fallback
   // is never passed off as runtime. An unknown duration leaves the column
   // empty in every state — a dash placeholder next to the outcome mark read
@@ -653,7 +688,7 @@ ${engineError}`;
         ? undefined
         : time.formatDuration(frameDuration);
   const inputWell = <ToolRecordField block={block} agentId={agentId} field="input" />;
-  const outputWell = <ToolRecordField block={block} agentId={agentId} field="output"><OutputView output={block.output} media={block.media} agentId={agentId} outputPending={block.outputPending} external={external} /></ToolRecordField>;
+  const outputWell = <ToolRecordField block={block} agentId={agentId} field="output"><OutputView output={block.output} media={block.media} agentId={agentId} outputPending={block.outputPending} external={external} superseded={superseded} /></ToolRecordField>;
 
   if (semantics !== undefined) {
     // One skeleton for every built-in tool: the verb, what it acted on, the
@@ -661,8 +696,11 @@ ${engineError}`;
     // as they do on any other step.
     const settled = block.status === 'done';
     const semanticDetail = errorSummary !== undefined ? (
-      // The failure itself, in the row's own type: danger colour only.
-      <span title={errorTitle}>{errorSummary}</span>
+      calmed && calmedErrorSummary !== undefined ? (
+        <span title={errorTitle} className={superseded ? 'text-ink-faint' : 'text-ink-soft'}>{calmedErrorSummary}</span>
+      ) : (
+        <span title={errorTitle}>{errorSummary}</span>
+      )
     ) : block.status === 'stopped'
       ? target
       : semantics.object === undefined && semantics.note === undefined && block.status === 'running' && block.progressText !== undefined
@@ -691,9 +729,9 @@ ${engineError}`;
         expanded={expanded}
         onToggle={() => { setExpanded((value) => !value); }}
         layout={block.name === 'AskUserQuestion' ? 'question' : undefined}
-        meta={block.name === 'AskUserQuestion' ? <span className="inline-flex items-center gap-1">{fact}<StatusIcon block={block} /></span> : fact}
+        meta={block.name === 'AskUserQuestion' ? <span className="inline-flex items-center gap-1">{fact}<StatusIcon block={block} calmed={calmed} superseded={superseded} /></span> : fact}
         metaWidth="auto"
-        status={block.name === 'AskUserQuestion' ? undefined : <StatusIcon block={block} />}
+        status={block.name === 'AskUserQuestion' ? undefined : <StatusIcon block={block} calmed={calmed} superseded={superseded} />}
         aside={block.name === 'AskUserQuestion' ? undefined : <SemanticJumpSlot link={semantics.link} onOpenAgent={onOpenAgent} />}
       >
         {expanded ? (
@@ -755,7 +793,7 @@ ${engineError}`;
           : undefined
       }
       meta={durationMeta}
-      status={<StatusIcon block={block} />}
+      status={<StatusIcon block={block} calmed={calmed} superseded={superseded} />}
     >
       {expanded ? (
         // Expands in place under the line; no frame of its own — the wells
@@ -773,7 +811,7 @@ ${engineError}`;
                 command={block.display.command}
                 cwd={block.display.cwd}
                 output={
-                  block.output !== undefined ? <OutputView output={block.output} media={block.media} agentId={agentId} outputPending={block.outputPending} island external={external} /> : undefined
+                  block.output !== undefined ? <OutputView output={block.output} media={block.media} agentId={agentId} outputPending={block.outputPending} island external={external} superseded={superseded} /> : undefined
                 }
               />
               {/* Controls stay on paper under the island: the command line and

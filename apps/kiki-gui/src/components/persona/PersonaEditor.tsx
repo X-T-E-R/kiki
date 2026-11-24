@@ -366,7 +366,7 @@ function PersonaForm({
           onStageAvatar={creating ? setStagedAvatar : undefined}
         />
         <div className="min-w-0 flex-1 pt-1">
-          <h2 className="truncate font-display text-[22px] leading-7 font-semibold tracking-tight text-ink">
+          <h2 className="truncate font-display text-[22px] leading-7 font-semibold tracking-normal text-ink">
             {draft.name.trim() === '' ? t('persona.newTitle') : draft.name}
           </h2>
           <p className="mt-0.5 truncate text-[13px] text-ink-soft">
