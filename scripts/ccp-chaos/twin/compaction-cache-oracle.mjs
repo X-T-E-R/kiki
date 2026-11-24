@@ -342,21 +342,125 @@ export function compareWireSegments(baselineSegments, candidateSegments) {
  * Gemini, and DeepSeek. Tracks stored KV entries per partition, computes exact byte-matched cache hits,
  * emits provider-native usage fields, and records wire audit logs for S20 verification.
  */
+function extractMaxTokens(protocol, body) {
+  if (!isPlainRecord(body)) return null;
+  if (protocol === 'anthropic') {
+    return typeof body.max_tokens === 'number' ? body.max_tokens : null;
+  }
+  if (protocol === 'openai_responses' || protocol === 'openai_responses_ws') {
+    return typeof body.max_output_tokens === 'number' ? body.max_output_tokens : null;
+  }
+  if (protocol === 'google_genai') {
+    const genCfg = isPlainRecord(body.generationConfig) ? body.generationConfig : null;
+    return typeof genCfg?.maxOutputTokens === 'number' ? genCfg.maxOutputTokens : null;
+  }
+  if (typeof body.max_completion_tokens === 'number') return body.max_completion_tokens;
+  if (typeof body.max_tokens === 'number') return body.max_tokens;
+  return null;
+}
+
 export class CompactionCacheOracle {
   constructor() {
     this.partitions = new Map();
+    this.entriesBySeq = new Map();
     this.auditLog = [];
     this.seq = 0;
   }
 
   reset() {
     this.partitions.clear();
+    this.entriesBySeq.clear();
     this.auditLog.length = 0;
     this.seq = 0;
   }
 
   getAuditLog() {
     return [...this.auditLog];
+  }
+
+  verifyWarmContinuation({
+    parentSeq,
+    candidateSeq,
+    expectMaxTokensLocked = true,
+    maxExtraSegments = undefined,
+    forbiddenSubstrings = [],
+    expectedSuffixContains = undefined,
+  }) {
+    const parent = this.entriesBySeq.get(parentSeq);
+    const candidate = this.entriesBySeq.get(candidateSeq);
+    const reasons = [];
+    if (!parent) reasons.push(`missing_parent_seq:${String(parentSeq)}`);
+    if (!candidate) reasons.push(`missing_candidate_seq:${String(candidateSeq)}`);
+    if (!parent || !candidate) {
+      return { ok: false, reasons, parentSeq, candidateSeq };
+    }
+
+    const cmp = compareWireSegments(parent.segments, candidate.segments);
+    if (!cmp.exactPrefixMatched) {
+      reasons.push('prefix_mismatch');
+    }
+    const maxTokensMatched = !expectMaxTokensLocked || parent.maxTokens === candidate.maxTokens;
+    if (!maxTokensMatched) {
+      reasons.push(`max_tokens_mutated:${String(parent.maxTokens)}->${String(candidate.maxTokens)}`);
+    }
+
+    const suffixSegments = candidate.segments.slice(parent.segments.length);
+    if (maxExtraSegments !== undefined && suffixSegments.length > maxExtraSegments) {
+      reasons.push(`unexpected_extra_segments:${String(suffixSegments.length)}>${String(maxExtraSegments)}`);
+    }
+
+    const leakedForbidden = [];
+    if (forbiddenSubstrings.length > 0) {
+      for (const needle of forbiddenSubstrings) {
+        if (candidate.segments.some((seg) => seg.wireJson.includes(needle))) {
+          leakedForbidden.push(needle);
+        }
+      }
+      if (leakedForbidden.length > 0) {
+        reasons.push(`forbidden_content_leaked:${leakedForbidden.join(',')}`);
+      }
+    }
+
+    if (expectedSuffixContains !== undefined) {
+      const hasExpected = suffixSegments.some((seg) => seg.wireJson.includes(expectedSuffixContains));
+      if (!hasExpected) {
+        reasons.push(`missing_expected_suffix:${expectedSuffixContains}`);
+      }
+    }
+
+    let boundMatchedTokens = cmp.matchedTokens;
+    if (
+      candidate.protocol === 'anthropic' &&
+      candidate.incrementalTransport !== 'anthropic_thread_continue' &&
+      !candidate.hasTopLevelCacheControl
+    ) {
+      let runningTokens = 0;
+      boundMatchedTokens = 0;
+      for (let i = 0; i < cmp.matchedCount; i += 1) {
+        const seg = candidate.segments[i];
+        const prevSeg = parent.segments[i];
+        runningTokens += seg.tokens;
+        if (seg.isBreakpoint && prevSeg.isBreakpoint) {
+          boundMatchedTokens = runningTokens;
+        }
+      }
+    }
+    const boundHitRatio = candidate.totalTokens > 0 ? boundMatchedTokens / candidate.totalTokens : 0;
+
+    return {
+      ok: reasons.length === 0,
+      reasons,
+      parentSeq,
+      candidateSeq,
+      exactPrefixMatched: cmp.exactPrefixMatched,
+      boundHitRatio,
+      maxTokensMatched,
+      parentMaxTokens: parent.maxTokens,
+      candidateMaxTokens: candidate.maxTokens,
+      suffixSegmentCount: suffixSegments.length,
+      leakedForbidden,
+      firstDiff: cmp.firstDiff,
+    };
   }
 
   evaluate({
@@ -485,14 +589,23 @@ export class CompactionCacheOracle {
       };
     }
 
+    const maxTokens = extractMaxTokens(protocol, body);
     const entryRecord = {
       seq: this.seq,
       protocol,
       partitionKey: built.partitionKey,
       segments: built.segments,
+      hasTopLevelCacheControl: built.hasTopLevelCacheControl,
+      incrementalTransport,
+      maxTokens,
       totalTokens,
       totalBytes,
     };
+    this.entriesBySeq.set(this.seq, entryRecord);
+    if (this.entriesBySeq.size > 4096) {
+      const oldest = this.entriesBySeq.keys().next().value;
+      if (oldest !== undefined) this.entriesBySeq.delete(oldest);
+    }
 
     if (recordIntoCache) {
       let bucket = this.partitions.get(built.partitionKey);
@@ -509,6 +622,7 @@ export class CompactionCacheOracle {
       protocol,
       partitionKey: built.partitionKey,
       incrementalTransport,
+      maxTokens,
       totalBytes,
       totalTokens,
       cachedBytes: bestCachedBytes,

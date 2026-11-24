@@ -66,6 +66,8 @@ export function digestAnthropicContentBlock(block: unknown): string {
 
 export interface AnthropicBreakpointSummary {
   readonly total: number;
+  readonly serverFixedCount: number;
+  readonly serverSawFiveMinute: boolean;
   readonly ttlOrderValid: boolean;
   readonly sawFiveMinute: boolean;
   readonly positions: readonly string[];
@@ -75,72 +77,81 @@ export function countAnthropicFixedBreakpoints(
   body: Readonly<Record<string, unknown>>,
 ): AnthropicBreakpointSummary {
   let total = 0;
+  let serverFixedCount = 0;
+  let serverSawFiveMinute = false;
   let sawFiveMinute = false;
   let ttlOrderValid = true;
   const positions: string[] = [];
 
-  const recordControl = (cc: CacheControlObject | undefined, pos: string): void => {
+  const recordControl = (cc: CacheControlObject | undefined, pos: string, isServerFixed: boolean): void => {
     if (cc === undefined) return;
     total += 1;
+    if (isServerFixed) serverFixedCount += 1;
     positions.push(pos);
     const ttl = normalizeTtl(cc);
     if (ttl === '1h' && sawFiveMinute) {
       ttlOrderValid = false;
     } else if (ttl === '5m') {
       sawFiveMinute = true;
+      if (isServerFixed) serverSawFiveMinute = true;
     }
   };
 
   const tools = body['tools'];
   if (Array.isArray(tools)) {
     for (let i = 0; i < tools.length; i += 1) {
-      recordControl(readCacheControl(tools[i]), `tools[${String(i)}]`);
+      recordControl(readCacheControl(tools[i]), `tools[${String(i)}]`, true);
     }
   }
 
   const system = body['system'];
   if (Array.isArray(system)) {
     for (let i = 0; i < system.length; i += 1) {
-      recordControl(readCacheControl(system[i]), `system[${String(i)}]`);
+      recordControl(readCacheControl(system[i]), `system[${String(i)}]`, true);
     }
   }
 
-  recordControl(readCacheControl(body), 'top_level');
+  recordControl(readCacheControl(body), 'top_level', false);
 
-  return { total, ttlOrderValid, sawFiveMinute, positions };
+  return { total, serverFixedCount, serverSawFiveMinute, ttlOrderValid, sawFiveMinute, positions };
 }
 
 export function countAnthropicBodyBreakpoints(
   body: Readonly<Record<string, unknown>>,
+  initialSawFiveMinute = false,
 ): AnthropicBreakpointSummary {
   let total = 0;
-  let sawFiveMinute = false;
+  let serverFixedCount = 0;
+  let serverSawFiveMinute = initialSawFiveMinute;
+  let sawFiveMinute = initialSawFiveMinute;
   let ttlOrderValid = true;
   const positions: string[] = [];
 
-  const recordControl = (cc: CacheControlObject | undefined, pos: string): void => {
+  const recordControl = (cc: CacheControlObject | undefined, pos: string, isServerFixed: boolean): void => {
     if (cc === undefined) return;
     total += 1;
+    if (isServerFixed) serverFixedCount += 1;
     positions.push(pos);
     const ttl = normalizeTtl(cc);
     if (ttl === '1h' && sawFiveMinute) {
       ttlOrderValid = false;
     } else if (ttl === '5m') {
       sawFiveMinute = true;
+      if (isServerFixed) serverSawFiveMinute = true;
     }
   };
 
   const tools = body['tools'];
   if (Array.isArray(tools)) {
     for (let i = 0; i < tools.length; i += 1) {
-      recordControl(readCacheControl(tools[i]), `tools[${String(i)}]`);
+      recordControl(readCacheControl(tools[i]), `tools[${String(i)}]`, true);
     }
   }
 
   const system = body['system'];
   if (Array.isArray(system)) {
     for (let i = 0; i < system.length; i += 1) {
-      recordControl(readCacheControl(system[i]), `system[${String(i)}]`);
+      recordControl(readCacheControl(system[i]), `system[${String(i)}]`, true);
     }
   }
 
@@ -151,20 +162,22 @@ export function countAnthropicBodyBreakpoints(
       if (!isPlainRecord(msg) || !Array.isArray(msg['content'])) continue;
       const content = msg['content'] as readonly unknown[];
       for (let b = 0; b < content.length; b += 1) {
-        recordControl(readCacheControl(content[b]), `messages[${String(m)}].content[${String(b)}]`);
+        recordControl(readCacheControl(content[b]), `messages[${String(m)}].content[${String(b)}]`, false);
       }
     }
   }
 
-  recordControl(readCacheControl(body), 'top_level');
+  recordControl(readCacheControl(body), 'top_level', false);
 
-  return { total, ttlOrderValid, sawFiveMinute, positions };
+  return { total, serverFixedCount, serverSawFiveMinute, ttlOrderValid, sawFiveMinute, positions };
 }
 
 export interface PlannedAnthropicBreakpoints {
   readonly allowedKeys: ReadonlySet<string>;
   readonly applied: readonly AnthropicProvenBreakpoint[];
   readonly fixedCount: number;
+  readonly serverFixedCount: number;
+  readonly serverSawFiveMinute: boolean;
 }
 
 export function stripMessageCacheControls(messages: readonly MessageParam[]): void {
@@ -270,15 +283,18 @@ export function planAndApplyAnthropicMessageBreakpoints(
     allowedKeys,
     applied,
     fixedCount: fixed.total,
+    serverFixedCount: fixed.serverFixedCount,
+    serverSawFiveMinute: fixed.serverSawFiveMinute,
   };
 }
 
 export function assertAnthropicBreakpointsValid(
   body: Readonly<Record<string, unknown>>,
-  extraFixedCount = 0,
+  extraServerFixedCount = 0,
+  extraServerSawFiveMinute = false,
 ): void {
-  const summary = countAnthropicBodyBreakpoints(body);
-  const total = summary.total + extraFixedCount;
+  const summary = countAnthropicBodyBreakpoints(body, extraServerSawFiveMinute);
+  const total = summary.total + extraServerFixedCount;
   if (total > ANTHROPIC_MAX_CACHE_BREAKPOINTS) {
     throw new ChatProviderError(
       `Anthropic cache_control breakpoints (${String(total)}) exceed the hard limit of ${String(ANTHROPIC_MAX_CACHE_BREAKPOINTS)}.`,

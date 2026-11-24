@@ -241,6 +241,7 @@ describe('Anthropic cache breakpoint accounting and planning', () => {
       fixedHash,
       threadDisposition: 'auxiliary_exclusive',
       fixedBreakpointCount: 4,
+      serverFixedBreakpointCount: 4,
     });
     expect(exclusiveAttempt.kind).toBe('continue');
     expect(tracker.get('session-1')).toBeUndefined();
@@ -249,5 +250,78 @@ describe('Anthropic cache breakpoint accounting and planning', () => {
     expect(deltaMessages).toHaveLength(1);
     const deltaBlock = (deltaMessages[0]!.content as { cache_control?: unknown }[])[0]!;
     expect(deltaBlock.cache_control).toBeUndefined();
+  });
+
+  it('accepts a legal 4-slot thread.continue with top-level cache_control and preserves parent tracker if continuation validation fails', () => {
+    const tracker = new AnthropicThreadTracker();
+    const baseMessages = makeMessages(['u0', 'a0']);
+    const fixedHash = 'fixed-hash-auto-cc';
+    const nextMessages: MessageParam[] = [
+      ...baseMessages,
+      { role: 'user', content: [{ type: 'text', text: 'summary delta' }] },
+    ];
+    const autoCcBody: Record<string, unknown> = {
+      model: 'claude-sonnet-4-6',
+      tools: [{ name: 'Read', input_schema: { type: 'object' }, cache_control: { type: 'ephemeral' } }],
+      system: [{ type: 'text', text: 'sys', cache_control: { type: 'ephemeral' } }],
+      cache_control: { type: 'ephemeral' },
+      messages: nextMessages,
+    };
+    const plan = planAndApplyAnthropicMessageBreakpoints(autoCcBody, nextMessages);
+    expect(plan.fixedCount).toBe(3);
+    expect(plan.serverFixedCount).toBe(2);
+    expect(plan.applied).toHaveLength(1);
+
+    tracker.commit('session-auto', {
+      responseId: 'msg_parent_auto',
+      prefixCount: baseMessages.length,
+      prefixHash: hashThreadMessages(baseMessages),
+      fixedHash,
+      createBetas: [MESSAGE_THREADS_BETA],
+      replacesLostThread: false,
+      unfinishedTurn: false,
+    });
+
+    const invalidDeltaMessages: MessageParam[] = [
+      ...baseMessages,
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'd0', cache_control: { type: 'ephemeral' } },
+          { type: 'text', text: 'd1', cache_control: { type: 'ephemeral' } },
+        ],
+      },
+    ];
+    expect(() => tracker.prepare({
+      scopeKey: 'session-auto',
+      baseBody: { ...autoCcBody, messages: invalidDeltaMessages },
+      messages: invalidDeltaMessages,
+      baseBetas: [],
+      fixedHash,
+      fixedBreakpointCount: plan.fixedCount,
+      serverFixedBreakpointCount: plan.serverFixedCount,
+      serverSawFiveMinute: plan.serverSawFiveMinute,
+      threadDisposition: 'auxiliary_exclusive',
+    })).toThrow(ChatProviderError);
+    expect(tracker.get('session-auto')?.responseId).toBe('msg_parent_auto');
+
+    const legalContinue = tracker.prepare({
+      scopeKey: 'session-auto',
+      baseBody: autoCcBody,
+      messages: nextMessages,
+      baseBetas: [],
+      fixedHash,
+      fixedBreakpointCount: plan.fixedCount,
+      serverFixedBreakpointCount: plan.serverFixedCount,
+      serverSawFiveMinute: plan.serverSawFiveMinute,
+      threadDisposition: 'auxiliary_exclusive',
+    });
+    expect(legalContinue.kind).toBe('continue');
+    expect(() => assertAnthropicBreakpointsValid(
+      legalContinue.body,
+      plan.serverFixedCount,
+      plan.serverSawFiveMinute,
+    )).not.toThrow();
+    expect(tracker.get('session-auto')).toBeUndefined();
   });
 });

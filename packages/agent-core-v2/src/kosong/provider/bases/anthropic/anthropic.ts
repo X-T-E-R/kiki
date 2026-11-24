@@ -1582,6 +1582,8 @@ export class AnthropicChatProvider implements ChatProvider {
       fixedHash,
       allowedBreakpoints: breakpointPlan.allowedKeys,
       fixedBreakpointCount: breakpointPlan.fixedCount,
+      serverFixedBreakpointCount: breakpointPlan.serverFixedCount,
+      serverSawFiveMinute: breakpointPlan.serverSawFiveMinute,
       threadDisposition,
     };
     let currentAttempt: PreparedAnthropicThreadRequest = this._threadTracker.prepare(threadInput);
@@ -1591,7 +1593,8 @@ export class AnthropicChatProvider implements ChatProvider {
       try {
         assertAnthropicBreakpointsValid(
           currentAttempt.body,
-          currentAttempt.kind === 'continue' ? breakpointPlan.fixedCount : 0,
+          currentAttempt.kind === 'continue' ? breakpointPlan.serverFixedCount : 0,
+          currentAttempt.kind === 'continue' ? breakpointPlan.serverSawFiveMinute : false,
         );
         const response = await sendAttempt(currentAttempt.body, currentAttempt.betas);
         const settlementContext = commitThread ? extractAnthropicThreadSettlementContext(currentAttempt) : undefined;

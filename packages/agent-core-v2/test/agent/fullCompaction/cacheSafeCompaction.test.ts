@@ -7,6 +7,7 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { resolveCompactionBudget } from '#/agent/llmRequester/turnCacheEnvelope';
 import { APIContextOverflowError, APIRequestTooLargeError } from '#/kosong/contract/errors';
+import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
 import { createTestAgent, type TestAgentContext } from '../../harness';
 
 describe('cache-safe A2 compaction and TurnCacheEnvelope contracts', () => {
@@ -298,5 +299,71 @@ describe('cache-safe A2 compaction and TurnCacheEnvelope contracts', () => {
     expect(requester.getTurnCacheEnvelopeSummary?.()?.id).toBe(env?.id);
     expect(ctx.llmCalls[2]!.history.slice(0, ctx.llmCalls[1]!.history.length)).toEqual(ctx.llmCalls[1]!.history);
     void vi;
+  });
+
+  it('invalidates warm envelope when a tool is revoked via disallowedTools', async () => {
+    ctx = createTestAgent([], { initialConfig: { worktree: { cleanup: { auto: false } } } });
+    await ctx.ready;
+    ctx.configure({ tools: ['Read', 'Glob'] });
+    const context = ctx.get(IAgentContextMemoryService);
+    context.append(
+      { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Read file before revocation' }], toolCalls: [] },
+    );
+    const requester = ctx.get(IAgentLLMRequesterService);
+    ctx.mockNextResponse({ type: 'text', text: 'Warm turn with Read active.' });
+    const turn = await requester.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    context.append({ role: 'assistant', content: turn.message.content, toolCalls: [] });
+    expect(ctx.llmCalls[0]!.tools.some((tool) => tool.name === 'Read')).toBe(true);
+
+    const profile = ctx.get(IAgentProfileService);
+    profile.update({ disallowedTools: ['Read'] });
+    expect(profile.data().disallowedTools).toContain('Read');
+
+    ctx.mockNextResponse({ type: 'text', text: 'Branch summary without revoked Read tool.' });
+    const compaction = ctx.get(IAgentFullCompactionService);
+    await compaction.prepareSummary({
+      authorizedHistory: context.get(),
+      compactCount: 2,
+      disposition: 'branch_seed',
+    }, new AbortController().signal);
+
+    const summaryCall = ctx.llmCalls[1]!;
+    expect(summaryCall.tools.some((tool) => tool.name === 'Read')).toBe(false);
+    expect(summaryCall.tools.some((tool) => tool.name === 'Glob')).toBe(true);
+  });
+
+  it('freezes pre-baseline extension patch across cold compaction correction rounds', async () => {
+    let preBaselineCalls = 0;
+    ctx = createTestAgent([], { initialConfig: { worktree: { cleanup: { auto: false } } } });
+    await ctx.ready;
+    const extensions = ctx.get(IPluginExtensionPortRegistryReader);
+    vi.spyOn(extensions, 'hasRequestPolicies', 'get').mockReturnValue(true);
+    vi.spyOn(extensions, 'collectPreBaselinePatch').mockImplementation(async () => {
+      preBaselineCalls += 1;
+      return { sampling: { temperature: 0.2 } };
+    });
+    ctx.configure({ tools: ['Read'] });
+    const context = ctx.get(IAgentContextMemoryService);
+    context.append(
+      { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Cold task' }], toolCalls: [] },
+      { role: 'assistant', content: [{ type: 'text', text: 'Cold answer' }], toolCalls: [] },
+    );
+
+    ctx.mockNextResponse(
+      { type: 'text', text: 'Invalid mixed text' },
+      { type: 'function', id: 'cold-bad-tc', name: 'Read', arguments: '{}' },
+    );
+    ctx.mockNextResponse({ type: 'text', text: 'Clean cold summary on round 2.' });
+
+    const compaction = ctx.get(IAgentFullCompactionService);
+    const summary = await compaction.prepareSummary({
+      authorizedHistory: context.get(),
+      compactCount: 2,
+      disposition: 'replace_window',
+    }, new AbortController().signal);
+
+    expect(summary).toContain('Clean cold summary on round 2.');
+    expect(ctx.llmCalls).toHaveLength(2);
+    expect(preBaselineCalls).toBe(1);
   });
 });

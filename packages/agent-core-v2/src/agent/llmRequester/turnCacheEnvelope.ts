@@ -30,8 +30,11 @@ export interface TurnCacheEnvelopeScope {
   readonly baseUrl?: string;
   readonly adapterBindingKey?: string;
   readonly endpointPresent: boolean;
+  readonly endpointKey: string;
   readonly bindingRevision?: string;
   readonly toolOverrideKey: string;
+  readonly activeToolPolicyKey: string;
+  readonly principalKey: string;
 }
 
 export interface TurnCacheExtensionUpdate {
@@ -121,14 +124,17 @@ export function matchesTurnCacheEnvelopeScope(
   if (prev.adapterBindingKey !== current.adapterBindingKey) {
     return { ok: false, reason: 'adapter_changed' };
   }
-  if (prev.endpointPresent !== current.endpointPresent) {
+  if (prev.endpointPresent !== current.endpointPresent || prev.endpointKey !== current.endpointKey) {
     return { ok: false, reason: 'endpoint_changed' };
   }
   if (prev.bindingRevision !== current.bindingRevision) {
     return { ok: false, reason: 'binding_changed' };
   }
-  if (prev.toolOverrideKey !== current.toolOverrideKey) {
-    return { ok: false, reason: 'tool_override_changed' };
+  if (prev.toolOverrideKey !== current.toolOverrideKey || prev.activeToolPolicyKey !== current.activeToolPolicyKey) {
+    return { ok: false, reason: 'tool_policy_changed' };
+  }
+  if (prev.principalKey !== current.principalKey) {
+    return { ok: false, reason: 'principal_changed' };
   }
   return { ok: true };
 }

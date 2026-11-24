@@ -1584,6 +1584,32 @@ export async function createContractTwinServer(options = {}) {
                 if (effectiveSystem === undefined && prevThread.system !== undefined) {
                   effectiveSystem = prevThread.system;
                 }
+                const combinedContinueBp = inspectAnthropicBreakpoints({
+                  tools: effectiveTools,
+                  system: effectiveSystem,
+                  messages: body.messages,
+                  cache_control: body.cache_control,
+                });
+                if (combinedContinueBp.total > MAX_CACHE_CONTROL_BREAKPOINTS) {
+                  const v = recordViolation(
+                    400,
+                    'cache_control_limit_exceeded',
+                    `thread.continue effective cache_control breakpoints (${combinedContinueBp.total}) exceeded Anthropic hard limit of ${MAX_CACHE_CONTROL_BREAKPOINTS}`,
+                    { cacheControlCount: combinedContinueBp.total, positions: combinedContinueBp.positions },
+                  );
+                  sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', code: v.code, message: v.message } });
+                  return;
+                }
+                if (!combinedContinueBp.ttlOrderValid) {
+                  const v = recordViolation(
+                    400,
+                    'cache_control_ttl_order_invalid',
+                    'thread.continue Anthropic cache_control TTL order violation: 1h breakpoints must precede 5m breakpoints',
+                    { positions: combinedContinueBp.positions },
+                  );
+                  sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', code: v.code, message: v.message } });
+                  return;
+                }
               } else {
                 const v = recordViolation(422, 'invalid_thread_type', `Unsupported thread.type "${String(body.thread.type)}"`);
                 sendJson(res, 422, { type: 'error', error: { type: 'invalid_request_error', code: v.code, message: v.message } });
@@ -2234,6 +2260,7 @@ export async function createContractTwinServer(options = {}) {
     armNextAction: (action) => protocolExt.armAction(action),
     clearArmedActions: () => protocolExt.clearArmedActions(),
     getWireAuditLog: () => cacheOracle.getAuditLog(),
+    verifyWarmContinuation: (opts) => cacheOracle.verifyWarmContinuation(opts),
     clearWireAuditLog: () => {
       cacheOracle.auditLog.length = 0;
     },

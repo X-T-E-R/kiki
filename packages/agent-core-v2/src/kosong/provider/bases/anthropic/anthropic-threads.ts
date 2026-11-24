@@ -4,7 +4,7 @@ import { APIError as AnthropicAPIError } from '@anthropic-ai/sdk';
 import type { ContentBlockParam, MessageParam } from '@anthropic-ai/sdk/resources/messages/messages.js';
 
 import type { AnthropicThreadDisposition } from '#/kosong/contract/provider';
-import { anthropicBreakpointKey } from './anthropic-cache-breakpoints';
+import { anthropicBreakpointKey, assertAnthropicBreakpointsValid } from './anthropic-cache-breakpoints';
 
 export const MESSAGE_THREADS_BETA = 'message-threads-2026-08-12';
 
@@ -51,6 +51,8 @@ export interface PrepareAnthropicThreadInput {
   readonly fixedHash: string;
   readonly allowedBreakpoints?: ReadonlySet<string>;
   readonly fixedBreakpointCount?: number;
+  readonly serverFixedBreakpointCount?: number;
+  readonly serverSawFiveMinute?: boolean;
   readonly threadDisposition?: AnthropicThreadDisposition;
 }
 
@@ -515,21 +517,27 @@ export class AnthropicThreadTracker {
         (hasDelta || resumesUnfinished) &&
         hashThreadMessages(input.messages.slice(0, state.prefixCount)) === state.prefixHash
       ) {
-        this.entries.delete(input.scopeKey);
         const { system: _system, tools: _tools, ...rest } = input.baseBody;
         const deltaRaw = input.messages.slice(state.prefixCount);
         const deltaMessages =
           input.fixedBreakpointCount !== undefined && input.fixedBreakpointCount >= 4
             ? deltaRaw.map((msg) => withoutCacheControl(msg))
             : deltaRaw;
+        const continueBody: Record<string, unknown> = {
+          ...rest,
+          messages: deltaMessages,
+          thread: { type: 'continue', previous_message_id: state.responseId },
+        };
+        assertAnthropicBreakpointsValid(
+          continueBody,
+          input.serverFixedBreakpointCount ?? 0,
+          input.serverSawFiveMinute ?? false,
+        );
+        this.entries.delete(input.scopeKey);
         return {
           kind: 'continue',
           scopeKey: input.scopeKey,
-          body: {
-            ...rest,
-            messages: deltaMessages,
-            thread: { type: 'continue', previous_message_id: state.responseId },
-          },
+          body: continueBody,
           betas: [...state.createBetas],
           replacesLostThread: state.replacesLostThread,
           fixedHash: input.fixedHash,

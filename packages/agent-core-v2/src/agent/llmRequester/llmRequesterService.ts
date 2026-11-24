@@ -260,6 +260,8 @@ interface ColdCompactionFrozenSnapshot {
   readonly extensionBaselineText: string;
   readonly extensionUpdates: readonly TurnCacheExtensionUpdate[];
   readonly requestIdentityPolicy: ResolvedRequestIdentityPolicy;
+  preBaselinePatchCaptured: boolean;
+  preBaselinePatch?: PreBaselineRequestPatch;
 }
 
 interface ResolvedLLMRequest {
@@ -289,6 +291,11 @@ interface ResolvedLLMRequest {
   readonly cacheInheritance?: LLMRequestCacheInheritanceOptions;
   readonly matchedEnvelope?: TurnCacheEnvelope;
   readonly cacheInheritanceStatus?: LLMRequestCacheInheritanceStatus;
+  readonly coldFreezeKey?: string;
+  readonly frozenColdPreBaselinePatch?: {
+    readonly captured: boolean;
+    readonly patch: PreBaselineRequestPatch | undefined;
+  };
 }
 
 interface ToolsetDigest {
@@ -320,7 +327,7 @@ interface TurnRequestConfig {
   readonly promptPrepared: boolean;
   readonly cognition?: import('#/agent/cognition/cognitionConfig').CognitionBinding;
   readonly providerConfig: ProviderConfig | undefined;
-  readonly requestIdentity: ResolvedRequestIdentityPolicy;
+  requestIdentity?: ResolvedRequestIdentityPolicy;
 }
 
 export const llmRequesterLastConfigLogSignatureKey = defineState<string | undefined>(
@@ -954,9 +961,12 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       const extensionSignal = signal ?? new AbortController().signal;
       let appliedPreBaselinePatch: PreBaselineRequestPatch | undefined;
       try {
-        appliedPreBaselinePatch = matchedEnvelope !== undefined
-          ? matchedEnvelope.preBaselinePatch
-          : extensions?.hasRequestPolicies === true
+        if (matchedEnvelope !== undefined) {
+          appliedPreBaselinePatch = matchedEnvelope.preBaselinePatch;
+        } else if (request.frozenColdPreBaselinePatch?.captured === true) {
+          appliedPreBaselinePatch = request.frozenColdPreBaselinePatch.patch;
+        } else {
+          appliedPreBaselinePatch = extensions?.hasRequestPolicies === true
             ? await extensions.collectPreBaselinePatch(frozenExtensionSnapshot({
                 sessionId: this.sessionContext.sessionId, agentId: this.agentContext.agentId,
                 turnId: source?.turnId, step: source?.type === 'turn' ? source.step : undefined,
@@ -967,6 +977,14 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
                 serviceTier: typeof params.serviceTier === 'string' ? params.serviceTier : undefined,
               }), extensionSignal)
             : undefined;
+          if (request.coldFreezeKey !== undefined) {
+            const snapshot = this.coldCompactionSnapshots.get(request.coldFreezeKey);
+            if (snapshot !== undefined) {
+              snapshot.preBaselinePatchCaptured = true;
+              snapshot.preBaselinePatch = appliedPreBaselinePatch;
+            }
+          }
+        }
         const requestParams: ModelRequestParams & {
           readonly attribution: typeof attribution;
           readonly preBaselinePatch?: PreBaselineRequestPatch;
@@ -1563,8 +1581,41 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     resolved: ProfileModelContext,
     model: Model,
     bindingRevision: string | undefined,
+    providerConfig: ProviderConfig | undefined,
   ): TurnCacheEnvelopeScope {
     const profileData = this.profile.data();
+    const activeTools = this.toolSelect
+      .shapeTools(this.tools.list())
+      .map((tool) => [tool.name, tool.parameters ?? EMPTY_TOOL_PARAMETERS, tool.deferred]);
+    const activeToolPolicyKey = createHash('sha256')
+      .update(JSON.stringify([profileData.toolOverride ?? null, profileData.disallowedTools ?? null, profileData.activeToolNames ?? null, activeTools]))
+      .digest('hex');
+    const endpointKey = createHash('sha256')
+      .update(JSON.stringify(
+        profileData.endpoint === undefined
+          ? null
+          : {
+              baseUrl: profileData.endpoint.base_url,
+              model: profileData.endpoint.model,
+              providerType: profileData.endpoint.provider_type,
+              capabilities: profileData.endpoint.capabilities,
+              requestParams: profileData.endpoint.request_params ?? null,
+            },
+      ))
+      .digest('hex');
+    const principalKey = createHash('sha256')
+      .update(JSON.stringify({
+        oauthKey: providerConfig?.oauth?.key ?? null,
+        oauthStorage: providerConfig?.oauth?.storage ?? null,
+        apiKeyHash: providerConfig?.apiKey === undefined
+          ? null
+          : createHash('sha256').update(providerConfig.apiKey).digest('hex'),
+        requestIdentity: providerConfig?.requestIdentity ?? null,
+        profileName: profileData.profileName ?? null,
+        profileDefinitionId: profileData.profileDefinitionId ?? null,
+        routeId: profileData.routeId ?? null,
+      }))
+      .digest('hex');
     return {
       sessionId: this.sessionContext.sessionId,
       agentId: this.agentContext.agentId,
@@ -1578,14 +1629,18 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       baseUrl: model.baseUrl,
       adapterBindingKey: this.protocolAdapters?.current?.adapterCacheKey?.(model.protocol, model.providerType),
       endpointPresent: profileData.endpoint !== undefined,
+      endpointKey,
       bindingRevision,
       toolOverrideKey: JSON.stringify(profileData.toolOverride ?? null),
+      activeToolPolicyKey,
+      principalKey,
     };
   }
 
   private async resolveRequest(
     overrides: AgentLLMRequestOverrides,
   ): Promise<ResolvedLLMRequest> {
+    await this.identityCatalog.ready;
     const cacheInheritance = overrides.cacheInheritance;
     const wantsEnvelope =
       cacheInheritance !== undefined &&
@@ -1603,7 +1658,10 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         turnConfig?.cognition?.recipe?.resolved.model ??
         this.profile.getRecipeModelSettings(resolved.modelAlias),
     );
-    const envelopeScope = this.buildEnvelopeScope(resolved, requester.model, bindingRevision);
+    const scopeProviderConfig =
+      turnConfig?.providerConfig ??
+      this.config.get<ProvidersSection>(PROVIDERS_SECTION)?.[requester.model.providerName];
+    const envelopeScope = this.buildEnvelopeScope(resolved, requester.model, bindingRevision, scopeProviderConfig);
     const allowWarmEnvelope = cacheInheritance?.allowWarmEnvelope !== false;
     const candidateEnvelope = wantsEnvelope && allowWarmEnvelope ? this.lastTurnEnvelope : undefined;
     const matchedEnvelope =
@@ -1831,6 +1889,11 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         bindingRevision,
         cacheInheritance,
         cacheInheritanceStatus: coldStatus,
+        coldFreezeKey,
+        frozenColdPreBaselinePatch: {
+          captured: existingCold.preBaselinePatchCaptured,
+          patch: existingCold.preBaselinePatch,
+        },
         logFields: {
           ...logFieldsForSource(overrides.source),
           cacheInheritance: coldStatus,
@@ -1886,6 +1949,9 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     const requestIdentity =
       turnConfig?.requestIdentity ??
       this.resolveRequestIdentityPolicy(resolved, providerConfig);
+    if (turnConfig !== undefined && turnConfig.requestIdentity === undefined) {
+      turnConfig.requestIdentity = requestIdentity;
+    }
     validateRequestIdentityHeaderCollisions(providerConfig);
     preflightRequestIdentityProjection(requestIdentity, requester.model.protocol);
 
@@ -2031,6 +2097,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         extensionBaselineText,
         extensionUpdates,
         requestIdentityPolicy: requestIdentity,
+        preBaselinePatchCaptured: false,
       });
     }
     const anchorSteps = cognition.config?.anchor === undefined ? undefined : cognition.config.anchorSteps ?? 1;
@@ -2060,6 +2127,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       anchorScope,
       cacheInheritance,
       cacheInheritanceStatus: coldStatus,
+      coldFreezeKey,
       logFields: {
         ...logFieldsForSource(overrides.source),
         anchorApplied: anchoredPrompt !== undefined,
@@ -2128,7 +2196,6 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         cognition: this.profile.getCognitionSnapshot(),
         promptPrepared: preparePrompt,
         providerConfig,
-        requestIdentity: this.resolveRequestIdentityPolicy(resolved, providerConfig),
       };
       this.turnConfigs.set(turnId, snapshot);
     }
