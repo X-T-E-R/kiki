@@ -4750,7 +4750,7 @@ describe('TranscriptService live integration', () => {
         }));
         expect(recovered).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(27);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(31);
         expect(await read()).toEqual(expected);
         expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
         expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
@@ -4796,7 +4796,7 @@ describe('TranscriptService live integration', () => {
           nextByteOffset: number;
           snapshot: AgentTranscriptSnapshot;
         }>('__transcript_projection_checkpoint__', key);
-        expect(saved?.format).toBe(27);
+        expect(saved?.format).toBe(31);
         expect(saved?.nextByteOffset).toBe(originalWire.byteLength);
 
         const legacy = {
@@ -4817,7 +4817,7 @@ describe('TranscriptService live integration', () => {
         const recovered = await read();
         expect(recovered?.meta.agent?.contextTokens).toBe(61_234);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(27);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(31);
 
         const cached = await read();
         expect(cached?.meta.agent?.contextTokens).toBe(61_234);
@@ -4827,7 +4827,7 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       const ref = { refId: 'ar:message-1:worker', profile: 'worker', executor: 'example-acp', configuration: 'profile', label: 'Worker' };
@@ -4930,7 +4930,7 @@ describe('TranscriptService live integration', () => {
         const accepted = expected?.prompts.find(prompt => prompt.promptId === 'accepted-not-delivered');
         expect(accepted).toMatchObject({ status: 'queued', steerAccepted: true, userMessageId: 'logical-accepted' });
         expect(accepted?.steeredAt).toBeUndefined();
-        expect(checkpoint?.format).toBe(27);
+        expect(checkpoint?.format).toBe(31);
         const boundary = expected?.items.find((item) => item.kind === 'turn' && item.turnId === 't5');
         expect(boundary).toMatchObject({ state: 'failed',
           error: 'example_stream_reset: Example worker connection was reset.',

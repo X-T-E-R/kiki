@@ -2208,6 +2208,155 @@ describe('ThreadCommunicationService', () => {
     expect(deliveredToWatcher.some((msg) => msg.content.includes('<notification'))).toBe(false);
   });
 
+  it('does not cancel a newer reverse notify_on_terminal watch on an idempotent ThreadSend replay', async () => {
+    const watcherSummary = summary('watcher-a', 'ws-shared', 1_700_000_000_000);
+    const targetSummary = summary('target-b', 'ws-shared', 1_700_000_000_000);
+    const targetActivity = new Emitter<SessionActivityChangedEvent>();
+    const deliveredToWatcher: Array<{ content: string; origin?: unknown }> = [];
+    const targetHandle = observedSessionHandle('target-b', 'ws-shared', targetActivity);
+    const makePromptHandle = (sessionId: string): ISessionScopeHandle => {
+      const agentHandle = {
+        id: MAIN_AGENT_ID,
+        kind: LifecycleScope.Agent,
+        accessor: accessor([
+          [IAgentPromptService, {
+            _serviceBrand: undefined,
+            lookup: () => undefined,
+            inject: vi.fn(),
+            steer: vi.fn(),
+            abort: vi.fn(),
+            enqueue: async (input: { readonly id: string; readonly message: { readonly content: readonly { readonly text?: string }[]; readonly origin?: unknown } }) => {
+              if (sessionId === 'watcher-a') {
+                deliveredToWatcher.push({
+                  content: input.message.content.map((part) => part.text ?? '').join(''),
+                  origin: input.message.origin,
+                });
+              }
+              return {
+                id: input.id,
+                userMessageId: input.id,
+                createdAt: new Date().toISOString(),
+                state: 'completed',
+                message: input.message,
+                launched: Promise.resolve(undefined),
+                completion: Promise.resolve(undefined),
+              } as unknown as PromptHandle;
+            },
+          }],
+        ]),
+        dispose: () => {},
+      } as unknown as IAgentScopeHandle;
+      return {
+        id: sessionId,
+        kind: LifecycleScope.Session,
+        accessor: accessor([
+          [ISessionContext, { _serviceBrand: undefined, sessionId, workspaceId: 'ws-shared', cwd: '/ws-shared', createdAt: 1 }],
+          [ISessionActivityView, {
+            _serviceBrand: undefined,
+            state: () => ({ busy: false, mainTurnActive: false, pendingInteraction: 'none' as const }),
+            onDidChange: sessionId === 'target-b' ? targetActivity.event : Event.None,
+          }],
+          [IAgentLifecycleService, {
+            _serviceBrand: undefined,
+            get: () => agentHandle,
+            create: async () => agentHandle,
+            list: () => [agentHandle],
+          }],
+        ]),
+        dispose: async () => {},
+      } as unknown as ISessionScopeHandle;
+    };
+    const live = new Map<string, ISessionScopeHandle>([
+      ['watcher-a', makePromptHandle('watcher-a')],
+      ['target-b', makePromptHandle('target-b')],
+    ]);
+
+    const pendingByTarget = new Map<string, AcceptedThreadMessage[]>();
+    const acceptedByKey = new Map<string, AcceptedThreadMessage>();
+    let seqCounter = 1;
+    const baseMailbox = inMemoryMailbox();
+    const mailbox: IThreadMailboxStore = {
+      ...baseMailbox,
+      acceptMessage: async (input) => {
+        const dedupeKey = `${threadIdentity(input.target)}:${input.idempotencyKey}`;
+        const existing = acceptedByKey.get(dedupeKey);
+        if (existing !== undefined) {
+          return { message: existing, deduplicated: true, delivery: 'delivered', payloadConflict: false };
+        }
+        const message: AcceptedThreadMessage = {
+          ...input,
+          messageId: `msg-${seqCounter++}`,
+          acceptedAt: Date.now(),
+          targetSeq: seqCounter,
+        };
+        acceptedByKey.set(dedupeKey, message);
+        const key = threadIdentity(input.target);
+        const list = pendingByTarget.get(key) ?? [];
+        list.push(message);
+        pendingByTarget.set(key, list);
+        return { message, deduplicated: false, delivery: 'pending', payloadConflict: false };
+      },
+      claimNext: async (input) => {
+        const key = threadIdentity(input.target);
+        const list = pendingByTarget.get(key);
+        const next = list?.shift();
+        if (next === undefined) return undefined;
+        return { message: next, consumerId: input.consumerId, hostEpoch: 'epoch-1', fence: 1, leaseUntil: Date.now() + input.leaseMs };
+      },
+      acknowledgeDelivery: async () => true,
+    };
+    ix.stub(IThreadMailboxStore, mailbox);
+    ix.stub(ISessionIndex, {
+      get: async (sessionId: string) => (sessionId === 'watcher-a' ? watcherSummary : sessionId === 'target-b' ? targetSummary : undefined),
+      listRecent: async () => ({ items: [watcherSummary, targetSummary] }),
+    } as unknown as ISessionIndex);
+    ix.stub(ISessionManager, {
+      list: () => [targetHandle],
+      get: (sessionId: string) => live.get(sessionId),
+      resume: async (sessionId: string) => live.get(sessionId),
+      onDidCreateSession: Event.None,
+      onDidForkSession: Event.None,
+      onDidArchiveSession: Event.None,
+      onDidCloseSession: Event.None,
+      onDidDeleteSession: Event.None,
+    } as unknown as ISessionManager);
+    const service = ix.get(IThreadCommunicationService);
+    const refA = ref(service.hostId, 'ws-shared', 'watcher-a');
+    const refB = ref(service.hostId, 'ws-shared', 'target-b');
+
+    const initialReply = await peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({
+      source: refB,
+      target: refA,
+      content: 'earlier reply from B',
+      idempotencyKey: 'b-to-a-initial',
+    });
+    expect(initialReply.deduplicated).toBe(false);
+
+    await peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({
+      source: refA,
+      target: refB,
+      content: 'new task requiring watch',
+      idempotencyKey: 'a-to-b-new-watch',
+      notifyOnTerminal: true,
+    });
+
+    const replayedReply = await peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({
+      source: refB,
+      target: refA,
+      content: 'earlier reply from B',
+      idempotencyKey: 'b-to-a-initial',
+    });
+    expect(replayedReply.deduplicated).toBe(true);
+
+    targetActivity.fire({
+      cause: 'turn_ended',
+      state: { busy: false, mainTurnActive: false, pendingInteraction: 'none', lastTurnReason: 'completed' },
+    });
+    await vi.waitFor(() =>
+      expect(deliveredToWatcher.some((msg) => msg.content.includes('<notification'))).toBe(true),
+    );
+  });
+
   it('excludes thread-watch peer_thread notifications from undo anchors, displayable origins, and thread steering', () => {
     const watchByFlag = {
       kind: 'peer_thread' as const,

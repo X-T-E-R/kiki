@@ -191,10 +191,10 @@ describe('classifyTranscriptText', () => {
     ).toMatchObject({ lane: 'you', text: 'Inspect the renderer' });
     expect(
       splitSystemReminders(
-        '<system-reminder>\nFirst steering\n</system-reminder>\n<system-reminder>\nSecond steering\n</system-reminder>',
+        '<system-reminder>\nFirst steering\n</system-reminder>\n\n<system-reminder>\nSecond steering with <\\/system-reminder> quote\n</system-reminder>',
         true,
       ),
-    ).toEqual({ text: '', reminders: ['First steering', 'Second steering'] });
+    ).toEqual({ text: '', reminders: ['First steering', 'Second steering with </system-reminder> quote'] });
     expect(
       classifyTranscriptText({
         text: '<system-reminder>\nContinue the active goal\n</system-reminder>',
@@ -202,6 +202,20 @@ describe('classifyTranscriptText', () => {
         origin: { kind: 'system_trigger', name: 'goal_continuation' },
       }),
     ).toMatchObject({ lane: 'system', systemVariant: 'system_trigger', text: 'Continue the active goal', reminders: [] });
+    expect(
+      classifyTranscriptText({
+        text: '<system-reminder>\n[Kiki todo_state]\nWorking notes:\nnext: Ship\n</system-reminder>',
+        role: 'user',
+        origin: { kind: 'hook_result', event: 'kiki:claude:UserPromptSubmit' },
+      }),
+    ).toMatchObject({ lane: 'system', systemVariant: 'hook_result', text: '[Kiki todo_state]\nWorking notes:\nnext: Ship', reminders: [] });
+    expect(
+      classifyTranscriptText({
+        text: '<cron-fire job="nightly">Run report</cron-fire>\n\n<system-reminder>\n[Kiki memory]\nKeep <\\/system-reminder> clean\n</system-reminder>',
+        role: 'user',
+        origin: { kind: 'merged', origins: [{ kind: 'cron_job' }, { kind: 'hook_result', event: 'kiki:codex:UserPromptSubmit' }] },
+      }),
+    ).toMatchObject({ lane: 'system', text: 'Run report\n\n[Kiki memory]\nKeep </system-reminder> clean', reminders: [] });
     expect(
       classifyTranscriptText({
         text: '<system-reminder>\n<hook_result hook_event="UserPromptSubmit">\nremember the lint rule\n</hook_result>\n</system-reminder>',

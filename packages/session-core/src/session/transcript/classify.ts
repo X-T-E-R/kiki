@@ -10,11 +10,16 @@ export interface SplitSystemRemindersResult {
 }
 
 const SYSTEM_REMINDER_GLOBAL_RE = /<system-reminder>([\s\S]*?)<\/system-reminder>/gi;
+const ESCAPED_SYSTEM_REMINDER_CLOSE_RE = /<\\\/system-reminder>/gi;
+
+function unescapeSystemReminderClose(text: string): string {
+  return text.replace(ESCAPED_SYSTEM_REMINDER_CLOSE_RE, '</system-reminder>');
+}
 
 export function splitSystemReminders(text: string, generated = false): SplitSystemRemindersResult {
   if (!generated) return { text, reminders: [] };
   const trimmed = text.trim();
-  if (!trimmed.startsWith('<system-reminder>') || !trimmed.endsWith('</system-reminder>')) {
+  if (!/^<system-reminder>/i.test(trimmed) || !/<\/system-reminder>$/i.test(trimmed)) {
     return { text, reminders: [] };
   }
   const reminders: string[] = [];
@@ -23,7 +28,7 @@ export function splitSystemReminders(text: string, generated = false): SplitSyst
     if (trimmed.slice(cursor, match.index).trim() !== '') {
       return { text, reminders: [] };
     }
-    reminders.push(match[1]!.trim());
+    reminders.push(unescapeSystemReminderClose(match[1]!).trim());
     cursor = match.index + match[0].length;
   }
   if (reminders.length === 0 || trimmed.slice(cursor).trim() !== '') {
@@ -461,11 +466,11 @@ function unwrapMergedSystemText(text: string, variants: readonly SystemVariant[]
       return full;
     });
   }
+  if (set.has('injection') || set.has('system_trigger') || set.has('hook_result')) {
+    out = out.replace(SYSTEM_REMINDER_GLOBAL_RE, (_, inner: string) => unescapeSystemReminderClose(inner).trim());
+  }
   if (set.has('hook_result')) {
     out = stripHookResultEnvelope(out);
-  }
-  if (set.has('injection') || set.has('system_trigger')) {
-    out = out.replace(SYSTEM_REMINDER_GLOBAL_RE, (_, inner: string) => inner.trim());
   }
   return out.trim();
 }

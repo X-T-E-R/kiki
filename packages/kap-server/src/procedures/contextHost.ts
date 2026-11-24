@@ -4,6 +4,7 @@ import { IAgentMemorySnapshot } from '@kiki/agent-core-v2/app/memory/memorySnaps
 import { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
 import { IAgentContextInjectorService } from '@kiki/agent-core-v2/agent/contextInjector/contextInjector';
 import { externalBoundaryHookEvent, externalHintAlreadyRecorded, externalPromptHints, externalStateHints, externalTurnHasModelContent } from '@kiki/agent-core-v2/agent/execution/externalPromptHints';
+import { wrapSystemReminder } from '@kiki/agent-core-v2/agent/systemReminder/systemReminder';
 import { IAgentExecutionService } from '@kiki/agent-core-v2/agent/execution/execution';
 import { newDeliveryId } from '@kiki/agent-core-v2/agent/contextMemory/messageDelivery';
 import { newMessageId } from '@kiki/agent-core-v2/agent/contextMemory/messageId';
@@ -68,16 +69,27 @@ export class ContextProcedureHost {
         if (!hint.text.trim()) continue;
         const id = `${preparing ? 'prepared:' : ''}${hint.origin}:${createHash('sha256').update(hint.text).digest('hex')}`;
         if (delivered.has(id)) continue;
-        const formatted = `[Kiki ${hint.origin}]\n${hint.text.trim()}`;
-        const recorded = !recovering && (externalHintAlreadyRecorded(history, hint.text, runningTurnId) || externalHintAlreadyRecorded(history, formatted, runningTurnId));
+        const body = stripOuterSystemReminder(hint.text);
+        const formatted = `[Kiki ${hint.origin}]\n${body}`;
+        const legacyFormatted = `[Kiki ${hint.origin}]\n${hint.text.trim()}`;
+        const wrapped = wrapSystemReminder(formatted);
+        const recorded = !recovering && (
+          externalHintAlreadyRecorded(history, hint.text, runningTurnId)
+          || externalHintAlreadyRecorded(history, body, runningTurnId)
+          || externalHintAlreadyRecorded(history, formatted, runningTurnId)
+          || (legacyFormatted !== formatted && externalHintAlreadyRecorded(history, legacyFormatted, runningTurnId))
+          || externalHintAlreadyRecorded(history, wrapped, runningTurnId)
+        );
         delivered.add(id);
         parts.push(formatted);
         if (!recorded) fresh.push(formatted);
       }
-      const content = parts.join('\n\n');
+      const content = parts.length > 0 ? wrapSystemReminder(parts.join('\n\n')) : '';
       const freshText = fresh.join('\n\n');
       if (freshText.length > 0) {
-        const text = preparing ? `[Handoff prepared; not injected by this hook]\n${freshText}` : freshText;
+        const text = wrapSystemReminder(
+          preparing ? `[Handoff prepared; not injected by this hook]\n${freshText}` : freshText,
+        );
         const origin = { kind: 'hook_result' as const, event: `kiki:${input.harness}:${input.event}`, blocked: false };
         const beforeModel = runningTurnId !== undefined && !externalTurnHasModelContent(history, runningTurnId);
         if (!preparing && boundary && runningTurnId !== undefined) {
@@ -181,4 +193,19 @@ export class ContextProcedureHost {
       return operation(agent);
     });
   }
+}
+
+function stripOuterSystemReminder(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('<system-reminder>') || !trimmed.endsWith('</system-reminder>')) {
+    return trimmed;
+  }
+  const firstClose = trimmed.indexOf('</system-reminder>');
+  if (firstClose !== trimmed.length - '</system-reminder>'.length) {
+    return trimmed;
+  }
+  return trimmed
+    .slice('<system-reminder>'.length, trimmed.length - '</system-reminder>'.length)
+    .trim()
+    .replace(/<\\\/system-reminder>/gi, '</system-reminder>');
 }

@@ -155,18 +155,25 @@ describe('harness context authority', () => {
       const todos = session.accessor.get(ISessionTodoService);
       todos.setNotes({ goal: 'Keep the context contract stable', next: 'Run the smoke checks' }, { turnId: 0, step: 0, toolCallId: 'notes-fixture' }, 'main');
       const first = await context.hook({ harness: 'claude', event: 'UserPromptSubmit' }) as { content: string };
+      expect(first.content.startsWith('<system-reminder>\n')).toBe(true);
+      expect(first.content.endsWith('\n</system-reminder>')).toBe(true);
+      expect(first.content).toContain('[Kiki todo_state]');
       expect(first.content).toContain('Keep the context contract stable');
       const second = await context.hook({ harness: 'claude', event: 'UserPromptSubmit' });
       expect(second).toEqual({ content: '' });
       const history = main.accessor.get(IAgentContextMemoryService).get();
-      expect(history.filter((message) => message.origin?.kind === 'hook_result' && message.origin.event === 'kiki:claude:UserPromptSubmit')).toHaveLength(1);
+      const claudeHookMessages = history.filter((message) => message.origin?.kind === 'hook_result' && message.origin.event === 'kiki:claude:UserPromptSubmit');
+      expect(claudeHookMessages).toHaveLength(1);
+      expect(claudeHookMessages[0]?.content).toEqual([
+        expect.objectContaining({ text: expect.stringMatching(/^<system-reminder>\n[\s\S]*Keep the context contract stable[\s\S]*\n<\/system-reminder>$/) }),
+      ]);
       expect(await context.hook({ harness: 'claude', event: 'PreCompact' })).toEqual({ content: '' });
       expect(main.accessor.get(IAgentContextMemoryService).get().findLast((message) => message.origin?.kind === 'hook_result')?.content).toEqual([
-        expect.objectContaining({ text: expect.stringContaining('[Handoff prepared; not injected by this hook]') }),
+        expect.objectContaining({ text: expect.stringMatching(/^<system-reminder>\n\[Handoff prepared; not injected by this hook\]\n[\s\S]*\n<\/system-reminder>$/) }),
       ]);
-      expect((await context.hook({ harness: 'claude', event: 'SessionStart', compact: true }) as { content: string }).content).toContain('Keep the context contract stable');
+      expect((await context.hook({ harness: 'claude', event: 'SessionStart', compact: true }) as { content: string }).content).toMatch(/^<system-reminder>\n[\s\S]*Keep the context contract stable[\s\S]*\n<\/system-reminder>$/);
       expect(await context.hook({ harness: 'codex', event: 'PreCompact' })).toEqual({ content: '' });
-      expect((await context.hook({ harness: 'codex', event: 'UserPromptSubmit' }) as { content: string }).content).toContain('Keep the context contract stable');
+      expect((await context.hook({ harness: 'codex', event: 'UserPromptSubmit' }) as { content: string }).content).toMatch(/^<system-reminder>\n[\s\S]*Keep the context contract stable[\s\S]*\n<\/system-reminder>$/);
       expect(await context.hook({ harness: 'codex', event: 'UserPromptSubmit' })).toEqual({ content: '' });
       const notes = 'Keep the context contract stable';
       const noteCopies = (): number => main.accessor.get(IAgentContextMemoryService).get()
@@ -174,7 +181,8 @@ describe('harness context authority', () => {
       const grokLease = await server.core.accessor.get(IHarnessMcpService).acquire({ sessionId, agentId: main.id, workspacePath: home, executorId: 'grok-acp', hooks: true });
       try {
         const beforeStop = noteCopies();
-        expect(await grokLease.contextHook!('Stop')).toContain(notes);
+        const grokStop = await grokLease.contextHook!('Stop');
+        expect(grokStop).toMatch(/^<system-reminder>\n[\s\S]*Keep the context contract stable[\s\S]*\n<\/system-reminder>$/);
         expect(await grokLease.contextHook!('Stop')).toBe('');
         expect(noteCopies()).toBe(beforeStop);
         expect(main.accessor.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'hook_result' && message.origin.event === 'kiki:grok:Stop')).toHaveLength(0);

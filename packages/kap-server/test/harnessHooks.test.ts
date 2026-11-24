@@ -31,7 +31,8 @@ describe('process-local harness hooks', () => {
         expect(request.url).toBe('/api/klient/delegation/context/hook');
         expect(request.headers.authorization).toBe('Bearer fixture-token');
         response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ code: 0, data: { content: 'Keep the working notes.' } }));
+        const wrapped = '<system-reminder>\n[Kiki todo_state]\nKeep the working notes.\n</system-reminder>';
+        response.end(JSON.stringify({ code: 0, data: { content: wrapped } }));
       })();
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -39,9 +40,10 @@ describe('process-local harness hooks', () => {
       const address = server.address();
       if (address === null || typeof address === 'string') throw new Error('No listener');
       const endpoint = `http://127.0.0.1:${address.port}`;
-      expect(await runScript(script, 'claude', 'SessionStart', endpoint)).toEqual({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'Keep the working notes.' } });
-      expect(await runScript(script, 'codex', 'UserPromptSubmit', endpoint)).toEqual({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'Keep the working notes.' } });
-      expect(await runScript(script, 'antigravity', 'PreInvocation', endpoint)).toEqual({ injectSteps: [{ userMessage: 'Keep the working notes.' }] });
+      const expected = '<system-reminder>\n[Kiki todo_state]\nKeep the working notes.\n</system-reminder>';
+      expect(await runScript(script, 'claude', 'SessionStart', endpoint)).toEqual({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: expected } });
+      expect(await runScript(script, 'codex', 'UserPromptSubmit', endpoint)).toEqual({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: expected } });
+      expect(await runScript(script, 'antigravity', 'PreInvocation', endpoint)).toEqual({ injectSteps: [{ userMessage: expected }] });
       expect(calls).toHaveLength(3);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));

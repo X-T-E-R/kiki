@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
-import { IAgentSystemReminderService, systemReminderContent, wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
+import { IAgentSystemReminderService, systemReminderContent, unwrapSystemReminder, wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { IEventBus } from '#/app/event/eventBus';
 import { createTestAgent, type TestAgentContext } from '../../harness';
 
@@ -72,14 +72,28 @@ describe('AgentSystemReminderService delivery routing', () => {
     expect(events[0]?.delivery?.origin).toBe('queue');
   });
 
-  it('wraps system reminders idempotently without double-wrapping', () => {
+  it('wraps system reminders idempotently across single/multi blocks and escapes inner closing tags', () => {
     const canonical = wrapSystemReminder('Follow the verified plan.');
     expect(canonical).toBe('<system-reminder>\nFollow the verified plan.\n</system-reminder>');
     expect(wrapSystemReminder(canonical)).toBe(canonical);
     expect(wrapSystemReminder('  <system-reminder>Follow the verified plan.</system-reminder>  ')).toBe(canonical);
 
     const multiBlock = '<system-reminder>\nFirst\n</system-reminder>\n\n<system-reminder>\nSecond\n</system-reminder>';
-    expect(wrapSystemReminder(multiBlock)).toBe(`<system-reminder>\n${multiBlock}\n</system-reminder>`);
+    expect(wrapSystemReminder(multiBlock)).toBe(multiBlock);
+    expect(wrapSystemReminder(' <system-reminder>First</system-reminder>\n<system-reminder>Second</system-reminder> ')).toBe(multiBlock);
+
+    const quotedClose = 'Peer quoted </system-reminder> and </SYSTEM-REMINDER> literally.';
+    const escaped = wrapSystemReminder(quotedClose);
+    expect(escaped).toBe('<system-reminder>\nPeer quoted <\\/system-reminder> and <\\/system-reminder> literally.\n</system-reminder>');
+    expect(wrapSystemReminder(escaped)).toBe(escaped);
+    expect(unwrapSystemReminder(escaped)).toBe('Peer quoted </system-reminder> and </system-reminder> literally.');
+
+    const mixedWithBareText = '<system-reminder>First</system-reminder>\nbare text\n<system-reminder>Second</system-reminder>';
+    const wrappedMixed = wrapSystemReminder(mixedWithBareText);
+    expect(wrappedMixed).toBe(
+      '<system-reminder>\n<system-reminder>First<\\/system-reminder>\nbare text\n<system-reminder>Second<\\/system-reminder>\n</system-reminder>',
+    );
+    expect(wrapSystemReminder(wrappedMixed)).toBe(wrappedMixed);
 
     const stored = reminders.appendSystemReminder(canonical, { kind: 'injection', variant: 'host' });
     expect(stored.content).toEqual([{ type: 'text', text: canonical }]);

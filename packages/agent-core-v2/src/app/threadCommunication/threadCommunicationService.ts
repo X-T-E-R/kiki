@@ -198,7 +198,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     if (this.connector === undefined) throw new Error2(ErrorCodes.THREAD_CROSS_HOST, 'No space bridge is installed.');
     await this.connector.beforeDelivery({ ...input, messageId: '', acceptedAt: Date.now(), targetSeq: 0 });
     const result = await this.sendProducedMessage(input);
-    if (result.delivery !== 'undeliverable') {
+    if (!result.deduplicated && result.delivery !== 'undeliverable') {
       this.cancelSendWatchesForReply(input.producer.source, input.target);
     }
     return result;
@@ -700,7 +700,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         signal: peer.signal,
         deliveryTimeoutMs: Math.max(0, deadline - Date.now()),
       }, peer.allowWhenDisabled !== true);
-      if (result.delivery !== 'undeliverable') {
+      if (!result.deduplicated && result.delivery !== 'undeliverable') {
         this.cancelSendWatchesForReply(peer.source, target);
       }
     }

@@ -1,5 +1,6 @@
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { GoalSnapshot } from '#/agent/goal/types';
+import { unwrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { renderTodoList, type TodoItem } from '#/session/todo/todoItem';
 import { NOTE_SECTIONS, type TodoNotes } from '#/session/todo/todoNotes';
 
@@ -31,12 +32,12 @@ export function externalHintAlreadyRecorded(
   text: string,
   turnId?: number,
 ): boolean {
-  const body = text.trim();
+  const body = unwrapSystemReminder(text);
   if (body.length === 0) return false;
   const lastAssistant = history.findLastIndex((message) => message.role === 'assistant');
   return history.slice(lastAssistant + 1).some((message) => {
     const visible = message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n');
-    if (!visible.includes(body)) return false;
+    if (!visible.includes(body) && !unwrapSystemReminder(visible).includes(body)) return false;
     const kind = message.origin?.kind;
     if (kind !== 'injection' && kind !== 'hook_result' && kind !== 'task' && kind !== 'agent_message') return false;
     return turnId === undefined || message.source?.turnId === undefined || message.source.turnId === turnId;

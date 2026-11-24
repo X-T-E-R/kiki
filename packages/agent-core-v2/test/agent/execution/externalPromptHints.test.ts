@@ -54,6 +54,17 @@ describe('external boundary hook ownership', () => {
     expect(externalHintAlreadyRecorded(history, '[Kiki memory]\nremember this', 4)).toBe(false);
     expect(externalHintAlreadyRecorded(history, 'the user wrote remember this too', 4)).toBe(false);
     expect(externalHintAlreadyRecorded(history, 'Goal (active): land', 4)).toBe(false);
+
+    const wrappedHookHistory = [
+      message('assistant reply', undefined),
+      message('<system-reminder>\n[Kiki memory]\nremember <\\/system-reminder> note\n</system-reminder>', { kind: 'hook_result', event: 'kiki:claude:SessionStart' }, 5),
+      message('[Kiki todo_state]\nlegacy unwrapped note', { kind: 'hook_result', event: 'kiki:codex:SessionStart' }, 5),
+    ];
+    wrappedHookHistory[0] = { ...wrappedHookHistory[0]!, role: 'assistant' };
+    expect(externalHintAlreadyRecorded(wrappedHookHistory, 'remember </system-reminder> note', 5)).toBe(true);
+    expect(externalHintAlreadyRecorded(wrappedHookHistory, '[Kiki memory]\nremember </system-reminder> note', 5)).toBe(true);
+    expect(externalHintAlreadyRecorded(wrappedHookHistory, '<system-reminder>\n[Kiki memory]\nremember <\\/system-reminder> note\n</system-reminder>', 5)).toBe(true);
+    expect(externalHintAlreadyRecorded(wrappedHookHistory, '<system-reminder>\n[Kiki todo_state]\nlegacy unwrapped note\n</system-reminder>', 5)).toBe(true);
   });
 
   it('sees model content only after this turn has assistant text or a tool', () => {
