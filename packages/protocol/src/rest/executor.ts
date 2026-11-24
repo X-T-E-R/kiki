@@ -16,12 +16,16 @@ export const executorCapabilitiesSchema = /* @__PURE__ */ z.object({
     agent_version: z.string().optional(),
     image: z.boolean().optional(),
     audio: z.boolean().optional(),
+    pdf: z.boolean().optional(),
+    text_attachment: z.boolean().optional(),
     fork: z.boolean().optional(),
     native_steering: z.boolean().optional(),
     question_form: z.boolean().optional(),
     plan_approval: z.boolean().optional(),
     models: z.array(z.string()).optional(),
     thinking_levels: z.array(z.string()).optional(),
+    model_thinking_levels: z.record(z.string(), z.array(z.string())).optional(),
+    slash_commands: z.array(z.string()).optional(),
     native_agents: z.array(z.string()).optional(),
     auth_methods: z.array(z.string()).optional(),
     resume: z.boolean().optional(),
@@ -132,7 +136,7 @@ export const executorInstanceProxyResponseSchema = /* @__PURE__ */ z.discriminat
 ]);
 
 export const executorInstanceIdSchema = /* @__PURE__ */ z.string().regex(/^instance-[a-z0-9][a-z0-9-]{0,79}$/);
-export const executorQuotaSourceIdSchema = /* @__PURE__ */ z.string().regex(/^plugin:[a-z0-9][a-z0-9_-]{0,63}\/[a-z0-9][a-z0-9-]{0,63}$/);
+export const executorQuotaSourceIdSchema = /* @__PURE__ */ z.string().regex(/^(?:plugin:[a-z0-9][a-z0-9_-]{0,63}\/[a-z0-9][a-z0-9-]{0,63}|official:[a-z0-9][a-z0-9-]{0,63})$/);
 export const executorAutoContinuationPolicySchema = /* @__PURE__ */ z.enum(['prefer_current', 'prefer_quota']);
 export type ExecutorAutoContinuationPolicy = z.infer<typeof executorAutoContinuationPolicySchema>;
 const executorAccountIdSchema = /* @__PURE__ */ z.string().min(1).max(1024).regex(/^[^\s\u0000]+$/);

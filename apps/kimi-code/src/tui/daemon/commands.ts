@@ -1,6 +1,13 @@
+import type { AutocompleteItem } from '@kiki/pi-tui';
 import { buildSkillSlashItems } from '@kiki/session-core/commands/slashCommands';
 import type { SkillDescriptor } from '@kiki/protocol';
 import type { SlashAutocompleteCommand } from '#/tui/components/editor/file-mention-provider';
+
+export interface DaemonCommandArgumentCompletions {
+  readonly model?: (prefix: string) => AutocompleteItem[] | Promise<AutocompleteItem[]>;
+  readonly effort?: (prefix: string) => AutocompleteItem[] | Promise<AutocompleteItem[]>;
+  readonly login?: (prefix: string) => AutocompleteItem[] | Promise<AutocompleteItem[]>;
+}
 
 export type DaemonCommandName =
   | 'exit'
@@ -127,7 +134,7 @@ const SUPPORTED_COMMANDS = [
   command('plugins', [], 'Manage plugins (install --trust consents to full account permissions)', 'optional-rest', '[marketplace|install [--trust] <source>|enable|disable|remove|reload]'),
   command('provider', ['providers'], 'Manage AI providers', 'optional-rest', '[add|remove|refresh]'),
   command('reload', [], 'Reload daemon configuration and plugins', 'none'),
-  command('login', [], 'Authenticate a provider', 'optional-one', '[provider]'),
+  command('login', [], 'Authenticate a provider', 'optional-rest', '[provider|antigravity-acp [code]]'),
   command('logout', ['disconnect'], 'Log out of a configured provider', 'optional-one', '[provider]'),
   command('mcp', [], 'Show MCP server status', 'none'),
   command('goal', [], 'Start or manage an autonomous goal', 'optional-rest', '[objective|pause|resume|cancel]'),
@@ -242,19 +249,30 @@ const PRIMARY_ORDER_MAP = new Map<string, number>(
 export function daemonAutocompleteCommands(
   skills: ReadonlyMap<string, DaemonSkillCommand>,
   agentProfiles: ReadonlyMap<string, string>,
+  argumentCompletions?: DaemonCommandArgumentCompletions,
 ): SlashAutocompleteCommand[] {
   // Disabled entries stay in `DAEMON_COMMANDS` / `resolveDaemonCommand` (so
   // typing one explicitly yields a clear explanation and `/help` still lists
   // them), while the interactive `/` popup only surfaces usable commands.
-  const builtins = SUPPORTED_COMMANDS.map((definition) => ({
-    name: definition.name,
-    aliases: [...definition.aliases],
-    description: definition.description,
-    argumentHint: definition.argumentHint,
-    kind: 'command' as const,
-    primary: PRIMARY_ORDER_MAP.has(definition.name),
-    primaryOrder: PRIMARY_ORDER_MAP.get(definition.name),
-  }));
+  const builtins = SUPPORTED_COMMANDS.map((definition) => {
+    const getArgumentCompletions = definition.name === 'model'
+      ? argumentCompletions?.model
+      : definition.name === 'effort'
+        ? argumentCompletions?.effort
+        : definition.name === 'login'
+          ? argumentCompletions?.login
+          : undefined;
+    return {
+      name: definition.name,
+      aliases: [...definition.aliases],
+      description: definition.description,
+      argumentHint: definition.argumentHint,
+      kind: 'command' as const,
+      primary: PRIMARY_ORDER_MAP.has(definition.name),
+      primaryOrder: PRIMARY_ORDER_MAP.get(definition.name),
+      ...(getArgumentCompletions !== undefined ? { getArgumentCompletions } : {}),
+    };
+  });
   const dynamic = [
     ...[...skills.values()].map((skill) => ({
       name: skill.commandName,

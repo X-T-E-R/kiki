@@ -217,7 +217,7 @@ describe('AgentExecutorPreflightService', () => {
     expect(result[0]?.diagnostics).toHaveLength(1);
     expect(result[0]?.diagnostics[0]?.message).toContain('这是 Antigravity IDE，不是 ACP CLI');
     expect(result[0]?.diagnostics[0]?.message).toContain('ANTIGRAVITY_ACP_PATH');
-    expect(result[0]?.diagnostics[0]?.message).toContain('1.4.5');
+    expect(result[0]?.diagnostics[0]?.message).toContain('1.5+');
     expect(result[0]?.diagnostics[0]?.code).toBe('antigravity_ide_not_acp');
     expect(processService.calls.some((call) => call.includes('antigravity'))).toBe(false);
   });

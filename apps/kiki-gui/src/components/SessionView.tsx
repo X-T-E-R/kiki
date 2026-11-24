@@ -181,7 +181,12 @@ import { InteractionPlacementContext, type InteractionPlacement } from './Intera
 import { externalClientsFacade } from '../lib/externalClients';
 import { ExternalClientMark, ExternalSessionComposer, useExternalClientMark } from './externalClients/ExternalClientSession';
 import { HarnessMark } from './harness/HarnessMark';
-import { harnessDenies, type SessionHarness } from './harness/sessionHarness';
+import {
+  formatExternalCompactPrompt,
+  harnessAdvertisesCompact,
+  harnessDenies,
+  type SessionHarness,
+} from './harness/sessionHarness';
 import { NeedsYouTray, type NeedsYouTrayHandle } from './NeedsYouTray';
 import { reportAttention } from '../lib/awayNotify';
 import { useViewedSession } from '../lib/useAwayNotifications';
@@ -3314,9 +3319,16 @@ export function SessionView({
     [modelControlPending, effortControlPending, effectiveModel, effectiveEffort],
   );
   const nativeSteeringUnavailable = harnessDenies(harness, 'native_steering');
+  const harnessCatalogItem = harness === undefined
+    ? undefined
+    : executorCatalog.find((entry) => entry.id === harness.executorId);
+  const harnessNativeCompact = harnessAdvertisesCompact(harness, harnessCatalogItem);
   const composerEngine = useMemo<ComposerEngine | undefined>(() => harness === undefined ? undefined : {
     label: harness.label, fork: !harnessDenies(harness, 'fork'), images: !harnessDenies(harness, 'image'),
-  }, [harness]);
+    permissionModes: harness.negotiated?.permission_modes,
+    modelThinkingLevels: harness.negotiated?.model_thinking_levels,
+    advertisesCompact: harnessNativeCompact,
+  }, [harness, harnessNativeCompact]);
 
   // Canonical ids on both sides: a bare alias lands on its provider row, so
   // "same model" reads as the same model and the panel names what it shows.
@@ -4448,6 +4460,14 @@ boundExecution,
               text: t('action.exportFailed', { detail: sessionActionErrorText(locale, error) }),
             });
           });
+      } else if (harnessNativeCompact && actions !== null) {
+        void Promise.resolve(actions.send(formatExternalCompactPrompt(), []))
+          .catch((error: unknown) => {
+            pushToast({
+              tone: 'error',
+              text: t('action.compactFailed', { detail: sessionActionErrorText(locale, error) }),
+            });
+          });
       } else {
         setManualCompactSessionId(sessionId);
         void compactSessionContext(actionContext, record)
@@ -4465,7 +4485,7 @@ boundExecution,
           });
       }
     },
-    [actionContext, sessionId, state.session, t, locale, currentBoundModel, openModelSwitchPanel, seedCompactionProgress, openForkPopover],
+    [actionContext, actions, harnessNativeCompact, sessionId, state.session, t, locale, currentBoundModel, openModelSwitchPanel, seedCompactionProgress, openForkPopover],
   );
 
   const confirmUndoRun = useCallback(() => {

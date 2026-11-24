@@ -49,4 +49,27 @@ describe('Antigravity install progress over the shared WebSocket', () => {
       expect(received[0]?.installId.length).toBeGreaterThan(0);
     } finally { subscription.dispose(); await client.close(); }
   });
+
+  it('serves extended query and multi-instance fields across the 7 Antigravity REST routes', { timeout: 30_000 }, async () => {
+    const base = `http://127.0.0.1:${server!.port}`;
+    const statusRes = await authedFetch(server!, base, '/api/executors/antigravity-acp/binaries?instance_id=antigravity-acp&check_updates=false');
+    const statusBody = await statusRes.json() as { code: number; data: { release: { layout?: string; entry: string }; profile?: { instance_id?: string; signed_in: boolean } } };
+    expect(statusBody).toEqual(expect.objectContaining({ code: 0 }));
+    expect(statusBody.data.release.layout).toBe('official-cli');
+    expect(statusBody.data.profile).toMatchObject({ instance_id: 'antigravity-acp', signed_in: false });
+
+    const badBusiness = await authedFetch(server!, base, '/api/executors/antigravity-acp/login/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method_id: 'oauth-business', instance_id: 'antigravity-acp' }),
+    });
+    expect((await badBusiness.json() as { code: number }).code).not.toBe(0);
+
+    const logoutRes = await authedFetch(server!, base, '/api/executors/antigravity-acp/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ instance_id: 'antigravity-acp' }),
+    });
+    expect(await logoutRes.json()).toMatchObject({ code: 0, data: { signed_out: true } });
+  });
 });

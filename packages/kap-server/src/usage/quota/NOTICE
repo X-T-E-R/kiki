@@ -21,3 +21,12 @@ cockpit-tools 87242087582b83d9d0760696f6d2dbd539c408e9 (CC BY-NC-SA 4.0) was beh
 only; no source copied. CLIProxyAPI ea37d13a9eced4af835cad10bcb030d770a5ba88 (MIT) Antigravity
 credit fetcher was evaluated but deferred because Kiki has no approved Antigravity provider OAuth
 connection. CodexPro 113472c6ff0a1516b6f223a43cd355abdf2e61ae (MIT) has no applicable fetcher.
+
+Google Antigravity CloudCode PA quota fetching and bucket normalization (retrieveUserQuotaSummary
+with fetchAvailableModels fallback, rolling full-window reset filtering, and oauth-personal /
+oauth-business host ordering) in packages/agent-core-v2/src/app/agentExecutor/antigravityQuota.ts
+and runtime.ts are adapted from T3 Code:
+https://github.com/pingdotgg/t3code
+commit a1ed691
+apps/server/src/provider/antigravityUsageLimits.ts
+Copyright (c) 2026 T3 Tools Inc., MIT.

@@ -239,6 +239,42 @@ describe('external executor model writability', () => {
     expect(onChangeExecution).not.toHaveBeenCalled();
     expect(onChangeModel).not.toHaveBeenCalled();
   });
+
+  it('uses per-model model_thinking_levels when switching models and drops unsupported effort', async () => {
+    const observed = catalog({ advertised: true, applicability: 'fresh_binding', apply_state: 'unknown' });
+    observed.effective.models = {
+      state: 'ready',
+      values: ['gemini-3.1-pro', 'gemini-3-flash'],
+    };
+    observed.effective.thinking_levels = { state: 'ready', values: ['low', 'medium', 'high'] };
+    observed.effective.controls.thinking_switch = { applicability: 'fresh_binding', apply_state: 'applied' };
+    getExecutorModels.mockResolvedValue(observed);
+
+    const onChangeExecution = vi.fn();
+    await render({
+      execution: { executor: 'agy-cli-909', profile: undefined, overrides: { model: 'gemini-3.1-pro', thinking: 'high' } },
+      engine: {
+        label: 'Antigravity',
+        fork: false,
+        images: true,
+        modelThinkingLevels: {
+          'gemini-3.1-pro': ['low', 'high'],
+          'gemini-3-flash': [],
+        },
+        permissionModes: ['manual', 'auto'],
+      },
+      onChangeExecution,
+      onChangeModel: vi.fn(),
+    });
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-execution-trigger]')!.click());
+    await settle();
+    // Switch to gemini-3-flash which advertises [] thinking levels -> drops thinking override
+    await act(async () => container.querySelector<HTMLElement>('[data-execution-model="gemini-3-flash"]')!.click());
+    await settle();
+    const switched = onChangeExecution.mock.calls[0]?.[0] as { overrides: { model?: string; thinking?: string | null } };
+    expect(switched.overrides.model).toBe('gemini-3-flash');
+    expect(switched.overrides.thinking).toBeUndefined();
+  });
 });
 
 /**

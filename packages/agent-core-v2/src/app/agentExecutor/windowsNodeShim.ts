@@ -42,13 +42,24 @@ export async function resolveWindowsNodeShim(
   };
 }
 
+const REMOTE_PROCESS_SERVICE = Symbol.for('kiki.remoteHostProcessService');
+
+export function isRemoteHostProcessService(processService: HostProcessServiceLike): boolean {
+  if ((processService as { readonly [REMOTE_PROCESS_SERVICE]?: boolean })[REMOTE_PROCESS_SERVICE] === true) {
+    return true;
+  }
+  const proto = Object.getPrototypeOf(processService) as { readonly constructor?: { readonly name?: string } } | null;
+  return proto?.constructor?.name === 'SshHostProcessService';
+}
+
 export function wrapWindowsNodeShims<T extends HostProcessServiceLike>(
   processService: T,
   fs: IHostFileSystem | undefined,
   bootstrap: () => IBootstrapService,
 ): T {
-  return {
+  const wrapped = {
     ...processService,
+    ...(isRemoteHostProcessService(processService) ? { [REMOTE_PROCESS_SERVICE]: true } : {}),
     spawn: async (command: string, args: readonly string[] = [], options?: Parameters<T['spawn']>[2]) => {
       const host = bootstrap();
       if (host.platform === 'win32' && fs === undefined) {
@@ -58,5 +69,6 @@ export function wrapWindowsNodeShims<T extends HostProcessServiceLike>(
         : await resolveWindowsNodeShim(command, args, fs, host);
       return processService.spawn(launch.command, launch.args, options);
     },
-  } as T;
+  };
+  return wrapped as T;
 }

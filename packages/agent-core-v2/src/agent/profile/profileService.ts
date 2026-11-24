@@ -1005,7 +1005,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       defaultsChoice: overrides?.[familyId]?.defaults?.executor_instance ?? overrides?.[requestedExecutor]?.defaults?.executor_instance,
       autoContinuationPolicy: overrides?.[familyId]?.defaults?.auto_continuation_policy ?? overrides?.[requestedExecutor]?.defaults?.auto_continuation_policy,
       instances: views,
-      quotaSourceId: overrides?.[familyId]?.quotaSource ?? overrides?.[requestedExecutor]?.quotaSource,
+      quotaSourceId: overrides?.[familyId]?.quotaSource ??
+        overrides?.[requestedExecutor]?.quotaSource ??
+        (familyId === 'antigravity-acp' ? 'official:antigravity-acp' : undefined),
       previous: {
         schedule: this.profileState.execution?.schedule,
         profileIdentity: this.profileState.profileDefinitionId ?? this.profileState.profileName,

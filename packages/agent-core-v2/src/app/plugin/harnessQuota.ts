@@ -12,7 +12,16 @@ import { abortable, isAbortError } from '#/_base/utils/abort';
 import { LifecycleScope } from '#/app/scopes';
 import { Service } from '#/_base/di/service';
 import { Error2, ErrorCodes } from '#/errors';
+import { IAntigravityService } from '#/app/agentExecutor/antigravityService';
+import { OFFICIAL_ANTIGRAVITY_QUOTA_SOURCE_ID } from '#/app/agentExecutor/antigravityQuota';
 import { IPluginHostService } from './pluginHostService';
+
+const OFFICIAL_ANTIGRAVITY_QUOTA_DEFINITION: PluginHarnessQuotaSnapshot = {
+  id: OFFICIAL_ANTIGRAVITY_QUOTA_SOURCE_ID,
+  label: 'Google Antigravity (Official)',
+  engineIds: ['antigravity-acp'],
+  minRefreshIntervalMs: 300_000,
+};
 
 interface QuotaFlight {
   readonly controller: AbortController;
@@ -131,19 +140,29 @@ export class HarnessQuotaService extends Service implements IHarnessQuotaService
   declare readonly _serviceBrand: undefined;
   private readonly cache = new HarnessQuotaCache();
 
-  constructor(@IPluginHostService private readonly hosts: IPluginHostService) {
+  constructor(
+    @IPluginHostService private readonly hosts: IPluginHostService,
+    @IAntigravityService private readonly antigravity?: IAntigravityService,
+  ) {
     super();
     this.hosts.attachQuotaCache(() => this.cached());
   }
 
   async definitions(): Promise<readonly PluginHarnessQuotaSnapshot[]> {
     const sources = await this.hosts.listHarnessQuotaSources();
-    return sources.map((source) => ({
+    const projected: PluginHarnessQuotaSnapshot[] = sources.map((source) => ({
       ...source,
       engineIds: [...source.engineIds],
       actions: source.actions === undefined ? undefined : source.actions.map((item) => ({ ...item })),
       readings: undefined,
     }));
+    if (this.antigravity !== undefined && !projected.some((source) => source.id === OFFICIAL_ANTIGRAVITY_QUOTA_SOURCE_ID)) {
+      projected.push({
+        ...OFFICIAL_ANTIGRAVITY_QUOTA_DEFINITION,
+        engineIds: [...OFFICIAL_ANTIGRAVITY_QUOTA_DEFINITION.engineIds],
+      });
+    }
+    return projected;
   }
 
   async cached(): Promise<{ readonly sources: readonly PluginHarnessQuotaSnapshot[] }> {
@@ -151,6 +170,17 @@ export class HarnessQuotaService extends Service implements IHarnessQuotaService
   }
 
   async read(sourceId: string, signal?: AbortSignal): Promise<readonly HarnessQuotaReading[]> {
+    if (sourceId === OFFICIAL_ANTIGRAVITY_QUOTA_SOURCE_ID && this.antigravity !== undefined) {
+      signal?.throwIfAborted();
+      return this.cache.read(
+        sourceId,
+        OFFICIAL_ANTIGRAVITY_QUOTA_DEFINITION.minRefreshIntervalMs,
+        (flightSignal) => this.antigravity!.readAllInstanceQuotas(
+          AbortSignal.any([flightSignal, AbortSignal.timeout(30_000)]),
+        ),
+        signal,
+      );
+    }
     const definition = (await this.hosts.listHarnessQuotaSources()).find((source) => source.id === sourceId);
     if (definition === undefined) throw new Error(`Unknown harness quota source ${sourceId}`);
     signal?.throwIfAborted();
@@ -168,6 +198,9 @@ export class HarnessQuotaService extends Service implements IHarnessQuotaService
     accountId?: string,
     signal?: AbortSignal,
   ): Promise<HarnessQuotaActionResponse> {
+    if (sourceId === OFFICIAL_ANTIGRAVITY_QUOTA_SOURCE_ID && this.antigravity !== undefined) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, `Action ${action} is not declared for harness quota source ${sourceId}`);
+    }
     const definition = (await this.hosts.listHarnessQuotaSources()).find((source) => source.id === sourceId);
     if (definition === undefined) {
       throw new Error2(ErrorCodes.PLUGIN_NOT_FOUND, `Unknown harness quota source ${sourceId}`);

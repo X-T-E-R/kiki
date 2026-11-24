@@ -4302,3 +4302,58 @@ it('closes an in-flight controller cleanly if a superseding openSession rejects 
   expect(internal.controller).toBeUndefined();
   expect(subscribeCloseSpy).toHaveBeenCalled();
 });
+
+it('routes /compact to prompt submission when an external executor advertises compact and guards mismatched /login targets', async () => {
+  const { internal, controller, agentFacade } = driver();
+  const agyItem = {
+    id: 'antigravity-acp',
+    label: 'Antigravity',
+    protocol: 'acp-v1',
+    status: 'ready',
+    model_binding: 'mapped',
+    thinking_binding: 'mapped',
+    capabilities: {
+      prompt_deliveries: ['preamble'],
+      steer: 'native',
+      permission: { trust_engine_settings: false },
+      thinking_binding: true,
+      negotiated: { slash_commands: ['compact'] },
+    },
+  };
+  const workItem = {
+    ...agyItem,
+    id: 'instance-agy-work',
+    label: 'Antigravity · Work',
+    instance: { source_executor: 'antigravity-acp' },
+  };
+  (internal as unknown as Record<string, unknown>)['executorCatalog'] = [agyItem, workItem];
+  const baseState = controller.getState() as Record<string, unknown>;
+  controller.getState = vi.fn(() => ({
+    ...baseState,
+    session: {
+      id: 'session-1',
+      status: 'idle',
+      created_at: '',
+      updated_at: '',
+      workspace_id: 'ws-1',
+      cwd: 'C:\\repo',
+      executor_id: 'antigravity-acp',
+      negotiated: { slash_commands: ['compact'] },
+    },
+  })) as unknown as typeof controller.getState;
+  const sendPromptSpy = vi.fn(async () => undefined);
+  (internal as unknown as Record<string, unknown>)['sendPrompt'] = sendPromptSpy;
+
+  await internal.handleSlash('/compact keep auth state');
+  expect(sendPromptSpy).toHaveBeenCalledWith('/compact keep auth state');
+  expect(agentFacade.compact).not.toHaveBeenCalled();
+
+  const completeSpy = vi.fn();
+  (internal.client as unknown as Record<string, unknown>)['completeAntigravityLogin'] = completeSpy;
+  (internal as unknown as Record<string, unknown>)['pendingAntigravityLogin'] = {
+    handle: 'h-work',
+    instanceId: 'instance-agy-work',
+  };
+  await expect(internal.handleSlash('/login antigravity-acp 4/0A-wrong-target')).rejects.toThrow('instance-agy-work');
+  expect(completeSpy).not.toHaveBeenCalled();
+});

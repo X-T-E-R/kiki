@@ -311,7 +311,11 @@ function EngineQuotaRow({
       <div className={QUOTA_ROW_GRID}>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${view.dot}`} title={t(view.key)} />
+            <span
+              aria-hidden
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${!isPluginMode && source.status === 'auth_required' ? 'bg-amber-rule' : view.dot}`}
+              title={!isPluginMode && source.status === 'auth_required' ? t('usage.quota.status.auth_required') : t(view.key)}
+            />
             <h3 className="truncate font-sans text-[13px] font-[510] text-ink" title={engineId}>
               {source.label}
             </h3>
@@ -337,10 +341,22 @@ function EngineQuotaRow({
             <p className="mt-0.5 truncate text-[11.5px] text-ink-faint" title={singleSeat.accountLabel}>
               {compactIdentifier(singleSeat.accountLabel)}
             </p>
-          ) : health === 'warning' || health === 'missing' ? (
-            <Link to={quotaSettingsHref(source)} data-quota-engine-settings={engineId} className="mt-0.5 inline-block text-[11.5px] text-ink-soft hover:text-ink hover:underline">
-              {t('usage.quota.action.settings')}
-            </Link>
+          ) : !isPluginMode && (source.account_label !== undefined || health === 'warning' || health === 'missing') ? (
+            <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11.5px] text-ink-faint">
+              {source.account_label !== undefined ? (
+                <span className="min-w-0 truncate" title={source.account_label}>
+                  {compactIdentifier(source.account_label)}
+                </span>
+              ) : null}
+              {source.account_label !== undefined && (health === 'warning' || health === 'missing') && source.status !== 'auth_required' ? (
+                <span aria-hidden>·</span>
+              ) : null}
+              {(health === 'warning' || health === 'missing') && source.status !== 'auth_required' ? (
+                <Link to={quotaSettingsHref(source)} data-quota-engine-settings={engineId} className="shrink-0 text-ink-soft hover:text-ink hover:underline">
+                  {t('usage.quota.action.settings')}
+                </Link>
+              ) : null}
+            </p>
           ) : null}
         </div>
 
@@ -349,7 +365,10 @@ function EngineQuotaRow({
             source.supported ? (
               <div className="space-y-2" data-engine-native-quota={engineId} data-engine-quota-status={nativeUnqueried ? 'unqueried' : source.status}>
                 {source.meters.length > 0 ? (
-                  <div className="space-y-2.5" data-engine-native-meters={engineId}>
+                  <div
+                    className={source.meters.length >= 4 ? 'grid grid-cols-1 gap-x-6 gap-y-2.5 sm:grid-cols-2' : 'space-y-2.5'}
+                    data-engine-native-meters={engineId}
+                  >
                     {source.meters.map((meter) => (
                       <QuotaWindowMeter key={meter.id} meter={meter} sourceStatus={source.status} nowMs={now} />
                     ))}
@@ -373,11 +392,26 @@ function EngineQuotaRow({
                     ) : null}
                   </div>
                 ) : (
-                  <p className={`py-0.5 text-[12px] ${source.status === 'error' ? 'text-danger' : 'text-ink-soft'}`}>
-                    {source.message ?? source.reason ?? t(source.status === 'ready' || source.status === 'stale' ? 'st.quota.none' : 'usage.quota.status.unknown')}
-                  </p>
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-0.5 text-[12px]">
+                    <p className={source.status === 'error' ? 'text-danger' : source.status === 'auth_required' ? 'text-amber-ink' : 'text-ink-soft'}>
+                      {source.message ?? source.reason ?? t(source.status === 'ready' || source.status === 'stale' ? 'st.quota.none' : 'usage.quota.status.unknown')}
+                    </p>
+                    {source.status === 'auth_required' ? (
+                      <Link
+                        to={quotaSettingsHref(source)}
+                        data-quota-engine-auth-settings={engineId}
+                        className="shrink-0 font-medium text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink"
+                      >
+                        {t('usage.quota.action.settings')}
+                      </Link>
+                    ) : null}
+                  </div>
                 )}
-                {source.message && source.meters.length > 0 ? <p className="text-[11.5px] text-ink-soft">{source.message}</p> : null}
+                {source.message && source.meters.length > 0 ? (
+                  <p className={`text-[11.5px] ${source.status === 'auth_required' || source.status === 'stale' ? 'text-amber-ink' : 'text-ink-soft'}`}>
+                    {source.message}
+                  </p>
+                ) : null}
               </div>
             ) : (
               <div className="py-0.5" data-engine-quota-status="unsupported">

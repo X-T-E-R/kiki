@@ -1409,7 +1409,8 @@ class FixtureServer {
         model_binding: source?.model_binding ?? 'unavailable', thinking_binding: source?.thinking_binding ?? 'unavailable' });
     }
     return items.map((item) => {
-      const login = item.id === 'antigravity-acp' ? antigravityLogin(this) ?? this.executorLogin?.[item.id] : this.executorLogin?.[item.id];
+      const isAgy = item.id === 'antigravity-acp' || item.instance?.source_executor === 'antigravity-acp';
+      const login = isAgy ? antigravityLogin(this, item.id) ?? this.executorLogin?.[item.id] : this.executorLogin?.[item.id];
       return item.connection !== undefined && login !== undefined
         ? { ...item, connection: { ...item.connection, login_status: login } }
         : item;
@@ -3088,7 +3089,7 @@ class FixtureServer {
     // Web access (scripts/fixture-web-access.mjs) — the browser entry point surface.
     if (handleWebAccess(this, res, path, method, body, req)) return;
     // Antigravity ACP binary cache + sign-in (scripts/fixture-antigravity.mjs).
-    if (path.startsWith('/executors/antigravity-acp/') && handleAntigravity(this, res, path, method, body)) return;
+    if (path.startsWith('/executors/antigravity-acp/') && handleAntigravity(this, res, path, method, body, query)) return;
     // Spaces (scripts/fixture-spaces.mjs): homes.json management and per-key config origins.
     if ((path.startsWith('/homes') || path === '/config/overrides:remove') && handleSpaces(this, res, path, method, body)) return;
     // GUI entry contracts (scripts/fixture-gui-entries.mjs): shortcuts, models.dev directory, account quota.
@@ -3997,7 +3998,8 @@ class FixtureServer {
       if (item === undefined) return this.envelope(res, null, 40404, 'Executor not found');
       if (executorMatch[2] === undefined && method === 'GET') return this.envelope(res, item);
       if (executorMatch[2] !== undefined && method === 'POST') {
-        const seeded = (executorId === 'antigravity-acp' ? antigravityCheck(this) : undefined) ?? this.scenario?.data.executorChecks?.[executorId];
+        const isAgy = executorId === 'antigravity-acp' || item.instance?.source_executor === 'antigravity-acp';
+        const seeded = (isAgy ? antigravityCheck(this, executorId) : undefined) ?? this.scenario?.data.executorChecks?.[executorId];
         const result = seeded !== undefined ? { id: executorId, ...structuredClone(seeded) } : {
           id: executorId,
           status: item.status === 'ready' ? 'ready' : 'unavailable',

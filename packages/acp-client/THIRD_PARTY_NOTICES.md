@@ -4,12 +4,12 @@ This package and its companion external harness modules (`packages/agent-core-v2
 
 ---
 
-## T3 Code (`d2c25950b4d9`)
+## T3 Code (`a1ed691` / `d2c25950b4d9`)
 
-- **Upstream**: <https://github.com/pingdotgg/t3code> (commit `d2c25950b4d9`)
+- **Upstream**: <https://github.com/pingdotgg/t3code> (commits `d2c25950b4d9`, `a1ed691`)
 - **Adapted components**:
-  - `packages/acp-client/src/antigravity.ts`, `packages/acp-client/src/flavors.ts`, `packages/acp-client/src/client.ts`, `packages/acp-client/src/events.ts`, `packages/acp-client/src/login.ts` (adapted from `apps/server/src/provider/acp/AntigravityAcpSupport.ts`, `AntigravityProtocol.ts`, `packages/provider-acp/src/server/AcpSessionRuntime.ts`, `packages/provider-grok/src/server/acpSupport.ts`, and `packages/provider-acp-registry/src/server/{copilotAcp,droidAcp,devinAcp,claudeAcp}.ts`)
-  - `packages/agent-core-v2/src/app/agentExecutor/{antigravityDistribution,antigravityProcess,acpRegistryCatalog,builtinDescriptorData}.ts` and `packages/agent-core-v2/src/os/backends/node-local/antigravityRuntime.ts` (adapted from `apps/server/src/provider/{antigravityRelease,antigravityAuthSupport}.ts`, `apps/server/src/provider/acp/AntigravityTurnOutcome.ts`, `packages/provider-kiro/src/server/acpSupport.ts`, and `packages/provider-acp-registry/src/server/AcpRegistrySupport.ts`)
+  - `packages/acp-client/src/antigravity.ts`, `packages/acp-client/src/antigravityEditLocation.ts`, `packages/acp-client/src/flavors.ts`, `packages/acp-client/src/client.ts`, `packages/acp-client/src/events.ts`, `packages/acp-client/src/login.ts` (adapted from `apps/server/src/provider/acp/AntigravityAcpSupport.ts`, `AntigravityProtocol.ts`, `AntigravityEditLocation.ts`, `AntigravityChildWork.ts`, `apps/server/src/orchestration-v2/Adapters/AntigravityAdapterV2.ts`, `packages/provider-acp/src/server/{AcpSessionRuntime,adapter}.ts`, `packages/provider-grok/src/server/acpSupport.ts`, and `packages/provider-acp-registry/src/server/{copilotAcp,droidAcp,devinAcp,claudeAcp}.ts`)
+  - `packages/agent-core-v2/src/app/agentExecutor/{antigravityDistribution,antigravityProcess,acpRegistryCatalog,builtinDescriptorData}.ts`, `packages/agent-core-v2/src/agent/execution/{acpAgentExecutorSession,externalAttachments}.ts`, and `packages/agent-core-v2/src/os/backends/node-local/antigravityRuntime.ts` (adapted from `apps/server/src/provider/{antigravityRelease,antigravityAuthSupport}.ts`, `apps/server/src/provider/acp/{AntigravityTurnOutcome,AntigravityChildWork,AntigravityAcpSupport}.ts`, `packages/provider-kiro/src/server/acpSupport.ts`, and `packages/provider-acp-registry/src/server/AcpRegistrySupport.ts`)
 - **Modifications by Kiki**: Ported from Effect services/schemas to Kiki's native TypeScript, Zod, and Node.js runtime interfaces.
 
 ```text
