@@ -2131,6 +2131,7 @@ export class SessionController {
     this.rosterRefreshInFlight = true;
     const hintedAgents = [...this.pendingHintRosterAgents];
     this.pendingHintRosterAgents.clear();
+    let hintsConsumed = false;
     const attachment = this.viewAttachment;
     const generation = this.connectionGeneration;
     const bindings = new Map([...this.storeTimelines].map(({ agentId, store }) => [agentId, store.getMeta().agent]));
@@ -2174,6 +2175,7 @@ export class SessionController {
       this.retireRequestedRosterAgents();
       this.publishForest();
       this.publish(MAIN_AGENT_ID);
+      hintsConsumed = true;
       if (hintedAgents.length > 0 && this.hasTruncatedRoster() && (this.view.subagents !== undefined || this.client.searchSubagents !== undefined)) {
         for (const agentId of hintedAgents) {
           if (agentId !== '' && agentId !== MAIN_AGENT_ID && !returnedIds.has(agentId) && this.hasRosterRow(agentId)) {
@@ -2184,6 +2186,9 @@ export class SessionController {
     } catch {
       // Best-effort: task ops and reconnect snapshots still recover the row.
     } finally {
+      if (!hintsConsumed && !this.closed && !this.isSuspended && attachment === this.viewAttachment && generation === this.connectionGeneration) {
+        for (const agentId of hintedAgents) this.pendingHintRosterAgents.add(agentId);
+      }
       this.rosterRefreshInFlight = false;
       const queued = this.rosterRefreshQueuedCursor;
       const dirty = this.rosterRefreshDirty;

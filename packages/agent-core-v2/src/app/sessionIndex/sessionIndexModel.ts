@@ -13,6 +13,7 @@ export async function advanceSessionIndexRevision(store: IQueryStore): Promise<v
 }
 
 export const PARENT_INDEX_NAME = 'byParent';
+export const CREATED_BY_INDEX_NAME = 'byCreatedBy';
 export const SESSION_SOURCE_ROOT_KEY = '\0root';
 
 export interface SessionWorkspaceCounts {

@@ -82,6 +82,8 @@ export class PromptIngress {
   private readonly pendingContent = new Map<string, { readonly key: string; readonly promptId: string }>();
   private readonly stateMetaCache = new Map<string, CachedSessionStateMeta>();
   private readonly stateMetaFlights = new Map<string, Promise<CachedSessionStateMeta | undefined>>();
+  private readonly mutexes = new Map<string, Promise<void>>();
+  private readonly publishedPageKeys = new Set<string>();
   private closed = false;
   private outboxFlight?: Promise<void>;
   private rerunOutbox = false;
@@ -146,7 +148,7 @@ export class PromptIngress {
       for (const { target, key } of entries?.entries ?? []) {
         if (this.closed || this.core.accessor.get(IWorkAdmissionService).state().operationId !== undefined) return;
         await this.core.accessor.get(IWorkAdmissionService).run('switch-outbox-prepare', async () => {
-          const entry = await this.locked(target, async () => {
+          const entry = await this.lockedKey(target, key, async () => {
             const current = await this.read(target, key);
             if (current?.admission !== 'waiting_switch') return undefined;
             const next: Entry = { ...current, admission: 'restoring', owner: this.owner };
@@ -249,9 +251,31 @@ export class PromptIngress {
     return new ScopedMediaStore(`${target.scope}/media`, this.core.accessor.get(IFileSystemStorageService), this.documents(),
       this.core.accessor.get(IBlobStore), target.scope);
   }
-  private async locked<T>(target: Target, operation: () => Promise<T>): Promise<T> {
-    const lock = await this.core.accessor.get(IFileSystemStorageService).acquireLock(`${target.scope}/prompt-ingress`, 'mutation.lock', { waitForMs: 5000 });
-    try { return await operation(); } finally { await lock.release(); }
+  private async withMutex<T>(mutexKey: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.mutexes.get(mutexKey) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => { release = resolve; });
+    const tail = previous.then(() => current);
+    this.mutexes.set(mutexKey, tail);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.mutexes.get(mutexKey) === tail) this.mutexes.delete(mutexKey);
+    }
+  }
+  private lockedIndex<T>(target: Target, operation: () => Promise<T>): Promise<T> {
+    return this.withMutex(`${target.scope}\0index`, async () => {
+      const lock = await this.core.accessor.get(IFileSystemStorageService).acquireLock(`${target.scope}/prompt-ingress`, 'mutation.lock', { waitForMs: 5000 });
+      try { return await operation(); } finally { await lock.release(); }
+    });
+  }
+  private lockedKey<T>(target: Target, key: string, operation: () => Promise<T>): Promise<T> {
+    return this.withMutex(`${target.scope}\0key:${key}`, async () => {
+      const lock = await this.core.accessor.get(IFileSystemStorageService).acquireLock(`${target.scope}/prompt-ingress`, `${key}.lock`, { waitForMs: 5000 });
+      try { return await operation(); } finally { await lock.release(); }
+    });
   }
   private read(target: Target, key: string): Promise<Entry | undefined> {
     return this.documents().get(`${target.scope}/prompt-ingress/requests`, `${key}.json`);
@@ -264,14 +288,26 @@ export class PromptIngress {
   private async save(target: Target, entry: Entry): Promise<void> {
     await this.documents().set(`${target.scope}/prompt-ingress/requests`, `${entry.key}.json`, entry);
   }
-  private async publish(target: Target, entry: Entry): Promise<void> {
+  private pageKeyToken(target: Target, entry: Entry): string {
+    return `${target.scope}\0${entry.ordinal}\0${entry.key}`;
+  }
+  private async publish(target: Target, entry: Entry, holdsIndexLock = false): Promise<void> {
+    const token = this.pageKeyToken(target, entry);
+    if (this.publishedPageKeys.has(token)) {
+      await this.save(target, entry);
+      return;
+    }
+    const ensurePage = holdsIndexLock
+      ? this.ensurePageKey(target, entry)
+      : this.lockedIndex(target, () => this.ensurePageKey(target, entry));
     const settled = await Promise.allSettled([
       this.save(target, entry),
-      this.ensurePageKey(target, entry),
+      ensurePage,
     ]);
     for (const outcome of settled) {
       if (outcome.status === 'rejected') throw outcome.reason;
     }
+    this.publishedPageKeys.add(token);
   }
   private async ensurePageKey(target: Target, entry: Entry): Promise<void> {
     await this.documents().update<IndexPage>(`${target.scope}/prompt-ingress/pages`, `${Math.floor(entry.ordinal / PAGE_SIZE)}.json`, current => {
@@ -326,7 +362,7 @@ export class PromptIngress {
     if (existing !== undefined) {
       if (existing.fingerprint !== fingerprint) throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, 'This prompt_id already belongs to another request.');
       await this.recover(target, existing);
-      const recovered = await this.locked(target, async () => {
+      const recovered = await this.lockedKey(target, key, async () => {
         const current = (await this.read(target, key))!;
         if (current.result === undefined && await this.documents().get(`${target.scope}/prompt-ingress/payloads`, `${key}.json`) === undefined) {
           const repairedContent = await this.retainMedia(target, body.content);
@@ -342,39 +378,48 @@ export class PromptIngress {
     }
     const content = await this.retainMedia(target, body.content);
     const savedPayload: PromptSubmission = { ...body, content, admission: undefined };
-    const entry = await this.locked(target, async () => {
-      const [raced, index] = await Promise.all([
-        this.read(target, key),
-        this.documents().get<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY),
-      ]);
-      if (raced !== undefined) {
-        if (raced.fingerprint !== fingerprint) throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, 'This prompt_id already belongs to another request.');
-        if (raced.result === undefined && await this.documents().get(`${target.scope}/prompt-ingress/payloads`, `${key}.json`) === undefined) {
+    const entry = await this.withMutex(`${target.scope}\0key:${key}`, async () => {
+      const preExisting = await this.read(target, key);
+      if (preExisting !== undefined) {
+        if (preExisting.fingerprint !== fingerprint) throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, 'This prompt_id already belongs to another request.');
+        if (preExisting.result === undefined && await this.documents().get(`${target.scope}/prompt-ingress/payloads`, `${key}.json`) === undefined) {
           await this.documents().set(`${target.scope}/prompt-ingress/payloads`, `${key}.json`, savedPayload);
         }
-        await this.publish(target, raced);
-        return raced;
+        await this.publish(target, preExisting);
+        return preExisting;
       }
-      const ordinal = index?.next ?? 0;
-      const contentIdentity = `${target.scope}/${agentId}/${createHash('sha256').update(JSON.stringify({ ...body, prompt_id: undefined, admission: undefined })).digest('hex')}`;
-      const duplicate = this.pendingContent.get(contentIdentity);
-      const created: Entry = { version: 1, key, ordinal, agentId, body: { prompt_id: body.prompt_id, append_timing: body.append_timing, content: this.preview(content) }, fingerprint,
-        createdAt: new Date().toISOString(), owner: this.owner, admission: duplicate !== undefined ? 'held' : waitingSwitch ? 'waiting_switch' : 'restoring', stage: 'restoring',
-        contentIdentity, duplicateOf: duplicate?.promptId,
-        error: duplicate === undefined ? undefined : { code: 40903, message: 'An identical message is already waiting for restoration. This copy is held. Cancel it or explicitly resume it to send it separately.' },
-        steerTarget: body.delivery_mode === 'steer' ? steerTarget : undefined };
-      const settledWrites = await Promise.allSettled([
-        this.documents().set(`${target.scope}/prompt-ingress/payloads`, `${key}.json`, savedPayload),
-        this.documents().set<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY, { next: ordinal + 1 }),
-        this.ensurePageKey(target, created),
-      ]);
-      for (const outcome of settledWrites) {
-        if (outcome.status === 'rejected') throw outcome.reason;
-      }
-      await this.save(target, created);
-      if (created.admission === 'waiting_switch') await this.registerSwitchEntry(target, key);
-      if (duplicate === undefined) this.pendingContent.set(contentIdentity, { key, promptId: body.prompt_id! });
-      return created;
+      await this.documents().set(`${target.scope}/prompt-ingress/payloads`, `${key}.json`, savedPayload);
+      return this.lockedIndex(target, async () => {
+        const [raced, index] = await Promise.all([
+          this.read(target, key),
+          this.documents().get<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY),
+        ]);
+        if (raced !== undefined) {
+          if (raced.fingerprint !== fingerprint) throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, 'This prompt_id already belongs to another request.');
+          await this.publish(target, raced, true);
+          return raced;
+        }
+        const ordinal = index?.next ?? 0;
+        const contentIdentity = `${target.scope}/${agentId}/${createHash('sha256').update(JSON.stringify({ ...body, prompt_id: undefined, admission: undefined })).digest('hex')}`;
+        const duplicate = this.pendingContent.get(contentIdentity);
+        const created: Entry = { version: 1, key, ordinal, agentId, body: { prompt_id: body.prompt_id, append_timing: body.append_timing, content: this.preview(content) }, fingerprint,
+          createdAt: new Date().toISOString(), owner: this.owner, admission: duplicate !== undefined ? 'held' : waitingSwitch ? 'waiting_switch' : 'restoring', stage: 'restoring',
+          contentIdentity, duplicateOf: duplicate?.promptId,
+          error: duplicate === undefined ? undefined : { code: 40903, message: 'An identical message is already waiting for restoration. This copy is held. Cancel it or explicitly resume it to send it separately.' },
+          steerTarget: body.delivery_mode === 'steer' ? steerTarget : undefined };
+        const settledWrites = await Promise.allSettled([
+          this.documents().set<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY, { next: ordinal + 1 }),
+          this.ensurePageKey(target, created),
+          this.save(target, created),
+        ]);
+        for (const outcome of settledWrites) {
+          if (outcome.status === 'rejected') throw outcome.reason;
+        }
+        this.publishedPageKeys.add(this.pageKeyToken(target, created));
+        if (created.admission === 'waiting_switch') await this.registerSwitchEntry(target, key);
+        if (duplicate === undefined) this.pendingContent.set(contentIdentity, { key, promptId: body.prompt_id! });
+        return created;
+      });
     });
     if (entry.owner === this.owner && entry.admission === 'restoring') this.schedule(target, entry);
     if (entry.admission === 'waiting_switch' && this.core.accessor.get(IWorkAdmissionService).state().operationId === undefined) this.start();
@@ -423,7 +468,7 @@ export class PromptIngress {
     if ((entry.admission !== 'held' && entry.admission !== 'failed') || this.unsettledSubmits.has(progressKey)) {
       return this.item(target, entry);
     }
-    const resumed = await this.locked(target, async () => {
+    const resumed = await this.lockedKey(target, key, async () => {
       const current = (await this.read(target, key))!;
       if ((current.admission !== 'held' && current.admission !== 'failed') || this.unsettledSubmits.has(progressKey)) {
         return current;
@@ -442,7 +487,7 @@ export class PromptIngress {
     if (live === undefined && await this.core.accessor.get(ISessionIndex).get(sessionId) === undefined) return undefined;
     const target = await this.target(sessionId, agentId);
     const key = this.key(agentId, promptId);
-    const entry = await this.locked(target, async () => {
+    const entry = await this.lockedKey(target, key, async () => {
       const current = await this.read(target, key);
       if (current === undefined || current.admission === 'admitted' || current.admission === 'cancelled') return current;
       const next: Entry = { ...current, owner: this.owner, cancelRequested: true, admission: current.stage === 'restoring' ? 'cancelled' : 'held',
@@ -462,7 +507,7 @@ export class PromptIngress {
     try { worker = await this.core.accessor.get(IFileSystemStorageService).acquireLock(`${target.scope}/prompt-ingress`, `${entry.key}.worker.lock`, { waitForMs: 0 }); }
     catch (error) { if (isError2(error) && error.code === 'storage.locked') return entry; throw error; }
     try {
-      return await this.locked(target, async () => {
+      return await this.lockedKey(target, entry.key, async () => {
         const current = (await this.read(target, entry.key))!;
         if (current.owner === this.owner || current.admission !== 'restoring') return current;
         const held: Entry = { ...current, admission: 'held', error: undefined };
@@ -579,7 +624,7 @@ export class PromptIngress {
     if (this.closed) return;
     let shouldSchedule: Entry | undefined;
     try {
-      await this.locked(target, async () => {
+      await this.lockedKey(target, key, async () => {
         const current = await this.read(target, key);
         if (current === undefined || current.owner !== this.owner || current.admission === 'cancelled') return;
         const compact = settled === undefined
@@ -660,7 +705,7 @@ export class PromptIngress {
             const outcome = await this.awaitSubmitSettlement(pendingSubmit);
             if (outcome.kind === 'uncertain') {
               const mapped = mapError(outcome.error, entry.body.prompt_id!);
-              await this.locked(target, async () => {
+              await this.lockedKey(target, key, async () => {
                 const current = (await this.read(target, key))!;
                 if (current.admission === 'cancelled') {
                   workerEntry.cancelHandled = true;
@@ -680,7 +725,7 @@ export class PromptIngress {
             }
           }
           await this.runCancelReconciliation(target.sessionId, entry.agentId, entry.body.prompt_id!);
-          await this.locked(target, async () => {
+          await this.lockedKey(target, key, async () => {
             const current = (await this.read(target, key))!;
             workerEntry.cancelHandled = true;
             const compact = settledResult === undefined
@@ -704,7 +749,7 @@ export class PromptIngress {
               elapsed_ms: previous === undefined ? progress.elapsedMs : Date.now() - Date.parse(previous.started_at), queue_position: progress.queuePosition });
           },
           beforeSubmit: async () => {
-            await this.locked(target, async () => {
+            await this.lockedKey(target, key, async () => {
               entry = (await this.read(target, key))!;
               if (entry.cancelRequested || controller.signal.aborted || this.closed) throw new Error('Prompt admission cancelled');
               submittingStarted = true;
@@ -744,7 +789,7 @@ export class PromptIngress {
         const result = await abortable(submitFlight, controller.signal);
         submitSettled = true;
         settledResult = result;
-        await this.locked(target, async () => {
+        await this.lockedKey(target, key, async () => {
           const current = (await this.read(target, key))!;
           if (current.cancelRequested) workerEntry.cancelAttempted = true;
           entry = { ...current, result: { ...result, content: this.preview(result.content), resolved_parts: undefined }, admission: current.cancelRequested ? 'held' : 'admitted', error: undefined };
@@ -752,7 +797,7 @@ export class PromptIngress {
         });
         if (entry.cancelRequested) {
           await this.runCancelReconciliation(target.sessionId, entry.agentId, entry.body.prompt_id!);
-          await this.locked(target, async () => {
+          await this.lockedKey(target, key, async () => {
             const current = (await this.read(target, key))!;
             workerEntry.cancelHandled = true;
             await this.publish(target, { ...current, admission: 'cancelled', error: undefined });
@@ -762,7 +807,7 @@ export class PromptIngress {
         let submitError: unknown = error;
         let uncertainSettlement = false;
         for (;;) {
-          const decision = await this.locked(target, async () => {
+          const decision = await this.lockedKey(target, key, async () => {
             const current = (await this.read(target, key))!;
             if (current.admission === 'cancelled') {
               workerEntry.cancelHandled = true;
@@ -803,7 +848,7 @@ export class PromptIngress {
           }
           try {
             await this.runCancelReconciliation(target.sessionId, entry.agentId, entry.body.prompt_id!);
-            await this.locked(target, async () => {
+            await this.lockedKey(target, key, async () => {
               const current = (await this.read(target, key))!;
               workerEntry.cancelHandled = true;
               const compact = settledResult === undefined

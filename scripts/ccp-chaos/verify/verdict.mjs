@@ -2311,8 +2311,8 @@ export function evaluateS18CoupledWorkstationVerdict(report, cfg = null, options
         );
       }
     }
-    if (hb.homeSwitchABA?.ok !== true) {
-      productFailures.push(`S18 A->B->A home switch identity check failed: ${JSON.stringify(hb.homeSwitchABA?.checks)}`);
+    if (hb.homeSwitchABA?.ok !== true || hb.homeSwitchABA?.drivenViaGuiSpaceSwitcher !== true) {
+      productFailures.push(`S18 A->B->A GUI space-switch check failed: ${JSON.stringify(hb.homeSwitchABA?.checks)}`);
     }
     if (hb.homeBHeartbeatWatchdog) {
       if ((hb.homeBHeartbeatWatchdog.samples ?? 0) < 3) {

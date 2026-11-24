@@ -19,6 +19,7 @@ import {
   IAgentPromptService,
   normalizeAgentProfile,
   IEventDispatcher,
+  IFileSystemStorageService,
   IWireService,
   IModelCatalogMutationService,
   IConfigService,
@@ -1547,6 +1548,54 @@ describe('server-v2 /api prompts', () => {
     } finally {
       releaseResume();
       resumeSpy.mockRestore();
+    }
+  });
+
+  it('acknowledges a new durable prompt without blocking on another prompt holding its key lock during beforeSubmit', async () => {
+    const id = await createSession(fixture.home as string);
+    const storage = fixture.server!.core.accessor.get(IFileSystemStorageService);
+    const originalAcquire = storage.acquireLock.bind(storage);
+    let releaseFirstKeyLock!: () => void;
+    const firstKeyLockGate = new Promise<void>((resolve) => { releaseFirstKeyLock = resolve; });
+    let firstKeyLockEntered!: () => void;
+    const firstKeyLocked = new Promise<void>((resolve) => { firstKeyLockEntered = resolve; });
+    let blockedOnce = false;
+    const lockSpy = vi.spyOn(storage, 'acquireLock').mockImplementation(async (scope, key, options) => {
+      const lease = await originalAcquire(scope, key, options);
+      if (!blockedOnce && scope.endsWith('/prompt-ingress') && key.endsWith('.lock') && key !== 'mutation.lock') {
+        blockedOnce = true;
+        firstKeyLockEntered();
+        return {
+          release: async () => {
+            await firstKeyLockGate;
+            await lease.release();
+          },
+        };
+      }
+      return lease;
+    });
+    try {
+      const first = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        admission: 'durable',
+        prompt_id: 'durable-lock-a',
+        content: [{ type: 'text', text: 'first durable prompt' }],
+      });
+      expect(first.body.code, first.body.msg).toBe(0);
+      await firstKeyLocked;
+
+      const startedAt = performance.now();
+      const second = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        admission: 'durable',
+        prompt_id: 'durable-lock-b',
+        content: [{ type: 'text', text: 'second durable prompt' }],
+      });
+      const elapsedMs = performance.now() - startedAt;
+      expect(second.body.code, second.body.msg).toBe(0);
+      expect(second.body.data.prompt_id).toBe('durable-lock-b');
+      expect(elapsedMs).toBeLessThan(2000);
+    } finally {
+      releaseFirstKeyLock();
+      lockSpy.mockRestore();
     }
   });
 });

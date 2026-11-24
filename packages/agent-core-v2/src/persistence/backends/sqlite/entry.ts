@@ -152,6 +152,27 @@ function indexedEqualities(filter: Record<string, unknown> | undefined): Array<[
   return result;
 }
 
+function selectValueIndex(
+  connection: DatabaseSync,
+  collection: string,
+  equalities: ReadonlyArray<readonly [string, unknown]>,
+): string | undefined {
+  if (equalities.length === 0) return undefined;
+  const fields = new Set(equalities.map(([field]) => field));
+  const definitions = connection.prepare('SELECT id,json FROM definitions WHERE collection=? ORDER BY id ASC').all(collection);
+  let fallback: string | undefined;
+  for (const row of definitions) {
+    const id = Number(row['id']);
+    if (!Number.isSafeInteger(id)) continue;
+    const definition = JSON.parse(String(row['json'])) as IndexDef;
+    if (definition.kind !== 'value' || !fields.has(definition.field)) continue;
+    const indexName = `query_value_${id}`;
+    if (definition.unique) return indexName;
+    fallback ??= indexName;
+  }
+  return fallback;
+}
+
 async function query(input: ReadQuery): Promise<{ items: unknown[]; nextCursor?: string }> {
   const connection = open();
   let mixed: boolean | undefined;
@@ -179,8 +200,9 @@ async function query(input: ReadQuery): Promise<{ items: unknown[]; nextCursor?:
   }
   const limit = input.limit;
   if (limit !== undefined && (!Number.isInteger(limit) || limit < 0)) throw new RangeError('Query limit must be a nonnegative integer');
-  const clauses = ['r.collection=?'];
-  const parameters: SQLInputValue[] = [input.collection];
+  const equalities = indexedEqualities(input.filter);
+  const clauses = input.column === undefined ? [`r.collection=${quote(input.collection)}`] : ['r.collection=?'];
+  const parameters: SQLInputValue[] = input.column === undefined ? [] : [input.collection];
   let from = 'rows r';
   let order = 'r.key ASC';
   let selected = 'r.key,r.json';
@@ -196,8 +218,11 @@ async function query(input: ReadQuery): Promise<{ items: unknown[]; nextCursor?:
       clauses.push(`c.value ${operator} ?`); parameters.push(value);
     }
     if (input.columnOrder !== undefined) orderedValue = 'c.value';
+  } else if (input.sort === undefined) {
+    const valueIndex = selectValueIndex(connection, input.collection, equalities);
+    if (valueIndex !== undefined) from = `rows r INDEXED BY ${valueIndex}`;
   }
-  for (const [field, value] of indexedEqualities(input.filter)) { clauses.push(`kiki_value(r.json,${quote(field)}) IS ?`); parameters.push(scalarKey(value)); }
+  for (const [field, value] of equalities) { clauses.push(`kiki_value(r.json,${quote(field)}) IS ?`); parameters.push(scalarKey(value)); }
   if (input.sort !== undefined) {
     orderedValue = mixed ? `kiki_order_key(r.json,${quote(input.sort.field)})` : `kiki_order(r.json,${quote(input.sort.field)})`;
     descending = input.sort.dir === 'desc';

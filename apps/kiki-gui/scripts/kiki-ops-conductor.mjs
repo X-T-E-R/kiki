@@ -764,6 +764,8 @@ export function bootstrapOps({
   let syncedCredentialFiles = 0;
   let syncedOAuthFiles = 0;
   let syncedAgentsCount = 0;
+  let syncedPromptFiles = 0;
+  let syncedRecipeFiles = 0;
 
   if (syncConfig !== false) {
     const sourceConfigPath = join(resolvedSourceHome, 'config.toml');
@@ -802,6 +804,14 @@ export function bootstrapOps({
     if (existsSync(sourceAgentsDir)) {
       syncedAgentsCount = copyDirectoryTreeSafe(sourceAgentsDir, join(resolvedOpsHome, 'agents'));
     }
+    const sourcePromptDir = join(resolvedSourceHome, 'prompt');
+    if (existsSync(sourcePromptDir)) {
+      syncedPromptFiles = copyDirectoryTreeSafe(sourcePromptDir, join(resolvedOpsHome, 'prompt'));
+    }
+    const sourceRecipesDir = join(resolvedSourceHome, 'recipes');
+    if (existsSync(sourceRecipesDir)) {
+      syncedRecipeFiles = copyDirectoryTreeSafe(sourceRecipesDir, join(resolvedOpsHome, 'recipes'));
+    }
   } else {
     ensureSearchDisabledConfig(configPath);
   }
@@ -836,6 +846,8 @@ export function bootstrapOps({
     syncedCredentialFiles,
     syncedOAuthFiles,
     syncedAgentsCount,
+    syncedPromptFiles,
+    syncedRecipeFiles,
     sha256: copied.sha256,
     bytes: copied.bytes,
   };
@@ -1450,6 +1462,7 @@ export async function verifySpaceHealth({
   kikiHome,
   expectedCommit,
   expectedReleaseId,
+  expectedPort = null,
   previousPid,
   allowSamePid = false,
   resolveProcessPath = defaultResolveProcessPath,
@@ -1521,6 +1534,15 @@ export async function verifySpaceHealth({
       error: `Post-switch verification failed: server PID did not change (${srv.pid}).`,
     };
   }
+  if (Number.isInteger(expectedPort) && expectedPort > 0 && srv.port !== expectedPort) {
+    return {
+      ok: false,
+      kikiHome: resolvedHome,
+      server: srv,
+      healthz: 'skipped',
+      error: `Post-switch verification failed for ${resolvedHome}: server bound port ${srv.port} instead of required fixed port ${expectedPort}.`,
+    };
+  }
   let healthz = 'ok';
   try {
     const hz = await callApi({
@@ -1578,6 +1600,33 @@ function summarizeSpaceCheck(check) {
   };
 }
 
+function parseExplicitPortFromArgs(launchArgs) {
+  if (typeof launchArgs !== 'string' || launchArgs.trim() === '') return null;
+  const re = /(?:^|\s)(?:--port|-p)(?:=|\s+)(?:"(\d+)"|'([^']+)'|(\d+))(?=\s|$)/gi;
+  let last = null;
+  let match;
+  while ((match = re.exec(launchArgs)) !== null) {
+    const raw = match[1] ?? match[2] ?? match[3];
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535) {
+      last = parsed;
+    }
+  }
+  return last;
+}
+
+function resolveExpectedHeadlessPort(hadDesktop, headlessLaunchArgs, originalPort) {
+  if (hadDesktop !== false) return null;
+  const explicit = parseExplicitPortFromArgs(headlessLaunchArgs);
+  if (explicit !== null) {
+    return explicit === 0 ? null : explicit;
+  }
+  if (Number.isInteger(originalPort) && originalPort > 0 && originalPort <= 65535) {
+    return originalPort;
+  }
+  return null;
+}
+
 function normalizeSpaceSnapshots(rawSpaces, primaryHome, primaryServer) {
   const byKey = new Map();
   const add = (sp) => {
@@ -1586,12 +1635,36 @@ function normalizeSpaceSnapshots(rawSpaces, primaryHome, primaryServer) {
     const key = normalizeComparePath(normHome);
     const existing = byKey.get(key);
     const srv = sp.liveServer ?? sp.preServerMeta ?? sp.server ?? null;
+    const hadDesktop = sp.hadDesktop ?? existing?.hadDesktop ?? true;
+    const headlessLaunchArgs = sp.headlessLaunchArgs ?? existing?.headlessLaunchArgs ?? null;
+    const rawOriginalPort =
+      sp.headlessOriginalPort ??
+      sp.originalPort ??
+      (hadDesktop === false ? (srv?.port ?? sp.port ?? null) : null) ??
+      existing?.headlessOriginalPort ??
+      null;
+    const headlessOriginalPort =
+      Number.isInteger(rawOriginalPort) && rawOriginalPort > 0 && rawOriginalPort <= 65535 ? rawOriginalPort : null;
+    const headlessExplicitPort =
+      sp.headlessExplicitPort ??
+      (hadDesktop === false ? parseExplicitPortFromArgs(headlessLaunchArgs) : null) ??
+      existing?.headlessExplicitPort ??
+      null;
+    const rawExpectedPort =
+      sp.expectedPort ??
+      existing?.expectedPort ??
+      resolveExpectedHeadlessPort(hadDesktop, headlessLaunchArgs, headlessOriginalPort);
+    const expectedPort =
+      Number.isInteger(rawExpectedPort) && rawExpectedPort > 0 && rawExpectedPort <= 65535 ? rawExpectedPort : null;
     const merged = {
       kikiHome: normHome,
       isPrimary: sp.isPrimary ?? key === normalizeComparePath(primaryHome),
       passHomeArg: sp.passHomeArg ?? key !== normalizeComparePath(primaryHome),
-      hadDesktop: sp.hadDesktop ?? existing?.hadDesktop ?? true,
-      headlessLaunchArgs: sp.headlessLaunchArgs ?? existing?.headlessLaunchArgs ?? null,
+      hadDesktop,
+      headlessLaunchArgs,
+      headlessOriginalPort,
+      headlessExplicitPort,
+      expectedPort,
       desktopManaged: sp.desktopManaged ?? srv?.desktop_managed ?? existing?.desktopManaged ?? true,
       oldReleaseId: sp.oldReleaseId ?? srv?.releaseId ?? existing?.oldReleaseId ?? null,
       oldBuildId: sp.oldBuildId ?? srv?.build_id ?? existing?.oldBuildId ?? null,
@@ -1599,6 +1672,8 @@ function normalizeSpaceSnapshots(rawSpaces, primaryHome, primaryServer) {
       serverHomeId: sp.serverHomeId ?? srv?.server_home_id ?? existing?.serverHomeId ?? null,
       spaceId: sp.spaceId ?? srv?.current_space_id ?? existing?.spaceId ?? null,
       pid: sp.pid ?? srv?.pid ?? existing?.pid ?? null,
+      fenceOperationId: sp.fenceOperationId ?? existing?.fenceOperationId ?? null,
+      sessions: Array.isArray(sp.sessions) ? sp.sessions : (existing?.sessions ?? []),
     };
     byKey.set(key, merged);
   };
@@ -1668,7 +1743,14 @@ export async function rollbackRuntime({
     normalizeComparePath(existingState.kikiHome ?? '') !== normalizeComparePath(resolvedHome);
 
   if (needsRollbackStateSeed) {
+    const existingSpacesByKey = new Map();
+    for (const esp of Array.isArray(existingState?.spaces) ? existingState.spaces : []) {
+      if (esp && typeof esp.kikiHome === 'string' && esp.kikiHome.trim() !== '') {
+        existingSpacesByKey.set(normalizeComparePath(esp.kikiHome), esp);
+      }
+    }
     const primarySnap = candidateSpaces.find((s) => normalizeComparePath(s.kikiHome) === normalizeComparePath(resolvedHome)) ?? candidateSpaces[0];
+    const primaryExisting = existingSpacesByKey.get(normalizeComparePath(resolvedHome));
     const seededState = {
       schemaVersion: 1,
       phase: 'starting_failed',
@@ -1683,24 +1765,38 @@ export async function rollbackRuntime({
       targetBuildId: existingState?.targetBuildId ?? existingLedger?.switchSnapshot?.targetCommit ?? resolvedBuildId ?? '',
       hadDesktop: primarySnap?.hadDesktop ?? true,
       headlessLaunchArgs: primarySnap?.headlessLaunchArgs ?? null,
+      headlessOriginalPort: primarySnap?.headlessOriginalPort ?? existingState?.headlessOriginalPort ?? null,
+      headlessExplicitPort: primarySnap?.headlessExplicitPort ?? existingState?.headlessExplicitPort ?? null,
+      expectedPort: primarySnap?.expectedPort ?? existingState?.expectedPort ?? null,
       desktopManaged: primarySnap?.desktopManaged ?? true,
-      fenceOperationId: existingState?.fenceOperationId ?? null,
-      sessions: [],
-      spaces: candidateSpaces.map((sp) => ({
-        kikiHome: sp.kikiHome,
-        isPrimary: sp.isPrimary,
-        passHomeArg: sp.passHomeArg,
-        oldReleaseId: resolvedReleaseId,
-        oldBuildId: resolvedBuildId ?? sp.oldBuildId ?? '',
-        oldServerId: sp.oldServerId ?? 'rollback-prior-server',
-        serverHomeId: sp.serverHomeId ?? '',
-        spaceId: sp.spaceId ?? 'main',
-        hadDesktop: sp.hadDesktop,
-        headlessLaunchArgs: sp.headlessLaunchArgs,
-        desktopManaged: sp.desktopManaged,
-        fenceOperationId: null,
-        sessions: [],
-      })),
+      fenceOperationId: primaryExisting?.fenceOperationId ?? primarySnap?.fenceOperationId ?? existingState?.fenceOperationId ?? null,
+      sessions: Array.isArray(primaryExisting?.sessions) ? primaryExisting.sessions : (Array.isArray(existingState?.sessions) ? existingState.sessions : []),
+      spaces: candidateSpaces.map((sp) => {
+        const esp = existingSpacesByKey.get(normalizeComparePath(sp.kikiHome));
+        const spFence =
+          esp?.fenceOperationId ??
+          sp.fenceOperationId ??
+          (sp.isPrimary ? (existingState?.fenceOperationId ?? null) : null);
+        const spSessions = Array.isArray(esp?.sessions) ? esp.sessions : (Array.isArray(sp.sessions) ? sp.sessions : []);
+        return {
+          kikiHome: sp.kikiHome,
+          isPrimary: sp.isPrimary,
+          passHomeArg: sp.passHomeArg,
+          oldReleaseId: resolvedReleaseId,
+          oldBuildId: resolvedBuildId ?? sp.oldBuildId ?? '',
+          oldServerId: sp.oldServerId ?? 'rollback-prior-server',
+          serverHomeId: sp.serverHomeId ?? '',
+          spaceId: sp.spaceId ?? 'main',
+          hadDesktop: sp.hadDesktop,
+          headlessLaunchArgs: sp.headlessLaunchArgs,
+          headlessOriginalPort: sp.headlessOriginalPort ?? esp?.headlessOriginalPort ?? null,
+          headlessExplicitPort: sp.headlessExplicitPort ?? esp?.headlessExplicitPort ?? null,
+          expectedPort: sp.expectedPort ?? esp?.expectedPort ?? null,
+          desktopManaged: sp.desktopManaged,
+          fenceOperationId: spFence,
+          sessions: spSessions,
+        };
+      }),
     };
     writeJsonAtomic(statePath, seededState);
   }
@@ -1727,6 +1823,7 @@ export async function rollbackRuntime({
         kikiHome: sp.kikiHome,
         expectedCommit: resolvedBuildId ?? undefined,
         expectedReleaseId: resolvedReleaseId,
+        expectedPort: sp.expectedPort ?? null,
         allowSamePid: true,
         resolveProcessPath,
         callApi,
@@ -1893,6 +1990,7 @@ export async function switchRuntime({
         runtimeRoot: resolvedRuntime,
         kikiHome: sp.kikiHome,
         expectedCommit: targetCommit,
+        expectedPort: preSp?.expectedPort ?? sp.expectedPort ?? null,
         previousPid: preSp?.pid ?? null,
         allowSamePid: report?.outcome === 'already_running',
         resolveProcessPath,
@@ -1962,6 +2060,7 @@ export async function switchRuntime({
               kikiHome: sp.kikiHome,
               expectedCommit: previousBuildId ?? undefined,
               expectedReleaseId: previousReleaseId,
+              expectedPort: sp.expectedPort ?? null,
               allowSamePid: true,
               resolveProcessPath,
               callApi,

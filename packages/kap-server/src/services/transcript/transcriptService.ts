@@ -6057,13 +6057,13 @@ export class TranscriptService {
       ? existingWindow : undefined;
     let searchEnd: number | undefined;
     if (validWindow !== undefined && validWindow.start > 0 &&
-        validWindow.reachedTail === true &&
         !hasVisibilityResetRecord(validWindow.records)) {
       const windowOldest = oldestTurnOrdinal(validWindow.snapshot.items);
-      if (windowOldest !== undefined && targetOrdinal < windowOldest && windowOldest - targetOrdinal <= ANCHOR_PROXIMITY_MAX_TURN_GAP) {
+      if (windowOldest !== undefined && targetOrdinal <= windowOldest && windowOldest - targetOrdinal <= ANCHOR_PROXIMITY_MAX_TURN_GAP) {
         searchEnd = validWindow.start;
       }
-    } else if (validWindow === undefined) {
+    }
+    if (searchEnd === undefined) {
       const resident = this.live.get(sessionId)?.store.getAgent(agentId);
       const residentOldest = resident === undefined ? undefined : oldestTurnOrdinal(resident.getItems());
       if (residentOldest !== undefined && targetOrdinal <= residentOldest &&

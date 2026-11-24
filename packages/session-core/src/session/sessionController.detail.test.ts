@@ -2620,6 +2620,108 @@ describe('automatic lightweight roster', () => {
     expect(subagentsFn).toHaveBeenCalledWith({ agentId: 'child-8888', limit: 1 });
     controller.close();
   });
+
+  it('preserves unconsumed pendingHintRosterAgents across early-aborted coalesced roster refreshes and settles out-of-window agent-a', async () => {
+    const content = vi.fn(async () => ({ ref, value: [], contentRefs: [] }));
+    const { controller, view, deliver } = harness(undefined, content);
+    const runningAgentA: NonNullable<SessionSnapshotResponse['subagents']>[number] = {
+      id: 'agent-a',
+      agent_id: 'agent-a',
+      session_id: session.id,
+      kind: 'subagent',
+      description: 'Agent A',
+      label: 'Agent A',
+      profile: 'worker',
+      model: 'fixture/model',
+      status: 'running',
+      activity_status: 'running',
+      status_source: 'metadata',
+      name_source: 'user_label',
+      live: true,
+      created_at: FIXED_AT,
+    };
+    const completedAgentA: NonNullable<SessionSnapshotResponse['subagents']>[number] = {
+      ...runningAgentA,
+      status: 'completed',
+      activity_status: 'completed',
+      live: false,
+    };
+    const agentB: NonNullable<SessionSnapshotResponse['subagents']>[number] = {
+      ...runningAgentA,
+      id: 'agent-b',
+      agent_id: 'agent-b',
+      description: 'Agent B',
+      label: 'Agent B',
+      status: 'completed',
+      activity_status: 'completed',
+      live: false,
+    };
+    const subagentsFn = vi.fn(async (input?: { q?: string; agentId?: string; limit?: number }) => {
+      if (input?.agentId === 'agent-a') {
+        return { items: [completedAgentA], total: 10_000, matched: 1 };
+      }
+      return { items: [], total: 10_000, matched: 0 };
+    });
+    (view as unknown as { subagents: typeof subagentsFn }).subagents = subagentsFn;
+
+    const largeRef: ContentRef = { source: { kind: 'snapshot', id: '' }, revision: 'inventory-10k', path: ['subagents'], kind: 'array', offset: 64, total: 10_000 };
+    const largeCounts = { total: 10_001, subagents: 10_000, completed: 9999, failed: 0, cancelled: 0, active: 1, idle: 0, unknown: 0 };
+    const initialWindow = [runningAgentA, agentB, ...children.slice(0, 62)];
+    const finalWindow = [agentB, ...children.slice(0, 63)];
+
+    let releaseFirstRefresh!: (snapshot: SessionSnapshotResponse) => void;
+    const firstRefreshPromise = new Promise<SessionSnapshotResponse>((resolve) => {
+      releaseFirstRefresh = resolve;
+    });
+    let snapshotCall = 0;
+    vi.mocked(view.snapshot).mockImplementation(async () => {
+      snapshotCall += 1;
+      if (snapshotCall === 1) {
+        return {
+          ...initial,
+          epoch: 'e',
+          as_of_seq: 1,
+          subagents: initialWindow,
+          agent_counts: largeCounts,
+          contentRefs: [largeRef],
+        };
+      }
+      if (snapshotCall === 2) {
+        return firstRefreshPromise;
+      }
+      return {
+        ...initial,
+        epoch: 'e',
+        as_of_seq: 3,
+        subagents: finalWindow,
+        agent_counts: { ...largeCounts, completed: 10_000, active: 0 },
+        contentRefs: [largeRef],
+      };
+    });
+
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot(), 1));
+    expect(controller.getForest()?.byId['agent-a']?.status).toBe('running');
+
+    // Hint A starts the first refresh (seq=2); while in flight, hint B arrives with higher watermark (seq=3).
+    controller.handleSignal({ type: 'sessionCursorAdvanced', cursor: { seq: 2, epoch: 'e' }, rosterAgentId: 'agent-a', generation: 1 });
+    await vi.waitFor(() => expect(snapshotCall).toBe(2));
+    controller.handleSignal({ type: 'sessionCursorAdvanced', cursor: { seq: 3, epoch: 'e' }, rosterAgentId: 'agent-b', generation: 1 });
+
+    // First refresh resolves at seq=2 (< queued seq=3), causing early return; hint A must survive to the retry.
+    releaseFirstRefresh({
+      ...initial,
+      epoch: 'e',
+      as_of_seq: 2,
+      subagents: initialWindow,
+      agent_counts: largeCounts,
+      contentRefs: [largeRef],
+    });
+
+    await vi.waitFor(() => expect(subagentsFn).toHaveBeenCalledWith({ agentId: 'agent-a', limit: 1 }));
+    await vi.waitFor(() => expect(controller.getForest()?.byId['agent-a']?.status).toBe('completed'));
+    controller.close();
+  });
 });
 
 describe('hidden prefix turn preview', () => {

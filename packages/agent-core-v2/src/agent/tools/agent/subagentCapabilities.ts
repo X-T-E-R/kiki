@@ -18,7 +18,7 @@ import { resolveThinkingEffortForModel } from '#/kosong/model/thinking';
 import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { assertSubagentModelNotDenied, canonicalizeSubagentBinding, resolveInheritedModelAlias, resolveSubagentBinding, usesAutoModel } from '#/session/subagent/configSection';
 import { autoModelCandidates } from '#/session/subagent/autoModel';
-import { pinBindingAdvisory, resolveRoleThinkingDefault, roleBindingAdvisories, roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
+import { buildSubagentBindingConstraintLayers, pinBindingAdvisory, resolveRoleThinkingDefault, roleBindingAdvisories, roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
 import { assertProfileRouteModelAvailable } from '#/session/subagent/profileRouteBinding';
 
 export interface SubagentCapabilityCatalog {
@@ -148,10 +148,20 @@ export function projectSubagentCapabilities(
         assertProfileRouteModelAvailable({ ...route, lockedModelAlias: routeLock }, services.modelCatalog, resolver);
       }
       const constraints = roleConstraintsFromProfile(profile, spawnConstraintOrigin(target.lease, target.spawnPolicy));
+      const constraintLayers = buildSubagentBindingConstraintLayers({
+        baseProfile: {
+          ...target.selection.profile,
+          restrictModelsToMenu: profile.restrictModelsToMenu,
+          modelMenuConstraint: profile.modelMenuConstraint,
+        },
+        lease: target.lease,
+        spawnPolicy: target.spawnPolicy,
+        profileName,
+      });
       const binding = resolveSubagentBinding(services.config, { ...filled, thinkingEffort: filled.thinkingEffort ?? route?.lockedThinkingEffort }, {
         modelAlias: route?.lockedModelAlias ?? profile.modelAlias,
         thinkingEffort: route?.lockedThinkingEffort ?? profile.thinkingEffort,
-      }, native ? services.models : undefined, constraints, { profileName, routeId }, {
+      }, native ? services.models : undefined, constraints, { profileName, routeId, constraintLayers }, {
         modelAlias: input.caller.modelAlias,
         thinkingEffort: input.caller.effectiveThinkingLevel ?? input.caller.thinkingLevel,
       });
@@ -211,17 +221,17 @@ export function projectSubagentCapabilities(
       }
       const thinkingValueSource = thinkingValueSourceFor(effortSource, requestedThinking, thinking);
       const bindingAdvisories = [
-        ...roleBindingAdvisories({
+        ...constraintLayers.flatMap((layer) => roleBindingAdvisories({
           model: effectiveModel,
           requestedModel,
           thinking,
           requestedThinking,
-          constraints,
+          constraints: layer.constraints,
           models: native ? services.models : undefined,
-          ruleSource: `profile:${profileName}`,
+          ruleSource: layer.ruleSource,
           modelValueSource,
           thinkingValueSource,
-        }),
+        })),
         pinBindingAdvisory({
           dimension: 'model',
           ruleSource: `route:${route?.id ?? routeId ?? profileName}`,

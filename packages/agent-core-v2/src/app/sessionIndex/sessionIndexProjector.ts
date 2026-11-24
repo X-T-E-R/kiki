@@ -4,8 +4,9 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import { IQueryStore, type WriteOp } from '#/persistence/interface/queryStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
-import { PARENT_SESSION_ID_KEY, type SessionSummary } from './sessionIndex';
+import { CREATED_BY_SESSION_ID_KEY, PARENT_SESSION_ID_KEY, type SessionSummary } from './sessionIndex';
 import {
+  CREATED_BY_INDEX_NAME,
   LEGACY_SESSION_INDEX_MANIFEST,
   PARENT_INDEX_NAME,
   SESSION_INDEX_MANIFEST,
@@ -395,11 +396,18 @@ export class SessionIndexProjector {
       queryStore.dropCollection(sources),
       queryStore.dropCollection(workspaces),
     ]);
-    await queryStore.ensureIndex(collection, {
-      kind: 'value',
-      name: PARENT_INDEX_NAME,
-      field: `custom.${PARENT_SESSION_ID_KEY}`,
-    });
+    await Promise.all([
+      queryStore.ensureIndex(collection, {
+        kind: 'value',
+        name: PARENT_INDEX_NAME,
+        field: `custom.${PARENT_SESSION_ID_KEY}`,
+      }),
+      queryStore.ensureIndex(collection, {
+        kind: 'value',
+        name: CREATED_BY_INDEX_NAME,
+        field: `custom.${CREATED_BY_SESSION_ID_KEY}`,
+      }),
+    ]);
 
     function* writes(): Generator<WriteOp> {
       for (const summary of summaries) {

@@ -20,6 +20,51 @@ export interface SubagentRoleModelConstraints extends AgentModelConstraints {
   readonly origin?: string;
 }
 
+export interface SubagentBindingConstraintLayer {
+  readonly constraints: SubagentRoleModelConstraints;
+  readonly ruleSource: string;
+}
+
+export function buildSubagentBindingConstraintLayers(input: {
+  readonly baseProfile: SubagentRoleModelConstraints & {
+    readonly name: string;
+    readonly fileDefinition?: unknown;
+    readonly sourcePath?: string;
+  };
+  readonly lease?: SubagentRoleModelConstraints;
+  readonly spawnPolicy?: SubagentRoleModelConstraints;
+  readonly profileName?: string;
+}): readonly SubagentBindingConstraintLayer[] {
+  const profileName = input.profileName ?? input.baseProfile.name;
+  const layers: SubagentBindingConstraintLayer[] = [
+    {
+      constraints: roleConstraintsFromProfile({
+        ...input.baseProfile,
+        modelConstraintProfiles: input.lease?.modelProfiles === undefined
+          ? input.baseProfile.modelConstraintProfiles
+          : [...(input.baseProfile.modelConstraintProfiles ?? []), ...(input.baseProfile.modelProfiles ?? [])],
+        modelProfiles: input.lease?.modelProfiles === undefined ? input.baseProfile.modelProfiles : undefined,
+      }),
+      ruleSource: input.baseProfile.fileDefinition === undefined
+        ? `profile:${profileName}`
+        : `profile-file:${input.baseProfile.sourcePath ?? profileName}`,
+    },
+  ];
+  if (input.lease !== undefined) {
+    layers.push({
+      constraints: roleConstraintsFromProfile(input.lease),
+      ruleSource: `caller-lease:${profileName}`,
+    });
+  }
+  if (input.spawnPolicy !== undefined) {
+    layers.push({
+      constraints: roleConstraintsFromProfile(input.spawnPolicy),
+      ruleSource: 'caller-spawn-constraints',
+    });
+  }
+  return layers;
+}
+
 export function roleConstraintsFromProfile(
   profile: SubagentRoleModelConstraints,
   origin?: string,

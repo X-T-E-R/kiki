@@ -77,7 +77,7 @@ import {
   type SubagentConfig,
 } from '#/session/subagent/configSection';
 import { mirrorAgentRun, SubagentStarted } from '#/session/subagent/mirrorAgentRun';
-import { resolveRoleThinkingDefault, roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
+import { buildSubagentBindingConstraintLayers, resolveRoleThinkingDefault, roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
 import { ISessionSubagentService, type AgentRunRequest } from '#/session/subagent/subagent';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
@@ -1145,6 +1145,16 @@ export class SessionDispatchService implements ISessionDispatchService {
       profile,
       spawnConstraintOrigin(target.lease, target.spawnPolicy),
     );
+    const constraintLayers = buildSubagentBindingConstraintLayers({
+      baseProfile: {
+        ...selection.profile,
+        restrictModelsToMenu: profile.restrictModelsToMenu,
+        modelMenuConstraint: profile.modelMenuConstraint,
+      },
+      lease: target.lease,
+      spawnPolicy: target.spawnPolicy,
+      profileName: profile.name,
+    });
     const resolved = resolveSubagentBinding(
       this.config,
       { ...filled, thinkingEffort: filled.thinkingEffort ?? selection.route?.lockedThinkingEffort },
@@ -1155,7 +1165,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       },
       native ? this.models : undefined,
       roleConstraints,
-      { profileName: profile.name, routeId: selection.route?.id },
+      { profileName: profile.name, routeId: selection.route?.id, constraintLayers },
       { modelAlias: caller.modelAlias, thinkingEffort: caller.effectiveThinkingLevel ?? caller.thinkingLevel },
     );
     const binding = native ? canonicalizeSubagentBinding(resolved, this.models) : resolved;

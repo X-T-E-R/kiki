@@ -119,15 +119,136 @@ function Test-ServerHealthz([object]$Server, [string]$SpaceToken = $null) {
 }
 
 function Try-RuntimeSwitch([object]$Server, [string]$OperationId, [string]$Action, [hashtable]$Result = $null) {
-    if ($null -ne $Result) { $Result.confirmed = $false }
-    if (!$OperationId) { return }
+    if ($null -ne $Result) {
+        $Result.confirmed = $false
+        $Result.released = $false
+        $Result.unsupported = $false
+        $Result.statusCode = 0
+        $Result.error = $null
+    }
+    if (!$OperationId) {
+        if ($null -ne $Result -and $Action -eq 'cancel') { $Result.released = $true }
+        return
+    }
     try {
         Call-Local $Server 'runtime-switch' @{ operationId = $OperationId; serverId = $Server.server_id; action = $Action } | Out-Null
-        if ($null -ne $Result) { $Result.confirmed = $true }
+        if ($null -ne $Result) {
+            $Result.confirmed = $true
+            $Result.released = $true
+        }
     } catch {
         $responseProperty = $_.Exception.PSObject.Properties['Response']
         $response = if ($null -ne $responseProperty) { $responseProperty.Value } else { $null }
-        if ($null -eq $response -or $response.StatusCode.value__ -ne 404) { Write-Verbose "runtime-switch ($Action) skipped: $($_.Exception.Message)" }
+        $statusCode = if ($null -ne $response) {
+            try { [int]$response.StatusCode } catch {
+                try { [int]$response.StatusCode.value__ } catch { 0 }
+            }
+        } else {
+            0
+        }
+        if ($null -ne $Result) {
+            $Result.statusCode = $statusCode
+            $Result.error = $_.Exception.Message
+        }
+        if ($statusCode -eq 404) {
+            if ($null -ne $Result) {
+                $Result.unsupported = $true
+                if ($Action -eq 'cancel') { $Result.released = $true }
+            }
+            return
+        }
+        if ($Action -eq 'cancel') {
+            try {
+                $status = Call-Local $Server 'runtime-switch'
+                $writerObj = Get-ObjectProperty $status 'writer'
+                $admissionObj = Get-ObjectProperty $status 'admission'
+                $writerOp = [string](Get-ObjectProperty $writerObj 'operationId')
+                $admissionOp = [string](Get-ObjectProperty $admissionObj 'operationId')
+                if ($writerOp -cne $OperationId -and $admissionOp -cne $OperationId) {
+                    if ($null -ne $Result) {
+                        $Result.confirmed = $true
+                        $Result.released = $true
+                        $Result.error = $null
+                    }
+                    return
+                }
+            } catch {
+                if ($null -ne $Result -and [string]::IsNullOrWhiteSpace([string]$Result.error)) {
+                    $Result.error = $_.Exception.Message
+                }
+            }
+        }
+        Write-Verbose "runtime-switch ($Action) skipped: $($_.Exception.Message)"
+    }
+}
+
+function Get-ExplicitPortFromCommandLine([string]$CommandLine) {
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $null }
+    $matches = [regex]::Matches($CommandLine, '(?i)(?:^|\s)(?:--port|-p)(?:=|\s+)(?:"(\d+)"|''(\d+)''|(\d+))(?=\s|$)')
+    if ($matches.Count -eq 0) { return $null }
+    $last = $matches[$matches.Count - 1]
+    $raw = if ($last.Groups[1].Success) { $last.Groups[1].Value } elseif ($last.Groups[2].Success) { $last.Groups[2].Value } else { $last.Groups[3].Value }
+    $parsed = 0
+    if ([int]::TryParse($raw, [ref]$parsed) -and $parsed -ge 0 -and $parsed -le 65535) {
+        return $parsed
+    }
+    return $null
+}
+
+function Resolve-ExpectedHeadlessPort([bool]$HadDesktop, [string]$HeadlessLaunchArgs, $OriginalPort) {
+    if ($HadDesktop) { return $null }
+    $explicit = Get-ExplicitPortFromCommandLine $HeadlessLaunchArgs
+    if ($null -ne $explicit) {
+        if ($explicit -eq 0) { return $null }
+        return [int]$explicit
+    }
+    if ($null -ne $OriginalPort) {
+        $parsed = 0
+        if ([int]::TryParse([string]$OriginalPort, [ref]$parsed) -and $parsed -gt 0 -and $parsed -le 65535) {
+            return [int]$parsed
+        }
+    }
+    return $null
+}
+
+function Get-ExpectedHeadlessPort([object]$SpaceState) {
+    if ($null -eq $SpaceState -or [bool](Get-ObjectProperty $SpaceState 'hadDesktop')) { return $null }
+    $recordedExpected = Get-ObjectProperty $SpaceState 'expectedPort'
+    if ($null -ne $recordedExpected) {
+        $parsed = 0
+        if ([int]::TryParse([string]$recordedExpected, [ref]$parsed) -and $parsed -gt 0 -and $parsed -le 65535) {
+            return [int]$parsed
+        }
+    }
+    $launchArgs = [string](Get-ObjectProperty $SpaceState 'headlessLaunchArgs')
+    $origPort = Get-ObjectProperty $SpaceState 'headlessOriginalPort'
+    if ($null -eq $origPort) { $origPort = Get-ObjectProperty $SpaceState 'originalPort' }
+    return Resolve-ExpectedHeadlessPort $false $launchArgs $origPort
+}
+
+function Test-TcpPortListening([int]$Port) {
+    if ($Port -le 0 -or $Port -gt 65535) { return $false }
+    try {
+        $listeners = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()
+        foreach ($ep in $listeners) {
+            if ($null -ne $ep -and [int]$ep.Port -eq $Port) { return $true }
+        }
+    } catch {}
+    return $false
+}
+
+function Wait-ForPortsReleased([int[]]$Ports, [int]$TimeoutSeconds = 15) {
+    $uniquePorts = @($Ports | Where-Object { $_ -gt 0 -and $_ -le 65535 } | Select-Object -Unique)
+    if ($uniquePorts.Count -eq 0) { return }
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $stillBound = @($uniquePorts | Where-Object { Test-TcpPortListening $_ })
+        if ($stillBound.Count -eq 0) { return }
+        Start-Sleep -Milliseconds 150
+    }
+    $stillBound = @($uniquePorts | Where-Object { Test-TcpPortListening $_ })
+    if ($stillBound.Count -gt 0) {
+        throw ("Fixed headless port(s) did not release within {0}s before relaunch: {1}" -f $TimeoutSeconds, ($stillBound -join ', '))
     }
 }
 
@@ -530,6 +651,13 @@ function Discover-RuntimeSpaces([switch]$AllowMissingTokens) {
         } else {
             $null
         }
+        $headlessOriginalPort = if (-not $hadDesktop -and $null -ne $server -and [int]$server.instance.port -gt 0) {
+            [int]$server.instance.port
+        } else {
+            $null
+        }
+        $headlessExplicitPort = if (-not $hadDesktop) { Get-ExplicitPortFromCommandLine $headlessLaunchArgs } else { $null }
+        $expectedPort = Resolve-ExpectedHeadlessPort $hadDesktop $headlessLaunchArgs $headlessOriginalPort
         $spaces += [pscustomobject]@{
             kikiHome = $spaceHome
             isPrimary = $isPrimary
@@ -537,6 +665,9 @@ function Discover-RuntimeSpaces([switch]$AllowMissingTokens) {
             hadDesktop = $hadDesktop
             isHeadless = (-not $hadDesktop)
             headlessLaunchArgs = $headlessLaunchArgs
+            headlessOriginalPort = $headlessOriginalPort
+            headlessExplicitPort = $headlessExplicitPort
+            expectedPort = $expectedPort
             headlessPid = if ($null -ne $servingEntry) { [int]$servingEntry.pid } else { 0 }
             launcherPid = $launcherPid
             launcherProcess = $launcherProcess
@@ -569,6 +700,9 @@ function Get-RecordedSpaces([object]$StateObj) {
             spaceId = [string]$StateObj.spaceId
             hadDesktop = [bool]$StateObj.hadDesktop
             headlessLaunchArgs = [string](Get-ObjectProperty $StateObj 'headlessLaunchArgs')
+            headlessOriginalPort = Get-ObjectProperty $StateObj 'headlessOriginalPort'
+            headlessExplicitPort = Get-ObjectProperty $StateObj 'headlessExplicitPort'
+            expectedPort = Get-ObjectProperty $StateObj 'expectedPort'
             desktopManaged = [bool](Get-ObjectProperty $StateObj 'desktopManaged')
             fenceOperationId = [string](Get-ObjectProperty $StateObj 'fenceOperationId')
             sessions = $sessionItems
@@ -1131,6 +1265,19 @@ function Wait-ForAllExits([object[]]$SpacePlans) {
         $remainingDesc = ($remainingShells | ForEach-Object { '{0} (pid {1})' -f $_.kikiHome, $_.pid }) -join ', '
         throw ("Another desktop shell appeared outside the switch plan before launch: {0}" -f $remainingDesc)
     }
+    $fixedHeadlessPorts = @(
+        foreach ($plan in $SpacePlans) {
+            if ([bool](Get-ObjectProperty $plan 'hadDesktop')) { continue }
+            $ep = Get-ExpectedHeadlessPort $plan
+            if ($null -eq $ep -and $null -ne $plan.server -and [int]$plan.server.instance.port -gt 0) {
+                $ep = Resolve-ExpectedHeadlessPort $false ([string](Get-ObjectProperty $plan 'headlessLaunchArgs')) $plan.server.instance.port
+            }
+            if ($null -ne $ep -and $ep -gt 0) { [int]$ep }
+        }
+    )
+    if ($fixedHeadlessPorts.Count -gt 0) {
+        Wait-ForPortsReleased $fixedHeadlessPorts 15
+    }
 }
 
 function Await-AllReleases([object[]]$SpaceStates, [string]$ReleaseId, [string]$ExpectedBuildId, [hashtable]$LaunchersByHome, [hashtable]$TokensByHome) {
@@ -1167,6 +1314,11 @@ function Await-AllReleases([object[]]$SpaceStates, [string]$ReleaseId, [string]$
                     })
                     if ($matchingActiveShells.Count -lt 1) {
                         continue
+                    }
+                } else {
+                    $expectedPort = Get-ExpectedHeadlessPort $spaceState
+                    if ($null -ne $expectedPort -and $expectedPort -gt 0 -and [int]$new.instance.port -ne $expectedPort) {
+                        throw ("The started headless service for {0} bound port {1} instead of required fixed port {2}." -f $spaceState.kikiHome, $new.instance.port, $expectedPort)
                     }
                 }
                 if (-not (Test-ServerHealthz $new.instance $spaceToken)) {
@@ -1392,6 +1544,7 @@ function Release-OurPausesForAllSpaces([hashtable]$TargetsByHome, [object[]]$Spa
 }
 
 function Clear-SwitchControlsForAllSpaces([hashtable]$TargetsByHome, [object[]]$SpaceStates, [bool]$AllowCancel) {
+    $fenceFailures = @()
     foreach ($spaceState in @($SpaceStates)) {
         $key = ([string]$spaceState.kikiHome).ToLowerInvariant()
         $target = $TargetsByHome[$key]
@@ -1399,12 +1552,40 @@ function Clear-SwitchControlsForAllSpaces([hashtable]$TargetsByHome, [object[]]$
         if ([bool](Get-ObjectProperty $target.meta 'desktop_managed') -and (Get-ObjectProperty (Lifecycle $target.instance '') 'hot_switch_prepared') -eq $true) {
             Lifecycle $target.instance 'cancel-update' | Out-Null
         }
-        Try-RuntimeSwitch $target.instance (Get-ObjectProperty $spaceState 'fenceOperationId') 'cancel'
+        $fenceOpId = [string](Get-ObjectProperty $spaceState 'fenceOperationId')
+        if (-not [string]::IsNullOrWhiteSpace($fenceOpId)) {
+            $cancelResult = @{}
+            Try-RuntimeSwitch $target.instance $fenceOpId 'cancel' $cancelResult
+            if (-not [bool]$cancelResult.released) {
+                $errDetail = if (-not [string]::IsNullOrWhiteSpace([string]$cancelResult.error)) { [string]$cancelResult.error } else { 'fence cancel unconfirmed' }
+                $fenceFailures += ("{0}: {1}" -f $spaceState.kikiHome, $errDetail)
+            }
+        }
     }
-    Release-OurPausesForAllSpaces $TargetsByHome $SpaceStates $AllowCancel
+    $pauseError = $null
+    try {
+        Release-OurPausesForAllSpaces $TargetsByHome $SpaceStates $AllowCancel
+    } catch {
+        $pauseError = $_.Exception.Message
+    }
+    if ($fenceFailures.Count -gt 0 -or $null -ne $pauseError) {
+        $parts = @()
+        if ($fenceFailures.Count -gt 0) { $parts += ('Failed to release admission fence(s): ' + ($fenceFailures -join '; ')) }
+        if ($null -ne $pauseError) { $parts += $pauseError }
+        throw ($parts -join ' | ')
+    }
 }
 
 function Start-AllSpaces([object[]]$SpaceStates) {
+    $fixedHeadlessPorts = @(
+        foreach ($sp in @($SpaceStates)) {
+            $ep = Get-ExpectedHeadlessPort $sp
+            if ($null -ne $ep -and $ep -gt 0) { [int]$ep }
+        }
+    )
+    if ($fixedHeadlessPorts.Count -gt 0) {
+        Wait-ForPortsReleased $fixedHeadlessPorts 15
+    }
     $launchers = @{}
     foreach ($spaceState in @($SpaceStates)) {
         $key = ([string]$spaceState.kikiHome).ToLowerInvariant()
@@ -1415,6 +1596,10 @@ function Start-AllSpaces([object[]]$SpaceStates) {
             $headlessArgs = [string](Get-ObjectProperty $spaceState 'headlessLaunchArgs')
             if ([string]::IsNullOrWhiteSpace($headlessArgs)) {
                 $headlessArgs = if ([bool](Get-ObjectProperty $spaceState 'isPrimary')) { 'serve' } else { 'serve --home ' + (Format-WindowsProcessArgument ([string]$spaceState.kikiHome)) }
+            }
+            $expectedPort = Get-ExpectedHeadlessPort $spaceState
+            if ($null -ne $expectedPort -and $expectedPort -gt 0 -and ($null -eq (Get-ExplicitPortFromCommandLine $headlessArgs))) {
+                $headlessArgs = ($headlessArgs.Trim() + (' --port {0}' -f $expectedPort))
             }
             $preserveManaged = [bool](Get-ObjectProperty $spaceState 'desktopManaged')
             $launchers[$key] = Invoke-HeadlessLaunch $runtime ([string]$spaceState.kikiHome) $headlessArgs -PassThru -RuntimeManaged:$preserveManaged
@@ -1440,6 +1625,9 @@ if ($InspectOnly) {
                 hadDesktop = [bool]$sp.hadDesktop
                 isHeadless = [bool]$sp.isHeadless
                 headlessLaunchArgs = $sp.headlessLaunchArgs
+                headlessOriginalPort = $sp.headlessOriginalPort
+                headlessExplicitPort = $sp.headlessExplicitPort
+                expectedPort = $sp.expectedPort
                 desktopManaged = [bool]$sp.desktopManaged
                 tokenError = $sp.tokenError
                 liveServer = $snap.server
@@ -1605,6 +1793,10 @@ try {
             if (-not $runningByHome.ContainsKey($k)) { return $false }
             $srv = $runningByHome[$k]
             if ($srv.releaseId -cne $desiredReleaseId -or $srv.meta.build_id -cne $desiredBuildId -or $srv.layout -ne 'active') { return $true }
+            if (-not [bool]$_.hadDesktop) {
+                $expPort = Get-ExpectedHeadlessPort $_
+                if ($null -ne $expPort -and $expPort -gt 0 -and [int]$srv.instance.port -ne $expPort) { return $true }
+            }
             return (-not (Test-ServerHealthz $srv.instance $tokensByHome[$k]))
         })
         $missingSpaces = @($recordedSpaces | Where-Object {
@@ -1679,6 +1871,9 @@ try {
                             kikiHome = [string]$spState.kikiHome
                             key = $k
                             hadDesktop = [bool]$spState.hadDesktop
+                            headlessLaunchArgs = [string](Get-ObjectProperty $spState 'headlessLaunchArgs')
+                            headlessOriginalPort = Get-ObjectProperty $spState 'headlessOriginalPort'
+                            expectedPort = Get-ExpectedHeadlessPort $spState
                             ownerToken = $tokensByHome[$k]
                             server = $srv
                             launcherPid = if ($null -ne $srvEnt) { [int]$srvEnt.launcherPid } else { 0 }
@@ -1792,6 +1987,9 @@ try {
             hadDesktop = [bool]$sp.hadDesktop
             isHeadless = [bool]$sp.isHeadless
             headlessLaunchArgs = $sp.headlessLaunchArgs
+            headlessOriginalPort = $sp.headlessOriginalPort
+            headlessExplicitPort = $sp.headlessExplicitPort
+            expectedPort = $sp.expectedPort
             launcherPid = [int](Get-ObjectProperty $sp 'launcherPid')
             launcherProcess = Get-ObjectProperty $sp 'launcherProcess'
             desktopManaged = [bool]$sp.desktopManaged
@@ -1824,6 +2022,9 @@ try {
                 hadDesktop = [bool]$_.hadDesktop
                 isHeadless = [bool]$_.isHeadless
                 headlessLaunchArgs = $_.headlessLaunchArgs
+                headlessOriginalPort = $_.headlessOriginalPort
+                headlessExplicitPort = $_.headlessExplicitPort
+                expectedPort = $_.expectedPort
                 desktopManaged = [bool]$_.desktopManaged
                 preServerMeta = Format-ServerMetaReport $_.server
                 postServerMeta = $null
@@ -1987,7 +2188,9 @@ try {
                         oldReleaseId = $plan.server.releaseId; oldBuildId = $plan.server.meta.build_id
                         oldServerId = $plan.server.meta.server_id; serverHomeId = $plan.server.meta.server_home_id
                         spaceId = $plan.server.meta.current_space_id; hadDesktop = [bool]$plan.hadDesktop
-                        headlessLaunchArgs = $plan.headlessLaunchArgs; desktopManaged = [bool]$plan.desktopManaged
+                        headlessLaunchArgs = $plan.headlessLaunchArgs
+                        headlessOriginalPort = $plan.headlessOriginalPort; headlessExplicitPort = $plan.headlessExplicitPort; expectedPort = $plan.expectedPort
+                        desktopManaged = [bool]$plan.desktopManaged
                         fenceOperationId = if ($plan.isPrimary) { [string]$state.fenceOperationId } else { 'hot-switch:' + [guid]::NewGuid().ToString('N') }
                         sessions = if ($plan.isPrimary) { $primarySessions } else { @() }
                     }
@@ -2004,7 +2207,9 @@ try {
                     oldReleaseId = $plan.server.releaseId; oldBuildId = $plan.server.meta.build_id
                     oldServerId = $plan.server.meta.server_id; serverHomeId = $plan.server.meta.server_home_id
                     spaceId = $plan.server.meta.current_space_id; hadDesktop = [bool]$plan.hadDesktop
-                    headlessLaunchArgs = $plan.headlessLaunchArgs; desktopManaged = [bool]$plan.desktopManaged
+                    headlessLaunchArgs = $plan.headlessLaunchArgs
+                    headlessOriginalPort = $plan.headlessOriginalPort; headlessExplicitPort = $plan.headlessExplicitPort; expectedPort = $plan.expectedPort
+                    desktopManaged = [bool]$plan.desktopManaged
                     fenceOperationId = if ($plan.isPrimary) { $primaryFenceId } else { 'hot-switch:' + [guid]::NewGuid().ToString('N') }
                     sessions = @()
                 }
@@ -2014,7 +2219,9 @@ try {
             schemaVersion = 1; phase = 'pausing'; kikiHome = $homePath; oldReleaseId = $old.releaseId; oldBuildId = $old.meta.build_id
             oldServerId = $old.meta.server_id; serverHomeId = $old.meta.server_home_id; spaceId = $old.meta.current_space_id
             priorPointerReleaseId = $priorPointerReleaseId; targetReleaseId = $targetRelease; targetBuildId = $expectedBuildId; hadDesktop = [bool]$primarySpace.hadDesktop
-            headlessLaunchArgs = $primarySpace.headlessLaunchArgs; desktopManaged = [bool]$primarySpace.desktopManaged
+            headlessLaunchArgs = $primarySpace.headlessLaunchArgs
+            headlessOriginalPort = $primarySpace.headlessOriginalPort; headlessExplicitPort = $primarySpace.headlessExplicitPort; expectedPort = $primarySpace.expectedPort
+            desktopManaged = [bool]$primarySpace.desktopManaged
             fenceOperationId = $primaryFenceId
             sessions = @()
             spaces = $spaceStateList
@@ -2185,18 +2392,37 @@ try {
     Write-Host "Running $targetRelease ($($primaryTarget.meta.server_id))"
 } catch {
     $failure = $_
-    if ($pauseOwnersByHome.Count -gt 0 -and $null -ne $state -and $state.phase -eq 'pausing') {
+    if ($pauseOwnersByHome.Count -gt 0 -and $null -ne $state -and ($state.phase -eq 'pausing' -or $state.phase -eq 'switching')) {
         try {
             $recordedSpaces = @(Get-RecordedSpaces $state)
+            $fenceFailures = @()
             foreach ($spState in $recordedSpaces) {
                 $k = ([string]$spState.kikiHome).ToLowerInvariant()
-                if ($pauseOwnersByHome.ContainsKey($k)) {
-                    Try-RuntimeSwitch $pauseOwnersByHome[$k].instance (Get-ObjectProperty $spState 'fenceOperationId') 'cancel'
+                if (-not $pauseOwnersByHome.ContainsKey($k)) { continue }
+                $fenceOpId = [string](Get-ObjectProperty $spState 'fenceOperationId')
+                if ([string]::IsNullOrWhiteSpace($fenceOpId)) { continue }
+                $cancelResult = @{}
+                Try-RuntimeSwitch $pauseOwnersByHome[$k].instance $fenceOpId 'cancel' $cancelResult
+                if (-not [bool]$cancelResult.released) {
+                    $errDetail = if (-not [string]::IsNullOrWhiteSpace([string]$cancelResult.error)) { [string]$cancelResult.error } else { 'fence cancel unconfirmed' }
+                    $fenceFailures += ("{0}: {1}" -f $spState.kikiHome, $errDetail)
                 }
             }
-            Release-OurPausesForAllSpaces $pauseOwnersByHome $recordedSpaces $true
-            $state.phase = 'complete'; Save-State
-            Write-Warning 'The running service was not switched; pauses were released and current.json remains promoted to the verified target release.'
+            $pauseError = $null
+            try {
+                Release-OurPausesForAllSpaces $pauseOwnersByHome $recordedSpaces $true
+            } catch {
+                $pauseError = $_.Exception.Message
+            }
+            if ($fenceFailures.Count -eq 0 -and $null -eq $pauseError) {
+                $state.phase = 'complete'; Save-State
+                Write-Warning 'The running service was not switched; fences and pauses were released and current.json remains promoted to the verified target release.'
+            } else {
+                $parts = @()
+                if ($fenceFailures.Count -gt 0) { $parts += ('Fence release still pending: ' + ($fenceFailures -join '; ')) }
+                if ($null -ne $pauseError) { $parts += ("Pause release still pending: $pauseError") }
+                Write-Warning ($parts -join ' | ')
+            }
         } catch { Write-Warning "Pause recovery is still pending: $($_.Exception.Message)" }
     }
     if ($null -ne $script:report) {

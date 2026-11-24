@@ -278,11 +278,31 @@ describe('attachment media kinds', () => {
       expect(container.querySelector('[data-message-attachment-subtype="markdown"]')).not.toBeNull();
       expect(container.querySelector('[data-message-attachment-subtype="archive"]')).not.toBeNull();
 
-      // Local HTML attachment opens the real host file directly in 1 click (skipping the read-only copy hop).
+      // Originless HTML receipt stays on the preserved session copy rather than opening a live host file.
       const htmlOpen = container.querySelector<HTMLButtonElement>('[data-message-attachment="blobref:main:html1"] [data-message-attachment-open]');
       expect(htmlOpen).not.toBeNull();
       act(() => { htmlOpen?.click(); });
-      expect(previewProbe.openFile).toHaveBeenCalledWith('/workspace/demo/index.html');
+      expect(previewProbe.openFile).not.toHaveBeenCalled();
+      expect(previewProbe.openAttachmentInWorkspace).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'file',
+        fileId: 'blobref:main:html1',
+        path: undefined,
+        origin: undefined,
+        mime: 'text/html',
+      }));
+
+      // Trusted-origin HTML attachment (with sourceId) opens the live host file directly.
+      const trustedHtmlAtt: MessageAttachment = {
+        ...htmlAtt,
+        blobId: 'blobref:main:html-trusted',
+        sourceId: 'a'.repeat(64),
+        path: '/workspace/demo/trusted.html',
+      };
+      const trustedHtmlContainer = draw(message({ attachments: [trustedHtmlAtt] }));
+      const trustedHtmlOpen = trustedHtmlContainer.querySelector<HTMLButtonElement>('[data-message-attachment="blobref:main:html-trusted"] [data-message-attachment-open]');
+      expect(trustedHtmlOpen).not.toBeNull();
+      act(() => { trustedHtmlOpen?.click(); });
+      expect(previewProbe.openFile).toHaveBeenCalledWith('/workspace/demo/trusted.html');
 
       const pdfOpen = container.querySelector<HTMLButtonElement>('[data-message-attachment="blob-report"] [data-message-attachment-open]');
       act(() => { pdfOpen?.click(); });

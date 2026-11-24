@@ -16,6 +16,7 @@ import type { IModelService } from '#/kosong/model/model';
 import {
   assertRoleBindingConstraints,
   resolveRoleThinkingDefault,
+  type SubagentBindingConstraintLayer,
   type SubagentRoleModelConstraints,
 } from './modelConstraints';
 
@@ -227,6 +228,7 @@ export interface SubagentBindingRequest {
 export interface SubagentBindingTarget {
   readonly profileName?: string;
   readonly routeId?: string;
+  readonly constraintLayers?: readonly SubagentBindingConstraintLayer[];
 }
 
 export type SubagentModelSource = 'tool' | 'profile';
@@ -362,10 +364,26 @@ export function resolveSubagentBinding(
       : undefined) ??
     (selectedModel === INHERIT_MODEL_ALIAS ? normalized(callerBinding?.thinkingEffort) : undefined);
   assertSubagentModelNotDenied(config, model, models);
-  assertRoleBindingConstraints({ model, thinking, constraints: roleConstraints, models,
-    ruleSource: `profile:${target?.profileName ?? 'subagent'}`,
-    requestedModel: toolModel, requestedThinking: requested.thinkingEffort,
-    modelValueSource: toolModel === undefined ? 'profile-default' : 'dispatch-explicit' });
+  const layers = target?.constraintLayers;
+  if (layers !== undefined && layers.length > 0) {
+    for (const layer of layers) {
+      assertRoleBindingConstraints({
+        model,
+        thinking,
+        constraints: layer.constraints,
+        models,
+        ruleSource: layer.ruleSource,
+        requestedModel: toolModel,
+        requestedThinking: requested.thinkingEffort,
+        modelValueSource: toolModel === undefined ? 'profile-default' : 'dispatch-explicit',
+      });
+    }
+  } else {
+    assertRoleBindingConstraints({ model, thinking, constraints: roleConstraints, models,
+      ruleSource: `profile:${target?.profileName ?? 'subagent'}`,
+      requestedModel: toolModel, requestedThinking: requested.thinkingEffort,
+      modelValueSource: toolModel === undefined ? 'profile-default' : 'dispatch-explicit' });
+  }
   return recordBindingMetadata({ model, thinking, displayModel: selectedModel }, { source });
 }
 

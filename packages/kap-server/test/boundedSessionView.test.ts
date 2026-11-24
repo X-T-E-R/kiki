@@ -1946,4 +1946,83 @@ describe('bounded session-view canonical reads', () => {
     const pageTurns = (page?.items ?? []).filter((item): item is TranscriptTurn => item.kind === 'turn');
     expect(pageTurns.map((turn) => [turn.turnId, turn.state])).toEqual([['t12', 'completed'], ['t13', 'running']]);
   });
+
+  it('keeps older-page slicing whole-turn atomic without splitting a leading orphan turn and skips readFullAgentSnapshot for strictly older pages', async () => {
+    const liveTranscript = new AgentTranscript('main');
+    const residentTurn: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't143',
+      ordinal: 143,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'TURN_MARKER_000143',
+      steps: [],
+    };
+    liveTranscript.apply([{
+      op: 'reset',
+      agentId: 'main',
+      snapshot: { ...empty(), items: [residentTurn], hasMoreOlder: true },
+    }]);
+    const splitOrphan140: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't140',
+      ordinal: 140,
+      state: 'completed',
+      origin: { kind: 'other' },
+      steps: [],
+    };
+    const complete141: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't141',
+      ordinal: 141,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'TURN_MARKER_000141',
+      steps: [],
+    };
+    const complete142: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't142',
+      ordinal: 142,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'TURN_MARKER_000142',
+      steps: [],
+    };
+    const coldSnapshot: AgentTranscriptSnapshot = {
+      ...empty(),
+      items: [splitOrphan140, complete141, complete142, residentTurn],
+      hasMoreOlder: true,
+    };
+    const readFullAgentSnapshot = vi.fn();
+    const service = {
+      forSessionLive: () => ({ agents: () => [], getAgent: () => liveTranscript }),
+      ensureAgentHistory: async () => liveTranscript,
+      isTranscriptLiveCoverageVerified: () => false,
+      verifyTranscriptLiveCoverage: async () => false,
+      getTranscriptCursor: () => ({ seq: 15, epoch: 'live-epoch' }),
+      readColdPageSnapshot: async (_sid: string, _aid: string, project: (s: AgentTranscriptSnapshot) => AgentTranscriptSnapshot) => project(coldSnapshot),
+      readFullAgentSnapshot,
+      reconcileQuestionSnapshot: (_session: string, snapshot: AgentTranscriptSnapshot) => snapshot,
+    } as unknown as TranscriptService;
+
+    const beforeCursor = Buffer.from(JSON.stringify({
+      v: 2,
+      agentId: 'main',
+      source: 'derived',
+      epoch: 'live-epoch',
+      anchor: 'turn:t143',
+    })).toString('base64url');
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', {
+      agentId: 'main',
+      beforeItem: beforeCursor,
+      pageSize: 20,
+    });
+    expect(readFullAgentSnapshot).not.toHaveBeenCalled();
+    expect(page?.items.map((item) => item.kind === 'turn' ? item.turnId : item.kind)).toEqual(['t141', 't142']);
+    expect(page?.has_more).toBe(true);
+    const decodedNext = JSON.parse(Buffer.from(page!.next_cursor!, 'base64url').toString('utf8')) as Record<string, unknown>;
+    expect(decodedNext['anchor']).toBe('turn:t141');
+    expect(decodedNext['orphanTurn']).toBeUndefined();
+  });
 });

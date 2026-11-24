@@ -444,4 +444,53 @@ describe('subagent capability final bindings', () => {
     expect(projected.profiles.map((profile) => profile.name)).toEqual(['live']);
     expect(projected.aliases).toContain('example');
   });
+
+  it('attributes hard constraint rejections to caller-spawn-constraints and caller-lease instead of blaming the child profile', () => {
+    services.models.list = () => ({ 'devin/swe-2': {}, 'grok-4.7': {} });
+    const worker = helper({ name: 'ctf-worker', modelAlias: 'devin/swe-2' });
+    const catalog = {
+      get: (name: string) => (name === worker.name ? worker : undefined),
+      list: () => [worker],
+      getDefault: () => worker,
+      resolveSelection: ({ profile }: { readonly profile?: string }) => {
+        if (profile !== worker.name) throw new Error('unknown profile');
+        return { profile: worker, baseProfile: worker };
+      },
+    };
+    const spawnBlocked = projectSubagentCapabilities({
+      catalog,
+      caller: {
+        profileName: 'ctf',
+        allowedSubagents: ['ctf-worker'],
+        spawnPolicy: { allowedModels: ['grok-4.7'] },
+      },
+      profiles: [worker],
+      routes: [],
+    }, services)[0];
+    expect(spawnBlocked).toMatchObject({
+      profile: 'ctf-worker',
+      defaultsAvailable: false,
+      unavailableReasonCode: 'binding_constraints_unsatisfied',
+    });
+    expect(spawnBlocked?.unavailableReason).toContain('caller-spawn-constraints.allowed_models');
+    expect(spawnBlocked?.unavailableReason).not.toContain('profile:ctf-worker.allowed_models');
+
+    const leaseBlocked = projectSubagentCapabilities({
+      catalog,
+      caller: {
+        profileName: 'ctf',
+        allowedSubagents: ['ctf-worker'],
+        subagentLeases: { 'ctf-worker': { name: 'ctf-worker', allowedModels: ['grok-4.7'] } },
+      },
+      profiles: [worker],
+      routes: [],
+    }, services)[0];
+    expect(leaseBlocked).toMatchObject({
+      profile: 'ctf-worker',
+      defaultsAvailable: false,
+      unavailableReasonCode: 'binding_constraints_unsatisfied',
+    });
+    expect(leaseBlocked?.unavailableReason).toContain('caller-lease:ctf-worker.allowed_models');
+    expect(leaseBlocked?.unavailableReason).not.toContain('profile:ctf-worker.allowed_models');
+  });
 });

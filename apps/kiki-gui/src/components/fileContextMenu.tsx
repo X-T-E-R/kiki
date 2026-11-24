@@ -22,7 +22,7 @@ import { buildResourceMenuEntries, useActiveDraftKey } from './mediaParts';
 import { useMediaPreview } from './mediaPreviewContext';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { TextTile, type ContextChipVariant } from './ContextChips';
-import { resolveSameSessionAttachmentPath, trustedAttachmentOrigin } from './message/messageMedia';
+import { trustedAttachmentOrigin } from './message/messageMedia';
 
 export interface ResolvedLocalAttachment {
   readonly origin?: { readonly path: string; readonly trusted: true };
@@ -42,31 +42,18 @@ export function resolveDirectLocalAttachment(
   options: {
     readonly readable: boolean;
     readonly remote: boolean;
-    readonly isHtml: boolean;
+    readonly isHtml?: boolean;
     readonly cwd?: string;
   },
 ): ResolvedLocalAttachment {
   const origin = trustedAttachmentOrigin(attachment, { readable: options.readable });
-  if (!options.readable || options.remote) {
+  if (!options.readable || options.remote || origin === undefined) {
     return { origin };
   }
-  if (origin !== undefined) {
-    return {
-      origin,
-      localPath: resolveHostPath(origin.path, options.cwd),
-    };
-  }
-  if (options.isHtml) {
-    const htmlPath = resolveSameSessionAttachmentPath(attachment, {
-      readable: options.readable,
-      remote: options.remote,
-      cwd: options.cwd,
-    });
-    if (htmlPath !== undefined) {
-      return { origin, localPath: htmlPath };
-    }
-  }
-  return { origin };
+  return {
+    origin,
+    localPath: resolveHostPath(origin.path, options.cwd),
+  };
 }
 
 /**

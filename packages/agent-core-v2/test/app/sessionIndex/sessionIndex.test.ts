@@ -1,6 +1,7 @@
 import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import { join, sep } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -21,13 +22,19 @@ import { IFlagService } from '#/app/flag/flag';
 import { IHostFsWatchService, type HostFsChange, type HostFsWatchOptions } from '#/os/interface/hostFsWatch';
 import { SessionIndexBuildingError, SessionIndexReconcilePendingError } from '#/app/sessionIndex/errors';
 import {
+  CHILD_SESSION_KIND,
+  CHILD_SESSION_KIND_KEY,
+  CREATED_BY_SESSION_ID_KEY,
   ISessionIndex,
   ISessionIndexMirror,
+  PARENT_SESSION_ID_KEY,
   type SessionIndexStatus,
   type SessionSummary,
 } from '#/app/sessionIndex/sessionIndex';
 import {
+  CREATED_BY_INDEX_NAME,
   LEGACY_SESSION_INDEX_MANIFEST,
+  PARENT_INDEX_NAME,
   SESSION_INDEX_MANIFEST,
   SESSION_SOURCE_ROOT_KEY,
   legacySessionCollection,
@@ -5412,4 +5419,121 @@ describe('FileSessionIndex (read model)', () => {
       scanSpy.mockRestore();
     }
   }, 15_000);
+
+  it('archiveFamily uses indexed equality queries on byCreatedBy and byParent without $or full scans', async () => {
+    await seedSession('root', { title: 'root', createdAt: 1, updatedAt: 10, archived: false });
+    await seedSession('child-created', {
+      title: 'created',
+      createdAt: 2,
+      updatedAt: 20,
+      archived: false,
+      custom: { [CREATED_BY_SESSION_ID_KEY]: 'root' },
+    });
+    await seedSession('child-attached', {
+      title: 'attached',
+      createdAt: 3,
+      updatedAt: 30,
+      archived: false,
+      custom: { [PARENT_SESSION_ID_KEY]: 'root', [CHILD_SESSION_KIND_KEY]: CHILD_SESSION_KIND },
+    });
+    await seedSession('fork-detached', {
+      title: 'fork',
+      createdAt: 4,
+      updatedAt: 40,
+      archived: false,
+      custom: { [PARENT_SESSION_ID_KEY]: 'root' },
+    });
+    await seedSession('reparented', {
+      title: 'reparented',
+      createdAt: 5,
+      updatedAt: 50,
+      archived: false,
+      custom: {
+        [CREATED_BY_SESSION_ID_KEY]: 'other-root',
+        [PARENT_SESSION_ID_KEY]: 'root',
+        [CHILD_SESSION_KIND_KEY]: CHILD_SESSION_KIND,
+      },
+    });
+    await seedSession('grandchild', {
+      title: 'grandchild',
+      createdAt: 6,
+      updatedAt: 60,
+      archived: false,
+      custom: { [CREATED_BY_SESSION_ID_KEY]: 'child-created' },
+    });
+
+    const store = build();
+    await store.prepare();
+    store.stopReconcileLoop();
+    const generation = store.status().generation;
+    expect(generation).toBeGreaterThan(0);
+    const collection = sessionCollection(generation!);
+
+    const db = new DatabaseSync(join(homeDir, 'cache', SQLITE_QUERY_STORE_SUBDIR, 'index.sqlite'), { readOnly: true });
+    try {
+      db.function('kiki_value', { deterministic: true }, (_json: unknown, _path: unknown) => '');
+      const defRows = db
+        .prepare('SELECT id, name FROM definitions WHERE collection=? ORDER BY name')
+        .all(collection) as Array<{ id: number; name: string }>;
+      const defByName = new Map(defRows.map((row) => [String(row.name), Number(row.id)]));
+      expect([...defByName.keys()]).toEqual(expect.arrayContaining([CREATED_BY_INDEX_NAME, PARENT_INDEX_NAME]));
+
+      const quotedCollection = `'${collection.replaceAll("'", "''")}'`;
+      const createdIndexName = `query_value_${defByName.get(CREATED_BY_INDEX_NAME)}`;
+      const createdPlan = db
+        .prepare(
+          `EXPLAIN QUERY PLAN SELECT r.key, r.json FROM rows r INDEXED BY ${createdIndexName} WHERE r.collection=${quotedCollection} AND kiki_value(r.json,'custom.${CREATED_BY_SESSION_ID_KEY}') IS ? ORDER BY r.key ASC`,
+        )
+        .all('s:root')
+        .map((row) => String(row['detail']))
+        .join(' | ');
+      expect(createdPlan).toMatch(/USING INDEX query_value_/);
+      expect(createdPlan).not.toMatch(/SCAN rows/);
+
+      const parentIndexName = `query_value_${defByName.get(PARENT_INDEX_NAME)}`;
+      const parentPlan = db
+        .prepare(
+          `EXPLAIN QUERY PLAN SELECT r.key, r.json FROM rows r INDEXED BY ${parentIndexName} WHERE r.collection=${quotedCollection} AND kiki_value(r.json,'custom.${PARENT_SESSION_ID_KEY}') IS ? AND kiki_value(r.json,'custom.${CHILD_SESSION_KIND_KEY}') IS ? ORDER BY r.key ASC`,
+        )
+        .all('s:root', `s:${CHILD_SESSION_KIND}`)
+        .map((row) => String(row['detail']))
+        .join(' | ');
+      expect(parentPlan).toMatch(/USING INDEX query_value_/);
+      expect(parentPlan).not.toMatch(/SCAN rows/);
+    } finally {
+      db.close();
+    }
+
+    const seenFilters: Record<string, unknown>[] = [];
+    const originalQuery = queryStore.query.bind(queryStore);
+    const querySpy = vi.spyOn(queryStore, 'query').mockImplementation((col) => {
+      const builder = originalQuery(col);
+      const originalWhere = builder.where.bind(builder);
+      builder.where = ((filter: Record<string, unknown>) => {
+        seenFilters.push(filter);
+        return originalWhere(filter);
+      }) as typeof builder.where;
+      return builder;
+    });
+    try {
+      const family = await store.archiveFamily('root', []);
+      expect(family.map((item) => item.id).toSorted()).toEqual([
+        'child-attached',
+        'child-created',
+        'grandchild',
+        'root',
+      ]);
+      expect(seenFilters.length).toBeGreaterThanOrEqual(2);
+      for (const filter of seenFilters) {
+        expect(filter).not.toHaveProperty('$or');
+      }
+      expect(seenFilters).toContainEqual({ [`custom.${CREATED_BY_SESSION_ID_KEY}`]: 'root' });
+      expect(seenFilters).toContainEqual({
+        [`custom.${PARENT_SESSION_ID_KEY}`]: 'root',
+        [`custom.${CHILD_SESSION_KIND_KEY}`]: CHILD_SESSION_KIND,
+      });
+    } finally {
+      querySpy.mockRestore();
+    }
+  });
 });

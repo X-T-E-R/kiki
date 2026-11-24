@@ -3172,6 +3172,14 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       disallowedTools: this.profileState.disallowedTools,
     };
     const toolPolicy = effectiveToolBinding(toolPolicyBase, this.profileState.toolOverride, this.profileState.boundProfile);
+    const liveMainProfile = this.resolveLiveMainCatalogProfile();
+    const canSpawnSubagents = liveMainProfile !== undefined
+      ? (liveMainProfile.canSpawnSubagents === false
+          ? false
+          : this.profileState.execution !== undefined
+            ? this.profileState.execution.effective.allow_kiki_subagents
+            : liveMainProfile.canSpawnSubagents)
+      : this.profileState.canSpawnSubagents;
     return {
       endpoint: this.profileState.endpoint,
       driver: this.profileState.driver,
@@ -3229,13 +3237,13 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         this.profileState.disabledToolGroups === undefined
           ? undefined
           : [...this.profileState.disabledToolGroups],
-      canSpawnSubagents: this.profileState.canSpawnSubagents,
-      allowedSubagents: this.profileState.allowedSubagents,
-      preferredSubagents: this.profileState.preferredSubagents,
-      denySubagents: this.profileState.denySubagents,
-      subagentLeases: this.profileState.subagentLeases,
+      canSpawnSubagents,
+      allowedSubagents: liveMainProfile !== undefined ? liveMainProfile.allowedSubagents : this.profileState.allowedSubagents,
+      preferredSubagents: liveMainProfile !== undefined ? liveMainProfile.preferredSubagents : this.profileState.preferredSubagents,
+      denySubagents: liveMainProfile !== undefined ? liveMainProfile.denySubagents : this.profileState.denySubagents,
+      subagentLeases: liveMainProfile !== undefined ? liveMainProfile.subagentLeases : this.profileState.subagentLeases,
       dispatchDecision: this.profileState.dispatchDecision,
-      spawnPolicy: this.profileState.spawnPolicy,
+      spawnPolicy: liveMainProfile !== undefined ? liveMainProfile.spawnConstraints : this.profileState.spawnPolicy,
       appliedLease: this.profileState.appliedLease,
       boundProfile: this.profileState.boundProfile,
       serviceTier: this.serviceTier,
@@ -3979,6 +3987,33 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const active = this.resolveActiveProfile();
     if (active === undefined) return undefined;
     return { ...profile, systemPrompt: active.systemPrompt, renderSystemPrompt: active.renderSystemPrompt };
+  }
+
+  private resolveLiveMainCatalogProfile(): AgentProfile | undefined {
+    if (this.delegationPosition !== 'main' || this.agentScope.agentId !== MAIN_AGENT_ID) return undefined;
+    if (
+      this.profileState.boundProfile?.fileSources !== undefined ||
+      this.profileState.boundProfile?.fileDefinition !== undefined ||
+      this.profileState.execution?.selection.profile_file !== undefined
+    ) {
+      return undefined;
+    }
+    if (this.routeId !== undefined) {
+      try {
+        return this.catalog.resolveSelection({ route: this.routeId }).profile;
+      } catch {
+        return undefined;
+      }
+    }
+    const profileName = this.profileName;
+    if (profileName === undefined) return undefined;
+    const catalogProfile = profileName === DEFAULT_AGENT_PROFILE_NAME
+      ? this.catalog.getDefault()
+      : this.catalog.get(profileName);
+    if (catalogProfile !== undefined && this.catalog.sourceRejection?.(catalogProfile) !== undefined) {
+      return undefined;
+    }
+    return catalogProfile;
   }
 
   private resolveActiveProfile(): ResolvedAgentProfile | undefined {

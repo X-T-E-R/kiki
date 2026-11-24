@@ -731,7 +731,19 @@ async function readSessionViewTranscriptPageRaw(
       const loaded = await readColdTranscriptPage(transcriptService, sessionId, input, sourceDirection, 'derived');
       if (loaded === undefined) return undefined;
       const query = loaded.query;
-      const skipFullMerge = !anchored || loaded.preparing || (loaded.page.items.length === 0 && loaded.snapshot.hasMoreOlder === true && typeof transcriptService.coldWindowBoundary === 'function');
+      const loadedStrictlyOlderThanResident =
+        anchored &&
+        query.afterItem === undefined &&
+        query.afterTurn === undefined &&
+        query.refreshTurn === undefined &&
+        firstResidentTurn?.kind === 'turn' &&
+        loaded.page.items.length > 0 &&
+        loaded.page.items.every((item) =>
+          item.kind === 'turn'
+            ? compareTurnIds(item.turnId, firstResidentTurn.turnId) < 0
+            : !liveItems.some((liveItem) => itemKey(liveItem) === itemKey(item)),
+        );
+      const skipFullMerge = !anchored || loaded.preparing || loadedStrictlyOlderThanResident || (loaded.page.items.length === 0 && loaded.snapshot.hasMoreOlder === true && typeof transcriptService.coldWindowBoundary === 'function');
       const cold = skipFullMerge ? loaded.snapshot : await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal,
         (source) => boundedTranscriptPageSource(source, input.agentId, sourceDirection), query.beforeTurn, loaded.snapshot);
       if (cold === undefined) return undefined;
@@ -742,7 +754,7 @@ async function readSessionViewTranscriptPageRaw(
       const anchorState = loaded.preparing ? 'pending' : typeof transcriptService.anchorReadState === 'function' ? transcriptService.anchorReadState(cold) : undefined;
       let page: ReturnType<typeof paginateTurns>;
       try {
-        page = loaded.preparing || query.refreshTurn !== undefined ? loaded.page : paginateTurns(cold.items, covered ? { ...query, beforeTurn: turnId, beforeItem: undefined } : query);
+        page = loaded.preparing || loadedStrictlyOlderThanResident || query.refreshTurn !== undefined ? loaded.page : paginateTurns(cold.items, covered ? { ...query, beforeTurn: turnId, beforeItem: undefined } : query);
       } catch (error) {
         if (!(error instanceof TranscriptDetailCursorError)) throw error;
         if (anchorState !== 'pending' && decodePageCursor(input.beforeItem, input.agentId) !== undefined) throw new TranscriptSourceChangedError('derived', 'stale_cursor');
@@ -1444,6 +1456,27 @@ async function readColdTranscriptPage(
         snapshot = resolvedSnapshot;
         located = { ...located, page: { ...located.page, items: withRecoveredOpenings(located.page.items, resolvedSnapshot.items) } };
       }
+    }
+  }
+  if (
+    anchored &&
+    query.afterItem === undefined &&
+    query.afterTurn === undefined &&
+    query.refreshTurn === undefined &&
+    !located.missing &&
+    snapshot.hasMoreOlder === true &&
+    located.page.items.length > 1 &&
+    isOrphanTurn(located.page.items[0]!)
+  ) {
+    const firstCompleteIndex = located.page.items.findIndex((item) => !isOrphanTurn(item));
+    if (firstCompleteIndex > 0 && located.page.items.slice(firstCompleteIndex).some((item) => item.kind === 'turn')) {
+      located = {
+        ...located,
+        page: {
+          items: located.page.items.slice(firstCompleteIndex),
+          hasMore: true,
+        },
+      };
     }
   }
   return { snapshot, page: located.page, query };

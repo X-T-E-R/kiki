@@ -35,6 +35,7 @@ import {
   type SessionSummary,
 } from './sessionIndex';
 import {
+  CREATED_BY_INDEX_NAME,
   PARENT_INDEX_NAME,
   SESSION_INDEX_MANIFEST,
   SESSION_INDEX_REVISION,
@@ -911,11 +912,19 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   }
 
   private async ensureSchema(generation: number): Promise<void> {
-    await this.queryStore.ensureIndex(sessionCollection(generation), {
-      kind: 'value',
-      name: PARENT_INDEX_NAME,
-      field: `custom.${PARENT_SESSION_ID_KEY}`,
-    });
+    const collection = sessionCollection(generation);
+    await Promise.all([
+      this.queryStore.ensureIndex(collection, {
+        kind: 'value',
+        name: PARENT_INDEX_NAME,
+        field: `custom.${PARENT_SESSION_ID_KEY}`,
+      }),
+      this.queryStore.ensureIndex(collection, {
+        kind: 'value',
+        name: CREATED_BY_INDEX_NAME,
+        field: `custom.${CREATED_BY_SESSION_ID_KEY}`,
+      }),
+    ]);
   }
 
   async get(id: string, workspaceId?: string, signal?: AbortSignal): Promise<SessionSummary | undefined> {
@@ -995,21 +1004,26 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         if (!this.isArchiveIndexCompleteNow()) throw new Error('session index no longer complete');
         const pending = this.mirror.pending();
         const pendingById = new Map(pending.map((summary) => [summary.id, summary]));
-        const page = await this.queryStore
-          .query<SessionSummary>(collection)
-          .where({
-            $or: [
-              { [`custom.${CREATED_BY_SESSION_ID_KEY}`]: parentId },
-              { [`custom.${PARENT_SESSION_ID_KEY}`]: parentId },
-            ],
-          })
-          .execute();
+        const [byCreatedBy, byParent] = await Promise.all([
+          this.queryStore
+            .query<SessionSummary>(collection)
+            .where({ [`custom.${CREATED_BY_SESSION_ID_KEY}`]: parentId })
+            .execute(),
+          this.queryStore
+            .query<SessionSummary>(collection)
+            .where({
+              [`custom.${PARENT_SESSION_ID_KEY}`]: parentId,
+              [`custom.${CHILD_SESSION_KIND_KEY}`]: CHILD_SESSION_KIND,
+            })
+            .execute(),
+        ]);
         if (!(await verifyConsistent())) throw new Error('session index generation changed');
         const merged = new Map<string, SessionSummary>();
-        for (const item of page.items) {
+        for (const item of [...byCreatedBy.items, ...byParent.items]) {
           if (!isSessionSummaryShape(item)) continue;
           const summary = stripRecencyField(generation, item);
-          if (!pendingById.has(summary.id)) merged.set(summary.id, summary);
+          if (pendingById.has(summary.id) || attachedSessionParent(summary) !== parentId) continue;
+          merged.set(summary.id, summary);
         }
         for (const summary of pending) {
           if (attachedSessionParent(summary) === parentId) merged.set(summary.id, summary);

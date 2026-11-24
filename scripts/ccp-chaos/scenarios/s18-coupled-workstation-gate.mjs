@@ -1285,32 +1285,166 @@ export async function runScenarioS18CoupledWorkstationGate({
       childBarrier.release();
     }
 
-    // Verify A -> B -> A identity switch via real UI/meta identity checks (always runs once Home B is booted)
+    // Verify A -> B -> A space switch via real GUI SpaceScopeControl / SpaceSwitchSheet (no page.goto between A->B->A)
+    let pairedHomeBRecordId = null;
+    const enableInboundB = await apiJson(serverB.endpoint, serverB.token, 'PUT', '/api/remote-connections/inbound', {
+      enabled: true,
+    }, 10_000);
+    const pairCodeRes = enableInboundB.status === 200
+      ? await apiJson(serverB.endpoint, serverB.token, 'POST', '/api/remote-connections/inbound/pair-code', {
+          label: 'S18 Home B',
+          allowBridge: true,
+        }, 10_000)
+      : null;
+    const pairIssued = pairCodeRes?.status === 200 && pairCodeRes.json?.code === 0 ? pairCodeRes.json.data : null;
+    if (pairIssued?.code) {
+      const claimEndpoint = pairIssued.suggestedEndpoints?.[0] ?? serverB.endpoint;
+      const pairRes = await apiJson(server.endpoint, server.token, 'POST', '/api/remote-connections/pair', {
+        endpoint: claimEndpoint,
+        code: pairIssued.code,
+        fingerprint: pairIssued.tlsFingerprint,
+        label: 'Coupled Isolated Home B',
+        backgroundSummary: false,
+        requestBridge: true,
+      }, 15_000);
+      if (pairRes.status === 200 && pairRes.json?.code === 0 && pairRes.json?.data?.id) {
+        pairedHomeBRecordId = pairRes.json.data.id;
+      }
+    }
+
     const switchPage = await context.newPage();
     try {
-      for (const [label, targetSrv, expectedSid] of [
-        ['A_initial', server, corpus.giantSessionId],
-        ['B_isolated', serverB, bSessionId],
-        ['A_return', server, corpus.giantSessionId],
-      ]) {
-        await switchPage.goto(deepLinkFor(targetSrv, `/s/${expectedSid}`), {
-          waitUntil: 'domcontentloaded',
-          timeout: 25_000,
-        });
-        await switchPage.waitForSelector('[data-session-sidebar]', { timeout: 15_000 });
-        const metaRes = await apiJson(targetSrv.endpoint, targetSrv.token, 'GET', '/api/meta', undefined, 5_000);
-        const observedHomeId = metaRes.json?.data?.server_home_id ?? metaRes.json?.data?.home_id ?? null;
-        const uiHasTargetSid = await switchPage.evaluate(
-          (sid) => window.location.pathname.includes(sid),
-          expectedSid,
+      // Load Home A once; all subsequent A -> B -> A transitions are driven via GUI SpaceScopeControl + SpaceSwitchSheet + Sidebar clicks.
+      await switchPage.goto(deepLinkFor(server, `/s/${corpus.giantSessionId}`), {
+        waitUntil: 'domcontentloaded',
+        timeout: 25_000,
+      });
+      await switchPage.waitForSelector('[data-session-sidebar]', { timeout: 15_000 });
+      await switchPage.waitForSelector('[data-space-switcher]', { timeout: 15_000 });
+      await switchPage.waitForSelector('[data-transcript-scroll] [data-transcript-virtual-item]', { timeout: 20_000 });
+
+      const initialState = await switchPage.evaluate((sid) => {
+        const pathNow = window.location.pathname;
+        const transcriptText = document.querySelector('[data-transcript-scroll]')?.textContent ?? '';
+        return {
+          path: pathNow,
+          matchesSession: pathNow.includes(`/s/${sid}`) && !pathNow.includes('/p/'),
+          hasHomeAContent: transcriptText.includes('TURN_MARKER_'),
+          hasHomeBContent: transcriptText.includes('HOME_B_OWNER_DISPATCHED_PRIVATE_CHILD'),
+        };
+      }, corpus.giantSessionId);
+      switchChecks.push({
+        step: 'A_initial',
+        ok: Boolean(initialState.matchesSession && initialState.hasHomeAContent && !initialState.hasHomeBContent),
+        expectedHomeId: server.identity?.homeId ?? null,
+        sessionId: corpus.giantSessionId,
+        path: initialState.path,
+        drivenViaGui: true,
+      });
+
+      // Step 2: Switch to paired Home B via real SpaceScopeControl -> SpaceSwitchSheet -> remote item -> Home B conversation row.
+      if (pairedHomeBRecordId) {
+        await switchPage.locator('[data-space-switcher]').click();
+        await switchPage.waitForSelector('[data-space-switcher-menu]', { timeout: 10_000 });
+        const remoteItem = switchPage.locator(`[data-space-remote-item="${pairedHomeBRecordId}"]`);
+        await remoteItem.waitFor({ state: 'visible', timeout: 15_000 });
+        await remoteItem.click();
+        await switchPage.waitForFunction(
+          (recId) => document.querySelector('[data-space-switcher]')?.getAttribute('data-space-scope') === `remote:${recId}`,
+          pairedHomeBRecordId,
+          { timeout: 10_000 },
         );
+        const homeBSessionRow = switchPage.locator(`[data-session-row="${bSessionId}"]`).first();
+        await homeBSessionRow.waitFor({ state: 'visible', timeout: 15_000 });
+        await homeBSessionRow.click();
+        await switchPage.waitForFunction(
+          ({ recId, sid }) =>
+            window.location.pathname.includes(`/p/${recId}/s/${sid}`) &&
+            (document.querySelector('[data-transcript-scroll]')?.textContent ?? '').includes('HOME_B_OWNER_DISPATCHED_PRIVATE_CHILD'),
+          { recId: pairedHomeBRecordId, sid: bSessionId },
+          { timeout: 20_000 },
+        );
+        const homeBState = await switchPage.evaluate(({ recId, sid }) => {
+          const pathNow = window.location.pathname;
+          const scopeNow = document.querySelector('[data-space-switcher]')?.getAttribute('data-space-scope') ?? null;
+          const transcriptText = document.querySelector('[data-transcript-scroll]')?.textContent ?? '';
+          return {
+            path: pathNow,
+            scope: scopeNow,
+            matchesSession: pathNow.includes(`/p/${recId}/s/${sid}`),
+            hasHomeBContent: transcriptText.includes('HOME_B_OWNER_DISPATCHED_PRIVATE_CHILD'),
+            hasHomeAContent: transcriptText.includes('TURN_MARKER_'),
+          };
+        }, { recId: pairedHomeBRecordId, sid: bSessionId });
         switchChecks.push({
-          step: label,
-          ok: Boolean(uiHasTargetSid && metaRes.status === 200 && observedHomeId === targetSrv.identity?.homeId),
-          expectedHomeId: targetSrv.identity?.homeId ?? null,
-          observedHomeId,
-          sessionId: expectedSid,
+          step: 'B_isolated',
+          ok: Boolean(
+            homeBState.scope === `remote:${pairedHomeBRecordId}` &&
+            homeBState.matchesSession &&
+            homeBState.hasHomeBContent &&
+            !homeBState.hasHomeAContent,
+          ),
+          expectedHomeId: serverB.identity?.homeId ?? null,
+          pairedConnectionId: pairedHomeBRecordId,
+          sessionId: bSessionId,
+          path: homeBState.path,
+          scope: homeBState.scope,
+          drivenViaGui: true,
         });
+
+        // Step 3: Switch back to Home A via SpaceScopeControl -> SpaceSwitchSheet -> [data-space-computer-local] -> Home A conversation row.
+        await switchPage.locator('[data-space-switcher]').click();
+        await switchPage.waitForSelector('[data-space-switcher-menu]', { timeout: 10_000 });
+        const localBtn = switchPage.locator('[data-space-computer-local]');
+        await localBtn.waitFor({ state: 'visible', timeout: 10_000 });
+        await localBtn.click();
+        await switchPage.waitForFunction(
+          () => (document.querySelector('[data-space-switcher]')?.getAttribute('data-space-scope') ?? '').startsWith('local:'),
+          null,
+          { timeout: 10_000 },
+        );
+        const homeASessionRow = switchPage.locator(`[data-session-row="${corpus.giantSessionId}"]`).first();
+        await homeASessionRow.waitFor({ state: 'visible', timeout: 15_000 });
+        await homeASessionRow.click();
+        await switchPage.waitForFunction(
+          (sid) =>
+            window.location.pathname.includes(`/s/${sid}`) &&
+            !window.location.pathname.includes('/p/') &&
+            (document.querySelector('[data-transcript-scroll]')?.textContent ?? '').includes('TURN_MARKER_'),
+          corpus.giantSessionId,
+          { timeout: 20_000 },
+        );
+        const returnAState = await switchPage.evaluate((sid) => {
+          const pathNow = window.location.pathname;
+          const scopeNow = document.querySelector('[data-space-switcher]')?.getAttribute('data-space-scope') ?? null;
+          const transcriptText = document.querySelector('[data-transcript-scroll]')?.textContent ?? '';
+          return {
+            path: pathNow,
+            scope: scopeNow,
+            matchesSession: pathNow.includes(`/s/${sid}`) && !pathNow.includes('/p/'),
+            hasHomeAContent: transcriptText.includes('TURN_MARKER_'),
+            hasHomeBContent: transcriptText.includes('HOME_B_OWNER_DISPATCHED_PRIVATE_CHILD'),
+          };
+        }, corpus.giantSessionId);
+        switchChecks.push({
+          step: 'A_return',
+          ok: Boolean(
+            (returnAState.scope ?? '').startsWith('local:') &&
+            returnAState.matchesSession &&
+            returnAState.hasHomeAContent &&
+            !returnAState.hasHomeBContent,
+          ),
+          expectedHomeId: server.identity?.homeId ?? null,
+          sessionId: corpus.giantSessionId,
+          path: returnAState.path,
+          scope: returnAState.scope,
+          drivenViaGui: true,
+        });
+      } else {
+        switchChecks.push(
+          { step: 'B_isolated', ok: false, error: 'Failed to pair Home B for GUI space switch', drivenViaGui: true },
+          { step: 'A_return', ok: false, error: 'Skipped due to Home B pairing failure', drivenViaGui: true },
+        );
       }
     } finally {
       await switchPage.close().catch(() => undefined);
@@ -1382,8 +1516,10 @@ export async function runScenarioS18CoupledWorkstationGate({
           reopenDomRowsQ === 1,
       },
       homeSwitchABA: {
+        pairedConnectionId: pairedHomeBRecordId,
+        drivenViaGuiSpaceSwitcher: switchChecks.length === 3 && switchChecks.every((c) => c.drivenViaGui === true),
         checks: switchChecks,
-        ok: switchChecks.length === 3 && switchChecks.every((c) => c.ok),
+        ok: switchChecks.length === 3 && switchChecks.every((c) => c.ok && c.drivenViaGui === true),
       },
       serverBEld: {
         pid: serverB.pid,

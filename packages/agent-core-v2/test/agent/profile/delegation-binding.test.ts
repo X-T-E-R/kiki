@@ -869,4 +869,60 @@ describe('model usage policy binding', () => {
       expect(profile.resolveRequestParams().thinkingEffort).toBe('medium');
     } finally { await restored.dispose(); }
   });
+
+  it('resolves live catalog spawnPolicy and subagentLeases for restored main agents while keeping child parent ceilings frozen', async () => {
+    const oldMain = normalizeAgentProfile({
+      name: 'ctf',
+      tools: [],
+      systemPrompt: () => 'ctf prompt',
+      allowedSubagents: ['ctf-worker'],
+      spawnConstraints: { allowedModels: ['old-model'] },
+      subagentLeases: { 'ctf-worker': { name: 'ctf-worker', allowedModels: ['old-model'] } },
+    });
+    const updatedMain = normalizeAgentProfile({
+      name: 'ctf',
+      tools: [],
+      systemPrompt: () => 'ctf prompt',
+      allowedSubagents: ['ctf-worker', 'reviewer'],
+      spawnConstraints: undefined,
+      subagentLeases: { 'ctf-worker': { name: 'ctf-worker', modelAlias: 'usage' } },
+    });
+
+    const initialMainCtx = createTestAgent(
+      sessionService(ISessionAgentProfileCatalog, catalogWith(oldMain)),
+      { initialConfig: { models: { usage: configuredModel } } },
+    );
+    let savedMainSnapshot: ReturnType<IAgentProfileService['data']>;
+    try {
+      const profile = initialMainCtx.get(IAgentProfileService);
+      await profile.bind({ profile: 'ctf', model: 'usage' });
+      expect(profile.data().spawnPolicy).toEqual({ allowedModels: ['old-model'] });
+      savedMainSnapshot = JSON.parse(JSON.stringify(profile.data()));
+    } finally { await initialMainCtx.dispose(); }
+
+    const restoredMainCtx = createTestAgent(
+      sessionService(ISessionAgentProfileCatalog, catalogWith(updatedMain)),
+      { initialConfig: { models: { usage: configuredModel } } },
+    );
+    try {
+      const profile = restoredMainCtx.get(IAgentProfileService);
+      profile.applyBindingSnapshot(savedMainSnapshot!);
+      expect(profile.data().spawnPolicy).toBeUndefined();
+      expect(profile.data().allowedSubagents).toEqual(['ctf-worker', 'reviewer']);
+      expect(profile.data().subagentLeases).toEqual({ 'ctf-worker': { name: 'ctf-worker', modelAlias: 'usage' } });
+    } finally { await restoredMainCtx.dispose(); }
+
+    const restoredChildCtx = createTestAgent(
+      agentService(IAgentScopeContext, makeAgentScopeContext({ agentId: 'child-1', agentScope: 'agents/child-1' })),
+      sessionService(ISessionAgentProfileCatalog, catalogWith(updatedMain)),
+      { initialConfig: { models: { usage: configuredModel } } },
+    );
+    try {
+      await restoredChildCtx.get(ISessionMetadata).registerAgent('child-1', { type: 'sub', model: 'usage' });
+      const childProfile = restoredChildCtx.get(IAgentProfileService);
+      childProfile.applyBindingSnapshot(savedMainSnapshot!);
+      expect(childProfile.data().spawnPolicy).toEqual({ allowedModels: ['old-model'] });
+      expect(childProfile.data().allowedSubagents).toEqual(['ctf-worker']);
+    } finally { await restoredChildCtx.dispose(); }
+  });
 });

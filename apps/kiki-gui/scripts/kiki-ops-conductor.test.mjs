@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   copyFileSync,
@@ -1137,5 +1137,326 @@ test('switchRuntime automatically rolls back primary + headless spaces when swit
     await primarySrv.close();
     await headlessSrv.close();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('bootstrapOps syncs prompt/ and recipes/ into a clean Ops home for model prompt_overrides and profile recipe refs', () => {
+  const root = makeTemp();
+  try {
+    const sourceHome = join(root, 'source-home');
+    const opsHome = join(root, 'ops-home');
+    const opsRuntime = join(root, 'ops-runtime');
+    const sourceCli = join(root, 'kiki.exe');
+    mkdirSync(join(sourceHome, 'agents'), { recursive: true });
+    mkdirSync(join(sourceHome, 'prompt', 'nested'), { recursive: true });
+    mkdirSync(join(sourceHome, 'recipes', 'common'), { recursive: true });
+    writeFileSync(sourceCli, 'fake-cli-binary');
+    writeFileSync(
+      join(sourceHome, 'config.toml'),
+      [
+        'default_model = "test-model"',
+        '[models.test-model]',
+        'provider = "test"',
+        'model = "test"',
+        '[models.test-model.prompt_overrides]',
+        'files = ["prompt/override.md", "prompt/nested/addon.md"]',
+      ].join('\n'),
+    );
+    writeFileSync(join(sourceHome, 'prompt', 'override.md'), '# Model prompt override\n');
+    writeFileSync(join(sourceHome, 'prompt', 'nested', 'addon.md'), '# Nested override\n');
+    writeFileSync(
+      join(sourceHome, 'agents', 'ops-agent.md'),
+      ['---', 'name: ops-agent', 'recipe: ../recipes/common/base.md', '---', 'Ops profile body.'].join('\n'),
+    );
+    writeFileSync(join(sourceHome, 'recipes', 'common', 'base.md'), '# Shared recipe\n');
+
+    const receipt = bootstrapOps({
+      sourceCli,
+      sourceHome,
+      opsHome,
+      opsRuntime,
+    });
+
+    assert.equal(receipt.ok, true);
+    assert.equal(receipt.syncedConfig, true);
+    assert.equal(receipt.syncedAgentsCount, 1);
+    assert.equal(receipt.syncedPromptFiles, 2);
+    assert.equal(receipt.syncedRecipeFiles, 1);
+
+    const parsedConfig = parseToml(readFileSync(join(opsHome, 'config.toml'), 'utf8'));
+    const overrideFiles = parsedConfig.models['test-model'].prompt_overrides.files;
+    for (const relPath of overrideFiles) {
+      const resolvedPrompt = resolve(opsHome, relPath);
+      assert.ok(existsSync(resolvedPrompt), `Expected synced prompt override file at ${resolvedPrompt}`);
+    }
+    const agentFile = join(opsHome, 'agents', 'ops-agent.md');
+    const recipeRef = resolve(dirname(agentFile), '../recipes/common/base.md');
+    assert.ok(existsSync(recipeRef), `Expected synced recipe file at ${recipeRef}`);
+    assert.equal(readFileSync(recipeRef, 'utf8'), '# Shared recipe\n');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rollbackRuntime preserves per-space fenceOperationIds and enforces fixed headless port across switch and rollback', async () => {
+  const root = makeTemp();
+  const runtimeRoot = join(root, 'runtime');
+  const primaryHome = join(root, 'primary-home');
+  const headlessHome = join(root, 'subtext-home');
+  const oldCand = join(root, 'cand-old');
+  const newCand = join(root, 'cand-new');
+  const oldRelId = writeCandidate(oldCand, OLD_COMMIT, 'desk-old', 'srv-old');
+  const newRelId = writeCandidate(newCand, NEW_COMMIT, 'desk-new', 'srv-new');
+  seedActive(runtimeRoot, oldRelId, OLD_COMMIT, 'desk-old', 'srv-old');
+
+  const activeExe = join(runtimeRoot, 'active', 'kiki-server.exe');
+  const primaryState = { serverId: 'srv-p-old', homeId: 'home-p', spaceId: 'main', buildId: OLD_COMMIT, desktopManaged: true, healthzOk: true };
+  const headlessFixedState = { serverId: 'srv-h-old', homeId: 'home-h', spaceId: 'subtext', buildId: OLD_COMMIT, desktopManaged: false, healthzOk: true };
+  const headlessDriftedState = { serverId: 'srv-h-drift', homeId: 'home-h', spaceId: 'subtext', buildId: NEW_COMMIT, desktopManaged: false, healthzOk: true };
+
+  const primarySrv = await startFixtureHttpServer(primaryState);
+  const headlessFixedSrv = await startFixtureHttpServer(headlessFixedState);
+  const headlessDriftedSrv = await startFixtureHttpServer(headlessDriftedState);
+
+  try {
+    mkdirSync(join(primaryHome, 'server', 'instances'), { recursive: true });
+    mkdirSync(join(headlessHome, 'server', 'instances'), { recursive: true });
+    writeFileSync(join(primaryHome, 'server.local-owner'), TOKEN);
+    writeFileSync(join(headlessHome, 'server.local-owner'), TOKEN);
+
+    let primaryPid = 60001;
+    let headlessPid = 60002;
+    registerInstance(primaryHome, { serverId: 'srv-p-old', pid: primaryPid, port: primarySrv.port, buildId: OLD_COMMIT });
+    registerInstance(headlessHome, { serverId: 'srv-h-old', pid: headlessPid, port: headlessFixedSrv.port, buildId: OLD_COMMIT });
+
+    // 1) Forward switch fails if headless space silently binds a drifted port instead of its fixed port, then auto-rolls back onto the exact fixed port.
+    let switchErr = null;
+    try {
+      await switchRuntime({
+        runtimeRoot,
+        kikiHome: primaryHome,
+        candidateRoot: newCand,
+        expectedCommit: NEW_COMMIT,
+        resolveProcessPath: (pid) => (pid === primaryPid || pid === headlessPid ? activeExe : null),
+        inspectSpaces: async () => [
+          {
+            kikiHome: primaryHome,
+            isPrimary: true,
+            hadDesktop: true,
+            liveServer: { server_id: 'srv-p-old', pid: primaryPid, port: primarySrv.port, releaseId: oldRelId, build_id: OLD_COMMIT, server_home_id: 'home-p', current_space_id: 'main' },
+          },
+          {
+            kikiHome: headlessHome,
+            isPrimary: false,
+            hadDesktop: false,
+            headlessLaunchArgs: `serve --home "${headlessHome}" --port ${headlessFixedSrv.port}`,
+            desktopManaged: false,
+            liveServer: { server_id: 'srv-h-old', pid: headlessPid, port: headlessFixedSrv.port, releaseId: oldRelId, build_id: OLD_COMMIT, server_home_id: 'home-h', current_space_id: 'subtext' },
+          },
+        ],
+        runHotSwitch: async (_script, args) => {
+          if (args.includes('-Rollback')) {
+            rmSync(join(primaryHome, 'server', 'instances', 'srv-p-new.json'), { force: true });
+            rmSync(join(headlessHome, 'server', 'instances', 'srv-h-drift.json'), { force: true });
+            primaryState.serverId = 'srv-p-rb';
+            primaryState.buildId = OLD_COMMIT;
+            headlessFixedState.serverId = 'srv-h-rb';
+            headlessFixedState.buildId = OLD_COMMIT;
+            primaryPid = 60011;
+            headlessPid = 60012;
+            seedActive(runtimeRoot, oldRelId, OLD_COMMIT, 'desk-old', 'srv-old');
+            registerInstance(primaryHome, { serverId: 'srv-p-rb', pid: primaryPid, port: primarySrv.port, buildId: OLD_COMMIT });
+            registerInstance(headlessHome, { serverId: 'srv-h-rb', pid: headlessPid, port: headlessFixedSrv.port, buildId: OLD_COMMIT });
+            return { code: 0, stdout: `Recovery complete: ${oldRelId}`, stderr: '' };
+          }
+          rmSync(join(primaryHome, 'server', 'instances', 'srv-p-old.json'), { force: true });
+          rmSync(join(headlessHome, 'server', 'instances', 'srv-h-old.json'), { force: true });
+          primaryState.serverId = 'srv-p-new';
+          primaryState.buildId = NEW_COMMIT;
+          primaryPid = 60003;
+          headlessPid = 60004;
+          seedActive(runtimeRoot, newRelId, NEW_COMMIT, 'desk-new', 'srv-new');
+          registerInstance(primaryHome, { serverId: 'srv-p-new', pid: primaryPid, port: primarySrv.port, buildId: NEW_COMMIT });
+          // Simulate silent port drift to headlessDriftedSrv.port instead of headlessFixedSrv.port.
+          registerInstance(headlessHome, { serverId: 'srv-h-drift', pid: headlessPid, port: headlessDriftedSrv.port, buildId: NEW_COMMIT });
+          return { code: 0, stdout: `Running ${newRelId}`, stderr: '' };
+        },
+      });
+    } catch (error) {
+      switchErr = error;
+    }
+
+    assert.ok(switchErr, 'switchRuntime must reject when headless space binds a different port than its fixed port');
+    assert.match(switchErr.message, new RegExp(`bound port ${headlessDriftedSrv.port} instead of required fixed port ${headlessFixedSrv.port}`));
+    assert.equal(switchErr.failureReport.rollback.ok, true);
+
+    // 2) Reseeded rollback state MUST preserve per-space fenceOperationIds and expectedPort from existing hot-switch.json,
+    //    and rollback postcheck MUST fail if rollback lands on a drifted port.
+    const statePath = join(runtimeRoot, 'hot-switch.json');
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        phase: 'complete',
+        kikiHome: primaryHome,
+        oldReleaseId: oldRelId,
+        oldBuildId: OLD_COMMIT,
+        fenceOperationId: 'hot-switch:primary-fence-123',
+        spaces: [
+          {
+            kikiHome: primaryHome,
+            isPrimary: true,
+            hadDesktop: true,
+            fenceOperationId: 'hot-switch:primary-fence-123',
+            sessions: [{ id: 'sess-1', pauseId: 'hot-switch:pause-1' }],
+          },
+          {
+            kikiHome: headlessHome,
+            isPrimary: false,
+            hadDesktop: false,
+            headlessLaunchArgs: `serve --home "${headlessHome}" --port ${headlessFixedSrv.port}`,
+            headlessOriginalPort: headlessFixedSrv.port,
+            expectedPort: headlessFixedSrv.port,
+            fenceOperationId: 'hot-switch:subtext-fence-456',
+            sessions: [{ id: 'sess-2', pauseId: 'hot-switch:pause-2' }],
+          },
+        ],
+      }),
+    );
+
+    let seenSeededState = null;
+    let rbDriftErr = null;
+    try {
+      await rollbackRuntime({
+        runtimeRoot,
+        kikiHome: primaryHome,
+        releaseId: oldRelId,
+        expectedCommit: OLD_COMMIT,
+        resolveProcessPath: (pid) => (pid === primaryPid || pid === headlessPid ? activeExe : null),
+        runHotSwitch: async () => {
+          seenSeededState = JSON.parse(readFileSync(statePath, 'utf8'));
+          rmSync(join(headlessHome, 'server', 'instances', 'srv-h-rb.json'), { force: true });
+          headlessDriftedState.buildId = OLD_COMMIT;
+          headlessDriftedState.serverId = 'srv-h-rb-drift';
+          registerInstance(headlessHome, { serverId: 'srv-h-rb-drift', pid: headlessPid, port: headlessDriftedSrv.port, buildId: OLD_COMMIT });
+          return { code: 0, stdout: `Recovery complete: ${oldRelId}`, stderr: '' };
+        },
+      });
+    } catch (error) {
+      rbDriftErr = error;
+    }
+    assert.ok(seenSeededState, 'rollbackRuntime should seed unfinished hot-switch.json when previous state was complete');
+    assert.equal(seenSeededState.fenceOperationId, 'hot-switch:primary-fence-123');
+    const seededHeadless = seenSeededState.spaces.find((s) => s.kikiHome.toLowerCase() === headlessHome.toLowerCase());
+    assert.equal(seededHeadless.fenceOperationId, 'hot-switch:subtext-fence-456');
+    assert.equal(seededHeadless.expectedPort, headlessFixedSrv.port);
+    assert.deepEqual(seededHeadless.sessions, [{ id: 'sess-2', pauseId: 'hot-switch:pause-2' }]);
+    assert.ok(rbDriftErr, 'rollbackRuntime must reject when rollback binds a drifted headless port');
+    assert.equal(rbDriftErr.failureReport.ok, false);
+    assert.match(rbDriftErr.message, new RegExp(`bound port ${headlessDriftedSrv.port} instead of required fixed port ${headlessFixedSrv.port}`));
+  } finally {
+    await primarySrv.close();
+    await headlessFixedSrv.close();
+    await headlessDriftedSrv.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('desktop-hot-switch.ps1 Try-RuntimeSwitch distinguishes 404 unfenced, 5xx failure, and GET-confirmed release', async () => {
+  const mode = { postStatus: 500, getStatus: 500, writerOp: 'op-1', admissionOp: 'op-1' };
+  const srv = http.createServer((req, res) => {
+    if (req.url === '/api/runtime-switch' && req.method === 'POST') {
+      res.writeHead(mode.postStatus, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(mode.postStatus === 200 ? { code: 0, data: { ok: true } } : { code: 50001, msg: 'fail' }));
+      return;
+    }
+    if (req.url === '/api/runtime-switch' && req.method === 'GET') {
+      res.writeHead(mode.getStatus, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(
+        mode.getStatus === 200
+          ? { code: 0, data: { writer: { operationId: mode.writerOp }, admission: { operationId: mode.admissionOp } } }
+          : { code: 50001, msg: 'fail' },
+      ));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((res) => srv.listen(0, '127.0.0.1', res));
+  const port = srv.address().port;
+  const psScriptPath = join(repoRoot, 'apps', 'kiki-gui', 'scripts', 'desktop-hot-switch.ps1');
+  const psSource = readFileSync(psScriptPath, 'utf8');
+  const startIdx = psSource.indexOf('function Call-Local(');
+  const endIdx = psSource.indexOf('function Get-ProcessTreePids(');
+  assert.ok(startIdx > 0 && endIdx > startIdx, 'Could not locate helper block in desktop-hot-switch.ps1');
+  const helperBlock = psSource.slice(startIdx, endIdx);
+  const harnessDir = makeTemp();
+  const harnessPath = join(harnessDir, 'harness.ps1');
+  writeFileSync(
+    harnessPath,
+    [
+      'param([int]$Port, [string]$OpId)',
+      '$ownerToken = "tok"',
+      'function Get-ObjectProperty([object]$Obj, [string]$Name) { if ($null -eq $Obj) { return $null }; $p = $Obj.PSObject.Properties[$Name]; if ($null -ne $p) { return $p.Value }; return $null }',
+      helperBlock,
+      '$srv = [pscustomobject]@{ port = $Port; server_id = "srv-1"; ownerToken = "tok" }',
+      '$res = @{}',
+      'Try-RuntimeSwitch $srv $OpId "cancel" $res',
+      '$res | ConvertTo-Json -Compress',
+    ].join('\n'),
+  );
+
+  const runCase = () => new Promise((resolveRun, rejectRun) => {
+    execFile(
+      'powershell',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', harnessPath, '-Port', String(port), '-OpId', 'op-1'],
+      { encoding: 'utf8', timeout: 20_000 },
+      (err, stdout, stderr) => {
+        if (err) {
+          rejectRun(new Error(stderr || err.message));
+          return;
+        }
+        try {
+          resolveRun(JSON.parse(stdout.trim()));
+        } catch (parseErr) {
+          rejectRun(parseErr);
+        }
+      },
+    );
+  });
+
+  try {
+    // 500 POST + 500 GET => NOT released (must keep state unfinished!)
+    mode.postStatus = 500;
+    mode.getStatus = 500;
+    const r500 = await runCase();
+    assert.equal(r500.confirmed, false);
+    assert.equal(r500.released, false);
+    assert.equal(r500.unsupported, false);
+
+    // 400 POST + 200 GET still holding our fence => NOT released!
+    mode.postStatus = 400;
+    mode.getStatus = 200;
+    mode.writerOp = 'op-1';
+    mode.admissionOp = 'op-1';
+    const rStillFenced = await runCase();
+    assert.equal(rStillFenced.confirmed, false);
+    assert.equal(rStillFenced.released, false);
+
+    // 400 POST + 200 GET showing fence no longer held => confirmed & released!
+    mode.writerOp = null;
+    mode.admissionOp = null;
+    const rAlreadyReleased = await runCase();
+    assert.equal(rAlreadyReleased.confirmed, true);
+    assert.equal(rAlreadyReleased.released, true);
+
+    // 404 POST (legacy unfenced server) => unsupported & released!
+    mode.postStatus = 404;
+    const r404 = await runCase();
+    assert.equal(r404.unsupported, true);
+    assert.equal(r404.released, true);
+  } finally {
+    await new Promise((res) => srv.close(res));
+    rmSync(harnessDir, { recursive: true, force: true });
   }
 });
