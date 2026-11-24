@@ -181,27 +181,35 @@ describe('the personas header on a phone', () => {
   });
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  it('keeps New persona in the header and moves Ask Kiki and Import into the ⋯ sheet', async () => {
+  it('collapses create actions into a single secondary 新建 ▾ menu on phone and desktop', async () => {
     listPersonas.mockResolvedValue([LIN_LAN]);
     listWorkspaceCatalog.mockResolvedValue({ items: [{ id: 'wd_recent_000000000000', name: 'Recent', root: '/recent' }] });
     const container = await render('/personas');
     const header = container.querySelector('header')!;
-    expect(header.querySelector('[data-persona-new]')).not.toBeNull();
+    const trigger = header.querySelector<HTMLButtonElement>('[data-persona-new-menu-trigger]')!;
+    expect(trigger).not.toBeNull();
+    expect(trigger.className).not.toContain('bg-accent');
     expect(header.querySelector('[data-persona-ask-kiki]')).toBeNull();
     expect(header.querySelector('[data-persona-import]')).toBeNull();
 
-    await act(async () => { header.querySelector<HTMLButtonElement>('[data-persona-more]')!.click(); });
-    const sheet = document.querySelector('[data-persona-more-menu][class~="kiki-action-sheet-layer"]')!;
-    expect(sheet).not.toBeNull();
-    const items = [...sheet.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
-    expect(items.map((item) => item.textContent)).toEqual(['帮我创建', '导入角色卡']);
+    await act(async () => { trigger.click(); });
+    const menu = document.querySelector('[data-persona-new-menu]')!;
+    expect(menu).not.toBeNull();
+    const items = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    expect(items.map((item) => item.textContent)).toEqual(['空白角色', '帮我创建', '导入角色卡']);
 
-    // The sheet's Import opens the same import dialog the desktop button does.
-    await act(async () => { items[1]!.click(); });
-    expect(document.querySelector('[data-persona-more-menu][class~="kiki-action-sheet-layer"]')).toBeNull();
+    // The menu's Import opens the same import dialog.
+    await act(async () => { items[2]!.click(); });
+    expect(document.querySelector('[data-persona-new-menu]')).toBeNull();
     expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
   });
 });
+
+async function openNewMenuAndFind(container: HTMLElement, selector: string): Promise<HTMLButtonElement> {
+  const trigger = container.querySelector<HTMLButtonElement>('[data-persona-new-menu-trigger]')!;
+  await act(async () => { trigger.click(); });
+  return document.querySelector<HTMLButtonElement>(selector)!;
+}
 
 describe('handing a new persona to Kiki', () => {
   beforeEach(() => {
@@ -211,27 +219,19 @@ describe('handing a new persona to Kiki', () => {
     listWorkspaceCatalog.mockResolvedValue({ items: [{ id: 'wd_recent_000000000000', name: 'Recent', root: '/recent' }] });
   });
 
-  it('sits beside New persona in Ask Kiki -> Import -> New order, and carries the full intent for assistive tech', async () => {
+  it('lives inside the secondary 新建 ▾ menu with Blank -> Ask Kiki -> Import order, carrying full intent for assistive tech', async () => {
     listPersonas.mockResolvedValue([LIN_LAN]);
     const container = await render('/personas');
 
-    const ask = container.querySelector<HTMLButtonElement>('[data-persona-ask-kiki]')!;
+    const trigger = container.querySelector<HTMLButtonElement>('[data-persona-new-menu-trigger]')!;
+    expect(trigger.className).not.toContain('bg-accent');
+    const ask = await openNewMenuAndFind(container, '[data-persona-ask-kiki]');
     expect(ask.textContent).toBe('帮我创建');
     expect(ask.getAttribute('aria-label')).toBe('让 Kiki 帮你创建角色');
     expect(ask.getAttribute('title')).toBe('让 Kiki 帮你创建角色');
-    // It is the same second-level weight as Import, never the primary verb.
-    const primary = container.querySelector<HTMLButtonElement>('[data-persona-new]')!;
-    const importButton = container.querySelector<HTMLButtonElement>('[data-persona-import]')!;
-    const headerButtons = [...container.querySelectorAll('header button')].filter((button) =>
-      button.hasAttribute('data-persona-ask-kiki') || button.hasAttribute('data-persona-import') || button.hasAttribute('data-persona-new'));
-    expect(headerButtons.map((button) => button.getAttribute('data-persona-ask-kiki') !== null ? 'ask' : button.getAttribute('data-persona-import') !== null ? 'import' : 'new'))
-      .toEqual(['ask', 'import', 'new']);
-    // The only addition is shrink-0, so a wrapped header never squeezes the
-    // label into an ellipsis; the border, type and colour roles are identical.
-    expect([...ask.classList].filter((name) => name !== 'shrink-0').sort())
-      .toEqual([...importButton.classList].sort());
-    expect(ask.className).not.toBe(primary.className);
-    expect(ask.className).not.toContain('bg-accent');
+    const items = [...document.querySelectorAll<HTMLButtonElement>('[data-persona-new-menu] [role="menuitem"]')];
+    expect(items.map((button) => button.hasAttribute('data-persona-new') ? 'new' : button.hasAttribute('data-persona-ask-kiki') ? 'ask' : 'import'))
+      .toEqual(['new', 'ask', 'import']);
   });
 
   it('opens one new session whose composer waits for an editable /kiki-persona line, and sends nothing', async () => {
@@ -239,7 +239,8 @@ describe('handing a new persona to Kiki', () => {
     createSession.mockResolvedValue({ id: 'persona-ask-session' });
     const container = await render('/personas');
 
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-ask-kiki]')!.click(); });
+    const ask = await openNewMenuAndFind(container, '[data-persona-ask-kiki]');
+    await act(async () => { ask.click(); });
     for (let index = 0; index < 6; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
     expect(createSession).toHaveBeenCalledTimes(1);
@@ -263,7 +264,8 @@ describe('handing a new persona to Kiki', () => {
     createSession.mockResolvedValue({ id: 'persona-ask-empty' });
     const container = await render('/personas');
 
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-ask-kiki]')!.click(); });
+    const ask = await openNewMenuAndFind(container, '[data-persona-ask-kiki]');
+    await act(async () => { ask.click(); });
     for (let index = 0; index < 6; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
     // Same body /new sends when there is nothing to inherit.
@@ -277,7 +279,8 @@ describe('handing a new persona to Kiki', () => {
     createSession.mockResolvedValue({ id: 'persona-ask-unknown' });
     const container = await render('/personas');
 
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-ask-kiki]')!.click(); });
+    const ask = await openNewMenuAndFind(container, '[data-persona-ask-kiki]');
+    await act(async () => { ask.click(); });
     for (let index = 0; index < 6; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
     // We never learned where this belongs, so the button must not have fired:
@@ -291,7 +294,7 @@ describe('handing a new persona to Kiki', () => {
     listPersonas.mockResolvedValue([LIN_LAN]);
     createSession.mockResolvedValue({ id: 'persona-ask-session' });
     const container = await render('/personas');
-    const button = container.querySelector<HTMLButtonElement>('[data-persona-ask-kiki]')!;
+    const button = await openNewMenuAndFind(container, '[data-persona-ask-kiki]');
 
     await act(async () => { button.click(); button.click(); button.click(); });
     for (let index = 0; index < 6; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -303,14 +306,15 @@ describe('handing a new persona to Kiki', () => {
     listPersonas.mockResolvedValue([LIN_LAN]);
     createSession.mockRejectedValueOnce(new Error('server offline')).mockResolvedValueOnce({ id: 'persona-ask-retry' });
     const container = await render('/personas');
-    const button = container.querySelector<HTMLButtonElement>('[data-persona-ask-kiki]')!;
+    const first = await openNewMenuAndFind(container, '[data-persona-ask-kiki]');
 
-    await act(async () => { button.click(); });
+    await act(async () => { first.click(); });
     for (let index = 0; index < 6; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(button.disabled).toBe(false);
     expect(navigate).not.toHaveBeenCalled();
 
-    await act(async () => { button.click(); });
+    const retry = await openNewMenuAndFind(container, '[data-persona-ask-kiki]');
+    expect(retry.disabled).toBe(false);
+    await act(async () => { retry.click(); });
     for (let index = 0; index < 6; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(createSession).toHaveBeenCalledTimes(2);
     expect(navigate).toHaveBeenCalledWith('/s/persona-ask-retry', { state: { createdSession: { id: 'persona-ask-retry', scopeId: 'local' } } });

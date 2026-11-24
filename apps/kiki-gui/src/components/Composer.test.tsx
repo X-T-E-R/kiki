@@ -524,7 +524,7 @@ describe('Composer host compatibility', () => {
 
   it('keeps permission chip visible and renders profile mark plus effort in CompactModelSheet', async () => {
     const { container } = await renderComposer({
-      execution: { executor: 'native' },
+      execution: { executor: 'native', profile: undefined, overrides: undefined },
       onChangeExecution: vi.fn(),
       model: 'fixture/kiki-pro',
       efforts: ['low', 'medium', 'high'],

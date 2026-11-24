@@ -108,6 +108,7 @@ vi.mock('./Transcript', async (importOriginal) => {
 });
 vi.mock('./SelectionQuoteButton', () => ({ SelectionQuoteButton: () => null }));
 // The preview: a tab strip that opens (and selects) an agent tab.
+let togglePreviewPanelCalls = 0;
 vi.mock('./mediaPreview', () => ({
   PreviewToggleButton: () => null,
   useMediaPreview: () => undefined,
@@ -117,6 +118,21 @@ vi.mock('./mediaPreview', () => ({
       openAgentPanel: (agentId: string) => {
         opened.push(agentId);
         setTabs((current) => (current.includes(agentId) ? current : [...current, agentId]));
+      },
+      get previewTabCount() {
+        return Math.max(tabs.length, fixture.previewPresentation !== undefined ? 1 : 0);
+      },
+      get previewPanelOpen() {
+        return fixture.previewPresentation?.open === true;
+      },
+      togglePreviewPanel: () => {
+        togglePreviewPanelCalls += 1;
+        if (fixture.previewPresentation !== undefined) {
+          fixture.previewPresentation = {
+            ...fixture.previewPresentation,
+            open: !fixture.previewPresentation.open,
+          };
+        }
       },
     }) as unknown as MediaPreviewApi);
     return (
@@ -446,7 +462,8 @@ describe('right rail responsive layout', () => {
     }
   });
 
-  it('yields docked rail at 1024–1359px when preview opens and summons overlay on first header toggle click', async () => {
+  it('swaps docked Preview and Inspector inline at 1024–1359px with zero scrim and restores Preview on close', async () => {
+    togglePreviewPanelCalls = 0;
     fixture.session = { id: 'session-a', title: 'Priority band', workspace_id: 'ws_a', agent_config: {}, metadata: {} } as Session;
     const view = await mountAt('priority', true);
     try {
@@ -461,21 +478,25 @@ describe('right rail responsive layout', () => {
       expect(view.toggle()?.getAttribute('aria-expanded')).toBe('false');
       expect(localStorage.getItem('kiki.layout')).toBeNull();
 
-      // First click summons the Inspector overlay + stage scrim inside slots.rail.
+      // Clicking the Inspector toggle collapses Preview and mounts Inspector inline with zero scrim.
       await act(async () => { view.toggle()!.click(); });
+      expect(togglePreviewPanelCalls).toBe(1);
+      expect(fixture.previewPresentation?.open).toBe(false);
+      await view.rerender();
       expect(view.rail()).not.toBeNull();
       expect(view.toggle()?.getAttribute('aria-expanded')).toBe('true');
-      const scrim = slots['rail']?.querySelector<HTMLElement>('[data-rail-backdrop]');
-      expect(scrim).not.toBeNull();
-      expect(scrim?.classList.contains('app-overlay-backdrop--row')).toBe(true);
+      expect(slots['rail']?.querySelector('[data-rail-backdrop]')).toBeNull();
       expect(localStorage.getItem('kiki.layout')).toBeNull();
 
-      // Clicking the scrim closes the transient overlay while keeping stored railOpen untouched.
-      await act(async () => { scrim!.click(); });
+      // Clicking the Inspector toggle again closes Inspector and restores Preview cleanly.
+      await act(async () => { view.toggle()!.click(); });
+      expect(togglePreviewPanelCalls).toBe(2);
+      expect(fixture.previewPresentation?.open).toBe(true);
+      await view.rerender();
       expect(view.rail()).toBeNull();
       expect(view.toggle()?.getAttribute('aria-expanded')).toBe('false');
 
-      // Widening to >=1360px restores the docked rail inline automatically.
+      // Widening to >=1360px restores the docked rail inline alongside Preview with zero scrim.
       await resizeTo('wide');
       expect(view.rail()).not.toBeNull();
       expect(slots['rail']?.querySelector('[data-rail-backdrop]')).toBeNull();

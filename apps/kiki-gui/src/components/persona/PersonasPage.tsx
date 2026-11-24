@@ -20,7 +20,8 @@
  * instead of repeating the same line under every heading.
  */
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Popover } from '@base-ui/react/popover';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
@@ -30,12 +31,12 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { useAskKiki, useAskKikiWorkspace, AskKikiButton } from '../askKiki';
 import { DisclosureChevron, Icon } from '../icons';
-import { PAGE_WIDTH, PageHeader, PageMoreMenu } from '../PageChrome';
-import { usePhoneMode } from '../../lib/layoutHooks';
+import { PAGE_WIDTH, PageHeader } from '../PageChrome';
 import { LIST_TOOLS_MIN_ITEMS } from '../settings/list';
 import { InlineError } from '../controls';
+import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
+import { floatingSurfaceZIndex } from '../../lib/uiBusy';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
-import { segmentClass } from '../WorkspaceScopeControl';
 import { SettingsPageScopeContext } from '../settings/SectionCard';
 import { PersonaAvatar, personaAvatarOf } from './PersonaAvatar';
 import { PersonaEditor } from './PersonaEditor';
@@ -44,19 +45,20 @@ import { PersonaConversationsSection } from './PersonaConversationsSection';
 import { matchesPersona, sortPersonas, usePersonaList } from './usePersonas';
 
 export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: () => void }) {
-  const { t, tp } = useI18n();
+  const { t, tp, locale } = useI18n();
   const [params, setParams] = useSearchParams();
   const [search, setSearch] = useState('');
   const [showHidden, setShowHidden] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
+  const newMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const listQuery = usePersonaList({ includeArchived: true });
   const { ask, busy: askingKiki } = useAskKiki();
   // Personas are server-scoped, but the conversation still runs somewhere: the
   // same workspace a plain New conversation here would use.
   const kikiWorkspace = useAskKikiWorkspace();
   const askKiki = () => { void ask({ skill: 'kiki-persona', promptKey: 'persona.askKiki.prompt', location: kikiWorkspace.location }); };
-  const phone = usePhoneMode();
 
   const selectedId = params.get('persona') ?? undefined;
   const creating = params.get('new') === '1';
@@ -104,37 +106,80 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
   return (
     <div data-personas-page className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
       <PageHeader title={t('persona.title')} onToggleSidebar={onToggleSidebar} width="split">
-        {/* A phone header keeps the title and one action; asking Kiki and
-            importing a card go behind the ⋯, so the title is not squeezed. */}
-        {phone ? null : (
-          <AskKikiButton
-            label={t('persona.askKiki')}
-            labelAria={t('persona.askKikiAria')}
-            busy={askingKiki}
-            // Disabled until the workspace list answers: pressing it blind would
-            // land the session in a fresh folder the user never asked for.
-            disabled={!kikiWorkspace.resolved}
-            testId="data-persona-ask-kiki"
-            onAsk={askKiki}
-          />
-        )}
-        {phone ? null : (
-          <button type="button" data-persona-import onClick={() => { setImporting(true); }} className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}>
-            {t('persona.import')}
-          </button>
-        )}
-        <button type="button" data-persona-new onClick={() => { select(undefined, { creating: true }); }} className={`${PRIMARY_BUTTON} pointer-coarse:min-h-11`}>
-          {t('persona.new')}
-        </button>
-        {phone ? (
-          <PageMoreMenu
-            menuId="persona-more"
-            entries={[
-              { key: 'ask-kiki', label: t('persona.askKiki'), disabled: askingKiki || !kikiWorkspace.resolved, run: askKiki },
-              { key: 'import', label: t('persona.import'), run: () => { setImporting(true); } },
-            ]}
-          />
-        ) : null}
+        <Popover.Root open={newMenuOpen} onOpenChange={setNewMenuOpen}>
+          <Popover.Trigger
+            ref={newMenuTriggerRef}
+            type="button"
+            data-persona-new-menu-trigger
+            aria-haspopup="menu"
+            aria-expanded={newMenuOpen}
+            className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5 pointer-coarse:min-h-11`}
+          >
+            <span>{locale === 'zh' ? '新建' : 'New'}</span>
+            <Icon
+              name="chevron"
+              size={12}
+              className={`text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] ${newMenuOpen ? '-rotate-90' : 'rotate-90'}`}
+            />
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Positioner
+              anchor={newMenuTriggerRef}
+              side="bottom"
+              align="end"
+              sideOffset={6}
+              collisionPadding={8}
+              positionMethod="fixed"
+              style={{ zIndex: floatingSurfaceZIndex(newMenuTriggerRef.current) }}
+            >
+              <Popover.Popup
+                role="menu"
+                data-persona-new-menu
+                className={`anim-enter w-44 p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-persona-new
+                  onClick={() => {
+                    setNewMenuOpen(false);
+                    select(undefined, { creating: true });
+                  }}
+                  className="flex w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] text-ink transition-colors hover:bg-ink/[0.05] focus-visible:bg-ink/[0.05] focus-visible:outline-none pointer-coarse:min-h-11"
+                >
+                  {locale === 'zh' ? '空白角色' : t('persona.new')}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-persona-ask-kiki
+                  aria-label={t('persona.askKikiAria')}
+                  title={t('persona.askKikiAria')}
+                  disabled={askingKiki || !kikiWorkspace.resolved}
+                  onClick={() => {
+                    setNewMenuOpen(false);
+                    askKiki();
+                  }}
+                  className="flex w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] text-ink transition-colors hover:bg-ink/[0.05] focus-visible:bg-ink/[0.05] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11"
+                >
+                  {t('persona.askKiki')}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-persona-import
+                  onClick={() => {
+                    setNewMenuOpen(false);
+                    setImporting(true);
+                  }}
+                  className="flex w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] text-ink transition-colors hover:bg-ink/[0.05] focus-visible:bg-ink/[0.05] focus-visible:outline-none pointer-coarse:min-h-11"
+                >
+                  {t('persona.import')}
+                </button>
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
       </PageHeader>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-3 lg:px-6">
         <div className={`mx-auto pb-10 ${PAGE_WIDTH.split}`}>
@@ -238,15 +283,19 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                     {/* The default view leads; the conversations view keeps a
                         small face and name, since its list has no masthead and
                         the roster is off screen on narrow layouts. */}
-                    <div className="flex min-w-0 items-center justify-between gap-3 border-b border-hairline pb-3">
-                      <div role="tablist" aria-label={t('persona.viewModeAria')} className="flex shrink-0 items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5">
+                    <div className="flex min-w-0 items-center justify-between gap-3 border-b border-hairline">
+                      <div role="tablist" aria-label={t('persona.viewModeAria')} className="flex shrink-0 items-center gap-5">
                         <button
                           type="button"
                           role="tab"
                           data-persona-view="settings"
                           aria-selected={viewMode === 'settings'}
                           onClick={() => select(selected.id, { view: 'settings' })}
-                          className={segmentClass(viewMode === 'settings', 'h-7 px-3 text-[13px] pointer-coarse:h-10')}
+                          className={`relative -mb-px pb-2.5 text-[13px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
+                            viewMode === 'settings'
+                              ? 'font-medium text-ink after:absolute after:inset-x-0 after:bottom-0 after:h-[1.5px] after:bg-ink'
+                              : 'font-normal text-ink-soft hover:text-ink'
+                          }`}
                         >
                           {t('persona.tabSettings')}
                         </button>
@@ -256,13 +305,17 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                           data-persona-view="conversations"
                           aria-selected={viewMode === 'conversations'}
                           onClick={() => select(selected.id, { view: 'conversations' })}
-                          className={segmentClass(viewMode === 'conversations', 'h-7 px-3 text-[13px] pointer-coarse:h-10')}
+                          className={`relative -mb-px pb-2.5 text-[13px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
+                            viewMode === 'conversations'
+                              ? 'font-medium text-ink after:absolute after:inset-x-0 after:bottom-0 after:h-[1.5px] after:bg-ink'
+                              : 'font-normal text-ink-soft hover:text-ink'
+                          }`}
                         >
                           {t('persona.tabConversations')}
                         </button>
                       </div>
                       {viewMode === 'conversations' ? (
-                        <span data-persona-view-identity className="flex min-w-0 items-center gap-2 text-[13px] text-ink-soft">
+                        <span data-persona-view-identity className="flex min-w-0 items-center gap-2 pb-2 text-[13px] text-ink-soft">
                           <PersonaAvatar persona={personaAvatarOf(selected)} size={22} decorative />
                           <span className="min-w-0 truncate">{selected.name}</span>
                         </span>

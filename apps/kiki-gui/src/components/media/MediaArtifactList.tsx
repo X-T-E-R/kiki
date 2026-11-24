@@ -37,7 +37,7 @@ import { formatBytes } from '@kiki/session-core/composer/media';
 import { useI18n } from '../../i18n';
 import type { MediaArtifact } from '../../lib/mediaSources';
 import { useOptionalConnection } from '../../state/connection';
-import { attachmentName, MediaPart, useMediaRefMenu } from '../mediaParts';
+import { attachmentName, classifyMediaFailure, MediaLoadFailure, MediaPart, useMediaRefMenu, type MediaFailureKind } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
 import { QUIET_BUTTON } from '../capabilities/primitives';
 import { MediaKindGlyph } from './MediaKindGlyph';
@@ -323,7 +323,7 @@ function AudioOriginal({ artifact, sessionId }: { readonly artifact: MediaArtifa
   });
   const decodeFailed = decodeFailureState.source === sourceIdentity && decodeFailureState.failed;
 
-  type ByteLoadState = { status: 'idle' | 'loading' | 'ready'; url?: string; failed: boolean };
+  type ByteLoadState = { status: 'idle' | 'loading' | 'ready'; url?: string; failed: boolean; failureKind?: MediaFailureKind };
 
   const [byteState, setByteState] = useState<{
     source: typeof sourceIdentity;
@@ -361,9 +361,9 @@ function AudioOriginal({ artifact, sessionId }: { readonly artifact: MediaArtifa
         const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: artifact.mime || mime }));
         objectUrlRef.current = url;
         setByteState({ source: sourceIdentity, load: { status: 'ready', url, failed: false } });
-      }, () => {
+      }, (error: unknown) => {
         if (!controller.signal.aborted) {
-          setByteState({ source: sourceIdentity, load: { status: 'idle', failed: true } });
+          setByteState({ source: sourceIdentity, load: { status: 'idle', failed: true, failureKind: classifyMediaFailure(error, false, 'audio') } });
         }
       });
 
@@ -380,28 +380,33 @@ function AudioOriginal({ artifact, sessionId }: { readonly artifact: MediaArtifa
   };
 
   const failed = armed && (playback.status === 'failed' || byteLoad.failed || decodeFailed);
+  const failureKind: MediaFailureKind = decodeFailed
+    ? 'decode'
+    : byteLoad.failed
+      ? (byteLoad.failureKind ?? 'transient')
+      : 'transient';
   const loading = armed && (playback.status === 'loading' || byteLoad.status === 'loading');
   const readyUrl = armed && !decodeFailed
     ? (playback.status === 'ready' ? playback.url : (playback.status === 'fallback' && byteLoad.status === 'ready' ? byteLoad.url : undefined))
     : undefined;
 
   if (failed) {
+    const retryAudio = () => {
+      setDecodeFailureState({ source: sourceIdentity, failed: false });
+      setByteState({ source: sourceIdentity, load: { status: 'idle', failed: false } });
+      setAttempt((c) => c + 1);
+      setArmedSource(currentSource);
+    };
     return (
-      <span className="flex min-w-0 flex-wrap items-center gap-2" data-media-audio={artifact.id} data-media-audio-state="failed">
-        <span role="alert" className="text-[11px] text-danger">{t('cap.media.artifact.audioFailed')}</span>
-        <button
-          type="button"
-          onClick={() => {
-            setDecodeFailureState({ source: sourceIdentity, failed: false });
-            setByteState({ source: sourceIdentity, load: { status: 'idle', failed: false } });
-            setAttempt((c) => c + 1);
-            setArmedSource(currentSource);
-          }}
-          className={`${QUIET_BUTTON} h-8`}
-          data-media-audio-retry={artifact.id}
-        >
-          {t('common.retry')}
-        </button>
+      <span className="inline-flex min-w-0 max-w-full" data-media-audio={artifact.id} data-media-audio-state="failed">
+        <MediaLoadFailure
+          name={artifact.name}
+          decode={failureKind === 'decode'}
+          failureKind={failureKind}
+          title={artifact.name}
+          onRetry={retryAudio}
+          retryDataAttr={{ 'data-media-audio-retry': artifact.id }}
+        />
       </span>
     );
   }

@@ -73,6 +73,7 @@ import {
   groupHasRunning,
   effectiveSubagentStatus,
   groupSummary,
+  isMediaTool,
   latestFinalAssistantBlockId,
   settledFinalAssistantBlockIds,
   latestTurnId,
@@ -165,7 +166,7 @@ import { ApprovalCard, InteractionRecord, MergedInteractionRecord, QuestionCard,
 import { ExecutorNoteRow, TurnExecutionBadge } from './timeline/ExecutorNotes';
 import { ExternalTextRow } from './timeline/ExternalTextRow';
 import { AssistantOutputContent, useOutputLayer } from './output-layer';
-import { MediaRunRow, SubagentEndedRow, SubagentGroupRow } from './timeline/FoldRows';
+import { SubagentEndedRow, SubagentGroupRow } from './timeline/FoldRows';
 import { FindBar } from './timeline/FindBar';
 import { buildFindItems } from './timeline/findItems';
 import { createFindRevealStore, FindRevealContext, useFindReveal } from './timeline/findReveal';
@@ -194,8 +195,8 @@ import { AdmissionLine, useAdmissionView } from './timeline/AdmissionLine';
 import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { RenderedImageScope, useRenderedImageTargets } from './markdown/renderedImages';
-import { MediaPartList, useActiveDraftKey } from './mediaParts';
-import { unwrapFileLinkTarget, type MediaRef } from '@kiki/session-core/composer/media';
+import { MediaPart, MediaPartList, useActiveDraftKey, type MediaFailureKind } from './mediaParts';
+import { basenameOf, extractToolOutputMedia, toolResultMedia, unwrapFileLinkTarget, type MediaRef } from '@kiki/session-core/composer/media';
 import { MediaGalleryOrder, useMediaPreview } from './mediaPreviewContext';
 import { RelativeTime, useElapsedSince } from './RelativeTime';
 import { NestedFoldContext, NestedFoldStore, countFoldedDescendants, groupDescendantsByDispatch, useDispatchGroup, useNestedFold } from './timeline/nestedFold';
@@ -1372,13 +1373,13 @@ function systemHeadline(text: string): string | undefined {
   return undefined;
 }
 
-const SystemMessage = memo(function SystemMessage({ block }: { block: SystemBlock }) {
+const SystemMessage = memo(function SystemMessage({ block, superseded = false }: { block: SystemBlock; superseded?: boolean }) {
   const hook = block.variant === 'hook_result' ? parseKikiHookEvent(block.hookEvent) : undefined;
   if (hook !== undefined) return <KikiHookRow block={block} hook={hook} />;
-  return <PlainSystemMessage block={block} />;
+  return <PlainSystemMessage block={block} superseded={superseded} />;
 });
 
-function PlainSystemMessage({ block }: { block: SystemBlock }) {
+function PlainSystemMessage({ block, superseded = false }: { block: SystemBlock; superseded?: boolean }) {
   const { t, time } = useI18n();
   const resolution = useAgentRefResolution();
   const [open, setOpen] = useState(block.variant === 'injection');
@@ -1419,9 +1420,10 @@ function PlainSystemMessage({ block }: { block: SystemBlock }) {
   }
   return (
     <ActivityRow
-      attrs={{ 'data-system': block.variant }}
+      attrs={{ 'data-system': block.variant, 'data-superseded': superseded || undefined }}
       glyph={<Icon name={block.variant === 'task' ? 'task' : block.variant === 'cron_job' || block.variant === 'cron_missed' ? 'clock' : 'system'} />}
-      tone={isFailed ? 'danger' : 'plain'}
+      tone={isFailed && !superseded ? 'danger' : 'plain'}
+      status={isFailed && superseded ? <span aria-label={t('transcript.failedAria')} className="text-ink-faint"><Icon name="warning" size={12} /></span> : undefined}
       label={label}
       detail={detail}
       title={time.absoluteTime(block.createdAt)}
@@ -1986,6 +1988,7 @@ function SubagentCompactCard({
   onOpenAgent,
   onExpand,
   folded = false,
+  superseded = false,
   invocationButton,
   invocationBody,
 }: {
@@ -2004,6 +2007,8 @@ function SubagentCompactCard({
   onExpand?: () => void;
   /** A nested agent folded by the view rule: its expand opens it for the rest of the view. */
   folded?: boolean;
+  /** Downgrade historical failure wash once a newer turn exists. */
+  superseded?: boolean;
 }) {
   const { t, tp, time } = useI18n();
   const [errorOpen, setErrorOpen] = useState(false);
@@ -2055,8 +2060,8 @@ function SubagentCompactCard({
         'data-orphaned': block.orphaned === true || undefined,
       }}
       buttonAttrs={{ 'data-agent-open': block.subagentId }}
-      glyph={<span className={`inline-block h-2 w-2 rounded-full align-middle ${subagentStatusTone(status)}`} />}
-      tone={error !== undefined ? 'danger' : 'plain'}
+      glyph={<span className={`inline-block h-2 w-2 rounded-full align-middle ${error !== undefined && superseded ? 'bg-ink/25' : subagentStatusTone(status)}`} />}
+      tone={error !== undefined && !superseded ? 'danger' : 'plain'}
       label={block.name || block.label || block.subagentId}
       detail={detail}
       title={error ?? t('subagent.openAgent', { name: block.name || block.label || block.subagentId })}
@@ -2175,6 +2180,7 @@ const SubagentCard = memo(function SubagentCard({
   displayStatus,
   formOverride,
   onToggleForm,
+  superseded = false,
 }: {
   block: SubagentBlock;
   forest?: AgentForest;
@@ -2184,6 +2190,7 @@ const SubagentCard = memo(function SubagentCard({
   displayStatus?: AgentTreeNode['status'];
   formOverride?: SubagentCardForm;
   onToggleForm?: (agentId: string, form: SubagentCardForm) => void;
+  superseded?: boolean;
 }) {
   const { t, tp, locale } = useI18n();
   const batchLimit = getSubagentScaleConfig().inlineBatchPreviewLimit;
@@ -2277,6 +2284,7 @@ const SubagentCard = memo(function SubagentCard({
         toolCalls={toolCalls}
         onOpenAgent={onOpenAgent}
         folded={nested}
+        superseded={superseded}
         invocationButton={invocation.button}
         invocationBody={<><AgentTurnOutcomeLine outcome={node?.turnOutcome} />{invocation.body}</>}
         onExpand={
@@ -2446,9 +2454,11 @@ const SUBAGENT_EVENT_ERROR_ROOTS: readonly string[] = ['error', 'stateReason'];
 const SubagentEventRow = memo(function SubagentEventRow({
   block,
   onOpenAgent,
+  superseded = false,
 }: {
   block: SubagentEventBlock;
   onOpenAgent?: (agentId: string) => void;
+  superseded?: boolean;
 }) {
   const { t } = useI18n();
   const [openMessage, setOpenMessage] = useState(false);
@@ -2493,10 +2503,11 @@ const SubagentEventRow = memo(function SubagentEventRow({
     <ActivityRow
       glyph={
         <span
-          className={`inline-block h-1.5 w-1.5 rounded-full align-middle ${subagentStatusTone(block.status)} ${busy ? 'status-dot-busy' : ''}`}
+          className={`inline-block h-1.5 w-1.5 rounded-full align-middle ${isFailed && superseded ? 'bg-ink/25' : subagentStatusTone(block.status)} ${busy ? 'status-dot-busy' : ''}`}
         />
       }
-      tone={isFailed ? 'danger' : 'plain'}
+      tone={isFailed && !superseded ? 'danger' : 'plain'}
+      status={isFailed && superseded ? <span aria-label={t('transcript.failedAria')} className="text-ink-faint"><Icon name="warning" size={12} /></span> : undefined}
       label={t(`subagent.event.${block.event}` as I18nKey)}
       detail={detail}
       title={block.error ?? t('subagent.openAgent', { name: block.name })}
@@ -2737,7 +2748,71 @@ function findTurnHintMatch(
   return queryMatch ?? userQueryMatch;
 }
 
-const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
+function humanizeTimelineError(raw: string | undefined, locale: string): string | undefined {
+  const plain = plainFailure(raw);
+  if (plain === undefined) return undefined;
+  const zh = locale === 'zh';
+  if (/MEDIA_PIPELINE_FAILED|empty media buffer/i.test(plain)) {
+    return zh ? '生成失败：上游返回空结果' : 'Generation failed: upstream returned empty data';
+  }
+  if (/file or media data is empty|unable to process input.*media/i.test(plain)) {
+    return zh ? '请求被拒绝：历史附件不可用' : 'Request rejected: attachment data unavailable';
+  }
+  if (/502 Bad Gateway|upstream asset expired/i.test(plain)) {
+    return zh ? '上游服务暂时不可用（502）' : 'Upstream service unavailable (502)';
+  }
+  return plain;
+}
+
+function matchesTailErrorText(
+  noticeText: string,
+  noticeDetails?: string,
+  tailError?: string,
+  tailErrorDetails?: string,
+): boolean {
+  const notice = noticeText.trim();
+  if (notice === '') return false;
+  const combinedTail = [tailError?.trim(), tailErrorDetails?.trim()]
+    .filter((part): part is string => part !== undefined && part !== '')
+    .join('\n');
+  if (combinedTail === '') return false;
+  if (!(combinedTail === notice || combinedTail.includes(notice))) return false;
+  const details = noticeDetails?.trim();
+  if (details !== undefined && details !== '' && !combinedTail.includes(details)) return false;
+  return true;
+}
+
+function isTurnFailureNotice(
+  block: NoticeBlock,
+  tail?: { readonly error?: string; readonly errorDetails?: string },
+): boolean {
+  if (
+    block.compactionPhase !== undefined ||
+    block.compactionFailure !== undefined ||
+    block.i18n?.key === 'transcript.marker.compactionFailed' ||
+    block.taskRef !== undefined ||
+    block.modelSwitch !== undefined ||
+    block.executor !== undefined ||
+    block.externalText !== undefined
+  ) {
+    return false;
+  }
+  if (
+    block.i18n?.key === 'notice.turnFailedDetail' ||
+    block.i18n?.key === 'notice.turnFailed' ||
+    block.i18n?.key === 'notice.promptFailed'
+  ) {
+    const details = block.errorDetails?.trim();
+    if (details !== undefined && details !== '') {
+      const combinedTail = [tail?.error?.trim(), tail?.errorDetails?.trim()].filter(Boolean).join('\n');
+      if (!combinedTail.includes(details)) return false;
+    }
+    return true;
+  }
+  return block.tone === 'danger' && matchesTailErrorText(block.text, block.errorDetails, tail?.error, tail?.errorDetails);
+}
+
+const Notice = memo(function Notice({ block, superseded = false }: { block: NoticeBlock; superseded?: boolean }) {
   const { t, time, locale } = useI18n();
   const compactionRecovery = useContext(CompactionRecoveryContext);
   const canRecoverCompaction =
@@ -2755,11 +2830,11 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
     ? (rawErrorText !== undefined && !block.errorDetails.includes(rawErrorText) ? `${rawErrorText}\n\n${block.errorDetails}` : block.errorDetails)
     : rawErrorText;
   const errorExpandable = block.compactionFailure !== undefined || block.errorDetails !== undefined ||
-    (block.tone === 'danger' && rawErrorText !== undefined && (rawErrorText.includes('\n') || rawErrorText.length > 72));
+    (block.tone === 'danger' && rawErrorText !== undefined && (rawErrorText.includes('\n') || rawErrorText.length > 72 || humanizeTimelineError(rawErrorText, locale) !== rawErrorText));
   const summaryHeadline = isDangerOrError && block.compactionFailure === undefined
     ? (block.i18n?.key === 'notice.turnFailedDetail' && block.text !== ''
-      ? t('notice.turnFailedDetail', { detail: `: ${plainFailure(block.text) ?? firstLineOf(block.text)}` })
-      : plainFailure(fullText) ?? firstLineOf(fullText))
+      ? t('notice.turnFailedDetail', { detail: `: ${humanizeTimelineError(block.text, locale) ?? firstLineOf(block.text)}` })
+      : humanizeTimelineError(fullText, locale) ?? firstLineOf(fullText))
     : fullText;
   const history = block.compactionHistory ?? [];
   const hasCompactionSummary = block.summary !== undefined || block.summaryPending === true ||
@@ -2771,15 +2846,21 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
   const count = block.markerRepeatCount ?? 1;
   const repeatedText = count > 1 ? history.length > 0
     ? t('transcript.marker.compactionRepeated', { label: summaryHeadline, count }) : `${summaryHeadline} ×${count}` : summaryHeadline;
-  const label = block.tone === 'danger'
+  const activeDanger = block.tone === 'danger' && !superseded;
+  const label = activeDanger
     ? <span className="min-w-0 truncate font-medium text-danger">{repeatedText}</span>
-    : <span className="min-w-0 truncate">{repeatedText}</span>;
+    : <span className="min-w-0 truncate text-ink-faint">{repeatedText}</span>;
   return (
     <div>
       <TimelineDivider
-        tone={block.tone === 'danger' ? 'warn' : 'plain'}
+        tone={activeDanger ? 'warn' : 'plain'}
         title={title === '' ? undefined : title}
-        attrs={{ 'data-notice-tone': block.tone, 'data-notice-key': block.i18n?.key, 'data-goal-change': block.goalChange?.kind }}
+        attrs={{
+          'data-notice-tone': activeDanger ? 'danger' : 'neutral',
+          'data-notice-superseded': superseded && block.tone === 'danger' ? 'true' : undefined,
+          'data-notice-key': block.i18n?.key,
+          'data-goal-change': block.goalChange?.kind,
+        }}
       >
         {expandable ? (
           <button
@@ -3191,12 +3272,15 @@ const BlockView = memo(function BlockView({
   annotations,
   stoppedTailTurnId,
   deliveredReply = false,
+  superseded = false,
 }: {
   block: Exclude<Block, ToolBlock>;
   /** Turn whose stop the visible tail divider already states. */
   stoppedTailTurnId?: string;
   /** This assistant text is the reply the message view speaks. */
   deliveredReply?: boolean;
+  /** Older turn / superseded failure: render failures in quiet paper-and-ink. */
+  superseded?: boolean;
   /** Settled final reply of a completed turn — eligible for `:fork`. */
   canForkReply?: boolean;
   readOnly: boolean;
@@ -3278,7 +3362,7 @@ const BlockView = memo(function BlockView({
     case 'system-reminder':
       return <SystemReminderMessage block={block} />;
     case 'system':
-      return <SystemMessage block={block} />;
+      return <SystemMessage block={block} superseded={superseded} />;
     case 'skill':
       return <SkillMessage block={block} />;
     case 'assistant':
@@ -3308,10 +3392,11 @@ const BlockView = memo(function BlockView({
           onOpenAgent={onOpenAgent}
           formOverride={subagentFormOverride}
           onToggleForm={onToggleSubagentForm}
+          superseded={superseded}
         />
       );
     case 'subagent-event':
-      return <SubagentEventRow block={block} onOpenAgent={onOpenAgent} />;
+      return <SubagentEventRow block={block} onOpenAgent={onOpenAgent} superseded={superseded} />;
     case 'notice':
       return block.executor !== undefined
         ? <ExecutorNoteRow note={block.executor} createdAt={block.createdAt} />
@@ -3321,7 +3406,7 @@ const BlockView = memo(function BlockView({
             ? <EarlierPromptOutcomesRow block={block} />
             : block.modelSwitch !== undefined
               ? <ModelSwitchNotice block={block} />
-              : <Notice block={block} />;
+              : <Notice block={block} superseded={superseded} />;
     case 'approval':
       // Terminal facts stay inline as one compact history line (readOnly or
       // not); only a PENDING approval keeps the full interactive card.
@@ -4360,7 +4445,7 @@ function MeasuredTranscriptRow({ index, rowKey, virtualizer, onDetach, arriving,
           event.target.style.animation = 'none';
         }
       }}
-      className="relative flow-root w-full hover:z-20 focus-within:z-20 has-[[data-actions-open]]:z-20 has-[[data-row-menu-open]]:z-20"
+      className="relative flow-root w-full pb-px hover:z-20 focus-within:z-20 has-[[data-actions-open]]:z-20 has-[[data-row-menu-open]]:z-20"
     >
       {children}
     </div>
@@ -4384,6 +4469,10 @@ type TranscriptRowProps = {
   executionBadge?: TurnExecutionInfo;
   /** Turn whose stop the visible tail divider already states. */
   stoppedTailTurnId?: string;
+  /** True when a newer turn (or later step/reply for tool rows) supersedes this failure. */
+  superseded?: boolean;
+  /** Active failed tail turn id, used to calm raw tool failure bars above TurnTailLine. */
+  failedTailTurnId?: string;
   /** Manual subagent card form overrides, keyed by subagentId (empty = auto). */
   subagentFormOverrides: ReadonlyMap<string, SubagentCardForm>;
   onToggleSubagentForm?: (agentId: string, form: SubagentCardForm) => void;
@@ -4479,6 +4568,116 @@ function forkableAssistantEqual(previous: TranscriptRowProps, next: TranscriptRo
  * for untouched blocks, so with stable map/callback props a delta re-renders
  * only the row whose block actually changed.
  */
+const TRANSCRIPT_MEDIA_STRIP_MAX = 6;
+
+function mediaRunEntries(run: MediaRun, agentId: string) {
+  return run.members.flatMap((tool) => {
+    const media = toolResultMedia(tool.media, extractToolOutputMedia(tool.output)?.media, agentId, true, tool.outputPending === true);
+    const argPath = (tool.args as { path?: unknown } | undefined)?.path;
+    return media.flatMap((item, index) => {
+      if (item.kind !== 'image' && !(item.kind === 'file' && item.detail !== undefined && isMediaTool(tool))) return [];
+      const path = item.path ?? (typeof argPath === 'string' ? argPath : undefined);
+      return [{
+        key: `${tool.id}:${index}`,
+        blockId: tool.id,
+        index,
+        item: path === undefined || item.path !== undefined ? item : { ...item, name: item.name ?? basenameOf(path), origin: item.origin ?? { path, trusted: true } },
+        name: item.name ?? (path === undefined ? tool.name : basenameOf(path)),
+      }];
+    });
+  });
+}
+
+const TranscriptMediaRunRow = memo(function TranscriptMediaRunRow({
+  run,
+  agentId,
+  blockOrder,
+  superseded = false,
+}: {
+  run: MediaRun;
+  agentId: string;
+  blockOrder?: ReadonlyMap<string, number>;
+  superseded?: boolean;
+}) {
+  const { t, tp, locale } = useI18n();
+  const [stripFailures, setStripFailures] = useState<Readonly<Record<string, MediaFailureKind>>>({});
+  const items = mediaRunEntries(run, agentId);
+  const latest = run.latest;
+  const shown = latest ? items : items.slice(0, TRANSCRIPT_MEDIA_STRIP_MAX);
+  const more = items.length - shown.length;
+  const names = items.map((entry) => entry.name).join(', ');
+  const failed = run.members.some((tool) => tool.status === 'error' || tool.isError === true);
+  const failedStripCount = !latest
+    ? shown.filter((entry) => stripFailures[entry.key] !== undefined).length
+    : 0;
+  const allStripFailed = !latest && shown.length > 0 && failedStripCount === shown.length;
+  const missingStrip = !latest && Object.values(stripFailures).some((kind) => kind === 'missing');
+  const stripMetaNote = failedStripCount > 0
+    ? (missingStrip
+      ? (locale === 'zh' ? '原文件已不在' : 'Original file unavailable')
+      : (locale === 'zh' ? '未生成图片' : 'Image unavailable'))
+    : undefined;
+  const detail = (
+    <span className="text-ink-faint">
+      {tp('transcript.media.count', items.length)}
+      {stripMetaNote !== undefined ? ` · ${stripMetaNote}` : ''}
+    </span>
+  );
+  const statusNode = failed ? (
+    <span
+      aria-label={t('transcript.failedAria')}
+      title={t('transcript.failedAria')}
+      className={superseded ? 'text-ink-faint' : 'text-danger/80'}
+    >
+      <Icon name="warning" size={12} />
+    </span>
+  ) : undefined;
+  return (
+    <div data-media-run={run.members.length} data-media-run-latest={latest || undefined}>
+      <ActivityRow
+        glyph={<Icon name="eye" />}
+        label={t('transcript.media.label')}
+        detail={detail}
+        tone="plain"
+        status={statusNode}
+        title={names}
+      />
+      {!allStripFailed && shown.length > 0 ? (
+        <ul
+          aria-label={t('transcript.media.aria', { names })}
+          className={`flex items-center overflow-x-auto pb-1 pl-6 [scrollbar-width:thin] ${latest ? 'gap-2 pt-1' : 'gap-1.5'}`}
+        >
+          {shown.map((entry) => {
+            if (!latest && stripFailures[entry.key] !== undefined) return null;
+            const order = blockOrder?.get(entry.blockId);
+            const thumb = (
+              <MediaPart
+                item={entry.item}
+                agentId={agentId}
+                size={latest ? 'preview' : 'strip'}
+                galleryIndex={entry.index}
+                onStripFailure={!latest ? (kind) => {
+                  setStripFailures((prev) => (prev[entry.key] === kind ? prev : { ...prev, [entry.key]: kind }));
+                } : undefined}
+              />
+            );
+            return (
+              <li key={entry.key} data-media-thumb className="shrink-0" title={entry.name}>
+                {order === undefined
+                  ? thumb
+                  : <MediaGalleryOrder agentId={agentId} order={order} blockId={entry.blockId}>{thumb}</MediaGalleryOrder>}
+              </li>
+            );
+          })}
+          {more > 0 ? (
+            <li className="shrink-0 pl-1 text-[12px] text-ink-faint tabular-nums">{t('transcript.media.more', { count: more })}</li>
+          ) : null}
+        </ul>
+      ) : null}
+    </div>
+  );
+});
+
 const TranscriptRow = memo(
   function TranscriptRow({
     node,
@@ -4494,6 +4693,8 @@ const TranscriptRow = memo(
     annotations,
     executionBadge,
     stoppedTailTurnId,
+    superseded = false,
+    failedTailTurnId,
     subagentFormOverrides,
     onToggleSubagentForm,
     openFolds,
@@ -4512,6 +4713,7 @@ const TranscriptRow = memo(
     forkableAssistantIds,
     nonUserTurn,
   }: TranscriptRowProps) {
+    const { locale } = useI18n();
     // data-turn-id makes a turn addressable from outside the transcript (the
     // /usage drilldown's ?turn= locator scrolls to it); absent on turn-less
     // nodes, so the attribute simply doesn't render there.
@@ -4539,15 +4741,34 @@ const TranscriptRow = memo(
           <EndedRow ending={member} forest={forest} childBlocks={childBlocks} onOpenAgent={onOpenAgent} onLocateDispatch={onLocateDispatch} />
         ))
       ) : member.kind === 'media-run' ? (
-        <MediaRunRow run={member} agentId={agentId} blockOrder={blockOrder} />
+        <TranscriptMediaRunRow run={member} agentId={agentId} blockOrder={blockOrder} superseded={superseded} />
       ) : member.kind === 'subagent-group' ? (
         <SubagentGroupRow group={member} forest={forest} childBlocks={childBlocks} renderMember={(agent) => renderNode(agent, 'compact')} />
       ) : member.kind === 'tool-group' ? (
         <ToolGroupRow group={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} blockOrder={blockOrder} />
       ) : member.kind === 'tool' ? (
-        withGalleryOrder(member.id, agentId, blockOrder, (
-          <ToolCard block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
-        ))
+        withGalleryOrder(member.id, agentId, blockOrder, (() => {
+          const isCalmedError =
+            member.status === 'error' && (
+              superseded ||
+              (failedTailTurnId !== undefined && sameTurn(member.turnId, failedTailTurnId)) ||
+              (typeof member.output === 'string' && /MEDIA_PIPELINE_FAILED/i.test(member.output))
+            );
+          const rawOutput = typeof member.output === 'string' && member.output.trim() !== ''
+            ? member.output.trim()
+            : undefined;
+          return (
+            <ToolCard
+              block={member}
+              agentId={agentId}
+              agentNames={agentNames}
+              onOpenAgent={onOpenAgent}
+              calmed={isCalmedError}
+              superseded={superseded}
+              calmedErrorSummary={isCalmedError ? humanizeTimelineError(rawOutput, locale) : undefined}
+            />
+          );
+        })())
       ) : member.kind === 'shell' ? (
         withGalleryOrder(member.id, agentId, blockOrder, <ShellMessage block={member} />)
       ) : (
@@ -4576,6 +4797,7 @@ const TranscriptRow = memo(
             annotations={member.id === node.id ? annotations : undefined}
             stoppedTailTurnId={stoppedTailTurnId}
             deliveredReply={promotedReplyIds?.has(member.id) === true}
+            superseded={superseded}
           />
         ))
       );
@@ -4609,6 +4831,8 @@ const TranscriptRow = memo(
     prev.annotations === next.annotations &&
     prev.executionBadge === next.executionBadge &&
     prev.stoppedTailTurnId === next.stoppedTailTurnId &&
+    prev.superseded === next.superseded &&
+    prev.failedTailTurnId === next.failedTailTurnId &&
     prev.subagentFormOverrides === next.subagentFormOverrides &&
     prev.blockOrder === next.blockOrder &&
     prev.onToggleSubagentForm === next.onToggleSubagentForm &&
@@ -4634,21 +4858,42 @@ const TranscriptRow = memo(
  * reader stays their own click.
  */
 function JumpToBottom({
-  virtualizer, tailKey, streaming, onJump,
+  virtualizer,
+  tailKey,
+  streaming,
+  failedTail,
+  tailSlotElement,
+  seatHeight,
+  onJump,
 }: {
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>;
   /** Key of the newest row; a different one means a row arrived. */
   tailKey: string;
   /** A reply or its reasoning is still streaming in. */
   streaming: boolean;
+  /** True when the active tail row is an unresolved turn failure. */
+  failedTail?: boolean;
+  /** Measured tail slot element so we never float the pill on top of visible tail actions. */
+  tailSlotElement?: HTMLDivElement | null;
+  /** Measured composer seat height for unoccluded viewport clearance checks. */
+  seatHeight?: number;
   onJump: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   // The newest row when the reader left the end, and whether anything has
   // arrived since. Kept here rather than in the transcript so the signal
   // costs the transcript no render of its own; it is dropped whenever the
   // reader is back at the end, whatever brought them there.
   const [away, setAway] = useState<{ tailKey: string; hasNew: boolean } | null>(null);
+  const scrollEl = virtualizer.scrollElement;
+  const tailVisibleAboveSeat = (() => {
+    if (tailSlotElement === null || tailSlotElement === undefined || scrollEl === null) return false;
+    const scrollRect = scrollEl.getBoundingClientRect();
+    const tailRect = tailSlotElement.getBoundingClientRect();
+    if (scrollRect.height <= 0 || tailRect.height <= 0) return false;
+    const unoccludedBottom = scrollRect.bottom - Math.max(0, seatHeight ?? 0);
+    return tailRect.top < unoccludedBottom - 8 && tailRect.bottom > scrollRect.top;
+  })();
   if (virtualizer.isAtEnd(TRANSCRIPT_END_THRESHOLD)) {
     if (away !== null) setAway(null);
     return null;
@@ -4656,21 +4901,37 @@ function JumpToBottom({
   const hasNew = away === null ? streaming : away.hasNew || away.tailKey !== tailKey || streaming;
   if (away === null) setAway({ tailKey, hasNew });
   else if (hasNew !== away.hasNew) setAway({ tailKey: away.tailKey, hasNew });
+  // Never float "Jump to latest" directly on top of an already-visible TurnTailLine.
+  if (tailVisibleAboveSeat) {
+    return null;
+  }
+  const showFailedCue = failedTail === true && !streaming;
   return (
     <button
       type="button"
       data-jump-to-latest
       data-jump-has-new={hasNew || undefined}
+      data-jump-failed={showFailedCue || undefined}
       aria-label={hasNew ? t('transcript.jumpToLatestNew') : undefined}
       onClick={onJump}
-      style={{ transform: 'translate(-50%, calc(-1 * max(16px, var(--kiki-seat-height, 148px) - 20px)))' }}
+      style={{ transform: 'translate(-50%, calc(-1 * max(20px, var(--kiki-seat-height, 148px) + 12px)))' }}
       className="absolute bottom-0 left-1/2 z-10 flex min-h-8 items-center gap-1.5 rounded-full bg-panel px-3 text-[12px] font-medium text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
     >
-      <Icon name="arrowDown" size={12} /> {t('transcript.jumpToLatest')}
-      {/* Breathing means "working" everywhere else in the app (motion.css),
-          so the dot breathes only while a reply is still streaming; content
-          that already arrived is marked by a still dot. */}
-      {hasNew ? <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full bg-ink-soft ${streaming ? 'status-dot-busy' : ''}`} /> : null}
+      {showFailedCue ? (
+        <>
+          <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-danger" />
+          <span>{locale === 'zh' ? '本轮失败' : t('notice.turnFailed')}</span>
+          <Icon name="arrowDown" size={12} />
+        </>
+      ) : (
+        <>
+          <Icon name="arrowDown" size={12} /> {t('transcript.jumpToLatest')}
+          {/* Breathing means "working" everywhere else in the app (motion.css),
+              so the dot breathes only while a reply is still streaming; content
+              that already arrived is marked by a still dot. */}
+          {hasNew ? <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full bg-ink-soft ${streaming ? 'status-dot-busy' : ''}`} /> : null}
+        </>
+      )}
     </button>
   );
 }
@@ -4922,7 +5183,9 @@ export const TurnTailLine = memo(function TurnTailLine({
   const fullErrorText = tail.errorDetails !== undefined
     ? (tail.error !== undefined && !tail.errorDetails.includes(tail.error) ? `${tail.error}\n\n${tail.errorDetails}` : tail.errorDetails)
     : tail.error;
-  const errorSummary = tail.error !== undefined ? (plainFailure(tail.error) ?? firstLineOf(tail.error)) : (fullErrorText === undefined ? undefined : plainFailure(fullErrorText) ?? firstLineOf(fullErrorText));
+  const errorSummary = tail.error !== undefined
+    ? (humanizeTimelineError(tail.error, locale) ?? firstLineOf(tail.error))
+    : (fullErrorText === undefined ? undefined : humanizeTimelineError(fullErrorText, locale) ?? firstLineOf(fullErrorText));
   const facts: string[] = [];
   if (tail.durationMs !== undefined) {
     facts.push(t('transcript.ranFor', { duration: time.formatDuration(tail.durationMs) }));
@@ -4959,9 +5222,17 @@ export const TurnTailLine = memo(function TurnTailLine({
         <span className={`h-px flex-1 ${isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
         <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
           {isFailed ? (
-            <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-ink-soft">
-              <span aria-hidden data-turn-tail-dot className="h-1.5 w-1.5 rounded-full bg-danger" />
-              {t('notice.turnFailed')}
+            <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-[12px] font-medium text-ink-soft">
+              <span aria-hidden data-turn-tail-dot className="h-1.5 w-1.5 shrink-0 rounded-full bg-danger" />
+              <span className="shrink-0">{t('notice.turnFailed')}</span>
+              {errorSummary !== undefined && errorSummary !== '' ? (
+                <>
+                  <span aria-hidden className="shrink-0 text-ink-faint">·</span>
+                  <span className="min-w-0 max-w-[26rem] truncate font-normal text-ink-soft" title={fullErrorText}>
+                    {errorSummary}
+                  </span>
+                </>
+              ) : null}
             </span>
           ) : isCancelled ? (
             <span data-turn-tail-cancellation={cancellation} className="text-[12px] font-semibold text-amber-ink">
@@ -5000,16 +5271,6 @@ export const TurnTailLine = memo(function TurnTailLine({
           <span className={`text-[12px] tabular-nums ${isCancelled ? 'text-amber-ink' : 'text-ink-faint'}`}>
             <RelativeTime at={tail.endedAt} />{facts.length > 0 ? ` · ${facts.join(' · ')}` : ''}
           </span>
-          {isFailed && fullErrorText !== undefined ? (
-            <button
-              type="button"
-              onClick={handleCopyError}
-              className={TAIL_ACTION}
-              title={fullErrorText}
-            >
-              {copied ? t('cb.copied') : t('cb.copy')}
-            </button>
-          ) : null}
           {isFailed && onContinueFailed !== undefined && failedHasWork === true ? (
             <button
               type="button"
@@ -5044,26 +5305,40 @@ export const TurnTailLine = memo(function TurnTailLine({
               {t('transcript.promptOutcome.retry')}
             </button>
           ) : null}
+          {isFailed && fullErrorText !== undefined ? (
+            <button
+              type="button"
+              data-turn-tail-error-toggle
+              aria-expanded={errorOpen}
+              title={errorOpen ? undefined : fullErrorText}
+              onClick={toggleErrorOpen}
+              className={`inline-flex cursor-pointer items-center gap-0.5 ${TAIL_ACTION}`}
+            >
+              <span>{t('transcript.promptOutcome.details')}</span>
+              <DisclosureChevron open={errorOpen} className="shrink-0" />
+            </button>
+          ) : null}
         </div>
         <span className={`h-px flex-1 ${isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
       </div>
-      {isFailed && fullErrorText !== undefined ? (
-        <button
-          type="button"
+      {isFailed && fullErrorText !== undefined && errorOpen ? (
+        <div
           data-turn-tail-error
-          data-turn-tail-error-toggle
-          aria-expanded={errorOpen}
-          title={errorOpen ? undefined : fullErrorText}
-          onClick={toggleErrorOpen}
-          className={`mx-auto mt-1 flex w-full max-w-[var(--kiki-chat-content-width,760px)] cursor-pointer gap-1.5 rounded-md bg-ink/[0.04] px-3 py-1.5 font-mono text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-selected-ink ${
-            errorOpen ? 'items-start text-left' : 'items-center justify-center text-center'
-          }`}
+          className="mx-auto mt-1.5 flex w-full max-w-[var(--kiki-chat-content-width,760px)] items-start gap-2 rounded-md bg-ink/[0.04] px-3 py-1.5 font-mono text-[12px] text-ink-soft"
         >
-          <span className={errorOpen ? 'min-w-0 flex-1 leading-relaxed break-words whitespace-pre-wrap' : 'min-w-0 truncate'}>
-            {errorOpen ? fullErrorText : (errorSummary ?? fullErrorText)}
+          <span className="min-w-0 flex-1 text-left leading-relaxed break-words whitespace-pre-wrap">
+            {fullErrorText}
           </span>
-          <DisclosureChevron open={errorOpen} className={errorOpen ? 'mt-0.5 shrink-0' : 'shrink-0'} />
-        </button>
+          <button
+            type="button"
+            data-turn-tail-copy
+            onClick={handleCopyError}
+            className={`shrink-0 font-sans ${TAIL_ACTION}`}
+            title={fullErrorText}
+          >
+            {copied ? t('cb.copied') : t('cb.copy')}
+          </button>
+        </div>
       ) : null}
     </div>
   );
@@ -5098,6 +5373,75 @@ export function queuedPromptsLast(blocks: readonly Block[]): readonly Block[] {
  * transcript several times over. Its props are kept referentially stable by
  * the owner for exactly this reason.
  */
+function dedupeBoundaryUserBlocks(blocks: readonly Block[]): readonly Block[] {
+  let result: Block[] | null = null;
+  const isCandidate = (block: Block): block is UserBlock =>
+    block.kind === 'user' &&
+    block.turnId !== undefined &&
+    block.turnId !== '' &&
+    block.promptStatus !== 'queued' &&
+    block.agentMessage === undefined &&
+    block.branchFold === undefined;
+  const isCanonicalUser = (block: UserBlock): boolean =>
+    block.id.startsWith('user-msg-') || block.userMessageId !== undefined;
+  const isAdjacentBoundaryEcho = (prev: UserBlock, next: UserBlock): boolean => {
+    const turn = normalizeTurnId(prev.turnId!);
+    if (turn !== normalizeTurnId(next.turnId!)) return false;
+    const prevText = prev.text.trim();
+    const nextText = next.text.trim();
+    // Never merge attachment-only (empty-text) messages.
+    if (prevText === '' || prevText !== nextText) return false;
+    if (prev.userMessageId !== undefined && next.userMessageId !== undefined && prev.userMessageId !== next.userMessageId) {
+      return false;
+    }
+    if (prev.clientRequestId !== undefined && next.clientRequestId !== undefined && prev.clientRequestId !== next.clientRequestId) {
+      return false;
+    }
+    if (prev.promptId !== undefined && next.promptId !== undefined && prev.promptId !== next.promptId) {
+      return false;
+    }
+    if ((prev.media?.length ?? 0) > 0 && (next.media?.length ?? 0) > 0) return false;
+    const sameIdentity =
+      prev.id === next.id ||
+      (prev.userMessageId !== undefined && prev.userMessageId === next.userMessageId) ||
+      (prev.clientRequestId !== undefined && prev.clientRequestId === next.clientRequestId) ||
+      (prev.promptId !== undefined && prev.promptId === next.promptId);
+    if (sameIdentity) return true;
+    // Positive boundary-echo check: one canonical `user-msg-*` paired with the
+    // exact same turn's synthetic `user-prompt-<ordinal>` echo (no distinct promptId).
+    const turnOrdinal = turn.startsWith('t') ? turn.slice(1) : turn;
+    const syntheticTurnId = `user-prompt-${turnOrdinal}`;
+    return (
+      (isCanonicalUser(prev) && next.id === syntheticTurnId && next.promptId === undefined) ||
+      (isCanonicalUser(next) && prev.id === syntheticTurnId && prev.promptId === undefined)
+    );
+  };
+  const mergeUser = (primary: UserBlock, secondary: UserBlock): UserBlock => ({
+    ...secondary,
+    ...primary,
+    createdAt: primary.createdAt ?? secondary.createdAt,
+    media: primary.media !== undefined && primary.media.length > 0 ? primary.media : secondary.media,
+    promptOutcome: primary.promptOutcome ?? secondary.promptOutcome,
+    presentation: primary.presentation ?? secondary.presentation,
+    userMessageId: primary.userMessageId ?? secondary.userMessageId,
+    clientRequestId: primary.clientRequestId ?? secondary.clientRequestId,
+  });
+  for (let i = 0; i < blocks.length; i += 1) {
+    const block = blocks[i]!;
+    const prevIndex = result === null ? i - 1 : result.length - 1;
+    const prev = prevIndex >= 0 ? (result === null ? blocks[prevIndex] : result[prevIndex]) : undefined;
+    if (prev !== undefined && isCandidate(prev) && isCandidate(block) && isAdjacentBoundaryEcho(prev, block)) {
+      if (result === null) result = blocks.slice(0, i);
+      const primary = isCanonicalUser(block) && !isCanonicalUser(prev) ? block : prev;
+      const secondary = primary === block ? prev : block;
+      result[prevIndex] = mergeUser(primary, secondary);
+      continue;
+    }
+    if (result !== null) result.push(block);
+  }
+  return result ?? blocks;
+}
+
 export const Transcript = memo(function Transcript({
   state,
   agentId = 'main',
@@ -5248,10 +5592,10 @@ export const Transcript = memo(function Transcript({
   );
   // The main conversation lists parked prompts in the composer's queue strip;
   // a timeline without that strip keeps them in place, marked as queued.
-  const timelineBlocks = useMemo(
-    () => showQueuedPrompts ? queuedPromptsLast(blocks) : blocks.filter((block) => block.kind !== 'user' || block.promptStatus !== 'queued'),
-    [blocks, showQueuedPrompts],
-  );
+  const timelineBlocks = useMemo(() => {
+    const deduped = dedupeBoundaryUserBlocks(blocks);
+    return showQueuedPrompts ? queuedPromptsLast(deduped) : deduped.filter((block) => block.kind !== 'user' || block.promptStatus !== 'queued');
+  }, [blocks, showQueuedPrompts]);
   const annotationOverrides = useSyncExternalStore(subscribeAnnotationOverrides, getAnnotationOverridesSnapshot, getAnnotationOverridesSnapshot);
   const annotationTargets = useStableAnnotationTargets(
     useMemo(() => {
@@ -5401,19 +5745,28 @@ export const Transcript = memo(function Transcript({
     visibleTailTurnId !== undefined && state.turnTail?.state === 'failed' ? visibleTailTurnId : undefined;
   const tailNodes = useMemo(() => {
     if (stoppedTailTurnId === undefined && failedTailTurnId === undefined) return nodes;
-    // Live abort notices can lack a turn id; anything after the last user row
-    // belongs to the stopped tail turn too.
+    // Live abort/failure notices can lack a turn id; anything after the last
+    // user row belongs to the stopped/failed tail turn too.
     const lastUserIndex = nodes.findLastIndex((node) => node.kind === 'user');
     return nodes
-      .filter(
-        (node, index) =>
-          stoppedTailTurnId === undefined ||
-          !(
-            node.kind === 'notice' &&
-            (isAbortedPromptNotice(node) || isInterruptionNotice(node)) &&
-            (sameTurn(node.turnId, stoppedTailTurnId) || (node.turnId === undefined && index > lastUserIndex))
-          ),
-      )
+      .filter((node, index) => {
+        if (node.kind !== 'notice') return true;
+        if (
+          stoppedTailTurnId !== undefined &&
+          (isAbortedPromptNotice(node) || isInterruptionNotice(node)) &&
+          (sameTurn(node.turnId, stoppedTailTurnId) || (node.turnId === undefined && index > lastUserIndex))
+        ) {
+          return false;
+        }
+        if (
+          failedTailTurnId !== undefined &&
+          isTurnFailureNotice(node, state.turnTail) &&
+          (sameTurn(node.turnId, failedTailTurnId) || (node.turnId === undefined && index > lastUserIndex))
+        ) {
+          return false;
+        }
+        return true;
+      })
       .map((node) =>
         node.kind === 'user' &&
         ((node.promptOutcome?.status === 'aborted' && sameTurn(node.turnId, stoppedTailTurnId)) ||
@@ -5421,7 +5774,7 @@ export const Transcript = memo(function Transcript({
           ? { ...node, promptOutcome: undefined }
           : node,
       );
-  }, [nodes, stoppedTailTurnId, failedTailTurnId]);
+  }, [nodes, stoppedTailTurnId, failedTailTurnId, state.turnTail]);
   // The failed turn's message & work status, for 1-click Continue / Retry.
   const failedTurnUserBlock = useMemo(() => {
     if (failedTailTurnId === undefined) return undefined;
@@ -5796,6 +6149,25 @@ export const Transcript = memo(function Transcript({
     () => groupedNodes.length === 0 ? [undefined] : groupedNodes,
     [groupedNodes],
   );
+  const { lastUserVirtualIndex, lastWorkOrReplyVirtualIndex } = useMemo(() => {
+    let lastUser = -1;
+    let lastWorkOrReply = -1;
+    for (let i = 0; i < virtualNodes.length; i += 1) {
+      const candidate = virtualNodes[i];
+      if (candidate === undefined) continue;
+      if (candidate.kind === 'user') lastUser = i;
+      if (
+        candidate.kind === 'user' ||
+        candidate.kind === 'assistant' ||
+        candidate.kind === 'tool' ||
+        candidate.kind === 'media-run' ||
+        candidate.kind === 'message'
+      ) {
+        lastWorkOrReply = i;
+      }
+    }
+    return { lastUserVirtualIndex: lastUser, lastWorkOrReplyVirtualIndex: lastWorkOrReply };
+  }, [virtualNodes]);
   const nodeIndexes = useMemo(() => {
     const map = new Map<string, number>();
     virtualNodes.forEach((node, index) => { map.set(virtualNodeKey(node), index); });
@@ -5879,7 +6251,6 @@ export const Transcript = memo(function Transcript({
   const surfaceRef = useRef<HTMLDivElement>(null);
   const olderIntentRef = useRef(false);
   const olderIntentAtRef = useRef(0);
-  const olderCarryPxRef = useRef(0);
   const olderInflightRef = useRef(false);
   const underfillStartedRef = useRef(false);
   useInsertionEffect(() => { underfillStartedRef.current = false; }, [agentId, state.transcriptResetVersion]);
@@ -5964,45 +6335,13 @@ export const Transcript = memo(function Transcript({
     if (olderInflightRef.current) return false;
     if (!stateRef.current.hasMoreHistory && stateRef.current.olderError === undefined) return false;
     olderIntentRef.current = false;
-    const carryPx = olderCarryPxRef.current;
-    olderCarryPxRef.current = 0;
     olderInflightRef.current = true;
     setOlderBatchActive(true);
     const request = new AbortController();
     olderRequestRef.current = request;
     const intent = readingIntentRef.current;
-    const before = stateRef.current.blocks;
     try {
-      let loaded = await loadOlderAtReadingAnchor(request.signal);
-      let remainingCarry = carryPx;
-      if (loaded && !request.signal.aborted && readingIntentRef.current === intent && visibleRef.current && remainingCarry > 0) {
-        let previousBlocks = before;
-        for (let step = 0; step < 32 && loaded && !request.signal.aborted && readingIntentRef.current === intent && visibleRef.current; step += 1) {
-          const scroll = scrollRef.current;
-          if (scroll === null) break;
-          const current = stateRef.current;
-          const addedCount = Math.max(0, current.blocks.length - previousBlocks.length);
-          const stepUp = Math.min(scroll.scrollTop, remainingCarry);
-          if (stepUp > 0) {
-            const targetTop = scroll.scrollTop - stepUp;
-            const instance = virtualizerRef.current;
-            if (instance !== null) {
-              instance.scrollToOffset(targetTop, { align: 'start' });
-              instance.scrollOffset = scroll.scrollTop;
-            } else {
-              scroll.scrollTop = targetTop;
-            }
-            scroll.dispatchEvent(new Event('scroll'));
-            if (addedCount > 0) remainingCarry -= stepUp;
-          }
-          if (remainingCarry <= 0 || !current.hasMoreHistory || current.olderError !== undefined ||
-              scroll.scrollTop > olderPrefetchDistance(scroll.clientHeight)) break;
-          olderInflightRef.current = true;
-          previousBlocks = current.blocks;
-          loaded = await loadOlderAtReadingAnchor(request.signal);
-          if (stateRef.current.blocks === previousBlocks) break;
-        }
-      }
+      const loaded = await loadOlderAtReadingAnchor(request.signal);
       // The rest of the run. A page that lands while the reader is still
       // within the prefetch distance of the top, with more history above, has
       // not given them enough to read, so the run goes on to the next page
@@ -6043,21 +6382,19 @@ export const Transcript = memo(function Transcript({
     readingIntentRef.current += 1;
     olderRequestRef.current?.abort();
     olderIntentRef.current = false;
-    olderCarryPxRef.current = 0;
   }, []);
   useEffect(() => {
     const element = scrollRef.current;
     if (element === null) return;
     let touchY: number | undefined;
     let pointerY: number | undefined;
-    const recordIntent = (upward: boolean, upwardDeltaPx = 0) => {
+    const recordIntent = (upward: boolean) => {
       seekRequestRef.current?.abort();
       if (!upward) {
         underfillStartedRef.current = true;
         readingIntentRef.current += 1;
         olderRequestRef.current?.abort();
         olderIntentRef.current = false;
-        olderCarryPxRef.current = 0;
         return;
       }
       // Upward scroll intent immediately disengages stick-to-bottom so streaming
@@ -6074,16 +6411,11 @@ export const Transcript = memo(function Transcript({
       readingIntentRef.current += 1;
       olderIntentRef.current = true;
       olderIntentAtRef.current = Date.now();
-      const viewHeight = Math.max(element.clientHeight, 1);
-      olderCarryPxRef.current = upwardDeltaPx >= viewHeight * 2
-        ? Math.min(Math.max(0, upwardDeltaPx - element.scrollTop), viewHeight * 5)
-        : 0;
     };
     const loadAtTop = () => {
       if (!visible || element.clientHeight === 0 || !olderIntentRef.current) return;
       if (Date.now() - olderIntentAtRef.current > TRANSCRIPT_OLDER_INTENT_MS) {
         olderIntentRef.current = false;
-        olderCarryPxRef.current = 0;
         return;
       }
       if (olderInflightRef.current || state.loadingOlder ||
@@ -6096,8 +6428,7 @@ export const Transcript = memo(function Transcript({
       // reading in either direction: it must neither cancel an older-history
       // read in flight nor stand in for an upward gesture.
       if (event.deltaY === 0) return;
-      const pixelDelta = event.deltaMode === 1 ? event.deltaY * 40 : event.deltaMode === 2 ? event.deltaY * Math.max(element.clientHeight, 600) : event.deltaY;
-      recordIntent(event.deltaY < 0, pixelDelta < 0 ? -pixelDelta : 0);
+      recordIntent(event.deltaY < 0);
       loadAtTop();
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -6255,7 +6586,6 @@ export const Transcript = memo(function Transcript({
     const prior = priorHistoryShapeRef.current;
     if (prior.resetVersion !== state.transcriptResetVersion || virtualNodes.length < prior.length) {
       olderIntentRef.current = false;
-      olderCarryPxRef.current = 0;
     }
     priorHistoryShapeRef.current = { resetVersion: state.transcriptResetVersion, length: virtualNodes.length };
   }, [state.transcriptResetVersion, virtualNodes.length]);
@@ -6301,7 +6631,7 @@ export const Transcript = memo(function Transcript({
     observer.observe(tailSlotElement);
     return () => { observer.disconnect(); };
   }, [hasTailContent, tailSlotElement]);
-  const baseSeatPaddingEnd = 60 + Math.max(0, seatHeight - 36);
+  const baseSeatPaddingEnd = seatHeight > 0 ? Math.max(76, seatHeight + 36) : 60;
   const effectiveTailHeight = hasTailContent ? tailSlotHeight : 0;
   const seatPaddingEnd = baseSeatPaddingEnd + (effectiveTailHeight > 0 ? effectiveTailHeight + TRANSCRIPT_TAIL_GAP : 0);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
@@ -7946,6 +8276,11 @@ export const Transcript = memo(function Transcript({
                           annotations={annotationTargets.get(virtualNodeKey(node))}
                           executionBadge={executionBadges.get(virtualNodeKey(node))}
                           stoppedTailTurnId={node.kind === 'assistant' ? stoppedTailTurnId : undefined}
+                          superseded={
+                            (lastUserVirtualIndex >= 0 && virtualItem.index < lastUserVirtualIndex) ||
+                            ((node.kind === 'tool' || node.kind === 'media-run') && virtualItem.index < lastWorkOrReplyVirtualIndex)
+                          }
+                          failedTailTurnId={failedTailTurnId}
                           subagentFormOverrides={cardForms}
                           onToggleSubagentForm={handleToggleSubagentForm}
                           openFolds={openFolds}
@@ -8087,6 +8422,9 @@ export const Transcript = memo(function Transcript({
         virtualizer={virtualizer}
         tailKey={lastKey}
         streaming={streamingNow}
+        failedTail={failedTailTurnId !== undefined}
+        tailSlotElement={tailSlotElement}
+        seatHeight={seatHeight}
         onJump={() => { void locate({ kind: 'latest' }); }}
       />
       {findRequest !== null ? (

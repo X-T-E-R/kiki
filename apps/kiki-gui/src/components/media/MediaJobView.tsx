@@ -46,6 +46,7 @@ import { CapabilityGlyph } from '../capabilities/CapabilityIcon';
 import { QUIET_BUTTON } from '../capabilities/primitives';
 import { MediaArtifactList } from './MediaArtifactList';
 import { MediaKindGlyph } from './MediaKindGlyph';
+import { plainFailure } from '../agent-panel/failureText';
 import { useMediaPreview } from '../mediaPreviewContext';
 
 export interface MediaJobDeliveryChannel {
@@ -126,6 +127,7 @@ export function MediaJobView({
   onStop,
   busy,
   feedback,
+  superseded = false,
 }: {
   readonly job: MediaJob;
   readonly delivery?: MediaJobDelivery;
@@ -137,12 +139,15 @@ export function MediaJobView({
   readonly onStop?: (job: MediaJob) => void;
   readonly busy?: 'resume' | 'stop' | null;
   readonly feedback?: { readonly tone: 'info' | 'success' | 'error'; readonly text: string } | null;
+  /** When true (older turn or followed by a later step/output), downgrade error styling to quiet paper-and-ink. */
+  readonly superseded?: boolean;
 }) {
   const { t } = useI18n();
   const previewContext = useMediaPreview();
   const effectiveSessionId = sessionId ?? previewContext?.sessionId;
   const [showRaw, setShowRaw] = useState(false);
-  const tone = jobTone(job);
+  const rawTone = jobTone(job);
+  const tone = superseded && rawTone === 'error' ? 'off' : rawTone;
   const modality = jobModality(job);
   const unknown = isJobUnknown(job);
   const resumable = canResume(job);
@@ -282,10 +287,24 @@ export function MediaJobView({
         </p>
       ) : null}
       {job.error !== undefined && job.error.submission === 'rejected' ? (
-        <p role="alert" className="mt-1 text-[12px] leading-4 text-danger" data-media-job-error>{job.error.message}</p>
+        <p
+          role={superseded ? undefined : 'alert'}
+          className={`mt-1 text-[12px] leading-4 ${superseded ? 'text-ink-faint' : 'text-danger'}`}
+          title={job.error.message}
+          data-media-job-error
+        >
+          {superseded ? (plainFailure(job.error.message) ?? job.error.message) : job.error.message}
+        </p>
       ) : null}
       {job.error !== undefined && job.error.submission === 'accepted' ? (
-        <p role="alert" className="mt-1 text-[12px] leading-4 text-ink-soft" data-media-job-error>{job.error.message}</p>
+        <p
+          role={superseded ? undefined : 'alert'}
+          className={`mt-1 text-[12px] leading-4 ${superseded ? 'text-ink-faint' : 'text-ink-soft'}`}
+          title={job.error.message}
+          data-media-job-error
+        >
+          {superseded ? (plainFailure(job.error.message) ?? job.error.message) : job.error.message}
+        </p>
       ) : null}
 
       {/* What the reader may do next. Deliberately absent for an unknown

@@ -7,7 +7,7 @@ import { useI18n } from '../../i18n';
 import { useOptionalConnection } from '../../state/connection';
 import { mediaOutcomeKey, useMediaReady } from '../imageActions';
 import { safeImagePreviewName } from '../imagePreviewName';
-import { MediaPart, useGalleryImage, useMessageImageMenu, useSessionMedia } from '../mediaParts';
+import { MediaLoadFailure, MediaPart, useGalleryImage, useMessageImageMenu, useSessionMedia, type MediaFailureKind } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
 import { RemoteImageGate } from '../RemoteImageGate';
 import { useRecordRenderedImage } from './renderedImages';
@@ -58,17 +58,23 @@ function LoadedMarkdownFileImage({ src, srcSet: _srcSet, alt, title: _title, nod
   if (fileId !== undefined) return <MediaPart item={{ kind: 'image', fileId }} />;
 
   if (path !== undefined && (load.status === 'failed' || failure)) {
+    const failureKind: MediaFailureKind = failure ? 'decode' : (load.status === 'failed' ? (load.failureKind ?? 'transient') : 'transient');
     return (
-      <button
-        type="button"
-        onClick={() => {
-          setFailedMedia(null);
-          setAttempt((value) => value + 1);
-        }}
-        className="kiki-md-img-retry inline-flex min-h-7 items-center gap-1 rounded-lg border border-hairline bg-panel px-2.5 py-1 font-sans text-[12px] text-ink-faint transition-colors hover:border-hairline-strong hover:text-ink"
-      >
-        {t('preview.failed')} · {t('transcript.detail.retry')}
-      </button>
+      <>
+        <MediaLoadFailure
+          name={label}
+          decode={failure}
+          failureKind={failureKind}
+          title={localPath ?? target ?? label}
+          onRetry={() => {
+            setFailedMedia(null);
+            setAttempt((value) => value + 1);
+          }}
+          onOpen={preview !== null && localPath !== undefined ? () => { preview.openFile(localPath); } : undefined}
+          onContextMenu={imageMenu.openMenu}
+        />
+        {imageMenu.menuElement}
+      </>
     );
   }
 

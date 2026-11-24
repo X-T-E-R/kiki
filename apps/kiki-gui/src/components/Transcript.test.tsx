@@ -1886,7 +1886,7 @@ describe('live and event chrome', () => {
     expect(container.querySelector('[data-turn-tail]')).not.toBeNull();
   });
 
-  it('renders turn tail failure state with error message and copy action', async () => {
+  it('renders turn tail failure state with error message, collapsible details and copy action', async () => {
     const container = await renderTranscript(
       [{ kind: 'assistant', id: 'assistant-1', text: 'response', streaming: false, createdAt: undefined }],
       undefined,
@@ -1897,10 +1897,14 @@ describe('live and event chrome', () => {
     expect(tail?.getAttribute('data-turn-tail-state')).toBe('failed');
     expect(tail?.textContent).toContain('Turn failed');
     expect(tail?.textContent).toContain('Provider token quota exceeded');
-    expect(tail?.querySelector('button')?.textContent).toBe('copy');
+    const toggle = tail?.querySelector<HTMLButtonElement>('[data-turn-tail-error-toggle]');
+    expect(toggle?.textContent).toContain('Details');
     expect(tail?.querySelectorAll('[data-turn-tail-dot]')).toHaveLength(1);
     expect(tail?.querySelector('.text-danger')).toBeNull();
+    expect(tail?.querySelector('[data-turn-tail-error]')).toBeNull();
+    await act(async () => { toggle?.click(); });
     expect(tail?.querySelector('[data-turn-tail-error]')?.className).toContain('font-mono');
+    expect(tail?.querySelector('[data-turn-tail-copy]')?.textContent).toBe('copy');
   });
 
   it('lets the failed tail own the failure instead of repeating it under the bubble', async () => {
@@ -8597,7 +8601,7 @@ describe('terminal pile-up folding (timeline tail)', () => {
     expect(container.querySelector('[data-turn-tail-state="cancelled"]')).not.toBeNull();
   });
 
-  it('keeps the latest-turn failure and interruption marker unfolded beside the failed tail', async () => {
+  it('deduplicates same-turn failure notice beside failed tail while keeping independent same-turn danger notices and interruption markers unfolded', async () => {
     const currentTail = {
       ...stoppedTail,
       state: 'failed',
@@ -8608,6 +8612,22 @@ describe('terminal pile-up folding (timeline tail)', () => {
         { ...assistantBlock('a-current', 'latest attempt'), turnId: 't-latest' },
         markerNoticeBlock('historical-neighbour'),
         failedNoticeBlock('latest', 't-latest'),
+        {
+          kind: 'notice',
+          id: 'independent-error',
+          text: 'Independent downstream warning not in tail',
+          tone: 'danger',
+          turnId: 't-latest',
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+        {
+          kind: 'notice',
+          id: 'prefix-only-error',
+          text: 'Provider rejected the request while writing recovery journal',
+          tone: 'danger',
+          turnId: 't-latest',
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
         abortedNoticeBlock('latest-aborted', 't-latest'),
         interruptionNoticeBlock('t-latest'),
       ],
@@ -8616,11 +8636,24 @@ describe('terminal pile-up folding (timeline tail)', () => {
     );
 
     expect(container.querySelector('[data-history-run]')).toBeNull();
-    expect(container.querySelectorAll('[data-notice-tone="danger"]')).toHaveLength(1);
-    expect(container.textContent).toContain('Prompt failed');
+    expect(container.querySelectorAll('[data-notice-tone="danger"]')).toHaveLength(2);
+    expect(container.textContent).toContain('Independent downstream warning not in tail');
+    expect(container.textContent).toContain('Provider rejected the request while writing recovery journal');
+    expect(container.textContent).toContain('Provider rejected the request');
     expect(container.textContent).toContain('Prompt aborted');
     expect(container.textContent).toContain('You stopped this turn');
     expect(container.querySelector('[data-turn-tail-state="failed"]')).not.toBeNull();
+  });
+
+  it('downgrades historical superseded failure notices to quiet neutral dividers', async () => {
+    const container = await renderTranscript([
+      userBlock({ id: 'u1', text: 'turn 1', turnId: 't1' }),
+      failedNoticeBlock('old-fail', 't1'),
+      userBlock({ id: 'u2', text: 'turn 2', turnId: 't2' }),
+      { ...assistantBlock('a2', 'recovered reply'), turnId: 't2' },
+    ]);
+    expect(container.querySelectorAll('[data-notice-tone="danger"]')).toHaveLength(0);
+    expect(container.querySelector('[data-notice-superseded="true"]')).not.toBeNull();
   });
 
   it('keeps a lone aborted divider as a single line', async () => {
@@ -12030,5 +12063,85 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
     });
     await settleVirtualizer();
     assertNoOverlap(container);
+  });
+
+  it('deduplicates adjacent boundary user echo while preserving distinct same-turn steer prompts and calmed failed ToolCard inspection body', async () => {
+    const container = await renderTranscript([
+      userBlock({ id: 'user-msg-user-140', turnId: 't140', userMessageId: 'msg-user-140', text: 'TURN_MARKER_000140 Synthetic turn 140' }),
+      userBlock({ id: 'user-prompt-140', turnId: 't140', text: 'TURN_MARKER_000140 Synthetic turn 140' }),
+      toolBlock({
+        id: 'tool-old-fail',
+        toolCallId: 'tool-old-fail',
+        turnId: 't140',
+        name: 'plugin__kiki_media__generate',
+        args: { prompt: 'storyboard frame 09' },
+        status: 'error',
+        isError: true,
+        output: { code: 'MEDIA_PIPELINE_FAILED', detail: 'empty media buffer' },
+      }),
+      { ...assistantBlock('asst-140', 'Reply 140'), turnId: 't140' },
+      userBlock({ id: 'user-msg-steer-1', turnId: 't141', userMessageId: 'msg-steer-1', text: 'continue' }),
+      userBlock({ id: 'user-msg-steer-2', turnId: 't141', userMessageId: 'msg-steer-2', text: 'continue' }),
+      userBlock({ id: 'user-prompt-distinct-a', turnId: 't141', promptId: 'p-a', text: 'continue' }),
+      userBlock({ id: 'user-msg-distinct-b', turnId: 't141', promptId: 'p-b', text: 'continue' }),
+      { ...assistantBlock('asst-141', 'Reply 141'), turnId: 't141' },
+      userBlock({ id: 'user-prompt-steer-3', turnId: 't141', text: 'continue' }),
+    ]);
+    const turn140Users = [...container.querySelectorAll('[data-turn-id="t140"]')]
+      .filter((el) => el.textContent?.includes('TURN_MARKER_000140'));
+    expect(turn140Users).toHaveLength(1);
+    expect(turn140Users[0]?.getAttribute('data-block-id')).toBe('user-msg-user-140');
+
+    // Distinct batched steers, distinct promptIds, and non-adjacent repeat after assistant reply stay separate.
+    const turn141Users = [...container.querySelectorAll('[data-turn-id="t141"]')]
+      .filter((el) => el.getAttribute('data-block-id')?.startsWith('user-') === true);
+    expect(turn141Users).toHaveLength(5);
+
+    // Attachment-only (empty-text) messages never merge.
+    const attachContainer = await renderTranscript([
+      userBlock({ id: 'user-msg-attach-1', turnId: 't142', userMessageId: 'msg-attach-1', text: '' }),
+      userBlock({ id: 'user-prompt-142', turnId: 't142', text: '' }),
+    ]);
+    const turn142Users = [...attachContainer.querySelectorAll('[data-turn-id="t142"]')]
+      .filter((el) => el.getAttribute('data-block-id')?.startsWith('user-') === true);
+    expect(turn142Users).toHaveLength(2);
+
+    // Superseded failed ToolCard keeps quiet header and expands to full input/output inspection body.
+    const toolTrigger = container.querySelector<HTMLButtonElement>('[data-tool-id="tool-old-fail"] button');
+    expect(toolTrigger).not.toBeNull();
+    await act(async () => { toolTrigger!.click(); });
+    expect(container.querySelector('[data-tool-id="tool-old-fail"]')?.textContent).toContain('storyboard frame 09');
+    expect(container.querySelector('[data-tool-id="tool-old-fail"]')?.textContent).toContain('MEDIA_PIPELINE_FAILED');
+  });
+
+  it('preserves the exact reading anchor after older-page prepend even after a large upward wheel delta at scrollTop=0', async () => {
+    const initial = virtualBlocks(30, 'anchor-s18');
+    const older = virtualBlocks(20, 'older-s18');
+    const { root, container } = makeRoot();
+    let resolveOlder!: () => void;
+    const onLoadOlder = vi.fn(async () => {
+      await new Promise<void>((resolve) => { resolveOlder = resolve; });
+      await renderSettled(root, virtualTranscript({ ...transcriptState([...older, ...initial]), hasMoreHistory: false }, onLoadOlder));
+      return true;
+    });
+    await renderSettled(root, virtualTranscript({ ...transcriptState(initial), hasMoreHistory: true }, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    const anchorBlock = container.querySelector<HTMLElement>('[data-block-id="anchor-s18-0"]')!;
+    expect(anchorBlock).not.toBeNull();
+    const topBefore = anchorBlock.getBoundingClientRect().top;
+
+    await act(async () => {
+      scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -2400, bubbles: true }));
+    });
+    expect(onLoadOlder).toHaveBeenCalledOnce();
+    await act(async () => { resolveOlder(); });
+    await settleVirtualizer();
+
+    const anchorAfter = container.querySelector<HTMLElement>('[data-block-id="anchor-s18-0"]');
+    expect(anchorAfter).not.toBeNull();
+    expect(Math.abs(anchorAfter!.getBoundingClientRect().top - topBefore)).toBeLessThanOrEqual(4);
   });
 });
