@@ -179,8 +179,12 @@ export function InstalledList({
     return pinnedGroupById[plugin.id] ?? (plugin.enabled ? 'on' : 'off');
   };
 
+  const entryById = useMemo(() => new Map(entries.map((entry) => [entry.id, entry])), [entries]);
   const keyOf = (plugin: PluginSummary) => plugin.id;
-  const textOf = (plugin: PluginSummary) => [plugin.displayName, plugin.id, plugin.originalSource];
+  const textOf = (plugin: PluginSummary) => {
+    const entry = entryById.get(plugin.id);
+    return [plugin.displayName, plugin.id, plugin.originalSource, entry?.description, ...(entry?.keywords ?? [])];
+  };
   const filters = useMemo<readonly ListFilterSpec<PluginSummary>[]>(() => [
     { id: 'attention', label: t('cap.installed.group.attention'), tone: 'attention', test: (plugin) => broken(plugin) },
     { id: 'updates', label: t('cap.installed.group.updates'), test: (plugin) => !broken(plugin) && updates.has(plugin.id) },
