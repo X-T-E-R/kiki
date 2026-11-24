@@ -26,6 +26,7 @@ export interface LoadOptions {
   includeMemories?: boolean;
   includeCredentials?: boolean;
   ifNoneMatch?: string;
+  ifNoneMatchOrigin?: string;
   signal?: AbortSignal;
 }
 export interface LoadedSpaceTree extends PortableSpaceTree {
@@ -33,8 +34,8 @@ export interface LoadedSpaceTree extends PortableSpaceTree {
   etag?: string;
 }
 export type LoadedUrlTreeResult =
-  | { readonly status: 'not_modified'; readonly etag?: string }
-  | { readonly status: 'ok'; readonly tree: LoadedSpaceTree; readonly etag?: string };
+  | { readonly status: 'not_modified'; readonly etag?: string; readonly finalOrigin: string }
+  | { readonly status: 'ok'; readonly tree: LoadedSpaceTree; readonly etag?: string; readonly finalOrigin: string };
 export interface WriteOptions {
   format?: PortableSpaceFormat;
   secretMode?: PortableSpaceSecretMode;
@@ -279,13 +280,14 @@ export class SpaceEndpoints {
   ): Promise<LoadedUrlTreeResult> {
     const fetched = await fetchSubscriptionArchive(endpoint.url, {
       ifNoneMatch: options.ifNoneMatch,
+      ifNoneMatchOrigin: options.ifNoneMatchOrigin,
       fetchFn: this.urlFetchOptions?.fetchFn,
       lookupFn: this.urlFetchOptions?.lookupFn,
       allowLoopback: this.urlFetchOptions?.allowLoopback,
       signal: options.signal,
     });
     if (fetched.status === 'not_modified') {
-      return { status: 'not_modified', etag: fetched.etag };
+      return { status: 'not_modified', etag: fetched.etag, finalOrigin: fetched.finalOrigin };
     }
     const pathname = new URL(endpoint.url).pathname;
     const decoded = await this.decodeArchiveBytes(fetched.bytes, pathname, options.unlock, true);
@@ -299,7 +301,7 @@ export class SpaceEndpoints {
       true,
       fetched.etag,
     );
-    return { status: 'ok', tree, etag: fetched.etag };
+    return { status: 'ok', tree, etag: fetched.etag, finalOrigin: fetched.finalOrigin };
   }
 
   async load(endpoint: PortableSpaceEndpoint, options: LoadOptions = {}): Promise<LoadedSpaceTree> {

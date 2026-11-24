@@ -1911,4 +1911,43 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     expect(aliasView.source).toBe('managed');
     expect(aliasView.value).toBeUndefined();
   });
+
+  it('fails closed on a named provider suffix without falling through to a sibling same-origin provider', async () => {
+    const ix = createServices(disposables, {
+      additionalServices: (reg) => {
+        reg.definePartialInstance(IHostFileSystem, new HostFileSystem());
+        reg.definePartialInstance(IFileSystemStorageService, {
+          pathFor: (_scope, key) => join(fixture, 'cache', key),
+          write: async () => undefined,
+          size: async () => undefined,
+          read: async () => undefined,
+        });
+        reg.definePartialInstance(IConfigService, {
+          ready: Promise.resolve(),
+          onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
+          get: ((domain: string) => domain === 'providers'
+            ? {
+                axon: { type: 'anthropic', baseUrl: 'https://api.example.test/v1' },
+                sibling: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', apiKey: 'sk-sibling-secret-do-not-steal' },
+              }
+            : undefined) as IConfigService['get'],
+        });
+        reg.define(INbSearchSourceStore, NbSearchSourceStore);
+      },
+    });
+    const nbPatch = {
+      credential_slots: {
+        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY' },
+        'exa.missing': { provider_id: 'exa', env: 'NB_SEARCH_EXA_MISSING_API_KEY' },
+      },
+      provider_instances: {
+        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.axon', options: {} },
+        'exa.missing': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.missing', options: {} },
+      },
+    } as never;
+    const store = ix.get(INbSearchSourceStore);
+    const source = await store.withSource(false, nbPatch, (value) => value);
+    expect(source.env['NB_SEARCH_EXA_AXON_API_KEY']).toBeUndefined();
+    expect(source.env['NB_SEARCH_EXA_MISSING_API_KEY']).toBeUndefined();
+  });
 });

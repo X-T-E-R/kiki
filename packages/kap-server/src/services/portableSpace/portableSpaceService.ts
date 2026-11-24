@@ -7,12 +7,12 @@ import { portableSpaceSourceRecordSchema, type PortableSpaceApplyInput, type Por
 import { z } from 'zod';
 import { formatRecipients, parseRecipients } from './ageCodec';
 import { endpointForPath, endpointKey, inspectTree, resealOptions, SpaceEndpoints, type LoadedSpaceTree } from './endpoints';
-import { reconcileOfficialPlugins, writeLive } from './liveSpace';
+import { reconcileOfficialPlugins, writeLive, type OfficialPluginReconcileError } from './liveSpace';
 import { applyUnset, assignPath, isUnitId, modelDependencies, planChanges, reconcile, sameUnit, unitHashes, type Change, type VerifiedBase } from './mergeEngine';
 import { missing, pathFormat, readBounded, writeFileAtomic } from './spaceFiles';
 import { packTarGz, safePortablePath, unpackTarGz } from './tarArchive';
 import { commonUnits, domainForFile, encodeToml, filesFromUnits, object, parseToml, platformUnits, PLAIN, putUnit, RECIPIENTS, SEALED, selectedUnits, toUnits, type ForkBase, type PortableSpaceTree, type Units } from './treeProjection';
-import { assertNoRemoteExecutableMcp, reconcileSubscriptionUnits, sanitizeEtag } from './urlSubscription';
+import { assertNoRemoteExecutableMcp, assertSafeRemoteCredentialBindings, reconcileSubscriptionUnits, sanitizeEtag } from './urlSubscription';
 
 interface Plan {
   input: PortableSpacePreviewInput;
@@ -264,6 +264,10 @@ export class PortableSpaceService {
       const spaceId = input.linkToSpaceId ?? existing?.linkedSpaceId ?? 'main';
       const isFirstSubscribe = existing?.lastSyncedAt === undefined && existing?.managedIds === undefined;
       const applied = await this.applySubscriptionTree(recordId, spaceId, loaded.tree, existing?.managedIds ?? [], isFirstSubscribe, input.createBackup !== false);
+      const pendingPlugins = applied.pluginErrors.map((entry) => entry.id);
+      const pluginErrorMsg = applied.pluginErrors.length > 0
+        ? `Official plugin reconciliation pending (${applied.pluginErrors.map((entry) => `${entry.id}: ${entry.message}`).join('; ')})`.slice(0, 1024)
+        : undefined;
       const record: PortableSpaceSourceRecord = {
         id: recordId,
         endpoint,
@@ -278,8 +282,10 @@ export class PortableSpaceService {
         lastCheckedAt: now,
         autoSync: input.autoSync ?? existing?.autoSync ?? true,
         etag: sanitizeEtag(loaded.etag),
-        lastSyncError: undefined,
+        etagOrigin: loaded.finalOrigin,
+        lastSyncError: pluginErrorMsg,
         managedIds: applied.nextManagedIds,
+        ...(pendingPlugins.length > 0 ? { pendingOfficialPlugins: pendingPlugins } : {}),
       };
       await this.saveSources([...items.filter((item) => item.id !== record.id), record]);
       return {
@@ -308,15 +314,34 @@ export class PortableSpaceService {
         const canRevalidate = input.force !== true && existing.lastSyncedAt !== undefined && existing.etag !== undefined;
         const loaded = await this.endpoints.loadUrl(existing.endpoint, {
           ifNoneMatch: canRevalidate ? sanitizeEtag(existing.etag) : undefined,
+          ifNoneMatchOrigin: canRevalidate ? existing.etagOrigin : undefined,
           signal,
         });
         if (loaded.status === 'not_modified') {
           if (!canRevalidate) throw new Error('Unexpected 304 response without an applied baseline');
+          let nextPendingPlugins: string[] | undefined;
+          let nextPluginError: string | undefined;
+          if ((existing.pendingOfficialPlugins?.length ?? 0) > 0) {
+            const priorBase = await this.loadBase(existing.id);
+            const desiredRetry = new Map<string, boolean>();
+            for (const pluginId of existing.pendingOfficialPlugins ?? []) {
+              const unitId = `plugins:plugins.${pluginId.replaceAll('%', '%25').replaceAll('.', '%2E')}`;
+              const unit = priorBase?.units.get(unitId);
+              desiredRetry.set(pluginId, unit === undefined ? true : object(unit.value)['enabled'] !== false);
+            }
+            const retryResult = await reconcileOfficialPlugins(this.endpoints.live, desiredRetry);
+            if (retryResult.errors.length > 0) {
+              nextPendingPlugins = retryResult.errors.map((entry) => entry.id);
+              nextPluginError = `Official plugin reconciliation pending (${retryResult.errors.map((entry) => `${entry.id}: ${entry.message}`).join('; ')})`.slice(0, 1024);
+            }
+          }
           const updated: PortableSpaceSourceRecord = {
             ...existing,
             etag: sanitizeEtag(loaded.etag) ?? sanitizeEtag(existing.etag),
+            etagOrigin: loaded.finalOrigin,
             lastCheckedAt: now,
-            lastSyncError: undefined,
+            lastSyncError: nextPluginError,
+            pendingOfficialPlugins: nextPendingPlugins,
           };
           await this.saveSources(items.map((item) => item.id === existing.id ? updated : item));
           return {
@@ -331,6 +356,10 @@ export class PortableSpaceService {
         const spaceId = existing.linkedSpaceId ?? 'main';
         const isFirstSubscribe = existing.lastSyncedAt === undefined && existing.managedIds === undefined;
         const applied = await this.applySubscriptionTree(existing.id, spaceId, loaded.tree, existing.managedIds ?? [], isFirstSubscribe, input.createBackup !== false, signal);
+        const pendingPlugins = applied.pluginErrors.map((entry) => entry.id);
+        const pluginErrorMsg = applied.pluginErrors.length > 0
+          ? `Official plugin reconciliation pending (${applied.pluginErrors.map((entry) => `${entry.id}: ${entry.message}`).join('; ')})`.slice(0, 1024)
+          : undefined;
         const updated: PortableSpaceSourceRecord = {
           ...existing,
           format: loaded.tree.format,
@@ -341,8 +370,10 @@ export class PortableSpaceService {
           lastCheckedAt: now,
           lastSyncedAt: now,
           etag: sanitizeEtag(loaded.etag),
-          lastSyncError: undefined,
+          etagOrigin: loaded.finalOrigin,
+          lastSyncError: pluginErrorMsg,
           managedIds: applied.nextManagedIds,
+          pendingOfficialPlugins: pendingPlugins.length > 0 ? pendingPlugins : undefined,
         };
         await this.saveSources(items.map((item) => item.id === existing.id ? updated : item));
         return {
@@ -387,23 +418,25 @@ export class PortableSpaceService {
     appliedIds: string[];
     deletedIds: string[];
     skippedIds: string[];
+    pluginErrors: OfficialPluginReconcileError[];
     backupPath?: string;
   }> {
     if (signal?.aborted) throw new Error('Subscription sync cancelled');
     const liveEndpoint: PortableSpaceEndpoint = { kind: 'live', spaceId };
     await this.endpoints.assertWritable(liveEndpoint);
     const upstreamUnits = platformUnits(upstreamTree.units, process.platform);
-    const hasUpstreamMemories = [...upstreamUnits.values()].some((unit) => unit.domain === 'memories');
-    const liveTree = await this.endpoints.load(liveEndpoint, { includeMemories: hasUpstreamMemories, includeCredentials: true });
+    const liveTree = await this.endpoints.load(liveEndpoint, { includeMemories: false, includeCredentials: true });
     if (signal?.aborted) throw new Error('Subscription sync cancelled');
     const targetUnits = commonUnits(liveTree.units);
     const priorBase = await this.loadBase(recordId);
     const merged = reconcileSubscriptionUnits(upstreamUnits, targetUnits, previousManagedIds, priorBase, isFirstSubscribe);
     assertNoRemoteExecutableMcp(merged.nextUnits, targetUnits, [...merged.appliedIds, ...merged.deletedIds]);
+    assertSafeRemoteCredentialBindings(merged.nextUnits, targetUnits, upstreamUnits, previousManagedIds);
     const errors = modelDependencies(merged.nextUnits);
     if (errors.length) throw new Error(errors.join('; '));
     if (signal?.aborted) throw new Error('Subscription sync cancelled');
     let backupPath: string | undefined;
+    const pluginErrors: OfficialPluginReconcileError[] = [];
     const wroteLive = !equalUnits(merged.nextUnits, targetUnits);
     if (wroteLive) {
       if (createBackup) {
@@ -411,7 +444,7 @@ export class PortableSpaceService {
         const { recipient } = await this.endpoints.sync.ensureDeviceKeypair();
         await this.endpoints.write(backupPath, liveTree, { format: 'tgz', secretMode: 'sealed', encryption: { mode: 'x25519', recipients: [recipient] } });
       }
-      await writeLive(this.endpoints.live, merged.nextUnits, targetUnits, 'override');
+      await writeLive(this.endpoints.live, merged.nextUnits, targetUnits, 'override', pluginErrors);
     }
     const pendingUpstreamPlugins = new Map<string, boolean>();
     const appliedSet = new Set(merged.appliedIds);
@@ -421,7 +454,8 @@ export class PortableSpaceService {
       pendingUpstreamPlugins.set(unit.key[1], object(unit.value)['enabled'] !== false);
     }
     if (pendingUpstreamPlugins.size > 0) {
-      await reconcileOfficialPlugins(this.endpoints.live, pendingUpstreamPlugins);
+      const result = await reconcileOfficialPlugins(this.endpoints.live, pendingUpstreamPlugins);
+      if (result.errors.length > 0) pluginErrors.push(...result.errors);
     }
     const key = await this.hashKey();
     await this.saveBase(recordId, merged.nextBaseUnits, key);
@@ -430,6 +464,7 @@ export class PortableSpaceService {
       appliedIds: merged.appliedIds,
       deletedIds: merged.deletedIds,
       skippedIds: merged.skippedIds,
+      pluginErrors,
       backupPath,
     };
   }

@@ -43,10 +43,11 @@ function resolveProviderKey(
   return resolvePoolKey(credentials, providerId);
 }
 
-function instanceSuffix(instanceId: string): string | undefined {
-  const parts = instanceId.split('.');
-  const tail = parts.at(-1)?.trim();
-  return tail !== undefined && tail.length > 0 ? tail : undefined;
+function namedProviderSuffix(instanceId: string): string | undefined {
+  const dot = instanceId.lastIndexOf('.');
+  if (dot <= 0) return undefined;
+  const tail = instanceId.slice(dot + 1).trim();
+  return tail.length > 0 ? tail : undefined;
 }
 
 /** Resolves an inherited API key for an nb-search instance strictly from a same-origin Kiki provider entry. */
@@ -60,14 +61,13 @@ export function resolveInheritedNbSearchKey(
   const providers = kikiConfig.get<ProvidersSection | undefined>(PROVIDERS_SECTION);
   if (providers === undefined) return undefined;
   const credentials = kikiConfig.get<CredentialsPoolSection | undefined>(CREDENTIALS_POOL_SECTION);
-  const suffix = instanceSuffix(instanceId);
+  const suffix = namedProviderSuffix(instanceId);
 
-  if (suffix !== undefined && Object.hasOwn(providers, suffix)) {
+  if (suffix !== undefined) {
+    if (!Object.hasOwn(providers, suffix)) return undefined;
     const candidate = providers[suffix]!;
-    if (nbSearchOriginOf(candidate.baseUrl) === targetOrigin) {
-      const key = resolveProviderKey(suffix, candidate, credentials);
-      if (key !== undefined) return key;
-    }
+    if (nbSearchOriginOf(candidate.baseUrl) !== targetOrigin) return undefined;
+    return resolveProviderKey(suffix, candidate, credentials);
   }
 
   for (const [providerId, provider] of Object.entries(providers)) {

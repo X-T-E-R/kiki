@@ -31,15 +31,23 @@ const USER_KEEP_CONFIG_IDS = new Set([
   'config:disabled_named_profiles',
 ]);
 
-const PARTIAL_MERGE_CONFIG_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
-  'config:permission': new Set(['reviewer']),
-  'config:memory': new Set(['advisor']),
+const PARTIAL_MERGE_NESTED_KEYS: Readonly<Record<string, Readonly<Record<string, ReadonlySet<string>>>>> = {
+  'config:permission': {
+    reviewer: new Set(['backend', 'source']),
+  },
+  'config:memory': {
+    advisor: new Set(['mode', 'source']),
+  },
 };
+
+const BLOCKED_REMOTE_DOMAINS = new Set<PortableSpaceDomain>([
+  'sessions',
+  'memories',
+  'skills',
+]);
 
 const USER_KEEP_DOMAINS = new Set<PortableSpaceDomain>([
   'appearance',
-  'memories',
-  'sessions',
 ]);
 
 export interface UrlSafetyOptions {
@@ -49,13 +57,14 @@ export interface UrlSafetyOptions {
 
 export interface UrlFetchOptions extends UrlSafetyOptions {
   readonly ifNoneMatch?: string;
+  readonly ifNoneMatchOrigin?: string;
   readonly fetchFn?: typeof fetch;
   readonly signal?: AbortSignal;
 }
 
 export type UrlFetchResult =
-  | { readonly status: 'not_modified'; readonly etag?: string }
-  | { readonly status: 'ok'; readonly bytes: Buffer; readonly etag?: string };
+  | { readonly status: 'not_modified'; readonly etag?: string; readonly finalOrigin: string }
+  | { readonly status: 'ok'; readonly bytes: Buffer; readonly etag?: string; readonly finalOrigin: string };
 
 export interface SubscriptionMergeResult {
   readonly nextUnits: Units;
@@ -186,15 +195,10 @@ export async function assertSafeSubscriptionUrl(
   return target.url;
 }
 
-/** Derives a safe display label from a subscription URL without leaking long path tokens. */
+/** Derives a safe display label from a subscription URL using only its hostname so path tokens never leak. */
 export function defaultLabelForSubscriptionUrl(rawUrl: string): string {
   try {
     const parsed = new URL(rawUrl);
-    const tail = parsed.pathname.split('/').filter(Boolean).at(-1) ?? '';
-    const stem = tail.replace(/\.(?:kiki\.)?(?:tgz|tar\.gz|age)$/i, '');
-    if (stem.length > 0 && stem.length <= 32 && !/^[a-f0-9]{24,}$/i.test(stem)) {
-      return `${parsed.hostname} (${stem})`.slice(0, 256);
-    }
     return parsed.hostname.slice(0, 256) || 'URL Subscription';
   } catch {
     return 'URL Subscription';
@@ -315,16 +319,18 @@ function combinedSignal(outer: AbortSignal | undefined): AbortSignal {
   return outer === undefined ? timeout : AbortSignal.any([outer, timeout]);
 }
 
-/** Fetches a remote subscription archive with DNS-pinned SSRF checks, redirect validation, size bounds, and If-None-Match 304 support. */
+/** Fetches a remote subscription archive with DNS-pinned SSRF checks, redirect validation, size bounds, and origin-bound If-None-Match 304 support. */
 export async function fetchSubscriptionArchive(rawUrl: string, options: UrlFetchOptions = {}): Promise<UrlFetchResult> {
   const initialTarget = await resolveSafeSubscriptionTarget(rawUrl, options);
   const redirectAllowLoopback = options.allowLoopback === true && initialTarget.isLoopback;
   let currentTarget = initialTarget;
   const normalizedIfNoneMatch = sanitizeEtag(options.ifNoneMatch);
+  const expectedEtagOrigin = (options.ifNoneMatchOrigin ?? initialTarget.url.origin).toLowerCase();
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const currentOrigin = currentTarget.url.origin.toLowerCase();
     const headers: Record<string, string> = { accept: 'application/gzip, application/octet-stream, */*' };
-    if (normalizedIfNoneMatch !== undefined) {
+    if (normalizedIfNoneMatch !== undefined && currentOrigin === expectedEtagOrigin) {
       headers['if-none-match'] = normalizedIfNoneMatch;
     }
     const signal = combinedSignal(options.signal);
@@ -360,7 +366,7 @@ export async function fetchSubscriptionArchive(rawUrl: string, options: UrlFetch
     }
 
     if (status === 304) {
-      return { status: 'not_modified', etag: etag ?? normalizedIfNoneMatch };
+      return { status: 'not_modified', etag: etag ?? normalizedIfNoneMatch, finalOrigin: currentOrigin };
     }
     if (status >= 300 && status < 400) {
       if (!location) throw new Error(`Subscription redirect missing Location (HTTP ${status})`);
@@ -375,7 +381,7 @@ export async function fetchSubscriptionArchive(rawUrl: string, options: UrlFetch
     if (status < 200 || status >= 300) {
       throw new Error(`Subscription fetch failed with HTTP ${status}`);
     }
-    return { status: 'ok', bytes, etag };
+    return { status: 'ok', bytes, etag, finalOrigin: currentOrigin };
   }
   throw new Error('Too many redirects fetching subscription');
 }
@@ -614,6 +620,36 @@ export function sanitizeRemoteSubscriptionFiles(files: ReadonlyMap<string, Buffe
       continue;
     }
 
+    if (/^skills(?:\/|$)/i.test(path)) {
+      excluded.push({
+        id: `skills:${path.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+        domain: 'skills',
+        path: path.slice(0, 512),
+        reason: 'Blocked skill bundle from remote URL subscription',
+      });
+      continue;
+    }
+
+    if (/^sessions(?:\/|$)/i.test(path)) {
+      excluded.push({
+        id: `sessions:${path.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+        domain: 'sessions',
+        path: path.slice(0, 512),
+        reason: 'Blocked session history from remote URL subscription',
+      });
+      continue;
+    }
+
+    if (/^memories(?:\/|$)/i.test(path)) {
+      excluded.push({
+        id: `memories:${path.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+        domain: 'memories',
+        path: path.slice(0, 512),
+        reason: 'Blocked personal memories from remote URL subscription',
+      });
+      continue;
+    }
+
     if (/^(?:recipes|store\/recipes)\/.+\/hooks(?:\/|$)/i.test(path)) {
       excluded.push({
         id: `recipes:${path.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
@@ -674,11 +710,167 @@ export function assertNoRemoteExecutableMcp(
   }
 }
 
-function filterAllowedPartialObject(raw: unknown, allowedKeys: ReadonlySet<string>): Data {
+function originOfHttpUrl(rawUrl: unknown): string | undefined {
+  if (typeof rawUrl !== 'string') return undefined;
+  const trimmed = rawUrl.trim();
+  if (trimmed.length === 0 || !URL.canParse(trimmed)) return undefined;
+  const parsed = new URL(trimmed);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
+  return parsed.origin.toLowerCase();
+}
+
+function encodeUnitKeySegment(segment: string): string {
+  return segment.replaceAll('%', '%25').replaceAll('.', '%2E');
+}
+
+function isUnmanagedPoolCredential(
+  credId: string,
+  targetUnits: Units,
+  upstreamUnits: Units,
+  previousManagedSet: ReadonlySet<string>,
+): boolean {
+  const poolUnitId = `credentials:pool.${encodeUnitKeySegment(credId)}`;
+  return targetUnits.has(poolUnitId) && !upstreamUnits.has(poolUnitId) && !previousManagedSet.has(poolUnitId);
+}
+
+function hasUnmanagedProviderCredential(
+  providerId: string,
+  providerObj: Data,
+  beforeProviderObj: Data | undefined,
+  targetUnits: Units,
+  upstreamUnits: Units,
+  previousManagedSet: ReadonlySet<string>,
+): boolean {
+  const providerCredUnitId = `credentials:providers.${encodeUnitKeySegment(providerId)}`;
+  if (targetUnits.has(providerCredUnitId) && !upstreamUnits.has(providerCredUnitId) && !previousManagedSet.has(providerCredUnitId)) {
+    return true;
+  }
+  const explicitCredId = typeof providerObj['credential_id'] === 'string' && providerObj['credential_id'].trim().length > 0
+    ? providerObj['credential_id'].trim()
+    : undefined;
+  const beforeCredId = typeof beforeProviderObj?.['credential_id'] === 'string' && beforeProviderObj['credential_id'].trim().length > 0
+    ? beforeProviderObj['credential_id'].trim()
+    : undefined;
+  for (const candidateId of new Set([providerId, explicitCredId, beforeCredId].filter((v): v is string => v !== undefined))) {
+    if (isUnmanagedPoolCredential(candidateId, targetUnits, upstreamUnits, previousManagedSet)) return true;
+  }
+  if (beforeProviderObj !== undefined) {
+    const providerUnitId = `config:providers.${encodeUnitKeySegment(providerId)}`;
+    const providerWasUnmanaged = !previousManagedSet.has(providerUnitId);
+    if (
+      providerWasUnmanaged
+      && (typeof beforeProviderObj['api_key_env'] === 'string' || beforeProviderObj['oauth'] !== undefined)
+    ) {
+      return true;
+    }
+    if (typeof beforeProviderObj['api_key_env'] === 'string' && beforeProviderObj['api_key_env'] === providerObj['api_key_env']) {
+      return true;
+    }
+    if (beforeProviderObj['oauth'] !== undefined && providerObj['oauth'] !== undefined) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Verifies after composition that remote URL subscriptions never retarget unmanaged local credentials to a new origin at provider or model level. */
+export function assertSafeRemoteCredentialBindings(
+  nextUnits: Units,
+  targetUnits: Units,
+  upstreamUnits: Units,
+  previousManagedIds: readonly string[],
+): void {
+  const previousManagedSet = new Set(previousManagedIds);
+
+  for (const [id, upstream] of upstreamUnits) {
+    if (upstream.domain === 'config' && upstream.key[0] === 'providers' && upstream.key[1] !== undefined) {
+      const providerId = upstream.key[1];
+      const nextUnit = nextUnits.get(id);
+      if (nextUnit === undefined) continue;
+      const nextProvider = object(nextUnit.value);
+      const beforeUnit = targetUnits.get(id);
+      const beforeProvider = beforeUnit === undefined ? undefined : object(beforeUnit.value);
+      const credId = typeof nextProvider['credential_id'] === 'string' ? nextProvider['credential_id'].trim() : undefined;
+      if (
+        credId !== undefined
+        && credId.length > 0
+        && credId !== providerId
+        && isUnmanagedPoolCredential(credId, targetUnits, upstreamUnits, previousManagedSet)
+      ) {
+        throw new Error(`Remote URL subscription provider "${providerId}" cannot reference unmanaged local credential "${credId}"`);
+      }
+      if (
+        beforeProvider !== undefined
+        && hasUnmanagedProviderCredential(providerId, nextProvider, beforeProvider, targetUnits, upstreamUnits, previousManagedSet)
+      ) {
+        const beforeOrigin = originOfHttpUrl(beforeProvider['base_url']);
+        const nextOrigin = originOfHttpUrl(nextProvider['base_url']);
+        if (beforeOrigin !== undefined && nextOrigin !== beforeOrigin) {
+          throw new Error(`Remote URL subscription provider "${providerId}" cannot retarget unmanaged local credentials to a different origin`);
+        }
+      }
+    }
+  }
+
+  for (const [id, upstream] of upstreamUnits) {
+    if (upstream.domain !== 'config' || upstream.key[0] !== 'models' || upstream.key[1] === undefined) continue;
+    const modelId = upstream.key[1];
+    const nextUnit = nextUnits.get(id);
+    if (nextUnit === undefined) continue;
+    const nextModel = object(nextUnit.value);
+    const modelCredId = typeof nextModel['credential_id'] === 'string' ? nextModel['credential_id'].trim() : undefined;
+    if (modelCredId !== undefined && modelCredId.length > 0 && isUnmanagedPoolCredential(modelCredId, targetUnits, upstreamUnits, previousManagedSet)) {
+      throw new Error(`Remote URL subscription model "${modelId}" cannot reference unmanaged local credential "${modelCredId}"`);
+    }
+    const rawModelBaseUrl = nextModel['base_url'];
+    if (typeof rawModelBaseUrl !== 'string' || rawModelBaseUrl.trim().length === 0) continue;
+    const modelOrigin = originOfHttpUrl(rawModelBaseUrl);
+    if (modelOrigin === undefined) {
+      throw new Error(`Remote URL subscription model "${modelId}" specifies an invalid base_url`);
+    }
+    const providerName = typeof nextModel['provider'] === 'string' && nextModel['provider'].trim().length > 0
+      ? nextModel['provider'].trim()
+      : typeof nextModel['provider_id'] === 'string' && nextModel['provider_id'].trim().length > 0
+        ? nextModel['provider_id'].trim()
+        : undefined;
+    if (providerName !== undefined) {
+      const providerUnitId = `config:providers.${encodeUnitKeySegment(providerName)}`;
+      const nextProviderUnit = nextUnits.get(providerUnitId);
+      const beforeProviderUnit = targetUnits.get(providerUnitId);
+      const nextProviderObj = nextProviderUnit === undefined ? {} : object(nextProviderUnit.value);
+      const beforeProviderObj = beforeProviderUnit === undefined ? undefined : object(beforeProviderUnit.value);
+      if (hasUnmanagedProviderCredential(providerName, nextProviderObj, beforeProviderObj, targetUnits, upstreamUnits, previousManagedSet)) {
+        const expectedOrigin = originOfHttpUrl(beforeProviderObj?.['base_url']) ?? originOfHttpUrl(nextProviderObj['base_url']);
+        if (expectedOrigin === undefined || modelOrigin !== expectedOrigin) {
+          throw new Error(`Remote URL subscription model "${modelId}" cannot override base_url to a different origin while using provider "${providerName}" credentials`);
+        }
+      }
+    }
+    const modelCredUnitId = `credentials:models.${encodeUnitKeySegment(modelId)}`;
+    if (targetUnits.has(modelCredUnitId) && !upstreamUnits.has(modelCredUnitId) && !previousManagedSet.has(modelCredUnitId)) {
+      const beforeModelUnit = targetUnits.get(id);
+      const beforeOrigin = beforeModelUnit === undefined ? undefined : originOfHttpUrl(object(beforeModelUnit.value)['base_url']);
+      if (beforeOrigin !== undefined && modelOrigin !== beforeOrigin) {
+        throw new Error(`Remote URL subscription model "${modelId}" cannot retarget unmanaged local model credentials to a different origin`);
+      }
+    }
+  }
+}
+
+function filterAllowedNestedPartialObject(
+  raw: unknown,
+  allowedNested: Readonly<Record<string, ReadonlySet<string>>>,
+): Data {
   const source = object(raw);
   const filtered: Data = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (allowedKeys.has(key)) filtered[key] = value;
+  for (const [sectionKey, allowedFields] of Object.entries(allowedNested)) {
+    if (!Object.hasOwn(source, sectionKey)) continue;
+    const subSource = object(source[sectionKey]);
+    const subFiltered: Data = {};
+    for (const [field, value] of Object.entries(subSource)) {
+      if (allowedFields.has(field)) subFiltered[field] = value;
+    }
+    if (Object.keys(subFiltered).length > 0) filtered[sectionKey] = subFiltered;
   }
   return filtered;
 }
@@ -687,18 +879,29 @@ function mergePartialConfigUnit(
   upstream: SubscriptionUnit,
   current: SubscriptionUnit | undefined,
   priorUpstream: SubscriptionUnit | undefined,
-  allowedKeys: ReadonlySet<string>,
+  allowedNested: Readonly<Record<string, ReadonlySet<string>>>,
 ): { readonly merged: SubscriptionUnit; readonly filteredUpstream: SubscriptionUnit } {
-  const upstreamObj = filterAllowedPartialObject(upstream.value, allowedKeys);
-  const priorObj = filterAllowedPartialObject(priorUpstream?.value, allowedKeys);
+  const upstreamObj = filterAllowedNestedPartialObject(upstream.value, allowedNested);
+  const priorObj = filterAllowedNestedPartialObject(priorUpstream?.value, allowedNested);
   const merged: Data = { ...object(current?.value) };
-  for (const oldKey of Object.keys(priorObj)) {
-    if (!Object.hasOwn(upstreamObj, oldKey)) {
-      delete merged[oldKey];
+  for (const sectionKey of Object.keys(allowedNested)) {
+    const nextSection = object(upstreamObj[sectionKey]);
+    const priorSection = object(priorObj[sectionKey]);
+    const hasCurrentSection = Object.hasOwn(merged, sectionKey);
+    const mergedSection: Data = hasCurrentSection ? { ...object(merged[sectionKey]) } : {};
+    for (const oldField of Object.keys(priorSection)) {
+      if (!Object.hasOwn(nextSection, oldField)) {
+        delete mergedSection[oldField];
+      }
     }
-  }
-  for (const [key, value] of Object.entries(upstreamObj)) {
-    merged[key] = value;
+    for (const [field, value] of Object.entries(nextSection)) {
+      mergedSection[field] = value;
+    }
+    if (Object.keys(mergedSection).length === 0) {
+      delete merged[sectionKey];
+    } else if (hasCurrentSection || Object.keys(nextSection).length > 0) {
+      merged[sectionKey] = mergedSection;
+    }
   }
   return {
     merged: { ...upstream, value: merged },
@@ -709,16 +912,26 @@ function mergePartialConfigUnit(
 function prunePartialConfigUnit(
   current: SubscriptionUnit,
   priorUpstream: SubscriptionUnit | undefined,
-  allowedKeys: ReadonlySet<string>,
+  allowedNested: Readonly<Record<string, ReadonlySet<string>>>,
 ): SubscriptionUnit | undefined {
-  if (priorUpstream === undefined) return undefined;
-  const priorObj = filterAllowedPartialObject(priorUpstream.value, allowedKeys);
+  if (priorUpstream === undefined) return current;
+  const priorObj = filterAllowedNestedPartialObject(priorUpstream.value, allowedNested);
   const remaining: Data = { ...object(current.value) };
-  for (const oldKey of Object.keys(priorObj)) {
-    delete remaining[oldKey];
+  for (const [sectionKey, priorSectionVal] of Object.entries(priorObj)) {
+    if (!Object.hasOwn(remaining, sectionKey)) continue;
+    const section = { ...object(remaining[sectionKey]) };
+    for (const oldField of Object.keys(object(priorSectionVal))) {
+      delete section[oldField];
+    }
+    if (Object.keys(section).length === 0) delete remaining[sectionKey];
+    else remaining[sectionKey] = section;
   }
   if (Object.keys(remaining).length === 0) return undefined;
   return { ...current, value: remaining };
+}
+
+function isProtectedUnmanagedCustomUnit(unit: SubscriptionUnit): boolean {
+  return unit.domain === 'mcp' || (unit.domain === 'config' && unit.key[0] === 'providers');
 }
 
 /** Reconciles an upstream URL subscription into live target units using managed_overwrite + user_keep rules. */
@@ -738,6 +951,10 @@ export function reconcileSubscriptionUnits(
   const skippedIds: string[] = [];
 
   for (const [id, upstream] of upstreamUnits) {
+    if (BLOCKED_REMOTE_DOMAINS.has(upstream.domain)) {
+      skippedIds.push(id);
+      continue;
+    }
     const current = targetUnits.get(id);
     if (USER_KEEP_CONFIG_IDS.has(id) || USER_KEEP_DOMAINS.has(upstream.domain)) {
       if (isFirstSubscribe && current === undefined) {
@@ -749,10 +966,25 @@ export function reconcileSubscriptionUnits(
       continue;
     }
 
-    const allowedPartialKeys = PARTIAL_MERGE_CONFIG_KEYS[id];
-    if (allowedPartialKeys !== undefined) {
+    if (id === 'config:error_telemetry') {
       const priorUpstream = priorBase?.units.get(id);
-      const { merged: mergedUnit, filteredUpstream } = mergePartialConfigUnit(upstream, current, priorUpstream, allowedPartialKeys);
+      const localOptOut = current !== undefined
+        && object(current.value)['enabled'] === false
+        && (priorUpstream === undefined || object(priorUpstream.value)['enabled'] !== false);
+      if (localOptOut) {
+        if (priorUpstream !== undefined) {
+          nextManagedSet.add(id);
+          nextBaseUnits.set(id, priorUpstream);
+        }
+        skippedIds.push(id);
+        continue;
+      }
+    }
+
+    const allowedNested = PARTIAL_MERGE_NESTED_KEYS[id];
+    if (allowedNested !== undefined) {
+      const priorUpstream = priorBase?.units.get(id);
+      const { merged: mergedUnit, filteredUpstream } = mergePartialConfigUnit(upstream, current, priorUpstream, allowedNested);
       if (Object.keys(object(filteredUpstream.value)).length === 0) {
         skippedIds.push(id);
         continue;
@@ -809,12 +1041,21 @@ export function reconcileSubscriptionUnits(
       const providerId = upstream.key[1];
       const upstreamProvider = object(upstream.value);
       const credId = typeof upstreamProvider['credential_id'] === 'string' ? upstreamProvider['credential_id'].trim() : undefined;
-      if (credId !== undefined && credId.length > 0 && credId !== providerId) {
-        const poolUnitId = `credentials:pool.${credId.replaceAll('%', '%25').replaceAll('.', '%2E')}`;
-        if (targetUnits.has(poolUnitId) && !upstreamUnits.has(poolUnitId) && !previousManagedSet.has(poolUnitId)) {
-          throw new Error(`Remote URL subscription provider "${providerId}" cannot reference unmanaged local credential "${credId}"`);
-        }
+      if (
+        credId !== undefined
+        && credId.length > 0
+        && credId !== providerId
+        && isUnmanagedPoolCredential(credId, targetUnits, upstreamUnits, previousManagedSet)
+      ) {
+        throw new Error(`Remote URL subscription provider "${providerId}" cannot reference unmanaged local credential "${credId}"`);
       }
+    }
+
+    if (isProtectedUnmanagedCustomUnit(upstream) && current !== undefined && !previousManagedSet.has(id)) {
+      if (!sameUnit(upstream, current)) {
+        skippedIds.push(id);
+      }
+      continue;
     }
 
     nextManagedSet.add(id);
@@ -829,10 +1070,14 @@ export function reconcileSubscriptionUnits(
     if (nextManagedSet.has(oldId)) continue;
     const current = nextUnits.get(oldId);
     if (current === undefined) continue;
-    if (USER_KEEP_CONFIG_IDS.has(oldId) || USER_KEEP_DOMAINS.has(current.domain)) continue;
-    const allowedPartialKeys = PARTIAL_MERGE_CONFIG_KEYS[oldId];
-    if (allowedPartialKeys !== undefined) {
-      const pruned = prunePartialConfigUnit(current, priorBase?.units.get(oldId), allowedPartialKeys);
+    if (USER_KEEP_CONFIG_IDS.has(oldId) || USER_KEEP_DOMAINS.has(current.domain) || BLOCKED_REMOTE_DOMAINS.has(current.domain)) continue;
+    if (oldId === 'config:error_telemetry' && object(current.value)['enabled'] === false) {
+      skippedIds.push(oldId);
+      continue;
+    }
+    const allowedNested = PARTIAL_MERGE_NESTED_KEYS[oldId];
+    if (allowedNested !== undefined) {
+      const pruned = prunePartialConfigUnit(current, priorBase?.units.get(oldId), allowedNested);
       if (pruned === undefined) {
         nextUnits.delete(oldId);
         deletedIds.push(oldId);

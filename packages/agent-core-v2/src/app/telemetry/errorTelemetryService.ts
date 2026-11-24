@@ -21,6 +21,9 @@ const MAX_QUEUE_SIZE = 200;
 const REQUEST_TIMEOUT_MS = 5000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 2000;
 const MAX_MESSAGE_LENGTH = 500;
+const MAX_IDENTIFIER_LENGTH = 128;
+
+const URL_PATTERN = /\bhttps?:\/\/[^\s"'`<>|]+/gi;
 
 const SECRET_PATTERNS: readonly RegExp[] = [
   /\b(?:Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{6,}/gi,
@@ -61,17 +64,25 @@ export interface ErrorTelemetryBatchPayload {
   readonly events: readonly SanitizedErrorTelemetryEvent[];
 }
 
-/** Scrubs filesystem paths and credential-like tokens from free-form error strings. */
+/** Scrubs filesystem paths, URLs, and credential-like tokens from free-form error strings. */
 export function sanitizeErrorTelemetryMessage(raw: string): string {
   let scrubbed = raw;
   for (const pattern of SECRET_PATTERNS) {
     scrubbed = scrubbed.replace(pattern, '<redacted>');
   }
+  scrubbed = scrubbed.replace(URL_PATTERN, '<url>');
   for (const pattern of PATH_PATTERNS) {
     scrubbed = scrubbed.replace(pattern, '<path>');
   }
   const compact = scrubbed.replace(/\s+/g, ' ').trim();
   return compact.length > MAX_MESSAGE_LENGTH ? `${compact.slice(0, MAX_MESSAGE_LENGTH - 3)}...` : compact;
+}
+
+function sanitizeTelemetryIdentifier(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const cleaned = sanitizeErrorTelemetryMessage(raw).replace(/[\r\n\t]+/g, ' ').trim();
+  if (cleaned.length === 0) return undefined;
+  return cleaned.length > MAX_IDENTIFIER_LENGTH ? cleaned.slice(0, MAX_IDENTIFIER_LENGTH) : cleaned;
 }
 
 /** Returns whether a telemetry event represents an error or failure eligible for error telemetry. */
@@ -121,17 +132,18 @@ export function projectErrorTelemetryEvent(
   now = new Date(),
 ): SanitizedErrorTelemetryEvent | undefined {
   if (!isErrorTelemetryEvent(event, properties)) return undefined;
-  const errorCode = stringProp(properties, 'error_code', 'error_type');
+  const errorCode = sanitizeTelemetryIdentifier(stringProp(properties, 'error_code', 'error_type'));
   const statusCode = numberProp(properties, 'status_code');
-  const modelId = stringProp(properties, 'model_id', 'alias', 'model');
-  const providerId = stringProp(properties, 'provider_id', 'provider_type');
-  const toolName = stringProp(properties, 'tool_name');
+  const modelId = sanitizeTelemetryIdentifier(stringProp(properties, 'model_id', 'alias', 'model'));
+  const providerId = sanitizeTelemetryIdentifier(stringProp(properties, 'provider_id', 'provider_type'));
+  const toolName = sanitizeTelemetryIdentifier(stringProp(properties, 'tool_name'));
   const durationMs = numberProp(properties, 'duration_ms');
+  const safeEvent = sanitizeTelemetryIdentifier(event) ?? 'error';
   return {
     ts: now.toISOString(),
     category: inferCategory(event, properties),
-    event,
-    ...(errorCode === undefined ? {} : { error_code: sanitizeErrorTelemetryMessage(errorCode) }),
+    event: safeEvent,
+    ...(errorCode === undefined ? {} : { error_code: errorCode }),
     ...(statusCode === undefined ? {} : { status_code: statusCode }),
     ...(modelId === undefined ? {} : { model_id: modelId }),
     ...(providerId === undefined ? {} : { provider_id: providerId }),
@@ -151,12 +163,13 @@ export function projectUnexpectedErrorEvent(err: unknown, now = new Date()): San
     : err !== null && typeof err === 'object' && 'statusCode' in err && typeof err.statusCode === 'number'
       ? err.statusCode
       : undefined;
-  const errorCode = codeField ?? (isError && err.name ? err.name : 'UnexpectedError');
+  const rawCode = codeField ?? (isError && err.name ? err.name : 'UnexpectedError');
+  const errorCode = sanitizeTelemetryIdentifier(rawCode) ?? 'UnexpectedError';
   return {
     ts: now.toISOString(),
     category: 'unexpected',
     event: 'unexpected_error',
-    error_code: sanitizeErrorTelemetryMessage(errorCode),
+    error_code: errorCode,
     ...(statusField === undefined ? {} : { status_code: statusField }),
   };
 }
@@ -248,6 +261,7 @@ export class ErrorTelemetryAppender implements ITelemetryAppender {
   private activeConfig(): (ErrorTelemetryConfig & { readonly endpoint: string }) | undefined {
     const config = this.options.getConfig();
     if (config === undefined || config.enabled !== true || !config.endpoint) return undefined;
+    if (approvedTelemetryEndpointOrigin(config.endpoint) === undefined) return undefined;
     return config as ErrorTelemetryConfig & { readonly endpoint: string };
   }
 
@@ -308,6 +322,7 @@ export class ErrorTelemetryAppender implements ITelemetryAppender {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
+        redirect: 'error',
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch {

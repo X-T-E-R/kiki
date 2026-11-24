@@ -244,4 +244,51 @@ describe('ErrorTelemetryAppender', () => {
       globalThis.fetch = origFetch;
     }
   });
+
+  it('rejects non-HTTPS non-loopback endpoints, sets redirect=error, and sanitizes identifier fields', async () => {
+    const fetchSpy = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+    const plainHttpAppender = new ErrorTelemetryAppender({
+      getConfig: () => ({
+        enabled: true,
+        endpoint: 'http://collector.example.test/v1/kiki/telemetry',
+        flush_interval_ms: 60_000,
+        max_batch_size: 10,
+      }),
+      resolveBearerToken: () => undefined,
+      getClientId: async () => 'cid-http',
+      fetchFn: fetchSpy,
+    });
+    plainHttpAppender.track('api_error', { error_type: 'timeout' });
+    await plainHttpAppender.shutdown();
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    const httpsAppender = new ErrorTelemetryAppender({
+      getConfig: () => ({
+        enabled: true,
+        endpoint: 'https://collector.example.test/v1/kiki/telemetry',
+        flush_interval_ms: 60_000,
+        max_batch_size: 10,
+      }),
+      resolveBearerToken: () => undefined,
+      getClientId: async () => 'cid-https',
+      fetchFn: fetchSpy,
+    });
+    httpsAppender.track('api_error', {
+      error_code: `Bearer sk-secret-token123456 https://evil.example.test/tok ${'x'.repeat(200)}`,
+      model_id: 'model/Users/alice/secret.txt',
+      provider_id: 'axon api_key=leak999999',
+      tool_name: 'Bash C:\\Users\\bob\\creds.env',
+    });
+    await httpsAppender.shutdown();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [, init] = fetchSpy.mock.calls[0]!;
+    expect(init?.redirect).toBe('error');
+    const body = JSON.parse(String(init?.body)) as ErrorTelemetryBatchPayload;
+    const ev = body.events[0]!;
+    expect(ev.error_code!.length).toBeLessThanOrEqual(128);
+    expect(ev.error_code).not.toContain('sk-secret-token123456');
+    expect(ev.error_code).not.toContain('https://evil.example.test');
+    expect(ev.provider_id).not.toContain('leak999999');
+    expect(ev.tool_name).not.toContain('C:\\Users\\bob');
+  });
 });

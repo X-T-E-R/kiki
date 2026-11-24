@@ -147,9 +147,11 @@ export const portableSpaceSourceRecordSchema = z.object({
   lastSyncedAt: z.string().optional(),
   autoSync: z.boolean().optional(),
   etag: z.string().max(512).optional(),
+  etagOrigin: z.string().max(512).optional(),
   lastCheckedAt: z.string().optional(),
   lastSyncError: z.string().max(1024).optional(),
   managedIds: z.array(z.string().min(1).max(512)).optional(),
+  pendingOfficialPlugins: z.array(z.string().min(1).max(128)).max(64).optional(),
 }).strict();
 export type PortableSpaceSourceRecord = z.infer<typeof portableSpaceSourceRecordSchema>;
 
