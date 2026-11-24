@@ -1329,10 +1329,15 @@ export async function runScenarioS18CoupledWorkstationGate({
       const initialState = await switchPage.evaluate((sid) => {
         const pathNow = window.location.pathname;
         const transcriptText = document.querySelector('[data-transcript-scroll]')?.textContent ?? '';
+        const itemCount = document.querySelectorAll('[data-transcript-scroll] [data-transcript-virtual-item]').length;
         return {
           path: pathNow,
           matchesSession: pathNow.includes(`/s/${sid}`) && !pathNow.includes('/p/'),
-          hasHomeAContent: transcriptText.includes('TURN_MARKER_'),
+          hasHomeAContent:
+            itemCount > 0 &&
+            (transcriptText.includes('TURN_MARKER_') ||
+              transcriptText.includes('coupled_tick_') ||
+              transcriptText.includes('S18_')),
           hasHomeBContent: transcriptText.includes('HOME_B_OWNER_DISPATCHED_PRIVATE_CHILD'),
         };
       }, corpus.giantSessionId);
@@ -1372,7 +1377,7 @@ export async function runScenarioS18CoupledWorkstationGate({
           { timeout: 10_000 },
         );
         await ensureSessionsSidebarTab(switchPage);
-        const homeBSessionRow = switchPage.locator(`[data-session-row="${bSessionId}"]`).first();
+        const homeBSessionRow = switchPage.locator(`[data-session-row="${bSessionId}"] > button`).first();
         await homeBSessionRow.waitFor({ state: 'visible', timeout: 15_000 });
         await homeBSessionRow.click();
         await switchPage.waitForFunction(
@@ -1422,14 +1427,24 @@ export async function runScenarioS18CoupledWorkstationGate({
           { timeout: 10_000 },
         );
         await ensureSessionsSidebarTab(switchPage);
-        const homeASessionRow = switchPage.locator(`[data-session-row="${corpus.giantSessionId}"]`).first();
+        const homeASessionRow = switchPage.locator(`[data-session-row="${corpus.giantSessionId}"] > button`).first();
         await homeASessionRow.waitFor({ state: 'visible', timeout: 15_000 });
         await homeASessionRow.click();
         await switchPage.waitForFunction(
-          (sid) =>
-            window.location.pathname.includes(`/s/${sid}`) &&
-            !window.location.pathname.includes('/p/') &&
-            (document.querySelector('[data-transcript-scroll]')?.textContent ?? '').includes('TURN_MARKER_'),
+          (sid) => {
+            const pathNow = window.location.pathname;
+            const transcriptText = document.querySelector('[data-transcript-scroll]')?.textContent ?? '';
+            const itemCount = document.querySelectorAll('[data-transcript-scroll] [data-transcript-virtual-item]').length;
+            return (
+              pathNow.includes(`/s/${sid}`) &&
+              !pathNow.includes('/p/') &&
+              itemCount > 0 &&
+              !transcriptText.includes('HOME_B_OWNER_DISPATCHED_PRIVATE_CHILD') &&
+              (transcriptText.includes('TURN_MARKER_') ||
+                transcriptText.includes('coupled_tick_') ||
+                transcriptText.includes('S18_'))
+            );
+          },
           corpus.giantSessionId,
           { timeout: 20_000 },
         );
@@ -1437,11 +1452,16 @@ export async function runScenarioS18CoupledWorkstationGate({
           const pathNow = window.location.pathname;
           const scopeNow = document.querySelector('[data-space-switcher]')?.getAttribute('data-space-scope') ?? null;
           const transcriptText = document.querySelector('[data-transcript-scroll]')?.textContent ?? '';
+          const itemCount = document.querySelectorAll('[data-transcript-scroll] [data-transcript-virtual-item]').length;
           return {
             path: pathNow,
             scope: scopeNow,
             matchesSession: pathNow.includes(`/s/${sid}`) && !pathNow.includes('/p/'),
-            hasHomeAContent: transcriptText.includes('TURN_MARKER_'),
+            hasHomeAContent:
+              itemCount > 0 &&
+              (transcriptText.includes('TURN_MARKER_') ||
+                transcriptText.includes('coupled_tick_') ||
+                transcriptText.includes('S18_')),
             hasHomeBContent: transcriptText.includes('HOME_B_OWNER_DISPATCHED_PRIVATE_CHILD'),
           };
         }, corpus.giantSessionId);

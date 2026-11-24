@@ -5403,7 +5403,8 @@ function dedupeBoundaryUserBlocks(blocks: readonly Block[]): readonly Block[] {
     if ((prev.media?.length ?? 0) > 0 && (next.media?.length ?? 0) > 0) return false;
     const sameIdentity =
       prev.id === next.id ||
-      (prev.userMessageId !== undefined && prev.userMessageId === next.userMessageId) ||
+      (prev.userMessageId !== undefined && (prev.userMessageId === next.userMessageId || next.id === `user-${prev.userMessageId}`)) ||
+      (next.userMessageId !== undefined && prev.id === `user-${next.userMessageId}`) ||
       (prev.clientRequestId !== undefined && prev.clientRequestId === next.clientRequestId) ||
       (prev.promptId !== undefined && prev.promptId === next.promptId);
     if (sameIdentity) return true;
@@ -5413,10 +5414,11 @@ function dedupeBoundaryUserBlocks(blocks: readonly Block[]): readonly Block[] {
     const syntheticTurnId = `user-prompt-${turnOrdinal}`;
     const syntheticPromptId = `prompt-${turnOrdinal}`;
     const isSyntheticTurnPrompt = (block: UserBlock): boolean =>
-      !isCanonicalUser(block) &&
       block.id === syntheticTurnId &&
       (block.promptId === undefined || block.promptId === syntheticPromptId);
     return (
+      (prev.id.startsWith('user-msg-') && isSyntheticTurnPrompt(next)) ||
+      (next.id.startsWith('user-msg-') && isSyntheticTurnPrompt(prev)) ||
       (isCanonicalUser(prev) && isSyntheticTurnPrompt(next)) ||
       (isCanonicalUser(next) && isSyntheticTurnPrompt(prev))
     );
@@ -5438,7 +5440,11 @@ function dedupeBoundaryUserBlocks(blocks: readonly Block[]): readonly Block[] {
     const prev = prevIndex >= 0 ? (result === null ? blocks[prevIndex] : result[prevIndex]) : undefined;
     if (prev !== undefined && isCandidate(prev) && isCandidate(block) && isAdjacentBoundaryEcho(prev, block)) {
       if (result === null) result = blocks.slice(0, i);
-      const primary = isCanonicalUser(block) && !isCanonicalUser(prev) ? block : prev;
+      const primary =
+        (block.id.startsWith('user-msg-') && !prev.id.startsWith('user-msg-')) ||
+        (isCanonicalUser(block) && !isCanonicalUser(prev))
+          ? block
+          : prev;
       const secondary = primary === block ? prev : block;
       result[prevIndex] = mergeUser(primary, secondary);
       continue;

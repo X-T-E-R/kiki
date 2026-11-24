@@ -12113,6 +12113,27 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
     expect(turn151Users).toHaveLength(1);
     expect(turn151Users[0]?.getAttribute('data-block-id')).toBe('user-msg-user-151');
 
+    // Cold wire pair (t142): turn.prompt carries userMessageId='msg-user-142' + promptId='prompt-142',
+    // while context.append_message projects id='user-msg-user-142' with userMessageId=undefined.
+    const wirePairContainer = await renderTranscript([
+      userBlock({
+        id: 'user-prompt-142',
+        turnId: 't142',
+        promptId: 'prompt-142',
+        userMessageId: 'msg-user-142',
+        text: 'TURN_MARKER_000142 Synthetic chaos benchmark turn 142 invoking ThreadList',
+      }),
+      userBlock({
+        id: 'user-msg-user-142',
+        turnId: 't142',
+        text: 'TURN_MARKER_000142 Synthetic chaos benchmark turn 142 invoking ThreadList',
+      }),
+    ]);
+    const turn142PairUsers = [...wirePairContainer.querySelectorAll('[data-turn-id="t142"]')]
+      .filter((el) => el.textContent?.includes('TURN_MARKER_000142'));
+    expect(turn142PairUsers).toHaveLength(1);
+    expect(turn142PairUsers[0]?.getAttribute('data-block-id')).toBe('user-msg-user-142');
+
     // Distinct batched steers, distinct promptIds, and non-adjacent repeat after assistant reply stay separate.
     const turn141Users = [...container.querySelectorAll('[data-turn-id="t141"]')]
       .filter((el) => el.getAttribute('data-block-id')?.startsWith('user-') === true);
