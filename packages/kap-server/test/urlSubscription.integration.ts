@@ -18,6 +18,7 @@ import {
 } from '@kiki/protocol';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { reconcileOfficialPlugins } from '../src/services/portableSpace/liveSpace';
+import { PortableSpaceService } from '../src/services/portableSpace/portableSpaceService';
 import { packTarGz, unpackTarGz } from '../src/services/portableSpace/tarArchive';
 import {
   assertSafeSubscriptionUrl,
@@ -470,46 +471,168 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
-  it.skipIf(!externalLabPackDir)('validates generated lab-base-pack.tgz size, zero-leak, leaf agents, recipes, and portal-catalog.json', async () => {
+  it('skips fresh error-free URL subscriptions on startup pass while syncing stale or failed ones', async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), 'kiki-sub-cadence-'));
+    try {
+      const now = Date.now();
+      const sources = [
+        {
+          id: 'fresh-ok',
+          label: 'Fresh OK',
+          endpoint: { kind: 'url' as const, url: 'https://example.test/fresh.tgz' },
+          format: 'tgz' as const,
+          autoSync: true,
+          lastCheckedAt: new Date(now - 60 * 60 * 1000).toISOString(),
+        },
+        {
+          id: 'stale-ok',
+          label: 'Stale OK',
+          endpoint: { kind: 'url' as const, url: 'https://example.test/stale.tgz' },
+          format: 'tgz' as const,
+          autoSync: true,
+          lastCheckedAt: new Date(now - 13 * 60 * 60 * 1000).toISOString(),
+        },
+        {
+          id: 'fresh-errored',
+          label: 'Fresh Errored',
+          endpoint: { kind: 'url' as const, url: 'https://example.test/errored.tgz' },
+          format: 'tgz' as const,
+          autoSync: true,
+          lastCheckedAt: new Date(now - 10 * 60 * 1000).toISOString(),
+          lastSyncError: 'HTTP 503',
+        },
+        {
+          id: 'manual-only',
+          label: 'Manual Only',
+          endpoint: { kind: 'url' as const, url: 'https://example.test/manual.tgz' },
+          format: 'tgz' as const,
+          autoSync: false,
+        },
+      ];
+      await writeFile(join(tmpHome, 'portable-spaces.json'), JSON.stringify(sources), 'utf8');
+      const svc = new PortableSpaceService({ home: tmpHome } as never);
+      const syncSpy = vi.spyOn(svc, 'syncSubscription').mockResolvedValue({
+        status: 'not_modified',
+        source: sources[0] as never,
+        appliedIds: [],
+        skippedIds: [],
+        deletedIds: [],
+      });
+
+      await svc.syncAllAutoSubscriptions(undefined, 12 * 60 * 60 * 1000);
+      expect(syncSpy.mock.calls.map(([id]) => id)).toEqual(['stale-ok', 'fresh-errored']);
+
+      syncSpy.mockClear();
+      await svc.syncAllAutoSubscriptions(undefined, undefined);
+      expect(syncSpy.mock.calls.map(([id]) => id)).toEqual(['fresh-ok', 'stale-ok', 'fresh-errored']);
+    } finally {
+      await rm(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!externalLabPackDir)('validates generated lab-base-pack.tgz size, zero-leak, 9 agents, 6 recipes, extensions.toml, and portal-catalog.json', async () => {
     const packBytes = await readFile(join(externalLabPackDir!, 'lab-base-pack.tgz'));
-    expect(packBytes.byteLength).toBeLessThan(80 * 1024);
+    expect(packBytes.byteLength).toBeLessThan(150 * 1024);
     const unpackedTarText = gunzipSync(packBytes).toString('utf8');
     const catalogText = await readFile(join(externalLabPackDir!, 'portal-catalog.json'), 'utf8');
 
     const files = unpackTarGz(packBytes);
     expect([...files.keys()].some((k) => k.startsWith('skills/'))).toBe(false);
-    expect(unpackedTarText).not.toMatch(/gpt-6\.2-astra/i);
-    expect(catalogText).not.toMatch(/gpt-6\.2-astra/i);
+    for (const forbidden of [
+      /gpt-6\.2-astra/i,
+      /swe-2-flash/i,
+      /cmd\/deepseek/i,
+      /xxoy/i,
+      /nailong/i,
+      /krhougs/i,
+      /vaultwarden/i,
+      /subtext/i,
+      /nb-hub/i,
+      /research_ctl\.py/i,
+      /repo-xray/i,
+    ]) {
+      expect(unpackedTarText).not.toMatch(forbidden);
+      expect(catalogText).not.toMatch(forbidden);
+    }
+
+    const extensionsToml = parse(files.get('extensions.toml')!.toString('utf8')) as {
+      plugins?: Array<{ id?: string; enabled?: boolean }>;
+    };
+    expect(extensionsToml.plugins).toEqual([{ id: 'kiki-office', enabled: true }]);
 
     const agentPaths = [...files.keys()].filter((k) => k.startsWith('agents/')).sort();
     expect(agentPaths).toEqual([
       'agents/explore.md',
       'agents/frontend.md',
       'agents/implementer.md',
+      'agents/operator.md',
       'agents/researcher.md',
       'agents/reviewer.md',
       'agents/think.md',
+      'agents/worker.md',
+      'agents/writer.md',
     ]);
+    const parsedAgents = new Map<string, ReturnType<typeof parseAgentFileText>>();
     for (const agentPath of agentPaths) {
-      const parsed = parseAgentFileText({
-        path: agentPath,
-        text: files.get(agentPath)!.toString('utf8'),
-        source: 'user',
-      });
-      expect(parsed.canSpawnSubagents).toBe(false);
-      expect(parsed.disallowedTools).toEqual(expect.arrayContaining(['AgentRun', 'AgentSend']));
+      const text = files.get(agentPath)!.toString('utf8');
+      expect(text).not.toMatch(/claude-opus-5-5/i);
+      const parsed = parseAgentFileText({ path: agentPath, text, source: 'user' });
+      parsedAgents.set(parsed.name, parsed);
     }
+    expect(parsedAgents.get('explore')?.modelAlias).toBe('swe-2');
+    expect(parsedAgents.get('explore')?.canSpawnSubagents).toBe(false);
+    expect(files.get('agents/explore.md')!.toString('utf8')).not.toMatch(/gemini-4-neon/i);
+    expect(parsedAgents.get('worker')?.modelAlias).toBe('swe-2');
+    expect(parsedAgents.get('worker')?.canSpawnSubagents).toBe(false);
+    expect(files.get('agents/worker.md')!.toString('utf8')).not.toMatch(/gemini-4-neon/i);
+    expect(parsedAgents.get('operator')?.modelAlias).toBe('gemini-4-hydrogen');
+    expect(parsedAgents.get('operator')?.canSpawnSubagents).toBe(false);
+    expect(parsedAgents.get('implementer')?.modelAlias).toBe('gemini-4-neon');
+    expect(parsedAgents.get('implementer')?.allowedSubagents).toEqual(['explore', 'worker']);
+    expect(parsedAgents.get('frontend')?.modelAlias).toBe('gemini-4-neon');
+    expect(parsedAgents.get('frontend')?.allowedSubagents).toEqual(['explore', 'worker']);
+    expect(parsedAgents.get('reviewer')?.modelAlias).toBe('gpt-6.2-sol');
+    expect(parsedAgents.get('reviewer')?.canSpawnSubagents).toBe(false);
+    expect(parsedAgents.get('think')?.modelAlias).toBe('gpt-6.2-sol');
+    expect(parsedAgents.get('think')?.preferredModels).toEqual(['gpt-6.2-sol', 'gemini-4-carbon']);
+    expect(parsedAgents.get('writer')?.modelAlias).toBe('gemini-4-neon');
+    expect(parsedAgents.get('writer')?.canSpawnSubagents).toBe(false);
 
-    for (const recipePath of ['recipes/lab-gemini/recipe.toml', 'recipes/lab-sol/recipe.toml', 'recipes/lab-deepseek/recipe.toml']) {
+    for (const recipePath of [
+      'recipes/sol-luna/sol.toml',
+      'recipes/neon/recipe.toml',
+      'recipes/carbon/recipe.toml',
+      'recipes/hydrogen/g38f.toml',
+      'recipes/deepseek/deepseek.toml',
+      'recipes/k31-pro/k31.toml',
+    ]) {
       const manifest = recipeManifestSchema.parse(parse(files.get(recipePath)!.toString('utf8')));
       expect(manifest.hooks).toBeUndefined();
     }
 
-    const catalog = JSON.parse(catalogText) as { models: { id: string }[]; wechat_im_guide: { steps: unknown[] } };
-    expect(catalog.models).toHaveLength(10);
-    expect(catalog.models.some((m) => m.id === 'swe-2')).toBe(true);
-    expect(catalog.models.some((m) => m.id === 'swe-2-flash')).toBe(true);
+    const catalog = JSON.parse(catalogText) as {
+      models: { id: string }[];
+      included_official_plugins: { id: string; enabled: boolean }[];
+      wechat_im_guide: { steps: unknown[] };
+      skills_catalog: { total_skills: number; skills: { slug: string }[] };
+    };
+    expect(catalog.models.map((m) => m.id).sort()).toEqual([
+      'claude-opus-5-5',
+      'deepseek-v4-flash',
+      'gemini-4-carbon',
+      'gemini-4-hydrogen',
+      'gemini-4-neon',
+      'gpt-6-luna',
+      'gpt-6.2-sol',
+      'k3.1-pro',
+      'swe-2',
+    ]);
+    expect(catalog.included_official_plugins).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'kiki-office', enabled: true })]),
+    );
     expect(catalog.wechat_im_guide.steps).toHaveLength(3);
+    expect(catalog.skills_catalog.total_skills).toBe(13);
+    expect(catalog.skills_catalog.skills).toHaveLength(13);
   });
 
   it('subscribes via URL, inherits axon key in nb_search, handles ETag 304 and sync errors, and enforces managed_overwrite vs user_keep', async () => {
@@ -534,7 +657,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     expect(providers?.['axon']?.apiKey).toBe('sk-axon-integration-test-key');
     expect(providers?.['axon']?.decision?.system_one?.model).toBe('typesafe/jev');
 
-    const models = configService.get<Record<string, { model?: string; displayName?: string }>>('models');
+    const models = configService.get<Record<string, { model?: string; displayName?: string; recipe?: string; promptOverrides?: unknown }>>('models');
     if (externalLabPackDir) {
       expect(Object.keys(models ?? {}).sort()).toEqual([
         'claude-opus-5-5',
@@ -546,8 +669,15 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
         'gpt-6.2-sol',
         'k3.1-pro',
         'swe-2',
-        'swe-2-flash',
       ]);
+      expect(models?.['deepseek-v4-flash']?.model).toBe('deepseek-v4.1-flash');
+      expect(models?.['swe-2']?.model).toBe('swe-2');
+      expect(models?.['gpt-6-luna']?.recipe).toBe('recipes/sol-luna/sol.toml');
+      expect(models?.['claude-opus-5-5']?.promptOverrides).toBeUndefined();
+      expect(configService.get<{ contextStrategy?: string; subagentContextStrategy?: string }>('loopControl')).toMatchObject({
+        contextStrategy: 'summarize',
+        subagentContextStrategy: 'summarize',
+      });
     } else {
       expect(Object.keys(models ?? {}).sort()).toEqual(['claude-opus-5-5', 'gemini-4-neon', 'gpt-6-luna', 'k3.1-pro']);
     }
@@ -642,7 +772,8 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
       Buffer.from('---\nname: explore\ndescription: Fast locator v2\nmodel_alias: gpt-6-luna\npreferred_models:\n  - gpt-6-luna\nmodel_profiles:\n  - model: gpt-6-luna\n    effort: medium\n---\nExplore v2 updated body.\n', 'utf8'),
     );
     v2Files.delete('agents/legacy.md');
-    v2Files.set('recipes/lab-gemini/system.md', Buffer.from('# Lab Gemini v2\nUpdated research guidance.\n', 'utf8'));
+    const recipeBodyRelPath = externalLabPackDir ? 'recipes/neon/neon-main.md' : 'recipes/lab-gemini/system.md';
+    v2Files.set(recipeBodyRelPath, Buffer.from('# Lab Gemini v2\nUpdated research guidance.\n', 'utf8'));
     v2Files.delete('recipes/old-recipe/recipe.toml');
     await mkdir(join(kikiHome, 'agents'), { recursive: true });
     await writeFile(join(kikiHome, 'agents', 'user-local.md'), '---\nname: user-local\ndescription: Local agent\n---\nKeep me.\n', 'utf8');
@@ -671,7 +802,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     expect(updatedExploreMd).toContain('Explore v2 updated body.');
     const userLocalAgent = await readFile(join(kikiHome, 'agents', 'user-local.md'), 'utf8');
     expect(userLocalAgent).toContain('Keep me.');
-    const updatedRecipeMd = await readFile(join(kikiHome, 'recipes', 'lab-gemini', 'system.md'), 'utf8');
+    const updatedRecipeMd = await readFile(join(kikiHome, ...recipeBodyRelPath.split('/')), 'utf8');
     expect(updatedRecipeMd).toContain('Updated research guidance.');
     const userCustomRecipe = await readFile(join(kikiHome, 'recipes', 'user-custom', 'recipe.toml'), 'utf8');
     expect(userCustomRecipe).toContain('user-custom');

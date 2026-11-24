@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { realpath, rm } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -28,8 +28,11 @@ interface Plan {
 interface StoredFork extends ForkBase { source: string; destination: string; shared?: boolean }
 interface Preview { at: number; plan: Plan }
 const TTL = 5 * 60_000;
-const DEFAULT_AUTO_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const DEFAULT_STARTUP_SYNC_DELAY_MS = 2_000;
+const DEFAULT_AUTO_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_AUTO_SYNC_JITTER_MS = 30 * 60 * 1000;
+const DEFAULT_STARTUP_SYNC_MIN_DELAY_MS = 60_000;
+const DEFAULT_STARTUP_SYNC_MAX_DELAY_MS = 180_000;
+const DEFAULT_STARTUP_FRESHNESS_WINDOW_MS = 12 * 60 * 60 * 1000;
 const sourceListSchema = z.array(portableSpaceSourceRecordSchema);
 
 function agreedBase(left: Units, right: Units, key: string, prior: VerifiedBase | undefined): VerifiedBase {
@@ -84,26 +87,31 @@ export class PortableSpaceService {
 
   constructor(private readonly endpoints: SpaceEndpoints) {}
 
-  startAutoSync(options: { readonly intervalMs?: number; readonly startupDelayMs?: number } = {}): void {
+  startAutoSync(options: {
+    readonly intervalMs?: number;
+    readonly startupDelayMs?: number;
+    readonly startupFreshnessMs?: number;
+  } = {}): void {
     void this.stopAutoSync();
     this.stopped = false;
     const controller = new AbortController();
     this.autoSyncAbort = controller;
-    const startupDelayMs = options.startupDelayMs ?? DEFAULT_STARTUP_SYNC_DELAY_MS;
-    const intervalMs = options.intervalMs ?? DEFAULT_AUTO_SYNC_INTERVAL_MS;
-    const run = () => {
+    const startupDelayMs = options.startupDelayMs ?? randomInt(DEFAULT_STARTUP_SYNC_MIN_DELAY_MS, DEFAULT_STARTUP_SYNC_MAX_DELAY_MS + 1);
+    const intervalMs = options.intervalMs ?? (DEFAULT_AUTO_SYNC_INTERVAL_MS + randomInt(0, DEFAULT_AUTO_SYNC_JITTER_MS + 1));
+    const startupFreshnessMs = options.startupFreshnessMs ?? DEFAULT_STARTUP_FRESHNESS_WINDOW_MS;
+    const run = (skipIfFreshMs?: number) => {
       if (this.stopped || controller.signal.aborted || this.activeAutoSync !== undefined) return;
-      const pass = this.syncAllAutoSubscriptions(controller.signal).then(() => undefined, () => undefined).finally(() => {
+      const pass = this.syncAllAutoSubscriptions(controller.signal, skipIfFreshMs).then(() => undefined, () => undefined).finally(() => {
         if (this.activeAutoSync === pass) this.activeAutoSync = undefined;
       });
       this.activeAutoSync = pass;
     };
     this.startupSyncTimer = setTimeout(() => {
       this.startupSyncTimer = undefined;
-      run();
+      run(startupFreshnessMs);
     }, startupDelayMs);
     this.startupSyncTimer.unref?.();
-    this.periodicSyncTimer = setInterval(run, intervalMs);
+    this.periodicSyncTimer = setInterval(() => run(undefined), intervalMs);
     this.periodicSyncTimer.unref?.();
   }
 
@@ -138,12 +146,22 @@ export class PortableSpaceService {
     }
   }
 
-  async syncAllAutoSubscriptions(signal?: AbortSignal): Promise<PortableSpaceSubscriptionSyncResult[]> {
+  async syncAllAutoSubscriptions(
+    signal?: AbortSignal,
+    skipIfFreshMs?: number,
+  ): Promise<PortableSpaceSubscriptionSyncResult[]> {
     const items = await this.sources();
     const results: PortableSpaceSubscriptionSyncResult[] = [];
+    const now = Date.now();
     for (const item of items) {
       if (this.stopped || signal?.aborted) break;
       if (item.endpoint.kind !== 'url' || item.autoSync === false) continue;
+      if (skipIfFreshMs !== undefined && skipIfFreshMs > 0 && !item.lastSyncError && item.lastCheckedAt !== undefined) {
+        const checkedMs = Date.parse(item.lastCheckedAt);
+        if (Number.isFinite(checkedMs) && now - checkedMs >= 0 && now - checkedMs < skipIfFreshMs) {
+          continue;
+        }
+      }
       try {
         results.push(await this.syncSubscription(item.id, { force: false, createBackup: true }, signal));
       } catch {

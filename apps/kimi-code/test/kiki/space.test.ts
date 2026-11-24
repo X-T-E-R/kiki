@@ -1,6 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -512,5 +512,40 @@ describe('portable Space CLI', () => {
       return sourceList();
     });
     await expect(parse(failHarness.dependencies, 'sync', 'sub-url-err')).rejects.toThrow(/HTTP 503/);
+  });
+
+  it('honors subcommand --yes under a root --yes default(false) and omits selectedIds when --selected is unused', async () => {
+    const harness = makeHarness((path) => {
+      if (path === '/api/spaces/portable/preview') {
+        return {
+          ...preview(),
+          previewToken: 'tok-apply-1',
+        };
+      }
+      if (path === '/api/spaces/portable/apply') {
+        return {
+          mode: 'merge',
+          appliedIds: ['config:default_model'],
+          skippedIds: [],
+          deletedIds: [],
+          gitSyncedSkills: [],
+          restartRequired: false,
+        };
+      }
+      return sourceList();
+    });
+
+    const root = new Command();
+    root.exitOverride();
+    root.addOption(new Option('--yes').hideHelp().default(false));
+    registerSpaceCommand(root, harness.dependencies);
+    await root.parseAsync(['node', 'kiki', 'space', 'apply', '/tmp/pack.tgz', '--yes', '--no-backup', '--json']);
+
+    const applyReq = harness.requests.find((r) => r.path === '/api/spaces/portable/apply');
+    expect(applyReq).toBeDefined();
+    expect(applyReq?.body).toEqual({
+      previewToken: 'tok-apply-1',
+      createBackup: false,
+    });
   });
 });

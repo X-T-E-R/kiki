@@ -26,7 +26,11 @@ export function registerPortableSpaceRoutes(app: FastifyInstance, service: Porta
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'ENOENT') return reply.code(404).send(errEnvelope(40401, 'Portable Space endpoint not found', request.id));
-      if (error instanceof z.ZodError) return reply.code(400).send(errEnvelope(40001, 'Invalid Portable Space input or document', request.id));
+      if (error instanceof z.ZodError) {
+        const issue = error.issues[0];
+        const detail = issue ? `${issue.path.join('.') || 'root'}: ${issue.message}` : '';
+        return reply.code(400).send(errEnvelope(40001, detail ? `Invalid Portable Space input or document (${detail})` : 'Invalid Portable Space input or document', request.id));
+      }
       const message = typeof code === 'number' ? 'Portable Space Git operation failed' : error instanceof Error ? error.message.split('\n', 1)[0] : 'Portable Space operation failed';
       return reply.code(400).send(errEnvelope(40001, message ?? 'Portable Space operation failed', request.id));
     }

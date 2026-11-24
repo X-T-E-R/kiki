@@ -156,7 +156,7 @@ function nonEmpty(values: readonly string[] | undefined): readonly string[] | un
 }
 
 function asOptions(command: Command): SpaceOptions {
-  return command.optsWithGlobals<SpaceOptions>();
+  return { ...command.optsWithGlobals<SpaceOptions>(), ...command.opts<SpaceOptions>() };
 }
 
 function writeJson(value: unknown, dependencies: SpaceCommandDependencies, compact = false): void {
@@ -619,7 +619,7 @@ async function runApply(sourceValues: readonly (string | PortableSpaceEndpoint)[
         token = preview.previewToken;
       } else if (options.dryRun) throw new Error('Dry run requires source endpoints, not a preview token');
       const input: PortableSpaceApplyInput = portableSpaceApplyInputSchema.parse({
-        previewToken: token, selectedIds: options.selected, createBackup: options.backup !== false, targetEncryption: encryptionFromOptions(options),
+        previewToken: token, selectedIds: nonEmpty(options.selected), createBackup: options.backup !== false, targetEncryption: encryptionFromOptions(options),
       });
       outputReceipt(await portableSpaceRequest(connection, 'apply', { method: 'POST', body: input, parse: portableSpaceApplyReceiptSchema, fetch: dependencies.fetch }), options, dependencies);
     } finally { if (temporaryRoot) await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 3 }); }
