@@ -4348,7 +4348,7 @@ describe('Sidebar inline session rename reliability and confirmation UX', () => 
 });
 
 describe('Sidebar Vibe42 Inbox-Zero, zero-jank pin, triage, 72h cold fold & optimistic click-to-read', () => {
-  it('defaults to inbox mode with [Inbox|Sessions] carrying the single two-tier badge (no duplicate bell badge)', async () => {
+  it('defaults to sessions when inbox has 0 actionable items while keeping the single unread badge on the inbox tab, and defaults to inbox when an item needs you', async () => {
     const done = { ...session('s-done'), last_turn_reason: 'completed' as const, last_seq: 5, updated_at: '2026-10-06T10:00:00Z' };
     const { container } = await mount({
       sidebarMode: undefined,
@@ -4356,12 +4356,21 @@ describe('Sidebar Vibe42 Inbox-Zero, zero-jank pin, triage, 72h cold fold & opti
       sessionGroups: [{ key: 'today', label: 'Today', items: [done] }],
       nowMs: FIXTURE_NOW_MS,
     });
-    expect(container.querySelector('[data-sidebar-mode="inbox"]')?.getAttribute('aria-selected')).toBe('true');
-    expect(container.querySelector('[data-sidebar-inbox]')).not.toBeNull();
+    expect(container.querySelector('[data-sidebar-mode="sessions"]')?.getAttribute('aria-selected')).toBe('true');
     // Exactly one badge exists (on the Inbox tab), never duplicated on the bell button.
     expect(container.querySelectorAll('[data-activity-badge]')).toHaveLength(1);
     expect(container.querySelector('[data-nav-activity] [data-activity-badge]')).toBeNull();
     expect(container.querySelector('[data-sidebar-mode="inbox"] [data-activity-badge]')?.getAttribute('data-activity-badge-tone')).toBe('unread');
+
+    const blocked = { ...session('s-blocked'), pending_interaction: 'approval' as const, last_seq: 6, updated_at: '2026-10-06T10:05:00Z' };
+    const mountedBlocked = await mount({
+      sidebarMode: undefined,
+      sessions: [blocked],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [blocked] }],
+      nowMs: FIXTURE_NOW_MS,
+    });
+    expect(mountedBlocked.container.querySelector('[data-sidebar-mode="inbox"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(mountedBlocked.container.querySelector('[data-sidebar-inbox]')).not.toBeNull();
   });
 
   it('holds a clicked unread done row in place (zero-jank viewing pin) with cleared dot until settled, busy, or navigated away', async () => {

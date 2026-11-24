@@ -1047,7 +1047,6 @@ export function Sidebar({
   }, [legacySeen, seenV2, sessions, rooms, currentSpaceKey]);
 
   const layoutPrefs = useLayoutPreferences();
-  const activeSidebarMode: SidebarMode = sidebarModeOverride ?? layoutPrefs.sidebarMode ?? 'inbox';
   const spaceScope = layoutPrefs.spaceScope ?? ALL_SPACE_SCOPE;
   const activeRouteConnectionId = parsePlaceConnectionId(location.pathname);
   const activeRouteSpaceKey = activeRouteConnectionId !== undefined
@@ -1086,6 +1085,20 @@ export function Sidebar({
   });
   const inboxTriage = externalInboxTriage ?? localInboxTriage;
   const unifiedInbox = inboxTriage.inbox;
+  const hasExplicitSidebarMode = (() => {
+    try {
+      const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem('kiki.layout');
+      if (raw === null) return false;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      return parsed['sidebarMode'] === 'inbox' || parsed['sidebarMode'] === 'sessions';
+    } catch {
+      return false;
+    }
+  })();
+  const activeSidebarMode: SidebarMode =
+    sidebarModeOverride
+    ?? (hasExplicitSidebarMode ? layoutPrefs.sidebarMode : undefined)
+    ?? (unifiedInbox.needsYouCount > 0 ? 'inbox' : 'sessions');
   const badgeTotal = unifiedInbox.total;
   const badgeNeedsYou = unifiedInbox.needsYouCount;
   const badgeUnread = unifiedInbox.unreadCount;

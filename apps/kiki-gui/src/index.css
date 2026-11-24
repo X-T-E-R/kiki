@@ -103,8 +103,8 @@
    * stacks keep the Latin identity and land Chinese on deliberate Song-style
    * serif (display) and system sans (body/mono) faces. */
   --font-display: 'Newsreader Variable', 'Newsreader', Georgia, 'Songti SC', 'Noto Serif SC', 'SimSun', serif;
-  --font-sans: 'Instrument Sans Variable', 'Instrument Sans', ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', monospace;
+  --font-sans: 'Instrument Sans Variable', 'Instrument Sans', 'PingFang SC', 'Noto Sans SC', 'Hiragino Sans GB', ui-sans-serif, system-ui, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', monospace;
   /* Mono text is copied and typed back: JetBrains Mono's contextual
    * alternates fuse `--`, `->`, `!=` into one glyph (`--short` read as
    * `—short`), so mono shows every character as typed. Tailwind feeds this to
@@ -195,6 +195,21 @@ html,
 body {
   overscroll-behavior-y: none;
   -webkit-tap-highlight-color: transparent;
+  font-synthesis: none;
+}
+
+h1,
+h2,
+h3,
+.kiki-prose {
+  font-feature-settings: 'halt' 1, 'chws' 1;
+}
+
+/* CJK ideographs are square-em glyphs: negative letter-spacing crowds strokes.
+ * Reset negative tracking on headings and chrome labels under Chinese locales. */
+:root[lang^='zh'] :is(h1, h2, h3, h4),
+:root[lang^='zh'] :is(h1, h2, h3, h4) span {
+  letter-spacing: 0 !important;
 }
 
 /* Phone keyboard + dynamic toolbars: `interactive-widget=resizes-content`
@@ -2131,6 +2146,20 @@ input[data-add-search]:focus-visible {
 .kiki-cb .shiki,
 .kiki-cb .shiki span {
   background-color: transparent !important;
+}
+/* Deepen Shiki github-light orange parameter/variable tokens (#e36209 ~3.44:1 on
+ * #fffdfa) and muted comments (#6a737d) so every token holds WCAG AA (>=4.5:1).
+ * Streamdown v2 emits spans inside [data-streamdown='code-block-body'] using
+ * inline `--shiki-light` custom properties, so override both var and color. */
+:root:not([data-theme='dark']) .kiki-cb :is(.shiki, [data-streamdown='code-block-body']) span[style*='#e36209' i],
+:root:not([data-theme='dark']) .kiki-cb :is(.shiki, [data-streamdown='code-block-body']) span[style*='rgb(227, 98, 9)'] {
+  --shiki-light: #9c3b0e !important;
+  color: #9c3b0e !important;
+}
+:root:not([data-theme='dark']) .kiki-cb :is(.shiki, [data-streamdown='code-block-body']) span[style*='#6a737d' i],
+:root:not([data-theme='dark']) .kiki-cb :is(.shiki, [data-streamdown='code-block-body']) span[style*='rgb(106, 115, 125)'] {
+  --shiki-light: #5c554c !important;
+  color: #5c554c !important;
 }
 
 /* ---- message display: streaming thinking-row sweep ----

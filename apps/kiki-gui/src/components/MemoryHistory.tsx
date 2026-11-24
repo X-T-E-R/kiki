@@ -248,13 +248,33 @@ export function MemoryReadView({ entry, target, sourceLabel, onOpenReplacement, 
           {t(entry.status === 'superseded' && (replacement.isPending || replacementHistory.isPending) ? 'memory.loading' : 'memory.history.reasonUnavailable')}
         </p>
       ) : null}
-      {/* Who last wrote this, and why the content reads as it does: two
-          different facts, so two lines rather than one merged one. */}
-      {view !== undefined ? (
+      {/* Only render visible provenance metadata when substantive basis or validity is recorded. */}
+      {view !== undefined && (view.basis !== undefined || memoryApplicability(view.validity, now) !== 'unrecorded') ? (
         <div data-memory-provenance className="space-y-3 border-t border-hairline pt-3">
-          <BasisLine entry={view} />
-          <ValidityLine validity={view.validity} now={now} />
+          {view.basis !== undefined ? (
+            <BasisLine entry={view} />
+          ) : (
+            <span className="sr-only" data-memory-basis="unrecorded">
+              {t('memory.basis.unrecorded')}
+            </span>
+          )}
+          {memoryApplicability(view.validity, now) !== 'unrecorded' ? (
+            <ValidityLine validity={view.validity} now={now} />
+          ) : (
+            <span className="sr-only" data-memory-validity="unrecorded" data-memory-validity-state="unrecorded">
+              {t('memory.validity.unrecorded')}
+            </span>
+          )}
         </div>
+      ) : view !== undefined ? (
+        <>
+          <span className="sr-only" data-memory-basis="unrecorded">
+            {t('memory.basis.unrecorded')}
+          </span>
+          <span className="sr-only" data-memory-validity="unrecorded" data-memory-validity-state="unrecorded">
+            {t('memory.validity.unrecorded')}
+          </span>
+        </>
       ) : null}
       {view?.covered_by !== undefined ? <>
         <CoveredByLine coveredBy={view.covered_by} onOpen={onOpenCoveredBy} />

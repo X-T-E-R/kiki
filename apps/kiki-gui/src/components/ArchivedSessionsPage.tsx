@@ -339,22 +339,20 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 pt-1 pb-12 lg:px-6">
         <div className={`mx-auto flex w-full ${PAGE_WIDTH.reading} flex-col gap-4`}>
-          <div className="flex flex-col gap-1">
-            <p className="max-w-[62ch] text-[13px] leading-relaxed text-ink-soft">{t('archive.lede')}</p>
-            <p className="text-[12px] text-ink-faint" title={t('archive.scopeNoteHint')}>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <input
+              type="search"
+              data-archive-search
+              value={search}
+              onChange={(event) => { setSearch(event.target.value); }}
+              placeholder={t('archive.searchPlaceholder')}
+              aria-label={t('archive.searchAria')}
+              className="h-9 w-full max-w-[420px] rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent pointer-coarse:h-11"
+            />
+            <span className="text-[12px] text-ink-faint" title={t('archive.scopeNoteHint')}>
               {t('archive.scopeNote')}
-            </p>
+            </span>
           </div>
-
-          <input
-            type="search"
-            data-archive-search
-            value={search}
-            onChange={(event) => { setSearch(event.target.value); }}
-            placeholder={t('archive.searchPlaceholder')}
-            aria-label={t('archive.searchAria')}
-            className="h-9 w-full max-w-[420px] rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent pointer-coarse:h-11"
-          />
 
           {outcome.error !== null || outcome.failed.length > 0 ? (
             <div data-archive-error role="alert" className="flex flex-col gap-2 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2.5">
@@ -552,6 +550,14 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
   );
 }
 
+function shortCwd(cwd: string | undefined): string | undefined {
+  if (!cwd) return undefined;
+  const trimmed = cwd.trim().replace(/[\\/]+$/, '');
+  if (!trimmed) return undefined;
+  const parts = trimmed.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1];
+}
+
 function ArchivedRow({
   session,
   title,
@@ -578,6 +584,7 @@ function ArchivedRow({
   const { t } = useI18n();
   const moreRef = useRef<HTMLButtonElement>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const resolvedWorkspace = workspaceName ?? shortCwd(session.metadata?.cwd);
   return (
     <li
       ref={virtualRow?.measureRef}
@@ -597,9 +604,13 @@ function ArchivedRow({
           <ThreadTitle text={title} />
         </span>
         <span className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
-          <Icon name="folder" size={12} />
-          <span className="min-w-0 truncate">{workspaceName ?? t('archive.workspaceUnknown')}</span>
-          <span aria-hidden>·</span>
+          {resolvedWorkspace !== undefined ? (
+            <>
+              <Icon name="folder" size={12} />
+              <span className="min-w-0 truncate">{resolvedWorkspace}</span>
+              <span aria-hidden>·</span>
+            </>
+          ) : null}
           <RelativeTime at={session.updated_at} className="shrink-0 tabular-nums" />
         </span>
       </button>

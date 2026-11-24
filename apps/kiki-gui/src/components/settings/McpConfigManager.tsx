@@ -121,6 +121,26 @@ function runtimeDotState(status: McpServer['status'] | undefined): 'ok' | 'busy'
   return status === 'connected' ? 'ok' : status === 'connecting' ? 'busy' : status === 'error' ? 'error' : 'off';
 }
 
+function humanizeMcpError(raw: string, locale: string): string {
+  const isZh = locale.startsWith('zh');
+  const firstLine = raw.split(/\r?\n/)[0] ?? raw;
+  const enoent = /ENOENT\s+([^\s()]+)/i.exec(firstLine);
+  if (enoent !== null) {
+    const cmd = enoent[1]!;
+    return isZh ? `未找到命令「${cmd}」` : `Could not find command "${cmd}"`;
+  }
+  if (/ECONNREFUSED/i.test(firstLine)) {
+    return isZh ? '无法连接到服务器（连接被拒绝）' : 'Connection refused by server';
+  }
+  if (/ETIMEDOUT|timed?\s*out/i.test(firstLine)) {
+    return isZh ? '连接服务器超时' : 'Connection timed out';
+  }
+  if (/ENOTFOUND/i.test(firstLine)) {
+    return isZh ? '无法解析服务器地址' : 'Could not resolve server address';
+  }
+  return firstLine.replace(/\s+at\s+\S+.*$/, '').trim() || firstLine.trim();
+}
+
 export function McpConfigManager({
   cwd,
   entries,
@@ -654,9 +674,12 @@ export function McpConfigManager({
                       {entry.mutable ? null : <Tag>{entry.plugin !== undefined ? t('st.mcp.fromPlugin', { name: entry.plugin.name }) : t('st.mcp.readOnly')}</Tag>}
                     </span>
                     {view.density === 'compact' ? null : (
-                      <span className={`mt-0.5 block truncate text-[12px] leading-4 ${live?.status === 'error' ? 'text-danger' : 'text-ink-faint'}`}>
+                      <span
+                        className={`mt-0.5 block truncate text-[12px] leading-4 ${live?.status === 'error' ? 'text-danger' : 'text-ink-faint'}`}
+                        title={live?.status === 'error' ? live.last_error : undefined}
+                      >
                         {live?.status === 'error' && live.last_error !== undefined
-                          ? live.last_error
+                          ? humanizeMcpError(live.last_error, locale)
                           : [
                               entry.config.transport,
                               live === undefined ? statusLabel : live.status === 'connected' ? tp('cap.mcp.tools', live.tool_count) : statusLabel,
@@ -686,8 +709,14 @@ export function McpConfigManager({
                 <div className="overflow-hidden" inert={!open}>
                   <div className="space-y-4 pb-4 pl-14 pr-2 pt-1" data-mcp-server-detail={entry.name}>
                     {live?.status === 'error' && live.last_error !== undefined ? (
-                      <div className="space-y-1" data-mcp-error={entry.name}>
-                        <pre className="max-h-40 overflow-auto rounded-md bg-shell px-3 py-2 font-mono text-[12px] leading-5 whitespace-pre-wrap text-shell-ink">{live.last_error}</pre>
+                      <div className="space-y-1.5" data-mcp-error={entry.name}>
+                        <p className="text-[12.5px] font-medium text-danger">{humanizeMcpError(live.last_error, locale)}</p>
+                        <details className="text-[12px] text-ink-faint">
+                          <summary className="cursor-pointer select-none hover:text-ink">
+                            {locale.startsWith('zh') ? '查看原始详情' : 'Technical details'}
+                          </summary>
+                          <pre className="mt-1.5 max-h-40 overflow-auto rounded-md bg-shell px-3 py-2 font-mono text-[11.5px] leading-5 whitespace-pre-wrap text-shell-ink">{live.last_error}</pre>
+                        </details>
                         <p className="text-[12px] leading-4 text-ink-faint">{t('st.mcp.errorHint')}</p>
                       </div>
                     ) : null}

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-export const usageGranularitySchema = /* @__PURE__ */ z.enum(['day', 'week', 'month', 'session', 'five_hour']);
+export const usageGranularitySchema = /* @__PURE__ */ z.enum(['hour', 'day', 'week', 'month', 'session', 'five_hour']);
+export const usageSortBySchema = /* @__PURE__ */ z.enum(['tokens', 'cost']);
 export const usageRangePresetSchema = /* @__PURE__ */ z.enum([
   'today',
   'last_7_days',
@@ -16,6 +17,7 @@ const repeatedStringSchema = /* @__PURE__ */ z.union([z.string().min(1), z.array
 export const usageQuerySchema = /* @__PURE__ */ z
   .object({
     granularity: usageGranularitySchema.optional(),
+    sort_by: usageSortBySchema.optional(),
     range: usageRangePresetSchema.optional(),
     dimension: usageDimensionSchema.optional(),
     model: repeatedStringSchema,
@@ -127,6 +129,7 @@ export const usageSessionItemSchema = /* @__PURE__ */ z.object({
 export const usageResponseSchema = /* @__PURE__ */ z.object({
   query: z.object({
     granularity: usageGranularitySchema,
+    sort_by: usageSortBySchema.optional(),
     range: z.object({
       preset: usageRangePresetSchema,
       start_at: z.number().int().nonnegative().nullable(),
@@ -142,7 +145,11 @@ export const usageResponseSchema = /* @__PURE__ */ z.object({
     include_archived: z.boolean(),
     timezone_offset_minutes: z.number().int(),
   }),
-  summary: usageAggregateSchema.extend({ session_count: z.number().int().nonnegative() }),
+  summary: usageAggregateSchema.extend({
+    session_count: z.number().int().nonnegative(),
+    turn_count: z.number().int().nonnegative().optional(),
+    request_count: z.number().int().nonnegative().optional(),
+  }),
   trend: z.array(usageTrendBucketSchema),
   sessions: z.object({
     items: z.array(usageSessionItemSchema),

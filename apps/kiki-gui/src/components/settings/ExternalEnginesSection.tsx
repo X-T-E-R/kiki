@@ -390,15 +390,49 @@ export function ExternalEnginesList() {
     }
   }, [catalogKey, client, locale, meta?.server_id, queryClient, redetecting, scopeId]);
 
-  // No rows, no box: an empty bordered list reads as a stray rule under the heading.
-  const list = engines.length === 0 && removalNote === undefined ? null : <div data-engine-list className="overflow-hidden rounded-lg border border-hairline bg-panel">
-    {removalNote !== undefined ? <p role="status" data-engine-removal-result className="border-b border-hairline px-3 py-2 text-[12px] leading-4 text-ink-soft">{removalNote}</p> : null}
-    {engines.map((item) => <EngineRow key={item.id} item={item} overrides={overrides} display={display} fault={faults[item.id]}
-      discovery={discoveryOf(discovery, item.id)}
-      onOpen={() => { engineDetail.open(item.id); }} />)}
-    {/* Fresh check results merge into the catalog cache, so rows re-read
-        themselves when a check lands elsewhere (the detail's recheck). */}
-  </div>;
+  // Partition installed/warning/unknown engines from uninstalled ('missing') ones
+  // so missing CLIs fold quietly instead of lighting up the settings surface red.
+  const activeEngines = engines.filter((item) => {
+    const entry = discoveryOf(discovery, item.id);
+    const health = entry !== undefined ? discoveryHealth(entry.status) : engineHealth(item, catalogCheckOf(item));
+    return health !== 'missing';
+  });
+  const missingEngines = engines.filter((item) => {
+    const entry = discoveryOf(discovery, item.id);
+    const health = entry !== undefined ? discoveryHealth(entry.status) : engineHealth(item, catalogCheckOf(item));
+    return health === 'missing';
+  });
+
+  const foldMissing = activeEngines.length > 0 && missingEngines.length > 0;
+  const visibleEngines = foldMissing ? activeEngines : engines;
+
+  // No rows, no box: unboxed hairline rows sit directly on paper.
+  const list = engines.length === 0 && removalNote === undefined ? null : (
+    <div data-engine-list className="space-y-3">
+      {removalNote !== undefined ? <p role="status" data-engine-removal-result className="border-b border-hairline px-1 py-2 text-[12px] leading-4 text-ink-soft">{removalNote}</p> : null}
+      {visibleEngines.length > 0 ? (
+        <div className="border-t border-hairline">
+          {visibleEngines.map((item) => <EngineRow key={item.id} item={item} overrides={overrides} display={display} fault={faults[item.id]}
+            discovery={discoveryOf(discovery, item.id)}
+            onOpen={() => { engineDetail.open(item.id); }} />)}
+        </div>
+      ) : null}
+      {foldMissing ? (
+        <details data-engine-missing-fold className="pt-1">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 py-1.5 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink pointer-coarse:min-h-11 [&::-webkit-details-marker]:hidden">
+            <DisclosureChevron open={false} className="text-ink-faint" />
+            <span>{t('st.engines.discovery.missing')}</span>
+            <span className="font-normal tabular-nums">{missingEngines.length}</span>
+          </summary>
+          <div className="mt-1 border-t border-hairline">
+            {missingEngines.map((item) => <EngineRow key={item.id} item={item} overrides={overrides} display={display} fault={faults[item.id]}
+              discovery={discoveryOf(discovery, item.id)}
+              onOpen={() => { engineDetail.open(item.id); }} />)}
+          </div>
+        </details>
+      ) : null}
+    </div>
+  );
   const rail = <DetailRailGroup label={t('st.engines.title')} count={engines.length}>
     {engines.map((item) => {
       const entry = discoveryOf(discovery, item.id);
@@ -406,7 +440,7 @@ export function ExternalEnginesList() {
       return <DetailRailItem key={item.id} itemKey={item.id} label={item.label}
         current={item.id === detailItem?.id}
         trailing={<span data-rail-engine-health={health} aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-          health === 'missing' ? 'bg-danger' : health === 'warning' ? 'bg-amber-rule' : health === 'unknown' ? 'bg-ink-faint' : 'bg-success'}`} />}
+          health === 'missing' ? 'bg-ink/25' : health === 'warning' ? 'bg-amber-rule' : health === 'unknown' ? 'bg-ink-faint' : 'bg-success'}`} />}
         onSelect={() => { engineDetail.open(item.id); }} />;
     })}
   </DetailRailGroup>;
@@ -441,12 +475,18 @@ export function ExternalEnginesList() {
       {query.isError ? <InlineError error={query.error} /> : null}
       {discoveryQuery.isSuccess ? (
         <div data-engine-redetect className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-          <button type="button" data-engine-redetect-button className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
-            disabled={redetecting} aria-busy={redetecting} onClick={() => void redetect()}>
+          <button
+            type="button"
+            data-engine-redetect-button
+            title={t('st.engines.discovery.redetectHint')}
+            className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5 pointer-coarse:min-h-11`}
+            disabled={redetecting}
+            aria-busy={redetecting}
+            onClick={() => void redetect()}
+          >
             {redetecting ? <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-current border-t-transparent motion-reduce:animate-none" /> : null}
             {redetecting ? t('st.engines.discovery.redetecting') : t('st.engines.discovery.redetect')}
           </button>
-          <span className="text-[12px] text-ink-faint">{t('st.engines.discovery.redetectHint')}</span>
         </div>
       ) : null}
       {discoveryQuery.isError ? (
@@ -1035,7 +1075,7 @@ function EngineRow({ item, overrides: _overrides, display: _display, fault, disc
   return (
     <div data-engine-row={item.id} data-engine-health={health} data-engine-discovery={discovery?.status}
       onClick={onOpen}
-      className="group/engine flex min-h-14 cursor-pointer flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-hairline px-3 py-2 transition-colors last:border-b-0 hover:bg-ink/[0.03]">
+      className="group/engine flex min-h-14 cursor-pointer flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-hairline px-2 py-2 transition-colors hover:bg-ink/[0.03]">
       <button type="button" data-engine-open data-detail-trigger={item.id}
         onClick={(event) => { event.stopPropagation(); onOpen(); }}
         className="-my-1 flex min-w-0 flex-1 items-center gap-3 rounded-md py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
@@ -1050,9 +1090,9 @@ function EngineRow({ item, overrides: _overrides, display: _display, fault, disc
         </span>
         <span data-engine-status={health}
           className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] ${
-            health === 'missing' ? 'text-danger' : health === 'warning' ? 'text-amber-ink' : 'text-ink-faint'}`}>
+            health === 'warning' ? 'text-amber-ink' : 'text-ink-faint'}`}>
           <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
-            health === 'missing' ? 'bg-danger' : health === 'warning' ? 'bg-amber-rule' : health === 'unknown' ? 'bg-ink-faint' : 'bg-success'}`} />
+            health === 'missing' ? 'bg-ink/25' : health === 'warning' ? 'bg-amber-rule' : health === 'unknown' ? 'bg-ink-faint' : 'bg-success'}`} />
           <span className="hidden md:inline">{statusText}</span>
           <span className="sr-only md:hidden">{statusText}</span>
         </span>

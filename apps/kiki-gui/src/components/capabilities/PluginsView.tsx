@@ -221,15 +221,17 @@ export function PluginsView({
             />
           </div>
         ) : null}
-        <button
-          type="button"
-          data-plugins-install-trigger
-          onClick={() => { setAdding(true); }}
-          className={`${SECONDARY_BUTTON} ml-auto inline-flex shrink-0 items-center gap-1.5`}
-        >
-          <Icon name="plus" size={14} />
-          <span>{t('cap.plugins.install')}</span>
-        </button>
+        {inSettings ? (
+          <button
+            type="button"
+            data-plugins-install-trigger
+            onClick={() => { setAdding(true); }}
+            className={`${SECONDARY_BUTTON} ml-auto inline-flex shrink-0 items-center gap-1.5`}
+          >
+            <Icon name="plus" size={14} />
+            <span>{t('cap.plugins.install')}</span>
+          </button>
+        ) : null}
       </div>
 
       {tab === 'installed' && !installedQuery.isPending && !installedQuery.isError && installed.length === 0 ? (

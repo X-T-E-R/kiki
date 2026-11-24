@@ -190,7 +190,7 @@ export function SettingsSegmented<T extends string>({ choices, value, onChange, 
         disabled={disabled || choice.disabled === true}
         {...(dataAttr !== undefined ? { [dataAttr]: choice.value } : {})}
         onClick={() => { if (!selected) onChange(choice.value); }}
-        className={`h-7 rounded-[5px] px-3 text-[13px] transition-colors disabled:cursor-not-allowed disabled:text-ink-faint ${
+        className={`h-7 rounded-[5px] px-3 text-[13px] transition-colors disabled:cursor-not-allowed disabled:text-ink-faint pointer-coarse:min-h-11 ${
           selected
             ? choice.caution === true
               ? 'bg-amber-card font-medium text-amber-ink shadow-[var(--kiki-sheet-shadow)]'
@@ -320,10 +320,10 @@ export function SettingsLoading({ label, rows, rowHeight = 56 }: {
   }, []);
   if (!shown) return null;
   if (rows === undefined) return <p role="status" data-settings-loading className="text-[12px] text-ink-faint">{label}</p>;
-  return <div role="status" aria-label={label} data-settings-loading className="overflow-hidden rounded-lg border border-hairline bg-panel">
+  return <div role="status" aria-label={label} data-settings-loading className="border-t border-hairline">
     {Array.from({ length: rows }, (_, index) => (
-      <div key={index} style={{ height: rowHeight }} className="border-b border-hairline last:border-b-0">
-        <div className="mx-3 mt-4 h-3 w-1/3 rounded bg-ink/[0.05]" />
+      <div key={index} style={{ height: rowHeight }} className="border-b border-hairline">
+        <div className="mx-2 mt-4 h-3 w-1/3 rounded bg-ink/[0.05]" />
       </div>
     ))}
   </div>;

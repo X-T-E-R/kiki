@@ -225,10 +225,10 @@ function SkillsViewInner({
     tools: {
       ...view.tools,
       search: allSkills.length > 0,
-      filters: filters.length > 1,
-      filterIds: filters.map((item) => item.id),
+      filters: false,
+      filterIds: [],
     },
-  }), [allSkills.length, filters, view]);
+  }), [allSkills.length, view]);
 
   const groups = useMemo(
     () => groupItems(allSkills, view.visible, (skill) => {
@@ -601,8 +601,6 @@ function SkillRow({
 }) {
   const { t, locale } = useI18n();
   const host = useHost();
-  const groupId = skillGroupId(skill.source, skill.plugin_id);
-  const sourceBadge = t(SOURCE_BADGE_KEYS[groupId]);
   const pluginId = pluginIdFromSkill(skill);
   const openLocalFolder = skill.source !== 'builtin' ? (host.revealPath ?? host.openPath) : undefined;
   const compact = density === 'compact';
@@ -692,10 +690,6 @@ function SkillRow({
       )}
 
       <div className="flex shrink-0 items-center gap-1">
-        <span className="hidden rounded bg-ink/[0.045] px-1.5 py-0.5 text-[11px] leading-4 text-ink-faint sm:inline-flex">
-          {sourceBadge}
-        </span>
-
         <span className="hidden items-center gap-0.5 opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] min-[640px]:flex group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
           {canPreview ? (
             <button

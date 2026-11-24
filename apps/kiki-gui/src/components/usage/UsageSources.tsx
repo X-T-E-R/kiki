@@ -45,6 +45,7 @@ export function UsageSources({
   isFilterActive,
   onFilterSource,
   onOpenSessions,
+  onHoverSource,
 }: {
   readonly trend: readonly UsageTrendBucketWire[];
   readonly groupBy: UsageGroupBy;
@@ -58,10 +59,11 @@ export function UsageSources({
   readonly isFilterActive?: (row: UsageSourceRow) => boolean;
   readonly onFilterSource: (row: UsageSourceRow) => void;
   readonly onOpenSessions: (row: UsageSourceRow | undefined) => void;
+  readonly onHoverSource?: (key: string | null) => void;
 }) {
   const { t, time } = useI18n();
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-  const rows = useMemo(() => aggregateSourceRows(trend, groupBy), [trend, groupBy]);
+  const rows = useMemo(() => aggregateSourceRows(trend, groupBy, metric), [trend, groupBy, metric]);
   const totalCost = rows.reduce((sum, row) => sum + row.costUsdEstimated, 0);
   const totalTokensAll = rows.reduce((sum, row) => sum + row.totalTokens, 0);
   const needle = query.trim().toLocaleLowerCase();
@@ -100,13 +102,13 @@ export function UsageSources({
 
   const renderRow = (row: UsageSourceRow) => {
     const unknownTotal = row.tokensUnknown && row.totalTokens === 0;
-    const share =
-      totalCost > 0
-        ? row.costUsdEstimated / totalCost
-        : totalTokensAll > 0
-          ? row.totalTokens / totalTokensAll
-          : null;
     const cacheHit = cacheHitRateOf({ tokens: row.tokens, cost_usd_estimated: 0, cost_unknown: false });
+    const share =
+      metric === 'cost'
+        ? (totalCost > 0 ? row.costUsdEstimated / totalCost : null)
+        : metric === 'cache'
+          ? cacheHit
+          : (totalTokensAll > 0 ? row.totalTokens / totalTokensAll : null);
     const open = expanded.has(row.key);
     const priorRow = prior?.priorByKey.get(row.key);
     const priorOutcome = priorOutcomeFor(metric, row, priorRow, prior, cacheHit);
@@ -117,7 +119,9 @@ export function UsageSources({
       <li
         key={row.key}
         data-usage-breakdown-row={row.key}
-        className={`group relative border-b border-hairline last:border-b-0 ${
+        onMouseEnter={() => { onHoverSource?.(row.key); }}
+        onMouseLeave={() => { onHoverSource?.(null); }}
+        className={`group relative border-b border-hairline last:border-b-0 transition-colors hover:bg-ink/[0.025] ${
           filterActive ? 'bg-selected/25' : ''
         }`}
       >
@@ -149,7 +153,7 @@ export function UsageSources({
                 </button>
               ) : (
                 <p
-                  className={`min-w-0 flex-1 truncate text-[13px] ${row.key === USAGE_SOURCE_KEY_UNKNOWN ? 'text-ink-soft italic' : 'font-medium text-ink'}`}
+                  className={`min-w-0 flex-1 truncate text-[13px] ${row.key === USAGE_SOURCE_KEY_UNKNOWN ? 'text-ink-soft' : 'font-medium text-ink'}`}
                   title={row.value ?? undefined}
                 >
                   {rowName}
@@ -167,7 +171,7 @@ export function UsageSources({
                     aria-label={t('usage.sources.toggleFilter', { name: rowName })}
                     title={t('usage.sources.toggleFilter', { name: rowName })}
                     onClick={() => { onFilterSource(row); }}
-                    className={`flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-9 pointer-coarse:w-9 ${
+                    className={`flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11 ${
                       filterActive
                         ? 'bg-selected text-selected-ink'
                         : 'text-ink-faint hover:bg-ink/[0.06] hover:text-ink'
@@ -182,7 +186,7 @@ export function UsageSources({
                   aria-label={t('usage.sources.traceSessions', { name: rowName })}
                   title={t('usage.sources.traceSessions', { name: rowName })}
                   onClick={() => { onOpenSessions(row); }}
-                  className="flex h-7 w-7 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-9 pointer-coarse:w-9"
+                  className="flex h-7 w-7 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11"
                 >
                   <Icon name="thread" size={12} />
                 </button>
@@ -198,13 +202,13 @@ export function UsageSources({
 
             <span
               data-usage-breakdown-tokens={row.key}
-              className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block"
+              className={`${metric === 'tokens' ? 'block text-[13px] font-semibold text-ink' : 'hidden text-[12px] text-ink-soft sm:block'} text-right tabular-nums`}
             >
               {unknownTotal ? '—' : time.formatTokens(row.totalTokens)}
               {row.tokensUnknown && row.totalTokens > 0 ? <KnownSubtotalMarker /> : null}
             </span>
 
-            <span className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block">
+            <span className={`${metric === 'cache' ? 'block text-[13px] font-semibold text-ink' : 'hidden text-[12px] text-ink-soft sm:block'} text-right tabular-nums`}>
               {formatPercent(cacheHit)}
             </span>
 
@@ -225,7 +229,7 @@ export function UsageSources({
 
             <span
               data-usage-breakdown-cost={row.key}
-              className="inline-flex items-center justify-end gap-0.5 text-right text-[13px] font-semibold text-ink tabular-nums"
+              className={`${metric === 'cost' ? 'inline-flex text-[13px] font-semibold text-ink' : 'hidden text-[12px] text-ink-soft sm:inline-flex'} items-center justify-end gap-0.5 text-right tabular-nums`}
             >
               {unknownTotal || (row.costUnknown && row.costUsdEstimated === 0 && row.totalTokens > 0)
                 ? '—'
@@ -238,10 +242,14 @@ export function UsageSources({
             </span>
 
             <p className="col-span-2 -mt-0.5 pl-7 text-[11px] text-ink-faint tabular-nums sm:hidden">
-              {t('usage.sources.mobileDetail', {
-                share: share === null ? '—' : formatPercent(share),
-                tokens: unknownTotal ? '—' : time.formatTokens(row.totalTokens),
-              })}
+              {metric === 'tokens'
+                ? `${share === null ? '—' : formatPercent(share)} · ${row.costUnknown && row.costUsdEstimated === 0 && (row.totalTokens > 0 || row.tokensUnknown) ? '—' : formatCostUsd(row.costUsdEstimated)}`
+                : metric === 'cache'
+                  ? `${unknownTotal ? '—' : time.formatTokens(row.totalTokens)} · ${row.costUnknown && row.costUsdEstimated === 0 && (row.totalTokens > 0 || row.tokensUnknown) ? '—' : formatCostUsd(row.costUsdEstimated)}`
+                  : t('usage.sources.mobileDetail', {
+                      share: share === null ? '—' : formatPercent(share),
+                      tokens: unknownTotal ? '—' : time.formatTokens(row.totalTokens),
+                    })}
             </p>
         </div>
 
@@ -287,16 +295,22 @@ export function UsageSources({
         <>
           <div aria-hidden className={`${rowGridClass} border-b border-hairline pb-2 text-[11px] text-ink-faint`}>
             <span className="pl-7">{t(`usage.sources.grouping.${groupBy}`)}</span>
-            <span className="hidden sm:block">{t('usage.col.share')}</span>
-            <span className="hidden text-right sm:block">{t('usage.col.tokens')}</span>
-            <span className="hidden text-right sm:block">{t('usage.col.cacheHit')}</span>
+            <span className="hidden sm:block">
+              {metric === 'tokens'
+                ? t('usage.trend.shareTokens')
+                : metric === 'cost'
+                  ? t('usage.trend.shareCost')
+                  : t('usage.col.share')}
+            </span>
+            <span className={`${metric === 'tokens' ? 'block' : 'hidden sm:block'} text-right`}>{t('usage.col.tokens')}</span>
+            <span className={`${metric === 'cache' ? 'block' : 'hidden sm:block'} text-right`}>{t('usage.col.cacheHit')}</span>
             {prior !== undefined ? (
               <>
                 <span className="hidden text-right lg:block">{t('usage.compare.prior')}</span>
                 <span className="hidden text-right lg:block">{t('usage.compare.change')}</span>
               </>
             ) : null}
-            <span className="text-right">{t('usage.col.cost')}</span>
+            <span className={`${metric === 'cost' ? 'block' : 'hidden sm:block'} text-right`}>{t('usage.col.cost')}</span>
           </div>
           {visible.length === 0 ? (
             <p data-usage-source-empty className="py-8 text-center text-[13px] text-ink-faint">

@@ -68,18 +68,18 @@ function bucket(startAt: number, groups: UsageGroupWire[]): UsageTrendBucketWire
 }
 
 describe('parseUsageFilters', () => {
-  it('defaults to local today / 5h rhythm / model with no query', () => {
+  it('defaults to local today / hour rhythm / model with no query', () => {
     expect(parseUsageFilters('')).toEqual(USAGE_FILTER_DEFAULTS);
     expect(USAGE_FILTER_DEFAULTS.range).toBe('today');
-    expect(USAGE_FILTER_DEFAULTS.granularity).toBe('five_hour');
+    expect(USAGE_FILTER_DEFAULTS.granularity).toBe('hour');
   });
 
-  it('parses every axis from the URL', () => {
+  it('parses every axis from the URL and sanitizes legacy five_hour granularity to range default', () => {
     const filters = parseUsageFilters(
       '?granularity=five_hour&range=last_7_days&group_by=provider&workspace=wd_1&include_archived=false&model=example-model&profile=explore&profile=general',
     );
     expect(filters).toEqual({
-      granularity: 'five_hour',
+      granularity: 'day',
       range: 'last_7_days',
       groupBy: 'provider',
       advancedDimension: undefined,
@@ -123,7 +123,7 @@ describe('parseUsageFilters', () => {
 
   it('drops unknown values individually instead of failing the whole URL', () => {
     const filters = parseUsageFilters('?granularity=hourly&range=bogus&group_by=team');
-    expect(filters.granularity).toBe('five_hour');
+    expect(filters.granularity).toBe('hour');
     expect(filters.range).toBe('today');
     expect(filters.groupBy).toBe('model');
   });
@@ -192,7 +192,7 @@ describe('usageFiltersToSearch', () => {
       agentIds: ['agent-1'],
       includeArchived: false,
       startAt: 1000,
-      endAt: 2000,
+      endAt: 1000 + 21 * 86_400_000,
     };
     const search = usageFiltersToSearch(filters);
     expect(searchHasUsageParams(search)).toBe(true);
@@ -222,7 +222,7 @@ describe('stored filters', () => {
     const filters: UsageFilters = {
       ...USAGE_FILTER_DEFAULTS,
       range: 'this_month',
-      granularity: 'month',
+      granularity: 'week',
     };
     writeStoredUsageFilters(filters);
     expect(readStoredUsageFilters()).toEqual(filters);
@@ -244,7 +244,7 @@ describe('buildUsageApiQuery', () => {
       { timezoneOffsetMinutes: 480, pageSize: 25 },
     );
     expect(query).toMatchObject({
-      granularity: 'five_hour',
+      granularity: 'hour',
       range: 'today',
       dimension: 'model',
       include_archived: 'false',

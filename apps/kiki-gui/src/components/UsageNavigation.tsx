@@ -37,7 +37,15 @@ const NAV_ITEMS: readonly { id: UsagePanel; labelKey: string }[] = [
  * `data-usage-panel` + `aria-current="page"` stay: deep links and the existing
  * tests read the state from them.
  */
-export function UsageNavigation({ panel, onChange }: { panel: UsagePanel; onChange: (panel: UsagePanel) => void }) {
+export function UsageNavigation({
+  panel,
+  onChange,
+  quotaAttentionCount = 0,
+}: {
+  panel: UsagePanel;
+  onChange: (panel: UsagePanel) => void;
+  quotaAttentionCount?: number;
+}) {
   const { t } = useI18n();
   const tabsRef = useRef<HTMLDivElement>(null);
   // On the export view no tab is current; the first one keeps the strip
@@ -65,6 +73,7 @@ export function UsageNavigation({ panel, onChange }: { panel: UsagePanel; onChan
     <div ref={tabsRef} data-usage-nav role="tablist" aria-label={t('usage.title')} className="flex gap-2 overflow-x-auto border-b border-hairline">
       {NAV_ITEMS.map(({ id, labelKey }, index) => {
         const active = panel === id;
+        const showDot = id === 'quota' && quotaAttentionCount > 0;
         return (
           <button
             key={id}
@@ -77,13 +86,20 @@ export function UsageNavigation({ panel, onChange }: { panel: UsagePanel; onChan
             data-usage-nav-item={id}
             onClick={() => { select(id); }}
             onKeyDown={(event) => { onKeyDown(event, index); }}
-            className={`-mb-px min-h-9 shrink-0 border-b-2 px-3 py-1.5 text-[13.5px] tracking-[-0.01em] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+            className={`-mb-px inline-flex min-h-9 shrink-0 items-center gap-1.5 border-b-2 px-3 py-1.5 text-[13.5px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${
               active
                 ? 'border-ink font-medium text-ink'
                 : 'border-transparent text-ink-soft hover:border-hairline-strong hover:text-ink'
             }`}
           >
-            {t(labelKey as I18nKey)}
+            <span>{t(labelKey as I18nKey)}</span>
+            {showDot ? (
+              <span
+                aria-hidden
+                data-usage-quota-attention-dot
+                className="h-1.5 w-1.5 shrink-0 rounded-full bg-attention"
+              />
+            ) : null}
           </button>
         );
       })}

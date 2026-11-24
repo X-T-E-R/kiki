@@ -534,11 +534,11 @@ describe('UsagePage (V2)', () => {
   });
 
   it('keeps panel=history explicit when clearing a deep-linked history parameter back to default', async () => {
-    const { container, root } = await renderPage('/usage?metric=tokens');
+    const { container, root } = await renderPage('/usage?metric=cost');
     expect(container.querySelector('[data-usage-panel="history"]')?.getAttribute('aria-current')).toBe('page');
-    const costButton = container.querySelector<HTMLButtonElement>('button[data-trend-metric="cost"]');
-    expect(costButton).not.toBeNull();
-    await act(async () => { costButton!.click(); });
+    const tokensButton = container.querySelector<HTMLButtonElement>('button[data-trend-metric="tokens"]');
+    expect(tokensButton).not.toBeNull();
+    await act(async () => { tokensButton!.click(); });
     expect(container.querySelector('[data-location-probe]')?.textContent).toBe('/usage?panel=history');
     expect(container.querySelector('[data-usage-panel="history"]')?.getAttribute('aria-current')).toBe('page');
     await act(async () => { root.unmount(); });
@@ -619,7 +619,7 @@ describe('UsagePage (V2)', () => {
     const main = mainCalls();
     expect(main.length).toBeGreaterThan(0);
     expect(main[0]?.[0]).toMatchObject({
-      granularity: 'five_hour',
+      granularity: 'hour',
       range: 'today',
       dimension: 'model',
     });
@@ -631,7 +631,7 @@ describe('UsagePage (V2)', () => {
   it('keeps explicit all-history URL semantics without an all-history defensive banner', async () => {
     const { container } = await renderPage('/usage?range=all');
     const main = mainCalls();
-    expect(main[0]?.[0]).toMatchObject({ granularity: 'five_hour', dimension: 'model' });
+    expect(main[0]?.[0]).toMatchObject({ granularity: 'week', dimension: 'model' });
     expect((main[0]?.[0] as Record<string, unknown>)['range']).toBeUndefined();
     expect(container.querySelector('[data-usage-all-history]')).toBeNull();
     expect(container.textContent).not.toContain('no time filter applied');
@@ -656,7 +656,7 @@ describe('UsagePage (V2)', () => {
     const main = mainCalls();
     expect(main.length).toBeGreaterThan(0);
     expect(main[0]?.[0]).toMatchObject({
-      granularity: 'five_hour',
+      granularity: 'hour',
       range: 'today',
       dimension: 'model',
       include_archived: 'true',
@@ -718,10 +718,10 @@ describe('UsagePage (V2)', () => {
       }),
     );
     await renderPage(
-      '/usage?granularity=five_hour&range=last_7_days&dimension=agent&workspace=wd_1&include_archived=false',
+      '/usage?granularity=day&range=last_7_days&dimension=agent&workspace=wd_1&include_archived=false',
     );
     expect(mainCalls()[0]?.[0]).toMatchObject({
-      granularity: 'five_hour',
+      granularity: 'day',
       range: 'last_7_days',
       dimension: 'agent',
       'workspace.id': 'wd_1',
@@ -1197,12 +1197,10 @@ describe('UsagePage (V2)', () => {
       });
     });
 
-    const { container, root } = await renderPage('/usage?range=last_7_days&compare=previous');
+    const { container, root } = await renderPage('/usage?range=today&compare=previous');
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
-    // Whole-range comparison should be requested using server range minus 7 days:
-    // shift is -(serverEnd - serverStart) = -604800000
-    // so start_at = serverStart - 604800000 = 1790179200000, end_at = serverEnd - 604800000 = 1790784000000
+    // Whole-range comparison should be requested using server range minus its resolved span:
     const compareCalls = getUsage.mock.calls.filter(([q]) => (q as Record<string, unknown>)['start_at'] !== undefined);
     expect(compareCalls.length).toBeGreaterThan(0);
     const wholeRangeCompare = compareCalls[0]?.[0] as Record<string, unknown>;
@@ -1335,13 +1333,13 @@ describe('UsagePage (V2)', () => {
   });
 
   it('switches to Sessions via the flat tab bar, and opens the SidePanel trace with base filters preserved when a bucket is selected', async () => {
-    const { container, root } = await renderPage('/usage?range=last_7_days&provider=kimi&model=k2-thinking');
+    const { container, root } = await renderPage('/usage?range=today&provider=kimi&model=k2-thinking');
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-tab="sessions"]')!.click(); });
     expect(container.querySelector('[data-usage-sessions]')).not.toBeNull();
     expect(document.body.querySelector('[data-usage-session-panel]')).toBeNull();
 
-    // Back on Model with a selected bucket, View sessions in this period opens the SidePanel trace with base filters preserved.
+    // Back on Model with a selected hourly bucket, View sessions in this period opens the SidePanel trace with base filters preserved.
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-tab="model"]')!.click(); });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-trend] [data-bucket]')!.click(); });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-open-sessions]')!.click(); });
@@ -1352,6 +1350,22 @@ describe('UsagePage (V2)', () => {
     expect(trace['range']).toBe('custom');
     expect(container.querySelector('[data-usage-sessions]')).toBeNull();
     expect(document.body.querySelector('[data-usage-session-panel]')).not.toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('drills down from a 7-day daily bar into hourly view and restores via breadcrumb or Escape', async () => {
+    const { container, root } = await renderPage('/usage?range=last_7_days');
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const dayBar = container.querySelector<HTMLButtonElement>('[data-usage-trend] [data-bucket]')!;
+    expect(dayBar).not.toBeNull();
+    await act(async () => { dayBar.click(); });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(mainCalls().at(-1)?.[0]).toMatchObject({ range: 'custom', granularity: 'hour' });
+    const backBtn = container.querySelector<HTMLButtonElement>('[data-usage-drilldown-back]');
+    expect(backBtn).not.toBeNull();
+    await act(async () => { backBtn!.click(); });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(mainCalls().at(-1)?.[0]).toMatchObject({ range: 'last_7_days', granularity: 'day' });
     await act(async () => { root.unmount(); });
   });
 

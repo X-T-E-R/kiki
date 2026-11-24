@@ -152,6 +152,16 @@
   overscroll-behavior-x: contain;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: thin;
+  /* Pure-CSS horizontal scroll shadow cue (visible only when code overflows). */
+  background-image:
+    linear-gradient(to right, var(--color-panel) 25%, transparent),
+    linear-gradient(to left, var(--color-panel) 25%, transparent),
+    linear-gradient(to right, color-mix(in srgb, var(--color-ink) 8%, transparent), transparent 16px),
+    linear-gradient(to left, color-mix(in srgb, var(--color-ink) 8%, transparent), transparent 16px);
+  background-position: left center, right center, left center, right center;
+  background-repeat: no-repeat;
+  background-size: 28px 100%, 28px 100%, 16px 100%, 16px 100%;
+  background-attachment: local, local, scroll, scroll;
 }
 
 .kiki-cb [data-streamdown='code-block'],

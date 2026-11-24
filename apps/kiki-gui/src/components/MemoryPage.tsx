@@ -526,8 +526,13 @@ function MemoryOnSentence({ workspaceId }: { readonly workspaceId?: string }) {
     <>
       <span data-memory-status-sentence>{model !== undefined ? t('memory.status.on', { model }) : t('memory.status.onNoAdvisor')}</span>
       {view.on && (view.kind === 'unconfigured' || view.kind === 'problem') ? (
-        <span data-memory-advisor-state className={view.tone === 'danger' ? 'text-danger' : 'text-amber-ink'}>
-          {t('memory.advisor.headerLabel')} · {t(view.stateKey)}
+        <span
+          data-memory-advisor-state
+          title={`${t('memory.advisor.headerLabel')} · ${t(view.stateKey)}`}
+          className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${view.tone === 'danger' ? 'text-danger' : 'text-amber-ink'}`}
+        >
+          <Icon name="partial" size={12} />
+          <span className="sr-only">{t('memory.advisor.headerLabel')} · {t(view.stateKey)}</span>
         </span>
       ) : null}
     </>
@@ -1097,10 +1102,10 @@ function MemoryScopeView({
                           {row.kind === 'heading' ? (
                             <h2
                               data-memory-source={row.sourceKey}
-                              className={`flex items-center gap-2 text-[12px] font-medium text-ink-soft ${row.isFirst ? 'pb-2' : 'pt-4 pb-2'}`}
+                              className={`flex items-center gap-2 text-[13px] font-[550] text-section-ink ${row.isFirst ? 'pb-2' : 'pt-4 pb-2'}`}
                             >
                               {row.label}
-                              <span className="font-mono text-[11px] font-normal text-ink-faint">{row.count}</span>
+                              <span className="text-[11.5px] font-normal text-ink-faint tabular-nums">{row.count}</span>
                             </h2>
                           ) : (
                             <div className="pb-1">
@@ -1120,10 +1125,10 @@ function MemoryScopeView({
                   <div className="space-y-6 pt-1">
                     {groups.filter((group) => group.entries.length > 0).map((group) => (
                       <section key={targetKey(group.target)} data-memory-source={targetKey(group.target)} aria-label={group.label}>
-                        <h2 className="mb-2 flex items-center gap-2 text-[12px] font-medium text-ink-soft">
-                          {group.label}<span className="font-mono text-[11px] font-normal text-ink-faint">{group.entries.length}</span>
+                        <h2 className="mb-2 flex items-center gap-2 text-[13px] font-[550] text-section-ink">
+                          {group.label}<span className="text-[11.5px] font-normal text-ink-faint tabular-nums">{group.entries.length}</span>
                         </h2>
-                        <ul className="-mx-3 space-y-1">
+                        <ul className="space-y-1">
                           {group.entries.map((entry) => {
                             const key = `${targetKey(group.target)}:${entry.id}`;
                             return (
@@ -1400,59 +1405,60 @@ function MemoryDetail({
 
       <MemoryGovernancePanel target={target} entry={entry} />
 
-      <section data-memory-history aria-labelledby={`memory-history-${entry.id}`}>
-        <h3 id={`memory-history-${entry.id}`} className={FIELD_LABEL}>{t('memory.history')}</h3>
-        {journalQuery.isPending ? <p role="status" className="mt-1.5 text-[12px] text-ink-faint">{t('memory.loading')}</p>
-          : journalQuery.isError ? (
-            <div role="alert" className="mt-2 space-y-1">
-              <p className="text-[12px] font-medium text-danger">{t('memory.loadFailed')}</p>
-              <InlineError error={journalQuery.error} />
-              <button type="button" onClick={() => { void journalQuery.refetch(); }} className={`mt-2 ${SECONDARY_BUTTON}`}>
-                {t('common.retry')}
-              </button>
-            </div>
-          )
-          : history.length === 0 ? <p className="mt-1.5 text-[12px] text-ink-faint">{t('memory.history.empty')}</p>
-          : <ul className="mt-1.5 space-y-px">
-            {[...history].reverse().map((record) => (
-              <li key={`${record.operationId}:${record.at}`} className="flex min-w-0 items-center gap-2 py-1 text-[12px] text-ink-faint">
-                <button
-                  type="button"
-                  data-memory-history-record={record.operationId}
-                  title={t('memory.history.view')}
-                  onClick={() => { setOpenHistory(record.operationId); }}
-                  className="min-w-0 flex-1 truncate rounded-sm text-left hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
-                >
-                  {historyLabel(record.action, t)}
-                  {' · '}
-                  {t(`memory.writer.${record.writer}`)}
-                  {' · '}
-                  <RelativeTime at={record.at} />
+      {journalQuery.isPending || journalQuery.isError || history.length > 0 ? (
+        <section data-memory-history aria-labelledby={`memory-history-${entry.id}`}>
+          <h3 id={`memory-history-${entry.id}`} className={FIELD_LABEL}>{t('memory.history')}</h3>
+          {journalQuery.isPending ? <p role="status" className="mt-1.5 text-[12px] text-ink-faint">{t('memory.loading')}</p>
+            : journalQuery.isError ? (
+              <div role="alert" className="mt-2 space-y-1">
+                <p className="text-[12px] font-medium text-danger">{t('memory.loadFailed')}</p>
+                <InlineError error={journalQuery.error} />
+                <button type="button" onClick={() => { void journalQuery.refetch(); }} className={`mt-2 ${SECONDARY_BUTTON}`}>
+                  {t('common.retry')}
                 </button>
-                {writable ? (
-                  <UndoButton
-                    record={record}
-                    busy={undoMutation.isPending}
-                    onUndo={() => { undoMutation.mutate(record.operationId); }}
-                  />
-                ) : null}
-              </li>
-            ))}
-          </ul>}
-        {openHistory !== null ? (
-          <MemoryHistoryDialog
-            recordId={openHistory}
-            onNavigate={setOpenHistory}
-            onClose={() => { setOpenHistory(null); }}
-            history={history}
-            current={entry}
-            target={target}
-            sourceLabel={sourceLabel}
-            onUndo={(record) => { undoMutation.mutate(record.operationId); }}
-            undoBusy={undoMutation.isPending || !writable}
-          />
-        ) : null}
-      </section>
+              </div>
+            )
+            : <ul className="mt-1.5 space-y-px">
+              {[...history].reverse().map((record) => (
+                <li key={`${record.operationId}:${record.at}`} className="flex min-w-0 items-center gap-2 py-1 text-[12px] text-ink-faint">
+                  <button
+                    type="button"
+                    data-memory-history-record={record.operationId}
+                    title={t('memory.history.view')}
+                    onClick={() => { setOpenHistory(record.operationId); }}
+                    className="min-w-0 flex-1 truncate rounded-sm text-left hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+                  >
+                    {historyLabel(record.action, t)}
+                    {' · '}
+                    {t(`memory.writer.${record.writer}`)}
+                    {' · '}
+                    <RelativeTime at={record.at} />
+                  </button>
+                  {writable ? (
+                    <UndoButton
+                      record={record}
+                      busy={undoMutation.isPending}
+                      onUndo={() => { undoMutation.mutate(record.operationId); }}
+                    />
+                  ) : null}
+                </li>
+              ))}
+            </ul>}
+          {openHistory !== null ? (
+            <MemoryHistoryDialog
+              recordId={openHistory}
+              onNavigate={setOpenHistory}
+              onClose={() => { setOpenHistory(null); }}
+              history={history}
+              current={entry}
+              target={target}
+              sourceLabel={sourceLabel}
+              onUndo={(record) => { undoMutation.mutate(record.operationId); }}
+              undoBusy={undoMutation.isPending || !writable}
+            />
+          ) : null}
+        </section>
+      ) : null}
 
       {confirmForget ? (
         <MemoryForgetDialog

@@ -121,7 +121,7 @@ export function DefaultModelBar({ tab: _tab }: { tab?: AiSettingsTab } = {}) {
       data-default-model-bar
       data-default-model-line
       data-ai-status-card
-      className="rounded-lg border border-hairline bg-panel px-4 py-3"
+      className="rounded-lg bg-ink/[0.03] px-4 py-2.5"
     >
       {emptyConnections ? (
         <p data-ai-status-empty className="text-[13px] leading-5 text-ink-soft">
