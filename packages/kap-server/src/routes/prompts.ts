@@ -454,11 +454,6 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
   });
   app.addHook?.('preClose', () => ingress.close());
   app.addHook?.('onListen', async () => { ingress.start(); });
-  const durableIngressItemSchema = promptItemSchema.extend({ agent_id: z.string().min(1).optional() });
-  const durableIngressReceiptSchema = promptSubmitReceiptSchema.extend({ agent_id: z.string().min(1).optional() });
-  const durablePromptListResponseSchema = promptListResponseSchema.extend({
-    ingress: z.array(durableIngressItemSchema).optional(),
-  });
   let modelSwitchReader: PersistedModelSwitchReader | undefined;
   const switchParams = z.object({ session_id: z.string().min(1), agent_id: z.string().min(1) });
   const operationParams = switchParams.extend({ operation_id: z.string().min(1) });
@@ -563,7 +558,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       path: '/sessions/{session_id}/prompts',
       params: sessionIdParamSchema,
       querystring: z.object({ admission: z.literal('durable').optional(), agent_id: z.string().min(1).optional(), cursor: z.string().optional(), observe: z.literal('true').optional() }),
-      success: { data: durablePromptListResponseSchema },
+      success: { data: promptListResponseSchema },
       errors: { [ErrorCode.SESSION_NOT_FOUND]: {} },
       description: 'List the active prompt and queued prompts for a session',
       tags: ['prompts'],
@@ -605,12 +600,12 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
   const ingressRead = defineRoute({ method: 'GET', path: '/sessions/{session_id}/prompts/{prompt_id}',
     params: sessionIdParamSchema.extend({ prompt_id: z.string().min(1).max(256) }),
     querystring: z.object({ admission: z.literal('durable'), agent_id: z.string().min(1).optional() }),
-    success: { data: durableIngressItemSchema }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.PROMPT_NOT_FOUND]: {} },
+    success: { data: promptItemSchema }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.PROMPT_NOT_FOUND]: {} },
     description: 'Read a saved durable request without restoring its agent', tags: ['prompts'], operationId: 'getDurablePrompt' }, async (req, reply) => {
     try {
       const item = await ingress.lookup(req.params.session_id, req.query.agent_id ?? MAIN_AGENT_ID, req.params.prompt_id);
       if (item === undefined) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'Saved request not found.');
-      reply.send(okEnvelope(durableIngressItemSchema.parse(item), req.id));
+      reply.send(okEnvelope(promptItemSchema.parse(item), req.id));
     }
     catch (error) { sendMappedError(reply, req, error); }
   });
@@ -636,7 +631,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       body: promptSubmissionSchema,
       params: sessionIdParamSchema,
       querystring: z.object({ receipt: z.literal('true').optional() }),
-      success: { data: z.union([durableIngressItemSchema, durableIngressReceiptSchema]) },
+      success: { data: z.union([promptItemSchema, promptSubmitReceiptSchema]) },
       errors: promptSubmissionErrors,
       description: 'Submit a prompt; requests with a client prompt_id replay an accepted matching receipt',
       tags: ['prompts'],
@@ -715,11 +710,11 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           }
         }
       };
-      const sendResult = (result: z.input<typeof durableIngressItemSchema> & Pick<PromptIngressResult, 'resolved_parts'>) => {
+      const sendResult = (result: z.input<typeof promptItemSchema> & Pick<PromptIngressResult, 'resolved_parts'>) => {
         const agent_id = result.agent_id ?? (req.body.agent_id !== undefined && req.body.agent_id !== MAIN_AGENT_ID ? req.body.agent_id : undefined);
         const withAgent = agent_id === undefined ? result : { ...result, agent_id };
         const resolved_parts = withAgent.resolved_parts ?? (retryContentRanges ?? preparedMedia?.sourceRanges)?.map(({ index, start, end }) => ({ index, content: withAgent.content.slice(start, end) }));
-        const data = req.query.receipt === 'true' ? durableIngressReceiptSchema.parse({ ...withAgent, resolved_parts })
+        const data = req.query.receipt === 'true' ? promptSubmitReceiptSchema.parse({ ...withAgent, resolved_parts })
           : ingressExecution === undefined ? withAgent : { ...withAgent, resolved_parts };
         return reply.send(okEnvelope(data, req.id));
       };
@@ -1083,7 +1078,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       body: z.union([promptSubmissionSchema, promptSteerRequestSchema]),
       params: sessionIdParamSchema,
       querystring: z.object({ receipt: z.literal('true').optional() }),
-      success: { data: z.union([promptSteerResultSchema, durableIngressItemSchema, durableIngressReceiptSchema]) },
+      success: { data: z.union([promptSteerResultSchema, promptItemSchema, promptSubmitReceiptSchema]) },
       errors: { ...promptSubmissionErrors, [ErrorCode.PROMPT_NOT_FOUND]: {} },
       description: 'Submit new content or steer queued prompts into the active turn',
       tags: ['prompts'],
@@ -1127,7 +1122,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         data: z.union([
           promptAbortResponseSchema,
           promptMoveResultSchema,
-          durableIngressItemSchema,
+          promptItemSchema,
           promptReplaceResultSchema,
           promptTimingResultSchema,
           promptHoldResultSchema,
