@@ -1,14 +1,20 @@
 /**
- * The Live tab (`运行 → 实时`): answers "which conversation needs me, and what
- * is it doing?" on first paint without clicking a disclosure or reading a
- * rules editor.
+ * The Live tab (`运行 → 实时`): answers "how many concurrent requests are running,
+ * which models/caps hold them, and which conversation needs me?" on first paint
+ * without full-width chart bars or a 9-rule config wall.
  *
  * Reading order:
- *   1. Single-line summary strip (requests, queued, active agents + freshness)
+ *   1. Prominent top concurrency strip (`24/28` bold tabular figures: concurrent
+ *      requests + queued, active agents + main/sub split, active sessions + freshness
+ *      & PauseAllExecutions)
  *   2. Needs you (approvals / questions / budget pauses — only when real items exist)
- *   3. Current sessions (all active, queued-waiting, and held/recovery sessions directly visible)
- *   4. Footer disclosures (both CLOSED by default):
- *      - By dimension (text & counts, one dimension at a time, no full-width bars)
+ *   3. Live concurrency (`实时并发` — open by default when active/queued/capped, with
+ *      inline quiet dimension tabs `模型 · 提供商 · 执行器 · 角色`, compact `w-20`
+ *      cap meters `active / limit` when capped, and `N 并发` when uncapped)
+ *   4. Current sessions (all active, queued-waiting, and held/recovery sessions with
+ *      per-session `N 并发 · Model · M 个智能体`)
+ *   5. Footer disclosures (closed by default):
+ *      - Agent breakdown (`executor / profile / model / role / session`)
  *      - Manage concurrency rules (opens ConcurrencyRulesEditor inline on click or ?panel=limits)
  */
 
@@ -44,7 +50,10 @@ import {
 import {
   formatRuntimeModelLabel,
   projectLiveRuntime,
+  type LiveConcurrencyBucketRow,
+  type LiveConcurrencyDimension,
   type LivePendingRow,
+  type LivePressuredRuleRow,
   type LiveSessionRow,
 } from './usage/liveRuntimeProjection';
 import { AxisGroup } from './usage/usageShared';
@@ -135,6 +144,7 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
   const [rulesOpen, setRulesOpen] = useState<boolean>(view === 'limits');
   const [focusRuleRequest, setFocusRuleRequest] = useState<{ readonly id: string; readonly seq: number } | null>(null);
   const [breakdownOpen, setBreakdownOpen] = useState<boolean>(false);
+  const [chosenConcurrencyDim, setChosenConcurrencyDim] = useState<LiveConcurrencyDimension | null>(null);
 
   const agentSnapshot = liveAgent.snapshot ?? undefined;
   const rules: readonly GovernanceRule[] = useMemo(() => {
@@ -161,12 +171,8 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
     });
   }, [view]);
 
-  // Read already-cached model catalog without issuing a network fetch while the
-  // rule editor is closed; formatRuntimeModelLabel cleanly formats known IDs
-  // even when the cache is cold.
   const catalogModels = queryClient.getQueryData<{ readonly items?: readonly ModelCatalogItem[] }>(['models'])?.items ?? EMPTY_MODELS;
 
-  // Read pending approvals/questions from cached sessions & rooms (plus a bounded fallback if direct deep-link).
   const seen = useSessionSeen();
   const cachedSessions = useMemo(() => {
     const byId = new Map<string, Session>();
@@ -212,7 +218,6 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
     [inboxSessions, cachedRooms, seen],
   );
 
-  // Live agent inventory + cold paused discovery + bounded execution control reads.
   const liveSessionIds = liveInventorySessionIds(agentSnapshot?.agents);
   const pausedDiscovery = usePausedSessionDiscovery();
   const executionSessionIds = useMemo(
@@ -227,8 +232,6 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
       .map((row) => row.id!),
     [agentSnapshot?.dimensions],
   );
-  // Waiter session ids never trigger per-waiter getSession fetches; reuse cached
-  // session titles directly and reserve useSessionNames for live/paused/dimension rows.
   const fetchedSessionIds = useMemo(
     () => [...new Set([...executionSessionIds, ...sessionDimensionIds])],
     [executionSessionIds, sessionDimensionIds],
@@ -255,6 +258,7 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
     () => projectLiveRuntime({
       requestSnapshot,
       agentSnapshot,
+      rules,
       executionStates,
       inboxNeedsYou: inbox.needsYou,
       models: catalogModels,
@@ -264,11 +268,15 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
       pausedLabel: t('usage.execution.phase.paused'),
       pausingLabel: t('usage.execution.phase.pausing'),
       failedLabel: t('usage.execution.phase.failed'),
+      roleRootLabel: t('usage.governance.roleRoot'),
+      roleSubagentLabel: t('usage.governance.roleSubagent'),
+      executorKikiLabel: t('usage.governance.executorKiki'),
+      unknownExecutorLabel: t('usage.governance.unknownExecutor'),
       resolveSessionLabel: labelOf,
       untitledLabel: t('sidebar.untitled'),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [requestSnapshot, agentSnapshot, executionStates, inbox.needsYou, catalogModels, locale, nameOf, t],
+    [requestSnapshot, agentSnapshot, rules, executionStates, inbox.needsYou, catalogModels, locale, nameOf, t],
   );
 
   const anyStale = (requestSnapshot !== undefined && requestStale) || (agentSnapshot !== undefined && liveAgent.stale);
@@ -306,7 +314,6 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
     });
   };
 
-  // Both sources completely absent -> single quiet status line on paper.
   const bothMissing = requestSnapshot === undefined && agentSnapshot === undefined && projection.pendingRows.length === 0 && projection.sessionRows.length === 0;
   if (bothMissing) {
     const stillLoading = requestLoading || liveAgent.loading;
@@ -350,54 +357,106 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
     && (requestSnapshot?.queued ?? 0) === 0
     && (totalActiveAgents ?? 0) === 0;
 
+  const { availableDimensions, defaultDimension, rowsByDimension, pressuredRules } = projection.concurrency;
+  const activeConcurrencyDim: LiveConcurrencyDimension = chosenConcurrencyDim !== null && availableDimensions.includes(chosenConcurrencyDim)
+    ? chosenConcurrencyDim
+    : defaultDimension;
+  const shownConcurrencyRows = rowsByDimension[activeConcurrencyDim];
+  const shownInlineRuleIds = new Set(shownConcurrencyRows.map((r) => r.ruleId).filter((id): id is string => id !== undefined));
+  const extraPressuredRules = pressuredRules.filter((r) => !shownInlineRuleIds.has(r.ruleId));
+  const showConcurrencySection = !isIdle && (shownConcurrencyRows.length > 0 || extraPressuredRules.length > 0);
+
   const manageRulesLabel = enabledRules > 0
     ? (locale === 'zh' ? `管理并发规则（${enabledRules} 条启用）` : `Manage concurrency rules (${enabledRules} active)`)
     : (locale === 'zh' ? '管理并发规则' : 'Manage concurrency rules');
 
   return (
     <div className="space-y-6" data-request-governance>
-      {/* 1. Single-line compact summary strip */}
+      {/* 1. Prominent top concurrency strip (24px/28px tabular figures, zero card boxes) */}
       <div
         data-governance-live
-        className="flex min-h-8 flex-wrap items-center gap-x-6 gap-y-1.5 border-b border-hairline pb-3"
+        className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3 border-b border-hairline pb-4"
       >
-        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
-          <span className="inline-flex items-baseline gap-1.5">
-            <span className="text-[13px] leading-5 text-ink-soft">
-              {locale === 'zh' ? '请求' : 'Requests'}
+        <div className="flex flex-wrap items-end gap-x-8 gap-y-3 sm:gap-x-10">
+          {/* Stat 1: Concurrent model requests (+ queued inline when > 0) */}
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[12px] leading-4 text-ink-soft">
+              {locale === 'zh' ? '并发请求' : 'Concurrent requests'}
             </span>
-            <span data-governance-active className="text-[14px] leading-5 font-normal text-ink tabular-nums">
-              {requestSnapshot === undefined ? '—' : requestSnapshot.active}
-            </span>
-          </span>
-          <span className="inline-flex items-baseline gap-1.5">
-            <span className="text-[13px] leading-5 text-ink-soft">
-              {locale === 'zh' ? '排队' : 'Queued'}
-            </span>
-            <span data-governance-queued className="text-[14px] leading-5 font-normal text-ink tabular-nums">
-              {requestSnapshot === undefined ? '—' : requestSnapshot.queued}
-            </span>
-          </span>
-          <span className="inline-flex items-baseline gap-1.5" data-governance-live-agents>
-            <span className="text-[13px] leading-5 text-ink-soft">
+            <div className="flex items-baseline gap-2">
+              <span data-governance-active className="font-sans text-[24px] leading-7 font-bold text-ink tabular-nums">
+                {requestSnapshot === undefined ? '—' : requestSnapshot.active}
+              </span>
+              {requestSnapshot !== undefined && requestSnapshot.queued > 0 ? (
+                <span className="inline-flex items-baseline gap-0.5 text-[13px] leading-5 text-amber-ink tabular-nums">
+                  <span aria-hidden>+</span>
+                  <span data-governance-queued>{requestSnapshot.queued}</span>
+                  <span>{locale === 'zh' ? ' 排队' : ' queued'}</span>
+                </span>
+              ) : (
+                <span data-governance-queued className="sr-only">
+                  {requestSnapshot === undefined ? '—' : 0}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Stat 2: Active agents (with main / sub split when nonzero) */}
+          <div className="flex flex-col gap-0.5" data-governance-live-agents>
+            <span className="text-[12px] leading-4 text-ink-soft">
               {locale === 'zh' ? '运行中智能体' : 'Active agents'}
             </span>
             {agentSnapshot !== undefined ? (
-              <>
+              <div className="flex items-baseline gap-2">
                 <span
                   data-governance-total-agents
                   title={`${t('usage.governance.mainAgents')} ${mainAgents} · ${t('usage.governance.subagents')} ${subAgents}${independentAgents > 0 ? ` · ${t('usage.governance.independentAgents')} ${independentAgents}` : ''}`}
-                  className="text-[14px] leading-5 font-normal text-ink tabular-nums"
+                  className="font-sans text-[24px] leading-7 font-bold text-ink tabular-nums"
                 >
                   {totalActiveAgents}
                 </span>
-                <span className="sr-only" data-governance-main-agents>{mainAgents}</span>
-                <span className="sr-only" data-governance-sub-agents>{subAgents}</span>
-                <span className="sr-only" data-governance-independent-agents>{independentAgents}</span>
-                <span className="sr-only" data-governance-agents-queued>{agentsQueued}</span>
-              </>
+                {(totalActiveAgents ?? 0) > 0 ? (
+                  <span className="inline-flex items-baseline gap-1 text-[12px] leading-4 text-ink-faint tabular-nums">
+                    <span>
+                      {locale === 'zh' ? '主 ' : 'main '}
+                      <span data-governance-main-agents>{mainAgents}</span>
+                    </span>
+                    <span aria-hidden>·</span>
+                    <span>
+                      {locale === 'zh' ? '子 ' : 'sub '}
+                      <span data-governance-sub-agents>{subAgents}</span>
+                    </span>
+                    {independentAgents > 0 ? (
+                      <>
+                        <span aria-hidden>·</span>
+                        <span>
+                          {locale === 'zh' ? '独 ' : 'ind '}
+                          <span data-governance-independent-agents>{independentAgents}</span>
+                        </span>
+                      </>
+                    ) : (
+                      <span className="sr-only" data-governance-independent-agents>{independentAgents}</span>
+                    )}
+                  </span>
+                ) : (
+                  <>
+                    <span className="sr-only" data-governance-main-agents>{mainAgents}</span>
+                    <span className="sr-only" data-governance-sub-agents>{subAgents}</span>
+                    <span className="sr-only" data-governance-independent-agents>{independentAgents}</span>
+                  </>
+                )}
+                {agentsQueued > 0 ? (
+                  <span className="inline-flex items-baseline gap-0.5 text-[12px] leading-4 text-amber-ink tabular-nums">
+                    <span aria-hidden>+</span>
+                    <span data-governance-agents-queued>{agentsQueued}</span>
+                    <span>{locale === 'zh' ? ' 排队' : ' queued'}</span>
+                  </span>
+                ) : (
+                  <span className="sr-only" data-governance-agents-queued>{agentsQueued}</span>
+                )}
+              </div>
             ) : (
-              <span className="inline-flex items-center gap-1 text-[12px] leading-4 text-ink-faint" data-governance-agents-status>
+              <span className="inline-flex min-h-7 items-center gap-1 text-[12px] leading-4 text-ink-faint" data-governance-agents-status>
                 <span>{t(liveAgent.loading ? 'usage.governance.agentsLoading' : 'usage.governance.agentsUnavailable')}</span>
                 {liveAgent.loading ? null : (
                   <button
@@ -413,10 +472,28 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
                 )}
               </span>
             )}
-          </span>
+          </div>
+
+          {/* Stat 3: Active sessions */}
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[12px] leading-4 text-ink-soft">
+              {locale === 'zh' ? '活跃会话' : 'Active sessions'}
+            </span>
+            <div className="flex items-baseline gap-2">
+              <span data-governance-active-sessions className="font-sans text-[24px] leading-7 font-bold text-ink tabular-nums">
+                {projection.sessionRows.length}
+              </span>
+              {projection.pendingRows.length > 0 ? (
+                <span className="text-[12px] leading-4 text-accent-ink tabular-nums">
+                  {locale === 'zh' ? `+${projection.pendingRows.length} 待处理` : `+${projection.pendingRows.length} needs you`}
+                </span>
+              ) : null}
+            </div>
+          </div>
         </div>
 
-        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        {/* Right cluster: freshness + refresh icon + PauseAllExecutions */}
+        <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2 self-center">
           {asOfLabel !== undefined ? (
             <span
               data-governance-stale-time={anyStale ? '' : undefined}
@@ -441,6 +518,19 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
                 <Icon name="refresh" size={12} />
               </button>
             </span>
+          ) : (
+            <button
+              type="button"
+              aria-label={t('usage.execution.retryRefresh')}
+              title={t('usage.execution.retryRefresh')}
+              onClick={refreshAll}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11"
+            >
+              <Icon name="refresh" size={12} />
+            </button>
+          )}
+          {agentSnapshot !== undefined ? (
+            <PauseAllExecutions snapshot={agentSnapshot} states={executionStates} labelOf={labelOf} />
           ) : null}
         </div>
       </div>
@@ -464,7 +554,79 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
         </section>
       ) : null}
 
-      {/* 3. Current sessions (all active/waiting/paused rows directly visible — NEVER folded) */}
+      {/* 3. First-screen Live Concurrency (`实时并发` — open by default when active/queued/capped) */}
+      {showConcurrencySection ? (
+        <section data-governance-concurrency aria-labelledby="live-concurrency-heading" className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 id="live-concurrency-heading" className="font-sans text-[16px] leading-6 font-bold text-ink">
+              {locale === 'zh' ? '实时并发' : 'Live concurrency'}
+            </h2>
+            {availableDimensions.length > 1 ? (
+              <div
+                role="group"
+                aria-label={t('usage.governance.byDimension')}
+                data-axis="governance-dimension"
+                className="flex flex-wrap items-center gap-0.5 rounded-md bg-ink/[0.04] p-0.5"
+              >
+                {availableDimensions.map((dim) => {
+                  const selected = dim === activeConcurrencyDim;
+                  const label = dim === 'executor'
+                    ? t('usage.governance.executor')
+                    : t(`usage.governance.${dim}` as I18nKey);
+                  return (
+                    <button
+                      key={dim}
+                      type="button"
+                      data-axis-value={dim}
+                      aria-pressed={selected}
+                      onClick={() => { setChosenConcurrencyDim(dim); }}
+                      className={`h-7 rounded-[5px] px-2.5 text-[12px] leading-4 font-normal transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
+                        selected
+                          ? 'bg-paper text-ink'
+                          : 'text-ink-soft hover:text-ink'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+
+          {shownConcurrencyRows.length > 0 ? (
+            <div data-governance-dimensions data-governance-dimension={activeConcurrencyDim}>
+              <ol className="divide-y divide-hairline border-t border-hairline">
+                {shownConcurrencyRows.map((row) => (
+                  <LiveConcurrencyRow
+                    key={row.key}
+                    row={row}
+                    locale={locale}
+                    onJumpToRule={openRulesEditor}
+                  />
+                ))}
+              </ol>
+            </div>
+          ) : null}
+
+          {extraPressuredRules.length > 0 ? (
+            <div data-governance-cap-pressure className={shownConcurrencyRows.length > 0 ? 'pt-1' : undefined}>
+              <ol className="divide-y divide-hairline border-t border-hairline">
+                {extraPressuredRules.map((rule) => (
+                  <PressuredRuleRow
+                    key={rule.ruleId}
+                    rule={rule}
+                    locale={locale}
+                    onJumpToRule={openRulesEditor}
+                  />
+                ))}
+              </ol>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* 4. Current sessions (all active/waiting/paused rows directly visible — NEVER folded) */}
       {projection.sessionRows.length > 0 ? (
         <section
           data-governance-sessions
@@ -472,18 +634,13 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
           aria-labelledby="live-sessions-heading"
           className="space-y-2"
         >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-baseline gap-2">
-              <h2 id="live-sessions-heading" className="font-sans text-[16px] leading-6 font-bold text-ink">
-                {locale === 'zh' ? '当前会话' : 'Current sessions'}
-              </h2>
-              <span data-governance-sessions-count className="text-[13px] leading-5 text-ink-faint tabular-nums">
-                {projection.sessionRows.length}
-              </span>
-            </div>
-            {agentSnapshot !== undefined ? (
-              <PauseAllExecutions snapshot={agentSnapshot} states={executionStates} labelOf={labelOf} />
-            ) : null}
+          <div className="flex items-baseline gap-2">
+            <h2 id="live-sessions-heading" className="font-sans text-[16px] leading-6 font-bold text-ink">
+              {locale === 'zh' ? '当前会话' : 'Current sessions'}
+            </h2>
+            <span data-governance-sessions-count className="text-[13px] leading-5 text-ink-faint tabular-nums">
+              {projection.sessionRows.length}
+            </span>
           </div>
           <ul className="divide-y divide-hairline border-t border-hairline">
             {projection.sessionRows.map((row) => (
@@ -517,7 +674,7 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
                 <li
                   key={waiter.attemptId}
                   data-governance-waiter={waiter.attemptId}
-                  className="flex min-h-12 flex-wrap items-center gap-x-3 gap-y-1 py-2 text-[13px] leading-5"
+                  className="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-1 py-2 text-[13px] leading-5"
                 >
                   <span className="text-ink">{locale === 'zh' ? '未关联会话的请求' : 'Unattributed request'}</span>
                   <span className="text-ink-soft" title={model.technical}>{model.display}</span>
@@ -546,20 +703,24 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
         </p>
       ) : null}
 
-      {/* 4. Footer disclosures: Breakdown + Manage concurrency rules (BOTH closed by default) */}
+      {/* 5. Footer disclosures: Agent dimension details + Manage concurrency rules (closed by default) */}
       <div className="space-y-4 border-t border-hairline pt-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <button
-            type="button"
-            data-governance-breakdown-toggle
-            aria-expanded={breakdownOpen}
-            aria-controls="usage-live-breakdown"
-            onClick={() => { setBreakdownOpen((open) => !open); }}
-            className="inline-flex min-h-8 items-center gap-1 rounded-md px-1 text-[13px] leading-5 font-normal text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-          >
-            <span>{locale === 'zh' ? '按维度查看' : 'View by dimension'}</span>
-            <DisclosureChevron open={breakdownOpen} size={12} className="text-ink-faint" />
-          </button>
+          {agentSnapshot !== undefined ? (
+            <button
+              type="button"
+              data-governance-breakdown-toggle
+              aria-expanded={breakdownOpen}
+              aria-controls="usage-live-breakdown"
+              onClick={() => { setBreakdownOpen((open) => !open); }}
+              className="inline-flex min-h-8 items-center gap-1 rounded-md px-1 text-[13px] leading-5 font-normal text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+            >
+              <span>{locale === 'zh' ? '智能体维度明细' : 'Agent breakdown'}</span>
+              <DisclosureChevron open={breakdownOpen} size={12} className="text-ink-faint" />
+            </button>
+          ) : (
+            <span />
+          )}
 
           <span data-governance-rules-summary>
             <button
@@ -577,10 +738,9 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
           </span>
         </div>
 
-        {breakdownOpen ? (
+        {breakdownOpen && agentSnapshot !== undefined ? (
           <div id="usage-live-breakdown" data-governance-breakdown className="border-t border-hairline pt-4">
-            <DimensionBreakdown
-              requestSnapshot={requestSnapshot}
+            <AgentDimensionBreakdown
               agentSnapshot={agentSnapshot}
               models={catalogModels}
               labelOf={labelOf}
@@ -607,6 +767,141 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
   );
 }
 
+function LiveConcurrencyRow({
+  row,
+  locale,
+  onJumpToRule,
+}: {
+  readonly row: LiveConcurrencyBucketRow;
+  readonly locale: 'zh' | 'en';
+  readonly onJumpToRule: (ruleId: string) => void;
+}) {
+  const isAtOrOverCap = row.limit !== undefined && (row.queued > 0 || row.active >= row.limit);
+  const ratioPct = row.limit !== undefined && row.limit > 0
+    ? Math.min(100, Math.round((row.active / row.limit) * 100))
+    : 0;
+
+  return (
+    <li
+      data-governance-row={row.id}
+      data-governance-concurrency-row={row.id}
+      className="flex min-h-10 items-center justify-between gap-3 py-2"
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="min-w-0 truncate text-[13px] leading-5 text-ink" title={row.technical ?? row.display}>
+          {row.display}
+        </span>
+        {row.subDetail !== undefined ? (
+          <span className="hidden shrink-0 text-[12px] leading-4 text-ink-faint tabular-nums min-[440px]:inline">
+            {row.subDetail}
+          </span>
+        ) : null}
+        {row.ruleId !== undefined ? (
+          <button
+            type="button"
+            data-governance-row-rule={row.ruleId}
+            onClick={() => { onJumpToRule(row.ruleId!); }}
+            className="hidden shrink-0 rounded font-mono text-[12px] leading-4 text-ink-faint underline-offset-2 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink min-[440px]:inline"
+          >
+            {row.ruleId}
+          </button>
+        ) : null}
+      </div>
+
+      <div className="ml-auto flex shrink-0 items-center gap-3 tabular-nums">
+        {row.queued > 0 ? (
+          <span data-governance-row-queued className="text-[12px] leading-4 text-amber-ink">
+            +{row.queued}{locale === 'zh' ? ' 排队' : ' queued'}
+          </span>
+        ) : null}
+
+        {row.limit !== undefined ? (
+          <>
+            <span
+              aria-hidden
+              data-governance-meter
+              className="inline-flex h-1.5 w-16 overflow-hidden rounded-full bg-ink/[0.08] sm:w-20"
+            >
+              <span
+                className={`h-full rounded-full transition-[width] duration-200 ${isAtOrOverCap ? 'bg-attention' : 'bg-ink/70'}`}
+                style={{ width: `${ratioPct}%` }}
+              />
+            </span>
+            <span data-governance-row-cap className="min-w-[3.25rem] text-right text-[13px] leading-5 text-ink">
+              <span className="font-bold">{row.active}</span>
+              <span className="text-ink-faint"> / {row.limit}</span>
+            </span>
+          </>
+        ) : (
+          <span data-governance-row-uncapped className="min-w-[3.25rem] text-right text-[13px] leading-5 text-ink">
+            <span className="font-bold">{row.active}</span>
+            <span className="text-ink-soft">
+              {row.dimension === 'executor'
+                ? (locale === 'zh' ? ' 运行中' : ' active')
+                : (locale === 'zh' ? ' 并发' : ' concurrent')}
+            </span>
+          </span>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function PressuredRuleRow({
+  rule,
+  locale,
+  onJumpToRule,
+}: {
+  readonly rule: LivePressuredRuleRow;
+  readonly locale: 'zh' | 'en';
+  readonly onJumpToRule: (ruleId: string) => void;
+}) {
+  const isAtOrOverCap = rule.queued > 0 || rule.active >= rule.limit;
+  const ratioPct = rule.limit > 0 ? Math.min(100, Math.round((rule.active / rule.limit) * 100)) : 0;
+
+  return (
+    <li
+      data-governance-pressure-rule={rule.ruleId}
+      className="flex min-h-10 items-center justify-between gap-3 py-2"
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <button
+          type="button"
+          onClick={() => { onJumpToRule(rule.ruleId); }}
+          className="shrink-0 rounded font-mono text-[13px] leading-5 text-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+        >
+          {rule.ruleId}
+        </button>
+        <span className="min-w-0 truncate text-[12px] leading-4 text-ink-faint">
+          {rule.targetSummary}
+        </span>
+      </div>
+
+      <div className="ml-auto flex shrink-0 items-center gap-3 tabular-nums">
+        {rule.queued > 0 ? (
+          <span className="text-[12px] leading-4 text-amber-ink">
+            +{rule.queued}{locale === 'zh' ? ' 排队' : ' queued'}
+          </span>
+        ) : null}
+        <span
+          aria-hidden
+          data-governance-meter
+          className="inline-flex h-1.5 w-16 overflow-hidden rounded-full bg-ink/[0.08] sm:w-20"
+        >
+          <span
+            className={`h-full rounded-full transition-[width] duration-200 ${isAtOrOverCap ? 'bg-attention' : 'bg-ink/70'}`}
+            style={{ width: `${ratioPct}%` }}
+          />
+        </span>
+        <span className="min-w-[3.25rem] text-right text-[13px] leading-5 text-ink">
+          <span className="font-bold">{rule.active}</span>
+          <span className="text-ink-faint"> / {rule.limit}</span>
+        </span>
+      </div>
+    </li>
+  );
+}
+
 function PendingRuntimeRow({ row }: { readonly row: LivePendingRow }) {
   const { t, locale } = useI18n();
   const navigate = useNavigate();
@@ -627,9 +922,13 @@ function PendingRuntimeRow({ row }: { readonly row: LivePendingRow }) {
       <span className="flex min-w-0 items-center gap-1.5 text-[13px] leading-5 text-ink-soft">
         <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-attention" />
         <span className="truncate">{reasonText}</span>
-        {row.runningAgentCount > 0 ? (
+        {row.activeRequests > 0 ? (
+          <span className="shrink-0 text-[12px] leading-4 text-ink tabular-nums">
+            · {locale === 'zh' ? `${row.activeRequests} 并发` : `${row.activeRequests} concurrent`}
+          </span>
+        ) : row.runningAgentCount > 0 ? (
           <span className="shrink-0 text-[12px] leading-4 text-ink-faint tabular-nums">
-            · {locale === 'zh' ? `${row.runningAgentCount} 个运行中智能体` : `${row.runningAgentCount} running`}
+            · {locale === 'zh' ? `${row.runningAgentCount} 个智能体` : `${row.runningAgentCount} agents`}
           </span>
         ) : null}
       </span>
@@ -670,6 +969,7 @@ function ActiveRuntimeSessionRow({
       : row.phaseKind === 'queued' || row.phaseKind === 'pausing'
         ? 'text-amber-ink'
         : 'text-ink-soft';
+  const showConcurrencyLead = row.activeRequests > 0 && row.phaseKind === 'running';
 
   return (
     <li
@@ -705,11 +1005,39 @@ function ActiveRuntimeSessionRow({
           </span>
         </div>
 
-        {/* Col 2: honest phase · catalog model display name + optional extra agents / blocking rules */}
+        {/* Col 2: live concurrency / phase · catalog model display · agent count · blocking rules */}
         <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[13px] leading-5">
-          <span data-execution-phase={row.executionState?.phase ?? row.phaseKind} className={`shrink-0 ${phaseTone}`}>
-            {row.phaseKind === 'paused' ? t('usage.execution.pausedHint') : row.phaseLabel}
-          </span>
+          {showConcurrencyLead ? (
+            <span
+              data-governance-session-concurrency={row.activeRequests}
+              data-execution-phase={row.executionState?.phase ?? row.phaseKind}
+              className="shrink-0 text-ink tabular-nums"
+            >
+              {locale === 'zh' ? `${row.activeRequests} 并发` : `${row.activeRequests} concurrent`}
+            </span>
+          ) : (
+            <>
+              <span data-execution-phase={row.executionState?.phase ?? row.phaseKind} className={`shrink-0 ${phaseTone}`}>
+                {row.phaseKind === 'paused' ? t('usage.execution.pausedHint') : row.phaseLabel}
+              </span>
+              {row.activeRequests > 0 ? (
+                <>
+                  <span aria-hidden className="text-ink-faint">·</span>
+                  <span data-governance-session-concurrency={row.activeRequests} className="shrink-0 text-ink tabular-nums">
+                    {locale === 'zh' ? `${row.activeRequests} 并发` : `${row.activeRequests} concurrent`}
+                  </span>
+                </>
+              ) : null}
+            </>
+          )}
+          {showConcurrencyLead && row.queuedRequests > 0 ? (
+            <>
+              <span aria-hidden className="text-ink-faint">·</span>
+              <span className="shrink-0 text-[12px] leading-4 text-amber-ink tabular-nums">
+                +{row.queuedRequests}{locale === 'zh' ? ' 排队' : ' queued'}
+              </span>
+            </>
+          ) : null}
           {row.modelDisplay !== undefined ? (
             <>
               <span aria-hidden className="text-ink-faint">·</span>
@@ -718,7 +1046,7 @@ function ActiveRuntimeSessionRow({
               </span>
             </>
           ) : null}
-          {row.extraAgentCount > 0 ? (
+          {row.agents.length > 1 ? (
             <>
               <span aria-hidden className="text-ink-faint">·</span>
               <button
@@ -726,10 +1054,17 @@ function ActiveRuntimeSessionRow({
                 data-governance-extra-agents={row.sessionId}
                 aria-expanded={agentsExpanded}
                 onClick={() => { setAgentsExpanded((open) => !open); }}
-                className="shrink-0 rounded text-[12px] leading-4 text-ink-faint underline-offset-2 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+                className="shrink-0 rounded text-[12px] leading-4 text-ink-faint tabular-nums underline-offset-2 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
               >
-                {locale === 'zh' ? `另有 ${row.extraAgentCount} 个智能体` : `+${row.extraAgentCount} more agents`}
+                {locale === 'zh' ? `${row.agents.length} 个智能体` : `${row.agents.length} agents`}
               </button>
+            </>
+          ) : row.agents.length === 1 && row.activeRequests > 0 ? (
+            <>
+              <span aria-hidden className="text-ink-faint">·</span>
+              <span className="shrink-0 text-[12px] leading-4 text-ink-faint tabular-nums">
+                {locale === 'zh' ? '1 个智能体' : '1 agent'}
+              </span>
             </>
           ) : null}
           {row.blockingRules.length > 0 ? (
@@ -807,54 +1142,30 @@ function ActiveRuntimeSessionRow({
 }
 
 /**
- * Text-and-counts breakdown under the optional `按维度查看` disclosure.
- * Single dimension at a time for model requests and running agents — no
- * full-width percentage bars and no raw wire model IDs as primary labels.
+ * Secondary multi-column agent breakdown (`executor / profile / model / role / session`)
+ * under the optional footer disclosure — single dimension at a time, zero bars.
  */
-function DimensionBreakdown({
-  requestSnapshot,
+function AgentDimensionBreakdown({
   agentSnapshot,
   models,
   labelOf,
 }: {
-  readonly requestSnapshot: RequestGovernanceSnapshot | undefined;
-  readonly agentSnapshot: LiveAgentSnapshot | undefined;
+  readonly agentSnapshot: LiveAgentSnapshot;
   readonly models: readonly ModelCatalogItem[];
   readonly labelOf: (sessionId: string) => SessionLabel;
 }) {
   const { t, locale } = useI18n();
   const unknownModel = locale === 'zh' ? '模型未提供' : 'Model unavailable';
 
-  // Model request dimensions
-  const dimensions = (requestSnapshot?.dimensions ?? []).filter((row) => row.dimension !== 'session');
-  const [chosenReqDim, setChosenReqDim] = useState<'model' | 'provider' | 'role' | null>(null);
-  const presentReqDims = (['model', 'provider', 'role'] as const).filter((option) =>
-    dimensions.some((row) => row.dimension === option));
-  const reqDim = chosenReqDim !== null && presentReqDims.includes(chosenReqDim) ? chosenReqDim : presentReqDims[0];
-  const shownReqRows = reqDim === undefined ? [] : dimensions.filter((row) => row.dimension === reqDim);
-
-  // Agent dimensions
   const AGENT_DIM_KEYS = ['executor', 'profile', 'model', 'role', 'session'] as const;
   const [chosenAgentDim, setChosenAgentDim] = useState<LiveAgentDimensionKind | null>(null);
-  const agentDimensions = agentSnapshot?.dimensions ?? [];
+  const agentDimensions = agentSnapshot.dimensions ?? [];
   const presentAgentDims = AGENT_DIM_KEYS.filter((opt) =>
     agentDimensions.some((row) => row.dimension === opt));
   const agentDim: LiveAgentDimensionKind = chosenAgentDim !== null && presentAgentDims.includes(chosenAgentDim)
     ? chosenAgentDim
     : (presentAgentDims[0] ?? 'executor');
   const shownAgentRows = agentDimensions.filter((row) => row.dimension === agentDim);
-
-  const reqRowLabel = (row: (typeof dimensions)[number]): { display: string; title: string } => {
-    if (row.dimension === 'role') {
-      const text = row.id === 'subagent' ? t('usage.governance.roleSubagent') : t('usage.governance.roleRoot');
-      return { display: text, title: text };
-    }
-    if (row.dimension === 'model') {
-      const m = formatRuntimeModelLabel(row.id, models, unknownModel);
-      return { display: m.display, title: m.technical ?? m.display };
-    }
-    return { display: row.id, title: row.id };
-  };
 
   const agentRowLabel = (id: string | null): { display: string; title: string } => {
     if (agentDim === 'executor') {
@@ -886,106 +1197,56 @@ function DimensionBreakdown({
   };
 
   return (
-    <div className="grid gap-8 lg:grid-cols-2">
-      {requestSnapshot !== undefined ? (
-        <section className="min-w-0 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="font-sans text-[14px] leading-5 font-bold text-ink">{t('usage.governance.viewRequests')}</h3>
-            {presentReqDims.length > 1 && reqDim !== undefined ? (
-              <AxisGroup
-                label={t('usage.governance.byDimension')}
-                dataAxis="governance-dimension"
-                options={presentReqDims}
-                value={reqDim}
-                onChange={(next) => { setChosenReqDim(next); }}
-                labelFor={(option) => t(`usage.governance.${option}` as I18nKey)}
-              />
-            ) : null}
+    <section className="min-w-0 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="font-sans text-[14px] leading-5 font-bold text-ink">{t('usage.governance.viewAgents')}</h3>
+        <AxisGroup
+          label={t('usage.governance.byDimension')}
+          dataAxis="governance-agent-dimension"
+          options={presentAgentDims.length > 0 ? presentAgentDims : AGENT_DIM_KEYS}
+          value={agentDim}
+          onChange={(next) => { setChosenAgentDim(next); }}
+          labelFor={(option) => {
+            if (option === 'executor') return t('usage.governance.executor');
+            if (option === 'profile') return t('usage.governance.profile');
+            if (option === 'model') return t('usage.governance.model');
+            return t(`usage.governance.${option}` as I18nKey);
+          }}
+        />
+      </div>
+      {shownAgentRows.length === 0 ? (
+        <p data-governance-agents-empty className="text-[13px] leading-5 text-ink-faint">{t('usage.governance.idleAgents')}</p>
+      ) : (
+        <div data-governance-agent-dimensions data-governance-agent-dimension={agentDim}>
+          <div aria-hidden className="hidden grid-cols-[minmax(0,1fr)_3.75rem_3.75rem_3.75rem] gap-x-2 pb-1.5 text-[12px] leading-4 text-ink-faint sm:grid">
+            <span>{t('usage.governance.target')}</span>
+            <span className="text-right">{t('usage.governance.mainAgents')}</span>
+            <span className="text-right">{t('usage.governance.subagents')}</span>
+            <span className="text-right">{t('usage.governance.totalAgents')}</span>
           </div>
-          {shownReqRows.length === 0 ? (
-            <p data-governance-dimensions-empty className="text-[13px] leading-5 text-ink-faint">{t('usage.governance.idleNow')}</p>
-          ) : (
-            <div data-governance-dimensions data-governance-dimension={reqDim}>
-              <div aria-hidden className="hidden grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] pb-1.5 text-[12px] leading-4 text-ink-faint sm:grid">
-                <span>{t('usage.governance.target')}</span>
-                <span className="text-right">{t('usage.governance.running')}</span>
-                <span className="text-right">{t('usage.governance.queued')}</span>
-              </div>
-              <ol className="divide-y divide-hairline border-t border-hairline">
-                {shownReqRows.map((row) => {
-                  const label = reqRowLabel(row);
-                  return (
-                    <li key={`${row.dimension}:${row.id}`} data-governance-row={row.id} className="py-2">
-                      <div className="flex flex-col gap-0.5 sm:grid sm:grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] sm:items-baseline">
-                        <span className="min-w-0 truncate text-[13px] leading-5 text-ink" title={label.title}>{label.display}</span>
-                        <span className="text-[12px] leading-4 text-ink-soft tabular-nums sm:hidden">
-                          {`${t('usage.governance.running')} ${row.active} · ${t('usage.governance.queued')} ${row.queued}`}
-                        </span>
-                        <span className="hidden text-right text-[13px] leading-5 text-ink tabular-nums sm:inline">{row.active}</span>
-                        <span className="hidden text-right text-[13px] leading-5 text-ink-soft tabular-nums sm:inline">{row.queued}</span>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ol>
-            </div>
-          )}
-        </section>
-      ) : null}
-
-      {agentSnapshot !== undefined ? (
-        <section className="min-w-0 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="font-sans text-[14px] leading-5 font-bold text-ink">{t('usage.governance.viewAgents')}</h3>
-            <AxisGroup
-              label={t('usage.governance.byDimension')}
-              dataAxis="governance-agent-dimension"
-              options={presentAgentDims.length > 0 ? presentAgentDims : AGENT_DIM_KEYS}
-              value={agentDim}
-              onChange={(next) => { setChosenAgentDim(next); }}
-              labelFor={(option) => {
-                if (option === 'executor') return t('usage.governance.executor');
-                if (option === 'profile') return t('usage.governance.profile');
-                if (option === 'model') return t('usage.governance.model');
-                return t(`usage.governance.${option}` as I18nKey);
-              }}
-            />
-          </div>
-          {shownAgentRows.length === 0 ? (
-            <p data-governance-agents-empty className="text-[13px] leading-5 text-ink-faint">{t('usage.governance.idleAgents')}</p>
-          ) : (
-            <div data-governance-agent-dimensions data-governance-agent-dimension={agentDim}>
-              <div aria-hidden className="hidden grid-cols-[minmax(0,1fr)_3.75rem_3.75rem_3.75rem] gap-x-2 pb-1.5 text-[12px] leading-4 text-ink-faint sm:grid">
-                <span>{t('usage.governance.target')}</span>
-                <span className="text-right">{t('usage.governance.mainAgents')}</span>
-                <span className="text-right">{t('usage.governance.subagents')}</span>
-                <span className="text-right">{t('usage.governance.totalAgents')}</span>
-              </div>
-              <ol className="divide-y divide-hairline border-t border-hairline">
-                {shownAgentRows.map((row) => {
-                  const mainCount = row.mainActive ?? row.main ?? 0;
-                  const subCount = row.subActive ?? row.subagent ?? 0;
-                  const totalCount = row.totalActive ?? row.active ?? 0;
-                  const label = agentRowLabel(row.id);
-                  return (
-                    <li key={`${row.dimension}:${row.id ?? 'unknown'}`} data-governance-agent-row={row.id ?? 'unknown'} className="py-2">
-                      <div className="flex flex-col gap-0.5 sm:grid sm:grid-cols-[minmax(0,1fr)_3.75rem_3.75rem_3.75rem] sm:items-baseline sm:gap-x-2">
-                        <span className="min-w-0 truncate text-[13px] leading-5 text-ink" title={label.title}>{label.display}</span>
-                        <span className="text-[12px] leading-4 text-ink-soft tabular-nums sm:hidden">
-                          {`${t('usage.governance.mainAgents')} ${mainCount} · ${t('usage.governance.subagents')} ${subCount} · ${t('usage.governance.totalAgents')} ${totalCount}`}
-                        </span>
-                        <span className="hidden text-right text-[13px] leading-5 text-ink tabular-nums sm:inline">{mainCount}</span>
-                        <span className="hidden text-right text-[13px] leading-5 text-ink-soft tabular-nums sm:inline">{subCount}</span>
-                        <span className="hidden text-right text-[13px] leading-5 text-ink tabular-nums sm:inline">{totalCount}</span>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ol>
-            </div>
-          )}
-        </section>
-      ) : null}
-    </div>
+          <ol className="divide-y divide-hairline border-t border-hairline">
+            {shownAgentRows.map((row) => {
+              const mainCount = row.mainActive ?? row.main ?? 0;
+              const subCount = row.subActive ?? row.subagent ?? 0;
+              const totalCount = row.totalActive ?? row.active ?? 0;
+              const label = agentRowLabel(row.id);
+              return (
+                <li key={`${row.dimension}:${row.id ?? 'unknown'}`} data-governance-agent-row={row.id ?? 'unknown'} className="py-2">
+                  <div className="flex flex-col gap-0.5 sm:grid sm:grid-cols-[minmax(0,1fr)_3.75rem_3.75rem_3.75rem] sm:items-baseline sm:gap-x-2">
+                    <span className="min-w-0 truncate text-[13px] leading-5 text-ink" title={label.title}>{label.display}</span>
+                    <span className="text-[12px] leading-4 text-ink-soft tabular-nums sm:hidden">
+                      {`${t('usage.governance.mainAgents')} ${mainCount} · ${t('usage.governance.subagents')} ${subCount} · ${t('usage.governance.totalAgents')} ${totalCount}`}
+                    </span>
+                    <span className="hidden text-right text-[13px] leading-5 text-ink tabular-nums sm:inline">{mainCount}</span>
+                    <span className="hidden text-right text-[13px] leading-5 text-ink-soft tabular-nums sm:inline">{subCount}</span>
+                    <span className="hidden text-right text-[13px] leading-5 text-ink tabular-nums sm:inline">{totalCount}</span>
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      )}
+    </section>
   );
 }
