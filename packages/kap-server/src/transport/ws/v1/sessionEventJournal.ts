@@ -237,6 +237,15 @@ export interface JournalLogger {
 
 const noopLogger: JournalLogger = { warn: () => {} };
 
+/** Hook notified around durable journal file writes to keep a derived watermark index consistent. */
+export interface JournalWriteWatermarkHook {
+  onBeforeWrite(reason?: string): void;
+  onDurableFlush(
+    watermark: { readonly seq: number; readonly epoch: string; readonly attentionSeq: number },
+    fileStat: { readonly size: number; readonly mtimeMs: number; readonly ctimeMs?: number },
+  ): void;
+}
+
 interface RetainedJournalEntry {
   buf: Buffer;
   bytes: number;
@@ -254,6 +263,13 @@ export interface SessionEventJournalOptions {
   readonly maxSingleLineBytes?: number;
   readonly maxSessionPendingBytes?: number;
   readonly maxProcessPendingBytes?: number;
+  readonly watermarkHook?: JournalWriteWatermarkHook;
+}
+
+function isWatermarkHook(
+  value: SessionEventJournalOptions | JournalWriteWatermarkHook | undefined,
+): value is JournalWriteWatermarkHook {
+  return value !== undefined && 'onBeforeWrite' in value && 'onDurableFlush' in value;
 }
 
 function isTransientReadError(code: string | undefined): boolean {
@@ -430,6 +446,7 @@ export class SessionEventJournal {
     private readonly capacity: number,
     private readonly maxRetainedBytes: number,
     options?: SessionEventJournalOptions,
+    private readonly watermarkHook?: JournalWriteWatermarkHook,
   ) {
     this._epoch = epoch;
     this._seq = lastSeq;
@@ -502,8 +519,11 @@ export class SessionEventJournal {
     logger: JournalLogger = noopLogger,
     capacity = 1000,
     maxRetainedBytes = DEFAULT_MAX_RETAINED_BYTES,
-    options?: SessionEventJournalOptions,
+    optionsOrHook?: SessionEventJournalOptions | JournalWriteWatermarkHook,
+    explicitWatermarkHook?: JournalWriteWatermarkHook,
   ): Promise<SessionEventJournal> {
+    const options = isWatermarkHook(optionsOrHook) ? undefined : optionsOrHook;
+    const watermarkHook = explicitWatermarkHook ?? (isWatermarkHook(optionsOrHook) ? optionsOrHook : options?.watermarkHook);
     if (!Number.isSafeInteger(capacity) || capacity < 0) {
       throw new RangeError('journal capacity must be a nonnegative integer');
     }
@@ -554,12 +574,14 @@ export class SessionEventJournal {
         capacity,
         maxRetainedBytes,
         options,
+        watermarkHook,
       );
     }
 
     if (epoch === undefined) {
       if (sawAnyLine) {
         logger.warn({ filePath }, 'event journal missing header; rotating to a fresh epoch');
+        watermarkHook?.onBeforeWrite('epoch_reset');
       }
       return new SessionEventJournal(
         filePath,
@@ -575,6 +597,7 @@ export class SessionEventJournal {
         capacity,
         maxRetainedBytes,
         options,
+        watermarkHook,
       );
     }
     return new SessionEventJournal(
@@ -591,6 +614,7 @@ export class SessionEventJournal {
       capacity,
       maxRetainedBytes,
       options,
+      watermarkHook,
     );
   }
 
@@ -1525,6 +1549,7 @@ export class SessionEventJournal {
     this.durableSeq = nextDurableSeq;
     this.durableAttentionSeq = nextDurableAttentionSeq;
     try {
+      this.watermarkHook?.onBeforeWrite('compact');
       await mkdir(dirname(this.filePath), { recursive: true });
       const headerBuf = this.encodeHeader();
       const bufs: Buffer[] = [headerBuf];
@@ -1546,6 +1571,7 @@ export class SessionEventJournal {
       this.diskEventBytes = trimmed.bytes;
       this.diskFileBytes = written;
       this.releaseBatchPendingBytes(batch);
+      await this.checkpointWatermarkFromPath('batch compaction');
       return true;
     } catch (error) {
       this.durableSeq = prevDurableSeq;
@@ -1588,7 +1614,6 @@ export class SessionEventJournal {
       );
       return;
     }
-
     if (this.pendingEntries.length === 0 && this.headerPending && this.closing) {
       const ok = await this.writeHeaderOnlyInitial();
       if (!ok) return;
@@ -1625,6 +1650,7 @@ export class SessionEventJournal {
       if (compacted) return;
     }
     if (this.closing && this.dirtySinceSync && !this.writePoisoned) {
+      let synced = false;
       try {
         const file = await open(this.filePath, constants.O_RDWR);
         try {
@@ -1633,15 +1659,44 @@ export class SessionEventJournal {
           await file.close();
         }
         this.dirtySinceSync = false;
+        synced = true;
       } catch (error) {
         this.closeSyncFailed = true;
         this.logger.warn({ filePath: this.filePath, err: String(error) }, 'event journal close sync failed');
       }
+      if (synced && this.watermarkHook !== undefined) {
+        try {
+          const info = await stat(this.filePath);
+          this.watermarkHook.onDurableFlush(
+            { epoch: this.epoch, seq: this.durableSeq, attentionSeq: this.durableAttentionSeq },
+            { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs },
+          );
+        } catch (error) {
+          this.logger.warn({ filePath: this.filePath, err: String(error) }, 'event journal watermark checkpoint failed on close sync; session kept dirty');
+        }
+      }
+    }
+  }
+
+  private async checkpointWatermarkFromPath(context: string): Promise<void> {
+    if (this.watermarkHook === undefined) return;
+    try {
+      const info = await stat(this.filePath);
+      this.watermarkHook.onDurableFlush(
+        { epoch: this.epoch, seq: this.durableSeq, attentionSeq: this.durableAttentionSeq },
+        { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs },
+      );
+    } catch (error) {
+      this.logger.warn(
+        { filePath: this.filePath, err: String(error) },
+        `event journal watermark checkpoint failed after ${context}; session kept dirty`,
+      );
     }
   }
 
   private async writeHeaderOnlyInitial(): Promise<boolean> {
     try {
+      this.watermarkHook?.onBeforeWrite(this.replaceOnFirstWrite ? 'epoch_reset' : 'append');
       await mkdir(dirname(this.filePath), { recursive: true });
       const headerBuf = this.encodeHeader();
       if (this.replaceOnFirstWrite) {
@@ -1655,6 +1710,7 @@ export class SessionEventJournal {
         this.diskFileBytes = written;
         this.diskEventBytes = 0;
         this.diskEventCount = 0;
+        await this.checkpointWatermarkFromPath('initial header write');
         return true;
       }
       const file = await open(this.filePath, constants.O_CREAT | constants.O_RDWR);
@@ -1670,6 +1726,7 @@ export class SessionEventJournal {
       this.headerIsV2 = this.hasGapRecords;
       this.appendSeparator = false;
       this.dirtySinceSync = true;
+      await this.checkpointWatermarkFromPath('initial header write');
       return true;
     } catch (error) {
       this.writeFailed = true;
@@ -1699,6 +1756,7 @@ export class SessionEventJournal {
       this.durableSeq = nextDurableSeq;
       this.durableAttentionSeq = nextDurableAttentionSeq;
       try {
+        this.watermarkHook?.onBeforeWrite('replace');
         await mkdir(dirname(this.filePath), { recursive: true });
         const headerBuf = this.encodeHeader();
         const bufs = [headerBuf, ...nextRetained.entries.map((e) => e.buf)];
@@ -1718,6 +1776,7 @@ export class SessionEventJournal {
         this.diskEventBytes = nextRetained.bytes;
         this.diskFileBytes = written;
         this.releaseBatchPendingBytes(batch);
+        await this.checkpointWatermarkFromPath('atomic init write');
         return 'ok';
       } catch (error) {
         this.durableSeq = prevDurableSeq;
@@ -1770,8 +1829,10 @@ export class SessionEventJournal {
     let beforeDev: number | bigint = 0;
     let beforeIno: number | bigint = 0;
     let writeCompleted = false;
+    let handleStat: { readonly size: number; readonly mtimeMs: number; readonly ctimeMs: number; readonly ino: number } | undefined;
 
     try {
+      this.watermarkHook?.onBeforeWrite('append');
       await mkdir(dirname(this.filePath), { recursive: true });
       file = await open(this.filePath, constants.O_CREAT | constants.O_RDWR);
       const beforeStat = await file.stat({ bigint: true });
@@ -1786,6 +1847,14 @@ export class SessionEventJournal {
       const written = await writevBuffers(file, buffers, beforeSize, (b) => this.recordBatchWrite(b));
       if (written !== expectedWriteBytes) {
         throw new Error(`event journal writev incomplete: wrote ${written} of ${expectedWriteBytes}`);
+      }
+      if (this.watermarkHook !== undefined) {
+        try {
+          const info = await file.stat();
+          handleStat = { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, ino: info.ino };
+        } catch (statError) {
+          this.logger.warn({ filePath: this.filePath, err: String(statError) }, 'event journal post-append handle stat failed; session kept dirty');
+        }
       }
       writeCompleted = true;
     } catch (error) {
@@ -1876,11 +1945,33 @@ export class SessionEventJournal {
     this.retainedEntries = trimmed.entries;
     this.retainedBytes = trimmed.bytes;
     this.releaseBatchPendingBytes(batch);
+    if (this.watermarkHook !== undefined && handleStat !== undefined) {
+      try {
+        const pathInfo = await stat(this.filePath);
+        const sameSource =
+          pathInfo.ino === handleStat.ino &&
+          pathInfo.size === handleStat.size &&
+          Math.abs(pathInfo.mtimeMs - handleStat.mtimeMs) < 0.001 &&
+          Math.abs(pathInfo.ctimeMs - handleStat.ctimeMs) < 0.001;
+        if (sameSource) {
+          this.watermarkHook.onDurableFlush(
+            { epoch: this.epoch, seq: this.durableSeq, attentionSeq: this.durableAttentionSeq },
+            { size: handleStat.size, mtimeMs: handleStat.mtimeMs, ctimeMs: handleStat.ctimeMs },
+          );
+        }
+      } catch (error) {
+        this.logger.warn(
+          { filePath: this.filePath, err: String(error) },
+          'event journal watermark checkpoint failed after durable append; session kept dirty',
+        );
+      }
+    }
     return 'ok';
   }
 
   private async compactNow(isCloseConvergence: boolean): Promise<boolean> {
     try {
+      this.watermarkHook?.onBeforeWrite('compact');
       const trimmed = trimRetainedEntries(this.retainedEntries!, this.capacity, this.maxRetainedBytes);
       this.retainedEntries = trimmed.entries;
       this.retainedBytes = trimmed.bytes;
@@ -1903,6 +1994,7 @@ export class SessionEventJournal {
       this.diskFileBytes = written;
       this.compactPending = false;
       this.dirtySinceSync = false;
+      await this.checkpointWatermarkFromPath('compaction');
       return true;
     } catch (error) {
       this.compactPending = true;
@@ -2173,6 +2265,7 @@ export async function pruneExpiredEventJournals(
     readonly activeSessionIds?: ReadonlySet<string>;
     readonly isSessionActive?: (sessionId: string) => boolean;
     readonly beforeUnlink?: (sessionId: string) => (() => void) | undefined;
+    readonly onUnlinked?: (sessionId: string) => void;
     readonly now?: number;
     readonly logger?: JournalLogger;
   },
@@ -2181,6 +2274,7 @@ export async function pruneExpiredEventJournals(
   const activeSessionIds = options?.activeSessionIds;
   const isSessionActive = options?.isSessionActive;
   const beforeUnlink = options?.beforeUnlink;
+  const onUnlinked = options?.onUnlinked;
   const now = options?.now ?? Date.now();
   const logger = options?.logger ?? noopLogger;
   let entries;
@@ -2224,6 +2318,7 @@ export async function pruneExpiredEventJournals(
       }
       try {
         await rm(fullPath, { force: true });
+        if (isJournal) onUnlinked?.(sessionId);
         removed += 1;
       } finally {
         release?.();

@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
-import { PEER_BRIDGE_CAPABILITY_CHUNKED_V1, type RemoteConnection } from '@kiki/protocol';
+import { PEER_BRIDGE_CAPABILITY_CHUNKED_V1, PEER_BRIDGE_CAPABILITY_GROUP_IDENTITY_V1, type RemoteConnection } from '@kiki/protocol';
 import type { KlientFrame } from '@kiki/klient/host';
 import type { RemoteConnectionManager } from '../src/services/connections/manager';
 import { OutboundPeerBridgeClient } from '../src/services/threadBridge/outboundPeerBridgeClient';
@@ -90,7 +90,7 @@ async function fixture(random: () => number = () => 0): Promise<Fixture> {
       try { frame = JSON.parse(Buffer.from(raw as Buffer).toString('utf8')) as Frame; }
       catch { return; }
       if (frame.type === 'bridge_attach') {
-        expect(frame.data).toEqual({ capabilities: [PEER_BRIDGE_CAPABILITY_CHUNKED_V1] });
+        expect(frame.data).toEqual({ capabilities: [PEER_BRIDGE_CAPABILITY_CHUNKED_V1, PEER_BRIDGE_CAPABILITY_GROUP_IDENTITY_V1] });
         socket.send(JSON.stringify({ type: 'bridge_attached', id: frame.id, data: { operations: ['list', 'read', 'send', 'wait'] } }));
         attachments.push({ socket, index });
       } else if (frame.type === 'ping') {

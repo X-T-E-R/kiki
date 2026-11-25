@@ -2,6 +2,7 @@ import {
   detachSessionSharedCasAliases,
   ISessionContext,
   ISessionMetadata,
+  preserveReservedSessionGroupKeys,
   type ISessionScopeHandle,
 } from '@kiki/agent-core-v2';
 import { PROMOTED_FROM_KEY } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
@@ -12,7 +13,7 @@ function replaceCustomMetadata(
   existing: Record<string, unknown> | undefined,
   patch: Record<string, unknown>,
 ): Record<string, unknown> {
-  const custom = { ...patch };
+  const custom = preserveReservedSessionGroupKeys(existing, patch);
   for (const key of [PROMOTED_FROM_KEY, 'goal']) {
     if (!Object.hasOwn(custom, key) && existing !== undefined && Object.hasOwn(existing, key)) {
       custom[key] = existing[key];
@@ -43,8 +44,14 @@ export async function updateSessionProfile(
 
   const metadataPatch = body.metadata;
   if (metadataPatch !== undefined && Object.keys(metadataPatch).length > 0) {
-    const current = await metadata.read();
-    await metadata.update({ custom: replaceCustomMetadata(current.custom, metadataPatch as Record<string, unknown>) });
+    if (metadata.updateCustom !== undefined) {
+      await metadata.updateCustom((current) =>
+        replaceCustomMetadata(current, metadataPatch as Record<string, unknown>),
+      );
+    } else {
+      const current = await metadata.read();
+      await metadata.update({ custom: replaceCustomMetadata(current.custom, metadataPatch as Record<string, unknown>) });
+    }
   }
 
   const meta = await metadata.read();

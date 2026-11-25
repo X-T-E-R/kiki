@@ -24,6 +24,8 @@ export const metaCapabilitiesSchema = /* @__PURE__ */ z.object({
   thread_communication: z.boolean().optional(),
   /** Present only on servers that expose the transcript WS/REST protocol. */
   transcript: z.boolean().optional(),
+  /** Present only on servers that expose `/api/sidebar/sessions` unit pagination and session groups. */
+  sidebar_groups: z.boolean().optional(),
 });
 
 export type MetaCapabilities = z.infer<typeof metaCapabilitiesSchema>;

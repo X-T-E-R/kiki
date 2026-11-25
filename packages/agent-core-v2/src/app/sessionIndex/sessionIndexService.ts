@@ -33,19 +33,38 @@ import {
   type SessionIndexState,
   type SessionListQuery,
   type SessionSummary,
+  type SidebarGroupMemberListQuery,
+  type SidebarGroupMemberListResult,
+  type SidebarUnitListQuery,
+  type SidebarUnitListResult,
+  type SidebarUnitResolveQuery,
+  type SidebarUnitResolveResult,
 } from './sessionIndex';
+import { resolveHomeGroupOrigin, resolveSessionGroupProjection } from './sessionGroup';
 import {
   CREATED_BY_INDEX_NAME,
+  GROUP_ID_INDEX_NAME,
   PARENT_INDEX_NAME,
   SESSION_INDEX_MANIFEST,
   SESSION_INDEX_REVISION,
+  WORKSPACE_ID_INDEX_NAME,
   advanceSessionIndexRevision,
+  buildAdvanceSessionIndexRevisionOp,
   recencyColumn,
+  resolveSidebarVisibilityBucket,
   sessionCollection,
   sessionCountersCollection,
+  sidebarUnitCollection,
+  sidebarUnitColumn,
   stripRecencyField,
   type SessionWorkspaceCounts,
 } from './sessionIndexModel';
+import {
+  buildAffectedSidebarUnitOps,
+  buildSidebarGroupMembersFromSummaries,
+  buildSidebarPageFromSummaries,
+  resolveSidebarUnitsFromSummaries,
+} from './sidebarUnitOps';
 import { SessionIndexBuildingError, SessionIndexReconcilePendingError } from './errors';
 import { isSessionIndexResourceExhaustionError } from './sessionIndexMirrorService';
 import {
@@ -183,6 +202,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       queryStore,
       log,
       sessionsScope: bootstrap.scope('sessions'),
+      homeDir: bootstrap.homeDir,
     });
     this._register(mirror.onDidChange(({ id, workspaceId }) => {
       this.projector.invalidateFingerprint(workspaceId, id);
@@ -924,6 +944,16 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         name: CREATED_BY_INDEX_NAME,
         field: `custom.${CREATED_BY_SESSION_ID_KEY}`,
       }),
+      this.queryStore.ensureIndex(collection, {
+        kind: 'value',
+        name: GROUP_ID_INDEX_NAME,
+        field: 'groupId',
+      }),
+      this.queryStore.ensureIndex(collection, {
+        kind: 'value',
+        name: WORKSPACE_ID_INDEX_NAME,
+        field: 'workspaceId',
+      }),
     ]);
   }
 
@@ -1037,6 +1067,30 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     return this.withReadyReadModel(
       (generation) => this.listRecentFromReadModel(generation, query),
       () => this.listLegacy(query),
+    );
+  }
+
+  async listSidebarUnits(query: SidebarUnitListQuery): Promise<SidebarUnitListResult> {
+    query.signal?.throwIfAborted();
+    return this.withReadyReadModel(
+      (generation) => this.listSidebarUnitsFromReadModel(generation, query),
+      () => this.listSidebarUnitsLegacy(query),
+    );
+  }
+
+  async listSidebarGroupMembers(query: SidebarGroupMemberListQuery): Promise<SidebarGroupMemberListResult> {
+    query.signal?.throwIfAborted();
+    return this.withReadyReadModel(
+      (generation) => this.listSidebarGroupMembersFromReadModel(generation, query),
+      () => this.listSidebarGroupMembersLegacy(query),
+    );
+  }
+
+  async resolveSidebarUnits(query: SidebarUnitResolveQuery): Promise<SidebarUnitResolveResult> {
+    query.signal?.throwIfAborted();
+    return this.withReadyReadModel(
+      (generation) => this.resolveSidebarUnitsFromReadModel(generation, query),
+      () => this.resolveSidebarUnitsLegacy(query),
     );
   }
 
@@ -1328,27 +1382,164 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     this.mirror.acknowledge(this.mirror.pending().filter((summary) => summary.id === id));
   }
 
+  private async currentRevision(signal?: AbortSignal): Promise<number> {
+    const rev = await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION, signal).catch(() => undefined);
+    return (rev?.seq ?? 0) + this.mirror.epoch();
+  }
+
+  private async listSidebarUnitsFromReadModel(
+    generation: number,
+    query: SidebarUnitListQuery,
+  ): Promise<SidebarUnitListResult> {
+    if (this.queryStore.sidebarPage === undefined) return this.listSidebarUnitsLegacy(query);
+    const pending = this.mirror.pending();
+    const mirrorEpoch = this.mirror.epoch();
+    const bucket = resolveSidebarVisibilityBucket(
+      query.filter.archived,
+      query.filter.privacy,
+      query.filter.pinned === true,
+    );
+    const page = await this.queryStore.sidebarPage<SessionSummary>(
+      {
+        sessionCollection: sessionCollection(generation),
+        unitCollection: sidebarUnitCollection(generation),
+        unitColumn: sidebarUnitColumn(generation, bucket),
+        recencyField: recencyColumn(generation),
+        filter: query.filter,
+        sort: query.sort ?? 'updated_desc',
+        limit: query.limit,
+        memberLimit: query.memberLimit,
+        maxRows: query.maxRows ?? Math.max(query.limit * 2, 150),
+        cursor: query.cursor,
+        pending: pending.length > 0 ? pending : undefined,
+        explain: query.explain,
+        revisionCheckpointKey: SESSION_INDEX_REVISION,
+      },
+      query.signal,
+    );
+    const revision = (page.revision ?? (await this.currentRevision(query.signal))) + mirrorEpoch;
+    return { ...page, revision, generation };
+  }
+
+  private async listSidebarGroupMembersFromReadModel(
+    generation: number,
+    query: SidebarGroupMemberListQuery,
+  ): Promise<SidebarGroupMemberListResult> {
+    if (this.queryStore.sidebarGroupMembers === undefined) return this.listSidebarGroupMembersLegacy(query);
+    const pending = this.mirror.pending();
+    const mirrorEpoch = this.mirror.epoch();
+    const result = await this.queryStore.sidebarGroupMembers<SessionSummary>(
+      {
+        sessionCollection: sessionCollection(generation),
+        recencyField: recencyColumn(generation),
+        groupId: query.groupId,
+        filter: query.filter,
+        limit: query.limit,
+        cursor: query.cursor,
+        pending: pending.length > 0 ? pending : undefined,
+        revisionCheckpointKey: SESSION_INDEX_REVISION,
+      },
+      query.signal,
+    );
+    const revision = (result.revision ?? (await this.currentRevision(query.signal))) + mirrorEpoch;
+    return { ...result, revision, generation };
+  }
+
+  private async resolveSidebarUnitsFromReadModel(
+    generation: number,
+    query: SidebarUnitResolveQuery,
+  ): Promise<SidebarUnitResolveResult> {
+    if (this.queryStore.sidebarResolveUnits === undefined) return this.resolveSidebarUnitsLegacy(query);
+    const pending = this.mirror.pending();
+    const mirrorEpoch = this.mirror.epoch();
+    const result = await this.queryStore.sidebarResolveUnits<SessionSummary>(
+      {
+        sessionCollection: sessionCollection(generation),
+        recencyField: recencyColumn(generation),
+        sessionIds: query.sessionIds,
+        groupIds: query.groupIds,
+        filter: query.filter,
+        memberLimit: query.memberLimit,
+        pending: pending.length > 0 ? pending : undefined,
+        revisionCheckpointKey: SESSION_INDEX_REVISION,
+      },
+      query.signal,
+    );
+    const revision = (result.revision ?? (await this.currentRevision(query.signal))) + mirrorEpoch;
+    return { ...result, revision, generation };
+  }
+
+  private async collectProjectedAuthoritative(signal?: AbortSignal): Promise<SessionSummary[]> {
+    signal?.throwIfAborted();
+    const [summaries, originKey] = await Promise.all([
+      abortable(this.collectAuthoritative(undefined), signal),
+      resolveHomeGroupOrigin(this.bootstrap.homeDir, this.storage),
+    ]);
+    return resolveSessionGroupProjection(summaries, originKey);
+  }
+
+  private async listSidebarUnitsLegacy(query: SidebarUnitListQuery): Promise<SidebarUnitListResult> {
+    const projected = await this.collectProjectedAuthoritative(query.signal);
+    const page = buildSidebarPageFromSummaries(projected, {
+      filter: query.filter,
+      sort: query.sort ?? 'updated_desc',
+      limit: query.limit,
+      memberLimit: query.memberLimit,
+      maxRows: query.maxRows ?? Math.max(query.limit * 2, 150),
+      cursor: query.cursor,
+    });
+    return { ...page, revision: this.mirror.epoch() };
+  }
+
+  private async listSidebarGroupMembersLegacy(
+    query: SidebarGroupMemberListQuery,
+  ): Promise<SidebarGroupMemberListResult> {
+    const projected = await this.collectProjectedAuthoritative(query.signal);
+    const result = buildSidebarGroupMembersFromSummaries(projected, {
+      groupId: query.groupId,
+      filter: query.filter,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+    return { ...result, revision: this.mirror.epoch() };
+  }
+
+  private async resolveSidebarUnitsLegacy(query: SidebarUnitResolveQuery): Promise<SidebarUnitResolveResult> {
+    const projected = await this.collectProjectedAuthoritative(query.signal);
+    const result = resolveSidebarUnitsFromSummaries(projected, {
+      sessionIds: query.sessionIds,
+      groupIds: query.groupIds,
+      filter: query.filter,
+      memberLimit: query.memberLimit,
+    });
+    return { ...result, revision: this.mirror.epoch() };
+  }
+
   private async removeFromReadModel(generation: number, id: string): Promise<void> {
     const collection = sessionCollection(generation);
     const storedValue: unknown = await this.queryStore.get(collection, id);
     if (storedValue === undefined) return;
-    await advanceSessionIndexRevision(this.queryStore);
     if (!isSessionSummaryShape(storedValue)) {
+      await advanceSessionIndexRevision(this.queryStore);
       await this.queryStore.delete(collection, id);
       return;
     }
+    const stripped = stripRecencyField(generation, storedValue);
     const counters = sessionCountersCollection(generation);
-    const current =
-      (await this.queryStore.get<SessionWorkspaceCounts>(counters, storedValue.workspaceId)) ?? {
-        active: 0,
-        archived: 0,
-      };
-    const value: SessionWorkspaceCounts = storedValue.archived
-      ? { active: current.active, archived: Math.max(0, current.archived - 1) }
-      : { active: Math.max(0, current.active - 1), archived: current.archived };
+    const [current, unitOps, revOp] = await Promise.all([
+      this.queryStore.get<SessionWorkspaceCounts>(counters, stripped.workspaceId),
+      buildAffectedSidebarUnitOps(this.queryStore, generation, [{ id, old: stripped, next: undefined }]),
+      buildAdvanceSessionIndexRevisionOp(this.queryStore),
+    ]);
+    const base = current ?? { active: 0, archived: 0 };
+    const value: SessionWorkspaceCounts = stripped.archived
+      ? { active: base.active, archived: Math.max(0, base.archived - 1) }
+      : { active: Math.max(0, base.active - 1), archived: base.archived };
     await this.queryStore.batch([
       { kind: 'delete', collection, key: id },
-      { kind: 'put', collection: counters, key: storedValue.workspaceId, value },
+      ...unitOps,
+      { kind: 'put', collection: counters, key: stripped.workspaceId, value },
+      revOp,
     ]);
   }
 

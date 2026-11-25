@@ -22,7 +22,13 @@ export const PINNED_SESSIONS_QUERY_KEY = ['sessions', 'pinned'] as const;
 export const SESSION_EVENT_READ_INTERVAL_MS = 250;
 
 /** The logical sidebar source; sessions retain their independent load-more cursor. */
-export function useConversationList(sessions: readonly Session[], order: SessionSortOrder = 'updated-desc', workspaces: readonly ConversationWorkspace[] = []) {
+export function useConversationList(
+  sessions: readonly Session[],
+  order: SessionSortOrder = 'updated-desc',
+  workspaces: readonly ConversationWorkspace[] = [],
+  options?: { readonly skipLegacyMetaRefresh?: boolean },
+) {
+  const skipLegacyMetaRefresh = options?.skipLegacyMetaRefresh === true;
   const { client, wsStatus } = useConnection();
   const queryClient = useQueryClient();
   const seen = useSyncExternalStore(subscribeSessionSeen, sessionSeenSnapshot, sessionSeenSnapshot);
@@ -59,6 +65,7 @@ export function useConversationList(sessions: readonly Session[], order: Session
   // per session, start at most once per interval, and an event that arrives
   // during a read or inside the interval is folded into one trailing read.
   useEffect(() => {
+    if (skipLegacyMetaRefresh) return undefined;
     let disposed = false;
     const inFlight = new Set<string>();
     const dirty = new Set<string>();
@@ -143,7 +150,7 @@ export function useConversationList(sessions: readonly Session[], order: Session
       for (const timer of timers.values()) clearTimeout(timer);
       timers.clear();
     };
-  }, [client, queryClient]);
+  }, [client, queryClient, skipLegacyMetaRefresh]);
   const rooms = roomsQuery.data ?? [];
   const items = useMemo(() => mergeConversationItems(sessions, rooms, seen, order, workspaces), [sessions, rooms, seen, order, workspaces]);
   return { items, rooms, roomsQuery, seen };

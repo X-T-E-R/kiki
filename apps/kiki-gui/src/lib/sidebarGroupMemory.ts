@@ -20,10 +20,11 @@ const MAX_GROUPS = 400;
 export interface WorkspaceGroupMemory {
   readonly collapsed: readonly string[];
   readonly expanded: readonly string[];
+  readonly expandedSessionGroups: readonly string[];
   readonly scrollTop: number;
 }
 
-const EMPTY: WorkspaceGroupMemory = { collapsed: [], expanded: [], scrollTop: 0 };
+const EMPTY: WorkspaceGroupMemory = { collapsed: [], expanded: [], expandedSessionGroups: [], scrollTop: 0 };
 
 type Stored = Record<string, WorkspaceGroupMemory & { readonly at: number }>;
 
@@ -45,6 +46,7 @@ function readAll(): Stored {
       result[scope] = {
         collapsed: stringList(record['collapsed']),
         expanded: stringList(record['expanded']),
+        expandedSessionGroups: stringList(record['expandedSessionGroups']),
         scrollTop,
         at: typeof record['at'] === 'number' ? record['at'] : 0,
       };
@@ -57,7 +59,14 @@ function readAll(): Stored {
 
 export function readWorkspaceGroupMemory(scopeId: string): WorkspaceGroupMemory {
   const entry = readAll()[scopeId];
-  return entry === undefined ? EMPTY : { collapsed: entry.collapsed, expanded: entry.expanded, scrollTop: entry.scrollTop };
+  return entry === undefined
+    ? EMPTY
+    : {
+        collapsed: entry.collapsed,
+        expanded: entry.expanded,
+        expandedSessionGroups: entry.expandedSessionGroups,
+        scrollTop: entry.scrollTop,
+      };
 }
 
 export function writeWorkspaceGroupMemory(scopeId: string, patch: Partial<WorkspaceGroupMemory>): void {
@@ -66,6 +75,7 @@ export function writeWorkspaceGroupMemory(scopeId: string, patch: Partial<Worksp
   all[scopeId] = {
     collapsed: (patch.collapsed ?? current.collapsed).slice(-MAX_GROUPS),
     expanded: (patch.expanded ?? current.expanded).slice(-MAX_GROUPS),
+    expandedSessionGroups: (patch.expandedSessionGroups ?? current.expandedSessionGroups).slice(-MAX_GROUPS),
     scrollTop: Math.max(0, Math.round(patch.scrollTop ?? current.scrollTop)),
     at: Date.now(),
   };

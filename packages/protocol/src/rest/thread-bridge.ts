@@ -33,6 +33,12 @@ export type BridgeInstall = z.infer<typeof bridgeInstallSchema>;
 export type BridgeRequest = z.infer<typeof bridgeRequestSchema>;
 export type BridgeSend = z.infer<typeof bridgeSendSchema>;
 export type BridgeOperation = 'read' | 'send' | 'wait' | 'wake' | 'create' | 'tools';
+export const bridgeGroupOriginSchema = /* @__PURE__ */ z.object({
+  homeId: z.string().uuid(),
+  hostId: z.string().min(1).max(256),
+  bridgeId: z.string().uuid().optional(),
+}).strict();
+export type BridgeGroupOrigin = z.infer<typeof bridgeGroupOriginSchema>;
 export const bridgeCreateSchema = /* @__PURE__ */ bridgeRequestSchema.extend({
   workspaceId: z.string().min(1).max(512).optional(),
   idempotencyKey: z.string().min(1).max(256),
@@ -45,6 +51,8 @@ export const bridgeCreateSchema = /* @__PURE__ */ bridgeRequestSchema.extend({
   planMode: z.boolean().optional(),
   prompt: z.string().min(1).max(100000).optional(),
   notifyOnTerminal: z.boolean().optional(),
+  groupId: z.string().min(1).max(128).optional(),
+  groupOrigin: bridgeGroupOriginSchema.optional(),
 }).strict();
 export type BridgeCreate = z.infer<typeof bridgeCreateSchema>;
 export interface BridgeCreateResult {
@@ -112,6 +120,7 @@ export const peerBridgeInstallSchema = /* @__PURE__ */ z.object({
 }).strict();
 export type PeerBridgeInstall = z.infer<typeof peerBridgeInstallSchema>;
 export const PEER_BRIDGE_CAPABILITY_CHUNKED_V1 = 'chunked_v1';
+export const PEER_BRIDGE_CAPABILITY_GROUP_IDENTITY_V1 = 'group_identity_v1';
 export const peerBridgeAttachPayloadSchema = /* @__PURE__ */ z.object({
   operations: z.array(z.enum(['list', 'read', 'send', 'wait', 'create', 'tools_list', 'tools_call'])).min(1).max(7).optional(),
   capabilities: z.array(z.string().min(1).max(64)).max(32).optional(),

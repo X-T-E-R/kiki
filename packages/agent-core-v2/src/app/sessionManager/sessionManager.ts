@@ -84,6 +84,10 @@ export interface ISessionManager {
   createChild(options: CreateChildSessionOptions): Promise<ISessionScopeHandle>;
   /** Opens a subagent as its own top-level thread, in the workspace of the subagent's working directory. */
   promoteAgent?(options: PromoteAgentOptions): Promise<ISessionScopeHandle>;
+  /** Durably establishes and returns the opener session's deterministic group token without touching recency. */
+  ensureSessionGroup?(sessionId: string): Promise<{ readonly groupId: string; readonly originKey: string }>;
+  /** Explicitly detaches a session from its group and cuts legacy edges without touching recency. */
+  detachSessionGroup?(sessionId: string): Promise<{ readonly detached: boolean; readonly sessionId: string; readonly previousGroupId?: string }>;
 }
 
 export const ISessionManager: ServiceIdentifier<ISessionManager> = createDecorator<ISessionManager>('sessionManager');

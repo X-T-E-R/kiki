@@ -37,6 +37,7 @@ export interface SessionCursorReader {
     signal?: AbortSignal,
     indexed?: boolean,
   ): Promise<SessionCursorSnapshot | undefined> | SessionCursorSnapshot | undefined;
+  getCoveredCursor?(sessionId: string): SessionCursorSnapshot | undefined;
 }
 
 interface ColdCursorStore {
@@ -65,6 +66,7 @@ function getColdCursorStore(core: Scope, broadcaster: object): ColdCursorStore {
     manager.onDidCreateSession?.(evict);
     manager.onDidCloseSession?.(evict);
     manager.onDidArchiveSession?.(evict);
+    manager.onDidDeleteSession?.(evict);
   } catch {}
   try {
     core.accessor.get(IEventService).onDidPublish((event) => {
@@ -83,6 +85,7 @@ export async function readSessionCursor(
   sessionId: string,
   signal?: AbortSignal,
   indexed = false,
+  allowCovered = false,
 ): Promise<SessionCursorSnapshot | undefined> {
   if (broadcaster === undefined) return undefined;
   signal?.throwIfAborted();
@@ -95,7 +98,12 @@ export async function readSessionCursor(
     store.values.delete(sessionId);
     return broadcaster.getCursor(sessionId, signal, indexed);
   }
-  const cached = store.values.get(sessionId);
+  if (allowCovered && broadcaster.getCoveredCursor !== undefined) {
+    const covered = broadcaster.getCoveredCursor(sessionId);
+    if (covered !== undefined) return covered;
+    store.values.delete(sessionId);
+  }
+  const cached = allowCovered && broadcaster.getCoveredCursor !== undefined ? undefined : store.values.get(sessionId);
   if (cached !== undefined) return cached;
   let pending = store.inflight.get(sessionId);
   if (pending === undefined) {

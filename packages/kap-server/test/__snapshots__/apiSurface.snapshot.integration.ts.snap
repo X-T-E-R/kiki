@@ -22,6 +22,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
   "routes": [
     [
       "DELETE",
+      "/api/agents/{name}",
+    ],
+    [
+      "DELETE",
       "/api/appearance/packs/{pack_id}",
     ],
     [
@@ -62,6 +66,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/im/sessions/instances/{id}",
+    ],
+    [
+      "DELETE",
       "/api/im/sessions/targets/{id}/notify/{channelId}",
     ],
     [
@@ -71,6 +79,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "DELETE",
       "/api/memory/{scope}/{id}",
+    ],
+    [
+      "DELETE",
+      "/api/mesh/tunnels/{tunnelId}",
+    ],
+    [
+      "DELETE",
+      "/api/mesh/workspace-copies/{copyId}",
     ],
     [
       "DELETE",
@@ -135,6 +151,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "DELETE",
       "/api/sessions/media-playback/{previewId}",
+    ],
+    [
+      "DELETE",
+      "/api/spaces/portable/sources/{id}",
     ],
     [
       "DELETE",
@@ -295,6 +315,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/discovered-models",
+    ],
+    [
+      "GET",
+      "/api/events",
     ],
     [
       "GET",
@@ -522,6 +546,30 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/mesh/sessions/{sessionId}/leases",
+    ],
+    [
+      "GET",
+      "/api/mesh/takeover/{targetId}",
+    ],
+    [
+      "GET",
+      "/api/mesh/tunnels",
+    ],
+    [
+      "GET",
+      "/api/mesh/workspace-copies",
+    ],
+    [
+      "GET",
+      "/api/mesh/workspace-copies/{copyId}/diff",
+    ],
+    [
+      "GET",
+      "/api/mesh/workspace-copies/{copyId}/status",
+    ],
+    [
+      "GET",
       "/api/meta",
     ],
     [
@@ -591,6 +639,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/personas/{id}/export",
+    ],
+    [
+      "GET",
+      "/api/personas/session-heads",
     ],
     [
       "GET",
@@ -714,6 +766,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/runtime-switch",
+    ],
+    [
+      "GET",
       "/api/search/status",
     ],
     [
@@ -759,6 +815,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/sessions/{session_id}/document-preview/assets/{asset_id}",
+    ],
+    [
+      "GET",
+      "/api/sessions/{session_id}/events",
     ],
     [
       "GET",
@@ -894,6 +954,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/sidebar/groups/{group_id}/members",
+    ],
+    [
+      "GET",
+      "/api/sidebar/sessions",
+    ],
+    [
+      "GET",
       "/api/skills",
     ],
     [
@@ -914,6 +982,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/spaces/portable/sources",
+    ],
+    [
+      "GET",
       "/api/ssh/config-sync",
     ],
     [
@@ -931,6 +1003,18 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/ssh/hosts/{tail}",
+    ],
+    [
+      "GET",
+      "/api/sync/config/portable",
+    ],
+    [
+      "GET",
+      "/api/sync/device-key",
+    ],
+    [
+      "GET",
+      "/api/sync/skills/plan",
     ],
     [
       "GET",
@@ -1107,6 +1191,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PATCH",
       "/api/providers/{provider_id}",
+    ],
+    [
+      "PATCH",
+      "/api/remote-connections/inbound/grants/{grantId}/trust",
     ],
     [
       "PATCH",
@@ -1354,6 +1442,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/harness-quota/{sourceId}/action",
+    ],
+    [
+      "POST",
       "/api/harness-quota/read",
     ],
     [
@@ -1430,6 +1522,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/klient/batch",
+    ],
+    [
+      "POST",
       "/api/klient/call",
     ],
     [
@@ -1439,6 +1535,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/leases",
+    ],
+    [
+      "POST",
+      "/api/llm:complete",
     ],
     [
       "POST",
@@ -1527,6 +1627,66 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/memory/authority/retry",
+    ],
+    [
+      "POST",
+      "/api/mesh/inbound/execute",
+    ],
+    [
+      "POST",
+      "/api/mesh/sessions/{sessionId}/leases/pin",
+    ],
+    [
+      "POST",
+      "/api/mesh/sessions/{sessionId}/leases/renew",
+    ],
+    [
+      "POST",
+      "/api/mesh/sessions/{sessionId}/leases/unpin",
+    ],
+    [
+      "POST",
+      "/api/mesh/takeover/{targetId}/acquire",
+    ],
+    [
+      "POST",
+      "/api/mesh/takeover/{targetId}/release",
+    ],
+    [
+      "POST",
+      "/api/mesh/takeover/{targetId}/renew",
+    ],
+    [
+      "POST",
+      "/api/mesh/targets/{targetId}/dispatch",
+    ],
+    [
+      "POST",
+      "/api/mesh/targets/{targetId}/resolve-question",
+    ],
+    [
+      "POST",
+      "/api/mesh/tunnels",
+    ],
+    [
+      "POST",
+      "/api/mesh/workspace-copies",
+    ],
+    [
+      "POST",
+      "/api/mesh/workspace-copies/{copyId}/apply",
+    ],
+    [
+      "POST",
+      "/api/mesh/workspace-copies/{copyId}/delta/apply",
+    ],
+    [
+      "POST",
+      "/api/mesh/workspace-copies/{copyId}/delta/export",
+    ],
+    [
+      "POST",
+      "/api/mesh/workspace-copies/{copyId}/snapshot",
     ],
     [
       "POST",
@@ -1690,6 +1850,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/remote-connections/{connectionId}/verify-fingerprint",
+    ],
+    [
+      "POST",
       "/api/remote-connections/claim",
     ],
     [
@@ -1795,6 +1959,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/rooms/from-threads",
+    ],
+    [
+      "POST",
+      "/api/runtime-switch",
     ],
     [
       "POST",
@@ -1918,6 +2086,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/sessions/{session_id}/interactions/{tail}",
+    ],
+    [
+      "POST",
       "/api/sessions/{session_id}/messages/{tail}",
     ],
     [
@@ -1994,7 +2166,59 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/sidebar/units:resolve",
+    ],
+    [
+      "POST",
       "/api/skills/{tail}",
+    ],
+    [
+      "POST",
+      "/api/spaces/portable/apply",
+    ],
+    [
+      "POST",
+      "/api/spaces/portable/delta",
+    ],
+    [
+      "POST",
+      "/api/spaces/portable/export",
+    ],
+    [
+      "POST",
+      "/api/spaces/portable/fork",
+    ],
+    [
+      "POST",
+      "/api/spaces/portable/inspect",
+    ],
+    [
+      "POST",
+      "/api/spaces/portable/mutate",
+    ],
+    [
+      "POST",
+      "/api/spaces/portable/pack",
+    ],
+    [
+      "POST",
+      "/api/spaces/portable/preview",
+    ],
+    [
+      "POST",
+      "/api/spaces/portable/recipients",
+    ],
+    [
+      "POST",
+      "/api/spaces/portable/rekey",
+    ],
+    [
+      "POST",
+      "/api/spaces/portable/sources",
+    ],
+    [
+      "POST",
+      "/api/spaces/portable/unpack",
     ],
     [
       "POST",
@@ -2003,6 +2227,34 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/ssh/hosts/{tail}",
+    ],
+    [
+      "POST",
+      "/api/sync/bundle/export",
+    ],
+    [
+      "POST",
+      "/api/sync/bundle/import",
+    ],
+    [
+      "POST",
+      "/api/sync/credentials/merge",
+    ],
+    [
+      "POST",
+      "/api/sync/credentials/seal",
+    ],
+    [
+      "POST",
+      "/api/sync/peers/{peerId}/pull",
+    ],
+    [
+      "POST",
+      "/api/sync/peers/{peerId}/push",
+    ],
+    [
+      "POST",
+      "/api/sync/project-identity/resolve",
     ],
     [
       "POST",
@@ -2019,6 +2271,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/thread-bridge/send",
+    ],
+    [
+      "POST",
+      "/api/thread-bridge/tools_call",
+    ],
+    [
+      "POST",
+      "/api/thread-bridge/tools_list",
     ],
     [
       "POST",
@@ -2050,7 +2310,15 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/thread-bridges/peer/request-bridge",
+    ],
+    [
+      "POST",
       "/api/thread-bridges/retry",
+    ],
+    [
+      "POST",
+      "/api/thread-bridges/sync/{connectionId}",
     ],
     [
       "POST",
@@ -2299,6 +2567,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PUT",
       "/api/thread-bridges/{direction}/{id}/enabled",
+    ],
+    [
+      "PUT",
+      "/api/thread-bridges/inbound/{id}/operations",
+    ],
+    [
+      "PUT",
+      "/api/thread-bridges/outbound/{id}/borrow-tools",
     ],
     [
       "PUT",

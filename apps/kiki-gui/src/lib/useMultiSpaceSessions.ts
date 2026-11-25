@@ -14,8 +14,30 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { RemoteConnection, RoomListItem, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
-import type { SpaceConversationSource } from '@kiki/session-core/sessions';
+import type {
+  MetaResponse,
+  RemoteConnection,
+  RoomListItem,
+  Session,
+  SidebarSessionsQuery,
+  SidebarSessionsSort,
+  SidebarUnit,
+  WorkspaceCatalogEntry,
+} from '@kiki/protocol';
+import {
+  appendSidebarGroupMembers,
+  appendSidebarPage,
+  applySidebarUnitReplacements,
+  collectCrossHostGroupIds,
+  dedupeSidebarUnits,
+  flattenSidebarUnitsToSessions,
+  hasSidebarGroupsCapability,
+  isPageTokenMismatchError,
+  mergeSidebarFirstPage,
+  type SidebarUnitPagesData,
+  type SidebarUnitSpaceSource,
+  type SpaceConversationSource,
+} from '@kiki/session-core/sessions';
 
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
@@ -63,6 +85,10 @@ export interface MultiSpaceHealth {
 
 interface CachedSpaceSnapshot {
   readonly sessions: readonly Session[];
+  readonly unitPages?: SidebarUnitPagesData;
+  readonly sidebarGroupsCapable?: boolean;
+  readonly serverHomeId?: string;
+  readonly filterSignature?: string;
   readonly hasMoreSessions: boolean;
   readonly nextSessionCursor?: string;
   readonly rooms: readonly RoomListItem[];
@@ -76,21 +102,36 @@ interface PooledRemoteEntry {
   readonly client: KikiClient;
 }
 
+export interface MultiSpaceSidebarFilterQuery {
+  readonly showArchived?: boolean;
+  readonly includePrivate?: boolean;
+  readonly privateOnly?: boolean;
+  readonly sort?: SidebarSessionsSort;
+}
+
 export interface UseMultiSpaceSessionsOptions {
   /** Currently active connection's live sessions (avoids duplicate fetch). */
   readonly activeSessions: readonly Session[];
+  /** Currently active connection's live sidebar units when `sidebar_groups` is supported. */
+  readonly activeSidebarUnits?: readonly SidebarUnit[];
   /** Currently active connection's live rooms. */
   readonly activeRooms: readonly RoomListItem[];
   /** Currently active connection's live workspace catalog. */
   readonly activeWorkspaces: readonly WorkspaceCatalogEntry[];
+  /** Active filter & sort query forwarded per space so remote sources honor the view's filters. */
+  readonly sidebarFilter?: MultiSpaceSidebarFilterQuery;
+  /** Active space scope (`all` enables cross-host group fragment batch resolution). */
+  readonly spaceScope?: string;
   /** Pauses background remote head polling when the sidebar is closed/inert. */
   readonly enabled?: boolean;
 }
 
 export interface MultiSpaceSessionsResult {
   readonly sources: readonly SpaceConversationSource[];
+  readonly unitSources: readonly SidebarUnitSpaceSource[];
   readonly healthBySpace: ReadonlyMap<string, MultiSpaceHealth>;
   readonly hasMoreBySpace: ReadonlyMap<string, boolean>;
+  readonly nextCursorBySpace: ReadonlyMap<string, string>;
   readonly loadingMoreSpaces: ReadonlySet<string>;
   readonly localSpaceKey: string;
   readonly localSpaceName: string;
@@ -100,6 +141,7 @@ export interface MultiSpaceSessionsResult {
   readonly refetchRemotes: () => Promise<void>;
   readonly refreshRemoteSpace: (connectionId: string) => Promise<void>;
   readonly loadMoreSpaceSessions: (spaceKey: string) => Promise<void>;
+  readonly loadMoreSpaceGroupMembers: (spaceKey: string, groupId: string, cursor: string) => Promise<void>;
   readonly searchAcrossSpaces: (
     query: string,
     scope: string | undefined,
@@ -109,6 +151,10 @@ export interface MultiSpaceSessionsResult {
 
 interface SpaceHeadResult {
   readonly sessions: readonly Session[];
+  readonly unitPage?: import('@kiki/protocol').SidebarSessionsPage;
+  readonly sidebarGroupsCapable: boolean;
+  readonly serverHomeId?: string;
+  readonly filterSignature: string;
   readonly hasMoreSessions: boolean;
   readonly nextSessionCursor?: string;
   readonly rooms?: readonly RoomListItem[];
@@ -116,15 +162,78 @@ interface SpaceHeadResult {
   readonly partialFailure: boolean;
 }
 
+function buildRemoteSidebarQuery(filter: MultiSpaceSidebarFilterQuery | undefined): SidebarSessionsQuery {
+  return {
+    page_size: 50,
+    ...(filter?.sort !== undefined ? { sort: filter.sort } : {}),
+    ...(filter?.showArchived ? { include_archive: true } : {}),
+    ...(filter?.includePrivate ? { include_private: true } : {}),
+    ...(filter?.privateOnly ? { private_only: true } : {}),
+  };
+}
+
+function filterSignatureOf(filter: MultiSpaceSidebarFilterQuery | undefined): string {
+  return JSON.stringify({
+    a: filter?.showArchived === true,
+    ip: filter?.includePrivate === true,
+    po: filter?.privateOnly === true,
+    s: filter?.sort ?? 'updated_desc',
+  });
+}
+
 async function fetchSpaceHead(
   targetClient: KikiClient,
   signal: AbortSignal,
+  filter: MultiSpaceSidebarFilterQuery | undefined,
+  metaCache: WeakMap<KikiClient, MetaResponse | null>,
 ): Promise<SpaceHeadResult> {
   const roomsPromise = targetClient.klient.rest?.rooms !== undefined
     ? targetClient.klient.rest.rooms.listItems()
     : undefined;
+  let cachedMeta = metaCache.get(targetClient);
+  if (cachedMeta === undefined) {
+    try {
+      cachedMeta = await targetClient.meta();
+      metaCache.set(targetClient, cachedMeta);
+    } catch {
+      cachedMeta = null;
+      metaCache.set(targetClient, null);
+    }
+  }
+  const sidebarRest = targetClient.klient.rest?.sidebar;
+  const capable = cachedMeta !== null && cachedMeta !== undefined && hasSidebarGroupsCapability(cachedMeta) && sidebarRest !== undefined;
+  const sig = filterSignatureOf(filter);
+  const query = buildRemoteSidebarQuery(filter);
+
+  if (capable) {
+    const [unitPage, workspacesOutcome, roomsOutcome] = await Promise.all([
+      sidebarRest.list(query, { signal }),
+      Promise.allSettled([targetClient.listWorkspaceCatalog()]).then(([r]) => r),
+      roomsPromise !== undefined
+        ? Promise.allSettled([roomsPromise]).then(([r]) => r)
+        : Promise.resolve({ status: 'fulfilled' as const, value: [] as RoomListItem[] }),
+    ]);
+    const sessions = flattenSidebarUnitsToSessions(unitPage.units);
+    return {
+      sessions,
+      unitPage,
+      sidebarGroupsCapable: true,
+      serverHomeId: cachedMeta?.server_home_id,
+      filterSignature: sig,
+      hasMoreSessions: unitPage.has_more && unitPage.next_cursor !== undefined,
+      nextSessionCursor: unitPage.has_more ? unitPage.next_cursor : undefined,
+      rooms: roomsOutcome.status === 'fulfilled' ? (roomsOutcome.value ?? []) : undefined,
+      workspaces: workspacesOutcome.status === 'fulfilled' ? workspacesOutcome.value.items : undefined,
+      partialFailure: workspacesOutcome.status === 'rejected' || roomsOutcome.status === 'rejected',
+    };
+  }
+
   const [sessionsPage, workspacesOutcome, roomsOutcome] = await Promise.all([
-    targetClient.listSessions({}, { signal }),
+    targetClient.listSessions({
+      include_archive: filter?.showArchived || undefined,
+      include_private: filter?.includePrivate || undefined,
+      private_only: filter?.privateOnly || undefined,
+    }, { signal }),
     Promise.allSettled([targetClient.listWorkspaceCatalog()]).then(([r]) => r),
     roomsPromise !== undefined
       ? Promise.allSettled([roomsPromise]).then(([r]) => r)
@@ -132,6 +241,9 @@ async function fetchSpaceHead(
   ]);
   return {
     sessions: sessionsPage.items,
+    sidebarGroupsCapable: false,
+    serverHomeId: cachedMeta?.server_home_id,
+    filterSignature: sig,
     hasMoreSessions: sessionsPage.has_more,
     nextSessionCursor: sessionsPage.has_more
       ? (sessionsPage.next_cursor ?? sessionsPage.items.at(-1)?.id)
@@ -146,12 +258,39 @@ function mergeSpaceSnapshot(
   existing: CachedSpaceSnapshot | undefined,
   head: SpaceHeadResult,
   now: number,
+  sort: SidebarSessionsSort = 'updated_desc',
 ): CachedSpaceSnapshot {
+  const filterChanged = existing !== undefined && existing.filterSignature !== head.filterSignature;
+  if (head.sidebarGroupsCapable && head.unitPage !== undefined) {
+    const base = filterChanged ? undefined : existing?.unitPages;
+    const mergedPages = mergeSidebarFirstPage(base, head.unitPage, sort) ?? {
+      pages: [head.unitPage],
+      pageParams: [undefined],
+    };
+    const lastPage = mergedPages.pages.at(-1);
+    const dedupedUnits = dedupeSidebarUnits(mergedPages);
+    return {
+      sessions: flattenSidebarUnitsToSessions(dedupedUnits),
+      unitPages: mergedPages,
+      sidebarGroupsCapable: true,
+      serverHomeId: head.serverHomeId ?? existing?.serverHomeId,
+      filterSignature: head.filterSignature,
+      hasMoreSessions: lastPage?.has_more === true && lastPage.next_cursor !== undefined,
+      nextSessionCursor: lastPage?.has_more ? lastPage.next_cursor : undefined,
+      rooms: head.rooms ?? existing?.rooms ?? [],
+      workspaces: head.workspaces ?? existing?.workspaces ?? [],
+      lastSyncedAt: head.partialFailure ? (existing?.lastSyncedAt ?? now) : now,
+      stale: head.partialFailure,
+    };
+  }
   const headIds = new Set(head.sessions.map((session) => session.id));
-  const olderLoaded = (existing?.sessions ?? []).filter((session) => !headIds.has(session.id));
-  const keepOlderPagination = olderLoaded.length > 0 && existing !== undefined;
+  const olderLoaded = filterChanged ? [] : (existing?.sessions ?? []).filter((session) => !headIds.has(session.id));
+  const keepOlderPagination = !filterChanged && olderLoaded.length > 0 && existing !== undefined;
   return {
     sessions: keepOlderPagination ? [...head.sessions, ...olderLoaded] : head.sessions,
+    sidebarGroupsCapable: false,
+    serverHomeId: head.serverHomeId ?? existing?.serverHomeId,
+    filterSignature: head.filterSignature,
     hasMoreSessions: keepOlderPagination ? existing.hasMoreSessions : head.hasMoreSessions,
     nextSessionCursor: keepOlderPagination ? existing.nextSessionCursor : head.nextSessionCursor,
     rooms: head.rooms ?? existing?.rooms ?? [],
@@ -182,8 +321,11 @@ async function runWithConcurrency<T>(
 
 export function useMultiSpaceSessions({
   activeSessions,
+  activeSidebarUnits,
   activeRooms,
   activeWorkspaces,
+  sidebarFilter,
+  spaceScope = ALL_SPACE_SCOPE,
   enabled = true,
 }: UseMultiSpaceSessionsOptions): MultiSpaceSessionsResult {
   const host = useHost();
@@ -244,11 +386,16 @@ export function useMultiSpaceSessions({
 
   // Fallback local pool when rendered outside PlaceClientsProvider (e.g. unit tests).
   const poolRef = useRef(new Map<string, PooledRemoteEntry>());
+  const metaCacheRef = useRef(new WeakMap<KikiClient, MetaResponse | null>());
+  const resolvedCrossHostRef = useRef(new Map<string, string>());
   const [snapshots, setSnapshots] = useState<ReadonlyMap<string, CachedSpaceSnapshot>>(() => new Map());
   const [loadingMoreSpaces, setLoadingMoreSpaces] = useState<ReadonlySet<string>>(() => new Set());
   const snapshotsRef = useRef(snapshots);
   snapshotsRef.current = snapshots;
   const loadingMoreRef = useRef(new Set<string>());
+  const sidebarFilterRef = useRef(sidebarFilter);
+  sidebarFilterRef.current = sidebarFilter;
+  const sidebarFilterSig = filterSignatureOf(sidebarFilter);
 
   const controlBaseUrl = controlClient?.baseUrl ?? config.url;
   const controlToken = config.token;
@@ -332,11 +479,12 @@ export function useMultiSpaceSessions({
     if (targetClient === null) return;
     const controller = new AbortController();
     const key = remoteSpaceKey(recordId);
+    const filter = sidebarFilterRef.current;
     try {
-      const head = await fetchSpaceHead(targetClient, controller.signal);
+      const head = await fetchSpaceHead(targetClient, controller.signal, filter, metaCacheRef.current);
       setSnapshots((prev) => {
         const next = new Map(prev);
-        next.set(key, mergeSpaceSnapshot(prev.get(key), head, Date.now()));
+        next.set(key, mergeSpaceSnapshot(prev.get(key), head, Date.now(), filter?.sort ?? 'updated_desc'));
         return next;
       });
     } catch {
@@ -388,12 +536,13 @@ export function useMultiSpaceSessions({
         }
         await runWithConcurrency(targets, REMOTE_FETCH_CONCURRENCY, async (target) => {
           if (controller.signal.aborted) return;
+          const filter = sidebarFilterRef.current;
           try {
-            const head = await fetchSpaceHead(target.client, controller.signal);
+            const head = await fetchSpaceHead(target.client, controller.signal, filter, metaCacheRef.current);
             if (controller.signal.aborted) return;
             setSnapshots((prev) => {
               const next = new Map(prev);
-              next.set(target.key, mergeSpaceSnapshot(prev.get(target.key), head, Date.now()));
+              next.set(target.key, mergeSpaceSnapshot(prev.get(target.key), head, Date.now(), filter?.sort ?? 'updated_desc'));
               return next;
             });
           } catch {
@@ -424,6 +573,7 @@ export function useMultiSpaceSessions({
   }, [
     enabled,
     onlineRemoteSignature,
+    sidebarFilterSig,
     isVerifiedActiveRemoteRecord,
     inBrokeredScope,
     controlClient,
@@ -431,16 +581,63 @@ export function useMultiSpaceSessions({
     getOrCreateRemoteClient,
   ]);
 
-  const { sources, healthBySpace, hasMoreBySpace } = useMemo(() => {
+  const { sources, unitSources, healthBySpace, hasMoreBySpace, nextCursorBySpace } = useMemo(() => {
     const outSources: SpaceConversationSource[] = [];
+    const outUnitSources: SidebarUnitSpaceSource[] = [];
     const outHealth = new Map<string, MultiSpaceHealth>();
     const outHasMore = new Map<string, boolean>();
+    const outNextCursors = new Map<string, string>();
+
+    const sessionsToFallbackUnits = (list: readonly Session[]): SidebarUnit[] =>
+      list.map((session) => ({
+        kind: 'session',
+        id: session.id,
+        sort_at: Date.parse(session.own_updated_at ?? session.updated_at) || 0,
+        row: {
+          id: session.id,
+          workspace_id: session.workspace_id,
+          cwd: session.metadata?.cwd,
+          title: session.title,
+          created_at: session.created_at,
+          updated_at: session.updated_at,
+          own_updated_at: session.own_updated_at ?? session.updated_at,
+          archived: session.archived,
+          archived_at: session.archived_at,
+          private: session.private,
+          pinned: session.metadata?.['kiki.pinned'] === true,
+          busy: session.busy,
+          executing: session.executing,
+          cleanup_pending: session.cleanup_pending,
+          main_turn_active: session.main_turn_active,
+          pending_interaction: session.pending_interaction,
+          last_turn_reason: session.last_turn_reason,
+          execution_phase: session.execution_phase,
+          delivery: session.delivery,
+          executor_id: session.executor_id,
+          persona_id: session.agent_config?.persona?.id,
+          persona: session.agent_config?.persona,
+          bot_persona_id: typeof session.metadata?.['bot_persona_id'] === 'string' ? session.metadata['bot_persona_id'] : undefined,
+          room_persona_id: typeof session.metadata?.['room_persona_id'] === 'string' ? session.metadata['room_persona_id'] : undefined,
+          room_member_of: typeof session.metadata?.['room_member_of'] === 'string' ? session.metadata['room_member_of'] : undefined,
+          worktree: session.worktree,
+          forked_from: session.forked_from,
+          promoted_from: session.promoted_from,
+          created_by_session_id: typeof session.metadata?.['created_by_session_id'] === 'string' ? session.metadata['created_by_session_id'] : undefined,
+          last_seq: session.last_seq,
+          attention_cursor: session.attention_cursor,
+        },
+      }));
 
     // 1. Local space (live from App when active, else cached from localClient).
     const localSnap = snapshots.get(localSpaceKey);
     const localSessions = !inBrokeredScope ? activeSessions : (localSnap?.sessions ?? []);
     const localRooms = !inBrokeredScope ? activeRooms : (localSnap?.rooms ?? []);
     const localWorkspaces = !inBrokeredScope ? activeWorkspaces : (localSnap?.workspaces ?? []);
+    const localUnits = !inBrokeredScope
+      ? (activeSidebarUnits ?? sessionsToFallbackUnits(activeSessions))
+      : (localSnap?.unitPages !== undefined
+          ? dedupeSidebarUnits(localSnap.unitPages)
+          : sessionsToFallbackUnits(localSnap?.sessions ?? []));
     outSources.push({
       spaceKey: localSpaceKey,
       spaceName: localSpaceName,
@@ -449,8 +646,21 @@ export function useMultiSpaceSessions({
       rooms: localRooms,
       workspaces: localWorkspaces,
     });
+    outUnitSources.push({
+      spaceKey: localSpaceKey,
+      spaceName: localSpaceName,
+      isRemote: false,
+      serverHomeId: !inBrokeredScope ? meta?.server_home_id : localSnap?.serverHomeId,
+      units: localUnits,
+      rooms: localRooms,
+      workspaces: localWorkspaces,
+      partialCoverage: inBrokeredScope && (localSnap === undefined || localSnap.stale || localSnap.sidebarGroupsCapable === false),
+    });
     if (inBrokeredScope && localSnap !== undefined) {
       outHasMore.set(localSpaceKey, localSnap.hasMoreSessions);
+      if (localSnap.hasMoreSessions && localSnap.nextSessionCursor !== undefined) {
+        outNextCursors.set(localSpaceKey, localSnap.nextSessionCursor);
+      }
     }
     outHealth.set(localSpaceKey, {
       spaceKey: localSpaceKey,
@@ -470,6 +680,18 @@ export function useMultiSpaceSessions({
       const remoteSessions = isActiveRemote ? activeSessions : (snap?.sessions ?? []);
       const remoteRooms = isActiveRemote ? activeRooms : (snap?.rooms ?? []);
       const remoteWorkspaces = isActiveRemote ? activeWorkspaces : (snap?.workspaces ?? []);
+      const remoteUnits = isActiveRemote
+        ? (activeSidebarUnits ?? sessionsToFallbackUnits(activeSessions))
+        : (snap?.unitPages !== undefined
+            ? dedupeSidebarUnits(snap.unitPages)
+            : sessionsToFallbackUnits(snap?.sessions ?? []));
+
+      const healthState: MultiSpaceHealth['state'] =
+        record.state !== 'online' && !isActiveRemote
+          ? 'offline'
+          : !isActiveRemote && snap?.stale === true
+            ? 'stale'
+            : 'online';
 
       if (isActiveRemote || record.state === 'online' || snap !== undefined) {
         outSources.push({
@@ -480,17 +702,36 @@ export function useMultiSpaceSessions({
           rooms: remoteRooms,
           workspaces: remoteWorkspaces,
         });
+        outUnitSources.push({
+          spaceKey: key,
+          spaceName: record.label,
+          isRemote: true,
+          serverHomeId: isActiveRemote ? meta?.server_home_id : (snap?.serverHomeId ?? record.target.homeId),
+          units: remoteUnits,
+          rooms: remoteRooms,
+          workspaces: remoteWorkspaces,
+          partialCoverage: !isActiveRemote && (healthState !== 'online' || snap?.sidebarGroupsCapable === false),
+        });
         if (!isActiveRemote && snap !== undefined) {
           outHasMore.set(key, snap.hasMoreSessions);
+          if (snap.hasMoreSessions && snap.nextSessionCursor !== undefined) {
+            outNextCursors.set(key, snap.nextSessionCursor);
+          }
         }
+      } else {
+        // Offline paired space with no snapshot still marks All Spaces coverage partial.
+        outUnitSources.push({
+          spaceKey: key,
+          spaceName: record.label,
+          isRemote: true,
+          serverHomeId: record.target.homeId,
+          units: [],
+          rooms: [],
+          workspaces: [],
+          partialCoverage: true,
+        });
       }
 
-      const healthState: MultiSpaceHealth['state'] =
-        record.state !== 'online' && !isActiveRemote
-          ? 'offline'
-          : !isActiveRemote && snap?.stale === true
-            ? 'stale'
-            : 'online';
       outHealth.set(key, {
         spaceKey: key,
         spaceName: record.label,
@@ -501,18 +742,122 @@ export function useMultiSpaceSessions({
       });
     }
 
-    return { sources: outSources, healthBySpace: outHealth, hasMoreBySpace: outHasMore };
+    return {
+      sources: outSources,
+      unitSources: outUnitSources,
+      healthBySpace: outHealth,
+      hasMoreBySpace: outHasMore,
+      nextCursorBySpace: outNextCursors,
+    };
   }, [
     snapshots,
     localSpaceKey,
     localSpaceName,
     localSpaceEntry?.color,
     inBrokeredScope,
+    meta?.server_home_id,
     activeSessions,
+    activeSidebarUnits,
     activeRooms,
     activeWorkspaces,
     remoteRecords,
     isVerifiedActiveRemoteRecord,
+  ]);
+
+  // All Spaces cross-host group resolution: batch-resolve displayed group IDs
+  // on other authorized online capable sources so cross-host children beyond
+  // page 1 coalesce into the displayed group without stripping origin prefixes.
+  const capablePeersSig = useMemo(() => {
+    const keys: string[] = [];
+    for (const [key, snap] of snapshots.entries()) {
+      if (snap.sidebarGroupsCapable === true) keys.push(key);
+    }
+    return keys.toSorted().join(',');
+  }, [snapshots]);
+
+  const crossHostGroupSig = useMemo(() => {
+    if (!enabled || spaceScope !== ALL_SPACE_SCOPE || unitSources.length <= 1) return '';
+    return collectCrossHostGroupIds(unitSources).slice(0, 100).toSorted().join(',');
+  }, [enabled, spaceScope, unitSources]);
+
+  useEffect(() => {
+    if (!enabled || spaceScope !== ALL_SPACE_SCOPE || crossHostGroupSig === '' || capablePeersSig === '') return;
+    const allGroupIds = crossHostGroupSig.split(',').filter(Boolean);
+    if (allGroupIds.length === 0) return;
+
+    const controller = new AbortController();
+    const filter = sidebarFilterRef.current;
+    const sort = filter?.sort ?? 'updated_desc';
+
+    const targets: Array<{ readonly key: string; readonly client: KikiClient }> = [];
+    if (inBrokeredScope && controlClient !== null) {
+      const snap = snapshotsRef.current.get(localSpaceKey);
+      if (snap?.sidebarGroupsCapable === true) {
+        targets.push({ key: localSpaceKey, client: controlClient });
+      }
+    }
+    for (const record of onlineRemotesRef.current) {
+      if (isVerifiedActiveRemoteRecord(record)) continue;
+      const key = remoteSpaceKey(record.id);
+      const snap = snapshotsRef.current.get(key);
+      if (snap?.sidebarGroupsCapable !== true) continue;
+      const remoteClient = getOrCreateRemoteClient(record.id);
+      if (remoteClient !== null) targets.push({ key, client: remoteClient });
+    }
+
+    if (targets.length === 0) return;
+
+    void runWithConcurrency(targets, REMOTE_FETCH_CONCURRENCY, async (target) => {
+      if (controller.signal.aborted) return;
+      const sidebarRest = target.client.klient.rest?.sidebar;
+      if (sidebarRest === undefined) return;
+      const requestKey = `${target.key}|${sidebarFilterSig}|${crossHostGroupSig}`;
+      if (resolvedCrossHostRef.current.get(target.key) === requestKey) return;
+      resolvedCrossHostRef.current.set(target.key, requestKey);
+      try {
+        const resolved = await sidebarRest.resolveUnits(
+          {
+            group_ids: allGroupIds,
+            ...(filter?.showArchived ? { include_archive: true } : {}),
+            ...(filter?.includePrivate ? { include_private: true } : {}),
+            ...(filter?.privateOnly ? { private_only: true } : {}),
+          },
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted || resolved.units.length === 0) return;
+        setSnapshots((prev) => {
+          const existing = prev.get(target.key);
+          if (existing?.unitPages === undefined) return prev;
+          const nextPages = applySidebarUnitReplacements(existing.unitPages, resolved, {
+            sort,
+            insertMissingAtHead: true,
+          });
+          if (nextPages === undefined || nextPages === existing.unitPages) return prev;
+          const next = new Map(prev);
+          next.set(target.key, {
+            ...existing,
+            unitPages: nextPages,
+            sessions: flattenSidebarUnitsToSessions(dedupeSidebarUnits(nextPages)),
+          });
+          return next;
+        });
+      } catch {
+        // Offline or transient failure leaves partial coverage intact.
+      }
+    });
+
+    return () => { controller.abort(); };
+  }, [
+    enabled,
+    spaceScope,
+    crossHostGroupSig,
+    capablePeersSig,
+    sidebarFilterSig,
+    inBrokeredScope,
+    controlClient,
+    localSpaceKey,
+    isVerifiedActiveRemoteRecord,
+    getOrCreateRemoteClient,
   ]);
 
   const loadMoreSpaceSessions = useCallback(async (targetSpaceKey: string) => {
@@ -534,8 +879,52 @@ export function useMultiSpaceSessions({
 
     loadingMoreRef.current.add(targetSpaceKey);
     setLoadingMoreSpaces(new Set(loadingMoreRef.current));
+    const filter = sidebarFilterRef.current;
+    const sort = filter?.sort ?? 'updated_desc';
     try {
-      const page = await targetClient.listSessions({ before_id: currentSnap.nextSessionCursor });
+      const sidebarRest = targetClient.klient.rest?.sidebar;
+      if (currentSnap.sidebarGroupsCapable && sidebarRest !== undefined && currentSnap.unitPages !== undefined) {
+        try {
+          const page = await sidebarRest.list({
+            ...buildRemoteSidebarQuery(filter),
+            cursor: currentSnap.nextSessionCursor,
+          });
+          setSnapshots((prev) => {
+            const existing = prev.get(targetSpaceKey);
+            if (existing?.unitPages === undefined) return prev;
+            const nextPages = appendSidebarPage(existing.unitPages, page, currentSnap.nextSessionCursor);
+            const last = nextPages.pages.at(-1);
+            const next = new Map(prev);
+            next.set(targetSpaceKey, {
+              ...existing,
+              unitPages: nextPages,
+              sessions: flattenSidebarUnitsToSessions(dedupeSidebarUnits(nextPages)),
+              hasMoreSessions: last?.has_more === true && last.next_cursor !== undefined,
+              nextSessionCursor: last?.has_more ? last.next_cursor : undefined,
+            });
+            return next;
+          });
+        } catch (cause: unknown) {
+          if (isPageTokenMismatchError(cause)) {
+            const head = await fetchSpaceHead(targetClient, new AbortController().signal, filter, metaCacheRef.current);
+            setSnapshots((prev) => {
+              const next = new Map(prev);
+              next.set(targetSpaceKey, mergeSpaceSnapshot(undefined, head, Date.now(), sort));
+              return next;
+            });
+            return;
+          }
+          throw cause;
+        }
+        return;
+      }
+
+      const page = await targetClient.listSessions({
+        before_id: currentSnap.nextSessionCursor,
+        include_archive: filter?.showArchived || undefined,
+        include_private: filter?.includePrivate || undefined,
+        private_only: filter?.privateOnly || undefined,
+      });
       setSnapshots((prev) => {
         const existing = prev.get(targetSpaceKey);
         if (existing === undefined) return prev;
@@ -556,6 +945,37 @@ export function useMultiSpaceSessions({
       loadingMoreRef.current.delete(targetSpaceKey);
       setLoadingMoreSpaces(new Set(loadingMoreRef.current));
     }
+  }, [controlClient, getOrCreateRemoteClient, localSpaceKey]);
+
+  const loadMoreSpaceGroupMembers = useCallback(async (targetSpaceKey: string, groupId: string, cursor: string) => {
+    const targetClient = targetSpaceKey === localSpaceKey
+      ? controlClient
+      : targetSpaceKey.startsWith('remote:')
+        ? getOrCreateRemoteClient(targetSpaceKey.slice('remote:'.length))
+        : null;
+    const sidebarRest = targetClient?.klient.rest?.sidebar;
+    if (sidebarRest === undefined) return;
+    const filter = sidebarFilterRef.current;
+    const response = await sidebarRest.groupMembers(groupId, {
+      cursor,
+      page_size: 50,
+      ...(filter?.showArchived ? { include_archive: true } : {}),
+      ...(filter?.includePrivate ? { include_private: true } : {}),
+      ...(filter?.privateOnly ? { private_only: true } : {}),
+    });
+    setSnapshots((prev) => {
+      const existing = prev.get(targetSpaceKey);
+      if (existing?.unitPages === undefined) return prev;
+      const nextPages = appendSidebarGroupMembers(existing.unitPages, response);
+      if (nextPages === undefined || nextPages === existing.unitPages) return prev;
+      const next = new Map(prev);
+      next.set(targetSpaceKey, {
+        ...existing,
+        unitPages: nextPages,
+        sessions: flattenSidebarUnitsToSessions(dedupeSidebarUnits(nextPages)),
+      });
+      return next;
+    });
   }, [controlClient, getOrCreateRemoteClient, localSpaceKey]);
 
   const searchAcrossSpaces = useCallback(async (
@@ -668,8 +1088,10 @@ export function useMultiSpaceSessions({
 
   return {
     sources,
+    unitSources,
     healthBySpace,
     hasMoreBySpace,
+    nextCursorBySpace,
     loadingMoreSpaces,
     localSpaceKey,
     localSpaceName,
@@ -679,6 +1101,7 @@ export function useMultiSpaceSessions({
     refetchRemotes,
     refreshRemoteSpace,
     loadMoreSpaceSessions,
+    loadMoreSpaceGroupMembers,
     searchAcrossSpaces,
   };
 }

@@ -172,6 +172,7 @@ export type {
 } from '#/kosong/provider/providers/kimi/kimi.contrib';
 
 export * from '#/app/sessionIndex/sessionIndex';
+export * from '#/app/sessionIndex/sessionGroup';
 export * from '#/app/sessionIndex/errors';
 export * from '#/app/sessionIndex/sessionIndexService';
 export * from '#/app/sessionIndex/sessionIndexMirrorService';
@@ -673,6 +674,7 @@ export * from '#/workspace/sessionLifecycle/sessionLifecycle';
 export * from '#/workspace/sessionLifecycle/sessionLifecycleEvents';
 export * from '#/workspace/sessionLifecycle/sessionLifecycleService';
 export * from '#/workspace/sessionLifecycle/coldSessionArchive';
+export * from '#/workspace/sessionLifecycle/sessionGroupAuthority';
 export * from '#/workspace/sessionLifecycle/internal/addressing';
 import '#/app/sessionExport/errors';
 export * from '#/app/sessionExport/sessionExport';

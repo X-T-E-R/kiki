@@ -7,6 +7,7 @@ import { ILogService } from '#/_base/log/log';
 import { BugIndicatingError } from '#/_base/errors/errors';
 import { defineState } from '#/state/state';
 import { ISessionIndexMirror, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
+import { preserveReservedSessionGroupKeys } from '#/app/sessionIndex/sessionGroup';
 import { buildSessionSummary, summaryEquals } from '#/app/sessionIndex/sessionIndexSource';
 import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
 import { addSessionUsage } from '#/app/sessionIndex/sessionUsageSummary';
@@ -358,7 +359,11 @@ export class SessionMetadata extends Service implements ISessionMetadata {
 
   async update(
     patch: SessionMetadataWrite,
-    opts?: { readonly touchUpdatedAt?: boolean; readonly deferPersistence?: boolean },
+    opts?: {
+      readonly touchUpdatedAt?: boolean;
+      readonly deferPersistence?: boolean;
+      readonly allowReservedGroupWrite?: boolean;
+    },
   ): Promise<void> {
     if (opts?.deferPersistence === true && patch.private === undefined) {
       const work = this.ready.then(() => {
@@ -374,7 +379,32 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     });
   }
 
-  private mergePatch(patch: SessionMetadataWrite, opts?: { readonly touchUpdatedAt?: boolean }): void {
+  async updateCustom(
+    updater: (current: Record<string, unknown>) => Record<string, unknown>,
+    opts?: {
+      readonly touchUpdatedAt?: boolean;
+      readonly allowReservedGroupWrite?: boolean;
+    },
+  ): Promise<SessionMeta> {
+    return this.enqueueUpdate(async () => {
+      await this.ready;
+      if (this.disposed) return this.data;
+      const current = this.data.custom ?? {};
+      const proposed = updater({ ...current });
+      const nextCustom =
+        opts?.allowReservedGroupWrite === true
+          ? proposed
+          : preserveReservedSessionGroupKeys(current, proposed);
+      if (JSON.stringify(current) === JSON.stringify(nextCustom)) return this.data;
+      await this.applyUpdate({ custom: nextCustom }, opts);
+      return this.data;
+    });
+  }
+
+  private mergePatch(
+    patch: SessionMetadataWrite,
+    opts?: { readonly touchUpdatedAt?: boolean; readonly allowReservedGroupWrite?: boolean },
+  ): void {
     const updatedAt =
       patch.updatedAt ?? (opts?.touchUpdatedAt === false ? this.data.updatedAt : Date.now());
     const activityUpdatedAt = patch.activityUpdatedAt === undefined ? this.data.activityUpdatedAt
@@ -388,19 +418,50 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     const isPrivate = patch.private ?? this.data.private;
     const nextAgents = isPrivate === true && (agents !== this.data.agents || this.data.private !== true)
       ? withoutAgentStatistics(agents) : agents;
+    const nextCustom =
+      patch.custom === undefined
+        ? this.data.custom
+        : opts?.allowReservedGroupWrite === true
+          ? patch.custom
+          : preserveReservedSessionGroupKeys(this.data.custom, patch.custom);
     this.outcomes.preserveRefs(this.data.agents, nextAgents);
-    this.data = { ...this.data, ...patch, private: isPrivate, agents: nextAgents, updatedAt, activityUpdatedAt };
+    this.data = { ...this.data, ...patch, custom: nextCustom, private: isPrivate, agents: nextAgents, updatedAt, activityUpdatedAt };
     if (isPrivate === true && this.data.usage !== undefined) this.data = { ...this.data, usage: undefined };
   }
 
-  private async applyUpdate(patch: SessionMetadataWrite, opts?: { readonly touchUpdatedAt?: boolean }): Promise<boolean> {
+  private async applyUpdate(
+    patch: SessionMetadataWrite,
+    opts?: { readonly touchUpdatedAt?: boolean; readonly allowReservedGroupWrite?: boolean },
+  ): Promise<boolean> {
     await this.ready;
     if (this.disposed) return false;
-    this.mergePatch(patch, opts);
-    if (patch.private === true && this.ctx.ephemeral !== true) {
-      await this.usageFacts?.current?.setSessionPrivacy(buildSessionSummary({ ...this.data, workspaceId: this.ctx.workspaceId }));
+    const prevSnapshot = this.data;
+    let absorbed: readonly (keyof SessionMeta)[];
+    let encoded: SessionMeta;
+    try {
+      this.mergePatch(patch, opts);
+      if (patch.private === true && this.ctx.ephemeral !== true) {
+        await this.usageFacts?.current?.setSessionPrivacy(buildSessionSummary({ ...this.data, workspaceId: this.ctx.workspaceId }));
+      }
+      const persisted = await this.persistAbsorbingDeferred();
+      absorbed = persisted.absorbed;
+      encoded = persisted.encoded;
+    } catch (error) {
+      const rolledBack: Record<string, unknown> = { ...this.data };
+      for (const key of Object.keys(patch) as (keyof SessionMeta)[]) {
+        rolledBack[key] = prevSnapshot[key];
+      }
+      rolledBack['updatedAt'] = prevSnapshot.updatedAt;
+      rolledBack['activityUpdatedAt'] = prevSnapshot.activityUpdatedAt;
+      if (patch.private === true) {
+        rolledBack['agents'] = prevSnapshot.agents;
+        if (rolledBack['usage'] === undefined && prevSnapshot.usage !== undefined) {
+          rolledBack['usage'] = prevSnapshot.usage;
+        }
+      }
+      this.data = rolledBack as unknown as SessionMeta;
+      throw error;
     }
-    const { absorbed, encoded } = await this.persistAbsorbingDeferred();
     if (this.disposed) return false;
     if (patch.private === false && this.ctx.ephemeral !== true) {
       await this.usageFacts?.current?.setSessionPrivacy(buildSessionSummary({ ...encoded, workspaceId: this.ctx.workspaceId }));

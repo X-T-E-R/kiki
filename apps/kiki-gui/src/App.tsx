@@ -74,18 +74,24 @@ import {
   adjacentRunningSession,
   arrangePinnedFirst,
   dedupeSessions,
+  flattenSidebarUnitsToSessions,
   groupConversationItems,
+  hasSidebarGroupsCapability,
   mergeMultiSpaceConversationItems,
   mergeSessionFirstPage,
+  projectSidebarUnitGroups,
   readAllSessionPages,
   readSessionFirstPage,
+  sidebarUnitQuerySort,
   sortWorkspacesByPinnedThenRecency,
   withPinnedSessions,
   type ConversationListItem,
   type NamedConversationWorkspace,
   type SessionGroup,
   type SessionListData,
+  type SidebarDisplayBucket,
 } from '@kiki/session-core/sessions';
+import { useSidebarUnitsQuery } from './components/sidebar/useSidebarUnitsQuery';
 import {
   encodeConversationRef,
   readLastSessionId,
@@ -611,9 +617,22 @@ function NormalApp() {
   const isSettingsRoute = useMatch('/settings/*') !== null;
   const isUsageRoute = useMatch('/usage') !== null;
 
+  const sidebarGroupsCapable = hasSidebarGroupsCapability(meta) && client.klient?.rest?.sidebar !== undefined;
+  const sidebarSort = sidebarUnitQuerySort(layoutPrefs.sortBy);
+  const sidebarUnits = useSidebarUnitsQuery({
+    enabled: sidebarGroupsCapable && (!drawerClosed || backgroundReady),
+    client,
+    wsStatus,
+    showArchived,
+    workspaceFilter,
+    privateFilter,
+    sort: sidebarSort,
+    pinnedEnabled: backgroundReady || sidebarOpen,
+  });
+
   const sessionsQuery = useInfiniteQuery({
     queryKey: sessionsKey,
-    enabled: !drawerClosed || backgroundReady,
+    enabled: !sidebarGroupsCapable && (!drawerClosed || backgroundReady),
     queryFn: ({ pageParam, signal }) =>
       client.listSessions({
         page_size: 50,
@@ -640,6 +659,7 @@ function NormalApp() {
     [showArchived, privateFilter],
   );
   useEffect(() => {
+    if (sidebarGroupsCapable) return undefined;
     const controller = new AbortController();
     let inFlight = false;
     let queued = false;
@@ -738,14 +758,14 @@ function NormalApp() {
       for (const sub of subscriptions) sub.dispose();
       controller.abort();
     };
-  }, [client, includePrivate, personaHeadKey, privateOnly, queryClient, sessionsKey, showArchived, workspaceFilter, wsStatus]);
+  }, [client, includePrivate, personaHeadKey, privateOnly, queryClient, sessionsKey, showArchived, sidebarGroupsCapable, workspaceFilter, wsStatus]);
   // Pinned sessions are read as their own complete set: the recency pages
   // above only reach as far as the reader has scrolled, and an old pinned
   // session must not wait for them. The key sits under ['sessions'], so every
   // list refresh and pin toggle refreshes it too.
   const pinnedSessionsQuery = useQuery({
     queryKey: pinnedSessionsQueryKey(showArchived, workspaceFilter, privateFilter),
-    enabled: backgroundReady || sidebarOpen,
+    enabled: !sidebarGroupsCapable && (backgroundReady || sidebarOpen),
     staleTime: 15_000,
     queryFn: ({ signal }) => readAllSessionPages((before_id) => client.listSessions({
       page_size: 100,
@@ -796,11 +816,13 @@ function NormalApp() {
   // chips, so it stays pinned-first + newest-first regardless of
   // the sidebar's view preference. Grouping applies its own sort internally.
   const sessions = useMemo(() => {
-    const all = arrangePinnedFirst(withPinnedSessions(sessionsQuery.data, pinnedSessionsQuery.data));
+    const all = sidebarGroupsCapable
+      ? arrangePinnedFirst(flattenSidebarUnitsToSessions(sidebarUnits.units))
+      : arrangePinnedFirst(withPinnedSessions(sessionsQuery.data, pinnedSessionsQuery.data));
     if (privateFilter === 'only') return all.filter((session) => session.private === true);
     if (privateFilter === 'include') return all;
     return all.filter((session) => session.private !== true);
-  }, [privateFilter, sessionsQuery.data, pinnedSessionsQuery.data]);
+  }, [privateFilter, sidebarGroupsCapable, sidebarUnits.units, sessionsQuery.data, pinnedSessionsQuery.data]);
   const globalSessions = useMemo(() => {
     if (workspaceFilter === undefined) return sessions;
     const rawCrossWorkspace = dedupeSessions(personaHeadQuery.data);
@@ -815,7 +837,9 @@ function NormalApp() {
       pageParams: [undefined],
     });
   }, [workspaceFilter, sessions, personaHeadQuery.data, privateFilter]);
-  const conversations = useConversationList(sessions, layoutPrefs.sortBy, workspaceOptions);
+  const conversations = useConversationList(sessions, layoutPrefs.sortBy, workspaceOptions, {
+    skipLegacyMetaRefresh: sidebarGroupsCapable,
+  });
   // The one update schedule for the whole app: a check after the first screen,
   // a daily tick for a window left open, and a catch-up when it comes back. A
   // session waiting on an approval is a modal moment in its own right, so the
@@ -832,10 +856,18 @@ function NormalApp() {
   const seenV2 = useConversationSeen();
   const personaDirectoryState = usePersonaDirectory({ sessions: globalSessions, seen });
   const rawPersonaDirectory = personaDirectoryState.data === undefined ? undefined : personaDirectoryState.directory;
+  const activeSpaceScope = layoutPrefs.spaceScope ?? ALL_SPACE_SCOPE;
+  const multiSpaceSidebarFilter = useMemo(
+    () => ({ showArchived, includePrivate, privateOnly, sort: sidebarSort }),
+    [showArchived, includePrivate, privateOnly, sidebarSort],
+  );
   const multiSpace = useMultiSpaceSessions({
     activeSessions: globalSessions,
+    activeSidebarUnits: sidebarGroupsCapable ? sidebarUnits.units : undefined,
     activeRooms: conversations.rooms,
     activeWorkspaces: workspaceOptions,
+    sidebarFilter: multiSpaceSidebarFilter,
+    spaceScope: activeSpaceScope,
     enabled: !drawerClosed,
   });
   const localRoomMatch = useMatch('/rooms/:id');
@@ -848,7 +880,6 @@ function NormalApp() {
     : activeRoomId !== undefined
       ? encodeConversationRef({ spaceKey: activePlaceSpaceKey, kind: 'room', id: activeRoomId })
       : undefined;
-  const activeSpaceScope = layoutPrefs.spaceScope ?? ALL_SPACE_SCOPE;
   const inboxTriage = useInboxTriageState({
     sources: multiSpace.sources,
     currentSpaceKey: spaceKey,
@@ -867,6 +898,7 @@ function NormalApp() {
     return src?.sessions ?? [];
   }, [activePlaceConnectionId, multiSpace.sources, sessions]);
   const sessionGroups = useMemo<readonly SessionGroup<ConversationListItem>[]>(() => {
+    if (sidebarGroupsCapable) return [];
     const scopedSources = multiSpace.sources.filter((src) => matchesSpaceScope(activeSpaceScope, src.spaceKey));
     const hasRemoteSources = scopedSources.some((src) => src.isRemote);
     const localOnlyMatching = !hasRemoteSources && scopedSources.length === 1 && scopedSources[0]?.spaceKey === spaceKey;
@@ -930,7 +962,91 @@ function NormalApp() {
     layoutPrefs.groupBy,
     layoutPrefs.sortBy,
     t,
+    sidebarGroupsCapable,
   ]);
+
+  const sidebarUnitBuckets = useMemo<readonly SidebarDisplayBucket[] | undefined>(() => {
+    if (!sidebarGroupsCapable) return undefined;
+    const scopedSources = multiSpace.unitSources.filter((src) => matchesSpaceScope(activeSpaceScope, src.spaceKey));
+    const mergedWorkspaces: NamedConversationWorkspace[] = [...workspaceOptions];
+    const seenWs = new Set(workspaceOptions.map((ws) => ws.id));
+    for (const src of scopedSources) {
+      for (const ws of src.workspaces ?? []) {
+        if (!seenWs.has(ws.id)) {
+          seenWs.add(ws.id);
+          mergedWorkspaces.push(ws);
+        }
+      }
+    }
+    return projectSidebarUnitGroups(scopedSources, {
+      groupBy: layoutPrefs.groupBy,
+      workspaces: mergedWorkspaces,
+      filters: listFilters,
+      nowMs: Date.now(),
+      order: layoutPrefs.sortBy,
+      labels: {
+        pinned: t('sidebar.groupPinned'),
+        today: t('sidebar.groupToday'),
+        yesterday: t('sidebar.groupYesterday'),
+        week: t('sidebar.groupWeek'),
+        month: t('sidebar.groupMonth'),
+        older: t('sidebar.groupOlder'),
+      },
+      ungroupedLabel: t('sidebar.groupUngrouped'),
+      seenV2,
+      fallbackLocalSpaceKey: spaceKey,
+      fallbackLocalSeen: seen,
+      shouldHideRow: (_row, session, _rowSpaceKey, isRemote) =>
+        !isRemote && shouldHideFromSessionGroups(session, rawPersonaDirectory),
+    });
+  }, [
+    sidebarGroupsCapable,
+    multiSpace.unitSources,
+    activeSpaceScope,
+    workspaceOptions,
+    layoutPrefs.groupBy,
+    layoutPrefs.sortBy,
+    listFilters,
+    t,
+    seenV2,
+    spaceKey,
+    seen,
+    rawPersonaDirectory,
+  ]);
+
+  const activeSessionsQuery = useMemo(() => (
+    sidebarGroupsCapable
+      ? {
+          isLoading: sidebarUnits.isLoading,
+          isError: sidebarUnits.isError,
+          error: sidebarUnits.error,
+          data: sidebarUnits.listData,
+          hasNextPage: sidebarUnits.hasNextPage,
+          isFetchingNextPage: sidebarUnits.isFetchingNextPage,
+          fetchNextPage: sidebarUnits.fetchNextPage,
+        }
+      : sessionsQuery
+  ), [sidebarGroupsCapable, sidebarUnits, sessionsQuery]);
+
+  const handleLoadMoreGroupMembers = useCallback(
+    async (groupId: string, targetSpaceKey: string, cursor: string) => {
+      if (targetSpaceKey === spaceKey) {
+        await sidebarUnits.loadMoreGroupMembers(groupId, cursor);
+      } else {
+        await multiSpace.loadMoreSpaceGroupMembers(targetSpaceKey, groupId, cursor);
+      }
+    },
+    [spaceKey, sidebarUnits.loadMoreGroupMembers, multiSpace.loadMoreSpaceGroupMembers],
+  );
+
+  const sidebarNextCursor = sidebarGroupsCapable
+    ? sidebarUnits.nextCursor
+    : (sessionsQuery.data?.pages.at(-1)?.has_more
+        ? (sessionsQuery.data.pages.at(-1)?.next_cursor ?? sessionsQuery.data.pages.at(-1)?.items.at(-1)?.id)
+        : undefined);
+  const sidebarQueryGeneration = sidebarGroupsCapable
+    ? sidebarUnits.queryGenerationKey
+    : JSON.stringify(sessionsKey);
 
   // System notifications while the window is in the background, the taskbar
   // badge, and notification clicks back to their session.
@@ -1217,8 +1333,8 @@ function NormalApp() {
   const activeSession = sessions.find((session) => session.id === activeSessionId);
   const isSessionReachable = Boolean(
     activeSessionId
-    && !sessionsQuery.isLoading
-    && sessionsQuery.data
+    && !activeSessionsQuery.isLoading
+    && activeSessionsQuery.data
     && activeSession
     && !activeSession.archived
     && !(activeSession as { deleted?: boolean }).deleted,
@@ -1240,7 +1356,15 @@ function NormalApp() {
       personaSessions={globalSessions}
       rooms={conversations.rooms}
       sessionGroups={sessionGroups}
-      sessionsQuery={sessionsQuery}
+      sidebarUnitBuckets={sidebarUnitBuckets}
+      sidebarGroupsEnabled={sidebarGroupsCapable}
+      sidebarNextCursor={sidebarNextCursor}
+      sidebarQueryGeneration={sidebarQueryGeneration}
+      onLoadMoreGroupMembers={sidebarGroupsCapable ? handleLoadMoreGroupMembers : undefined}
+      loadingGroupIds={sidebarUnits.loadingGroupIds}
+      groupMemberErrors={sidebarUnits.groupMemberErrors}
+      onDetachGroupMember={sidebarGroupsCapable ? sidebarUnits.detachGroupMember : undefined}
+      sessionsQuery={activeSessionsQuery}
       roomsQuery={conversations.roomsQuery}
       workspaceOptions={workspaceOptions}
       filters={listFilters}
@@ -1253,6 +1377,10 @@ function NormalApp() {
       onClose={closeSidebar}
       multiSpaceSources={multiSpace.sources}
       healthBySpace={multiSpace.healthBySpace}
+      hasMoreBySpace={multiSpace.hasMoreBySpace}
+      nextCursorBySpace={multiSpace.nextCursorBySpace}
+      loadingMoreSpaces={multiSpace.loadingMoreSpaces}
+      onLoadMoreSpaceSessions={multiSpace.loadMoreSpaceSessions}
       hasMultipleSpaces={multiSpace.hasMultipleSpaces}
       localSpaceKey={multiSpace.localSpaceKey}
       onRefreshRemoteSpace={multiSpace.refreshRemoteSpace}

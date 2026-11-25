@@ -11,13 +11,15 @@ import { IQueryStore } from '#/persistence/interface/queryStore';
 import { ISessionIndexMirror, type SessionIndexMutation, type SessionSummary } from './sessionIndex';
 import {
   SESSION_INDEX_MANIFEST,
-  advanceSessionIndexRevision,
+  buildAdvanceSessionIndexRevisionOp,
   recencyColumn,
   sessionCollection,
   sessionCountersCollection,
+  stripRecencyField,
   withRecencyField,
   type SessionWorkspaceCounts,
 } from './sessionIndexModel';
+import { buildAffectedSidebarUnitOps, inheritLegacyGroupId } from './sidebarUnitOps';
 
 const READ_MODEL_FLAG = 'persistence_minidb_readmodel';
 
@@ -283,8 +285,18 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
         entry[field] += by;
         deltas.set(workspaceId, entry);
       };
-      for (const [id, summary] of chunk) {
-        const old = olds.get(id);
+      const effectiveChunk: Array<readonly [string, SessionSummary]> = [];
+      const unitChanges: Array<{
+        readonly id: string;
+        readonly old: SessionSummary | undefined;
+        readonly next: SessionSummary;
+      }> = [];
+      for (const [id, rawSummary] of chunk) {
+        const rawOld = olds.get(id);
+        const old = rawOld === undefined ? undefined : stripRecencyField(manifest.seq, rawOld);
+        const summary = inheritLegacyGroupId(rawSummary, old);
+        effectiveChunk.push([id, summary]);
+        unitChanges.push({ id, old, next: summary });
         if (old === undefined) {
           bump(summary.workspaceId, summary.archived ? 'archived' : 'active', 1);
         } else if (old.workspaceId !== summary.workspaceId) {
@@ -296,17 +308,19 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
         }
       }
 
-      const current = await this.queryStore.getMany<SessionWorkspaceCounts>(counters, [
-        ...deltas.keys(),
+      const [current, unitOps] = await Promise.all([
+        this.queryStore.getMany<SessionWorkspaceCounts>(counters, [...deltas.keys()]),
+        buildAffectedSidebarUnitOps(this.queryStore, manifest.seq, unitChanges),
       ]);
       const ops = [
-        ...chunk.map(([id, summary]) => ({
+        ...effectiveChunk.map(([id, summary]) => ({
           kind: 'put' as const,
           collection,
           key: id,
           value: withRecencyField(manifest.seq, summary),
           columns: { [recencyColumn(manifest.seq)]: summary.updatedAt },
         })),
+        ...unitOps,
         ...[...deltas.entries()].map(([workspaceId, delta]) => {
           const base = current.get(workspaceId) ?? { active: 0, archived: 0 };
           const value: SessionWorkspaceCounts = {
@@ -316,9 +330,9 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
           return { kind: 'put' as const, collection: counters, key: workspaceId, value };
         }),
       ];
-      await advanceSessionIndexRevision(this.queryStore);
+      const revOp = await buildAdvanceSessionIndexRevisionOp(this.queryStore);
       this.flushRevisionCountValue += 1;
-      await this.queryStore.batch(ops);
+      await this.queryStore.batch([...ops, revOp]);
       this.acknowledge(chunk.map(([, summary]) => summary));
       this.consecutiveFailures = 0;
     } catch (error) {

@@ -14,6 +14,8 @@ export type SessionCloseReason = 'exit' | 'archive';
 export interface CreateSessionOptions {
   readonly sessionId?: string;
   readonly workDir: string;
+  readonly title?: string;
+  readonly initialCustom?: Record<string, unknown>;
   readonly worktree?: SessionWorktree;
   readonly ephemeral?: boolean;
   readonly private?: boolean;
@@ -46,6 +48,7 @@ export interface ForkSessionOptions {
   readonly private?: boolean;
   readonly title?: string;
   readonly metadata?: Record<string, unknown>;
+  readonly groupId?: string;
   /**
    * Zero-based index of the user-visible turn to retain through. When omitted,
    * the complete session is copied (the existing fork behavior).
@@ -78,6 +81,7 @@ export interface CreateChildSessionOptions {
   readonly private?: boolean;
   readonly title?: string;
   readonly metadata?: Record<string, unknown>;
+  readonly groupId?: string;
 }
 
 /**
@@ -96,6 +100,8 @@ export interface PromoteAgentOptions {
   readonly model?: string;
   readonly thinking?: string;
   readonly metadata?: Record<string, unknown>;
+  readonly groupId?: string;
+  readonly initialCustom?: Record<string, unknown>;
 }
 
 export interface SessionCreatedEvent {

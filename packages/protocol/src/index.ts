@@ -47,6 +47,7 @@ export * from './rest/auth';
 export * from './rest/oauth';
 export * from './rest/session';
 export * from './rest/sessionModels';
+export * from './rest/sidebar';
 export * from './rest/snapshot';
 export * from './rest/workspace';
 export * from './rest/worktree';

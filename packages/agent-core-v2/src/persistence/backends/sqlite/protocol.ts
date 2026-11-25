@@ -1,4 +1,15 @@
-import type { ColumnBounds, IndexDef, QueryFilter, SortDir, StagedWrite, WriteCondition, WriteOp } from '../../interface/queryStore.ts';
+import type {
+  ColumnBounds,
+  IndexDef,
+  QueryFilter,
+  SidebarCompoundPageQuery,
+  SidebarGroupMembersQuery,
+  SidebarResolveUnitsQuery,
+  SortDir,
+  StagedWrite,
+  WriteCondition,
+  WriteOp,
+} from '../../interface/queryStore.ts';
 
 export interface ReadQuery {
   readonly collection: string;
@@ -14,6 +25,9 @@ export type StoreOperation =
   | { readonly type: 'get'; readonly collection: string; readonly keys: readonly string[]; readonly priority?: boolean }
   | { readonly type: 'batch'; readonly ops: readonly WriteOp[]; readonly conditions?: readonly WriteCondition[]; readonly staged?: StagedWrite }
   | { readonly type: 'query'; readonly query: ReadQuery }
+  | { readonly type: 'sidebarPage'; readonly query: SidebarCompoundPageQuery }
+  | { readonly type: 'sidebarGroupMembers'; readonly query: SidebarGroupMembersQuery }
+  | { readonly type: 'sidebarResolveUnits'; readonly query: SidebarResolveUnitsQuery }
   | { readonly type: 'keys'; readonly collection: string }
   | { readonly type: 'drop'; readonly collection: string }
   | { readonly type: 'index'; readonly collection: string; readonly definition: IndexDef }

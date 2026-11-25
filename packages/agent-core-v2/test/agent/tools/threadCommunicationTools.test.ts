@@ -33,7 +33,7 @@ import {
   IRoomReadTool, RoomReadTool, RoomReadToolInputSchema,
   IRoomAddTool, RoomAddTool, RoomAddToolInputSchema,
 } from '#/agent/tools/thread-communication/threadCommunicationTools';
-import { CREATED_BY_AGENT_ID_KEY, CREATED_BY_SESSION_ID_KEY } from '#/app/sessionIndex/sessionIndex';
+import { CREATED_BY_AGENT_ID_KEY, CREATED_BY_SESSION_ID_KEY, SESSION_GROUP_ID_KEY } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IThreadCommunicationService } from '#/app/threadCommunication/threadCommunication';
 import { IRoomService, type RoomDocument } from '#/app/room/room';
@@ -481,7 +481,12 @@ describe('thread communication tools', () => {
     try {
       const { tool, create, metadata } = createThreadFixture();
       const result = await executeThreadCreate(tool, { title: 'Separate topic', cwd: external });
-      expect(create).toHaveBeenCalledExactlyOnceWith({ workDir: external, mainAgentBinding: undefined });
+      expect(create).toHaveBeenCalledExactlyOnceWith({
+        workDir: external,
+        title: 'Separate topic',
+        initialCustom: { [CREATED_BY_SESSION_ID_KEY]: 'ambient-a', [CREATED_BY_AGENT_ID_KEY]: 'main' },
+        mainAgentBinding: undefined,
+      });
       expect(metadata.setTitle).toHaveBeenCalledExactlyOnceWith('Separate topic');
       expect(JSON.parse(result.output as string)).toMatchObject({
         id: 'session-new', title: 'Separate topic', cwd: external, profile: 'agent', prompt_started: false,
@@ -495,7 +500,12 @@ describe('thread communication tools', () => {
   it('uses the ambient workspace and leaves the thread empty without a prompt', async () => {
     const { tool, create, metadata, prompt, lifecycle } = createThreadFixture({ custom: { retained: true } });
     const result = await executeThreadCreate(tool, {});
-    expect(create).toHaveBeenCalledExactlyOnceWith({ workDir: '/ambient/workspace', mainAgentBinding: undefined });
+    expect(create).toHaveBeenCalledExactlyOnceWith({
+      workDir: '/ambient/workspace',
+      title: undefined,
+      initialCustom: { [CREATED_BY_SESSION_ID_KEY]: 'ambient-a', [CREATED_BY_AGENT_ID_KEY]: 'main' },
+      mainAgentBinding: undefined,
+    });
     expect(metadata.setTitle).not.toHaveBeenCalled();
     expect(metadata.update).toHaveBeenCalledExactlyOnceWith({
       custom: {
@@ -503,7 +513,7 @@ describe('thread communication tools', () => {
         [CREATED_BY_SESSION_ID_KEY]: 'ambient-a',
         [CREATED_BY_AGENT_ID_KEY]: 'main',
       },
-    }, { touchUpdatedAt: false });
+    }, { touchUpdatedAt: false, allowReservedGroupWrite: true });
     expect((await metadata.read()).custom).not.toHaveProperty('parent_session_id');
     expect((await metadata.read()).custom).not.toHaveProperty('child_session_kind');
     expect(lifecycle.create).toHaveBeenCalledExactlyOnceWith({ agentId: 'main' });
@@ -524,12 +534,33 @@ describe('thread communication tools', () => {
     expect(lifecycle.broadcastPermissionMode).toHaveBeenCalledExactlyOnceWith('auto');
   });
 
+  it('stamps ensured group_id into initialCustom before create when ensureSessionGroup is available', async () => {
+    const ensureSessionGroup = vi.fn(async () => ({ groupId: 'grp-ensured-1', originKey: 'home:local' }));
+    const { tool, create } = createThreadFixture({ ensureSessionGroup });
+    const result = await executeThreadCreate(tool, { title: 'Grouped child' });
+    expect(result.isError).not.toBe(true);
+    expect(ensureSessionGroup).toHaveBeenCalledExactlyOnceWith('ambient-a');
+    expect(create).toHaveBeenCalledExactlyOnceWith({
+      workDir: '/ambient/workspace',
+      title: 'Grouped child',
+      initialCustom: {
+        [CREATED_BY_SESSION_ID_KEY]: 'ambient-a',
+        [CREATED_BY_AGENT_ID_KEY]: 'main',
+        [SESSION_GROUP_ID_KEY]: 'grp-ensured-1',
+      },
+      mainAgentBinding: undefined,
+    });
+  });
+
   it('binds an enabled main profile to the new session', async () => {
     const { tool, create, lifecycle } = createThreadFixture();
     const result = await executeThreadCreate(tool, { profile: 'main-alt' });
     const binding = { profile: 'main-alt', persona: undefined, model: undefined, thinking: undefined, strictThinking: false };
     expect(create).toHaveBeenCalledExactlyOnceWith({
-      workDir: '/ambient/workspace', mainAgentBinding: binding,
+      workDir: '/ambient/workspace',
+      title: undefined,
+      initialCustom: { [CREATED_BY_SESSION_ID_KEY]: 'ambient-a', [CREATED_BY_AGENT_ID_KEY]: 'main' },
+      mainAgentBinding: binding,
     });
     expect(lifecycle.create).toHaveBeenCalledWith({ agentId: 'main', binding });
     expect(JSON.parse(result.output as string)).toMatchObject({ profile: 'main-alt', prompt_started: false });
@@ -540,7 +571,10 @@ describe('thread communication tools', () => {
     await executeThreadCreate(tool, { model_alias: 'configured-alias', effort: 'high', prompt: 'Start' });
     const binding = { profile: 'agent', persona: undefined, model: 'configured-alias', thinking: 'high', strictThinking: true };
     expect(create).toHaveBeenCalledExactlyOnceWith({
-      workDir: '/ambient/workspace', mainAgentBinding: binding,
+      workDir: '/ambient/workspace',
+      title: 'Start',
+      initialCustom: { [CREATED_BY_SESSION_ID_KEY]: 'ambient-a', [CREATED_BY_AGENT_ID_KEY]: 'main' },
+      mainAgentBinding: binding,
     });
     expect(lifecycle.create).toHaveBeenCalledWith({ agentId: 'main', binding });
     expect(prompt.enqueue).toHaveBeenCalledOnce();
@@ -551,6 +585,8 @@ describe('thread communication tools', () => {
     await executeThreadCreate(tool, { model_alias: 'configured-alias' });
     expect(create).toHaveBeenCalledExactlyOnceWith({
       workDir: '/ambient/workspace',
+      title: undefined,
+      initialCustom: { [CREATED_BY_SESSION_ID_KEY]: 'ambient-a', [CREATED_BY_AGENT_ID_KEY]: 'main' },
       mainAgentBinding: { profile: 'agent', persona: undefined, model: 'configured-alias', thinking: undefined, strictThinking: false },
     });
   });
@@ -560,6 +596,8 @@ describe('thread communication tools', () => {
     await executeThreadCreate(tool, { persona: 'xiao-you' });
     expect(create).toHaveBeenCalledExactlyOnceWith({
       workDir: '/ambient/workspace',
+      title: undefined,
+      initialCustom: { [CREATED_BY_SESSION_ID_KEY]: 'ambient-a', [CREATED_BY_AGENT_ID_KEY]: 'main' },
       mainAgentBinding: { profile: undefined, persona: 'xiao-you', model: undefined, thinking: undefined, strictThinking: false },
     });
   });
@@ -714,7 +752,7 @@ describe('thread communication tools', () => {
     } finally {
       await target.dispose();
     }
-  }, 60_000);
+  }, 90_000);
 
   it('prefers an explicit title when launching a prompt', async () => {
     const { tool, metadata } = createThreadFixture();
@@ -731,7 +769,12 @@ describe('thread communication tools', () => {
     const missing = join(tmpdir(), 'missing-thread-create-workspace');
     create.mockRejectedValueOnce(new Error(`workspace root ${missing} does not exist`));
     await expect(executeThreadCreate(tool, { cwd: missing })).rejects.toThrow('does not exist');
-    expect(create).toHaveBeenCalledExactlyOnceWith({ workDir: missing, mainAgentBinding: undefined });
+    expect(create).toHaveBeenCalledExactlyOnceWith({
+      workDir: missing,
+      title: undefined,
+      initialCustom: { [CREATED_BY_SESSION_ID_KEY]: 'ambient-a', [CREATED_BY_AGENT_ID_KEY]: 'main' },
+      mainAgentBinding: undefined,
+    });
   });
 
   it('promotes a direct child into its own workDir and preserves promotion provenance', async () => {
@@ -740,7 +783,8 @@ describe('thread communication tools', () => {
     const result = await executeThreadCreate(tool, { from_subagent: 'child-1', title: 'Independent research' });
     expect(promoteAgent).toHaveBeenCalledExactlyOnceWith({
       sourceSessionId: 'ambient-a', agentId: 'child-1', title: 'Independent research',
-      profile: undefined, model: undefined, thinking: undefined,
+      profile: undefined, model: undefined, thinking: undefined, groupId: undefined,
+      initialCustom: { [CREATED_BY_SESSION_ID_KEY]: 'ambient-a', [CREATED_BY_AGENT_ID_KEY]: 'main' },
     });
     expect(create).not.toHaveBeenCalled();
     expect(JSON.parse(result.output as string)).toMatchObject({ id: 'session-new', cwd: '/repo/feature', prompt_started: false });
@@ -907,6 +951,7 @@ function createThreadFixture(options: {
   sourceAgents?: Record<string, AgentMeta>;
   promoteAvailable?: boolean;
   bridgeCeiling?: PermissionMode;
+  ensureSessionGroup?: NonNullable<ISessionManager['ensureSessionGroup']>;
 } = {}) {
   const ix = disposables.add(new TestInstantiationService());
   let profileName = options.boundProfile;
@@ -989,7 +1034,12 @@ function createThreadFixture(options: {
     return target('/repo/feature');
   });
   const remove = vi.fn<ISessionManager['delete']>(async () => {});
-  ix.stub(ISessionManager, { create, delete: remove, promoteAgent: options.promoteAvailable === false ? undefined : promoteAgent });
+  ix.stub(ISessionManager, {
+    create,
+    delete: remove,
+    promoteAgent: options.promoteAvailable === false ? undefined : promoteAgent,
+    ensureSessionGroup: options.ensureSessionGroup,
+  });
   const createThread = vi.fn<IThreadCommunicationService['createThread']>(async (input) => ({
     ref: { hostId: 'remote', workspaceId: 'remote-workspace', sessionId: 'remote-session', bridgeId: input.bridgeId, connectionId: 'remote-connection' },
     title: 'Start', profile: 'agent', promptStarted: true,

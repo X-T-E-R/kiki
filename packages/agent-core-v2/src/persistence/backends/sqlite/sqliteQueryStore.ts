@@ -7,7 +7,27 @@ import { abortable } from '#/_base/utils/abort';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { LifecycleScope } from '#/app/scopes';
 import { acquireFileLock } from '#/persistence/backends/node-fs/fileLock';
-import { IQueryStore, type Checkpoint, type ColumnBounds, type ColumnPageQuery, type IndexDef, type IQuery, type Page, type QueryFilter, type QueryStaging, type SortDir, type StagedWrite, type WriteCondition, type WriteOp } from '#/persistence/interface/queryStore';
+import {
+  IQueryStore,
+  type Checkpoint,
+  type ColumnBounds,
+  type ColumnPageQuery,
+  type IndexDef,
+  type IQuery,
+  type Page,
+  type QueryFilter,
+  type QueryStaging,
+  type SidebarCompoundPageQuery,
+  type SidebarCompoundPageResult,
+  type SidebarGroupMembersQuery,
+  type SidebarGroupMembersResult,
+  type SidebarResolveUnitsQuery,
+  type SidebarResolveUnitsResult,
+  type SortDir,
+  type StagedWrite,
+  type WriteCondition,
+  type WriteOp,
+} from '#/persistence/interface/queryStore';
 import { isStorageError, StorageErrors, type IStorageLock } from '#/persistence/interface/storage';
 import { trackQueryStoreDisposal } from '#/persistence/queryStoreDisposals';
 import { QueryStoreWorker } from './host';
@@ -116,6 +136,15 @@ export class SqliteQueryStore extends Disposable implements IQueryStore {
   query<T>(collection: string): IQuery<T> { return new SqliteQuery((query, signal) => this.request({ type: 'query', query }, signal), collection); }
   pageByColumn<T>(collection: string, query: ColumnPageQuery, signal?: AbortSignal): Promise<Page<T>> {
     return this.request({ type: 'query', query: { collection, column: { name: query.column, bounds: query.bounds ?? {} }, columnOrder: query.dir ?? 'asc', limit: query.limit, filter: query.filter } }, signal);
+  }
+  sidebarPage<T>(query: SidebarCompoundPageQuery, signal?: AbortSignal): Promise<SidebarCompoundPageResult<T>> {
+    return this.request({ type: 'sidebarPage', query }, signal);
+  }
+  sidebarGroupMembers<T>(query: SidebarGroupMembersQuery, signal?: AbortSignal): Promise<SidebarGroupMembersResult<T>> {
+    return this.request({ type: 'sidebarGroupMembers', query }, signal);
+  }
+  sidebarResolveUnits<T>(query: SidebarResolveUnitsQuery, signal?: AbortSignal): Promise<SidebarResolveUnitsResult<T>> {
+    return this.request({ type: 'sidebarResolveUnits', query }, signal);
   }
   async ensureIndex(collection: string, definition: IndexDef): Promise<void> { await this.request({ type: 'index', collection, definition }); }
   listKeys(collection: string): Promise<readonly string[]> { return this.request({ type: 'keys', collection }); }

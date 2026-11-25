@@ -3,7 +3,7 @@ import { createReadStream } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { dirname, join } from 'node:path';
 import { lstat, mkdir, readdir, readFile, rename, rm } from 'node:fs/promises';
-import { ConfigTarget, isSkillSyncExcluded, openPinnedLogicalRead, planSkillSync, readPinnedRange, type IBootstrapService, type IConfigRegistry, type IConfigService, type IFileSystemStorageService, type IMemoryScopes, type IMemoryStore, type ISessionIndex, type ISessionManager } from '@kiki/agent-core-v2';
+import { ConfigTarget, SESSION_GROUP_DETACHED_KEY, SESSION_GROUP_ID_KEY, explicitSessionGroupId, isSkillSyncExcluded, openPinnedLogicalRead, planSkillSync, readPinnedRange, type IBootstrapService, type IConfigRegistry, type IConfigService, type IFileSystemStorageService, type IMemoryScopes, type IMemoryStore, type ISessionIndex, type ISessionManager } from '@kiki/agent-core-v2';
 import { SESSION_LOCK_SCOPE, sessionLockKey } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileLock';
 import { isStorageError, StorageErrors, type IStorageLock } from '@kiki/agent-core-v2/persistence/interface/storage';
 import { IMcpConfigStore } from '@kiki/agent-core-v2/app/mcpConfig/configStore';
@@ -30,7 +30,7 @@ import { safePortablePath } from './tarArchive';
 export interface SessionLiveServices {
   bootstrap: Pick<IBootstrapService, 'sessionsDir' | 'scope'>;
   sessions: Pick<ISessionManager, 'get' | 'isEphemeral'>;
-  index: Pick<ISessionIndex, 'status' | 'prepare' | 'get' | 'listRecent' | 'reconcileNow'>;
+  index: Pick<ISessionIndex, 'status' | 'prepare' | 'get' | 'listRecent' | 'reconcileNow'> & Partial<Pick<ISessionIndex, 'resolveSidebarUnits'>>;
   logs: Pick<IAppendLogStore, 'flush'>;
   storage?: IFileSystemStorageService;
 }
@@ -52,6 +52,7 @@ export interface LiveServices extends SessionLiveServices {
   sessions: ISessionManager;
   index: ISessionIndex;
   logs: IAppendLogStore;
+  onSessionsMutated?: (sessionIds: readonly string[]) => void;
 }
 
 function scopePath(scope: MemoryScope): string {
@@ -238,6 +239,8 @@ export async function collectCanonicalSessionSources(
       if (!entry) throw new Error(`Session not found: ${id}`);
       return entry;
     }));
+  const eligible: Array<{ readonly session: typeof sessions[number]; readonly root: string; readonly scope: string; readonly stateFile: Buffer | undefined; readonly parsedState: Data | undefined }> = [];
+  const unresolvedLegacyIds: string[] = [];
   for (const session of sessions) {
     if (session.private || live.sessions.isEphemeral(session.id)) continue;
     const workspaceSeg = safePortablePath(session.workspaceId);
@@ -247,18 +250,72 @@ export async function collectCanonicalSessionSources(
     const rootInfo = await missing(lstat(root));
     if (!rootInfo || rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) continue;
     const scope = `${live.bootstrap.scope('sessions')}/${session.workspaceId}/${session.id}`;
-    for (const entry of CANONICAL_SESSION_META_FILES) {
-      const metaPath = join(root, entry);
-      const metaInfo = await missing(lstat(metaPath));
-      if (!metaInfo || metaInfo.isSymbolicLink() || !metaInfo.isFile()) continue;
-      const file = await missing(readFile(metaPath));
-      if (file) {
-        const bytes = Buffer.from(JSON.stringify({ ...object(JSON.parse(file.toString('utf8'))), workspaceId: session.workspaceId }));
+    const readRegularMetaFile = async (rel: string): Promise<Buffer | undefined> => {
+      const target = join(root, rel);
+      const info = await missing(lstat(target));
+      if (!info || info.isSymbolicLink() || !info.isFile()) return undefined;
+      return await missing(readFile(target));
+    };
+    const stateFile = (await readRegularMetaFile('state.json'))
+      ?? (await readRegularMetaFile('session-meta/state.json'));
+    const parsedState = stateFile ? object(JSON.parse(stateFile.toString('utf8'))) : undefined;
+    const custom = parsedState ? object(parsedState['custom']) : {};
+    const hasExplicit = explicitSessionGroupId(custom) !== undefined;
+    const isDetached = custom[SESSION_GROUP_DETACHED_KEY] === true;
+    if (stateFile && !hasExplicit && !isDetached && session.groupId === undefined) {
+      unresolvedLegacyIds.push(session.id);
+    }
+    eligible.push({ session, root, scope, stateFile, parsedState });
+  }
+  const resolvedGroupBySessionId = new Map<string, string>();
+  if (unresolvedLegacyIds.length > 0 && live.index.resolveSidebarUnits !== undefined) {
+    const resolved = await live.index.resolveSidebarUnits({
+      sessionIds: unresolvedLegacyIds,
+      groupIds: [],
+      filter: { archived: 'include', privacy: 'include' },
+      memberLimit: Number.MAX_SAFE_INTEGER,
+    });
+    for (const unit of resolved.units) {
+      if (unit.kind !== 'group') continue;
+      for (const member of unit.members) {
+        resolvedGroupBySessionId.set(member.id, unit.id);
+      }
+    }
+  }
+  for (const { session, root, scope, stateFile, parsedState } of eligible) {
+    if (stateFile && parsedState) {
+      const custom = object(parsedState['custom']);
+      const hasExplicit = explicitSessionGroupId(custom) !== undefined;
+      const isDetached = custom[SESSION_GROUP_DETACHED_KEY] === true;
+      const resolvedGroupId = session.groupId ?? resolvedGroupBySessionId.get(session.id);
+      const nextCustom = !hasExplicit && !isDetached && resolvedGroupId !== undefined
+        ? { ...custom, [SESSION_GROUP_ID_KEY]: resolvedGroupId }
+        : parsedState['custom'];
+      const bytes = Buffer.from(JSON.stringify({
+        ...parsedState,
+        ...(nextCustom !== undefined ? { custom: nextCustom } : {}),
+        workspaceId: session.workspaceId,
+      }));
+      sources.push({
+        sessionId: session.id,
+        workspaceId: session.workspaceId,
+        relativePath: 'state.json',
+        archivePath: `sessions/${session.id}/state.json`,
+        size: bytes.byteLength,
+        bytes,
+      });
+    }
+    const metaPath = join(root, 'meta.json');
+    const metaInfo = await missing(lstat(metaPath));
+    if (metaInfo && !metaInfo.isSymbolicLink() && metaInfo.isFile()) {
+      const metaFile = await missing(readFile(metaPath));
+      if (metaFile) {
+        const bytes = Buffer.from(JSON.stringify({ ...object(JSON.parse(metaFile.toString('utf8'))), workspaceId: session.workspaceId }));
         sources.push({
           sessionId: session.id,
           workspaceId: session.workspaceId,
-          relativePath: entry,
-          archivePath: `sessions/${session.id}/${entry}`,
+          relativePath: 'meta.json',
+          archivePath: `sessions/${session.id}/meta.json`,
           size: bytes.byteLength,
           bytes,
         });
@@ -837,6 +894,7 @@ export async function writeLive(live: LiveServices, next: Units, before: Units, 
     return { write: bytes !== undefined, doc: memoryDocument(unit.path, bytes ?? unit.value as Buffer) };
   });
   const files = new Map<string, { path: string; bytes?: Buffer }>();
+  const mutatedSessionIds = new Set<string>();
   for (const unit of changes) {
     if (!Buffer.isBuffer(unit.value) || unit.domain === 'memories') continue;
     const bytes = requested.get(unit.path);
@@ -848,6 +906,7 @@ export async function writeLive(live: LiveServices, next: Units, before: Units, 
       path = `${sessionWorkspace(meta)}/${id}/${tail.join('/')}`;
       root = live.bootstrap.sessionsDir;
       if (id && live.sessions.get(id)) throw new Error(`Close session ${id} before replacing its data`);
+      if (id) mutatedSessionIds.add(id);
     }
     const destination = await checkedPath(root, path);
     files.set(destination, { path: destination, bytes });
@@ -947,6 +1006,9 @@ export async function writeLive(live: LiveServices, next: Units, before: Units, 
     else await rm(path, { force: true });
   }
   if (changes.some((unit) => unit.domain === 'sessions')) await refreshSessionIndex(live.index);
+  if (mutatedSessionIds.size > 0) {
+    live.onSessionsMutated?.([...mutatedSessionIds]);
+  }
   if (installationPath) {
     const previous = await missing(readBounded(installationPath));
     const records = previous ? readRecipeInstallations(previous) : {};

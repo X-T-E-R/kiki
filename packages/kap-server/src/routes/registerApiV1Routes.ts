@@ -69,6 +69,7 @@ import type { ProviderQuotaService } from '../usage/quota/service';
 import { registerDocumentPreviewRoutes } from './documentPreview';
 import { registerSessionExportRoute } from './sessionExport';
 import { liveWireSession, registerSessionsRoutes, sendSessionError } from './sessions';
+import { registerSidebarRoutes } from './sidebar';
 import { registerShippedAgentProfilesRoute } from './shippedAgentProfiles';
 import { registerShutdownRoutes } from './shutdown';
 import { registerDesktopLifecycleRoutes } from './desktopLifecycle';
@@ -240,6 +241,12 @@ export async function registerApiV1Routes(
         apiV1 as unknown as Parameters<typeof registerSessionModelsRoutes>[0],
         core,
         opts.providerQuota,
+      );
+      registerSidebarRoutes(
+        apiV1 as unknown as Parameters<typeof registerSidebarRoutes>[0],
+        core,
+        opts.broadcaster,
+        { serverHomeId: opts.serverHomeId },
       );
       registerAutoCompactRoutes(apiV1 as unknown as Parameters<typeof registerAutoCompactRoutes>[0], core);
       registerContextStrategyRoutes(apiV1 as unknown as Parameters<typeof registerContextStrategyRoutes>[0], core);

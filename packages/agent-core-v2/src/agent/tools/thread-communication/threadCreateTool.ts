@@ -11,7 +11,11 @@ import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution'
 import { IAgentPlanService } from '#/features/plan/plan';
 import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { promptPermissionModeSchema } from '#/app/sessionLegacy/sessionProtocol';
-import { CREATED_BY_AGENT_ID_KEY, CREATED_BY_SESSION_ID_KEY } from '#/app/sessionIndex/sessionIndex';
+import {
+  CREATED_BY_AGENT_ID_KEY,
+  CREATED_BY_SESSION_ID_KEY,
+  SESSION_GROUP_ID_KEY,
+} from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IThreadCommunicationService } from '#/app/threadCommunication/threadCommunication';
 import { Error2, ErrorCodes } from '#/errors';
@@ -152,10 +156,30 @@ export class ThreadCreateTool implements IThreadCreateTool {
         }
         const model = normalizeSubagentBindingValue(input.model_alias, 'model_alias');
         const thinking = normalizeSubagentBindingValue(input.effort, 'effort');
+        const firstLine = input.prompt?.split(/\r?\n/, 1)[0]?.trim();
+        const resolvedTitle = input.title ?? (firstLine ? Array.from(firstLine).slice(0, 80).join('') : undefined);
+        const ensuredGroup = this.sessions.ensureSessionGroup !== undefined
+          ? await this.sessions.ensureSessionGroup(this.session.sessionId)
+          : undefined;
+        const initialCustom: Record<string, unknown> = {
+          [CREATED_BY_SESSION_ID_KEY]: this.session.sessionId,
+          [CREATED_BY_AGENT_ID_KEY]: this.caller.agentId,
+          ...(ensuredGroup !== undefined ? { [SESSION_GROUP_ID_KEY]: ensuredGroup.groupId } : {}),
+        };
         const handle = input.from_subagent !== undefined
-          ? await this.promoteSubagent(input.from_subagent, input.title, input.profile, model, thinking)
+          ? await this.promoteSubagent(
+              input.from_subagent,
+              resolvedTitle,
+              input.profile,
+              model,
+              thinking,
+              ensuredGroup?.groupId,
+              initialCustom,
+            )
           : await this.sessions.create({
               workDir: input.cwd ?? this.session.cwd,
+              title: resolvedTitle,
+              initialCustom,
               mainAgentBinding: input.profile === undefined && input.persona === undefined && model === undefined && thinking === undefined
                 ? undefined
                 : {
@@ -185,17 +209,21 @@ export class ThreadCreateTool implements IThreadCreateTool {
               `Agent profile "${profile.name}" is not a main-agent profile. Choose an enabled main-agent profile.`,
             );
           }
-          const firstLine = input.prompt?.split(/\r?\n/, 1)[0]?.trim();
-          const title = input.title ?? (firstLine ? Array.from(firstLine).slice(0, 80).join('') : undefined);
           const metadata = handle.accessor.get(ISessionMetadata);
-          if (title !== undefined) await metadata.setTitle(title);
-          await metadata.update({
-            custom: {
-              ...(await metadata.read()).custom,
-              [CREATED_BY_SESSION_ID_KEY]: this.session.sessionId,
-              [CREATED_BY_AGENT_ID_KEY]: this.caller.agentId,
-            },
-          }, { touchUpdatedAt: false });
+          const currentMeta = await metadata.read();
+          if (resolvedTitle !== undefined && currentMeta.title !== resolvedTitle) {
+            await metadata.setTitle(resolvedTitle);
+          }
+          const needsCustomSync =
+            currentMeta.custom?.[CREATED_BY_SESSION_ID_KEY] !== this.session.sessionId ||
+            currentMeta.custom?.[CREATED_BY_AGENT_ID_KEY] !== this.caller.agentId ||
+            (ensuredGroup !== undefined && currentMeta.custom?.[SESSION_GROUP_ID_KEY] !== ensuredGroup.groupId);
+          if (needsCustomSync) {
+            await metadata.update(
+              { custom: { ...currentMeta.custom, ...initialCustom } },
+              { touchUpdatedAt: false, allowReservedGroupWrite: true },
+            );
+          }
           main.accessor.get(IAgentPermissionModeService).setModeCeiling(callerMode);
           main.accessor.get(IAgentLifecycleService).broadcastPermissionMode(requestedMode);
           if (input.plan_mode !== undefined) {
@@ -285,6 +313,8 @@ export class ThreadCreateTool implements IThreadCreateTool {
     profile: string | undefined,
     model: string | undefined,
     thinking: string | undefined,
+    groupId: string | undefined,
+    initialCustom: Record<string, unknown>,
   ): Promise<ISessionScopeHandle> {
     const meta = (await this.metadata.read()).agents?.[agentId];
     if (meta === undefined || subagentParentAgentId(meta) !== this.caller.agentId) {
@@ -304,6 +334,8 @@ export class ThreadCreateTool implements IThreadCreateTool {
       profile,
       model,
       thinking,
+      groupId,
+      initialCustom,
     });
   }
 }

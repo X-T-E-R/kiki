@@ -3,9 +3,24 @@ import type { NegotiatedExecutorCapabilities } from '#/app/agentExecutor/capabil
 import type { Event } from '#/_base/event';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import type { SessionWorktree } from '#/app/git/worktreeModel';
-import type { Page } from '#/persistence/interface/queryStore';
+import type {
+  Page,
+  SidebarCompoundPageResult,
+  SidebarGroupMembersResult,
+  SidebarQueryMemberFilter,
+  SidebarResolveUnitsResult,
+} from '#/persistence/interface/queryStore';
 import type { UsageFactTotals } from '#/agent/usage/usageFact';
 import type { SessionExecutionPhase, SessionInterruptedWork } from '#/session/sessionMetadata/sessionMetadata';
+
+export {
+  RESERVED_SESSION_GROUP_KEYS,
+  SESSION_GROUP_DETACHED_KEY,
+  SESSION_GROUP_GENERATION_KEY,
+  SESSION_GROUP_ID_KEY,
+  SESSION_GROUP_ORIGIN_KEY,
+  type SessionGroupOrigin,
+} from './sessionGroup';
 
 export const PARENT_SESSION_ID_KEY = 'parent_session_id';
 
@@ -49,6 +64,8 @@ export interface SessionSummary {
   readonly executorId?: string;
   readonly negotiated?: NegotiatedExecutorCapabilities;
   readonly allowKikiSubagents?: boolean;
+  readonly groupId?: string;
+  readonly groupDetached?: boolean;
 }
 
 export interface SessionListQuery {
@@ -69,6 +86,48 @@ export interface SessionListQuery {
   readonly beforePosition?: { readonly updatedAt: number; readonly id: string };
   /** Keyset cursor: the page strictly newer than this session id. */
   readonly after?: string;
+}
+
+export interface SidebarUnitListQuery {
+  readonly filter: SidebarQueryMemberFilter;
+  readonly sort?: 'updated_desc' | 'created_desc' | 'title';
+  readonly limit: number;
+  readonly memberLimit: number;
+  readonly maxRows?: number;
+  readonly cursor?: { readonly sortAt: number; readonly sortText?: string; readonly typedUnitId: string };
+  readonly explain?: boolean;
+  readonly signal?: AbortSignal;
+}
+
+export interface SidebarUnitListResult extends SidebarCompoundPageResult<SessionSummary> {
+  readonly revision: number;
+  readonly generation?: number;
+}
+
+export interface SidebarGroupMemberListQuery {
+  readonly groupId: string;
+  readonly filter: SidebarQueryMemberFilter;
+  readonly limit: number;
+  readonly cursor?: { readonly ownUpdatedAt: number; readonly id: string };
+  readonly signal?: AbortSignal;
+}
+
+export interface SidebarGroupMemberListResult extends SidebarGroupMembersResult<SessionSummary> {
+  readonly revision: number;
+  readonly generation?: number;
+}
+
+export interface SidebarUnitResolveQuery {
+  readonly sessionIds: readonly string[];
+  readonly groupIds: readonly string[];
+  readonly filter: SidebarQueryMemberFilter;
+  readonly memberLimit: number;
+  readonly signal?: AbortSignal;
+}
+
+export interface SidebarUnitResolveResult extends SidebarResolveUnitsResult<SessionSummary> {
+  readonly revision: number;
+  readonly generation?: number;
 }
 
 export interface SessionCountQuery {
@@ -106,6 +165,12 @@ export interface ISessionIndex {
   archiveFamily(id: string, excludedIds: readonly string[]): Promise<SessionSummary[]>;
   /** Recency-ordered keyset page over the persisted session set. */
   listRecent(query: SessionListQuery): Promise<Page<SessionSummary>>;
+  /** Bounded single-snapshot sidebar unit page with hydrated group members. */
+  listSidebarUnits?(query: SidebarUnitListQuery): Promise<SidebarUnitListResult>;
+  /** Indexed continuation over eligible members of one session group. */
+  listSidebarGroupMembers?(query: SidebarGroupMemberListQuery): Promise<SidebarGroupMemberListResult>;
+  /** Single-snapshot batch resolution of session and group units. */
+  resolveSidebarUnits?(query: SidebarUnitResolveQuery): Promise<SidebarUnitResolveResult>;
   /** Materialized count over the given workspace-id set. */
   count(query: SessionCountQuery): Promise<number>;
   /**

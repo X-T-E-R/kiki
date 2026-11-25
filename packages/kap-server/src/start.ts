@@ -429,6 +429,7 @@ export interface ServerTurnSummary {
 export interface RunningServer {
   readonly app: FastifyInstance;
   readonly core: Scope;
+  readonly broadcaster?: SessionEventBroadcaster;
   readonly connectionRegistry: IConnectionRegistry;
   readonly authTokenService: IAuthTokenService;
   readonly localOwnerToken: string;
@@ -1707,6 +1708,9 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     index: core.accessor.get(ISessionIndex),
     logs: core.accessor.get(IAppendLogStore),
     storage: core.accessor.get(IFileSystemStorageService),
+    onSessionsMutated: (sessionIds) => {
+      for (const sessionId of sessionIds) broadcaster.invalidateWatermark(sessionId, 'import');
+    },
   }, syncService)), localOwnerToken);
   app.addHook('preClose', async () => { await meshService.close(); });
   const pairingHooks: { current?: PairingHooks } = {};
@@ -2070,6 +2074,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   return {
     app,
     core,
+    broadcaster,
     connectionRegistry,
     authTokenService,
     localOwnerToken,
