@@ -910,11 +910,11 @@ ${engineError}`;
 
 function ExternalSubagentBody({ snapshot }: { readonly snapshot: ExternalSubagentSnapshot }) {
   return (
-    <div data-external-subagent className="space-y-2 border-l-2 border-hairline pl-3 text-[12.5px]">
+    <div data-external-subagent className="space-y-2 border-l-2 border-hairline pl-3 text-[13px] leading-5">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-        <span data-external-subagent-role className="font-medium text-ink">{snapshot.role}</span>
+        <span data-external-subagent-role className="font-normal text-ink">{snapshot.role}</span>
         {snapshot.status !== undefined ? (
-          <span className="text-[11.5px] text-ink-faint">{snapshot.status}</span>
+          <span className="text-[12px] leading-4 text-ink-faint">{snapshot.status}</span>
         ) : null}
       </div>
       {snapshot.prompt !== undefined ? (
@@ -923,7 +923,7 @@ function ExternalSubagentBody({ snapshot }: { readonly snapshot: ExternalSubagen
         </p>
       ) : null}
       {snapshot.latestStep !== undefined ? (
-        <p data-external-subagent-step className="font-mono text-[11.5px] leading-snug text-ink-faint">
+        <p data-external-subagent-step className="font-mono text-[12px] leading-4 text-ink-faint">
           {snapshot.latestStep}
         </p>
       ) : null}
@@ -932,11 +932,11 @@ function ExternalSubagentBody({ snapshot }: { readonly snapshot: ExternalSubagen
           {snapshot.children.map((child, index) => (
             <li key={child.id ?? `${child.role}:${index}`} className="py-1.5">
               <div className="flex flex-wrap items-baseline gap-x-2">
-                <span className="font-medium text-ink">{child.role}</span>
-                {child.status !== undefined ? <span className="text-[11px] text-ink-faint">{child.status}</span> : null}
+                <span className="font-normal text-ink">{child.role}</span>
+                {child.status !== undefined ? <span className="text-[12px] leading-4 text-ink-faint">{child.status}</span> : null}
               </div>
               {child.latestStep !== undefined ? (
-                <p className="mt-0.5 truncate font-mono text-[11.5px] text-ink-faint">{child.latestStep}</p>
+                <p className="mt-0.5 truncate font-mono text-[12px] leading-4 text-ink-faint">{child.latestStep}</p>
               ) : null}
             </li>
           ))}

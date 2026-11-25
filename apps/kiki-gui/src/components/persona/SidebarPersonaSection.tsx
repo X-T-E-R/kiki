@@ -29,11 +29,13 @@ import { pushToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { DisclosureChevron, Icon } from '../icons';
-import { LifeMark } from '../LifeMark';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
 import { useSessionContextMenu } from '../sessionContextMenu';
+import { SidebarRowDot } from '../sidebar/SidebarRowSignal';
+import { sanitizeDisplayTitle } from '../../lib/threadTitles';
 import { CreateRoomDialog } from '../room/CreateRoomDialog';
 import { PersonaAvatar, personaAvatarOf } from './PersonaAvatar';
+import { PersonaConversationSwitcher } from './PersonaConversationSwitcher';
 import { personaNewConversationUrl } from './personaNavigation';
 import {
   compactPersonaThreadTitle,
@@ -41,7 +43,7 @@ import {
   sessionMatchesPrivateFilter,
   sessionPersonaId,
 } from './personaSessionUtils';
-import { usePersonaSessionHeads } from './usePersonaSwitcherConversations';
+import { usePersonaSessionHeads, usePersonaSwitcherConversations } from './usePersonaSwitcherConversations';
 import { usePersonaDirectory, type PersonaDirectoryEntry } from './usePersonaDirectory';
 import { invalidatePersonas, PERSONAS_QUERY_KEY, personaQueryKey } from './usePersonas';
 
@@ -71,8 +73,10 @@ function threadLifeOf(state: ReturnType<typeof sessionRowState>): InlinePersonaT
 }
 
 function rawThreadTitle(session: Session, untitled: string): string {
-  if (session.title !== undefined && session.title.trim() !== '') return session.title;
-  if (session.last_prompt !== undefined && session.last_prompt.trim() !== '') return session.last_prompt;
+  const title = sanitizeDisplayTitle(session.title);
+  if (title !== undefined) return title;
+  const prompt = sanitizeDisplayTitle(session.last_prompt);
+  if (prompt !== undefined) return prompt;
   return untitled;
 }
 
@@ -219,9 +223,10 @@ export function SidebarPersonaSection({
   sessions,
   activeSessionId,
   seen,
+  workspaceOptions,
   rooms = [],
 }: SidebarPersonaSectionProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const navigate = useGuardedNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -239,12 +244,17 @@ export function SidebarPersonaSection({
 
   const { directory } = usePersonaDirectory({ sessions: filteredSessions, seen });
   const [savedOrder, setSavedOrder] = useState<readonly string[]>(readSavedPersonaOrder);
-  const [expandedOverrides, setExpandedOverrides] = useState<Readonly<Record<string, boolean>>>({});
-  const [showAllThreadsFor, setShowAllThreadsFor] = useState<Readonly<Record<string, boolean>>>({});
+  const [switcherState, setSwitcherState] = useState<{ persona: PersonaDirectoryEntry; anchor: HTMLElement } | null>(null);
   const [rowMenu, setRowMenu] = useState<{ persona: PersonaDirectoryEntry; x: number; y: number } | null>(null);
   const [roomDialog, setRoomDialog] = useState<{ readonly initialPersonaId?: string } | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; position: 'before' | 'after' } | null>(null);
+
+  const switcherQuery = usePersonaSwitcherConversations(
+    switcherState?.persona.id,
+    switcherState !== null,
+    privateFilter,
+  );
 
   const nonHiddenPersonas = useMemo(
     () => directory.filter((item) => !item.hidden),
@@ -612,35 +622,9 @@ export function SidebarPersonaSection({
     0,
   );
 
-  const toggleInlineExpand = (personaId: string, currentlyExpanded: boolean) => {
+  const togglePersonaSwitcher = (persona: PersonaDirectoryEntry, anchor: HTMLElement) => {
     setRowMenu(null);
-    const next = !currentlyExpanded;
-    setExpandedOverrides((prev) => ({ ...prev, [personaId]: next }));
-    if (!next) {
-      setShowAllThreadsFor((prev) => {
-        if (!prev[personaId]) return prev;
-        const copy = { ...prev };
-        delete copy[personaId];
-        return copy;
-      });
-    }
-  };
-
-  const openUnread = (event: React.MouseEvent, persona: PersonaDirectoryEntry, unreadIds: readonly string[], hasThreads: boolean) => {
-    event.stopPropagation();
-    setRowMenu(null);
-    if (unreadIds.length === 1) {
-      void navigate(`/s/${encodeURIComponent(unreadIds[0]!)}`);
-      return;
-    }
-    if (hasThreads) {
-      setExpandedOverrides((prev) => ({ ...prev, [persona.id]: true }));
-      setShowAllThreadsFor((prev) => ({ ...prev, [persona.id]: true }));
-      return;
-    }
-    if (unreadIds[0] !== undefined) {
-      void navigate(`/s/${encodeURIComponent(unreadIds[0])}`);
-    }
+    setSwitcherState((current) => (current?.persona.id === persona.id ? null : { persona, anchor }));
   };
 
   const setPersonaDaily = async (persona: PersonaDirectoryEntry, sessionId: string) => {
@@ -813,24 +797,17 @@ export function SidebarPersonaSection({
             aria-expanded={!collapsed}
             aria-label={collapsed ? t('persona.expandSection') : t('persona.collapseSection')}
             onClick={() => { setSidebarPersonaSectionCollapsed(!collapsed); }}
-            className="row-interactive flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-left text-[12px] leading-4 font-medium text-section-ink transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
+            className="row-interactive flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-left text-[12px] leading-4 font-normal text-section-ink transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
           >
             <DisclosureChevron open={!collapsed} size={12} className="shrink-0 text-ink-faint" />
             <span className="min-w-0 truncate">{t('persona.groupTitle')}</span>
             {collapsed && (collapsedLife !== 'idle' || collapsedUnreadTotal > 0) ? (
               <span data-sidebar-personas-attention className="ml-0.5 flex shrink-0 items-center gap-1">
-                {collapsedLife === 'waiting' || collapsedLife === 'working' ? (
-                  <LifeMark
-                    markId="sidebar:personas-collapsed"
-                    life={collapsedLife}
-                    still
-                    tone={collapsedLife === 'waiting' ? 'bg-attention' : undefined}
-                  />
-                ) : null}
+                <SidebarRowDot signal />
                 {collapsedUnreadTotal > 0 ? (
                   <span
                     data-sidebar-personas-collapsed-unread={collapsedUnreadTotal}
-                    className="text-[11px] leading-4 font-medium text-accent-ink tabular-nums"
+                    className="sr-only"
                   >
                     {collapsedUnreadTotal}
                   </span>
@@ -887,63 +864,37 @@ export function SidebarPersonaSection({
             <ul className="flex flex-col gap-px">
               {shownPersonas.map((persona) => {
                 const stats = personaThreadStats.get(persona.id);
-                const allThreads = stats?.allThreads ?? [];
                 const extraThreads = stats?.extraThreads ?? [];
                 const totalConversations = stats?.totalConversations ?? (persona.homeSessionId !== undefined ? 1 : 0);
-                // Singleton personas (0 or 1 known eligible conversation) open directly on row click
-                // with no [1 ▾] toggle and no auto-expanded duplicate child.
-                const hasMultiThreads = totalConversations > 1;
-                const hasThreads = hasMultiThreads && allThreads.length > 0;
+                // 0 or 1 conversation opens directly with no switcher chevron; >=2 exposes a plain switcher chevron.
+                const hasMultiThreads = totalConversations >= 2;
                 const unreadCount = stats?.unreadCount ?? persona.unreadCount;
-                const unreadIds = stats?.unreadIds ?? persona.unreadSessionIds;
                 const effectiveLife = stats?.life ?? persona.life;
                 const primaryTargetUrl = stats?.primaryTargetUrl ?? `/p/${encodeURIComponent(persona.id)}/daily`;
 
-                const inlineSubthreadActive = extraThreads.some((item) => item.isCurrent);
+                const activeSubthread = extraThreads.find((item) => item.isCurrent);
+                const inlineSubthreadActive = activeSubthread !== undefined;
                 const isSelectedPersona = activePersonaId === persona.id
                   || inlineSubthreadActive
                   || (persona.homeSessionId !== undefined && persona.homeSessionId === activeSessionId);
-                const attentionThreads = allThreads.filter(
-                  (item) => item.needsYou || item.life === 'working' || item.life === 'done',
-                );
-
-                const overrideExpanded = expandedOverrides[persona.id];
-                const defaultExpanded = hasThreads && (isSelectedPersona || attentionThreads.length > 0);
-                const isExpanded = hasThreads && (overrideExpanded ?? defaultExpanded);
-                const showAllThreads = showAllThreadsFor[persona.id] === true;
-
-                const inlineThreads = (() => {
-                  if (!isExpanded || !hasThreads) return [];
-                  if (showAllThreads) return allThreads;
-                  if (overrideExpanded === true || isSelectedPersona) {
-                    const top = allThreads.slice(0, SIDEBAR_PERSONA_INLINE_THREAD_LIMIT);
-                    if (allThreads.length > SIDEBAR_PERSONA_INLINE_THREAD_LIMIT) {
-                      const current = allThreads.find((item) => item.isCurrent);
-                      if (current !== undefined && !top.includes(current)) {
-                        top[SIDEBAR_PERSONA_INLINE_THREAD_LIMIT - 1] = current;
-                      }
-                    }
-                    return top;
-                  }
-                  if (attentionThreads.length > 0) {
-                    return attentionThreads.slice(0, SIDEBAR_PERSONA_INLINE_THREAD_LIMIT);
-                  }
-                  return allThreads.slice(0, SIDEBAR_PERSONA_INLINE_THREAD_LIMIT);
-                })();
-                const overflowThreadCount = inlineThreads.length > 0
-                  ? Math.max(0, totalConversations - inlineThreads.length)
-                  : 0;
+                const switcherOpenForPersona = switcherState?.persona.id === persona.id;
                 const atDaily = !hasMultiThreads
                   ? isSelectedPersona
                   : ((persona.homeSessionId !== undefined && persona.homeSessionId === activeSessionId)
                     || (activePersonaId === persona.id && !inlineSubthreadActive));
-                const emphasis = isSelectedPersona || effectiveLife === 'waiting' || effectiveLife === 'done';
+                const hasSignal = effectiveLife === 'working'
+                  || effectiveLife === 'waiting'
+                  || effectiveLife === 'done'
+                  || unreadCount > 0;
                 const menuOpenForRow = rowMenu?.persona.id === persona.id;
                 const isDragging = draggingId === persona.id;
                 const dropEdge = dropTarget?.id === persona.id ? dropTarget.position : undefined;
                 const rowTooltip = persona.title !== undefined && persona.title.trim() !== ''
                   ? `${persona.name} — ${persona.title.trim()}`
                   : t('persona.openDaily', { name: persona.name });
+                const switcherAria = locale === 'zh'
+                  ? `切换对话，${totalConversations} 个`
+                  : `Switch conversation, ${totalConversations}`;
 
                 return (
                   <li
@@ -1028,8 +979,8 @@ export function SidebarPersonaSection({
                     ) : null}
 
                     <div
-                      className={`row-interactive flex h-8 items-center gap-1 pr-1 pl-2 pointer-coarse:min-h-11 ${
-                        isSelectedPersona && (!isExpanded || !inlineSubthreadActive) ? 'bg-ink/[0.055]' : ''
+                      className={`row-interactive flex min-h-8 items-center gap-1 pr-1 pl-2 pointer-coarse:min-h-11 ${
+                        isSelectedPersona && !inlineSubthreadActive ? 'bg-ink/[0.04]' : ''
                       }`}
                     >
                       <button
@@ -1043,39 +994,19 @@ export function SidebarPersonaSection({
                         }}
                         className="flex h-full min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
                       >
-                        <span className="flex h-[19px] w-[7px] shrink-0 items-center">
-                          <LifeMark
-                            markId={`persona:${persona.id}`}
-                            life={effectiveLife}
-                            still
-                            tone={effectiveLife === 'waiting' ? 'bg-attention' : undefined}
-                          />
-                        </span>
+                        <SidebarRowDot signal={hasSignal} />
                         <PersonaAvatar persona={personaAvatarOf(persona)} size={20} decorative />
-                        <span className={`min-w-0 flex-1 truncate text-[13px] leading-[19px] ${
-                          emphasis ? 'font-medium text-ink' : 'text-ink-soft group-hover:text-ink'
+                        <span className={`min-w-0 flex-1 truncate text-[13px] leading-5 font-normal ${
+                          hasSignal ? 'text-ink' : 'text-ink-soft group-hover:text-ink'
                         }`}>
                           {persona.name}
                         </span>
                         {persona.pinned ? (
-                          <span aria-hidden className="shrink-0 text-ink-faint/80"><Icon name="pin" size={12} /></span>
+                          <span aria-hidden className="shrink-0 text-ink-faint"><Icon name="pin" size={12} /></span>
                         ) : null}
                       </button>
 
                       <div className="flex shrink-0 items-center gap-0.5">
-                        {unreadCount > 0 ? (
-                          <button
-                            type="button"
-                            data-persona-unread-count={unreadCount}
-                            aria-label={t('persona.unreadCountTitle', { count: unreadCount })}
-                            title={t('persona.unreadCountTitle', { count: unreadCount })}
-                            onClick={(event) => { openUnread(event, persona, unreadIds, hasThreads); }}
-                            className="flex h-6 min-w-4 items-center justify-center rounded px-1 text-[12px] leading-4 font-medium text-accent-ink tabular-nums hover:bg-ink/[0.06]"
-                          >
-                            {unreadCount}
-                          </button>
-                        ) : null}
-
                         <span className={`flex items-center gap-0.5 transition-opacity duration-[var(--kiki-motion-quick)] ${
                           menuOpenForRow
                             ? 'w-auto overflow-visible opacity-100'
@@ -1118,34 +1049,34 @@ export function SidebarPersonaSection({
                             type="button"
                             data-persona-switcher-toggle={persona.id}
                             data-persona-thread-count={totalConversations}
-                            aria-expanded={isExpanded}
-                            aria-label={t('persona.openSwitcherAria', { name: persona.name })}
-                            title={t('sidebar.persona.threadsCount', { count: totalConversations })}
+                            aria-haspopup="menu"
+                            aria-expanded={switcherOpenForPersona}
+                            aria-label={switcherAria}
+                            title={switcherAria}
                             onClick={(event) => {
                               event.stopPropagation();
-                              toggleInlineExpand(persona.id, isExpanded);
+                              togglePersonaSwitcher(persona, event.currentTarget);
                             }}
-                            className={`flex h-6 min-w-7 shrink-0 items-center justify-center gap-0.5 rounded-md px-1.5 text-[11px] leading-none font-medium tabular-nums transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${
-                              isExpanded
-                                ? 'bg-ink/[0.08] text-ink'
-                                : 'bg-ink/[0.045] text-ink-soft hover:bg-ink/[0.08] hover:text-ink'
+                            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${
+                              switcherOpenForPersona ? 'bg-ink/[0.06] text-ink' : ''
                             }`}
                           >
-                            <span>{totalConversations}</span>
-                            <DisclosureChevron open={isExpanded} size={12} className="shrink-0 text-ink-faint" />
+                            <DisclosureChevron open={switcherOpenForPersona} size={12} className="shrink-0" />
                           </button>
                         ) : null}
                       </div>
                     </div>
 
-                    {inlineThreads.length > 0 ? (
+                    {activeSubthread !== undefined ? (
                       <ul
                         data-persona-subthreads={persona.id}
                         className="mt-0.5 mb-1 ml-[19px] flex flex-col gap-px border-l border-hairline pl-1.5"
                       >
-                        {inlineThreads.map((thread) => {
+                        {(() => {
+                          const thread = activeSubthread;
                           const subMenuOpen = sessionMenu.menuSessionId === thread.id;
                           const canOpenSubMenu = thread.session !== undefined;
+                          const subSignal = thread.needsYou || thread.life === 'working' || thread.life === 'done';
                           return (
                             <li
                               key={thread.id}
@@ -1157,43 +1088,23 @@ export function SidebarPersonaSection({
                                 openSubthreadMenu(persona, thread, event.clientX, event.clientY);
                               }}
                             >
-                              <div
-                                className={`row-interactive flex h-7 w-full items-center gap-1 pr-1 pl-2 ${
-                                  thread.isCurrent ? 'bg-ink/[0.055]' : ''
-                                }`}
-                              >
+                              <div className="row-interactive flex min-h-8 w-full items-center gap-1 bg-ink/[0.04] pr-1 pl-2 pointer-coarse:min-h-11">
                                 <button
                                   type="button"
                                   data-persona-subthread={thread.id}
                                   data-persona-subthread-kind={thread.kind}
-                                  aria-current={thread.isCurrent ? 'page' : undefined}
+                                  aria-current="page"
                                   title={thread.fullTitle}
                                   onClick={() => { void navigate(thread.targetUrl); }}
-                                  className="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left text-[12px] leading-4 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+                                  className="flex h-full min-w-0 flex-1 items-center gap-2 text-left text-[13px] leading-5 font-normal focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
                                 >
-                                  <span className="flex h-4 w-[7px] shrink-0 items-center">
-                                    <LifeMark
-                                      markId={`persona-thread:${thread.id}`}
-                                      life={thread.life}
-                                      still
-                                      tone={thread.needsYou ? 'bg-attention' : undefined}
-                                    />
-                                  </span>
-                                  {thread.kind === 'daily' ? (
-                                    <span aria-hidden className="shrink-0 text-ink-faint"><Icon name="pin" size={12} /></span>
-                                  ) : thread.kind === 'room' ? (
-                                    <span aria-hidden className="shrink-0 font-mono text-[11px] text-ink-faint">#</span>
+                                  <SidebarRowDot signal={subSignal} />
+                                  {thread.kind === 'room' ? (
+                                    <span aria-hidden className="shrink-0 font-mono text-[12px] text-ink-faint">#</span>
                                   ) : null}
-                                  <span className={`min-w-0 flex-1 truncate ${
-                                    thread.isCurrent || thread.needsYou || thread.life === 'done'
-                                      ? 'font-medium text-ink'
-                                      : 'text-ink-soft group-hover/sub:text-ink'
-                                  }`}>
+                                  <span className={`min-w-0 flex-1 truncate ${subSignal ? 'text-ink' : 'text-ink-soft'}`}>
                                     {thread.shortTitle}
                                   </span>
-                                  {thread.kind === 'daily' && thread.shortTitle !== t('persona.dailyTitle') ? (
-                                    <span className="shrink-0 text-[10.5px] text-ink-faint">{t('persona.dailyBadge')}</span>
-                                  ) : null}
                                 </button>
                                 {canOpenSubMenu ? (
                                   <button
@@ -1212,7 +1123,7 @@ export function SidebarPersonaSection({
                                       const rect = event.currentTarget.getBoundingClientRect();
                                       openSubthreadMenu(persona, thread, rect.right + 4, rect.top);
                                     }}
-                                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint transition-opacity duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.07] hover:text-ink focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11 ${
+                                    className={`flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-faint transition-opacity duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.07] hover:text-ink focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11 ${
                                       subMenuOpen
                                         ? 'opacity-100'
                                         : 'opacity-100 [@media(hover:hover)_and_(pointer:fine)]:opacity-0 [@media(hover:hover)_and_(pointer:fine)]:group-hover/sub:opacity-100 [@media(hover:hover)_and_(pointer:fine)]:group-focus-within/sub:opacity-100'
@@ -1224,47 +1135,7 @@ export function SidebarPersonaSection({
                               </div>
                             </li>
                           );
-                        })}
-                        {overflowThreadCount > 0 ? (
-                          <li>
-                            <button
-                              type="button"
-                              data-persona-subthreads-more={persona.id}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                if (!showAllThreads && allThreads.length > inlineThreads.length) {
-                                  setExpandedOverrides((prev) => ({ ...prev, [persona.id]: true }));
-                                  setShowAllThreadsFor((prev) => ({ ...prev, [persona.id]: true }));
-                                  return;
-                                }
-                                void navigate(`/personas?persona=${encodeURIComponent(persona.id)}&view=conversations`);
-                              }}
-                              className="row-interactive flex h-6 w-full items-center pr-2 pl-[23px] text-left text-[11px] leading-4 text-ink-faint tabular-nums transition-colors hover:text-ink"
-                            >
-                              <span className="min-w-0 truncate">
-                                +{overflowThreadCount} · {t('persona.allConversations')}
-                              </span>
-                            </button>
-                          </li>
-                        ) : showAllThreads && allThreads.length > SIDEBAR_PERSONA_INLINE_THREAD_LIMIT ? (
-                          <li>
-                            <button
-                              type="button"
-                              data-persona-subthreads-less={persona.id}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setShowAllThreadsFor((prev) => {
-                                  const copy = { ...prev };
-                                  delete copy[persona.id];
-                                  return copy;
-                                });
-                              }}
-                              className="row-interactive flex h-6 w-full items-center pr-2 pl-[23px] text-left text-[11px] leading-4 text-ink-faint transition-colors hover:text-ink"
-                            >
-                              <span className="min-w-0 truncate">{t('sidebar.persona.showLess')}</span>
-                            </button>
-                          </li>
-                        ) : null}
+                        })()}
                       </ul>
                     ) : null}
                   </li>
@@ -1308,6 +1179,34 @@ export function SidebarPersonaSection({
           ariaLabel={t('persona.rowActionsAria', { name: rowMenu.persona.name })}
           overlayId="persona-sidebar-row-menu"
           dataAttribute="data-persona-row-menu"
+        />
+      ) : null}
+
+      {switcherState !== null ? (
+        <PersonaConversationSwitcher
+          anchor={switcherState.anchor}
+          align="end"
+          persona={switcherState.persona}
+          sessions={mergePersonaConversations(
+            [
+              ...(switcherQuery.data?.items ?? []).filter((item) => sessionMatchesPrivateFilter(item, privateFilter)),
+              ...(serverSessionsByPersona.get(switcherState.persona.id) ?? []),
+            ],
+            filteredSessions,
+            switcherState.persona.id,
+          )}
+          status={
+            switcherQuery.isError
+              ? { error: switcherQuery.error instanceof Error ? switcherQuery.error.message : String(switcherQuery.error) }
+              : switcherQuery.isPending && (serverSessionsByPersona.get(switcherState.persona.id)?.length ?? 0) === 0
+                ? { loading: true }
+                : undefined
+          }
+          activeSessionId={activeSessionId}
+          workspaceOptions={workspaceOptions}
+          seen={seen}
+          roomNames={roomNames}
+          onClose={() => { setSwitcherState(null); }}
         />
       ) : null}
 

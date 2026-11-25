@@ -122,7 +122,7 @@ function InlineApprovalCard({
               type="button"
               data-mobile-approve-btn={approvalId}
               onClick={() => { onResolve(approvalId, 'approved'); }}
-              className="inline-flex h-11 items-center gap-1.5 rounded-full bg-accent px-4 text-[14px] font-medium text-primary-foreground transition-colors hover:bg-accent-deep"
+              className="inline-flex h-11 items-center gap-1.5 rounded-full bg-accent px-4 text-[14px] leading-5 font-normal text-primary-foreground transition-colors hover:bg-accent-deep"
             >
               <Icon name="check" size={14} />
               <span>{t('mobile.approval.approve')}</span>
@@ -131,7 +131,7 @@ function InlineApprovalCard({
               type="button"
               data-mobile-reject-btn={approvalId}
               onClick={() => { setRejecting(true); }}
-              className="inline-flex h-11 items-center gap-1.5 rounded-full border border-hairline bg-paper px-4 text-[14px] font-medium text-ink-soft transition-colors hover:text-ink"
+              className="inline-flex h-11 items-center gap-1.5 rounded-full border border-hairline bg-paper px-4 text-[14px] leading-5 font-normal text-ink-soft transition-colors hover:text-ink"
             >
               <Icon name="cross" size={14} />
               <span>{t('mobile.approval.reject')}</span>
@@ -141,7 +141,7 @@ function InlineApprovalCard({
           <button
             type="button"
             onClick={onOpenWorkbench}
-            className="inline-flex h-11 items-center gap-1 rounded-full border border-hairline bg-paper px-4 text-[14px] font-medium text-ink-soft transition-colors hover:text-ink"
+            className="inline-flex h-11 items-center gap-1 rounded-full border border-hairline bg-paper px-4 text-[14px] leading-5 font-normal text-ink-soft transition-colors hover:text-ink"
           >
             <span>{t('mobile.approval.details')}</span>
             <Icon name="chevron" size={12} />
@@ -166,7 +166,7 @@ function InlineApprovalCard({
 
 function AssistantBubble({ text }: { readonly text: string }) {
   return (
-    <div data-mobile-msg="assistant" className="w-full text-[15.5px] leading-[1.6] text-ink">
+    <div data-mobile-msg="assistant" className="kiki-prose w-full text-ink">
       <Markdown text={text} />
     </div>
   );
@@ -223,7 +223,7 @@ export function MobileTranscript({
     if (block.kind === 'user') {
       return (
         <div key={block.id} data-mobile-msg="user" className="flex justify-end">
-          <div className="max-w-[84%] rounded-[20px] rounded-br-[6px] bg-bubble-user px-4 py-2.5 text-[15px] leading-[1.55] text-ink whitespace-pre-wrap break-words">
+          <div className="kiki-user-text max-w-[84%] rounded-[20px] rounded-br-[6px] bg-bubble-user px-4 py-2.5 leading-[1.7] text-ink whitespace-pre-wrap break-words">
             {block.text}
           </div>
         </div>
@@ -279,7 +279,7 @@ export function MobileTranscript({
               data-mobile-load-older=""
               disabled={loadingOlder}
               onClick={onLoadOlder}
-              className="h-11 rounded-full border border-hairline bg-panel px-4 text-[13px] font-medium text-ink-soft transition-colors hover:border-hairline-strong disabled:opacity-55"
+              className="h-11 rounded-full border border-hairline bg-panel px-4 text-[13px] leading-5 font-normal text-ink-soft transition-colors hover:border-hairline-strong disabled:opacity-55"
             >
               {loadingOlder ? t('mobile.chat.loading') : t('mobile.chat.loadOlder')}
             </button>
@@ -287,7 +287,7 @@ export function MobileTranscript({
         ) : null}
 
         {showGreeting ? (
-          <div data-mobile-msg="greeting" className="w-full text-[15.5px] leading-[1.6] text-ink">
+          <div data-mobile-msg="greeting" className="kiki-prose w-full text-ink">
             <Markdown text={greeting.text} />
           </div>
         ) : null}
@@ -298,24 +298,24 @@ export function MobileTranscript({
             data-mobile-load-error=""
             className="mx-auto my-8 flex w-full max-w-[360px] flex-col items-center rounded-2xl border border-danger/30 bg-danger/5 px-4 py-5 text-center"
           >
-            <p className="text-[14px] font-medium text-danger">{t('transcript.couldNotOpen')}</p>
-            <p className="mt-1.5 break-words font-mono text-[12px] text-danger/80">{loadError}</p>
+            <p className="text-[14px] leading-5 font-normal text-danger">{t('transcript.couldNotOpen')}</p>
+            <p className="mt-1.5 break-words font-mono text-[12px] leading-4 text-danger">{loadError}</p>
             {onRetryLoad !== undefined ? (
               <button
                 type="button"
                 data-mobile-retry-load=""
                 onClick={onRetryLoad}
-                className="mt-3.5 inline-flex h-11 items-center justify-center rounded-full bg-accent px-5 text-[13.5px] font-medium text-primary-foreground transition-colors hover:bg-accent-deep"
+                className="mt-3.5 inline-flex h-11 items-center justify-center rounded-full bg-accent px-5 text-[14px] leading-5 font-normal text-primary-foreground transition-colors hover:bg-accent-deep"
               >
                 {t('common.retry')}
               </button>
             ) : null}
           </div>
         ) : !loaded ? (
-          <p className="py-12 text-center text-[13.5px] text-ink-faint">{t('mobile.chat.loading')}</p>
+          <p className="py-12 text-center text-[13px] leading-5 text-ink-faint">{t('mobile.chat.loading')}</p>
         ) : entries.length === 0 && !showGreeting ? (
           <div className="py-16 text-center">
-            <p className="font-display text-[20px] text-ink-soft">{t('mobile.chat.emptyHint')}</p>
+            <p className="font-sans text-[18px] leading-[26px] font-normal text-ink-soft">{t('mobile.chat.emptyHint')}</p>
           </div>
         ) : (
           entries.map((entry) => {
@@ -360,7 +360,7 @@ export function MobileTranscript({
               onClick={() => { onOpenHood('diff'); }}
               className="flex min-h-11 w-full items-center justify-between border-b border-hairline/65 px-3.5 text-left transition-colors hover:bg-ink/[0.02]"
             >
-              <span className="text-[13.5px] font-semibold text-ink">
+              <span className="text-[13px] leading-5 font-normal text-ink">
                 {t('mobile.chat.changes', { count: fileChanges.length })}
               </span>
               <Icon name="chevron" size={12} className="text-ink-faint" />
@@ -388,7 +388,7 @@ export function MobileTranscript({
                 <button
                   type="button"
                   onClick={() => { onOpenHood('diff'); }}
-                  className="flex min-h-11 w-full items-center px-3.5 text-left text-[12.5px] text-ink-faint"
+                  className="flex min-h-11 w-full items-center px-3.5 text-left text-[12px] leading-4 text-ink-faint"
                 >
                   {t('mobile.chat.changesMore', { count: fileChanges.length - 4 })}
                 </button>

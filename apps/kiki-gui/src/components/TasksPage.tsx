@@ -79,7 +79,7 @@ function CopyTextButton({ text, label }: { readonly text: string; readonly label
       type="button"
       data-task-copy
       onClick={copy}
-      className="inline-flex min-h-6 items-center gap-1 rounded-md px-1.5 text-[11.5px] font-medium text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-2.5"
+      className="inline-flex min-h-6 items-center gap-1 rounded-md px-1.5 text-[12px] leading-4 font-normal text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-2.5"
     >
       <Icon name={copied ? 'check' : 'copy'} size={12} />
       <span>{copied ? t('cb.copied') : label}</span>
@@ -148,11 +148,11 @@ function TaskDetail({
       {split ? (
         <div className="flex flex-wrap items-start justify-between gap-2 border-b border-hairline pb-3">
           <div className="min-w-0 flex-1">
-            <h2 className="truncate font-display text-[16px] font-semibold leading-6 text-ink" title={current.description}>
+            <h2 className="truncate font-sans text-[16px] leading-6 font-bold text-ink" title={current.description}>
               {current.description}
             </h2>
-            <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[12px] text-ink-faint tabular-nums">
-              <span className={current.status === 'failed' ? 'font-medium text-danger' : current.status === 'running' ? 'font-medium text-selected-ink' : 'text-ink-soft'}>
+            <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[12px] leading-4 text-ink-faint tabular-nums">
+              <span className={current.status === 'failed' ? 'font-normal text-danger' : current.status === 'running' ? 'font-normal text-selected-ink' : 'text-ink-soft'}>
                 {t(`rail.taskStatus.${current.status}`)}
               </span>
               <span aria-hidden>·</span>
@@ -172,7 +172,7 @@ function TaskDetail({
               disabled={cancelling}
               onClick={onStop}
               title={t('rail.stopTitle')}
-              className="shrink-0 rounded-md border border-hairline px-2.5 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
+              className="shrink-0 rounded-md border border-hairline px-2.5 py-1 text-[12px] leading-4 font-normal text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
             >
               {cancelling ? t('tasks.stopping') : t('rail.stop')}
             </button>
@@ -210,19 +210,19 @@ function TaskDetail({
       {current.command !== undefined ? (
         <div>
           <div className="mb-1 flex items-center justify-between gap-2">
-            <p className="text-[12px] font-medium text-ink-soft">
+            <p className="text-[12px] leading-4 font-normal text-ink-soft">
               {t('tasks.field.command')}
             </p>
             <CopyTextButton text={current.command} label={t('tasks.detail.copyCommand')} />
           </div>
-          <pre className="overflow-x-auto rounded-lg bg-ink/[0.04] px-3 py-2 font-mono text-[11.5px] leading-relaxed break-all whitespace-pre-wrap text-ink">
+          <pre className="overflow-x-auto rounded-lg bg-ink/[0.04] px-3 py-2 font-mono text-[12px] leading-4 break-all whitespace-pre-wrap text-ink">
             {current.command}
           </pre>
         </div>
       ) : null}
       <div>
         <div className="mb-1 flex items-center justify-between gap-2">
-          <p className="text-[12px] font-medium text-ink-soft">
+          <p className="text-[12px] leading-4 font-normal text-ink-soft">
             {t('tasks.field.output')}
           </p>
           {output !== undefined && output !== '' ? (
@@ -230,17 +230,17 @@ function TaskDetail({
           ) : null}
         </div>
         {detailQuery.isPending && output === undefined ? (
-          <p className="flex items-center gap-2 text-[11.5px] text-ink-faint">
+          <p className="flex items-center gap-2 text-[12px] leading-4 text-ink-faint">
             <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
             {t('tasks.outputLoading')}
           </p>
         ) : detailQuery.isError && output === undefined ? (
-          <div role="alert" data-task-output-error className="flex flex-wrap items-center gap-2 text-[12px] text-ink-soft">
+          <div role="alert" data-task-output-error className="flex flex-wrap items-center gap-2 text-[12px] leading-4 text-ink-soft">
             <span>{errorText(locale, detailQuery.error)}</span>
             <button
               type="button"
               onClick={() => { void detailQuery.refetch(); }}
-              className="font-medium text-ink underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-selected-ink"
+              className="font-normal text-ink underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-selected-ink"
             >
               {t('common.retry')}
             </button>
@@ -248,12 +248,12 @@ function TaskDetail({
         ) : output !== undefined && output !== '' ? (
           <pre
             data-task-output
-            className={`${split ? 'max-h-[420px]' : 'max-h-72'} overflow-auto rounded-lg bg-ink/[0.04] px-3 py-2.5 font-mono text-[11.5px] leading-relaxed whitespace-pre text-ink-soft`}
+            className={`${split ? 'max-h-[420px]' : 'max-h-72'} overflow-auto rounded-lg bg-ink/[0.04] px-3 py-2.5 font-mono text-[12px] leading-4 whitespace-pre text-ink-soft`}
           >
             {output}
           </pre>
         ) : (
-          <p className="text-[11.5px] text-ink-faint">{t('tasks.noOutput')}</p>
+          <p className="text-[12px] leading-4 text-ink-faint">{t('tasks.noOutput')}</p>
         )}
       </div>
     </div>
@@ -339,7 +339,7 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     const statusTone = task.status === 'failed'
       ? 'text-danger'
       : isRunning
-        ? 'text-selected-ink font-medium'
+        ? 'text-selected-ink font-normal'
         : 'text-ink-soft';
     return (
       <li
@@ -361,13 +361,13 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
             >
               <span data-task-status={task.status} className={statusTone}>{t(`rail.taskStatus.${task.status}`)}</span>
               <span aria-hidden className="text-ink-faint"> · </span>
-              <span className="font-medium">{task.description}</span>
+              <span className="font-normal">{task.description}</span>
             </button>
           ) : (
             <span className="min-w-0 flex-1 truncate text-[13px] text-ink" title={task.description}>
               <span data-task-status={task.status} className={statusTone}>{t(`rail.taskStatus.${task.status}`)}</span>
               <span aria-hidden className="text-ink-faint"> · </span>
-              <span className="font-medium">{task.description}</span>
+              <span className="font-normal">{task.description}</span>
             </span>
           )}
           <span className="hidden shrink-0 text-[12px] text-ink-faint tabular-nums sm:inline">
@@ -379,7 +379,7 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
               disabled={pendingCancelId === task.id}
               onClick={() => { stopTask(task.id); }}
               title={t('rail.stopTitle')}
-              className="shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-3"
+              className="shrink-0 rounded-md px-2 py-1 text-[12px] leading-4 font-normal text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-3"
             >
               {pendingCancelId === task.id ? t('tasks.stopping') : t('rail.stop')}
             </button>
@@ -405,7 +405,7 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
           </button>
         </div>
         {task.command !== undefined ? (
-          <p className="mt-0.5 truncate font-mono text-[11px] text-ink-faint" title={task.command}>
+          <p className="mt-0.5 truncate font-mono text-[12px] leading-4 text-ink-faint" title={task.command}>
             {task.command}
           </p>
         ) : null}
@@ -420,7 +420,7 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   };
   const group = (key: 'running' | 'finished', rows: readonly Task[]) => (rows.length === 0 ? null : (
     <section data-task-group={key} aria-labelledby={`task-group-${key}`}>
-      <h2 id={`task-group-${key}`} className="mb-1 flex items-baseline gap-2 text-[12px] font-medium text-ink-soft">
+      <h2 id={`task-group-${key}`} className="mb-1 flex items-baseline gap-2 text-[12px] leading-4 font-normal text-ink-soft">
         {t(key === 'running' ? 'tasks.group.running' : 'tasks.group.finished')}
         <span className="text-ink-faint tabular-nums">{rows.length}</span>
       </h2>
@@ -442,7 +442,7 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
             </p>
           ) : tasksQuery.isError ? (
             <div role="alert" data-tasks-error className="py-4 text-[13px]">
-              <p className="font-medium text-ink">{t('tasks.loadFailed')}</p>
+              <p className="font-normal text-ink">{t('tasks.loadFailed')}</p>
               <p className="mt-1 text-[12px] text-ink-soft">{errorText(locale, tasksQuery.error)}</p>
               <button
                 type="button"
@@ -475,7 +475,7 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                         aria-pressed={filter === candidate}
                         className={`rounded-[5px] px-3 py-1 text-[12px] transition-colors pointer-coarse:min-h-11 ${
                           filter === candidate
-                            ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                            ? 'bg-panel font-normal text-ink shadow-[var(--kiki-sheet-shadow)]'
                             : 'text-ink-soft hover:text-ink'
                         }`}
                       >

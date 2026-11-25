@@ -39,13 +39,12 @@
  * spacing utility from it, so this needs no further wiring — the declaration
  * exists here only to document that the variable is part of the contract. */
 
-/* Assistant prose face (Settings → Appearance). Serif Newsreader is the
- * default set in index.css; `sans` swaps the prose stack for the UI sans so
- * long answers read in the same face as the chrome. A typed family
- * (`--kiki-prose-user`, from the skin tweaks) wins over both. Only the family moves —
- * size, measure and code inside prose keep their own rules. */
-:root[data-kiki-prose='sans'] :is(.kiki-prose, .thinking-row) {
-  --kiki-prose-font: var(--kiki-prose-user, var(--font-sans));
+/* Assistant prose face (Settings → Appearance). UI sans is the default set
+ * in index.css; `serif` swaps the prose stack for Newsreader Latin editorial
+ * reading while keeping Chinese on the clean sans fallback. A typed family
+ * (`--kiki-prose-user`, from the skin tweaks) wins over both. */
+:root[data-kiki-prose='serif'] :is(.kiki-prose, .thinking-row) {
+  --kiki-prose-font: var(--kiki-prose-user, var(--font-serif));
 }
 
 /* ---- window background ----

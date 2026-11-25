@@ -91,9 +91,9 @@ export function UsageNavigation({
             data-usage-nav-item={id}
             onClick={() => { select(id); }}
             onKeyDown={(event) => { onKeyDown(event, index); }}
-            className={`-mb-px inline-flex min-h-9 shrink-0 items-center gap-1.5 border-b-2 px-3 py-1.5 text-[13.5px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${
+            className={`-mb-px inline-flex min-h-10 shrink-0 items-center gap-1.5 border-b-2 px-3 py-1.5 text-[13px] leading-5 font-normal transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${
               active
-                ? 'border-ink font-medium text-ink'
+                ? 'border-ink text-ink'
                 : 'border-transparent text-ink-soft hover:border-hairline-strong hover:text-ink'
             }`}
           >

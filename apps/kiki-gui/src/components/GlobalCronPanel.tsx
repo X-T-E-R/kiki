@@ -220,7 +220,7 @@ function LastFire({ at }: { readonly at: string | null }) {
 }
 
 const CHIP_BASE =
-  'shrink-0 rounded-sm border border-transparent px-1.5 py-px text-[11.5px] font-medium';
+  'shrink-0 rounded-sm border border-transparent px-1.5 py-px text-[12px] leading-4 font-normal';
 
 /** Fine-hover reveal rule: visible on touch and keyboard focus, quiet at rest on hover-capable desktops. */
 const ROW_ACTION_QUIET =
@@ -294,9 +294,9 @@ function CronNextCheckTimeline({
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-          <h2 className="text-[12px] font-medium text-section-ink">{t('cron.timeline.heading')}</h2>
-          <span className="text-[11.5px] text-ink-faint">{t('cron.timeline.nextOnly')}</span>
-          <span className="text-[11.5px] text-ink-faint tabular-nums" data-cron-timeline-in-window>
+          <h2 className="text-[12px] leading-4 font-normal text-section-ink">{t('cron.timeline.heading')}</h2>
+          <span className="text-[12px] leading-4 text-ink-faint">{t('cron.timeline.nextOnly')}</span>
+          <span className="text-[12px] leading-4 text-ink-faint tabular-nums" data-cron-timeline-in-window>
             · {tp('cron.timeline.inWindow', projection.inWindow.length)}
           </span>
           {projection.overdue.length > 0 ? (
@@ -304,18 +304,18 @@ function CronNextCheckTimeline({
               type="button"
               data-cron-timeline-overdue
               onClick={() => { onFocusTask(projection.overdue[0]!); }}
-              className="rounded-sm bg-amber-card px-1.5 py-px text-[11.5px] font-medium text-amber-ink tabular-nums transition-opacity hover:opacity-85 focus-visible:outline-2 focus-visible:outline-selected-ink"
+              className="rounded-sm bg-amber-card px-1.5 py-px text-[12px] leading-4 font-normal text-amber-ink tabular-nums transition-opacity hover:opacity-85 focus-visible:outline-2 focus-visible:outline-selected-ink"
             >
               {tp('cron.timeline.overdue', projection.overdue.length)}
             </button>
           ) : null}
           {projection.later.length > 0 ? (
-            <span data-cron-timeline-later className="text-[11.5px] text-ink-faint tabular-nums">
+            <span data-cron-timeline-later className="text-[12px] leading-4 text-ink-faint tabular-nums">
               · {tp('cron.timeline.later', projection.later.length)}
             </span>
           ) : null}
           {hasMorePages ? (
-            <span data-cron-timeline-more className="text-[11.5px] text-ink-faint">
+            <span data-cron-timeline-more className="text-[12px] leading-4 text-ink-faint">
               · {t('cron.timeline.morePages')}
             </span>
           ) : null}
@@ -334,8 +334,8 @@ function CronNextCheckTimeline({
                 data-cron-window={candidate}
                 aria-pressed={active}
                 onClick={() => { onChangeWindow(candidate); }}
-                className={`h-6 rounded-[4px] px-2 text-[11.5px] tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink ${
-                  active ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
+                className={`h-6 rounded-[4px] px-2 text-[12px] leading-4 tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink ${
+                  active ? 'bg-panel font-normal text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
                 }`}
               >
                 {t(candidate === '24h' ? 'cron.timeline.window24h' : 'cron.timeline.window7d')}
@@ -353,7 +353,7 @@ function CronNextCheckTimeline({
         <div aria-hidden className="pointer-events-none absolute top-0 bottom-[18px] left-0 w-[1.5px] bg-accent" />
         <span
           data-cron-timeline-now
-          className="pointer-events-none absolute bottom-0 left-0 text-[10.5px] font-medium text-accent-ink tabular-nums"
+          className="pointer-events-none absolute bottom-0 left-0 text-[12px] leading-4 font-normal text-accent-ink tabular-nums"
         >
           {t('cron.timeline.now')}
         </span>
@@ -367,7 +367,7 @@ function CronNextCheckTimeline({
             className="pointer-events-none absolute top-1 bottom-[18px] w-px bg-hairline/70"
           >
             <span
-              className={`absolute top-[calc(100%+4px)] text-[10.5px] whitespace-nowrap text-ink-faint tabular-nums ${
+              className={`absolute top-[calc(100%+4px)] text-[12px] leading-4 whitespace-nowrap text-ink-faint tabular-nums ${
                 tick.fraction >= 0.98 ? 'right-0' : '-translate-x-1/2'
               }`}
             >
@@ -379,7 +379,7 @@ function CronNextCheckTimeline({
         {projection.inWindow.length === 0 ? (
           <p
             data-cron-timeline-empty
-            className="pointer-events-none absolute inset-x-0 top-2.5 text-center text-[11.5px] text-ink-faint"
+            className="pointer-events-none absolute inset-x-0 top-2.5 text-center text-[12px] leading-4 text-ink-faint"
           >
             {t('cron.timeline.emptyWindow')}
           </p>
@@ -440,8 +440,8 @@ function CronNextCheckTimeline({
 
       <div className="mt-1.5 min-h-[18px]">
         {hoveredMarker !== undefined && hoveredMarker.task.next_fire_at !== null ? (
-          <p data-cron-timeline-readout className="flex min-w-0 items-center gap-x-2 truncate text-[11.5px] leading-[18px] text-ink-soft tabular-nums">
-            <span className="font-medium text-ink">
+          <p data-cron-timeline-readout className="flex min-w-0 items-center gap-x-2 truncate text-[12px] leading-4 text-ink-soft tabular-nums">
+            <span className="font-normal text-ink">
               {localizedCronSchedule(locale, hoveredMarker.task.cron, t) ?? t('cron.schedule.custom')}
             </span>
             <span aria-hidden>·</span>
@@ -460,7 +460,7 @@ function Fact({ label, children }: { readonly label: string; readonly children: 
   return (
     <div className="min-w-0 sm:grid sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-3 sm:py-0.5">
       <dt className="text-[12px] text-ink-faint sm:pt-px">{label}</dt>
-      <dd className="min-w-0 text-[12.5px] leading-relaxed text-ink-soft">{children}</dd>
+      <dd className="min-w-0 text-[13px] leading-5 text-ink-soft">{children}</dd>
     </div>
   );
 }
@@ -492,7 +492,7 @@ function CronDetail({ task, sessionTitle, workspaceName, pending, onEdit, onRun,
       className="mt-3 space-y-3 border-t border-hairline/80 pt-3"
     >
       <div className="min-w-0">
-        <p className="text-[11px] text-ink-faint">{t('cron.detail.prompt')}</p>
+        <p className="text-[12px] leading-4 text-ink-faint">{t('cron.detail.prompt')}</p>
         <CronDetailPrompt task={task} />
       </div>
       <dl className="space-y-1.5">
@@ -505,13 +505,13 @@ function CronDetail({ task, sessionTitle, workspaceName, pending, onEdit, onRun,
             because that is the one fact the schedule itself cannot carry. */}
         <Fact label={t('cron.detail.delivery')}>
           {t(`cron.delivery.${cronDeliveryMode(task)}`)}
-          <span className="mt-0.5 block text-[11.5px] leading-relaxed text-ink-faint">
+          <span className="mt-0.5 block text-[12px] leading-4 text-ink-faint">
             {t(`cron.delivery.hint.${cronDeliveryMode(task)}`)}
           </span>
         </Fact>
         <Fact label={t('cron.detail.expression')}>
           <span className="font-mono text-[12px] text-ink">{task.cron}</span>
-          <span className="mt-0.5 block text-[11.5px] leading-relaxed text-ink-faint">
+          <span className="mt-0.5 block text-[12px] leading-4 text-ink-faint">
             {t('cron.detail.expressionHint')}
           </span>
         </Fact>
@@ -519,18 +519,18 @@ function CronDetail({ task, sessionTitle, workspaceName, pending, onEdit, onRun,
           {task.session_id === null ? (
             <>
               <span className="text-ink-faint">{t('cron.detail.unbound')}</span>
-              <span className="mt-0.5 block text-[11.5px] leading-relaxed text-ink-faint">
+              <span className="mt-0.5 block text-[12px] leading-4 text-ink-faint">
                 {t('cron.detail.unboundHint')}
               </span>
             </>
           ) : sessionTitle === undefined ? (
-            <span className="font-mono text-[11.5px]">{task.session_id}</span>
+            <span className="font-mono text-[12px] leading-4">{task.session_id}</span>
           ) : (
             <button
               type="button"
               data-cron-detail-session={task.session_id}
               onClick={() => { onOpenSession(task.session_id as string); }}
-              className="max-w-full truncate text-left font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline"
+              className="max-w-full truncate text-left font-normal text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline"
               title={sessionTitle}
             >
               {sessionTitle}
@@ -546,7 +546,7 @@ function CronDetail({ task, sessionTitle, workspaceName, pending, onEdit, onRun,
           data-cron-action="edit"
           disabled={pending}
           onClick={onEdit}
-          className="text-[12.5px] font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline disabled:opacity-50"
+          className="text-[13px] leading-5 font-normal text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline disabled:opacity-50"
         >
           {t('cron.action.edit')}
         </button>
@@ -555,7 +555,7 @@ function CronDetail({ task, sessionTitle, workspaceName, pending, onEdit, onRun,
           data-cron-action="run"
           disabled={pending}
           onClick={() => { onRun(task); }}
-          className="text-[12.5px] font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline disabled:opacity-50"
+          className="text-[13px] leading-5 font-normal text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline disabled:opacity-50"
         >
           {t('cron.action.run')}
         </button>
@@ -564,7 +564,7 @@ function CronDetail({ task, sessionTitle, workspaceName, pending, onEdit, onRun,
           data-cron-action="delete"
           disabled={pending}
           onClick={() => { onDelete(task); }}
-          className="text-[12.5px] text-danger/80 underline-offset-2 transition-colors hover:text-danger hover:underline disabled:opacity-50"
+          className="text-[13px] leading-5 text-danger underline-offset-2 transition-colors hover:text-danger hover:underline disabled:opacity-50"
         >
           {t('cron.action.delete')}
         </button>
@@ -634,7 +634,7 @@ function CronTaskRow({
       data-cron-action="pause"
       disabled={pending}
       onClick={() => { onPauseResume(task, !task.paused); }}
-      className={`inline-flex h-8 shrink-0 items-center justify-center rounded-md px-2.5 text-[12.5px] font-medium text-ink-soft transition-all hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${
+      className={`inline-flex h-8 shrink-0 items-center justify-center rounded-md px-2.5 text-[13px] leading-5 font-normal text-ink-soft transition-all hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${
         expanded || pending ? 'opacity-100' : ROW_ACTION_QUIET
       }`}
     >
@@ -652,7 +652,7 @@ function CronTaskRow({
       className="inline-flex min-w-0 items-center gap-1.5 rounded text-left transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
     >
       <Chevron open={expanded} />
-      <span data-cron-schedule className="min-w-0 text-[13.5px] font-medium text-ink">
+      <span data-cron-schedule className="min-w-0 text-[13px] leading-5 font-normal text-ink">
         {schedule}
       </span>
     </button>
@@ -684,7 +684,7 @@ function CronTaskRow({
             type="button"
             data-cron-session={sessionId}
             onClick={() => { onOpenSession(sessionId); }}
-            className="max-w-56 truncate font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline"
+            className="max-w-56 truncate font-normal text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline"
             title={shownTitle}
           >
             {shownTitle}
@@ -728,11 +728,11 @@ function CronTaskRow({
             {task.next_fire_at !== null ? (
               <>
                 <span className="sr-only">{t('cron.nextFire')} </span>
-                <span className={`font-display text-[15px] font-semibold tabular-nums ${overdue ? 'text-amber-ink' : 'text-ink'}`}>
+                <span className={`font-sans text-[16px] leading-6 font-normal tabular-nums ${overdue ? 'text-amber-ink' : 'text-ink'}`}>
                   <NextFire at={task.next_fire_at} />
                 </span>
                 {overdue ? (
-                  <span data-cron-overdue className="ml-1.5 text-[11px] font-medium text-amber-ink">{t('cron.status.overdue')}</span>
+                  <span data-cron-overdue className="ml-1.5 text-[12px] leading-4 font-normal text-amber-ink">{t('cron.status.overdue')}</span>
                 ) : null}
               </>
             ) : (
@@ -776,17 +776,17 @@ function CronTaskRow({
         {/* When: next scheduled instant + muted last run, under shared column heading. */}
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 lg:flex-col lg:gap-0.5">
           {task.next_fire_at !== null ? (
-            <span className={`font-display text-[16px] leading-tight font-semibold tabular-nums ${overdue ? 'text-amber-ink' : 'text-ink'}`}>
+            <span className={`font-sans text-[16px] leading-6 font-normal tabular-nums ${overdue ? 'text-amber-ink' : 'text-ink'}`}>
               <span className="sr-only">{t('cron.nextFire')} </span>
               <NextFire at={task.next_fire_at} />
             </span>
           ) : (
-            <span className="text-[12.5px] font-medium text-ink-faint">{t('cron.status.paused')}</span>
+            <span className="text-[13px] leading-5 font-normal text-ink-faint">{t('cron.status.paused')}</span>
           )}
           {overdue ? (
-            <span data-cron-overdue className="text-[11px] font-medium text-amber-ink">{t('cron.status.overdue')}</span>
+            <span data-cron-overdue className="text-[12px] leading-4 font-normal text-amber-ink">{t('cron.status.overdue')}</span>
           ) : null}
-          <span className="text-[11.5px] text-ink-faint tabular-nums">
+          <span className="text-[12px] leading-4 text-ink-faint tabular-nums">
             <span className="sr-only">{t('cron.lastFire')}: </span>
             <LastFire at={task.last_fired_at} />
           </span>
@@ -805,7 +805,7 @@ function CronTaskRow({
           {/* A rule the localizer cannot name reads as a custom schedule with
               the raw expression as the fact under it, never as the bold title. */}
           {customSchedule ? (
-            <p className="mt-0.5 font-mono text-[11.5px] text-ink-faint" title={task.cron}>{task.cron}</p>
+            <p className="mt-0.5 font-mono text-[12px] leading-4 text-ink-faint" title={task.cron}>{task.cron}</p>
           ) : null}
           <p className="mt-1 line-clamp-2 text-[13px] leading-relaxed text-ink-soft">
             {task.prompt_preview.replace('…(truncated)', '…')}
@@ -863,18 +863,18 @@ function CronDetailPrompt({ task }: { readonly task: CronTask }) {
   });
   if (detail.isError) {
     return (
-      <p role="status" data-cron-detail-error className="mt-0.5 text-[12.5px] text-ink-faint">
+      <p role="status" data-cron-detail-error className="mt-0.5 text-[13px] leading-5 text-ink-faint">
         {t('cron.form.detailUnavailable')}
       </p>
     );
   }
   if (detail.data === undefined) {
-    return <p data-cron-detail-loading className="mt-0.5 text-[12.5px] text-ink-faint">{t('cron.panel.loading')}</p>;
+    return <p data-cron-detail-loading className="mt-0.5 text-[13px] leading-5 text-ink-faint">{t('cron.panel.loading')}</p>;
   }
   return (
     <p
       data-cron-detail-prompt
-      className="mt-0.5 max-h-64 overflow-y-auto whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-ink-soft"
+      className="mt-0.5 max-h-64 overflow-y-auto whitespace-pre-wrap break-words text-[13px] leading-5 text-ink-soft"
     >
       {detail.data.prompt}
     </p>
@@ -1141,7 +1141,7 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
   const section = (key: 'active' | 'paused', rows: readonly CronTask[]) => (rows.length === 0 ? null : (
     <section data-cron-section={key} aria-labelledby={`cron-section-${key}`}>
       <div className="mb-2 flex items-baseline justify-between gap-2">
-        <h2 id={`cron-section-${key}`} className="flex items-baseline gap-2 text-[12px] font-medium text-section-ink">
+        <h2 id={`cron-section-${key}`} className="flex items-baseline gap-2 text-[12px] leading-4 font-normal text-section-ink">
           {t(key === 'active' ? 'cron.section.active' : 'cron.section.paused')}
           <span className="text-ink-faint tabular-nums">{rows.length}</span>
         </h2>
@@ -1149,7 +1149,7 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
       {key === 'active' ? (
         <div
           aria-hidden
-          className="hidden pb-1.5 text-[11px] font-medium text-ink-faint lg:grid lg:grid-cols-[9.5rem_minmax(0,1fr)_5.5rem] lg:gap-x-6"
+          className="hidden pb-1.5 text-[12px] leading-4 font-normal text-ink-faint lg:grid lg:grid-cols-[9.5rem_minmax(0,1fr)_5.5rem] lg:gap-x-6"
         >
           <span>{t('cron.column.timing')}</span>
           <span>{t('cron.column.rule')}</span>
@@ -1193,7 +1193,7 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
                 type="button"
                 data-cron-session-clear
                 onClick={clearSessionScope}
-                className="shrink-0 font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline"
+                className="shrink-0 font-normal text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline"
               >
                 {t('cron.scope.sessionClear')}
               </button>
@@ -1212,13 +1212,13 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
         {tasksQuery.isPending ? (
           <div
             role="status"
-            className="flex h-full items-center justify-center gap-2 text-[12.5px] text-ink-faint"
+            className="flex h-full items-center justify-center gap-2 text-[13px] leading-5 text-ink-faint"
           >
             <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
             {t('cron.panel.loading')}
           </div>
         ) : tasksQuery.isError ? (
-          <p className={`mx-auto ${PAGE_WIDTH.split} py-10 text-[12.5px] leading-5 text-ink-soft`} data-cron-error>
+          <p className={`mx-auto ${PAGE_WIDTH.split} py-10 text-[13px] leading-5 text-ink-soft`} data-cron-error>
             {t('cron.panel.error.title')}
             {' · '}
             {cronErrorText(tasksQuery.error, t, locale)}
@@ -1226,7 +1226,7 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
             <button
               type="button"
               onClick={() => { void tasksQuery.refetch(); }}
-              className="font-medium text-ink underline underline-offset-2"
+              className="font-normal text-ink underline underline-offset-2"
             >
               {t('common.retry')}
             </button>
@@ -1234,14 +1234,14 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
         ) : tasks.length === 0 && sessionScope !== undefined ? (
           <div data-cron-session-empty className={`mx-auto ${PAGE_WIDTH.split} py-10`}>
             <p className="text-[13px] text-ink-soft">{t('cron.scope.sessionEmpty')}</p>
-            <button type="button" onClick={clearSessionScope} className="mt-1 text-[13px] font-medium text-ink underline underline-offset-2">
+            <button type="button" onClick={clearSessionScope} className="mt-1 text-[13px] font-normal text-ink underline underline-offset-2">
               {t('cron.scope.sessionClear')}
             </button>
           </div>
         ) : tasks.length === 0 && scope !== undefined && allTasks.length > 0 ? (
           <div data-cron-scope-empty className={`mx-auto ${PAGE_WIDTH.split} py-10`}>
             <p className="text-[13px] text-ink-soft">{t('cron.scope.empty')}</p>
-            <button type="button" onClick={() => { setScope(undefined); }} className="mt-1 text-[13px] font-medium text-ink underline underline-offset-2">
+            <button type="button" onClick={() => { setScope(undefined); }} className="mt-1 text-[13px] font-normal text-ink underline underline-offset-2">
               {t('cron.scope.showAll')}
             </button>
           </div>
@@ -1253,7 +1253,7 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
             <span className="flex h-11 w-11 items-center justify-center rounded-full border border-hairline bg-panel text-ink-faint">
               <ClockGlyph className="h-5 w-5" />
             </span>
-            <p className="text-[13px] font-medium text-ink">{t('cron.panel.empty.title')}</p>
+            <p className="text-[13px] font-normal text-ink">{t('cron.panel.empty.title')}</p>
             <p className="max-w-md text-[12px] leading-relaxed text-ink-soft">
               {t('cron.panel.empty.description')}
             </p>

@@ -30,8 +30,8 @@ import { DisclosureChevron, Icon } from '../../icons';
 import { TEXT_BUTTON } from '../SettingsPrimitives';
 import { type ListDensity, type ListFilterSpec, type ListSortSpec, type ListView } from './listState';
 
-const CHIP = 'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-9';
-const CHIP_ON = 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]';
+const CHIP = 'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[5px] px-2.5 text-[13px] leading-5 font-normal transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-9';
+const CHIP_ON = 'bg-panel font-normal text-ink shadow-[var(--kiki-sheet-shadow)]';
 const CHIP_OFF = 'text-ink-soft hover:text-ink';
 const ICON_BUTTON = 'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-9 pointer-coarse:w-9';
 
@@ -94,10 +94,10 @@ export function ListToolbar<T>({
                 view.setQuery('');
               }
             }}
-            className="h-8 w-full min-w-0 rounded-md bg-ink/[0.04] pr-20 pl-8 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.06] focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)] [&::-webkit-search-cancel-button]:hidden"
+            className="h-8 w-full min-w-0 rounded-md bg-ink/[0.04] pr-20 pl-8 text-[13px] leading-5 text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.06] focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)] [&::-webkit-search-cancel-button]:hidden"
           />
           <span data-list-count aria-live="polite"
-            className="pointer-events-none absolute right-2.5 text-[12px] text-ink-faint tabular-nums">
+            className="pointer-events-none absolute right-2.5 text-[12px] leading-4 text-ink-faint tabular-nums">
             {view.narrowed ? t('st.list.countOf', { shown, total }) : t('st.list.count', { total })}
           </span>
         </label> : null}
@@ -123,7 +123,7 @@ export function ListToolbar<T>({
                     onClick={() => { view.setFilter(chip.id); }}
                     className={`${CHIP} ${on ? CHIP_ON : CHIP_OFF}`}>
                     {chip.label}
-                    <span className={`tabular-nums ${chip.tone === 'attention' && count > 0 ? 'font-medium text-attention' : 'text-ink-faint'}`}>{count}</span>
+                    <span className={`tabular-nums ${chip.tone === 'attention' && count > 0 ? 'font-normal text-attention' : 'text-ink-faint'}`}>{count}</span>
                   </button>
                 );
               })}
@@ -142,13 +142,13 @@ export function ListToolbar<T>({
 function SortSwitch<T>({ sorts, value, onChange }: { sorts: readonly ListSortSpec<T>[]; value: string; onChange: (id: string) => void }) {
   const { t } = useI18n();
   return (
-    <div role="group" aria-label={t('st.list.sortAria')} data-list-sort className="ml-auto flex items-center gap-0.5 text-[12px]">
+    <div role="group" aria-label={t('st.list.sortAria')} data-list-sort className="ml-auto flex items-center gap-0.5 text-[12px] leading-4">
       <span className="pr-1 text-ink-faint">{t('st.list.sortBy')}</span>
       {sorts.map((spec) => (
         <button key={spec.id} type="button" aria-pressed={spec.id === value} data-list-sort-option={spec.id}
           onClick={() => { onChange(spec.id); }}
           className={`h-7 rounded-md px-1.5 transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
-            spec.id === value ? 'font-medium text-ink' : 'text-ink-faint hover:text-ink'
+            spec.id === value ? 'font-normal text-ink' : 'text-ink-faint hover:text-ink'
           }`}>
           {spec.label}
         </button>
@@ -201,10 +201,10 @@ export function ListGroup({ groupKey, label, count, total, folded, onToggle, tra
         <button type="button" aria-expanded={!folded} data-list-group-toggle={groupKey}
           aria-label={folded ? t('sidebar.expandGroup', { label: labelText }) : t('sidebar.collapseGroup', { label: labelText })}
           onClick={onToggle}
-          className="-ml-1 flex h-9 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-left text-[14px] font-[550] text-section-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11">
+          className="-ml-1 flex h-9 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-left text-[13px] leading-5 font-normal text-section-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11">
           <DisclosureChevron open={!folded} className="text-ink-faint" />
           <span className="min-w-0 truncate">{label}</span>
-          <span className="shrink-0 text-[12px] font-normal text-ink-faint tabular-nums">
+          <span className="shrink-0 text-[12px] leading-4 font-normal text-ink-faint tabular-nums">
             {count === total ? count : t('st.list.countOf', { shown: count, total })}
           </span>
         </button>
@@ -349,7 +349,7 @@ export function ListBulkBar({ count, onClear, active = false, children }: {
   return (
     <div data-list-bulk role="region" aria-label={t('st.list.bulkAria')}
       className="anim-enter mb-2 flex min-h-10 flex-wrap items-center gap-2 rounded-lg bg-panel px-3 py-1.5 shadow-[var(--kiki-sheet-shadow)]">
-      <span className="mr-auto text-[13px] font-medium text-ink tabular-nums">{t('st.list.selected', { count })}</span>
+      <span className="mr-auto text-[13px] leading-5 font-normal text-ink tabular-nums">{t('st.list.selected', { count })}</span>
       {children}
       <button type="button" onClick={onClear} className={ICON_BUTTON} aria-label={t('st.list.clearSelection')} title={t('st.list.clearSelection')}>
         <Icon name="close" size={12} />
@@ -383,7 +383,7 @@ export function ListEmpty({ kind, title, body, action, onClear, standalone = fal
   if (standalone) {
     return (
       <div data-list-empty={kind} className="rounded-lg border border-dashed border-hairline-strong px-4 py-6 text-center">
-        <p className="text-[13px] font-medium text-ink">{title}</p>
+        <p className="text-[13px] leading-5 font-normal text-ink">{title}</p>
         {body !== undefined ? <p className="mx-auto mt-1 max-w-[52ch] text-[12px] leading-4 text-ink-faint">{body}</p> : null}
         {clear !== null ? <div className="mt-3 flex justify-center">{clear}</div> : null}
         {action !== undefined ? <div className="mt-3 flex justify-center">{action}</div> : null}

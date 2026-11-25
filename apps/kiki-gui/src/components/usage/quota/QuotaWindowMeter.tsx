@@ -30,7 +30,7 @@ export function QuotaPaceCaption({ pace }: { readonly pace: RemainingPace | null
   return (
     <p
       data-quota-pace={pace.state}
-      className={`font-sans tracking-normal text-[11px] tabular-nums ${
+      className={`font-sans tracking-normal text-[12px] leading-4 tabular-nums ${
         pace.state === 'depleting'
           ? 'text-[var(--kiki-chart-danger-text)]'
           : 'text-[var(--kiki-chart-warn-text)]'
@@ -80,10 +80,8 @@ export function QuotaWindowMeter({
   const primaryTone = display.unknown
     ? 'text-[var(--kiki-chart-muted)]'
     : muted
-      ? 'font-medium text-[var(--kiki-chart-label)]'
-      : display.exhausted || (display.remainingPercent !== undefined && display.remainingPercent <= 5) || pace?.state === 'depleting'
-        ? 'font-semibold text-ink'
-        : 'font-medium text-ink';
+      ? 'font-normal text-[var(--kiki-chart-label)]'
+      : 'font-normal text-ink';
 
   const resetShort = formatQuotaResetShort(resetTime, nowMs);
   const resetFull = formatQuotaResetDuration(resetTime, locale);
@@ -93,7 +91,7 @@ export function QuotaWindowMeter({
 
   return (
     <div
-      className="space-y-1 text-[12px]"
+      className="space-y-1 text-[12px] leading-4"
       data-quota-meter={meter.id}
       data-quota-low={tier === 'critical' ? 'true' : undefined}
       data-meter-detail={display.hoverDetail}
@@ -126,11 +124,11 @@ export function QuotaWindowMeter({
             </span>
             {periodSuffix ? <span className="shrink-0 text-[var(--kiki-chart-muted)]">· {periodSuffix}</span> : null}
             {meter.scope === 'team' ? (
-              <span className="shrink-0 text-[11px] text-[var(--kiki-chart-muted)]">· {t('usage.quota.scope.team')}</span>
+              <span className="shrink-0 text-[12px] leading-4 text-[var(--kiki-chart-muted)]">· {t('usage.quota.scope.team')}</span>
             ) : null}
             {status !== 'ready' ? (
               <span
-                className={`shrink-0 rounded px-1 py-px text-[10px] font-medium ${badge.toneClass}`}
+                className={`shrink-0 rounded px-1 py-px text-[12px] leading-4 font-normal ${badge.toneClass}`}
                 data-meter-status={status}
                 title={t(badge.labelKey as I18nKey)}
               >
@@ -141,13 +139,13 @@ export function QuotaWindowMeter({
         </div>
 
         <span className="flex shrink-0 items-baseline gap-x-2 tabular-nums">
-          <span className={`text-[12.5px] ${primaryTone}`}>{display.primaryText}</span>
+          <span className={`text-[13px] leading-5 ${primaryTone}`}>{display.primaryText}</span>
           {display.secondaryText !== undefined ? (
-            <span className="text-[11px] text-[var(--kiki-chart-muted)]">{display.secondaryText}</span>
+            <span className="text-[12px] leading-4 text-[var(--kiki-chart-muted)]">{display.secondaryText}</span>
           ) : null}
           {resetShort !== undefined && resetTime ? (
             <span
-              className="text-[11px] text-[var(--kiki-chart-muted)]"
+              className="text-[12px] leading-4 text-[var(--kiki-chart-muted)]"
               title={resetFull ? t('usage.quota.stripReset', { time: resetFull }) : resetTime}
             >
               {resetShort}
@@ -156,7 +154,7 @@ export function QuotaWindowMeter({
         </span>
       </div>
       <QuotaPaceCaption pace={pace} />
-      {meter.message ? <p className="font-sans tracking-normal text-[11px] text-[var(--kiki-chart-danger-text)]">{meter.message}</p> : null}
+      {meter.message ? <p className="font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-danger-text)]">{meter.message}</p> : null}
     </div>
   );
 }

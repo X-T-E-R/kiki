@@ -313,7 +313,7 @@ export function ProvidersSection() {
           aria-label={t('st.nav.needsAttention')}
           className="space-y-1.5"
         >
-          <p className="text-[14px] font-[550] text-amber-ink">{t('st.nav.needsAttention')}</p>
+          <p className="text-[13px] leading-5 font-normal text-amber-ink">{t('st.nav.needsAttention')}</p>
           <ul className="divide-y divide-hairline border-y border-hairline">
             {attentionItems.map((provider) => {
               const method = methodFor(provider.id);
@@ -350,13 +350,13 @@ export function ProvidersSection() {
                   className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5"
                 >
                   <span className="min-w-0 flex-1">
-                    <span className="text-[13px] font-medium text-ink">{displayName}</span>
-                    <span className="ml-2 text-[12px] text-ink-faint">
+                    <span className="text-[13px] leading-5 font-normal text-ink">{displayName}</span>
+                    <span className="ml-2 text-[12px] leading-4 text-ink-faint">
                       {t(`st.connections.kind.${kind}`)}
                       {isDecision ? '' : ` · ${t('st.connections.modelCount', { count })}`}
                     </span>
                   </span>
-                  <span className={`shrink-0 text-[12px] ${provider.status === 'error' ? 'text-danger' : 'text-amber-ink'}`}>
+                  <span className={`shrink-0 text-[12px] leading-4 ${provider.status === 'error' ? 'text-danger' : 'text-amber-ink'}`}>
                     {statusWord}
                   </span>
                   {pluginInfo !== undefined ? (
@@ -472,7 +472,7 @@ export function ProvidersSection() {
         open={enginesOpen}
         onToggle={(event) => { setEnginesOpen(event.currentTarget.open); }}
       >
-        <summary className="flex min-h-8 w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-1 text-[12.5px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 [&::-webkit-details-marker]:hidden">
+        <summary className="flex min-h-8 w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-1 text-[13px] leading-5 font-normal text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 [&::-webkit-details-marker]:hidden">
           <DisclosureChevron open={false} className="text-ink-soft transition-transform group-open:rotate-90" />
           {t('st.ai.engines.fold')}
         </summary>
@@ -485,7 +485,7 @@ export function ProvidersSection() {
                   to="/settings/external-clients"
                   data-external-clients-entry
                   title={t('st.engines.externalClientsEntryHint')}
-                  className="-ml-1.5 inline-flex min-h-8 min-w-0 max-w-full items-center gap-1.5 rounded-md px-1.5 text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+                  className="-ml-1.5 inline-flex min-h-8 min-w-0 max-w-full items-center gap-1.5 rounded-md px-1.5 text-[13px] leading-5 text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
                 >
                   <Icon name="external" size={12} className="shrink-0 text-ink-faint" />
                   <span className="min-w-0 truncate">{t('st.engines.externalClientsEntry')}</span>

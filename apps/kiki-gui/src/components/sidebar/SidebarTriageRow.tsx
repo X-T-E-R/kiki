@@ -15,9 +15,9 @@ import type { SnoozePreset } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import type { LifeState } from '../../lib/motion';
 import { Icon } from '../icons';
-import { LifeMark } from '../LifeMark';
 import { RelativeTime } from '../RelativeTime';
 import { ThreadTitle } from '../ThreadTitle';
+import { SidebarRowDot } from './SidebarRowSignal';
 import { SidebarSnoozePopover } from './SidebarSnoozePopover';
 
 export type InboxRowBucket = 'active' | 'working' | 'snoozed' | 'archived';
@@ -114,11 +114,13 @@ export function SidebarTriageRow({
   const snoozeTriggerRef = useRef<HTMLButtonElement>(null);
 
   const rawTitle = item.title.trim() !== '' ? item.title : (item.preview ?? untitled);
-  const displayTitle = resolveTitle !== undefined ? resolveTitle(rawTitle) : rawTitle;
+  const resolvedTitle = resolveTitle !== undefined ? resolveTitle(rawTitle) : rawTitle;
+  const displayTitle = resolvedTitle.trim() !== '' ? resolvedTitle : untitled;
   const life = lifeForInboxItem(item, bucket);
+  const hasSignal = life !== 'idle';
   const isRoom = item.ref.kind === 'room';
   const subdued = bucket === 'archived';
-  const emphasis = active || (!subdued && (item.needsYou || item.unread));
+  const emphasis = !subdued && (hasSignal || item.needsYou || item.unread);
   const stateWord = t(stateLabelKey(item.reason));
   // Homogeneous `working` bucket already names the running state in its header;
   // only show per-row state words where rows carry heterogeneous states.
@@ -160,23 +162,15 @@ export function SidebarTriageRow({
           subdued ? 'opacity-70 hover:opacity-100' : ''
         }`}
       >
-        <span className="flex h-[19px] w-[7px] shrink-0 items-center">
-          <span data-inbox-status={life} className="flex h-[7px] w-[7px]">
-            <LifeMark
-              markId={`inbox:${item.encodedKey}`}
-              life={life}
-              still
-              title={stateWord}
-              tone={life === 'failed' ? 'bg-ink-faint' : life === 'waiting' ? 'bg-attention' : undefined}
-            />
-          </span>
+        <span data-inbox-status={life} className="shrink-0">
+          <SidebarRowDot signal={hasSignal} label={stateWord} />
         </span>
         <span className="min-w-0 flex-1">
           <span
             data-inbox-title
-            className={`flex min-w-0 items-center gap-1 pr-1 text-[13px] leading-[19px] ${
+            className={`flex min-w-0 items-center gap-1 pr-1 text-[13px] leading-5 font-normal ${
               hasActions ? 'group-hover:pr-[74px] group-focus-within:pr-[74px] pointer-coarse:pr-[74px]' : ''
-            } ${emphasis ? 'font-medium text-ink' : 'text-ink-soft'}`}
+            } ${emphasis ? 'text-ink' : 'text-ink-soft'}`}
           >
             {isRoom ? <Icon name="room" size={12} className="shrink-0 text-ink-faint" /> : null}
             <span className="min-w-0 flex-1 truncate">
@@ -185,7 +179,7 @@ export function SidebarTriageRow({
           </span>
           <span
             data-inbox-meta
-            className="mt-0.5 flex min-w-0 items-center gap-1 text-[11.5px] leading-4 text-ink-faint"
+            className="mt-0.5 flex min-w-0 items-center gap-1 text-[12px] leading-4 text-ink-faint"
           >
             {bucket === 'snoozed' && item.snoozedUntil !== undefined ? (
               <span className="shrink-0 tabular-nums text-ink-soft">

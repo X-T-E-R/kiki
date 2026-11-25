@@ -15,7 +15,7 @@
  * only while the editor is mounted.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ModelCatalogItem, RequestGovernanceSnapshot } from '@kiki/protocol';
@@ -44,9 +44,11 @@ export interface ConcurrencyRulesEditorProps {
    * gets the add button on the resource filter row instead.
    */
   readonly showHeading?: boolean;
+  /** Optional rule ID + monotonic sequence to reveal and open immediately (e.g. from a blocking-rule jump). */
+  readonly focusRuleRequest?: { readonly id: string; readonly seq: number } | null;
 }
 
-const FIELD_INPUT = 'h-8 w-full rounded-md border border-hairline bg-paper px-2 font-mono text-[12.5px] text-ink tabular-nums outline-none transition-colors duration-[var(--kiki-motion-quick)] placeholder:text-ink-faint focus:border-selected-ink aria-[invalid=true]:border-danger';
+const FIELD_INPUT = 'h-8 w-full rounded-md border border-hairline bg-paper px-2 font-mono text-[13px] leading-5 text-ink tabular-nums outline-none transition-colors duration-[var(--kiki-motion-quick)] placeholder:text-ink-faint focus:border-selected-ink aria-[invalid=true]:border-danger';
 
 /** Server messages arrive as `msg (code N)`; the editor's inline line drops the diagnostic tail. */
 function editorErrorText(error: unknown, t?: (key: I18nKey) => string): string {
@@ -509,13 +511,19 @@ function RuleEditor({ initial, otherIds, isNew, models, providerOptions, onSubmi
   );
 }
 
-export function ConcurrencyRulesEditor({ rules, showHeading = true }: ConcurrencyRulesEditorProps) {
-  const { t, tp } = useI18n();
+export function ConcurrencyRulesEditor({ rules, showHeading = true, focusRuleRequest }: ConcurrencyRulesEditorProps) {
+  const { t, tp, locale } = useI18n();
   const { client } = useConnection();
   const queryClient = useQueryClient();
   /** The row whose editor is open, or 'new' while the add form is. */
-  const [editorFor, setEditorFor] = useState<string | null>(null);
+  const [editorFor, setEditorFor] = useState<string | null>(() => (focusRuleRequest?.id ?? null));
   const [resourceFilter, setResourceFilter] = useState<'all' | 'model_request' | 'agent_execution'>('all');
+
+  useEffect(() => {
+    if (focusRuleRequest !== undefined && focusRuleRequest !== null && rules.some((rule) => rule.id === focusRuleRequest.id)) {
+      setEditorFor(focusRuleRequest.id);
+    }
+  }, [focusRuleRequest, rules]);
 
   const modelOptions = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
   const providerOptions = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
@@ -610,9 +618,20 @@ export function ConcurrencyRulesEditor({ rules, showHeading = true }: Concurrenc
   const showFilter = rules.length >= LIST_TOOLS_MIN_ITEMS
     && rules.some((rule) => resourceOf(rule) === 'model_request')
     && rules.some((rule) => resourceOf(rule) === 'agent_execution');
-  const filteredRules = showFilter
-    ? rules.filter((rule) => resourceFilter === 'all' || resourceOf(rule) === resourceFilter)
-    : rules;
+  const filteredRules = useMemo(() => {
+    const matching = showFilter
+      ? rules.filter((rule) => resourceFilter === 'all' || resourceOf(rule) === resourceFilter)
+      : rules;
+    // Enabled rules first so active constraints read before disabled ones.
+    return [...matching].sort((a, b) => Number(b.enabled) - Number(a.enabled));
+  }, [showFilter, rules, resourceFilter]);
+
+  const enabledCount = rules.filter((rule) => rule.enabled).length;
+  const rulesHelp = enabledCount === rules.length
+    ? tp('usage.governance.ruleCount', rules.length)
+    : locale === 'zh'
+      ? `${enabledCount} 条启用 / 共 ${rules.length} 条`
+      : `${enabledCount} enabled of ${rules.length}`;
 
   const addButton = (
     <button
@@ -631,7 +650,7 @@ export function ConcurrencyRulesEditor({ rules, showHeading = true }: Concurrenc
       {showHeading ? (
         <UsageSectionHeading
           title={t('usage.governance.limitsTitle')}
-          help={tp('usage.governance.ruleCount', rules.length)}
+          help={rulesHelp}
           actions={addButton}
         />
       ) : null}
@@ -658,8 +677,8 @@ export function ConcurrencyRulesEditor({ rules, showHeading = true }: Concurrenc
       ) : null}
       {filteredRules.length === 0 && editorFor !== 'new' ? (
         <div data-governance-empty className="py-3">
-          <p className="text-[12.5px] text-ink-soft">{t('usage.governance.emptyTitle')}</p>
-          <p className="mt-1 max-w-md text-[12px] leading-relaxed text-ink-faint">{t('usage.governance.emptyBody')}</p>
+          <p className="text-[13px] leading-5 text-ink-soft">{t('usage.governance.emptyTitle')}</p>
+          <p className="mt-1 max-w-md text-[12px] leading-4 text-ink-faint">{t('usage.governance.emptyBody')}</p>
         </div>
       ) : null}
       {editorFor === 'new' ? (
@@ -691,12 +710,12 @@ export function ConcurrencyRulesEditor({ rules, showHeading = true }: Concurrenc
                   className="min-w-0 flex-1 rounded-md py-0.5 text-left transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
                 >
                   <span className="flex min-w-0 items-center gap-2">
-                    <span className={`min-w-0 truncate font-mono text-[12.5px] ${rule.enabled ? 'text-ink' : 'text-ink-faint'}`}>{rule.id}</span>
+                    <span className={`min-w-0 truncate font-mono text-[13px] leading-5 ${rule.enabled ? 'text-ink' : 'text-ink-faint'}`}>{rule.id}</span>
                     {rule.enabled ? null : (
-                      <span className="shrink-0 rounded-full border border-hairline px-1.5 text-[10.5px] text-ink-faint">{t('usage.governance.disabled')}</span>
+                      <span className="shrink-0 rounded-full border border-hairline px-1.5 text-[12px] leading-4 text-ink-faint">{t('usage.governance.disabled')}</span>
                     )}
                   </span>
-                  <span className="mt-0.5 block truncate text-[11.5px] text-ink-faint">{ruleSummary(rule, t)}</span>
+                  <span className="mt-0.5 block truncate text-[12px] leading-4 text-ink-faint">{ruleSummary(rule, t)}</span>
                 </button>
                 <Toggle
                   layout="bare"

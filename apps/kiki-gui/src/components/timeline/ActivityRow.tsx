@@ -68,11 +68,11 @@ const ROW_TONE: Record<ActivityTone, string> = {
 };
 
 /** Fixed trailing columns — the axis the dense stretches align to. */
-const STATS_COLUMN = 'min-w-[52px] shrink-0 text-right font-mono text-[12px] tabular-nums text-ink-faint';
-const META_COLUMN = 'min-w-[46px] shrink-0 text-right text-[12px] tabular-nums whitespace-nowrap text-ink-faint';
-const META_COLUMN_AUTO = 'shrink-0 text-right text-[12px] whitespace-nowrap text-ink-faint';
+const STATS_COLUMN = 'min-w-[52px] shrink-0 text-right font-mono text-[12px] leading-4 tabular-nums text-ink-faint';
+const META_COLUMN = 'min-w-[46px] shrink-0 text-right text-[12px] leading-4 tabular-nums whitespace-nowrap text-ink-faint';
+const META_COLUMN_AUTO = 'shrink-0 text-right text-[12px] leading-4 whitespace-nowrap text-ink-faint';
 /** Wide enough for "1天 23小时" / "23h 59m", so a column of agent run times stays one column. */
-const META_COLUMN_WIDE = 'w-[76px] shrink-0 overflow-hidden text-right text-[12px] tabular-nums whitespace-nowrap text-ink-faint';
+const META_COLUMN_WIDE = 'w-[76px] shrink-0 overflow-hidden text-right text-[12px] leading-4 tabular-nums whitespace-nowrap text-ink-faint';
 const STATUS_COLUMN = 'flex h-3.5 w-3.5 shrink-0 items-center justify-center';
 
 export interface ActivityRowProps {
@@ -156,12 +156,12 @@ export function ActivityRow({
   const heading = (
     <span
       data-activity-label
-      className={`${shrinkLabel ? 'min-w-0 shrink truncate' : 'shrink-0'} font-sans text-[13px] font-medium ${LABEL_TONE[tone]}`}
+      className={`${shrinkLabel ? 'min-w-0 shrink truncate' : 'shrink-0'} font-sans text-[13px] leading-5 font-normal ${LABEL_TONE[tone]}`}
     >
       {label}
     </span>
   );
-  const excerpt = <span data-activity-detail className={`min-w-0 flex-1 truncate font-sans text-[12px] ${DETAIL_TONE[tone]}`}>{detail}</span>;
+  const excerpt = <span data-activity-detail className={`min-w-0 flex-1 truncate font-sans text-[13px] leading-5 font-normal ${DETAIL_TONE[tone]}`}>{detail}</span>;
   const inner = (
     <>
       {/* The glyph column is a fixed 18px box so drawn icons, status dots and
@@ -261,7 +261,7 @@ export function TimelineDivider({
   return (
     <div data-timeline-divider className="anim-enter flex min-w-0 items-center gap-3 py-1" title={title} {...attrs}>
       <span className={`h-px min-w-4 flex-1 ${rule}`} />
-      <span className={`min-w-0 max-w-[min(82%,44rem)] truncate text-[12px] ${text}`}>{children}</span>
+      <span className={`min-w-0 max-w-[min(82%,44rem)] truncate text-[12px] leading-4 ${text}`}>{children}</span>
       <span className={`h-px min-w-4 flex-1 ${rule}`} />
     </div>
   );

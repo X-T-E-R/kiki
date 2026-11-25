@@ -338,8 +338,8 @@ export function SemanticBody({
         <ul data-tool-semantic-items className="space-y-px">
           {visible.map((item) => {
             if (semantics.icon === 'ask') return (
-              <li key={item.key} className="space-y-1 py-2 pl-[26px] pr-2 text-[13px]">
-                <p className="break-words font-medium text-ink-soft">{item.secondary}</p>
+              <li key={item.key} className="space-y-1 py-2 pl-[26px] pr-2 text-[13px] leading-5">
+                <p className="break-words text-ink-soft">{item.secondary}</p>
                 <p className="whitespace-pre-wrap break-words text-ink">{item.primary}</p>
               </li>
             );

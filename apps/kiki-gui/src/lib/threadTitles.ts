@@ -8,22 +8,42 @@ import { useThreadRefDirectory } from './threadRefs';
 
 const REF_TITLE_LENGTH = 8;
 
+/**
+ * Recognized machine tool/XML protocol envelopes (including truncated prefixes)
+ * that must never surface as a session's display title. Narrowly anchored at
+ * the start of the trimmed string so legitimate human text containing `<`,
+ * HTML snippets, or discussing tool names like `ReadMediaFile` is untouched.
+ */
+const MACHINE_ENVELOPE_RE =
+  /^(?:<\/?(?:tool_call|function_call|tool_response|tool_result|system-reminder|system_instruction|antml:function_calls|invoke|parameter|kiki_envelope)\b|\{"(?:tool_call|function_call|tool_use)"\s*:)/i;
+
+/** Returns undefined when `raw` is empty or a recognized machine envelope/prefix. */
+export function sanitizeDisplayTitle(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (trimmed === '') return undefined;
+  if (MACHINE_ENVELOPE_RE.test(trimmed)) return undefined;
+  return trimmed;
+}
+
 /** Project links without changing the stored title or following title-reference cycles. */
 export function resolveThreadTitle(text: string, titleOf: (id: string) => string | undefined): string {
-  const refs = findThreadRefs(text);
+  const sanitized = sanitizeDisplayTitle(text);
+  if (sanitized === undefined) return '';
+  const refs = findThreadRefs(sanitized);
   let result = '';
   let cursor = 0;
   for (const ref of refs) {
-    const title = titleOf(ref.sessionId)?.trim();
-    const safeTitle = title === undefined || title === ''
+    const title = sanitizeDisplayTitle(titleOf(ref.sessionId));
+    const safeTitle = title === undefined
       ? shortThreadId(ref.sessionId)
       : resolveThreadTitle(title, () => undefined);
     const chars = Array.from(safeTitle);
     const label = chars.length > REF_TITLE_LENGTH ? `${chars.slice(0, REF_TITLE_LENGTH).join('')}…` : safeTitle;
-    result += text.slice(cursor, ref.start) + label;
+    result += sanitized.slice(cursor, ref.start) + label;
     cursor = ref.end;
   }
-  return refs.length === 0 ? text : result + text.slice(cursor);
+  return refs.length === 0 ? sanitized : result + sanitized.slice(cursor);
 }
 
 const NO_SESSIONS: readonly Pick<Session, 'id' | 'title'>[] = [];
@@ -72,9 +92,12 @@ export function useSessionNamesWithClient(
   return useCallback((sessionId: string): SessionNameEntry => {
     const session = directory.lookup(sessionId).session;
     if (session === undefined) return { title: undefined, known: false };
-    const raw = session.title.trim();
+    const raw = sanitizeDisplayTitle(session.title);
+    const resolved = raw === undefined
+      ? undefined
+      : sanitizeDisplayTitle(resolveThreadTitle(raw, (id) => directory.lookup(id).session?.title));
     return {
-      title: raw === '' ? undefined : resolveThreadTitle(raw, (id) => directory.lookup(id).session?.title),
+      title: resolved,
       known: true,
     };
   }, [directory]);

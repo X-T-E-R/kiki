@@ -2574,22 +2574,21 @@ describe('Sidebar grouping', () => {
     expect(container.querySelector('[data-session-row="blocked"] [data-session-needs-you]')?.textContent).toBe('Awaiting approval');
   });
 
-  it('keeps row dots still and draws nothing for a caught-up row', async () => {
+  it('keeps row dots still with strict 2-state grammar and draws nothing for a caught-up row', async () => {
     resetSessionSeen();
     const running = { ...session('run'), busy: true, executing: true, last_seq: 2 };
     const read = { ...session('read'), last_seq: 2 };
     markSessionSeen('read', 2);
     const items = [running, read];
     const { container } = await mount({ sessions: items, sessionGroups: [{ key: 'today', label: 'Today', items }] });
-    const runDot = container.querySelector('[data-session-row="run"] [data-life]');
-    expect(runDot?.getAttribute('data-life')).toBe('working');
-    expect(runDot?.hasAttribute('data-life-still')).toBe(true);
-    expect(container.querySelector('[data-session-row="read"] [data-life]')).toBeNull();
+    const runDot = container.querySelector('[data-session-row="run"] [data-sidebar-signal]');
+    expect(runDot?.getAttribute('data-sidebar-signal')).toBe('active');
+    expect(container.querySelector('[data-session-row="read"] [data-sidebar-signal]')?.getAttribute('data-sidebar-signal')).toBe('normal');
     // The header's running count is the one mark allowed to breathe.
     expect(container.querySelector('[data-activity-summary] [data-life]')?.hasAttribute('data-life-still')).toBe(false);
   });
 
-  it('says an unseen failure in words and marks it with a square, not only a colour', async () => {
+  it('says an unseen failure in words and uses the 2-state neutral dot (no red square shape)', async () => {
     resetSessionSeen();
     const failed = { ...session('fail'), last_turn_reason: 'failed' as const, last_seq: 4 };
     const stopped = { ...session('stop'), last_turn_reason: 'cancelled' as const, last_seq: 4 };
@@ -2597,8 +2596,21 @@ describe('Sidebar grouping', () => {
     const { container } = await mount({ sessions: items, sessionGroups: [{ key: 'today', label: 'Today', items }] });
     expect(container.querySelector('[data-session-row="fail"] [data-session-failed]')?.textContent).toBe('Failed');
     expect(container.querySelector('[data-session-row="stop"] [data-session-failed]')?.textContent).toBe('Stopped');
-    const mark = container.querySelector('[data-session-row="fail"] [data-life="failed"]');
-    expect(mark?.className).toContain('rounded-[1.5px]!');
+    const mark = container.querySelector('[data-session-row="fail"] [data-sidebar-signal="active"]');
+    expect(mark).not.toBeNull();
+  });
+
+  it('sanitizes machine tool-call envelopes in titles while preserving legitimate human titles with < or ReadMediaFile', async () => {
+    const items = [
+      { ...session('s_tool'), title: '<tool_call name="ReadMediaFile" path="case2.png" />' },
+      { ...session('s_human_lt'), title: '1 < 2 比较与边界测试' },
+      { ...session('s_human_tool'), title: 'ReadMediaFile 转写 case2 录音' },
+    ];
+    const { container } = await mount({ sessions: items, sessionGroups: [{ key: 'today', label: 'Today', items }] });
+    const toolText = container.querySelector('[data-session-row="s_tool"]')?.textContent ?? '';
+    expect(toolText).not.toContain('<tool_call');
+    expect(container.querySelector('[data-session-row="s_human_lt"]')?.textContent).toContain('1 < 2 比较与边界测试');
+    expect(container.querySelector('[data-session-row="s_human_tool"]')?.textContent).toContain('ReadMediaFile 转写 case2 录音');
   });
 
   it('opens and focuses its search when another surface asks for the session list', async () => {
@@ -3238,11 +3250,18 @@ describe('collapsed icon rail', () => {
     expect(container.querySelector('[data-session-list]')).toBeNull();
     expect(container.querySelector('[data-search-toggle]')).toBeNull();
     expect(container.querySelector('[data-new-session]')).not.toBeNull();
-    for (const hook of ['cron', 'memory', 'personas', 'usage', 'capabilities']) {
+    for (const hook of ['memory', 'personas', 'usage']) {
       const button = container.querySelector(`[data-nav-${hook}]`);
       expect(button).not.toBeNull();
       expect(button?.getAttribute('title')).not.toBe('');
     }
+    // Secondary destinations fold behind the More trigger in the collapsed rail.
+    expect(container.querySelector('[data-nav-cron]')).toBeNull();
+    expect(container.querySelector('[data-nav-capabilities]')).toBeNull();
+    const moreBtn = container.querySelector<HTMLButtonElement>('[data-sidebar-rail-more]');
+    expect(moreBtn).not.toBeNull();
+    await act(async () => { moreBtn!.click(); });
+    expect(document.body.querySelector('[data-sidebar-rail-more-menu]')).not.toBeNull();
     expect(container.querySelector('[data-nav-settings]')).not.toBeNull();
     expect(container.querySelector('[data-sidebar-toggle="expand"]')).not.toBeNull();
     expect(container.querySelector('[data-sidebar-toggle="collapse"]')).toBeNull();
@@ -4763,7 +4782,7 @@ describe('Sidebar automatic session groups & single-demand infinite scroll', () 
     };
   }
 
-  it('starts groups collapsed, toggles with click and ArrowRight/ArrowLeft, persists expansion, and loads >50-member tails', async () => {
+  it('flattens automatic session groups transparently into top-level rows and exposes load-more tail when >50 members exist', async () => {
     const opener = { ...session('s_open'), title: 'Release checklist', updated_at: '2026-10-06T11:00:00Z' };
     const child = {
       ...session('s_old_child'),
@@ -4787,44 +4806,17 @@ describe('Sidebar automatic session groups & single-demand infinite scroll', () 
       nowMs: FIXTURE_NOW_MS,
     });
 
-    // Starts collapsed by default: compact count shown, members hidden, no boxed card border.
-    const headerBtn = first.container.querySelector<HTMLButtonElement>('[data-sidebar-unit-group="grp_big"] button')!;
-    expect(headerBtn.getAttribute('aria-expanded')).toBe('false');
-    expect(first.container.querySelector('[data-sidebar-unit-group="grp_big"] [data-sidebar-unit-group-count]')?.textContent).toBe('54');
-    expect(first.container.querySelector('[data-session-row="s_old_child"]')).toBeNull();
-
-    // ArrowRight expands; 90-day-old child appears inside the group with zero "from <parent>" subtitle.
-    await act(async () => {
-      headerBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
-    });
-    expect(headerBtn.getAttribute('aria-expanded')).toBe('true');
+    // No collapsed group header — both opener and member render directly as top-level rows.
+    expect(first.container.querySelector('[data-sidebar-unit-group="grp_big"]')).toBeNull();
     expect(first.container.querySelector('[data-session-row="s_open"]')).not.toBeNull();
     expect(first.container.querySelector('[data-session-row="s_old_child"]')).not.toBeNull();
     expect(first.container.querySelector('[data-session-row="s_old_child"] [data-session-relation-note]')).toBeNull();
-    expect(readWorkspaceGroupMemory('local').expandedSessionGroups).toContain('grp_big');
 
-    // >50-member group exposes "Load more members" and forwards cursor cleanly.
+    // >50-member tail remains reachable via SessionGroupMoreRow and forwards cursor cleanly.
     const moreBtn = first.container.querySelector<HTMLButtonElement>('[data-sidebar-unit-group-more="grp_big"]')!;
     expect(moreBtn).not.toBeNull();
     await act(async () => { moreBtn.click(); });
     expect(onLoadMoreGroupMembers).toHaveBeenCalledWith('grp_big', 'main', 'cur_m_50');
-
-    // Remounting preserves expanded state; ArrowLeft collapses again.
-    await act(async () => { first.root.unmount(); });
-    const second = await mount({
-      sessions: [opener, child],
-      sessionGroups: [],
-      sidebarGroupsEnabled: true,
-      sidebarUnitBuckets: [unitBucket('today', 'Today', [grp])],
-      nowMs: FIXTURE_NOW_MS,
-    });
-    const secondBtn = second.container.querySelector<HTMLButtonElement>('[data-sidebar-unit-group="grp_big"] button')!;
-    expect(secondBtn.getAttribute('aria-expanded')).toBe('true');
-    await act(async () => {
-      secondBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
-    });
-    expect(secondBtn.getAttribute('aria-expanded')).toBe('false');
-    expect(second.container.querySelector('[data-session-row="s_old_child"]')).toBeNull();
   });
 
   it('routes detach-group through server callback instead of local topLevelThreads and archives single members with include_attached=false', async () => {

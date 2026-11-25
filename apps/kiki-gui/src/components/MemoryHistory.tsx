@@ -85,7 +85,7 @@ export function historyLabel(action: string, t: (key: I18nKey) => string): strin
 export function TypeTag({ type }: { readonly type: MemoryEntry['type'] }) {
   const { t } = useI18n();
   return (
-    <span data-memory-type={type} className="shrink-0 rounded-sm bg-ink/[0.05] px-1.5 py-px text-[11px] font-medium text-ink-soft">
+    <span data-memory-type={type} className="shrink-0 rounded-sm bg-ink/[0.05] px-1.5 py-px text-[12px] leading-4 font-normal text-ink-soft">
       {t(`memory.type.${type}`)}
     </span>
   );
@@ -112,7 +112,7 @@ export function BasisLine({ entry, className = '' }: { readonly entry: MemoryEnt
     <div data-memory-basis={basis?.kind ?? 'unrecorded'} className={`min-w-0 ${className}`}>
       <p className="flex flex-wrap items-baseline gap-x-1.5">
         <span className="text-ink-faint">{t('memory.basis.label')}</span>
-        <span className={`font-medium ${basis?.kind === 'unknown' || basis === undefined ? 'text-ink-faint' : 'text-ink-soft'}`}>
+        <span className={`font-normal ${basis?.kind === 'unknown' || basis === undefined ? 'text-ink-faint' : 'text-ink-soft'}`}>
           {t(basis === undefined ? 'memory.basis.unrecorded' : `memory.basis.${basis.kind}`)}
         </span>
         {basis !== undefined && basis.refs.length > 0 ? (
@@ -124,7 +124,7 @@ export function BasisLine({ entry, className = '' }: { readonly entry: MemoryEnt
       ) : null}
       {basis !== undefined && basis.refs.length > 0 ? (
         <ul data-memory-basis-refs className="mt-1 space-y-0.5">
-          {basis.refs.map((ref) => (<li key={ref} className="font-mono text-[11px] break-all text-ink-faint">{ref}</li>))}
+          {basis.refs.map((ref) => (<li key={ref} className="font-mono text-[12px] leading-4 break-all text-ink-faint">{ref}</li>))}
         </ul>
       ) : null}
     </div>
@@ -159,7 +159,7 @@ export function ValidityLine({ validity, now, className = '' }: {
     <div data-memory-validity={applicability} data-memory-validity-state={applicability} className={`min-w-0 ${className} ${expired ? 'text-amber-ink' : 'text-ink-soft'}`}>
       <p className="flex flex-wrap items-baseline gap-x-1.5">
         <span>{t('memory.validity.label')}: </span>
-        <span className="font-medium">{t(expired ? 'memory.validity.expired' : 'memory.validity.recheck')}</span>
+        <span className="font-normal">{t(expired ? 'memory.validity.expired' : 'memory.validity.recheck')}</span>
         {validity?.until !== undefined ? (
           <span className="text-ink-faint">{dateText(locale, validity.until)}</span>
         ) : null}
@@ -244,7 +244,7 @@ export function MemoryReadView({ entry, target, sourceLabel, onOpenReplacement, 
           <TypeTag type={entry.type} />
           {entry.status !== 'active' ? <><span aria-hidden>·</span><span>{t(`memory.status.${entry.status}`)}</span></> : null}
         </p>
-        <h3 className="font-display text-[21px] leading-snug font-medium break-words text-ink">{entry.title}</h3>
+        <h3 className="font-sans text-[18px] leading-[26px] font-bold break-words text-ink">{entry.title}</h3>
         <p data-memory-source-meta className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-ink-faint tabular-nums">
           <span>{t(`memory.writer.${entry.source.writer}`)}</span>
           {entry.updated !== '' ? (
@@ -262,15 +262,15 @@ export function MemoryReadView({ entry, target, sourceLabel, onOpenReplacement, 
           {entry.source.step !== undefined ? (
             <>
               <span aria-hidden>·</span>
-              <span className="font-mono text-[11px]">{t('memory.source.step', { step: entry.source.step })}</span>
+              <span className="font-mono text-[12px] leading-4">{t('memory.source.step', { step: entry.source.step })}</span>
             </>
           ) : null}
         </p>
       </header>
-      <p data-memory-read-body className="text-[13.5px] leading-7 break-words whitespace-pre-wrap text-ink">{entry.body}</p>
+      <p data-memory-read-body className="text-[14px] leading-6 break-words whitespace-pre-wrap text-ink">{entry.body}</p>
       {reason ? (
         <p className="text-[13px] leading-6 break-words text-ink-soft">
-          <span className="font-medium">{t(retired ? 'memory.history.retirementReason' : 'memory.field.reason')}</span>
+          <span className="font-normal">{t(retired ? 'memory.history.retirementReason' : 'memory.field.reason')}</span>
           {' · '}
           <span data-memory-read-reason className="whitespace-pre-wrap">{reason}</span>
         </p>
@@ -345,15 +345,15 @@ export function VersionBlock({ label, entry, raw, revision }: {
   ].filter((part) => part !== '').join(' · ');
   return (
     <section className="space-y-2">
-      <h4 className="text-[12px] font-medium text-ink-soft">{label}</h4>
+      <h4 className="text-[12px] leading-4 font-normal text-ink-soft">{label}</h4>
       {entry !== undefined ? (
         <div className="space-y-2">
           <p className="flex flex-wrap items-center gap-1.5">
             <TypeTag type={entry.type} />
-            {entry.status !== 'active' ? <span className="text-[11px] text-ink-faint">{t(`memory.status.${entry.status}`)}</span> : null}
-            {entry.covered_by !== undefined ? <span data-memory-version-covered className="text-[11px] text-ink-faint">{t('memory.coveredBy.label')}</span> : null}
+            {entry.status !== 'active' ? <span className="text-[12px] leading-4 text-ink-faint">{t(`memory.status.${entry.status}`)}</span> : null}
+            {entry.covered_by !== undefined ? <span data-memory-version-covered className="text-[12px] leading-4 text-ink-faint">{t('memory.coveredBy.label')}</span> : null}
           </p>
-          <p className="break-words text-[14px] font-medium leading-snug text-ink">{entry.title}</p>
+          <p className="break-words text-[14px] font-normal leading-5 text-ink">{entry.title}</p>
           <p className="text-[13px] leading-6 break-words whitespace-pre-wrap text-ink">{entry.body}</p>
           {entry.reason !== '' ? (
             <p className="text-[13px] leading-6 break-words text-ink-soft">{t('memory.field.reason')} · {entry.reason}</p>
@@ -422,7 +422,7 @@ export function MemoryHistoryDialog({
     >
       <div className="min-h-0 flex-1 overflow-y-auto" data-memory-history-detail={record.operationId}>
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-          <h3 className="font-display text-[18px] font-semibold text-ink">{historyLabel(record.action, t)}</h3>
+          <h3 className="font-sans text-[18px] leading-[26px] font-bold text-ink">{historyLabel(record.action, t)}</h3>
           <span className="text-[12px] text-ink-faint">
             {dateText(locale, record.at)} · {t(`memory.writer.${record.writer}`)}
           </span>
@@ -432,7 +432,7 @@ export function MemoryHistoryDialog({
         </div>
         <p className="mt-0.5 truncate text-[12px] text-ink-faint">{current.title} · {sourceLabel}</p>
         {record.beforeRevision !== null || record.afterRevision !== null ? (
-          <p className="mt-3 text-[11px] text-ink-faint" data-memory-revision-chain>
+          <p className="mt-3 text-[12px] leading-4 text-ink-faint" data-memory-revision-chain>
             {t('memory.history.revision')}{' '}
             <span className="font-mono break-all">{record.beforeRevision ?? t('memory.history.noVersion')} → {record.afterRevision ?? t('memory.history.noVersion')}</span>
           </p>

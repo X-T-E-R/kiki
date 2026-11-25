@@ -205,7 +205,7 @@ export function SubagentGroupRow({
           </div>
         ))}
         {remaining > 0 ? (
-          <div data-subagent-group-more className="flex items-center gap-2 py-1 pl-1 text-[11.5px] text-ink-faint">
+          <div data-subagent-group-more className="flex items-center gap-2 py-1 pl-1 text-[12px] leading-4 text-ink-faint">
             <button
               type="button"
               onClick={() => { setVisibleLimit((limit) => limit + batchLimit); }}
@@ -366,7 +366,7 @@ export function SubagentEndedRow({
             <div className="flex items-start gap-2">
               <div
                 data-subagent-ended-receipt
-                className="kiki-prose min-w-0 flex-1 max-h-[28rem] overflow-auto pr-1 !text-[13.5px]"
+                className="kiki-prose min-w-0 flex-1 max-h-[28rem] overflow-auto pr-1 !text-[14px]"
               >
                 {renderReceipt(receipt)}
               </div>

@@ -28,7 +28,7 @@ export function Wordmark({ size = 'md', life, echo }: {
   return (
     <span className="inline-flex items-baseline select-none" aria-label="kiki">
       <span
-        className={`font-display ${textClass} leading-none font-semibold tracking-tight text-ink`}
+        className={`font-serif ${textClass} leading-none font-semibold tracking-tight text-ink`}
         style={{ fontVariationSettings: size === 'xl' ? '"opsz" 60' : '"opsz" 40' }}
       >
         kiki

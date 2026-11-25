@@ -380,9 +380,9 @@ export function TrendChart({
                   data-usage-trend-mode={mode}
                   aria-pressed={active}
                   onClick={() => { setVisualMode(mode); }}
-                  className={`h-7 rounded-[5px] px-2.5 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-3 ${
+                  className={`h-7 rounded-[5px] px-2.5 text-[12px] leading-4 font-normal transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-3 ${
                     active
-                      ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                      ? 'bg-panel text-ink shadow-[var(--kiki-sheet-shadow)]'
                       : 'text-[var(--kiki-chart-label)] hover:text-ink'
                   }`}
                 >
@@ -401,7 +401,7 @@ export function TrendChart({
                   dataAttr="data-axis-select"
                   value={filters.granularity}
                   onChange={onGranularityChange}
-                  className="bg-transparent px-2 text-[12px] text-[var(--kiki-chart-label)] hover:bg-ink/[0.04] hover:text-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11 pointer-coarse:px-2.5"
+                  className="bg-transparent px-2 text-[12px] leading-4 text-[var(--kiki-chart-label)] hover:bg-ink/[0.04] hover:text-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11 pointer-coarse:px-2.5"
                   choices={allowedGranularities.map((option) => ({
                     value: option,
                     label: t(`usage.granularity.${option}`),
@@ -412,7 +412,7 @@ export function TrendChart({
               <span
                 data-axis-select="static"
                 data-axis-granularity-static={filters.granularity}
-                className="px-1 text-[12px] text-[var(--kiki-chart-label)]"
+                className="px-1 text-[12px] leading-4 text-[var(--kiki-chart-label)]"
               >
                 {t(`usage.granularity.${filters.granularity}`)}
               </span>
@@ -422,7 +422,7 @@ export function TrendChart({
       </div>
 
       {headerMeta !== undefined ? (
-        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-[var(--kiki-chart-label)]">
+        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] leading-4 text-[var(--kiki-chart-label)]">
           {headerMeta}
         </div>
       ) : null}
@@ -459,10 +459,10 @@ export function TrendChart({
               aria-hidden
               data-usage-trend-tooltip
               style={{ left: tooltipLeft }}
-              className="pointer-events-none absolute top-1 z-20 w-56 max-w-[calc(100%-1rem)] rounded-lg bg-panel/96 px-3 py-2 text-[11.5px] shadow-[var(--kiki-sheet-shadow)] backdrop-blur-xs transition-opacity duration-100"
+              className="pointer-events-none absolute top-1 z-20 w-56 max-w-[calc(100%-1rem)] rounded-lg bg-panel/96 px-3 py-2 text-[12px] leading-4 shadow-[var(--kiki-sheet-shadow)] backdrop-blur-xs transition-opacity duration-100"
             >
               <div className="flex items-baseline justify-between gap-2">
-                <span className="truncate font-medium text-ink">
+                <span className="truncate font-normal text-ink">
                   {bucketLabel(hoveredBucket, filters.granularity, locale)}
                   {pt?.isInProgress ? (
                     <span className="ml-1.5 font-normal text-[var(--kiki-chart-label)]">
@@ -470,13 +470,13 @@ export function TrendChart({
                     </span>
                   ) : null}
                 </span>
-                <span className="shrink-0 font-semibold text-ink tabular-nums">
+                <span className="shrink-0 font-normal text-ink tabular-nums">
                   {unknownTotal || pt?.total === null || pt?.total === undefined
                     ? '—'
                     : formatValue(pt.total)}
                 </span>
               </div>
-              <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--kiki-chart-label)] tabular-nums">
+              <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] leading-4 text-[var(--kiki-chart-label)] tabular-nums">
                 {metric !== 'cost' ? <span className="text-ink">{unknownTotal || bCostUnknown ? '—' : formatCostUsd(bCost)}</span> : null}
                 {metric !== 'tokens' ? <span className="text-ink">{unknownTotal ? '—' : time.formatTokens(bTokens)}</span> : null}
                 {metric !== 'cache' && bCache !== null ? (
@@ -489,7 +489,7 @@ export function TrendChart({
               {topRows.length > 0 ? (
                 <ul className="mt-1.5 space-y-0.5 border-t border-hairline pt-1.5">
                   {topRows.map((entry) => (
-                    <li key={entry.key} className="flex items-center justify-between gap-2 text-[11px]">
+                    <li key={entry.key} className="flex items-center justify-between gap-2 text-[12px] leading-4">
                       <span className="flex min-w-0 items-center gap-1.5 text-[var(--kiki-chart-label)]">
                         <span
                           className="h-2 w-2 shrink-0 rounded-full"
@@ -503,7 +503,7 @@ export function TrendChart({
                 </ul>
               ) : null}
               {canDrilldown && (numericTotals[activeHoverIndex] ?? 0) > 0 ? (
-                <p className="mt-1.5 border-t border-hairline pt-1 text-[10.5px] text-[var(--kiki-chart-label)]">
+                <p className="mt-1.5 border-t border-hairline pt-1 text-[12px] leading-4 text-[var(--kiki-chart-label)]">
                   {t('usage.trend.drilldownHourHint')}
                 </p>
               ) : null}
@@ -550,7 +550,7 @@ export function TrendChart({
                     left: `${leftPct}%`,
                     top: `${Math.max(1, pPt.yTotal - 18)}px`,
                   }}
-                  className={`pointer-events-none absolute z-10 whitespace-nowrap text-[10.5px] font-medium text-ink tabular-nums ${alignClass}`}
+                  className={`pointer-events-none absolute z-10 whitespace-nowrap text-[12px] leading-4 font-normal text-ink tabular-nums ${alignClass}`}
                 >
                   {formatValue(peakValue)}
                 </span>
@@ -568,7 +568,7 @@ export function TrendChart({
                 <span
                   aria-hidden
                   style={{ top: `${topPx}px` }}
-                  className={`pointer-events-none absolute ${sideClass} z-10 rounded bg-paper/90 px-1 font-sans tracking-normal text-[10px] font-medium text-ink tabular-nums`}
+                  className={`pointer-events-none absolute ${sideClass} z-10 rounded bg-paper/90 px-1 font-sans tracking-normal text-[12px] leading-4 font-normal text-ink tabular-nums`}
                 >
                   {t('usage.trend.cacheAverage', { value: formatCachePercent(overallCacheHit) })}
                 </span>
@@ -585,7 +585,7 @@ export function TrendChart({
                     left: `${leftPct}%`,
                     top: `${Math.max(2, ip.yTotal - 17)}px`,
                   }}
-                  className="pointer-events-none absolute z-10 -translate-x-1/2 whitespace-nowrap font-sans text-[10px] tracking-normal text-[var(--kiki-chart-label)]"
+                  className="pointer-events-none absolute z-10 -translate-x-1/2 whitespace-nowrap font-sans text-[12px] leading-4 tracking-normal text-[var(--kiki-chart-label)]"
                 >
                   {t('usage.trend.inProgress')}
                 </span>
@@ -669,7 +669,7 @@ export function TrendChart({
                 <span
                   key={bucket.key}
                   style={{ left: `${leftPct}%` }}
-                  className={`absolute top-0 whitespace-nowrap text-[10.5px] text-[var(--kiki-chart-label)] tabular-nums ${alignClass}`}
+                  className={`absolute top-0 whitespace-nowrap text-[12px] leading-4 text-[var(--kiki-chart-label)] tabular-nums ${alignClass}`}
                 >
                   {compactAxisLabel(bucket, filters.granularity, locale, index > 0 ? displayTrend[index - 1] : undefined)}
                 </span>
@@ -700,12 +700,12 @@ export function TrendChart({
                 <button
                   type="button"
                   onClick={() => { triggerBucketAt(currentStepperIdx); }}
-                  className="inline-flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-md bg-ink/[0.04] px-3 text-[12px] text-ink transition-colors hover:bg-ink/[0.08] focus-visible:outline-2 focus-visible:outline-selected-ink"
+                  className="inline-flex min-h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-md bg-ink/[0.04] px-3 text-[12px] leading-4 text-ink transition-colors hover:bg-ink/[0.08] focus-visible:outline-2 focus-visible:outline-selected-ink"
                 >
-                  <span className="truncate font-medium">
+                  <span className="truncate font-normal">
                     {bucketLabel(stepBucketItem, filters.granularity, locale)}
                   </span>
-                  <span className="shrink-0 font-semibold tabular-nums">{stepValText}</span>
+                  <span className="shrink-0 font-normal tabular-nums">{stepValText}</span>
                 </button>
                 <button
                   type="button"
@@ -722,7 +722,7 @@ export function TrendChart({
       </div>
 
       {/* Legend & Series Isolation Strip */}
-      <div className="mt-3 flex flex-wrap items-center gap-x-3.5 gap-y-1.5 text-[12px] text-[var(--kiki-chart-label)]">
+      <div className="mt-3 flex flex-wrap items-center gap-x-3.5 gap-y-1.5 text-[12px] leading-4 text-[var(--kiki-chart-label)]">
         {metric === 'cache' ? (
           <span className="inline-flex items-center gap-1.5">
             <span aria-hidden className="h-2 w-2 rounded-full bg-[var(--kiki-chart-4)]" />
@@ -760,7 +760,7 @@ export function TrendChart({
                   onClick={() => { toggleSeriesKey(key); }}
                   className={`inline-flex min-w-0 max-w-52 items-center gap-1.5 rounded px-1.5 py-0.5 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-2.5 ${
                     isolated
-                      ? 'bg-selected/70 font-medium text-ink'
+                      ? 'bg-selected/70 font-normal text-ink'
                       : activeHighlight !== null && !isHi
                         ? 'text-[var(--kiki-chart-muted)]'
                         : ''
@@ -795,7 +795,7 @@ export function TrendChart({
                   onClick={() => { toggleSeriesKey(key); }}
                   className={`inline-flex min-w-0 max-w-56 items-center gap-1.5 rounded px-1.5 py-0.5 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-2.5 ${
                     isolated
-                      ? 'bg-selected/70 font-medium text-ink'
+                      ? 'bg-selected/70 font-normal text-ink'
                       : activeHighlight !== null && !isHi
                         ? 'text-[var(--kiki-chart-muted)]'
                         : ''
@@ -848,19 +848,19 @@ export function DrilldownSessionList({
                 data-usage-drilldown-session={session.session_id}
                 onClick={() => void navigate(`/s/${session.session_id}`)}
                 title={session.session_id}
-                className="min-w-0 flex-1 truncate text-left text-[13px] text-ink underline-offset-2 transition-colors hover:text-ink hover:underline"
+                className="min-w-0 flex-1 truncate text-left text-[13px] leading-5 text-ink underline-offset-2 transition-colors hover:text-ink hover:underline"
               >
-                {title ?? <span className="font-mono text-[12px]">{compactId}</span>}
+                {title ?? <span className="font-mono text-[12px] leading-4">{compactId}</span>}
                 {title !== undefined ? (
-                  <span className="ml-2 font-mono text-[11px] text-ink-faint">{compactId}</span>
+                  <span className="ml-2 font-mono text-[12px] leading-4 text-ink-faint">{compactId}</span>
                 ) : null}
               </button>
-              <span className="shrink-0 text-[12px] text-ink-soft tabular-nums">
+              <span className="shrink-0 text-[12px] leading-4 text-ink-soft tabular-nums">
                 {t('usage.drilldown.turns', { count: session.turn_count })}
                 {session.turn_ids_truncated ? ` · ${t('usage.drilldown.turnIdsTruncated')}` : ''}
               </span>
               {session.unknown_turn_records > 0 ? (
-                <span className="shrink-0 text-[11.5px] text-amber-ink">
+                <span className="shrink-0 text-[12px] leading-4 text-amber-ink">
                   {t('usage.drilldown.unknownTurns', { count: session.unknown_turn_records })}
                 </span>
               ) : null}
@@ -874,7 +874,7 @@ export function DrilldownSessionList({
                     data-usage-turn={turnId}
                     onClick={() => void navigate(`/s/${session.session_id}?turn=${turnId}`)}
                     title={t('usage.drilldown.turnHint')}
-                    className="min-h-8 rounded-md border border-hairline bg-paper px-2 font-mono text-[11px] text-ink-soft tabular-nums transition-colors hover:border-accent hover:text-ink pointer-coarse:min-h-11"
+                    className="min-h-8 rounded-md border border-hairline bg-paper px-2 font-mono text-[12px] leading-4 text-ink-soft tabular-nums transition-colors hover:border-accent hover:text-ink pointer-coarse:min-h-11"
                   >
                     {t('usage.drilldown.turnId', { id: turnId })}
                   </button>
@@ -891,7 +891,7 @@ export function DrilldownSessionList({
 export function SourceTokenDetails({ label, detail }: { readonly label: string; readonly detail: React.ReactNode }) {
   return (
     <div data-usage-source-details className="border-t border-dashed border-hairline px-3 py-2">
-      <p className="text-[11.5px] text-ink-faint">{label}</p>
+      <p className="text-[12px] leading-4 text-ink-faint">{label}</p>
       {detail}
     </div>
   );
@@ -901,7 +901,7 @@ export function TraceHeading({ label, onClose }: { readonly label: string; reado
   const { t } = useI18n();
   return (
     <div className="flex items-baseline gap-3">
-      <h3 className="min-w-0 flex-1 truncate text-[14px] font-semibold text-ink">{label}</h3>
+      <h3 className="min-w-0 flex-1 truncate font-sans text-[16px] leading-6 font-bold text-ink">{label}</h3>
       <button
         type="button"
         onClick={onClose}

@@ -217,7 +217,7 @@ export function PersonaConversationsSection({
             onChange={(event) => { setSearch(event.target.value); }}
             placeholder={t('persona.searchConversations')}
             aria-label={t('persona.searchConversations')}
-            className="h-8 w-full rounded-md border border-hairline bg-paper pr-2 pl-6 text-[12.5px] text-ink placeholder:text-ink-faint focus:border-hairline-strong focus:outline-none pointer-coarse:h-11"
+            className="h-8 w-full rounded-md border border-hairline bg-paper pr-2 pl-6 text-[13px] leading-5 text-ink placeholder:text-ink-faint focus:border-hairline-strong focus:outline-none pointer-coarse:h-11"
           />
         </div>
         <button
@@ -226,7 +226,7 @@ export function PersonaConversationsSection({
           onClick={() => {
             void navigate(personaNewConversationUrl(persona.id, workspaceFilter === '' ? undefined : workspaceFilter));
           }}
-          className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+          className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3 text-[12px] leading-4 font-normal text-ink transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
         >
           <Icon name="plus" size={12} />
           <span>{t('persona.newTopic')}</span>
@@ -334,14 +334,14 @@ export function PersonaConversationsSection({
                     />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-1.5 text-[13px] leading-[19px]">
+                    <span className="flex items-center gap-1.5 text-[13px] leading-5">
                       {isDaily ? (
                         <span aria-hidden className="shrink-0 text-ink-faint"><Icon name="pin" size={12} /></span>
                       ) : roomId !== undefined ? (
                         <span aria-hidden className="shrink-0 font-mono text-ink-faint">#</span>
                       ) : null}
-                      <span className={`min-w-0 truncate ${
-                        isDaily || life === 'waiting' || life === 'done' ? 'font-medium text-ink' : session.archived ? 'text-ink-faint' : 'text-ink-soft'
+                      <span className={`min-w-0 truncate font-normal ${
+                        isDaily || life === 'waiting' || life === 'done' ? 'text-ink' : session.archived ? 'text-ink-faint' : 'text-ink-soft'
                       }`}>
                         {title}
                       </span>

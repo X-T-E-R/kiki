@@ -184,7 +184,7 @@ export function UsageSources({
                 className="min-w-0 flex-1 text-left transition-colors hover:text-selected-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
               >
                 <span
-                  className={`block truncate text-[13px] font-medium ${
+                  className={`block truncate text-[13px] leading-5 font-normal ${
                     filterActive
                       ? 'text-selected-ink underline decoration-selected-ink/40 underline-offset-3'
                       : isRowDimmed
@@ -197,10 +197,10 @@ export function UsageSources({
               </button>
             ) : (
               <p
-                className={`min-w-0 flex-1 truncate text-[13px] ${
+                className={`min-w-0 flex-1 truncate text-[13px] leading-5 font-normal ${
                   row.key === USAGE_SOURCE_KEY_UNKNOWN || isRowDimmed
                     ? 'text-[var(--kiki-chart-muted)]'
-                    : 'font-medium text-ink'
+                    : 'text-ink'
                 }`}
                 title={row.value ?? undefined}
               >
@@ -242,26 +242,26 @@ export function UsageSources({
           </div>
 
           {showShareCol ? (
-            <span className="hidden text-right text-[12px] text-ink tabular-nums sm:block">
+            <span className="hidden text-right text-[12px] leading-4 text-ink tabular-nums sm:block">
               {share === null ? '—' : formatPercent(share)}
             </span>
           ) : null}
 
           <span
             data-usage-breakdown-tokens={row.key}
-            className={`${metric === 'tokens' ? 'block text-[13px] font-semibold text-ink' : 'hidden text-[12px] text-ink sm:block'} text-right tabular-nums`}
+            className={`${metric === 'tokens' ? 'block text-[13px] leading-5 font-normal text-ink' : 'hidden text-[12px] leading-4 text-ink sm:block'} text-right tabular-nums`}
           >
             {unknownTotal ? '—' : time.formatTokens(row.totalTokens)}
             {row.tokensUnknown && row.totalTokens > 0 ? <KnownSubtotalMarker /> : null}
           </span>
 
-          <span className={`${metric === 'cache' ? 'block text-[13px] font-semibold text-ink' : 'hidden text-[12px] text-ink sm:block'} text-right tabular-nums`}>
+          <span className={`${metric === 'cache' ? 'block text-[13px] leading-5 font-normal text-ink' : 'hidden text-[12px] leading-4 text-ink sm:block'} text-right tabular-nums`}>
             {formatPercent(cacheHit)}
           </span>
 
           {prior !== undefined ? (
             <>
-              <span className="hidden text-right text-[12px] text-ink tabular-nums lg:block">
+              <span className="hidden text-right text-[12px] leading-4 text-ink tabular-nums lg:block">
                 {priorRow === undefined ? '—' : metric === 'cache'
                   ? formatPercent(cacheHitOf(priorRow))
                   : metric === 'tokens'
@@ -276,7 +276,7 @@ export function UsageSources({
 
           <span
             data-usage-breakdown-cost={row.key}
-            className={`${metric === 'cost' ? 'inline-flex text-[13px] font-semibold text-ink' : 'hidden text-[12px] text-ink sm:inline-flex'} items-center justify-end gap-0.5 text-right tabular-nums`}
+            className={`${metric === 'cost' ? 'inline-flex text-[13px] leading-5 font-normal text-ink' : 'hidden text-[12px] leading-4 text-ink sm:inline-flex'} items-center justify-end gap-0.5 text-right tabular-nums`}
           >
             {unknownTotal || (row.costUnknown && row.costUsdEstimated === 0 && row.totalTokens > 0)
               ? '—'
@@ -288,7 +288,7 @@ export function UsageSources({
             ) : null}
           </span>
 
-          <p className="col-span-2 -mt-0.5 pl-10 text-[11px] text-[var(--kiki-chart-label)] tabular-nums sm:hidden">
+          <p className="col-span-2 -mt-0.5 pl-10 text-[12px] leading-4 text-[var(--kiki-chart-label)] tabular-nums sm:hidden">
             {metric === 'tokens'
               ? `${share === null ? '—' : formatPercent(share)} · ${row.costUnknown && row.costUsdEstimated === 0 && (row.totalTokens > 0 || row.tokensUnknown) ? '—' : formatCostUsd(row.costUsdEstimated)}`
               : metric === 'cache'
@@ -302,7 +302,7 @@ export function UsageSources({
 
         {open ? (
           <div id={`usage-source-details-${row.key}`} className="border-t border-dashed border-hairline px-3 py-2.5">
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[12px] tabular-nums sm:grid-cols-4">
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[12px] leading-4 tabular-nums sm:grid-cols-4">
               <div><dt className="text-[var(--kiki-chart-label)]">{t('usage.composition.fresh')}</dt><dd className="text-ink">{time.formatTokens(row.tokens.input_other)}</dd></div>
               <div><dt className="text-[var(--kiki-chart-label)]">{t('usage.tokens.output')}</dt><dd className="text-ink">{time.formatTokens(row.tokens.output)}</dd></div>
               <div><dt className="text-[var(--kiki-chart-label)]">{t('usage.tokens.cacheRead')}</dt><dd className="text-ink">{time.formatTokens(row.tokens.input_cache_read)}</dd></div>
@@ -314,7 +314,7 @@ export function UsageSources({
                   type="button"
                   data-usage-source-filter={row.key}
                   onClick={() => { onFilterSource(row); }}
-                  className="inline-flex min-h-8 items-center rounded-md bg-ink/[0.045] px-2.5 text-[12px] text-ink transition-colors hover:bg-ink/[0.09] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                  className="inline-flex min-h-8 items-center rounded-md bg-ink/[0.045] px-2.5 text-[12px] leading-4 text-ink transition-colors hover:bg-ink/[0.09] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
                 >
                   {t(`usage.sources.onlyThis.${row.filter.field === 'workspace.id' ? 'workspace' : row.filter.field}`)}
                 </button>
@@ -337,10 +337,10 @@ export function UsageSources({
   return (
     <section id="usage-source-table" aria-label={t('usage.sources.title')} data-usage-sources={groupBy}>
       {rows.length === 0 ? (
-        <p className="py-8 text-center text-[13px] text-[var(--kiki-chart-label)]">{t('usage.empty')}</p>
+        <p className="py-8 text-center text-[13px] leading-5 text-[var(--kiki-chart-label)]">{t('usage.empty')}</p>
       ) : (
         <>
-          <div aria-hidden className={`${rowGridClass} border-b border-hairline pb-2 text-[11px] text-[var(--kiki-chart-label)]`}>
+          <div aria-hidden className={`${rowGridClass} border-b border-hairline pb-2 text-[12px] leading-4 text-[var(--kiki-chart-label)]`}>
             <span className="pl-10">{t(`usage.sources.grouping.${groupBy}`)}</span>
             {showShareCol ? (
               <span className="hidden items-center justify-end gap-0.5 text-right sm:inline-flex">
@@ -365,7 +365,7 @@ export function UsageSources({
             <span className={`${metric === 'cost' ? 'block' : 'hidden sm:block'} text-right`}>{t('usage.col.cost')}</span>
           </div>
           {visible.length === 0 ? (
-            <p data-usage-source-empty className="py-8 text-center text-[13px] text-[var(--kiki-chart-label)]">
+            <p data-usage-source-empty className="py-8 text-center text-[13px] leading-5 text-[var(--kiki-chart-label)]">
               {t('usage.sources.noMatch')}
             </p>
           ) : (

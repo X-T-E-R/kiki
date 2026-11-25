@@ -9,7 +9,7 @@ import type { SidebarSessionGroupEntry } from '@kiki/session-core/sessions';
 import { useI18n } from '../../i18n';
 import type { LifeState } from '../../lib/motion';
 import { RelativeTime } from '../RelativeTime';
-import { LifeMark } from '../LifeMark';
+import { SidebarRowDot } from './SidebarRowSignal';
 import { DisclosureChevron, Icon, Spinner } from '../icons';
 
 export interface SessionGroupHeaderRowProps {
@@ -38,9 +38,7 @@ export const SessionGroupHeaderRow = memo(function SessionGroupHeaderRow({
     ? t('sidebar.group.memberCountPartial', { count: group.memberCount })
     : t('sidebar.group.memberCount', { count: group.memberCount });
 
-  const showCollapsedLifeDot = !expanded && (
-    collapsedLife === 'working' || collapsedLife === 'waiting' || collapsedLife === 'failed'
-  );
+  const hasSignal = !expanded && (collapsedLife === 'working' || collapsedLife === 'waiting' || collapsedLife === 'done' || collapsedLife === 'failed');
   return (
     <div
       data-sidebar-unit-group={group.groupId}
@@ -65,11 +63,11 @@ export const SessionGroupHeaderRow = memo(function SessionGroupHeaderRow({
             onToggle(group.groupId);
           }
         }}
-        className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left pointer-coarse:h-10 ${
+        className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left pointer-coarse:h-11 ${
           !expanded && hasActiveMember ? 'bg-ink/[0.04]' : ''
         }`}
       >
-        <span className="flex h-[19px] w-[7px] shrink-0 items-center justify-center text-ink-faint">
+        <span className="flex h-5 w-2 shrink-0 items-center justify-center text-ink-faint">
           <DisclosureChevron open={expanded} size={12} />
         </span>
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -80,8 +78,8 @@ export const SessionGroupHeaderRow = memo(function SessionGroupHeaderRow({
           ) : null}
           <span
             data-sidebar-unit-group-title
-            className={`min-w-0 flex-1 truncate text-[13px] leading-[19px] ${
-              emphasis ? 'font-medium text-ink' : 'text-ink-soft group-hover/sgrp:text-ink'
+            className={`min-w-0 flex-1 truncate text-[13px] leading-5 font-normal ${
+              hasSignal ? 'text-ink' : 'text-ink-soft group-hover/sgrp:text-ink'
             }`}
           >
             {title}
@@ -89,21 +87,13 @@ export const SessionGroupHeaderRow = memo(function SessionGroupHeaderRow({
           <span
             data-sidebar-unit-group-count
             title={countTitle}
-            className="shrink-0 text-[11.5px] leading-4 font-normal text-ink-faint tabular-nums"
+            className="shrink-0 text-[12px] leading-4 font-normal text-ink-faint tabular-nums"
           >
             {countLabel}
           </span>
-          {showCollapsedLifeDot ? (
-            <span
-              data-sidebar-unit-group-life-dot={collapsedLife}
-              className="flex h-[7px] w-[7px] shrink-0 items-center justify-center"
-            >
-              <LifeMark
-                markId={`sgrp:${group.groupId}`}
-                life={collapsedLife}
-                still
-                tone={collapsedLife === 'failed' ? 'bg-ink-faint' : collapsedLife === 'waiting' ? 'bg-attention' : undefined}
-              />
+          {hasSignal ? (
+            <span data-sidebar-unit-group-life-dot={collapsedLife} className="flex shrink-0 items-center">
+              <SidebarRowDot signal />
             </span>
           ) : null}
         </span>

@@ -53,7 +53,7 @@ import { isStopFirstError, livePauseIndex, ROOM_IDLE_POLL_MS, ROOM_LOG_WINDOW, R
 import { roomMemberId, threadMemberFace, threadMemberName } from './threadRooms';
 
 const HEADER_BUTTON =
-  'flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2 text-[12.5px] text-ink-soft transition-colors hover:bg-canvas hover:text-ink aria-expanded:bg-canvas aria-expanded:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:opacity-50 lg:h-8 lg:min-w-8';
+  'flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2 text-[13px] leading-5 text-ink-soft transition-colors hover:bg-canvas hover:text-ink aria-expanded:bg-canvas aria-expanded:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:opacity-50 lg:h-8 lg:min-w-8';
 
 export function RoomPage({
   sessions,
@@ -79,7 +79,7 @@ export function RoomPage({
   const room = roomQuery.data;
 
   if (roomQuery.isPending) {
-    return <RoomShell onToggleSidebar={onToggleSidebar}><div className="p-8 text-[12.5px] text-ink-faint">{t('sidebar.loadingSessions')}</div></RoomShell>;
+    return <RoomShell onToggleSidebar={onToggleSidebar}><div className="p-8 text-[13px] leading-5 text-ink-faint">{t('sidebar.loadingSessions')}</div></RoomShell>;
   }
   if (roomQuery.isError || room === undefined) {
     return (
@@ -88,7 +88,7 @@ export function RoomPage({
           <p className="text-[13px] text-ink-soft">{roomQuery.isError ? errorText(locale, roomQuery.error) : t('room.notFound')}</p>
           {roomQuery.isError ? (
             <button type="button" onClick={() => { void queryClient.invalidateQueries({ queryKey: roomQueryKey(id) }); }}
-              className="mt-2 text-[12.5px] font-medium text-ink underline underline-offset-2">{t('common.retry')}</button>
+              className="mt-2 text-[13px] leading-5 font-normal text-ink underline underline-offset-2">{t('common.retry')}</button>
           ) : null}
         </div>
       </RoomShell>
@@ -113,7 +113,7 @@ function RoomShell({ onToggleSidebar, title, children }: { readonly onToggleSide
         >
           <Icon name="menu" size={16} />
         </button>
-        {title !== undefined ? <h1 className="truncate text-[15px] font-semibold text-ink">{title}</h1> : null}
+        {title !== undefined ? <h1 className="truncate font-sans text-[16px] leading-6 font-bold text-ink">{title}</h1> : null}
       </header>
       {children}
     </div>
@@ -317,7 +317,7 @@ function RoomView({
           >
             <Icon name="menu" size={16} />
           </button>
-          <h1 className="flex min-w-0 shrink items-baseline gap-1.5 truncate text-[15px] font-semibold text-ink">
+          <h1 className="flex min-w-0 shrink items-baseline gap-1.5 truncate font-sans text-[16px] leading-6 font-bold text-ink">
             <span aria-hidden className="font-mono font-normal text-ink-faint">#</span>
             <span className="truncate">{room.name}</span>
           </h1>
@@ -325,7 +325,7 @@ function RoomView({
             onClick={() => { setMembersOpen((open) => !open); }} className={`${HEADER_BUTTON} ml-1`}>
             <AvatarStack members={roster} avatars={personas} faces={faces} max={6} size={20} />
           </button>
-          <span className="hidden min-w-0 truncate text-[12.5px] text-ink-faint lg:inline" data-room-host-line>
+          <span className="hidden min-w-0 truncate text-[12px] leading-4 text-ink-faint lg:inline" data-room-host-line>
             {t('room.hostLine', { name: hostName })}
           </span>
           <span className="min-w-0 flex-1" />
@@ -345,7 +345,7 @@ function RoomView({
           </button>
           {room.paused ? (
             <button type="button" data-room-continue disabled={action.isPending}
-              onClick={() => { action.mutate('continue'); }} className={`${HEADER_BUTTON} font-medium text-ink`}>
+              onClick={() => { action.mutate('continue'); }} className={`${HEADER_BUTTON} font-normal text-ink`}>
               <Icon name="arrowRight" size={14} />
               <span className="max-sm:sr-only">{t('room.resume')}</span>
             </button>
@@ -394,7 +394,7 @@ function RoomView({
         <div className="shrink-0 px-3 pt-1 pb-3 sm:px-6">
           <div className="mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)]">
             {send.isError ? (
-              <p role="alert" className="mb-1.5 px-1 text-[12.5px] text-danger">{t('room.sendFailed', { detail: errorText(locale, send.error) })}</p>
+              <p role="alert" className="mb-1.5 px-1 text-[12px] leading-4 text-danger">{t('room.sendFailed', { detail: errorText(locale, send.error) })}</p>
             ) : null}
             <RoomComposer
               roomName={room.name}
@@ -515,7 +515,7 @@ function RoomMenu({ anchor, onClose, onStop, onDelete }: {
           >
             <button type="button" role="menuitem" className={item} onClick={onStop} data-room-stop>
               <span>{t('room.stopAll')}</span>
-              <span className="text-[11.5px] leading-4 text-ink-faint">{t('room.stopAllTitle')}</span>
+              <span className="text-[12px] leading-4 text-ink-faint">{t('room.stopAllTitle')}</span>
             </button>
             <div className="my-1 h-px bg-hairline" />
             <button type="button" role="menuitem" className={`${item} hover:text-danger`} onClick={onDelete} data-room-delete>
@@ -627,7 +627,7 @@ function RoomLogView({
       <div className="mx-auto flex w-full max-w-[var(--kiki-chat-content-width,760px)] flex-col pt-4 pb-6">
         {truncated ? <p className="mb-4 text-center text-[12px] text-ink-faint">{t('room.logTruncated', { count: ROOM_LOG_WINDOW })}</p> : null}
         {error !== null && !loaded ? (
-          <p role="alert" className="py-8 text-center text-[12.5px] text-danger">{t('room.loadFailed')} · {errorText(locale, error)}</p>
+          <p role="alert" className="py-8 text-center text-[13px] leading-5 text-danger">{t('room.loadFailed')} · {errorText(locale, error)}</p>
         ) : null}
         {loaded && entries.length === 0 ? (
           <p data-room-empty className="py-16 text-center text-[13px] text-ink-faint text-pretty">
@@ -661,7 +661,7 @@ function RoomLogView({
           <div className="mt-4"><PresenceLine text={t('room.working', { name: working.join(t('room.listSeparator')) })} /></div>
         ) : null}
         {queued.length > 0 ? (
-          <p role="status" data-room-queued className={`${working.length > 0 ? 'mt-1' : 'mt-4'} flex min-h-6 items-center gap-2 text-[12.5px] text-ink-faint`}>
+          <p role="status" data-room-queued className={`${working.length > 0 ? 'mt-1' : 'mt-4'} flex min-h-6 items-center gap-2 text-[13px] leading-5 text-ink-faint`}>
             <span className={`${MESSAGE_FACE} flex justify-center`}><Icon name="hold" size={12} /></span>
             <span className="min-w-0 truncate">{t('room.threadBusy', { name: queued.join(t('room.listSeparator')) })}</span>
           </p>
@@ -689,10 +689,10 @@ function SystemRow({
   readonly onAdjustBudget: () => void;
 }) {
   const { t } = useI18n();
-  const link = 'min-h-7 rounded-md px-1 font-medium text-ink-soft underline-offset-2 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-60';
+  const link = 'min-h-7 rounded-md px-1 font-normal text-ink-soft underline-offset-2 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-60';
   return (
     <div data-room-system={event} data-room-system-live={live || undefined}
-      className="my-4 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-0.5 text-center text-[12.5px] text-ink-faint">
+      className="my-4 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-0.5 text-center text-[12px] leading-4 text-ink-faint">
       <span>{text}</span>
       {live ? (
         <>
@@ -795,10 +795,10 @@ function RoomAttachmentList({
                 <Icon name="file" size={14} />
               </span>
               <div className="min-w-0 flex-1">
-                <p className="truncate font-mono text-[12.5px] leading-4 text-ink" title={attachment.path}>
+                <p className="truncate font-mono text-[13px] leading-5 text-ink" title={attachment.path}>
                   {displayName}
                 </p>
-                <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] leading-4 text-ink-faint">
+                <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[12px] leading-4 text-ink-faint">
                   {metaParts.length > 0 ? <span className="tabular-nums">{metaParts.join(' · ')}</span> : null}
                   {metaParts.length > 0 ? <span aria-hidden>·</span> : null}
                   <span data-room-attachment-unavailable>{t('room.attachmentOriginalUnavailable')}</span>
@@ -836,7 +836,7 @@ function RoomAttachmentList({
 function UserRoomRow({ entry, spaced }: { readonly entry: RoomMessage; readonly spaced: boolean }) {
   return (
     <div data-room-message={entry.id} data-room-from="user" className={`anim-enter group/msg flex flex-col items-end ${spaced ? 'mt-5' : ''}`}>
-      <div className="max-w-[80%] rounded-[14px] rounded-br-[6px] bg-bubble-user px-4 py-2 text-[length:calc(var(--kiki-prose-font-size,15.5px)-1.5px)] leading-[1.6] break-words whitespace-pre-wrap text-ink">
+      <div className="kiki-user-text max-w-[80%] rounded-[14px] rounded-br-[6px] bg-bubble-user px-4 py-2 break-words whitespace-pre-wrap text-ink">
         {entry.text}
       </div>
       <RoomAttachmentList attachments={entry.attachments} align="end" />
@@ -868,7 +868,7 @@ function BotRoomRow({
         <span className={MESSAGE_FACE} />
         <div className="min-w-0 flex-1">
           {quote !== undefined && quote !== '' ? (
-            <p className="mb-1 truncate border-l-2 border-hairline-strong pl-2 text-[12.5px] text-ink-faint">{t('message.replyTo', { text: quote })}</p>
+            <p className="mb-1 truncate border-l-2 border-hairline-strong pl-2 text-[12px] leading-4 text-ink-faint">{t('message.replyTo', { text: quote })}</p>
           ) : null}
           <div className="kiki-prose min-w-0"><Markdown text={entry.text} mode="static" /></div>
           <RoomAttachmentList attachments={entry.attachments} align="start" />
@@ -915,7 +915,7 @@ function RoomQuestion({ sessionId, queued, face, pollIntervalMs = ROOM_POLL_MS }
               done();
             }}
           />
-          {queued > 0 ? <p data-room-questions-queued className="mt-2 text-[12.5px] text-ink-faint">{t('room.queuedQuestions', { count: queued })}</p> : null}
+          {queued > 0 ? <p data-room-questions-queued className="mt-2 text-[12px] leading-4 text-ink-faint">{t('room.queuedQuestions', { count: queued })}</p> : null}
         </div>
       </div>
     </div>

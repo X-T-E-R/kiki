@@ -70,11 +70,29 @@ export function settingsCardRoute(section: string, cardId: string, tab?: string)
   return `/settings/${section}${tab === undefined ? '' : `?tab=${tab}`}#${cardId}`;
 }
 
+/**
+ * Recognized machine tool/XML protocol envelopes (including truncated prefixes)
+ * that must never surface as a session's display title. Narrowly anchored at
+ * the start of the trimmed string so legitimate human text containing `<`,
+ * HTML snippets, or discussing tool names like `ReadMediaFile` is untouched.
+ */
+const MACHINE_ENVELOPE_RE =
+  /^(?:<\/?(?:tool_call|function_call|tool_response|tool_result|system-reminder|system_instruction|antml:function_calls|invoke|parameter|kiki_envelope)\b|\{"(?:tool_call|function_call|tool_use)"\s*:)/i;
+
+/** Returns undefined when `raw` is empty or a recognized machine envelope/prefix. */
+export function sanitizeDisplayTitle(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (trimmed === '') return undefined;
+  if (MACHINE_ENVELOPE_RE.test(trimmed)) return undefined;
+  return trimmed;
+}
+
 export function switcherSessionLabel(session: Session, untitled: string): string {
-  if (session.title.trim() !== '') return session.title;
-  if (session.last_prompt !== undefined && session.last_prompt.trim() !== '') {
-    return session.last_prompt;
-  }
+  const safeTitle = sanitizeDisplayTitle(session.title);
+  if (safeTitle !== undefined) return safeTitle;
+  const safePrompt = sanitizeDisplayTitle(session.last_prompt);
+  if (safePrompt !== undefined) return safePrompt;
   return untitled;
 }
 

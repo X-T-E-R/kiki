@@ -157,7 +157,7 @@ export const RailCrumbs = memo(function RailCrumbs({
             <span aria-hidden className="shrink-0 text-hairline-strong">/</span>
           </span>
         ))}
-        <h2 aria-current="page" tabIndex={-1} data-rail-owner-heading="" className="min-w-0 truncate rounded outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink font-display text-[15px] font-semibold tracking-tight text-ink" title={label(current)}>
+        <h2 aria-current="page" tabIndex={-1} data-rail-owner-heading="" className="min-w-0 truncate rounded outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink font-sans text-[16px] leading-6 font-bold text-ink" title={label(current)}>
           <span className="sr-only">{t('inspector.viewing')}: </span>
           {label(current)}
         </h2>
@@ -229,7 +229,7 @@ export function RosterSummary({
               pressed
                 ? 'bg-ink text-panel'
                 : bucket === 'waiting'
-                  ? 'bg-attention-soft font-medium text-attention hover:bg-attention-soft/70'
+                  ? 'bg-attention-soft font-normal text-attention hover:bg-attention-soft/70'
                   : 'bg-ink/[0.05] text-ink-soft hover:bg-ink/[0.08] hover:text-ink'
             }`}
           >
@@ -374,21 +374,21 @@ const RosterAgent = memo(function RosterAgent({
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-baseline gap-2 leading-5">
-            <span className={`max-w-[70%] shrink-0 truncate text-[13px] font-medium ${settled ? 'text-ink-soft' : 'text-ink'}`}>{label}</span>
-            {model !== undefined ? <span className="min-w-0 truncate text-[11.5px] text-ink-faint">{model}</span> : null}
+            <span className={`max-w-[70%] shrink-0 truncate text-[13px] leading-5 font-normal ${settled ? 'text-ink-soft' : 'text-ink'}`}>{label}</span>
+            {model !== undefined ? <span className="min-w-0 truncate text-[12px] leading-4 text-ink-faint">{model}</span> : null}
             <span
               data-agent-status={node.status}
-              className={`ml-auto shrink-0 text-[12px] tabular-nums ${
-                waiting ? 'font-medium text-attention' : bucket === 'running' ? 'text-success' : 'text-ink-faint'
+              className={`ml-auto shrink-0 text-[12px] leading-4 tabular-nums ${
+                waiting ? 'font-normal text-attention' : bucket === 'running' ? 'text-success' : 'text-ink-faint'
               }`}
             >
               {state}
             </span>
           </span>
-          <span className="flex h-[18px] min-w-0 items-baseline gap-1.5 text-[12.5px] leading-[18px]">
+          <span className="flex h-5 min-w-0 items-baseline gap-1.5 text-[12px] leading-4">
             {trail !== undefined ? <span className="max-w-[45%] shrink-0 truncate text-ink-faint" title={trail}>{trail} ›</span> : null}
             {!row.expanded && row.childCount > 0 ? (
-              <span className={`shrink-0 ${row.waitingBelow > 0 ? 'font-medium text-attention' : 'text-ink-faint'}`}>
+              <span className={`shrink-0 ${row.waitingBelow > 0 ? 'font-normal text-attention' : 'text-ink-faint'}`}>
                 {row.waitingBelow > 0 ? tp('inspector.waitingBelow', row.waitingBelow) : tp('inspector.childCount', row.childCount)}
                 {body !== undefined && body !== '' ? <span aria-hidden className="ml-1.5 text-ink-faint">·</span> : null}
               </span>
@@ -424,7 +424,7 @@ function RosterGroup({ row, onToggle }: { row: Extract<RosterRow, { kind: 'group
       data-roster-done-group={unknown ? undefined : ''}
       aria-expanded={row.open}
       onClick={onToggle}
-      className="row-interactive flex h-8 w-full items-center pr-2 text-left text-[12.5px] text-ink-soft hover:text-ink"
+      className="row-interactive flex h-8 w-full items-center pr-2 text-left text-[13px] leading-5 text-ink-soft hover:text-ink"
     >
       <span className="flex w-6 shrink-0 justify-center"><DisclosureChevron open={row.open} /></span>
       <span className={RAIL_MARK}>
@@ -589,7 +589,7 @@ export const AgentRoster = memo(function AgentRoster({
         </div>
       ) : null}
       {model.rows.length === 0 ? (
-        <p data-roster-empty className="py-1 pl-6 text-[12.5px] text-ink-faint">
+        <p data-roster-empty className="py-1 pl-6 text-[13px] leading-5 text-ink-faint">
           {remoteSearch.loading ? (locale === 'zh' ? '搜索中…' : 'Searching…') : t('inspector.noAgentMatch')}
         </p>
       ) : (
@@ -633,7 +633,7 @@ export const AgentRoster = memo(function AgentRoster({
             </div>
           )}
           {model.settledTruncated ? (
-            <p data-roster-window-hint className="px-2 pt-1.5 text-[11px] text-ink-faint">
+            <p data-roster-window-hint className="px-2 pt-1.5 text-[12px] leading-4 text-ink-faint">
               {locale === 'zh'
                 ? `显示最近 ${model.settledShown} 项 · 搜索可定位全部`
                 : `Showing latest ${model.settledShown} · Search to find any`}
@@ -652,7 +652,7 @@ export const AgentRoster = memo(function AgentRoster({
             onChange={(event) => { setQuery(event.target.value); }}
             onKeyDown={(event) => { if (event.key === 'Escape' && query !== '') { event.stopPropagation(); setQuery(''); } }}
             placeholder={t('inspector.searchAgents')}
-            className="h-8 w-full rounded-md border border-hairline bg-transparent pr-2 pl-7 text-[12.5px] text-ink placeholder:text-ink-faint transition-colors hover:border-hairline-strong focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink"
+            className="h-8 w-full rounded-md border border-hairline bg-transparent pr-2 pl-7 text-[13px] leading-5 text-ink placeholder:text-ink-faint transition-colors hover:border-hairline-strong focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink"
           />
         </label>
       ) : null}

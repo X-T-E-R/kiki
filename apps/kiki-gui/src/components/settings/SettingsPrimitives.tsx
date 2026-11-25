@@ -143,7 +143,7 @@ export function SettingsDetailLayout({ list, detail, narrowPane = 'list', column
  * same step as the memory and task-board editors. Row settings use
  * `SettingField` (T3/400) instead.
  */
-export const FORM_LABEL = 'block text-[12px] font-medium text-ink-soft';
+export const FORM_LABEL = 'block text-[13px] leading-5 font-normal text-ink-soft';
 
 /** A SearchableSelect trigger that sits in a form grid next to `INPUT` fields. */
 export const FORM_SELECT_TRIGGER =
@@ -190,11 +190,11 @@ export function SettingsSegmented<T extends string>({ choices, value, onChange, 
         disabled={disabled || choice.disabled === true}
         {...(dataAttr !== undefined ? { [dataAttr]: choice.value } : {})}
         onClick={() => { if (!selected) onChange(choice.value); }}
-        className={`h-7 rounded-[5px] px-3 text-[13px] transition-colors disabled:cursor-not-allowed disabled:text-ink-faint pointer-coarse:min-h-11 ${
+        className={`h-7 rounded-[5px] px-3 text-[13px] leading-5 font-normal transition-colors disabled:cursor-not-allowed disabled:text-ink-faint pointer-coarse:min-h-11 ${
           selected
             ? choice.caution === true
-              ? 'bg-amber-card font-medium text-amber-ink shadow-[var(--kiki-sheet-shadow)]'
-              : 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+              ? 'bg-amber-card text-amber-ink shadow-[var(--kiki-sheet-shadow)]'
+              : 'bg-panel text-ink shadow-[var(--kiki-sheet-shadow)]'
             : 'text-ink-soft hover:text-ink'
         }`}>
         {choice.label}
@@ -266,7 +266,7 @@ export function SettingsSelect<T extends string>({
  * verbs never reads as a column of alerts (settings conventions §2).
  */
 export const TEXT_BUTTON =
-  'rounded text-[12px] font-medium text-ink underline-offset-2 transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:no-underline';
+  'rounded text-[13px] leading-5 font-normal text-ink underline-offset-2 transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:no-underline';
 
 /**
  * The tab strip of a tabbed settings page. The page owns the `?tab=` address
@@ -288,8 +288,8 @@ export function SettingsTabs<T extends string>({ tabs, current, ariaLabel, label
       return <button key={tab} type="button" role="tab" aria-selected={active}
         {...{ [dataAttr]: tab }}
         onClick={() => { if (!active) onSelect(tab); }}
-        className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors ${
-          active ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
+        className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] leading-5 font-normal transition-colors ${
+          active ? 'border-ink text-ink' : 'border-transparent text-ink-soft hover:text-ink'
         }`}>
         {labelOf(tab)}
       </button>;

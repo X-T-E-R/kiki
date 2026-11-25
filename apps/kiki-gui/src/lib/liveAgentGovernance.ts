@@ -140,8 +140,8 @@ export interface AgentAncestorLimitDetails {
 export const agentActivityStatusLabels: Readonly<Record<AgentActivityPhase, { readonly en: string; readonly zh: string }>> = {
   starting: { en: 'Starting', zh: '启动中' },
   running: { en: 'Running', zh: '运行中' },
-  tool_waiting: { en: 'Tool execution / waiting', zh: '工具执行／等待' },
-  suspended: { en: 'Awaiting approval', zh: '等待审批' },
+  tool_waiting: { en: 'Waiting for tool', zh: '等待工具' },
+  suspended: { en: 'Suspended', zh: '已挂起' },
   cancelling: { en: 'Cancelling', zh: '取消中' },
   finalizing: { en: 'Finalizing', zh: '收尾中' },
 };

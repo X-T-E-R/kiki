@@ -190,7 +190,7 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
             </p>
           ) : listQuery.isError ? (
             <div data-persona-error className="py-4">
-              <p className="text-[13px] font-medium text-danger">{t('persona.loadFailed')}</p>
+              <p className="text-[13px] leading-5 font-normal text-danger">{t('persona.loadFailed')}</p>
               <div className="mt-1"><InlineError error={listQuery.error} /></div>
               <button type="button" onClick={() => { void listQuery.refetch(); }} className={`mt-3 ${SECONDARY_BUTTON}`}>
                 {t('common.retry')}
@@ -248,7 +248,7 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                         data-persona-show-hidden
                         aria-expanded={showHidden}
                         onClick={() => { setShowHidden((shown) => !shown); }}
-                        className="inline-flex min-h-8 items-center gap-1 rounded-sm text-[12.5px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                        className="inline-flex min-h-8 items-center gap-1 rounded-sm text-[13px] leading-5 text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
                       >
                         {tp('persona.hiddenRow', hiddenCount)}
                         <DisclosureChevron open={showHidden} className="text-ink-faint" />
@@ -260,7 +260,7 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                         data-persona-show-archived
                         aria-expanded={showArchived}
                         onClick={() => { setShowArchived((shown) => !shown); }}
-                        className="inline-flex min-h-8 items-center gap-1 rounded-sm text-[12.5px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                        className="inline-flex min-h-8 items-center gap-1 rounded-sm text-[13px] leading-5 text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
                       >
                         {tp('persona.archivedRow', archivedCount)}
                         <DisclosureChevron open={showArchived} className="text-ink-faint" />
@@ -295,7 +295,7 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                           onClick={() => select(selected.id, { view: 'settings' })}
                           className={`relative -mb-px pb-2.5 text-[13px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
                             viewMode === 'settings'
-                              ? 'font-medium text-ink after:absolute after:inset-x-0 after:bottom-0 after:h-[1.5px] after:bg-ink'
+                              ? 'font-normal text-ink after:absolute after:inset-x-0 after:bottom-0 after:h-[1.5px] after:bg-ink'
                               : 'font-normal text-ink-soft hover:text-ink'
                           }`}
                         >
@@ -309,7 +309,7 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                           onClick={() => select(selected.id, { view: 'conversations' })}
                           className={`relative -mb-px pb-2.5 text-[13px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
                             viewMode === 'conversations'
-                              ? 'font-medium text-ink after:absolute after:inset-x-0 after:bottom-0 after:h-[1.5px] after:bg-ink'
+                              ? 'font-normal text-ink after:absolute after:inset-x-0 after:bottom-0 after:h-[1.5px] after:bg-ink'
                               : 'font-normal text-ink-soft hover:text-ink'
                           }`}
                         >
@@ -380,10 +380,10 @@ function PersonaRow({ persona, active, onOpen }: { readonly persona: PersonaSumm
       <PersonaAvatar persona={personaAvatarOf(persona)} size={36} decorative className={persona.archived ? 'opacity-60' : ''} />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="flex min-w-0 items-baseline gap-2">
-          <span className={`min-w-0 truncate text-[13.5px] ${active ? 'font-medium text-ink' : persona.archived ? 'text-ink-soft' : 'text-ink'}`}>{persona.name}</span>
+          <span className={`min-w-0 truncate text-[13px] leading-5 font-normal ${persona.archived && !active ? 'text-ink-soft' : 'text-ink'}`}>{persona.name}</span>
           {persona.title !== undefined ? <span className="min-w-0 shrink-[2] truncate text-[12px] text-section-ink">{persona.title}</span> : null}
-          {persona.hidden === true && !persona.archived ? <span data-persona-hidden-tag className="shrink-0 text-[11px] text-ink-faint">{t('persona.hiddenTag')}</span> : null}
-          {persona.archived ? <span className="shrink-0 text-[11px] text-ink-faint">{t('persona.archivedTag')}</span> : null}
+          {persona.hidden === true && !persona.archived ? <span data-persona-hidden-tag className="shrink-0 text-[12px] leading-4 text-ink-faint">{t('persona.hiddenTag')}</span> : null}
+          {persona.archived ? <span className="shrink-0 text-[12px] leading-4 text-ink-faint">{t('persona.archivedTag')}</span> : null}
         </span>
         {persona.job !== undefined ? <span className="truncate text-[12px] leading-4 text-ink-faint">{persona.job}</span> : null}
       </span>

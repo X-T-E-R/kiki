@@ -23,8 +23,9 @@
   --ok: #1f6348;
   --selected: #1d4d6d;
   --tabbar-height: 58px;
-  --font-display: 'Newsreader Variable', 'Newsreader', Georgia, 'Songti SC', 'Noto Serif SC', 'SimSun', serif;
-  --font-sans: 'Instrument Sans Variable', 'Instrument Sans', ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  --font-serif: 'Newsreader Variable', Georgia, 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --font-sans: 'Instrument Sans Variable', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', 'Hiragino Sans GB', sans-serif;
+  --font-display: var(--font-sans);
   color-scheme: light;
 }
 
@@ -50,7 +51,7 @@
 
 * { box-sizing: border-box; }
 
-html, body { min-height: 100%; margin: 0; }
+html, body { min-height: 100%; margin: 0; font-synthesis: none; }
 
 body {
   background: var(--paper);
@@ -98,7 +99,7 @@ body {
 }
 
 .wordmark {
-  font: 600 26px/1 var(--font-display);
+  font: 600 26px/1 var(--font-serif);
   font-optical-sizing: auto;
   letter-spacing: -0.02em;
 }
@@ -120,9 +121,8 @@ body {
 
 .view-title {
   margin: 12px 0 0;
-  font: 600 30px/1.15 var(--font-display);
-  font-optical-sizing: auto;
-  letter-spacing: -0.015em;
+  font: 700 24px/32px var(--font-sans);
+  letter-spacing: normal;
 }
 
 #view-computers .view-title,

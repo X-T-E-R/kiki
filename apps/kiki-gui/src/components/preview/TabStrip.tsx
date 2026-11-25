@@ -194,7 +194,7 @@ export function PreviewTabStrip({
           aria-haspopup="menu"
           aria-label={t('preview.tabPickerAria', { name: activeInfo.label, count: tabs.length })}
           onClick={() => { setSheetOpen(true); }}
-          className="flex min-h-11 min-w-0 w-full items-center gap-1.5 rounded-md px-2 text-left text-[13px] font-medium text-ink transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+          className="flex min-h-11 min-w-0 w-full items-center gap-1.5 rounded-md px-2 text-left text-[13px] leading-5 font-normal text-ink transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
         >
           {activeDirty ? (
             <span
@@ -209,7 +209,7 @@ export function PreviewTabStrip({
           {activeInfo.isCopy ? (
             <span
               data-preview-copy-badge
-              className="shrink-0 rounded-[3px] bg-ink/[0.06] px-1 py-0.5 text-[10px] leading-none font-normal text-ink-faint"
+              className="shrink-0 rounded-[3px] bg-ink/[0.06] px-1 py-0.5 text-[12px] leading-4 font-normal text-ink-faint"
             >
               {t('preview.sentCopyBadge')}
             </span>
@@ -280,8 +280,8 @@ export function PreviewTabStrip({
                       onActivate(key);
                       setSheetOpen(false);
                     }}
-                    className={`flex min-h-12 min-w-0 flex-1 items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-left text-[15px] transition-colors hover:bg-paper focus-visible:bg-paper ${
-                      isTabActive ? 'font-medium text-ink' : 'text-ink-soft'
+                    className={`flex min-h-12 min-w-0 flex-1 items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-left text-[14px] leading-5 font-normal transition-colors hover:bg-paper focus-visible:bg-paper ${
+                      isTabActive ? 'text-ink' : 'text-ink-soft'
                     }`}
                   >
                     <Icon name={info.icon} size={16} className="shrink-0 text-ink-faint" />
@@ -293,7 +293,7 @@ export function PreviewTabStrip({
                     ) : null}
                     <span className="min-w-0 flex-1 truncate">{info.label}</span>
                     {info.isCopy ? (
-                      <span className="shrink-0 rounded-[3px] bg-ink/[0.06] px-1.5 py-0.5 text-[11px] leading-none font-normal text-ink-faint">
+                      <span className="shrink-0 rounded-[3px] bg-ink/[0.06] px-1.5 py-0.5 text-[12px] leading-4 font-normal text-ink-faint">
                         {t('preview.sentCopyBadge')}
                       </span>
                     ) : null}
@@ -609,10 +609,10 @@ function PreviewResourceTabChip({
       }}
       className={
         singleMode
-          ? 'group flex h-8 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1 text-[13px] font-medium text-ink select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
-          : `group flex h-8 ${isCopy ? 'max-w-52' : 'max-w-44'} min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-md border px-2 text-[12px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+          ? 'group flex h-8 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1 text-[13px] leading-5 font-normal text-ink select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
+          : `group flex h-8 ${isCopy ? 'max-w-52' : 'max-w-44'} min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-md border px-2 text-[12px] leading-4 select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
               active
-                ? 'border-hairline bg-paper font-medium text-ink'
+                ? 'border-hairline bg-paper font-normal text-ink'
                 : 'border-transparent text-ink-faint hover:text-ink-soft'
             }`
       }
@@ -629,7 +629,7 @@ function PreviewResourceTabChip({
       {isCopy ? (
         <span
           data-preview-copy-badge
-          className="shrink-0 rounded-[3px] bg-ink/[0.06] px-1 py-0.5 text-[10px] leading-none font-normal text-ink-faint"
+          className="shrink-0 rounded-[3px] bg-ink/[0.06] px-1 py-0.5 text-[12px] leading-4 font-normal text-ink-faint"
         >
           {t('preview.sentCopyBadge')}
         </span>
@@ -646,8 +646,8 @@ function PreviewResourceTabChip({
               appendToDraft(targetDraftKey, mentionTokenFor(trustedPath, cwd));
             }
           }}
-          className={`shrink-0 rounded-sm px-0.5 font-mono text-[11px] leading-none transition-colors hover:text-ink ${
-            active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint pointer-coarse:text-ink-faint'
+          className={`shrink-0 rounded-sm px-0.5 font-mono text-[12px] leading-4 text-ink-faint transition-colors hover:text-ink ${
+            active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100'
           }`}
         >
           @
@@ -660,8 +660,8 @@ function PreviewResourceTabChip({
           event.stopPropagation();
           onClose();
         }}
-        className={`shrink-0 rounded-sm px-0.5 text-[11px] leading-none transition-colors hover:text-danger ${
-          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint pointer-coarse:text-ink-faint'
+        className={`shrink-0 rounded-sm px-0.5 text-[12px] leading-4 text-ink-faint transition-colors hover:text-danger ${
+          active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100'
         }`}
       >
         <Icon name="close" size={12} />
@@ -728,21 +728,21 @@ function PreviewSkillTab({
       }}
       className={
         singleMode
-          ? 'group flex h-8 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1 text-[13px] font-medium text-ink select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
-          : `group flex h-8 max-w-48 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-md border px-2 text-[12px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
-              active ? 'border-hairline bg-paper font-medium text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
+          ? 'group flex h-8 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1 text-[13px] leading-5 font-normal text-ink select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
+          : `group flex h-8 max-w-48 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-md border px-2 text-[12px] leading-4 select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+              active ? 'border-hairline bg-paper font-normal text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
             }`
       }
     >
       {singleMode ? <Icon name="skill" size={14} className="shrink-0 text-ink-faint" /> : null}
       <span className="min-w-0 truncate">SKILL.md</span>
-      <span className="min-w-0 truncate text-[11.5px] font-normal text-ink-faint">{name}</span>
+      <span className="min-w-0 truncate text-[12px] leading-4 font-normal text-ink-faint">{name}</span>
       <button
         type="button"
         aria-label={`${t('common.close')} ${name} SKILL.md`}
         onClick={(event) => { event.stopPropagation(); onClose(); }}
-        className={`shrink-0 rounded-sm px-0.5 text-[11px] leading-none transition-colors hover:text-danger ${
-          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint pointer-coarse:text-ink-faint'
+        className={`shrink-0 rounded-sm px-0.5 text-[12px] leading-4 text-ink-faint transition-colors hover:text-danger ${
+          active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100'
         }`}
       >
         <Icon name="close" size={12} />
@@ -812,9 +812,9 @@ function PreviewWebTab({
       }}
       className={
         singleMode
-          ? 'group flex h-8 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1 text-[13px] font-medium text-ink select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
-          : `group flex h-8 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-md border px-2 text-[12px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
-              active ? 'border-hairline bg-paper font-medium text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
+          ? 'group flex h-8 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1 text-[13px] leading-5 font-normal text-ink select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
+          : `group flex h-8 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-md border px-2 text-[12px] leading-4 select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+              active ? 'border-hairline bg-paper font-normal text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
             }`
       }
     >
@@ -824,8 +824,8 @@ function PreviewWebTab({
         type="button"
         aria-label={`${t('common.close')} ${label}`}
         onClick={(event) => { event.stopPropagation(); onClose(); }}
-        className={`shrink-0 rounded-sm px-0.5 text-[11px] leading-none transition-colors hover:text-danger ${
-          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint pointer-coarse:text-ink-faint'
+        className={`shrink-0 rounded-sm px-0.5 text-[12px] leading-4 text-ink-faint transition-colors hover:text-danger ${
+          active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100'
         }`}
       >
         <Icon name="close" size={12} />
@@ -894,15 +894,15 @@ function PreviewPanelTab({
         event.preventDefault();
         onContextMenu(event.clientX, event.clientY);
       }}
-      className={`group flex h-11 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 ${
+      className={`group flex h-11 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-t-md border border-b-0 px-2 text-[12px] leading-4 select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 ${
         active
-          ? 'border-hairline bg-paper font-medium text-ink'
+          ? 'border-hairline bg-paper font-normal text-ink'
           : 'border-transparent text-ink-faint hover:text-ink-soft'
       }`}
     >
       <span
         className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-          isBusy ? 'status-dot-busy bg-accent' : node?.status === 'failed' ? 'bg-danger' : 'bg-ink-faint/60'
+          isBusy ? 'status-dot-busy bg-accent' : node?.status === 'failed' ? 'bg-danger' : 'bg-ink-faint'
         }`}
       />
       <span className="min-w-0 truncate">{name}</span>
@@ -913,8 +913,8 @@ function PreviewPanelTab({
           event.stopPropagation();
           onClose();
         }}
-        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-[11px] leading-none transition-colors hover:text-danger lg:h-auto lg:w-auto lg:px-0.5 ${
-          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint pointer-coarse:text-ink-faint'
+        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-[12px] leading-4 text-ink-faint transition-colors hover:text-danger lg:h-auto lg:w-auto lg:px-0.5 ${
+          active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100'
         }`}
       >
         <Icon name="close" size={12} />
@@ -988,10 +988,10 @@ function PreviewPluginTab({
       }}
       className={
         singleMode
-          ? 'group flex h-8 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1 text-[13px] font-medium text-ink select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
-          : `group flex h-11 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-[12px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 ${
+          ? 'group flex h-8 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1 text-[13px] leading-5 font-normal text-ink select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
+          : `group flex h-11 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-[12px] leading-4 select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 ${
               active
-                ? 'border-hairline bg-paper font-medium text-ink'
+                ? 'border-hairline bg-paper font-normal text-ink'
                 : 'border-transparent text-ink-faint hover:text-ink-soft'
             }`
       }
@@ -1006,8 +1006,8 @@ function PreviewPluginTab({
           event.stopPropagation();
           onClose();
         }}
-        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-[11px] leading-none transition-colors hover:text-danger lg:h-auto lg:w-auto lg:px-0.5 ${
-          active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint pointer-coarse:text-ink-faint'
+        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-[12px] leading-4 text-ink-faint transition-colors hover:text-danger lg:h-auto lg:w-auto lg:px-0.5 ${
+          active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100'
         }`}
       >
         <Icon name="close" size={12} />

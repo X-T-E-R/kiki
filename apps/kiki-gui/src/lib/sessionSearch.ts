@@ -29,7 +29,7 @@ import {
 } from '@kiki/session-core/sessions';
 import type { SearchMessageHit, SearchMessagesResponse } from './client';
 import { useConnection } from '../state/connection';
-import { useThreadTitleResolver } from './threadTitles';
+import { sanitizeDisplayTitle, useThreadTitleResolver } from './threadTitles';
 
 /** Concatenate pages in server order, keeping every page's `items` verbatim —
  * duplicates re-ranked across a page boundary are kept, never collapsed. */
@@ -113,17 +113,21 @@ export function useSessionSearch(input: {
   const scopeKey = scope.join(',');
 
   const resolveTitle = useThreadTitleResolver(input.sessions.map((session) =>
-    session.title.trim() !== '' ? session.title : session.last_prompt ?? ''), input.sessions);
+    sanitizeDisplayTitle(session.title) ?? sanitizeDisplayTitle(session.last_prompt) ?? ''), input.sessions);
   const localSessions = useMemo<LocalSession[]>(
     () =>
-      input.sessions.map((session) => ({
-        id: session.id,
-        title: resolveTitle(session.title.trim() !== '' ? session.title : (session.last_prompt?.trim() || input.untitled)),
-        workspace_id: session.workspace_id,
-        updated_at: session.updated_at,
-        cwd: session.metadata.cwd,
-        source: session,
-      })),
+      input.sessions.map((session) => {
+        const candidate = sanitizeDisplayTitle(session.title) ?? sanitizeDisplayTitle(session.last_prompt) ?? input.untitled;
+        const resolved = resolveTitle(candidate);
+        return {
+          id: session.id,
+          title: resolved.trim() !== '' ? resolved : input.untitled,
+          workspace_id: session.workspace_id,
+          updated_at: session.updated_at,
+          cwd: session.metadata.cwd,
+          source: session,
+        };
+      }),
     [input.sessions, input.untitled, resolveTitle],
   );
   const local = useMemo(() => {

@@ -252,7 +252,7 @@ export function UsageHeroStage({
             <span className="flex flex-col items-center leading-tight">
               <span className="max-w-full truncate">{costFormatted}</span>
               {costOutcome !== undefined ? (
-                <span className="mt-0.5 font-sans text-[10.5px] leading-none">
+                <span className="mt-0.5 font-sans text-[12px] leading-4 font-normal">
                   <CompareCell outcome={costOutcome} />
                 </span>
               ) : null}
@@ -270,7 +270,7 @@ export function UsageHeroStage({
               <span className="flex flex-col items-center leading-tight">
                 <span className="max-w-full truncate">{cacheFormatted}</span>
                 {cacheOutcome !== undefined ? (
-                  <span className="mt-0.5 font-sans text-[10.5px] leading-none">
+                  <span className="mt-0.5 font-sans text-[12px] leading-4 font-normal">
                     <CompareCell outcome={cacheOutcome} points />
                   </span>
                 ) : null}
@@ -286,7 +286,7 @@ export function UsageHeroStage({
               <span className="flex flex-col items-center leading-tight">
                 <span className="max-w-full truncate">{tokensFormatted}</span>
                 {tokensOutcome !== undefined ? (
-                  <span className="mt-0.5 font-sans text-[10.5px] leading-none">
+                  <span className="mt-0.5 font-sans text-[12px] leading-4 font-normal">
                     <CompareCell outcome={tokensOutcome} />
                   </span>
                 ) : null}
@@ -301,7 +301,7 @@ export function UsageHeroStage({
       title={tokenCompositionTitle}
       className="inline-flex items-center gap-1 font-sans tracking-normal text-[var(--kiki-chart-label)]"
     >
-      <span data-usage-summary-tokens className="font-semibold text-ink tabular-nums">
+      <span data-usage-summary-tokens className="font-normal text-ink tabular-nums">
         {tokensFormatted}
       </span>
       <span>{t('usage.col.tokens')}</span>
@@ -319,19 +319,19 @@ export function UsageHeroStage({
       <span data-usage-summary-activity className="inline-flex items-baseline gap-1 tabular-nums">
         {hasTurns && hasRequests ? (
           <>
-            <span className="font-semibold text-ink">{formatGrouped(requests)}</span>
+            <span className="font-normal text-ink">{formatGrouped(requests)}</span>
             <span>{t('usage.kpi.requestsUnit')}</span>
             <span aria-hidden>·</span>
-            <span className="font-semibold text-ink">{formatGrouped(turns)}</span>
+            <span className="font-normal text-ink">{formatGrouped(turns)}</span>
             <span>{t('usage.kpi.turnsUnit')}</span>
           </>
         ) : hasTurns ? (
           <>
-            <span className="font-semibold text-ink">{formatGrouped(turns)}</span>
+            <span className="font-normal text-ink">{formatGrouped(turns)}</span>
             <span>{t('usage.kpi.turnsUnit')}</span>
           </>
         ) : (
-          <span className="font-medium text-ink">{tp('usage.sessionChip', summary.session_count)}</span>
+          <span className="font-normal text-ink">{tp('usage.sessionChip', summary.session_count)}</span>
         )}
       </span>
     </span>
@@ -344,7 +344,7 @@ export function UsageHeroStage({
       className="inline-flex items-center gap-1 font-sans tracking-normal text-[var(--kiki-chart-label)]"
     >
       <span>{t('usage.kpi.estimatedCost')}</span>
-      <span data-usage-summary-cost className="font-semibold text-ink tabular-nums">
+      <span data-usage-summary-cost className="font-normal text-ink tabular-nums">
         {costFormatted}
       </span>
       {costUnknownBadge}
@@ -359,7 +359,7 @@ export function UsageHeroStage({
       className="inline-flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-sans tracking-normal text-[var(--kiki-chart-label)]"
     >
       <span>{t('usage.kpi.cacheHit')}</span>
-      <span data-usage-summary-cache className="font-medium text-ink tabular-nums">
+      <span data-usage-summary-cache className="font-normal text-ink tabular-nums">
         {cacheFormatted}
       </span>
       {cacheOutcome !== undefined ? <CompareCell outcome={cacheOutcome} points /> : null}
@@ -442,11 +442,11 @@ export function UsageHeroStage({
         <div className="min-w-0 @min-[800px]/usage:order-1">
           {trend.length === 0 ? (
             <div className="space-y-3">
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-[var(--kiki-chart-label)]">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] leading-4 text-[var(--kiki-chart-label)]">
                 {plotHeaderMeta}
               </div>
               {complete ? (
-                <p data-usage-empty className="py-10 text-center text-[13px] text-[var(--kiki-chart-label)]">
+                <p data-usage-empty className="py-10 text-center text-[13px] leading-5 text-[var(--kiki-chart-label)]">
                   {emptyMessage}
                 </p>
               ) : null}

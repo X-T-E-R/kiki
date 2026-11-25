@@ -296,7 +296,7 @@ export function useAdmissionView(promptId: string | undefined): AdmissionView | 
   return promptId === undefined ? undefined : views.get(promptId);
 }
 
-const LINK = 'min-h-6 rounded-sm px-1 font-medium text-ink-soft underline-offset-2 transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-default disabled:no-underline disabled:opacity-60';
+const LINK = 'min-h-6 rounded-sm px-1 font-normal text-ink-soft underline-offset-2 transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-default disabled:no-underline disabled:opacity-60';
 /** Shown with the bubble's hover/focus, always on touch screens. */
 const ON_HOVER = 'opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 [@media(hover:none)]:opacity-100';
 
@@ -320,7 +320,7 @@ export function AdmissionLine({ view }: { readonly view: AdmissionView }) {
       role="status"
       data-admission={view.kind}
       title={title}
-      className="mt-1 mr-1 flex flex-wrap items-center justify-end gap-x-1 text-[11px] text-ink-faint"
+      className="mt-1 mr-1 flex flex-wrap items-center justify-end gap-x-1 text-[12px] leading-4 text-ink-faint"
     >
       {waiting
         ? <Spinner label={label} size={12} />

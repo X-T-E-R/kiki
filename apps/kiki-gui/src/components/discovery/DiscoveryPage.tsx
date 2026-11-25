@@ -76,7 +76,7 @@ export function DiscoveryPage({
               className="mb-8 flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 rounded-r-lg border-l-2 border-selected-ink bg-selected-ink/[0.05] py-3 pl-4 pr-3.5"
             >
               <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium text-ink">
+                <p className="text-[13px] leading-5 font-normal text-ink">
                   {t('discovery.hub.resumeAt', { step: view.position })}
                   {view.total > 0 ? (
                     <span className="ml-2 text-[12px] font-normal tabular-nums text-selected-ink">
@@ -104,10 +104,7 @@ export function DiscoveryPage({
           ) : null}
 
           <section data-discovery-tour>
-            <h2
-              className="font-display text-[26px] leading-[1.2] tracking-tight text-ink sm:text-[30px]"
-              style={{ fontVariationSettings: '"opsz" 32' }}
-            >
+            <h2 className="font-sans text-[24px] leading-8 font-bold text-ink">
               {t('discovery.hub.headline')}
             </h2>
             <p className="mt-2.5 max-w-[56ch] text-[14px] leading-relaxed text-ink-soft">
@@ -123,7 +120,7 @@ export function DiscoveryPage({
                 <span>{t('firstRun.tour.start')}</span>
                 <Icon name="arrowRight" size={14} />
               </button>
-              <span className="inline-flex flex-wrap items-center gap-x-2 text-[12.5px] text-ink-faint">
+              <span className="inline-flex flex-wrap items-center gap-x-2 text-[13px] leading-5 text-ink-faint">
                 <span className="inline-flex items-center gap-1.5">
                   <Icon name="compass" size={12} className="shrink-0 text-ink-faint" />
                   <span>{t('discovery.noModel')}</span>
@@ -178,7 +175,7 @@ export function DiscoveryPage({
                       <div className="flex shrink-0 items-center sm:w-full">
                         <span
                           aria-hidden
-                          className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10.5px] font-medium tabular-nums ${nodeClasses}`}
+                          className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[12px] leading-4 font-normal tabular-nums ${nodeClasses}`}
                         >
                           {marker === 'tried' || marker === 'seen' ? (
                             <Icon name="check" size={12} />
@@ -192,11 +189,11 @@ export function DiscoveryPage({
                       </div>
                       <div className="min-w-0 flex-1 sm:w-full sm:pr-2">
                         <span
-                          className={`block text-[12.5px] leading-snug ${
+                          className={`block text-[13px] leading-5 font-normal ${
                             marker === 'resumable'
-                              ? 'font-medium text-selected-ink'
+                              ? 'text-selected-ink'
                               : marker === 'tried' || marker === 'seen'
-                                ? 'font-medium text-ink'
+                                ? 'text-ink'
                                 : 'text-ink-soft'
                           }`}
                         >
@@ -204,7 +201,7 @@ export function DiscoveryPage({
                         </span>
                         {marker !== 'unvisited' ? (
                           <span
-                            className={`mt-0.5 block text-[11px] leading-4 ${
+                            className={`mt-0.5 block text-[12px] leading-4 ${
                               marker === 'resumable' ? 'text-selected-ink' : 'text-ink-faint'
                             }`}
                           >
@@ -222,7 +219,7 @@ export function DiscoveryPage({
           </section>
 
           <section className="mt-10 border-t border-hairline pt-7" aria-labelledby="discovery-topics-heading">
-            <h2 id="discovery-topics-heading" className="text-[12px] font-medium text-section-ink">
+            <h2 id="discovery-topics-heading" className="text-[12px] leading-4 font-normal text-section-ink">
               {t('discovery.hub.topics')}
             </h2>
             <div

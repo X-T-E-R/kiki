@@ -158,8 +158,8 @@ export function MobileChatScreen({
               onClick={() => { openHood('info'); }}
               className="flex min-h-11 min-w-0 flex-1 flex-col items-start justify-center text-left"
             >
-              <span className="w-full truncate text-[15px] font-semibold leading-tight text-ink">{title}</span>
-              <span className="mt-0.5 flex w-full items-center gap-1.5 text-[11.5px] leading-none text-ink-faint">
+              <span className="w-full truncate font-sans text-[16px] font-bold leading-6 text-ink">{title}</span>
+              <span className="mt-0.5 flex w-full items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
                 <span
                   className={`h-[6px] w-[6px] shrink-0 rounded-full ${stream.state.busy ? 'bg-accent' : 'bg-success'}`}
                   aria-hidden="true"
@@ -214,7 +214,7 @@ export function MobileChatScreen({
             >
               <span className="flex min-w-0 items-center gap-2">
                 <span className="h-2 w-2 shrink-0 rounded-full bg-accent" aria-hidden="true" />
-                <span className="truncate font-medium">
+                <span className="truncate font-normal">
                   {t('mobile.chat.liveRunPill', { count: runningTasksCount })}
                 </span>
               </span>

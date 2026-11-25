@@ -36,9 +36,9 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine } from '../controls';
 import { DisclosureChevron, Icon } from '../icons';
 
-const ROW_BUTTON = 'inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-2.5';
-const RESUME_BUTTON = 'inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-selected-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-selected/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-2.5';
-const PAUSE_ALL_BUTTON = 'inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md border border-hairline px-2.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:border-hairline-strong hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11';
+const ROW_BUTTON = 'inline-flex min-h-8 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] leading-4 font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-2.5';
+const RESUME_BUTTON = 'inline-flex min-h-8 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] leading-4 font-normal text-selected-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-selected/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-2.5';
+const PAUSE_ALL_BUTTON = 'inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-md border border-hairline px-2.5 text-[12px] leading-4 font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:border-hairline-strong hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11';
 
 type Translate = (key: I18nKey, params?: Record<string, string | number>) => string;
 
@@ -121,10 +121,99 @@ function PhaseChip({ state }: { readonly state: ExecutionControlState }) {
       ? 'bg-danger'
       : 'bg-amber-rule';
   return (
-    <span data-execution-phase={state.phase} className={`inline-flex shrink-0 items-center gap-1.5 text-[11.5px] font-medium leading-4 ${tone}`}>
+    <span data-execution-phase={state.phase} className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] leading-4 font-normal ${tone}`}>
       <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
       {label}
     </span>
+  );
+}
+
+/**
+ * Inline per-session pause / cancel-pause / resume / retry controls for one
+ * Live runtime row. Keeps confirmation dialog and per-session error feedback
+ * bound to this session without owning navigation.
+ */
+export function SessionExecutionActions({
+  sessionId,
+  state,
+  onRetryRead,
+}: {
+  readonly sessionId: string;
+  readonly state: ExecutionControlState;
+  readonly onRetryRead: () => void;
+}) {
+  const { t } = useI18n();
+  const pause = useExecutionPause([sessionId]);
+  const cancelPause = useExecutionCancelPauseOne(sessionId, state);
+  const resume = useExecutionResumeOne(sessionId, state);
+  const [confirming, setConfirming] = useState(false);
+  const phase = state.phase;
+  const busy = pause.pending || cancelPause.pending || resume.pending || phase === 'pausing' || phase === 'resuming';
+  const settling = settlingCount(state);
+  const errorText = phase === 'failed'
+    ? (state.error ?? t('usage.execution.readFailed'))
+    : pause.error !== undefined
+      ? executionFailureText(pause.error, 'pause', t)
+      : resume.error !== undefined
+        ? executionFailureText(resume.error, 'resume', t)
+        : cancelPause.error !== undefined
+          ? executionFailureText(cancelPause.error, 'cancelPause', t)
+          : undefined;
+  return (
+    <>
+      <span className="inline-flex shrink-0 flex-wrap items-center gap-1" data-execution-control={sessionId}>
+        {settling > 0 ? (
+          <span className="text-[12px] leading-4 text-ink-faint tabular-nums">
+            {t('usage.execution.agentsSettling', { count: settling })}
+          </span>
+        ) : null}
+        {phase === 'running' ? (
+          <button type="button" data-execution-action="pause" className={ROW_BUTTON} disabled={busy} onClick={() => { setConfirming(true); }}>
+            <Icon name="hold" size={12} />
+            {t('usage.execution.pauseSession')}
+          </button>
+        ) : null}
+        {phase === 'failed' ? (
+          <button type="button" data-execution-action="retry-read" className={ROW_BUTTON} disabled={busy} onClick={() => { onRetryRead(); }}>
+            {t('usage.execution.retryRead')}
+          </button>
+        ) : null}
+        {(phase === 'pausing' || (phase === 'failed' && state.pausedAt === undefined)) && state.pauseOperationId !== undefined ? (
+          <button
+            type="button"
+            data-execution-action="cancel-pause"
+            data-execution-pending={cancelPause.pending || undefined}
+            className={ROW_BUTTON}
+            disabled={cancelPause.pending || pause.pending || resume.pending}
+            onClick={() => { cancelPause.run(); }}
+          >
+            <Icon name="close" size={12} />
+            {t('usage.execution.cancelPause')}
+          </button>
+        ) : null}
+        {phase === 'paused' || (phase === 'failed' && state.pausedAt !== undefined && state.pauseOperationId !== undefined) ? (
+          <button type="button" data-execution-action="resume" className={RESUME_BUTTON} disabled={busy} onClick={() => { resume.reset(); resume.run(); }}>
+            <Icon name="refresh" size={12} />
+            {t('usage.execution.resumeSession')}
+          </button>
+        ) : null}
+      </span>
+      {errorText !== undefined ? (
+        <div className="col-span-full pt-0.5">
+          <FeedbackLine feedback={{ tone: 'error', text: errorText }} />
+        </div>
+      ) : null}
+      <ConfirmDialog
+        open={confirming}
+        title={t('usage.execution.pauseConfirmTitle')}
+        body={t('usage.execution.pauseConfirmBody')}
+        confirmLabel={t('usage.execution.pauseConfirmAction')}
+        tone="default"
+        busy={pause.pending}
+        onCancel={() => { setConfirming(false); }}
+        onConfirm={() => { setConfirming(false); pause.reset(); pause.run(); }}
+      />
+    </>
   );
 }
 
@@ -185,7 +274,6 @@ export function ExecutionSessionList({ liveSessionIds, states, onRetryRead, labe
 }) {
   const { t } = useI18n();
   const listId = useId();
-  const [expanded, setExpanded] = useState(false);
   const live = new Set(liveSessionIds);
   const held = Object.entries(states)
     .filter((entry): entry is [string, ExecutionControlState] => entry[1] !== undefined && entry[1].phase !== 'running' && !live.has(entry[0]))
@@ -194,33 +282,15 @@ export function ExecutionSessionList({ liveSessionIds, states, onRetryRead, labe
   const rows = [...liveSessionIds.filter((sessionId) => states[sessionId] !== undefined), ...held];
   if (rows.length === 0) return null;
   const phases = rows.map((sessionId) => states[sessionId]!.phase);
-  // Only running rows ever fold away; with none left the disclosure would be a no-op.
-  const foldable = rows.length > 1 && phases.includes('running');
-  const collapsed = foldable && !expanded;
   const heading = t('usage.execution.sessionsCount', { count: rows.length });
-  // When every row is held the same way, the phase hint reads once for the list.
   const sharedPhase = rows.length > 1 && (phases.every((phase) => phase === 'paused') || phases.every((phase) => phase === 'pausing'))
     ? phases[0] as 'paused' | 'pausing'
     : undefined;
   return (
-    <div data-execution-sessions data-collapsed={collapsed || undefined} className="mt-3 border-t border-hairline pt-2">
-      {foldable ? (
-        <button
-          type="button"
-          data-execution-sessions-toggle
-          aria-expanded={expanded}
-          aria-controls={listId}
-          onClick={() => { setExpanded((open) => !open); }}
-          className="-ml-1 inline-flex h-7 items-center gap-1.5 rounded-md px-1 text-[11.5px] font-medium text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
-        >
-          <DisclosureChevron open={expanded} className="text-current" />
-          {heading}
-        </button>
-      ) : (
-        <h3 className="flex h-7 items-center text-[11.5px] font-medium text-ink-faint">{heading}</h3>
-      )}
+    <div data-execution-sessions className="mt-3 border-t border-hairline pt-2">
+      <h3 className="flex h-7 items-center text-[12px] leading-4 font-normal text-ink-faint">{heading}</h3>
       {sharedPhase !== undefined ? (
-        <p data-execution-shared-hint={sharedPhase} className="pb-1 text-[11.5px] leading-4 text-ink-faint">
+        <p data-execution-shared-hint={sharedPhase} className="pb-1 text-[12px] leading-4 text-ink-faint">
           {t(sharedPhase === 'paused' ? 'usage.execution.pausedHint' : 'usage.execution.pausingHint')}
         </p>
       ) : null}
@@ -231,7 +301,7 @@ export function ExecutionSessionList({ liveSessionIds, states, onRetryRead, labe
             sessionId={sessionId}
             state={states[sessionId]!}
             label={labelOf(sessionId)}
-            collapsed={collapsed}
+            collapsed={false}
             phaseHintShared={sharedPhase !== undefined}
             onRetryRead={onRetryRead}
           />

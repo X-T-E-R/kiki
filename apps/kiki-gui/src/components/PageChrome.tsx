@@ -39,7 +39,7 @@ export function PhoneRemoteSpaceLine({ className = '' }: { readonly className?: 
   if (!phoneMode || !inRemoteScope) return null;
   const text = t('sidebar.space.inSpace', { space: spaceName });
   return (
-    <span data-phone-space-line title={text} className={`block min-w-0 truncate text-[11px] leading-[14px] text-ink-faint ${className}`}>
+    <span data-phone-space-line title={text} className={`block min-w-0 truncate text-[12px] leading-4 text-ink-faint ${className}`}>
       {text}
     </span>
   );
@@ -73,7 +73,7 @@ export function PageHeader({
       </button>
       <NavBackButton />
       <div className="min-w-0 flex-1">
-        <h1 data-page-title className="min-w-0 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
+        <h1 data-page-title className="min-w-0 truncate font-sans text-[16px] leading-6 font-bold text-ink">
           {title}
         </h1>
         <PhoneRemoteSpaceLine />

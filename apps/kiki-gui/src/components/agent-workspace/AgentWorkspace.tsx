@@ -583,7 +583,7 @@ function AgentWorkspaceHeader({
               setFamilyRunningOnly(true);
               setFamilyOpen(true);
             }}
-            className="inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-md bg-ink/[0.05] px-1.5 text-[11.5px] font-medium text-ink-soft tabular-nums transition-colors hover:bg-ink/[0.09] hover:text-ink"
+            className="inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-md bg-ink/[0.05] px-1.5 text-[12px] leading-4 font-normal text-ink-soft tabular-nums transition-colors hover:bg-ink/[0.09] hover:text-ink"
           >
             <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-success" />
             <span>{runningChildrenCount}</span>
@@ -596,7 +596,7 @@ function AgentWorkspaceHeader({
             disabled={branchUnlocking}
             title={t('transcript.branch.unlockTools')}
             onClick={onUnlockBranchTools}
-            className="hidden h-6 shrink-0 cursor-pointer items-center rounded-md border border-hairline bg-paper px-2 text-[11.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-60 @[560px]/center:inline-flex"
+            className="hidden h-6 shrink-0 cursor-pointer items-center rounded-md border border-hairline bg-paper px-2 text-[12px] leading-4 text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-60 @[560px]/center:inline-flex"
           >
             {readOnlyBadgeLabel}
           </button>
@@ -604,7 +604,7 @@ function AgentWorkspaceHeader({
           <span
             data-branch-seam-header
             title={branchSeamLabel}
-            className="hidden h-5 shrink-0 items-center rounded bg-ink/[0.04] px-1.5 text-[11px] text-ink-soft @[560px]/center:inline-flex"
+            className="hidden h-5 shrink-0 items-center rounded bg-ink/[0.04] px-1.5 text-[12px] leading-4 text-ink-soft @[560px]/center:inline-flex"
           >
             {branchSeedLabel}
           </span>
@@ -618,7 +618,7 @@ function AgentWorkspaceHeader({
             data-promote-branch-action
             disabled={promote.pending}
             onClick={promote.promote}
-            className="hidden h-7 shrink-0 cursor-pointer rounded-md px-2.5 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.06] hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint @[560px]/center:inline-flex @[560px]/center:items-center"
+            className="hidden h-7 shrink-0 cursor-pointer rounded-md px-2.5 text-[12px] leading-4 font-normal text-ink-soft transition-colors hover:bg-ink/[0.06] hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint @[560px]/center:inline-flex @[560px]/center:items-center"
           >
             {t(promote.pending ? 'agent.promotePending' : 'transcript.branch.promote')}
           </button>
@@ -629,7 +629,7 @@ function AgentWorkspaceHeader({
             data-branch-fold-action
             disabled={branchFolding || branchFoldPending}
             onClick={onFoldBranch}
-            className="h-7 shrink-0 cursor-pointer rounded-md bg-ink/[0.06] px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.10] disabled:cursor-not-allowed disabled:text-ink-faint"
+            className="h-7 shrink-0 cursor-pointer rounded-md bg-ink/[0.06] px-2.5 text-[12px] leading-4 font-normal text-ink transition-colors hover:bg-ink/[0.10] disabled:cursor-not-allowed disabled:text-ink-faint"
           >
             {branchFolding || branchFoldPending
               ? (locale === 'zh' ? '合回中…' : 'Merging…')

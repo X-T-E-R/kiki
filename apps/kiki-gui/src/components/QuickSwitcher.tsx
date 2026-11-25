@@ -43,6 +43,7 @@ import { useSessionSearch } from '../lib/sessionSearch';
 import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Icon } from './icons';
+import { sanitizeDisplayTitle } from '../lib/threadTitles';
 import { ThreadTitle } from './ThreadTitle';
 
 const ADVISOR_ACTION = 'memory-advisor-toggle';
@@ -500,8 +501,8 @@ export function QuickSwitcher({
             </span>
           ) : item.kind === 'session' ? (
             <>
-              <span className="truncate text-[13px] font-medium text-ink">
-                <ThreadTitle text={item.title} />
+              <span className="truncate text-[13px] leading-5 font-normal text-ink">
+                <ThreadTitle text={sanitizeDisplayTitle(item.title) ?? untitled} />
               </span>
               <span className="flex items-center gap-1.5 text-[12px] text-ink-faint">
                 <span className="truncate">{item.cwd}</span>
@@ -515,7 +516,7 @@ export function QuickSwitcher({
               </span>
               <span className="flex items-center gap-1.5 text-[11px] text-ink-faint">
                 <span className="truncate">
-                  <ThreadTitle text={item.sessionTitle.trim() !== '' ? item.sessionTitle : untitled} />
+                  <ThreadTitle text={sanitizeDisplayTitle(item.sessionTitle) ?? untitled} />
                 </span>
                 {item.turn !== undefined ? (
                   <span data-switcher-hit-turn className="shrink-0 rounded bg-ink/[0.06] px-1 py-px font-mono text-[10.5px] text-ink-soft tabular-nums">

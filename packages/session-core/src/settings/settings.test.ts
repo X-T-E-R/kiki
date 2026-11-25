@@ -1720,7 +1720,7 @@ describe('appearance leaf', () => {
 
   it('normalizes the stored motion, prose, and device-local uiZoom / reading / code preferences', () => {
     expect(UI_ZOOM_STEPS).toEqual([80, 90, 100, 110, 125, 140, 150]);
-    expect(PROSE_FONT_SIZE_STEPS).toEqual([14, 15, 15.5, 17, 18, 20]);
+    expect(PROSE_FONT_SIZE_STEPS).toEqual([14, 15, 15.5, 16, 17, 18, 20]);
     expect(CODE_FONT_SIZE_STEPS).toEqual([11, 12, 12.5, 13, 14, 15, 16]);
     expect(CHAT_WIDTH_CHOICES).toEqual(['standard', 'wide', 'full']);
     expect(normalizeUiZoom(undefined)).toBe(DEFAULT_UI_ZOOM);
@@ -1738,8 +1738,8 @@ describe('appearance leaf', () => {
     expect(normalizeProseFontSize(10)).toBe(14);
     expect(normalizeProseFontSize(17.6)).toBe(18);
     expect(normalizeProseFontSize(30)).toBe(20);
-    expect(stepProseFontSize(15.5, 1)).toBe(17);
-    expect(stepProseFontSize(15.5, -1)).toBe(15);
+    expect(stepProseFontSize(16, 1)).toBe(17);
+    expect(stepProseFontSize(16, -1)).toBe(15.5);
     expect(stepProseFontSize(20, 1)).toBe(20);
     expect(stepProseFontSize(14, -1)).toBe(14);
 
@@ -1748,8 +1748,8 @@ describe('appearance leaf', () => {
     expect(normalizeCodeFontSize(8)).toBe(11);
     expect(normalizeCodeFontSize(13.8)).toBe(14);
     expect(normalizeCodeFontSize(24)).toBe(16);
-    expect(stepCodeFontSize(12.5, 1)).toBe(13);
-    expect(stepCodeFontSize(12.5, -1)).toBe(12);
+    expect(stepCodeFontSize(13, 1)).toBe(14);
+    expect(stepCodeFontSize(13, -1)).toBe(12.5);
     expect(stepCodeFontSize(16, 1)).toBe(16);
     expect(stepCodeFontSize(11, -1)).toBe(11);
 
@@ -1767,11 +1767,16 @@ describe('appearance leaf', () => {
       chatWidth: 'cinema',
     }));
     expect(readSettings().motion).toBe('system');
-    expect(readSettings().proseFont).toBe('serif');
+    expect(readSettings().proseFont).toBe('sans');
     expect(readSettings().uiZoom).toBe(100);
-    expect(readSettings().proseFontSize).toBe(15.5);
-    expect(readSettings().codeFontSize).toBe(12.5);
+    expect(readSettings().proseFontSize).toBe(16);
+    expect(readSettings().codeFontSize).toBe(13);
     expect(readSettings().chatWidth).toBe('standard');
+    // Persisted opt-in serif preference must be retained by the normalizer.
+    localStorage.setItem('kiki.settings', JSON.stringify({
+      proseFont: 'serif',
+    }));
+    expect(readSettings().proseFont).toBe('serif');
     localStorage.setItem('kiki.settings', JSON.stringify({
       motion: 'reduce',
       proseFont: 'sans',

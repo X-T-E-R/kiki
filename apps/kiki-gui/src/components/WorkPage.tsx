@@ -145,7 +145,7 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
       {slots.header !== null
         ? createPortal(
             <div className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline/70 bg-paper px-4">
-              <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
+              <h1 className="min-w-0 flex-1 truncate font-sans text-[16px] leading-6 font-bold text-ink">
                 {mode?.name ?? t('workHome.eyebrow')}
               </h1>
               <WorkModeMenu catalog={catalog} onSetup={onSetupMode} {...modeMenu} />
@@ -153,17 +153,14 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
             slots.header,
           )
         : null}      <div className="mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)] px-4 pb-5 pt-7 text-left sm:px-6" data-work-page>
-        <p className="flex items-center gap-2 text-[10.5px] font-semibold uppercase tracking-[0.11em] text-accent-ink">
+        <p className="flex items-center gap-2 text-[12px] leading-4 font-normal text-accent-ink">
           <span aria-hidden className="inline-block h-2 w-2 rounded-[2px] bg-accent" />
           {t('workHome.eyebrow')}
         </p>
-        <h2
-          className="mt-3 font-display text-[26px] font-semibold leading-[1.15] tracking-tight text-ink"
-          style={{ fontVariationSettings: '"opsz" 32' }}
-        >
+        <h2 className="mt-3 font-sans text-[24px] leading-8 font-bold text-ink">
           {t('workHome.headline')}
         </h2>
-        <p className="mt-2.5 max-w-[52ch] text-[13.5px] leading-[1.6] text-ink-soft">{t('workHome.subhead')}</p>
+        <p className="mt-2.5 max-w-[52ch] text-[14px] leading-5 text-ink-soft">{t('workHome.subhead')}</p>
         {showTargetHint ? (
           <div data-work-target-recovery className="mt-3 space-y-2 rounded-lg border border-hairline bg-panel/60 p-3">
             <p className="text-[12px] text-ink-soft">{t('new.noTargetHint')}</p>
@@ -173,7 +170,7 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
         {state.workspacesError !== null && cwd === '' ? (
           <div role="alert" data-work-workspace-failure className="mt-2 text-[12px] text-danger">
             <p>{t('new.workspaceLoadFailed', { detail: state.workspacesError })}</p>
-            <button type="button" onClick={state.retryWorkspaces} className="mt-1 rounded px-1 py-0.5 font-medium underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('common.retry')}</button>
+            <button type="button" onClick={state.retryWorkspaces} className="mt-1 rounded px-1 py-0.5 font-normal underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('common.retry')}</button>
           </div>
         ) : null}
         {state.creationNotice !== null || state.hasCreationIntent ? (
@@ -181,8 +178,8 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
             <p>{state.creationNotice}</p>
             {!state.creationPending ? (
               <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-                <button type="button" disabled={state.checkingCreation} onClick={() => { void state.retryCreation(); }} className="rounded py-1 font-medium text-ink underline underline-offset-2 disabled:opacity-50">{t('new.recoverCreation')}</button>
-                {state.createdSessionId !== undefined ? <button type="button" disabled={state.checkingCreation} onClick={() => { void state.openCreatedSession(); }} className="rounded py-1 font-medium text-ink underline underline-offset-2">{t('new.openCreatedSession')}</button> : null}
+                <button type="button" disabled={state.checkingCreation} onClick={() => { void state.retryCreation(); }} className="rounded py-1 font-normal text-ink underline underline-offset-2 disabled:opacity-50">{t('new.recoverCreation')}</button>
+                {state.createdSessionId !== undefined ? <button type="button" disabled={state.checkingCreation} onClick={() => { void state.openCreatedSession(); }} className="rounded py-1 font-normal text-ink underline underline-offset-2">{t('new.openCreatedSession')}</button> : null}
                 <button type="button" disabled={state.checkingCreation} onClick={state.startNewCreation} className="rounded py-1 text-ink-soft underline underline-offset-2">{t('new.startAnotherCreation')}</button>
                 <button type="button" disabled={state.checkingCreation} onClick={state.dismissCreationIntent} className="rounded py-1 text-ink-soft underline underline-offset-2">{t('new.dismissCreation')}</button>
               </div>
@@ -193,11 +190,11 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
         {state.error !== null ? <p role="alert" className="mt-2 text-[13px] text-danger">{state.error}</p> : null}
 
         <div className="mt-6 flex items-center justify-between border-t border-hairline pt-4">
-          <p className="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-section-ink">{t('workHome.startHeading')}</p>
+          <p className="text-[12px] leading-4 font-normal text-section-ink">{t('workHome.startHeading')}</p>
           <button
             type="button"
             onClick={() => { void navigate('/new'); }}
-            className="text-[11.5px] text-ink-faint transition-colors hover:text-ink"
+            className="text-[12px] leading-4 text-ink-faint transition-colors hover:text-ink"
           >
             {t('new.title')}
           </button>
@@ -216,8 +213,8 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
                 <Icon name={task.icon} size={14} />
               </span>
               <span className="min-w-0">
-                <span className="block text-[13px] font-medium leading-[1.35] text-ink">{t(task.labelKey)}</span>
-                <span className="mt-0.5 block text-[11.5px] leading-[1.5] text-ink-faint">{t(task.bodyKey)}</span>
+                <span className="block text-[13px] font-normal leading-5 text-ink">{t(task.labelKey)}</span>
+                <span className="mt-0.5 block text-[12px] leading-4 text-ink-faint">{t(task.bodyKey)}</span>
               </span>
             </button>
           ))}

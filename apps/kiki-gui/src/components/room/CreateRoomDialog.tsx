@@ -110,7 +110,7 @@ export function CreateRoomDialog({
     >
       <form id="create-room-form" data-create-room onSubmit={(event) => { event.preventDefault(); submit(); }}>
         <label className="block">
-          <span className="text-[12.5px] font-medium text-ink-soft">{t('room.name')}</span>
+          <span className="text-[13px] leading-5 font-normal text-ink-soft">{t('room.name')}</span>
           <input data-autofocus value={name} maxLength={200}
             placeholder={t('room.namePlaceholder')}
             aria-invalid={touched && nameMissing}
@@ -121,12 +121,12 @@ export function CreateRoomDialog({
 
         <fieldset className="mt-4">
           <legend className="flex w-full items-baseline gap-2">
-            <span className="text-[12.5px] font-medium text-ink-soft">{t('room.members')}</span>
+            <span className="text-[13px] leading-5 font-normal text-ink-soft">{t('room.members')}</span>
             <span className="text-[12px] text-ink-faint tabular-nums">{selectedMembers.length}/{MAX_MEMBERS}</span>
           </legend>
           <p className="mt-0.5 text-[12px] text-ink-faint">{t('room.membersHint')}</p>
           {personas.length === 0 && !personasQuery.isLoading ? (
-            <p className="mt-2 text-[12.5px] text-ink-soft">{t('room.noPersonas')}</p>
+            <p className="mt-2 text-[13px] leading-5 text-ink-soft">{t('room.noPersonas')}</p>
           ) : (
             <ul className="mt-2 max-h-56 divide-y divide-hairline overflow-y-auto border-y border-hairline">
               {personas.map((persona) => {
@@ -146,7 +146,7 @@ export function CreateRoomDialog({
                         ) : null}
                       </span>
                       {checked && persona.id === effectiveHost ? (
-                        <span className="shrink-0 rounded-full bg-selected px-1.5 text-[11px] leading-[18px] text-selected-ink">{t('room.hostTag')}</span>
+                        <span className="shrink-0 rounded-full bg-selected px-1.5 text-[12px] leading-4 text-selected-ink">{t('room.hostTag')}</span>
                       ) : null}
                     </label>
                   </li>
@@ -159,7 +159,7 @@ export function CreateRoomDialog({
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <div className="min-w-0">
-            <label htmlFor="create-room-host" className="block text-[12.5px] font-medium text-ink-soft">{t('room.host')}</label>
+            <label htmlFor="create-room-host" className="block text-[13px] leading-5 font-normal text-ink-soft">{t('room.host')}</label>
             <div className="mt-1.5">
               <SearchableSelect
                 id="create-room-host"
@@ -173,7 +173,7 @@ export function CreateRoomDialog({
             </div>
           </div>
           <div className="min-w-0">
-            <label htmlFor="create-room-workspace" className="block text-[12.5px] font-medium text-ink-soft">{t('room.workspace')}</label>
+            <label htmlFor="create-room-workspace" className="block text-[13px] leading-5 font-normal text-ink-soft">{t('room.workspace')}</label>
             <div className="mt-1.5">
               <SearchableSelect
                 id="create-room-workspace"
@@ -189,7 +189,7 @@ export function CreateRoomDialog({
         </div>
 
         {create.isError ? (
-          <p role="alert" className="mt-3 flex items-start gap-1.5 text-[12.5px] text-danger">
+          <p role="alert" className="mt-3 flex items-start gap-1.5 text-[13px] leading-5 text-danger">
             <Icon name="warning" size={14} />
             <span>{t('room.createFailed', { detail: create.error instanceof Error ? create.error.message : String(create.error) })}</span>
           </p>

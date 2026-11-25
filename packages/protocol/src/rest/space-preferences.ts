@@ -25,7 +25,7 @@ export type SpacePreferenceValues = z.infer<typeof spacePreferenceValuesSchema>;
 export const DEFAULT_SPACE_PREFERENCES: SpacePreferenceValues = {
   theme: 'system', skin: { source: 'builtin', id: 'paper' }, tweaks: {},
   background: { light: null, dark: null, linked: true, assist: true },
-  proseFont: 'serif', defaultAppendTiming: 'agent_idle', foldSteps: true, worktreeSkipConfirm: false,
+  proseFont: 'sans', defaultAppendTiming: 'agent_idle', foldSteps: true, worktreeSkipConfirm: false,
 };
 export const spaceDomainSchema = /* @__PURE__ */ z.enum(['config', 'agents', 'instructions', 'skills', 'mcp', 'appearance', 'plugins', 'credentials', 'generic_roots']);
 export type SpaceDomain = z.infer<typeof spaceDomainSchema>;

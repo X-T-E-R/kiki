@@ -18,7 +18,7 @@ export interface FontPreset {
 const SAMPLE_CLASS = {
   sans: 'text-[14px] leading-6',
   mono: 'font-mono text-[13px] leading-6',
-  prose: 'text-[15.5px] leading-7',
+  prose: 'text-[16px] leading-7',
 } as const;
 
 const SAMPLE_KEY: Record<keyof typeof SAMPLE_CLASS, I18nKey> = {

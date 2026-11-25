@@ -63,7 +63,7 @@ const PROTOCOL_DEFAULTS = {
   skin: { source: 'builtin', id: 'paper' },
   tweaks: {},
   background: { light: null, dark: null, linked: true, assist: true },
-  proseFont: 'serif',
+  proseFont: 'sans',
   defaultAppendTiming: 'agent_idle',
   foldSteps: true,
   worktreeSkipConfirm: false,
