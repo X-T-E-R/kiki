@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { open } from 'node:fs/promises';
 
 import { Disposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
@@ -40,6 +41,7 @@ export { readLogicalRange, readPinnedRange, wireFileAddress } from '#/persistenc
 const textEncoder = new TextEncoder();
 const TRANSIENT_APPEND_ERRNOS = new Set(['EBUSY', 'EPERM', 'EACCES']);
 const MAX_APPEND_BATCH_BYTES = 4 * 1024 * 1024;
+const MAX_REPAIR_TRAILING_LINE_BYTES = 64 * 1024 * 1024;
 
 const pendingRetirements = new Set<Promise<void>>();
 
@@ -782,7 +784,8 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     if (state.cutoverEpoch !== cutoverEpoch) return false;
     let wrote = false;
     while (state.pending.length > 0) {
-      const { batch, encoded } = takeEncodedBatch(state.pending);
+      const { batch, encoded: rawEncoded } = takeEncodedBatch(state.pending);
+      let encoded = rawEncoded;
       const prepared = this.prepareProjections(scope, key, batch.map((entry) => entry.record));
       if (state.position === undefined) {
         try {
@@ -791,8 +794,39 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
           const chunks: Uint8Array[] = [];
           if (offset > 0) for await (const chunk of readLogicalBytes(this.storage, scope, key, { start: Math.max(0, offset - 4096), end: offset - 1 })) chunks.push(chunk);
           state.position = { generation, offset, boundary: Buffer.concat(chunks) };
-        } catch {
+        } catch (error) {
           prepared.length = 0;
+          const wrapped = error instanceof StorageError && appendCommitted(error) === false
+            ? error
+            : new StorageError(
+              error instanceof StorageError && error.code === StorageErrors.codes.STORAGE_CORRUPTED
+                ? StorageErrors.codes.STORAGE_CORRUPTED
+                : StorageErrors.codes.STORAGE_IO_FAILED,
+              'Append-log EOF verification failed before append',
+              { cause: error, details: { scope, key, committed: false } },
+            );
+          state.storageFailure ??= { error: wrapped };
+          state.storageFailureRetriable = mayRetryAppendFailure(state.storageFailure.error, isRetry);
+          throw state.storageFailure.error;
+        }
+      }
+      if (state.position !== undefined && state.position.offset > 0) {
+        const boundary = state.position.boundary;
+        if (boundary.byteLength > 0 && boundary[boundary.byteLength - 1] !== 0x0a) {
+          try {
+            const repaired = await this.repairTrailingLine(scope, key, state, state.position);
+            if (repaired === 'prepend_newline') {
+              const prefixed = new Uint8Array(encoded.byteLength + 1);
+              prefixed[0] = 0x0a;
+              prefixed.set(encoded, 1);
+              encoded = prefixed;
+            }
+          } catch (error) {
+            state.position = undefined;
+            state.storageFailure ??= { error };
+            state.storageFailureRetriable = mayRetryAppendFailure(state.storageFailure.error, isRetry);
+            throw state.storageFailure.error;
+          }
         }
       }
       const start = state.position;
@@ -814,6 +848,184 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       state.pending.splice(0, batch.length);
     }
     return wrote;
+  }
+
+  private async repairTrailingLine(
+    scope: string,
+    key: string,
+    state: LogState,
+    position: AppendPosition,
+  ): Promise<'prepend_newline' | 'truncated'> {
+    let validEnd = await this.findTrailingLineStart(scope, key, position);
+    const tornBytes = position.offset - validEnd;
+    if (tornBytes <= 0) return 'truncated';
+    if (tornBytes > MAX_REPAIR_TRAILING_LINE_BYTES) {
+      throw new StorageError(
+        StorageErrors.codes.STORAGE_CORRUPTED,
+        `Trailing append-log line (${tornBytes} bytes) exceeds repair validation limit`,
+        { details: { scope, key, committed: false } },
+      );
+    }
+    const tailChunks: Uint8Array[] = [];
+    for await (const chunk of readLogicalBytes(this.storage, scope, key, { start: validEnd, end: position.offset - 1 })) {
+      tailChunks.push(chunk);
+    }
+    const tailBuf = Buffer.concat(tailChunks);
+    if (tailBuf.byteLength !== tornBytes) {
+      throw new StorageError(
+        StorageErrors.codes.STORAGE_CORRUPTED,
+        'Append-log trailing fragment changed before repair validation',
+        { details: { scope, key, committed: false } },
+      );
+    }
+    const raw = tailBuf.toString('utf8');
+    const trimmed = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (trimmed.length > 0) {
+      try {
+        JSON.parse(trimmed);
+        return 'prepend_newline';
+      } catch {}
+    }
+    const expectedIdentity = state.source?.stat?.identity;
+    let nextGeneration = position.generation;
+    let mutated = false;
+    try {
+      await withColdExclusive(this.storage, scope, key, async () => {
+        const located = this.storage.pathFor(scope, key);
+        const truncateUnlocked = async (): Promise<void> => {
+          await waitActiveReadersIdle(this.storage, scope, key);
+          const currentGeneration = await this.readGeneration(scope, key);
+          if (currentGeneration !== position.generation) {
+            throw new StorageError(
+              StorageErrors.codes.STORAGE_CORRUPTED,
+              'Append-log generation changed before torn-tail repair',
+              { details: { scope, key, committed: false } },
+            );
+          }
+          const generation = randomUUID();
+          if (located !== undefined && located.length > 0) {
+            const currentStat = await this.storage.stat?.(scope, key);
+            if (expectedIdentity !== undefined && currentStat?.identity !== expectedIdentity) {
+              throw new StorageError(
+                StorageErrors.codes.STORAGE_CORRUPTED,
+                'Append-log file identity changed before torn-tail repair',
+                { details: { scope, key, committed: false } },
+              );
+            }
+            const handle = await open(located, 'r+');
+            try {
+              const fhStat = await handle.stat();
+              const handleIdentity = `${fhStat.dev}:${fhStat.ino}`;
+              if (
+                (expectedIdentity !== undefined && handleIdentity !== expectedIdentity)
+                || (currentStat?.identity !== undefined && handleIdentity !== currentStat.identity)
+              ) {
+                throw new StorageError(
+                  StorageErrors.codes.STORAGE_CORRUPTED,
+                  'Append-log opened handle identity changed before torn-tail repair',
+                  { details: { scope, key, committed: false } },
+                );
+              }
+              if (fhStat.size !== position.offset || (currentStat !== undefined && currentStat.size !== position.offset)) {
+                throw new StorageError(
+                  StorageErrors.codes.STORAGE_CORRUPTED,
+                  'Append-log size changed before torn-tail repair',
+                  { details: { scope, key, committed: false } },
+                );
+              }
+              const verifyBuf = Buffer.allocUnsafe(tornBytes);
+              const { bytesRead } = await handle.read(verifyBuf, 0, tornBytes, fhStat.size - tornBytes);
+              if (bytesRead !== tornBytes || !verifyBuf.equals(tailBuf)) {
+                throw new StorageError(
+                  StorageErrors.codes.STORAGE_CORRUPTED,
+                  'Append-log trailing bytes changed before torn-tail repair',
+                  { details: { scope, key, committed: false } },
+                );
+              }
+              await this.storage.write(scope, `${key}.generation`, textEncoder.encode(generation), {
+                atomic: true,
+                preserveDestinationOnError: true,
+              });
+              mutated = true;
+              const truncateLen = fhStat.size - tornBytes;
+              await handle.truncate(truncateLen);
+              await handle.sync();
+              validEnd = truncateLen;
+            } finally {
+              await handle.close();
+            }
+          } else {
+            const existing = await this.storage.read(scope, key);
+            if (
+              existing === undefined
+              || existing.byteLength !== position.offset
+              || !Buffer.from(existing.subarray(validEnd)).equals(tailBuf)
+            ) {
+              throw new StorageError(
+                StorageErrors.codes.STORAGE_CORRUPTED,
+                'Append-log content changed before torn-tail repair',
+                { details: { scope, key, committed: false } },
+              );
+            }
+            await this.storage.write(scope, `${key}.generation`, textEncoder.encode(generation), {
+              atomic: true,
+              preserveDestinationOnError: true,
+            });
+            mutated = true;
+            await this.storage.write(scope, key, existing.subarray(0, validEnd), { atomic: true });
+          }
+          nextGeneration = generation;
+        };
+        if (located === undefined || located.length === 0) await truncateUnlocked();
+        else await withColdReaderGate(located, truncateUnlocked);
+      });
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      if (!mutated) {
+        throw new StorageError(
+          StorageErrors.codes.STORAGE_IO_FAILED,
+          'Append-log torn-tail repair failed before mutation',
+          { cause: error, details: { scope, key, committed: false } },
+        );
+      }
+      throw new StorageError(
+        StorageErrors.codes.STORAGE_IO_FAILED,
+        'Append-log torn-tail repair failed during mutation',
+        { cause: error, details: { scope, key, committed: true } },
+      );
+    }
+    if (state.source !== undefined) {
+      state.source.revision++;
+      state.source.unexplained++;
+      state.source.stat = await this.storage.stat?.(scope, key).catch(() => undefined);
+    }
+    const nextChunks: Uint8Array[] = [];
+    if (validEnd > 0) {
+      for await (const chunk of readLogicalBytes(this.storage, scope, key, { start: Math.max(0, validEnd - 4096), end: validEnd - 1 })) {
+        nextChunks.push(chunk);
+      }
+    }
+    state.position = { generation: nextGeneration, offset: validEnd, boundary: Buffer.concat(nextChunks) };
+    return 'truncated';
+  }
+
+  private async findTrailingLineStart(scope: string, key: string, position: AppendPosition): Promise<number> {
+    const lastNl = position.boundary.lastIndexOf(0x0a);
+    if (lastNl >= 0) return position.offset - (position.boundary.byteLength - (lastNl + 1));
+    let scanEnd = position.offset - position.boundary.byteLength;
+    const chunkSize = 65_536;
+    while (scanEnd > 0) {
+      const scanStart = Math.max(0, scanEnd - chunkSize);
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of readLogicalBytes(this.storage, scope, key, { start: scanStart, end: scanEnd - 1 })) {
+        chunks.push(chunk);
+      }
+      const buf = Buffer.concat(chunks);
+      const nl = buf.lastIndexOf(0x0a);
+      if (nl >= 0) return scanStart + nl + 1;
+      scanEnd = scanStart;
+    }
+    return 0;
   }
 }
 

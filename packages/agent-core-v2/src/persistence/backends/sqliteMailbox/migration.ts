@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { link, mkdir, open, rename, unlink, lstat, readdir, realpath, rmdir } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 
@@ -549,7 +549,7 @@ async function sameFileBytes(left: string, right: string): Promise<boolean> {
 async function assertIndependentBackupPath(homeDir: string, destination: string, mustExist = false): Promise<void> {
   const inside = (root: string, path: string): boolean => {
     const position = relative(root, path);
-    return position === '' || !position.startsWith('..') && !isAbsolute(position);
+    return position === '' || (position !== '..' && !position.startsWith(`..${sep}`) && !isAbsolute(position));
   };
   const home = await realpath(homeDir);
   let existing = dirname(destination);

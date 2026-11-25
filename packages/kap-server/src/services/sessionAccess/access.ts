@@ -50,7 +50,7 @@ function sessionAccessOperation(token: SessionAccessToken, request: FastifyReque
     token.session_id !== undefined && target === token.session_id;
   if (method === 'GET') {
     if (url === '/api/events') {
-      return token.scopes.includes('read');
+      return token.session_id !== undefined && token.scopes.includes('read');
     }
     if (url === '/api/sessions/:session_id/agents/:agent_id/model-switches' ||
         url === '/api/sessions/:session_id/agents/:agent_id/model-switches/:operation_id') {

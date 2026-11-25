@@ -206,6 +206,17 @@ class SignalWatchHandle implements IHostFsWatchHandle {
 
   private startNativeLeg(): void {
     if (this.disposed) return;
+    if (this.runtime.exists !== undefined && !this.runtime.exists(this.root)) {
+      if (!this.recovering) {
+        this.readiness.resolve();
+        return;
+      }
+      this.onNativeError(
+        undefined,
+        Object.assign(new Error(`ENOENT: watched root missing: ${this.root}`), { code: 'ENOENT' }) as NodeJS.ErrnoException,
+      );
+      return;
+    }
     try {
       let watcher: NativeFsWatcher | undefined;
       let earlyError: NodeJS.ErrnoException | undefined;
@@ -271,7 +282,8 @@ class SignalWatchHandle implements IHostFsWatchHandle {
       this.recovering = false;
       this.readiness.resolve();
       this.fireRecoveryInvalidation();
-      this.reportError(this.root, error, 'native');
+      const rootMissing = error.code === 'ENOENT' && this.runtime.exists !== undefined && !this.runtime.exists(this.root);
+      if (!rootMissing) this.reportError(this.root, error, 'native');
       return;
     }
     const delay = Math.min(

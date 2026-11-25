@@ -153,6 +153,16 @@ async function readCachedPersistedHookInspection(
   return promise;
 }
 
+const SAFE_AGENT_ID_RE = /^[A-Za-z0-9._-]+$/u;
+
+function isSafeAgentId(agentId: string): boolean {
+  return SAFE_AGENT_ID_RE.test(agentId) && agentId !== '.' && agentId !== '..' && !agentId.includes('..');
+}
+
+function ownAgentMeta(agents: Record<string, AgentMeta> | undefined, agentId: string): AgentMeta | undefined {
+  return agents !== undefined && Object.hasOwn(agents, agentId) ? agents[agentId] : undefined;
+}
+
 export function registerAgentHooksRoutes(app: RouteHost, core: Scope): void {
   const route = defineRoute({ method: 'GET', path: '/sessions/{session_id}/agents/{agent_id}/hooks',
     params: z.object({ session_id: z.string().min(1), agent_id: z.string().min(1) }),
@@ -161,6 +171,10 @@ export function registerAgentHooksRoutes(app: RouteHost, core: Scope): void {
     errors: { [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.SESSION_BUSY]: {} },
     description: 'Inspect effective hook rules, sources and cadence for an agent', tags: ['sessions'],
   }, async (req, reply) => {
+    if (!isSafeAgentId(req.params.agent_id)) {
+      reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Invalid agent_id', req.id));
+      return;
+    }
     const models = core.accessor.get(IModelService);
     const providers = core.accessor.get(IProviderService);
     const finish = (snapshot: Parameters<typeof projectHookInspection>[0], persisted: Awaited<ReturnType<typeof readPersistedHookInspection>>) => {
@@ -193,6 +207,11 @@ export function registerAgentHooksRoutes(app: RouteHost, core: Scope): void {
     const agent = live?.accessor.get(IAgentLifecycleService).get(req.params.agent_id);
     if (agent !== undefined) { reply.send(okEnvelope(await agent.accessor.get(IAgentHookRules).inspect(), req.id)); return; }
     if (live !== undefined) {
+      const liveMeta = ownAgentMeta((await live.accessor.get(ISessionMetadata).read()).agents, req.params.agent_id);
+      if (liveMeta === undefined && req.params.agent_id !== 'main') {
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent does not exist in this session', req.id));
+        return;
+      }
       const liveAgentScope = live.accessor.get(ISessionContext).scope(`agents/${req.params.agent_id}`);
       const liveWireSize = req.query.observe === 'true'
         ? (await logicalByteSize(core.accessor.get(IFileSystemStorageService), liveAgentScope, 'wire.jsonl') ?? 0)
@@ -205,7 +224,7 @@ export function registerAgentHooksRoutes(app: RouteHost, core: Scope): void {
         if (session === undefined) { reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id)); return; }
         const resident = session.accessor.get(IAgentLifecycleService).get(req.params.agent_id);
         if (resident !== undefined) { reply.send(okEnvelope(await resident.accessor.get(IAgentHookRules).inspect(), req.id)); return; }
-        const metadata = (await session.accessor.get(ISessionMetadata).read()).agents?.[req.params.agent_id];
+        const metadata = ownAgentMeta((await session.accessor.get(ISessionMetadata).read()).agents, req.params.agent_id);
         if (metadata === undefined && req.params.agent_id !== 'main') { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent does not exist in this session', req.id)); return; }
         const rules = session.accessor.get(IHookRulesSession);
         const [, persisted] = await Promise.all([
@@ -220,7 +239,8 @@ export function registerAgentHooksRoutes(app: RouteHost, core: Scope): void {
     if (summary === undefined) { reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id)); return; }
     const scope = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
     const docs = core.accessor.get(IAtomicDocumentStore);
-    const metadata = (await readColdSessionMeta(core, summary.workspaceId, summary.id) ?? await docs.get<SessionMeta>(`${scope}/session-meta`, 'state.json'))?.agents?.[req.params.agent_id];
+    const coldSessionMeta = await readColdSessionMeta(core, summary.workspaceId, summary.id) ?? await docs.get<SessionMeta>(`${scope}/session-meta`, 'state.json');
+    const metadata = ownAgentMeta(coldSessionMeta?.agents, req.params.agent_id);
     if (metadata === undefined && req.params.agent_id !== 'main') { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent does not exist in this session', req.id)); return; }
     const coldAgentScope = `${scope}/agents/${req.params.agent_id}`;
     const coldWireSize = req.query.observe === 'true'

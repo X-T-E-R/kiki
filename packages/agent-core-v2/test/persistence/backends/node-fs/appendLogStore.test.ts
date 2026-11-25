@@ -1157,6 +1157,43 @@ describe('AppendLogStore', () => {
     expect(truncations).toEqual([]);
   });
 
+  it('truncates a crash-torn trailing line before appending, rotates generation, and keeps new records readable', async () => {
+    const raw = `${JSON.stringify({ n: 1 })}\n{"n":2,"torn":`;
+    await storage.append(SCOPE, KEY, enc.encode(raw));
+    const generationBefore = await record.generation(SCOPE, KEY);
+    record.append(SCOPE, KEY, { n: 3 });
+    record.append(SCOPE, KEY, { n: 4 });
+    await record.flush(SCOPE, KEY);
+    const generationAfter = await record.generation(SCOPE, KEY);
+
+    const truncations: AppendLogTruncation[] = [];
+    const out: Rec[] = [];
+    for await (const r of record.read<Rec>(SCOPE, KEY, {
+      onTruncate: (truncation) => truncations.push(truncation),
+    })) {
+      out.push(r);
+    }
+
+    expect(generationAfter).not.toBe(generationBefore);
+    expect(out).toEqual([{ n: 1 }, { n: 3 }, { n: 4 }]);
+    expect(truncations).toEqual([]);
+  });
+
+  it('separates a valid trailing record larger than 4 MiB lacking a newline without truncating it', async () => {
+    const bigText = 'x'.repeat(4 * 1024 * 1024 + 1024);
+    const raw = JSON.stringify({ n: 1, text: bigText });
+    await storage.append(SCOPE, KEY, enc.encode(raw));
+    record.append(SCOPE, KEY, { n: 2 });
+    await record.flush(SCOPE, KEY);
+
+    const out: Array<Rec & { text?: string }> = [];
+    for await (const r of record.read<Rec & { text?: string }>(SCOPE, KEY)) out.push(r);
+    expect(out).toHaveLength(2);
+    expect(out[0]?.n).toBe(1);
+    expect(out[0]?.text?.length).toBe(bigText.length);
+    expect(out[1]).toEqual({ n: 2 });
+  });
+
   it('reads across chunk boundaries (stream read splits lines)', async () => {
     const full = `${JSON.stringify({ n: 1 })}\n${JSON.stringify({ n: 2 })}\n${JSON.stringify({ n: 3 })}\n`;
     const bytes = enc.encode(full);

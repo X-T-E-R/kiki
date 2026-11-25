@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   resetUnexpectedErrorHandler,
@@ -546,5 +546,55 @@ describe('host filesystem change notifications', () => {
       emitter.emit('raw', 'rename', '/live/dir', { watchedPath: '/live/dir' });
     }
     expect(unwatched).toEqual(['/gone/dir']);
+  });
+
+  it('skips native watch startup for missing roots and retries quietly without ENOENT warning spam when a root disappears', async () => {
+    const watchNative = vi.fn<HostFsWatchRuntime['watchNative']>(() => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    const retries: Array<() => void> = [];
+    const scheduleRetry = vi.fn((callback: () => void) => {
+      retries.push(callback);
+      return { dispose: vi.fn() };
+    });
+    const logWarn = vi.fn();
+    let dirExists = false;
+    const runtime: HostFsWatchRuntime = {
+      platform: 'win32',
+      homeDir: '/Users/example',
+      watchNative,
+      watchFallback: vi.fn(() => { throw new Error('unexpected fallback'); }),
+      scheduleRetry,
+      exists: () => dirExists,
+    };
+    const service = new HostFsWatchService(
+      runtime,
+      { ...stubLog(), warn: logWarn },
+    );
+    const missingHandle = service.watch('/deleted-worktree', { signal: true });
+    await missingHandle.ready;
+    expect(watchNative).not.toHaveBeenCalled();
+    expect(scheduleRetry).not.toHaveBeenCalled();
+    expect(logWarn).not.toHaveBeenCalled();
+    await missingHandle.dispose();
+
+    dirExists = true;
+    let emitError: ((error: NodeJS.ErrnoException) => void) | undefined;
+    const close = vi.fn();
+    watchNative.mockImplementation((_root, _onEvent, onError) => {
+      emitError = onError;
+      return { close, on: vi.fn() };
+    });
+    const liveHandle = service.watch('/ephemeral-worktree', { signal: true });
+    await liveHandle.ready;
+    dirExists = false;
+    emitError?.(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    expect(close).toHaveBeenCalledTimes(1);
+    while (retries.length > 0) {
+      retries.shift()!();
+    }
+    expect(watchNative).toHaveBeenCalledTimes(1);
+    expect(logWarn).not.toHaveBeenCalled();
+    await liveHandle.dispose();
   });
 });

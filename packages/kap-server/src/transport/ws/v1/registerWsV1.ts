@@ -56,6 +56,7 @@ const wss = new WebSocketServer({
       terminalCore: core,
       enableTerminals: opts.enableTerminals,
       connectionRegistry: registry,
+      sessionAccess: scoped !== undefined,
       sessionAccessId: scoped?.session_id,
       browser: webPrincipal(req) !== undefined,
       validateCredential: scoped === undefined ? opts.validateCredential : async (token) => digest(token) === scoped.digest,

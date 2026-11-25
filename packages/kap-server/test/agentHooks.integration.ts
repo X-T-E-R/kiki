@@ -94,3 +94,44 @@ it('inspects an unmaterialized main with native defaults without starting the li
     expect((await read('main', 'missing-session')).code).toBe(40401);
   } finally { await server.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 });
+
+it('validates agent_id format and session-meta membership before touching storage on live observe=true hooks requests', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-hooks-agentid-'));
+  await writeFile(join(home, 'config.toml'), '[search]\nenabled = false\n');
+  const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const created = await fetch(`${base}/api/sessions`, {
+      method: 'POST',
+      headers: authHeaders(server, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ metadata: { cwd: home } }),
+    }).then(response => response.json()) as { code: number; data: { id: string } };
+    expect(created.code).toBe(0);
+
+    const { IFileSystemStorageService } = await import('@kiki/agent-core-v2');
+    const storage = server.core.accessor.get(IFileSystemStorageService);
+    const touchedScopes: string[] = [];
+    const origSize = storage.size.bind(storage);
+    const origPathFor = storage.pathFor.bind(storage);
+    storage.size = async (scope, key) => {
+      if (scope.includes('/agents/')) touchedScopes.push(`${scope}:${key}`);
+      return origSize(scope, key);
+    };
+    storage.pathFor = (scope, key) => {
+      if (scope.includes('/agents/')) touchedScopes.push(`${scope}:${key}`);
+      return origPathFor(scope, key);
+    };
+
+    for (const badAgentId of ['a..b', '..%2F..%2Fother', 'sub%2Fescape', 'sub%5Cescape', 'toString', 'nonexistent-agent']) {
+      const response = await fetch(
+        `${base}/api/sessions/${created.data.id}/agents/${badAgentId}/hooks?observe=true`,
+        { headers: authHeaders(server) },
+      ).then(res => res.json()) as { code: number };
+      expect(response.code).toBe(40001);
+    }
+    expect(touchedScopes).toEqual([]);
+  } finally {
+    await server.close();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});

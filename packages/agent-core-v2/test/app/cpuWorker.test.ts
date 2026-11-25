@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { availableParallelism, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CpuWorkerPool } from '#/app/cpuWorker/host';
 import { runCpuStream } from '#/app/cpuWorker/stream';
 import { reduceContextTranscript } from '#/agent/contextMemory/contextTranscript';
@@ -572,4 +572,25 @@ describe('CPU worker image operations', () => {
     await workers.close();
     expect((workers as unknown as { retiringExits: Set<Promise<void>> }).retiringExits.size).toBe(0);
   }, 15_000);
+
+  it('hard-terminates a wedged detached worker at its request timeout deadline instead of leaking it', async () => {
+    const workers = await pool({ maxWorkers: 1, cancelGraceMs: 25, timeoutMs: 180 });
+    const ac = new AbortController();
+    const stuck = workers.request<number>({ type: 'spin' }, { signal: ac.signal, timeoutMs: 180 });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    ac.abort(new Error('cancel-spin'));
+    await expect(stuck).rejects.toThrow('cancel-spin');
+
+    await vi.waitFor(() => {
+      const detached = (workers as unknown as { detachedDraining: unknown[] }).detachedDraining;
+      expect(detached.length).toBe(1);
+    }, { timeout: 2_000 });
+
+    await vi.waitFor(() => {
+      const detached = (workers as unknown as { detachedDraining: unknown[] }).detachedDraining;
+      expect(detached.length).toBe(0);
+    }, { timeout: 2_000 });
+
+    await expect(workers.request<number>({ type: 'echo', bytes: 9 })).resolves.toBe(9);
+  });
 });

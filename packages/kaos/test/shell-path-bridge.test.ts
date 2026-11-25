@@ -32,6 +32,7 @@ interface StubOpts {
   readonly existingPaths?: readonly string[];
   readonly execFileResults?: Readonly<Record<string, string>>;
   readonly execFileSync?: ShellPathBridgeDeps['execFileSync'];
+  readonly now?: () => number;
 }
 
 function stubDeps(opts: StubOpts = {}) {
@@ -47,6 +48,7 @@ function stubDeps(opts: StubOpts = {}) {
   const deps: ShellPathBridgeDeps = {
     execFileSync,
     isFile: (path: string) => existing.has(path),
+    now: opts.now,
   };
   return { deps, execFileSync };
 }
@@ -192,9 +194,11 @@ describe('fromShellPath cygpath resolution', () => {
     expect(execFileSync).toHaveBeenCalledWith(BIN_CYGPATH, ['-w', '-C', 'UTF8', '--', '/home']);
   });
 
-  it('passes through and retries on the next access when cygpath fails', () => {
+  it('passes through, backs off during failure TTL, and retries once TTL expires when cygpath fails', () => {
+    let clock = 1_000;
     const { deps, execFileSync } = stubDeps({
       existingPaths: [USR_BIN_CYGPATH],
+      now: () => clock,
       execFileSync: () => {
         throw new Error('cygpath exited 1');
       },
@@ -203,18 +207,28 @@ describe('fromShellPath cygpath resolution', () => {
 
     expect(bridge.fromShellPath('/tmp/x')).toBe('/tmp/x');
     expect(bridge.fromShellPath('/tmp/y')).toBe('/tmp/y');
+    expect(execFileSync).toHaveBeenCalledTimes(1);
+
+    clock += 30_001;
+    expect(bridge.fromShellPath('/tmp/z')).toBe('/tmp/z');
     expect(execFileSync).toHaveBeenCalledTimes(2);
   });
 
-  it('passes through and retries when cygpath output is not an absolute win32 path', () => {
+  it('passes through, backs off during failure TTL, and retries after TTL when cygpath output is not an absolute win32 path', () => {
+    let clock = 1_000;
     const { deps, execFileSync } = stubDeps({
       existingPaths: [USR_BIN_CYGPATH],
+      now: () => clock,
       execFileResults: { [cygpathKey('tmp')]: 'not a win32 path\n' },
     });
     const bridge = createShellPathBridge(WINDOWS_ENV, deps);
 
     expect(bridge.fromShellPath('/tmp/x')).toBe('/tmp/x');
     expect(bridge.fromShellPath('/tmp/y')).toBe('/tmp/y');
+    expect(execFileSync).toHaveBeenCalledTimes(1);
+
+    clock += 30_001;
+    expect(bridge.fromShellPath('/tmp/z')).toBe('/tmp/z');
     expect(execFileSync).toHaveBeenCalledTimes(2);
   });
 

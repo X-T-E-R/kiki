@@ -218,6 +218,38 @@ describe('formatter — auto-redact', () => {
     expect(tokens[1]?.['token']).toBe('[REDACTED]');
   });
 
+  it('redacts secrets in msg, nested strings, header keys, and query keys without mangling token counts', () => {
+    const { text } = formatEntry(
+      baseEntry({
+        msg: 'provider request failed https://example.test/v1?key=AIzaSy1234567890&alt=json x-api-key: sec_live_999',
+        ctx: {
+          headers: { 'x-api-key': 'raw-key-1', 'x-goog-api-key': 'raw-key-2', 'X-Trace': 'ok' },
+          nested: { detail: 'Authorization: Bearer nested-secret-value', pat: 'github_pat_11ABCDEF1234567890_xyz' },
+          max_tokens: 4096,
+          prompt_tokens: 1200,
+        },
+      }),
+    );
+    expect(text).not.toContain('AIzaSy1234567890');
+    expect(text).not.toContain('sec_live_999');
+    expect(text).not.toContain('raw-key-1');
+    expect(text).not.toContain('raw-key-2');
+    expect(text).not.toContain('nested-secret-value');
+    expect(text).not.toContain('github_pat_11ABCDEF1234567890_xyz');
+    expect(text).toContain('alt=json');
+    expect(text).toContain('max_tokens=4096');
+    expect(text).toContain('prompt_tokens=1200');
+    const { text: quoted } = formatEntry(
+      baseEntry({
+        msg: 'config password="my pass&word tail999" raw password=ab&tail888 ok',
+      }),
+    );
+    expect(quoted).not.toContain('pass&word');
+    expect(quoted).not.toContain('tail999');
+    expect(quoted).not.toContain('tail888');
+    expect(quoted).toContain('ok');
+  });
+
   it('collapses cycles to [REDACTED:cycle]', () => {
     const a: Record<string, unknown> = { name: 'a' };
     a['self'] = a;

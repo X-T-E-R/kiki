@@ -1,4 +1,4 @@
-import { watch, type FSWatcher } from 'node:fs';
+import { statSync, watch, type FSWatcher } from 'node:fs';
 import { createDeletedRootSpinDetector } from '#/_base/utils/fsWatchGuard';
 import { isAbsolute, relative, resolve, basename } from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
@@ -15,6 +15,7 @@ export interface WorkspacePathSnapshot {
 
 export interface WorkspacePathIndexOptions {
   readonly watch?: typeof watch;
+  readonly statSync?: typeof statSync;
   readonly reconcileDebounceMs?: number;
   readonly maxScanRetainedMutations?: number;
 }
@@ -185,6 +186,7 @@ export class WorkspacePathIndex {
   private readonly mutationListeners = new Set<(path: string | undefined) => void>();
   private readonly networkRoot: boolean;
   private readonly watchFn: typeof watch;
+  private readonly statSyncFn: typeof statSync | undefined;
   private readonly reconcileDebounceMs: number;
   private readonly maxScanRetainedMutations: number;
   private refreshController: AbortController | undefined;
@@ -213,6 +215,7 @@ export class WorkspacePathIndex {
     this.networkRoot = isUncRoot(root) || isUncRoot(resolve(root));
     this.root = this.networkRoot ? root : resolve(root);
     this.watchFn = options.watch ?? watch;
+    this.statSyncFn = options.statSync ?? (options.watch === undefined ? statSync : undefined);
     this.reconcileDebounceMs = options.reconcileDebounceMs ?? DEFAULT_RECONCILE_DEBOUNCE_MS;
     this.maxScanRetainedMutations = Math.max(0, options.maxScanRetainedMutations ?? DEFAULT_MAX_SCAN_RETAINED_MUTATIONS);
     if (cacheDir !== undefined && !this.networkRoot) {
@@ -231,10 +234,25 @@ export class WorkspacePathIndex {
     }
   }
 
+  private watchRootIsDirectory(): boolean {
+    if (this.statSyncFn === undefined) return true;
+    try {
+      return this.statSyncFn(this.root).isDirectory();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+      throw error;
+    }
+  }
+
   private ensureStarted(triggerRefresh = true): void {
     if (this.started || this.disposed || this.networkRoot) return;
     this.started = true;
     try {
+      if (!this.watchRootIsDirectory()) {
+        this.rootDeleted = true;
+        return;
+      }
       const isDeletedSpin = createDeletedRootSpinDetector(this.root);
       this.watcher = this.watchFn(this.root, { recursive: true }, (_kind, filename) => {
         if (isDeletedSpin()) {
@@ -262,6 +280,9 @@ export class WorkspacePathIndex {
         }
       });
       this.watcher.on('error', error => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          this.rootDeleted = true;
+        }
         this.error = error;
         this.watching = false;
         if (this.activeScan !== undefined) {

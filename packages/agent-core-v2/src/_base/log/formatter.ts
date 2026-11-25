@@ -10,28 +10,57 @@ export const REDACT_MAX_DEPTH = 10;
 const REDACTED_KEYS: ReadonlySet<string> = new Set([
   'authorization',
   'apikey',
+  'xapikey',
+  'xgoogapikey',
   'token',
   'refreshtoken',
   'accesstoken',
   'idtoken',
+  'authtoken',
+  'sessiontoken',
+  'bearertoken',
+  'csrftoken',
   'password',
   'secret',
   'clientsecret',
   'apisecret',
+  'privatekey',
   'cookie',
   'setcookie',
   'bearer',
 ]);
+
+const REDACTED_KEY_SUFFIXES: readonly string[] = [
+  'apikey',
+  'apisecret',
+  'clientsecret',
+  'password',
+  'privatekey',
+  'secret',
+  'cookie',
+  'authtoken',
+  'accesstoken',
+  'refreshtoken',
+  'idtoken',
+  'sessiontoken',
+  'bearertoken',
+  'apitoken',
+  'bottoken',
+  'oauthtoken',
+];
 
 const SAFE_KEY_RE = /^[\w.-]+$/;
 const ELLIPSIS = '…';
 const TRUNCATED_TAIL = ` …truncated`;
 const REDACTED = '[REDACTED]';
 const RAW_SECRET_PATTERNS: readonly RegExp[] = [
-  /\b(authorization\s*[:=]\s*bearer\s+)[^\s"'`]+/gi,
-  /\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|password|secret)\s*[:=]\s*)[^\s"'`]+/gi,
+  /\b(authorization\s*[:=]\s*bearer\s+)[^\s"'`,}]+/gi,
+  /\b(bearer\s+)[A-Za-z0-9._-]{16,}/gi,
+  /([?&](?:api[_-]?key|access[_-]?token|key)=)[^&\s"'`]{8,}/gi,
+  /(?<![?&])\b((?:(?:x[-_](?:goog[-_])?)?api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|auth[-_]?token|session[-_]?token|client[-_]?secret|api[-_]?secret|private[-_]?key|token|password|secret)["']?\s*[:=]\s*)(?:"(?:\\[\s\S]|[^"\\])+"|'(?:\\[\s\S]|[^'\\])+'|[^\s"'`,}]+)/gi,
   /\b(cookie\s*[:=]\s*)[^\r\n]+/gi,
 ];
+const RAW_TOKEN_LITERAL_RE = /\b(?:sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,})\b/g;
 
 const LEVEL_LABEL: Record<Exclude<LogEntry['level'], never>, string> = {
   error: 'ERROR',
@@ -52,10 +81,17 @@ function normalizeKey(key: string): string {
   return key.toLowerCase().replaceAll(/[_\-.]/g, '');
 }
 
+function isRedactedKey(key: string): boolean {
+  const normalized = normalizeKey(key);
+  if (REDACTED_KEYS.has(normalized)) return true;
+  return REDACTED_KEY_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+}
+
 export function redactCtx(ctx: LogContext): LogContext {
   const seen = new WeakSet<object>();
   const walk = (value: unknown, depth: number): unknown => {
     if (depth > REDACT_MAX_DEPTH) return '[REDACTED:depth]';
+    if (typeof value === 'string') return redactString(value);
     if (value === null || typeof value !== 'object') return value;
     if (seen.has(value)) return '[REDACTED:cycle]';
     seen.add(value);
@@ -64,7 +100,7 @@ export function redactCtx(ctx: LogContext): LogContext {
     }
     const out: Record<string, unknown> = {};
     for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = REDACTED_KEYS.has(normalizeKey(key)) ? REDACTED : walk(raw, depth + 1);
+      out[key] = isRedactedKey(key) ? REDACTED : walk(raw, depth + 1);
     }
     return out;
   };
@@ -111,7 +147,7 @@ function redactString(value: string): string {
   for (const pattern of RAW_SECRET_PATTERNS) {
     out = out.replace(pattern, `$1${REDACTED}`);
   }
-  return out;
+  return out.replace(RAW_TOKEN_LITERAL_RE, REDACTED);
 }
 
 function quote(value: string): string {
@@ -158,7 +194,7 @@ function indentStack(stack: string): string {
 export function formatEntry(entry: LogEntry, options: FormatOptions = {}): FormattedEntry {
   const ctx = entry.ctx ? redactCtx(entry.ctx) : undefined;
   const omitContextKeys = new Set(options.omitContextKeys ?? []);
-  const msg = truncate(entry.msg, MSG_MAX_CHARS);
+  const msg = truncate(redactString(entry.msg), MSG_MAX_CHARS);
   const pairs: string[] = [];
   if (ctx) {
     for (const [k, v] of Object.entries(ctx)) {
