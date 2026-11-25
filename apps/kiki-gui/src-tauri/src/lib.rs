@@ -2334,7 +2334,7 @@ fn disable_browser_accelerator_keys(window: &tauri::WebviewWindow<Wry>) -> tauri
     })
 }
 
-#[cfg(any(test, not(windows)))]
+#[cfg(any(test, all(not(windows), not(target_os = "macos"))))]
 fn notification_response_opens(response: &notify_rust::NotificationResponse) -> bool {
     match response {
         notify_rust::NotificationResponse::Default => true,
@@ -2399,12 +2399,14 @@ fn remember_plugin_focus(home_id: String, request_id: u64) {
     plugin_focus::remember_request_id(&home_id, request_id);
 }
 
+#[cfg(any(test, not(target_os = "macos")))]
 fn notification_navigation_intent(route: &str, home_id: Option<&str>, scope: Option<&NotificationScope>) -> serde_json::Value {
     static NEXT_CLICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let id = NEXT_CLICK.fetch_add(1, Ordering::SeqCst).to_string();
     serde_json::json!({ "route": route, "homeId": home_id, "scope": scope, "navigationId": id })
 }
 
+#[cfg(not(target_os = "macos"))]
 fn deliver_notification_click(app: &AppHandle, route: &str, home_id: Option<&str>, scope: Option<&NotificationScope>) {
     let intent = notification_navigation_intent(route, home_id, scope);
     if let Ok(mut pending) = PENDING_NAVIGATION_INTENT.lock() { *pending = Some(intent.clone()); }
@@ -2435,32 +2437,34 @@ fn show_native_notification(app: AppHandle, title: String, body: Option<String>,
 fn show_native_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, home_id: Option<String>, scope: Option<NotificationScope>, _session_ids: Vec<String>, _delivery_id: Option<String>) -> Result<(), String> {
     let mut notification = notify_rust::Notification::new();
     notification.summary(&title).body(body.as_deref().unwrap_or(""));
-    if route.is_some() { notification.action("open", "Open Kiki"); }
     #[cfg(target_os = "macos")]
     {
-        let _ = notify_rust::set_application(if tauri::is_dev() { "com.apple.Terminal" } else { &app.config().identifier });
+        static MACOS_NOTIFICATION_APP_INIT: std::sync::Once = std::sync::Once::new();
+        let _ = (route, home_id, scope);
+        let bundle_id = if tauri::is_dev() {
+            "com.apple.Terminal".to_string()
+        } else {
+            app.config().identifier.clone()
+        };
+        MACOS_NOTIFICATION_APP_INIT.call_once(|| {
+            let _ = notify_rust::set_application(&bundle_id);
+        });
+        let _ = notification.show().map_err(|error| format!("Cannot show desktop notification: {error}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if route.is_some() { notification.action("open", "Open Kiki"); }
+        let handle = notification.show().map_err(|error| format!("Cannot show desktop notification: {error}"))?;
         if let Some(route) = route {
-            let handle = notify_rust::NotificationHandle::new(notification.finalize());
             thread::spawn(move || {
                 let _ = handle.wait_for_response(|response: &notify_rust::NotificationResponse| {
                     if notification_response_opens(response) { deliver_notification_click(&app, &route, home_id.as_deref(), scope.as_ref()); }
                 });
             });
-            return Ok(());
         }
+        Ok(())
     }
-    let handle = notification.show().map_err(|error| format!("Cannot show desktop notification: {error}"))?;
-    #[cfg(not(target_os = "macos"))]
-    if let Some(route) = route {
-        thread::spawn(move || {
-            let _ = handle.wait_for_response(|response: &notify_rust::NotificationResponse| {
-                if notification_response_opens(response) { deliver_notification_click(&app, &route, home_id.as_deref(), scope.as_ref()); }
-            });
-        });
-    }
-    #[cfg(target_os = "macos")]
-    let _ = handle;
-    Ok(())
 }
 
 #[tauri::command]

@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  IPluginHostService,
   ISessionManager,
   ISessionContext,
   ISessionMediaStore,
@@ -18,6 +19,7 @@ import {
   ensureMainAgent,
   type AgentTool,
   type IAgentScopeHandle,
+  type Scope,
 } from '@kiki/agent-core-v2';
 import { IAgentRemoteToolService } from '@kiki/agent-core-v2/agent/remoteTools/agentRemoteToolService';
 import { IRemoteSpaceToolBridgeService } from '@kiki/agent-core-v2/app/remoteTools/remoteSpaceToolBridge';
@@ -25,6 +27,7 @@ import { parseDaemonFileUrl } from '@kiki/agent-core-v2/agent/media/mediaRef';
 import { createKlient } from '@kiki/klient/http';
 import { formatPairingUri } from '@kiki/protocol';
 import { startServer, type RunningServer } from '../src/start';
+import { listExportedTools } from '../src/services/threadBridge/remoteToolsHost';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
@@ -486,4 +489,56 @@ describe('space bridge zero-workspace pairing, telemetry, and remote tool federa
       await betaClient.close();
     }
   }, 90_000);
+
+  it('coalesces concurrent listExportedTools flights per scope and isolates waiter aborts', async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    let gateEntered = new Promise<void>((resolveEntered) => { entered = resolveEntered; });
+    let listCalls = 0;
+    const pluginHost = {
+      list: async () => {
+        listCalls += 1;
+        entered();
+        await new Promise<void>((resolveGate) => { release = resolveGate; });
+        return [{
+          pluginId: 'demo-plugin',
+          definition: {
+            name: 'ping',
+            description: 'Ping demo tool',
+            parameters: { type: 'object', properties: {} },
+          },
+        }];
+      },
+    };
+    const core = {
+      accessor: {
+        get: (id: unknown) => {
+          if (id === IPluginHostService) return pluginHost;
+          throw new Error('not registered');
+        },
+      },
+    } as unknown as Scope;
+
+    const acA = new AbortController();
+    const acB = new AbortController();
+    const flightA = listExportedTools(core, 'ws-1', { signal: acA.signal });
+    const flightB = listExportedTools(core, 'ws-1', { signal: acB.signal });
+    await gateEntered;
+    expect(listCalls).toBe(1);
+
+    acA.abort(new Error('caller A disconnected'));
+    await expect(flightA).rejects.toThrow('caller A disconnected');
+
+    release();
+    const resultB = await flightB;
+    expect(resultB.tools.map((tool) => tool.remoteName)).toEqual(['plugin__demo_plugin__ping']);
+    expect(listCalls).toBe(1);
+
+    gateEntered = new Promise<void>((resolveEntered) => { entered = resolveEntered; });
+    const fresh = listExportedTools(core, 'ws-1');
+    await gateEntered;
+    release();
+    await fresh;
+    expect(listCalls).toBe(2);
+  });
 });

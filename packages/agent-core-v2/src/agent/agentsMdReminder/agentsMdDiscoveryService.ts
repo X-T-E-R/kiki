@@ -206,12 +206,12 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     const runtime = lease.runtime;
     const fs = runtime.fs!;
     const pathClass = runtime.environment.pathClass;
-    await this.ensureWatcher(lease, cache, directory, ownerKey);
     const entries = await readDir(fs, directory);
     if (entries === undefined) {
       cache.existingDirectories.delete(ownerKey);
       return [];
     }
+    await this.ensureWatcher(lease, cache, directory, ownerKey);
     cache.existingDirectories.set(ownerKey, this.now() + this.ttlMs);
     const paths: string[] = [];
     const dotKikiEntry = namedEntry(entries, '.kiki', pathClass);

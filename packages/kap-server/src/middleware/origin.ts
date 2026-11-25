@@ -4,6 +4,7 @@ import { stripPort } from './hostnames';
 
 const CORS_ALLOW_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
 const CORS_ALLOW_HEADERS = 'Content-Type, Authorization, X-Kimi-Client-Id, X-Kimi-Client-Name, X-Kimi-Client-Version, X-Kimi-Client-Ui-Mode';
+const CORS_MAX_AGE_SECONDS = '600';
 
 export interface OriginHookOptions {
   /** Explicit cross-origin allowlist (full origin strings, scheme + host). */
@@ -123,6 +124,7 @@ export function createOriginHook(
       );
       reply.header('Vary', 'Origin');
       if (req.method === 'OPTIONS') {
+        reply.header('Access-Control-Max-Age', CORS_MAX_AGE_SECONDS);
         return reply.code(204).send();
       }
       return;
