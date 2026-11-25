@@ -14,7 +14,6 @@ import { promptPermissionModeSchema } from '#/app/sessionLegacy/sessionProtocol'
 import {
   CREATED_BY_AGENT_ID_KEY,
   CREATED_BY_SESSION_ID_KEY,
-  SESSION_GROUP_ID_KEY,
 } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IThreadCommunicationService } from '#/app/threadCommunication/threadCommunication';
@@ -158,13 +157,9 @@ export class ThreadCreateTool implements IThreadCreateTool {
         const thinking = normalizeSubagentBindingValue(input.effort, 'effort');
         const firstLine = input.prompt?.split(/\r?\n/, 1)[0]?.trim();
         const resolvedTitle = input.title ?? (firstLine ? Array.from(firstLine).slice(0, 80).join('') : undefined);
-        const ensuredGroup = this.sessions.ensureSessionGroup !== undefined
-          ? await this.sessions.ensureSessionGroup(this.session.sessionId)
-          : undefined;
         const initialCustom: Record<string, unknown> = {
           [CREATED_BY_SESSION_ID_KEY]: this.session.sessionId,
           [CREATED_BY_AGENT_ID_KEY]: this.caller.agentId,
-          ...(ensuredGroup !== undefined ? { [SESSION_GROUP_ID_KEY]: ensuredGroup.groupId } : {}),
         };
         const handle = input.from_subagent !== undefined
           ? await this.promoteSubagent(
@@ -173,7 +168,6 @@ export class ThreadCreateTool implements IThreadCreateTool {
               input.profile,
               model,
               thinking,
-              ensuredGroup?.groupId,
               initialCustom,
             )
           : await this.sessions.create({
@@ -216,12 +210,11 @@ export class ThreadCreateTool implements IThreadCreateTool {
           }
           const needsCustomSync =
             currentMeta.custom?.[CREATED_BY_SESSION_ID_KEY] !== this.session.sessionId ||
-            currentMeta.custom?.[CREATED_BY_AGENT_ID_KEY] !== this.caller.agentId ||
-            (ensuredGroup !== undefined && currentMeta.custom?.[SESSION_GROUP_ID_KEY] !== ensuredGroup.groupId);
+            currentMeta.custom?.[CREATED_BY_AGENT_ID_KEY] !== this.caller.agentId;
           if (needsCustomSync) {
             await metadata.update(
               { custom: { ...currentMeta.custom, ...initialCustom } },
-              { touchUpdatedAt: false, allowReservedGroupWrite: true },
+              { touchUpdatedAt: false },
             );
           }
           main.accessor.get(IAgentPermissionModeService).setModeCeiling(callerMode);
@@ -313,7 +306,6 @@ export class ThreadCreateTool implements IThreadCreateTool {
     profile: string | undefined,
     model: string | undefined,
     thinking: string | undefined,
-    groupId: string | undefined,
     initialCustom: Record<string, unknown>,
   ): Promise<ISessionScopeHandle> {
     const meta = (await this.metadata.read()).agents?.[agentId];
@@ -334,7 +326,6 @@ export class ThreadCreateTool implements IThreadCreateTool {
       profile,
       model,
       thinking,
-      groupId,
       initialCustom,
     });
   }

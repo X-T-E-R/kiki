@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useContext, useEffect, useMemo, useSyncExternalStore } from 'react';
-import { QueryClientContext, type Query, type QueryClient, type QueryKey } from '@tanstack/react-query';
+import { QueryClientContext, type QueryClient, type QueryKey } from '@tanstack/react-query';
 
 import type { Session, Workspace } from '@kiki/protocol';
 
@@ -78,22 +78,72 @@ function isThreadRefQuery(key: QueryKey): boolean {
     || (key.length === 1 && key[0] === 'thread-host-id');
 }
 
-function threadCacheVersionReader(client: QueryClient | undefined): () => number {
-  let previous: readonly (readonly [Query, number])[] = [];
-  let version = 0;
-  return () => {
-    const current = client?.getQueryCache().getAll()
-      .filter((query) => isThreadRefQuery(query.queryKey) && query.state.data !== undefined)
-      .map((query) => [query, query.state.dataUpdateCount] as const) ?? [];
-    // Identity also detects removal/replacement when update counts are equal.
-    if (current.length !== previous.length || current.some(([query, count], index) =>
-      query !== previous[index]?.[0] || count !== previous[index]?.[1])) {
-      previous = current;
-      version += 1;
+interface SharedThreadCacheStore {
+  version: number;
+  snapshot: { sessions: Map<string, Session>; workspaces: Map<string, ThreadRefWorkspace> } | undefined;
+  readonly seenCounts: WeakMap<object, number>;
+  readonly listeners: Set<() => void>;
+  unsubscribe?: () => void;
+}
+
+const sharedThreadStores = new WeakMap<QueryClient, SharedThreadCacheStore>();
+
+function sharedThreadStoreFor(client: QueryClient): SharedThreadCacheStore {
+  let store = sharedThreadStores.get(client);
+  if (store === undefined) {
+    store = { version: 0, snapshot: undefined, seenCounts: new WeakMap(), listeners: new Set() };
+    sharedThreadStores.set(client, store);
+  }
+  return store;
+}
+
+function subscribeSharedThreadStore(client: QueryClient | undefined, listener: () => void): () => void {
+  if (client === undefined) return noopSubscribe();
+  const store = sharedThreadStoreFor(client);
+  store.listeners.add(listener);
+  if (store.unsubscribe === undefined) {
+    for (const query of client.getQueryCache().getAll()) {
+      if (isThreadRefQuery(query.queryKey)) {
+        store.seenCounts.set(query, query.state.dataUpdateCount);
+      }
     }
-    return version;
+    store.unsubscribe = client.getQueryCache().subscribe((event) => {
+      if (event.type !== 'added' && event.type !== 'updated' && event.type !== 'removed') return;
+      if (!isThreadRefQuery(event.query.queryKey)) return;
+      if (event.type === 'added') {
+        store.seenCounts.set(event.query, event.query.state.dataUpdateCount);
+        if (event.query.state.data === undefined) return;
+      } else if (event.type === 'updated') {
+        const count = event.query.state.dataUpdateCount;
+        const previous = store.seenCounts.get(event.query);
+        if (previous === count || (previous === undefined && count === 0 && event.query.state.data === undefined)) return;
+        store.seenCounts.set(event.query, count);
+      } else {
+        store.seenCounts.delete(event.query);
+      }
+      store.version += 1;
+      store.snapshot = undefined;
+      for (const fn of store.listeners) fn();
+    });
+  }
+  return () => {
+    store.listeners.delete(listener);
+    if (store.listeners.size === 0 && store.unsubscribe !== undefined) {
+      store.unsubscribe();
+      store.unsubscribe = undefined;
+      store.snapshot = undefined;
+    }
   };
 }
+
+function readSharedThreadSnapshot(client: QueryClient | undefined): { sessions: Map<string, Session>; workspaces: Map<string, ThreadRefWorkspace> } {
+  if (client === undefined) return EMPTY_THREAD_SNAPSHOT;
+  const store = sharedThreadStoreFor(client);
+  if (store.snapshot === undefined) store.snapshot = snapshotOf(client);
+  return store.snapshot;
+}
+
+const EMPTY_THREAD_SNAPSHOT = { sessions: new Map<string, Session>(), workspaces: new Map<string, ThreadRefWorkspace>() };
 
 const THREAD_REF_PREFETCH_CONCURRENCY = 2;
 
@@ -158,14 +208,18 @@ export function useThreadRefDirectory(
 ): ThreadRefDirectory {
   const client = useContext(QueryClientContext);
   const subscribe = useCallback(
-    (listener: () => void) => (client === undefined ? noopSubscribe() : client.getQueryCache().subscribe((event) => {
-      if (isThreadRefQuery(event.query.queryKey)) listener();
-    })),
+    (listener: () => void) => subscribeSharedThreadStore(client, listener),
     [client],
   );
-  const readVersion = useMemo(() => threadCacheVersionReader(client), [client]);
-  const version = useSyncExternalStore(subscribe, readVersion, () => 0);
-  const snapshot = useMemo(() => snapshotOf(client), [client, version]);
+  const getVersion = useCallback(
+    () => (client === undefined ? 0 : sharedThreadStoreFor(client).version),
+    [client],
+  );
+  const version = useSyncExternalStore(subscribe, getVersion, () => 0);
+  const snapshot = useMemo(() => {
+    void version;
+    return readSharedThreadSnapshot(client);
+  }, [client, version]);
   const knownHostId = client?.getQueryData<string>(['thread-host-id']);
   const sourceMatches = sourceHostId === undefined || sourceHostId === knownHostId;
   const missing = useMemo(

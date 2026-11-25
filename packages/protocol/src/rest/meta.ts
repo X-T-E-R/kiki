@@ -26,6 +26,8 @@ export const metaCapabilitiesSchema = /* @__PURE__ */ z.object({
   transcript: z.boolean().optional(),
   /** Present only on servers that expose `/api/sidebar/sessions` unit pagination and session groups. */
   sidebar_groups: z.boolean().optional(),
+  /** Present only on servers whose `/api/sidebar/sessions` projects every session as an independent flat unit. */
+  sidebar_flat_sessions: z.boolean().optional(),
 });
 
 export type MetaCapabilities = z.infer<typeof metaCapabilitiesSchema>;

@@ -13,7 +13,6 @@ import {
   IWorkspacePersistence,
   SESSION_GROUP_DETACHED_KEY,
   SESSION_GROUP_ORIGIN_KEY,
-  explicitSessionGroupId,
   type Scope,
   type SessionSummary,
   type SidebarQueryMemberFilter,
@@ -54,7 +53,7 @@ const sidebarGroupIdParamSchema = z.object({
 });
 
 const pageCursorPayloadSchema = z.object({
-  v: z.literal(1),
+  v: z.literal(2),
   fp: z.string().min(1),
   gen: z.number().int().nonnegative().optional(),
   sortAt: z.number().int().nonnegative(),
@@ -344,7 +343,7 @@ async function projectSidebarRow(
   const cwd = summary.cwd ?? roots.get(summary.workspaceId);
   const ownUpdatedAt = summary.ownUpdatedAt ?? summary.updatedAt;
   const updatedAt = summary.updatedAt;
-  const groupId = summary.groupId ?? explicitSessionGroupId(summary.custom);
+  const groupId = summary.groupId;
   const groupDetached = summary.groupDetached === true || summary.custom?.[SESSION_GROUP_DETACHED_KEY] === true;
   const executorId = facts.executorId ?? summary.executorId;
   const lastTurnReason = facts.lastTurnReason ?? (facts.live === false ? summary.lastTurnReason : undefined);
@@ -613,7 +612,7 @@ export function registerSidebarRoutes(
         const lastUnit = page.units.at(-1);
         const nextCursor = page.hasMore && lastUnit !== undefined
           ? encodeCursor({
-              v: 1,
+              v: 2,
               fp,
               ...(page.generation !== undefined ? { gen: page.generation } : {}),
               sortAt: lastUnit.sortAt,

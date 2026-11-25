@@ -30,17 +30,6 @@ const unknownEntry: RoomRefDirectoryEntry = { name: undefined, exists: false, me
 
 const noopSubscribe = () => () => {};
 
-/** Bumped by the room queries, so a late-arriving room list re-reads the chips. */
-function roomCacheVersion(client: QueryClient | undefined): number {
-  if (client === undefined) return 0;
-  let sum = 0;
-  for (const query of client.getQueryCache().getAll()) {
-    if (query.queryKey[0] !== ROOM_ITEMS_QUERY_KEY[0]) continue;
-    sum += query.state.dataUpdateCount;
-  }
-  return sum;
-}
-
 /**
  * Rooms inside one cached list payload. Two shapes reach this cache: the room
  * summaries the sidebar reads (`GET /rooms/items`, which carry `title` and a
@@ -75,6 +64,72 @@ function snapshotOf(client: QueryClient | undefined): Map<string, { name: string
   return rooms;
 }
 
+interface SharedRoomCacheStore {
+  version: number;
+  snapshot: Map<string, { name: string; members: number | undefined }> | undefined;
+  readonly seenCounts: WeakMap<object, number>;
+  readonly listeners: Set<() => void>;
+  unsubscribe?: () => void;
+}
+
+const sharedRoomStores = new WeakMap<QueryClient, SharedRoomCacheStore>();
+const EMPTY_ROOM_SNAPSHOT = new Map<string, { name: string; members: number | undefined }>();
+
+function sharedRoomStoreFor(client: QueryClient): SharedRoomCacheStore {
+  let store = sharedRoomStores.get(client);
+  if (store === undefined) {
+    store = { version: 0, snapshot: undefined, seenCounts: new WeakMap(), listeners: new Set() };
+    sharedRoomStores.set(client, store);
+  }
+  return store;
+}
+
+function subscribeSharedRoomStore(client: QueryClient | undefined, listener: () => void): () => void {
+  if (client === undefined) return noopSubscribe();
+  const store = sharedRoomStoreFor(client);
+  store.listeners.add(listener);
+  if (store.unsubscribe === undefined) {
+    for (const query of client.getQueryCache().getAll()) {
+      if (query.queryKey[0] === ROOM_ITEMS_QUERY_KEY[0]) {
+        store.seenCounts.set(query, query.state.dataUpdateCount);
+      }
+    }
+    store.unsubscribe = client.getQueryCache().subscribe((event) => {
+      if (event.type !== 'added' && event.type !== 'updated' && event.type !== 'removed') return;
+      if (event.query.queryKey[0] !== ROOM_ITEMS_QUERY_KEY[0]) return;
+      if (event.type === 'added') {
+        store.seenCounts.set(event.query, event.query.state.dataUpdateCount);
+        if (event.query.state.data === undefined) return;
+      } else if (event.type === 'updated') {
+        const count = event.query.state.dataUpdateCount;
+        const previous = store.seenCounts.get(event.query);
+        if (previous === count || (previous === undefined && count === 0 && event.query.state.data === undefined)) return;
+        store.seenCounts.set(event.query, count);
+      } else {
+        store.seenCounts.delete(event.query);
+      }
+      store.version += 1;
+      store.snapshot = undefined;
+      for (const fn of store.listeners) fn();
+    });
+  }
+  return () => {
+    store.listeners.delete(listener);
+    if (store.listeners.size === 0 && store.unsubscribe !== undefined) {
+      store.unsubscribe();
+      store.unsubscribe = undefined;
+      store.snapshot = undefined;
+    }
+  };
+}
+
+function readSharedRoomSnapshot(client: QueryClient | undefined): Map<string, { name: string; members: number | undefined }> {
+  if (client === undefined) return EMPTY_ROOM_SNAPSHOT;
+  const store = sharedRoomStoreFor(client);
+  if (store.snapshot === undefined) store.snapshot = snapshotOf(client);
+  return store.snapshot;
+}
+
 /**
  * The directory for the linked room ids in view. `ids` drives a one-shot fetch
  * for rooms the cached list does not carry; a failed lookup (deleted room,
@@ -89,16 +144,22 @@ export function useRoomRefDirectory(
 ): RoomRefDirectory {
   const client = useContext(QueryClientContext);
   const subscribe = useCallback(
-    (listener: () => void) => (client === undefined ? noopSubscribe() : client.getQueryCache().subscribe(listener)),
+    (listener: () => void) => subscribeSharedRoomStore(client, listener),
     [client],
   );
-  const version = useSyncExternalStore(subscribe, () => roomCacheVersion(client), () => 0);
-  const snapshot = useMemo(() => snapshotOf(client), [client, version]);
+  const getVersion = useCallback(
+    () => (client === undefined ? 0 : sharedRoomStoreFor(client).version),
+    [client],
+  );
+  const version = useSyncExternalStore(subscribe, getVersion, () => 0);
+  const snapshot = useMemo(() => {
+    void version;
+    return readSharedRoomSnapshot(client);
+  }, [client, version]);
   useEffect(() => {
-    if (client === undefined || fetchRoom === undefined) return;
-    const known = snapshotOf(client);
+    if (client === undefined || fetchRoom === undefined || ids.length === 0) return;
     for (const id of new Set(ids)) {
-      if (known.has(id) || client.getQueryState(roomQueryKey(id)) !== undefined) continue;
+      if (snapshot.has(id) || client.getQueryState(roomQueryKey(id)) !== undefined) continue;
       void client.prefetchQuery({ queryKey: roomQueryKey(id), queryFn: () => fetchRoom(id), staleTime: 60_000, retry: false })
         .catch(() => undefined);
     }

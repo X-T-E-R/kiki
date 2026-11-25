@@ -40,7 +40,7 @@ type Notice =
 
 type GcPlan = { readonly removable: number; readonly kept: number };
 
-const WORKTREE_SESSION_FETCH_CONCURRENCY = 2;
+const WORKTREE_SESSION_FETCH_CONCURRENCY = 4;
 
 const ROW_ACTION =
   'inline-flex h-8 shrink-0 items-center rounded-md px-2.5 text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-ink-soft pointer-coarse:h-11 pointer-coarse:px-3';

@@ -36,20 +36,10 @@ import {
   ISessionIndex,
   ISessionIndexMirror,
   PARENT_SESSION_ID_KEY,
-  SESSION_GROUP_DETACHED_KEY,
-  SESSION_GROUP_GENERATION_KEY,
   SESSION_GROUP_ID_KEY,
-  SESSION_GROUP_ORIGIN_KEY,
   type SessionUsageSummary,
 } from '#/app/sessionIndex/sessionIndex';
-import {
-  deriveSessionGroupToken,
-  explicitSessionGroupId,
-  isSessionGroupDetached,
-  parseSessionGroupGeneration,
-  resolveHomeGroupOrigin,
-  stripSessionGroupControls,
-} from '#/app/sessionIndex/sessionGroup';
+import { stripSessionGroupControls } from '#/app/sessionIndex/sessionGroup';
 import { buildSessionSummary } from '#/app/sessionIndex/sessionIndexSource';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
@@ -1827,7 +1817,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         delete forkedCustom['externalClient'];
         if (Object.keys(forkedCustom).length === 0) forkedCustom = undefined;
       }
-      const resolvedGroupId = opts.groupId ?? (await this.ensureSourceGroup(sourceId, sourceHandle));
+      const resolvedGroupId = opts.groupId;
       const totalVisibleTurns = opts.turnIndex === undefined ? countVisibleUserTurns(mainSourceRecords) : undefined;
       const resolvedTurnIndex =
         opts.turnIndex !== undefined
@@ -1854,8 +1844,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         lastPrompt: turnSlice === undefined ? sourceMeta?.lastPrompt : turnSlice.lastPrompt,
         lastTurnReason: anyActiveTurn ? settledMainLastTurnReason : sourceMeta?.lastTurnReason,
         usage: aggregateSessionUsage(target),
-        custom: { ...forkedCustom, [FORKED_FROM_KEY]: forkedFrom, [SESSION_GROUP_ID_KEY]: resolvedGroupId },
-      }, { allowReservedGroupWrite: true });
+        custom: {
+          ...forkedCustom,
+          [FORKED_FROM_KEY]: forkedFrom,
+          ...(resolvedGroupId !== undefined ? { [SESSION_GROUP_ID_KEY]: resolvedGroupId } : {}),
+        },
+      }, { allowReservedGroupWrite: resolvedGroupId !== undefined });
 
       await this.appendSessionIndexEntry(targetId, this.workspaceContext.cwd);
       this._onDidForkSession.fire({
@@ -1890,73 +1884,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       metadata,
       groupId: opts.groupId,
     });
-  }
-
-  private async ensureSourceGroup(
-    sourceId: string,
-    sourceHandle: ISessionScopeHandle | undefined,
-  ): Promise<string> {
-    let manager: ISessionManager | undefined;
-    try {
-      manager = this.instantiation.invokeFunction((accessor) => accessor.get(ISessionManager));
-    } catch {}
-    if (manager?.ensureSessionGroup !== undefined) {
-      return (await manager.ensureSessionGroup(sourceId)).groupId;
-    }
-    const originKey = await resolveHomeGroupOrigin(this.bootstrap.homeDir, this.storage);
-    const indexed = await this.index.get(sourceId);
-    const computeNext = (current: Record<string, unknown>): { readonly groupId: string; readonly next: Record<string, unknown>; readonly changed: boolean } => {
-      const existing = explicitSessionGroupId(current);
-      if (existing !== undefined) return { groupId: existing, next: current, changed: false };
-      if (isSessionGroupDetached(current)) {
-        const nextGen = parseSessionGroupGeneration(current) + 1;
-        const groupId = deriveSessionGroupToken(originKey, sourceId, nextGen);
-        const next: Record<string, unknown> = { ...current };
-        delete next[SESSION_GROUP_DETACHED_KEY];
-        delete next[SESSION_GROUP_ORIGIN_KEY];
-        next[SESSION_GROUP_ID_KEY] = groupId;
-        next[SESSION_GROUP_GENERATION_KEY] = nextGen;
-        return { groupId, next, changed: true };
-      }
-      const gen = parseSessionGroupGeneration(current);
-      const groupId = indexed?.groupId ?? deriveSessionGroupToken(originKey, sourceId, gen);
-      const next: Record<string, unknown> = { ...current, [SESSION_GROUP_ID_KEY]: groupId };
-      if (gen > 0) next[SESSION_GROUP_GENERATION_KEY] = gen;
-      return { groupId, next, changed: true };
-    };
-    if (sourceHandle !== undefined) {
-      const metadata = sourceHandle.accessor.get(ISessionMetadata);
-      let groupId = '';
-      if (metadata.updateCustom !== undefined) {
-        await metadata.updateCustom((current) => {
-          const decision = computeNext(current);
-          groupId = decision.groupId;
-          return decision.next;
-        }, { touchUpdatedAt: false, allowReservedGroupWrite: true });
-      } else {
-        const meta = await metadata.read();
-        const decision = computeNext(meta.custom ?? {});
-        groupId = decision.groupId;
-        if (decision.changed) {
-          await metadata.update({ custom: decision.next }, { touchUpdatedAt: false, allowReservedGroupWrite: true });
-        }
-      }
-      return groupId;
-    }
-    const diskMeta = await this.readMetaFromDisk(sourceId);
-    const decision = computeNext(diskMeta?.custom ?? {});
-    if (diskMeta !== undefined && decision.changed) {
-      const scope = sessionScopeOf(this.handlerScope, sourceId);
-      const encoded = encodeSessionMeta({ ...diskMeta, custom: decision.next });
-      await this.docs.set(scope, 'state.json', encoded, { cooperative: true });
-      this.indexMirror.record(buildSessionSummary({
-        ...encoded,
-        id: sourceId,
-        workspaceId: this.workspaceId,
-        cwd: encoded.cwd ?? this.workspaceContext.cwd,
-      }));
-    }
-    return decision.groupId;
   }
 
   private async resolveSourceTitle(sourceId: string): Promise<string | undefined> {
@@ -2232,7 +2159,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         promotedAt: Date.now(),
       };
       const inherited = stripSessionGroupControls(withoutGoal(opts.metadata));
-      const resolvedGroupId = opts.groupId ?? (await this.ensureSourceGroup(source.sourceSessionId, this.sessions.get(source.sourceSessionId)));
+      const resolvedGroupId = opts.groupId;
       await targetMeta.update({
         title: opts.title ?? agentName,
         titleKind: opts.title !== undefined ? 'custom' : 'generated',
@@ -2249,9 +2176,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           ...inherited,
           ...opts.initialCustom,
           [PROMOTED_FROM_KEY]: promotedFrom,
-          [SESSION_GROUP_ID_KEY]: resolvedGroupId,
+          ...(resolvedGroupId !== undefined ? { [SESSION_GROUP_ID_KEY]: resolvedGroupId } : {}),
         },
-      }, { allowReservedGroupWrite: true });
+      }, { allowReservedGroupWrite: resolvedGroupId !== undefined });
       await this.appendSessionIndexEntry(targetId, source.workDir);
       await this.announceCreated({ sessionId: targetId, handle: target, source: 'fork' });
       return target;

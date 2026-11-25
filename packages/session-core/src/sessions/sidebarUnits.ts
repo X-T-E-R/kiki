@@ -35,6 +35,12 @@ export function hasSidebarGroupsCapability(
   return meta?.capabilities?.sidebar_groups === true;
 }
 
+export function hasFlatSidebarSessionsCapability(
+  meta: Pick<MetaResponse, 'capabilities'> | undefined,
+): boolean {
+  return meta?.capabilities?.sidebar_flat_sessions === true;
+}
+
 export function sidebarUnitRows(unit: SidebarUnit): readonly SidebarRow[] {
   return unit.kind === 'session' ? [unit.row] : unit.members;
 }

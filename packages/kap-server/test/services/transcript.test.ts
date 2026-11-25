@@ -8662,3 +8662,211 @@ it('preserves a long blocked-hook assistant message (>512 bytes before origin) o
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 }, 30_000);
+
+it('shares one cursor-consistent evicted-tail baseline flight across concurrent callers and ref-counts aborts', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-transcript-evicted-flight-'));
+  const wirePath = join(home, 'sessions', 'ws', 's-evicted', 'agents', 'main', 'wire.jsonl');
+  await mkdir(dirname(wirePath), { recursive: true });
+  const wireLines = [
+    JSON.stringify({ type: 'metadata', protocol_version: '1.1', time: 1_000 }),
+    JSON.stringify({ type: 'turn.prompt', turnId: 1, promptId: 'p1', input: [{ type: 'text', text: 'old turn' }], origin: { kind: 'user' }, time: 1_100 }),
+    JSON.stringify({ type: 'turn.ended', turnId: 1, reason: 'completed', time: 1_200 }),
+    JSON.stringify({ type: 'turn.prompt', turnId: 2, promptId: 'p2', input: [{ type: 'text', text: 'evicted tail turn' }], origin: { kind: 'user' }, time: 1_300 }),
+    JSON.stringify({ type: 'turn.ended', turnId: 2, reason: 'completed', time: 1_400 }),
+  ];
+  await writeFixtureFile(wirePath, `${wireLines.join('\n')}\n`);
+  const bus = new EventEmitter();
+  const agentAccessor = {
+    get: (token: unknown) => {
+      if (token === IEventBus) return { subscribe: (fn: (event: Event2) => void) => { bus.on('e', fn); return { dispose: () => bus.off('e', fn) }; } };
+      if (token === IAgentLoopService) return { status: () => ({ state: 'idle' }) };
+      if (token === IAgentActivityView) return { state: () => ({ turn: undefined }) };
+      if (token === IAgentTaskService) return { list: () => [] };
+      if (token === IAgentPromptService) return { list: () => ({ active: undefined, pending: [] }) };
+      return undefined;
+    },
+  };
+  const mainHandle = { id: 'main', accessor: agentAccessor };
+  const sessionScope = {
+    id: 's-evicted',
+    workspaceId: 'ws',
+    accessor: {
+      get: (token: unknown) => {
+        if (token === IAgentLifecycleService) {
+          return {
+            list: () => [mainHandle],
+            get: (id: string) => id === 'main' ? mainHandle : undefined,
+            onDidCreate: () => ({ dispose: () => {} }),
+            onDidDispose: () => ({ dispose: () => {} }),
+          };
+        }
+        if (token === ISessionMetadata) return { read: async () => ({ agents: {} }) };
+        if (token === ISessionInteractionService) {
+          return {
+            listPending: () => [],
+            onDidChangePending: () => ({ dispose: () => {} }),
+            onDidResolve: () => ({ dispose: () => {} }),
+          };
+        }
+        return undefined;
+      },
+    },
+  };
+  const core = {
+    accessor: {
+      get: (token: unknown) => {
+        if (token === ISessionIndex) {
+          return { get: async (id: string) => id === 's-evicted' ? { id, workspaceId: 'ws', updatedAt: 1 } : undefined };
+        }
+        if (token === ISessionLifecycleService) {
+          return {
+            get: (id: string) => id === 's-evicted' ? sessionScope : undefined,
+            onDidClose: () => ({ dispose: () => {} }),
+          };
+        }
+        if (token === ISessionManager) {
+          return {
+            get: (id: string) => id === 's-evicted' ? sessionScope : undefined,
+            list: () => [sessionScope],
+          };
+        }
+        return undefined;
+      },
+    },
+  } as unknown as Scope;
+  const service = new TranscriptService({ homeDir: home, core });
+  try {
+    const store = service.forSessionLive('s-evicted')!;
+    await service.whenReady('s-evicted');
+    const liveMain = store.getAgent('main')!;
+    liveMain.releaseDurableTurns([liveMain.getTurn('t2')!], { tailTurns: 0, maxBytes: 1 });
+    expect(liveMain.hasEvictedTail).toBe(true);
+
+    const internal = service as unknown as {
+      readScreenSnapshot: (...args: unknown[]) => Promise<AgentTranscriptSnapshot | undefined>;
+    };
+    const originalRead = internal.readScreenSnapshot.bind(service);
+    let releaseRead!: () => void;
+    let enteredRead!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const started = new Promise<void>((resolve) => { enteredRead = resolve; });
+    let readCount = 0;
+    vi.spyOn(internal, 'readScreenSnapshot').mockImplementation(async (...args: unknown[]) => {
+      readCount += 1;
+      enteredRead();
+      await gate;
+      return originalRead(...args);
+    });
+
+    const controller1 = new AbortController();
+    const controller2 = new AbortController();
+    const first = service.ensureAgentHistory('s-evicted', 'main', { tailFirst: true, signal: controller1.signal });
+    const second = service.ensureAgentHistory('s-evicted', 'main', { tailFirst: true, signal: controller2.signal });
+    await started;
+    expect(readCount).toBe(1);
+
+    controller1.abort();
+    await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+
+    releaseRead();
+    const secondResult = await second;
+    expect(readCount).toBe(1);
+    expect(secondResult?.hasEvictedTail).toBe(false);
+    expect(secondResult?.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(['t1', 't2']);
+
+    const thirdResult = await service.ensureAgentHistory('s-evicted', 'main', { tailFirst: true });
+    expect(readCount).toBe(1);
+    expect(thirdResult?.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(['t1', 't2']);
+
+    await appendFixtureFile(wirePath, `${JSON.stringify({ type: 'context.undo', count: 1, removedCount: 1, time: 1_500 })}\n`);
+    bus.emit('e', { type: 'context.undo', count: 1, removedCount: 1, time: 1_500 });
+    const afterUndoResult = await service.ensureAgentHistory('s-evicted', 'main', { tailFirst: true });
+    expect(readCount).toBe(2);
+    expect(afterUndoResult?.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(['t1']);
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 30_000);
+
+it('preserves running state for a live active turn in readProjectedColdTurn without retaining it in cold turn cache', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-transcript-live-cold-turn-'));
+  const wirePath = join(home, 'sessions', 'ws', 's-running', 'agents', 'main', 'wire.jsonl');
+  await mkdir(dirname(wirePath), { recursive: true });
+  const wireLines = [
+    JSON.stringify({ type: 'metadata', protocol_version: '1.1', time: 1_000 }),
+    JSON.stringify({ type: 'turn.prompt', turnId: 1, promptId: 'p1', input: [{ type: 'text', text: 'still running turn' }], origin: { kind: 'user' }, time: 1_100 }),
+    JSON.stringify({ type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 1, step: 1, uuid: 'step-1' }, time: 1_150 }),
+  ];
+  await writeFixtureFile(wirePath, `${wireLines.join('\n')}\n`);
+  const agentAccessor = {
+    get: (token: unknown) => {
+      if (token === IEventBus) return { subscribe: () => ({ dispose: () => {} }) };
+      if (token === IAgentLoopService) return { status: () => ({ state: 'running', activeTurnId: 1 }) };
+      if (token === IAgentActivityView) return { state: () => ({ turn: { turnId: 1, step: 1 } }) };
+      if (token === IAgentTaskService) return { list: () => [] };
+      if (token === IAgentPromptService) return { list: () => ({ active: undefined, pending: [] }) };
+      return undefined;
+    },
+  };
+  const mainHandle = { id: 'main', accessor: agentAccessor };
+  const sessionScope = {
+    id: 's-running',
+    workspaceId: 'ws',
+    accessor: {
+      get: (token: unknown) => {
+        if (token === IAgentLifecycleService) {
+          return {
+            list: () => [mainHandle],
+            get: (id: string) => id === 'main' ? mainHandle : undefined,
+            onDidCreate: () => ({ dispose: () => {} }),
+            onDidDispose: () => ({ dispose: () => {} }),
+          };
+        }
+        if (token === ISessionMetadata) return { read: async () => ({ agents: {} }) };
+        if (token === ISessionInteractionService) {
+          return {
+            listPending: () => [],
+            onDidChangePending: () => ({ dispose: () => {} }),
+            onDidResolve: () => ({ dispose: () => {} }),
+          };
+        }
+        return undefined;
+      },
+    },
+  };
+  const core = {
+    accessor: {
+      get: (token: unknown) => {
+        if (token === ISessionIndex) {
+          return { get: async (id: string) => id === 's-running' ? { id, workspaceId: 'ws', updatedAt: 1 } : undefined };
+        }
+        if (token === ISessionLifecycleService) {
+          return {
+            get: (id: string) => id === 's-running' ? sessionScope : undefined,
+            onDidClose: () => ({ dispose: () => {} }),
+          };
+        }
+        if (token === ISessionManager) {
+          return {
+            get: (id: string) => id === 's-running' ? sessionScope : undefined,
+            list: () => [sessionScope],
+          };
+        }
+        return undefined;
+      },
+    },
+  } as unknown as Scope;
+  const service = new TranscriptService({ homeDir: home, core });
+  try {
+    service.forSessionLive('s-running');
+    await service.whenReady('s-running');
+    const projected = await service.readProjectedColdTurn('s-running', 'main', 't1', new AbortController().signal);
+    expect(projected?.turnId).toBe('t1');
+    expect(projected?.state).toBe('running');
+    expect(service.memoryReport().retainedTurnBytes).toBe(0);
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 30_000);

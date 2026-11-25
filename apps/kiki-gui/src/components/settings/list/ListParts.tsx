@@ -271,18 +271,28 @@ function WindowedRows<T>({ items, keyOf, density, renderRow }: {
     setScroller(pane);
     if (anchor === null || pane === null) return;
     // Where the list starts inside the scroller; re-read when anything above it grows.
+    let rafId: number | undefined;
     const measure = () => {
+      rafId = undefined;
       const next = Math.max(0, Math.round(anchor.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop));
       setOffset((prev) => (prev === next ? prev : next));
     };
+    const scheduleMeasure = () => {
+      if (rafId !== undefined) return;
+      rafId = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(measure) : undefined;
+      if (rafId === undefined) measure();
+    };
     measure();
     if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(measure);
+    const observer = new ResizeObserver(scheduleMeasure);
     observer.observe(pane.firstElementChild ?? pane);
     if (anchor.parentElement !== null && anchor.parentElement !== pane && anchor.parentElement !== pane.firstElementChild) {
       observer.observe(anchor.parentElement);
     }
-    return () => { observer.disconnect(); };
+    return () => {
+      if (rafId !== undefined) cancelAnimationFrame(rafId);
+      observer.disconnect();
+    };
   }, [items.length, density]);
   const rowHeight = LIST_ROW_HEIGHT[density];
   const overscan = getPickerScaleConfig().virtualOverscan;
@@ -309,9 +319,10 @@ function WindowedRows<T>({ items, keyOf, density, renderRow }: {
       observer.observe(el);
       return () => { observer.disconnect(); };
     },
-    measureElement: (el) => {
-      const height = Math.round(el.getBoundingClientRect().height);
-      return height > 0 ? height : rowHeight;
+    measureElement: (_el, entry) => {
+      const boxHeight = entry?.borderBoxSize?.[0]?.blockSize;
+      if (boxHeight !== undefined && boxHeight > 0) return Math.round(boxHeight);
+      return rowHeight;
     },
     useFlushSync: false,
   });

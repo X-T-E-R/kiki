@@ -847,8 +847,12 @@ function appendTargetKey(op: TranscriptOperation): string | undefined {
   return undefined;
 }
 
+const RESIDENT_BYTES_CACHE = new WeakMap<object, number>();
+
 function estimateResidentStateBytes(state: AgentState): number {
-  return estimateResidentValueBytes({
+  const cached = RESIDENT_BYTES_CACHE.get(state);
+  if (cached !== undefined) return cached;
+  const total = estimateResidentValueBytes({
     items: state.items,
     tasks: state.tasks,
     interactions: state.interactions,
@@ -860,6 +864,8 @@ function estimateResidentStateBytes(state: AgentState): number {
     pendingInteractions: state.pendingInteractions,
     hasMoreOlder: state.hasMoreOlder,
   });
+  RESIDENT_BYTES_CACHE.set(state, total);
+  return total;
 }
 
 function estimateResidentValueBytes(value: unknown, seen = new WeakSet<object>()): number {
@@ -871,7 +877,7 @@ function estimateResidentValueBytes(value: unknown, seen = new WeakSet<object>()
   seen.add(value);
   if (Array.isArray(value)) {
     let bytes = 32 + value.length * 8;
-    for (const item of value) bytes += estimateResidentValueBytes(item, seen);
+    for (let i = 0; i < value.length; i += 1) bytes += estimateResidentValueBytes(value[i], seen);
     return bytes;
   }
   if (value instanceof Map) {
@@ -888,8 +894,10 @@ function estimateResidentValueBytes(value: unknown, seen = new WeakSet<object>()
     return bytes;
   }
   let bytes = 48;
-  for (const [key, entry] of Object.entries(value)) {
-    bytes += 16 + key.length * 2 + estimateResidentValueBytes(entry, seen);
+  const record = value as Record<string, unknown>;
+  for (const key in record) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+    bytes += 16 + key.length * 2 + estimateResidentValueBytes(record[key], seen);
   }
   return bytes;
 }

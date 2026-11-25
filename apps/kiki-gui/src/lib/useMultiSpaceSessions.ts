@@ -31,7 +31,7 @@ import {
   collectCrossHostGroupIds,
   dedupeSidebarUnits,
   flattenSidebarUnitsToSessions,
-  hasSidebarGroupsCapability,
+  hasFlatSidebarSessionsCapability,
   isPageTokenMismatchError,
   mergeSidebarFirstPage,
   type SidebarUnitPagesData,
@@ -201,7 +201,7 @@ async function fetchSpaceHead(
     }
   }
   const sidebarRest = targetClient.klient.rest?.sidebar;
-  const capable = cachedMeta !== null && cachedMeta !== undefined && hasSidebarGroupsCapability(cachedMeta) && sidebarRest !== undefined;
+  const capable = cachedMeta !== null && cachedMeta !== undefined && hasFlatSidebarSessionsCapability(cachedMeta) && sidebarRest !== undefined;
   const sig = filterSignatureOf(filter);
   const query = buildRemoteSidebarQuery(filter);
 
@@ -396,6 +396,8 @@ export function useMultiSpaceSessions({
   const sidebarFilterRef = useRef(sidebarFilter);
   sidebarFilterRef.current = sidebarFilter;
   const sidebarFilterSig = filterSignatureOf(sidebarFilter);
+  const sidebarFilterSigRef = useRef(sidebarFilterSig);
+  sidebarFilterSigRef.current = sidebarFilterSig;
 
   const controlBaseUrl = controlClient?.baseUrl ?? config.url;
   const controlToken = config.token;
@@ -880,6 +882,7 @@ export function useMultiSpaceSessions({
     loadingMoreRef.current.add(targetSpaceKey);
     setLoadingMoreSpaces(new Set(loadingMoreRef.current));
     const filter = sidebarFilterRef.current;
+    const capturedFilterSig = sidebarFilterSigRef.current;
     const sort = filter?.sort ?? 'updated_desc';
     try {
       const sidebarRest = targetClient.klient.rest?.sidebar;
@@ -889,6 +892,7 @@ export function useMultiSpaceSessions({
             ...buildRemoteSidebarQuery(filter),
             cursor: currentSnap.nextSessionCursor,
           });
+          if (sidebarFilterSigRef.current !== capturedFilterSig) return;
           setSnapshots((prev) => {
             const existing = prev.get(targetSpaceKey);
             if (existing?.unitPages === undefined) return prev;
@@ -905,8 +909,10 @@ export function useMultiSpaceSessions({
             return next;
           });
         } catch (cause: unknown) {
+          if (sidebarFilterSigRef.current !== capturedFilterSig) return;
           if (isPageTokenMismatchError(cause)) {
             const head = await fetchSpaceHead(targetClient, new AbortController().signal, filter, metaCacheRef.current);
+            if (sidebarFilterSigRef.current !== capturedFilterSig) return;
             setSnapshots((prev) => {
               const next = new Map(prev);
               next.set(targetSpaceKey, mergeSpaceSnapshot(undefined, head, Date.now(), sort));
@@ -925,6 +931,7 @@ export function useMultiSpaceSessions({
         include_private: filter?.includePrivate || undefined,
         private_only: filter?.privateOnly || undefined,
       });
+      if (sidebarFilterSigRef.current !== capturedFilterSig) return;
       setSnapshots((prev) => {
         const existing = prev.get(targetSpaceKey);
         if (existing === undefined) return prev;

@@ -3,7 +3,6 @@ import {
   IAgentProfileService, IAgentPermissionModeService, IAgentLifecycleService, IAgentPlanService,
   IAgentPromptService, IEventDispatcher, ISessionMetadata, IThreadCommunicationService,
   CREATED_BY_SESSION_ID_KEY, CREATED_BY_AGENT_ID_KEY,
-  SESSION_GROUP_ID_KEY, SESSION_GROUP_ORIGIN_KEY,
   Error2, ErrorCodes, constrainPermissionMode,
   type PermissionMode, type Scope, type Workspace, type CreateBridgedThreadResult,
 } from '@kiki/agent-core-v2';
@@ -15,8 +14,6 @@ export async function createBridgedThread(core: Scope, workspace: Workspace, hos
   const groupCustom: Record<string, unknown> = {
     [CREATED_BY_SESSION_ID_KEY]: `${input.source.hostId}:${input.source.sessionId}`,
     [CREATED_BY_AGENT_ID_KEY]: 'bridged_peer',
-    ...(input.groupId !== undefined ? { [SESSION_GROUP_ID_KEY]: input.groupId } : {}),
-    ...(input.groupOrigin !== undefined ? { [SESSION_GROUP_ORIGIN_KEY]: input.groupOrigin } : {}),
   };
   const firstLine = input.prompt?.split(/\r?\n/, 1)[0]?.trim();
   const title = input.title ?? (firstLine ? Array.from(firstLine).slice(0, 80).join('') : undefined);
@@ -42,9 +39,9 @@ export async function createBridgedThread(core: Scope, workspace: Workspace, hos
     if (existing !== undefined) {
       if (title !== undefined) await metadata.setTitle(title);
       if (metadata.updateCustom !== undefined) {
-        await metadata.updateCustom((current) => ({ ...current, ...groupCustom }), { touchUpdatedAt: false, allowReservedGroupWrite: true });
+        await metadata.updateCustom((current) => ({ ...current, ...groupCustom }), { touchUpdatedAt: false });
       } else {
-        await metadata.update({ custom: { ...(await metadata.read()).custom, ...groupCustom } }, { touchUpdatedAt: false, allowReservedGroupWrite: true });
+        await metadata.update({ custom: { ...(await metadata.read()).custom, ...groupCustom } }, { touchUpdatedAt: false });
       }
     }
     const permission = main.accessor.get(IAgentPermissionModeService);

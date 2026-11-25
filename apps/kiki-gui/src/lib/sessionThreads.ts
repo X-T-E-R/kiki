@@ -19,7 +19,7 @@
 
 import type { Session } from '@kiki/protocol';
 
-import { isPinnedSession, type ConversationListItem, type SessionGroup } from '@kiki/session-core/sessions';
+import type { ConversationListItem, SessionGroup } from '@kiki/session-core/sessions';
 
 export type SessionRelationKind = 'thread' | 'branch' | 'fork';
 
@@ -87,69 +87,20 @@ interface TreeGroup<T> {
 function nestItems<T>(
   groups: readonly SessionGroup<T>[],
   sessionOf: (item: T) => Session | undefined,
-  options: { readonly crossGroups: boolean; readonly topLevelIds?: ReadonlySet<string> },
+  _options: { readonly crossGroups: boolean; readonly topLevelIds?: ReadonlySet<string> },
 ): TreeGroup<T>[] {
-  const groupOf = new Map<string, string>();
-  const byId = new Map<string, { item: T; session: Session }>();
-  for (const group of groups) {
-    for (const item of group.items) {
-      const session = sessionOf(item);
-      if (session === undefined) continue;
-      groupOf.set(session.id, group.key);
-      byId.set(session.id, { item, session });
-    }
-  }
-
-  // The visible root a session descends from: walk the parent chain through
-  // loaded rows only, stopping at a gap or a (malformed) cycle.
-  const rootOf = (session: Session): string => {
-    const seen = new Set<string>([session.id]);
-    let current = session;
-    for (;;) {
-      if (options.topLevelIds?.has(current.id)) return current.id;
-      const relation = sessionRelationOf(current);
-      const parent = relation === undefined ? undefined : byId.get(relation.parentId);
-      if (parent === undefined || seen.has(parent.session.id)) return current.id;
-      seen.add(parent.session.id);
-      current = parent.session;
-    }
-  };
-  // '' marks a top-level row; otherwise the id of the row it nests under.
-  const hostOf = new Map<string, string>();
-  for (const { session } of byId.values()) {
-    const root = rootOf(session);
-    const sameGroup = groupOf.get(root) === groupOf.get(session.id);
-    const allowed = sameGroup || (options.crossGroups && !isPinnedSession(session));
-    hostOf.set(session.id, root !== session.id && allowed ? root : '');
-  }
-  // A host must itself be top-level; anything else (only reachable through a
-  // cycle) falls back to its own row so nothing ever disappears.
-  for (const [id, host] of hostOf) {
-    if (host !== '' && hostOf.get(host) !== '') hostOf.set(id, '');
-  }
-
-  const childrenOf = new Map<string, TreeNode<T>[]>();
-  for (const { item, session } of byId.values()) {
-    const host = hostOf.get(session.id);
-    if (host === undefined || host === '') continue;
-    const list = childrenOf.get(host) ?? [];
-    list.push({ item, relation: sessionRelationOf(session), children: [] });
-    childrenOf.set(host, list);
-  }
-
   const result: TreeGroup<T>[] = [];
   for (const group of groups) {
     const nodes: TreeNode<T>[] = [];
-    let total = 0;
     for (const item of group.items) {
       const session = sessionOf(item);
-      const host = session === undefined ? '' : hostOf.get(session.id);
-      if (host !== undefined && host !== '') continue;
-      const children = session === undefined ? [] : childrenOf.get(session.id) ?? [];
-      total += 1 + children.length;
-      nodes.push({ item, relation: session === undefined ? undefined : sessionRelationOf(session), children });
+      nodes.push({
+        item,
+        relation: session === undefined ? undefined : sessionRelationOf(session),
+        children: [],
+      });
     }
-    if (nodes.length > 0) result.push({ key: group.key, label: group.label, nodes, total });
+    if (nodes.length > 0) result.push({ key: group.key, label: group.label, nodes, total: nodes.length });
   }
   return result;
 }

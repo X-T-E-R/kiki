@@ -1319,9 +1319,25 @@ export class SessionEventBroadcaster {
             return true;
           }
         }
-        const rawTranscript = await ensureHistory(agentId);
-        if (!current()) return false;
-        if (rawTranscript === undefined) return true;
+        if (!admitted.has(agentId) && seed.store.getAgent(agentId) === undefined) return true;
+        let rawTranscript: AgentTranscript | undefined;
+        let historyLoaded = false;
+        const loadTranscript = async (): Promise<AgentTranscript | undefined> => {
+          if (!historyLoaded) {
+            rawTranscript = await ensureHistory(agentId);
+            historyLoaded = true;
+          }
+          return rawTranscript;
+        };
+        const resolveResetBaseline = async (
+          transcript: AgentTranscript,
+        ): Promise<{ readonly transcript: AgentTranscript; readonly cursor: TranscriptCursor }> => resolveFreshTailResetBaseline(
+          service,
+          state.sessionId,
+          agentId,
+          transcript,
+          timing.signal,
+        );
         let sent = delivered.get(agentId);
         for (;;) {
           await yieldIfNeeded();
@@ -1337,7 +1353,7 @@ export class SessionEventBroadcaster {
           const needsReset = seed.deferred || gradeUpgrade;
           const detailBaselineRequired = sent === undefined && gradeUpgrade &&
             (seed.prev !== undefined || grade === 'block' || grade === 'delta');
-          const catchup = since === undefined || detailBaselineRequired
+          const catchup = since === undefined || detailBaselineRequired || seed.store.getAgent(agentId) === undefined
             ? undefined
             : service.getOpsSince(state.sessionId, agentId, since);
           if (catchup?.complete === true) {
@@ -1361,16 +1377,16 @@ export class SessionEventBroadcaster {
                 fallbackToReset = true;
                 break;
               }
+              if (((index + 1) & 31) === 0) await target.drain?.();
+            }
+            if (!fallbackToReset && visible.length > 0) {
               await target.drain?.();
             }
             if (fallbackToReset) {
-              const baseline = await resolveFreshTailResetBaseline(
-                service,
-                state.sessionId,
-                agentId,
-                rawTranscript,
-                timing.signal,
-              );
+              const transcript = await loadTranscript();
+              if (!current()) return false;
+              if (transcript === undefined) return true;
+              const baseline = await resolveResetBaseline(transcript);
               if (!current()) return false;
               if (!this.sendTranscriptReset(state, target, baseline.transcript, grade, baseline.cursor, seed.generation)) return false;
               await timeSessionViewPhase('agent_drain', { ...fields, agentId }, async () => target.drain?.(), timing);
@@ -1379,13 +1395,10 @@ export class SessionEventBroadcaster {
               sent = { seq: catchup.throughSeq, epoch: catchup.epoch };
             }
           } else if (since !== undefined || needsReset) {
-            const baseline = await resolveFreshTailResetBaseline(
-              service,
-              state.sessionId,
-              agentId,
-              rawTranscript,
-              timing.signal,
-            );
+            const transcript = await loadTranscript();
+            if (!current()) return false;
+            if (transcript === undefined) return true;
+            const baseline = await resolveResetBaseline(transcript);
             if (!current()) return false;
             if (!this.sendTranscriptReset(state, target, baseline.transcript, grade, baseline.cursor, seed.generation)) return false;
             await timeSessionViewPhase('agent_drain', { ...fields, agentId }, async () => target.drain?.(), timing);
@@ -1425,8 +1438,6 @@ export class SessionEventBroadcaster {
         const currentSpec = state.targets.get(target)?.transcriptGrades;
         let caughtUp = true;
         for (const { agentId } of seed.store.agents()) {
-          await yieldIfNeeded();
-          if (!current()) return;
           if (gradeFor(currentSpec, agentId) === 'off' || seed.store.getAgent(agentId) === undefined) continue;
           const currentCursor = service.getTranscriptCursor(state.sessionId, agentId);
           const sent = delivered.get(agentId);

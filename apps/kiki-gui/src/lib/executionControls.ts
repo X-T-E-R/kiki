@@ -13,7 +13,7 @@
  * receipt, and a fresh operation gets a fresh id once the previous one settled.
  */
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { SessionEventPayloads } from '@kiki/klient';
@@ -25,8 +25,11 @@ export type ExecutionPauseAgent = ExecutionControlState['agents'][number];
 export type ExecutionPhase = ExecutionControlState['phase'];
 
 const EXECUTION_KEY = 'session-execution';
-/** Poll cadence: a reconnect/read-failure fallback only — events carry freshness. */
+/** Poll cadence when live event subscriptions are unavailable. */
 const EXECUTION_POLL_MS = 5000;
+/** Quiet safety poll cadence when per-session event observations are active. */
+const EXECUTION_OBSERVED_POLL_MS = 30_000;
+const MAX_EXECUTION_READ_CONCURRENCY = 4;
 export function executionQueryKey(scopeId: string | undefined, sessionId: string): readonly unknown[] {
   return [EXECUTION_KEY, scopeId, sessionId] as const;
 }
@@ -118,22 +121,29 @@ export function useSessionExecutions(
     }));
   };
 
+  const [allObserved, setAllObserved] = useState(false);
+
   const query = useQuery({
     queryKey: batchKey,
     queryFn: async (): Promise<Record<string, ExecutionControlState | null>> => {
       const started = new Map(ids.map((sessionId) => [sessionId, generations.current.get(sessionId) ?? 0]));
       let readFailure: unknown;
-      await Promise.all(ids.map(async (sessionId) => {
-        const execution = executionOf(client, sessionId);
-        const readGeneration = started.get(sessionId) ?? 0;
-        if (execution === undefined) { commit(sessionId, null, readGeneration); return; }
-        try {
-          const state = await execution.read();
-          commit(sessionId, state, readGeneration);
-        } catch (error) {
-          readFailure = error;
-          // On a read failure keep whatever the cache currently holds for this
-          // session — including a newer event — instead of writing anything.
+      let cursor = 0;
+      const workerCount = Math.min(MAX_EXECUTION_READ_CONCURRENCY, ids.length);
+      await Promise.all(Array.from({ length: workerCount }, async () => {
+        while (cursor < ids.length) {
+          const sessionId = ids[cursor++]!;
+          const execution = executionOf(client, sessionId);
+          const readGeneration = started.get(sessionId) ?? 0;
+          if (execution === undefined) { commit(sessionId, null, readGeneration); continue; }
+          try {
+            const state = await execution.read();
+            commit(sessionId, state, readGeneration);
+          } catch (error) {
+            readFailure = error;
+            // On a read failure keep whatever the cache currently holds for this
+            // session — including a newer event — instead of writing anything.
+          }
         }
       }));
       lastReadError.current = readFailure;
@@ -141,7 +151,7 @@ export function useSessionExecutions(
       // query contract. Commits above already merged per session.
       return queryClient.getQueryData<Record<string, ExecutionControlState | null>>(batchKey) ?? {};
     },
-    refetchInterval: EXECUTION_POLL_MS,
+    refetchInterval: allObserved ? EXECUTION_OBSERVED_POLL_MS : EXECUTION_POLL_MS,
     retry: false,
     enabled: enabled && ids.length > 0,
     placeholderData: (previous) => previous,
@@ -151,7 +161,10 @@ export function useSessionExecutions(
   // unknown `execution.changed` event (older server) drops the observation and
   // the poll alone carries the state.
   useEffect(() => {
-    if (!enabled || ids.length === 0) return;
+    if (!enabled || ids.length === 0) {
+      setAllObserved(false);
+      return;
+    }
     const observations: { dispose(): void }[] = [];
     for (const sessionId of ids) {
       const events = eventsOf(client, sessionId);
@@ -173,7 +186,11 @@ export function useSessionExecutions(
         // observation unsupported — the poll keeps this session truthful
       }
     }
-    return () => { for (const observation of observations) observation.dispose(); };
+    setAllObserved(observations.length === ids.length);
+    return () => {
+      setAllObserved(false);
+      for (const observation of observations) observation.dispose();
+    };
   }, [client, enabled, ids, batchKey, scopeId, queryClient]);
 
   const states = useMemo(() => {
@@ -292,6 +309,7 @@ export function usePausedSessionDiscovery(options?: { readonly enabled?: boolean
       if (sessions === undefined) return [];
       return collectPausedSessionIds(sessions, signal);
     },
+    staleTime: 30_000,
     retry: false,
     enabled,
   });
@@ -349,9 +367,14 @@ export function usePausedSessionDiscovery(options?: { readonly enabled?: boolean
     return () => { for (const subscription of subscriptions) subscription.dispose(); };
   }, [client, enabled, queryClient, queryKey]);
 
-  // Reconnect: one inventory walk once the socket is open again.
+  // Reconnect: one inventory walk only when transitioning back to open after a disconnect.
+  const prevWsStatusRef = useRef(wsStatus);
   useEffect(() => {
-    if (enabled && wsStatus === 'open') void queryClient.invalidateQueries({ queryKey });
+    const prev = prevWsStatusRef.current;
+    prevWsStatusRef.current = wsStatus;
+    if (enabled && wsStatus === 'open' && prev !== 'open') {
+      void queryClient.invalidateQueries({ queryKey });
+    }
   }, [enabled, wsStatus, queryClient, queryKey]);
 
   return {

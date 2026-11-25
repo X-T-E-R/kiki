@@ -350,15 +350,7 @@ function resolvePendingOverlay(
   const stored = fetchByKeys(getStmt, sessionCollection, incoming.map((doc) => doc.id), check);
   for (const doc of incoming) {
     const old = stored.docs.get(doc.id);
-    const inheritedGroupId =
-      doc.groupId === undefined &&
-      doc.groupDetached !== true &&
-      old?.groupId !== undefined &&
-      legacyParentOf(doc) === legacyParentOf(old)
-        ? old.groupId
-        : doc.groupId;
-    const effective: StoredSessionDoc =
-      inheritedGroupId === doc.groupId ? doc : { ...doc, groupId: inheritedGroupId };
+    const effective: StoredSessionDoc = doc;
     byId.set(effective.id, effective);
     const nextUnitId = typedUnitIdOf(effective);
     affectedUnitIds.add(nextUnitId);

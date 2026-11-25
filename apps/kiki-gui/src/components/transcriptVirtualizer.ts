@@ -234,10 +234,9 @@ export function installTranscriptAnchoring(
   instance.shouldAdjustScrollPositionOnItemSizeChange = (item: VirtualItem) => {
     const element = instance.scrollElement;
     const scrollOffset = (instance.scrollOffset ?? 0) + instance.scrollAdjustments;
-    const rawDistanceFromEnd = element instanceof HTMLElement
+    const distanceFromEnd = stick.isFollowing() && element instanceof HTMLElement
       ? element.scrollHeight - element.clientHeight - element.scrollTop
       : Number.POSITIVE_INFINITY;
-    const distanceFromEnd = stick.isFollowing() ? rawDistanceFromEnd : Number.POSITIVE_INFINITY;
     if (shouldCompensateRowResize({
       itemStart: item.start,
       itemSize: item.size,
@@ -300,37 +299,56 @@ export function observeRowMutations(
   let queued = false;
   let active = true;
   let fullScan = false;
+  let lastReconcileMs = 0;
+  let rafId: number | undefined;
   const dirtyRows = new Set<HTMLDivElement>();
+  const flush = () => {
+    queued = false;
+    rafId = undefined;
+    if (!active || !scroll.isConnected) {
+      dirtyRows.clear();
+      fullScan = false;
+      return;
+    }
+    const startedAt = performance.now();
+    if (fullScan) {
+      fullScan = false;
+      dirtyRows.clear();
+      reconcileMountedRows(instance);
+      lastReconcileMs = performance.now() - startedAt;
+      return;
+    }
+    if (dirtyRows.size === 0) return;
+    const rows = [...dirtyRows];
+    dirtyRows.clear();
+    reconcileMountedRows(instance, rows);
+    lastReconcileMs = performance.now() - startedAt;
+  };
   const observer = new MutationObserver((records) => {
     for (const record of records) {
       const target = record.target instanceof HTMLElement ? record.target : record.target.parentElement;
-      const row = target?.closest<HTMLDivElement>('[data-row-key]') ?? null;
+      const row = target?.closest<HTMLDivElement>('[data-row-key], [data-index]') ?? null;
       if (row instanceof HTMLDivElement && scroll.contains(row)) {
         dirtyRows.add(row);
-      } else {
-        fullScan = true;
+      } else if (record.type === 'childList') {
+        for (const node of record.addedNodes) {
+          if (
+            node instanceof HTMLElement
+            && (node.matches('[data-row-key], [data-index]') || node.querySelector('[data-row-key], [data-index]') !== null)
+          ) {
+            fullScan = true;
+            break;
+          }
+        }
       }
     }
-    if (queued) return;
+    if (queued || (!fullScan && dirtyRows.size === 0)) return;
     queued = true;
-    queueMicrotask(() => {
-      queued = false;
-      if (!active || !scroll.isConnected) {
-        dirtyRows.clear();
-        fullScan = false;
-        return;
-      }
-      if (fullScan) {
-        fullScan = false;
-        dirtyRows.clear();
-        reconcileMountedRows(instance);
-        return;
-      }
-      if (dirtyRows.size === 0) return;
-      const rows = [...dirtyRows];
-      dirtyRows.clear();
-      reconcileMountedRows(instance, rows);
-    });
+    if (lastReconcileMs >= 4 && typeof requestAnimationFrame === 'function') {
+      rafId = requestAnimationFrame(flush);
+    } else {
+      queueMicrotask(flush);
+    }
   });
   observer.observe(scroll, {
     childList: true,
@@ -341,6 +359,7 @@ export function observeRowMutations(
   });
   return () => {
     active = false;
+    if (rafId !== undefined && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
     dirtyRows.clear();
     observer.disconnect();
   };

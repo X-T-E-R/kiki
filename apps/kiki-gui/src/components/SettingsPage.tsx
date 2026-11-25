@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import {
@@ -25,40 +25,48 @@ import { useI18n } from '../i18n';
 import { prefersReducedMotion } from '../lib/motion';
 import { useConnection } from '../state/connection';
 import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
-import { AboutSection } from './settings/AboutSection';
-import { DesktopLogCard } from './settings/DesktopLogCard';
-import { AppearanceSection } from './settings/AppearanceSection';
 import { useSidebarContext } from './sidebarContext';
 import { Icon } from './icons';
-import { AgentsSection } from './settings/AgentsSection';
-import { AiSection } from './settings/AiSection';
-import { ProvidersSection } from './settings/ProvidersSection';
-import { DefaultsTab } from './settings/ModelsSection';
-import { EngineParametersSection } from './settings/EngineParametersSection';
-import { HooksSection } from './settings/hooks/HooksSection';
-import { ConnectionSection } from './settings/ConnectionSection';
-import { DeveloperSection } from './settings/DeveloperSection';
-import { ExperimentalRows } from './settings/ExperimentalRows';
-import { ExtensionsSection } from './settings/ExtensionsSection';
-import { PluginSettingsSectionSlotList } from './plugins/PluginSettingsSectionCard';
-import { ConnectionServicesSection } from './settings/ConnectionServicesSection';
-import { GeneralSection } from './settings/GeneralSection';
-import { LabsSection } from './settings/LabsSection';
-import { McpSection } from './settings/McpSection';
-import { MemorySection } from './settings/MemorySection';
-import { NbSearchSection } from './settings/NbSearchSection';
-import { IdentitySection } from './settings/IdentitySection';
-import { NotificationsSection } from './settings/NotificationsSection';
-import { PermissionsSection } from './settings/PermissionsSection';
-import { PluginsSection } from './settings/PluginsSection';
-import { BrowserControlSection } from './settings/BrowserControlSection';
+import {
+  LazyAboutSection as AboutSection,
+  LazyAgentsSection as AgentsSection,
+  LazyAiSection as AiSection,
+  LazyAppearanceSection as AppearanceSection,
+  LazyBrowserControlSection as BrowserControlSection,
+  LazyConnectionSection as ConnectionSection,
+  LazyConnectionServicesSection as ConnectionServicesSection,
+  LazyDefaultsTab as DefaultsTab,
+  LazyDesktopLogCard as DesktopLogCard,
+  LazyDeveloperSection as DeveloperSection,
+  LazyEngineParametersSection as EngineParametersSection,
+  LazyExperimentalRows as ExperimentalRows,
+  LazyExtensionsSection as ExtensionsSection,
+  LazyGeneralSection as GeneralSection,
+  LazyHooksSection as HooksSection,
+  LazyIdentitySection as IdentitySection,
+  LazyLabsSection as LabsSection,
+  LazyMcpSection as McpSection,
+  LazyMemorySection as MemorySection,
+  LazyNbSearchSection as NbSearchSection,
+  LazyNotificationsSection as NotificationsSection,
+  LazyPermissionsSection as PermissionsSection,
+  LazyPluginSettingsSectionSlotList as PluginSettingsSectionSlotList,
+  LazyPluginsSection as PluginsSection,
+  LazyProvidersSection as ProvidersSection,
+  LazySessionsImportPage as SessionsImportPage,
+  LazySessionsSection as SessionsSection,
+  LazyShortcutsSection as ShortcutsSection,
+  LazySkillsSection as SkillsSection,
+  LazySpacesSection as SpacesSection,
+  LazySshSection as SshSection,
+  LazySubscriptionsSection as SubscriptionsSection,
+  LazyTasksSection as TasksSection,
+  LazyWorkspacesSection as WorkspacesSection,
+} from './settings/lazySections';
 import { SECTIONS, type SectionId } from './settings/sections';
 import { SettingsCardMountContext, SettingsFlashContext, SettingsPageScopeContext } from './settings/SectionCard';
 import { SettingsTabs } from './settings/SettingsPrimitives';
 import { SettingsPaneBoundary } from './settings/SettingsPaneBoundary';
-import { SessionsSection } from './settings/SessionsSection';
-import { SessionsImportPage } from './settings/SessionsImportPage';
-import { ShortcutsSection } from './settings/ShortcutsSection';
 import {
   REMOTE_SPACE_NAV_TREE,
   SettingsNav,
@@ -66,21 +74,15 @@ import {
   settingsSectionAllowedInRemoteSpace,
 } from './settings/SettingsNav';
 import { useOptionalInstalledPlugins } from './capabilities/usePlugins';
-import { SkillsSection } from './settings/SkillsSection';
-import { SpacesSection } from './settings/SpacesSection';
-import { SubscriptionsSection } from './settings/SubscriptionsSection';
 import { SpaceDot } from './settings/spaces/SpaceDot';
 import { currentSpace, useSpaces } from '../lib/spaces';
 import { connectionIdOfSpaceKey, useRemoteConnections } from '../lib/remoteConnections';
 import { sanitizeHumanLabel, useServerHandshake, useSpaceLocation } from '../lib/spaceLocation';
 import { spaceSettingsTargetIsSpace, spaceSettingsTargetOf } from '../lib/spaceSettings';
-import { TasksSection } from './settings/TasksSection';
 import { UnknownSettingsSection } from './settings/UnknownSection';
 import { SettingsWorkspaceScopeContext, WorkspaceDetailNameContext } from './settings/workspaceScope';
-import { WorkspacesSection } from './settings/WorkspacesSection';
-import { SshSection } from './ssh/SshSection';
 import { NavBackButton } from './NavBackButton';
-import { getCurrentVisit, getUiSnapshot, saveScrollPosition, saveUiSnapshot } from '../lib/navHistory';
+import { getCurrentVisit, getUiSnapshot, saveScrollPosition } from '../lib/navHistory';
 
 export { mcpConfigFromDraft, parseNamedAgentTools } from '@kiki/session-core/settings';
 
@@ -280,6 +282,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   useEffect(() => { setWorkspaceScopeName(null); }, [active]);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const scrolledRef = useRef(false);
 
   // App commits the target visit in its layout transition, before this effect.
   // The shared section container must also reset for a newly pushed visit.
@@ -288,10 +291,15 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     if (!visit || !scrollRef.current) return;
     const saved = getUiSnapshot<{ scrollTop?: number }>(visit.visitId);
     const container = scrollRef.current;
-    container.scrollTop = saved?.scrollTop ?? 0;
+    const targetTop = saved?.scrollTop ?? 0;
+    if (targetTop > 0 || scrolledRef.current) {
+      container.scrollTop = targetTop;
+      scrolledRef.current = targetTop > 0;
+    }
     const handleScroll = () => {
-      saveUiSnapshot(visit.visitId, { scrollTop: container.scrollTop });
-      saveScrollPosition(visit.visitId, '[data-settings-scroll]', container.scrollTop);
+      const top = container.scrollTop;
+      scrolledRef.current = top > 0;
+      saveScrollPosition(visit.visitId, '[data-settings-scroll]', top, undefined, { syncScrollTop: true });
     };
     container.addEventListener('scroll', handleScroll, { passive: true });
     return () => { container.removeEventListener('scroll', handleScroll); };
@@ -554,12 +562,6 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   // open plugin's page names its plugin: the page IS that object, and the
   // section label alone would not say which one.
   const activeLabel = workspaceDetailName ?? (activeLabelKey === undefined ? undefined : t(activeLabelKey));
-  // An open plugin's page gets one more breadcrumb segment with its own name;
-  // the navigation no longer lists installed plugins under the leaf.
-  const installedPlugins = useOptionalInstalledPlugins().plugins;
-  const pluginLabel = activePluginId === null
-    ? undefined
-    : installedPlugins.find((plugin) => plugin.id === activePluginId)?.displayName ?? activePluginId;
 
   const { sidebarOpen } = useSidebarContext();
 
@@ -608,7 +610,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
         <h1 className={`${headerSearchToken !== null ? 'max-lg:hidden ' : ''}flex min-w-0 flex-1 items-baseline gap-1.5 truncate font-display text-[15px] font-semibold tracking-tight text-ink`}>
           <span className={activeLabel === undefined ? '' : settingsIndex ? 'lg:font-normal lg:text-ink-faint' : 'font-normal text-ink-faint'}>{t('st.title')}</span>
           {activeLabel !== undefined ? <><span aria-hidden className={`font-normal text-ink-faint${settingsIndex ? ' hidden lg:inline' : ''}`}>/</span><span data-settings-page-title className={`truncate${settingsIndex ? ' hidden lg:inline' : ''}`}>{activeLabel}</span></> : null}
-          {pluginLabel !== undefined ? <><span aria-hidden className="font-normal text-ink-faint">/</span><span data-settings-plugin-title className="truncate font-normal text-ink-faint">{pluginLabel}</span></> : null}
+          {activePluginId !== null ? <SettingsPluginTitle pluginId={activePluginId} /> : null}
         </h1>
         {active !== null && !settingsIndex && headerSearchToken === null ? (
           <button
@@ -649,13 +651,15 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
                 )}
                 <SettingsPageScopeContext.Provider value={pageScope}>
                   <SettingsPaneBoundary resetKey={`${active}\u0000${search}\u0000${key}`}>
-                    <div className="space-y-6">
-                      {pane}
-                      {!hiddenInRemoteSpace && (active === 'plugins' || active === 'extensions') && activePluginId === null ? (
-                        <PluginSettingsSectionSlotList workspaceId={activeWorkspaceId ?? undefined} />
-                      ) : null}
-                      {showExperimental ? <ExperimentalRows section={active} /> : null}
-                    </div>
+                    <Suspense fallback={<div data-settings-suspense className="min-h-[12rem]" aria-busy="true" />}>
+                      <div className="space-y-6">
+                        {pane}
+                        {!hiddenInRemoteSpace && (active === 'plugins' || active === 'extensions') && activePluginId === null ? (
+                          <PluginSettingsSectionSlotList workspaceId={activeWorkspaceId ?? undefined} />
+                        ) : null}
+                        {showExperimental ? <ExperimentalRows section={active} /> : null}
+                      </div>
+                    </Suspense>
                   </SettingsPaneBoundary>
                 </SettingsPageScopeContext.Provider>
               </div>
@@ -667,5 +671,16 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     </SettingsWorkspaceScopeContext.Provider>
     </SettingsFlashContext.Provider>
     </SettingsCardMountContext.Provider>
+  );
+}
+
+function SettingsPluginTitle({ pluginId }: { readonly pluginId: string }) {
+  const installedPlugins = useOptionalInstalledPlugins().plugins;
+  const pluginLabel = installedPlugins.find((plugin) => plugin.id === pluginId)?.displayName ?? pluginId;
+  return (
+    <>
+      <span aria-hidden className="font-normal text-ink-faint">/</span>
+      <span data-settings-plugin-title className="truncate font-normal text-ink-faint">{pluginLabel}</span>
+    </>
   );
 }

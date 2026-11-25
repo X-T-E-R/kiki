@@ -581,7 +581,7 @@ export interface HttpRestFacade {
 
   readonly workspaces: {
     list(): Promise<import('@kiki/protocol').ListWorkspacesResponse>;
-    listCatalog(): Promise<import('@kiki/protocol').ListWorkspaceCatalogResponse>;
+    listCatalog(opts?: { readonly includeTrust?: boolean }): Promise<import('@kiki/protocol').ListWorkspaceCatalogResponse>;
     detail(workspaceId: string): Promise<import('@kiki/protocol').Workspace>;
     inspect(root: string): Promise<import('@kiki/protocol').InspectWorkspaceResponse>;
     rename(workspaceId: string, name: string): Promise<import('@kiki/protocol').Workspace>;

@@ -22,7 +22,7 @@ const harness = {
     localSpaceKey: 'main',
     client: {
       baseUrl: 'http://local.example.test',
-      meta: async () => ({ server_home_id: 'home_local', capabilities: { sidebar_groups: true } }),
+      meta: async () => ({ server_home_id: 'home_local', capabilities: { sidebar_groups: true, sidebar_flat_sessions: true } }),
       klient: {
         rest: {
           connections: {
@@ -37,7 +37,7 @@ const harness = {
     },
     localClient: null,
     config: { url: 'http://local.example.test', token: '' },
-    meta: { server_home_id: 'home_local', capabilities: { sidebar_groups: true } },
+    meta: { server_home_id: 'home_local', capabilities: { sidebar_groups: true, sidebar_flat_sessions: true } },
     wsStatus: 'open',
   },
   placePool: {
@@ -167,7 +167,7 @@ describe('useMultiSpaceSessions sidebar_groups & cross-host coalescing', () => {
     }));
 
     harness.remoteClients.set('conn_peer', {
-      meta: async () => ({ server_home_id: 'home_peer', capabilities: { sidebar_groups: true } }),
+      meta: async () => ({ server_home_id: 'home_peer', capabilities: { sidebar_groups: true, sidebar_flat_sessions: true } }),
       listWorkspaceCatalog: async () => ({ items: [] }),
       klient: {
         rest: {
@@ -177,7 +177,7 @@ describe('useMultiSpaceSessions sidebar_groups & cross-host coalescing', () => {
       },
     });
     harness.remoteClients.set('conn_legacy', {
-      meta: async () => ({ server_home_id: 'home_legacy', capabilities: {} }),
+      meta: async () => ({ server_home_id: 'home_legacy', capabilities: { sidebar_groups: true } }),
       listSessions: legacyListSessions,
       listWorkspaceCatalog: async () => ({ items: [] }),
       klient: { rest: { rooms: { listItems: async () => [] } } },

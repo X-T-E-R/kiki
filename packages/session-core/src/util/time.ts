@@ -2,6 +2,20 @@
 
 import { translate, type Locale } from '../i18n/locale';
 
+const SHORT_DATE_FORMATTERS = new Map<Locale, Intl.DateTimeFormat>();
+
+function shortDateFormatter(locale: Locale): Intl.DateTimeFormat {
+  let formatter = SHORT_DATE_FORMATTERS.get(locale);
+  if (formatter === undefined) {
+    formatter = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', {
+      month: 'short',
+      day: 'numeric',
+    });
+    SHORT_DATE_FORMATTERS.set(locale, formatter);
+  }
+  return formatter;
+}
+
 export function relativeTime(iso: string, locale: Locale = 'en'): string {
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return '';
@@ -14,11 +28,7 @@ export function relativeTime(iso: string, locale: Locale = 'en'): string {
   if (hours < 24) return translate(locale, 'time.hoursAgo', { n: hours });
   const days = Math.floor(hours / 24);
   if (days < 7) return translate(locale, 'time.daysAgo', { n: days });
-  const date = new Date(then);
-  return date.toLocaleDateString(locale === 'zh' ? 'zh-CN' : 'en-US', {
-    month: 'short',
-    day: 'numeric',
-  });
+  return shortDateFormatter(locale).format(then);
 }
 
 export function formatDuration(ms: number, locale: Locale = 'en'): string {

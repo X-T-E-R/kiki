@@ -124,7 +124,41 @@ function hydrate(): void {
   }
 }
 
+let persistTimer: ReturnType<typeof setTimeout> | undefined;
+let unloadHookInstalled = false;
+
+function ensureUnloadPersistHook(): void {
+  if (unloadHookInstalled || typeof window === 'undefined') return;
+  unloadHookInstalled = true;
+  const flush = () => {
+    if (persistTimer !== undefined) {
+      clearTimeout(persistTimer);
+      persistTimer = undefined;
+      persist();
+    }
+  };
+  window.addEventListener('pagehide', flush);
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flush();
+    });
+  }
+}
+
+function schedulePersist(): void {
+  ensureUnloadPersistHook();
+  if (persistTimer !== undefined) clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    persistTimer = undefined;
+    persist();
+  }, 250);
+}
+
 function persist(): void {
+  if (persistTimer !== undefined) {
+    clearTimeout(persistTimer);
+    persistTimer = undefined;
+  }
   try {
     // An unserializable adapter snapshot must not prevent history metadata saving.
     const serializable: NavSnapshot[] = [];
@@ -326,7 +360,6 @@ export function getSnapshot(visitId: string): NavSnapshot | undefined {
   if (snapshot !== undefined) {
     snapshots.delete(visitId);
     snapshots.set(visitId, snapshot);
-    persist();
   }
   return snapshot;
 }
@@ -339,6 +372,10 @@ export function registerNavHistoryReset(listener: () => void): () => void {
 }
 
 export function clearNavHistory(): void {
+  if (persistTimer !== undefined) {
+    clearTimeout(persistTimer);
+    persistTimer = undefined;
+  }
   entries = [];
   currentIndex = -1;
   snapshots.clear();
@@ -368,11 +405,36 @@ export function peekUiSnapshot(visitId: string): Record<string, unknown> | undef
   return snapshots.get(visitId)?.ui;
 }
 
-export function saveScrollPosition(visitId: string, selector: string, top: number, left?: number): void {
+export function saveScrollPosition(
+  visitId: string,
+  selector: string,
+  top: number,
+  left?: number,
+  options?: { readonly syncScrollTop?: boolean },
+): void {
   if (!Number.isFinite(top) || (left !== undefined && !Number.isFinite(left))) return;
-  const ui = getUiSnapshot(visitId);
-  const positions = isRecord(ui?.['scrollPositions']) ? ui['scrollPositions'] : {};
-  saveUiSnapshot(visitId, { scrollPositions: { ...positions, [selector]: { top, left } } });
+  hydrate();
+  const previous = snapshots.get(visitId);
+  const entry = entries.find((candidate) => candidate.visitId === visitId);
+  const existingUi = previous?.ui;
+  const positions = isRecord(existingUi?.['scrollPositions']) ? existingUi['scrollPositions'] : {};
+  const nextUi: Record<string, unknown> = {
+    ...existingUi,
+    scrollPositions: { ...positions, [selector]: { top, left } },
+  };
+  if (options?.syncScrollTop === true) nextUi['scrollTop'] = top;
+  const value = {
+    ...entry,
+    ...previous,
+    ui: nextUi,
+    visitId,
+    timestamp: Date.now(),
+  };
+  if (!isSnapshot(value)) return;
+  snapshots.delete(visitId);
+  snapshots.set(visitId, { ...value, scope: cloneNavScope(value.scope), ui: value.ui === undefined ? undefined : { ...value.ui } });
+  trimSnapshots();
+  schedulePersist();
 }
 
 export function getScrollPosition(visitId: string, selector: string): { top: number; left?: number } | undefined {

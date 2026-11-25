@@ -528,8 +528,13 @@ function useWorkspaceTrust(workspaceId: string) {
     queryFn: () => client.getWorkspaceTrust(workspaceId),
     retry: false,
   });
+  const queryClient = useQueryClient();
   const write = useMutation({
     mutationFn: (trusted: boolean) => client.setWorkspaceTrust(workspaceId, trusted),
+    onSuccess: (res) => {
+      queryClient.setQueryData(TRUST_QUERY_KEY(workspaceId), res);
+      void queryClient.invalidateQueries({ queryKey: ['workspaces', 'catalog'] });
+    },
   });
   return { read, write };
 }

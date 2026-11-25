@@ -30,10 +30,10 @@ import {
   type SessionSummary,
 } from '#/app/sessionIndex/sessionIndex';
 import {
-  deriveSessionGroupToken,
   preserveReservedSessionGroupKeys,
   resolveSessionGroupProjection,
 } from '#/app/sessionIndex/sessionGroup';
+import { FORKED_FROM_KEY, PROMOTED_FROM_KEY } from '#/session/sessionMetadata/sessionMetadata';
 import { FileSessionIndex } from '#/app/sessionIndex/sessionIndexService';
 import { SessionIndexMirror } from '#/app/sessionIndex/sessionIndexMirrorService';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
@@ -168,14 +168,13 @@ describe('sessionGroup projection and authority', () => {
     ];
 
     const projected = new Map(resolveSessionGroupProjection(summaries, origin).map((s) => [s.id, s]));
-    const expectedCycleGroup = deriveSessionGroupToken(origin, 'cyc_a', 0);
-    expect(projected.get('cyc_a')?.groupId).toBe(expectedCycleGroup);
-    expect(projected.get('cyc_b')?.groupId).toBe(expectedCycleGroup);
+    expect(projected.get('cyc_a')?.groupId).toBeUndefined();
+    expect(projected.get('cyc_b')?.groupId).toBeUndefined();
     expect(projected.get('orphan_1')?.groupId).toBeUndefined();
     expect(projected.get('remote_child')?.groupId).toBeUndefined();
-    expect(projected.get('exp_p')?.groupId).toBe('grp_explicit_p');
-    expect(projected.get('exp_c')?.groupId).toBe('grp_explicit_p');
-    expect(projected.get('exp_other')?.groupId).toBe('grp_explicit_other');
+    expect(projected.get('exp_p')?.groupId).toBeUndefined();
+    expect(projected.get('exp_c')?.groupId).toBeUndefined();
+    expect(projected.get('exp_other')?.groupId).toBeUndefined();
     expect(projected.get('det_c')?.groupId).toBeUndefined();
     expect(projected.get('det_c')?.groupDetached).toBe(true);
   });
@@ -295,7 +294,7 @@ describe('SQLite v7 sidebar unit pagination, query plan, and authority', () => {
     expect(afterFresh.custom[SESSION_GROUP_GENERATION_KEY]).toBe(2);
   });
 
-  it('handles equality ties, private opener exclusion, 51 & 201 member groups, query plans, and flag-off parity', async () => {
+  it('projects 39 mixed creator/fork/promotion/stamped sessions as 39 flat independent units across SQLite v8 pagination, flag-off fallback, and non-destructive v7 upgrade', async () => {
     for (let i = 0; i < 6; i += 1) {
       await writeSessionState(homeDir, workspaceId, `tie_${String(i).padStart(2, '0')}`, {
         title: `Tie ${i}`,
@@ -324,21 +323,27 @@ describe('SQLite v7 sidebar unit pagination, query plan, and authority', () => {
       custom: { [SESSION_GROUP_ID_KEY]: 'grp_priv_mix', [CREATED_BY_SESSION_ID_KEY]: 'priv_opener' },
     });
 
-    for (let i = 0; i < 51; i += 1) {
-      await writeSessionState(homeDir, workspaceId, `g51_${String(i).padStart(3, '0')}`, {
-        title: `Group51 Member ${i}`,
+    await writeSessionState(homeDir, workspaceId, 'root_00', {
+      title: 'Root 0',
+      createdAt: 1000,
+      updatedAt: 80_000,
+      custom: { [SESSION_GROUP_ID_KEY]: 'grp_legacy_39' },
+    });
+    for (let i = 1; i < 31; i += 1) {
+      const id = `chain_${String(i).padStart(2, '0')}`;
+      const custom: Record<string, unknown> =
+        i % 4 === 0
+          ? { [CREATED_BY_SESSION_ID_KEY]: 'root_00', [SESSION_GROUP_ID_KEY]: 'grp_legacy_39' }
+          : i % 4 === 1
+            ? { [CREATED_BY_SESSION_ID_KEY]: `chain_${String(Math.max(1, i - 1)).padStart(2, '0')}` }
+            : i % 4 === 2
+              ? { [FORKED_FROM_KEY]: { sessionId: 'root_00', forkedAt: 1000 + i }, [SESSION_GROUP_ID_KEY]: 'grp_legacy_39' }
+              : { [PROMOTED_FROM_KEY]: { sessionId: 'root_00', agentId: `agent-${i}`, promotedAt: 1000 + i } };
+      await writeSessionState(homeDir, workspaceId, id, {
+        title: `Session ${i}`,
         createdAt: 1000 + i,
         updatedAt: 70_000 + i,
-        custom: { [SESSION_GROUP_ID_KEY]: 'grp_51' },
-      });
-    }
-
-    for (let i = 0; i < 201; i += 1) {
-      await writeSessionState(homeDir, workspaceId, `g201_${String(i).padStart(3, '0')}`, {
-        title: `Group201 Member ${i}`,
-        createdAt: 2000 + i,
-        updatedAt: 60_000 + i,
-        custom: { [SESSION_GROUP_ID_KEY]: 'grp_201' },
+        custom,
       });
     }
 
@@ -350,11 +355,11 @@ describe('SQLite v7 sidebar unit pagination, query plan, and authority', () => {
     let cursor: { readonly sortAt: number; readonly sortText?: string; readonly typedUnitId: string } | undefined;
     let firstPlan: readonly string[] | undefined;
     let continuationPlan: readonly string[] | undefined;
-    for (let pageNo = 0; pageNo < 10; pageNo += 1) {
+    for (let pageNo = 0; pageNo < 20; pageNo += 1) {
       const page = await index.listSidebarUnits!({
         filter: { archived: 'hide', privacy: 'hide' },
         sort: 'updated_desc',
-        limit: 3,
+        limit: 5,
         memberLimit: 50,
         maxRows: 100,
         cursor,
@@ -365,9 +370,10 @@ describe('SQLite v7 sidebar unit pagination, query plan, and authority', () => {
         expect(page.stats.unitsVisited).toBeLessThanOrEqual(10);
       } else if (pageNo === 1) {
         continuationPlan = page.stats.indexPlan;
-        expect(page.stats.unitsVisited).toBeLessThanOrEqual(5);
+        expect(page.stats.unitsVisited).toBeLessThanOrEqual(10);
       }
       for (const unit of page.units) {
+        expect(unit.kind).toBe('session');
         seenUnitIds.push(unit.typedUnitId);
       }
       if (!page.hasMore) break;
@@ -375,70 +381,26 @@ describe('SQLite v7 sidebar unit pagination, query plan, and authority', () => {
       cursor = { sortAt: last.sortAt, sortText: last.sortText, typedUnitId: last.typedUnitId };
     }
 
-    expect(new Set(seenUnitIds).size).toBe(seenUnitIds.length);
-    expect(seenUnitIds).toHaveLength(9);
-    expect(seenUnitIds.slice(0, 6)).toEqual([
+    expect(new Set(seenUnitIds).size).toBe(39);
+    expect(seenUnitIds).toHaveLength(39);
+    expect(seenUnitIds.slice(0, 9)).toEqual([
       's:tie_05',
       's:tie_04',
       's:tie_03',
       's:tie_02',
       's:tie_01',
       's:tie_00',
+      's:pub_child_1',
+      's:pub_child_2',
+      's:root_00',
     ]);
-    expect(seenUnitIds.slice(6)).toEqual(['g:grp_priv_mix', 'g:grp_51', 'g:grp_201']);
     expect(firstPlan?.some((line) => line.includes('query_order_') || line.includes('SEARCH'))).toBe(true);
     expect(continuationPlan?.some((line) => line.includes('SEARCH') && line.includes('value') && line.includes('key'))).toBe(true);
 
-    const resolvedPriv = await index.resolveSidebarUnits!({
-      sessionIds: [],
-      groupIds: ['grp_priv_mix', 'grp_51', 'grp_201'],
-      filter: { archived: 'hide', privacy: 'hide' },
-      memberLimit: 50,
-    });
-    const privGroup = resolvedPriv.units.find((u) => u.id === 'grp_priv_mix')!;
-    expect(privGroup.memberCount).toBe(2);
-    expect(privGroup.title).toBe('Public Child 1');
-    expect(privGroup.sortAt).toBe(85_000);
-    expect(privGroup.members.map((m) => m.id)).not.toContain('priv_opener');
-
-    const group51 = resolvedPriv.units.find((u) => u.id === 'grp_51')!;
-    expect(group51.memberCount).toBe(51);
-    expect(group51.members).toHaveLength(50);
-    expect(group51.hasMoreMembers).toBe(true);
-
-    const last51 = group51.members.at(-1)!;
-    const tail51 = await index.listSidebarGroupMembers!({
-      groupId: 'grp_51',
-      filter: { archived: 'hide', privacy: 'hide' },
-      limit: 50,
-      cursor: { ownUpdatedAt: last51.ownUpdatedAt ?? last51.updatedAt, id: last51.id },
-    });
-    expect(tail51.memberCount).toBe(51);
-    expect(tail51.members).toHaveLength(1);
-    expect(tail51.hasMore).toBe(false);
-
-    const group201 = resolvedPriv.units.find((u) => u.id === 'grp_201')!;
-    expect(group201.memberCount).toBe(201);
-    expect(group201.members).toHaveLength(50);
-    expect(group201.hasMoreMembers).toBe(true);
-    const drained201: string[] = group201.members.map((m) => m.id);
-    let mCursor: { readonly ownUpdatedAt: number; readonly id: string } | undefined = {
-      ownUpdatedAt: group201.members.at(-1)!.ownUpdatedAt ?? group201.members.at(-1)!.updatedAt,
-      id: group201.members.at(-1)!.id,
+    const diskRoot = JSON.parse(await fsp.readFile(join(homeDir, 'sessions', workspaceId, 'root_00', 'state.json'), 'utf8')) as {
+      custom?: Record<string, unknown>;
     };
-    while (mCursor !== undefined) {
-      const next = await index.listSidebarGroupMembers!({
-        groupId: 'grp_201',
-        filter: { archived: 'hide', privacy: 'hide' },
-        limit: 50,
-        cursor: mCursor,
-      });
-      drained201.push(...next.members.map((m) => m.id));
-      if (!next.hasMore) break;
-      const last = next.members.at(-1)!;
-      mCursor = { ownUpdatedAt: last.ownUpdatedAt ?? last.updatedAt, id: last.id };
-    }
-    expect(new Set(drained201).size).toBe(201);
+    expect(diskRoot.custom?.[SESSION_GROUP_ID_KEY]).toBe('grp_legacy_39');
 
     await disposeHost?.();
     disposeHost = undefined;
@@ -450,16 +412,14 @@ describe('SQLite v7 sidebar unit pagination, query plan, and authority', () => {
     const fallbackPage = await fallback.index.listSidebarUnits!({
       filter: { archived: 'hide', privacy: 'hide' },
       sort: 'updated_desc',
-      limit: 20,
+      limit: 50,
       memberLimit: 50,
       maxRows: 500,
     });
     expect(fallbackPage.units.map((u) => u.typedUnitId)).toEqual(seenUnitIds);
-    expect(fallbackPage.units.find((u) => u.id === 'grp_priv_mix')?.title).toBe('Public Child 1');
-    expect(fallbackPage.units.find((u) => u.id === 'grp_201')?.memberCount).toBe(201);
   });
 
-  it('keeps unstamped legacy children out of a detached-and-respawned opener generation across incremental, flag-off, and rebuild reads', async () => {
+  it('keeps legacy children and respawned opener independent across incremental, flag-off, and rebuild reads', async () => {
     await writeSessionState(homeDir, workspaceId, 'leg_opener', {
       title: 'Legacy Opener',
       createdAt: 1000,
@@ -475,12 +435,10 @@ describe('SQLite v7 sidebar unit pagination, query plan, and authority', () => {
     const { host, index } = mountHost(true);
     await index.prepare();
     const initialChild = await index.get('leg_old_child');
-    expect(initialChild?.groupId).toBeDefined();
-    const oldGroupId = initialChild!.groupId!;
+    expect(initialChild?.groupId).toBeUndefined();
 
     await detachSessionGroupUnguarded(host.accessor, 'leg_opener');
     const respawned = await ensureSessionGroupUnguarded(host.accessor, 'leg_opener');
-    expect(respawned.groupId).not.toBe(oldGroupId);
     await writeSessionState(homeDir, workspaceId, 'leg_new_child', {
       title: 'New Gen Child',
       createdAt: 1200,
@@ -495,9 +453,8 @@ describe('SQLite v7 sidebar unit pagination, query plan, and authority', () => {
       limit: 10,
       memberLimit: 50,
     });
-    const newGroupInc = incrementalPage.units.find((u) => u.id === respawned.groupId);
-    expect(newGroupInc?.members.map((m) => m.id).sort()).toEqual(['leg_new_child', 'leg_opener']);
-    expect(newGroupInc?.members.map((m) => m.id)).not.toContain('leg_old_child');
+    expect(incrementalPage.units.every((u) => u.kind === 'session')).toBe(true);
+    expect(incrementalPage.units.map((u) => u.id)).toEqual(['leg_new_child', 'leg_old_child', 'leg_opener']);
 
     await disposeHost?.();
     disposeHost = undefined;
@@ -512,10 +469,7 @@ describe('SQLite v7 sidebar unit pagination, query plan, and authority', () => {
       limit: 10,
       memberLimit: 50,
     });
-    const newGroupOff = flagOffPage.units.find((u) => u.id === respawned.groupId);
-    expect(newGroupOff?.members.map((m) => m.id).sort()).toEqual(['leg_new_child', 'leg_opener']);
-    expect(newGroupOff?.members.map((m) => m.id)).not.toContain('leg_old_child');
-    const oldGroupOff = flagOffPage.units.find((u) => u.id === oldGroupId);
-    expect(oldGroupOff?.members.map((m) => m.id)).toEqual(['leg_old_child']);
+    expect(flagOffPage.units.every((u) => u.kind === 'session')).toBe(true);
+    expect(flagOffPage.units.map((u) => u.id)).toEqual(['leg_new_child', 'leg_old_child', 'leg_opener']);
   });
 });

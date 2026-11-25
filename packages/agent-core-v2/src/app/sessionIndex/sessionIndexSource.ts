@@ -21,7 +21,7 @@ import {
   type SessionSummary,
   type SessionUsageSummary,
 } from './sessionIndex';
-import { explicitSessionGroupId, isSessionGroupDetached } from './sessionGroup';
+import { isSessionGroupDetached } from './sessionGroup';
 import type { SessionSourceFingerprint } from './sessionIndexModel';
 
 const META_SCOPE = 'session-meta';
@@ -177,7 +177,7 @@ export function buildSessionSummary(fields: {
     executorId: fields.agents?.['main']?.executor,
     negotiated: fields.agents?.['main']?.negotiated,
     allowKikiSubagents: fields.agents?.['main']?.allowKikiSubagents,
-    groupId: explicitSessionGroupId(custom),
+    groupId: undefined,
     groupDetached: isSessionGroupDetached(custom) ? true : undefined,
   };
 }

@@ -207,6 +207,7 @@ describe('sidebar routes, zero-disk cold watermarks, PortableSpace, and ThreadBr
 
     const meta = await rest.meta();
     expect(meta.capabilities.sidebar_groups).toBe(true);
+    expect(meta.capabilities.sidebar_flat_sessions).toBe(true);
 
     const beforeStats = broadcaster.watermarkStats();
     expect(beforeStats.covered).toBe(true);
@@ -225,31 +226,37 @@ describe('sidebar routes, zero-disk cold watermarks, PortableSpace, and ThreadBr
     console.log('[sidebar-cold-50-units]', JSON.stringify({ p50Ms: Number(p50Ms.toFixed(2)), p95Ms: Number(p95Ms.toFixed(2)), coveredHits: broadcaster.watermarkStats().coveredHits - beforeStats.coveredHits }));
 
     const afterStats = broadcaster.watermarkStats();
-    expect(afterStats.coveredHits - beforeStats.coveredHits).toBe(51 * 21);
+    expect(afterStats.coveredHits - beforeStats.coveredHits).toBe(50 * 21);
     expect(afterStats.repairMisses).toBe(beforeStats.repairMisses);
     expect(afterStats.legacyMisses).toBe(beforeStats.legacyMisses);
     expect(p95Ms).toBeLessThan(20);
 
     expect(page1.units).toHaveLength(50);
-    const groupUnit = page1.units[0]!;
-    expect(groupUnit.kind).toBe('group');
-    if (groupUnit.kind === 'group') {
-      expect(groupUnit.id).toBe('grp_demo_1');
-      expect(groupUnit.member_count).toBe(2);
-      expect(groupUnit.members.map((m) => m.id)).toEqual(['grp_open', 'grp_child_old']);
-      expect(groupUnit.members[0]!.last_seq).toBe(7);
-      expect(groupUnit.members[0]!.attention_cursor).toEqual({ epoch: 'ep_grp_open', seq: 4 });
-      expect(groupUnit.members[0]!.external_client).toEqual({
+    expect(page1.units.every((u) => u.kind === 'session')).toBe(true);
+    const openUnit = page1.units[0]!;
+    expect(openUnit.kind).toBe('session');
+    if (openUnit.kind === 'session') {
+      expect(openUnit.id).toBe('grp_open');
+      expect(openUnit.row.group_id).toBeUndefined();
+      expect(openUnit.row.last_seq).toBe(7);
+      expect(openUnit.row.attention_cursor).toEqual({ epoch: 'ep_grp_open', seq: 4 });
+      expect(openUnit.row.external_client).toEqual({
         driver: 'external',
         connectionId: 'conn_ext_1',
         clientName: 'Vibe42',
         sessionRef: 'v42:1',
       });
-      expect(groupUnit.members[1]!.last_seq).toBe(5);
-      expect(groupUnit.members[1]!.attention_cursor).toEqual({ epoch: 'ep_grp_child_old', seq: 2 });
-      expect(groupUnit.members[1]!.created_by_agent_id).toBe('agent-7');
-      expect(groupUnit.members[1]!.child_session_kind).toBe('child');
-      expect(groupUnit.members[1]!.parent_session_id).toBe('grp_open');
+    }
+    const childResolved = await rest.sidebar.resolveUnits({ session_ids: ['grp_child_old'] });
+    const childUnit = childResolved.units.find((u) => u.kind === 'session' && u.id === 'grp_child_old');
+    expect(childUnit?.kind).toBe('session');
+    if (childUnit?.kind === 'session') {
+      expect(childUnit.row.group_id).toBeUndefined();
+      expect(childUnit.row.last_seq).toBe(5);
+      expect(childUnit.row.attention_cursor).toEqual({ epoch: 'ep_grp_child_old', seq: 2 });
+      expect(childUnit.row.created_by_agent_id).toBe('agent-7');
+      expect(childUnit.row.child_session_kind).toBe('child');
+      expect(childUnit.row.parent_session_id).toBe('grp_open');
     }
 
     const badCursorRes = await fetch(
@@ -292,15 +299,12 @@ describe('sidebar routes, zero-disk cold watermarks, PortableSpace, and ThreadBr
     expect(detached.previous_group_id).toBe('grp_demo_1');
 
     const resolved = await rest.sidebar.resolveUnits({
-      session_ids: ['grp_child_old'],
+      session_ids: ['grp_child_old', 'grp_open'],
       group_ids: ['grp_demo_1'],
     });
     expect(resolved.units.some((u) => u.kind === 'session' && u.id === 'grp_child_old')).toBe(true);
-    const remainingGroup = resolved.units.find((u) => u.kind === 'group' && u.id === 'grp_demo_1');
-    expect(remainingGroup?.kind).toBe('group');
-    if (remainingGroup?.kind === 'group') {
-      expect(remainingGroup.member_count).toBe(1);
-    }
+    expect(resolved.units.some((u) => u.kind === 'session' && u.id === 'grp_open')).toBe(true);
+    expect(resolved.missing_group_ids).toEqual(['grp_demo_1']);
 
     await client.close();
   });
@@ -359,8 +363,8 @@ describe('sidebar routes, zero-disk cold watermarks, PortableSpace, and ThreadBr
     const exportedC2 = await readLive(makeLive(server), { mode: 'ids', sessionIds: ['leg_c2'] }, undefined, false, false);
     const c1Doc = JSON.parse(exportedC1.get('sessions/leg_c1/state.json')!.toString('utf8')) as { custom?: Record<string, unknown> };
     const c2Doc = JSON.parse(exportedC2.get('sessions/leg_c2/state.json')!.toString('utf8')) as { custom?: Record<string, unknown> };
-    expect(typeof c1Doc.custom?.[SESSION_GROUP_ID_KEY]).toBe('string');
-    expect(c1Doc.custom?.[SESSION_GROUP_ID_KEY]).toBe(c2Doc.custom?.[SESSION_GROUP_ID_KEY]);
+    expect(c1Doc.custom?.[SESSION_GROUP_ID_KEY]).toBeUndefined();
+    expect(c2Doc.custom?.[SESSION_GROUP_ID_KEY]).toBeUndefined();
 
     const srcOnDisk = JSON.parse(
       await (await import('node:fs/promises')).readFile(join(srcHome, 'sessions', wsId, 'leg_c1', 'session-meta', 'state.json'), 'utf8'),
@@ -387,8 +391,8 @@ describe('sidebar routes, zero-disk cold watermarks, PortableSpace, and ThreadBr
       memberLimit: 50,
     });
     expect(afterC1.units).toHaveLength(1);
-    expect(afterC1.units[0]!.kind).toBe('group');
-    expect(afterC1.units[0]!.memberCount).toBe(1);
+    expect(afterC1.units[0]!.kind).toBe('session');
+    expect(afterC1.units[0]!.id).toBe('leg_c1');
 
     const both = new Map([
       ['sessions/leg_c1/state.json', exportedC1.get('sessions/leg_c1/state.json')!],
@@ -402,9 +406,9 @@ describe('sidebar routes, zero-disk cold watermarks, PortableSpace, and ThreadBr
       limit: 10,
       memberLimit: 50,
     });
-    expect(afterBoth.units).toHaveLength(1);
-    expect(afterBoth.units[0]!.kind).toBe('group');
-    expect(afterBoth.units[0]!.memberCount).toBe(2);
+    expect(afterBoth.units).toHaveLength(2);
+    expect(afterBoth.units.every((u) => u.kind === 'session')).toBe(true);
+    expect(afterBoth.units.map((u) => u.id)).toEqual(['leg_c2', 'leg_c1']);
   });
 
   it('negotiates group_identity_v1 over peer_socket, keeps bridgeCreateSchema strict, and stamps bridged provenance + group identity', async () => {
@@ -472,8 +476,8 @@ describe('sidebar routes, zero-disk cold watermarks, PortableSpace, and ThreadBr
     expect(created.ref.sessionId).toBe('sess-remote-child');
     const summary = await server.core.accessor.get(ISessionIndex).get('sess-remote-child');
     expect(summary?.custom?.[CREATED_BY_SESSION_ID_KEY]).toBe('host-a:sess-a');
-    expect(summary?.custom?.[SESSION_GROUP_ID_KEY]).toBe('grp_origin_1');
-    expect(summary?.custom?.[SESSION_GROUP_ORIGIN_KEY]).toEqual({ homeId: homeUuid, hostId: 'host-a', bridgeId: bridgeUuid });
+    expect(summary?.custom?.[SESSION_GROUP_ID_KEY]).toBeUndefined();
+    expect(summary?.custom?.[SESSION_GROUP_ORIGIN_KEY]).toBeUndefined();
 
     const parentHandle = await server.core.accessor.get(ISessionManager).create({ workDir, title: 'Child Parent' });
     const childHandle = await server.core.accessor.get(ISessionManager).createChild({
@@ -483,8 +487,8 @@ describe('sidebar routes, zero-disk cold watermarks, PortableSpace, and ThreadBr
     expect(childHandle.id).not.toBe(parentHandle.id);
     const childMeta = await server.core.accessor.get(ISessionIndex).get(childHandle.id);
     const parentMeta = await server.core.accessor.get(ISessionIndex).get(parentHandle.id);
-    expect(childMeta?.groupId).toBeDefined();
-    expect(childMeta?.groupId).toBe(parentMeta?.groupId);
+    expect(childMeta?.groupId).toBeUndefined();
+    expect(parentMeta?.groupId).toBeUndefined();
 
     modern.dispose();
     legacy.dispose();

@@ -3,7 +3,7 @@ import { createReadStream } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { dirname, join } from 'node:path';
 import { lstat, mkdir, readdir, readFile, rename, rm } from 'node:fs/promises';
-import { ConfigTarget, SESSION_GROUP_DETACHED_KEY, SESSION_GROUP_ID_KEY, explicitSessionGroupId, isSkillSyncExcluded, openPinnedLogicalRead, planSkillSync, readPinnedRange, type IBootstrapService, type IConfigRegistry, type IConfigService, type IFileSystemStorageService, type IMemoryScopes, type IMemoryStore, type ISessionIndex, type ISessionManager } from '@kiki/agent-core-v2';
+import { ConfigTarget, isSkillSyncExcluded, openPinnedLogicalRead, planSkillSync, readPinnedRange, type IBootstrapService, type IConfigRegistry, type IConfigService, type IFileSystemStorageService, type IMemoryScopes, type IMemoryStore, type ISessionIndex, type ISessionManager } from '@kiki/agent-core-v2';
 import { SESSION_LOCK_SCOPE, sessionLockKey } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileLock';
 import { isStorageError, StorageErrors, type IStorageLock } from '@kiki/agent-core-v2/persistence/interface/storage';
 import { IMcpConfigStore } from '@kiki/agent-core-v2/app/mcpConfig/configStore';
@@ -254,7 +254,6 @@ export async function collectCanonicalSessionSources(
       return entry;
     }));
   const eligible: Array<{ readonly session: typeof sessions[number]; readonly root: string; readonly scope: string; readonly stateFile: Buffer | undefined; readonly parsedState: Data | undefined }> = [];
-  const unresolvedLegacyIds: string[] = [];
   for (const session of sessions) {
     if (session.private || live.sessions.isEphemeral(session.id)) continue;
     const workspaceSeg = safePortablePath(session.workspaceId);
@@ -273,41 +272,12 @@ export async function collectCanonicalSessionSources(
     const stateFile = (await readRegularMetaFile('state.json'))
       ?? (await readRegularMetaFile('session-meta/state.json'));
     const parsedState = stateFile ? object(JSON.parse(stateFile.toString('utf8'))) : undefined;
-    const custom = parsedState ? object(parsedState['custom']) : {};
-    const hasExplicit = explicitSessionGroupId(custom) !== undefined;
-    const isDetached = custom[SESSION_GROUP_DETACHED_KEY] === true;
-    if (stateFile && !hasExplicit && !isDetached && session.groupId === undefined) {
-      unresolvedLegacyIds.push(session.id);
-    }
     eligible.push({ session, root, scope, stateFile, parsedState });
-  }
-  const resolvedGroupBySessionId = new Map<string, string>();
-  if (unresolvedLegacyIds.length > 0 && live.index.resolveSidebarUnits !== undefined) {
-    const resolved = await live.index.resolveSidebarUnits({
-      sessionIds: unresolvedLegacyIds,
-      groupIds: [],
-      filter: { archived: 'include', privacy: 'include' },
-      memberLimit: Number.MAX_SAFE_INTEGER,
-    });
-    for (const unit of resolved.units) {
-      if (unit.kind !== 'group') continue;
-      for (const member of unit.members) {
-        resolvedGroupBySessionId.set(member.id, unit.id);
-      }
-    }
   }
   for (const { session, root, scope, stateFile, parsedState } of eligible) {
     if (stateFile && parsedState) {
-      const custom = object(parsedState['custom']);
-      const hasExplicit = explicitSessionGroupId(custom) !== undefined;
-      const isDetached = custom[SESSION_GROUP_DETACHED_KEY] === true;
-      const resolvedGroupId = session.groupId ?? resolvedGroupBySessionId.get(session.id);
-      const nextCustom = !hasExplicit && !isDetached && resolvedGroupId !== undefined
-        ? { ...custom, [SESSION_GROUP_ID_KEY]: resolvedGroupId }
-        : parsedState['custom'];
       const bytes = Buffer.from(JSON.stringify({
         ...parsedState,
-        ...(nextCustom !== undefined ? { custom: nextCustom } : {}),
         workspaceId: session.workspaceId,
       }));
       sources.push({

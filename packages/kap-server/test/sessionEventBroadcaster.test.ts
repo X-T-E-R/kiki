@@ -486,6 +486,7 @@ describe('SessionEventBroadcaster', () => {
   let sessions: Map<string, FakeLifecycle>;
   let eventBus: FakeEventBus;
   let lifecycleEvents: FakeSessionLifecycleEvents;
+  let defaultBc: SessionEventBroadcaster;
   let bc: SessionEventBroadcaster;
 
   beforeEach(async () => {
@@ -498,10 +499,12 @@ describe('SessionEventBroadcaster', () => {
       core: makeCore(sessions, eventBus, {}, lifecycleEvents),
       maxBufferSize: 3,
     });
+    defaultBc = bc;
   });
 
   afterEach(async () => {
     await bc.close();
+    if (defaultBc !== bc) await defaultBc.close();
     await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
@@ -4700,6 +4703,111 @@ describe('SessionEventBroadcaster', () => {
       expect(
         signals.filter((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId !== undefined),
       ).toHaveLength(0);
+    });
+
+    it('skips ensureAgentHistory on provably complete grade-compatible catch-up while preserving resets on upgrade, gap, and epoch change', async () => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      sessions.set('s1', lc);
+      const core = makeCore(sessions, eventBus);
+      const service = new TranscriptService({ homeDir: dir, core });
+      const ensureSpy = vi.spyOn(service, 'ensureAgentHistory');
+      bc = new SessionEventBroadcaster({ eventsDir: dir, core, transcriptService: service });
+
+      const view = collectingTarget();
+      await bc.subscribe('s1', view.target, undefined, { '*': 'off', main: 'delta' });
+      main.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'user' } }));
+      main.bus.emit(agentEvent('turn.step.started', { turnId: 1, step: 1 }));
+      main.bus.emit(agentEvent('assistant.delta', { turnId: 1, delta: 'live delta body' }));
+      main.bus.emit(agentEvent('turn.step.completed', { turnId: 1, step: 1 }));
+      main.bus.emit(agentEvent('turn.ended', { turnId: 1, reason: 'completed' }));
+      const cursorBeforePark = service.getTranscriptCursor('s1', 'main');
+
+      ensureSpy.mockClear();
+      const beforeParkCount = view.envelopes.length;
+      await bc.subscribe('s1', view.target, undefined, { '*': 'off', main: 'turn' }, {
+        deferTranscriptReset: true,
+        transcriptSince: { main: cursorBeforePark },
+      });
+      await bc.flushTranscriptSeed('s1', view.target);
+      expect(ensureSpy).not.toHaveBeenCalled();
+      expect(transcriptEnvelopes(view.envelopes.slice(beforeParkCount)).filter((e) => e.type === 'transcript.reset')).toHaveLength(0);
+
+      ensureSpy.mockClear();
+      const beforeUpgradeCount = view.envelopes.length;
+      await bc.subscribe('s1', view.target, undefined, { '*': 'off', main: 'delta' }, {
+        deferTranscriptReset: true,
+        transcriptSince: { main: cursorBeforePark },
+      });
+      await bc.flushTranscriptSeed('s1', view.target);
+      expect(ensureSpy).toHaveBeenCalledTimes(1);
+      expect(transcriptEnvelopes(view.envelopes.slice(beforeUpgradeCount)).filter((e) => e.type === 'transcript.reset')).toHaveLength(1);
+
+      ensureSpy.mockClear();
+      const beforeEpochMismatchCount = view.envelopes.length;
+      await bc.subscribe('s1', view.target, undefined, { '*': 'off', main: 'turn' }, {
+        deferTranscriptReset: true,
+        transcriptSince: { main: { epoch: 'stale-epoch', seq: cursorBeforePark.seq } },
+      });
+      await bc.flushTranscriptSeed('s1', view.target);
+      expect(ensureSpy).toHaveBeenCalledTimes(1);
+      expect(transcriptEnvelopes(view.envelopes.slice(beforeEpochMismatchCount)).filter((e) => e.type === 'transcript.reset')).toHaveLength(1);
+
+      ensureSpy.mockClear();
+      const beforeGapCount = view.envelopes.length;
+      await bc.subscribe('s1', view.target, undefined, { '*': 'off', main: 'turn' }, {
+        deferTranscriptReset: true,
+        transcriptSince: { main: { epoch: cursorBeforePark.epoch, seq: cursorBeforePark.seq + 50 } },
+      });
+      await bc.flushTranscriptSeed('s1', view.target);
+      expect(ensureSpy).toHaveBeenCalledTimes(1);
+      expect(transcriptEnvelopes(view.envelopes.slice(beforeGapCount)).filter((e) => e.type === 'transcript.reset')).toHaveLength(1);
+    });
+
+    it('reconstructs an evicted tail on a fresh zero-priority turn-grade reset instead of presenting a partial tail as current, while reusing complete catch-up without backfill', async () => {
+      const lc = new FakeLifecycle();
+      lc.addAgent('main');
+      sessions.set('s1', lc);
+      const wireDir = join(dir, 'sessions', 'wd', 's1', 'agents', 'main');
+      await mkdir(wireDir, { recursive: true });
+      const wireLines = [
+        JSON.stringify({ type: 'metadata', protocol_version: '1.1', time: 1_000 }),
+        JSON.stringify({ type: 'turn.prompt', turnId: 1, promptId: 'p1', input: [{ type: 'text', text: 'stale-old' }], origin: { kind: 'user' }, time: 1_100 }),
+        JSON.stringify({ type: 'turn.ended', turnId: 1, reason: 'completed', time: 1_200 }),
+        JSON.stringify({ type: 'turn.prompt', turnId: 2, promptId: 'p2', input: [{ type: 'text', text: 'recent-evicted' }], origin: { kind: 'user' }, time: 1_300 }),
+        JSON.stringify({ type: 'turn.ended', turnId: 2, reason: 'completed', time: 1_400 }),
+      ];
+      await writeFile(join(wireDir, 'wire.jsonl'), `${wireLines.join('\n')}\n`);
+      const core = makeCore(sessions, eventBus);
+      const service = new TranscriptService({ homeDir: dir, core });
+      const liveStore = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      const liveMain = liveStore.ensureAgent('main');
+      liveMain.releaseDurableTurns([liveMain.getTurn('t2')!], { tailTurns: 0, maxBytes: 1 });
+      expect(liveMain.hasEvictedTail).toBe(true);
+
+      const ensureSpy = vi.spyOn(service, 'ensureAgentHistory');
+      bc = new SessionEventBroadcaster({ eventsDir: dir, core, transcriptService: service });
+
+      const view = collectingTarget();
+      await bc.subscribe('s1', view.target, undefined, { '*': 'off', main: 'turn' }, {
+        deferTranscriptReset: true,
+      });
+      await bc.flushTranscriptSeed('s1', view.target);
+      expect(ensureSpy).toHaveBeenCalledWith('s1', 'main', expect.objectContaining({ tailFirst: true }));
+      const parkedResets = transcriptEnvelopes(view.envelopes).filter((e) => e.type === 'transcript.reset');
+      expect(parkedResets).toHaveLength(1);
+      const resetSnapshot = (parkedResets[0]!.payload as { snapshot: { items: Array<{ kind: string; turnId?: string }> } }).snapshot;
+      expect(resetSnapshot.items.filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(['t1', 't2']);
+
+      const cursorAfterReset = (parkedResets[0]!.payload as { cursor: { epoch?: string; seq: number } }).cursor;
+      ensureSpy.mockClear();
+      await bc.subscribe('s1', view.target, undefined, { '*': 'off', main: 'turn' }, {
+        deferTranscriptReset: true,
+        transcriptSince: { main: cursorAfterReset },
+      });
+      await bc.flushTranscriptSeed('s1', view.target);
+      expect(ensureSpy).not.toHaveBeenCalled();
     });
 
     it('suppresses transcript-projected session_events on graded connections only', async () => {
