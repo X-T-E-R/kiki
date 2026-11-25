@@ -503,6 +503,14 @@ describe('memory persistence and snapshot', () => {
     await store.put({ action: 'update', scope: global, id: saved.entry.id, expectedRevision: edited!.revision, title: saved.entry.title, body: 'No credentials.', type: 'project', reason: 'Remove secret', source });
     expect(await fs.readFile(storage.pathFor('memory/global', 'journal.jsonl'), 'utf8')).not.toContain(key);
     expect(redactMemorySecrets('Bearer abcdefghijklmnopqrstuv')).toContain('[REDACTED_SECRET]');
+    expect(redactMemorySecrets('access_token=abcdefgh12345')).toBe('access_token=[REDACTED_SECRET]');
+    expect(redactMemorySecrets('DB_PASSWORD=hunter2hunter2')).toBe('DB_PASSWORD=[REDACTED_SECRET]');
+    expect(redactMemorySecrets('client_secret: abcdefgh1234')).toBe('client_secret: [REDACTED_SECRET]');
+    expect(redactMemorySecrets('{"api_key": "abcdefgh12345", "max_tokens": 123456789}')).toBe('{"api_key": "[REDACTED_SECRET]", "max_tokens": 123456789}');
+    expect(redactMemorySecrets('password="my pass&word 123" kept')).toBe('password="[REDACTED_SECRET]" kept');
+    expect(redactMemorySecrets('password=ab&secret99 kept')).toBe('password=[REDACTED_SECRET] kept');
+    expect(redactMemorySecrets('https://example.test/?api_key=secret123456&alt=json')).toBe('https://example.test/?api_key=[REDACTED_SECRET]&alt=json');
+    expect(redactMemorySecrets('pat github_pat_11ABCDEF1234567890_xyz done')).toBe('pat [REDACTED_SECRET] done');
   });
 
   it('treats quoted instructions as data and wraps them without threat classification', async () => {

@@ -1829,9 +1829,10 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     const candidate = header === undefined ? hasBearerProtocol ? protocolToken ?? '' : null : header.startsWith('Bearer ') ? header.slice(7) : '';
     let scoped: SessionAccessToken | undefined;
     if (candidate?.startsWith('ksa_')) {
+      await sessionAccess.ready;
       scoped = sessionAccess.lookup(candidate);
       const invalid = scoped === undefined || !sessionAccess.config().enabled || !isSessionAccessLoopback(req, webRequests, peerRequests);
-      if (invalid || !isV1 || req.method !== 'GET' || !scoped!.scopes.includes('read')) {
+      if (invalid || !isV1 || req.method !== 'GET' || scoped!.session_id === undefined || !scoped!.scopes.includes('read')) {
         const body = JSON.stringify({ code: 40101, msg: invalid ? 'Unauthorized' : 'session_access_scope' });
         socket.end(`HTTP/1.1 ${invalid ? '401 Unauthorized' : '403 Forbidden'}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
         return;

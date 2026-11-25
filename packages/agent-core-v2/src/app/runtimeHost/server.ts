@@ -153,9 +153,45 @@ export function createRuntimeServer(
     return total;
   };
 
+  const maxOutboundBytes = Math.max(frameLimit * 4, 4 * 1024 * 1024);
+
   const write = (socket: Socket, frame: RuntimeOutboundFrame): boolean => {
     if (!socket.writable || socket.destroyed) return false;
-    socket.write(encodeFrame(frame));
+    let encoded = encodeFrame(frame);
+    let byteLength = Buffer.byteLength(encoded, 'utf8');
+    if (byteLength > frameLimit) {
+      if (frame.type === 'result' || frame.type === 'error') {
+        const correlation = frame.type === 'result' ? frame.result : frame.error;
+        encoded = encodeFrame({
+          type: 'error',
+          error: {
+            requestId: correlation.requestId,
+            epoch: correlation.epoch,
+            error: runtimeErrorPayload('runtime.frame_overflow', `runtime response exceeds max frame size (${frameLimit} bytes)`),
+          },
+        });
+        byteLength = Buffer.byteLength(encoded, 'utf8');
+        if (byteLength > frameLimit) {
+          teardown(socket, new HomeRuntimeError('runtime.frame_overflow', 'runtime response exceeds max frame size'));
+          return false;
+        }
+      } else {
+        if (frame.type === 'reject') socket.destroy();
+        else teardown(socket, new HomeRuntimeError('runtime.frame_overflow', 'runtime frame exceeds max frame size'));
+        return false;
+      }
+    }
+    if (socket.writableLength + byteLength > maxOutboundBytes) {
+      teardown(socket, new HomeRuntimeError('runtime.frame_overflow', 'runtime outbound buffer exceeded'));
+      return false;
+    }
+    const flushed = socket.write(encoded);
+    if (!flushed && !socket.destroyed && !socket.isPaused()) {
+      socket.pause();
+      socket.once('drain', () => {
+        if (!socket.destroyed) socket.resume();
+      });
+    }
     return true;
   };
 

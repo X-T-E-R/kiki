@@ -217,6 +217,9 @@ class KikiRuntimeService : Service() {
 
     private fun handleReady(ready: KernelState.Ready) {
         Log.i(TAG, "Kernel ready on 127.0.0.1:${ready.port} (gateway=127.0.0.1:${ready.gatewayPort}, pid=${ready.pid}, v=${ready.version})")
+        if (::networkHints.isInitialized) {
+            networkHints.emitCurrentState()
+        }
     }
 
     private var previousActiveTurns: Int = 0

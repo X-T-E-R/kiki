@@ -400,7 +400,12 @@ export function registerRawEventsRoutes(
       }
       const ndjson = wantsNdjson(headers);
       const afterCursor = parsedCursor.kind === 'valid' ? parsedCursor.cursor : undefined;
-      const scopedSessionId = sessionAccessToken(req)?.session_id;
+      const accessToken = sessionAccessToken(req);
+      if (accessToken !== undefined && accessToken.session_id === undefined) {
+        reply.code(403).send(errEnvelope(40101, 'session_access_scope', req.id));
+        return;
+      }
+      const scopedSessionId = accessToken?.session_id;
 
       reply.hijack();
       reply.raw.writeHead(200, {

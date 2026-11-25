@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -37,6 +37,7 @@ import { stubBootstrap } from '../app/bootstrap/stubs';
 import { stubWorkspaceContext } from '../session/workspaceContext/stub-workspace-context';
 import {
   isSensitiveFile,
+  resolveExternalWorkspaceRoots,
   resolveRealPathAccess,
   withDefinitionReadRoots,
   resolvePathAccess,
@@ -584,5 +585,24 @@ describe('resolveRealPathAccessPath', () => {
     }
     expect(await readFile(`${keyPath}::$DATA`, 'utf8')).toBe('private-key');
     expect(await readFile(shortPath, 'utf8')).toBe('private-key');
+  });
+
+  it('flags a workspace-internal symlink targeting outside the workspace as an external workspace root', async () => {
+    const insideSubdir = join(workspaceDir, 'sub');
+    await mkdir(insideSubdir, { recursive: true });
+    const escapeLink = join(workspaceDir, 'escape-link');
+    await symlink(outsideDir, escapeLink, process.platform === 'win32' ? 'junction' : 'dir');
+    const contains = (root: string, candidate: string): boolean => {
+      const rel = relative(root, candidate);
+      return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+    };
+
+    const internalResult = await resolveExternalWorkspaceRoots(fs, [workspaceDir], [insideSubdir], contains);
+    expect(internalResult.externalPaths).toEqual([]);
+
+    const escapedResult = await resolveExternalWorkspaceRoots(fs, [workspaceDir], [escapeLink], contains);
+    const realOutside = await realpath(outsideDir);
+    expect(escapedResult.externalPaths).toEqual([realOutside]);
+    expect(escapedResult.resolvedCandidates).toEqual([realOutside]);
   });
 });

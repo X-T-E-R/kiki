@@ -1,7 +1,6 @@
 import {
   captureFetchFileIdentity,
   stableFingerprint,
-  type CapabilityEnvelope,
   type FetchRunSyncEnvelope,
   type NbSearchRuntime,
   type OperationContext,
@@ -338,6 +337,27 @@ function fetchFilePath(config: import('@nb-corp/nb-search').CanonicalConfig, sou
   return path;
 }
 
+const CREDENTIAL_MISMATCH_HINT_CODES = new Set([
+  'LANE_NOT_CONFIGURED',
+  'PRESET_UNAVAILABLE',
+  'DEFAULT_NOT_CONFIGURED',
+  'FETCH_DEFAULT_NOT_CONFIGURED',
+  'FETCH_CHAIN_UNAVAILABLE',
+  'PIPELINE_NOT_CONFIGURED',
+  'NO_AVAILABLE_PIPELINE',
+]);
+
+function managedCredentialMismatchIssues(issues: readonly string[] | undefined): string[] {
+  if (issues === undefined) return [];
+  return issues.filter((issue) => issue.startsWith('MANAGED_CREDENTIALS_MISMATCH:'));
+}
+
+function mergeIssues(base: readonly string[], extra: readonly string[]): string[] {
+  const merged = new Set(base);
+  for (const issue of extra) merged.add(issue);
+  return [...merged];
+}
+
 function withManagedCredentialMismatchHint<T extends object>(
   envelope: T,
   issues: readonly string[] | undefined,
@@ -345,7 +365,7 @@ function withManagedCredentialMismatchHint<T extends object>(
   if (!('error' in envelope)) return envelope;
   const err = (envelope as { readonly error?: { readonly code?: unknown; readonly message?: unknown } }).error;
   if (err === undefined || typeof err.code !== 'string' || typeof err.message !== 'string') return envelope;
-  if (err.code !== 'LANE_NOT_CONFIGURED' && err.code !== 'PIPELINE_NOT_CONFIGURED' && err.code !== 'NO_AVAILABLE_PIPELINE') {
+  if (!CREDENTIAL_MISMATCH_HINT_CODES.has(err.code)) {
     return envelope;
   }
   const hint = formatManagedCredentialMismatchHint(issues);
@@ -378,27 +398,30 @@ function unavailableCapabilities(status: NbSearchConfigSourceStatus): NbSearchCa
   };
 }
 
-function searchReadiness(capabilities: CapabilityEnvelope): NbSearchReadiness {
+function searchReadiness(capabilities: NbSearchCapabilities): NbSearchReadiness {
+  const mismatchIssues = managedCredentialMismatchIssues(capabilities.config_source?.issues);
   const selection = capabilities.search.default_lane;
   if (selection === undefined) {
-    return { configured: false, available: false, issues: ['DEFAULT_NOT_CONFIGURED'] };
+    return { configured: false, available: false, issues: mergeIssues(['DEFAULT_NOT_CONFIGURED'], mismatchIssues) };
   }
   const lane = capabilities.search.lanes.find((candidate) => candidate.id === selection);
   const issues = lane?.issues.map((issue) => issue.code) ?? ['LANE_NOT_REGISTERED'];
+  const available = lane?.availability === 'ready' && lane.execution_modes.includes('sync');
   return {
     configured: true,
-    available: lane?.availability === 'ready' && lane.execution_modes.includes('sync'),
+    available,
     selection,
-    issues,
+    issues: available ? issues : mergeIssues(issues, mismatchIssues),
   };
 }
 
-function fetchReadiness(capabilities: CapabilityEnvelope): NbSearchReadiness {
+function fetchReadiness(capabilities: NbSearchCapabilities): NbSearchReadiness {
+  const mismatchIssues = managedCredentialMismatchIssues(capabilities.config_source?.issues);
   const chain = capabilities.fetch.chains.find(
     (candidate) => candidate.input_kind === 'url' && candidate.representation === 'markdown',
   );
   if (chain === undefined) {
-    return { configured: false, available: false, issues: ['FETCH_DEFAULT_NOT_CONFIGURED'] };
+    return { configured: false, available: false, issues: mergeIssues(['FETCH_DEFAULT_NOT_CONFIGURED'], mismatchIssues) };
   }
   const pipelines = chain.pipelines.map((id) =>
     capabilities.fetch.pipelines.find((candidate) => candidate.id === id),
@@ -413,7 +436,7 @@ function fetchReadiness(capabilities: CapabilityEnvelope): NbSearchReadiness {
     configured: true,
     available,
     selection: chain.pipelines.join(' -> '),
-    issues: available ? issues : [...issues, 'FETCH_CHAIN_UNAVAILABLE'],
+    issues: available ? issues : mergeIssues([...issues, 'FETCH_CHAIN_UNAVAILABLE'], mismatchIssues),
   };
 }
 

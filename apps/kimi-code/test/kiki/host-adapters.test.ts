@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { watchDispatchEvents } from '../../src/kiki/host-attach';
 import { readClaudeNotifications } from '../../src/kiki/host-claude';
-import { codexBindingPath, deliverCodexEvents, registerHostCodexCommands } from '../../src/kiki/host-codex';
+import { codexBindingPath, deliverCodexEvents, queueCodex, registerHostCodexCommands } from '../../src/kiki/host-codex';
 
 const dispatchId = 'dispatch_MOCK001';
 const event = (seq: number, type: string, message?: string) => ({ seq, dispatchId, type, at: seq, message });
@@ -175,5 +175,12 @@ describe('external host wake adapters (mock seat and queue)', () => {
     await completed;
     await deliverCodexEvents({ workspace, home, dispatch: issued.dispatchId, klient: seat as never, queue });
     expect(turnStarted).toBe(1);
+  });
+
+  it('kills a hanging codex queue child process after timeout instead of blocking under lock', async () => {
+    await writeFile(join(workspace, 'queue'), 'setTimeout(() => {}, 60_000);\n', 'utf8');
+    await expect(
+      queueCodex(process.execPath, 'thread_12345678', 'hello', 150, workspace),
+    ).rejects.toThrow(/codex queue timed out after 150ms/);
   });
 });

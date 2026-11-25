@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +8,7 @@ import { WebSocket } from 'ws';
 import { startServer, type RunningServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { isSessionAccessLoopback } from '../src/services/sessionAccess/access';
+import { WsConnectionV1 } from '../src/transport/ws/v1/wsConnectionV1';
 import type { IncomingMessage } from 'node:http';
 
 interface Frame { type: string; id?: string; code?: number; session_id?: string; payload?: Record<string, unknown> }
@@ -132,6 +134,25 @@ describe('session access WebSocket and lifecycle boundary', () => {
     }
   });
 
+  it('refuses unbound persistent/llm ksa_ tokens with read scope on /api/events and /api/ws', async () => {
+    const issued = await request('POST', '/api/session-access/tokens', undefined, {
+      scopes: ['read', 'llm'],
+      client: { name: 'unbound-client' },
+      ttl_seconds: 60,
+      persistent: true,
+    });
+    expect(issued.body.code, JSON.stringify(issued.body)).toBe(0);
+    const unboundToken = issued.body.data.token as string;
+
+    const eventsRes = await request('GET', '/api/events', unboundToken);
+    expect(eventsRes.status).toBe(403);
+    expect(eventsRes.body).toMatchObject({ code: 40101, msg: 'session_access_scope' });
+
+    const wsConn = connect(server.port, unboundToken, '/api/ws');
+    sockets.push(wsConn);
+    await expect(wsConn.opened).rejects.toThrow('403');
+  });
+
   it.each(['one', 'all', 'delete', 'expiry', 'disabled'] as const)('revokes REST and sockets on %s', async (cause) => {
     const id = await createSession();
     const token = await issue(id);
@@ -184,5 +205,52 @@ describe('session access WebSocket and lifecycle boundary', () => {
       web.add(request); expect(isSessionAccessLoopback(request, web, peers)).toBe(false);
       web.delete(request); peers.add(request); expect(isSessionAccessLoopback(request, web, peers)).toBe(false);
     }
+  });
+
+  it('drops cross-session and unbound resync_required control frames on session-access WS connections', () => {
+    const makeConn = (sessionAccessId?: string) => {
+      const sent: Frame[] = [];
+      const socket = Object.assign(new EventEmitter(), {
+        OPEN: WebSocket.OPEN,
+        readyState: WebSocket.OPEN,
+        bufferedAmount: 0,
+        send(data: string) { sent.push(JSON.parse(data) as Frame); },
+        close() {},
+        terminate() {},
+        ping() {},
+      }) as unknown as WebSocket;
+      const broadcaster = {
+        addGlobalTarget() {},
+        removeGlobalTarget() {},
+        unsubscribeAll() {},
+      };
+      const connectionRegistry = {
+        add() {},
+        remove() {},
+      };
+      const conn = new WsConnectionV1({
+        socket,
+        broadcaster: broadcaster as never,
+        connectionRegistry: connectionRegistry as never,
+        sessionAccess: true,
+        sessionAccessId,
+        remoteAddress: '127.0.0.1',
+        userAgent: null,
+        heartbeatIntervalMs: 0,
+      });
+      sent.length = 0;
+      return { conn, sent };
+    };
+
+    const bound = makeConn('sess-a');
+    bound.conn.sendControl({ type: 'resync_required', payload: { session_id: 'sess-b', reason: 'journal_gap', current_seq: 10, epoch: 'e1' } });
+    bound.conn.sendControl({ type: 'resync_required', payload: { session_id: 'sess-a', reason: 'journal_gap', current_seq: 11, epoch: 'e2' } });
+    expect(bound.sent).toEqual([
+      { type: 'resync_required', payload: { session_id: 'sess-a', reason: 'journal_gap', current_seq: 11, epoch: 'e2' } },
+    ]);
+
+    const unbound = makeConn(undefined);
+    unbound.conn.sendControl({ type: 'resync_required', payload: { session_id: 'sess-a', reason: 'journal_gap', current_seq: 11, epoch: 'e2' } });
+    expect(unbound.sent).toEqual([]);
   });
 });

@@ -34,9 +34,12 @@ export type ShellPathBridgeEnv = Pick<Environment, 'osKind' | 'shellName' | 'she
 export interface ShellPathBridgeDeps {
   readonly execFileSync: (file: string, args: readonly string[]) => string;
   readonly isFile: (path: string) => boolean;
+  readonly now?: () => number;
 }
 
 const CYGPATH_TIMEOUT_MS = 5_000;
+const MAX_SEGMENT_CACHE_ENTRIES = 256;
+const FAILURE_CACHE_TTL_MS = 30_000;
 
 const DRIVE_COLON_RE = /^\/([a-zA-Z]):(?:[\\/]|$)/;
 const CYGDRIVE_RE = /^\/cygdrive\/([a-zA-Z])(?:\/|$)/;
@@ -83,10 +86,20 @@ export function createShellPathBridge(
 
   // Lazily located on first use; `null` = not found → permanent pass-through.
   let cygpathExe: string | null | undefined;
-  // Cache successes only: a missing cygpath.exe is a stable fact, but an
-  // execution failure may be transient. First-segment caching is exact for
-  // default (first-level) mount tables; deeper user mounts are out of scope.
+  // Bounded cache of resolved first segments and short-TTL negative cache for
+  // failed/timed-out cygpath probes so repeated failures do not stall the event loop.
   const segmentCache = new Map<string, string>();
+  const failureCache = new Map<string, number>();
+  const now = deps.now ?? Date.now;
+
+  function setBounded<V>(cache: Map<string, V>, key: string, value: V): void {
+    if (cache.has(key)) cache.delete(key);
+    else if (cache.size >= MAX_SEGMENT_CACHE_ENTRIES) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(key, value);
+  }
 
   function locateCygpath(): string | null {
     if (cygpathExe !== undefined) return cygpathExe;
@@ -102,6 +115,11 @@ export function createShellPathBridge(
   function resolveRootSegment(firstSegment: string): string | null {
     const cached = segmentCache.get(firstSegment);
     if (cached !== undefined) return cached;
+    const failedUntil = failureCache.get(firstSegment);
+    if (failedUntil !== undefined) {
+      if (now() < failedUntil) return null;
+      failureCache.delete(firstSegment);
+    }
 
     const exe = locateCygpath();
     if (exe === null) return null;
@@ -110,12 +128,16 @@ export function createShellPathBridge(
       const output = deps.execFileSync(exe, ['-w', '-C', 'UTF8', '--', `/${firstSegment}`]);
       // cygpath appends a newline and may emit a trailing separator (`D:\`).
       const trimmed = output.replace(/\r?\n$/, '');
-      if (!WIN32_DRIVE_ABSOLUTE_RE.test(trimmed) && !trimmed.startsWith('\\\\')) return null;
+      if (!WIN32_DRIVE_ABSOLUTE_RE.test(trimmed) && !trimmed.startsWith('\\\\')) {
+        setBounded(failureCache, firstSegment, now() + FAILURE_CACHE_TTL_MS);
+        return null;
+      }
       resolved = trimmed.replace(/[\\/]$/, '');
     } catch {
+      setBounded(failureCache, firstSegment, now() + FAILURE_CACHE_TTL_MS);
       return null;
     }
-    segmentCache.set(firstSegment, resolved);
+    setBounded(segmentCache, firstSegment, resolved);
     return resolved;
   }
 

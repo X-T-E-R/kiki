@@ -95,6 +95,7 @@ export interface WsConnectionV1Options {
    * the bearer at the upgrade and no token in `client_hello`).
    */
   readonly validateCredential?: CredentialValidator;
+  readonly sessionAccess?: boolean;
   readonly sessionAccessId?: string;
   readonly browser?: boolean;
   readonly remoteAddress: string | null;
@@ -127,6 +128,7 @@ export class WsConnectionV1 implements BroadcastTarget {
   private readonly terminalCore?: Scope;
   private readonly enableTerminals: boolean;
   private readonly validateCredential?: CredentialValidator;
+  private readonly sessionAccess: boolean;
   private readonly sessionAccessId?: string;
   private readonly browser: boolean;
   private readonly maxBufferSize: number;
@@ -186,6 +188,7 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.terminalCore = opts.terminalCore;
     this.enableTerminals = opts.enableTerminals === true && opts.terminalCore !== undefined;
     this.validateCredential = opts.validateCredential;
+    this.sessionAccess = opts.sessionAccess === true || opts.sessionAccessId !== undefined;
     this.sessionAccessId = opts.sessionAccessId;
     this.browser = opts.browser === true;
     this.logger = opts.logger;
@@ -246,7 +249,7 @@ export class WsConnectionV1 implements BroadcastTarget {
   send(envelope: EventEnvelope, delivery: BroadcastDelivery = 'subscription'): void {
     const sessionId = envelope.session_id;
     if (this.browser && envelope.type === RemoteConnectionsChanged.type) return;
-    if (this.sessionAccessId !== undefined && (sessionId !== this.sessionAccessId ||
+    if (this.sessionAccess && (this.sessionAccessId === undefined || sessionId !== this.sessionAccessId ||
       envelope.type === 'event.plugin.topic' || envelope.type.startsWith('event.room.') ||
       (delivery === 'immediate' || isGlobalEvent(envelope.type)) && !/^(?:event\.session\.(?:work_changed|history_rewritten)|session\.meta\.updated|event\.(?:approval|question)\.[^.]+)$/.test(envelope.type))) return;
     if (delivery !== 'immediate' && sessionId !== undefined && this.replayHolds.has(sessionId)) {
@@ -362,6 +365,23 @@ export class WsConnectionV1 implements BroadcastTarget {
   }
 
   sendControl(frame: unknown): void {
+    if (this.sessionAccess) {
+      if (this.sessionAccessId === undefined) return;
+      if (typeof frame === 'object' && frame !== null) {
+        const scopedRec = frame as {
+          readonly type?: unknown;
+          readonly session_id?: unknown;
+          readonly payload?: { readonly session_id?: unknown };
+        };
+        const scopedSid = typeof scopedRec.payload?.session_id === 'string'
+          ? scopedRec.payload.session_id
+          : typeof scopedRec.session_id === 'string'
+            ? scopedRec.session_id
+            : undefined;
+        if (scopedSid !== undefined && scopedSid !== this.sessionAccessId) return;
+        if (scopedRec.type === 'resync_required' && scopedSid !== this.sessionAccessId) return;
+      }
+    }
     if (typeof frame === 'object' && frame !== null) {
       const rec = frame as {
         readonly type?: unknown;
@@ -406,10 +426,11 @@ export class WsConnectionV1 implements BroadcastTarget {
     }
     if (typeof frame?.type !== 'string') return;
 
-    if (this.sessionAccessId !== undefined) {
+    if (this.sessionAccess) {
       const payload = frame.payload ?? {};
       const sessions = frame.type === 'client_hello' ? asStringArray(payload['subscriptions']) : asStringArray(payload['session_ids']);
-      if (!['client_hello', 'subscribe', 'subscribe_v2', 'unsubscribe', 'unsubscribe_v2', 'ping', 'pong'].includes(frame.type) ||
+      if (this.sessionAccessId === undefined ||
+          !['client_hello', 'subscribe', 'subscribe_v2', 'unsubscribe', 'unsubscribe_v2', 'ping', 'pong'].includes(frame.type) ||
           sessions.some((id) => id !== this.sessionAccessId) ||
           (payload['session_id'] !== undefined && payload['session_id'] !== this.sessionAccessId)) {
         this.sendImmediateFrame(buildAck(frame.id ?? '', 40101, 'session_access_scope', {}));
@@ -421,10 +442,10 @@ export class WsConnectionV1 implements BroadcastTarget {
 
   private async handleFrame(frame: InboundFrame): Promise<void> {
     if (this.closed) return;
-    if (this.sessionAccessId !== undefined && frame.type !== 'client_hello' && !(await this.authorize(frame))) return;
+    if (this.sessionAccess && frame.type !== 'client_hello' && !(await this.authorize(frame))) return;
     switch (frame.type) {
       case 'ping':
-        if (this.sessionAccessId !== undefined) this.sendImmediateFrame({ type: 'pong', id: frame.id, payload: { nonce: frame.payload?.['nonce'] } });
+        if (this.sessionAccess) this.sendImmediateFrame({ type: 'pong', id: frame.id, payload: { nonce: frame.payload?.['nonce'] } });
         return;
       case 'client_hello': return this.onClientHello(frame);
       case 'subscribe': return this.onSubscribe(frame);

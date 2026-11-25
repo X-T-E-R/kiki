@@ -2011,4 +2011,60 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     expect(described.search).not.toContain(storedSecret);
     expect(described.search).not.toContain('sk-live-axon-key');
   });
+
+  it('surfaces managed credential mismatch hints on PRESET_UNAVAILABLE and in test() readiness issues', async () => {
+    const unavailableCaps = structuredClone(CAPABILITIES);
+    for (const lane of unavailableCaps.search.lanes) {
+      lane.availability = 'unavailable';
+      lane.execution_modes = [];
+      lane.issues = [{ code: 'LANE_NOT_CONFIGURED' }];
+    }
+    createRuntimeMock.mockImplementation((arg: { readonly captured?: { readonly config_revision: string } }) => ({
+      search: vi.fn().mockResolvedValue({
+        error: { code: 'PRESET_UNAVAILABLE', message: 'preset custom_exa has no ready lanes' },
+      }),
+      fetch: vi.fn(),
+      capabilities: vi.fn().mockResolvedValue({ ...unavailableCaps, revision: arg.captured?.config_revision ?? unavailableCaps.revision }),
+    }) satisfies NbSearchRuntime);
+    vi.stubEnv('NB_SEARCH_HOME', join(fixture, 'nb-search'));
+    vi.stubEnv('NB_SEARCH_EXA_API_KEY', '');
+    const staleDoc = Buffer.from(JSON.stringify({
+      schema_version: '1',
+      slots: {
+        'exa.default': { provider_id: 'exa', env: 'NB_SEARCH_EXA_API_KEY', binding: 'stale-old-binding', value: 'sk-stale-secret' },
+      },
+    }), 'utf8');
+    const ix = createServices(disposables, {
+      additionalServices: (reg) => {
+        reg.definePartialInstance(IHostFileSystem, new HostFileSystem());
+        reg.definePartialInstance(IFileSystemStorageService, {
+          pathFor: (_scope, key) => join(fixture, 'cache', key),
+          write: async () => undefined,
+          size: async (_scope, key) => key === 'gui-credentials.json' ? staleDoc.byteLength : undefined,
+          read: async (_scope, key) => key === 'gui-credentials.json' ? staleDoc : undefined,
+        });
+        reg.definePartialInstance(IConfigService, {
+          ready: Promise.resolve(),
+          onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
+          get: ((domain: string) => domain === NB_SEARCH_SOURCE_SECTION
+            ? { reuse_local_config: false }
+            : undefined) as IConfigService['get'],
+        });
+        reg.define(INbSearchSourceStore, NbSearchSourceStore);
+        reg.define(INbSearchService, NbSearchService);
+      },
+    });
+    const service = ix.get(INbSearchService);
+    const status = await service.test();
+    expect(status.search.available).toBe(false);
+    expect(status.search.issues).toContain('MANAGED_CREDENTIALS_MISMATCH:exa.default');
+
+    const result = await service.search({ action: 'run', query: ['kiki'], preset: 'custom_exa' });
+    expect('error' in result && result.error !== undefined).toBe(true);
+    if ('error' in result && result.error !== undefined) {
+      expect(result.error.code).toBe('PRESET_UNAVAILABLE');
+      expect(result.error.message).toContain('exa.default');
+      expect(result.error.message).not.toContain('sk-stale-secret');
+    }
+  });
 });

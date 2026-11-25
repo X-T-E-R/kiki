@@ -269,3 +269,31 @@ export async function resolveRealPathAccessPath(
 ): Promise<string> {
   return (await resolveRealPathAccess(path, options, fs)).path;
 }
+
+/** Resolves candidate workspace roots through realpath and identifies those outside inherited real roots. */
+export async function resolveExternalWorkspaceRoots(
+  fs: IHostFileSystem,
+  inheritedRoots: readonly string[],
+  candidates: readonly string[],
+  contains: (root: string, candidate: string) => boolean,
+): Promise<{
+  readonly resolvedCandidates: readonly string[];
+  readonly externalPaths: readonly string[];
+}> {
+  const resolveOne = (target: string): Promise<string> => realPathOrMissingChild(fs, target);
+  const [realInherited, resolvedCandidates] = await Promise.all([
+    Promise.all(inheritedRoots.map(resolveOne)),
+    Promise.all(candidates.map(resolveOne)),
+  ]);
+  const external: string[] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < resolvedCandidates.length; index += 1) {
+    const resolved = resolvedCandidates[index]!;
+    const insideReal = realInherited.some((root) => contains(root, resolved));
+    if (!insideReal && !seen.has(resolved)) {
+      seen.add(resolved);
+      external.push(resolved);
+    }
+  }
+  return { resolvedCandidates, externalPaths: external };
+}

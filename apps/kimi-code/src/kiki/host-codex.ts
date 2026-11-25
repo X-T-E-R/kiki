@@ -14,6 +14,7 @@ import { ensureServer } from './serve';
 
 const DISPATCH_ID = /^dispatch_[A-Za-z0-9]+$/u;
 const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
+const CODEX_QUEUE_TIMEOUT_MS = 30_000;
 
 interface CodexBinding {
   readonly thread: string;
@@ -58,6 +59,7 @@ export async function deliverCodexEvents(options: {
   readonly dispatch: string;
   readonly home?: string;
   readonly queue?: (command: string, thread: string, message: string) => Promise<void>;
+  readonly queueTimeoutMs?: number;
   readonly klient?: Pick<SeatKlient, 'events' | 'close'>;
 }): Promise<number> {
   const workspace = await realpath(resolve(options.workspace));
@@ -86,7 +88,7 @@ export async function deliverCodexEvents(options: {
         for (const event of page.items) {
           if ('type' in event && (event.type === 'agent_notify' || TERMINAL.has(event.type))) {
             const message = `Kiki ${event.type} for ${options.dispatch} (event ${event.seq}). ${String(event.message ?? '').replace(/[\u0000-\u001f\u007f]+/gu, ' ').slice(0, 300)} Read kiki_events and kiki_status for details.`;
-            await (options.queue ?? queueCodex)(binding.codex, binding.thread, message);
+            await (options.queue ?? ((cmd, thr, msg) => queueCodex(cmd, thr, msg, options.queueTimeoutMs)))(binding.codex, binding.thread, message);
             delivered++;
           }
           cursor = event.seq;
@@ -100,16 +102,95 @@ export async function deliverCodexEvents(options: {
   });
 }
 
-async function queueCodex(command: string, thread: string, message: string): Promise<void> {
+export async function queueCodex(
+  command: string,
+  thread: string,
+  message: string,
+  timeoutMs = CODEX_QUEUE_TIMEOUT_MS,
+  cwd?: string,
+): Promise<void> {
   await new Promise<void>((done, reject) => {
     const child = spawn(command, ['queue', '--thread', thread, '--message', message], {
-      stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true,
+      cwd,
+      detached: process.platform !== 'win32',
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true,
     });
     let failure = '';
+    let settled = false;
+    let timedOut = false;
+    let settleTimer: NodeJS.Timeout | undefined;
+    let stderrDrainTimer: NodeJS.Timeout | undefined;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (settleTimer !== undefined) clearTimeout(settleTimer);
+      if (stderrDrainTimer !== undefined) clearTimeout(stderrDrainTimer);
+      if (error === undefined) done();
+      else reject(error);
+    };
+    const timeoutError = (): Error => new Error(`codex queue timed out after ${timeoutMs}ms${failure ? `: ${failure}` : ''}`);
+    const killDirect = (): void => {
+      if (process.platform !== 'win32' && child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+          return;
+        } catch {}
+      }
+      try { child.kill('SIGKILL'); } catch {}
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.stderr.destroy();
+      child.unref();
+      if (process.platform === 'win32' && child.pid !== undefined) {
+        try {
+          const killer = spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], {
+            stdio: 'ignore', windowsHide: true,
+          });
+          killer.on('error', () => { killDirect(); });
+          killer.once('close', () => { killDirect(); });
+          killer.unref();
+        } catch {
+          killDirect();
+        }
+      } else {
+        killDirect();
+      }
+      settleTimer = setTimeout(() => {
+        killDirect();
+        finish(timeoutError());
+      }, 3_000);
+      settleTimer.unref();
+    }, timeoutMs);
+    timer.unref();
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => { failure = (failure + chunk).slice(-1000); });
-    child.once('error', reject);
-    child.once('exit', (code) => code === 0 ? done() : reject(new Error(`codex queue failed (${code}): ${failure}`)));
+    child.once('error', (error) => finish(timedOut ? timeoutError() : error));
+    child.once('exit', (code, signal) => {
+      if (timedOut) {
+        finish(timeoutError());
+        return;
+      }
+      if (code === 0) {
+        child.stderr.destroy();
+        child.unref();
+        finish();
+        return;
+      }
+      stderrDrainTimer = setTimeout(() => {
+        child.stderr.destroy();
+        child.unref();
+        finish(new Error(`codex queue failed (${code ?? signal}): ${failure}`));
+      }, 200);
+      stderrDrainTimer.unref();
+    });
+    child.once('close', (code, signal) => finish(
+      timedOut
+        ? timeoutError()
+        : (code === 0 ? undefined : new Error(`codex queue failed (${code ?? signal}): ${failure}`)),
+    ));
   });
 }
 

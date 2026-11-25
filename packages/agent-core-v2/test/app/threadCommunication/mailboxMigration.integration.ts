@@ -305,6 +305,7 @@ describe('canonical mailbox SQLite migration', () => {
     expect(preview.preserveBytes).toBeGreaterThan(0);
     expect(preview.removeBytes).toBe(preview.preserveBytes);
     await expect(migration.cleanupRecovery({ confirm: true, backupDestination: join(home, 'bad.sqlite') })).rejects.toThrow('outside this Kiki home');
+    await expect(migration.cleanupRecovery({ confirm: true, backupDestination: join(home, '..bak', 'bad.sqlite') })).rejects.toThrow('outside this Kiki home');
     const external = await createTestTempDir();
     try {
       const snapshot = join(external, 'mailbox.sqlite');

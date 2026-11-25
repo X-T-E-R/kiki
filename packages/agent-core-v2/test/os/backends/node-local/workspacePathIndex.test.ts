@@ -797,4 +797,22 @@ describe('WorkspacePathIndex demand start and coalesced mutations', () => {
       await index.dispose();
     }
   });
+
+  it('skips fs.watch cleanly without error when the workspace root does not exist', async () => {
+    const dir = await makeTempDir();
+    const missingRoot = join(dir, 'deleted-worktree');
+    const cpu: ICpuWorkerService = {
+      _serviceBrand: undefined,
+      request: async <T>() => ({ overflow: false, entries: [] }) as T,
+    };
+    const index = new WorkspacePathIndex(missingRoot, cpu);
+    try {
+      await index.refresh();
+      expect(index.isStarted).toBe(true);
+      expect(index.isWatching).toBe(false);
+      expect(index.error).toBeUndefined();
+    } finally {
+      await index.dispose();
+    }
+  });
 });

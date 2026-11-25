@@ -15,6 +15,7 @@ import {
 } from '#/_base/utils/abort';
 import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { toInputJsonSchema } from '#/tool/input-schema';
+import { PathSecurityError, resolveExternalWorkspaceRoots } from '#/tool/path-access';
 import { matchesStringRuleSubject } from '#/tool/rule-match';
 import {
   IAgentTaskService,
@@ -356,20 +357,33 @@ export class SubagentTool implements ISubagentTool {
     };
   }
 
-  private workspaceRootAccesses(
+  private async workspaceRootAccesses(
     runtime: Runtime,
     inherited: RuntimeWorkspaceRoots,
     roots: RuntimeWorkspaceRoots,
-  ): ToolAccesses {
+  ): Promise<{ readonly roots: RuntimeWorkspaceRoots; readonly accesses: ToolAccesses; readonly externalPaths: readonly string[] }> {
+    const fs = runtime.fs;
+    if (fs === undefined) {
+      throw new Error('Filesystem capability unavailable while validating subagent workspace roots.');
+    }
     const inheritedView = new RuntimeWorkspaceView(runtime, inherited);
     const candidates = [roots.workDir, ...(roots.additionalDirs ?? [])];
-    const external = [...new Set(candidates.filter((candidate) =>
-      !inheritedView.roots.some((root) => containsRuntimePath(runtime, root, candidate))))];
-    return external.flatMap((path) => ToolAccesses.file('readwrite', path, {
+    const { resolvedCandidates, externalPaths } = await resolveExternalWorkspaceRoots(
+      fs,
+      inheritedView.roots,
+      candidates,
+      (root, candidate) => containsRuntimePath(runtime, root, candidate),
+    );
+    const resolvedRoots: RuntimeWorkspaceRoots = {
+      workDir: resolvedCandidates[0] ?? roots.workDir,
+      additionalDirs: resolvedCandidates.slice(1),
+    };
+    const accesses = externalPaths.flatMap((path) => ToolAccesses.file('readwrite', path, {
       recursive: true,
       implicitExternal: true,
       workspaceRoot: true,
     }));
+    return { roots: resolvedRoots, accesses, externalPaths };
   }
 
   async resolveExecution(input: SubagentToolInput): Promise<ToolExecution> {
@@ -407,14 +421,62 @@ export class SubagentTool implements ISubagentTool {
     if (resumeAgentId === undefined || resumeAgentId.length === 0) await this.catalog.ready;
     const snapshot = this.catalog.snapshot?.();
     const runtime = this.runtime.inspect();
-    const workspaceRoots = this.workspaceRoots(runtime, args);
+    const rawWorkspaceRoots = this.workspaceRoots(runtime, args);
+    let workspaceRoots = rawWorkspaceRoots;
     const inheritedRoots = inspectAgentWorkspaceRoots(this.runtime, this.workspace);
-    const rootsForResolution = workspaceRoots ?? inheritedRoots;
-    const rootAccesses = this.workspaceRootAccesses(
-      runtime,
-      inheritedRoots,
-      rootsForResolution,
-    );
+    let rootsForResolution = workspaceRoots ?? inheritedRoots;
+    let rootAccesses: ToolAccesses = [];
+    let admittedRootValidation: {
+      readonly identity: {
+        readonly workspaceId: string;
+        readonly runtimeId: string;
+        readonly generation: string;
+      };
+      readonly requested: RuntimeWorkspaceRoots;
+      readonly resolved: RuntimeWorkspaceRoots;
+      readonly externalPaths: readonly string[];
+    } | undefined;
+    if (args.workDir !== undefined || args.additionalDirs !== undefined) {
+      const inspectedIdentity = {
+        workspaceId: runtime.identity.workspaceId,
+        runtimeId: runtime.identity.runtimeId,
+        generation: runtime.identity.generation,
+      };
+      const lease = this.runtime.acquire(['fs']);
+      try {
+        const leaseIdentity = {
+          workspaceId: lease.runtime.identity.workspaceId,
+          runtimeId: lease.runtime.identity.runtimeId,
+          generation: lease.runtime.identity.generation,
+        };
+        if (
+          leaseIdentity.workspaceId !== inspectedIdentity.workspaceId
+          || leaseIdentity.runtimeId !== inspectedIdentity.runtimeId
+          || leaseIdentity.generation !== inspectedIdentity.generation
+        ) {
+          return { isError: true, output: 'Runtime changed before workspace root admission. Retry the tool call.' };
+        }
+        const resolved = await this.workspaceRootAccesses(
+          lease.runtime,
+          inheritedRoots,
+          rootsForResolution,
+        );
+        rootAccesses = resolved.accesses;
+        workspaceRoots = resolved.roots;
+        rootsForResolution = resolved.roots;
+        admittedRootValidation = {
+          identity: leaseIdentity,
+          requested: rawWorkspaceRoots ?? inheritedRoots,
+          resolved: resolved.roots,
+          externalPaths: resolved.externalPaths,
+        };
+      } catch (error) {
+        if (error instanceof PathSecurityError) {
+          return { isError: true, output: error.message };
+        }
+        throw error;
+      } finally { lease.dispose(); }
+    }
     let filePath: string | undefined;
     if (args.profile_file !== undefined) {
       const lease = this.runtime.acquire(['fs']);
@@ -440,7 +502,7 @@ export class SubagentTool implements ISubagentTool {
       approvalRule: this.name,
       matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, profileNameForDisplay),
       execute: async (ctx) => {
-        const result = await this.execution(filePath === undefined ? args : { ...args, profile_file: filePath }, ctx, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots);
+        const result = await this.execution(filePath === undefined ? args : { ...args, profile_file: filePath }, ctx, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots, admittedRootValidation);
         if (resumeNote === undefined || result.isError === true) return result;
         return { ...result, note: result.note === undefined ? resumeNote : `${resumeNote}\n${result.note}` };
       },
@@ -767,14 +829,24 @@ export class SubagentTool implements ISubagentTool {
     capturedLaunchPolicy: DispatchLaunchPolicy,
     runInBackground: boolean,
     workspaceRoots: RuntimeWorkspaceRoots | undefined,
+    admittedRootValidation?: {
+      readonly identity: {
+        readonly workspaceId: string;
+        readonly runtimeId: string;
+        readonly generation: string;
+      };
+      readonly requested: RuntimeWorkspaceRoots;
+      readonly resolved: RuntimeWorkspaceRoots;
+      readonly externalPaths: readonly string[];
+    },
   ): Promise<ExecutableToolResult> {
     return this.workAdmission.run('agent-run-prepare', async () => {
       if (!runInBackground) {
-        return this.executionAdmitted(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots);
+        return this.executionAdmitted(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots, admittedRootValidation);
       }
       const releaseLaunchSlot = await this.acquireBackgroundLaunchSlot(context.signal);
       try {
-        return await this.executionAdmitted(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots);
+        return await this.executionAdmitted(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots, admittedRootValidation);
       } finally {
         releaseLaunchSlot();
       }
@@ -788,9 +860,19 @@ export class SubagentTool implements ISubagentTool {
     capturedLaunchPolicy: DispatchLaunchPolicy,
     runInBackground: boolean,
     workspaceRoots: RuntimeWorkspaceRoots | undefined,
+    admittedRootValidation?: {
+      readonly identity: {
+        readonly workspaceId: string;
+        readonly runtimeId: string;
+        readonly generation: string;
+      };
+      readonly requested: RuntimeWorkspaceRoots;
+      readonly resolved: RuntimeWorkspaceRoots;
+      readonly externalPaths: readonly string[];
+    },
   ): Promise<ExecutableToolResult> {
     if (!args.resume?.trim()) {
-      return this.executeOnce(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots);
+      return this.executeOnce(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots, admittedRootValidation);
     }
     const key = `${context.turnId}:${context.toolCallId}`;
     const fingerprint = JSON.stringify(args);
@@ -799,7 +881,7 @@ export class SubagentTool implements ISubagentTool {
       if (previous.fingerprint !== fingerprint) return { isError: true, output: 'This resume tool call already belongs to a different request. Retry its original arguments.' };
       return previous.promise;
     }
-    const promise = this.executeOnce(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots);
+    const promise = this.executeOnce(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots, admittedRootValidation);
     this.resumeExecutions.set(key, { fingerprint, promise });
     void promise.then((result) => { if (result.isError) this.resumeExecutions.delete(key); }, () => { this.resumeExecutions.delete(key); });
     return promise;
@@ -812,6 +894,16 @@ export class SubagentTool implements ISubagentTool {
     capturedLaunchPolicy: DispatchLaunchPolicy,
     runInBackground: boolean,
     workspaceRoots: RuntimeWorkspaceRoots | undefined,
+    admittedRootValidation?: {
+      readonly identity: {
+        readonly workspaceId: string;
+        readonly runtimeId: string;
+        readonly generation: string;
+      };
+      readonly requested: RuntimeWorkspaceRoots;
+      readonly resolved: RuntimeWorkspaceRoots;
+      readonly externalPaths: readonly string[];
+    },
   ): Promise<ExecutableToolResult> {
     const { toolCallId, signal, turnId } = context;
     try {
@@ -855,7 +947,42 @@ export class SubagentTool implements ISubagentTool {
           }
         }
       }
-      const runtimeLease = this.runtime.acquire(args.profile_file === undefined ? ['process'] : ['process', 'fs']);
+      const needsFs = args.profile_file !== undefined || admittedRootValidation !== undefined;
+      const runtimeLease = this.runtime.acquire(needsFs ? ['process', 'fs'] : ['process']);
+      if (admittedRootValidation !== undefined) {
+        const liveIdentity = runtimeLease.runtime.identity;
+        if (
+          liveIdentity.workspaceId !== admittedRootValidation.identity.workspaceId
+          || liveIdentity.runtimeId !== admittedRootValidation.identity.runtimeId
+          || liveIdentity.generation !== admittedRootValidation.identity.generation
+        ) {
+          runtimeLease.dispose();
+          return { output: 'Runtime changed after workspace root admission. Retry the tool call.', isError: true };
+        }
+        try {
+          const currentInherited = inspectAgentWorkspaceRoots(this.runtime, this.workspace);
+          const rechecked = await this.workspaceRootAccesses(
+            runtimeLease.runtime,
+            currentInherited,
+            admittedRootValidation.requested,
+          );
+          const admittedAdd = admittedRootValidation.resolved.additionalDirs ?? [];
+          const recheckedAdd = rechecked.roots.additionalDirs ?? [];
+          const rootsMatch =
+            rechecked.roots.workDir === admittedRootValidation.resolved.workDir
+            && recheckedAdd.length === admittedAdd.length
+            && recheckedAdd.every((dir, index) => dir === admittedAdd[index]);
+          const admittedExternal = new Set(admittedRootValidation.externalPaths);
+          const externalCovered = rechecked.externalPaths.every((path) => admittedExternal.has(path));
+          if (!rootsMatch || !externalCovered) {
+            runtimeLease.dispose();
+            return { output: 'Workspace root target changed after admission. Retry the tool call.', isError: true };
+          }
+        } catch (error) {
+          runtimeLease.dispose();
+          return { output: error instanceof Error ? error.message : 'Workspace root validation failed after admission.', isError: true };
+        }
+      }
 
       const controller = new AbortController();
       const abortBeforeRegister = (): void => {
