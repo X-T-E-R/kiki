@@ -37,6 +37,7 @@ function state(server) {
       active: seed.active ?? 'main',
       mainConfig: undefined,
       log: [],
+      portable: initPortableState(server.scenario?.data.portableSpaces),
       settings: {
         plans: new Map(),
         // The main space's own preferences are the source every followed item
@@ -549,8 +550,11 @@ function removeOverride(item, domain, keyPath) {
 
 const id16 = () => `h-${Math.random().toString(16).slice(2, 10).padEnd(8, '0')}${Date.now().toString(16).slice(-8)}`;
 
-export function handleSpaces(server, res, path, method, body) {
+export function handleSpaces(server, res, path, method, body, query = {}) {
   const spaces = state(server);
+  if (path.startsWith('/spaces/portable/')) {
+    return handlePortableSpaces(server, spaces, res, path, method, body, query);
+  }
   const reject = (message) => { server.envelope(res, null, 40001, message); return true; };
   const mainOnly = () => (spaces.active !== 'main' ? reject('Manage spaces from the main space window') : false);
 
@@ -645,6 +649,10 @@ export function handleSpaces(server, res, path, method, body) {
 /** `/__control` actions for the desktop mock. */
 export function spacesControl(server, body) {
   const spaces = state(server);
+  if (body.action === 'portable_seed') {
+    spaces.portable = initPortableState(body.portableSpaces);
+    return { portable: structuredClone({ items: spaces.portable.items, orderRevision: spaces.portable.orderRevision }) };
+  }
   if (body.action === 'space') {
     if (body.id !== 'main' && !spaces.items.some((item) => item.id === body.id)) return { error: `unknown space ${body.id}` };
     spaces.active = body.id;
@@ -653,4 +661,562 @@ export function spacesControl(server, body) {
     return { active: spaces.active, ...(item === undefined ? {} : { space: { id: item.id, name: item.name, color: item.color, path: item.path, credentials: item.credentials } }) };
   }
   return { ...structuredClone({ active: spaces.active, items: spaces.items, log: spaces.log }) };
+}
+
+// ---------------------------------------------------------------------------
+// Portable Spaces & Multi-Source Subscription Center (`/spaces/portable/*`)
+// ---------------------------------------------------------------------------
+
+const FIXTURE_DEVICE_RECIPIENT = 'age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p';
+
+function initPortableState(seed = {}) {
+  const copy = structuredClone(seed ?? {});
+  return {
+    deviceRecipient: copy.deviceRecipient ?? FIXTURE_DEVICE_RECIPIENT,
+    knownRecipients: copy.knownRecipients ?? [{ label: 'This device', recipient: FIXTURE_DEVICE_RECIPIENT }],
+    items: copy.items ?? [],
+    orderRevision: String(copy.orderRevision ?? '1'),
+    nextId: 1,
+    manifestBuilder: copy.manifest ?? null,
+    previews: new Map(),
+    removePreviews: new Map(),
+  };
+}
+
+function defaultFixtureManifest(source, targetSpaceId, spaces) {
+  const isArchive = source.kind === 'archive';
+  const displayOrigin = isArchive
+    ? String(source.path).split(/[\\/]/).filter(Boolean).at(-1) ?? 'lab-base-pack.tgz'
+    : (() => { try { return new URL(source.url).host; } catch { return 'sub.example.test'; } })();
+  const token = `tok-fix-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const expiresAt = new Date(Date.now() + 300_000).toISOString();
+  const custom = spaces.portable.manifestBuilder;
+  if (custom !== null && custom !== undefined) {
+    return {
+      ...structuredClone(custom),
+      previewToken: token,
+      expiresAt,
+      targetSpaceId,
+      displayOrigin,
+      allowedPolicies: isArchive ? ['once'] : (custom.allowedPolicies ?? ['auto', 'manual', 'once']),
+    };
+  }
+  return {
+    previewToken: token,
+    packDigest: 'sha256:fixture-lab-pack-v1',
+    expiresAt,
+    targetSpaceId,
+    suggestedLabel: isArchive ? 'Lab Base Pack' : 'Lab Gateway Pool',
+    displayOrigin,
+    format: isArchive && String(source.path).endsWith('.age') ? 'age' : 'tgz',
+    secretMode: 'plain',
+    encryptionMode: 'none',
+    allowedPolicies: isArchive ? ['once'] : ['auto', 'manual', 'once'],
+    defaultSelection: {
+      version: 1,
+      enabledScopes: ['models_providers', 'extensions_search', 'agents_recipes', 'personas', 'instructions', 'settings'],
+      excludedIds: [],
+      includedIds: [],
+      includeCredentials: true,
+    },
+    items: [
+      {
+        id: 'config:providers.axon',
+        scope: 'models_providers',
+        domain: 'config',
+        label: 'axon gateway',
+        path: 'providers.axon',
+        memberUnitIds: ['config:providers.axon'],
+        dependsOnIds: [],
+        softDependsOnIds: [],
+        referencedByIds: ['config:models.k3%2E1-pro', 'config:models.gemini-4-neon'],
+        dependencyEdges: [],
+        coupledCredentialIds: ['credentials:providers.axon'],
+        liveSatisfiedIds: [],
+        blockedDependencyIds: [],
+        status: 'will_write',
+        selectable: true,
+        selected: true,
+        safeDiff: '+ [providers.axon]\n+ type = "openai"\n+ base_url = "https://gw.example.test/v1"',
+      },
+      {
+        id: 'config:models.k3%2E1-pro',
+        scope: 'models_providers',
+        domain: 'config',
+        label: 'models.k3.1-pro',
+        path: 'models.k3.1-pro',
+        memberUnitIds: ['config:models.k3%2E1-pro'],
+        dependsOnIds: ['config:providers.axon'],
+        softDependsOnIds: [],
+        referencedByIds: ['agents:agents/implementer%2Emd'],
+        dependencyEdges: [{ toId: 'config:providers.axon', kind: 'hard', via: 'provider', liveSatisfied: false }],
+        coupledCredentialIds: [],
+        liveSatisfiedIds: [],
+        blockedDependencyIds: [],
+        status: 'will_write',
+        selectable: true,
+        selected: true,
+        safeDiff: '+ [models."k3.1-pro"]\n+ provider = "axon"\n+ model = "k3.1-pro"',
+      },
+      {
+        id: 'config:models.gemini-4-neon',
+        scope: 'models_providers',
+        domain: 'config',
+        label: 'models.gemini-4-neon',
+        path: 'models.gemini-4-neon',
+        memberUnitIds: ['config:models.gemini-4-neon'],
+        dependsOnIds: ['config:providers.axon'],
+        softDependsOnIds: [],
+        referencedByIds: ['agents:agents/researcher%2Emd'],
+        dependencyEdges: [{ toId: 'config:providers.axon', kind: 'hard', via: 'provider', liveSatisfied: false }],
+        coupledCredentialIds: [],
+        liveSatisfiedIds: [],
+        blockedDependencyIds: [],
+        status: 'will_write',
+        selectable: true,
+        selected: true,
+      },
+      {
+        id: 'mcp:zotero',
+        scope: 'extensions_search',
+        domain: 'mcp',
+        label: 'zotero',
+        path: 'mcp.zotero',
+        memberUnitIds: ['mcp:zotero'],
+        dependsOnIds: [],
+        softDependsOnIds: [],
+        referencedByIds: [],
+        dependencyEdges: [],
+        coupledCredentialIds: ['credentials:mcp.zotero'],
+        liveSatisfiedIds: [],
+        blockedDependencyIds: [],
+        status: 'will_write',
+        selectable: true,
+        selected: true,
+      },
+      {
+        id: 'config:nb_search',
+        scope: 'extensions_search',
+        domain: 'config',
+        label: 'nb_search',
+        path: 'nb_search',
+        memberUnitIds: ['config:nb_search'],
+        dependsOnIds: [],
+        softDependsOnIds: [],
+        referencedByIds: [],
+        dependencyEdges: [],
+        coupledCredentialIds: ['credentials:nb_search'],
+        liveSatisfiedIds: [],
+        blockedDependencyIds: [],
+        status: 'will_write',
+        selectable: true,
+        selected: true,
+      },
+      {
+        id: 'agents:agents/implementer%2Emd',
+        scope: 'agents_recipes',
+        domain: 'agents',
+        label: 'implementer',
+        path: 'agents/implementer.md',
+        memberUnitIds: ['agents:agents/implementer%2Emd'],
+        dependsOnIds: ['config:models.k3%2E1-pro'],
+        softDependsOnIds: ['config:models.k3%2E1-pro'],
+        referencedByIds: [],
+        dependencyEdges: [{ toId: 'config:models.k3%2E1-pro', kind: 'soft', via: 'model_alias', liveSatisfied: false }],
+        coupledCredentialIds: [],
+        liveSatisfiedIds: [],
+        blockedDependencyIds: [],
+        status: 'will_write',
+        selectable: true,
+        selected: true,
+        safeDiff: '--- a/agents/implementer.md\n+++ b/agents/implementer.md\n@@ -1,3 +1,3 @@\n-model_alias: fixture/kiki-pro\n+model_alias: lab/coder-pro',
+      },
+      {
+        id: 'agents:agents/researcher%2Emd',
+        scope: 'agents_recipes',
+        domain: 'agents',
+        label: 'researcher',
+        path: 'agents/researcher.md',
+        memberUnitIds: ['agents:agents/researcher%2Emd'],
+        dependsOnIds: ['config:models.gemini-4-neon'],
+        softDependsOnIds: ['config:models.gemini-4-neon'],
+        referencedByIds: [],
+        dependencyEdges: [{ toId: 'config:models.gemini-4-neon', kind: 'soft', via: 'model_alias', liveSatisfied: false }],
+        coupledCredentialIds: [],
+        liveSatisfiedIds: [],
+        blockedDependencyIds: [],
+        status: 'will_write',
+        selectable: true,
+        selected: true,
+      },
+      {
+        id: 'recipes:recipes/lab-review/recipe%2Etoml',
+        scope: 'agents_recipes',
+        domain: 'recipes',
+        label: 'lab-review',
+        path: 'recipes/lab-review/recipe.toml',
+        memberUnitIds: ['recipes:recipes/lab-review/recipe%2Etoml'],
+        dependsOnIds: [],
+        softDependsOnIds: [],
+        referencedByIds: [],
+        dependencyEdges: [],
+        coupledCredentialIds: [],
+        liveSatisfiedIds: [],
+        blockedDependencyIds: [],
+        status: 'will_write',
+        selectable: true,
+        selected: true,
+      },
+      {
+        id: 'personas:personas/lab-mentor/persona%2Emd',
+        scope: 'personas',
+        domain: 'personas',
+        label: 'Lab Mentor',
+        path: 'personas/lab-mentor/persona.md',
+        memberUnitIds: ['personas:personas/lab-mentor/persona%2Emd'],
+        dependsOnIds: [],
+        softDependsOnIds: [],
+        referencedByIds: [],
+        dependencyEdges: [],
+        coupledCredentialIds: [],
+        liveSatisfiedIds: [],
+        blockedDependencyIds: [],
+        status: 'will_write',
+        selectable: true,
+        selected: true,
+      },
+      {
+        id: 'instructions:AGENTS%2Emd',
+        scope: 'instructions',
+        domain: 'instructions',
+        label: 'AGENTS.md',
+        path: 'AGENTS.md',
+        memberUnitIds: ['instructions:AGENTS%2Emd'],
+        dependsOnIds: [],
+        softDependsOnIds: [],
+        referencedByIds: [],
+        dependencyEdges: [],
+        coupledCredentialIds: [],
+        liveSatisfiedIds: [],
+        blockedDependencyIds: [],
+        status: 'kept_local',
+        selectable: true,
+        selected: true,
+      },
+    ],
+    excluded: [
+      { id: 'hooks:pre-tool', domain: 'config', path: 'hooks.toml', reason: 'Remote subscription excludes executable hooks' },
+    ],
+    bindingSlots: [
+      {
+        tupleKey: JSON.stringify(['agents:agents/implementer%2Emd', 'lab/coder-pro']),
+        itemId: 'agents:agents/implementer%2Emd',
+        itemLabel: 'implementer',
+        itemScope: 'agents_recipes',
+        sourceModelId: 'lab/coder-pro',
+        required: true,
+        location: 'model_alias',
+        eligibleOptionIndices: [0, 1, 2],
+      },
+      {
+        tupleKey: JSON.stringify(['agents:agents/researcher%2Emd', 'lab/coder-pro']),
+        itemId: 'agents:agents/researcher%2Emd',
+        itemLabel: 'researcher',
+        itemScope: 'agents_recipes',
+        sourceModelId: 'lab/coder-pro',
+        required: true,
+        location: 'model_alias',
+        eligibleOptionIndices: [0, 2],
+      },
+      {
+        tupleKey: JSON.stringify(['personas:personas/lab-mentor/persona%2Emd', 'lab/mentor-ultra']),
+        itemId: 'personas:personas/lab-mentor/persona%2Emd',
+        itemLabel: 'Lab Mentor',
+        itemScope: 'personas',
+        sourceModelId: 'lab/mentor-ultra',
+        required: true,
+        location: 'model_alias',
+        eligibleOptionIndices: [0, 1],
+      },
+    ],
+    localModelOptions: [
+      { id: 'fixture/kiki-pro', label: 'Kiki Pro', providerId: 'fixture', defaultThinkingEffort: 'high' },
+      { id: 'fixture/kiki-lite', label: 'Kiki Lite', providerId: 'fixture', defaultThinkingEffort: 'medium' },
+      { id: 'fixture/opus-5-5', label: 'Opus 5.5', providerId: 'fixture', defaultThinkingEffort: 'xhigh' },
+    ],
+    savedBindingChoices: {},
+    catalogRevision: 'cat-1',
+    targetRevision: 'tgt-1',
+    orderRevision: spaces.portable.orderRevision,
+  };
+}
+
+function toLegacySourceRecord(record) {
+  const {
+    enabled: _enabled,
+    priority: _priority,
+    syncPolicy: _syncPolicy,
+    selection: _selection,
+    revision: _revision,
+    availableNewScopes: _availableNewScopes,
+    needsReconcile: _needsReconcile,
+    modelBindings: _modelBindings,
+    unitModelBindings: _unitModelBindings,
+    unmappedModelPolicy: _unmappedModelPolicy,
+    deferredSlotIds: _deferredSlotIds,
+    ...legacy
+  } = record;
+  return legacy;
+}
+
+function emptyImpact(managedCount = 0) {
+  return {
+    managedCount,
+    deletedIds: [],
+    handedOffIds: [],
+    preservedLocalIds: [],
+    preservedDependencyIds: [],
+    pendingReconcileIds: [],
+    addedIds: [],
+    updatedIds: [],
+  };
+}
+
+function handlePortableSpaces(server, spaces, res, path, method, body, query) {
+  const p = spaces.portable;
+  const viewParam = typeof query?.get === 'function' ? query.get('view') : query?.view;
+  const isCenter = viewParam === 'center-v1';
+
+  if (path === '/spaces/portable/sources' && method === 'GET') {
+    if (isCenter) {
+      server.envelope(res, {
+        deviceRecipient: p.deviceRecipient,
+        knownRecipients: p.knownRecipients,
+        items: p.items,
+        orderRevision: p.orderRevision,
+      });
+    } else {
+      server.envelope(res, {
+        deviceRecipient: p.deviceRecipient,
+        knownRecipients: p.knownRecipients,
+        items: p.items.map(toLegacySourceRecord),
+      });
+    }
+    return true;
+  }
+
+  if (path === '/spaces/portable/subscribe/preview' && method === 'POST') {
+    const manifest = defaultFixtureManifest(body.source, body.linkToSpaceId ?? 'main', spaces);
+    p.previews.set(manifest.previewToken, { manifest, source: body.source });
+    server.envelope(res, manifest);
+    return true;
+  }
+
+  if (path === '/spaces/portable/subscribe' && method === 'POST') {
+    if (body && typeof body.previewToken === 'string') {
+      const entry = p.previews.get(body.previewToken);
+      if (entry === undefined) {
+        server.envelope(res, null, 41004, 'Preview snapshot expired');
+        return true;
+      }
+      p.previews.delete(body.previewToken);
+      const selectedIds = entry.manifest.items.filter((i) => i.selectable).map((i) => i.id);
+      if (body.syncPolicy === 'once') {
+        server.envelope(res, {
+          kind: 'once',
+          status: 'imported',
+          appliedIds: selectedIds,
+          deletedIds: [],
+          skippedIds: [],
+          impact: { ...emptyImpact(0), addedIds: selectedIds },
+        });
+        return true;
+      }
+      const id = `sub-fix-${p.nextId++}`;
+      const urlCount = p.items.filter((item) => item.endpoint.kind === 'url').length;
+      const record = {
+        id,
+        label: body.label ?? entry.manifest.suggestedLabel,
+        endpoint: entry.source,
+        linkedSpaceId: entry.manifest.targetSpaceId,
+        format: entry.manifest.format,
+        spaceMode: 'full',
+        secretMode: entry.manifest.secretMode,
+        encryptionMode: entry.manifest.encryptionMode,
+        autoSync: body.syncPolicy === 'auto',
+        lastSyncedAt: new Date().toISOString(),
+        managedIds: selectedIds,
+        enabled: true,
+        priority: urlCount,
+        syncPolicy: body.syncPolicy,
+        selection: body.selection,
+        revision: '1',
+        availableNewScopes: [],
+        needsReconcile: false,
+        ...(body.modelBindings !== undefined ? { modelBindings: body.modelBindings } : {}),
+        ...(body.unitModelBindings !== undefined ? { unitModelBindings: body.unitModelBindings } : {}),
+        ...(body.unmappedModelPolicy !== undefined ? { unmappedModelPolicy: body.unmappedModelPolicy } : {}),
+        ...(body.deferredSlotIds !== undefined ? { deferredSlotIds: body.deferredSlotIds } : {}),
+      };
+      p.items.push(record);
+      p.orderRevision = String(Number(p.orderRevision) + 1);
+      server.envelope(res, {
+        kind: 'subscription',
+        source: record,
+        status: 'updated',
+        appliedIds: selectedIds,
+        deletedIds: [],
+        skippedIds: [],
+        impact: { ...emptyImpact(0), addedIds: selectedIds },
+      });
+      return true;
+    }
+    server.envelope(res, null, 40001, 'Invalid subscribe payload');
+    return true;
+  }
+
+  if (path === '/spaces/portable/sources/reorder' && method === 'POST') {
+    const orderedIds = Array.isArray(body?.orderedIds) ? body.orderedIds : [];
+    const byId = new Map(p.items.map((item) => [item.id, item]));
+    orderedIds.forEach((id, index) => {
+      const item = byId.get(id);
+      if (item !== undefined) item.priority = index;
+    });
+    p.orderRevision = String(Number(p.orderRevision) + 1);
+    server.envelope(res, { orderedIds, orderRevision: p.orderRevision });
+    return true;
+  }
+
+  const previewSourceMatch = /^\/spaces\/portable\/sources\/([^/]+)\/preview$/.exec(path);
+  if (previewSourceMatch !== null && method === 'POST') {
+    const id = decodeURIComponent(previewSourceMatch[1]);
+    const item = p.items.find((entry) => entry.id === id);
+    if (item === undefined) {
+      server.envelope(res, null, 40428, 'Portable source not found');
+      return true;
+    }
+    const manifest = defaultFixtureManifest(item.endpoint, item.linkedSpaceId ?? 'main', spaces);
+    manifest.suggestedLabel = item.label;
+    if (body?.cleanupDeselected === true) {
+      manifest.impact = {
+        ...emptyImpact(item.managedIds?.length ?? 3),
+        deletedIds: ['config:models.gemini-4-neon'],
+        preservedLocalIds: ['instructions:AGENTS%2Emd'],
+      };
+      manifest.impactDigest = 'sha256:fixture-cleanup-digest';
+    }
+    p.previews.set(manifest.previewToken, { manifest, source: item.endpoint });
+    server.envelope(res, manifest);
+    return true;
+  }
+
+  const syncMatch = /^\/spaces\/portable\/sources\/([^/]+)\/sync$/.exec(path);
+  if (syncMatch !== null && method === 'POST') {
+    const id = decodeURIComponent(syncMatch[1]);
+    const item = p.items.find((entry) => entry.id === id);
+    if (item === undefined) {
+      server.envelope(res, null, 40428, 'Portable source not found');
+      return true;
+    }
+    item.lastSyncedAt = new Date().toISOString();
+    item.lastCheckedAt = item.lastSyncedAt;
+    item.needsReconcile = false;
+    server.envelope(res, isCenter
+      ? {
+        kind: 'subscription',
+        source: item,
+        status: 'not_modified',
+        appliedIds: [],
+        deletedIds: [],
+        skippedIds: [],
+        impact: emptyImpact(item.managedIds?.length ?? 0),
+      }
+      : {
+        source: toLegacySourceRecord(item),
+        status: 'not_modified',
+        appliedIds: [],
+        deletedIds: [],
+        skippedIds: [],
+      });
+    return true;
+  }
+
+  const removePreviewMatch = /^\/spaces\/portable\/sources\/([^/]+)\/remove-preview$/.exec(path);
+  if (removePreviewMatch !== null && method === 'POST') {
+    const id = decodeURIComponent(removePreviewMatch[1]);
+    const item = p.items.find((entry) => entry.id === id);
+    if (item === undefined) {
+      server.envelope(res, null, 40428, 'Portable source not found');
+      return true;
+    }
+    const token = `tok-rm-${Date.now()}`;
+    const managedCount = item.managedIds?.length ?? 6;
+    const impact = {
+      managedCount,
+      deletedIds: (item.managedIds ?? ['config:providers.axon', 'config:models.k3%2E1-pro', 'mcp:zotero']).slice(0, 3),
+      handedOffIds: ['config:models.gemini-4-neon'],
+      preservedLocalIds: ['instructions:AGENTS%2Emd'],
+      preservedDependencyIds: [],
+      pendingReconcileIds: [],
+      addedIds: [],
+      updatedIds: [],
+    };
+    const result = {
+      previewToken: token,
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+      managedCount,
+      impact,
+      impactDigest: `sha256:rm-${id}`,
+    };
+    p.removePreviews.set(token, result);
+    server.envelope(res, result);
+    return true;
+  }
+
+  const sourceIdMatch = /^\/spaces\/portable\/sources\/([^/]+)$/.exec(path);
+  if (sourceIdMatch !== null && method === 'PATCH') {
+    const id = decodeURIComponent(sourceIdMatch[1]);
+    const item = p.items.find((entry) => entry.id === id);
+    if (item === undefined) {
+      server.envelope(res, null, 40428, 'Portable source not found');
+      return true;
+    }
+    if (typeof body?.label === 'string') item.label = body.label;
+    if (typeof body?.enabled === 'boolean') item.enabled = body.enabled;
+    if (body?.syncPolicy === 'auto' || body?.syncPolicy === 'manual') {
+      item.syncPolicy = body.syncPolicy;
+      item.autoSync = body.syncPolicy === 'auto';
+    }
+    if (body?.selection !== undefined) item.selection = body.selection;
+    item.revision = String(Number(item.revision ?? 1) + 1);
+    server.envelope(res, {
+      source: item,
+      impact: emptyImpact(item.managedIds?.length ?? 0),
+    });
+    return true;
+  }
+
+  if (sourceIdMatch !== null && method === 'DELETE') {
+    const id = decodeURIComponent(sourceIdMatch[1]);
+    const idx = p.items.findIndex((entry) => entry.id === id);
+    if (idx < 0) {
+      server.envelope(res, null, 40428, 'Portable source not found');
+      return true;
+    }
+    const [removed] = p.items.splice(idx, 1);
+    p.orderRevision = String(Number(p.orderRevision) + 1);
+    if (isCenter && body?.previewToken !== undefined) {
+      const preview = p.removePreviews.get(body.previewToken);
+      server.envelope(res, {
+        removed: true,
+        impact: body.purgeManaged ? (preview?.impact ?? emptyImpact(removed.managedIds?.length ?? 0)) : emptyImpact(removed.managedIds?.length ?? 0),
+      });
+    } else {
+      server.envelope(res, { removed: true });
+    }
+    return true;
+  }
+
+  server.envelope(res, null, 40428, `Unsupported portable space route: ${method} ${path}`);
+  return true;
 }

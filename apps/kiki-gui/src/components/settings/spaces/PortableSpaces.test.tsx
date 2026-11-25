@@ -7,11 +7,13 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
+  PortableSpaceCenterSource,
+  PortableSpaceCenterSourcesListResponse,
   PortableSpaceExportReceipt,
   PortableSpaceInspectResult,
   PortableSpacePreviewResult,
   PortableSpaceSourceRecord,
-  PortableSpaceSourcesListResponse,
+  PortableSpaceSubscribePreviewManifest,
 } from '@kiki/protocol';
 
 import { HostProvider, type HostAdapter } from '../../../host';
@@ -65,10 +67,21 @@ const SOURCE_DIR: PortableSpaceSourceRecord = {
   encryptionMode: 'none',
 };
 
-const SOURCES_RESPONSE: PortableSpaceSourcesListResponse = {
+function asCenterSource(record: PortableSpaceSourceRecord, index: number): PortableSpaceCenterSource {
+  return {
+    ...record,
+    enabled: true,
+    revision: `rev-${index + 1}`,
+    availableNewScopes: [],
+    needsReconcile: false,
+  };
+}
+
+const SOURCES_RESPONSE: PortableSpaceCenterSourcesListResponse = {
   deviceRecipient: DEVICE_KEY,
   knownRecipients: [{ label: 'This device', recipient: DEVICE_KEY }],
-  items: [SOURCE_GIT, SOURCE_AGE_A, SOURCE_AGE_B, SOURCE_DIR],
+  items: [SOURCE_GIT, SOURCE_AGE_A, SOURCE_AGE_B, SOURCE_DIR].map(asCenterSource),
+  orderRevision: '1',
 };
 
 const INSPECT_AGE_A: PortableSpaceInspectResult = {
@@ -182,9 +195,15 @@ const hostMock = {
 const apiMocks: Record<keyof PortableSpacesApi, ReturnType<typeof vi.fn>> = {
   listSources: vi.fn(),
   registerSource: vi.fn(),
+  previewSubscribe: vi.fn(),
   subscribe: vi.fn(),
+  previewSource: vi.fn(),
   syncSubscription: vi.fn(),
+  patchSource: vi.fn(),
+  reorderSources: vi.fn(),
+  previewRemoveSource: vi.fn(),
   removeSource: vi.fn(),
+  removeReviewedSource: vi.fn(),
   inspect: vi.fn(),
   exportSpace: vi.fn(),
   preview: vi.fn(),
@@ -192,8 +211,10 @@ const apiMocks: Record<keyof PortableSpacesApi, ReturnType<typeof vi.fn>> = {
   pack: vi.fn(),
   unpack: vi.fn(),
   fork: vi.fn(),
+  delta: vi.fn(),
   mutate: vi.fn(),
   rekey: vi.fn(),
+  addRecipient: vi.fn(),
 };
 
 const fakeClient = {
@@ -337,7 +358,16 @@ async function type(selector: string, value: string) {
 describe('PortableSpaces REST client', () => {
   it('sends bearer auth and validates envelopes against @kiki/protocol', async () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
-      new Response(JSON.stringify({ code: 0, msg: 'ok', data: SOURCES_RESPONSE, request_id: 'req-1' }), {
+      new Response(JSON.stringify({
+        code: 0,
+        msg: 'ok',
+        data: {
+          deviceRecipient: DEVICE_KEY,
+          knownRecipients: [{ label: 'This device', recipient: DEVICE_KEY }],
+          items: [SOURCE_GIT, SOURCE_AGE_A, SOURCE_AGE_B, SOURCE_DIR],
+        },
+        request_id: 'req-1',
+      }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       }),
@@ -384,11 +414,11 @@ describe('PortableSpacesCard & workflows', () => {
   it('lists registered sources with kind and secret badges and removes a source from its menu', async () => {
     await renderNode(<PortableSpacesCard client={fakeClient} spaces={SPACES} mainPath="/home/me/.kiki" />);
     expect(document.querySelector('[data-portable-kind-badge="src-git"]')?.textContent).toBe('Git');
-    expect(document.querySelector('[data-portable-secret-badge="src-git"]')?.textContent).toBe('No secrets');
+    expect(document.querySelector('[data-portable-secret-badge="src-git"]')?.textContent).toContain('No secrets');
     expect(document.querySelector('[data-portable-kind-badge="src-age-a"]')?.textContent).toBe('.kiki.age');
-    expect(document.querySelector('[data-portable-secret-badge="src-age-a"]')?.textContent).toBe('Encrypted');
+    expect(document.querySelector('[data-portable-secret-badge="src-age-a"]')?.textContent).toContain('Encrypted');
     expect(document.querySelector('[data-portable-kind-badge="src-age-b"]')?.textContent).toBe('Overlay');
-    expect(document.querySelector('[data-portable-secret-badge="src-dir"]')?.textContent).toBe('Plaintext');
+    expect(document.querySelector('[data-portable-secret-badge="src-dir"]')?.textContent).toContain('Plaintext');
 
     await click('[data-portable-menu="src-git"]');
     await click('[data-space-menu-item="remove"]');
@@ -396,7 +426,7 @@ describe('PortableSpacesCard & workflows', () => {
   });
 
   it('shows a calm 1-line empty state when no sources are registered', async () => {
-    apiMocks.listSources.mockResolvedValueOnce({ deviceRecipient: DEVICE_KEY, knownRecipients: [], items: [] });
+    apiMocks.listSources.mockResolvedValueOnce({ deviceRecipient: DEVICE_KEY, knownRecipients: [], items: [], orderRevision: '1' });
     await renderNode(<PortableSpacesCard client={fakeClient} spaces={SPACES} mainPath="/home/me/.kiki" />);
     expect(document.querySelector('[data-portable-empty]')?.textContent).toContain('.kiki.age');
     expect(document.querySelector('[data-settings-transfer-notices]')).toBeNull();
@@ -426,7 +456,8 @@ describe('PortableSpacesCard & workflows', () => {
   it('links a Git repository source', async () => {
     await renderNode(<PortableSpacesCard client={fakeClient} spaces={SPACES} mainPath="/home/me/.kiki" />);
     await click('[data-portable-link-open]');
-    await click('[data-portable-link-kind="git"]');
+    await click('[data-portable-source-tab="legacy"]');
+    await click('[data-portable-legacy-kind="git"]');
     await type('[data-portable-link-target]', 'https://github.com/example/kiki-dotfiles.git');
     await type('[data-portable-link-ref]', 'main');
     await type('[data-portable-link-label]', 'Team Dotfiles');
@@ -532,7 +563,7 @@ describe('PortableSpacesCard & workflows', () => {
         sources: [SOURCE_AGE_A.endpoint],
         target: { kind: 'live', spaceId: 'main' },
       }),
-      expect.any(AbortSignal),
+      { signal: expect.any(AbortSignal) },
     );
     expect(document.querySelector('[data-portable-diff-blocked="mcp:blocked"]')?.textContent).toBe('Local path differs on target');
     expect(document.querySelector('[data-portable-unchanged-toggle]')?.textContent).toContain('4 unchanged');
@@ -576,7 +607,7 @@ describe('PortableSpacesCard & workflows', () => {
         target: SOURCE_AGE_B.endpoint,
         targetUnlock: { passphrase: 'overlay-pass' },
       }),
-      expect.any(AbortSignal),
+      { signal: expect.any(AbortSignal) },
     );
   });
 
@@ -612,6 +643,7 @@ describe('PortableSpacesCard & workflows', () => {
     );
 
     await click('[data-portable-link-open]');
+    await click('[data-portable-source-tab="legacy"]');
     hostMock.pickDirectory.mockResolvedValueOnce(null);
     await click('[data-portable-link-browse]');
     expect(document.querySelector('[role="alert"]')).toBeNull();
@@ -621,8 +653,8 @@ describe('PortableSpacesCard & workflows', () => {
     expect(document.body.textContent).toContain('Native directory picker unavailable');
   });
 
-  it('subscribes via initialSubscribeUrl and triggers Sync now on URL subscriptions', async () => {
-    const urlSource: PortableSpaceSourceRecord = {
+  it('previews before subscribing via initialSubscribeUrl and triggers Sync now on URL subscriptions', async () => {
+    const urlSource: PortableSpaceCenterSource = {
       id: 'src-url-1',
       label: 'Lab Pack',
       endpoint: { kind: 'url', url: 'https://api.example.test/api/sub/pack.tgz' },
@@ -634,20 +666,95 @@ describe('PortableSpacesCard & workflows', () => {
       autoSync: true,
       etag: '"v1"',
       lastSyncedAt: '2026-11-24T00:00:00.000Z',
+      enabled: true,
+      priority: 0,
+      syncPolicy: 'auto',
+      revision: '1',
+      availableNewScopes: [],
+      needsReconcile: false,
     };
+    const manifest: PortableSpaceSubscribePreviewManifest = {
+      previewToken: 'tok-url-1',
+      packDigest: 'sha256:pack-1',
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+      targetSpaceId: 'main',
+      suggestedLabel: 'Lab Pack',
+      displayOrigin: 'api.example.test',
+      format: 'tgz',
+      secretMode: 'plain',
+      encryptionMode: 'none',
+      allowedPolicies: ['auto', 'manual', 'once'],
+      defaultSelection: {
+        version: 1,
+        enabledScopes: ['models_providers'],
+        excludedIds: [],
+        includedIds: [],
+        includeCredentials: true,
+      },
+      items: [
+        {
+          id: 'config:providers.axon',
+          scope: 'models_providers',
+          domain: 'config',
+          label: 'axon',
+          path: 'providers.axon',
+          memberUnitIds: ['config:providers.axon'],
+          dependsOnIds: [],
+          softDependsOnIds: [],
+          referencedByIds: [],
+          dependencyEdges: [],
+          coupledCredentialIds: [],
+          liveSatisfiedIds: [],
+          blockedDependencyIds: [],
+          status: 'will_write',
+          selectable: true,
+          selected: true,
+        },
+      ],
+      excluded: [],
+      bindingSlots: [],
+      localModelOptions: [],
+      savedBindingChoices: {},
+      catalogRevision: 'c1',
+      targetRevision: 't1',
+      orderRevision: '1',
+    };
+    apiMocks.previewSubscribe.mockResolvedValue(manifest);
     apiMocks.subscribe.mockResolvedValue({
+      kind: 'subscription',
       source: urlSource,
       status: 'updated',
-      appliedIds: ['config:providers.axon', 'config:models.gemini-4-neon'],
+      appliedIds: ['config:providers.axon'],
       deletedIds: [],
       skippedIds: [],
+      impact: {
+        managedCount: 0,
+        deletedIds: [],
+        handedOffIds: [],
+        preservedLocalIds: [],
+        preservedDependencyIds: [],
+        pendingReconcileIds: [],
+        addedIds: ['config:providers.axon'],
+        updatedIds: [],
+      },
     });
     apiMocks.syncSubscription.mockResolvedValue({
+      kind: 'subscription',
       source: urlSource,
       status: 'not_modified',
       appliedIds: [],
       deletedIds: [],
       skippedIds: [],
+      impact: {
+        managedCount: 1,
+        deletedIds: [],
+        handedOffIds: [],
+        preservedLocalIds: [],
+        preservedDependencyIds: [],
+        pendingReconcileIds: [],
+        addedIds: [],
+        updatedIds: [],
+      },
     });
     apiMocks.listSources.mockResolvedValue({
       ...SOURCES_RESPONSE,
@@ -663,17 +770,31 @@ describe('PortableSpacesCard & workflows', () => {
       />,
     );
 
-    const targetInput = document.querySelector<HTMLInputElement>('[data-portable-link-target]');
-    expect(targetInput?.value).toBe('https://api.example.test/api/sub/pack.tgz');
-    await click('[data-portable-link-submit]');
+    // Zero automatic outbound fetch on deep-link open; user clicks Fetch preview first.
+    expect(apiMocks.previewSubscribe).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-portable-deeplink-url]')?.textContent).toContain('api.example.test');
+    await click('[data-portable-fetch-preview]');
+    expect(apiMocks.previewSubscribe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: { kind: 'url', url: 'https://api.example.test/api/sub/pack.tgz' },
+        linkToSpaceId: 'main',
+      }),
+      { signal: expect.any(AbortSignal) },
+    );
+
+    await click('[data-portable-confirm-submit]');
     expect(apiMocks.subscribe).toHaveBeenCalledWith(expect.objectContaining({
-      url: 'https://api.example.test/api/sub/pack.tgz',
-      autoSync: true,
+      previewToken: 'tok-url-1',
+      syncPolicy: 'auto',
     }));
 
-    expect(document.querySelector('[data-portable-kind-badge="src-url-1"]')?.textContent).toBe('Subscription');
+    expect(document.querySelector('[data-portable-policy-label="src-url-1"]')?.textContent).toBe('Auto-sync');
     await click('[data-portable-sync-now="src-url-1"]');
-    expect(apiMocks.syncSubscription).toHaveBeenCalledWith('src-url-1', { force: false, createBackup: true });
+    expect(apiMocks.syncSubscription).toHaveBeenCalledWith(
+      'src-url-1',
+      { force: false, createBackup: true },
+      { view: 'center-v1' },
+    );
   });
 });
 

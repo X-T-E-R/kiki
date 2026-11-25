@@ -67,21 +67,26 @@ export function PortablePackDialog({
     setBusy(true);
     setFeedback(null);
     try {
-      const api = portableSpacesApi(client, { token });
+      const api = portableSpacesApi(client);
       const encryption: PortableSpaceEncryption | undefined = action === 'pack'
         ? encMode === 'passphrase'
           ? { mode: 'passphrase', passphrase: passphrase.trim() }
           : { mode: 'x25519', recipients: deviceRecipient !== undefined ? [deviceRecipient] : undefined }
         : undefined;
-      const body = {
-        action,
-        sourcePath,
-        destinationPath: trimmedDest,
-        format: action === 'pack' ? ('age' as const) : undefined,
-        encryption,
-        unlock: action === 'unpack' && passphrase.trim() !== '' ? { passphrase: passphrase.trim() } : undefined,
-      };
-      const receipt = action === 'pack' ? await api.pack(body) : await api.unpack(body);
+      const receipt = action === 'pack'
+        ? await api.pack({
+          action: 'pack',
+          sourcePath,
+          destinationPath: trimmedDest,
+          format: 'age',
+          encryption,
+        })
+        : await api.unpack({
+          action: 'unpack',
+          sourcePath,
+          destinationPath: trimmedDest,
+          unlock: passphrase.trim() !== '' ? { passphrase: passphrase.trim() } : undefined,
+        });
       onDone(receipt);
     } catch (error) {
       setBusy(false);

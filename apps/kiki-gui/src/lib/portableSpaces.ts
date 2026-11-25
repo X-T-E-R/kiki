@@ -1,66 +1,31 @@
 /**
- * Portable Spaces REST client and pure helpers.
+ * Portable Spaces REST adapter and pure helpers.
  *
- * Rides KikiClient's authenticated HTTP connection against `/api/spaces/portable/*`
- * and validates every response against `@kiki/protocol`.
+ * Delegates every HTTP call to the single canonical `klient.rest.portableSpaces`
+ * facade over the authenticated local control client, normalizing `RPCError`
+ * into `ApiError` so error codes (`40109`, `40428`, `40951`, `41004`, `40301`)
+ * map cleanly through `@kiki/session-core/i18n`.
  */
 
 import { useQuery } from '@tanstack/react-query';
-
+import type { PortableSpacesFacade } from '@kiki/klient';
+import { RPCError } from '@kiki/klient';
+import { HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
 import {
-  portableSpaceApplyReceiptSchema,
-  portableSpaceExportReceiptSchema,
-  portableSpaceInspectResultSchema,
-  portableSpaceMutateReceiptSchema,
-  portableSpacePreviewResultSchema,
-  portableSpaceRemoveSourceResponseSchema,
-  portableSpaceSourceRecordSchema,
-  portableSpaceSourcesListResponseSchema,
-  portableSpaceSubscriptionSyncResultSchema,
-  type PortableSpaceApplyInput,
-  type PortableSpaceApplyReceipt,
+  ErrorCode,
+  type PortableSpaceCenterSourcesListResponse,
   type PortableSpaceDomain,
   type PortableSpaceEndpoint,
-  type PortableSpaceExportInput,
-  type PortableSpaceExportReceipt,
-  type PortableSpaceForkInput,
   type PortableSpaceFormat,
   type PortableSpaceInspectInput,
-  type PortableSpaceInspectResult,
-  type PortableSpaceMutateInput,
-  type PortableSpaceMutateReceipt,
-  type PortableSpacePackUnpackInput,
-  type PortableSpacePreviewInput,
-  type PortableSpacePreviewResult,
-  type PortableSpaceRegisterSourceInput,
-  type PortableSpaceRekeyInput,
-  type PortableSpaceRemoveSourceResponse,
-  type PortableSpaceSourceRecord,
-  type PortableSpaceSourcesListResponse,
-  type PortableSpaceSubscribeInput,
-  type PortableSpaceSubscriptionSyncInput,
-  type PortableSpaceSubscriptionSyncResult,
+  type PortableSubscriptionScope,
 } from '@kiki/protocol';
-import type { I18nKey } from '@kiki/session-core/i18n';
+import { translate, type I18nKey } from '@kiki/session-core/i18n';
 
-import type { KikiClient } from './client';
+import { API_CODES, ApiError, type KikiClient } from './client';
+import { isLocalOwnerRequiredError } from './peerAccess';
 
-export interface PortableSpacesApi {
-  listSources(signal?: AbortSignal): Promise<PortableSpaceSourcesListResponse>;
-  registerSource(input: PortableSpaceRegisterSourceInput, signal?: AbortSignal): Promise<PortableSpaceSourceRecord>;
-  subscribe(input: PortableSpaceSubscribeInput, signal?: AbortSignal): Promise<PortableSpaceSubscriptionSyncResult>;
-  syncSubscription(id: string, input?: Partial<PortableSpaceSubscriptionSyncInput>, signal?: AbortSignal): Promise<PortableSpaceSubscriptionSyncResult>;
-  removeSource(id: string, signal?: AbortSignal): Promise<PortableSpaceRemoveSourceResponse>;
-  inspect(input: PortableSpaceInspectInput, signal?: AbortSignal): Promise<PortableSpaceInspectResult>;
-  exportSpace(input: PortableSpaceExportInput, signal?: AbortSignal): Promise<PortableSpaceExportReceipt>;
-  preview(input: PortableSpacePreviewInput, signal?: AbortSignal): Promise<PortableSpacePreviewResult>;
-  apply(input: PortableSpaceApplyInput, signal?: AbortSignal): Promise<PortableSpaceApplyReceipt>;
-  pack(input: PortableSpacePackUnpackInput, signal?: AbortSignal): Promise<PortableSpaceExportReceipt>;
-  unpack(input: PortableSpacePackUnpackInput, signal?: AbortSignal): Promise<PortableSpaceExportReceipt>;
-  fork(input: PortableSpaceForkInput, signal?: AbortSignal): Promise<PortableSpaceExportReceipt>;
-  mutate(input: PortableSpaceMutateInput, signal?: AbortSignal): Promise<PortableSpaceMutateReceipt>;
-  rekey(input: PortableSpaceRekeyInput, signal?: AbortSignal): Promise<PortableSpaceInspectResult>;
-}
+export type PortableSpacesApi = PortableSpacesFacade;
 
 interface PortableSpacesOverrideClient {
   readonly portableSpaces?: PortableSpacesApi;
@@ -82,68 +47,106 @@ function clientScope(client: KikiClient | null): number | null {
 export const portableSpaceKeys = {
   all: ['portable-spaces'] as const,
   sources: (client: KikiClient | null) => ['portable-spaces', 'sources', clientScope(client)] as const,
+  centerSources: (client: KikiClient | null) => ['portable-spaces', 'center-sources', clientScope(client)] as const,
   inspect: (client: KikiClient | null, endpoint: PortableSpaceEndpoint | null, unlockKey = '') =>
     ['portable-spaces', 'inspect', clientScope(client), endpoint === null ? null : endpointKey(endpoint), unlockKey] as const,
 };
 
-async function requestPortable<T>(
-  client: KikiClient,
-  method: 'GET' | 'POST' | 'DELETE',
-  path: string,
-  schema: { parse(data: unknown): T },
-  options: { readonly body?: unknown; readonly signal?: AbortSignal; readonly timeoutMs?: number; readonly token?: string } = {},
-): Promise<T> {
-  const data = await client.requestApiJson<unknown>(method, path, {
-    body: options.body,
-    signal: options.signal,
-    timeoutMs: options.timeoutMs ?? 0,
-    token: options.token,
-  });
-  return schema.parse(data);
+function toApiError(error: unknown): unknown {
+  if (error instanceof RPCError) {
+    const timedOut = error.reason === HTTP_TRANSPORT_TIMEOUT_REASON;
+    return new ApiError({
+      code: timedOut ? API_CODES.TIMEOUT : error.code,
+      msg: timedOut ? error.message.replace('call timed out', translate('en', 'common.requestTimedOut')) : error.message,
+      data: error.data ?? null,
+      details: error.details,
+      request_id: error.requestId,
+      source: error.source,
+      reason: error.reason,
+    });
+  }
+  return error;
 }
 
-export function portableSpacesApi(client: KikiClient, options?: { readonly token?: string }): PortableSpacesApi {
-  const override = (client as PortableSpacesOverrideClient).portableSpaces;
-  if (override !== undefined) return override;
-  const token = options?.token;
+function wrapFacade(facade: PortableSpacesFacade): PortableSpacesFacade {
+  const wrap = <Args extends readonly unknown[], Result>(
+    fn: (...args: Args) => Promise<Result>,
+  ): ((...args: Args) => Promise<Result>) => {
+    return async (...args: Args) => {
+      try {
+        return await fn(...args);
+      } catch (error) {
+        throw toApiError(error);
+      }
+    };
+  };
+
   return {
-    listSources: (signal) =>
-      requestPortable(client, 'GET', '/spaces/portable/sources', portableSpaceSourcesListResponseSchema, { signal, token }),
-    registerSource: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/sources', portableSpaceSourceRecordSchema, { body, signal, token }),
-    subscribe: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/subscribe', portableSpaceSubscriptionSyncResultSchema, { body, signal, token }),
-    syncSubscription: (id, body, signal) =>
-      requestPortable(client, 'POST', `/spaces/portable/sources/${encodeURIComponent(id)}/sync`, portableSpaceSubscriptionSyncResultSchema, { body: body ?? {}, signal, token }),
-    removeSource: (id, signal) =>
-      requestPortable(client, 'DELETE', `/spaces/portable/sources/${encodeURIComponent(id)}`, portableSpaceRemoveSourceResponseSchema, { signal, token }),
-    inspect: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/inspect', portableSpaceInspectResultSchema, { body, signal, token }),
-    exportSpace: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/export', portableSpaceExportReceiptSchema, { body, signal, token }),
-    preview: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/preview', portableSpacePreviewResultSchema, { body, signal, token }),
-    apply: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/apply', portableSpaceApplyReceiptSchema, { body, signal, token }),
-    pack: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/pack', portableSpaceExportReceiptSchema, { body, signal, token }),
-    unpack: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/unpack', portableSpaceExportReceiptSchema, { body, signal, token }),
-    fork: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/fork', portableSpaceExportReceiptSchema, { body, signal, token }),
-    mutate: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/mutate', portableSpaceMutateReceiptSchema, { body, signal, token }),
-    rekey: (body, signal) =>
-      requestPortable(client, 'POST', '/spaces/portable/rekey', portableSpaceInspectResultSchema, { body, signal, token }),
+    listSources: wrap(facade.listSources.bind(facade)) as PortableSpacesFacade['listSources'],
+    registerSource: wrap(facade.registerSource.bind(facade)),
+    previewSubscribe: wrap(facade.previewSubscribe.bind(facade)),
+    subscribe: wrap(facade.subscribe.bind(facade)) as PortableSpacesFacade['subscribe'],
+    previewSource: wrap(facade.previewSource.bind(facade)),
+    syncSubscription: wrap(facade.syncSubscription.bind(facade)) as PortableSpacesFacade['syncSubscription'],
+    patchSource: wrap(facade.patchSource.bind(facade)),
+    reorderSources: wrap(facade.reorderSources.bind(facade)),
+    previewRemoveSource: wrap(facade.previewRemoveSource.bind(facade)),
+    removeSource: wrap(facade.removeSource.bind(facade)),
+    removeReviewedSource: wrap(facade.removeReviewedSource.bind(facade)),
+    inspect: wrap(facade.inspect.bind(facade)),
+    exportSpace: wrap(facade.exportSpace.bind(facade)),
+    preview: wrap(facade.preview.bind(facade)),
+    apply: wrap(facade.apply.bind(facade)),
+    pack: wrap(facade.pack.bind(facade)),
+    unpack: wrap(facade.unpack.bind(facade)),
+    fork: wrap(facade.fork.bind(facade)),
+    delta: wrap(facade.delta.bind(facade)),
+    mutate: wrap(facade.mutate.bind(facade)),
+    rekey: wrap(facade.rekey.bind(facade)),
+    addRecipient: wrap(facade.addRecipient.bind(facade)),
   };
 }
 
-export function usePortableSources(client: KikiClient | null, token?: string) {
+const wrappedFacades = new WeakMap<PortableSpacesFacade, PortableSpacesFacade>();
+
+/**
+ * Returns the canonical `klient.rest.portableSpaces` facade for the local
+ * control client (or the test override seam when attached to a mock client).
+ */
+export function portableSpacesApi(client: KikiClient): PortableSpacesApi {
+  const override = (client as PortableSpacesOverrideClient).portableSpaces;
+  if (override !== undefined) return override;
+  const facade = client.klient?.rest?.portableSpaces;
+  if (facade === undefined) {
+    throw new Error('Portable spaces require an HTTP connection to the local Kiki server.');
+  }
+  let wrapped = wrappedFacades.get(facade);
+  if (wrapped === undefined) {
+    wrapped = wrapFacade(facade);
+    wrappedFacades.set(facade, wrapped);
+  }
+  return wrapped;
+}
+
+export function usePortableCenterSources(client: KikiClient | null) {
+  return useQuery<PortableSpaceCenterSourcesListResponse>({
+    queryKey: portableSpaceKeys.centerSources(client),
+    queryFn: ({ signal }) => {
+      if (client === null) throw new Error('The local space connection is not ready.');
+      return portableSpacesApi(client).listSources({ view: 'center-v1', signal });
+    },
+    enabled: client !== null,
+    staleTime: 20_000,
+    retry: false,
+  });
+}
+
+export function usePortableSources(client: KikiClient | null) {
   return useQuery({
     queryKey: portableSpaceKeys.sources(client),
     queryFn: ({ signal }) => {
       if (client === null) throw new Error('The local space connection is not ready.');
-      return portableSpacesApi(client, { token }).listSources(signal);
+      return portableSpacesApi(client).listSources({ signal });
     },
     enabled: client !== null,
     staleTime: 20_000,
@@ -154,22 +157,73 @@ export function usePortableSources(client: KikiClient | null, token?: string) {
 export function usePortableInspect(
   client: KikiClient | null,
   input: PortableSpaceInspectInput | null,
-  options?: { readonly token?: string; readonly unlockNonce?: number },
+  options?: { readonly unlockNonce?: number; readonly enabled?: boolean },
 ) {
   const unlockKey = `${options?.unlockNonce ?? 0}:${input?.unlock?.passphrase ? 'pw' : ''}:${input?.unlock?.identity ? 'id' : ''}`;
   return useQuery({
     queryKey: portableSpaceKeys.inspect(client, input?.endpoint ?? null, unlockKey),
     queryFn: ({ signal }) => {
       if (client === null || input === null) throw new Error('Inspect input is unavailable.');
-      return portableSpacesApi(client, { token: options?.token }).inspect(input, signal);
+      return portableSpacesApi(client).inspect(input, { signal });
     },
-    enabled: client !== null && input !== null,
+    enabled: (options?.enabled ?? true) && client !== null && input !== null,
     staleTime: 10_000,
     retry: false,
   });
 }
 
-// ---- Domain groups & labels ----
+// ---- Error classification ----
+
+export function extractPortableErrorCode(error: unknown): number | undefined {
+  if (typeof error === 'object' && error !== null && typeof (error as { code?: unknown }).code === 'number') {
+    return (error as { code: number }).code;
+  }
+  const text = error instanceof Error ? error.message : String(error ?? '');
+  const match = /\(code (-?\d+)\)\s*$/u.exec(text);
+  return match !== null ? Number(match[1]) : undefined;
+}
+
+export function isPortableUnlockRequiredError(error: unknown): boolean {
+  return extractPortableErrorCode(error) === ErrorCode.PORTABLE_UNLOCK_REQUIRED;
+}
+
+export function isPortablePreviewStaleError(error: unknown): boolean {
+  return extractPortableErrorCode(error) === ErrorCode.PORTABLE_PREVIEW_STALE;
+}
+
+export function isPortablePreviewExpiredError(error: unknown): boolean {
+  return extractPortableErrorCode(error) === ErrorCode.PORTABLE_PREVIEW_EXPIRED;
+}
+
+export function isPortableOwnerDeniedError(error: unknown): boolean {
+  return extractPortableErrorCode(error) === 40301 || isLocalOwnerRequiredError(error);
+}
+
+export function isPortableNotFoundError(error: unknown): boolean {
+  return extractPortableErrorCode(error) === ErrorCode.PORTABLE_NOT_FOUND;
+}
+
+export function isPortableHostUnsupportedError(error: unknown): boolean {
+  if (error instanceof Error && /404|not found/iu.test(error.message) && extractPortableErrorCode(error) === undefined) {
+    return true;
+  }
+  if (typeof error === 'object' && error !== null) {
+    const status = (error as { status?: unknown }).status;
+    if (status === 404 || status === 501) return true;
+  }
+  return false;
+}
+
+// ---- Scope & domain labels ----
+
+export const PORTABLE_SUBSCRIPTION_SCOPE_LABEL_KEY: Record<PortableSubscriptionScope, I18nKey> = {
+  models_providers: 'st.portable.scope.models_providers',
+  extensions_search: 'st.portable.scope.extensions_search',
+  agents_recipes: 'st.portable.scope.agents_recipes',
+  personas: 'st.portable.scope.personas',
+  instructions: 'st.portable.scope.instructions',
+  settings: 'st.portable.scope.settings',
+};
 
 export interface PortableDomainGroup {
   readonly id: string;
@@ -218,7 +272,7 @@ export const PORTABLE_DOMAIN_LABEL_KEY: Record<PortableSpaceDomain, I18nKey> = {
   sessions: 'st.portable.domain.sessions',
 };
 
-// ---- Endpoint & Colab helpers ----
+// ---- Endpoint, URL masking, archive & Colab helpers ----
 
 export function endpointKey(endpoint: PortableSpaceEndpoint): string {
   switch (endpoint.kind) {
@@ -235,11 +289,15 @@ export function endpointKey(endpoint: PortableSpaceEndpoint): string {
   }
 }
 
-function maskSubscriptionUrl(rawUrl: string): string {
+/**
+ * Redacts long bearer path tokens and strips query/userinfo/fragment from a
+ * subscription URL before displaying it in readonly surfaces or logs.
+ */
+export function maskSubscriptionUrl(rawUrl: string): string {
   try {
     const parsed = new URL(rawUrl);
     const maskedPath = parsed.pathname.split('/').map((segment) => {
-      const match = /^([a-z0-9_-]{16,})(\.(?:kiki\.)?(?:tgz|tar\.gz|age))?$/iu.exec(segment);
+      const match = /^([a-z0-9_-]{12,})(\.(?:kiki\.)?(?:tgz|tar\.gz|age))?$/iu.exec(segment);
       if (match === null) return segment;
       const token = match[1]!;
       const ext = match[2] ?? '';
@@ -247,8 +305,24 @@ function maskSubscriptionUrl(rawUrl: string): string {
     }).join('/');
     return `${parsed.origin}${maskedPath}`;
   } catch {
+    return rawUrl.replace(/\?.*$/u, '');
+  }
+}
+
+export function extractSubscriptionOrigin(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    return parsed.host || parsed.origin;
+  } catch {
     return rawUrl;
   }
+}
+
+const ARCHIVE_EXTENSION_RE = /\.(?:kiki\.)?(?:tgz|tar\.gz|age)$/iu;
+
+export function isSupportedPortableArchivePath(filePath: string): boolean {
+  const trimmed = filePath.trim();
+  return trimmed.length > 0 && ARCHIVE_EXTENSION_RE.test(trimmed);
 }
 
 export function endpointSubtitle(endpoint: PortableSpaceEndpoint, gitBranch?: string): string {

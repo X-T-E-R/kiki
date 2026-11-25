@@ -166,6 +166,7 @@ beforeEach(() => {
     deviceRecipient: 'age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq2x4v2p',
     knownRecipients: [],
     items: [],
+    orderRevision: '1',
   });
   connections.list.mockResolvedValue([]);
   threadBridges.status.mockResolvedValue({

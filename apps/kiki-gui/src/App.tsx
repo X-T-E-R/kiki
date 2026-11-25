@@ -63,6 +63,10 @@ import { Sidebar } from './components/Sidebar';
 import { shouldHideFromSessionGroups } from './components/persona/personaSessionUtils';
 import { usePersonaDirectory } from './components/persona/usePersonaDirectory';
 import { StorageMigrationViewComponent } from './components/storage/StorageMigrationView';
+import { SubscribeModal } from './components/settings/spaces/SubscribeModal';
+import { portableSpaceKeys } from './lib/portableSpaces';
+import { useSpaces } from './lib/spaces';
+import { useSubscribeIntentQueue } from './lib/subscribeIntent';
 import { Toasts } from './components/Toasts';
 import { WorkSetupSheet } from './components/WorkSetupSheet';
 import { useWorkModes, workPresetsEnabled } from './lib/workModeCatalog';
@@ -1160,18 +1164,15 @@ function NormalApp() {
     setSidebarOpen(false);
   }, [location.pathname, location.search]);
 
-  // Route `?subscribe=<url>` query links and desktop `kiki://subscribe?url=...`
-  // deep links to Settings -> Spaces so the subscription panel opens pre-filled.
-  useEffect(() => {
-    if (location.pathname === '/settings/spaces') return;
-    const subscribe = new URLSearchParams(location.search).get('subscribe')?.trim();
-    if (!subscribe) return;
-    void navigate(`/settings/spaces?subscribe=${encodeURIComponent(subscribe)}`, { replace: true });
-  }, [location.pathname, location.search, navigate]);
-
-  useEffect(() => host.onSubscribeUrl?.((url) => {
-    void navigate(`/settings/spaces?subscribe=${encodeURIComponent(url)}`);
-  }), [host, navigate]);
+  // Consume desktop `kiki://subscribe?...` intents via the authoritative FIFO
+  // pump and scrub legacy `?subscribe=` query parameters immediately without
+  // navigating away from unsaved drafts.
+  const subscribeQueue = useSubscribeIntentQueue(host, location, navigate);
+  const inRemoteScopeForSubscribe = connectionSource === 'remote' || connectionSource === 'ssh';
+  const subscribeControlClient = host.kind === 'tauri'
+    ? localClient
+    : (localClient ?? (inRemoteScopeForSubscribe ? null : client));
+  const subscribeSpaces = useSpaces(subscribeQueue.activeIntent !== null ? subscribeControlClient : null);
 
   // Escape closes the mobile sidebar drawer (the backdrop swallows pointer
   // events, so the key must be handled globally while it is open).
@@ -1562,6 +1563,27 @@ function NormalApp() {
         />
       ) : null}
         {shortcutsOpen ? <ShortcutsOverlay onClose={() => { setShortcutsOpen(false); }} /> : null}
+        {subscribeQueue.activeIntent !== null && subscribeControlClient !== null ? (
+          <SubscribeModal
+            key={subscribeQueue.activeIntent.id}
+            client={subscribeControlClient}
+            spaces={subscribeSpaces.data ?? []}
+            mode={{ kind: 'new', initialIntent: subscribeQueue.activeIntent }}
+            queuedCount={subscribeQueue.queuedCount}
+            onClose={() => { void subscribeQueue.settleActiveIntent(); }}
+            onDone={(result) => {
+              void queryClient.invalidateQueries({ queryKey: portableSpaceKeys.all });
+              if (result.kind === 'commit') {
+                const count = result.commit.appliedIds.length + result.commit.deletedIds.length;
+                const text = result.commit.kind === 'once'
+                  ? t('st.portable.center.importOnceDone', { count })
+                  : t('st.portable.subscribeDone', { name: result.commit.source.label, count });
+                pushToast({ tone: 'success', text });
+              }
+              void subscribeQueue.settleActiveIntent();
+            }}
+          />
+        ) : null}
         {workSetup !== null && client !== null ? (
           <WorkSetupSheet
             mode={workSetup}

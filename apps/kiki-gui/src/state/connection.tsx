@@ -52,6 +52,7 @@ import {
   readAdoptedShellCredential,
 } from '../lib/appShell';
 import { API_CODES, ApiError, createRemoteSpaceClient, KikiClient } from '../lib/client';
+import { portableSpaceKeys } from '../lib/portableSpaces';
 import { remoteConnectionKeys } from '../lib/remoteConnections';
 import { threadBridgeKeys } from '../lib/threadBridges';
 import { subscribeUsageFreshness } from '../lib/usageFreshness';
@@ -117,6 +118,10 @@ export function handleGlobalConnectionFrame(
   if (frame.type === 'event.remote_connections.changed') {
     void queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all });
     void queryClient.invalidateQueries({ queryKey: threadBridgeKeys.all });
+    return true;
+  }
+  if (frame.type === 'event.portable_spaces.changed') {
+    void queryClient.invalidateQueries({ queryKey: portableSpaceKeys.all });
     return true;
   }
   if (frame.type !== 'event.model_catalog.changed') return false;
@@ -1600,13 +1605,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         offPersonas();
         offPersonas = subscribePersonaFreshness(klient, queryClient);
         void queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all });
+        void queryClient.invalidateQueries({ queryKey: portableSpaceKeys.all });
       }
     });
     const catalog = klient.events.on('kosong.changed', () => {
       handleGlobalConnectionFrame({ type: 'event.model_catalog.changed' }, queryClient);
     });
-    // Forward remote-connection mutations as soon as the event facade emits them.
+    // Forward remote-connection and portable-space mutations as soon as the event facade emits them.
     let remoteConnectionsSub: { dispose(): void } | undefined;
+    let portableSpacesSub: { dispose(): void } | undefined;
     try {
       const dynamicEvents = klient.events as unknown as {
         on?: (name: string, cb: () => void) => { dispose(): void };
@@ -1615,9 +1622,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         remoteConnectionsSub = dynamicEvents.on('remoteConnections.changed', () => {
           handleGlobalConnectionFrame({ type: 'event.remote_connections.changed' }, queryClient);
         });
+        portableSpacesSub = dynamicEvents.on('portableSpaces.changed', () => {
+          handleGlobalConnectionFrame({ type: 'event.portable_spaces.changed' }, queryClient);
+        });
       }
     } catch {
       remoteConnectionsSub = undefined;
+      portableSpacesSub = undefined;
     }
     return () => {
       active = false;
@@ -1628,6 +1639,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       offStatus();
       catalog.dispose();
       remoteConnectionsSub?.dispose();
+      portableSpacesSub?.dispose();
       searchIndex.dispose();
       workChanged.dispose();
       offUsage();

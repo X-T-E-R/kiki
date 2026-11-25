@@ -70,7 +70,7 @@ export function LinkSourcePanel({ client, token, initialKind, initialTarget, onC
     setFeedback(null);
     try {
       if (kind === 'url') {
-        const result = await portableSpacesApi(client, { token }).subscribe({
+        const result = await portableSpacesApi(client).subscribe({
           url: trimmed,
           label: label.trim() || undefined,
           linkToSpaceId: 'main',
@@ -91,7 +91,7 @@ export function LinkSourcePanel({ client, token, initialKind, initialTarget, onC
         : kind === 'archive'
           ? { kind: 'archive', path: trimmed }
           : { kind: 'dir', path: trimmed };
-      const record = await portableSpacesApi(client, { token }).registerSource({
+      const record = await portableSpacesApi(client).registerSource({
         endpoint,
         label: label.trim() || undefined,
         unlock: passphrase.trim() !== '' ? { passphrase: passphrase.trim() } : undefined,

@@ -68,8 +68,14 @@ export interface NormalizedManifestIndex {
   readonly itemScopeById: ReadonlyMap<string, PortableSubscriptionScope>;
   readonly selectableItemsByScope: ReadonlyMap<PortableSubscriptionScope, readonly PortableSpaceSubscribePreviewItem[]>;
   readonly itemsByScope: ReadonlyMap<PortableSubscriptionScope, readonly PortableSpaceSubscribePreviewItem[]>;
+  readonly scopeItemIdSets: ReadonlyMap<PortableSubscriptionScope, ReadonlySet<string>>;
   readonly reverseHardConsumers: ReadonlyMap<string, readonly string[]>;
+  readonly nonLiveHardTargetsByItemId: ReadonlyMap<string, readonly string[]>;
+  readonly itemsWithHardDeps: readonly PortableSpaceSubscribePreviewItem[];
+  readonly itemsWithCredentials: readonly PortableSpaceSubscribePreviewItem[];
   readonly optionIndexById: ReadonlyMap<string, number>;
+  readonly eligibleSetByTupleKey: ReadonlyMap<string, ReadonlySet<number>>;
+  readonly packModelUnitIdByAlias: ReadonlyMap<string, string>;
 }
 
 /** Encodes a physical config model unit ID matching treeProjection.ts putUnit('config', ['models', alias]). */
@@ -79,24 +85,41 @@ export function encodeConfigModelUnitId(alias: string): string {
 
 /** Builds O(1) indexed structures from a frozen preview manifest for synchronous client/server evaluation. */
 export function normalizePreviewManifest(
-  manifest: Pick<PortableSpaceSubscribePreviewManifest, 'items' | 'localModelOptions'>,
+  manifest: Pick<PortableSpaceSubscribePreviewManifest, 'items' | 'localModelOptions'> & {
+    readonly bindingSlots?: readonly PortableSpaceBindingSlot[];
+  },
 ): NormalizedManifestIndex {
   const itemById = new Map<string, PortableSpaceSubscribePreviewItem>();
   const itemScopeById = new Map<string, PortableSubscriptionScope>();
   const itemsByScope = new Map<PortableSubscriptionScope, PortableSpaceSubscribePreviewItem[]>();
   const selectableItemsByScope = new Map<PortableSubscriptionScope, PortableSpaceSubscribePreviewItem[]>();
+  const scopeItemIdSets = new Map<PortableSubscriptionScope, Set<string>>();
   const reverseHardConsumers = new Map<string, string[]>();
+  const nonLiveHardTargetsByItemId = new Map<string, string[]>();
+  const itemsWithHardDeps: PortableSpaceSubscribePreviewItem[] = [];
+  const itemsWithCredentials: PortableSpaceSubscribePreviewItem[] = [];
+
   for (const scope of PORTABLE_SUBSCRIPTION_SCOPES) {
     itemsByScope.set(scope, []);
     selectableItemsByScope.set(scope, []);
+    scopeItemIdSets.set(scope, new Set());
   }
+
   for (const item of manifest.items) {
     itemById.set(item.id, item);
     itemScopeById.set(item.id, item.scope);
     itemsByScope.get(item.scope)!.push(item);
+    scopeItemIdSets.get(item.scope)!.add(item.id);
     if (item.selectable) selectableItemsByScope.get(item.scope)!.push(item);
+    if (item.coupledCredentialIds.length > 0) itemsWithCredentials.push(item);
+
+    let nonLiveHard: string[] | undefined;
     for (const edge of item.dependencyEdges) {
       if (edge.kind !== 'hard') continue;
+      if (!edge.liveSatisfied) {
+        if (nonLiveHard === undefined) nonLiveHard = [];
+        nonLiveHard.push(edge.toId);
+      }
       let list = reverseHardConsumers.get(edge.toId);
       if (list === undefined) {
         list = [];
@@ -104,18 +127,43 @@ export function normalizePreviewManifest(
       }
       if (!list.includes(item.id)) list.push(item.id);
     }
+    if (nonLiveHard !== undefined) {
+      nonLiveHardTargetsByItemId.set(item.id, nonLiveHard);
+    }
+    if (nonLiveHard !== undefined || item.blockedDependencyIds.length > 0) {
+      itemsWithHardDeps.push(item);
+    }
   }
+
   const optionIndexById = new Map<string, number>();
   manifest.localModelOptions.forEach((option: PortableSpaceLocalModelOption, index: number) => {
     optionIndexById.set(option.id, index);
   });
+
+  const eligibleSetByTupleKey = new Map<string, ReadonlySet<number>>();
+  const packModelUnitIdByAlias = new Map<string, string>();
+  if (manifest.bindingSlots !== undefined) {
+    for (const slot of manifest.bindingSlots) {
+      eligibleSetByTupleKey.set(slot.tupleKey, new Set(slot.eligibleOptionIndices));
+      if (!packModelUnitIdByAlias.has(slot.sourceModelId)) {
+        packModelUnitIdByAlias.set(slot.sourceModelId, encodeConfigModelUnitId(slot.sourceModelId));
+      }
+    }
+  }
+
   return {
     itemById,
     itemScopeById,
     selectableItemsByScope,
     itemsByScope,
+    scopeItemIdSets,
     reverseHardConsumers,
+    nonLiveHardTargetsByItemId,
+    itemsWithHardDeps,
+    itemsWithCredentials,
     optionIndexById,
+    eligibleSetByTupleKey,
+    packModelUnitIdByAlias,
   };
 }
 
@@ -138,94 +186,105 @@ export function evaluateSubscriptionSelection(
   index: NormalizedManifestIndex = normalizePreviewManifest(manifest),
 ): SubscriptionSelectionEvaluation {
   const enabledScopes = new Set(selection.enabledScopes);
-  const excluded = new Set(selection.excludedIds);
-  const included = new Set(selection.includedIds);
+  const excluded = selection.excludedIds.length > 0 ? new Set(selection.excludedIds) : undefined;
+  const included = selection.includedIds.length > 0 ? new Set(selection.includedIds) : undefined;
+
+  const selectedCountByScope = new Int32Array(PORTABLE_SUBSCRIPTION_SCOPES.length);
+  const scopeOrdinal: Record<PortableSubscriptionScope, number> = {
+    models_providers: 0,
+    extensions_search: 1,
+    agents_recipes: 2,
+    personas: 3,
+    instructions: 4,
+    settings: 5,
+  };
 
   const selectedItemIds = new Set<string>();
-  for (const item of manifest.items) {
+  const items = manifest.items;
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i]!;
     if (!item.selectable) continue;
-    const checked = excluded.has(item.id)
+    const checked = excluded !== undefined && excluded.has(item.id)
       ? false
-      : included.has(item.id)
+      : included !== undefined && included.has(item.id)
         ? true
         : enabledScopes.has(item.scope);
-    if (checked) selectedItemIds.add(item.id);
-  }
-
-  const blockedByItemId = new Map<string, string[]>();
-  for (const itemId of selectedItemIds) {
-    const item = index.itemById.get(itemId);
-    if (item === undefined) continue;
-    if (item.blockedDependencyIds.length > 0) {
-      const unresolvedStatic = item.blockedDependencyIds.filter((depId) => !selectedItemIds.has(depId));
-      if (unresolvedStatic.length > 0) {
-        blockedByItemId.set(itemId, [...unresolvedStatic]);
-      }
+    if (checked) {
+      selectedItemIds.add(item.id);
+      selectedCountByScope[scopeOrdinal[item.scope]]! += 1;
     }
   }
 
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const itemId of selectedItemIds) {
-      const item = index.itemById.get(itemId);
-      if (item === undefined) continue;
-      const missingHard: string[] = [];
-      for (const edge of item.dependencyEdges) {
-        if (edge.kind !== 'hard') continue;
-        const satisfiedByPack = selectedItemIds.has(edge.toId) && !blockedByItemId.has(edge.toId);
-        if (!edge.liveSatisfied && !satisfiedByPack) {
-          missingHard.push(edge.toId);
+  const blockedByItemId = new Map<string, string[]>();
+  const hardItems = index.itemsWithHardDeps;
+  if (hardItems.length > 0) {
+    for (let i = 0; i < hardItems.length; i += 1) {
+      const item = hardItems[i]!;
+      if (!selectedItemIds.has(item.id) || item.blockedDependencyIds.length === 0) continue;
+      let unresolvedStatic: string[] | undefined;
+      for (let j = 0; j < item.blockedDependencyIds.length; j += 1) {
+        const depId = item.blockedDependencyIds[j]!;
+        if (!selectedItemIds.has(depId)) {
+          if (unresolvedStatic === undefined) unresolvedStatic = [];
+          unresolvedStatic.push(depId);
         }
       }
-      if (missingHard.length > 0) {
-        const existing = blockedByItemId.get(itemId);
-        if (existing === undefined) {
-          blockedByItemId.set(itemId, missingHard);
-          changed = true;
-        } else {
-          for (const dep of missingHard) {
-            if (!existing.includes(dep)) {
-              existing.push(dep);
-              changed = true;
-            }
+      if (unresolvedStatic !== undefined) {
+        blockedByItemId.set(item.id, unresolvedStatic);
+      }
+    }
+
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let i = 0; i < hardItems.length; i += 1) {
+        const item = hardItems[i]!;
+        if (!selectedItemIds.has(item.id)) continue;
+        const targets = index.nonLiveHardTargetsByItemId.get(item.id);
+        if (targets === undefined) continue;
+        let existing = blockedByItemId.get(item.id);
+        for (let j = 0; j < targets.length; j += 1) {
+          const toId = targets[j]!;
+          if (selectedItemIds.has(toId) && !blockedByItemId.has(toId)) continue;
+          if (existing === undefined) {
+            existing = [toId];
+            blockedByItemId.set(item.id, existing);
+            changed = true;
+          } else if (!existing.includes(toId)) {
+            existing.push(toId);
+            changed = true;
           }
         }
       }
     }
   }
 
-  const scopeSummaries: ScopeSelectionSummary[] = PORTABLE_SUBSCRIPTION_SCOPES.map((scope) => {
-    const allItems = index.itemsByScope.get(scope) ?? [];
-    const selectable = index.selectableItemsByScope.get(scope) ?? [];
-    let selectedCount = 0;
-    for (const item of selectable) {
-      if (selectedItemIds.has(item.id)) selectedCount += 1;
-    }
+  const scopeSummaries: ScopeSelectionSummary[] = PORTABLE_SUBSCRIPTION_SCOPES.map((scope, idx) => {
+    const totalCount = index.itemsByScope.get(scope)?.length ?? 0;
+    const selectableCount = index.selectableItemsByScope.get(scope)?.length ?? 0;
+    const selectedCount = selectedCountByScope[idx]!;
     const state: SubscriptionScopeCheckState =
-      selectable.length === 0
+      selectableCount === 0
         ? (enabledScopes.has(scope) ? 'checked' : 'unchecked')
         : selectedCount === 0
           ? 'unchecked'
-          : selectedCount === selectable.length && enabledScopes.has(scope)
+          : selectedCount === selectableCount && enabledScopes.has(scope)
             ? 'checked'
-            : selectedCount === selectable.length && selectable.length > 0 && !enabledScopes.has(scope)
-              ? 'indeterminate'
-              : 'indeterminate';
+            : 'indeterminate';
     return {
       scope,
-      totalCount: allItems.length,
-      selectableCount: selectable.length,
+      totalCount,
+      selectableCount,
       selectedCount,
       state,
     };
   });
 
-  const deferredSet = new Set(
-    bindings.unmappedModelPolicy === 'defer' ? (bindings.deferredSlotIds ?? []) : [],
-  );
-  const unitBindings = bindings.unitModelBindings ?? {};
-  const groupBindings = bindings.modelBindings ?? {};
+  const deferredSet = bindings.unmappedModelPolicy === 'defer' && bindings.deferredSlotIds !== undefined && bindings.deferredSlotIds.length > 0
+    ? new Set(bindings.deferredSlotIds)
+    : undefined;
+  const unitBindings = bindings.unitModelBindings;
+  const groupBindings = bindings.modelBindings;
 
   const activeSlots: EvaluatedBindingSlot[] = [];
   const actionableSlots: EvaluatedBindingSlot[] = [];
@@ -233,13 +292,15 @@ export function evaluateSubscriptionSelection(
   const invalidTargetSlots: EvaluatedBindingSlot[] = [];
   const deferredSlots: EvaluatedBindingSlot[] = [];
 
-  for (const slot of manifest.bindingSlots) {
+  const bindingSlots = manifest.bindingSlots;
+  for (let i = 0; i < bindingSlots.length; i += 1) {
+    const slot = bindingSlots[i]!;
     if (!selectedItemIds.has(slot.itemId)) continue;
-    const eligibleSet = new Set(slot.eligibleOptionIndices);
-    const packModelUnitId = encodeConfigModelUnitId(slot.sourceModelId);
+    const eligibleSet = index.eligibleSetByTupleKey.get(slot.tupleKey) ?? new Set(slot.eligibleOptionIndices);
+    const packModelUnitId = index.packModelUnitIdByAlias.get(slot.sourceModelId) ?? encodeConfigModelUnitId(slot.sourceModelId);
     const packModelSelected = selectedItemIds.has(packModelUnitId) && !blockedByItemId.has(packModelUnitId);
-    const unitChoice = unitBindings[slot.tupleKey];
-    const groupChoice = groupBindings[slot.sourceModelId];
+    const unitChoice = unitBindings?.[slot.tupleKey];
+    const groupChoice = groupBindings?.[slot.sourceModelId];
 
     let evaluated: EvaluatedBindingSlot;
     if (unitChoice !== undefined) {
@@ -249,7 +310,7 @@ export function evaluateSubscriptionSelection(
       } else {
         evaluated = { slot, state: 'invalid_target', invalidLocalModelId: unitChoice };
       }
-    } else if (deferredSet.has(slot.tupleKey)) {
+    } else if (deferredSet !== undefined && deferredSet.has(slot.tupleKey)) {
       evaluated = { slot, state: 'deferred' };
     } else if (groupChoice !== undefined) {
       const optIdx = index.optionIndexById.get(groupChoice);
@@ -292,54 +353,64 @@ export function evaluateSubscriptionSelection(
     }
   }
 
-  const groupedMap = new Map<string, EvaluatedBindingSlot[]>();
-  for (const evaluated of actionableSlots) {
-    let list = groupedMap.get(evaluated.slot.sourceModelId);
-    if (list === undefined) {
-      list = [];
-      groupedMap.set(evaluated.slot.sourceModelId, list);
-    }
-    list.push(evaluated);
-  }
-
   const groupedActionableSlots: GroupedBindingSlot[] = [];
-  for (const [sourceModelId, slots] of groupedMap) {
-    let intersection: number[] | undefined;
-    const consumerItemIds: string[] = [];
-    const consumerLabels: string[] = [];
-    for (const entry of slots) {
-      if (!consumerItemIds.includes(entry.slot.itemId)) {
-        consumerItemIds.push(entry.slot.itemId);
-        consumerLabels.push(entry.slot.itemLabel);
+  if (actionableSlots.length > 0) {
+    const groupedMap = new Map<string, EvaluatedBindingSlot[]>();
+    for (let i = 0; i < actionableSlots.length; i += 1) {
+      const evaluated = actionableSlots[i]!;
+      let list = groupedMap.get(evaluated.slot.sourceModelId);
+      if (list === undefined) {
+        list = [];
+        groupedMap.set(evaluated.slot.sourceModelId, list);
       }
-      if (intersection === undefined) {
-        intersection = [...entry.slot.eligibleOptionIndices];
-      } else {
-        const current = new Set(entry.slot.eligibleOptionIndices);
-        intersection = intersection.filter((idx) => current.has(idx));
-      }
+      list.push(evaluated);
     }
-    groupedActionableSlots.push({
-      sourceModelId,
-      slots,
-      consumerItemIds,
-      consumerLabels,
-      intersectionOptionIndices: intersection ?? [],
-      groupLocalModelId: groupBindings[sourceModelId],
-      allDeferred: slots.length > 0 && slots.every((entry) => entry.state === 'deferred'),
-      hasUnresolved: slots.some((entry) => entry.state === 'unresolved' && entry.slot.required),
-      hasInvalidTarget: slots.some((entry) => entry.state === 'invalid_target'),
-    });
+
+    for (const [sourceModelId, slots] of groupedMap) {
+      let intersection: number[] | undefined;
+      const consumerItemIds: string[] = [];
+      const consumerLabels: string[] = [];
+      let allDeferred = slots.length > 0;
+      let hasUnresolved = false;
+      let hasInvalidTarget = false;
+      for (let i = 0; i < slots.length; i += 1) {
+        const entry = slots[i]!;
+        if (entry.state !== 'deferred') allDeferred = false;
+        if (entry.state === 'unresolved' && entry.slot.required) hasUnresolved = true;
+        if (entry.state === 'invalid_target') hasInvalidTarget = true;
+        if (!consumerItemIds.includes(entry.slot.itemId)) {
+          consumerItemIds.push(entry.slot.itemId);
+          consumerLabels.push(entry.slot.itemLabel);
+        }
+        if (intersection === undefined) {
+          intersection = [...entry.slot.eligibleOptionIndices];
+        } else {
+          const current = index.eligibleSetByTupleKey.get(entry.slot.tupleKey) ?? new Set(entry.slot.eligibleOptionIndices);
+          intersection = intersection.filter((idx) => current.has(idx));
+        }
+      }
+      groupedActionableSlots.push({
+        sourceModelId,
+        slots,
+        consumerItemIds,
+        consumerLabels,
+        intersectionOptionIndices: intersection ?? [],
+        groupLocalModelId: groupBindings?.[sourceModelId],
+        allDeferred,
+        hasUnresolved,
+        hasInvalidTarget,
+      });
+    }
   }
 
   const credentialSet = new Set<string>();
   if (selection.includeCredentials) {
-    for (const itemId of selectedItemIds) {
-      if (blockedByItemId.has(itemId)) continue;
-      const item = index.itemById.get(itemId);
-      if (item === undefined) continue;
-      for (const credId of item.coupledCredentialIds) {
-        credentialSet.add(credId);
+    const credItems = index.itemsWithCredentials;
+    for (let i = 0; i < credItems.length; i += 1) {
+      const item = credItems[i]!;
+      if (!selectedItemIds.has(item.id) || blockedByItemId.has(item.id)) continue;
+      for (let j = 0; j < item.coupledCredentialIds.length; j += 1) {
+        credentialSet.add(item.coupledCredentialIds[j]!);
       }
     }
   }
@@ -356,7 +427,7 @@ export function evaluateSubscriptionSelection(
     unresolvedRequiredSlots,
     invalidTargetSlots,
     deferredSlots,
-    coupledCredentialIds: [...credentialSet].sort(),
+    coupledCredentialIds: credentialSet.size > 0 ? [...credentialSet].sort() : [],
     hasHardBlockers,
     canConfirmInitial: selectedItemIds.size > 0 && !hasHardBlockers && bindingsReady,
     canConfirmEdit: !hasHardBlockers && bindingsReady,
@@ -376,13 +447,17 @@ export function toggleSubscriptionScope(
   checked: boolean,
   index: NormalizedManifestIndex = normalizePreviewManifest(manifest),
 ): PortableSpaceSubscriptionSelection {
-  const scopeItemIds = new Set((index.itemsByScope.get(scope) ?? []).map((item) => item.id));
+  const scopeItemIds = index.scopeItemIdSets.get(scope);
   const enabledScopes = new Set(selection.enabledScopes);
   if (checked) enabledScopes.add(scope);
   else enabledScopes.delete(scope);
 
-  const excludedIds = selection.excludedIds.filter((id) => !scopeItemIds.has(id));
-  const includedIds = selection.includedIds.filter((id) => !scopeItemIds.has(id));
+  const excludedIds = scopeItemIds === undefined || selection.excludedIds.length === 0
+    ? selection.excludedIds
+    : selection.excludedIds.filter((id) => !scopeItemIds.has(id));
+  const includedIds = scopeItemIds === undefined || selection.includedIds.length === 0
+    ? selection.includedIds
+    : selection.includedIds.filter((id) => !scopeItemIds.has(id));
   return {
     version: 1,
     enabledScopes: canonicalScopes(enabledScopes),
@@ -426,8 +501,9 @@ export function toggleSubscriptionItem(
     setLeaf(itemId, true, false);
     const queue: string[] = [itemId];
     const visited = new Set<string>([itemId]);
-    while (queue.length > 0) {
-      const currentId = queue.shift()!;
+    let head = 0;
+    while (head < queue.length) {
+      const currentId = queue[head++]!;
       const current = index.itemById.get(currentId);
       if (current === undefined) continue;
       for (const edge of current.dependencyEdges) {
@@ -454,15 +530,18 @@ export function toggleSubscriptionItem(
     setLeaf(itemId, false, isModelUnit);
     const queue: string[] = [itemId];
     const visited = new Set<string>([itemId]);
-    while (queue.length > 0) {
-      const removedId = queue.shift()!;
-      const consumers = index.reverseHardConsumers.get(removedId) ?? [];
-      for (const consumerId of consumers) {
+    let head = 0;
+    while (head < queue.length) {
+      const removedId = queue[head++]!;
+      const consumers = index.reverseHardConsumers.get(removedId);
+      if (consumers === undefined) continue;
+      for (let i = 0; i < consumers.length; i += 1) {
+        const consumerId = consumers[i]!;
         if (visited.has(consumerId)) continue;
         const consumer = index.itemById.get(consumerId);
         if (consumer === undefined || !consumer.selectable) continue;
-        const hardEdge = consumer.dependencyEdges.find((edge) => edge.kind === 'hard' && edge.toId === removedId);
-        if (hardEdge === undefined || hardEdge.liveSatisfied) continue;
+        const nonLiveHard = index.nonLiveHardTargetsByItemId.get(consumerId);
+        if (nonLiveHard === undefined || !nonLiveHard.includes(removedId)) continue;
         visited.add(consumerId);
         const consumerIsModel = consumer.domain === 'config' && consumer.id.startsWith('config:models.');
         setLeaf(consumerId, false, consumerIsModel);
@@ -474,8 +553,8 @@ export function toggleSubscriptionItem(
   return {
     version: 1,
     enabledScopes: canonicalScopes(enabledScopes),
-    excludedIds: [...excluded].sort(),
-    includedIds: [...included].sort(),
+    excludedIds: excluded.size > 0 ? [...excluded].sort() : [],
+    includedIds: included.size > 0 ? [...included].sort() : [],
     includeCredentials: selection.includeCredentials,
   };
 }
