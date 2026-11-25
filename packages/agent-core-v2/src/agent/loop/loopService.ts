@@ -2271,16 +2271,26 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       if (emissions.length > 0) beginResponseEvent();
       for (const emission of emissions) emission.emit();
     };
-    const accumulateCurrent = (part: ContentPart): Entry => {
+    const accumulateCurrent = (part: ContentPart): { readonly entry: Entry; readonly prevLength: number } => {
       const last = currentContent.at(-1);
-      if (!forceContentPartBoundary && last !== undefined && mergeInPlace(last.part, part)) return last;
+      const prevLength =
+        last === undefined
+          ? 0
+          : last.part.type === 'text'
+            ? last.part.text.length
+            : last.part.type === 'think'
+              ? last.part.think.length
+              : 0;
+      if (!forceContentPartBoundary && last !== undefined && mergeInPlace(last.part, part)) {
+        return { entry: last, prevLength };
+      }
       forceContentPartBoundary = false;
       const entry = { id: randomUUID(), part: { ...part }, responseInstanceId };
       currentContent.push(entry);
       if (!replaying) partialContent.push(entry);
-      return entry;
+      return { entry, prevLength: 0 };
     };
-    const reconcileCurrent = (index: number) => {
+    const reconcileCurrent = (index: number, delta?: ContentPart, prevLength?: number) => {
       if (!replaying) return;
       const reference = referenceContent[index];
       if (reference === undefined) {
@@ -2288,7 +2298,29 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         partialContent.push(currentContent[index]!);
         return;
       }
-      if (prefixRelation(reference.part, currentContent[index]!.part) === 'different') rollback(index);
+      const current = currentContent[index]!.part;
+      if (delta !== undefined && prevLength !== undefined) {
+        if (reference.part.type === 'text' && current.type === 'text' && delta.type === 'text') {
+          if (
+            prevLength + delta.text.length > reference.part.text.length ||
+            !reference.part.text.startsWith(delta.text, prevLength)
+          ) {
+            rollback(index);
+          }
+          return;
+        }
+        if (reference.part.type === 'think' && current.type === 'think' && delta.type === 'think') {
+          if (
+            reference.part.hidden !== current.hidden ||
+            prevLength + delta.think.length > reference.part.think.length ||
+            !reference.part.think.startsWith(delta.think, prevLength)
+          ) {
+            rollback(index);
+          }
+          return;
+        }
+      }
+      if (prefixRelation(reference.part, current) === 'different') rollback(index);
     };
     const finishReplay = () => {
       if (!replaying || currentContent.length === 0) return;
@@ -2338,9 +2370,9 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         }
         switch (part.type) {
           case 'text': {
-            const entry = accumulateCurrent(part);
+            const { entry, prevLength } = accumulateCurrent(part);
             const index = currentContent.length - 1;
-            reconcileCurrent(index);
+            reconcileCurrent(index, part, prevLength);
             recordEmission(index, () => {
               void this.dispatcher.dispatch(
                 new AssistantDelta({ turnId, step, stepId, partId: entry.id, delta: part.text }),
@@ -2350,9 +2382,9 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           }
           case 'think': {
             if (isVacuousContentPart(part) && currentContent.at(-1)?.part.type === 'text') return;
-            const entry = accumulateCurrent(part);
+            const { entry, prevLength } = accumulateCurrent(part);
             const index = currentContent.length - 1;
-            reconcileCurrent(index);
+            reconcileCurrent(index, part, prevLength);
             if (part.hidden === true || part.think.length === 0) {
               if (!replaying) beginResponseEvent();
               return;
@@ -2367,7 +2399,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           case 'image_url':
           case 'audio_url':
           case 'video_url': {
-            const entry = accumulateCurrent(part);
+            const { entry } = accumulateCurrent(part);
             const index = currentContent.length - 1;
             reconcileCurrent(index);
             recordEmission(index, () => {

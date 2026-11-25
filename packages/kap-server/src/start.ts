@@ -2041,22 +2041,56 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const subscribeTurnSummary = (listener: (summary: ServerTurnSummary) => void): (() => void) => {
     const manager = core.accessor.get(ISessionManager);
     const sessionWatchers = new Map<string, { dispose(): void | Promise<void> }>();
+    const sessionFlags = new Map<string, { busy: boolean; executing: boolean; pendingInteraction: boolean }>();
+    let activeCount = 0;
+    let executingCount = 0;
+    let pendingInteractionCount = 0;
     let lastKey = '';
     const emit = (): void => {
       if (shutdownController.signal.aborted) return;
-      const summary = computeTurnSummary();
-      const key = `${summary.active}:${Number(summary.executing)}:${Number(summary.pendingInteraction)}`;
+      const executing = executingCount > 0;
+      const pendingInteraction = pendingInteractionCount > 0;
+      const key = `${activeCount}:${Number(executing)}:${Number(pendingInteraction)}`;
       if (key === lastKey) return;
       lastKey = key;
-      listener(summary);
+      listener({ active: activeCount, executing, pendingInteraction });
+    };
+    const syncSession = (session: { readonly id: string; readonly accessor: Scope['accessor'] }): void => {
+      const state = session.accessor.get(ISessionActivityView).state();
+      const next = {
+        busy: state.busy,
+        executing: state.executing === true,
+        pendingInteraction: state.pendingInteraction !== 'none',
+      };
+      const prev = sessionFlags.get(session.id);
+      if (prev !== undefined) {
+        if (prev.busy) activeCount -= 1;
+        if (prev.executing) executingCount -= 1;
+        if (prev.pendingInteraction) pendingInteractionCount -= 1;
+      }
+      if (next.busy) activeCount += 1;
+      if (next.executing) executingCount += 1;
+      if (next.pendingInteraction) pendingInteractionCount += 1;
+      sessionFlags.set(session.id, next);
     };
     const watch = (session: { readonly id: string; readonly accessor: Scope['accessor'] }): void => {
       void sessionWatchers.get(session.id)?.dispose();
-      sessionWatchers.set(session.id, session.accessor.get(ISessionActivityView).onDidChange(() => { emit(); }));
+      syncSession(session);
+      sessionWatchers.set(session.id, session.accessor.get(ISessionActivityView).onDidChange(() => {
+        syncSession(session);
+        emit();
+      }));
     };
     const unwatch = (sessionId: string): void => {
       void sessionWatchers.get(sessionId)?.dispose();
       sessionWatchers.delete(sessionId);
+      const prev = sessionFlags.get(sessionId);
+      if (prev !== undefined) {
+        if (prev.busy) activeCount -= 1;
+        if (prev.executing) executingCount -= 1;
+        if (prev.pendingInteraction) pendingInteractionCount -= 1;
+        sessionFlags.delete(sessionId);
+      }
     };
     for (const session of manager.list()) watch(session);
     const created = manager.onDidCreateSession?.(({ sessionId }) => {
@@ -2070,6 +2104,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     return () => {
       for (const watcher of sessionWatchers.values()) void watcher.dispose();
       sessionWatchers.clear();
+      sessionFlags.clear();
       void created?.dispose();
       void closedSub?.dispose();
       void archivedSub?.dispose();

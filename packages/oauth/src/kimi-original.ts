@@ -16,7 +16,7 @@ export interface KimiOriginalOAuthOptions {
 }
 
 export class KimiOriginalOAuthService {
-  private readonly managers = new Map<string, OAuthManager>();
+  private readonly managers = new Map<string, { readonly manager: OAuthManager; readonly pinned: LocalOriginalOAuthSourceRef }>();
   private readonly disconnected = new Set<string>();
 
   constructor(private readonly options: KimiOriginalOAuthOptions = {}) {}
@@ -65,13 +65,27 @@ export class KimiOriginalOAuthService {
     return probe.sourceRef;
   }
 
+  private matchesPinned(cached: LocalOriginalOAuthSourceRef, ref: LocalOriginalOAuthSourceRef): boolean {
+    return (
+      cached.provider === ref.provider &&
+      cached.storageBackend === ref.storageBackend &&
+      cached.authFile === ref.authFile
+    );
+  }
+
   async disconnect(ref: LocalOriginalOAuthSourceRef): Promise<void> {
-    this.disconnected.add(this.home(ref.homeDir));
+    const home = this.home(ref.homeDir);
+    this.disconnected.add(home);
+    this.managers.delete(home);
   }
 
   async getCachedAccessToken(ref: LocalOriginalOAuthSourceRef): Promise<string | undefined> {
     const home = this.home(ref.homeDir);
     if (this.disconnected.has(home)) return undefined;
+    const cached = this.managers.get(home);
+    if (cached !== undefined && this.matchesPinned(cached.pinned, ref)) {
+      return cached.manager.getCachedAccessToken();
+    }
     const state = classifyToken((await this.inspect(home, ref)).token);
     return state.kind === 'valid' ? state.token.accessToken : undefined;
   }
@@ -79,13 +93,14 @@ export class KimiOriginalOAuthService {
   async getAccessToken(ref: LocalOriginalOAuthSourceRef, options?: { readonly force?: boolean }): Promise<string> {
     const home = this.home(ref.homeDir);
     if (this.disconnected.has(home)) throw new OAuthUnauthorizedError('This original Kimi Code source is disconnected from Kiki.');
-    await this.inspect(home, ref);
-    let manager = this.managers.get(home);
-    if (manager === undefined) {
-      manager = new OAuthManager({ config: KIMI_CODE_FLOW_CONFIG, configDir: home,
+    let entry = this.managers.get(home);
+    if (entry === undefined || !this.matchesPinned(entry.pinned, ref)) {
+      await this.inspect(home, ref);
+      const manager = new OAuthManager({ config: KIMI_CODE_FLOW_CONFIG, configDir: home,
         storage: resolveTokenStorage(join(home, 'credentials'), this.options.storageDeps), ...this.options.managerOptions });
-      this.managers.set(home, manager);
+      entry = { manager, pinned: ref };
+      this.managers.set(home, entry);
     }
-    return manager.ensureFresh(options);
+    return entry.manager.ensureFresh(options);
   }
 }

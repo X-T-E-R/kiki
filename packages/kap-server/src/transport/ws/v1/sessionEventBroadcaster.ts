@@ -1846,6 +1846,22 @@ export class SessionEventBroadcaster {
     return this.watermarkIndex.getCovered(sessionId);
   }
 
+  async getCoveredCursorAsync(sessionId: string): Promise<JournalWatermark | undefined> {
+    const live = this.sessions.get(sessionId);
+    if (live !== undefined) {
+      this.watermarkIndex.recordLiveHit();
+      return {
+        seq: live.journal.seq,
+        epoch: live.journal.epoch,
+        attentionSeq: live.journal.attentionSeq,
+      };
+    }
+    if (this.pendingStates.has(sessionId) || this.evictions.has(sessionId)) {
+      return undefined;
+    }
+    return this.watermarkIndex.getCoveredAsync(sessionId);
+  }
+
   async getCursor(
     sessionId: string,
     signal?: AbortSignal,

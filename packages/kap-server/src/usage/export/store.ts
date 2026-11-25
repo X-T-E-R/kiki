@@ -9,7 +9,15 @@ import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 interface Row { [key: string]: string | number | null }
 interface SourceRow { id: Uint8Array; workspace: string; kind: string; data: string }
 interface PrivateDestination { destination: UsageExportDestination; identityKey: string }
-interface ProjectionPlan { buckets: Map<string, ReturnType<typeof publicBucket>>; origins: Map<string, Set<string>>; destinationStamp: string; sourceGeneration: string | null }
+interface ProjectionPlan {
+  buckets: Map<string, ReturnType<typeof publicBucket>>;
+  hashes: Map<string, string>;
+  origins: Map<string, Set<string>>;
+  originsJson: Map<string, string>;
+  destinationStamp: string;
+  sourceGeneration: string | null;
+}
+interface StoredVersionSummary { revision: number; hash: string; origins: string }
 interface ProjectionAccumulator { contribution: Contribution; pricingVersions: Set<string> }
 /** Source staging is connection-local and file-backed; restart rebuilds it. Publication commits durable sources, metadata and outbox revisions in one FULL-synchronous transaction before bounded staging cleanup. */
 export class UsageExportStore {
@@ -38,7 +46,7 @@ export class UsageExportStore {
     try { this.election.exec('BEGIN IMMEDIATE'); writer = true; } catch {}
     this.elected = writer;
     this.db = new DatabaseSync(path);
-    this.db.exec('PRAGMA busy_timeout=5000;');
+    this.db.exec('PRAGMA busy_timeout=250;');
     if (writer) {
       const hasTables = (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' LIMIT 1").get()) !== undefined;
       if (!hasTables) this.db.exec('PRAGMA auto_vacuum=INCREMENTAL;');
@@ -47,8 +55,15 @@ export class UsageExportStore {
     if (writer) {
       this.ensureSchema();
       this.fence = randomUUID();
-      this.stmt("INSERT INTO meta VALUES('fence',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(this.fence);
-      this.stmt("INSERT OR IGNORE INTO meta VALUES('capacity','52428800')").run();
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        this.stmt("INSERT INTO meta VALUES('fence',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(this.fence);
+        this.stmt("INSERT OR IGNORE INTO meta VALUES('capacity','52428800')").run();
+        this.db.exec('COMMIT');
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
       this.backfillBucketOrigins();
       this.prepareStage();
       this.retireExperimentalGate();
@@ -268,17 +283,22 @@ export class UsageExportStore {
       if (operationsComplete) this.db.prepare("DELETE FROM sources WHERE kind='operation' AND id NOT IN (SELECT id FROM staging WHERE run=?)").run(run);
       const missing = (this.db.prepare("SELECT COUNT(*) AS n FROM sources WHERE kind!='operation' AND id NOT IN (SELECT id FROM staging WHERE run=?)").get(run) as Row)['n'];
       this.db.prepare('INSERT INTO sources SELECT id,workspace,kind,data,invalid FROM staging WHERE run=? ON CONFLICT(id) DO UPDATE SET workspace=excluded.workspace,kind=excluded.kind,data=excluded.data,invalid=excluded.invalid WHERE sources.workspace IS NOT excluded.workspace OR sources.kind IS NOT excluded.kind OR sources.data IS NOT excluded.data OR sources.invalid IS NOT excluded.invalid').run(run);
+      const nextGeneration = randomUUID();
       if (complete) this.setMeta('scan-complete', 'true');
       this.setMeta('scan-error', incompleteReason ?? (Number(missing) > 0 ? 'source-missing-retained-gap' : ''));
-      for (const destination of this.list()) if (destination.enabled) this.publishDestination(destination.id, plans?.get(destination.id));
+      for (const destination of this.list()) if (destination.enabled) this.publishDestination(destination.id, plans?.get(destination.id), nextGeneration);
       if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full');
-      this.setMeta('source-generation', randomUUID());
+      this.setMeta('source-generation', nextGeneration);
       if (cleanup) this.db.prepare('DELETE FROM staging WHERE run=?').run(run);
     });
   }
   refreshDestination(id: string): void { this.transaction(() => { this.publishDestination(id); if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full'); }); }
   async refreshDestinationAsync(id: string): Promise<void> {
     return this.withProjection(async () => {
+      if (this.meta(`withdrawn:${id}`) === 'true') return;
+      const current = this.get(id);
+      const planKey = `${this.meta('source-generation') ?? ''}:${this.projectionStamp(current)}`;
+      if (current.state !== 'queue-full' && this.meta(`published-plan:${id}`) === planKey) return;
       const plan = await this.projectionPlan(id);
       this.transaction(() => { this.assertProjection(id, plan); this.publishDestination(id, plan); if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full'); });
     });
@@ -300,6 +320,26 @@ export class UsageExportStore {
       }
       const related = origins.get(key) ?? new Set<string>(); related.add(Buffer.from(row.id).toString('utf8')); origins.set(key, related);
     }
+  }
+  private async finishProjectionAsync(
+    groups: Map<string, ProjectionAccumulator>,
+    origins: Map<string, Set<string>>,
+    identityKey: string,
+  ): Promise<{ buckets: ProjectionPlan['buckets']; hashes: Map<string, string>; originsJson: Map<string, string> }> {
+    const buckets: ProjectionPlan['buckets'] = new Map();
+    const hashes = new Map<string, string>();
+    const originsJson = new Map<string, string>();
+    let processed = 0;
+    for (const [key, group] of groups) {
+      const bucket = publicBucket([group.contribution], identityKey);
+      bucket.cost.pricing_version = digest([...group.pricingVersions].sort());
+      buckets.set(key, bucket);
+      hashes.set(key, digest({ operation: 'replace', bucket }));
+      originsJson.set(key, JSON.stringify([...(origins.get(key) ?? [])].sort()));
+      processed += 1;
+      if (processed % 64 === 0) await yieldToEventLoop();
+    }
+    return { buckets, hashes, originsJson };
   }
   private finishProjection(groups: Map<string, ProjectionAccumulator>, identityKey: string): ProjectionPlan['buckets'] {
     return new Map([...groups].map(([key, group]) => { const bucket = publicBucket([group.contribution], identityKey); bucket.cost.pricing_version = digest([...group.pricingVersions].sort()); return [key, bucket]; }));
@@ -323,8 +363,9 @@ export class UsageExportStore {
       for (const row of rows) this.accumulateProjection(row, destination, identityKey, groups, origins);
       cursor = Buffer.from(rows.at(-1)!.id).toString('utf8'); await yieldToEventLoop();
     }
+    const finished = await this.finishProjectionAsync(groups, origins, identityKey);
     if (sourceGeneration !== this.meta('source-generation') || this.projectionStamp(saved.destination) !== this.projectionStamp(this.get(id))) throw new Error('export-projection-changed');
-    return { buckets: this.finishProjection(groups, identityKey), origins, sourceGeneration, destinationStamp: this.projectionStamp(saved.destination) };
+    return { buckets: finished.buckets, hashes: finished.hashes, origins, originsJson: finished.originsJson, sourceGeneration, destinationStamp: this.projectionStamp(saved.destination) };
   }
   private assertProjection(id: string, plan: ProjectionPlan): void { if (plan.sourceGeneration !== this.meta('source-generation') || plan.destinationStamp !== this.projectionStamp(this.get(id))) throw new Error('export-projection-changed'); }
   async previewAsync(id: string, limit = 20): Promise<{ items: UsageExportItem[]; total: number }> {
@@ -344,30 +385,59 @@ export class UsageExportStore {
     }
     return { items, total: projected.size };
   }
-  private publishDestination(id: string, plan?: ProjectionPlan): void {
+  private publishDestination(id: string, plan?: ProjectionPlan, sourceGenerationOverride?: string): void {
     if (this.meta(`withdrawn:${id}`) === 'true') return;
     const destination = this.get(id); const projected = plan?.buckets ?? this.projected(id);
     if (plan !== undefined) { this.projectedOrigins.clear(); for (const [key, origins] of plan.origins) this.projectedOrigins.set(key, origins); }
-    const old = this.stmt('SELECT bucket,item FROM versions WHERE dest=?').all(id) as Row[];
-    for (const row of old) if (!projected.has(String(row['bucket']))) this.version(id, String(row['bucket']), 'delete', null, destination.stream_id);
-    for (const [key, bucket] of projected) this.version(id, key, 'replace', bucket, destination.stream_id);
-    if (destination.state === 'queue-full') this.update(id, { state: 'ready', error_category: null });
+    const existing = new Map<string, StoredVersionSummary>();
+    for (const row of this.stmt('SELECT bucket,revision,hash,origins FROM versions WHERE dest=?').iterate(id) as Iterable<Row>) {
+      existing.set(String(row['bucket']), {
+        revision: Number(row['revision']),
+        hash: String(row['hash']),
+        origins: String(row['origins'] ?? '[]'),
+      });
+    }
+    for (const [bucketId, previous] of existing) {
+      if (!projected.has(bucketId)) this.version(id, bucketId, 'delete', null, destination.stream_id, previous);
+    }
+    for (const [key, bucket] of projected) {
+      const previous = existing.get(key);
+      const precomputedHash = plan?.hashes.get(key);
+      const precomputedOrigins = plan?.originsJson.get(key);
+      if (previous !== undefined && precomputedHash !== undefined && previous.hash === precomputedHash && previous.origins === precomputedOrigins) continue;
+      this.version(id, key, 'replace', bucket, destination.stream_id, previous, precomputedHash, precomputedOrigins);
+    }
+    const publishedDestination = destination.state === 'queue-full' ? this.update(id, { state: 'ready', error_category: null }) : destination;
+    const publishedGeneration = sourceGenerationOverride ?? this.meta('source-generation') ?? '';
+    this.setMeta(`published-plan:${id}`, `${publishedGeneration}:${this.projectionStamp(publishedDestination)}`);
   }
-  private version(id: string, bucketId: string, operation: UsageExportItem['operation'], bucket: UsageExportItem['bucket'], streamId?: string): void {
-    const previous = this.stmt('SELECT revision,hash,origins FROM versions WHERE dest=? AND bucket=?').get(id, bucketId) as Row | undefined;
-    const originList: string[] = this.projectedOrigins.has(bucketId)
-      ? [...this.projectedOrigins.get(bucketId) ?? []].sort()
-      : JSON.parse(String(previous?.['origins'] ?? '[]')) as string[];
-    const origins = JSON.stringify(originList);
-    const payloadHash = digest({ operation, bucket });
-    if (previous?.['hash'] === payloadHash) {
-      if (String(previous['origins'] ?? '[]') !== origins) {
+  private version(
+    id: string,
+    bucketId: string,
+    operation: UsageExportItem['operation'],
+    bucket: UsageExportItem['bucket'],
+    streamId?: string,
+    preloaded?: StoredVersionSummary,
+    precomputedHash?: string,
+    precomputedOrigins?: string,
+  ): void {
+    const previous = preloaded ?? ((): StoredVersionSummary | undefined => {
+      const row = this.stmt('SELECT revision,hash,origins FROM versions WHERE dest=? AND bucket=?').get(id, bucketId) as Row | undefined;
+      return row === undefined ? undefined : { revision: Number(row['revision']), hash: String(row['hash']), origins: String(row['origins'] ?? '[]') };
+    })();
+    const origins = precomputedOrigins ?? (this.projectedOrigins.has(bucketId)
+      ? JSON.stringify([...this.projectedOrigins.get(bucketId) ?? []].sort())
+      : previous?.origins ?? '[]');
+    const payloadHash = precomputedHash ?? digest({ operation, bucket });
+    if (previous?.hash === payloadHash) {
+      if (previous.origins !== origins) {
         this.stmt('UPDATE versions SET origins=? WHERE dest=? AND bucket=?').run(origins, id, bucketId);
-        this.syncOrigins('version', id, bucketId, Number(previous['revision']), originList);
+        this.syncOrigins('version', id, bucketId, previous.revision, JSON.parse(origins) as string[]);
       }
       return;
     }
-    const item = usageExportItemSchema.parse({ schema_version: 'kiki.usage.bucket.v1', stream_id: streamId ?? this.get(id).stream_id, bucket_id: bucketId, revision: Number(previous?.['revision'] ?? 0) + 1, payload_hash: payloadHash, operation, bucket });
+    const originList = JSON.parse(origins) as string[];
+    const item = usageExportItemSchema.parse({ schema_version: 'kiki.usage.bucket.v1', stream_id: streamId ?? this.get(id).stream_id, bucket_id: bucketId, revision: (previous?.revision ?? 0) + 1, payload_hash: payloadHash, operation, bucket });
     const json = JSON.stringify(item);
     this.stmt('INSERT INTO versions(dest,bucket,revision,hash,item,origins) VALUES(?,?,?,?,?,?) ON CONFLICT(dest,bucket) DO UPDATE SET revision=excluded.revision,hash=excluded.hash,item=excluded.item,origins=excluded.origins').run(id, bucketId, item.revision, payloadHash, json, origins);
     this.syncOrigins('version', id, bucketId, item.revision, originList);
@@ -433,6 +503,7 @@ export class UsageExportStore {
   withdraw(id: string): void {
     this.transaction(() => {
       this.setMeta(`withdrawn:${id}`, 'true');
+      this.setMeta(`published-plan:${id}`, '');
       const streamId = this.get(id).stream_id;
       for (const row of this.stmt('SELECT bucket FROM versions WHERE dest=?').all(id) as Row[]) this.version(id, String(row['bucket']), 'delete', null, streamId);
       if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full');
@@ -470,28 +541,61 @@ export class UsageExportStore {
   exportQueue(id: string): UsageExportItem[] { return (this.stmt('SELECT item FROM outbox WHERE dest=? ORDER BY created,bucket,revision').all(id) as Row[]).map((row) => usageExportItemSchema.parse(JSON.parse(String(row['item'])))); }
   ack(id: string, bucket: string): { revision: number; hash: string } | undefined { const row = this.stmt('SELECT revision,hash FROM acknowledgements WHERE dest=? AND bucket=?').get(id, bucket) as Row | undefined; return row === undefined ? undefined : { revision: Number(row['revision']), hash: String(row['hash']) }; }
   acknowledgedRelated(id: string, batch: UsageExportBatch): { acknowledged: UsageExportItem; current: UsageExportItem | null; sameBucket: boolean; mappingVersion: string | null }[] {
+    if (batch.items.length === 0) return [];
     const result: { acknowledged: UsageExportItem; current: UsageExportItem | null; sameBucket: boolean; mappingVersion: string | null }[] = [];
-    const ackRows = this.stmt('SELECT bucket,item,origins,mapping_version FROM acknowledgements WHERE dest=? AND item IS NOT NULL').all(id) as Row[];
     const versionStmt = this.stmt('SELECT item FROM versions WHERE dest=? AND bucket=?');
     const outboxOriginStmt = this.stmt('SELECT origins FROM outbox WHERE dest=? AND bucket=? AND revision=?');
-    const batchOrigins = new Map<string, Set<string>>();
+    const batchByBucket = new Map<string, UsageExportItem[]>();
+    const replaceByStartAt = new Map<string, Array<{ item: UsageExportItem; origins: Set<string> }>>();
+    const candidateBuckets = new Set<string>();
+    const allBatchOrigins = new Set<string>();
     for (const item of batch.items) {
-      if (item.operation !== 'replace') continue;
+      candidateBuckets.add(item.bucket_id);
+      const bucketList = batchByBucket.get(item.bucket_id);
+      if (bucketList === undefined) batchByBucket.set(item.bucket_id, [item]);
+      else bucketList.push(item);
+      if (item.operation !== 'replace' || item.bucket === null) continue;
       const originRow = outboxOriginStmt.get(id, item.bucket_id, item.revision) as Row | undefined;
-      batchOrigins.set(`${item.bucket_id}\0${item.revision}`, new Set(JSON.parse(String(originRow?.['origins'] ?? '[]')) as string[]));
+      const origins = new Set(JSON.parse(String(originRow?.['origins'] ?? '[]')) as string[]);
+      for (const origin of origins) allBatchOrigins.add(origin);
+      const startAt = item.bucket.start_at;
+      const startList = replaceByStartAt.get(startAt);
+      if (startList === undefined) replaceByStartAt.set(startAt, [{ item, origins }]);
+      else startList.push({ item, origins });
     }
-    for (const row of ackRows) {
-      const acknowledged = usageExportItemSchema.parse(JSON.parse(String(row['item'])));
-      const currentRow = versionStmt.get(id, String(row['bucket'])) as Row | undefined;
-      const current = currentRow === undefined ? null : usageExportItemSchema.parse(JSON.parse(String(currentRow['item'])));
-      const mappingVersion = row['mapping_version'] === null || row['mapping_version'] === undefined ? null : String(row['mapping_version']);
-      const oldOrigins = JSON.parse(String(row['origins'])) as string[];
-      for (const item of batch.items) {
-        const sameBucket = item.bucket_id === acknowledged.bucket_id && item.stream_id === acknowledged.stream_id;
-        if (sameBucket) { result.push({ acknowledged, current, sameBucket, mappingVersion }); break; }
-        if (acknowledged.operation !== 'replace' || item.operation !== 'replace' || acknowledged.bucket?.start_at !== item.bucket?.start_at || current?.payload_hash === acknowledged.payload_hash) continue;
-        const newOrigins = batchOrigins.get(`${item.bucket_id}\0${item.revision}`);
-        if (newOrigins !== undefined && oldOrigins.some((source) => newOrigins.has(source))) { result.push({ acknowledged, current, sameBucket: false, mappingVersion }); break; }
+    const originList = [...allBatchOrigins];
+    for (let offset = 0; offset < originList.length; offset += 200) {
+      const slice = originList.slice(offset, offset + 200);
+      const placeholders = slice.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(`SELECT DISTINCT bucket FROM bucket_origins WHERE kind='ack' AND dest=? AND origin IN (${placeholders})`)
+        .all(id, ...slice) as Row[];
+      for (const row of rows) candidateBuckets.add(String(row['bucket']));
+    }
+    const candidateList = [...candidateBuckets];
+    for (let offset = 0; offset < candidateList.length; offset += 200) {
+      const slice = candidateList.slice(offset, offset + 200);
+      const placeholders = slice.map(() => '?').join(',');
+      const ackRows = this.db
+        .prepare(`SELECT bucket,item,origins,mapping_version FROM acknowledgements WHERE dest=? AND item IS NOT NULL AND bucket IN (${placeholders})`)
+        .all(id, ...slice) as Row[];
+      for (const row of ackRows) {
+        const acknowledged = usageExportItemSchema.parse(JSON.parse(String(row['item'])));
+        const currentRow = versionStmt.get(id, String(row['bucket'])) as Row | undefined;
+        const current = currentRow === undefined ? null : usageExportItemSchema.parse(JSON.parse(String(currentRow['item'])));
+        const mappingVersion = row['mapping_version'] === null || row['mapping_version'] === undefined ? null : String(row['mapping_version']);
+        const sameBucketItems = batchByBucket.get(acknowledged.bucket_id);
+        if (sameBucketItems !== undefined && sameBucketItems.some((item) => item.stream_id === acknowledged.stream_id)) {
+          result.push({ acknowledged, current, sameBucket: true, mappingVersion });
+          continue;
+        }
+        if (acknowledged.operation !== 'replace' || acknowledged.bucket === null || current?.payload_hash === acknowledged.payload_hash) continue;
+        const startMatches = replaceByStartAt.get(acknowledged.bucket.start_at);
+        if (startMatches === undefined) continue;
+        const oldOrigins = JSON.parse(String(row['origins'])) as string[];
+        if (startMatches.some(({ origins }) => oldOrigins.some((source) => origins.has(source)))) {
+          result.push({ acknowledged, current, sameBucket: false, mappingVersion });
+        }
       }
     }
     return result;

@@ -26,6 +26,9 @@ import {
   openVerifiedHostPinnedStream,
   parseHostPinnedUrl,
   readHostPinnedRefRecord,
+  statHostPinnedRef,
+  verifyHostPinnedRef,
+  type HostPinnedStatFingerprint,
 } from './hostPinnedMedia';
 
 import './flag';
@@ -144,6 +147,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
   private readonly evictedUploadCacheKeys = new Set<string>();
   private readonly memoKeysByUrl = new Map<string, Set<string>>();
   private readonly videoMemoExpiresAt = new Map<string, number>();
+  private readonly hostPinnedStatMemo = new Map<string, HostPinnedStatFingerprint>();
 
   markMediaPoisoned(urlsOrKeys: Iterable<string>): void {
     for (const urlOrKey of urlsOrKeys) {
@@ -173,6 +177,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
           if (kind === 'resolved') {
             this.resolved.delete(memoKey);
             this.videoMemoExpiresAt.delete(memoKey);
+            this.hostPinnedStatMemo.delete(memoKey);
           } else if (kind === 'image') {
             const existing = this.imageMemo.get(memoKey);
             if (existing !== undefined) {
@@ -958,6 +963,30 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     if (record === undefined || !record.mimeType.startsWith('audio/')) {
       return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
     }
+    const cacheKey = `hostref-audio:${record.refId}\0${record.sha256}`;
+    const memoed = this.resolved.get(cacheKey);
+    const cachedStat = this.hostPinnedStatMemo.get(cacheKey);
+    if (memoed !== undefined && cachedStat !== undefined) {
+      try {
+        const currentStat = await statHostPinnedRef(record);
+        signal?.throwIfAborted();
+        if (
+          currentStat.path === cachedStat.path &&
+          currentStat.size === cachedStat.size &&
+          currentStat.mtimeNs === cachedStat.mtimeNs &&
+          currentStat.ino === cachedStat.ino
+        ) {
+          return memoed;
+        }
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        this.resolved.delete(cacheKey);
+        this.hostPinnedStatMemo.delete(cacheKey);
+        return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
+      }
+      this.resolved.delete(cacheKey);
+      this.hostPinnedStatMemo.delete(cacheKey);
+    }
     let opened: Awaited<ReturnType<typeof openVerifiedHostPinnedStream>> | undefined;
     try {
       opened = await openVerifiedHostPinnedStream(record, { signal });
@@ -971,13 +1000,20 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       if (!SUPPORTED_AUDIO_MIMES.has(mime) || !validateMediaBytesIntegrity(bytes, mime).valid) {
         return { type: 'text', text: AUDIO_CORRUPT_TEXT };
       }
-      return {
+      const resolvedPart: ContentPart = {
         type: 'audio_url',
         audioUrl: {
           ...part.audioUrl,
           url: `data:${mime};base64,${bytes.toString('base64')}`,
         },
       };
+      const verifiedStat = await statHostPinnedRef(record).catch(() => undefined);
+      if (verifiedStat !== undefined) {
+        this.resolved.set(cacheKey, resolvedPart);
+        this.hostPinnedStatMemo.set(cacheKey, verifiedStat);
+        this.rememberMemoKey([url, mediaPartUrl(resolvedPart)], 'resolved', cacheKey);
+      }
+      return resolvedPart;
     } catch (error) {
       if (signal?.aborted) throw error;
       if (error instanceof HostPinnedSourceChangedError) return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
@@ -1003,6 +1039,67 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     if (record === undefined || !record.mimeType.startsWith('video/')) {
       return { type: 'text', text: VIDEO_UNAVAILABLE_TEXT };
     }
+    const model = requester.model;
+    const providerKey = model.providerType ?? model.protocol;
+    const cacheKey = `hostref-video:${record.refId}\0${record.sha256}\0${providerKey}`;
+    const memoed = this.resolved.get(cacheKey);
+    const cachedStat = this.hostPinnedStatMemo.get(cacheKey);
+    if (memoed !== undefined && cachedStat !== undefined) {
+      const expiresAtMs = this.videoMemoExpiresAt.get(cacheKey);
+      if (expiresAtMs !== undefined && Date.now() >= expiresAtMs) {
+        this.resolved.delete(cacheKey);
+        this.videoMemoExpiresAt.delete(cacheKey);
+        this.hostPinnedStatMemo.delete(cacheKey);
+      } else {
+        try {
+          const currentStat = await statHostPinnedRef(record);
+          signal?.throwIfAborted();
+          if (
+            currentStat.path === cachedStat.path &&
+            currentStat.size === cachedStat.size &&
+            currentStat.mtimeNs === cachedStat.mtimeNs &&
+            currentStat.ino === cachedStat.ino
+          ) {
+            return memoed;
+          }
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          this.resolved.delete(cacheKey);
+          this.videoMemoExpiresAt.delete(cacheKey);
+          this.hostPinnedStatMemo.delete(cacheKey);
+          void this.blobs.delete(CACHE_SCOPE, blobKey(cacheKey)).catch(() => undefined);
+          return { type: 'text', text: VIDEO_UNAVAILABLE_TEXT };
+        }
+        this.resolved.delete(cacheKey);
+        this.videoMemoExpiresAt.delete(cacheKey);
+        this.hostPinnedStatMemo.delete(cacheKey);
+      }
+    }
+
+    const cachedUpload = await this.readCachedUpload(cacheKey);
+    if (cachedUpload !== undefined) {
+      try {
+        await verifyHostPinnedRef(record, signal);
+        const verifiedStat = await statHostPinnedRef(record);
+        signal?.throwIfAborted();
+        const msUrl = `ms://${cachedUpload.llmFileId}`;
+        const reused: ContentPart = {
+          type: 'video_url',
+          videoUrl: { ...part.videoUrl, url: msUrl, id: cachedUpload.llmFileId },
+        };
+        this.resolved.set(cacheKey, reused);
+        this.videoMemoExpiresAt.set(cacheKey, cachedUpload.uploadedAtMs + UPLOAD_CACHE_TTL_MS);
+        this.hostPinnedStatMemo.set(cacheKey, verifiedStat);
+        this.rememberMemoKey([url, msUrl], 'resolved', cacheKey);
+        this.rememberUploadCache([url, msUrl], CACHE_SCOPE, blobKey(cacheKey));
+        return reused;
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        void this.blobs.delete(CACHE_SCOPE, blobKey(cacheKey)).catch(() => undefined);
+        if (error instanceof HostPinnedSourceChangedError) return { type: 'text', text: VIDEO_UNAVAILABLE_TEXT };
+      }
+    }
+
     let opened: Awaited<ReturnType<typeof openVerifiedHostPinnedStream>> | undefined;
     try {
       opened = await openVerifiedHostPinnedStream(record, { signal });
@@ -1015,7 +1112,6 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       if (!validateMediaBytesIntegrity(bytes, record.mimeType).valid) {
         return { type: 'text', text: VIDEO_CORRUPT_TEXT };
       }
-      const model = requester.model;
       const uploader = createVideoUploader(requester, {
         client: this.telemetry,
         props: {
@@ -1024,21 +1120,43 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
           protocol: model.protocol,
         },
       });
+      let resolvedPart: ContentPart | undefined;
+      let uploadedAtMs: number | undefined;
       if (uploader !== undefined) {
         try {
-          return await uploader({ data: bytes, mimeType: record.mimeType, filename: `${record.refId}.mp4` }, { signal });
+          resolvedPart = await uploader({ data: bytes, mimeType: record.mimeType, filename: `${record.refId}.mp4` }, { signal });
+          if (resolvedPart.type === 'video_url' && resolvedPart.videoUrl.url.startsWith('ms://')) {
+            const llmFileId = resolvedPart.videoUrl.id ?? resolvedPart.videoUrl.url.slice('ms://'.length);
+            uploadedAtMs = Date.now();
+            await this.writeCachedUpload(cacheKey, llmFileId, CACHE_SCOPE, uploadedAtMs);
+            this.rememberUploadCache([url, resolvedPart.videoUrl.url], CACHE_SCOPE, blobKey(cacheKey));
+          }
         } catch (error) {
           if (signal?.aborted) throw error;
           if (isVideoUploadAuthError(error)) throw error;
         }
       }
-      return {
-        type: 'video_url',
-        videoUrl: {
-          ...part.videoUrl,
-          url: `data:${record.mimeType};base64,${bytes.toString('base64')}`,
-        },
-      };
+      if (resolvedPart === undefined) {
+        resolvedPart = {
+          type: 'video_url',
+          videoUrl: {
+            ...part.videoUrl,
+            url: `data:${record.mimeType};base64,${bytes.toString('base64')}`,
+          },
+        };
+      }
+      const verifiedStat = await statHostPinnedRef(record).catch(() => undefined);
+      if (verifiedStat !== undefined) {
+        this.resolved.set(cacheKey, resolvedPart);
+        this.hostPinnedStatMemo.set(cacheKey, verifiedStat);
+        if (uploadedAtMs !== undefined) {
+          this.videoMemoExpiresAt.set(cacheKey, uploadedAtMs + UPLOAD_CACHE_TTL_MS);
+        } else {
+          this.videoMemoExpiresAt.delete(cacheKey);
+        }
+        this.rememberMemoKey([url, mediaPartUrl(resolvedPart)], 'resolved', cacheKey);
+      }
+      return resolvedPart;
     } catch (error) {
       if (signal?.aborted) throw error;
       if (error instanceof HostPinnedSourceChangedError) return { type: 'text', text: VIDEO_UNAVAILABLE_TEXT };

@@ -8,6 +8,8 @@ import type { WorkspacePathEntry } from './workspacePathInventory';
 const TRIGRAM_MIN_FILES = 1500;
 const TRIGRAM_REBUILD_BATCH_SIZE = 64;
 const TRIGRAM_PATCH_BATCH_SIZE = 256;
+const TRIGRAM_MAX_BATCH_BYTES = 16 << 20;
+const TRIGRAM_MAX_FILE_BYTES = 1 << 20;
 const TRIGRAM_FLUSH_DEBOUNCE_MS = 200;
 
 export function requiredGrepLiteral(pattern: string, literal: boolean): string | undefined {
@@ -169,8 +171,13 @@ export class WorkspaceTrigramIndex {
         if (chunkIndex > 0) await yieldToEventLoop();
         if (this.controller.signal.aborted || this.rebuildRequested || generation !== this.generation || this.epoch !== epoch || this.revision === -1) return;
         const updates: Array<readonly [string, WorkspacePathEntry | undefined]> = [];
+        let batchBytes = 0;
         for (const pair of this.updates) {
+          const entry = pair[1];
+          const entryBytes = entry !== undefined && entry.size <= TRIGRAM_MAX_FILE_BYTES ? entry.size : 0;
+          if (updates.length > 0 && batchBytes + entryBytes > TRIGRAM_MAX_BATCH_BYTES) break;
           updates.push(pair);
+          batchBytes += entryBytes;
           if (updates.length >= TRIGRAM_PATCH_BATCH_SIZE) break;
         }
         const accepted = await this.cpu.request<boolean>({ type: 'workspace.trigram.update', path: this.path, epoch, root: this.root,
@@ -236,11 +243,22 @@ export class WorkspaceTrigramIndex {
       const options = { signal: this.controller.signal, priority: 'low' as const };
       const started = await this.cpu.request<boolean>({ type: 'workspace.trigram.begin', path: this.path, epoch, owner: this.owner }, options);
       if (!started || generation !== this.generation || this.controller.signal.aborted) return;
-      for (let offset = 0; offset < files.length; offset += TRIGRAM_REBUILD_BATCH_SIZE) {
+      let offset = 0;
+      while (offset < files.length) {
         if (offset > 0) await yieldToEventLoop();
         if (generation !== this.generation || this.controller.signal.aborted) return;
+        const batch: WorkspacePathEntry[] = [];
+        let batchBytes = 0;
+        while (offset < files.length && batch.length < TRIGRAM_REBUILD_BATCH_SIZE) {
+          const entry = files[offset]!;
+          const entryBytes = entry.size <= TRIGRAM_MAX_FILE_BYTES ? entry.size : 0;
+          if (batch.length > 0 && batchBytes + entryBytes > TRIGRAM_MAX_BATCH_BYTES) break;
+          batch.push(entry);
+          batchBytes += entryBytes;
+          offset += 1;
+        }
         const accepted = await this.cpu.request<boolean>({ type: 'workspace.trigram.update', path: this.path, epoch,
-          root: this.root, entries: files.slice(offset, offset + TRIGRAM_REBUILD_BATCH_SIZE), owner: this.owner }, options);
+          root: this.root, entries: batch, owner: this.owner }, options);
         if (!accepted || generation !== this.generation || this.controller.signal.aborted) return;
       }
       const accepted = await this.cpu.request<boolean>({ type: 'workspace.trigram.finish', path: this.path, epoch, owner: this.owner }, options);

@@ -26,13 +26,20 @@ export async function createTokenStore(homeDir: string, options: { readonly mana
   const tokenPath = serverTokenPath(homeDir);
   const initial = await loadOrCreateServerToken(homeDir);
   const initialStat = statSync(tokenPath);
-  let cache: { token: string; mtimeMs: number; ino: number } = {
+  const initialManagedValid =
+    !options.managed ||
+    (initialStat.isFile() &&
+      (process.platform === 'win32' || (initialStat.mode & 0o077) === 0) &&
+      /^[A-Za-z0-9_-]{43}$/.test(initial));
+  let cache: { token: string; mtimeMs: number; ctimeMs: number; ino: number; size: number } = {
     token: initial,
     mtimeMs: initialStat.mtimeMs,
+    ctimeMs: initialStat.ctimeMs,
     ino: initialStat.ino,
+    size: initialStat.size,
   };
   let generation = 0;
-  let valid = true;
+  let valid = initialManagedValid;
 
   const currentToken = (): string => {
     if (options.managed) {
@@ -41,11 +48,20 @@ export async function createTokenStore(homeDir: string, options: { readonly mana
         if (!st.isFile() || (process.platform !== 'win32' && (st.mode & 0o077) !== 0)) {
           throw new Error('server token file permissions are invalid');
         }
+        if (
+          valid &&
+          st.mtimeMs === cache.mtimeMs &&
+          st.ctimeMs === cache.ctimeMs &&
+          st.ino === cache.ino &&
+          st.size === cache.size
+        ) {
+          return cache.token;
+        }
         const token = readFileSync(tokenPath, 'utf8').trim();
         if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('server token file is invalid');
         if (!valid || token !== cache.token) generation += 1;
         valid = true;
-        cache = { token, mtimeMs: st.mtimeMs, ino: st.ino };
+        cache = { token, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs, ino: st.ino, size: st.size };
         return token;
       } catch {
         if (valid) generation += 1;
@@ -59,13 +75,20 @@ export async function createTokenStore(homeDir: string, options: { readonly mana
     } catch {
       return cache.token;
     }
-    if (st.mtimeMs === cache.mtimeMs && st.ino === cache.ino) return cache.token;
+    if (
+      st.mtimeMs === cache.mtimeMs &&
+      st.ctimeMs === cache.ctimeMs &&
+      st.ino === cache.ino &&
+      st.size === cache.size
+    ) {
+      return cache.token;
+    }
     if (process.platform !== 'win32' && (st.mode & 0o077) !== 0) return cache.token;
     try {
       const token = readFileSync(tokenPath, 'utf8').trim();
       if (token.length > 0) {
         if (token !== cache.token) generation += 1;
-        cache = { token, mtimeMs: st.mtimeMs, ino: st.ino };
+        cache = { token, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs, ino: st.ino, size: st.size };
       }
     } catch {
     }

@@ -3,7 +3,8 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
+import { readFile as readFileAsync, stat as statAsync } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parse as parseCredentialsStoreConfig } from 'smol-toml';
@@ -478,6 +479,51 @@ const CREDENTIALS_STORE_MODES: readonly CredentialsStoreMode[] = ['file', 'keyri
 
 type ConfigParser = (text: string) => unknown;
 
+interface CredentialsStoreModeCacheEntry {
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+  readonly size: number;
+  readonly ino: number;
+  readonly mode: CredentialsStoreMode;
+}
+
+const MAX_CONFIG_MODE_CACHE_ENTRIES = 64;
+const credentialsStoreModeCache = new WeakMap<ConfigParser, Map<string, CredentialsStoreModeCacheEntry>>();
+
+function getModeCacheForParser(parser: ConfigParser): Map<string, CredentialsStoreModeCacheEntry> {
+  let cache = credentialsStoreModeCache.get(parser);
+  if (cache === undefined) {
+    cache = new Map();
+    credentialsStoreModeCache.set(parser, cache);
+  }
+  return cache;
+}
+
+function setModeCacheEntry(
+  cache: Map<string, CredentialsStoreModeCacheEntry>,
+  configPath: string,
+  entry: CredentialsStoreModeCacheEntry,
+): void {
+  if (cache.has(configPath)) cache.delete(configPath);
+  else if (cache.size >= MAX_CONFIG_MODE_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(configPath, entry);
+}
+
+function parseModeFromText(parser: ConfigParser, text: string): CredentialsStoreMode {
+  try {
+    const parsed = parser(text);
+    const raw = isRecord(parsed) ? parsed[CREDENTIALS_STORE_CONFIG_KEY] : undefined;
+    return typeof raw === 'string' && (CREDENTIALS_STORE_MODES as readonly string[]).includes(raw)
+      ? raw as CredentialsStoreMode
+      : 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+
 export interface ResolveCredentialsStoreModeDeps {
   mode?: CredentialsStoreMode;
   configPath?: string;
@@ -491,21 +537,84 @@ export function resolveCredentialsStoreMode(
 ): CredentialsStoreMode {
   if (deps.mode !== undefined) return deps.mode;
   const configPath = deps.configPath ?? join(dirname(resolve(credentialsDir)), 'config.toml');
+  const parser = deps.parseConfig ?? parseCredentialsStoreConfig;
+  const cache = getModeCacheForParser(parser);
+  let st: ReturnType<typeof statSync>;
+  try {
+    st = statSync(configPath);
+  } catch {
+    cache.delete(configPath);
+    return 'auto';
+  }
+  const cached = cache.get(configPath);
+  if (
+    cached !== undefined &&
+    cached.mtimeMs === st.mtimeMs &&
+    cached.ctimeMs === st.ctimeMs &&
+    cached.size === st.size &&
+    cached.ino === st.ino
+  ) {
+    return cached.mode;
+  }
   let text: string;
   try {
     text = readFileSync(configPath, 'utf-8');
   } catch {
+    cache.delete(configPath);
     return 'auto';
   }
+  const mode = parseModeFromText(parser, text);
+  setModeCacheEntry(cache, configPath, {
+    mtimeMs: st.mtimeMs,
+    ctimeMs: st.ctimeMs,
+    size: st.size,
+    ino: st.ino,
+    mode,
+  });
+  return mode;
+}
+
+async function resolveCredentialsStoreModeAsync(
+  credentialsDir: string,
+  deps: ResolveCredentialsStoreModeDeps = {},
+): Promise<CredentialsStoreMode> {
+  if (deps.mode !== undefined) return deps.mode;
+  const configPath = deps.configPath ?? join(dirname(resolve(credentialsDir)), 'config.toml');
+  const parser = deps.parseConfig ?? parseCredentialsStoreConfig;
+  const cache = getModeCacheForParser(parser);
+  let st;
   try {
-    const parsed = (deps.parseConfig ?? parseCredentialsStoreConfig)(text);
-    const raw = isRecord(parsed) ? parsed[CREDENTIALS_STORE_CONFIG_KEY] : undefined;
-    return typeof raw === 'string' && (CREDENTIALS_STORE_MODES as readonly string[]).includes(raw)
-      ? raw as CredentialsStoreMode
-      : 'auto';
+    st = await statAsync(configPath);
   } catch {
+    cache.delete(configPath);
     return 'auto';
   }
+  const cached = cache.get(configPath);
+  if (
+    cached !== undefined &&
+    cached.mtimeMs === st.mtimeMs &&
+    cached.ctimeMs === st.ctimeMs &&
+    cached.size === st.size &&
+    cached.ino === st.ino
+  ) {
+    return cached.mode;
+  }
+  let text: string;
+  try {
+    text = await readFileAsync(configPath, 'utf-8');
+  } catch {
+    cache.delete(configPath);
+    return 'auto';
+  }
+  const mode = parseModeFromText(parser, text);
+  setModeCacheEntry(cache, configPath, {
+    mtimeMs: st.mtimeMs,
+    ctimeMs: st.ctimeMs,
+    size: st.size,
+    ino: st.ino,
+    mode,
+  });
+  return mode;
 }
 
 export interface ResolveTokenStorageDeps extends ResolveCredentialsStoreModeDeps {
@@ -553,8 +662,8 @@ function unavailable(message: string, cause?: unknown): OAuthStorageUnavailableE
   return new OAuthStorageUnavailableError(message, cause === undefined ? undefined : { cause });
 }
 
-function inspectFile(legacy: FileTokenStorage, name: string): FileTokenInspection {
-  return legacy.readOnly(name);
+async function inspectFileAsync(legacy: FileTokenStorage, name: string): Promise<FileTokenInspection> {
+  return legacy.readOnlyAsync(name);
 }
 
 interface KeyringInspection {
@@ -604,9 +713,9 @@ export async function inspectTokenStorage(
 ): Promise<InspectTokenStorageResult> {
   assertValidTokenName(name);
   const legacy = new FileTokenStorage(credentialsDir);
-  const mode = isKeyringDisabledByEnv() ? 'file' : resolveCredentialsStoreMode(credentialsDir, deps);
-  const file = (): InspectTokenStorageResult => {
-    const inspected = inspectFile(legacy, name);
+  const mode = isKeyringDisabledByEnv() ? 'file' : await resolveCredentialsStoreModeAsync(credentialsDir, deps);
+  const file = async (): Promise<InspectTokenStorageResult> => {
+    const inspected = await inspectFileAsync(legacy, name);
     if (inspected.kind === 'unreadable') {
       throw unavailable(`file credential "${name}" is unreadable`, inspected.error);
     }
@@ -627,19 +736,19 @@ export async function inspectTokenStorage(
     if (mode === 'keyring') {
       throw unavailable(`keyring credential "${name}" is unavailable`, keyringResult.error);
     }
-    const fallback = file();
+    const fallback = await file();
     if (fallback.token !== undefined) return fallback;
     throw unavailable(`keyring credential "${name}" is unavailable`, keyringResult.error);
   }
   if (keyringResult.kind === 'missing') {
-    const fallback = inspectFile(legacy, name);
+    const fallback = await inspectFileAsync(legacy, name);
     if (fallback.kind === 'unreadable') {
       throw unavailable(`file credential "${name}" is unreadable`, fallback.error);
     }
     return { backend: 'keyring', token: fallback.kind === 'valid' ? fallback.token : undefined };
   }
 
-  const fallback = inspectFile(legacy, name);
+  const fallback = await inspectFileAsync(legacy, name);
   if (
     fallback.kind === 'valid' &&
     classifyToken(keyringResult.token as TokenInfo).kind === 'valid' &&

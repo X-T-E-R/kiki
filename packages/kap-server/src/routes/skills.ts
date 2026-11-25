@@ -74,7 +74,7 @@ import {
   type PromptSubmission,
   type SkillDescriptor,
 } from '@kiki/protocol';
-import { readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
+import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
 import { parseActionSuffix } from './action-suffix';
 import { HostSkillInstallConflict, installHostSkill, previewHostSkill, type HostSkillName } from './hostSkillInstall';
 
@@ -176,6 +176,8 @@ async function resolveSkillAgent(
     context.sessionId,
     requestedAgentId,
     agentMeta,
+    undefined,
+    { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, skipRequestAndMcp: true },
   );
   if (snapshot === undefined) {
     throw new Error2(

@@ -21,7 +21,7 @@ import { IWorkAdmissionService } from '@kiki/agent-core-v2/app/workAdmission/wor
 import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
 import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '@kiki/agent-core-v2/session/agentLifecycle/mainAgent';
-import { readPersistedAgentProfileSnapshot, resolvePersistedAgentCreateOptions } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
+import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot, resolvePersistedAgentCreateOptions } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
 import { readPersistedExecutionControl } from '@kiki/agent-core-v2/session/executionControl/readExecutionControl';
 import { PersistedContextRebuildReader } from '@kiki/agent-core-v2/agent/contextRebuild/contextRebuildRead';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
@@ -166,6 +166,7 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
       scope.agentId,
       agentMetadata,
       options?.signal,
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, skipRequestAndMcp: true },
     );
     options?.signal?.throwIfAborted();
     const createOptions = resolvePersistedAgentCreateOptions(scope.agentId, agentMetadata, snapshot);

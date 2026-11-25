@@ -17,7 +17,7 @@
  */
 
 import { execFileSync as nodeExecFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync as nodeReadFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 
 import type { Environment } from './environment';
@@ -35,11 +35,61 @@ export interface ShellPathBridgeDeps {
   readonly execFileSync: (file: string, args: readonly string[]) => string;
   readonly isFile: (path: string) => boolean;
   readonly now?: () => number;
+  readonly readFileSync?: (path: string) => string | undefined;
+  readonly env?: Readonly<Record<string, string | undefined>>;
 }
 
-const CYGPATH_TIMEOUT_MS = 5_000;
+const CYGPATH_TIMEOUT_MS = 1_000;
 const MAX_SEGMENT_CACHE_ENTRIES = 256;
 const FAILURE_CACHE_TTL_MS = 30_000;
+const MAX_CYGPATH_PROBES_PER_WINDOW = 16;
+
+function normalizeWin32Root(raw: string): string | null {
+  const trimmed = raw.trim().replace(/\r?\n$/, '');
+  if (!WIN32_DRIVE_ABSOLUTE_RE.test(trimmed) && !trimmed.startsWith('\\\\')) return null;
+  return trimmed.replace(/[\\/]$/, '');
+}
+
+function unescapeFstabField(field: string): string {
+  return field.replace(/\\([0-7]{3})/g, (_match, octal: string) =>
+    String.fromCharCode(Number.parseInt(octal, 8)),
+  );
+}
+
+function parseMsysFstab(content: string): Map<string, string> {
+  const mounts = new Map<string, string>();
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    const fields = line.split(/\s+/);
+    if (fields.length < 2) continue;
+    const source = unescapeFstabField(fields[0]!);
+    const target = unescapeFstabField(fields[1]!);
+    if (source.toLowerCase() === 'none' || !target.startsWith('/')) continue;
+    const normalizedTarget = nodePath.posix.normalize(target);
+    if (normalizedTarget === '/' || normalizedTarget.indexOf('/', 1) !== -1) continue;
+    const winRoot = normalizeWin32Root(source);
+    if (winRoot === null) continue;
+    mounts.set(normalizedTarget.slice(1), winRoot);
+  }
+  return mounts;
+}
+
+function inferMsysRoot(shellPath: string, cygpathExe: string): string | null {
+  const cygDir = nodePath.win32.dirname(cygpathExe);
+  const parent = nodePath.win32.dirname(cygDir);
+  if (
+    nodePath.win32.basename(cygDir).toLowerCase() === 'bin' &&
+    nodePath.win32.basename(parent).toLowerCase() === 'usr'
+  ) {
+    return normalizeWin32Root(nodePath.win32.dirname(parent));
+  }
+  if (nodePath.win32.basename(cygDir).toLowerCase() === 'bin') {
+    return normalizeWin32Root(parent);
+  }
+  const shellDir = nodePath.win32.dirname(shellPath);
+  return normalizeWin32Root(nodePath.win32.dirname(shellDir));
+}
 
 const DRIVE_COLON_RE = /^\/([a-zA-Z]):(?:[\\/]|$)/;
 const CYGDRIVE_RE = /^\/cygdrive\/([a-zA-Z])(?:\/|$)/;
@@ -91,6 +141,39 @@ export function createShellPathBridge(
   const segmentCache = new Map<string, string>();
   const failureCache = new Map<string, number>();
   const now = deps.now ?? Date.now;
+  let mountConfig:
+    | { readonly root: string; readonly mounts: ReadonlyMap<string, string> }
+    | null
+    | undefined;
+  let probeWindowStart = 0;
+  let probeCountInWindow = 0;
+
+  function loadMountConfig(exe: string): { readonly root: string; readonly mounts: ReadonlyMap<string, string> } | null {
+    if (mountConfig !== undefined) return mountConfig;
+    if (deps.readFileSync === undefined) {
+      mountConfig = null;
+      return null;
+    }
+    const root = inferMsysRoot(env.shellPath, exe);
+    if (root === null) {
+      mountConfig = null;
+      return null;
+    }
+    const mounts = new Map<string, string>();
+    const tempDir = deps.env?.['TEMP'] ?? deps.env?.['TMP'];
+    const normalizedTemp = tempDir !== undefined ? normalizeWin32Root(tempDir) : null;
+    if (normalizedTemp !== null) {
+      mounts.set('tmp', normalizedTemp);
+    }
+    const fstabContent = deps.readFileSync(nodePath.win32.join(root, 'etc', 'fstab'));
+    if (fstabContent !== undefined) {
+      for (const [segment, winRoot] of parseMsysFstab(fstabContent)) {
+        mounts.set(segment, winRoot);
+      }
+    }
+    mountConfig = { root, mounts };
+    return mountConfig;
+  }
 
   function setBounded<V>(cache: Map<string, V>, key: string, value: V): void {
     if (cache.has(key)) cache.delete(key);
@@ -123,18 +206,36 @@ export function createShellPathBridge(
 
     const exe = locateCygpath();
     if (exe === null) return null;
+
+    const mounts = loadMountConfig(exe);
+    if (mounts !== null) {
+      const mounted = mounts.mounts.get(firstSegment);
+      const resolved = mounted ?? `${mounts.root}/${firstSegment}`;
+      setBounded(segmentCache, firstSegment, resolved);
+      return resolved;
+    }
+
+    const currentTime = now();
+    if (currentTime - probeWindowStart >= FAILURE_CACHE_TTL_MS) {
+      probeWindowStart = currentTime;
+      probeCountInWindow = 0;
+    }
+    if (probeCountInWindow >= MAX_CYGPATH_PROBES_PER_WINDOW) {
+      return null;
+    }
+    probeCountInWindow += 1;
+
     let resolved: string;
     try {
       const output = deps.execFileSync(exe, ['-w', '-C', 'UTF8', '--', `/${firstSegment}`]);
-      // cygpath appends a newline and may emit a trailing separator (`D:\`).
-      const trimmed = output.replace(/\r?\n$/, '');
-      if (!WIN32_DRIVE_ABSOLUTE_RE.test(trimmed) && !trimmed.startsWith('\\\\')) {
-        setBounded(failureCache, firstSegment, now() + FAILURE_CACHE_TTL_MS);
+      const normalized = normalizeWin32Root(output);
+      if (normalized === null) {
+        setBounded(failureCache, firstSegment, currentTime + FAILURE_CACHE_TTL_MS);
         return null;
       }
-      resolved = trimmed.replace(/[\\/]$/, '');
+      resolved = normalized;
     } catch {
-      setBounded(failureCache, firstSegment, now() + FAILURE_CACHE_TTL_MS);
+      setBounded(failureCache, firstSegment, currentTime + FAILURE_CACHE_TTL_MS);
       return null;
     }
     setBounded(segmentCache, firstSegment, resolved);
@@ -205,6 +306,14 @@ export function getShellPathBridge(env: ShellPathBridgeEnv): ShellPathBridge {
         windowsHide: true,
       }),
     isFile: (path) => existsSync(path),
+    readFileSync: (path) => {
+      try {
+        return nodeReadFileSync(path, 'utf8');
+      } catch {
+        return undefined;
+      }
+    },
+    env: process.env,
   });
   bridgeCache.set(key, bridge);
   return bridge;

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type {
   HostProcessOptions,
@@ -173,6 +173,62 @@ describe('AcpProcessService local fallback', () => {
       args: ['-c', 'echo hi'],
       options: { env: bashEnv, cwd: '/repo' },
     });
+  });
+
+  it('prevents overlapping terminal/output polls and stops polling when waitForExit rejects', async () => {
+    vi.useFakeTimers();
+    try {
+      let inFlight = 0;
+      let maxInFlight = 0;
+      let pollCount = 0;
+      let resolveOutput: (() => void) | undefined;
+      let rejectExit: ((error: Error) => void) | undefined;
+
+      const connection = makeConnection({
+        terminalEnabled: true,
+        createTerminal: () => ({
+          id: 'term-slow',
+          currentOutput: () => {
+            pollCount += 1;
+            inFlight += 1;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            return new Promise((resolve) => {
+              resolveOutput = () => {
+                inFlight -= 1;
+                resolve({ output: '', truncated: false });
+              };
+            });
+          },
+          waitForExit: () =>
+            new Promise((_resolve, reject) => {
+              rejectExit = reject;
+            }),
+          kill: async () => ({}),
+          release: async () => ({}),
+        }),
+      });
+      const runtime = await bindRuntime(makeEnvironment(), { connection });
+      const proc = await runtime.process!.spawn('/bin/bash', ['-c', 'sleep 10'], {
+        env: { ...bashEnv },
+      });
+
+      await vi.advanceTimersByTimeAsync(250);
+      expect(pollCount).toBe(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(pollCount).toBe(1);
+      expect(maxInFlight).toBe(1);
+
+      resolveOutput?.();
+      await Promise.resolve();
+      rejectExit?.(new Error('terminal disconnected'));
+      await expect(proc.wait()).rejects.toThrow('terminal disconnected');
+
+      const pollsAtExit = pollCount;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(pollCount).toBe(pollsAtExit);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('falls back to local execution for non-Bash spawns', async () => {

@@ -28,7 +28,7 @@ import { runPluginNodeEntry } from './cli/sub/plugin-run-node';
 import { getVersion } from './cli/version';
 import { SOURCE_OWNED_ADAPTER_ROOT_ENV } from '../../../scripts/external-harness/production-manifest.mjs';
 import {
-  cleanupStaleNativeCacheForCurrent,
+  cleanupStaleAssetCachesForCurrent,
   getHistoryImportEntryFile,
   getKapSqliteQueryWorkerFile,
   getNativeRuntimeFile,
@@ -36,6 +36,7 @@ import {
   getSourceOwnedAdapterRoot,
   getWindowsProcessHelperFile,
 } from './native/native-assets';
+import { getCurrentWebAssetCacheManifestDir } from './native/web-assets';
 import { installKapModelPricing } from './native/model-pricing';
 import { installKikiDocs } from './native/product-docs';
 import { installKapUsageWorker } from './native/usage-worker';
@@ -181,13 +182,14 @@ function bootstrap(): void {
   );
   if (runNativeAssetSmokeIfRequested()) return;
 
-  queueMicrotask(() => {
-    try {
-      cleanupStaleNativeCacheForCurrent();
-    } catch {
+  const gcTimer = setTimeout(() => {
+    void cleanupStaleAssetCachesForCurrent({
+      currentWebManifestDir: getCurrentWebAssetCacheManifestDir(),
+    }).catch(() => {
       // Cache GC must never affect process startup.
-    }
-  });
+    });
+  }, 0);
+  gcTimer.unref?.();
 
   const version = getVersion();
 

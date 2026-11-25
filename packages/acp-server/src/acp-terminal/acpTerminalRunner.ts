@@ -21,7 +21,9 @@ import type {
 import { AcpHostFileSystem, IAcpConnection, type IAcpTerminalHandle } from '../acp-fs';
 
 const OUTPUT_BYTE_LIMIT = 4 * 1024 * 1024;
-const OUTPUT_POLL_MS = 250;
+const OUTPUT_POLL_MIN_MS = 250;
+const OUTPUT_POLL_MAX_MS = 2_000;
+const OUTPUT_POLL_TRUNCATED_MS = 4_000;
 let nextGeneration = 1;
 
 function isBashToolInvocation(args: readonly string[], options?: HostProcessOptions): boolean {
@@ -85,7 +87,10 @@ class AcpTerminalProcess implements IHostProcess {
 
   private _exitCode: number | null = null;
   private emitted = 0;
-  private readonly pollTimer: ReturnType<typeof setInterval>;
+  private pollTimer: ReturnType<typeof setTimeout> | undefined;
+  private pollStopped = false;
+  private pollDelayMs = OUTPUT_POLL_MIN_MS;
+  private pollInFlight: Promise<boolean> | undefined;
   private readonly waitPromise: Promise<number>;
   private released = false;
 
@@ -102,10 +107,7 @@ class AcpTerminalProcess implements IHostProcess {
     const waitPromise = this.run();
     waitPromise.catch(() => {});
     this.waitPromise = waitPromise;
-    this.pollTimer = setInterval(() => {
-      void this.pump();
-    }, OUTPUT_POLL_MS);
-    this.pollTimer.unref?.();
+    this.schedulePoll();
   }
 
   get exitCode(): number | null {
@@ -131,29 +133,77 @@ class AcpTerminalProcess implements IHostProcess {
   }
 
   private async run(): Promise<number> {
-    const status = await this.handle.waitForExit();
-    this._exitCode = status.exitCode ?? -1;
-    await this.pump();
-    this.stopPolling();
-    this.stdout.end();
-    return this._exitCode;
+    try {
+      const status = await this.handle.waitForExit();
+      this._exitCode = status.exitCode ?? -1;
+      this.stopPolling();
+      await this.pumpFinal();
+      return this._exitCode;
+    } finally {
+      this.stopPolling();
+      this.stdout.end();
+    }
   }
 
-  private async pump(): Promise<void> {
+  private schedulePoll(): void {
+    if (this.pollStopped || this.pollTimer !== undefined) return;
+    this.pollTimer = setTimeout(() => {
+      this.pollTimer = undefined;
+      if (this.pollStopped) return;
+      void this.pump().finally(() => {
+        if (!this.pollStopped) this.schedulePoll();
+      });
+    }, this.pollDelayMs);
+    this.pollTimer.unref?.();
+  }
+
+  private async pumpFinal(): Promise<void> {
+    if (this.pollInFlight !== undefined) {
+      await this.pollInFlight;
+    }
+    await this.pumpOnce();
+  }
+
+  private pump(): Promise<boolean> {
+    if (this.pollInFlight !== undefined) return this.pollInFlight;
+    const flight = this.pumpOnce().finally(() => {
+      if (this.pollInFlight === flight) this.pollInFlight = undefined;
+    });
+    this.pollInFlight = flight;
+    return flight;
+  }
+
+  private async pumpOnce(): Promise<boolean> {
     try {
-      const { output } = await this.handle.currentOutput();
+      const { output, truncated } = await this.handle.currentOutput();
+      let changed = false;
       if (output.length > this.emitted) {
         this.stdout.write(output.slice(this.emitted));
         this.emitted = output.length;
+        changed = true;
       } else if (output.length < this.emitted) {
         this.emitted = output.length;
+        changed = true;
       }
+      if (changed) {
+        this.pollDelayMs = OUTPUT_POLL_MIN_MS;
+      } else {
+        const cap = truncated === true ? OUTPUT_POLL_TRUNCATED_MS : OUTPUT_POLL_MAX_MS;
+        this.pollDelayMs = Math.min(cap, this.pollDelayMs * 2);
+      }
+      return changed;
     } catch {
+      this.pollDelayMs = Math.min(OUTPUT_POLL_MAX_MS, this.pollDelayMs * 2);
+      return false;
     }
   }
 
   private stopPolling(): void {
-    clearInterval(this.pollTimer);
+    this.pollStopped = true;
+    if (this.pollTimer !== undefined) {
+      clearTimeout(this.pollTimer);
+      this.pollTimer = undefined;
+    }
   }
 }
 

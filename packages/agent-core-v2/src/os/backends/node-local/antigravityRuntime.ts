@@ -2,6 +2,7 @@ import { constants, readFileSync, realpathSync, statSync } from 'node:fs';
 import { lstat, mkdir, open, readdir, readFile, readlink, realpath, rm, rmdir, stat, symlink } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { Stats } from 'node:fs';
 
 const PLANNER_RESPONSE_STEP_TYPE = 15;
@@ -200,7 +201,7 @@ export async function watchAntigravityTurnOutcome(
       if (!foreignFile) candidates.push({ segments, identity: undefined, startIndex: -1 });
       continue;
     }
-    const index = readSteps(db.path, lastStepIndex);
+    const index = await readSteps(db.path, lastStepIndex);
     if (index !== undefined) {
       candidates.push({ segments, identity: db.info, startIndex: index });
     }
@@ -213,7 +214,7 @@ export async function watchAntigravityTurnOutcome(
       const sameFile = candidate.identity === undefined ||
         (after.info.dev === candidate.identity.dev && after.info.ino === candidate.identity.ino);
       if (!sameFile) continue;
-      const step = readSteps(after.path, lastStepAfter(candidate.startIndex));
+      const step = await readSteps(after.path, lastStepAfter(candidate.startIndex));
       const failure = turnFailure(stopReason, step, now());
       if (failure !== undefined) return failure;
     }
@@ -605,20 +606,36 @@ function capText(value: string, limit: number): string {
   return value.length <= limit ? value : `${value.slice(0, limit)}…`;
 }
 
-function readSteps<T>(file: string, read: (database: DatabaseSync) => T): T | undefined {
-  let database: DatabaseSync | undefined;
-  try {
-    database = new DatabaseSync(file, { readOnly: true });
-    database.exec('PRAGMA busy_timeout = 100');
-    const hasSteps = database
-      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'steps'")
-      .get() !== undefined;
-    return hasSteps ? read(database) : undefined;
-  } catch {
-    return undefined;
-  } finally {
-    try { database?.close(); } catch {}
+function isSqliteBusyError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const code = (error as { errcode?: unknown; code?: unknown }).errcode ?? (error as { code?: unknown }).code;
+  if (code === 5 || code === 6 || code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED') return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /database is locked|database table is locked|SQLITE_BUSY/i.test(message);
+}
+
+async function readSteps<T>(file: string, read: (database: DatabaseSync) => T): Promise<T | undefined> {
+  const maxAttempts = 3;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    let database: DatabaseSync | undefined;
+    try {
+      database = new DatabaseSync(file, { readOnly: true });
+      database.exec('PRAGMA busy_timeout = 0');
+      const hasSteps = database
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'steps'")
+        .get() !== undefined;
+      return hasSteps ? read(database) : undefined;
+    } catch (error) {
+      if (isSqliteBusyError(error) && attempt + 1 < maxAttempts) {
+        await delay(25);
+        continue;
+      }
+      return undefined;
+    } finally {
+      try { database?.close(); } catch {}
+    }
   }
+  return undefined;
 }
 
 function lastStepIndex(database: DatabaseSync): number {

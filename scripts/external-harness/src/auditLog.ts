@@ -39,6 +39,8 @@ export async function readAuditFile(
 
   const keptState: IndexedRecord[] = [];
   const keptFrames: IndexedRecord[] = [];
+  const latestToolState = new Map<string, IndexedRecord>();
+  let latestNativeUsage: IndexedRecord | undefined;
   let order = 0;
 
   let pendingMalformed:
@@ -52,12 +54,22 @@ export async function readAuditFile(
 
   const pushRecord = (record: AuditRecord): void => {
     const entry: IndexedRecord = { order: order++, record };
-    if (compactMode && HIGH_FREQ_FRAME_TYPES.has(record.type)) {
-      keptFrames.push(entry);
-      if (keptFrames.length > tailFrameLimit) {
-        keptFrames.shift();
+    if (compactMode) {
+      if (HIGH_FREQ_FRAME_TYPES.has(record.type)) {
+        keptFrames.push(entry);
+        if (keptFrames.length > tailFrameLimit) {
+          keptFrames.shift();
+        }
+        return;
       }
-      return;
+      if (record.type === 'tool_state' && typeof record['toolCallId'] === 'string') {
+        latestToolState.set(record['toolCallId'], entry);
+        return;
+      }
+      if (record.type === 'native_usage') {
+        latestNativeUsage = entry;
+        return;
+      }
     }
     keptState.push(entry);
   };
@@ -149,21 +161,38 @@ export async function readAuditFile(
   if (!compactMode) {
     return keptState.map((item) => item.record);
   }
-  const merged = [...keptState, ...keptFrames].sort((a, b) => a.order - b.order);
+  const merged = [
+    ...keptState,
+    ...latestToolState.values(),
+    ...(latestNativeUsage === undefined ? [] : [latestNativeUsage]),
+    ...keptFrames,
+  ].sort((a, b) => a.order - b.order);
   return merged.map((item) => item.record);
 }
 
-export async function compactAuditFile(
+export interface CompactAuditStats {
+  readonly totalBytes: number;
+  readonly stateBytes: number;
+}
+
+export async function compactAuditFileWithStats(
   auditPath: string,
   options: { readonly maxBytes?: number; readonly tailFrameLimit?: number } = {},
-): Promise<number> {
+): Promise<CompactAuditStats> {
   const records = await readAuditFile(auditPath, {
     maxBytes: 0,
     tailFrameLimit: options.tailFrameLimit ?? AUDIT_TAIL_FRAME_RECORDS,
     repairTruncatedTail: false,
   });
-  const payload =
-    records.length === 0 ? '' : `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
+  let stateBytes = 0;
+  const lines = records.map((record) => {
+    const serialized = `${JSON.stringify(record)}\n`;
+    if (!HIGH_FREQ_FRAME_TYPES.has(record.type)) {
+      stateBytes += Buffer.byteLength(serialized, 'utf8');
+    }
+    return serialized;
+  });
+  const payload = lines.join('');
   const tempPath = `${auditPath}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(tempPath, payload, 'utf8');
   try {
@@ -172,7 +201,18 @@ export async function compactAuditFile(
     await unlink(tempPath).catch(() => {});
     throw error;
   }
-  return Buffer.byteLength(payload, 'utf8');
+  return {
+    totalBytes: Buffer.byteLength(payload, 'utf8'),
+    stateBytes,
+  };
+}
+
+export async function compactAuditFile(
+  auditPath: string,
+  options: { readonly maxBytes?: number; readonly tailFrameLimit?: number } = {},
+): Promise<number> {
+  const stats = await compactAuditFileWithStats(auditPath, options);
+  return stats.totalBytes;
 }
 
 export async function pruneExpiredAuditFiles(

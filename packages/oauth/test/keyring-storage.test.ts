@@ -402,4 +402,24 @@ describe('inspectTokenStorage', () => {
     await expect(inspectTokenStorage(dir, 'kimi-code', { mode: 'keyring', loadKeyring: () => keyring }))
       .resolves.toEqual({ backend: 'keyring' });
   });
+
+  it('caches parsed config.toml across repeated inspect calls until file changes', async () => {
+    const configPath = join(dir, 'config.toml');
+    writeFileSync(configPath, 'credentials_store = "file"\n', 'utf8');
+    const parseConfig = vi.fn((text: string) =>
+      text.includes('"keyring"') ? { credentials_store: 'keyring' } : { credentials_store: 'file' },
+    );
+
+    await expect(inspectTokenStorage(dir, 'kimi-code', { configPath, parseConfig }))
+      .resolves.toEqual({ backend: 'file' });
+    await expect(inspectTokenStorage(dir, 'kimi-code', { configPath, parseConfig }))
+      .resolves.toEqual({ backend: 'file' });
+    expect(parseConfig).toHaveBeenCalledTimes(1);
+
+    writeFileSync(configPath, 'credentials_store = "keyring"\n# updated\n', 'utf8');
+    await expect(
+      inspectTokenStorage(dir, 'kimi-code', { configPath, parseConfig, loadKeyring: () => new FakeKeyring() }),
+    ).resolves.toEqual({ backend: 'keyring' });
+    expect(parseConfig).toHaveBeenCalledTimes(2);
+  });
 });

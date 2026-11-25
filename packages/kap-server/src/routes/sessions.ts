@@ -878,7 +878,26 @@ export function registerSessionsRoutes(
         readonly facts?: SessionFacts;
       }
 
-      const collect = async (pageSize: number): Promise<{ visible: Eligible[]; hasMore: boolean }> => {
+      const SESSION_LIST_SCAN_BUDGET = 2000;
+      const liveBusyIds = new Set<string>();
+      for (const liveSession of core.accessor.get(ISessionManager).list()) {
+        if (liveSession.accessor.get(ISessionActivityView).state().busy) {
+          liveBusyIds.add(liveSession.id);
+        }
+      }
+      const hasMemoryFilter =
+        needle !== undefined && needle.length > 0 ||
+        raw.persona !== undefined ||
+        raw.exclude_empty === true ||
+        archivedOnly ||
+        raw.pinned !== undefined ||
+        raw.busy !== undefined ||
+        raw.private_only === true ||
+        raw.include_private === false;
+
+      const collect = async (
+        pageSize: number,
+      ): Promise<{ visible: Eligible[]; hasMore: boolean; resumeCursor?: string }> => {
         const wanted = pageSize + 1;
         const collected: Eligible[] = [];
         let pageBefore = before;
@@ -887,12 +906,62 @@ export function registerSessionsRoutes(
           afterCursor === undefined ||
           summary.updatedAt > afterCursor.updatedAt ||
           (summary.updatedAt === afterCursor.updatedAt && summary.id > afterCursor.id);
-        while (collected.length < wanted) {
+        const matchesSummary = (summary: SessionSummary): Eligible | undefined => {
+          if (!sessionMatchesPrivacy(summary.private, raw)) return undefined;
+          const cwd = summary.cwd ?? roots.get(summary.workspaceId) ?? (archivedOnly ? '' : undefined);
+          if (cwd === undefined) return undefined;
+          if (needle && ![summary.title ?? '', cwd, summary.workspaceId].some((value) => value.toLocaleLowerCase().includes(needle))) return undefined;
+          if (raw.persona !== undefined && resolveSessionPersonaId(core, summary) !== raw.persona) return undefined;
+          if (raw.exclude_empty === true && (summary.lastPrompt ?? '').length === 0) return undefined;
+          if (archivedOnly && !summary.archived) return undefined;
+          if (raw.pinned !== undefined && (summary.custom?.[SESSION_PIN_METADATA_KEY] === true) !== raw.pinned) return undefined;
+          if (raw.busy === false && liveBusyIds.has(summary.id)) return undefined;
+          if (raw.busy === true && !liveBusyIds.has(summary.id)) return undefined;
+          return { summary, cwd };
+        };
+        if (raw.busy === true) {
+          if (liveBusyIds.size === 0) return { visible: [], hasMore: false };
+          const workspaceSet = workspaceIds === undefined ? undefined : new Set(workspaceIds);
+          const beforeCursor = pageBefore !== undefined ? await index.get(pageBefore) : undefined;
+          const candidates = (await Promise.all([...liveBusyIds].map((id) => index.get(id))))
+            .filter((summary): summary is SessionSummary =>
+              summary !== undefined &&
+              (workspaceSet === undefined || workspaceSet.has(summary.workspaceId)) &&
+              (includeArchived || !summary.archived),
+            )
+            .sort((a, b) => (b.updatedAt !== a.updatedAt ? b.updatedAt - a.updatedAt : b.id > a.id ? 1 : b.id < a.id ? -1 : 0));
+          for (const summary of candidates) {
+            signal.throwIfAborted();
+            if (
+              beforeCursor !== undefined &&
+              (summary.updatedAt > beforeCursor.updatedAt ||
+                (summary.updatedAt === beforeCursor.updatedAt && summary.id >= beforeCursor.id))
+            ) {
+              continue;
+            }
+            if (!newerThanCursor(summary)) break;
+            const eligible = matchesSummary(summary);
+            if (eligible === undefined) continue;
+            collected.push(eligible);
+            if (collected.length >= wanted) break;
+          }
+          return { visible: collected.slice(0, pageSize), hasMore: collected.length > pageSize };
+        }
+        let visited = 0;
+        let resumeCursor: string | undefined;
+        while (collected.length < wanted && visited < SESSION_LIST_SCAN_BUDGET) {
           signal.throwIfAborted();
+          const remainingBudget = SESSION_LIST_SCAN_BUDGET - visited;
+          const baseBatch =
+            raw.persona !== undefined
+              ? Math.max(wanted - collected.length, 500)
+              : hasMemoryFilter
+                ? Math.max(wanted - collected.length, 200)
+                : wanted - collected.length;
           const page = await index.listRecent({
             workspaceIds,
             includeArchived,
-            limit: raw.persona === undefined ? wanted - collected.length : Math.max(wanted - collected.length, 500),
+            limit: Math.min(baseBatch, remainingBudget),
             before: pageBefore,
             after: pageBefore === undefined ? after : undefined,
           });
@@ -900,30 +969,32 @@ export function registerSessionsRoutes(
           let exhausted = false;
           for (const summary of page.items) {
             signal.throwIfAborted();
+            visited += 1;
             if (!newerThanCursor(summary)) {
               exhausted = true;
               break;
             }
-            if (!sessionMatchesPrivacy(summary.private, raw)) continue;
-            const cwd = summary.cwd ?? roots.get(summary.workspaceId) ?? (archivedOnly ? '' : undefined);
-            if (cwd === undefined) continue;
-            if (needle && ![summary.title ?? '', cwd, summary.workspaceId].some((value) => value.toLocaleLowerCase().includes(needle))) continue;
-            if (raw.persona !== undefined && resolveSessionPersonaId(core, summary) !== raw.persona) continue;
-            if (raw.exclude_empty === true && (summary.lastPrompt ?? '').length === 0) continue;
-            if (archivedOnly && !summary.archived) continue;
-            if (raw.pinned !== undefined && (summary.custom?.[SESSION_PIN_METADATA_KEY] === true) !== raw.pinned) continue;
-            const facts = raw.busy !== undefined ? resolveSessionFacts(core, summary.id, summary.usage) : undefined;
-            if (raw.busy !== undefined && facts?.busy !== raw.busy) continue;
-            collected.push({ summary, cwd, facts });
+            const eligible = matchesSummary(summary);
+            if (eligible === undefined) continue;
+            collected.push(eligible);
+            if (collected.length >= wanted) break;
           }
           if (exhausted || page.nextCursor === undefined) break;
           pageBefore = page.nextCursor;
+          if (visited >= SESSION_LIST_SCAN_BUDGET && collected.length < wanted) {
+            resumeCursor = page.nextCursor;
+            break;
+          }
         }
-        return { visible: collected.slice(0, pageSize), hasMore: collected.length > pageSize };
+        return {
+          visible: collected.slice(0, pageSize),
+          hasMore: collected.length > pageSize || resumeCursor !== undefined,
+          resumeCursor,
+        };
       };
 
       const pageSize = raw.page_size ?? DEFAULT_SESSION_LIST_PAGE_SIZE;
-      const { visible, hasMore } = await collect(pageSize);
+      const { visible, hasMore, resumeCursor } = await collect(pageSize);
       const projected = await Promise.all(visible.map(async ({ summary, cwd, facts }) => boundedListPreview(await project(summary, cwd, facts))));
       const ephemeral = raw.include_ephemeral === true ? await ephemeralSessions({
         workspace_id: raw.workspace_id,
@@ -939,10 +1010,11 @@ export function registerSessionsRoutes(
         items.push(session);
         bytes += size;
       }
-      const more = hasMore || items.length < projected.length;
-      const last = items.at(-1)?.id;
-      const nextCursor = more && last !== undefined ? after === undefined ? last : `next:${Buffer.from(JSON.stringify({ before: last, after })).toString('base64url')}` : undefined;
-      const busyCount = core.accessor.get(ISessionManager).list().filter((session) => session.accessor.get(ISessionActivityView).state().busy).length;
+      const trimmedByBytes = items.length < projected.length;
+      const more = hasMore || trimmedByBytes;
+      const cursorBefore = trimmedByBytes ? items.at(-1)?.id : (resumeCursor ?? items.at(-1)?.id);
+      const nextCursor = more && cursorBefore !== undefined ? after === undefined ? cursorBefore : `next:${Buffer.from(JSON.stringify({ before: cursorBefore, after })).toString('base64url')}` : undefined;
+      const busyCount = liveBusyIds.size;
       signal.throwIfAborted();
       reply.send(okEnvelope({ items, has_more: more, next_cursor: nextCursor, busy_count: busyCount, ephemeral: ephemeral?.items, ephemeral_has_more: ephemeral?.has_more, ephemeral_next_cursor: ephemeral?.next_cursor }, req.id));
     }),

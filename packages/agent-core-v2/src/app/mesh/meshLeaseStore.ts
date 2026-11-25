@@ -16,6 +16,7 @@ import { StaleEpochError } from './humanTakeover';
 
 const LEASE_SCOPE = 'mesh';
 const LEASE_KEY = 'session-leases.json';
+const MAX_HIGH_WATER_EPOCHS = 2048;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -88,6 +89,7 @@ export class MeshLeaseStore implements IMeshLeaseStore {
           }
         }
       }
+      this.sweepExpired(this.now());
     } catch {
     }
   }
@@ -247,7 +249,15 @@ export class MeshLeaseStore implements IMeshLeaseStore {
         throw new StaleEpochError(sessionId, expectedEpoch, currentEpoch);
       }
       const updated = updater(current, ts);
+      const wasActive = existing !== undefined && (existing.expiresAt === undefined || existing.expiresAt > ts);
+      if (!wasActive && isLeaseEmpty(updated)) {
+        if (existing !== undefined) {
+          this.sessions.delete(sessionId);
+        }
+        return emptyLease(sessionId, ts, currentEpoch);
+      }
       const nextEpoch = currentEpoch + 1;
+      this.highWaterEpochs.delete(sessionId);
       this.highWaterEpochs.set(sessionId, nextEpoch);
       const next: MeshSessionLease = {
         ...updated,
@@ -262,6 +272,7 @@ export class MeshLeaseStore implements IMeshLeaseStore {
       } else {
         this.sessions.set(sessionId, next);
       }
+      this.sweepExpired(ts);
       await this.persist();
       return next;
     });
@@ -269,8 +280,25 @@ export class MeshLeaseStore implements IMeshLeaseStore {
     return run;
   }
 
+  private sweepExpired(ts: number): void {
+    for (const [sessionId, lease] of this.sessions) {
+      if (lease.expiresAt !== undefined && lease.expiresAt <= ts) {
+        this.highWaterEpochs.set(sessionId, Math.max(this.highWaterEpochs.get(sessionId) ?? 0, lease.epoch ?? 0));
+        this.sessions.delete(sessionId);
+      }
+    }
+    if (this.highWaterEpochs.size > MAX_HIGH_WATER_EPOCHS) {
+      for (const sessionId of this.highWaterEpochs.keys()) {
+        if (this.highWaterEpochs.size <= MAX_HIGH_WATER_EPOCHS) break;
+        if (this.sessions.has(sessionId)) continue;
+        this.highWaterEpochs.delete(sessionId);
+      }
+    }
+  }
+
   private async persist(): Promise<void> {
     if (this.storage === undefined) return;
+    this.sweepExpired(this.now());
     const payload: StoredLeaseBook = {
       version: 1,
       sessions: Object.fromEntries([...this.sessions.entries()].toSorted(([a], [b]) => a.localeCompare(b))),

@@ -93,8 +93,8 @@ export class PersistedModelSwitchReader {
     }
     const pinned = await openPinnedLogicalRead(this.host.storage, scope, AGENT_WIRE_RECORD_KEY, signal);
     try {
-      const fastEmpty = await this.tryFastEmptyScan(scope, pinned, signal);
-      if (fastEmpty) return [];
+      const fast = await this.tryFastCachedOrEmpty(scope, pinned, signal);
+      if (fast !== undefined) return fast;
       for (;;) {
         signal?.throwIfAborted();
         try { return await this.readWithPinned(scope, signal, pinned, true); }
@@ -122,22 +122,34 @@ export class PersistedModelSwitchReader {
     return promise.then((list) => { signal?.throwIfAborted(); return list; });
   }
 
-  private async tryFastEmptyScan(scope: string, pinned: PinnedLogicalRead, signal?: AbortSignal): Promise<boolean> {
+  private projectSwitches(state: ReadState) {
+    return [...state.switches.values()].map((entry) => ({
+      ...entry,
+      queueIndex: state.queue.order.indexOf(`${PREFIX}${entry.input.operationId}`),
+    }));
+  }
+
+  private async tryFastCachedOrEmpty(
+    scope: string,
+    pinned: PinnedLogicalRead,
+    signal?: AbortSignal,
+  ) {
     signal?.throwIfAborted();
     const current = await this.source(scope, pinned);
     signal?.throwIfAborted();
-    if (current.size <= READ_BYTES * 2) return false;
     const cached = this.states.get(scope);
-    if (cached !== undefined && cached.complete && cached.switches.size === 0 && this.canAppend(cached.source, current) && current.size === cached.source.size) {
-      return true;
+    if (cached !== undefined && cached.complete && this.canAppend(cached.source, current)) {
+      if (current.size === cached.source.size) return this.projectSwitches(cached);
+      return undefined;
     }
+    if (current.size <= READ_BYTES * 2) return undefined;
     const wirePath = this.host.storage.pathFor?.(scope, AGENT_WIRE_RECORD_KEY);
     if (!pinned.sealed && wirePath !== undefined) {
       const scanned = await scanColdWireMarkers(wirePath, ['prompt.model_switch'], signal, READ_BYTES * 2);
       if (scanned !== undefined) {
-        if (scanned.matches.get('prompt.model_switch') === true) return false;
+        if (scanned.matches.get('prompt.model_switch') === true) return undefined;
         const after = await this.source(scope, pinned);
-        if (!this.canAppend(current, after) || after.size !== current.size) return false;
+        if (!this.canAppend(current, after) || after.size !== current.size) return undefined;
         const proof = await this.prefixProof(scope, current.size, pinned);
         this.states.delete(scope);
         this.states.set(scope, {
@@ -152,7 +164,7 @@ export class PersistedModelSwitchReader {
           complete: true,
         });
         while (this.states.size > 16) this.states.delete(this.states.keys().next().value!);
-        return true;
+        return [];
       }
     }
     const overlap = MODEL_SWITCH_NEEDLE.length - 1;
@@ -160,15 +172,27 @@ export class PersistedModelSwitchReader {
     for await (const raw of pinned.read({ start: 0, end: current.size - 1 }, { chunkBytes: SCAN_CHUNK_BYTES })) {
       signal?.throwIfAborted();
       const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
-      const combined = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
-      if (combined.indexOf(MODEL_SWITCH_NEEDLE) !== -1) {
-        return false;
+      if (carry.length > 0 && overlap > 0) {
+        const boundary = Buffer.concat([carry, chunk.subarray(0, Math.min(chunk.length, overlap))]);
+        if (boundary.indexOf(MODEL_SWITCH_NEEDLE) !== -1) {
+          return undefined;
+        }
       }
-      carry = overlap > 0 ? Buffer.from(combined.subarray(Math.max(0, combined.length - overlap))) : Buffer.alloc(0);
+      if (chunk.indexOf(MODEL_SWITCH_NEEDLE) !== -1) {
+        return undefined;
+      }
+      if (overlap > 0) {
+        if (chunk.length >= overlap) {
+          carry = Buffer.from(chunk.subarray(chunk.length - overlap));
+        } else {
+          const joined = Buffer.concat([carry, chunk]);
+          carry = Buffer.from(joined.subarray(Math.max(0, joined.length - overlap)));
+        }
+      }
     }
     const after = await this.source(scope, pinned);
     if (!this.canAppend(current, after) || after.size !== current.size) {
-      return false;
+      return undefined;
     }
     const proof = await this.prefixProof(scope, current.size, pinned);
     this.states.delete(scope);
@@ -184,7 +208,7 @@ export class PersistedModelSwitchReader {
       complete: true,
     });
     while (this.states.size > 16) this.states.delete(this.states.keys().next().value!);
-    return true;
+    return [];
   }
 
   private async checkpoint(scope: string, size: number, mtimeMs: number, signal?: AbortSignal) {
@@ -386,9 +410,7 @@ export class PersistedModelSwitchReader {
         }
       }
       if (!state.complete) throw new ModelSwitchQueuePreparingError();
-      return [...state.switches.values()].map((entry) => ({ ...entry,
-        queueIndex: state.queue.order.indexOf(`${PREFIX}${entry.input.operationId}`),
-      }));
+      return this.projectSwitches(state);
     } finally {
       ownedPinned?.close();
     }

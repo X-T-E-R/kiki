@@ -422,6 +422,7 @@ type JsonObject = Record<string, unknown>;
 
 const ROOT_COMBINATORS = ['allOf', 'anyOf', 'oneOf'] as const;
 const MAX_REF_DEPTH = 16;
+const MAX_SCHEMA_VISITS = 10_000;
 
 interface ObjectShape {
   readonly properties: Map<string, unknown>;
@@ -429,12 +430,42 @@ interface ObjectShape {
   readonly closed: boolean;
 }
 
+interface SchemaProjectionContext {
+  remaining: number;
+  readonly shapeMemo: Map<object, ObjectShape>;
+  readonly jsonKeyCache: WeakMap<object, string>;
+}
+
+class SchemaBudgetExceeded extends Error {}
+
+const projectedSchemaCache = new WeakMap<
+  JsonObject,
+  { readonly schema: Tool['inputSchema']; readonly constraint?: string }
+>();
+
 function jsonObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+function consumeSchemaVisit(ctx: SchemaProjectionContext): void {
+  ctx.remaining -= 1;
+  if (ctx.remaining < 0) throw new SchemaBudgetExceeded();
+}
+
+function jsonKeyOf(value: unknown, cache: WeakMap<object, string>): string {
+  if (typeof value === 'object' && value !== null) {
+    const cached = cache.get(value);
+    if (cached !== undefined) return cached;
+    const serialized = JSON.stringify(value);
+    cache.set(value, serialized);
+    return serialized;
+  }
+  return JSON.stringify(value);
+}
+
+function sameJson(left: unknown, right: unknown, cache: WeakMap<object, string>): boolean {
+  if (left === right) return true;
+  return jsonKeyOf(left, cache) === jsonKeyOf(right, cache);
 }
 
 function unconstrained(schema: unknown): boolean {
@@ -458,11 +489,12 @@ function resolveLocalRef(root: JsonObject, ref: string): unknown {
   return current;
 }
 
-function intersectShapes(left: ObjectShape, right: ObjectShape): ObjectShape {
+function intersectShapes(left: ObjectShape, right: ObjectShape, ctx: SchemaProjectionContext): ObjectShape {
   const properties = new Map(left.properties);
   for (const [key, schema] of right.properties) {
+    consumeSchemaVisit(ctx);
     const known = properties.get(key);
-    properties.set(key, known === undefined || unconstrained(known) || sameJson(known, schema) ? schema
+    properties.set(key, known === undefined || unconstrained(known) || sameJson(known, schema, ctx.jsonKeyCache) ? schema
       : unconstrained(schema) ? known : { allOf: [known, schema] });
   }
   const allowed = (shape: ObjectShape, key: string) => !shape.closed || shape.properties.has(key);
@@ -470,18 +502,25 @@ function intersectShapes(left: ObjectShape, right: ObjectShape): ObjectShape {
   return { properties, required: new Set([...left.required, ...right.required]), closed: left.closed || right.closed };
 }
 
-function unionShapes(branches: readonly ObjectShape[]): ObjectShape {
+function unionShapes(branches: readonly ObjectShape[], ctx: SchemaProjectionContext): ObjectShape {
   const keys = new Set(branches.flatMap((branch) => [...branch.properties.keys()]));
   const properties = new Map<string, unknown>();
   for (const key of keys) {
+    consumeSchemaVisit(ctx);
     if (branches.some((branch) => !branch.properties.has(key) && !branch.closed)) {
       properties.set(key, {});
       continue;
     }
     const variants: unknown[] = [];
+    const seenKeys = new Set<string>();
     for (const branch of branches) {
       const schema = branch.properties.get(key);
-      if (schema !== undefined && !variants.some((entry) => sameJson(entry, schema))) variants.push(schema);
+      if (schema === undefined) continue;
+      const serialized = jsonKeyOf(schema, ctx.jsonKeyCache);
+      if (!seenKeys.has(serialized)) {
+        seenKeys.add(serialized);
+        variants.push(schema);
+      }
     }
     properties.set(key, variants.length === 1 ? variants[0] : { anyOf: variants });
   }
@@ -490,41 +529,98 @@ function unionShapes(branches: readonly ObjectShape[]): ObjectShape {
   return { properties, required, closed: branches.length > 0 && branches.every((branch) => branch.closed) };
 }
 
-function objectShape(node: unknown, root: JsonObject, depth: number): ObjectShape {
+function objectShape(
+  node: unknown,
+  root: JsonObject,
+  depth: number,
+  ctx: SchemaProjectionContext,
+  activeNodes: Set<object>,
+  activeRefs: Set<string>,
+): ObjectShape {
+  consumeSchemaVisit(ctx);
   const open: ObjectShape = { properties: new Map(), required: new Set(), closed: false };
   if (!jsonObject(node) || depth > MAX_REF_DEPTH) return open;
-  let shape: ObjectShape = {
-    properties: new Map(jsonObject(node['properties']) ? Object.entries(node['properties']) : []),
-    required: new Set(strings(node['required'])),
-    closed: node['additionalProperties'] === false,
-  };
-  if (typeof node['$ref'] === 'string') shape = intersectShapes(shape, objectShape(resolveLocalRef(root, node['$ref']), root, depth + 1));
-  for (const branch of Array.isArray(node['allOf']) ? node['allOf'] : []) shape = intersectShapes(shape, objectShape(branch, root, depth + 1));
-  for (const combinator of ['anyOf', 'oneOf'] as const) {
-    const branches = (Array.isArray(node[combinator]) ? node[combinator] as unknown[] : []).filter((branch) => branch !== false);
-    if (branches.length > 0) shape = intersectShapes(shape, unionShapes(branches.map((branch) => objectShape(branch, root, depth + 1))));
+  if (activeNodes.has(node)) return open;
+  const memoized = ctx.shapeMemo.get(node);
+  if (memoized !== undefined && activeRefs.size === 0) return memoized;
+
+  activeNodes.add(node);
+  let hitCycle = false;
+  try {
+    let shape: ObjectShape = {
+      properties: new Map(jsonObject(node['properties']) ? Object.entries(node['properties']) : []),
+      required: new Set(strings(node['required'])),
+      closed: node['additionalProperties'] === false,
+    };
+    const ref = node['$ref'];
+    if (typeof ref === 'string') {
+      if (activeRefs.has(ref)) {
+        hitCycle = true;
+      } else {
+        activeRefs.add(ref);
+        try {
+          shape = intersectShapes(
+            shape,
+            objectShape(resolveLocalRef(root, ref), root, depth + 1, ctx, activeNodes, activeRefs),
+            ctx,
+          );
+        } finally {
+          activeRefs.delete(ref);
+        }
+      }
+    }
+    for (const branch of Array.isArray(node['allOf']) ? node['allOf'] : []) {
+      shape = intersectShapes(shape, objectShape(branch, root, depth + 1, ctx, activeNodes, activeRefs), ctx);
+    }
+    for (const combinator of ['anyOf', 'oneOf'] as const) {
+      const branches = (Array.isArray(node[combinator]) ? node[combinator] as unknown[] : []).filter((branch) => branch !== false);
+      if (branches.length > 0) {
+        shape = intersectShapes(
+          shape,
+          unionShapes(branches.map((branch) => objectShape(branch, root, depth + 1, ctx, activeNodes, activeRefs)), ctx),
+          ctx,
+        );
+      }
+    }
+    if (!hitCycle && activeRefs.size === 0) ctx.shapeMemo.set(node, shape);
+    return shape;
+  } finally {
+    activeNodes.delete(node);
   }
-  return shape;
 }
 
-function inlineRemovedRefs(value: unknown, root: JsonObject, depth = 0): unknown {
-  if (Array.isArray(value)) return value.map((item) => inlineRemovedRefs(item, root, depth));
+function inlineRemovedRefs(
+  value: unknown,
+  root: JsonObject,
+  ctx: SchemaProjectionContext,
+  depth = 0,
+  activeRefs: Set<string> = new Set(),
+): unknown {
+  consumeSchemaVisit(ctx);
+  if (Array.isArray(value)) return value.map((item) => inlineRemovedRefs(item, root, ctx, depth, activeRefs));
   if (!jsonObject(value)) return value;
   const ref = value['$ref'];
   if (typeof ref === 'string' && /^#\/(allOf|anyOf|oneOf)(\/|$)/.test(ref) && depth < MAX_REF_DEPTH) {
+    if (activeRefs.has(ref)) return {};
     const { $ref: _removed, ...siblings } = value;
-    const target = inlineRemovedRefs(resolveLocalRef(root, ref), root, depth + 1);
-    return Object.keys(siblings).length === 0 ? target : { allOf: [target, inlineRemovedRefs(siblings, root, depth)] };
+    activeRefs.add(ref);
+    let target: unknown;
+    try {
+      target = inlineRemovedRefs(resolveLocalRef(root, ref), root, ctx, depth + 1, activeRefs);
+    } finally {
+      activeRefs.delete(ref);
+    }
+    return Object.keys(siblings).length === 0 ? target : { allOf: [target, inlineRemovedRefs(siblings, root, ctx, depth, activeRefs)] };
   }
-  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, inlineRemovedRefs(child, root, depth)]));
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, inlineRemovedRefs(child, root, ctx, depth, activeRefs)]));
 }
 
-function rootAlternatives(parameters: JsonObject): string | undefined {
+function rootAlternatives(parameters: JsonObject, ctx: SchemaProjectionContext): string | undefined {
   const parts: string[] = [];
   for (const combinator of ['anyOf', 'oneOf'] as const) {
     if (!Array.isArray(parameters[combinator])) continue;
     const sets = (parameters[combinator] as unknown[]).filter(jsonObject)
-      .map((branch) => [...objectShape(branch, parameters, 0).required]);
+      .map((branch) => [...objectShape(branch, parameters, 0, ctx, new Set(), new Set()).required]);
     const distinct = [...new Map(sets.map((keys) => [keys.join('\u0000'), keys])).values()];
     if (distinct.length < 2) continue;
     const listed = distinct.map((keys) => keys.length === 0 ? '(no required parameters)' : `(${keys.join(', ')})`).join(' or ');
@@ -543,15 +639,37 @@ function rootAlternatives(parameters: JsonObject): string | undefined {
  * Calls are still validated by Kiki against the unchanged original schema.
  */
 export function mcpToolInputSchema(parameters: JsonObject): { readonly schema: Tool['inputSchema']; readonly constraint?: string } {
-  if (!ROOT_COMBINATORS.some((key) => Array.isArray(parameters[key]))) return { schema: { ...parameters, type: 'object' } };
-  const shape = objectShape(parameters, parameters, 0);
-  const schema: JsonObject = Object.fromEntries(Object.entries(parameters)
-    .filter(([key]) => !(ROOT_COMBINATORS as readonly string[]).includes(key) && key !== '$ref'));
-  schema['type'] = 'object';
-  schema['properties'] = inlineRemovedRefs(Object.fromEntries(shape.properties), parameters);
-  schema['required'] = [...shape.required];
-  if (shape.closed) schema['additionalProperties'] = false;
-  return { schema: schema as Tool['inputSchema'], constraint: rootAlternatives(parameters) };
+  const cached = projectedSchemaCache.get(parameters);
+  if (cached !== undefined) return cached;
+  if (!ROOT_COMBINATORS.some((key) => Array.isArray(parameters[key]))) {
+    const passthrough = { schema: { ...parameters, type: 'object' } as Tool['inputSchema'] };
+    projectedSchemaCache.set(parameters, passthrough);
+    return passthrough;
+  }
+  const ctx: SchemaProjectionContext = {
+    remaining: MAX_SCHEMA_VISITS,
+    shapeMemo: new Map(),
+    jsonKeyCache: new WeakMap(),
+  };
+  let projected: { readonly schema: Tool['inputSchema']; readonly constraint?: string };
+  try {
+    const shape = objectShape(parameters, parameters, 0, ctx, new Set(), new Set());
+    const schema: JsonObject = Object.fromEntries(Object.entries(parameters)
+      .filter(([key]) => !(ROOT_COMBINATORS as readonly string[]).includes(key) && key !== '$ref'));
+    schema['type'] = 'object';
+    schema['properties'] = inlineRemovedRefs(Object.fromEntries(shape.properties), parameters, ctx);
+    schema['required'] = [...shape.required];
+    if (shape.closed) schema['additionalProperties'] = false;
+    projected = { schema: schema as Tool['inputSchema'], constraint: rootAlternatives(parameters, ctx) };
+  } catch (error) {
+    if (error instanceof SchemaBudgetExceeded) {
+      projected = { schema: { ...parameters, type: 'object' } as Tool['inputSchema'] };
+    } else {
+      throw error;
+    }
+  }
+  projectedSchemaCache.set(parameters, projected);
+  return projected;
 }
 
 function withInputConstraint(description: string, constraint: string | undefined): string {

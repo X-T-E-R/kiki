@@ -25,6 +25,12 @@ import {
   unlinkSync,
   writeSync,
 } from 'node:fs';
+import {
+  chmod as chmodAsync,
+  mkdir as mkdirAsync,
+  open as openAsync,
+  readFile as readFileAsync,
+} from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 import lockfile from 'proper-lockfile';
@@ -60,9 +66,9 @@ export type FileTokenInspection =
 export async function withFileLock<T>(target: string, fn: () => Promise<T>): Promise<T> {
   let release: (() => Promise<void>) | undefined;
   try {
-    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-    const fd = openSync(target, 'a', 0o600);
-    closeSync(fd);
+    await mkdirAsync(dirname(target), { recursive: true, mode: 0o700 });
+    const fh = await openAsync(target, 'a', 0o600);
+    await fh.close();
     release = await lockfile.lock(target, {
       retries: { retries: 120, factor: 1, minTimeout: 50, maxTimeout: 500 },
       stale: 5_000,
@@ -119,6 +125,15 @@ export class FileTokenStorage implements TokenStorage {
     }
   }
 
+  private async ensureDirAsync(): Promise<void> {
+    await mkdirAsync(this.dir, { recursive: true, mode: 0o700 });
+    try {
+      await chmodAsync(this.dir, 0o700);
+    } catch {
+      // best-effort; Windows / read-only FS may refuse
+    }
+  }
+
   private pathFor(name: string): string {
     assertValidTokenName(name);
     return join(this.dir, `${name}.json`);
@@ -157,6 +172,29 @@ export class FileTokenStorage implements TokenStorage {
     return tokenFromWire(parsed as Partial<TokenInfoWire>);
   }
 
+  protected async loadUnlockedAsync(name: string): Promise<TokenInfo | undefined> {
+    const removalMarker = await this.readRemovalMarkerAsync(name);
+    if (removalMarker !== undefined) {
+      if (!(await this.isFileChangedSinceRemovalAsync(name, removalMarker))) return undefined;
+      this.clearRemovalUnlocked(name);
+    }
+    const file = this.pathFor(name);
+    let raw: string;
+    try {
+      raw = await readFileAsync(file, 'utf-8');
+    } catch {
+      return undefined;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+    if (!isRecord(parsed)) return undefined;
+    return tokenFromWire(parsed as Partial<TokenInfoWire>);
+  }
+
   readOnly(name: string): FileTokenInspection {
     assertValidTokenName(name);
     const removalMarker = this.readRemovalMarkerUnlocked(name);
@@ -166,6 +204,29 @@ export class FileTokenStorage implements TokenStorage {
     let raw: string;
     try {
       raw = readFileSync(this.pathFor(name), 'utf-8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' };
+      return { kind: 'unreadable', error };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      return { kind: 'unreadable', error };
+    }
+    if (!isRecord(parsed)) return { kind: 'unreadable', error: new TypeError('Token payload is not an object') };
+    return { kind: 'valid', token: tokenFromWire(parsed as Partial<TokenInfoWire>) };
+  }
+
+  async readOnlyAsync(name: string): Promise<FileTokenInspection> {
+    assertValidTokenName(name);
+    const removalMarker = await this.readRemovalMarkerAsync(name);
+    if (removalMarker !== undefined && !(await this.isFileChangedSinceRemovalAsync(name, removalMarker))) {
+      return { kind: 'missing' };
+    }
+    let raw: string;
+    try {
+      raw = await readFileAsync(this.pathFor(name), 'utf-8');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' };
       return { kind: 'unreadable', error };
@@ -237,22 +298,37 @@ export class FileTokenStorage implements TokenStorage {
     return this.readRemovalMarkerUnlocked(name) !== undefined;
   }
 
+  private parseRemovalMarker(name: string, raw: string): { readonly fileDigest: string | null } {
+    if (raw.length === 0) return { fileDigest: null };
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      (parsed as { version?: unknown }).version !== 1 ||
+      !('file_digest' in parsed) ||
+      ((parsed as { file_digest?: unknown }).file_digest !== null &&
+        typeof (parsed as { file_digest?: unknown }).file_digest !== 'string')
+    ) {
+      throw new Error(`Invalid removal marker for token "${name}"`);
+    }
+    return { fileDigest: (parsed as { file_digest: string | null }).file_digest };
+  }
+
   private readRemovalMarkerUnlocked(name: string): { readonly fileDigest: string | null } | undefined {
     try {
-      const raw = readFileSync(this.removalMarkerFor(name), 'utf-8');
-      if (raw.length === 0) return { fileDigest: null };
-      const parsed: unknown = JSON.parse(raw);
-      if (
-        typeof parsed !== 'object' ||
-        parsed === null ||
-        (parsed as { version?: unknown }).version !== 1 ||
-        !('file_digest' in parsed) ||
-        (parsed as { file_digest?: unknown }).file_digest !== null &&
-          typeof (parsed as { file_digest?: unknown }).file_digest !== 'string'
-      ) {
-        throw new Error(`Invalid removal marker for token "${name}"`);
+      return this.parseRemovalMarker(name, readFileSync(this.removalMarkerFor(name), 'utf-8'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      if (error instanceof SyntaxError) {
+        throw new TypeError(`Invalid removal marker for token "${name}"`, { cause: error });
       }
-      return { fileDigest: (parsed as { file_digest: string | null }).file_digest };
+      throw error;
+    }
+  }
+
+  private async readRemovalMarkerAsync(name: string): Promise<{ readonly fileDigest: string | null } | undefined> {
+    try {
+      return this.parseRemovalMarker(name, await readFileAsync(this.removalMarkerFor(name), 'utf-8'));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
       if (error instanceof SyntaxError) {
@@ -269,6 +345,21 @@ export class FileTokenStorage implements TokenStorage {
     let raw: string;
     try {
       raw = readFileSync(this.pathFor(name), 'utf-8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
+    if (marker.fileDigest === null) return true;
+    return createHash('sha256').update(raw).digest('hex') !== marker.fileDigest;
+  }
+
+  private async isFileChangedSinceRemovalAsync(
+    name: string,
+    marker: { readonly fileDigest: string | null },
+  ): Promise<boolean> {
+    let raw: string;
+    try {
+      raw = await readFileAsync(this.pathFor(name), 'utf-8');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
       throw error;
@@ -359,11 +450,19 @@ export class FileTokenStorage implements TokenStorage {
 
   async withTokenLock<T>(name: string, fn: (access: FileTokenAccess) => Promise<T>): Promise<T> {
     assertValidTokenName(name);
-    this.ensureDir();
+    try {
+      await this.ensureDirAsync();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EROFS' && code !== 'EACCES' && code !== 'EPERM') throw error;
+    }
     const lockTarget = this.lockTargetFor(name);
     return withFileLock(lockTarget, () =>
       fn({
-        load: async () => this.loadUnlocked(name),
+        load: () =>
+          this.loadUnlocked === FileTokenStorage.prototype.loadUnlocked
+            ? this.loadUnlockedAsync(name)
+            : Promise.resolve(this.loadUnlocked(name)),
         save: async (token) => {
           this.saveUnlocked(name, token);
         },
