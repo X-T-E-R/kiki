@@ -29,6 +29,7 @@ import { ErrorCode } from '@kiki/protocol';
 import type { PluginUsageItem, PluginUsageResponse, Workspace, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import { I18nProvider } from '../../../i18n';
+import { WorktreesCard } from '../WorktreesCard';
 import { WorkspaceSettingsPage } from './WorkspaceSettingsPage';
 
 const mocks = vi.hoisted(() => ({
@@ -56,10 +57,16 @@ const mocks = vi.hoisted(() => ({
   installPreviewedPlugin: vi.fn(),
   setPluginEnabled: vi.fn(),
   getPlugin: vi.fn(),
+  getSession: vi.fn(),
+  getConfig: vi.fn(),
+  worktreesList: vi.fn(),
+  worktreesInspect: vi.fn(),
+  worktreesRemove: vi.fn(),
+  worktreesGc: vi.fn(),
 }));
 
-vi.mock('../../../state/connection', () => ({
-  useConnection: () => ({
+vi.mock('../../../state/connection', () => {
+  const value = {
     client: {
       listWorkspaces: mocks.listWorkspaces,
       listWorkspaceCatalog: mocks.listWorkspaceCatalog,
@@ -81,10 +88,26 @@ vi.mock('../../../state/connection', () => ({
       installPreviewedPlugin: mocks.installPreviewedPlugin,
       setPluginEnabled: mocks.setPluginEnabled,
       getPlugin: mocks.getPlugin,
+      getSession: mocks.getSession,
+      getConfig: mocks.getConfig,
+      klient: {
+        rest: {
+          worktrees: {
+            list: mocks.worktreesList,
+            inspect: mocks.worktreesInspect,
+            remove: mocks.worktreesRemove,
+            gc: mocks.worktreesGc,
+          },
+        },
+      },
     },
     klient: { global: { mcp: { list: mocks.mcpList } } },
-  }),
-}));
+  };
+  return {
+    useConnection: () => value,
+    useOptionalConnection: () => value,
+  };
+});
 
 let container: HTMLDivElement;
 let root: Root;
@@ -176,6 +199,10 @@ beforeEach(() => {
   mocks.installPreviewedPlugin.mockResolvedValue({ id: 'summarizer', displayName: 'Summarizer' });
   mocks.setPluginEnabled.mockResolvedValue({ id: 'summarizer', displayName: 'Summarizer' });
   mocks.getPlugin.mockResolvedValue({ id: 'summarizer', displayName: 'Summarizer', manifest: {} });
+  mocks.getConfig.mockResolvedValue({ worktree: { enabled: true, defaultBase: 'head', branchPrefix: 'kiki/', root: '', gitTimeoutMs: 15_000, cleanup: { auto: true, afterDays: 7, disposableIgnored: [] } } });
+  mocks.worktreesList.mockResolvedValue({ worktrees: [] });
+  mocks.worktreesInspect.mockResolvedValue({ inspectedAt: 1, failed: false, dirtyFiles: 0, untrackedFiles: 0, aheadOfBase: 0, unpushedCommits: 0, ignoredNonDisposable: [] });
+  mocks.worktreesGc.mockResolvedValue({ candidates: [] });
 });
 
 afterEach(() => {
@@ -509,5 +536,146 @@ describe('WorkspaceSettingsPage', () => {
     expect(container.textContent).toContain('That workspace is gone');
     // And it does not fall back to a workspace that does exist.
     expect(container.textContent).not.toContain('C:/work/alpha');
+  });
+});
+
+describe('WorktreesCard', () => {
+  async function renderWorktrees() {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={client}>
+            <I18nProvider>
+              <WorktreesCard />
+            </I18nProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    for (let i = 0; i < 6; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+  }
+
+  it('keeps active-owner remove disabled with aria-describedby, avoids bulk inspect on load, uses a named help disclosure, and dry-runs cleanup before confirming', async () => {
+    const baseRecord = {
+      version: 1 as const,
+      repo: { fingerprint: 'fp', commonDir: 'C:/repo/.git', sourceRoot: 'C:/repo', workspaceId: 'ws-a' },
+      branchCreated: true,
+      base: { mode: 'head' as const, ref: 'HEAD', commit: 'abc123' },
+      state: 'ready' as const,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    mocks.worktreesList.mockResolvedValue({
+      worktrees: [
+        { ...baseRecord, id: 'wt_active', path: 'C:/wt/active', branch: 'kiki/active', owner: { kind: 'session', sessionId: 'ses_active' } },
+        { ...baseRecord, id: 'wt_archived', path: 'C:/wt/archived', branch: 'kiki/archived', owner: { kind: 'session', sessionId: 'ses_archived' } },
+      ],
+    });
+    mocks.getSession.mockImplementation(async (id: string) => (
+      id === 'ses_active'
+        ? { id, title: 'Active thread', archived: false, updated_at: '2026-11-24T00:00:00Z' }
+        : { id, title: 'Archived thread', archived: true, archived_at: '2026-11-10T00:00:00Z', updated_at: '2026-11-10T00:00:00Z' }
+    ));
+    mocks.worktreesGc.mockResolvedValueOnce({
+      candidates: [{ id: 'wt_archived', outcome: 'retained_dirty' }],
+    });
+
+    await renderWorktrees();
+
+    // Zero bulk background inspections on load.
+    expect(mocks.worktreesInspect).not.toHaveBeenCalled();
+
+    // Active worktree remove is disabled with a resolvable aria-describedby.
+    const activeRemove = container.querySelector<HTMLButtonElement>('[data-worktree-row="wt_active"] [data-worktree-remove]')!;
+    expect(activeRemove.disabled).toBe(true);
+    const describedBy = activeRemove.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(container.querySelector(`#${describedBy}`)?.textContent).toContain('Archive its session');
+
+    // Archived worktree actions are directly clickable without opening any menu.
+    const archivedCheck = container.querySelector<HTMLButtonElement>('[data-worktree-row="wt_archived"] [data-worktree-check]')!;
+    const archivedRemove = container.querySelector<HTMLButtonElement>('[data-worktree-row="wt_archived"] [data-worktree-remove]')!;
+    expect(archivedRemove.disabled).toBe(false);
+    await act(async () => { archivedCheck.click(); });
+    for (let i = 0; i < 4; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+    expect(mocks.worktreesInspect).toHaveBeenCalledExactlyOnceWith('wt_archived');
+
+    // Lone `?` SettingHelp is replaced by a named accessible disclosure.
+    expect(container.querySelector('[data-setting-help]')).toBeNull();
+    const helpToggle = container.querySelector<HTMLButtonElement>('[data-worktrees-help-toggle]')!;
+    expect(helpToggle.textContent).toContain('More about this');
+    expect(helpToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[data-worktrees-help-body]')).toBeNull();
+    await act(async () => { helpToggle.click(); });
+    expect(helpToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-worktrees-help-body]')?.textContent).toContain('7 days');
+
+    // Cleanup button does not invent an archived count and runs dry-run gc(true) first.
+    const cleanupBtn = container.querySelector<HTMLButtonElement>('[data-worktrees-cleanup]')!;
+    expect(cleanupBtn.textContent?.trim()).toBe('Clean up');
+    await act(async () => { cleanupBtn.click(); });
+    for (let i = 0; i < 4; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+    expect(mocks.worktreesGc).toHaveBeenCalledExactlyOnceWith(true);
+    expect(container.querySelector('[data-worktree-notice="info"]')?.textContent).toContain('kept');
+  });
+
+  it('renders 50 mixed worktree rows (active/dirty/unpushed/clean/foreign) with zero bulk inspect calls on mount', async () => {
+    const baseRecord = {
+      version: 1 as const,
+      repo: { fingerprint: 'fp', commonDir: 'C:/repo/.git', sourceRoot: 'C:/repo', workspaceId: 'ws-a' },
+      branchCreated: true,
+      base: { mode: 'head' as const, ref: 'HEAD', commit: 'abc123' },
+      state: 'ready' as const,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const fifty = Array.from({ length: 50 }, (_, index) => {
+      const idx = String(index + 1).padStart(2, '0');
+      const kind = index % 5;
+      const baseInspection = {
+        inspectedAt: 1,
+        failed: false,
+        dirtyFiles: 0,
+        untrackedFiles: 0,
+        aheadOfBase: 0,
+        unpushedCommits: 0,
+        ignoredNonDisposable: [] as string[],
+      };
+      return {
+        ...baseRecord,
+        id: `wt_scale_${idx}`,
+        path: `C:/wt/scale-${idx}`,
+        branch: `kiki/scale-branch-${idx}-long-descriptive-name`,
+        owner: { kind: 'session' as const, sessionId: `ses_scale_${idx}` },
+        state: kind === 4 ? ('orphaned' as const) : ('ready' as const),
+        ...(kind === 1 ? { lastInspection: { ...baseInspection, dirtyFiles: 3 } } : {}),
+        ...(kind === 2 ? { lastInspection: { ...baseInspection, unpushedCommits: 2 } } : {}),
+        ...(kind === 3 ? { lastInspection: baseInspection } : {}),
+        ...(kind === 4 ? { lastInspection: { ...baseInspection, foreignLock: 'external-ide' } } : {}),
+      };
+    });
+    mocks.worktreesList.mockResolvedValue({ worktrees: fifty });
+    mocks.getSession.mockImplementation(async (id: string) => {
+      const n = Number(id.slice(-2));
+      const active = (n - 1) % 5 === 0;
+      return active
+        ? { id, title: `Active thread ${n}`, archived: false, updated_at: '2026-11-24T00:00:00Z' }
+        : { id, title: `Archived thread ${n}`, archived: true, archived_at: '2026-11-10T00:00:00Z', updated_at: '2026-11-10T00:00:00Z' };
+    });
+
+    await renderWorktrees();
+
+    const rows = container.querySelectorAll('[data-worktree-row]');
+    expect(rows).toHaveLength(50);
+    expect(mocks.worktreesInspect).not.toHaveBeenCalled();
+    // Active rows stay protected; archived dirty/unpushed/clean/orphaned-foreign rows keep direct remove enabled.
+    expect(container.querySelector<HTMLButtonElement>('[data-worktree-row="wt_scale_01"] [data-worktree-remove]')!.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('[data-worktree-row="wt_scale_02"] [data-worktree-remove]')!.disabled).toBe(false);
+    expect(container.querySelector('[data-worktree-row="wt_scale_02"] [data-worktree-changes="dirty"]')?.textContent).toContain('3');
+    expect(container.querySelector('[data-worktree-row="wt_scale_03"] [data-worktree-changes="dirty"]')?.textContent).toContain('2');
+    expect(container.querySelector('[data-worktree-row="wt_scale_04"] [data-worktree-changes="clean"]')).not.toBeNull();
+    expect(container.querySelector('[data-worktree-row="wt_scale_05"]')?.getAttribute('data-worktree-state')).toBe('orphaned');
+    expect(container.querySelector<HTMLButtonElement>('[data-worktree-row="wt_scale_05"] [data-worktree-remove]')!.disabled).toBe(false);
   });
 });

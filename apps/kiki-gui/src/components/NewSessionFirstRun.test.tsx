@@ -41,6 +41,8 @@ const firstRun = vi.hoisted(() => ({
   startNewCreation: vi.fn(),
   dismissCreationIntent: vi.fn(),
   hasCreationIntent: false,
+  updateDraft: vi.fn(),
+  send: vi.fn(),
   seat: undefined as import('./ConversationShell').ConversationSeat | undefined,
   workspacesFailed: false,
   workspacesError: null as string | null,
@@ -155,7 +157,7 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
         modelSource: undefined,
         supportedEfforts: [],
         effectiveEffort: undefined,
-        updateDraft: () => {},
+        updateDraft: firstRun.updateDraft,
         setAttachments: () => {},
         selectWorkspace: () => {},
         setCwd: () => {},
@@ -164,7 +166,7 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
         setGoalObjective: () => {},
         setModelOverride: () => {},
         setAgentProfile: () => {},
-        send: () => {},
+        send: firstRun.send,
         activateSkill: () => {},
       }));
       return { ...state, execution, setExecution };
@@ -824,6 +826,31 @@ describe('first run without a model', () => {
     localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
     await mountNewSessionPage();
     await settle();
+    expect(footer().querySelector('[data-first-run-tour]')).toBeNull();
+  });
+
+  it('populates a draft when a starter is clicked without sending any model request', async () => {
+    await mountNewSessionPage();
+    const starter = document.querySelector<HTMLButtonElement>('#first-run-hero-footer [data-hero-starter]');
+    expect(starter).not.toBeNull();
+    await act(async () => { starter!.click(); });
+    expect(firstRun.updateDraft).toHaveBeenCalledTimes(1);
+    expect(firstRun.updateDraft.mock.calls[0]?.[0]).toBeTypeOf('string');
+    expect((firstRun.updateDraft.mock.calls[0]?.[0] as string).length).toBeGreaterThan(0);
+    expect(firstRun.send).not.toHaveBeenCalled();
+  });
+
+  it('starts the overview tour from TourLine while keeping the no-model promise and dismiss visible', async () => {
+    firstRun.discovery = { state: { lifecycle: 'new' }, startRoute: vi.fn(async () => true) };
+    firstRun.client.listSessions.mockResolvedValue({ items: [], has_more: false });
+    await mountNewSessionPage();
+    await settle();
+    const footer = () => document.querySelector('#first-run-hero-footer')!;
+    const tour = footer().querySelector('[data-first-run-tour]')!;
+    expect(tour.textContent).toContain('no model calls');
+    expect(tour.querySelector('[data-first-run-tour-dismiss]')).not.toBeNull();
+    await act(async () => { tour.querySelector<HTMLButtonElement>('[data-first-run-tour-start]')!.click(); });
+    expect(firstRun.discovery.startRoute).toHaveBeenCalledWith('overview');
     expect(footer().querySelector('[data-first-run-tour]')).toBeNull();
   });
 });
