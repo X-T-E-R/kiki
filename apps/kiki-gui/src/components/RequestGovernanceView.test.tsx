@@ -168,10 +168,9 @@ describe('live request governance', () => {
     });
     const { container, render } = mount('realtime');
     await settle(render);
-    // Breakdown starts closed by default; open the disclosure to inspect dimensions.
-    expect(container.querySelector('[data-governance-dimensions]')).toBeNull();
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-breakdown-toggle]')!.click(); });
+    // Live concurrency is open on first paint, defaulting to the model cut.
     const panel = () => container.querySelector<HTMLElement>('[data-governance-dimensions]')!;
+    expect(panel()).not.toBeNull();
     expect(container.querySelector('[data-axis="governance-dimension"]')).not.toBeNull();
     // Only the model cut is on screen; provider and role do not ride along.
     expect(panel().getAttribute('data-governance-dimension')).toBe('model');
@@ -183,6 +182,9 @@ describe('live request governance', () => {
     expect(panel().getAttribute('data-governance-dimension')).toBe('provider');
     expect(panel().textContent).toContain('provider-example');
     expect(panel().textContent).not.toContain('Kimi K3');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-axis-value="executor"]')!.click(); });
+    expect(panel().getAttribute('data-governance-dimension')).toBe('executor');
+    expect(panel().textContent).toContain('Kiki (Built-in)');
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-axis-value="role"]')!.click(); });
     expect(panel().getAttribute('data-governance-dimension')).toBe('role');
     expect(panel().textContent).toContain('Subagents');
@@ -196,13 +198,18 @@ describe('live request governance', () => {
     vi.useFakeTimers();
     localStorage.setItem('kiki.locale', 'en');
     connection.wsStatus = 'open';
+    const previousMock = mockLiveAgent.getMockImplementation();
+    disposals.push(() => {
+      if (previousMock !== undefined) mockLiveAgent.mockImplementation(previousMock);
+    });
+    liveAgentsWith([]);
     connection.client.getRequestGovernance.mockResolvedValue({
       ...snapshot,
       dimensions: [{ dimension: 'role', id: 'subagent', active: 2, queued: 0 }],
+      rules: [],
     });
     const { container, render } = mount('realtime');
     await settle(render);
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-breakdown-toggle]')!.click(); });
     // One dimension means no switcher to offer, and the idle copy is not shown
     // when that dimension does have rows.
     expect(container.querySelector('[data-axis="governance-dimension"]')).toBeNull();
@@ -1583,8 +1590,185 @@ describe('live agent snapshot availability', () => {
     expect(firstWaiter.querySelector('[title*="session_cached_waiter"]')).not.toBeNull();
     // Waiter session ids must not trigger per-waiter metadata fetches.
     expect(connection.client.getSession).not.toHaveBeenCalled();
-    // Breakdown opens on demand with one dimension at a time (no full-width count bands).
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-breakdown-toggle]')!.click(); });
+    // First-screen live concurrency shows the model cut directly without opening a disclosure.
     expect(container.querySelector('[data-governance-dimensions]')?.getAttribute('data-governance-dimension')).toBe('model');
+  });
+
+  it('surfaces prominent concurrency counters, capped active/limit meters, uncapped N concurrent rows, per-session concurrency, and quiet idle collapse', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', 'zh');
+    connection.wsStatus = 'open';
+    mockLiveAgent.mockReturnValue({
+      snapshot: {
+        domainId: 'this-service',
+        asOf: '2026-01-01T12:00:00Z',
+        active: 4,
+        queued: 0,
+        main: 1,
+        subagent: 3,
+        independent: 0,
+        queuedMain: 0,
+        queuedSubagent: 0,
+        queuedIndependent: 0,
+        mainActive: 1,
+        subActive: 3,
+        independentActive: 0,
+        totalActive: 4,
+        dimensions: [
+          { dimension: 'executor', id: 'kiki', active: 4, queued: 0, main: 1, subagent: 3, independent: 0, queuedMain: 0, queuedSubagent: 0, queuedIndependent: 0, mainActive: 1, subActive: 3, totalActive: 4 },
+        ],
+        agents: [
+          { sessionId: 's_neon', agentId: 'main', role: 'main', phase: 'running', modelId: 'axon-message/gemini-4-neon', startedAt: '2026-01-01T11:55:00Z' },
+          { sessionId: 's_neon', agentId: 'sub-1', role: 'subagent', phase: 'running', modelId: 'axon-message/gemini-4-neon', startedAt: '2026-01-01T11:56:00Z' },
+          { sessionId: 's_neon', agentId: 'sub-2', role: 'subagent', phase: 'tool_waiting', modelId: 'axon-message/gemini-4-neon', startedAt: '2026-01-01T11:57:00Z' },
+          { sessionId: 's_carbon', agentId: 'sub-3', role: 'subagent', phase: 'running', modelId: 'axon-message/gemini-4-carbon', startedAt: '2026-01-01T11:50:00Z' },
+        ],
+        waiting: [],
+      },
+      stale: false,
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    connection.client.getRequestGovernance.mockResolvedValue({
+      domainId: 'this-service',
+      runtimeEpoch: 'epoch-example',
+      seq: 10,
+      asOf: '2026-01-01T12:00:00Z',
+      coverage: { native: 'managed', external: 'unmanaged' },
+      active: 4,
+      queued: 1,
+      dimensions: [
+        { dimension: 'model', id: 'axon-message/gemini-4-carbon', active: 2, queued: 1 },
+        { dimension: 'model', id: 'axon-message/gemini-4-neon', active: 2, queued: 0 },
+        { dimension: 'provider', id: 'axon-message', active: 4, queued: 1 },
+        { dimension: 'session', id: 's_neon', active: 2, queued: 0 },
+        { dimension: 'session', id: 's_carbon', active: 2, queued: 1 },
+      ],
+      rules: [
+        {
+          id: 'gemini-carbon-cap',
+          resource: 'model_request',
+          scope: 'global',
+          models: ['axon-message/gemini-4-carbon'],
+          maxConcurrent: 4,
+          subagentsOnly: false,
+          overflow: 'queue',
+          enabled: true,
+        },
+        {
+          id: 'subagent-pool-cap',
+          resource: 'agent_execution',
+          scope: 'global',
+          subagentsOnly: true,
+          maxConcurrent: 4,
+          overflow: 'queue',
+          enabled: true,
+        },
+      ],
+      waiting: [
+        {
+          attemptId: 'att-carbon-1',
+          sessionId: 's_carbon',
+          modelId: 'axon-message/gemini-4-carbon',
+          providerId: 'axon-message',
+          purpose: 'turn',
+          waitedMs: 8000,
+          blockingRules: ['gemini-carbon-cap'],
+        },
+      ],
+    });
+
+    const { container, render } = mount('realtime', false, (queryClient) => {
+      queryClient.setQueryData(['models'], {
+        items: [
+          { id: 'axon-message/gemini-4-carbon', display_name: 'Gemini 4 Carbon' },
+          { id: 'axon-message/gemini-4-neon', display_name: 'Gemini 4 Neon' },
+        ],
+      });
+      queryClient.setQueryData(['sessions'], {
+        items: [
+          { id: 's_neon', title: 'Neon 多子代理任务', workspace_id: 'wd_1', updated_at: '2026-01-01T12:00:00Z' },
+          { id: 's_carbon', title: 'Carbon 架构审校', workspace_id: 'wd_1', updated_at: '2026-01-01T12:00:00Z' },
+        ],
+      });
+    });
+    await settle(render, 1100);
+
+    // 1. Top strip figures: 4 active requests (+1 queued), 4 active agents (主 1 · 子 3), 2 active sessions
+    expect(container.querySelector('[data-governance-active]')?.textContent).toBe('4');
+    expect(container.querySelector('[data-governance-queued]')?.textContent).toBe('1');
+    expect(container.querySelector('[data-governance-total-agents]')?.textContent).toBe('4');
+    expect(container.querySelector('[data-governance-active-sessions]')?.textContent).toBe('2');
+
+    // 2. First-screen Live Concurrency (`实时并发`) open by default on Model tab
+    const concurrency = container.querySelector<HTMLElement>('[data-governance-concurrency]')!;
+    expect(concurrency).not.toBeNull();
+    const carbonRow = concurrency.querySelector<HTMLElement>('[data-governance-concurrency-row="axon-message/gemini-4-carbon"]')!;
+    expect(carbonRow.textContent).toContain('Gemini 4 Carbon');
+    expect(carbonRow.querySelector('[data-governance-meter]')).not.toBeNull();
+    expect(carbonRow.querySelector('[data-governance-row-cap]')?.textContent).toBe('2 / 4');
+    expect(carbonRow.querySelector('[data-governance-row-queued]')?.textContent).toContain('+1 排队');
+
+    const neonRow = concurrency.querySelector<HTMLElement>('[data-governance-concurrency-row="axon-message/gemini-4-neon"]')!;
+    expect(neonRow.textContent).toContain('Gemini 4 Neon');
+    expect(neonRow.querySelector('[data-governance-meter]')).toBeNull();
+    expect(neonRow.querySelector('[data-governance-row-uncapped]')?.textContent).toBe('2 并发');
+
+    // Cross-dimension pressured rule (`subagent-pool-cap` 3 / 4) is also surfaced without opening Manage rules
+    const extraRule = concurrency.querySelector<HTMLElement>('[data-governance-pressure-rule="subagent-pool-cap"]')!;
+    expect(extraRule).not.toBeNull();
+    expect(extraRule.textContent).toContain('3 / 4');
+
+    // 3. Per-session concurrency in `当前会话` (`2 并发 · Gemini 4 Neon · 3 个智能体`)
+    const neonSession = container.querySelector<HTMLElement>('[data-execution-session="s_neon"]')!;
+    expect(neonSession.querySelector('[data-governance-session-concurrency="2"]')?.textContent).toBe('2 并发');
+    expect(neonSession.textContent).toContain('Gemini 4 Neon');
+    expect(neonSession.textContent).toContain('3 个智能体');
+
+    // Clicking the rule chip on the Carbon row opens ConcurrencyRulesEditor focused on `gemini-carbon-cap`
+    expect(container.querySelector('[data-governance-rules]')).toBeNull();
+    await act(async () => { carbonRow.querySelector<HTMLButtonElement>('[data-governance-row-rule="gemini-carbon-cap"]')!.click(); });
+    expect(container.querySelector('[data-governance-rules]')).not.toBeNull();
+    expect(container.querySelector('[data-governance-editor]')).not.toBeNull();
+
+    // 4. Completely idle state collapses `实时并发` into a single quiet line
+    mockLiveAgent.mockReturnValue({
+      snapshot: {
+        domainId: 'this-service',
+        asOf: '2026-01-01T12:05:00Z',
+        active: 0,
+        queued: 0,
+        main: 0,
+        subagent: 0,
+        independent: 0,
+        queuedMain: 0,
+        queuedSubagent: 0,
+        queuedIndependent: 0,
+        totalActive: 0,
+        dimensions: [],
+        agents: [],
+        waiting: [],
+      },
+      stale: false,
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+    connection.client.getRequestGovernance.mockResolvedValue({
+      domainId: 'this-service',
+      runtimeEpoch: 'epoch-example',
+      seq: 11,
+      asOf: '2026-01-01T12:05:00Z',
+      coverage: { native: 'managed', external: 'unmanaged' },
+      active: 0,
+      queued: 0,
+      dimensions: [],
+      rules: [],
+      waiting: [],
+    });
+    await settle(render, 1100);
+    expect(container.querySelector('[data-governance-concurrency]')).toBeNull();
+    expect(container.querySelector('[data-governance-idle]')).not.toBeNull();
   });
 });
