@@ -167,7 +167,7 @@ The plugin ships the `media-image`, `media-video` and `media-tts` skills; the ag
 
 Each row identifies a source and its owning package, with its configuration and enabled state. Open a source marked **Needs setup** to fill in missing settings. A disabled or removed source stays visible so you can restore it; a package that did not load must be repaired before its sources can generate. A blocked job is kept rather than discarded.
 
-Filter by modality (image, video, speech) or status, or type to search. The count beside each band is the whole list, not the filtered one, so a filter never hides how much sits behind it. Model and voice discovery runs when requested in a source's detail, not just because the list opened.
+Filter by modality (image, video, speech, 3D) or status, or type to search. The count beside each band is the whole list, not the filtered one, so a filter never hides how much sits behind it. Model and voice discovery runs when requested in a source's detail, not just because the list opened.
 
 ### Configuring a source
 
@@ -209,7 +209,7 @@ Existing jobs keep their original provider package, configuration and accepted h
 
 ### Per-modality defaults
 
-Three settings on Kiki Media pick the default source for images, video and speech. They are ordinary plugin settings stored with the rest of the package's configuration, and a default source says so on its row.
+Four settings on Kiki Media pick the default source for images, video, speech, and 3D. They are ordinary plugin settings stored with the rest of the package's configuration, and a default source says so on its row.
 
 When a modality has no default and exactly one enabled source could serve it, Kiki uses that one. If several could, Kiki asks you to choose rather than picking one and charging you for it.
 

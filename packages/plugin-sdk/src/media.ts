@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 const json = z.record(z.string(), z.unknown());
-export const mediaKindSchema = z.enum(['image', 'video', 'tts']);
+export const mediaKindSchema = z.enum(['image', 'video', 'tts', '3d']);
 export const mediaInputRefSchema = z.union([
   z.object({ path: z.string().min(1) }).strict(),
   z.object({ file_id: z.string().min(1) }).strict(),
@@ -11,6 +11,10 @@ export const mediaRequestSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('image'), prompt: z.string().min(1), images: z.array(mediaInputRefSchema).optional(), mask: mediaInputRefSchema.optional(), count: z.number().int().positive().optional(), size: z.string().optional(), aspect_ratio: z.string().optional(), format: z.string().optional(), options: json.optional() }).strict(),
   z.object({ kind: z.literal('video'), prompt: z.string().min(1), inputs: z.array(z.object({ ref: mediaInputRefSchema, role: z.enum(['first_frame', 'last_frame', 'reference_image', 'reference_video', 'reference_audio']) }).strict()).optional(), duration_seconds: z.number().positive().optional(), aspect_ratio: z.string().optional(), resolution: z.string().optional(), options: json.optional() }).strict(),
   z.object({ kind: z.literal('tts'), text: z.string().min(1), voice: z.string().min(1), language: z.string().optional(), format: z.string().optional(), sample_rate_hz: z.number().int().positive().optional(), options: json.optional() }).strict(),
+  z.object({ kind: z.literal('3d'), prompt: z.string().min(1).optional(), images: z.array(mediaInputRefSchema).optional(), format: z.string().optional(), options: json.optional() }).strict().refine(
+    (value) => value.prompt !== undefined || (value.images !== undefined && value.images.length > 0),
+    { message: '3d media request requires prompt or images' },
+  ),
 ]);
 export const mediaGenerateInputSchema = z.object({ request_id: z.string().min(1).max(200).optional(), provider: z.string().min(1).optional(), model: z.string().optional(), execution: z.enum(['auto', 'background']).default('auto'), request: mediaRequestSchema }).strict();
 export const mediaProviderDefinitionSchema = z.object({ schemaVersion: z.literal(1), id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/), kinds: z.array(mediaKindSchema).min(1), label: z.string().min(1), resumeVersion: z.number().int().positive(), connectionSetting: z.string().min(1).optional() }).strict();

@@ -43,6 +43,7 @@ import {
   useMediaJobs,
   useMediaManagedSources,
   useMediaSubscriptions,
+  writableDefaultKinds,
   type MediaJob,
   type MediaSourceEntry,
 } from '../../lib/mediaSources';
@@ -90,7 +91,8 @@ function useMediaPackageDefaults(client: KikiClient, enabled: boolean) {
   });
   // The defaults are a view over the shared entry, not a store of their own.
   const values = query.data?.values;
-  return { ...query, data: values === undefined ? undefined : { ...values } };
+  const writableDefaults = writableDefaultKinds(query.data, query.isError);
+  return { ...query, data: values === undefined ? undefined : { ...values }, writableDefaults };
 }
 
 export function MediaSourcesView({
@@ -212,6 +214,7 @@ export function MediaSourcesView({
           entry={selected}
           providers={entries}
           onBack={() => { setOpen(null); }}
+          {...(mediaSettings.writableDefaults === undefined ? {} : { writableDefaults: mediaSettings.writableDefaults })}
           {...(onOpenPlugin === undefined ? {} : { onOpenPlugin })}
         />
       </div>

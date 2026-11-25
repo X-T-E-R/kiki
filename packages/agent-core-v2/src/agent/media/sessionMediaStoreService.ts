@@ -14,6 +14,7 @@ import { detectFileType, MEDIA_SNIFF_BYTES } from './file-type';
 import {
   AUDIO_MIME_BY_SUFFIX,
   IMAGE_MIME_BY_SUFFIX,
+  MODEL_3D_MIME_BY_SUFFIX,
   mediaExtensionForMime,
   parseAgentMediaBlobRef,
   VIDEO_MIME_BY_SUFFIX,
@@ -192,6 +193,7 @@ export class ScopedMediaStore implements ISessionMediaStore {
       IMAGE_MIME_BY_SUFFIX[ext] ??
       VIDEO_MIME_BY_SUFFIX[ext] ??
       AUDIO_MIME_BY_SUFFIX[ext] ??
+      MODEL_3D_MIME_BY_SUFFIX[ext] ??
       'application/octet-stream'
     );
   }

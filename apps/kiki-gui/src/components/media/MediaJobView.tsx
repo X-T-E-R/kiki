@@ -86,9 +86,13 @@ export function jobTone(job: MediaJob): 'ok' | 'busy' | 'error' | 'off' | 'waiti
   return 'off';
 }
 
-/** The modality a job is about, read from the provider that took it. */
-function jobModality(job: MediaJob): 'image' | 'video' | 'tts' | undefined {
+/** The modality a job is about: authoritative effective.kind first, with historical inference fallback. */
+export function jobModality(job: MediaJob): 'image' | 'video' | 'tts' | '3d' | undefined {
+  const effectiveKind = job.effective?.['kind'];
+  if (effectiveKind === 'image' || effectiveKind === 'video' || effectiveKind === 'tts' || effectiveKind === '3d') return effectiveKind;
+  if (job.artifacts.some((artifact) => /\.(?:glb|gltf|usdz|obj|stl)$/i.test(artifact.name) || artifact.mime.toLowerCase().startsWith('model/'))) return '3d';
   const provider = job.provider.toLowerCase();
+  if (provider.includes('/3d') || provider.endsWith('-3d') || provider.includes('-3d/')) return '3d';
   if (provider.includes('/image') || provider.includes('images')) return 'image';
   if (provider.includes('/video')) return 'video';
   if (provider.includes('/speech') || provider.includes('/tts') || provider.includes('/audio')) return 'tts';

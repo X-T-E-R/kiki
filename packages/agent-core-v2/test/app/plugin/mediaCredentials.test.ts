@@ -117,12 +117,14 @@ it('enriches grouped media plugin settings from mediaSources and mediaProviders 
           mediaSources: [
             { id: 'openai', label: 'OpenAI', providerIds: ['openai-image', 'openai-tts'], settingsPrefix: 'openai__', required: ['apiKey', 'baseUrl'] },
             { id: 'google', label: 'Google', providerIds: ['google-image', 'google-video'], settingsPrefix: 'google__', required: [] },
+            { id: 'tripo', label: 'Tripo', providerIds: ['tripo-3d'], settingsPrefix: 'tripo__', required: [] },
           ],
           mediaProviders: [
             { schemaVersion: 1, id: 'openai-image', label: 'OpenAI Images', kinds: ['image'], resumeVersion: 1, connectionSetting: 'connectionId' },
             { schemaVersion: 1, id: 'google-image', label: 'Google Images', kinds: ['image'], resumeVersion: 1 },
             { schemaVersion: 1, id: 'google-video', label: 'Google Video', kinds: ['video'], resumeVersion: 1 },
             { schemaVersion: 1, id: 'openai-tts', label: 'OpenAI Speech', kinds: ['tts'], resumeVersion: 1 },
+            { schemaVersion: 1, id: 'tripo-3d', label: 'Tripo 3D', kinds: ['3d'], resumeVersion: 1 },
           ],
           settings: {
             schemaVersion: 1,
@@ -132,6 +134,7 @@ it('enriches grouped media plugin settings from mediaSources and mediaProviders 
                 defaultImageProvider: { type: 'string', title: 'Default image provider' },
                 defaultVideoProvider: { type: 'string', title: 'Default video provider' },
                 defaultTtsProvider: { type: 'string', title: 'Default TTS provider' },
+                default3dProvider: { type: 'string', title: 'Default 3D provider' },
                 openai__enabled: { type: 'boolean', title: 'Enabled', default: true },
                 openai__apiKey: { type: 'string', title: 'API key', secret: true },
                 openai__baseUrl: { type: 'string', title: 'API base URL' },
@@ -155,7 +158,9 @@ it('enriches grouped media plugin settings from mediaSources and mediaProviders 
     expect(props['defaultImageProvider']?.enum).toEqual(['openai-image', 'google-image']);
     expect(props['defaultVideoProvider']?.enum).toEqual(['google-video']);
     expect(props['defaultTtsProvider']?.enum).toEqual(['openai-tts']);
+    expect(props['default3dProvider']?.enum).toEqual(['tripo-3d']);
     expect(props['defaultImageProvider']?.localizations?.['zh']?.title).toBe('默认图像来源');
+    expect(props['default3dProvider']?.localizations?.['zh']?.title).toBe('默认 3D 来源');
     expect(props['openai__apiKey']?.group).toBe('openai');
     expect(props['openai__apiKey']?.groupTitle).toBe('OpenAI');
     expect(props['openai__apiKey']?.localizations?.['zh']?.title).toBe('API 密钥');

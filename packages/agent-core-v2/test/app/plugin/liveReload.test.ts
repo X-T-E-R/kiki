@@ -240,6 +240,18 @@ describe('plugin changes in an existing live agent', () => {
     snapshotInput.mockClear();
     await invoke(registry, 'media-tool', { request });
     expect(snapshotInput).toHaveBeenCalledWith(request.images[0], 'continuing-call/0', expect.anything(), expect.any(AbortSignal));
+    snapshotInput.mockClear();
+    const refPath = path.join(root, 'ref.png').replace(/\\/g, '/');
+    const request3d = { kind: '3d', images: [{ path: refPath }, { file_id: 'f_ref' }, { url: 'https://example.test/ref.png' }] };
+    const tool3d = registry.resolve('plugin__media_tool__echo')!;
+    const execution3d = await tool3d.resolveExecution({ request_id: 'mesh-request', request: request3d }) as RunnableToolExecution;
+    expect(execution3d.accesses).toEqual([{ kind: 'all' }, { kind: 'file', operation: 'read', path: refPath, implicitExternal: false }]);
+    const result3d = await execution3d.execute({ turnId: 1, toolCallId: 'continuing-call', signal: new AbortController().signal, cwd: root });
+    expect(JSON.parse(textOutput(result3d.output))).toMatchObject({ request: request3d });
+    expect(snapshotInput).toHaveBeenCalledTimes(3);
+    expect(snapshotInput).toHaveBeenNthCalledWith(1, request3d.images[0], 'mesh-request/0', expect.anything(), expect.any(AbortSignal));
+    expect(snapshotInput).toHaveBeenNthCalledWith(2, request3d.images[1], 'mesh-request/1', expect.anything(), expect.any(AbortSignal));
+    expect(snapshotInput).toHaveBeenNthCalledWith(3, request3d.images[2], 'mesh-request/2', expect.anything(), expect.any(AbortSignal));
   });
   it('installs, enables, applies source and schema edits, disables and removes without recreating the agent', async () => {
     const plugins = host.app.accessor.get(IPluginService);

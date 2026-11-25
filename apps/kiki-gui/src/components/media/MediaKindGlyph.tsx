@@ -41,6 +41,14 @@ const GLYPHS: Record<MediaModality, React.ReactNode> = {
       <path d="M12.1 4.6a5 5 0 0 1 0 6.8" />
     </>
   ),
+  // An isometric cube: universal mark for a 3D mesh/model asset.
+  '3d': (
+    <>
+      <path d="M8 2.2 13 5.1v5.8L8 13.8 3 10.9V5.1z" />
+      <path d="M8 8v5.8" />
+      <path d="M3 5.1 8 8l5-2.9" />
+    </>
+  ),
   // The same speaker, for an artifact that is already an audio file.
   audio: (
     <>
@@ -66,10 +74,11 @@ export function MediaKindGlyph({ kind, className = 'h-4 w-4' }: { readonly kind:
   );
 }
 
-const MODALITY_LABEL: Record<MediaModality, 'cap.media.kind.image' | 'cap.media.kind.video' | 'cap.media.kind.tts' | 'cap.media.kind.file'> = {
+const MODALITY_LABEL: Record<MediaModality, 'cap.media.kind.image' | 'cap.media.kind.video' | 'cap.media.kind.tts' | 'cap.media.kind.3d' | 'cap.media.kind.file'> = {
   image: 'cap.media.kind.image',
   video: 'cap.media.kind.video',
   tts: 'cap.media.kind.tts',
+  '3d': 'cap.media.kind.3d',
   audio: 'cap.media.kind.tts',
   file: 'cap.media.kind.file',
 };

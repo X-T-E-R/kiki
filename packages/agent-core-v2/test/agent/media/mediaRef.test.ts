@@ -4,6 +4,7 @@ import type { ContentPart } from '#/kosong/contract/message';
 import {
   AUDIO_MIME_BY_SUFFIX,
   IMAGE_MIME_BY_SUFFIX,
+  MODEL_3D_MIME_BY_SUFFIX,
   VIDEO_MIME_BY_SUFFIX,
   buildDaemonFileUrl,
   buildMediaPathTag,
@@ -11,6 +12,7 @@ import {
   isDaemonFileUrl,
   matchMediaPathTags,
   matchSingleMediaPathTag,
+  mediaExtensionForMime,
   mediaKindForMime,
   mediaKindForPath,
   mediaKindOfPart,
@@ -55,6 +57,20 @@ describe('media kind classification', () => {
     expect(VIDEO_MIME_BY_SUFFIX['.mkv']).toBe('video/x-matroska');
     expect(AUDIO_MIME_BY_SUFFIX['.mp3']).toBe('audio/mpeg');
     expect(AUDIO_MIME_BY_SUFFIX['.weba']).toBe('audio/webm');
+    expect(MODEL_3D_MIME_BY_SUFFIX).toEqual({
+      '.glb': 'model/gltf-binary',
+      '.gltf': 'model/gltf+json',
+      '.usdz': 'model/vnd.usdz+zip',
+      '.obj': 'model/obj',
+      '.stl': 'model/stl',
+    });
+    expect(mediaExtensionForMime('model/gltf-binary')).toBe('.glb');
+    expect(mediaExtensionForMime('model/gltf+json')).toBe('.gltf');
+    expect(mediaExtensionForMime('model/vnd.usdz+zip')).toBe('.usdz');
+    expect(mediaExtensionForMime('model/obj')).toBe('.obj');
+    expect(mediaExtensionForMime('model/stl')).toBe('.stl');
+    expect(mediaKindForPath('asset.glb')).toBeUndefined();
+    expect(mediaKindForMime('model/gltf-binary')).toBeUndefined();
   });
 });
 

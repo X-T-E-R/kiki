@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
-import { mediaGenerateInputSchema, mediaOutcomeSchema, mediaCapabilitiesSchema, mediaVoicePageSchema, mediaCancelOutcomeSchema, mediaSourcesInputSchema, mediaCatalogSchema, type MediaJob, type MediaGenerateInput, type MediaOutcome, type MediaCapabilityQuery, type MediaVoiceQuery, type MediaSource } from '@kiki/protocol';
+import { mediaGenerateInputSchema, mediaOutcomeSchema, mediaCapabilitiesSchema, mediaVoicePageSchema, mediaCancelOutcomeSchema, mediaSourcesInputSchema, mediaCatalogSchema, type MediaJob, type MediaGenerateInput, type MediaKind, type MediaOutcome, type MediaCapabilityQuery, type MediaVoiceQuery, type MediaSource } from '@kiki/protocol';
 import { Service } from '#/_base/di/service';
 import { toErrorMessage } from '#/_base/errors/errorMessage';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
@@ -28,6 +28,12 @@ import { mediaSourceUpdateSchema, mediaScriptSourceInputSchema, mediaSourceSetti
 const prefix = '';
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const activeStates = new Set(['running', 'pending']);
+const DEFAULT_PROVIDER_SETTING: Readonly<Record<MediaKind, string>> = {
+  image: 'defaultImageProvider',
+  video: 'defaultVideoProvider',
+  tts: 'defaultTtsProvider',
+  '3d': 'default3dProvider',
+};
 
 export class PluginMediaService extends Service implements IPluginMediaService {
   declare readonly _serviceBrand: undefined;
@@ -197,7 +203,15 @@ export class PluginMediaService extends Service implements IPluginMediaService {
       const providers = await this.filterScopedProviders(candidates, scope);
       return { providers: [...providers] };
     }
-    return mediaCapabilitiesSchema.parse(await this.discover(query.provider, 'describe', query, scope));
+    let provider = query.provider;
+    if (query.kind !== undefined) {
+      const providers = await this.hosts.listMediaProviders();
+      const matched = await this.matchProvidersForKind(providers, query.provider, query.kind);
+      if (matched.length === 0) throw new Error(`Media provider ${query.provider} does not support ${query.kind}`);
+      if (matched.length > 1) throw new Error(`Choose one media provider for ${query.kind}: ${matched.map((item) => item.provider).join(', ')}`);
+      provider = matched[0]!.provider;
+    }
+    return mediaCapabilitiesSchema.parse(await this.discover(provider, 'describe', query, scope));
   }
 
   async voices(query: MediaVoiceQuery, scope?: MediaScopeContext) {
@@ -233,6 +247,42 @@ export class PluginMediaService extends Service implements IPluginMediaService {
     const pluginId = provider.split('/', 1)[0];
     if (pluginId === undefined || pluginId.length === 0) return false;
     return this.usage.allows(scope.workspaceId, pluginId, scope.sessionId);
+  }
+
+  private async defaultProvider(kind: MediaKind): Promise<string | undefined> {
+    try {
+      const value = (await this.settings.forExecution('kiki-media'))[DEFAULT_PROVIDER_SETTING[kind]];
+      return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async groupProviders(requested: string): Promise<ReadonlySet<string> | undefined> {
+    const slash = requested.indexOf('/');
+    const pluginId = slash === -1 ? 'kiki-media' : requested.slice(0, slash);
+    const localId = slash === -1 ? requested : requested.slice(slash + 1);
+    try {
+      const info = await this.plugins.getPluginInfo({ id: pluginId });
+      const group = info.manifest?.kiki?.mediaSources?.find((item) => item.id === localId || item.providerIds.includes(localId));
+      return group === undefined ? undefined : new Set(group.providerIds.map((id) => `${pluginId}/${id}`));
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async matchProvidersForKind(
+    providers: readonly PluginMediaProviderRegistration[],
+    requested: string | undefined,
+    kind: MediaKind,
+  ): Promise<readonly PluginMediaProviderRegistration[]> {
+    const forKind = providers.filter((item) => item.definition.kinds.includes(kind));
+    if (requested === undefined) return forKind;
+    const direct = forKind.filter((item) => requested === item.provider || item.aliases?.includes(requested) ||
+      (!requested.includes('/') && `kiki-media/${requested}` === item.provider));
+    if (direct.length > 0) return direct;
+    const group = await this.groupProviders(requested);
+    return group === undefined ? [] : forKind.filter((item) => group.has(item.provider));
   }
 
   private async scopeForOwner(owner: MediaJobOwner): Promise<MediaScopeContext | undefined> {
@@ -273,16 +323,21 @@ export class PluginMediaService extends Service implements IPluginMediaService {
     }
     const providers = await this.hosts.listMediaProviders();
     const scope = await this.scopeForOwner(owner);
-    const candidates = providers.filter((item) => item.definition.kinds.includes(input.request.kind) &&
-      (input.provider === undefined || input.provider === item.provider || item.aliases?.includes(input.provider)));
+    const requested = input.provider ?? await this.defaultProvider(input.request.kind);
+    const candidates = await this.matchProvidersForKind(providers, requested, input.request.kind);
     const matching = await this.filterScopedProviders(candidates, scope);
-    if (matching.length !== 1) throw new Error(`Choose one configured media provider for ${input.request.kind}: ${matching.map((item) => item.provider).join(', ') || 'install/enable a media provider in Plugins'}`);
+    if (matching.length !== 1) {
+      if (requested !== undefined && matching.length === 0) {
+        throw new Error(`Configured media provider ${requested} is unavailable for ${input.request.kind}`);
+      }
+      throw new Error(`Choose one configured media provider for ${input.request.kind}: ${matching.map((item) => item.provider).join(', ') || 'install/enable a media provider in Plugins'}`);
+    }
     const provider = matching[0]!;
     const now = Date.now();
     const created: StoredMediaJob = { owner, input, fingerprint, provider, view: {
       schemaVersion: 1, job_id: id, request_id: input.request_id, owner_session_id: owner.sessionId, owner_agent_id: owner.agentId,
       provider: provider.provider, model: input.model, state: 'running', phase: 'submit', can_resume: false,
-      artifacts: [], created_at: now, updated_at: now,
+      artifacts: [], effective: { kind: input.request.kind }, created_at: now, updated_at: now,
     } };
     const result = await this.documents.update<StoredMediaJob>(this.scope, `${prefix}${id}.json`, (current) => {
       if (current !== undefined && current.fingerprint !== fingerprint) throw new Error('request_id already belongs to a different media request');
@@ -385,7 +440,7 @@ export class PluginMediaService extends Service implements IPluginMediaService {
           if (outcome.state === 'pending' && outcome.handle.version !== record.provider.definition.resumeVersion) throw new Error('Provider returned an incompatible resume handle');
           record = await this.save({ ...record, outcome, handle: outcome.state === 'pending' ? outcome.handle : record.handle,
             view: { ...record.view, state: outcome.state === 'pending' ? 'pending' : 'running', phase: outcome.state === 'pending' ? outcome.phase : 'download',
-              can_resume: outcome.state === 'pending' || (outcome.artifacts?.length ?? 0) > 0, effective: outcome.effective, usage: outcome.usage, warnings: outcome.warnings } });
+              can_resume: outcome.state === 'pending' || (outcome.artifacts?.length ?? 0) > 0, effective: { ...outcome.effective, kind: record.input.request.kind }, usage: outcome.usage, warnings: outcome.warnings } });
         }
         record = await this.materialize(record, outcome, signal);
         signal.throwIfAborted();

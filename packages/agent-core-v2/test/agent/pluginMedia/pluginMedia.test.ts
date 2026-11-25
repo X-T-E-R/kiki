@@ -8,7 +8,7 @@ import { createControlledPromise } from '@antfu/utils';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
-import { IAgentPluginMediaService } from '#/agent/pluginMedia/pluginMedia';
+import { IAgentPluginMediaService, mediaInputRefs } from '#/agent/pluginMedia/pluginMedia';
 import { IPluginMediaService } from '#/app/pluginMedia/pluginMedia';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -182,9 +182,34 @@ it('does not let ordinary TTS orchestration introduce image/video inputs or sess
   await expect(api.generate({ request: { kind: 'image', prompt: 'unadmitted', images: [{ path: path.join(root, 'outside.png') }] } })).rejects.toThrow('changed after tool/path admission');
   await expect(api.generate({ request: { kind: 'image', prompt: 'unadmitted', images: [{ file_id: 'f_session_input' }] } })).rejects.toThrow('changed after tool/path admission');
   await expect(api.generate({ request: { kind: 'video', prompt: 'unadmitted', inputs: [{ ref: { url: 'https://example.test/frame.png' }, role: 'first_frame' }] } })).rejects.toThrow('changed after tool/path admission');
+  await expect(api.generate({ request: { kind: '3d', prompt: 'unadmitted', images: [{ path: path.join(root, 'outside.png') }] } })).rejects.toThrow('changed after tool/path admission');
+  await expect(api.generate({ request: { kind: '3d', images: [{ file_id: 'f_session_input' }] } })).rejects.toThrow('changed after tool/path admission');
   const raw = { kind: 'tts' as const, text: 'line', voice: 'fixture', images: [{ path: path.join(root, 'outside.png') }] };
   await expect(api.generate({ request: raw })).rejects.toThrow();
   expect(start).not.toHaveBeenCalled();
+});
+it('extracts and snapshots images input refs for kind 3d requests', async () => {
+  const files = ctx.get(ISessionMediaStore);
+  const fileBytes = Buffer.from('3d-ref-from-session');
+  await files.materialize({ fileId: 'f_3d_ref', name: 'ref.png', mimeType: 'image/png', size: fileBytes.length, stream: () => Readable.from([fileBytes]) });
+  const workspaceRef = path.join(root, 'workspace-ref.png');
+  await writeFile(workspaceRef, '3d-ref-from-workspace');
+  const request = {
+    kind: '3d' as const,
+    images: [{ path: workspaceRef }, { file_id: 'f_3d_ref' }, { url: 'https://fixture.invalid/ref.png' }],
+    format: 'glb',
+  };
+  const refs = mediaInputRefs(request);
+  expect(refs).toEqual(request.images);
+  const bridge = ctx.get(IAgentPluginMediaService);
+  const fs = new HostFileSystem();
+  const signal = new AbortController().signal;
+  const stagedWorkspace = await bridge.snapshotInput(refs[0]!, '3d-0', fs, signal);
+  const stagedSession = await bridge.snapshotInput(refs[1]!, '3d-1', fs, signal);
+  const stagedUrl = await bridge.snapshotInput(refs[2]!, '3d-2', fs, signal);
+  expect(await readFile((stagedWorkspace as { path: string }).path, 'utf8')).toBe('3d-ref-from-workspace');
+  expect(await readFile((stagedSession as { path: string }).path, 'utf8')).toBe('3d-ref-from-session');
+  expect(stagedUrl).toEqual({ url: 'https://fixture.invalid/ref.png' });
 });
 it('settles automatic foreground generation through the existing Task release and suppresses duplicate terminal notification', async () => {
   const media = ctx.get(IPluginMediaService);
