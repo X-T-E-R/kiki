@@ -5,6 +5,7 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../../i18n';
 import { compactIdentifier } from '../../../lib/compactIdentifier';
 import {
+  effectiveEngineQuotaSourceOf,
   formatQuotaPercentNumber,
   formatQuotaResetDuration,
   groupHarnessQuotaReadings,
@@ -21,7 +22,7 @@ import {
 import { FeedbackLine, type Feedback } from '../../controls';
 import { DisclosureChevron, Icon } from '../../icons';
 import { SearchableSelect } from '../../SearchableSelect';
-import { engineHealth, engineQuotaSourceOf, type EngineHealth } from '../../settings/ExternalEnginesSection';
+import { engineHealth, type EngineHealth } from '../../settings/ExternalEnginesSection';
 import { computeRemainingPace, summarizePoolHealth } from './quotaModel';
 import { PluginAccountsMatrix, SingleAccountPluginRow } from './QuotaFleetMatrix';
 import { QUOTA_ICON_BUTTON, QUOTA_ROW_GRID, QUOTA_SMALL_BUTTON } from './QuotaSourceRow';
@@ -115,8 +116,8 @@ export function EngineQuotaSection({
             const engineId = source.provider_id;
             const item = catalog?.find((entry) => entry.id === engineId);
             const health: EngineHealth = item === undefined ? 'unknown' : engineHealth(item, undefined);
-            const selectedSourceId = engineQuotaSourceOf(configRaw, engineId);
             const matchingPluginSources = pluginQuotaSources.filter((entry) => entry.engineIds.includes(engineId));
+            const selectedSourceId = effectiveEngineQuotaSourceOf(configRaw, source, matchingPluginSources);
             const selectedPluginSnapshot = selectedSourceId !== ''
               ? pluginQuotaSources.find((entry) => entry.id === selectedSourceId)
               : undefined;
@@ -225,7 +226,7 @@ function EngineQuotaRow({
     : undefined;
   const pluginReadings = selectedPluginSnapshot?.readings;
   const accountGroups = useMemo<readonly HarnessQuotaAccountGroup[]>(
-    () => (isPluginMode && pStatus === 'ready' && pluginReadings !== undefined
+    () => (isPluginMode && (pStatus === 'ready' || pStatus === 'expired') && pluginReadings !== undefined
       ? groupHarnessQuotaReadings(pluginReadings)
       : []),
     [isPluginMode, pStatus, pluginReadings],
@@ -316,8 +317,9 @@ function EngineQuotaRow({
 
   const nativeHasBeenQueried = source.status !== 'unknown' || source.checked_at !== undefined || source.data_as_of !== undefined;
   const nativeUnqueried = !isPluginMode && source.supported && !nativeHasBeenQueried && source.meters.length === 0;
-  const isMultiSeat = isPluginMode && pStatus === 'ready' && accountGroups.length > 1;
-  const singleSeat = isPluginMode && pStatus === 'ready' && accountGroups.length === 1 ? accountGroups[0] : undefined;
+  const hasRenderablePluginSeats = isPluginMode && (pStatus === 'ready' || pStatus === 'expired');
+  const isMultiSeat = hasRenderablePluginSeats && accountGroups.length > 1;
+  const singleSeat = hasRenderablePluginSeats && accountGroups.length === 1 ? accountGroups[0] : undefined;
   const keepActionsVisible = isRefreshingPlugin || isRefreshingNative || isNativeLocked || pStatus === 'expired';
 
   return (
@@ -450,21 +452,28 @@ function EngineQuotaRow({
                 <p className="py-0.5 text-[12px] leading-4 text-danger" data-engine-quota-error={engineId}>
                   {pluginError ?? selectedPluginSnapshot?.error ?? pluginCatalogError}
                 </p>
-              ) : pStatus === 'unqueried' ? (
-                <div className="flex flex-wrap items-center gap-2 py-0.5 text-[12px] leading-4 text-ink-soft" data-engine-quota-unqueried={engineId}>
-                  <span>{t('usage.quota.notQueried')}</span>
-                  <span aria-hidden className="text-ink-faint">·</span>
-                  <button
-                    type="button"
-                    data-engine-quota-query={engineId}
-                    disabled={isRefreshingPlugin}
-                    onClick={() => { void runPluginRefresh(); }}
-                    className="font-normal text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-2"
-                  >
-                    {t('usage.quota.queryNow')}
-                  </button>
+              ) : pStatus === 'unqueried' || (pStatus === 'expired' && pluginReadings === undefined) ? (
+                <div
+                  className="flex flex-wrap items-center gap-2 py-0.5 text-[12px] leading-4 text-ink-soft"
+                  data-engine-quota-unqueried={pStatus === 'unqueried' ? engineId : undefined}
+                >
+                  <span>{t(isRefreshingPlugin ? 'usage.quota.refreshing' : 'usage.quota.notQueried')}</span>
+                  {!isRefreshingPlugin ? (
+                    <>
+                      <span aria-hidden className="text-ink-faint">·</span>
+                      <button
+                        type="button"
+                        data-engine-quota-query={pStatus === 'unqueried' ? engineId : undefined}
+                        disabled={isRefreshingPlugin}
+                        onClick={() => { void runPluginRefresh(); }}
+                        className="font-normal text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-2"
+                      >
+                        {t('usage.quota.queryNow')}
+                      </button>
+                    </>
+                  ) : null}
                 </div>
-              ) : pStatus === 'expired' ? null : accountGroups.length === 0 ? (
+              ) : accountGroups.length === 0 ? (
                 <p className="py-0.5 text-[12px] leading-4 text-ink-soft" data-engine-quota-empty={engineId}>
                   {t('usage.quota.engines.pluginEmpty')}
                 </p>

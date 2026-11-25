@@ -276,7 +276,7 @@ function foldable(
       return true;
     case 'system':
       if (node.variant === 'compaction_summary') return false;
-      if ((node.variant === 'task' || node.variant === 'thread_watch') && isFailedTaskSystemBlock(node)) return false;
+      if (node.variant === 'thread_watch' && isFailedTaskSystemBlock(node)) return false;
       return true;
     case 'notice':
       return classifyNoticePlacement(node, noticePlacementContext) === 'foldable';
@@ -298,6 +298,7 @@ function nodeFailed(
   if (node.kind === 'tool') return node.status === 'error' || node.isError === true;
   if (node.kind === 'shell') return node.isError === true;
   if (node.kind === 'subagent') return subagentFailed(node, forest, latestCardIdByAgent);
+  if (node.kind === 'system' && node.variant === 'task') return isFailedTaskSystemBlock(node);
   return false;
 }
 
@@ -799,6 +800,9 @@ export function foldHistory(
     node.kind === 'tool' ||
     node.kind === 'tool-group' ||
     node.kind === 'subagent';
+  const isInternalHarnessBoilerplate = (node: Row): boolean =>
+    (node.kind === 'system-reminder' && node.variant !== 'image_compression') ||
+    (node.kind === 'system' && (node.originVariant === 'model_steering' || node.source === 'model_steering'));
   const out: DisplayNode[] = [];
   let run: Row[] = [];
   let runTurn: string | undefined;
@@ -806,6 +810,7 @@ export function foldHistory(
     const shouldFold =
       run.length >= HISTORY_FOLD_MIN ||
       run.some((node) => node.kind === 'shell') ||
+      (run.length === 1 && isInternalHarnessBoilerplate(run[0]!)) ||
       (foldSingleProcess && run.length === 1 && isSingleFoldableProcess(run[0]!));
     if (shouldFold) out.push(buildFold(run, runTurn, forest, latestCardIdByAgent));
     else out.push(...run);
@@ -825,7 +830,9 @@ export function foldHistory(
     }
     const turn = normTurn(foldTurnId(node));
     const heldByNewest =
-      node.id === newest && !(foldSingleProcess && node.kind === 'thinking' && !node.streaming);
+      node.id === newest &&
+      !isInternalHarnessBoilerplate(node) &&
+      !(foldSingleProcess && node.kind === 'thinking' && !node.streaming);
     const held = turn === live && (heldByNewest || keepOpen?.has(node.id) === true);
     const eligible = turn !== undefined && !held && foldable(node, forest, latestCardIdByAgent, noticePlacementContext);
     if (!eligible || (run.length > 0 && turn !== runTurn)) flush();

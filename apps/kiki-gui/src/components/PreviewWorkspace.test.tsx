@@ -4154,6 +4154,9 @@ describe('WorkspacePanelsControl direct 1-click inline buttons', () => {
       expect(dot).not.toBeNull();
       expect(dot.className).toContain('bg-ink-soft');
       expect(dot.className).not.toContain('bg-accent');
+      // >= 3 inline panel slots stay compact icon-only even at wide container widths.
+      expect(phoneBtn.className).toContain('lg:w-8');
+      expect(phoneBtn.className).not.toContain('@[680px]/center:w-auto');
 
       // Clicking opens the panel tab, highlights the button, and keeps [预览] independent.
       await act(async () => { phoneBtn.click(); });

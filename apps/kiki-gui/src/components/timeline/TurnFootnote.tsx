@@ -59,45 +59,49 @@ export const TurnFootnote = memo(function TurnFootnote({
       data-turn-footnote-turn={tail.turnId}
       role={gap !== undefined ? 'status' : undefined}
       aria-live={gap !== undefined ? 'polite' : undefined}
-      className={`flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 font-sans text-[12px] leading-[16px] font-normal tabular-nums text-ink-faint ${revealClass} ${className}`.trimEnd()}
+      className={`anim-enter flex min-h-7 min-w-0 items-center gap-3 py-1 ${revealClass} ${className}`.trimEnd()}
     >
-      {gap !== undefined ? (
-        <>
-          <span data-turn-tail-gap={gap.work} className="text-ink-soft">
-            {t('transcript.noReply')}
-          </span>
-          <span aria-hidden>·</span>
-          <span data-turn-tail-gap-work>
-            {t(
-              gap.work === 'running'
-                ? 'transcript.noReplyBackground'
-                : gap.work === 'idle'
-                  ? 'transcript.noReplyIdle'
-                  : 'transcript.noReplyUnknown',
-            )}
-          </span>
-          {hasTime || facts.length > 0 ? <span aria-hidden>·</span> : null}
-        </>
-      ) : null}
-      <span title={time.absoluteTime(tail.endedAt)}>
-        {hasTime ? <RelativeTime at={tail.endedAt} /> : null}
-        {facts.length > 0 ? `${hasTime ? ' · ' : ''}${facts.join(' · ')}` : null}
-      </span>
-      {gap !== undefined && gap.work === 'idle' && onRetryGap !== undefined ? (
-        <>
-          <span aria-hidden>·</span>
-          <button
-            type="button"
-            data-turn-tail-gap-retry=""
-            onClick={onRetryGap}
-            disabled={retryDisabled}
-            title={t('transcript.promptOutcome.retryTitle')}
-            className="inline-flex min-h-7 min-w-7 cursor-pointer items-center rounded-[6px] px-1.5 text-[12px] leading-[16px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-55 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
-          >
-            {t('transcript.promptOutcome.retry')}
-          </button>
-        </>
-      ) : null}
+      <span aria-hidden data-turn-tail-rule="left" className="h-px min-w-0 flex-1 bg-hairline" />
+      <div className="flex min-w-0 flex-wrap items-center justify-center gap-x-1.5 gap-y-0.5 text-center font-sans text-[12px] leading-[16px] font-normal tabular-nums text-ink-faint">
+        {gap !== undefined ? (
+          <>
+            <span data-turn-tail-gap={gap.work} className="text-ink-soft">
+              {t('transcript.noReply')}
+            </span>
+            <span aria-hidden>·</span>
+            <span data-turn-tail-gap-work>
+              {t(
+                gap.work === 'running'
+                  ? 'transcript.noReplyBackground'
+                  : gap.work === 'idle'
+                    ? 'transcript.noReplyIdle'
+                    : 'transcript.noReplyUnknown',
+              )}
+            </span>
+            {hasTime || facts.length > 0 ? <span aria-hidden>·</span> : null}
+          </>
+        ) : null}
+        <span title={time.absoluteTime(tail.endedAt)}>
+          {hasTime ? <RelativeTime at={tail.endedAt} /> : null}
+          {facts.length > 0 ? `${hasTime ? ' · ' : ''}${facts.join(' · ')}` : null}
+        </span>
+        {gap !== undefined && gap.work === 'idle' && onRetryGap !== undefined ? (
+          <>
+            <span aria-hidden>·</span>
+            <button
+              type="button"
+              data-turn-tail-gap-retry=""
+              onClick={onRetryGap}
+              disabled={retryDisabled}
+              title={t('transcript.promptOutcome.retryTitle')}
+              className="inline-flex min-h-7 min-w-7 cursor-pointer items-center rounded-[6px] px-1.5 text-[12px] leading-[16px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-55 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+            >
+              {t('transcript.promptOutcome.retry')}
+            </button>
+          </>
+        ) : null}
+      </div>
+      <span aria-hidden data-turn-tail-rule="right" className="h-px min-w-0 flex-1 bg-hairline" />
     </div>
   );
 });

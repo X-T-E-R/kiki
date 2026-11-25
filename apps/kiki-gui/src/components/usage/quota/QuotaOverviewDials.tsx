@@ -3,6 +3,7 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../../i18n';
 import {
   compactQuotaMeterLabel,
+  effectiveEngineQuotaSourceOf,
   effectiveQuotaStatus,
   formatQuotaPercentNumber,
   formatQuotaResetDuration,
@@ -18,7 +19,6 @@ import {
 } from '../../../lib/providerQuota';
 import { FeedbackLine, type Feedback } from '../../controls';
 import { DisclosureChevron, Icon } from '../../icons';
-import { engineQuotaSourceOf } from '../../settings/ExternalEnginesSection';
 import { QuotaCalibrationDial, QuotaFuelMicroBar, resolveQuotaArcStroke } from './QuotaArcGauge';
 import {
   computeRemainingPace,
@@ -204,7 +204,8 @@ export function buildQuotaOverviewPlan(params: {
 
   for (const source of engineSources) {
     const engineId = source.provider_id;
-    const selectedSourceId = engineQuotaSourceOf(configRaw, engineId);
+    const matchingPlugins = pluginQuotaSources.filter((entry) => entry.engineIds.includes(engineId));
+    const selectedSourceId = effectiveEngineQuotaSourceOf(configRaw, source, matchingPlugins);
     if (selectedSourceId !== '') {
       const snapshot = pluginQuotaSources.find((entry) => entry.id === selectedSourceId);
       const pStatus = pluginQuotaSnapshotStatus(
@@ -214,7 +215,7 @@ export function buildQuotaOverviewPlan(params: {
         nowMs,
         pluginCatalogError !== undefined,
       );
-      if (pStatus !== 'ready' || snapshot === undefined || snapshot.readings === undefined) continue;
+      if ((pStatus !== 'ready' && pStatus !== 'expired') || snapshot === undefined || snapshot.readings === undefined) continue;
       const accountGroups = groupHarnessQuotaReadings(snapshot.readings);
       if (accountGroups.length === 0) continue;
       const fleetHealth = summarizePoolHealth(accountGroups, defaultPoolLabel, nowMs);

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Block, SessionViewState, TurnTailInfo, UserBlock } from '@kiki/session-core/session';
 import { I18nProvider } from '../../i18n';
+import { sanitizeDisplayTitle } from '../../lib/threadTitles';
 import { MobileTranscript } from '../../mobile/chat/MobileTranscript';
 import {
   buildDiagnosticClipboardText,
@@ -16,6 +17,7 @@ import {
 import { ModelSwitchActionsContext } from '../model-switch/ModelSwitchNotice';
 import { SubagentEndedRow } from './FoldRows';
 import { ModelDisplayProvider } from './ModelDisplayContext';
+import { PromptOutcomeLine } from './PromptOutcome';
 import { TimelineErrorCallout } from './TimelineErrorCallout';
 import { TurnFootnote } from './TurnFootnote';
 import { canFaithfullyRetryUserBlock, TurnTailSurface } from './TurnTailSurface';
@@ -184,7 +186,7 @@ describe('0.6.1 failureText & TimelineErrorCallout (Release Gate 2)', () => {
 });
 
 describe('0.6.1 TurnFootnote & TurnTailSurface (Release Gate 3)', () => {
-  it('renders all 4 timing facts without flanking horizontal rules', () => {
+  it('renders all 4 timing facts inside centered horizontal hairline rules', () => {
     const tail: TurnTailInfo = {
       turnId: 't1',
       state: 'completed',
@@ -199,7 +201,16 @@ describe('0.6.1 TurnFootnote & TurnTailSurface (Release Gate 3)', () => {
     expect(text).toContain('用时 2分16秒');
     expect(text).toContain('首 token 29 秒');
     expect(text).toContain('10 token/秒');
-    expect(container.querySelector('[data-timeline-divider]')).toBeNull();
+    expect(container.querySelector('[data-turn-tail-rule="left"]')).not.toBeNull();
+    expect(container.querySelector('[data-turn-tail-rule="right"]')).not.toBeNull();
+  });
+
+  it('does not extract bare integer exit codes as API error codes', () => {
+    const diag = decodeFullDiagnostic(
+      'Restore @nb-corp/nb-im package and run full nb-hub pnpm check suite · 退出码 1',
+      'Command: pnpm check\nExit code: 1.',
+    );
+    expect(diag.code).toBeUndefined();
   });
 
   it('shows ONE recovery callout for completed + 6 recoverable tasks, and footnote ONLY for stale zero counts', () => {
@@ -541,5 +552,95 @@ describe('0.6.1 MobileTranscript parity (Reply & Message modes)', () => {
     act(() => { toggle?.click(); });
     expect(container.querySelector('[data-subagent-model-raw]')?.textContent).toBe('axon-message/gemini-4-neon');
     expect(container.querySelector('[data-subagent-model-details] [data-copy-state]')).not.toBeNull();
+  });
+
+  it('keeps restore-draft reachable on superseded undelivered PromptOutcome, clamps multi-line error traces, enforces <=1 primary button, and preserves human <Component> titles', () => {
+    expect(sanitizeDisplayTitle('<Composer> layout fix')).toBe('<Composer> layout fix');
+    expect(sanitizeDisplayTitle('<user_request>fix bug</user_request>')).toBeUndefined();
+    expect(sanitizeDisplayTitle('<task-notification>done</task-notification>')).toBeUndefined();
+
+    const onRetryUndelivered = vi.fn();
+    const supersededOutcome = mount(
+      <PromptOutcomeLine
+        outcome={{ status: 'failed', delivered: false, error: 'WebSocket closed', at: '2026-11-25T07:00:00Z' }}
+        superseded
+        onRetry={onRetryUndelivered}
+      />,
+    );
+    const retryBtn = supersededOutcome.querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]');
+    expect(retryBtn).not.toBeNull();
+    act(() => { retryBtn?.click(); });
+    expect(onRetryUndelivered).toHaveBeenCalledTimes(1);
+
+    const multilineError = mount(
+      <TimelineErrorCallout
+        incidentId="inc-multiline"
+        message={'Upstream failed\n  at Router.dispatch (router.ts:42)\n  at Server.handle (server.ts:91)\n  at Socket.onData (net.ts:12)'}
+      />,
+    );
+    expect(multilineError.querySelector('[data-error-message]')?.className).toContain('line-clamp-2');
+    const rawToggle = multilineError.querySelector<HTMLButtonElement>('[data-error-raw-toggle]');
+    expect(rawToggle).not.toBeNull();
+    act(() => { rawToggle?.click(); });
+    expect(multilineError.querySelector('[data-error-raw-details]')?.textContent).toContain('Router.dispatch');
+
+    const singlePrimaryTail = mount(
+      <TurnTailSurface
+        agentId="main"
+        tail={{
+          turnId: 't-cap',
+          state: 'failed',
+          error: 'No capacity available for model gemini-4-carbon (503)',
+          endedAt: '2026-11-25T07:05:00Z',
+          durationMs: undefined,
+          ttftMs: undefined,
+          usage: undefined,
+          tokensPerSecond: undefined,
+        }}
+        failedHasWork
+        hasOriginalRetry
+        onContinueFailed={() => undefined}
+        onRetryFailed={() => undefined}
+        onOpenModelPicker={() => undefined}
+      />,
+    );
+    const actionBtns = [...singlePrimaryTail.querySelectorAll<HTMLButtonElement>('[data-error-actions] [data-error-action]')];
+    const primaryBtns = actionBtns.filter((btn) => btn.className.includes('bg-ink/[0.06]'));
+    expect(primaryBtns).toHaveLength(1);
+    expect(primaryBtns[0]?.getAttribute('data-error-action')).toBe('switch-model');
+
+    const steerBlock = {
+      kind: 'user' as const,
+      id: 'u-send-now',
+      promptId: 'p-send-now',
+      userMessageId: 'um-send-now',
+      text: '顺手核对第 48 帧高光',
+      createdAt: '2026-11-25T07:06:00Z',
+      steerStatus: 'waiting' as const,
+    };
+    const mobileSteer = mount(
+      <MobileTranscript
+        blocks={[steerBlock]}
+        state={{
+          blocks: [steerBlock],
+          session: { id: 's-mob-steer', executor_id: 'native' } as SessionViewState['session'],
+        } as unknown as SessionViewState}
+        loaded
+        hasMoreHistory={false}
+        loadingOlder={false}
+        busy
+        messageMode={false}
+        onLoadOlder={async () => false}
+        onOpenHood={() => undefined}
+        onResolveApproval={async () => undefined}
+        onAnswerQuestion={async () => undefined}
+        onDismissQuestion={async () => undefined}
+        onOpenWorkbench={() => undefined}
+      />,
+    );
+    const mobileSteerBubble = mobileSteer.querySelector('[data-steer-status="waiting"]');
+    expect(mobileSteerBubble?.className).toContain('steer-bubble-pending');
+    expect(mobileSteerBubble?.className).toContain('border-dashed');
+    expect(mobileSteerBubble?.className).not.toContain('bg-bubble-user');
   });
 });

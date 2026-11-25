@@ -975,7 +975,8 @@ export function engineQuotaSourceOf(raw: Readonly<Record<string, unknown>> | und
   const entry = (overrides as Record<string, unknown>)[executorId];
   if (typeof entry !== 'object' || entry === null) return '';
   const source = (entry as Record<string, unknown>)['quota_source'];
-  return typeof source === 'string' ? source : '';
+  if (typeof source !== 'string') return '';
+  return source === 'native' ? '' : source;
 }
 
 export function engineDefaultsOf(raw: Readonly<Record<string, unknown>> | undefined, executorId: string): Record<string, unknown> | null | undefined {

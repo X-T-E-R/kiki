@@ -1758,7 +1758,7 @@ describe('Composer permission chip', () => {
 
   it('shows the current mode and lists every wire mode with its hint', async () => {
     const { container } = await renderComposer({ permissionMode: 'auto' });
-    expect(trigger(container).getAttribute('aria-label')).toBe('Approvals');
+    expect(trigger(container).getAttribute('aria-label')).toBe('Approvals: Auto');
     expect(trigger(container).textContent).toContain('Auto');
     expect(trigger(container).getAttribute('aria-haspopup')).toBe('listbox');
     expect(rows(container)).toHaveLength(0);
@@ -1833,7 +1833,7 @@ describe('Composer run mode (Normal / Plan / Goal)', () => {
     for (let index = 0; index < 5; index += 1) await settle();
     const labels = [...container.querySelectorAll<HTMLElement>('[data-composer-toolbar] button')]
       .map((button) => button.getAttribute('aria-label'));
-    expect(labels).toEqual(['Add and actions', 'Model', 'Approvals', 'Send message']);
+    expect(labels).toEqual(['Add and actions', 'Model', 'Approvals: Ask every time', 'Send message']);
     expect(container.querySelector('[data-run-mode-chip]')).toBeNull();
   });
 
@@ -5491,6 +5491,8 @@ describe('Canonical 4-Layer Composer Slot Standard (Max-Loaded State)', () => {
     try {
       const { container } = await renderComposer({
         sessionId: 'session-max-loaded',
+        busy: true,
+        working: { lastResponseAt: Date.now() - 1_500 },
         value: 'Check the attached screenshot and file',
         quotes: [{ id: 'q1', quote: 'Quoted snippet from earlier turn' }],
         attachments: [
@@ -5514,6 +5516,7 @@ describe('Canonical 4-Layer Composer Slot Standard (Max-Loaded State)', () => {
       const editor = container.querySelector<HTMLElement>('[data-composer-editor]');
       const toolbar = container.querySelector<HTMLElement>('[data-composer-toolbar]');
       const statusLine = container.querySelector<HTMLElement>('[data-composer-status-line]');
+      const workingLine = statusLine?.querySelector<HTMLElement>('[data-composer-working]') ?? null;
       const sshStrip = statusLine?.querySelector<HTMLElement>('[data-composer-ssh-strip]') ?? null;
 
       expect(card).not.toBeNull();
@@ -5522,7 +5525,9 @@ describe('Canonical 4-Layer Composer Slot Standard (Max-Loaded State)', () => {
       expect(editor).not.toBeNull();
       expect(toolbar).not.toBeNull();
       expect(statusLine).not.toBeNull();
+      expect(workingLine).not.toBeNull();
       expect(sshStrip).not.toBeNull();
+      expect(Boolean(workingLine!.compareDocumentPosition(sshStrip!) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
 
       // Subtraction-first invariants: zero env-strip, zero plugin slots, zero SSH chips inside card!
       expect(container.querySelector('[data-composer-env-strip]')).toBeNull();

@@ -365,6 +365,9 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
   const shownInlineRuleIds = new Set(shownConcurrencyRows.map((r) => r.ruleId).filter((id): id is string => id !== undefined));
   const extraPressuredRules = pressuredRules.filter((r) => !shownInlineRuleIds.has(r.ruleId));
   const showConcurrencySection = !isIdle && (shownConcurrencyRows.length > 0 || extraPressuredRules.length > 0);
+  const showSessionsColumn = projection.sessionRows.length > 0 || projection.unattributedWaiters.length > 0;
+  const splitLiveColumns = showConcurrencySection && showSessionsColumn;
+  const concurrencyGridCols = 'grid-cols-[minmax(0,1fr)_2.75rem_2.75rem_4.75rem] sm:grid-cols-[minmax(0,1fr)_3.25rem_3.25rem_5.25rem]';
 
   const manageRulesLabel = enabledRules > 0
     ? (locale === 'zh' ? `管理并发规则（${enabledRules} 条启用）` : `Manage concurrency rules (${enabledRules} active)`)
@@ -548,153 +551,178 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
           </div>
           <ul className="divide-y divide-hairline border-t border-hairline">
             {projection.pendingRows.map((row) => (
-              <PendingRuntimeRow key={row.key} row={row} />
+              <PendingRuntimeRow key={row.key} row={row} onRetryRead={refreshAll} />
             ))}
           </ul>
         </section>
       ) : null}
 
-      {/* 3. First-screen Live Concurrency (`实时并发` — open by default when active/queued/capped) */}
-      {showConcurrencySection ? (
-        <section data-governance-concurrency aria-labelledby="live-concurrency-heading" className="space-y-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 id="live-concurrency-heading" className="font-sans text-[16px] leading-6 font-bold text-ink">
-              {locale === 'zh' ? '实时并发' : 'Live concurrency'}
-            </h2>
-            {availableDimensions.length > 1 ? (
-              <div
-                role="group"
-                aria-label={t('usage.governance.byDimension')}
-                data-axis="governance-dimension"
-                className="flex flex-wrap items-center gap-0.5 rounded-md bg-ink/[0.04] p-0.5"
-              >
-                {availableDimensions.map((dim) => {
-                  const selected = dim === activeConcurrencyDim;
-                  const label = dim === 'executor'
-                    ? t('usage.governance.executor')
-                    : t(`usage.governance.${dim}` as I18nKey);
-                  return (
-                    <button
-                      key={dim}
-                      type="button"
-                      data-axis-value={dim}
-                      aria-pressed={selected}
-                      onClick={() => { setChosenConcurrencyDim(dim); }}
-                      className={`h-7 rounded-[5px] px-2.5 text-[12px] leading-4 font-normal transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
-                        selected
-                          ? 'bg-paper text-ink'
-                          : 'text-ink-soft hover:text-ink'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
-          </div>
-
-          {shownConcurrencyRows.length > 0 ? (
-            <div data-governance-dimensions data-governance-dimension={activeConcurrencyDim}>
-              <ol className="divide-y divide-hairline border-t border-hairline">
-                {shownConcurrencyRows.map((row) => (
-                  <LiveConcurrencyRow
-                    key={row.key}
-                    row={row}
-                    locale={locale}
-                    onJumpToRule={openRulesEditor}
-                  />
-                ))}
-              </ol>
-            </div>
-          ) : null}
-
-          {extraPressuredRules.length > 0 ? (
-            <div data-governance-cap-pressure className={shownConcurrencyRows.length > 0 ? 'pt-1' : undefined}>
-              <ol className="divide-y divide-hairline border-t border-hairline">
-                {extraPressuredRules.map((rule) => (
-                  <PressuredRuleRow
-                    key={rule.ruleId}
-                    rule={rule}
-                    locale={locale}
-                    onJumpToRule={openRulesEditor}
-                  />
-                ))}
-              </ol>
-            </div>
-          ) : null}
-        </section>
-      ) : null}
-
-      {/* 4. Current sessions (all active/waiting/paused rows directly visible — NEVER folded) */}
-      {projection.sessionRows.length > 0 ? (
-        <section
-          data-governance-sessions
-          data-execution-sessions
-          aria-labelledby="live-sessions-heading"
-          className="space-y-2"
+      {/* 3 & 4. Live Concurrency + Current Sessions (2-column split on desktop when both are present) */}
+      {(showConcurrencySection || showSessionsColumn) ? (
+        <div
+          className={splitLiveColumns
+            ? 'grid gap-x-8 gap-y-6 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.28fr)] lg:items-start'
+            : 'space-y-6'}
         >
-          <div className="flex items-baseline gap-2">
-            <h2 id="live-sessions-heading" className="font-sans text-[16px] leading-6 font-bold text-ink">
-              {locale === 'zh' ? '当前会话' : 'Current sessions'}
-            </h2>
-            <span data-governance-sessions-count className="text-[13px] leading-5 text-ink-faint tabular-nums">
-              {projection.sessionRows.length}
-            </span>
-          </div>
-          <ul className="divide-y divide-hairline border-t border-hairline">
-            {projection.sessionRows.map((row) => (
-              <ActiveRuntimeSessionRow
-                key={row.sessionId}
-                row={row}
-                nowMs={nowMs}
-                onRetryRead={refetchExecutions}
-                onJumpToRule={openRulesEditor}
-              />
-            ))}
-          </ul>
-          {requestSnapshot !== undefined && requestSnapshot.queued > requestSnapshot.waiting.length ? (
-            <p data-governance-waiting-showing className="text-[12px] leading-4 text-ink-faint tabular-nums">
-              {t('usage.governance.waitingShowing', { shown: requestSnapshot.waiting.length, total: requestSnapshot.queued })}
-            </p>
-          ) : null}
-        </section>
-      ) : null}
+          {showConcurrencySection ? (
+            <section
+              data-governance-concurrency
+              aria-labelledby="live-concurrency-heading"
+              className={splitLiveColumns ? 'min-w-0 space-y-2' : 'max-w-[560px] space-y-2'}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 id="live-concurrency-heading" className="font-sans text-[16px] leading-6 font-bold text-ink">
+                  {locale === 'zh' ? '实时并发' : 'Live concurrency'}
+                </h2>
+                {availableDimensions.length > 1 ? (
+                  <div
+                    role="group"
+                    aria-label={t('usage.governance.byDimension')}
+                    data-axis="governance-dimension"
+                    className="flex flex-wrap items-center gap-0.5 rounded-md bg-ink/[0.04] p-0.5"
+                  >
+                    {availableDimensions.map((dim) => {
+                      const selected = dim === activeConcurrencyDim;
+                      const label = dim === 'executor'
+                        ? t('usage.governance.executor')
+                        : t(`usage.governance.${dim}` as I18nKey);
+                      return (
+                        <button
+                          key={dim}
+                          type="button"
+                          data-axis-value={dim}
+                          aria-pressed={selected}
+                          onClick={() => { setChosenConcurrencyDim(dim); }}
+                          className={`h-7 rounded-[5px] px-2.5 text-[12px] leading-4 font-normal transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
+                            selected
+                              ? 'bg-paper text-ink'
+                              : 'text-ink-soft hover:text-ink'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
 
-      {/* Unattributed queued waiters (never invented as a session link) */}
-      {projection.unattributedWaiters.length > 0 ? (
-        <section data-governance-unattributed-waiters className="space-y-2">
-          <h2 className="font-sans text-[16px] leading-6 font-bold text-ink">
-            {locale === 'zh' ? '未关联会话的请求' : 'Unattributed queued requests'}
-          </h2>
-          <ul className="divide-y divide-hairline border-t border-hairline">
-            {projection.unattributedWaiters.map((waiter) => {
-              const model = formatRuntimeModelLabel(waiter.modelId, catalogModels, locale === 'zh' ? '模型未提供' : 'Model unavailable');
-              return (
-                <li
-                  key={waiter.attemptId}
-                  data-governance-waiter={waiter.attemptId}
-                  className="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-1 py-2 text-[13px] leading-5"
+              <div
+                aria-hidden
+                className={`grid ${concurrencyGridCols} items-baseline gap-x-2 pt-0.5 pb-1 text-[11px] leading-4 text-ink-faint select-none`}
+              >
+                <span>{locale === 'zh' ? '目标' : 'Target'}</span>
+                <span className="text-right">{locale === 'zh' ? '运行中' : 'Active'}</span>
+                <span className="text-right">{locale === 'zh' ? '排队' : 'Queued'}</span>
+                <span className="text-right">{locale === 'zh' ? '上限' : 'Cap'}</span>
+              </div>
+
+              {shownConcurrencyRows.length > 0 ? (
+                <div data-governance-dimensions data-governance-dimension={activeConcurrencyDim}>
+                  <ol className="divide-y divide-hairline border-t border-hairline">
+                    {shownConcurrencyRows.map((row) => (
+                      <LiveConcurrencyRow
+                        key={row.key}
+                        row={row}
+                        locale={locale}
+                        gridCols={concurrencyGridCols}
+                        onJumpToRule={openRulesEditor}
+                      />
+                    ))}
+                  </ol>
+                </div>
+              ) : null}
+
+              {extraPressuredRules.length > 0 ? (
+                <div data-governance-cap-pressure className={shownConcurrencyRows.length > 0 ? 'pt-1' : undefined}>
+                  <ol className="divide-y divide-hairline border-t border-hairline">
+                    {extraPressuredRules.map((rule) => (
+                      <PressuredRuleRow
+                        key={rule.ruleId}
+                        rule={rule}
+                        gridCols={concurrencyGridCols}
+                        onJumpToRule={openRulesEditor}
+                      />
+                    ))}
+                  </ol>
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
+          {showSessionsColumn ? (
+            <div className={splitLiveColumns ? 'min-w-0 space-y-6 lg:border-l lg:border-hairline lg:pl-8' : 'space-y-6'}>
+              {projection.sessionRows.length > 0 ? (
+                <section
+                  data-governance-sessions
+                  data-execution-sessions
+                  aria-labelledby="live-sessions-heading"
+                  className="space-y-2"
                 >
-                  <span className="text-ink">{locale === 'zh' ? '未关联会话的请求' : 'Unattributed request'}</span>
-                  <span className="text-ink-soft" title={model.technical}>{model.display}</span>
-                  {waiter.blockingRules.length > 0 ? (
-                    <button
-                      type="button"
-                      onClick={() => { openRulesEditor(waiter.blockingRules[0]); }}
-                      className="text-[12px] leading-4 text-ink-faint underline-offset-2 hover:text-ink hover:underline"
-                    >
-                      {t('usage.governance.blockedBy', { rules: waiter.blockingRules.join(', ') })}
-                    </button>
+                  <div className="flex items-baseline gap-2">
+                    <h2 id="live-sessions-heading" className="font-sans text-[16px] leading-6 font-bold text-ink">
+                      {locale === 'zh' ? '当前会话' : 'Current sessions'}
+                    </h2>
+                    <span data-governance-sessions-count className="text-[13px] leading-5 text-ink-faint tabular-nums">
+                      {projection.sessionRows.length}
+                    </span>
+                  </div>
+                  <ul className="divide-y divide-hairline border-t border-hairline">
+                    {projection.sessionRows.map((row) => (
+                      <ActiveRuntimeSessionRow
+                        key={row.sessionId}
+                        row={row}
+                        nowMs={nowMs}
+                        onRetryRead={refetchExecutions}
+                        onJumpToRule={openRulesEditor}
+                      />
+                    ))}
+                  </ul>
+                  {requestSnapshot !== undefined && requestSnapshot.queued > requestSnapshot.waiting.length ? (
+                    <p data-governance-waiting-showing className="text-[12px] leading-4 text-ink-faint tabular-nums">
+                      {t('usage.governance.waitingShowing', { shown: requestSnapshot.waiting.length, total: requestSnapshot.queued })}
+                    </p>
                   ) : null}
-                  <span className="ml-auto text-[12px] leading-4 text-ink-faint tabular-nums">
-                    {time.formatDuration(waiter.waitedMs)}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
+                </section>
+              ) : null}
+
+              {projection.unattributedWaiters.length > 0 ? (
+                <section data-governance-unattributed-waiters className="space-y-2">
+                  <h2 className="font-sans text-[16px] leading-6 font-bold text-ink">
+                    {locale === 'zh' ? '未关联会话的请求' : 'Unattributed queued requests'}
+                  </h2>
+                  <ul className="divide-y divide-hairline border-t border-hairline">
+                    {projection.unattributedWaiters.map((waiter) => {
+                      const model = formatRuntimeModelLabel(waiter.modelId, catalogModels, locale === 'zh' ? '模型未提供' : 'Model unavailable');
+                      return (
+                        <li
+                          key={waiter.attemptId}
+                          data-governance-waiter={waiter.attemptId}
+                          className="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-1 py-2 text-[13px] leading-5"
+                        >
+                          <span className="text-ink">{locale === 'zh' ? '未关联会话的请求' : 'Unattributed request'}</span>
+                          <span className="text-ink-soft" title={model.technical}>{model.display}</span>
+                          {waiter.blockingRules.length > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => { openRulesEditor(waiter.blockingRules[0]); }}
+                              className="text-[12px] leading-4 text-ink-faint underline-offset-2 hover:text-ink hover:underline"
+                            >
+                              {t('usage.governance.blockedBy', { rules: waiter.blockingRules.join(', ') })}
+                            </button>
+                          ) : null}
+                          <span className="ml-auto text-[12px] leading-4 text-ink-faint tabular-nums">
+                            {time.formatDuration(waiter.waitedMs)}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
       {isIdle ? (
@@ -770,29 +798,37 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
 function LiveConcurrencyRow({
   row,
   locale,
+  gridCols,
   onJumpToRule,
 }: {
   readonly row: LiveConcurrencyBucketRow;
   readonly locale: 'zh' | 'en';
+  readonly gridCols: string;
   readonly onJumpToRule: (ruleId: string) => void;
 }) {
   const isAtOrOverCap = row.limit !== undefined && (row.queued > 0 || row.active >= row.limit);
   const ratioPct = row.limit !== undefined && row.limit > 0
     ? Math.min(100, Math.round((row.active / row.limit) * 100))
     : 0;
+  const rowTooltip = [
+    row.technical ?? row.display,
+    row.activeAgents !== undefined
+      ? (locale === 'zh' ? `${row.activeAgents} 个智能体运行中` : `${row.activeAgents} active agents`)
+      : undefined,
+  ].filter(Boolean).join(' · ');
 
   return (
     <li
       data-governance-row={row.id}
       data-governance-concurrency-row={row.id}
-      className="flex min-h-10 items-center justify-between gap-3 py-2"
+      className={`grid min-h-10 ${gridCols} items-center gap-x-2 py-2 tabular-nums`}
     >
-      <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="min-w-0 truncate text-[13px] leading-5 text-ink" title={row.technical ?? row.display}>
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="min-w-0 truncate text-[13px] leading-5 text-ink" title={rowTooltip}>
           {row.display}
         </span>
         {row.subDetail !== undefined ? (
-          <span className="hidden shrink-0 text-[12px] leading-4 text-ink-faint tabular-nums min-[440px]:inline">
+          <span className="hidden shrink-0 text-[12px] leading-4 text-ink-faint min-[440px]:inline">
             {row.subDetail}
           </span>
         ) : null}
@@ -808,52 +844,51 @@ function LiveConcurrencyRow({
         ) : null}
       </div>
 
-      <div className="ml-auto flex shrink-0 items-center gap-3 tabular-nums">
-        {row.queued > 0 ? (
-          <span data-governance-row-queued className="text-[12px] leading-4 text-amber-ink">
-            +{row.queued}{locale === 'zh' ? ' 排队' : ' queued'}
-          </span>
-        ) : null}
+      <span data-governance-row-active className="text-right text-[13px] leading-5 font-bold text-ink">
+        {row.active}
+      </span>
 
-        {row.limit !== undefined ? (
-          <>
+      {row.queued > 0 ? (
+        <span data-governance-row-queued className="text-right text-[12px] leading-4 text-amber-ink">
+          +{row.queued}
+        </span>
+      ) : (
+        <span className="text-right text-[12px] leading-4 text-ink-faint">—</span>
+      )}
+
+      {row.limit !== undefined ? (
+        <span className="flex items-center justify-end gap-1.5">
+          <span
+            aria-hidden
+            data-governance-meter
+            className="inline-flex h-1.5 w-7 shrink-0 overflow-hidden rounded-full bg-ink/[0.08]"
+          >
             <span
-              aria-hidden
-              data-governance-meter
-              className="inline-flex h-1.5 w-16 overflow-hidden rounded-full bg-ink/[0.08] sm:w-20"
-            >
-              <span
-                className={`h-full rounded-full transition-[width] duration-200 ${isAtOrOverCap ? 'bg-attention' : 'bg-ink/70'}`}
-                style={{ width: `${ratioPct}%` }}
-              />
-            </span>
-            <span data-governance-row-cap className="min-w-[3.25rem] text-right text-[13px] leading-5 text-ink">
-              <span className="font-bold">{row.active}</span>
-              <span className="text-ink-faint"> / {row.limit}</span>
-            </span>
-          </>
-        ) : (
-          <span data-governance-row-uncapped className="min-w-[3.25rem] text-right text-[13px] leading-5 text-ink">
-            <span className="font-bold">{row.active}</span>
-            <span className="text-ink-soft">
-              {row.dimension === 'executor'
-                ? (locale === 'zh' ? ' 运行中' : ' active')
-                : (locale === 'zh' ? ' 并发' : ' concurrent')}
-            </span>
+              className={`h-full rounded-full transition-[width] duration-200 ${isAtOrOverCap ? 'bg-attention' : 'bg-ink/70'}`}
+              style={{ width: `${ratioPct}%` }}
+            />
           </span>
-        )}
-      </div>
+          <span data-governance-row-cap className="text-right text-[13px] leading-5 text-ink">
+            <span className="font-bold">{row.active}</span>
+            <span className="text-ink-faint"> / {row.limit}</span>
+          </span>
+        </span>
+      ) : (
+        <span data-governance-row-uncapped className="text-right text-[13px] leading-5 text-ink-faint">
+          —
+        </span>
+      )}
     </li>
   );
 }
 
 function PressuredRuleRow({
   rule,
-  locale,
+  gridCols,
   onJumpToRule,
 }: {
   readonly rule: LivePressuredRuleRow;
-  readonly locale: 'zh' | 'en';
+  readonly gridCols: string;
   readonly onJumpToRule: (ruleId: string) => void;
 }) {
   const isAtOrOverCap = rule.queued > 0 || rule.active >= rule.limit;
@@ -862,9 +897,9 @@ function PressuredRuleRow({
   return (
     <li
       data-governance-pressure-rule={rule.ruleId}
-      className="flex min-h-10 items-center justify-between gap-3 py-2"
+      className={`grid min-h-10 ${gridCols} items-center gap-x-2 py-2 tabular-nums`}
     >
-      <div className="flex min-w-0 flex-1 items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <button
           type="button"
           onClick={() => { onJumpToRule(rule.ruleId); }}
@@ -872,37 +907,50 @@ function PressuredRuleRow({
         >
           {rule.ruleId}
         </button>
-        <span className="min-w-0 truncate text-[12px] leading-4 text-ink-faint">
+        <span className="min-w-0 truncate text-[12px] leading-4 text-ink-faint" title={rule.targetSummary}>
           {rule.targetSummary}
         </span>
       </div>
 
-      <div className="ml-auto flex shrink-0 items-center gap-3 tabular-nums">
-        {rule.queued > 0 ? (
-          <span className="text-[12px] leading-4 text-amber-ink">
-            +{rule.queued}{locale === 'zh' ? ' 排队' : ' queued'}
-          </span>
-        ) : null}
+      <span className="text-right text-[13px] leading-5 font-bold text-ink">
+        {rule.active}
+      </span>
+
+      {rule.queued > 0 ? (
+        <span className="text-right text-[12px] leading-4 text-amber-ink">
+          +{rule.queued}
+        </span>
+      ) : (
+        <span className="text-right text-[12px] leading-4 text-ink-faint">—</span>
+      )}
+
+      <span className="flex items-center justify-end gap-1.5">
         <span
           aria-hidden
           data-governance-meter
-          className="inline-flex h-1.5 w-16 overflow-hidden rounded-full bg-ink/[0.08] sm:w-20"
+          className="inline-flex h-1.5 w-7 shrink-0 overflow-hidden rounded-full bg-ink/[0.08]"
         >
           <span
             className={`h-full rounded-full transition-[width] duration-200 ${isAtOrOverCap ? 'bg-attention' : 'bg-ink/70'}`}
             style={{ width: `${ratioPct}%` }}
           />
         </span>
-        <span className="min-w-[3.25rem] text-right text-[13px] leading-5 text-ink">
+        <span className="text-right text-[13px] leading-5 text-ink">
           <span className="font-bold">{rule.active}</span>
           <span className="text-ink-faint"> / {rule.limit}</span>
         </span>
-      </div>
+      </span>
     </li>
   );
 }
 
-function PendingRuntimeRow({ row }: { readonly row: LivePendingRow }) {
+function PendingRuntimeRow({
+  row,
+  onRetryRead,
+}: {
+  readonly row: LivePendingRow;
+  readonly onRetryRead: () => void;
+}) {
   const { t, locale } = useI18n();
   const navigate = useNavigate();
   const reasonText = t(REASON_LABEL_KEY[row.reason]);
@@ -932,15 +980,24 @@ function PendingRuntimeRow({ row }: { readonly row: LivePendingRow }) {
           </span>
         ) : null}
       </span>
-      <button
-        type="button"
-        data-governance-pending-action={row.sessionId}
-        onClick={() => { void navigate(row.href); }}
-        className="ml-auto inline-flex min-h-8 shrink-0 items-center gap-0.5 rounded-md px-2 text-[13px] leading-5 font-normal text-accent-ink transition-colors hover:bg-attention-soft/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-      >
-        <span>{locale === 'zh' ? '处理' : 'Handle'}</span>
-        <span aria-hidden>›</span>
-      </button>
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        {row.roomId === undefined && row.executionState !== undefined ? (
+          <SessionExecutionActions
+            sessionId={row.sessionId}
+            state={row.executionState}
+            onRetryRead={onRetryRead}
+          />
+        ) : null}
+        <button
+          type="button"
+          data-governance-pending-action={row.sessionId}
+          onClick={() => { void navigate(row.href); }}
+          className="inline-flex min-h-8 shrink-0 items-center gap-0.5 rounded-md px-2 text-[13px] leading-5 font-normal text-accent-ink transition-colors hover:bg-attention-soft/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+        >
+          <span>{locale === 'zh' ? '处理' : 'Handle'}</span>
+          <span aria-hidden>›</span>
+        </button>
+      </div>
     </li>
   );
 }
@@ -976,17 +1033,16 @@ function ActiveRuntimeSessionRow({
       data-execution-session={row.sessionId}
       data-execution-paused={row.phaseKind === 'paused' || row.phaseKind === 'failed' ? row.sessionId : undefined}
       data-governance-waiter={row.waiterAttemptIds[0]}
-      className="py-2.5"
+      className="py-2"
     >
-      <div className="flex flex-col gap-1 min-[720px]:grid min-[720px]:min-h-8 min-[720px]:grid-cols-[minmax(12rem,1.15fr)_minmax(10rem,1fr)_max-content_auto] min-[720px]:items-center min-[720px]:gap-x-3">
-        {/* Line 1 on narrow / Col 1 on desktop: session title (+ elapsed on narrow) */}
-        <div className="flex min-w-0 items-center justify-between gap-2">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5">
+        <div className="min-w-0">
           <button
             type="button"
             data-execution-session-open
             title={`${name}\n${row.sessionId}`}
             onClick={() => { void navigate(row.href); }}
-            className="group flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+            className="group flex min-h-7 w-full min-w-0 items-center gap-2 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
           >
             <span className={`min-w-0 truncate text-[13px] leading-5 font-normal underline-offset-2 group-hover:underline ${row.label.titled ? 'text-ink' : 'text-ink-soft'}`}>
               {row.label.text}
@@ -997,100 +1053,90 @@ function ActiveRuntimeSessionRow({
               </span>
             )}
           </button>
+
+          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px] leading-4">
+            {showConcurrencyLead ? (
+              <span
+                data-governance-session-concurrency={row.activeRequests}
+                data-execution-phase={row.executionState?.phase ?? row.phaseKind}
+                className="shrink-0 text-ink tabular-nums"
+              >
+                {locale === 'zh' ? `${row.activeRequests} 并发` : `${row.activeRequests} concurrent`}
+              </span>
+            ) : (
+              <>
+                <span data-execution-phase={row.executionState?.phase ?? row.phaseKind} className={`shrink-0 ${phaseTone}`}>
+                  {row.phaseKind === 'paused' ? t('usage.execution.pausedHint') : row.phaseLabel}
+                </span>
+                {row.activeRequests > 0 ? (
+                  <>
+                    <span aria-hidden className="text-ink-faint">·</span>
+                    <span data-governance-session-concurrency={row.activeRequests} className="shrink-0 text-ink tabular-nums">
+                      {locale === 'zh' ? `${row.activeRequests} 并发` : `${row.activeRequests} concurrent`}
+                    </span>
+                  </>
+                ) : null}
+              </>
+            )}
+            {showConcurrencyLead && row.queuedRequests > 0 ? (
+              <>
+                <span aria-hidden className="text-ink-faint">·</span>
+                <span className="shrink-0 text-amber-ink tabular-nums">
+                  +{row.queuedRequests}{locale === 'zh' ? ' 排队' : ' queued'}
+                </span>
+              </>
+            ) : null}
+            {row.modelDisplay !== undefined ? (
+              <>
+                <span aria-hidden className="text-ink-faint">·</span>
+                <span className="min-w-0 truncate text-ink-soft" title={row.modelTechnical ?? row.modelDisplay}>
+                  {row.modelDisplay}
+                </span>
+              </>
+            ) : null}
+            {row.agents.length > 1 ? (
+              <>
+                <span aria-hidden className="text-ink-faint">·</span>
+                <button
+                  type="button"
+                  data-governance-extra-agents={row.sessionId}
+                  aria-expanded={agentsExpanded}
+                  onClick={() => { setAgentsExpanded((open) => !open); }}
+                  className="shrink-0 rounded text-ink-faint tabular-nums underline-offset-2 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+                >
+                  {locale === 'zh' ? `${row.agents.length} 个智能体` : `${row.agents.length} agents`}
+                </button>
+              </>
+            ) : row.agents.length === 1 && row.activeRequests > 0 ? (
+              <>
+                <span aria-hidden className="text-ink-faint">·</span>
+                <span className="shrink-0 text-ink-faint tabular-nums">
+                  {locale === 'zh' ? '1 个智能体' : '1 agent'}
+                </span>
+              </>
+            ) : null}
+            {row.blockingRules.length > 0 ? (
+              <>
+                <span aria-hidden className="text-ink-faint">·</span>
+                <button
+                  type="button"
+                  onClick={() => { onJumpToRule(row.blockingRules[0]!); }}
+                  className="min-w-0 truncate rounded font-mono text-ink-faint underline-offset-2 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+                >
+                  {t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}
+                </button>
+              </>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center justify-end gap-2">
           <span
             aria-label={elapsed === undefined ? (locale === 'zh' ? '时长未知' : 'Duration unknown') : undefined}
-            className="shrink-0 text-[12px] leading-4 text-ink-faint tabular-nums min-[720px]:hidden"
+            className="shrink-0 text-right text-[12px] leading-4 text-ink-faint tabular-nums"
           >
             {elapsed ?? '—'}
           </span>
-        </div>
-
-        {/* Col 2: live concurrency / phase · catalog model display · agent count · blocking rules */}
-        <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[13px] leading-5">
-          {showConcurrencyLead ? (
-            <span
-              data-governance-session-concurrency={row.activeRequests}
-              data-execution-phase={row.executionState?.phase ?? row.phaseKind}
-              className="shrink-0 text-ink tabular-nums"
-            >
-              {locale === 'zh' ? `${row.activeRequests} 并发` : `${row.activeRequests} concurrent`}
-            </span>
-          ) : (
-            <>
-              <span data-execution-phase={row.executionState?.phase ?? row.phaseKind} className={`shrink-0 ${phaseTone}`}>
-                {row.phaseKind === 'paused' ? t('usage.execution.pausedHint') : row.phaseLabel}
-              </span>
-              {row.activeRequests > 0 ? (
-                <>
-                  <span aria-hidden className="text-ink-faint">·</span>
-                  <span data-governance-session-concurrency={row.activeRequests} className="shrink-0 text-ink tabular-nums">
-                    {locale === 'zh' ? `${row.activeRequests} 并发` : `${row.activeRequests} concurrent`}
-                  </span>
-                </>
-              ) : null}
-            </>
-          )}
-          {showConcurrencyLead && row.queuedRequests > 0 ? (
-            <>
-              <span aria-hidden className="text-ink-faint">·</span>
-              <span className="shrink-0 text-[12px] leading-4 text-amber-ink tabular-nums">
-                +{row.queuedRequests}{locale === 'zh' ? ' 排队' : ' queued'}
-              </span>
-            </>
-          ) : null}
-          {row.modelDisplay !== undefined ? (
-            <>
-              <span aria-hidden className="text-ink-faint">·</span>
-              <span className="min-w-0 truncate text-ink-soft" title={row.modelTechnical ?? row.modelDisplay}>
-                {row.modelDisplay}
-              </span>
-            </>
-          ) : null}
-          {row.agents.length > 1 ? (
-            <>
-              <span aria-hidden className="text-ink-faint">·</span>
-              <button
-                type="button"
-                data-governance-extra-agents={row.sessionId}
-                aria-expanded={agentsExpanded}
-                onClick={() => { setAgentsExpanded((open) => !open); }}
-                className="shrink-0 rounded text-[12px] leading-4 text-ink-faint tabular-nums underline-offset-2 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
-              >
-                {locale === 'zh' ? `${row.agents.length} 个智能体` : `${row.agents.length} agents`}
-              </button>
-            </>
-          ) : row.agents.length === 1 && row.activeRequests > 0 ? (
-            <>
-              <span aria-hidden className="text-ink-faint">·</span>
-              <span className="shrink-0 text-[12px] leading-4 text-ink-faint tabular-nums">
-                {locale === 'zh' ? '1 个智能体' : '1 agent'}
-              </span>
-            </>
-          ) : null}
-          {row.blockingRules.length > 0 ? (
-            <>
-              <span aria-hidden className="text-ink-faint">·</span>
-              <button
-                type="button"
-                onClick={() => { onJumpToRule(row.blockingRules[0]!); }}
-                className="min-w-0 truncate rounded font-mono text-[12px] leading-4 text-ink-faint underline-offset-2 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
-              >
-                {t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}
-              </button>
-            </>
-          ) : null}
-        </div>
-
-        {/* Col 3 (desktop): tabular elapsed */}
-        <span
-          aria-label={elapsed === undefined ? (locale === 'zh' ? '时长未知' : 'Duration unknown') : undefined}
-          className="hidden shrink-0 text-right text-[12px] leading-4 text-ink-faint tabular-nums min-[720px]:inline"
-        >
-          {elapsed ?? '—'}
-        </span>
-
-        {/* Col 4: per-session execution controls + desktop open arrow */}
-        <div className={`shrink-0 items-center justify-end gap-1 ${row.executionState !== undefined ? 'flex' : 'hidden min-[720px]:flex'}`}>
           {row.executionState !== undefined ? (
             <SessionExecutionActions
               sessionId={row.sessionId}

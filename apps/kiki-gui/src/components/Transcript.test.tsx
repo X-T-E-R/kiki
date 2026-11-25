@@ -1350,18 +1350,21 @@ describe('timeline annotations', () => {
     expect(mark.getAttribute('aria-haspopup')).toBe('dialog');
 
     await act(async () => { click(mark); });
-    const panel = document.body.querySelector<HTMLElement>('[data-annotation-panel]')!;
-    const input = panel.querySelector<HTMLInputElement>('[data-annotation-panel-input]')!;
+    let panel = document.body.querySelector<HTMLElement>('[data-annotation-panel]')!;
+    const input = panel.querySelector<HTMLTextAreaElement>('[data-annotation-panel-input]')!;
     expect(panel.textContent).toContain(quote);
     expect(input.value).toBe(comment);
 
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'edited');
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(input, 'edited');
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await act(async () => { click(panel.querySelector('[data-annotation-panel-save]')!); });
     expect(onSave).toHaveBeenCalledWith('draft-note-1', 'edited');
+    expect(document.body.querySelector('[data-annotation-panel]')).toBeNull();
 
+    await act(async () => { click(mark); });
+    panel = document.body.querySelector<HTMLElement>('[data-annotation-panel]')!;
     await act(async () => { click(panel.querySelector('[data-annotation-panel-remove]')!); });
     expect(onRemove).toHaveBeenCalledWith('draft-note-1');
     expect(document.body.querySelector('[data-annotation-panel]')).toBeNull();
@@ -1485,7 +1488,7 @@ describe('timeline annotations', () => {
     expect(mark.closest('[data-source-block-id]')?.getAttribute('data-source-block-id')).toBe('older-source');
     expect(mark.previousSibling?.textContent).toBe('same ');
     await act(async () => { click(mark); });
-    expect(document.body.querySelector<HTMLInputElement>('[data-annotation-panel-input]')?.value).toBe('second occurrence');
+    expect(document.body.querySelector<HTMLTextAreaElement>('[data-annotation-panel-input]')?.value).toBe('second occurrence');
   });
 
   it('renders multiple quote chips in selection order alongside annotation bubbles without anchor leaks', async () => {
@@ -3101,7 +3104,11 @@ describe('message row actions', () => {
     ], rowActions);
     const row = container.querySelector('[data-block-id="user-p-now"]')!;
     expect(row).not.toBeNull();
-    expect(row.querySelector(`[data-steer-status="${phase}"]`)?.className).toContain('steer-bubble-pending');
+    const pendingBubble = row.querySelector(`[data-steer-status="${phase}"]`);
+    expect(pendingBubble?.className).toContain('steer-bubble-pending');
+    expect(pendingBubble?.className).toContain('border-dashed');
+    expect(pendingBubble?.className).not.toContain('!border-transparent');
+    expect(pendingBubble?.className).not.toContain('bg-bubble-user');
     expect(row.querySelector('[data-steer-line]')?.getAttribute('data-steer-line')).toBe(phase);
     const statusLine = row.querySelector('[data-steer-line]')?.textContent;
     expect(statusLine).toContain(phase === 'waiting' ? 'Accepted' : 'Accepting');
@@ -8277,7 +8284,7 @@ describe('background task notification folding (TUI-01)', () => {
     expect(container.textContent).toContain('break the run here');
   });
 
-  it('renders failed or timed-out task notifications as error callouts and leaves successes quiet', async () => {
+  it('renders failed or timed-out task notifications as quiet 1-line ActivityRows (never TimelineErrorCallout) with expandable copyable output', async () => {
     const blocks = agentTranscriptToBlocks({
       agent_id: 'main',
       items: [
@@ -8289,11 +8296,12 @@ describe('background task notification folding (TUI-01)', () => {
     const container = await renderTranscript(blocks);
     const rows = [...container.querySelectorAll('[data-system="task"]')];
     expect(rows).toHaveLength(3);
-    expect(rows[0]?.hasAttribute('data-timeline-error-callout')).toBe(true);
+    expect(container.querySelector('[data-timeline-error-callout]')).toBeNull();
+    expect(rows[0]?.querySelector('[data-activity-toggle]')?.className).toContain('bg-danger/[0.05]');
+    expect(rows[1]?.querySelector('[data-activity-toggle]')?.className).toContain('bg-danger/[0.05]');
+    expect(rows[2]?.querySelector('[data-activity-toggle]')?.className).not.toContain('bg-danger/[0.05]');
+    await act(async () => { click(rows[0]!.querySelector('[data-activity-toggle]')!); });
     expect(rows[0]?.querySelector('[data-copy-state]')).not.toBeNull();
-    expect(rows[1]?.hasAttribute('data-timeline-error-callout')).toBe(true);
-    expect(rows[1]?.querySelector('[data-copy-state]')).not.toBeNull();
-    expect(rows[2]?.hasAttribute('data-timeline-error-callout')).toBe(false);
   });
 
   it('names each notification by its headline so a settled row is never a bare "Task"', async () => {
@@ -8416,12 +8424,20 @@ describe('background task notification folding (TUI-01)', () => {
     expect(dismissedRows).toHaveLength(1);
     expect(dismissedRows[0]?.textContent).toContain('Enable verbose telemetry?');
 
-    // 3) Real Bash failure shows description & exit code outside fold; unproven notification shows neutral "Task notification"
+    // 3) Settled routine Bash failure folds into HistoryFold with failed count; opening the fold shows quiet 1-line ActivityRow
+    const settledFolds = [...container.querySelectorAll('[data-history-fold]')];
+    expect(settledFolds.some((fold) => fold.textContent?.includes('1 failed'))).toBe(true);
+    for (const fold of settledFolds) {
+      const toggle = fold.querySelector<HTMLElement>('[data-activity-toggle]');
+      if (toggle?.getAttribute('aria-expanded') === 'false') {
+        await act(async () => { click(toggle); });
+      }
+    }
     const taskRows = [...container.querySelectorAll('[data-system="task"]')];
     const bashFailRow = taskRows.find((row) => row.textContent?.includes('Background command failed'));
     expect(bashFailRow).toBeDefined();
     expect(bashFailRow?.textContent).toContain('Build production bundle · exit 2');
-    expect(bashFailRow?.closest('[data-history-fold]')).toBeNull();
+    expect(bashFailRow?.closest('[data-history-fold]')).not.toBeNull();
     const unprovenRow = taskRows.find((row) => row.textContent?.includes('Task notification'));
     expect(unprovenRow).toBeDefined();
 
@@ -8680,10 +8696,11 @@ describe('terminal pile-up folding (timeline tail)', () => {
       },
     );
     expect(withCommit.querySelectorAll('[data-notice-tone="danger"]')).toHaveLength(0);
-    expect(withCommit.querySelector('[data-notice-superseded="true"]')).not.toBeNull();
-    expect(withCommit.querySelector('[data-error-superseded="true"]')).not.toBeNull();
-    expect(withCommit.querySelector('[data-error-superseded="true"] [data-copy-state]')).not.toBeNull();
-    expect(withCommit.querySelector('[data-error-expand]')).not.toBeNull();
+    const quietNotice = withCommit.querySelector<HTMLElement>('[data-notice-superseded="true"]');
+    expect(quietNotice).not.toBeNull();
+    expect(quietNotice?.hasAttribute('data-activity-row')).toBe(true);
+    expect(withCommit.querySelector('[data-timeline-error-callout]')).toBeNull();
+    expect(quietNotice?.querySelector('[data-copy-state]')).not.toBeNull();
   });
 
   it('keeps a lone aborted divider as a single line', async () => {
@@ -10460,10 +10477,11 @@ describe('folding the live turn and what the agent looked at (FOLDING.md)', () =
     expect(container.querySelector('[data-block-id="s3"]')?.closest('[data-history-fold]')).toBeNull();
   });
 
-  it('marks a fold holding a failure in the outcome column and keeps a clean fold silent', async () => {
+  it('reports a fold holding a failure in the summary text without painting a trailing failed outcome glyph', async () => {
     const failed: Block = { ...step('s2'), status: 'error', isError: true } as Block;
     const bad = await renderTranscript([user, step('s1'), failed, step('s3')], undefined, { busy: true });
-    expect(bad.querySelector('[data-history-fold] [data-outcome="failed"]')).not.toBeNull();
+    expect(bad.querySelector('[data-history-fold]')?.textContent).toContain('1 failed');
+    expect(bad.querySelector('[data-history-fold] [data-outcome]')).toBeNull();
     const clean = await renderTranscript([user, step('s1'), step('s2'), step('s3')], undefined, { busy: true });
     expect(clean.querySelector('[data-history-fold] [data-outcome]')).toBeNull();
   });

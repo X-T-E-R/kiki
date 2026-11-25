@@ -53,6 +53,7 @@ export function PromptOutcomeLine({
         onClick: onRetry,
         disabled: retryDisabled || retryLoading,
         busy: retryLoading,
+        keepWhenSuperseded: !outcome.delivered,
         title: t(retryLoading ? 'transcript.content.loading' : 'transcript.promptOutcome.retryTitle'),
         dataAttr: 'data-prompt-outcome-retry',
       });

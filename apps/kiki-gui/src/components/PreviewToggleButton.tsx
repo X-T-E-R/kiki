@@ -94,25 +94,10 @@ export function WorkspacePanelsControl({
       preview.activePluginPanelKey === `${slot.pluginId}:${panelIdHint}`
     );
   });
-  const labelExpandAt = inlineSlots.length >= 4 ? '880' : inlineSlots.length === 3 ? '800' : '680';
-  const btnExpandClass =
-    labelExpandAt === '880'
-      ? '@[880px]/center:w-auto @[880px]/center:px-2'
-      : labelExpandAt === '800'
-        ? '@[800px]/center:w-auto @[800px]/center:px-2'
-        : '@[680px]/center:w-auto @[680px]/center:px-2';
-  const textExpandClass =
-    labelExpandAt === '880'
-      ? '@[880px]/center:inline'
-      : labelExpandAt === '800'
-        ? '@[800px]/center:inline'
-        : '@[680px]/center:inline';
-  const dotExpandClass =
-    labelExpandAt === '880'
-      ? '@[880px]/center:static @[880px]/center:ring-0'
-      : labelExpandAt === '800'
-        ? '@[800px]/center:static @[800px]/center:ring-0'
-        : '@[680px]/center:static @[680px]/center:ring-0';
+  const expandInlineLabels = inlineSlots.length <= 2;
+  const btnExpandClass = expandInlineLabels ? '@[680px]/center:w-auto @[680px]/center:px-2' : '';
+  const textExpandClass = expandInlineLabels ? '@[680px]/center:inline' : '';
+  const dotExpandClass = expandInlineLabels ? '@[680px]/center:static @[680px]/center:ring-0' : '';
   const panelSearchNeedles = panelQuery.trim().toLowerCase().split(/\s+/).filter((part) => part !== '');
   const filteringPanels = panelSearchNeedles.length > 0;
   const popoverSlots = filteringPanels

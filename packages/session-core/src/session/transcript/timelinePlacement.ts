@@ -81,9 +81,6 @@ export function classifyNoticePlacement(
 
   if (block.taskRef !== undefined) {
     const state = block.taskRef.state?.toLowerCase();
-    if (block.tone === 'danger' || (state !== undefined && FAILED_TASKREF_STATES.has(state))) {
-      return 'error';
-    }
     if (state !== undefined && ACTIVE_TASKREF_STATES.has(state)) {
       return 'visible-activity';
     }
@@ -97,17 +94,26 @@ export function classifyNoticePlacement(
     if (block.compactionPhase === 'cancelled') {
       return block.compactionFailure !== undefined ? 'error' : 'foldable';
     }
+    if (block.compactionPhase === 'queued' || block.compactionPhase === 'running') {
+      return 'visible-activity';
+    }
     return 'epoch';
   }
 
   if (
     block.i18n?.key === 'notice.compacting' ||
+    block.i18n?.key === 'transcript.marker.compactionQueued' ||
+    block.i18n?.key === 'transcript.marker.compactionRunning'
+  ) {
+    return 'visible-activity';
+  }
+
+  if (
     block.i18n?.key === 'transcript.marker.compaction' ||
     block.i18n?.key === 'transcript.marker.compactionSummarize' ||
     block.i18n?.key === 'transcript.marker.compactionFresh' ||
     block.i18n?.key === 'transcript.marker.compactionFallback' ||
-    block.i18n?.key === 'transcript.marker.compactionQueued' ||
-    block.i18n?.key === 'transcript.marker.compactionRunning'
+    block.i18n?.key === 'transcript.marker.compactionRescue'
   ) {
     return 'epoch';
   }
@@ -308,6 +314,83 @@ export function hasSubsequentCompactionResolution(
     if (block.compactionPhase === 'completed') return true;
   }
   return false;
+}
+
+export interface SupersededIncidentState {
+  readonly isTurnSuperseded: (turnId: string | undefined) => boolean;
+  readonly isCompactionSuperseded: (blockId: string) => boolean;
+  readonly isModelSwitchSuperseded: (blockId: string) => boolean;
+}
+
+export function buildSupersededIncidentState(
+  blocks: readonly Block[],
+  turnTerminals: Readonly<Record<string, TurnTailInfo>> | undefined,
+): SupersededIncidentState {
+  const supersededTurns = new Set<string>();
+  if (turnTerminals !== undefined) {
+    const ordered = collectOrderedTurnIds(blocks, turnTerminals);
+    const completedSet = new Set<string>();
+    let maxCompletedOrdinal: number | undefined;
+    for (const [rawId, info] of Object.entries(turnTerminals)) {
+      if (info.state !== 'completed') continue;
+      const key = canonicalTurnKey(rawId);
+      if (key === undefined) continue;
+      completedSet.add(key);
+      const ord = numericTurnOrdinal(key);
+      if (ord !== undefined && (maxCompletedOrdinal === undefined || ord > maxCompletedOrdinal)) {
+        maxCompletedOrdinal = ord;
+      }
+    }
+    if (completedSet.size > 0) {
+      let seenLaterCompletedInOrder = false;
+      for (let i = ordered.length - 1; i >= 0; i -= 1) {
+        const key = ordered[i]!;
+        const ord = numericTurnOrdinal(key);
+        const supersededByOrdinal =
+          ord !== undefined && maxCompletedOrdinal !== undefined && maxCompletedOrdinal > ord;
+        const supersededByOrder =
+          (ord === undefined || maxCompletedOrdinal === undefined) && seenLaterCompletedInOrder;
+        if (supersededByOrdinal || supersededByOrder) {
+          supersededTurns.add(key);
+        }
+        if (completedSet.has(key)) {
+          seenLaterCompletedInOrder = true;
+        }
+      }
+    }
+  }
+
+  const supersededCompactionIds = new Set<string>();
+  const supersededModelSwitchIds = new Set<string>();
+  let seenCompactionCompleted = false;
+  let seenModelSwitchCompleted = false;
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    const block = blocks[i];
+    if (block?.kind !== 'notice') continue;
+    if (seenCompactionCompleted && (block.compactionPhase === 'failed' || block.compactionPhase === 'interrupted' || block.compactionFailure !== undefined)) {
+      supersededCompactionIds.add(block.id);
+    }
+    if (block.compactionPhase === 'completed') {
+      seenCompactionCompleted = true;
+    }
+    if (seenModelSwitchCompleted && block.modelSwitch?.state === 'failed') {
+      supersededModelSwitchIds.add(block.id);
+    }
+    if (block.modelSwitch?.state === 'completed') {
+      seenModelSwitchCompleted = true;
+    }
+  }
+
+  return {
+    isTurnSuperseded: (turnId) => {
+      const key = canonicalTurnKey(turnId);
+      if (key === undefined) return false;
+      if (supersededTurns.has(key)) return true;
+      return hasConfirmedSubsequentSuccess(key, blocks, turnTerminals);
+    },
+    isCompactionSuperseded: (blockId) => supersededCompactionIds.has(blockId),
+    isModelSwitchSuperseded: (blockId) => supersededModelSwitchIds.has(blockId),
+  };
 }
 
 export function hasSubsequentModelSwitchResolution(

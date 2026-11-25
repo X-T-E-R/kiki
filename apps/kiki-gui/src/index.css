@@ -945,6 +945,10 @@ body[data-pane-resizing='true'] [data-terminal-panel] {
   background-color: color-mix(in srgb, var(--color-ink) 4%, transparent);
   box-shadow: none;
 }
+[data-settings-nav-tree] .row-interactive[aria-current] {
+  background-color: color-mix(in srgb, var(--color-ink) 6%, transparent);
+  box-shadow: none;
+}
 .row-interactive:focus-visible {
   outline: var(--focus-ring-width) solid var(--color-selected-ink);
   outline-offset: calc(-1 * var(--focus-ring-width));
@@ -1932,8 +1936,8 @@ input[data-add-search]:focus-visible {
 
 /* ---- assistant markdown & conversation typography ---- */
 .kiki-md {
-  font-size: var(--kiki-prose-font-size, 16px);
-  line-height: 1.75;
+  font-size: var(--kiki-prose-font-size, 14.5px);
+  line-height: 1.65;
   overflow-wrap: break-word;
 }
 /* Default prose uses the same sans CJK family as prompts and chrome; opt-in
@@ -1948,9 +1952,16 @@ input[data-add-search]:focus-visible {
 }
 .kiki-prose,
 .kiki-user-text {
-  font-size: var(--kiki-prose-font-size, 16px);
-  line-height: 1.75;
+  font-size: var(--kiki-prose-font-size, 14.5px);
+  line-height: 1.65;
   letter-spacing: normal;
+}
+@media (pointer: coarse) {
+  .kiki-md,
+  .kiki-prose,
+  .kiki-user-text {
+    font-size: var(--kiki-prose-font-size, 15.5px);
+  }
 }
 .kiki-prose {
   font-family: var(--kiki-prose-font);
@@ -1969,9 +1980,6 @@ input[data-add-search]:focus-visible {
 }
 .kiki-prose :is(button, input, kbd, [data-row-actions]) {
   font-family: var(--font-sans);
-}
-:root:not([data-kiki-chat-width='wide']):not([data-kiki-chat-width='full']) .kiki-prose :is(.kiki-md > :is(p, ul, ol, blockquote), .kiki-md > div > :is(p, ul, ol, blockquote), .kiki-prose-tail) {
-  max-width: min(100%, 38ic);
 }
 .kiki-md:not(.kiki-md--edges) > *:first-child {
   margin-top: 0;
@@ -2045,7 +2053,7 @@ input[data-add-search]:focus-visible {
   padding: 0;
   font-family: var(--font-mono);
   font-weight: 400;
-  font-size: var(--kiki-code-font-size, 13px);
+  font-size: var(--kiki-code-font-size, 12.5px);
   line-height: 1.55;
   font-feature-settings: 'liga' 0, 'calt' 0;
 }
@@ -2135,14 +2143,14 @@ input[data-add-search]:focus-visible {
 .kiki-md tr:last-child td {
   border-bottom: none;
 }
-.kiki-md :is(b, strong) {
+.kiki-md :is(b, strong, [data-streamdown='strong']) {
   font-weight: 700;
 }
-.kiki-md :is(h1, h2, h3, h4, h5, h6) :is(b, strong) {
+.kiki-md :is(h1, h2, h3, h4, h5, h6) :is(b, strong, [data-streamdown='strong']) {
   font-weight: 700;
 }
-.kiki-md :is(b, strong) > code {
-  font-weight: 400;
+.kiki-md :is(b, strong, [data-streamdown='strong']) code {
+  font-weight: inherit;
 }
 
 /* ---- code fence chrome (KikiCodeBlock wraps Streamdown's CodeBlock) ----
@@ -2190,7 +2198,7 @@ input[data-add-search]:focus-visible {
   padding: 0;
   font-family: var(--font-mono);
   font-weight: 400;
-  font-size: var(--kiki-code-font-size, 13px);
+  font-size: var(--kiki-code-font-size, 12.5px);
   line-height: 1.55;
   font-feature-settings: 'liga' 0, 'calt' 0;
 }

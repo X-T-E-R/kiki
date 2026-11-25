@@ -965,6 +965,7 @@ class FixtureServer {
     this.catalogPrices = structuredClone(data.catalogPrices ?? {});
     this.priceOverrides = structuredClone(data.priceOverrides ?? {});
     this.plugins = structuredClone(data.plugins ?? []);
+    this.pluginGuiSlots = structuredClone(data.pluginGuiSlots ?? []);
     this.autoCompactOverrides = new Map();
     resetContextStrategy(this);
     resetNotifications(this);
@@ -4500,6 +4501,11 @@ class FixtureServer {
     // proxy re-enters this route with no request object of its own.
     if (handlePluginUsage(this, res, path, req?.method ?? method, body, query)) return;
     if (path.startsWith('/plugins') && handlePlugins(this, res, path, method, body)) return;
+    if (path === '/plugins/gui-slots' && method === 'GET') {
+      return this.envelope(res, {
+        slots: structuredClone(this.pluginGuiSlots ?? []),
+      });
+    }
     if (path === '/plugins/marketplace') {
       const source = this.config.plugins?.marketplaceUrl;
       // No address configured is the normal case, not a broken one: a real

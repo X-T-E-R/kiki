@@ -34,7 +34,7 @@ import { PersonaAvatar } from '../persona/PersonaAvatar';
 import { age, decidable, pendingId, pendingSubject, useNow, type PendingItem } from './model';
 import { FOCUS_RING, StateMark, useDecide } from './shell';
 
-const SECTION_HEAD = 'text-[12px] leading-4 font-normal';
+const SECTION_HEAD = 'text-[12px] leading-4 font-bold';
 const APPROVE = 'h-7 shrink-0 rounded-md px-2 text-[12px] leading-4 font-normal text-attention ring-1 ring-attention/45 ring-inset transition-colors hover:bg-attention-soft';
 const REJECT = 'h-7 shrink-0 rounded-md px-1.5 text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink';
 
@@ -279,7 +279,7 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
           data-rail-profile-name
           title={profile?.description ?? t('inspector.details')}
           onClick={() => { setDrawer({ kind: 'profile', identity }); }}
-          className={`-mx-0.5 min-w-0 truncate rounded px-0.5 text-left font-sans text-[16px] leading-6 font-normal text-ink transition-colors hover:text-ink-soft ${FOCUS_RING}`}
+          className={`-mx-0.5 min-w-0 truncate rounded px-0.5 text-left font-sans text-[15px] leading-6 font-bold text-ink transition-colors hover:text-ink-soft ${FOCUS_RING}`}
         >
           {displayProfileName}
         </button>

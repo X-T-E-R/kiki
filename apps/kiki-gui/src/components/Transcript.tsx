@@ -66,6 +66,7 @@ import {
   agentRefsOfBlock,
   assistantMessageIdFromBlock,
   buildNoticePlacementContext,
+  buildSupersededIncidentState,
   classifyNoticePlacement,
   foldHistory,
   groupBlocks,
@@ -150,6 +151,7 @@ import {
 } from './ActivityHistory';
 import {
   ActivityRow,
+  ACTIVITY_BODY_INDENT,
   ACTIVITY_GUTTER,
   TimelineDivider,
 } from './timeline/ActivityRow';
@@ -717,78 +719,75 @@ const UserMessage = memo(function UserMessage({
       title={time.absoluteTime(block.createdAt)}
       onClick={tapActions.onClick}
     >
-      {/* Meta line: the sender shows only when it is not the user (agent or
-          peer-thread messages); the time stays quiet until hover/focus so the
-          bubble reads as the user's own voice. */}
-      <span className="mb-1 flex min-h-[18px] max-w-full items-baseline gap-1.5 pr-1">
-        {block.agentMessage === undefined && block.peerThread !== undefined ? <PeerThreadSource source={block.peerThread} /> : null}
-        {senderLabel === undefined ? null : senderOpen === undefined ? (
-          <span
-            {...senderAttrs}
-            className="text-[12px] font-normal text-ink-soft"
-            title={senderDetails}
-          >
-            {senderLabel}
+      {/* Meta line mounts in-flow only when sender or peer-thread metadata is
+          present; ordinary human bubbles float their hover timestamp with zero
+          reserved vertical height so consecutive turns stay compact. */}
+      {senderLabel !== undefined || (block.agentMessage === undefined && block.peerThread !== undefined) ? (
+        <span className="mb-1 flex min-h-[18px] max-w-full items-baseline gap-1.5 pr-1">
+          {block.agentMessage === undefined && block.peerThread !== undefined ? <PeerThreadSource source={block.peerThread} /> : null}
+          {senderLabel === undefined ? null : senderOpen === undefined ? (
+            <span
+              {...senderAttrs}
+              className="text-[12px] font-normal text-ink-soft"
+              title={senderDetails}
+            >
+              {senderLabel}
+            </span>
+          ) : (
+            <button
+              type="button"
+              {...senderAttrs}
+              onClick={senderOpen}
+              title={senderDetails}
+              className="-mx-1 cursor-pointer rounded-md px-1 text-[12px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            >
+              {senderLabel}
+            </button>
+          )}
+          {senderMeta === '' ? null : (
+            <span
+              data-agent-message-sender-meta={block.agentMessage?.senderAgentId}
+              className="text-[12px] font-normal text-ink-faint"
+              title={senderDetails}
+            >
+              {senderMeta}
+            </span>
+          )}
+          {senderDetails !== undefined && (senderModelRaw !== undefined || senderMeta !== '') ? (
+            <button
+              type="button"
+              data-agent-message-sender-details-toggle={block.agentMessage?.senderAgentId ?? senderAgentId}
+              aria-expanded={senderDetailsOpen}
+              aria-controls={senderDetailsId}
+              aria-label={t('transcript.promptOutcome.details')}
+              onClick={() => { setSenderDetailsOpen((value) => !value); }}
+              className="inline-flex min-h-6 min-w-6 cursor-pointer items-center justify-center rounded-[6px] px-1 text-[12px] font-normal text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+            >
+              <DisclosureChevron open={senderDetailsOpen} />
+            </button>
+          ) : null}
+          {branchFold !== undefined && senderOpen !== undefined ? (
+            <button
+              type="button"
+              data-branch-fold-open={branchFold.branchId}
+              onClick={senderOpen}
+              className="cursor-pointer rounded-md px-1.5 py-0.5 text-[11.5px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            >
+              {t('transcript.branch.openBranch')}
+            </button>
+          ) : null}
+          <span data-user-time className="text-[12px] text-ink-faint tabular-nums">
+            <RelativeTime at={block.createdAt} />
           </span>
-        ) : (
-          // The wash and the focus ring are the ones the timeline's agent rows
-          // already use for their click, so hovering this name reads as the
-          // same offer: the sink stays inside the meta line (the -mx-1/p-1
-          // pair cancels out), the ink lifts from soft to full, and Enter,
-          // Space or a tap all land on the one open entry above.
-          <button
-            type="button"
-            {...senderAttrs}
-            onClick={senderOpen}
-            title={senderDetails}
-            className="-mx-1 cursor-pointer rounded-md px-1 text-[12px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-          >
-            {senderLabel}
-          </button>
-        )}
-        {senderMeta === '' ? null : (
-          <span
-            data-agent-message-sender-meta={block.agentMessage?.senderAgentId}
-            className="text-[12px] font-normal text-ink-faint"
-            title={senderDetails}
-          >
-            {senderMeta}
-          </span>
-        )}
-        {senderDetails !== undefined && (senderModelRaw !== undefined || senderMeta !== '') ? (
-          <button
-            type="button"
-            data-agent-message-sender-details-toggle={block.agentMessage?.senderAgentId ?? senderAgentId}
-            aria-expanded={senderDetailsOpen}
-            aria-controls={senderDetailsId}
-            aria-label={t('transcript.promptOutcome.details')}
-            onClick={() => { setSenderDetailsOpen((value) => !value); }}
-            className="inline-flex min-h-6 min-w-6 cursor-pointer items-center justify-center rounded-[6px] px-1 text-[12px] font-normal text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11"
-          >
-            <DisclosureChevron open={senderDetailsOpen} />
-          </button>
-        ) : null}
-        {branchFold !== undefined && senderOpen !== undefined ? (
-          <button
-            type="button"
-            data-branch-fold-open={branchFold.branchId}
-            onClick={senderOpen}
-            className="cursor-pointer rounded-md px-1.5 py-0.5 text-[11.5px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-          >
-            {t('transcript.branch.openBranch')}
-          </button>
-        ) : null}
+        </span>
+      ) : (
         <span
           data-user-time
-          className={`text-[12px] text-ink-faint transition-opacity duration-[var(--kiki-motion-quick)] ${
-            senderLabel !== undefined || block.peerThread !== undefined
-              ? ''
-              : 'opacity-0 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 [@media(hover:none)]:opacity-100'
-          }`}
+          className="pointer-events-none absolute -top-4 right-1 text-[11.5px] leading-4 text-ink-faint tabular-nums opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] group-hover/msg:opacity-100 group-focus-within/msg:opacity-100"
         >
           <RelativeTime at={block.createdAt} />
         </span>
-      </span>
+      )}
       {senderDetailsOpen && senderDetails !== undefined ? (
         <div
           id={senderDetailsId}
@@ -836,7 +835,7 @@ const UserMessage = memo(function UserMessage({
                 className={`kiki-user-text max-w-[80%] rounded-[12px] rounded-br-[6px] px-4 py-2 whitespace-pre-wrap text-ink steer-bubble ${
                   block.steerStatus === undefined
                     ? 'bg-bubble-user'
-                    : 'steer-bubble-pending !border-transparent !bg-bubble-user/75'
+                    : 'steer-bubble-pending border-dashed'
                 }`}
               >
                 {projectBody(segment.text)}
@@ -864,7 +863,7 @@ const UserMessage = memo(function UserMessage({
           className={`kiki-user-text max-w-[80%] rounded-[12px] rounded-br-[6px] px-4 py-2 whitespace-pre-wrap text-ink steer-bubble ${
             block.steerStatus === undefined
               ? 'bg-bubble-user'
-              : 'steer-bubble-pending !border-transparent !bg-bubble-user/75'
+              : 'steer-bubble-pending border-dashed'
           }`}
         >
           <div
@@ -1526,20 +1525,6 @@ function PlainSystemMessage({ block, superseded = false }: { block: SystemBlock;
   }
   const watchBody = block.variant === 'thread_watch' ? (meta?.body ?? block.text) : block.text;
   const watchPreview = block.variant === 'thread_watch' ? meta?.outputPreview : undefined;
-  if (isFailed && block.variant === 'task') {
-    return (
-      <TimelineErrorCallout
-        incidentId={`task-system-${block.id}`}
-        severity="error"
-        title={label}
-        message={typeof detail === 'string' && detail !== '' ? detail : watchBody}
-        errorDetails={watchBody}
-        createdAt={block.createdAt}
-        superseded={superseded}
-        attrs={{ 'data-system': block.variant, 'data-superseded': superseded || undefined }}
-      />
-    );
-  }
   return (
     <ActivityRow
       attrs={{ 'data-system': block.variant, 'data-injection-variant': block.originVariant, 'data-superseded': superseded || undefined }}
@@ -2176,7 +2161,7 @@ function SubagentCompactCard({
   const combinedBody = (errorOpen && hasErrorBody) || invocationBody !== undefined ? (
     <>
       {errorOpen && hasErrorBody ? (
-        <div className={`${ACTIVITY_GUTTER} mt-1 flex max-w-full items-start gap-1 rounded-md bg-ink/[0.04] px-3 py-1.5 text-ink-soft`}>
+        <div className={`${ACTIVITY_BODY_INDENT} mt-1 flex max-w-full items-start gap-1 rounded-md bg-ink/[0.04] px-3 py-1.5 text-ink-soft`}>
           <p
             id={errorDetailsId}
             data-subagent-error-details
@@ -2713,7 +2698,7 @@ const SubagentEventRow = memo(function SubagentEventRow({
       aside={<>{errorToggle}{invocation.button}</>}
     >
       {openMessage && block.error !== undefined ? (
-        <div className={`${ACTIVITY_GUTTER} mt-1 space-y-1`}>
+        <div className={`${ACTIVITY_BODY_INDENT} mt-1 space-y-1`}>
           <div
             data-subagent-event-error
             className="flex max-w-full items-start gap-1 rounded-md bg-ink/[0.04] px-3 py-1.5 text-ink-soft"
@@ -3024,11 +3009,45 @@ const Notice = memo(function Notice({ block, superseded = false }: { block: Noti
     block.compactionFailure !== undefined;
 
   if (placement === 'error') {
-    const compactionSuperseded = isCompactionError && hasSubsequentCompactionResolution(allBlocks, block.id);
+    const compactionSuperseded = isCompactionError && (superseded || hasSubsequentCompactionResolution(allBlocks, block.id));
     const effectiveSuperseded = isCompactionError ? compactionSuperseded : superseded;
     const isInterruptedCompaction = block.compactionPhase === 'interrupted';
+    const rawMsg = isCompactionError
+      ? (block.compactionFailure ?? (isInterruptedCompaction ? t('transcript.error.compactionInterruptedDefault') : fullText))
+      : (block.text !== '' && block.text !== 'compaction' ? block.text : fullText);
+    const title = isCompactionError
+      ? fullText
+      : block.taskRef !== undefined
+        ? fullText
+        : undefined;
+    if (effectiveSuperseded) {
+      const hasErrorBody = block.errorDetails !== undefined && block.errorDetails !== '';
+      return (
+        <ActivityRow
+          glyph={<Icon name="warning" size={12} />}
+          tone="plain"
+          label={title ?? rawMsg}
+          detail={title !== undefined && rawMsg !== title ? rawMsg : undefined}
+          title={time.absoluteTime(block.createdAt)}
+          aside={<CopyButton text={block.errorDetails ?? rawMsg} label={title ?? rawMsg} />}
+          expanded={hasErrorBody ? open : undefined}
+          onToggle={hasErrorBody ? () => { setOpen((value) => !value); } : undefined}
+          attrs={{
+            'data-notice-tone': 'neutral',
+            'data-notice-superseded': 'true',
+            'data-notice-key': block.i18n?.key,
+          }}
+        >
+          {open && hasErrorBody ? (
+            <div id={detailsId} className="flex items-start gap-2 border-l border-hairline pl-3 text-[12px] leading-[16px] text-ink-faint">
+              <p className="min-w-0 flex-1 select-text font-mono whitespace-pre-wrap [overflow-wrap:anywhere]">{block.errorDetails}</p>
+            </div>
+          ) : undefined}
+        </ActivityRow>
+      );
+    }
     const actions: TimelineErrorAction[] = [];
-    if (isCompactionError && canRecoverCompaction && !effectiveSuperseded) {
+    if (isCompactionError && canRecoverCompaction) {
       actions.push({
         id: 'retry-compaction',
         label: t('transcript.error.retryCompaction'),
@@ -3045,14 +3064,6 @@ const Notice = memo(function Notice({ block, superseded = false }: { block: Noti
         dataAttr: 'data-compaction-retry-fresh',
       });
     }
-    const rawMsg = isCompactionError
-      ? (block.compactionFailure ?? (isInterruptedCompaction ? t('transcript.error.compactionInterruptedDefault') : fullText))
-      : (block.text !== '' && block.text !== 'compaction' ? block.text : fullText);
-    const title = isCompactionError
-      ? fullText
-      : block.taskRef !== undefined
-        ? fullText
-        : undefined;
     return (
       <TimelineErrorCallout
         incidentId={`notice-${block.id}`}
@@ -3061,11 +3072,10 @@ const Notice = memo(function Notice({ block, superseded = false }: { block: Noti
         message={rawMsg}
         errorDetails={block.errorDetails}
         createdAt={block.createdAt}
-        superseded={effectiveSuperseded}
+        superseded={false}
         actions={actions}
         attrs={{
-          'data-notice-tone': effectiveSuperseded ? 'neutral' : 'danger',
-          'data-notice-superseded': effectiveSuperseded ? 'true' : undefined,
+          'data-notice-tone': 'danger',
           'data-notice-key': block.i18n?.key,
         }}
       />
@@ -3242,15 +3252,18 @@ const Notice = memo(function Notice({ block, superseded = false }: { block: Noti
       ? planPath
       : undefined;
   const isGoalWarn = block.goalChange?.kind === 'blocked' || block.goalChange?.kind === 'paused';
-  const glyph = block.markerKind === 'interruption' || block.i18n?.key === 'transcript.marker.interruption'
-    ? <span aria-hidden className="inline-block h-2 w-2 rounded-[2px] bg-ink-faint" />
-    : block.goalChange !== undefined
-      ? <Icon name={isGoalWarn ? 'warning' : 'check'} size={12} />
-      : block.markerKind?.startsWith('plan.')
-        ? <Icon name="file" size={12} />
-        : block.taskRef !== undefined
-          ? <Icon name="task" size={12} />
-          : <Icon name="dash" size={12} />;
+  const isRunningCompactionActivity = block.compactionPhase === 'running' || block.i18n?.key === 'notice.compacting';
+  const glyph = isRunningCompactionActivity
+    ? <Spinner label={fullText} size={12} />
+    : block.markerKind === 'interruption' || block.i18n?.key === 'transcript.marker.interruption'
+      ? <span aria-hidden className="inline-block h-2 w-2 rounded-[2px] bg-ink-faint" />
+      : block.goalChange !== undefined
+        ? <Icon name={isGoalWarn ? 'warning' : 'check'} size={12} />
+        : block.markerKind?.startsWith('plan.')
+          ? <Icon name="file" size={12} />
+          : block.taskRef !== undefined
+            ? <Icon name="task" size={12} />
+            : <Icon name="dash" size={12} />;
 
   return (
     <ActivityRow
@@ -3266,6 +3279,7 @@ const Notice = memo(function Notice({ block, superseded = false }: { block: Noti
         'data-notice-tone': 'neutral',
         'data-notice-placement': placement,
         'data-notice-key': block.i18n?.key,
+        'data-compaction-phase': block.compactionPhase,
         'data-goal-change': block.goalChange?.kind,
       }}
     >
@@ -3390,7 +3404,7 @@ const ToolGroupRow = memo(
         // Members hang off a hairline spine in the glyph column — a timeline,
         // not a box inside a box. Their own glyphs keep the shared axis, and
         // their hover wash stops at the spine (`nested`).
-        <div className="-ml-[9px] border-l border-hairline pl-[17px]">
+        <div className="ml-[8.5px] border-l border-hairline pl-[17.5px]">
           {group.tools.map((member) => (
             <Fragment key={member.id}>
               {withGalleryOrder(member.id, agentId, blockOrder, (
@@ -3539,13 +3553,12 @@ function HistoryFoldRow({
           ? time.formatDuration(fold.durationMs)
           : undefined
       }
-      status={<OutcomeMark state={fold.failed > 0 ? 'failed' : 'done'} labels={activityOutcomeLabels(t)} />}
       expanded={expanded}
       onToggle={() => { onToggle(fold.id); }}
       ariaLabel={t('transcript.fold.aria', { summary: incompleteNote === undefined ? summary : `${summary} · ${incompleteNote}` })}
     >
       {expanded ? (
-        <div data-history-fold-members className="-ml-[9px] flex flex-col gap-0.5 border-l border-hairline pl-[17px]">
+        <div data-history-fold-members className="ml-[8.5px] flex flex-col gap-0.5 border-l border-hairline pl-[17.5px]">
           {(fold.members.length > visibleLimit ? fold.members.slice(0, visibleLimit) : fold.members).map((member) => (
             <div key={member.id} data-block-id={member.id} data-fold-member>
               {renderMember(member)}
@@ -3860,6 +3873,7 @@ const MessageViewRow = memo(function MessageViewRow({
   rowActions,
   latestFinalAssistantId,
   forkableAssistantIds,
+  superseded = false,
 }: {
   node: MessageBlock | ActivitySummary | NoticeBlock | UserBlock;
   previous: MessageTimelineNode | undefined;
@@ -3873,6 +3887,7 @@ const MessageViewRow = memo(function MessageViewRow({
   rowActions?: TranscriptRowActions;
   latestFinalAssistantId?: string;
   forkableAssistantIds: ReadonlySet<string>;
+  superseded?: boolean;
 }) {
   const { t } = useI18n();
   const context = useMessageViewContext();
@@ -3935,11 +3950,11 @@ const MessageViewRow = memo(function MessageViewRow({
     body = node.externalText !== undefined
       ? <ExternalTextRow note={node.externalText} createdAt={node.createdAt} />
       : node.modelSwitch !== undefined
-        ? <ModelSwitchNotice block={node} />
+        ? <ModelSwitchNotice block={node} superseded={superseded} />
         : node.earlierPromptOutcomes !== undefined
           ? <EarlierPromptOutcomesRow block={node} />
           : node.compactionPhase !== undefined || placement === 'epoch' || placement === 'visible-activity'
-            ? <Notice block={node} />
+            ? <Notice block={node} superseded={superseded} />
             : <OutcomeLine notice={node} onOpenProcess={() => { onOpenProcess(turnId, node.id); }} />;
   } else {
     body = (
@@ -4084,7 +4099,7 @@ function rowSpacing(previous: TranscriptVirtualNode, node: TranscriptVirtualNode
     const speaker = messageSpeakerKey(node);
     if (speaker !== undefined && messageSpeakerKey(previous) === speaker) return '-mt-2';
   }
-  if (node.kind === 'user') return 'mt-2';
+  if (node.kind === 'user') return 'mt-1';
   const lane = timelineLane(node);
   const previousLane = timelineLane(previous);
   if (lane === 'activity' && previousLane === 'activity') return '-mt-3';
@@ -5606,6 +5621,7 @@ function TranscriptAnnotationPopover({
       onSave={(id, comment) => {
         if (store.isDraftAnnotation(id)) onSaveDraft?.(id, comment);
         else writeAnnotationOverride(id, { ...getAnnotationOverride(id), comment });
+        onClose();
       }}
       onRemove={(id) => {
         if (store.isDraftAnnotation(id)) onRemoveDraft?.(id);
@@ -6784,40 +6800,17 @@ export const Transcript = memo(function Transcript({
     priorHistoryShapeRef.current = { resetVersion: state.transcriptResetVersion, length: virtualNodes.length };
   }, [state.transcriptResetVersion, virtualNodes.length]);
   const seatHeight = useConversationSeatHeight();
-  const completedTurnFootnotes = useMemo(() => {
-    const map = new Map<string, TurnTailInfo>();
-    if (state.turnTerminals !== undefined) {
-      for (const [id, info] of Object.entries(state.turnTerminals)) {
-        if (info.state === 'completed') {
-          const norm = normalizeTurnId(id);
-          if (norm !== undefined) map.set(norm, info);
-        }
-      }
-    }
-    if (state.turnTail?.state === 'completed') {
-      const norm = normalizeTurnId(state.turnTail.turnId);
-      if (norm !== undefined) map.set(norm, state.turnTail);
-    }
-    return map;
-  }, [state.turnTerminals, state.turnTail]);
-  const latestCompletedTurnId = !turnBusy && state.turnTail?.state === 'completed'
-    ? normalizeTurnId(state.turnTail.turnId)
-    : undefined;
-  const latestCompletedAttachedInline = useMemo(() => {
-    if (latestCompletedTurnId === undefined) return false;
-    return virtualNodes.some((node) => {
-      if (node === undefined) return false;
-      const tid = displayNodeTurnId(node);
-      return tid !== undefined && normalizeTurnId(tid) === latestCompletedTurnId;
-    });
-  }, [latestCompletedTurnId, virtualNodes]);
+  const supersededIncidents = useMemo(
+    () => buildSupersededIncidentState(blocks, state.turnTerminals),
+    [blocks, state.turnTerminals],
+  );
   const hasTailSurface = hasTurnTailSurfaceContent({
     agentId,
     tail: state.turnTail,
     interruptedWork,
     promptQueueHold: state.promptQueueHold,
     busy: turnBusy,
-    footnoteAttachedInline: latestCompletedAttachedInline,
+    footnoteAttachedInline: false,
   });
   const hasTailContent =
     (view === 'message' && presence !== undefined)
@@ -8529,6 +8522,16 @@ export const Transcript = memo(function Transcript({
                 node !== undefined && nodeContainsTurnGap(node)
                   ? gapLoadStatus === 'error' ? 'error' : gapLoadStatus === 'loading' ? 'loading' : 'idle'
                   : undefined;
+              const nodeSuperseded =
+                node === undefined
+                  ? false
+                  : node.kind === 'notice' && (node.compactionPhase === 'failed' || node.compactionPhase === 'interrupted' || node.compactionFailure !== undefined)
+                    ? supersededIncidents.isCompactionSuperseded(node.id)
+                    : node.kind === 'notice' && node.modelSwitch?.state === 'failed'
+                      ? supersededIncidents.isModelSwitchSuperseded(node.id)
+                      : node.kind === 'tool' || node.kind === 'media-run'
+                        ? (virtualItem.index < lastWorkOrReplyVirtualIndex || supersededIncidents.isTurnSuperseded(normalizedTurnId))
+                        : supersededIncidents.isTurnSuperseded(normalizedTurnId);
               rendered.push(
                 <MeasuredTranscriptRow
                   key={virtualItem.key}
@@ -8555,6 +8558,7 @@ export const Transcript = memo(function Transcript({
                           rowActions={readOnly ? undefined : rowActions}
                           latestFinalAssistantId={latestFinalAssistantId}
                           forkableAssistantIds={forkableAssistantIds}
+                          superseded={nodeSuperseded}
                         />
                       </div>
                     ) : (
@@ -8578,15 +8582,7 @@ export const Transcript = memo(function Transcript({
                           latestFinalAssistantId={latestFinalAssistantId}
                           executionBadge={executionBadges.get(virtualNodeKey(node))}
                           stoppedTailTurnId={node.kind === 'assistant' ? stoppedTailTurnId : undefined}
-                          superseded={
-                            node.kind === 'notice' && (node.compactionPhase === 'failed' || node.compactionPhase === 'interrupted')
-                              ? hasSubsequentCompactionResolution(blocks, node.id)
-                              : node.kind === 'notice' && node.modelSwitch?.state === 'failed'
-                                ? hasSubsequentModelSwitchResolution(blocks, node.id)
-                                : node.kind === 'tool' || node.kind === 'media-run'
-                                  ? (virtualItem.index < lastWorkOrReplyVirtualIndex || hasConfirmedSubsequentSuccess(normalizedTurnId, blocks, state.turnTerminals))
-                                  : hasConfirmedSubsequentSuccess(normalizedTurnId, blocks, state.turnTerminals)
-                          }
+                          superseded={nodeSuperseded}
                           failedTailTurnId={failedTailTurnId}
                           subagentFormOverrides={cardForms}
                           onToggleSubagentForm={handleToggleSubagentForm}
@@ -8617,21 +8613,6 @@ export const Transcript = memo(function Transcript({
                         ) : null}
                       </div>
                     )}
-                    {isTurnTail && normalizedTurnId !== undefined && completedTurnFootnotes.has(normalizedTurnId) ? (() => {
-                      const footnoteTail = completedTurnFootnotes.get(normalizedTurnId)!;
-                      const isLatestCompleted = normalizedTurnId === latestCompletedTurnId;
-                      return (
-                        <div className={node?.kind === 'assistant' ? `${AGENT_LANE} pt-4` : AGENT_LANE}>
-                          <TurnFootnote
-                            tail={footnoteTail}
-                            gap={isLatestCompleted ? replyGap : undefined}
-                            revealOnHover={!isLatestCompleted}
-                            onRetryGap={isLatestCompleted && !readOnly ? tailRetry : undefined}
-                            retryDisabled={promptOutcomeActions.disabled === true}
-                          />
-                        </div>
-                      );
-                    })() : null}
                     {isTurnTail && turnTailId !== undefined && (normalizedTurnId === undefined || !incompleteTurns.has(normalizedTurnId)) ? (
                       <TurnStepsContinuation turnId={turnTailId} visible={visible} foldOpen={!closedFoldTurns.has(turnTailId)} />
                     ) : null}
@@ -8684,7 +8665,7 @@ export const Transcript = memo(function Transcript({
                       promptQueueHold={state.promptQueueHold}
                       readOnly={readOnly}
                       busy={turnBusy}
-                      footnoteAttachedInline={latestCompletedAttachedInline}
+                      footnoteAttachedInline={false}
                       failedTurnUserBlock={failedTurnUserBlock}
                       failedHasWork={failedTurnHasWork}
                       hasOriginalRetry={canFaithfullyRetryUserBlock(failedTurnUserBlock, agentId === MAIN_AGENT_ID)}

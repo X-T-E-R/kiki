@@ -136,7 +136,7 @@ export function ComposerInput(props: ComposerInputProps) {
   };
 
   return (
-    <div className="composer-input text-[length:calc(var(--kiki-prose-font-size,15.5px)-1px)] pointer-coarse:text-[length:max(16px,calc(var(--kiki-prose-font-size,15.5px)-1px))]">
+    <div className="composer-input text-[length:var(--kiki-prose-font-size,14.5px)] pointer-coarse:text-[length:max(16px,var(--kiki-prose-font-size,14.5px))]">
       <textarea
         ref={textareaRef}
         rows={1}

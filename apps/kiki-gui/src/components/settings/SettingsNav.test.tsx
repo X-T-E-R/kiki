@@ -108,11 +108,14 @@ describe('SettingsNav grouped tree', () => {
     const container = await render(
       <SettingsNav active="ai" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
     );
-    // No scope blocks above the groups, and no rule splitting them.
+    // No scope blocks above the groups; subtle top hairline dividers separate groups after the first.
     expect(container.querySelector('[data-settings-nav-storage]')).toBeNull();
     const tree = container.querySelector('[data-settings-nav-tree]')!;
     expect([...tree.children].every((child) => child.hasAttribute('data-settings-nav-group'))).toBe(true);
-    expect(tree.querySelector('.border-t')).toBeNull();
+    expect(tree.children[0]?.className).toContain('first:border-t-0');
+    expect(tree.children[1]?.className).toContain('border-t');
+    expect(tree.children[0]?.querySelector('p')?.className).toContain('font-bold');
+    expect(container.querySelector('[data-settings-nav-leaf="ai"]')?.className).toContain('bg-ink/[0.06]');
     expect(container.textContent).not.toMatch(/All sessions|127\.0\.0\.1/);
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
     expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))

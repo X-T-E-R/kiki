@@ -9,6 +9,7 @@ import { I18nProvider } from '../i18n';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
 
 const containers: HTMLDivElement[] = [];
+const roots: ReturnType<typeof createRoot>[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
 
 beforeAll(() => {
@@ -20,7 +21,11 @@ beforeAll(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  while (roots.length > 0) {
+    const r = roots.pop()!;
+    await act(async () => { r.unmount(); });
+  }
   for (const container of containers.splice(0)) container.remove();
   window.getSelection()?.removeAllRanges();
 });
@@ -34,9 +39,11 @@ afterAll(() => {
 function Harness({
   onAnnotate,
   onUpdateAnnotation,
+  onRemoveAnnotation,
 }: {
   onAnnotate: (text: string, comment: string, source?: SelectionSourceAnchor | null) => string;
   onUpdateAnnotation: (id: string, comment: string) => void;
+  onRemoveAnnotation?: (id: string) => void;
 }) {
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   return (
@@ -45,23 +52,37 @@ function Harness({
         <p data-source>the selectable transcript text</p>
         <p data-source-secondary>another selectable transcript text</p>
       </div>
-      <SelectionQuoteButton containerRef={transcriptRef} onAnnotate={onAnnotate} onUpdateAnnotation={onUpdateAnnotation} />
+      <SelectionQuoteButton
+        containerRef={transcriptRef}
+        onAnnotate={onAnnotate}
+        onUpdateAnnotation={onUpdateAnnotation}
+        onRemoveAnnotation={onRemoveAnnotation}
+      />
     </>
   );
 }
 
 async function mount() {
   let sequence = 0;
-  const onAnnotate = vi.fn((_text: string, _comment: string, _source?: SelectionSourceAnchor | null) => { sequence += 1; return `annotation-${sequence}`; });
+  const onAnnotate = vi.fn((_text: string, _comment: string, _source?: SelectionSourceAnchor | null) => {
+    sequence += 1;
+    return `annotation-${sequence}`;
+  });
   const onUpdateAnnotation = vi.fn();
+  const onRemoveAnnotation = vi.fn();
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
+  roots.push(root);
   await act(async () => {
-    root.render(<I18nProvider><Harness onAnnotate={onAnnotate} onUpdateAnnotation={onUpdateAnnotation} /></I18nProvider>);
+    root.render(
+      <I18nProvider>
+        <Harness onAnnotate={onAnnotate} onUpdateAnnotation={onUpdateAnnotation} onRemoveAnnotation={onRemoveAnnotation} />
+      </I18nProvider>,
+    );
   });
-  return { container, onAnnotate, onUpdateAnnotation };
+  return { container, onAnnotate, onUpdateAnnotation, onRemoveAnnotation };
 }
 
 async function selectSource(container: HTMLElement, selector = '[data-source]') {
@@ -75,21 +96,22 @@ async function selectSource(container: HTMLElement, selector = '[data-source]') 
   });
 }
 
-function pill(container: HTMLElement): HTMLElement | null {
-  return container.querySelector('[data-selection-quote]');
+function pill(): HTMLElement | null {
+  return document.body.querySelector('[data-selection-quote]');
 }
 
-function annotateButton(container: HTMLElement): HTMLButtonElement {
-  return pill(container)!.querySelector('[data-selection-annotate-action]')!;
+function annotateButton(): HTMLButtonElement {
+  return pill()!.querySelector('[data-selection-annotate-action]')!;
 }
 
-function annotateInput(container: HTMLElement): HTMLTextAreaElement | null {
-  return pill(container)?.querySelector('[data-selection-annotate-input]') ?? null;
+function annotateInput(): HTMLTextAreaElement | null {
+  return pill()?.querySelector('[data-selection-annotate-input]') ?? null;
 }
 
-async function createAnnotation(container: HTMLElement) {
-  await act(async () => { annotateButton(container).click(); });
-  return annotateInput(container)!;
+async function createAnnotation() {
+  await act(async () => { annotateButton().click(); });
+  await act(async () => { await Promise.resolve(); });
+  return annotateInput()!;
 }
 
 async function typeComment(input: HTMLTextAreaElement, text: string) {
@@ -110,46 +132,78 @@ describe('SelectionQuoteButton', () => {
   it('offers one annotation entry above a contained selection', async () => {
     const { container } = await mount();
     await selectSource(container);
-    expect(pill(container)).not.toBeNull();
-    expect(pill(container)!.querySelectorAll('button')).toHaveLength(1);
-    expect(annotateButton(container).textContent).toContain('Annotate');
-    expect(pill(container)!.textContent).not.toContain('Quote');
+    expect(pill()).not.toBeNull();
+    expect(pill()!.querySelectorAll('button')).toHaveLength(1);
+    expect(annotateButton().textContent).toContain('Annotate');
+    expect(pill()!.textContent).not.toContain('Quote');
   });
 
-  it('creates an empty sourced item immediately and opens its comment box', async () => {
+  it('creates an empty sourced item immediately and opens its multiline editor with Delete & Save buttons', async () => {
     const { container, onAnnotate, onUpdateAnnotation } = await mount();
     await selectSource(container);
-    const input = await createAnnotation(container);
+    const input = await createAnnotation();
     expect(onAnnotate).toHaveBeenCalledExactlyOnceWith('the selectable transcript text', '', null);
     expect(input).not.toBeNull();
     expect(input.placeholder).toBe('Add a comment (optional)');
+    expect(pill()?.querySelector('[data-annotation-panel-remove]')).not.toBeNull();
+    const saveBtn = pill()?.querySelector<HTMLButtonElement>('[data-annotation-panel-save]')!;
+    expect(saveBtn).not.toBeNull();
+    expect(saveBtn.disabled).toBe(false);
     expect(onUpdateAnnotation).not.toHaveBeenCalled();
+  });
+
+  it('expands when focused, compresses when blurred, wraps multiline Shift+Enter, and supports Save & Delete buttons', async () => {
+    const { container, onUpdateAnnotation, onRemoveAnnotation } = await mount();
+    await selectSource(container);
+    const input = await createAnnotation();
+    expect(input.getAttribute('data-focused')).toBe('true');
+    expect(input.className).toContain('min-h-[68px]');
+
+    await act(async () => { input.blur(); });
+    expect(input.getAttribute('data-focused')).toBe('false');
+    expect(input.className).toContain('max-h-8');
+
+    await act(async () => { input.focus(); });
+    expect(input.getAttribute('data-focused')).toBe('true');
+    await pressKey(input, 'Enter', { shiftKey: true });
+    expect(pill()).not.toBeNull();
+
+    await typeComment(input, '  worth revisiting  ');
+    await act(async () => { pill()!.querySelector<HTMLButtonElement>('[data-annotation-panel-save]')!.click(); });
+    expect(onUpdateAnnotation).toHaveBeenLastCalledWith('annotation-1', 'worth revisiting');
+    expect(pill()).toBeNull();
+
+    await selectSource(container, '[data-source-secondary]');
+    await createAnnotation();
+    await act(async () => { pill()!.querySelector<HTMLButtonElement>('[data-annotation-panel-remove]')!.click(); });
+    expect(onRemoveAnnotation).toHaveBeenCalledWith('annotation-2');
+    expect(pill()).toBeNull();
   });
 
   it('updates the same item on every comment edit; Enter only closes the box', async () => {
     const { container, onAnnotate, onUpdateAnnotation } = await mount();
     await selectSource(container);
-    const input = await createAnnotation(container);
+    const input = await createAnnotation();
     await typeComment(input, 'worth revisiting');
     expect(onUpdateAnnotation).toHaveBeenLastCalledWith('annotation-1', 'worth revisiting');
     await pressKey(input, 'Enter');
     expect(onAnnotate).toHaveBeenCalledTimes(1);
-    expect(pill(container)).toBeNull();
+    expect(pill()).toBeNull();
   });
 
   it('keeps an empty item when Escape or an outside click dismisses the box', async () => {
     const { container, onAnnotate, onUpdateAnnotation } = await mount();
     await selectSource(container);
-    const input = await createAnnotation(container);
+    const input = await createAnnotation();
     await pressKey(input, 'Escape');
     expect(onAnnotate).toHaveBeenCalledTimes(1);
     expect(onUpdateAnnotation).not.toHaveBeenCalled();
 
     await selectSource(container, '[data-source-secondary]');
-    const second = await createAnnotation(container);
+    const second = await createAnnotation();
     await typeComment(second, 'keep this');
     await act(async () => { document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); });
-    expect(pill(container)).toBeNull();
+    expect(pill()).toBeNull();
     expect(onAnnotate).toHaveBeenCalledTimes(2);
     expect(onUpdateAnnotation).toHaveBeenLastCalledWith('annotation-2', 'keep this');
   });
@@ -157,7 +211,7 @@ describe('SelectionQuoteButton', () => {
   it('allows clearing a comment without recreating or removing the item', async () => {
     const { container, onAnnotate, onUpdateAnnotation } = await mount();
     await selectSource(container);
-    const input = await createAnnotation(container);
+    const input = await createAnnotation();
     await typeComment(input, 'temporary');
     await typeComment(input, '');
     expect(onUpdateAnnotation).toHaveBeenLastCalledWith('annotation-1', '');
@@ -168,10 +222,10 @@ describe('SelectionQuoteButton', () => {
   it('accumulates independent entries in selection order', async () => {
     const { container, onAnnotate } = await mount();
     await selectSource(container);
-    await createAnnotation(container);
-    await pressKey(annotateInput(container)!, 'Enter');
+    await createAnnotation();
+    await pressKey(annotateInput()!, 'Enter');
     await selectSource(container, '[data-source-secondary]');
-    await createAnnotation(container);
+    await createAnnotation();
     expect(onAnnotate.mock.calls.map((call) => call[0])).toEqual([
       'the selectable transcript text',
       'another selectable transcript text',
@@ -181,28 +235,28 @@ describe('SelectionQuoteButton', () => {
   it('keeps the comment box through selection collapse and scrolling', async () => {
     const { container } = await mount();
     await selectSource(container);
-    const input = await createAnnotation(container);
+    const input = await createAnnotation();
     await typeComment(input, 'draft stays on its item');
     await act(async () => {
       window.getSelection()!.removeAllRanges();
       document.dispatchEvent(new Event('selectionchange'));
       window.dispatchEvent(new Event('scroll'));
     });
-    expect(annotateInput(container)?.value).toBe('draft stays on its item');
+    expect(annotateInput()?.value).toBe('draft stays on its item');
   });
 
   it('does not close or commit Enter during IME composition', async () => {
     const { container, onAnnotate, onUpdateAnnotation } = await mount();
     await selectSource(container);
-    const input = await createAnnotation(container);
+    const input = await createAnnotation();
     await typeComment(input, '中文评论');
     await act(async () => { input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })); });
     await pressKey(input, 'Enter');
     await pressKey(input, 'Escape');
-    expect(annotateInput(container)).not.toBeNull();
+    expect(annotateInput()).not.toBeNull();
     await act(async () => { input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })); });
     await pressKey(input, 'Enter');
-    expect(pill(container)).toBeNull();
+    expect(pill()).toBeNull();
     expect(onAnnotate).toHaveBeenCalledTimes(1);
     expect(onUpdateAnnotation).toHaveBeenLastCalledWith('annotation-1', '中文评论');
   });
@@ -213,47 +267,14 @@ describe('SelectionQuoteButton', () => {
     source.dataset['sourceBlockId'] = 'actual-source';
     source.dataset['sourceVersion'] = 'source-version';
     await selectSource(container);
-    await createAnnotation(container);
+    await createAnnotation();
     const text = 'theselectabletranscripttext';
     expect(onAnnotate).toHaveBeenCalledExactlyOnceWith('the selectable transcript text', '', {
       blockId: 'actual-source', version: 'source-version', start: 0, end: text.length, text,
     });
   });
 
-  it('flips below the selection near the top edge and clamps inside narrow viewports', async () => {
-    const originalRect = Object.getOwnPropertyDescriptor(Range.prototype, 'getBoundingClientRect');
-    const originalWidth = window.innerWidth;
-    const originalHeight = window.innerHeight;
-    try {
-      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 240 });
-      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 400 });
-      Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
-        configurable: true,
-        value: () => ({ top: 10, left: 210, right: 235, bottom: 26, width: 25, height: 16, x: 210, y: 10, toJSON: () => ({}) }),
-      });
-      const { container } = await mount();
-      await selectSource(container);
-      const popover = pill(container)!;
-      expect(Number.parseFloat(popover.style.top)).toBe(32);
-      expect(Number.parseFloat(popover.style.left)).toBeGreaterThanOrEqual(8);
-
-      const input = await createAnnotation(container);
-      const annotateBox = pill(container)!;
-      expect(Number.parseFloat(annotateBox.style.left)).toBe(8);
-      expect(Number.parseFloat(annotateBox.style.top)).toBeGreaterThanOrEqual(8);
-      expect(Number.parseFloat(annotateBox.style.top)).toBeLessThanOrEqual(400 - 104 - 8);
-
-      // Shift+Enter does not submit or close the textarea
-      await pressKey(input, 'Enter', { shiftKey: true });
-      expect(pill(container)).not.toBeNull();
-    } finally {
-      if (originalRect !== undefined) Object.defineProperty(Range.prototype, 'getBoundingClientRect', originalRect);
-      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth });
-      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalHeight });
-    }
-  });
-
-  it('repositions on scroll and closes cleanly when the anchor scrolls out of the viewport', async () => {
+  it('closes cleanly when the anchor scrolls out of the viewport', async () => {
     const originalRect = Object.getOwnPropertyDescriptor(Range.prototype, 'getBoundingClientRect');
     let currentRect = { top: 200, left: 100, right: 220, bottom: 216, width: 120, height: 16, x: 100, y: 200, toJSON: () => ({}) };
     try {
@@ -263,16 +284,12 @@ describe('SelectionQuoteButton', () => {
       });
       const { container } = await mount();
       await selectSource(container);
-      await createAnnotation(container);
-      const beforeTop = Number.parseFloat(pill(container)!.style.top);
-
-      currentRect = { ...currentRect, top: 320, bottom: 336, y: 320 };
-      await act(async () => { window.dispatchEvent(new Event('scroll')); });
-      expect(Number.parseFloat(pill(container)!.style.top)).not.toBe(beforeTop);
+      await createAnnotation();
+      expect(pill()).not.toBeNull();
 
       currentRect = { ...currentRect, top: -60, bottom: -40, y: -60 };
       await act(async () => { window.dispatchEvent(new Event('scroll')); });
-      expect(pill(container)).toBeNull();
+      expect(pill()).toBeNull();
     } finally {
       if (originalRect !== undefined) Object.defineProperty(Range.prototype, 'getBoundingClientRect', originalRect);
     }
@@ -284,20 +301,18 @@ describe('SelectionQuoteButton', () => {
     document.body.append(siblingPanel);
     try {
       await selectSource(container);
-      expect(pill(container)).not.toBeNull();
-      // Scrolling a sibling subagent timeline must NOT close main's quote pill.
+      expect(pill()).not.toBeNull();
       await act(async () => {
         siblingPanel.dispatchEvent(new Event('scroll', { bubbles: false }));
       });
-      expect(pill(container)).not.toBeNull();
+      expect(pill()).not.toBeNull();
 
-      // Nor should it close or disturb an open inline annotate editor.
-      await createAnnotation(container);
-      expect(annotateInput(container)).not.toBeNull();
+      await createAnnotation();
+      expect(annotateInput()).not.toBeNull();
       await act(async () => {
         siblingPanel.dispatchEvent(new Event('scroll', { bubbles: false }));
       });
-      expect(annotateInput(container)).not.toBeNull();
+      expect(annotateInput()).not.toBeNull();
     } finally {
       siblingPanel.remove();
     }

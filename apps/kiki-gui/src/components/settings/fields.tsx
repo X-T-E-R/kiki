@@ -39,7 +39,7 @@ export function SettingsGroup({
   return (
     <div className="space-y-2 pt-5 first:pt-0" data-settings-group>
       <div>
-        <p className="text-[13px] font-normal text-ink">{title}</p>
+        <p className="text-[13px] leading-5 font-bold text-ink">{title}</p>
         {help !== undefined ? <Hint>{help}</Hint> : null}
       </div>
       <SettingsBox>{children}</SettingsBox>
@@ -110,7 +110,7 @@ export function SettingField({
   layout?: 'row' | 'stack';
   children: React.ReactNode;
 }) {
-  // T3/400: a field label is a row, not a heading. 500 is reserved for the
+  // T3/400: a field label is a row, not a heading. 700 is reserved for the
   // sub-block titles above (SettingsGroup) so the two never read alike.
   const labelClass = 'text-[13px] text-ink';
   const labelNode = htmlFor === undefined

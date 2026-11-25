@@ -5,6 +5,7 @@ import { projectAgentTranscriptView } from './project';
 import { resolveInjectionHeading } from './injectionLabels';
 import {
   buildNoticePlacementContext,
+  buildSupersededIncidentState,
   classifyNoticePlacement,
   hasConfirmedSubsequentSuccess,
   hasSubsequentCompactionResolution,
@@ -87,8 +88,8 @@ describe('0.6.1 timelinePlacement (18 dispositions & domain supersession)', () =
     expect(byId.get('n-branch')).toBe('epoch');
     expect(byId.get('n-handoff')).toBe('epoch');
     expect(byId.get('n-compact-done')).toBe('epoch');
-    expect(byId.get('n-compact-running')).toBe('epoch');
-    expect(byId.get('n-compact-queued')).toBe('epoch');
+    expect(byId.get('n-compact-running')).toBe('visible-activity');
+    expect(byId.get('n-compact-queued')).toBe('visible-activity');
     expect(byId.get('n-exec-compact')).toBe('epoch');
     expect(byId.get('n-switch-model')).toBe('epoch');
     expect(byId.get('n-switch-fresh-same')).toBe('epoch');
@@ -97,7 +98,7 @@ describe('0.6.1 timelinePlacement (18 dispositions & domain supersession)', () =
     expect(byId.get('n-compact-failed')).toBe('error');
     expect(byId.get('n-compact-interrupted')).toBe('error');
     expect(byId.get('n-switch-failed')).toBe('error');
-    expect(byId.get('n-task-failed')).toBe('error');
+    expect(byId.get('n-task-failed')).toBe('foldable');
     expect(byId.get('n-turn-err')).toBe('error');
 
     expect(byId.get('n-switch-pending')).toBe('visible-activity');
@@ -169,6 +170,15 @@ describe('0.6.1 timelinePlacement (18 dispositions & domain supersession)', () =
     ];
     expect(hasSubsequentModelSwitchResolution(switchBlocks, 'sw-fail')).toBe(true);
     expect(hasSubsequentModelSwitchResolution([switchBlocks[0]!], 'sw-fail')).toBe(false);
+
+    const precomputed = buildSupersededIncidentState(
+      [...blocks, ...compactResolved, ...switchBlocks],
+      terminalsDone,
+    );
+    expect(precomputed.isTurnSuperseded('t1')).toBe(true);
+    expect(precomputed.isTurnSuperseded('t2')).toBe(false);
+    expect(precomputed.isCompactionSuperseded('c-int')).toBe(true);
+    expect(precomputed.isModelSwitchSuperseded('sw-fail')).toBe(true);
   });
 
   it('distinguishes genuinely recoverable restart work from stale empty objects', () => {

@@ -5483,10 +5483,12 @@ boundExecution,
     void actions.send(text, []);
   }, [actions, controller, locale, revealOwnSend, setDraft, state.busy, t]);
   const handleOpenModelPicker = useCallback(() => {
-    const trigger = document.querySelector<HTMLButtonElement>('[data-execution-trigger], [data-compact-model-trigger]');
+    const trigger = slots.dock?.querySelector<HTMLButtonElement>(
+      '[data-execution-trigger], [data-compact-model-trigger], [data-composer-model-picker]',
+    );
     trigger?.focus();
     trigger?.click();
-  }, []);
+  }, [slots.dock]);
   const handleOpenProviderSettings = useCallback(() => {
     void navigate('/settings/providers');
   }, [navigate]);

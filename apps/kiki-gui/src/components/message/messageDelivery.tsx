@@ -14,6 +14,7 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import type { MessageBlock, MessageChannelDelivery } from '@kiki/session-core/session';
 
 import { useI18n } from '../../i18n';
+import { plainFailure } from '../agent-panel/failureText';
 import { Icon } from '../icons';
 
 const KIND_LABEL: Readonly<Record<string, I18nKey>> = {
@@ -45,6 +46,7 @@ function kindList(kinds: readonly string[], t: Translate, locale: Locale): strin
 interface DeliveryNote {
   readonly id: string;
   readonly text: string;
+  readonly title?: string;
   readonly icon: 'external' | 'info' | 'warning';
   readonly action: boolean;
 }
@@ -73,17 +75,30 @@ export function deliveryNotes(block: MessageBlock, t: Translate, locale: Locale)
   // `unsupported` alone means it took none of the attachments at all.
   const internalKinds = internal?.unsupported ?? [];
   if (internalKinds.length > 0 || internal?.status === 'unsupported' || internal?.status === 'partial') {
-    const text = internalKinds.length > 0
+    const rawDetail = internal?.detail?.trim();
+    const conciseReason = rawDetail !== undefined && rawDetail !== ''
+      ? (plainFailure(rawDetail) ?? rawDetail)
+      : undefined;
+    const baseText = internalKinds.length > 0
       ? t('message.internalUnsupported', { kinds: kindList(internalKinds, t, locale) })
       : internal?.status === 'partial'
         ? t('message.internalPartial')
         : t('message.channelFailed', { channel: channelName('internal', t) });
+    const text = internal?.status === 'partial' && conciseReason !== undefined
+      ? (locale === 'zh' ? `${baseText}（${conciseReason}）` : `${baseText} (${conciseReason})`)
+      : baseText;
     const id = internalKinds.length > 0
       ? 'internal-unsupported'
       : internal?.status === 'partial'
         ? 'internal-partial'
         : 'internal-failed';
-    notes.push({ id, text, icon: 'info', action: false });
+    notes.push({
+      id,
+      text,
+      title: rawDetail !== undefined && rawDetail !== '' ? rawDetail : undefined,
+      icon: internal?.status === 'partial' && conciseReason !== undefined ? 'warning' : 'info',
+      action: false,
+    });
   }
   for (const channel of external) {
     const name = channelName(channel.channelId, t);
@@ -130,13 +145,14 @@ export function DeliveryNotes({ block, onOpenProcess }: { readonly block: Messag
             key={note.id}
             type="button"
             data-message-delivery-note={note.id}
+            title={note.title}
             onClick={onOpenProcess}
             className={`${tone} -ml-1 min-h-7 rounded-md px-1 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-accent`}
           >
             {body}
           </button>
         ) : (
-          <p key={note.id} data-message-delivery-note={note.id} className={tone}>
+          <p key={note.id} data-message-delivery-note={note.id} title={note.title} className={tone}>
             {body}
           </p>
         );

@@ -161,8 +161,11 @@ function extractMetaFromText(text: string, meta: ExtractedMeta): void {
     if (reqMatch?.[1] !== undefined) meta.requestId = reqMatch[1];
   }
   if (meta.code === undefined) {
-    const codeMatch = /\b(?:error[_ -]?code|code)\s*[:=]\s*([A-Za-z0-9._-]+)/i.exec(text);
-    if (codeMatch?.[1] !== undefined) meta.code = codeMatch[1];
+    const codeMatch = /(?<!exit[_ -])(?<!return[_ -])(?<!status[_ -])\b(?:error[_ -]?code|code)\s*[:=]\s*([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)/i.exec(text);
+    const candidate = codeMatch?.[1];
+    if (candidate !== undefined && !/^\d{1,3}$/.test(candidate)) {
+      meta.code = candidate;
+    }
   }
   if (meta.status === undefined) {
     const statusMatch = /\b(?:http\s*status|status(?:\s*code)?)\s*[:=]?\s*(\d{3})\b/i.exec(text);

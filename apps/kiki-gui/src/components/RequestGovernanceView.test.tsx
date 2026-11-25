@@ -1707,13 +1707,15 @@ describe('live agent snapshot availability', () => {
     const carbonRow = concurrency.querySelector<HTMLElement>('[data-governance-concurrency-row="axon-message/gemini-4-carbon"]')!;
     expect(carbonRow.textContent).toContain('Gemini 4 Carbon');
     expect(carbonRow.querySelector('[data-governance-meter]')).not.toBeNull();
+    expect(carbonRow.querySelector('[data-governance-row-active]')?.textContent).toBe('2');
     expect(carbonRow.querySelector('[data-governance-row-cap]')?.textContent).toBe('2 / 4');
-    expect(carbonRow.querySelector('[data-governance-row-queued]')?.textContent).toContain('+1 排队');
+    expect(carbonRow.querySelector('[data-governance-row-queued]')?.textContent).toBe('+1');
 
     const neonRow = concurrency.querySelector<HTMLElement>('[data-governance-concurrency-row="axon-message/gemini-4-neon"]')!;
     expect(neonRow.textContent).toContain('Gemini 4 Neon');
     expect(neonRow.querySelector('[data-governance-meter]')).toBeNull();
-    expect(neonRow.querySelector('[data-governance-row-uncapped]')?.textContent).toBe('2 并发');
+    expect(neonRow.querySelector('[data-governance-row-active]')?.textContent).toBe('2');
+    expect(neonRow.querySelector('[data-governance-row-uncapped]')?.textContent).toBe('—');
 
     // Cross-dimension pressured rule (`subagent-pool-cap` 3 / 4) is also surfaced without opening Manage rules
     const extraRule = concurrency.querySelector<HTMLElement>('[data-governance-pressure-rule="subagent-pool-cap"]')!;

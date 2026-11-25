@@ -198,7 +198,7 @@ export function SubagentGroupRow({
         </span>
       }
     >
-      <div className="-ml-[9px] flex flex-col gap-0.5 border-l border-hairline pl-[17px]">
+      <div className="ml-[8.5px] flex flex-col gap-0.5 border-l border-hairline pl-[17.5px]">
         {shownMembers.map((member) => (
           <div key={member.id} data-block-id={member.id} data-subagent-group-member>
             {renderMember(member)}

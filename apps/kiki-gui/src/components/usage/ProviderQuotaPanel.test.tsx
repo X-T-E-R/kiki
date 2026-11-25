@@ -245,23 +245,25 @@ describe('ProviderQuotaPanel', () => {
     expect(container.querySelector('[data-location]')?.textContent).toBe(target);
     expect(client.startOAuthLogin).not.toHaveBeenCalled();
   });
-  it('lists enabled and configured engines, retaining unavailable engines and hiding explicit off choices', async () => {
-    const engine = (id: string) => source({ id: `executor:${id}`, provider_id: id, label: id, kind: 'executor', supported: false, status: 'unsupported' });
-    show(['grok-acp', 'custom-acp', 'off-acp', 'unused-acp'].map(engine));
+  it('folds no-quota engines into unsupported while listing native-supported or plugin-backed engines and hiding explicit off choices', async () => {
+    const engine = (id: string, supported = false) => source({ id: `executor:${id}`, provider_id: id, label: id, kind: 'executor', supported, status: supported ? 'unknown' : 'unsupported' });
+    show([engine('agy-native', true), engine('grok-acp'), engine('custom-acp'), engine('off-acp'), engine('unused-acp')]);
     client.getConfig.mockResolvedValue({ raw: {
-      agent_executor_overrides: { 'grok-acp': { show_in_profile_list: true }, 'off-acp': { show_in_profile_list: false } },
+      agent_executor_overrides: { 'agy-native': { show_in_profile_list: true }, 'grok-acp': { show_in_profile_list: true }, 'off-acp': { show_in_profile_list: false } },
       agent_executors: { 'custom-acp': {}, 'off-acp': {} },
     } });
     client.listExecutors.mockResolvedValue({ items: [{ id: 'grok-acp', status: 'unavailable' }] });
     const container = await mount();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
-    expect(container.querySelector('[data-quota-engine="grok-acp"]')).not.toBeNull();
-    expect(container.querySelector('[data-quota-engine="custom-acp"]')).not.toBeNull();
+    expect(container.querySelector('[data-quota-engine="agy-native"]')).not.toBeNull();
+    expect(container.querySelector('[data-quota-engine="grok-acp"]')).toBeNull();
+    expect(container.querySelector('[data-quota-engine="custom-acp"]')).toBeNull();
+    expect(container.querySelector('[data-quota-unsupported-item="executor:grok-acp"]')).not.toBeNull();
+    expect(container.querySelector('[data-quota-unsupported-item="executor:custom-acp"]')).not.toBeNull();
+    expect(container.querySelector('[data-quota-settings-link="executor:grok-acp"]')?.getAttribute('href')).toBe('/settings/ai#st-card-engines');
     expect(container.querySelector('[data-quota-engine="off-acp"]')).toBeNull();
     expect(container.querySelector('[data-quota-engine="unused-acp"]')).toBeNull();
     expect(container.querySelector('[data-quota-hidden-engines]')?.getAttribute('data-quota-hidden-engines')).toBe('2');
-    expect(container.querySelector('[data-quota-engine-settings="grok-acp"]')).not.toBeNull();
-    expect(refreshSource).not.toHaveBeenCalled();
     expect(setSourceEnabled).not.toHaveBeenCalled();
   });
   it('honors the global external visibility switch without deleting sources', async () => {
@@ -326,13 +328,16 @@ describe('ProviderQuotaPanel', () => {
       source({ id: 'src-unknown', label: 'OpenRouter', provider_id: 'openrouter', status: 'unknown', meters: [] }),
       source({ id: 'src-ready-empty', label: 'Queried Empty', provider_id: 'kimi', status: 'ready', checked_at: '2026-10-10T11:55:00Z', meters: [] }),
       source({ id: 'src-managed', provider_id: 'managed:kimi-code', status: 'ready', meters: [meter({ unit: 'percent', unit_label: '%', used: null, remaining: 52, limit: 100 })] }),
+      source({ id: 'src-prov-err', provider_id: 'anthropic', kind: 'provider', status: 'error', message: 'Provider gateway timeout' }),
       source({ id: 'src-err', provider_id: 'tavily', kind: 'external_service', status: 'error', message: 'Upstream timeout' }),
     ]);
     const container = await mount();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
 
-    // Attention band contains src-err; ledger contains src-unknown, src-ready-empty, and src-managed
-    expect(container.querySelector('[data-quota-attention] [data-quota-item="src-err"]')).not.toBeNull();
+    // Top attention band contains only primary provider errors; external_service renders quietly below engines
+    expect(container.querySelector('[data-quota-attention] [data-quota-item="src-prov-err"]')).not.toBeNull();
+    expect(container.querySelector('[data-quota-attention] [data-quota-item="src-err"]')).toBeNull();
+    expect(container.querySelector('[data-quota-external-services] [data-quota-item="src-err"]')).not.toBeNull();
     expect(container.querySelector('[data-quota-ledger] [data-quota-item="src-unknown"]')).not.toBeNull();
     expect(container.querySelector('[data-quota-ledger] [data-quota-item="src-ready-empty"]')).not.toBeNull();
     expect(container.querySelector('[data-quota-ledger] [data-quota-item="src-managed"]')).not.toBeNull();
@@ -654,7 +659,7 @@ describe('ProviderQuotaPanel', () => {
     const claudeRow = container.querySelector<HTMLElement>('[data-quota-engine="claude-acp"]')!;
     const agyRow = container.querySelector<HTMLElement>('[data-quota-engine="agy-cli"]')!;
 
-    // Expired state on claude-acp (readAt present, readings cleared after TTL) uses compact refresh icon without misleading credential-expired text
+    // Expired state on claude-acp (readAt present, readings cleared after TTL) uses compact refresh icon + prompt without misleading credential-expired text
     expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset['engineQuotaStatus']).toBe('expired');
     const expiredBox = claudeRow.querySelector('[data-engine-quota-expired="claude-acp"]')!;
     expect(expiredBox).not.toBeNull();
@@ -664,9 +669,10 @@ describe('ProviderQuotaPanel', () => {
     expect(claudeRow.querySelector('[data-engine-quota-query="claude-acp"]')?.getAttribute('title')).toContain('Cached reading expired');
     expect(claudeRow.textContent).not.toContain('Native Claude Meter');
 
-    // Unqueried selected plugin source (agy-cli) auto-refreshes once on mount while expired claude-acp (readAt present) does NOT
-    expect(harnessQuotaRead).toHaveBeenCalledTimes(1);
+    // Both unqueried (agy-cli) and expired (claude-acp) selected plugin sources auto-refresh on initial panel open
+    expect(harnessQuotaRead).toHaveBeenCalledTimes(2);
     expect(harnessQuotaRead).toHaveBeenCalledWith('plugin:magpie/agy');
+    expect(harnessQuotaRead).toHaveBeenCalledWith('plugin:alpha/claude');
     expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset['engineQuotaStatus']).toBe('unqueried');
     expect(agyRow.querySelector('[data-engine-quota-unqueried="agy-cli"]')).not.toBeNull();
 
@@ -864,11 +870,11 @@ describe('ProviderQuotaPanel', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(119_000); });
       expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset['engineQuotaStatus']).toBe('ready');
 
-      // Advance past the 300s minRefreshIntervalMs boundary: transitions to expired without polling
+      // Advance past the 300s minRefreshIntervalMs boundary: transitions to expired without polling while retaining cached meters
       await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
       expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset['engineQuotaStatus']).toBe('expired');
       expect(agyRow.querySelector('[data-engine-quota-expired="agy-cli"]')).not.toBeNull();
-      expect(agyRow.textContent).not.toContain('80%');
+      expect(agyRow.textContent).toContain('80%');
       expect(harnessQuotaCached).toHaveBeenCalledTimes(1);
       expect(harnessQuotaRead).not.toHaveBeenCalled();
     } finally {
@@ -945,9 +951,15 @@ describe('ProviderQuotaPanel', () => {
     });
 
     const hydratedRow = container.querySelector<HTMLElement>('[data-quota-engine="agy-cli"]')!;
+    // Unset quota_source on an engine without native quota auto-selects the matching plugin source
+    expect(hydratedRow.dataset['engineQuotaMode']).toBe('plugin');
+    expect(hydratedRow.querySelector('[data-quota-fleet-toggle="agy-cli"]')?.textContent).toContain('2/3 available');
+
+    // Explicitly opting into Native persists 'native' and switches to native mode cleanly
+    await selectOption(container, '[data-engine-quota-source="agy-cli"]', '');
     expect(hydratedRow.dataset['engineQuotaMode']).toBe('native');
 
-    // Select the plugin source -> defaults to collapsed pool summary ('2/3 available' since seat-3 exhausted its 5h pool)
+    // Switching back to the plugin source restores the collapsed pool summary ('2/3 available')
     await selectOption(container, '[data-engine-quota-source="agy-cli"]', 'plugin:magpie/agy');
     expect(hydratedRow.dataset['engineQuotaMode']).toBe('plugin');
     expect(hydratedRow.querySelector('[data-quota-fleet-toggle="agy-cli"]')?.textContent).toContain('2/3 available');

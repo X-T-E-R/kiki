@@ -313,6 +313,7 @@ function WorkspaceSurface({
           containerRef={annotations.containerRef}
           onAnnotate={annotations.onAnnotate}
           onUpdateAnnotation={annotations.onUpdate}
+          onRemoveAnnotation={annotations.onRemove}
         />
       ) : null}
       {timelineOverlay}
@@ -1832,17 +1833,15 @@ function ChildAgentWorkspace({
     }
     void handleComposerSendRef.current(failedUserBlock.text.trim(), []);
   }, [agentId, controller, setDraft, t]);
+  const dockScopeRef = useRef<HTMLDivElement>(null);
   const handleOpenModelPicker = useCallback(() => {
-    const trigger = document.querySelector<HTMLButtonElement>('[data-execution-trigger], [data-compact-model-trigger]');
+    const root = dockScopeRef.current ?? slots.dock;
+    const trigger = root?.querySelector<HTMLButtonElement>(
+      '[data-execution-trigger], [data-compact-model-trigger], [data-composer-model-picker]',
+    );
     trigger?.focus();
     trigger?.click();
-  }, []);
-  const handleCompactFromError = useCallback(() => {
-    if (composerDisabled) return;
-    void client.compactSession(sessionId, { strategy: 'summarize' }).catch((error: unknown) => {
-      pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
-    });
-  }, [client, composerDisabled, sessionId]);
+  }, [slots.dock]);
 
   const chrome = (
     <ActiveDraftKeyProvider sessionId={sessionId} draftKey={draftKey}>
@@ -1891,7 +1890,6 @@ function ChildAgentWorkspace({
         onRetryFailedTurn: composerDisabled ? undefined : handleRetryFailedTurn,
         onOpenModelPicker: composerDisabled ? undefined : handleOpenModelPicker,
         onOpenProviderSettings: navigation.openProviderSettings,
-        onCompactContext: composerDisabled ? undefined : handleCompactFromError,
         onRecoverInterruption: composerDisabled ? undefined : handleRecoverInterruption,
         recoveringInterruption,
         modelCatalog: modelsQuery.data?.items,
@@ -1900,7 +1898,7 @@ function ChildAgentWorkspace({
         visible: transcriptVisible,
       }}
       annotations={annotationSurface}
-      dock={<div className="space-y-2 pt-2">
+      dock={<div ref={dockScopeRef} className="space-y-2 pt-2">
         <SubmissionRecovery sessionId={sessionId} agentId={agentId} draftKey={draftKey} state={timelineState} />
         <ResyncStatusBanner
           resyncing={sessionState.resyncing} resyncFailed={sessionState.resyncFailed}

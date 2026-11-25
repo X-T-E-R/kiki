@@ -724,6 +724,18 @@ describe('delivery note contract', () => {
       ),
     }), externalPartial.t, 'zh');
     expect(externalPartial.calls).toContainEqual(['message.channelPartial', { channel: 'im:feishu' }]);
+
+    const ttsQuotaPartial = record();
+    const notes = deliveryNotes(message({
+      channels: channels({
+        channelId: 'internal',
+        status: 'partial',
+        unsupported: ['voice'],
+        detail: 'This request exceeds your quota of 131000 characters.',
+      }),
+    }), ttsQuotaPartial.t, 'zh');
+    expect(notes[0]?.text).toContain('（This request exceeds your quota of 131000 characters.）');
+    expect(notes[0]?.title).toBe('This request exceeds your quota of 131000 characters.');
   });
 });
 

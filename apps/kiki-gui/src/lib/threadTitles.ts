@@ -15,7 +15,7 @@ const REF_TITLE_LENGTH = 8;
  * HTML snippets, or discussing tool names like `ReadMediaFile` is untouched.
  */
 const MACHINE_ENVELOPE_RE =
-  /^(?:<\/?(?:tool_call|function_call|tool_response|tool_result|system-reminder|system_instruction|antml:function_calls|invoke|parameter|kiki_envelope)\b|\{"(?:tool_call|function_call|tool_use)"\s*:)/i;
+  /^(?:<\/?(?:tool_call|function_call|tool_response|tool_result|system-reminder|system_instruction|user_request|task-notification|command-name|command-message|command-args|local-command-[a-z0-9_-]+|antml:function_calls|invoke|parameter|kiki_envelope)\b|\{"(?:tool_call|function_call|tool_use)"\s*:)/i;
 
 /** Returns undefined when `raw` is empty or a recognized machine envelope/prefix. */
 export function sanitizeDisplayTitle(raw: string | undefined): string | undefined {

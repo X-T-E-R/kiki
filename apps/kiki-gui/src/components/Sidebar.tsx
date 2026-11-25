@@ -134,7 +134,7 @@ import { DisclosureChevron, Icon, resolvePluginSlotIconName, Spinner } from './i
 import { SpaceScopeControl } from './sidebar/SpaceScopeControl';
 import { SidebarModeSwitch } from './sidebar/SidebarModeSwitch';
 import { SidebarInboxView } from './sidebar/SidebarInboxView';
-import { SidebarRowDot } from './sidebar/SidebarRowSignal';
+import { SidebarRowDot, sidebarDotKindFromLife, type SidebarRowDotKind } from './sidebar/SidebarRowSignal';
 import { partitionColdFold, partitionUnitColdFold } from './sidebar/coldFold';
 import { SessionGroupHeaderRow, SessionGroupMoreRow, SidebarLoadMoreRow } from './sidebar/SidebarGroupRows';
 import { useSidebarInfiniteDemand, type SidebarDemandTarget } from './sidebar/useSidebarInfiniteDemand';
@@ -380,9 +380,15 @@ function StatusMark({ session, state }: { session: Session; state: SessionRowSta
           : state === 'unread'
             ? t('sidebar.rowState.unread')
             : undefined;
+  const dotKind: SidebarRowDotKind = state === 'needs-me'
+    ? 'needs_you'
+    : state === 'running'
+      ? 'working'
+      : 'unread';
   return (
     <SidebarRowDot
       signal={signal}
+      kind={dotKind}
       label={title}
       dataAttr={{ 'data-session-status': state === 'read' ? 'idle' : state }}
     />
@@ -4500,6 +4506,7 @@ const RoomConversationRow = memo(function RoomConversationRow({
       >
         <SidebarRowDot
           signal={hasSignal}
+          kind={state === 'needs-me' ? 'needs_you' : state === 'running' ? 'working' : 'unread'}
           label={markTitle}
           dataAttr={{ 'data-room-status': state === 'read' ? 'idle' : state }}
         />
@@ -4972,7 +4979,7 @@ const WorkspaceGroupHeader = memo(function WorkspaceGroupHeader({
       </span>
       {foldedLife !== 'idle' ? (
         <span data-session-group-life={foldedLife} className="flex shrink-0 items-center">
-          <SidebarRowDot signal />
+          <SidebarRowDot signal kind={sidebarDotKindFromLife(foldedLife)} />
         </span>
       ) : null}
       {onNewInWorkspace !== undefined ? <span aria-hidden className="w-7 shrink-0" /> : null}
@@ -4987,7 +4994,7 @@ const WorkspaceGroupHeader = memo(function WorkspaceGroupHeader({
       </span>
     </>
   );
-  const rowClass = 'flex h-7 w-full items-center gap-2 pr-1 pl-2 text-left text-[12px] leading-4 font-normal text-ink-soft';
+  const rowClass = 'flex h-7 w-full items-center gap-2 pr-1 pl-2 text-left text-[12px] leading-4 font-bold text-ink-soft';
   return (
     <div className="group/ws sticky top-0 z-[1] bg-canvas" data-session-group-header={groupKey}>
       {foldable ? (

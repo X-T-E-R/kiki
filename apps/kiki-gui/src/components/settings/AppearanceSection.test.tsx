@@ -195,31 +195,31 @@ describe('AppearanceSection', () => {
   });
 
   it('steps conversation text size, code size, and reading width, mirrors them onto <html>, and folds into Restore defaults + Undo', async () => {
-    expect(container.querySelector('[data-prose-size-value]')?.textContent).toBe('16px');
-    expect(container.querySelector('[data-code-size-value]')?.textContent).toBe('13px');
+    expect(container.querySelector('[data-prose-size-value]')?.textContent).toBe('14.5px');
+    expect(container.querySelector('[data-code-size-value]')?.textContent).toBe('12.5px');
     expect(document.documentElement.dataset['kikiChatWidth']).toBe('standard');
     expect(document.documentElement.style.getPropertyValue('--kiki-prose-font-size')).toBe('');
     expect(document.documentElement.style.getPropertyValue('--kiki-code-font-size')).toBe('');
 
     await act(async () => { button('[data-prose-size-in]').click(); });
     await act(async () => { button('[data-prose-size-in]').click(); });
-    expect(readSettings().proseFontSize).toBe(18);
-    expect(container.querySelector('[data-prose-size-value]')?.textContent).toBe('18px');
-    expect(document.documentElement.style.getPropertyValue('--kiki-prose-font-size')).toBe('18px');
+    expect(readSettings().proseFontSize).toBe(15.5);
+    expect(container.querySelector('[data-prose-size-value]')?.textContent).toBe('15.5px');
+    expect(document.documentElement.style.getPropertyValue('--kiki-prose-font-size')).toBe('15.5px');
 
     await act(async () => { button('[data-code-size-in]').click(); });
     await act(async () => { button('[data-code-size-in]').click(); });
-    expect(readSettings().codeFontSize).toBe(15);
-    expect(container.querySelector('[data-code-size-value]')?.textContent).toBe('15px');
-    expect(document.documentElement.style.getPropertyValue('--kiki-code-font-size')).toBe('15px');
+    expect(readSettings().codeFontSize).toBe(14);
+    expect(container.querySelector('[data-code-size-value]')?.textContent).toBe('14px');
+    expect(document.documentElement.style.getPropertyValue('--kiki-code-font-size')).toBe('14px');
 
     await act(async () => { button('[data-chat-width-choice="wide"]').click(); });
     expect(readSettings().chatWidth).toBe('wide');
     expect(document.documentElement.dataset['kikiChatWidth']).toBe('wide');
 
     await act(async () => { button('[data-appearance-restore]').click(); });
-    expect(readSettings().proseFontSize).toBe(16);
-    expect(readSettings().codeFontSize).toBe(13);
+    expect(readSettings().proseFontSize).toBe(14.5);
+    expect(readSettings().codeFontSize).toBe(12.5);
     expect(readSettings().chatWidth).toBe('standard');
     expect(document.documentElement.dataset['kikiChatWidth']).toBe('standard');
     expect(document.documentElement.style.getPropertyValue('--kiki-prose-font-size')).toBe('');
@@ -227,17 +227,17 @@ describe('AppearanceSection', () => {
 
     const undo = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Undo')!;
     await act(async () => { undo.click(); });
-    expect(readSettings().proseFontSize).toBe(18);
-    expect(readSettings().codeFontSize).toBe(15);
+    expect(readSettings().proseFontSize).toBe(15.5);
+    expect(readSettings().codeFontSize).toBe(14);
     expect(readSettings().chatWidth).toBe('wide');
     expect(document.documentElement.dataset['kikiChatWidth']).toBe('wide');
-    expect(document.documentElement.style.getPropertyValue('--kiki-prose-font-size')).toBe('18px');
-    expect(document.documentElement.style.getPropertyValue('--kiki-code-font-size')).toBe('15px');
+    expect(document.documentElement.style.getPropertyValue('--kiki-prose-font-size')).toBe('15.5px');
+    expect(document.documentElement.style.getPropertyValue('--kiki-code-font-size')).toBe('14px');
 
     await act(async () => { button('[data-prose-size-reset]').click(); });
     await act(async () => { button('[data-code-size-reset]').click(); });
-    expect(readSettings().proseFontSize).toBe(16);
-    expect(readSettings().codeFontSize).toBe(13);
+    expect(readSettings().proseFontSize).toBe(14.5);
+    expect(readSettings().codeFontSize).toBe(12.5);
   });
 
   it('applies motion and prose choices at once and mirrors them onto <html>', async () => {
