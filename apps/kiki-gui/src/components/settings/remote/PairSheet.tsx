@@ -563,11 +563,14 @@ function InboundPairSheet({
     return () => { window.clearInterval(timer); };
   }, [issued]);
 
+  const refetchInboundRef = useRef(inboundStatus.refetch);
+  refetchInboundRef.current = inboundStatus.refetch;
+
   useEffect(() => {
     if (issued === null) return undefined;
-    const poll = window.setInterval(() => { void inboundStatus.refetch(); }, 2_500);
+    const poll = window.setInterval(() => { void refetchInboundRef.current(); }, 2_500);
     return () => { window.clearInterval(poll); };
-  }, [issued, inboundStatus]);
+  }, [issued]);
 
   const generateCode = useCallback(async () => {
     if (savingRef.current || devBypass) return;

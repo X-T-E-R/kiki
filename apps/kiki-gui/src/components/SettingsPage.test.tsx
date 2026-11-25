@@ -315,6 +315,18 @@ async function flush(): Promise<void> {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
+  let waitedForSuspense = false;
+  for (let attempt = 0; attempt < 200 && document.querySelector('[data-settings-suspense]') !== null; attempt += 1) {
+    waitedForSuspense = true;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    });
+  }
+  if (waitedForSuspense) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
 }
 
 function GuardedSettingsFixture() {
@@ -1847,9 +1859,10 @@ describe('SettingsPage search locating', () => {
       expect(option?.textContent).toContain(cardTitle);
 
       await click(option!);
-      for (let attempt = 0; attempt < 5; attempt++) await flush();
-
-      expect(container.querySelector('[data-settings-page-title]')?.textContent).toBe(pageTitle);
+      await vi.waitFor(async () => {
+        await flush();
+        expect(container.querySelector('[data-settings-page-title]')?.textContent).toBe(pageTitle);
+      });
       const card = container.querySelector<HTMLElement>('#st-card-subagent-default-target');
       expect(card).not.toBeNull();
       expect(scrollIntoView).toHaveBeenCalledTimes(1);
@@ -1894,8 +1907,10 @@ describe('SettingsPage search locating', () => {
         const search = container.querySelector<HTMLInputElement>('[data-settings-search]')!;
         await setInput(search, 'catalog refresh');
         await click(search.parentElement!.querySelector('[role="option"]')!);
-        await flush();
-        expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/ai?tab=providers#st-card-catalog-refresh');
+        await vi.waitFor(async () => {
+          await flush();
+          expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/ai?tab=providers#st-card-catalog-refresh');
+        });
         expect(container.querySelector('[data-ai-tab="providers"]')?.getAttribute('aria-selected')).toBe('true');
         const card = container.querySelector('#st-card-catalog-refresh');
         expect(card?.className).toContain('settings-card-flash');

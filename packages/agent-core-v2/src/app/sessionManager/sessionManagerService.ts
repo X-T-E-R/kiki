@@ -603,16 +603,9 @@ export class SessionManager implements ISessionManager {
             `session ${options.sourceSessionId} does not exist`,
           );
         }
-        const groupId =
-          options.groupId ??
-          (this.instantiation !== undefined
-            ? (await this.instantiation.invokeFunction((accessor) =>
-                ensureSessionGroupUnguarded(accessor, options.sourceSessionId),
-              )).groupId
-            : undefined);
         return this.runWorkspaceOperation(
           target.workspaceId,
-          () => target.controller.fork({ ...options, groupId }),
+          () => target.controller.fork(options),
           target.release,
         );
       },
@@ -632,16 +625,9 @@ export class SessionManager implements ISessionManager {
             `session ${options.sourceSessionId} does not exist`,
           );
         }
-        const groupId =
-          options.groupId ??
-          (this.instantiation !== undefined
-            ? (await this.instantiation.invokeFunction((accessor) =>
-                ensureSessionGroupUnguarded(accessor, options.sourceSessionId),
-              )).groupId
-            : undefined);
         return this.runWorkspaceOperation(
           target.workspaceId,
-          () => target.controller.createChild({ ...options, groupId }),
+          () => target.controller.createChild(options),
           target.release,
         );
       },
@@ -651,11 +637,6 @@ export class SessionManager implements ISessionManager {
   async promoteAgent(options: PromoteAgentOptions): Promise<ISessionScopeHandle> {
     this.willAccessEmitter.fire(options.sourceSessionId);
     await this.awaitSessionMaintenanceRelease(options.sourceSessionId);
-    const groupId =
-      options.groupId ??
-      (this.instantiation !== undefined
-        ? (await this.ensureSessionGroup(options.sourceSessionId)).groupId
-        : undefined);
     const source = await this.controllerForSession(options.sourceSessionId);
     if (source === undefined) {
       throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${options.sourceSessionId} does not exist`);
@@ -669,7 +650,7 @@ export class SessionManager implements ISessionManager {
     const workspaceId = lease.instance.id;
     const promote = () => this.runWorkspaceOperation(
       workspaceId,
-      () => this.controllerForWorkspace(workspaceId).materializePromotion(snapshot, { ...options, groupId }),
+      () => this.controllerForWorkspace(workspaceId).materializePromotion(snapshot, options),
       () => lease.dispose(),
     );
     return options.newSessionId === undefined ? promote() : this.serializeLifecycle(options.newSessionId, promote);

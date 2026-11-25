@@ -52,23 +52,19 @@ import { RoomLinkRedirect } from './lib/conversationRoutes';
 import { ConversationShell } from './components/ConversationShell';
 import { lazyPage, PageLoadBoundary } from './components/LazyPage';
 import { PageHeader } from './components/PageChrome';
-import { QuickSwitcher } from './components/QuickSwitcher';
 import { RestartBanner } from './components/RestartBanner';
 import { SessionRouteView, type SidebarBadge } from './components/SessionView';
 import { PersonaDailyRoute } from './components/persona/PersonaDailyRoute';
 import { SpaceViewMemory, SpaceViewState } from './components/SpaceViewState';
 import { readSpaceViewRoute } from './lib/spaceViewState';
-import { ShortcutsOverlay } from './components/ShortcutsOverlay';
 import { Sidebar } from './components/Sidebar';
 import { shouldHideFromSessionGroups } from './components/persona/personaSessionUtils';
 import { usePersonaDirectory } from './components/persona/usePersonaDirectory';
 import { StorageMigrationViewComponent } from './components/storage/StorageMigrationView';
-import { SubscribeModal } from './components/settings/spaces/SubscribeModal';
 import { portableSpaceKeys } from './lib/portableSpaces';
 import { useSpaces } from './lib/spaces';
 import { useSubscribeIntentQueue } from './lib/subscribeIntent';
 import { Toasts } from './components/Toasts';
-import { WorkSetupSheet } from './components/WorkSetupSheet';
 import { useWorkModes, workPresetsEnabled } from './lib/workModeCatalog';
 import { readWindowModeId, writeWindowModeId } from './lib/workModes';
 import { landingRouteFor } from './lib/workModeStartup';
@@ -80,7 +76,7 @@ import {
   dedupeSessions,
   flattenSidebarUnitsToSessions,
   groupConversationItems,
-  hasSidebarGroupsCapability,
+  hasFlatSidebarSessionsCapability,
   mergeMultiSpaceConversationItems,
   mergeSessionFirstPage,
   projectSidebarUnitGroups,
@@ -171,10 +167,17 @@ const ArchivedSessionsPage = lazyPage(() => import('./components/ArchivedSession
 const RoomPage = lazyPage(() => import('./components/room/RoomPage').then((m) => m.RoomPage));
 const TasksPage = lazyPage(() => import('./components/TasksPage').then((m) => m.TasksPage));
 const WorkPage = lazyPage(() => import('./components/WorkPage').then((m) => m.WorkPage));
+const QuickSwitcher = lazyPage(() => import('./components/QuickSwitcher').then((m) => m.QuickSwitcher));
+const ShortcutsOverlay = lazyPage(() => import('./components/ShortcutsOverlay').then((m) => m.ShortcutsOverlay));
+const SubscribeModal = lazyPage(() => import('./components/settings/spaces/SubscribeModal').then((m) => m.SubscribeModal));
+const WorkSetupSheet = lazyPage(() => import('./components/WorkSetupSheet').then((m) => m.WorkSetupSheet));
+const preloadGeneralSettingsSection = () => {
+  void import('./components/settings/GeneralSection').catch(() => {});
+};
 
 // The sidebar's entries for those pages, by their nav hook attribute.
 const NAV_ENTRY_PAGES: readonly (readonly [string, { preload(): void }])[] = [
-  ['[data-nav-settings]', SettingsPage],
+  ['[data-nav-settings]', { preload: () => { SettingsPage.preload(); preloadGeneralSettingsSection(); } }],
   ['[data-nav-usage]', UsagePage],
   ['[data-nav-memory]', MemoryPage],
   ['[data-nav-capabilities]', CapabilitiesPage],
@@ -383,9 +386,12 @@ function NormalApp() {
   const includePrivate = privateFilter === 'include';
   const privateOnly = privateFilter === 'only';
   const workspaceFilter = listFilters.workspaces.length === 1 ? listFilters.workspaces[0] : undefined;
-  const sessionsKey = privateFilter === 'hide'
-    ? (['sessions', showArchived, workspaceFilter] as const)
-    : (['sessions', showArchived, workspaceFilter, privateFilter] as const);
+  const sessionsKey = useMemo(
+    () => (privateFilter === 'hide'
+      ? (['sessions', showArchived, workspaceFilter] as const)
+      : (['sessions', showArchived, workspaceFilter, privateFilter] as const)),
+    [privateFilter, showArchived, workspaceFilter],
+  );
   const focusedScopeKey = spaceScopeToKey(layoutPrefs.spaceScope);
   const focusedRemoteConnId = focusedScopeKey?.startsWith('remote:')
     ? focusedScopeKey.slice('remote:'.length)
@@ -621,7 +627,7 @@ function NormalApp() {
   const isSettingsRoute = useMatch('/settings/*') !== null;
   const isUsageRoute = useMatch('/usage') !== null;
 
-  const sidebarGroupsCapable = hasSidebarGroupsCapability(meta) && client.klient?.rest?.sidebar !== undefined;
+  const sidebarGroupsCapable = hasFlatSidebarSessionsCapability(meta) && client.klient?.rest?.sidebar !== undefined;
   const sidebarSort = sidebarUnitQuerySort(layoutPrefs.sortBy);
   const sidebarUnits = useSidebarUnitsQuery({
     enabled: sidebarGroupsCapable && (!drawerClosed || backgroundReady),
@@ -1030,7 +1036,17 @@ function NormalApp() {
           fetchNextPage: sidebarUnits.fetchNextPage,
         }
       : sessionsQuery
-  ), [sidebarGroupsCapable, sidebarUnits, sessionsQuery]);
+  ), [
+    sidebarGroupsCapable,
+    sidebarUnits.isLoading,
+    sidebarUnits.isError,
+    sidebarUnits.error,
+    sidebarUnits.listData,
+    sidebarUnits.hasNextPage,
+    sidebarUnits.isFetchingNextPage,
+    sidebarUnits.fetchNextPage,
+    sessionsQuery,
+  ]);
 
   const handleLoadMoreGroupMembers = useCallback(
     async (groupId: string, targetSpaceKey: string, cursor: string) => {
@@ -1584,8 +1600,14 @@ function NormalApp() {
       </div>
   );
 
+  const toggleSidebar = useCallback(() => { setSidebarOpen((v) => !v); }, []);
+  const sidebarContextValue = useMemo(
+    () => ({ sidebarOpen, toggleSidebar, closeSidebar }),
+    [sidebarOpen, toggleSidebar, closeSidebar],
+  );
+
   return (
-    <SidebarContext.Provider value={{ sidebarOpen, toggleSidebar: () => { setSidebarOpen((v) => !v); }, closeSidebar }}>
+    <SidebarContext.Provider value={sidebarContextValue}>
     <DirtyGuardContext.Provider value={dirtyGuardValue}>
       <NavHistoryBridge>
       <DiscoveryProvider
@@ -1683,6 +1705,7 @@ function NormalApp() {
         </>
       ) : null}
 
+      <Suspense fallback={null}>
       {quickSwitcherOpen ? (
         <QuickSwitcher
           sessions={sessions}
@@ -1733,6 +1756,7 @@ function NormalApp() {
             onPickFile={() => { setWorkSetup(null); }}
           />
         ) : null}
+      </Suspense>
         <Toasts />
         {readDesktopOverride() ? (
           <button

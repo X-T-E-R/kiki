@@ -178,120 +178,15 @@ export function selectGroupOpener<T extends Pick<SessionSummary, 'id' | 'created
 
 export function resolveSessionGroupProjection(
   summaries: readonly SessionSummary[],
-  originKey: string,
+  _originKey: string,
 ): SessionSummary[] {
   if (summaries.length === 0) return [];
-  const byId = new Map<string, SessionSummary>();
-  for (const summary of summaries) byId.set(summary.id, summary);
-
-  const parentOf = new Map<string, string>();
-  const explicitOf = new Map<string, string | undefined>();
-  for (const summary of summaries) {
-    parentOf.set(summary.id, summary.id);
-    explicitOf.set(summary.id, explicitSessionGroupId(summary.custom));
-  }
-
-  const find = (id: string): string => {
-    let root = id;
-    while (parentOf.get(root) !== root) root = parentOf.get(root)!;
-    let current = id;
-    while (current !== root) {
-      const next = parentOf.get(current)!;
-      parentOf.set(current, root);
-      current = next;
-    }
-    return root;
-  };
-
-  const tryUnion = (a: string, b: string): void => {
-    const ra = find(a);
-    const rb = find(b);
-    if (ra === rb) return;
-    const tagA = explicitOf.get(ra);
-    const tagB = explicitOf.get(rb);
-    if (tagA !== undefined && tagB !== undefined && tagA !== tagB) return;
-    const winner = ra < rb ? ra : rb;
-    const loser = winner === ra ? rb : ra;
-    parentOf.set(loser, winner);
-    explicitOf.set(winner, tagA ?? tagB);
-  };
-
-  const ordered = [...summaries].sort(compareDeterministicMember);
-  for (const child of ordered) {
-    if (isSessionGroupDetached(child.custom)) continue;
-    if (parseSessionGroupGeneration(child.custom) > 0) continue;
-    const parentId = legacyLocalParentIdOf(child);
-    if (parentId === undefined) continue;
-    const parent = byId.get(parentId);
-    if (parent === undefined) continue;
-    const childExplicit = explicitSessionGroupId(child.custom);
-    const parentExplicit = explicitSessionGroupId(parent.custom);
-    const parentPostDetach =
-      isSessionGroupDetached(parent.custom) || parseSessionGroupGeneration(parent.custom) > 0;
-    if (parentPostDetach) {
-      if (childExplicit === undefined) {
-        const root = find(child.id);
-        if (explicitOf.get(root) === undefined) {
-          const seenAncestors = new Set<string>([child.id]);
-          let ancestor = parent;
-          while (!seenAncestors.has(ancestor.id)) {
-            seenAncestors.add(ancestor.id);
-            const nextParentId = legacyLocalParentIdOf(ancestor);
-            if (nextParentId === undefined) break;
-            const nextAncestor = byId.get(nextParentId);
-            if (nextAncestor === undefined) break;
-            ancestor = nextAncestor;
-          }
-          const ancestorExplicit =
-            parseSessionGroupGeneration(ancestor.custom) === 0
-              ? explicitSessionGroupId(ancestor.custom)
-              : undefined;
-          explicitOf.set(root, ancestorExplicit ?? deriveSessionGroupToken(originKey, ancestor.id, 0));
-        }
-      }
-      continue;
-    }
-    if (childExplicit === undefined) {
-      tryUnion(child.id, parent.id);
-    } else if (parentExplicit === undefined) {
-      tryUnion(child.id, parent.id);
-    }
-  }
-
-  const components = new Map<string, SessionSummary[]>();
-  for (const summary of summaries) {
-    const root = find(summary.id);
-    let bucket = components.get(root);
-    if (bucket === undefined) {
-      bucket = [];
-      components.set(root, bucket);
-    }
-    bucket.push(summary);
-  }
-
-  const resolvedGroupById = new Map<string, string | undefined>();
-  for (const [root, members] of components) {
-    const explicitTag = explicitOf.get(root);
-    if (explicitTag !== undefined) {
-      for (const member of members) {
-        resolvedGroupById.set(member.id, isSessionGroupDetached(member.custom) ? undefined : explicitTag);
-      }
-    } else if (members.length >= 2) {
-      const opener = selectGroupOpener(members);
-      const token = deriveSessionGroupToken(originKey, opener.id, 0);
-      for (const member of members) resolvedGroupById.set(member.id, token);
-    } else {
-      resolvedGroupById.set(members[0]!.id, undefined);
-    }
-  }
-
   return summaries.map((summary) => {
-    const nextGroupId = resolvedGroupById.get(summary.id);
     const nextDetached = isSessionGroupDetached(summary.custom) ? true : undefined;
-    if (summary.groupId === nextGroupId && summary.groupDetached === nextDetached) return summary;
+    if (summary.groupId === undefined && summary.groupDetached === nextDetached) return summary;
     return {
       ...summary,
-      groupId: nextGroupId,
+      groupId: undefined,
       groupDetached: nextDetached,
     };
   });

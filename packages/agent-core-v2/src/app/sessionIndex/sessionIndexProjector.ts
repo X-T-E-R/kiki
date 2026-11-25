@@ -10,6 +10,7 @@ import {
   CREATED_BY_INDEX_NAME,
   GROUP_ID_INDEX_NAME,
   LEGACY_SESSION_INDEX_MANIFEST,
+  LEGACY_V7_SESSION_INDEX_MANIFEST,
   PARENT_INDEX_NAME,
   SESSION_INDEX_MANIFEST,
   SESSION_SOURCE_ROOT_KEY,
@@ -20,6 +21,11 @@ import {
   legacySessionCountersCollection,
   legacySessionSourcesCollection,
   legacySessionWorkspaceSourcesCollection,
+  legacyV7SessionCollection,
+  legacyV7SessionCountersCollection,
+  legacyV7SessionSourcesCollection,
+  legacyV7SessionWorkspaceSourcesCollection,
+  legacyV7SidebarUnitCollection,
   recencyColumn,
   sessionCollection,
   sessionCountersCollection,
@@ -485,6 +491,24 @@ export class SessionIndexProjector {
       } catch (error) {
         log.warn('failed to drop legacy session index generation', {
           generation: legacyManifest.seq,
+          error: String(error),
+        });
+      }
+    }
+
+    const legacyV7Manifest = await queryStore.getCheckpoint(LEGACY_V7_SESSION_INDEX_MANIFEST);
+    if (legacyV7Manifest !== undefined) {
+      try {
+        await Promise.all([
+          queryStore.dropCollection(legacyV7SessionCollection(legacyV7Manifest.seq)),
+          queryStore.dropCollection(legacyV7SidebarUnitCollection(legacyV7Manifest.seq)),
+          queryStore.dropCollection(legacyV7SessionCountersCollection(legacyV7Manifest.seq)),
+          queryStore.dropCollection(legacyV7SessionSourcesCollection(legacyV7Manifest.seq)),
+          queryStore.dropCollection(legacyV7SessionWorkspaceSourcesCollection(legacyV7Manifest.seq)),
+        ]);
+      } catch (error) {
+        log.warn('failed to drop legacy v7 session index generation', {
+          generation: legacyV7Manifest.seq,
           error: String(error),
         });
       }

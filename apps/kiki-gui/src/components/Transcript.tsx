@@ -4413,14 +4413,23 @@ function captureTranscriptAnchor(
     offset: item === undefined ? 0 : scrollOffset - item.start,
     ...modelMeta,
   };
-  if (!measured || scroll === null) return modelAnchor;
+  if (!measured || scroll === null || modelAnchor.atEnd) return modelAnchor;
   const top = scroll.getBoundingClientRect().top;
-  const rows = [...scroll.querySelectorAll<HTMLElement>('[data-transcript-virtual-item]')]
-    .map((row) => ({ row, box: row.getBoundingClientRect() }));
   // Direct DOM updates and the model can settle on different frames. Select
   // the row the reader actually sees, never an unmounted model-only key.
-  const row = rows.find(({ box }) => box.top <= top && box.bottom > top)?.row
-    ?? rows.filter(({ box }) => box.top >= top).sort((left, right) => left.box.top - right.box.top)[0]?.row;
+  let row: HTMLElement | undefined;
+  let nearestBelowTop = Number.POSITIVE_INFINITY;
+  for (const candidate of scroll.querySelectorAll<HTMLElement>('[data-transcript-virtual-item]')) {
+    const box = candidate.getBoundingClientRect();
+    if (box.top <= top && box.bottom > top) {
+      row = candidate;
+      break;
+    }
+    if (box.top >= top && box.top < nearestBelowTop) {
+      nearestBelowTop = box.top;
+      row = candidate;
+    }
+  }
   if (row === undefined) return modelAnchor;
   const rowIndex = Number(row.dataset['index']);
   const rowKey = virtualizer.options.getItemKey(rowIndex);
@@ -7261,9 +7270,10 @@ export const Transcript = memo(function Transcript({
     }
   }, [controller, agentId, state.sessionId, visible, cutStepsTurnKey]);
   const rekeyedFoldAnchorRef =useRef<{ blockId: string; offset: number; intent: number; controller: AbortController; started: boolean } | null>(null);
+  const departingRef = useRef(false);
   const captureRekeyedFold = useCallback((row: HTMLDivElement) => {
     const scroll = scrollRef.current;
-    if (!visibleRef.current || navRestorePendingRef.current || olderInflightRef.current || scroll === null || !row.isConnected) return;
+    if (departingRef.current || !visibleRef.current || navRestorePendingRef.current || olderInflightRef.current || scroll === null || !row.isConnected) return;
     const fold = row.querySelector('[data-history-fold-open]')?.closest<HTMLElement>('[data-block-id]');
     const oldKey = fold?.dataset['blockId'];
     if (oldKey === undefined || nodeIndexesRef.current.has(oldKey)
@@ -7957,12 +7967,16 @@ export const Transcript = memo(function Transcript({
   // Freeze source geometry before the virtualizer's layout cleanup detaches
   // its scroll element and publishes a temporary end anchor.
   useInsertionEffect(() => () => {
+    departingRef.current = true;
     readingIntentRef.current += 1;
     olderIntentRef.current = false;
     departingReadingAnchorRef.current = visibleRef.current && scrollRef.current?.isConnected === true && virtualizer.scrollElement === scrollRef.current
       ? captureTranscriptAnchor(virtualizer, true, virtualNodesRef.current, isFollowingBottom()) : navViewportAnchorRef.current;
   }, [reading.visitId, virtualizer]);
-  useLayoutEffect(() => { departingReadingAnchorRef.current = null; }, [reading.visitId]);
+  useLayoutEffect(() => {
+    departingRef.current = false;
+    departingReadingAnchorRef.current = null;
+  }, [reading.visitId]);
   useEffect(() => { setReadingRestoreFailed(null); }, [reading.visitId]);
   useEffect(() => () => {
     seekRequestRef.current?.abort();

@@ -80,6 +80,7 @@ describe('usage query freshness', () => {
     const otherScope = new QueryClient();
     const key = ['usage-v2', { range: 'today' }];
     queries.setQueryData(key, 1);
+    queries.setQueryData(['sessions', 'sidebar-units'], { pages: [] });
     queries.setQueryData(['agentCapabilities', { session_id: 'session-a', agent_id: 'main' }], 1);
     queries.setQueryData(['agentCapabilities', { session_id: 'session-b', agent_id: 'main' }], 1);
     otherScope.setQueryData(key, 99);
@@ -87,6 +88,7 @@ describe('usage query freshness', () => {
     const off = subscribeUsageFreshness(event.klient, queries);
     event.emit();
     await vi.waitFor(() => expect(queries.getQueryState(key)?.isInvalidated).toBe(true));
+    expect(queries.getQueryState(['sessions', 'sidebar-units'])?.isInvalidated).toBe(false);
     expect(queries.getQueryState(['agentCapabilities', { session_id: 'session-b', agent_id: 'main' }])?.isInvalidated).toBe(false);
     expect(otherScope.getQueryState(key)?.isInvalidated).toBe(false);
     const read = vi.fn(async () => 2);
@@ -95,6 +97,7 @@ describe('usage query freshness', () => {
     await vi.waitFor(() => expect(observer.getCurrentResult().data).toBe(2));
     event.attached();
     await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    expect(queries.getQueryState(['sessions', 'sidebar-units'])?.isInvalidated).toBe(true);
     off(); stop(); queries.clear(); otherScope.clear();
   });
 

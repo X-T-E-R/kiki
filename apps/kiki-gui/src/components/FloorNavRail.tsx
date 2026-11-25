@@ -6,7 +6,7 @@
  * Clicking a tick jumps the row to the top of the viewport.
  */
 
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Virtualizer } from '@tanstack/react-virtual';
 
 import { buildFloorEntries, type Block, type FloorEntry } from '@kiki/session-core/session';
@@ -111,31 +111,48 @@ function FloorNavRailBody({
   const [hovering, setHovering] = useState(false);
   const [activeId, setActiveId] = useState<string | undefined>(undefined);
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const revealedRef = useRef(false);
   const totalSize = virtualizer.getTotalSize();
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     const scroll = scrollRef.current;
     if (scroll === null || entries.length < 2) {
       setActiveId(undefined);
       return;
     }
-    const next = resolveVirtualFloorId(entries, nodeIndexes, virtualizer, scroll.scrollTop, resolveBlockLocation);
+    const viewportTop = virtualizer.scrollOffset ?? scroll.scrollTop;
+    const next = resolveVirtualFloorId(entries, nodeIndexes, virtualizer, viewportTop, resolveBlockLocation);
     setActiveId((previous) => (previous === next ? previous : next));
   }, [entries, nodeIndexes, resolveBlockLocation, scrollRef, virtualizer, totalSize]);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     const scroll = scrollRef.current;
     if (scroll === null || entries.length < 2) return;
-    const onScroll = () => {
-      setRevealed(true);
+    let rafId: number | undefined;
+    const updateActive = () => {
+      rafId = undefined;
       const next = resolveVirtualFloorId(entries, nodeIndexes, virtualizer, scroll.scrollTop, resolveBlockLocation);
       setActiveId((previous) => (previous === next ? previous : next));
+    };
+    const onScroll = () => {
+      if (!revealedRef.current) {
+        revealedRef.current = true;
+        setRevealed(true);
+      }
+      if (rafId === undefined) {
+        rafId = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(updateActive) : undefined;
+        if (rafId === undefined) updateActive();
+      }
       if (idleTimer.current !== null) clearTimeout(idleTimer.current);
-      idleTimer.current = setTimeout(() => { setRevealed(false); }, REVEAL_IDLE_MS);
+      idleTimer.current = setTimeout(() => {
+        revealedRef.current = false;
+        setRevealed(false);
+      }, REVEAL_IDLE_MS);
     };
     scroll.addEventListener('scroll', onScroll, { passive: true });
     return () => {
       scroll.removeEventListener('scroll', onScroll);
+      if (rafId !== undefined) cancelAnimationFrame(rafId);
       if (idleTimer.current !== null) clearTimeout(idleTimer.current);
     };
   }, [entries, nodeIndexes, resolveBlockLocation, scrollRef, virtualizer]);

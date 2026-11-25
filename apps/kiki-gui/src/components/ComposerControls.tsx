@@ -174,17 +174,42 @@ export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, o
     measure();
     // The ref lands in the same commit, after this effect; one frame later it
     // is there, so the resting values exist before any panel opens.
-    const frame = requestAnimationFrame(measure);
+    let frame: number | undefined = requestAnimationFrame(() => {
+      frame = undefined;
+      measure();
+    });
+    const scheduleMeasure = () => {
+      if (frame !== undefined) return;
+      frame = requestAnimationFrame(() => {
+        frame = undefined;
+        measure();
+      });
+    };
+    const onScroll = (event: Event) => {
+      if (open === false) return;
+      const target = event.target;
+      const card = cardRef.current;
+      if (
+        open === undefined &&
+        card !== null &&
+        target instanceof Node &&
+        target !== document &&
+        !target.contains(card)
+      ) {
+        return;
+      }
+      scheduleMeasure();
+    };
     root.addEventListener('pointerdown', measure, true);
     root.addEventListener('keydown', measure, true);
-    window.addEventListener('resize', measure);
-    window.addEventListener('scroll', measure, true);
+    window.addEventListener('resize', scheduleMeasure);
+    window.addEventListener('scroll', onScroll, true);
     return () => {
-      cancelAnimationFrame(frame);
+      if (frame !== undefined) cancelAnimationFrame(frame);
       root.removeEventListener('pointerdown', measure, true);
       root.removeEventListener('keydown', measure, true);
-      window.removeEventListener('resize', measure);
-      window.removeEventListener('scroll', measure, true);
+      window.removeEventListener('resize', scheduleMeasure);
+      window.removeEventListener('scroll', onScroll, true);
       observer?.disconnect();
     };
   }, [rootRef, cardRef, open]);

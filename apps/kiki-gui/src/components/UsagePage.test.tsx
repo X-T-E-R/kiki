@@ -241,10 +241,14 @@ async function renderPage(entry = '/usage?panel=history', options: { flush?: boo
     );
   });
   if (options.flush !== false) {
-    // Flush react-query promise resolution + re-render (a few macrotask turns).
+    // Flush react-query promise resolution + lazy chunk imports + re-render.
     for (let i = 0; i < 5; i += 1) {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     }
+    for (let attempt = 0; attempt < 40 && container.querySelector('[data-usage-suspense]') !== null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
+    }
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   }
   return { container, root, queryClient };
 }
@@ -321,6 +325,10 @@ describe('UsagePage (V2)', () => {
     expect(container.querySelector('[data-usage-summary-cost]')).toBeNull();
     await act(async () => { complete(usageResponse({ summaryCost: 8.75 })); });
     for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    for (let attempt = 0; attempt < 40 && container.querySelector('[data-usage-suspense]') !== null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
+    }
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(getUsage).toHaveBeenCalledTimes(1);
     expect(getSession).not.toHaveBeenCalled();
     expect(getProviderQuotas).not.toHaveBeenCalled();
@@ -480,7 +488,9 @@ describe('UsagePage (V2)', () => {
     const items = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
     expect(items.map((item) => item.textContent)).toEqual(['Model prices (1 missing)', 'Export']);
     await act(async () => { items[1]!.click(); });
-    expect(container.querySelector('[data-location-probe]')?.textContent).toBe('/usage?panel=export');
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-location-probe]')?.textContent).toBe('/usage?panel=export');
+    });
     // Export is a view without a tab: no tab claims to be current.
     expect(container.querySelector('[data-usage-panel][aria-current="page"]')).toBeNull();
     await act(async () => { root.unmount(); });
@@ -1929,7 +1939,9 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
     const unpricedTrigger = container.querySelector<HTMLButtonElement>('[data-usage-unpriced-trigger]')!;
     expect(unpricedTrigger).not.toBeNull();
     await act(async () => { unpricedTrigger.click(); });
-    expect(document.body.querySelector('[data-usage-pricing-panel]')).not.toBeNull();
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-usage-pricing-panel]')).not.toBeNull();
+    });
     await act(async () => { root.unmount(); });
   });
 

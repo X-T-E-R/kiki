@@ -65,7 +65,8 @@ function advanceSessionUsage(session: PanelUsageSession, revision: number, agent
 
 function isUsageRead(query: Query, source: UsageSource | undefined): boolean {
   const [key, scope] = query.queryKey;
-  if (key === 'usage-v2' || key === 'usage-v2-strip' || key === 'usage-v2-strip-session' || key === 'sessions') return true;
+  if (key === 'usage-v2' || key === 'usage-v2-strip' || key === 'usage-v2-strip-session') return true;
+  if (key === 'sessions') return source === undefined;
   if (key === 'session') return source?.sessionId === undefined || scope === source.sessionId;
   if (key !== 'agentCapabilities' || query.queryKey.at(-1) === 'catalog') return false;
   if (source === undefined) return true;

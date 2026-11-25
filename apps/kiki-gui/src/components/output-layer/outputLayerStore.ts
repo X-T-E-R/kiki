@@ -150,6 +150,10 @@ class OutputLayerStore {
 
   // Configuration management via backend client
   public setConfiguration(config: OutputLayerConfiguration | null, contextKey?: string) {
+    const previous = contextKey ? (this.configurations[contextKey] ?? null) : this.configuration;
+    if (previous === config || (previous !== null && config !== null && JSON.stringify(previous) === JSON.stringify(config))) {
+      return;
+    }
     if (contextKey) {
       this.configurations[contextKey] = config;
     } else {
@@ -171,13 +175,22 @@ class OutputLayerStore {
   ): Promise<OutputLayerConfiguration> {
     try {
       const config = await client.configuration(options?.sessionId ? { sessionId: options.sessionId } : undefined);
+      const prevScoped = options?.contextKey ? (this.configurations[options.contextKey] ?? null) : null;
+      const prevGlobal = this.configuration;
+      let changed = false;
       if (options?.contextKey) {
-        this.configurations[options.contextKey] = config;
+        if (prevScoped === null || JSON.stringify(prevScoped) !== JSON.stringify(config)) {
+          this.configurations[options.contextKey] = config;
+          changed = true;
+        }
       }
       if (!options?.contextKey || !options?.sessionId) {
-        this.configuration = config;
+        if (prevGlobal === null || JSON.stringify(prevGlobal) !== JSON.stringify(config)) {
+          this.configuration = config;
+          changed = true;
+        }
       }
-      this.notify();
+      if (changed) this.notify();
       return config;
     } catch (err) {
       const fallback: OutputLayerConfiguration = {

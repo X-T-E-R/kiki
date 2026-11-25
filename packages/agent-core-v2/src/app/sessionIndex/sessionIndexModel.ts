@@ -1,9 +1,10 @@
 import type { IQueryStore, WriteOp } from '#/persistence/interface/queryStore';
 import type { SessionSummary } from './sessionIndex';
 
-export const SESSION_INDEX_STORAGE_VERSION = 7;
+export const SESSION_INDEX_STORAGE_VERSION = 8;
 export const SESSION_INDEX_MANIFEST = `sessionIndex:v${SESSION_INDEX_STORAGE_VERSION}`;
 export const LEGACY_SESSION_INDEX_MANIFEST = 'sessionIndex:v6';
+export const LEGACY_V7_SESSION_INDEX_MANIFEST = 'sessionIndex:v7';
 export const SESSION_INDEX_REVISION = `${SESSION_INDEX_MANIFEST}:revision`;
 
 /** Build a revision-bump op to commit inside the same atomic batch as derived index mutations. */
@@ -113,6 +114,26 @@ export function legacySessionSourcesCollection(generation: number): string {
 
 export function legacySessionWorkspaceSourcesCollection(generation: number): string {
   return `sessionWorkspaceSources:v6:g${generation}`;
+}
+
+export function legacyV7SessionCollection(generation: number): string {
+  return `session:v7:g${generation}`;
+}
+
+export function legacyV7SidebarUnitCollection(generation: number): string {
+  return `sidebarUnit:v7:g${generation}`;
+}
+
+export function legacyV7SessionCountersCollection(generation: number): string {
+  return `sessionCounters:v7:g${generation}`;
+}
+
+export function legacyV7SessionSourcesCollection(generation: number): string {
+  return `sessionSources:v7:g${generation}`;
+}
+
+export function legacyV7SessionWorkspaceSourcesCollection(generation: number): string {
+  return `sessionWorkspaceSources:v7:g${generation}`;
 }
 
 /**

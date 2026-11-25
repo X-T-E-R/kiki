@@ -174,16 +174,16 @@ describe('attached conversation recency', () => {
     const groups = groupConversationItems(mergeConversationItems(sessions, [], { parent: 10 }), { groupBy, workspaces, filters, nowMs, order });
     return projectAttachedConversationGroups(groups, { groupBy, order, topLevelIds, sessions, nowMs, labels: { today: 'Today', week: 'Week' } });
   }
-  it('reorders on the metaUpdated point-read merge path and matches a cold baseline without borrowing unread or own time', () => {
+  it('keeps each session on its own clock without borrowing child or sibling activity', () => {
     const pinned = session({ id: 'pinned', updated_at: old, metadata: { cwd: '/example', 'kiki.pinned': true } });
     const previous: SessionListData = { pages: [{ items: [pinned, other], has_more: true, next_cursor: 'other' }, { items: [parent, child], has_more: false }], pageParams: [undefined, 'other'] };
     const before = structuredClone(previous);
-    const ids = (sessions: readonly Session[]) => project(sessions)[0]!.items.filter((item) => item.id !== 'child').map((item) => item.id);
-    expect(ids(dedupeSessions(previous))).toEqual(['pinned', 'other', 'parent']);
-    const childRead = { ...child, updated_at: fresh, last_seq: 13 };
+    const ids = (sessions: readonly Session[]) => project(sessions)[0]!.items.map((item) => item.id);
+    expect(ids(dedupeSessions(previous))).toEqual(['pinned', 'other', 'parent', 'child']);
+    const childRead = { ...child, own_updated_at: fresh, updated_at: fresh, last_seq: 13 };
     const afterChild = mergeSessionActivity(previous, childRead)!;
-    expect(ids(dedupeSessions(afterChild))).toEqual(['pinned', 'parent', 'other']);
-    const parentRead = { ...parent, updated_at: fresh };
+    expect(ids(dedupeSessions(afterChild))).toEqual(['pinned', 'child', 'other', 'parent']);
+    const parentRead = { ...parent, own_updated_at: fresh, updated_at: fresh };
     const afterParent = mergeSessionActivity(afterChild, parentRead)!;
     const live = dedupeSessions(afterParent);
     expect(ids(live)).toEqual(ids([pinned, other, parentRead, childRead]));
@@ -192,40 +192,25 @@ describe('attached conversation recency', () => {
     expect(previous).toEqual(before);
     const row = project(live)[0]!.items.find((item) => item.id === 'parent')!;
     expect(row.updated_at).toBe(fresh);
-    expect(row.kind === 'session' && row.session).toMatchObject({ own_updated_at: old, last_seq: 10 });
     expect(row.unread_count).toBe(0);
     expect(mergeSessionActivity(afterParent, child)).toEqual(afterParent);
   });
-  it('uses the authoritative family aggregate when an attached child page is not loaded, and moves the time bucket', () => {
+  it('uses own_updated_at rather than borrowing family aggregate timestamps across time buckets', () => {
     const freshParent = { ...parent, updated_at: fresh };
-    expect(project([other, freshParent])[0]!.items.map((item) => item.id)).toEqual(['parent', 'other']);
-    expect(project([other, freshParent], new Set(), 'time').map((group) => [group.key, group.label, group.items.map((item) => item.id)]))
-      .toEqual([['today', 'Today', ['parent']], ['week', 'Week', ['other']]]);
+    expect(project([other, freshParent])[0]!.items.map((item) => item.id)).toEqual(['other', 'parent']);
+    expect(project([other, freshParent], new Set(), 'time').map((group) => [group.key, group.items.map((item) => item.id)]))
+      .toEqual([['week', ['other', 'parent']]]);
     expect(freshParent.own_updated_at).toBe(old);
   });
-  it('cuts explicit promoted subtrees, but retains activity from ordinary attached siblings', () => {
+  it('keeps sibling and promoted sessions independently ordered by their own clocks', () => {
     const promoted = { ...child, own_updated_at: fresh, updated_at: fresh };
     const aggregated = { ...parent, updated_at: fresh };
     expect(project([aggregated, promoted, other], new Set(['child']))[0]!.items.map((item) => item.id)).toEqual(['child', 'other', 'parent']);
-    expect(project([aggregated, promoted, other])[0]!.items.filter((item) => item.id !== 'child').map((item) => item.id)).toEqual(['parent', 'other']);
-    const sibling = session({ id: 'sibling', own_updated_at: old, updated_at: '2026-10-05T10:00:00Z', metadata: { cwd: '/example', parent_session_id: 'parent', child_session_kind: 'child' } });
-    expect(project([aggregated, promoted, sibling, other], new Set(['child']))[0]!.items.filter((item) => item.id !== 'child' && item.id !== 'sibling').map((item) => item.id)).toEqual(['parent', 'other']);
-    expect(promoted.metadata).toEqual(child.metadata);
-    const newerAggregate = { ...parent, updated_at: '2026-10-06T11:30:00Z' };
-    expect(project([newerAggregate, promoted, other], new Set(['child']))[0]!.items.map((item) => item.id)).toEqual(['parent', 'child', 'other']);
-    const ownFamilyActivity = { ...promoted, own_updated_at: old };
-    expect(project([aggregated, ownFamilyActivity, other], new Set(['child']))[0]!.items.map((item) => item.id)).toEqual(['child', 'other', 'parent']);
-  });
-  it('does not treat temporary top-level placement as promotion or cross meaningful pin/workspace boundaries', () => {
-    const orphan = { ...child, updated_at: fresh, metadata: { ...child.metadata, created_by_session_id: 'unloaded' } };
-    expect(project([orphan, other])[0]!.items.map((item) => item.id)).toEqual(['child', 'other']);
-    const grandchild = { ...orphan, metadata: { ...orphan.metadata, created_by_session_id: 'hidden-mid' } };
-    const hiddenMid = session({ id: 'hidden-mid', archived: true, metadata: { cwd: '/example', created_by_session_id: 'parent' } });
-    expect(project([{ ...parent, updated_at: fresh }, hiddenMid, grandchild, other])[0]!.items.filter((item) => item.id !== 'child').map((item) => item.id)).toEqual(['parent', 'other']);
-    const pinned = { ...child, updated_at: fresh, metadata: { ...child.metadata, 'kiki.pinned': true } };
+    expect(project([aggregated, promoted, other])[0]!.items.map((item) => item.id)).toEqual(['child', 'other', 'parent']);
+    const pinned = { ...child, own_updated_at: fresh, updated_at: fresh, metadata: { ...child.metadata, 'kiki.pinned': true } };
     expect(project([{ ...parent, updated_at: fresh }, pinned, other], new Set(), 'time').map((group) => [group.key, group.items.map((item) => item.id)]))
       .toEqual([['pinned', ['child']], ['week', ['other', 'parent']]]);
-    const remoteChild = { ...child, workspace_id: 'ws-room', updated_at: fresh };
+    const remoteChild = { ...child, workspace_id: 'ws-room', own_updated_at: fresh, updated_at: fresh };
     expect(project([{ ...parent, updated_at: fresh }, remoteChild, other], new Set(), 'workspace').map((group) => [group.key, group.items.map((item) => item.id)]))
       .toEqual([['ws-thread', ['other', 'parent']], ['ws-room', ['child']]]);
   });

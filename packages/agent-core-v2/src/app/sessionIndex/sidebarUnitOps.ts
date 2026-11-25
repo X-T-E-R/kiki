@@ -9,11 +9,7 @@ import type {
 } from '#/persistence/interface/queryStore';
 
 import type { SessionSummary } from './sessionIndex';
-import {
-  legacyLocalParentIdOf,
-  parseSessionGroupGeneration,
-  selectGroupOpener,
-} from './sessionGroup';
+import { selectGroupOpener } from './sessionGroup';
 import {
   SESSION_PIN_METADATA_KEY,
   buildSidebarUnitColumns,
@@ -59,17 +55,8 @@ export function* yieldAllSidebarUnitWriteOps(
 
 export function inheritLegacyGroupId(
   next: SessionSummary,
-  old: SessionSummary | undefined,
+  _old: SessionSummary | undefined,
 ): SessionSummary {
-  if (
-    next.groupId === undefined &&
-    next.groupDetached !== true &&
-    parseSessionGroupGeneration(next.custom) === 0 &&
-    old?.groupId !== undefined &&
-    legacyLocalParentIdOf(next) === legacyLocalParentIdOf(old)
-  ) {
-    return { ...next, groupId: old.groupId };
-  }
   return next;
 }
 

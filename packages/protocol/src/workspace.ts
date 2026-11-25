@@ -19,6 +19,7 @@ export const workspaceSchema = /* @__PURE__ */ z.object({
   session_count: z.number().int().nonnegative(),
   pinned: z.boolean(),
   isGit: z.boolean(),
+  trusted: z.boolean().optional(),
 });
 
 export type Workspace = z.infer<typeof workspaceSchema>;

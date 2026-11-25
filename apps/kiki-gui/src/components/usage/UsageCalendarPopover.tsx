@@ -63,6 +63,29 @@ function formatYmd(dayStartMs: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+const CALENDAR_SHORT_DATE_FORMATS = new Map<string, Intl.DateTimeFormat>();
+const CALENDAR_MONTH_TITLE_FORMATS = new Map<string, Intl.DateTimeFormat>();
+
+function calendarShortDateFormat(locale: string): Intl.DateTimeFormat {
+  const tag = locale === 'zh' ? 'zh-CN' : 'en-US';
+  let fmt = CALENDAR_SHORT_DATE_FORMATS.get(tag);
+  if (fmt === undefined) {
+    fmt = new Intl.DateTimeFormat(tag, { month: 'short', day: 'numeric' });
+    CALENDAR_SHORT_DATE_FORMATS.set(tag, fmt);
+  }
+  return fmt;
+}
+
+function calendarMonthTitleFormat(locale: string): Intl.DateTimeFormat {
+  const tag = locale === 'zh' ? 'zh-CN' : 'en-US';
+  let fmt = CALENDAR_MONTH_TITLE_FORMATS.get(tag);
+  if (fmt === undefined) {
+    fmt = new Intl.DateTimeFormat(tag, { year: 'numeric', month: 'long' });
+    CALENDAR_MONTH_TITLE_FORMATS.set(tag, fmt);
+  }
+  return fmt;
+}
+
 export function formatCompactDateRange(
   startAt: number | undefined,
   endAt: number | undefined,
@@ -75,10 +98,7 @@ export function formatCompactDateRange(
   const sameDay = start.getFullYear() === end.getFullYear() &&
     start.getMonth() === end.getMonth() &&
     start.getDate() === end.getDate();
-  const fmt = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', {
-    month: 'short',
-    day: 'numeric',
-  });
+  const fmt = calendarShortDateFormat(locale);
   if (sameDay) return fmt.format(start);
   return `${fmt.format(start)} – ${fmt.format(end)}`;
 }
@@ -173,10 +193,7 @@ export function UsageCalendarPopover({
     : ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
 
   const formatMonthTitle = (year: number, monthIndex: number) =>
-    new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', {
-      year: 'numeric',
-      month: 'long',
-    }).format(new Date(year, monthIndex, 1));
+    calendarMonthTitleFormat(locale).format(new Date(year, monthIndex, 1));
 
   const handleDayClick = (dayMs: number) => {
     if (draftStart === null) {

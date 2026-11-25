@@ -2057,8 +2057,8 @@ export class KikiClient {
     return this.run(this.rest.workspaces.list());
   }
 
-  listWorkspaceCatalog(): Promise<import('@kiki/protocol').ListWorkspaceCatalogResponse> {
-    return this.run(this.rest.workspaces.listCatalog());
+  listWorkspaceCatalog(opts?: { readonly includeTrust?: boolean }): Promise<import('@kiki/protocol').ListWorkspaceCatalogResponse> {
+    return this.run(this.rest.workspaces.listCatalog(opts));
   }
 
   getWorkspaceDetails(workspaceId: string): Promise<Workspace> {

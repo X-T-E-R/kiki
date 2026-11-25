@@ -29,6 +29,7 @@ import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import { useViewedRoom } from '../../lib/useAwayNotifications';
 import { ROOMS_QUERY_KEY, roomQueryKey, roomUsageQueryKey, useBotRoomApi } from '../../lib/botRooms';
+import { ROOM_ITEMS_QUERY_KEY } from '../../lib/useConversationList';
 import { pushToast } from '../../lib/toasts';
 import { floatingSurfaceZIndex, registerOverlay } from '../../lib/uiBusy';
 import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
@@ -139,13 +140,28 @@ function RoomView({
   const memberIds = room.members.map((member) => member.sessionId);
   const memberSessionsQuery = useQuery({
     queryKey: ['rooms', room.id, 'member-sessions', memberIds.join(',')],
-    queryFn: async () => (await Promise.all(memberIds.map((sessionId) => client.getSession(sessionId).catch((error: unknown) => {
-      if (error instanceof ApiError && error.code === API_CODES.SESSION_NOT_FOUND) return undefined;
-      throw error;
-    }))))
-      .filter((session): session is Session => session !== undefined),
+    queryFn: async () => {
+      const settled = await Promise.allSettled(
+        memberIds.map((sessionId) => client.getSession(sessionId).catch((error: unknown) => {
+          if (error instanceof ApiError && error.code === API_CODES.SESSION_NOT_FOUND) return undefined;
+          throw error;
+        })),
+      );
+      const fulfilled: Session[] = [];
+      let firstError: unknown;
+      for (const item of settled) {
+        if (item.status === 'fulfilled') {
+          if (item.value !== undefined) fulfilled.push(item.value);
+        } else if (firstError === undefined) {
+          firstError = item.reason;
+        }
+      }
+      if (fulfilled.length === 0 && memberIds.length > 0 && firstError !== undefined) {
+        throw firstError;
+      }
+      return fulfilled;
+    },
     refetchInterval: (query) => {
-      if (query.state.status === 'error') return false;
       if (room.paused) return ROOM_IDLE_POLL_MS;
       const anyBusy = (query.state.data ?? []).some((session) => session.busy === true)
         || sessions.some((session) => memberIds.includes(session.id) && session.busy === true);
@@ -232,7 +248,8 @@ function RoomView({
     void queryClient.invalidateQueries({ queryKey: roomQueryKey(room.id) });
     void queryClient.invalidateQueries({ queryKey: roomUsageQueryKey(room.id) });
     void queryClient.invalidateQueries({ queryKey: ['rooms', room.id, 'member-sessions'] });
-    void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY });
+    void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY, exact: true });
+    void queryClient.invalidateQueries({ queryKey: ROOM_ITEMS_QUERY_KEY });
   };
   const applyRoom = (next: RoomDocument) => {
     queryClient.setQueryData(roomQueryKey(room.id), next);

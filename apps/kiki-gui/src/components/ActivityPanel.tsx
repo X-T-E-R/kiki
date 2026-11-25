@@ -48,17 +48,34 @@ export function useSessionActivity(sessions: readonly Session[], polling = true)
   const registry = useOptionalControllerRegistry();
   const { t } = useI18n();
   const untitled = t('sidebar.untitled');
+  const getLiveSnapshot = useCallback(() => {
+    if (registry === null) return '';
+    let snap = `${registry.snapshot()}:`;
+    for (const controller of registry) {
+      snap += `${controller.sessionId}=${controller.getState().queuedPromptIds.length};`;
+    }
+    return snap;
+  }, [registry]);
+
   const subscribeLiveState = useCallback(
     (listener: () => void) => {
       if (registry === null) return noopSubscribe();
       const controllerUnsubs = new Map<SessionController, () => void>();
+      let lastSnap = getLiveSnapshot();
+
+      const notifyIfChanged = () => {
+        const nextSnap = getLiveSnapshot();
+        if (nextSnap === lastSnap) return;
+        lastSnap = nextSnap;
+        listener();
+      };
 
       const syncControllerSubscriptions = () => {
         const currentControllers = new Set<SessionController>();
         for (const controller of registry) {
           currentControllers.add(controller);
           if (!controllerUnsubs.has(controller)) {
-            controllerUnsubs.set(controller, controller.subscribe(listener));
+            controllerUnsubs.set(controller, controller.subscribe(notifyIfChanged));
           }
         }
         for (const [controller, unsub] of controllerUnsubs) {
@@ -73,7 +90,7 @@ export function useSessionActivity(sessions: readonly Session[], polling = true)
 
       const unsubRegistry = registry.subscribe(() => {
         syncControllerSubscriptions();
-        listener();
+        notifyIfChanged();
       });
 
       return () => {
@@ -84,17 +101,8 @@ export function useSessionActivity(sessions: readonly Session[], polling = true)
         controllerUnsubs.clear();
       };
     },
-    [registry],
+    [registry, getLiveSnapshot],
   );
-
-  const getLiveSnapshot = useCallback(() => {
-    if (registry === null) return '';
-    let snap = `${registry.snapshot()}:`;
-    for (const controller of registry) {
-      snap += `${controller.sessionId}=${controller.getState().queuedPromptIds.length};`;
-    }
-    return snap;
-  }, [registry]);
 
   const liveSnapshot = useSyncExternalStore(
     subscribeLiveState,
@@ -113,6 +121,7 @@ export function useSessionActivity(sessions: readonly Session[], polling = true)
       queryKey: ['activity-prompts', sessionId],
       queryFn: () => client.listPrompts(sessionId, { observe: true }),
       refetchInterval: pollInterval,
+      refetchOnWindowFocus: false,
       staleTime: pollInterval - 1_000,
       enabled: polling,
     })),
@@ -122,16 +131,39 @@ export function useSessionActivity(sessions: readonly Session[], polling = true)
       queryKey: ['activity-tasks', sessionId],
       queryFn: () => client.listTasks(sessionId, { status: 'running' }).then((data) => data.items),
       refetchInterval: pollInterval,
+      refetchOnWindowFocus: false,
       staleTime: pollInterval - 1_000,
       enabled: polling,
     })),
   });
 
+  const stablePromptDataRef = useRef<readonly unknown[]>([]);
+  const promptData = promptQueries.map((q) => q.data);
+  if (
+    promptData.length !== stablePromptDataRef.current.length
+    || promptData.some((value, index) => !Object.is(value, stablePromptDataRef.current[index]))
+  ) {
+    stablePromptDataRef.current = promptData;
+  }
+  const stablePromptData = stablePromptDataRef.current;
+
+  const stableTaskDataRef = useRef<readonly unknown[]>([]);
+  const taskData = taskQueries.map((q) => q.data);
+  if (
+    taskData.length !== stableTaskDataRef.current.length
+    || taskData.some((value, index) => !Object.is(value, stableTaskDataRef.current[index]))
+  ) {
+    stableTaskDataRef.current = taskData;
+  }
+  const stableTaskData = stableTaskDataRef.current;
+
   const model = useMemo(() => {
     const prompts = Object.fromEntries(
-      busyIds.map((id, index) => [id, promptQueries[index]?.data]),
+      busyIds.map((id, index) => [id, stablePromptData[index] as Awaited<ReturnType<typeof client.listPrompts>> | undefined]),
     );
-    const tasks = Object.fromEntries(busyIds.map((id, index) => [id, taskQueries[index]?.data]));
+    const tasks = Object.fromEntries(
+      busyIds.map((id, index) => [id, stableTaskData[index] as Awaited<ReturnType<typeof client.listTasks>>['items'] | undefined]),
+    );
     const liveQueuedCounts = Object.fromEntries(
       [...(registry ?? [])].map((controller) => [
         controller.sessionId,
@@ -139,7 +171,7 @@ export function useSessionActivity(sessions: readonly Session[], polling = true)
       ]),
     );
     return buildActivityModel({ sessions, prompts, tasks, untitled, liveQueuedCounts });
-  }, [sessions, busyIds, promptQueries, taskQueries, untitled, registry, liveSnapshot]);
+  }, [sessions, busyIds, stablePromptData, stableTaskData, untitled, registry, liveSnapshot]);
 
   // First-seen-busy anchors: the timer's fallback when the active prompt (and
   // its created_at) has not been fetched yet.

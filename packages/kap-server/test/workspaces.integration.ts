@@ -234,6 +234,10 @@ describe('server-v2 /api/workspaces', () => {
     expect(catalog.body.code).toBe(0);
     expect(catalog.body.data.items).toHaveLength(1);
     expect(Object.keys(catalog.body.data.items[0]!).sort()).toEqual(['created_at', 'id', 'last_opened_at', 'name', 'pinned', 'root']);
+    const catalogWithTrust = await getJson<{ items: (Omit<WorkspaceWire, 'session_count' | 'isGit'> & { trusted?: boolean })[] }>('/api/workspaces?view=catalog&include_trust=1');
+    expect(catalogWithTrust.body.code).toBe(0);
+    expect(catalogWithTrust.body.data.items).toHaveLength(1);
+    expect(typeof catalogWithTrust.body.data.items[0]?.trusted).toBe('boolean');
     expect(await persistence.load()).toEqual(before);
     const updated = await patchJson<Omit<WorkspaceWire, 'session_count' | 'isGit'>>(`/api/workspaces/${workspace.id}?view=catalog`, { name: 'Renamed', pinned: true });
     expect(updated.body.code).toBe(0);

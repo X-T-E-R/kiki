@@ -94,6 +94,17 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope,
       if (req.query.view === 'catalog') {
         const catalog = await core.accessor.get(IWorkspacePersistence).load();
         const items = dedupeByRoot(new Map((catalog?.workspaces ?? []).map(ws => [ws.id, ws])));
+        if (req.query.include_trust === true) {
+          const docs = core.accessor.get(IAtomicDocumentStore);
+          const projected = await Promise.all(
+            items.map(async (ws) => ({
+              ...toWireCatalogEntry(ws),
+              trusted: await readWorkspaceTrust(docs, ws.root),
+            })),
+          );
+          reply.send(okEnvelope({ items: projected }, req.id));
+          return;
+        }
         reply.send(okEnvelope({ items: items.map(toWireCatalogEntry) }, req.id));
         return;
       }

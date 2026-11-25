@@ -27,6 +27,39 @@ const VERIFIED_HANDSHAKE_TTL_MS = 60_000;
 const VERIFIED_HANDSHAKE_MAX_AGE_MS = 15 * 60_000;
 const SUMMARY_PERSIST_INTERVAL_MS = 5 * 60_000;
 const TRANSPORT_OFFLINE_STRIKES = 3;
+const DEFAULT_FORWARD_TIMEOUT_MS = 30_000;
+const SPACE_SUMMARY_FORWARD_TIMEOUT_MS = 15_000;
+const UNTIMED_FORWARD_OPERATIONS: ReadonlySet<ConnectionOperation> = new Set([
+  'prompt',
+  'promptResume',
+  'promptReplace',
+  'promptSteer',
+  'steer',
+  'outputLayerStream',
+  'procedure',
+  'procedureBatch',
+  'fileUpload',
+  'file',
+  'media',
+  'mediaPreview',
+  'documentPreview',
+  'documentPreviewAsset',
+  'htmlPreviewResource',
+  'appearanceAsset',
+  'syncBundleExport',
+  'syncBundleImport',
+  'syncFilesExport',
+  'syncFilesImport',
+  'syncSessionsExportStream',
+  'syncSessionsImportStream',
+  'meshInboundExecute',
+]);
+
+function forwardTimeoutMs(operation: ConnectionOperation): number | undefined {
+  if (operation === 'spaceSummary') return SPACE_SUMMARY_FORWARD_TIMEOUT_MS;
+  if (UNTIMED_FORWARD_OPERATIONS.has(operation)) return undefined;
+  return DEFAULT_FORWARD_TIMEOUT_MS;
+}
 
 function raceSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(signal.reason);
@@ -669,7 +702,8 @@ export class RemoteConnectionManager {
       }
     }
     const epoch = this.credentialEpoch(id);
-    const callSignal = operation === 'spaceSummary' ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : signal;
+    const timeoutMs = forwardTimeoutMs(operation);
+    const callSignal = timeoutMs === undefined ? signal : AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
     const method = CONNECTION_OPERATIONS[operation][0];
     const serializedBody = rawBody ?? (input.body === undefined ? undefined : JSON.stringify(input.body));
     const executeAttempt = async (forceProve: boolean): Promise<Response> => {

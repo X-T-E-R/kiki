@@ -12,7 +12,7 @@
  * flag by defining scroll/clientHeight on the element.
  */
 
-import { useLayoutEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 
 export interface CollapsibleOverflow<T extends HTMLElement> {
   readonly contentRef: React.RefObject<T | null>;
@@ -23,34 +23,75 @@ export interface CollapsibleOverflow<T extends HTMLElement> {
   readonly toggle: () => void;
 }
 
+const pendingOverflowMeasures = new Set<() => void>();
+let overflowRafId: number | undefined;
+
+function scheduleOverflowMeasure(measure: () => void): () => void {
+  pendingOverflowMeasures.add(measure);
+  if (overflowRafId === undefined && typeof requestAnimationFrame === 'function') {
+    overflowRafId = requestAnimationFrame(() => {
+      overflowRafId = undefined;
+      const batch = [...pendingOverflowMeasures];
+      pendingOverflowMeasures.clear();
+      for (const run of batch) run();
+    });
+  }
+  return () => {
+    pendingOverflowMeasures.delete(measure);
+  };
+}
+
 export function useCollapsibleOverflow<T extends HTMLElement>(
   contentKey: unknown,
 ): CollapsibleOverflow<T> {
   const contentRef = useRef<T>(null);
   const [isOverflowing, setIsOverflowing] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const mountedMeasuredRef = useRef(false);
   const contentId = useId();
+
+  const measure = useCallback(() => {
+    const element = contentRef.current;
+    if (element === null || !element.isConnected) return;
+    // +1: subpixel slack so a borderline-equal height doesn't report overflow.
+    const next = element.scrollHeight > element.clientHeight + 1;
+    setIsOverflowing((prev) => (prev === next ? prev : next));
+  }, []);
 
   useLayoutEffect(() => {
     if (expanded) return;
+    if (!mountedMeasuredRef.current || typeof ResizeObserver === 'undefined') {
+      mountedMeasuredRef.current = true;
+      measure();
+      return;
+    }
+    return scheduleOverflowMeasure(measure);
+  }, [contentKey, expanded, measure]);
+
+  useEffect(() => {
+    if (expanded || typeof ResizeObserver === 'undefined') return;
     const element = contentRef.current;
     if (element === null) return;
-    // +1: subpixel slack so a borderline-equal height doesn't report overflow.
-    const measure = () => {
-      setIsOverflowing(element.scrollHeight > element.clientHeight + 1);
-    };
-    measure();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(measure);
+    let cancelScheduled: (() => void) | undefined;
+    const observer = new ResizeObserver(() => {
+      cancelScheduled = scheduleOverflowMeasure(measure);
+    });
     observer.observe(element);
-    return () => { observer.disconnect(); };
-  }, [contentKey, expanded]);
+    return () => {
+      cancelScheduled?.();
+      observer.disconnect();
+    };
+  }, [expanded, measure]);
+
+  const toggle = useCallback(() => {
+    setExpanded((value) => !value);
+  }, []);
 
   return {
     contentRef,
     contentId,
     isOverflowing,
     expanded,
-    toggle: () => { setExpanded((value) => !value); },
+    toggle,
   };
 }

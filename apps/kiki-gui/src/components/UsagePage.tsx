@@ -5,7 +5,7 @@
  * header's `⋯`.
  */
 
-import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { Suspense, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
@@ -50,22 +50,27 @@ import {
 } from '../lib/usageV2';
 import { useConnection } from '../state/connection';
 import { Icon } from './icons';
+import { lazyPage } from './LazyPage';
 import { PAGE_WIDTH, PageHeader, PageMoreMenu } from './PageChrome';
 import { RequestGovernanceView } from './RequestGovernanceView';
 import { ThreadTitle } from './ThreadTitle';
 import { SECONDARY_BUTTON } from './ui';
 import { UsageNavigation, usagePanelFromSearch, type UsagePanel } from './UsageNavigation';
-import { UsageExportPanel } from './usage/export/UsageExportPanel';
-import { PricingPanel } from './usage/PricingPanel';
-import { ProviderQuotaPanel } from './usage/ProviderQuotaPanel';
-import { DimensionBreakdown } from './usage/UsageBreakdown';
-import { UsageFilterBar } from './usage/UsageFilterBar';
-import { UsageReliabilityDetails } from './usage/UsageReliabilityDetails';
-import { UsageRescanActiveBadge, UsageRescanControl } from './usage/UsageRescanControl';
-import { UsageSessionPanel, type UsageSessionTraceRequest } from './usage/UsageSessionPanel';
-import { UsageSources, type UsageSourcePrior } from './usage/UsageSources';
+import type { UsageSessionTraceRequest } from './usage/UsageSessionPanel';
+import type { UsageSourcePrior } from './usage/UsageSources';
 import { buildCompositionModel } from './usage/usageChartPalette';
-import { UsageHeroStage } from './usage/UsageHeroStage';
+
+const UsageExportPanel = lazyPage(() => import('./usage/export/UsageExportPanel').then((m) => m.UsageExportPanel));
+const PricingPanel = lazyPage(() => import('./usage/PricingPanel').then((m) => m.PricingPanel));
+const ProviderQuotaPanel = lazyPage(() => import('./usage/ProviderQuotaPanel').then((m) => m.ProviderQuotaPanel));
+const DimensionBreakdown = lazyPage(() => import('./usage/UsageBreakdown').then((m) => m.DimensionBreakdown));
+const UsageFilterBar = lazyPage(() => import('./usage/UsageFilterBar').then((m) => m.UsageFilterBar));
+const UsageReliabilityDetails = lazyPage(() => import('./usage/UsageReliabilityDetails').then((m) => m.UsageReliabilityDetails));
+const UsageRescanActiveBadge = lazyPage(() => import('./usage/UsageRescanControl').then((m) => m.UsageRescanActiveBadge));
+const UsageRescanControl = lazyPage(() => import('./usage/UsageRescanControl').then((m) => m.UsageRescanControl));
+const UsageSessionPanel = lazyPage(() => import('./usage/UsageSessionPanel').then((m) => m.UsageSessionPanel));
+const UsageSources = lazyPage(() => import('./usage/UsageSources').then((m) => m.UsageSources));
+const UsageHeroStage = lazyPage(() => import('./usage/UsageHeroStage').then((m) => m.UsageHeroStage));
 import {
   buildUsageMultiApiQuery,
   isSourceRowFilterActive,
@@ -548,8 +553,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     if (pendingScrollRestore !== null) return;
     const cur = getCurrentVisit();
     if (cur && scrollRef.current) {
-      saveUiSnapshot(cur.visitId, { scrollTop: scrollRef.current.scrollTop });
-      saveScrollPosition(cur.visitId, 'main[data-usage-scroll]', scrollRef.current.scrollTop);
+      saveScrollPosition(cur.visitId, 'main[data-usage-scroll]', scrollRef.current.scrollTop, undefined, { syncScrollTop: true });
     }
   };
 
@@ -1098,11 +1102,14 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
         />
       </PageHeader>
       {pricingOpen ? (
-        <PricingPanel models={reliability?.unknown_price_models ?? []} onClose={() => { setPricingOpen(false); }} />
+        <Suspense fallback={null}>
+          <PricingPanel models={reliability?.unknown_price_models ?? []} onClose={() => { setPricingOpen(false); }} />
+        </Suspense>
       ) : null}
       <main ref={scrollRef} onScroll={handleScroll} data-usage-scroll style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-3 pb-10 lg:px-6">
         <div className={`mx-auto ${PAGE_WIDTH.split} space-y-4 sm:space-y-6`} data-usage-page>
           <UsageNavigation panel={panel} onChange={selectPanel} quotaAttentionCount={quotaAttentionCount} />
+          <Suspense fallback={<div data-usage-suspense className="min-h-[12rem]" aria-busy="true" />}>
           {panel === 'export' ? (
             <UsageExportPanel />
           ) : panel === 'quota' ? (
@@ -1392,6 +1399,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
               />
             ) : null}
           </>}
+          </Suspense>
         </div>
       </main>
     </div>

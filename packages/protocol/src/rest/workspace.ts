@@ -20,7 +20,13 @@ export type ListWorkspacesResponse = z.infer<typeof listWorkspacesResponseSchema
  * the full Workspace response; GET /api/workspaces/{workspace_id} reads one
  * registered workspace with measured details. Unknown registered IDs return 40410.
  */
-export const workspaceViewQuerySchema = /* @__PURE__ */ z.object({ view: z.enum(['catalog']).optional() });
+export const workspaceViewQuerySchema = /* @__PURE__ */ z.object({
+  view: z.enum(['catalog']).optional(),
+  include_trust: z.preprocess(
+    (value) => (value === 'true' || value === '1' || value === 1 || value === true ? true : value === 'false' || value === '0' || value === 0 || value === false ? false : value),
+    z.boolean().optional(),
+  ),
+});
 export const listWorkspaceCatalogResponseSchema = /* @__PURE__ */ z.object({ items: z.array(workspaceCatalogEntrySchema) });
 export type ListWorkspaceCatalogResponse = z.infer<typeof listWorkspaceCatalogResponseSchema>;
 

@@ -19,6 +19,7 @@ import { useI18n } from '../../i18n';
 import type { PluginSummary } from '../../lib/client';
 import { useOptionalConnection } from '../../state/connection';
 import { Icon } from '../icons';
+import { preloadSettingsSection } from './lazySections';
 import { PLUGIN_QUERY_KEYS } from '../capabilities/usePlugins';
 import { isLocalBaseUrl } from '../providerPresets';
 import { SECTIONS, type SectionId } from './sections';
@@ -148,16 +149,17 @@ export function SettingsSearch({
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const coarsePointer = useCoarsePointer();
+  const searching = query.trim() !== '';
   const index = useMemo(() => {
+    if (!searching) return [];
     const visibleSections = new Set(
       navTree.flatMap((node) => (node.kind === 'group' ? node.sections : [node.section])),
     );
     const entries = buildSettingsSearchIndex(settingsSectionLabels(t), t, navTree)
       .filter((entry) => visibleSections.has(entry.section));
     return coarsePointer ? entries.filter((entry) => listedOnTouch(entry.section)) : entries;
-  }, [t, navTree, coarsePointer]);
-  const results = useMemo(() => searchSettings(index, query), [index, query]);
-  const searching = query.trim() !== '';
+  }, [searching, t, navTree, coarsePointer]);
+  const results = useMemo(() => (searching ? searchSettings(index, query) : []), [searching, index, query]);
 
   // Ctrl+, lands here: type, Enter to jump, Esc to leave. Only the visible
   // instance takes focus — the other one is display:none at this breakpoint.
@@ -283,6 +285,8 @@ export function SettingsNavTree({
         type="button"
         data-settings-nav-leaf={id}
         aria-current={isCurrent ? 'page' : undefined}
+        onMouseEnter={() => { preloadSettingsSection(id); }}
+        onFocus={() => { preloadSettingsSection(id); }}
         onClick={() => { onNavigate(id as SectionId); onAfterNavigate?.(); }}
         className={`row-interactive flex h-7 items-center gap-2 px-2.5 text-left text-[13px] leading-5 font-normal pointer-coarse:h-11 pointer-coarse:px-3 pointer-coarse:text-[15px] ${
           isCurrent ? 'text-ink' : 'text-ink-soft hover:text-ink'

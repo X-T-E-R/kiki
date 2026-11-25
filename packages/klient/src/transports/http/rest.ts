@@ -576,7 +576,9 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     workspaces: {
       list: () => transport.json('/workspaces'),
-      listCatalog: () => transport.json('/workspaces', { query: { view: 'catalog' } }),
+      listCatalog: (opts) => transport.json('/workspaces', {
+        query: opts?.includeTrust === true ? { view: 'catalog', include_trust: '1' } : { view: 'catalog' },
+      }),
       detail: (workspaceId: string) => transport.json(`/workspaces/${encodeURIComponent(workspaceId)}`),
       trust: (workspaceId: string) => transport.json(`/workspaces/${encodeURIComponent(workspaceId)}/trust`),
       setTrust: (workspaceId: string, trusted: boolean) => transport.json(`/workspaces/${encodeURIComponent(workspaceId)}/${trusted ? 'trust' : 'untrust'}`, { method: 'POST' }),

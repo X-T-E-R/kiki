@@ -353,7 +353,10 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
     : !safe && !transitioningInPlace
       ? { phase: 'restoring', target }
       : state;
-  const value = { state: recoveryState, transitioningInPlace, retry, cancel };
+  const value = useMemo(
+    () => ({ state: recoveryState, transitioningInPlace, retry, cancel }),
+    [recoveryState, transitioningInPlace, retry, cancel],
+  );
   return <ScopeRestoreContext.Provider value={value}>
     <DirtyGuardStateContext.Provider value={guard}>
       <DirtyGuardContext.Provider value={guard.value}>

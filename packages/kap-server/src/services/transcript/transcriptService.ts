@@ -553,6 +553,22 @@ export interface TranscriptServiceDeps {
   ) => Promise<WireRecordsStreamResult>;
 }
 
+interface SharedEvictedTailFlight {
+  readonly controller: AbortController;
+  readonly promise: Promise<EvictedTailSnapshotResult | undefined>;
+  waiters: number;
+}
+
+interface EvictedTailSnapshotResult {
+  readonly snapshot: AgentTranscriptSnapshot;
+  witness?: WirePrefixWitness;
+  visibilityCheckedTo?: number;
+  readonly cursorEpoch?: string;
+  readonly cursorSeq: number;
+  readonly residencyRevision: number;
+  readonly projectionRevision: number;
+}
+
 interface LiveEntry {
   readonly store: TranscriptStore;
   readonly binding: TranscriptBinding;
@@ -562,6 +578,10 @@ interface LiveEntry {
   readonly dirtyLiveAgents: Set<string>;
   readonly tailFirstAgents: Set<string>;
   readonly tailBackfills: Map<string, Promise<void>>;
+  readonly evictedTailFlights: Map<string, SharedEvictedTailFlight>;
+  readonly evictedTailBaselines: Map<string, EvictedTailSnapshotResult>;
+  residencyRevision: number;
+  readonly projectionRevisions: Map<string, number>;
   readonly agentWires: Map<string, IWireService>;
   readonly pendingDisposals: Map<string, Promise<void>>;
   readonly unavailableAgents: Set<string>;
@@ -1133,6 +1153,10 @@ function isWireInitOnlyRecord(record: ContextRecord, index: number): boolean {
     typeof record['runtimeId'] === 'string';
 }
 
+function isShrinkingTranscriptOp(op: TranscriptOperation): boolean {
+  return op.op === 'reset' || op.op === 'items.remove' || op.op === 'frame.remove';
+}
+
 function isNonHistoryMetaOnlyOp(op: TranscriptOperation): boolean {
   if (op.op !== 'meta.merge') return false;
   if (
@@ -1412,6 +1436,10 @@ export class TranscriptService {
       dirtyLiveAgents: new Set(),
       tailFirstAgents: new Set(options.tailFirst === true ? [MAIN_AGENT_ID] : []),
       tailBackfills: new Map(),
+      evictedTailFlights: new Map(),
+      evictedTailBaselines: new Map(),
+      residencyRevision: 0,
+      projectionRevisions: new Map(),
       agentWires,
       pendingDisposals: new Map(),
       unavailableAgents: new Set(),
@@ -1449,6 +1477,8 @@ export class TranscriptService {
     entry.dirtyLiveAgents.delete(agentId);
     entry.tailFirstAgents.delete(agentId);
     entry.tailBackfills.delete(agentId);
+    entry.projectionRevisions.delete(agentId);
+    this.clearEvictedTailStateForAgent(entry, agentId, true);
     const journal = entry.opsJournals.get(agentId);
     if (journal !== undefined) {
       this.disposeOpsJournal(entry, journal);
@@ -1605,21 +1635,23 @@ export class TranscriptService {
     signal?.throwIfAborted();
     const tailFirst = options.tailFirst === true && options.fullHistory !== true;
     const wait = <T>(promise: Promise<T>): Promise<T> => signal === undefined ? promise : abortable(promise, signal);
+    const entry = this.live.get(sessionId);
+    if (entry === undefined) return;
     const establish = async (transcript: AgentTranscript | undefined): Promise<AgentTranscript | undefined> => {
       if (transcript === undefined) return undefined;
       if (!transcript.hasMoreOlder && !transcript.hasEvictedTail && (!options.fullHistory || transcript.snapshot().toolCallCountKnown === true)) return transcript;
       if (!options.fullHistory && !transcript.hasEvictedTail && transcript.getItems().some(item => item.kind === 'turn')) return transcript;
       const snapshot = options.fullHistory
         ? await this.readFullAgentSnapshot(sessionId, agentId, transcript, signal)
-        : await this.readScreenSnapshot(sessionId, agentId, undefined, signal, undefined, tailFirst);
+        : await this.readSharedTailScreenSnapshot(sessionId, agentId, entry, tailFirst, signal);
       if (snapshot === undefined) return undefined;
+      const latest = this.live.get(sessionId) === entry ? entry.store.getAgent(agentId) : undefined;
+      const mergedSource = latest ?? transcript;
       const full = new AgentTranscript(agentId);
       full.apply([{ op: 'reset', agentId, snapshot }]);
-      if (!options.fullHistory) full.apply(snapshotToOps(transcript.snapshot()));
+      if (!options.fullHistory) full.apply(snapshotToOps(mergedSource.snapshot()));
       return full;
     };
-    const entry = this.live.get(sessionId);
-    if (entry === undefined) return;
     const disposal = entry.pendingDisposals.get(agentId);
     if (disposal !== undefined) await wait(disposal);
     this.assertReadableAgent(sessionId, agentId);
@@ -1679,6 +1711,185 @@ export class TranscriptService {
       this.reconcileQueuedPrompts(sessionId, entry.store, agentId);
       return establish(entry.store.getAgent(agentId));
     }
+  }
+
+  private clearEvictedTailStateForAgent(entry: LiveEntry, agentId: string, abortFlights: boolean): void {
+    const prefix = `${agentId}\0`;
+    for (const key of entry.evictedTailBaselines.keys()) {
+      if (key.startsWith(prefix)) entry.evictedTailBaselines.delete(key);
+    }
+    for (const [key, flight] of entry.evictedTailFlights) {
+      if (!key.startsWith(prefix)) continue;
+      if (abortFlights) {
+        flight.controller.abort(new DOMException('Transcript agent closed', 'AbortError'));
+      }
+      entry.evictedTailFlights.delete(key);
+    }
+  }
+
+  private bumpProjectionRevision(entry: LiveEntry, agentId: string): void {
+    entry.projectionRevisions.set(agentId, (entry.projectionRevisions.get(agentId) ?? 0) + 1);
+    this.clearEvictedTailStateForAgent(entry, agentId, false);
+  }
+
+  private async readSharedTailScreenSnapshot(
+    sessionId: string,
+    agentId: string,
+    entry: LiveEntry,
+    tailFirst: boolean,
+    signal?: AbortSignal,
+  ): Promise<AgentTranscriptSnapshot | undefined> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      signal?.throwIfAborted();
+      const flightKey = `${agentId}\0${tailFirst ? '1' : '0'}`;
+      const cached = entry.evictedTailBaselines.get(flightKey);
+      const currentProjectionRevision = entry.projectionRevisions.get(agentId) ?? 0;
+      if (cached !== undefined && cached.witness !== undefined) {
+        const cursorBeforeStat = this.getTranscriptCursor(sessionId, agentId);
+        if (
+          cursorBeforeStat.epoch === cached.cursorEpoch &&
+          entry.residencyRevision === cached.residencyRevision &&
+          currentProjectionRevision === cached.projectionRevision
+        ) {
+          const location = await this.historyWireLocation(sessionId, agentId);
+          signal?.throwIfAborted();
+          const info = location === undefined ? undefined : await stat(location.wirePath).catch(() => undefined);
+          signal?.throwIfAborted();
+          if (info !== undefined && location !== undefined) {
+            const verified = await verifyWitnessAppendSafe(
+              location.wirePath,
+              cached.witness,
+              info,
+              cached.visibilityCheckedTo,
+              FIRST_SCREEN_WINDOW_BYTES,
+              signal,
+            );
+            signal?.throwIfAborted();
+            if (verified.valid && this.live.get(sessionId) === entry && entry.evictedTailBaselines.get(flightKey) === cached) {
+              const cursorAfterStat = this.getTranscriptCursor(sessionId, agentId);
+              const projectionAfterStat = entry.projectionRevisions.get(agentId) ?? 0;
+              const unchangedSize = info.size === cached.witness.observedSize;
+              const liveAppended = info.size > cached.witness.observedSize && cursorAfterStat.seq > cached.cursorSeq;
+              if (
+                entry.residencyRevision === cached.residencyRevision &&
+                projectionAfterStat === cached.projectionRevision &&
+                cursorAfterStat.epoch === cached.cursorEpoch &&
+                (unchangedSize || liveAppended)
+              ) {
+                if (verified.witness !== undefined) cached.witness = verified.witness;
+                if (verified.visibilityCheckedTo !== undefined) cached.visibilityCheckedTo = verified.visibilityCheckedTo;
+                return cached.snapshot;
+              }
+            }
+          }
+          if (entry.evictedTailBaselines.get(flightKey) === cached) {
+            entry.evictedTailBaselines.delete(flightKey);
+          }
+        }
+      }
+      let flight = entry.evictedTailFlights.get(flightKey);
+      if (flight === undefined) {
+        const controller = new AbortController();
+        const created: SharedEvictedTailFlight = {
+          controller,
+          waiters: 0,
+          promise: Promise.resolve(undefined),
+        };
+        const promise = (async (): Promise<EvictedTailSnapshotResult | undefined> => {
+          const residencyRevision = entry.residencyRevision;
+          const projectionRevision = entry.projectionRevisions.get(agentId) ?? 0;
+          const cursorBefore = this.getTranscriptCursor(sessionId, agentId);
+          const location = await this.historyWireLocation(sessionId, agentId);
+          const infoBefore = location === undefined ? undefined : await stat(location.wirePath).catch(() => undefined);
+          const beforeWitness = location === undefined || infoBefore === undefined
+            ? undefined
+            : await captureWirePrefixWitness(location.wirePath, infoBefore, controller.signal).catch(() => undefined);
+          const snapshot = await this.readScreenSnapshot(
+            sessionId,
+            agentId,
+            () => this.liveActiveTurnIds(sessionId, agentId, undefined),
+            controller.signal,
+            undefined,
+            tailFirst,
+          );
+          if (snapshot === undefined || this.live.get(sessionId) !== entry) return undefined;
+          const infoAfter = location === undefined ? undefined : await stat(location.wirePath).catch(() => undefined);
+          let witness: WirePrefixWitness | undefined;
+          let visibilityCheckedTo: number | undefined;
+          if (location !== undefined && infoAfter !== undefined) {
+            if (beforeWitness !== undefined) {
+              const checked = await verifyWitnessAppendSafe(
+                location.wirePath,
+                beforeWitness,
+                infoAfter,
+                beforeWitness.completeTailOffset,
+                FIRST_SCREEN_WINDOW_BYTES,
+                controller.signal,
+              ).catch(() => ({ valid: false as const }));
+              if (checked.valid) {
+                witness = checked.witness ?? beforeWitness;
+                visibilityCheckedTo = checked.visibilityCheckedTo ?? beforeWitness.completeTailOffset;
+              }
+            } else {
+              witness = await captureWirePrefixWitness(location.wirePath, infoAfter, controller.signal).catch(() => undefined);
+              visibilityCheckedTo = witness?.completeTailOffset;
+            }
+          }
+          const result: EvictedTailSnapshotResult = {
+            snapshot,
+            witness,
+            visibilityCheckedTo,
+            cursorEpoch: cursorBefore.epoch,
+            cursorSeq: cursorBefore.seq,
+            residencyRevision,
+            projectionRevision,
+          };
+          const cursorAfter = this.getTranscriptCursor(sessionId, agentId);
+          if (
+            witness !== undefined &&
+            entry.residencyRevision === residencyRevision &&
+            (entry.projectionRevisions.get(agentId) ?? 0) === projectionRevision &&
+            cursorAfter.epoch === cursorBefore.epoch
+          ) {
+            entry.evictedTailBaselines.set(flightKey, result);
+          }
+          return result;
+        })();
+        (created as { promise: Promise<EvictedTailSnapshotResult | undefined> }).promise = promise;
+        promise.finally(() => {
+          if (entry.evictedTailFlights.get(flightKey) === created) {
+            entry.evictedTailFlights.delete(flightKey);
+          }
+        }).catch(() => {});
+        entry.evictedTailFlights.set(flightKey, created);
+        flight = created;
+      }
+      flight.waiters += 1;
+      let result: EvictedTailSnapshotResult | undefined;
+      try {
+        result = await (signal === undefined ? flight.promise : abortable(flight.promise, signal));
+      } finally {
+        flight.waiters -= 1;
+        if (flight.waiters === 0 && entry.evictedTailFlights.get(flightKey) === flight && signal?.aborted === true) {
+          entry.evictedTailFlights.delete(flightKey);
+          flight.controller.abort(signal.reason);
+        }
+      }
+      if (result === undefined) return undefined;
+      const projectionAfter = entry.projectionRevisions.get(agentId) ?? 0;
+      if (this.live.get(sessionId) === entry && projectionAfter !== result.projectionRevision) {
+        continue;
+      }
+      return result.snapshot;
+    }
+    return this.readScreenSnapshot(
+      sessionId,
+      agentId,
+      () => this.liveActiveTurnIds(sessionId, agentId, undefined),
+      signal,
+      undefined,
+      tailFirst,
+    );
   }
 
   private async establishPendingReplayTail(sessionId: string, agentId: string, entry: LiveEntry): Promise<void> {
@@ -1970,6 +2181,8 @@ export class TranscriptService {
     const retainedPrompts = (durableGlobals.prompts ?? []).filter((prompt) => transcript.getPrompts().has(prompt.promptId));
     const released = transcript.releaseDurableTurns(turns, effective, durableGlobals);
     if (released.length === 0) return released;
+    entry.residencyRevision += 1;
+    this.clearEvictedTailStateForAgent(entry, agentId, false);
     const ids = new Set(released);
     const promptIds: string[] = [];
     let releasedBytes = 0;
@@ -2240,6 +2453,10 @@ export class TranscriptService {
   }
 
   private dispatchOps(sessionId: string, event: TranscriptChangeEvent): void {
+    if (event.ops.some(isShrinkingTranscriptOp)) {
+      const entry = this.live.get(sessionId);
+      if (entry !== undefined) this.bumpProjectionRevision(entry, event.agentId);
+    }
     const cursor = this.journalOps(sessionId, event);
     if (cursor === undefined) return;
     const listeners = this.opsListeners.get(sessionId);
@@ -4193,13 +4410,14 @@ export class TranscriptService {
       const existingTurn = turnOf(existing);
       if (existingTurn !== undefined) return existingTurn;
     }
-    const direct = await this.readDirectColdTurn(agentId, location.wirePath, info, fingerprint, turnId, opened);
+    const preserveOpenTurnIds = () => this.liveActiveTurnIds(sessionId, agentId, undefined);
+    const direct = await this.readDirectColdTurn(agentId, location.wirePath, info, fingerprint, turnId, opened, preserveOpenTurnIds);
     if (direct !== undefined) return direct;
-    const window = await this.ensureColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, undefined, undefined, 'records');
+    const window = await this.ensureColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, preserveOpenTurnIds, undefined, 'records');
     const found = turnOf(window);
     if (found !== undefined || window === undefined || window.start === 0) return found;
     if (window.end - window.start > FIRST_SCREEN_WINDOW_BYTES) return undefined;
-    return turnOf(await this.extendColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, undefined, undefined, FIRST_SCREEN_WINDOW_BYTES, false));
+    return turnOf(await this.extendColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, preserveOpenTurnIds, undefined, FIRST_SCREEN_WINDOW_BYTES, false));
   }
 
   private resolveDirectTurnMaxBytes(): number {
@@ -4581,6 +4799,7 @@ export class TranscriptService {
     fingerprint: string,
     turnId: string,
     signal: AbortSignal,
+    preserveOpenTurnIds?: () => readonly string[],
   ): Promise<TranscriptTurn | undefined> {
     const maxDirectTurnBytes = this.resolveDirectTurnMaxBytes();
     if (maxDirectTurnBytes <= 0) return undefined;
@@ -4672,7 +4891,7 @@ export class TranscriptService {
         spanIndex.visibilityCheckedTo = checked.visibilityCheckedTo;
       }
     }
-    const snapshot = await this.projectColdRecords(agentId, records, span.startOffset === 0, undefined, undefined, undefined, signal);
+    const snapshot = await this.projectColdRecords(agentId, records, span.startOffset === 0, preserveOpenTurnIds, undefined, undefined, signal);
     signal.throwIfAborted();
     const turn = snapshot.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
     if (
@@ -4682,7 +4901,7 @@ export class TranscriptService {
     ) {
       return undefined;
     }
-    if (exactAfter) this.retainDirectColdTurn(wirePath, fingerprint, turn);
+    if (exactAfter && turn.state !== 'running') this.retainDirectColdTurn(wirePath, fingerprint, turn);
     return turn;
   }
 
@@ -5917,6 +6136,7 @@ export class TranscriptService {
     const journal = entry.opsJournals.get(agentId);
     if (journal !== undefined) this.disposeOpsJournal(entry, journal);
     entry.opsJournals.set(agentId, { epoch: randomUUID(), nextSeq: 1, start: 0, batches: [], bytes: 0 });
+    this.bumpProjectionRevision(entry, agentId);
     entry.binding.finishReplay(agentId, replayState);
     this.releaseDurableHistory(entry, agentId, snapshot);
   }
@@ -6688,6 +6908,11 @@ export class TranscriptService {
     const entry = this.live.get(sessionId);
     if (entry === undefined) return;
     this.live.delete(sessionId);
+    for (const flight of entry.evictedTailFlights.values()) {
+      flight.controller.abort(new DOMException('Transcript session closed', 'AbortError'));
+    }
+    entry.evictedTailFlights.clear();
+    entry.evictedTailBaselines.clear();
     for (const journal of entry.opsJournals.values()) {
       this.disposeOpsJournal(entry, journal);
     }

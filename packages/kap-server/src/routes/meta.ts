@@ -64,6 +64,7 @@ export function registerMetaRoute(app: RouteHost, opts: MetaRouteOptions): void 
     thread_communication: true as const,
     transcript: true as const,
     sidebar_groups: true as const,
+    sidebar_flat_sessions: true as const,
   });
   const staticData = Object.freeze({
     server_version: opts.serverVersion,

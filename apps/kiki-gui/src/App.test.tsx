@@ -928,7 +928,7 @@ describe('App sidebar Escape wiring', () => {
       units: query?.pinned === true ? [pinnedGroup] : [personaGroup],
       has_more: false,
     }));
-    conn.meta = { server_home_id: 'main', capabilities: { sidebar_groups: true }, open_in_apps: [] };
+    conn.meta = { server_home_id: 'main', capabilities: { sidebar_groups: true, sidebar_flat_sessions: true }, open_in_apps: [] };
     conn.client.listSessions = listSessionsSpy;
     conn.client.listPersonas = async () => [{
       id: 'xiao-you',

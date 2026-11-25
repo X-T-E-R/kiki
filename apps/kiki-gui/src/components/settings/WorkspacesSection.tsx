@@ -54,7 +54,11 @@ function WorkspacesList() {
   const { t, locale } = useI18n();
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
-  const query = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
+  const query = useQuery({
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog({ includeTrust: true }),
+    staleTime: 30_000,
+  });
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [removing, setRemoving] = useState<Workspace | null>(null);
   const [bulkRemoving, setBulkRemoving] = useState<readonly Workspace[] | null>(null);
@@ -359,13 +363,15 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
   // Trust is read-only here; the only place it changes is the workspace's own
   // page. Only a trusted row carries the tag, and one page-level line covers
   // every failed read, which also marks its own row 未知.
+  const inlineTrusted = workspace.trusted;
   const trustQuery = useQuery({
     queryKey: ['workspace-trust', workspace.id],
     queryFn: () => client.getWorkspaceTrust(workspace.id),
+    enabled: inlineTrusted === undefined,
     staleTime: 30_000,
   });
 
-  const isTrusted = trustQuery.data?.trusted === true;
+  const isTrusted = (trustQuery.data?.trusted ?? inlineTrusted) === true;
   const displayName = workspaceDisplayName(workspace);
 
   const compact = density === 'compact';
@@ -532,7 +538,11 @@ function TrustReadFailure({ items }: { readonly items: readonly Workspace[] }) {
       setFailingKey((current) => (current === ids ? current : ids));
     };
     recount();
-    return queryClient.getQueryCache().subscribe(recount);
+    return queryClient.getQueryCache().subscribe((event) => {
+      if (event.type !== 'added' && event.type !== 'updated' && event.type !== 'removed') return;
+      if (event.query.queryKey[0] !== 'workspace-trust') return;
+      recount();
+    });
   }, [items, queryClient]);
   if (failingKey === '') return null;
   const failingCount = failingKey.split('\u0001').length;

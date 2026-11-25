@@ -488,7 +488,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
     count: isVirtualized ? visible.length : 0,
     getScrollElement: () => listEl,
     estimateSize: estimateRowSize,
-    getItemKey: (index) => `${visible[index]?.value ?? ''}-${index}`,
+    getItemKey: (index) => visible[index]?.value ?? index,
     indexAttribute: 'data-virtual-index',
     overscan: pickerScale.virtualOverscan,
     initialRect: { width: 320, height: PANEL_MAX_HEIGHT },
