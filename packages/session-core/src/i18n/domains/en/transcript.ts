@@ -719,6 +719,7 @@ export const transcriptEn = {
   'transcript.reminder.directive': 'Reminder · standing instruction',
   'transcript.reminder.epoch': 'Window {epoch}',
   'transcript.reminder.history': 'Reminder · earlier conversation',
+  'transcript.reminder.modelSteering': 'Model Steer',
   'transcript.reminder.progress': 'Reminder · update notes',
   'transcript.reminder.rebuild': 'Reminder · rebuild notes',
   'transcript.reminder.renew': 'Reminder · context renewal ahead',

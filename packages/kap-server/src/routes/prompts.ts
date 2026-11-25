@@ -100,6 +100,7 @@ import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 import { validatePromptRuntimeControls } from '@kiki/agent-core-v2/agent/prompt/runtimeControls';
 import { promptLaunchFailure } from '@kiki/agent-core-v2/agent/prompt/promptFailure';
 import { PromptAborted } from '@kiki/agent-core-v2/agent/prompt/promptService';
+import { PromptOutcomeCommitted } from '@kiki/agent-core-v2/agent/prompt/promptReplay';
 import { PersistedModelSwitchReader } from '@kiki/agent-core-v2/agent/prompt/modelSwitchQueueRead';
 import { ICpuWorkerService } from '@kiki/agent-core-v2/app/cpuWorker/cpuWorkerService';
 import { delegatorRef } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
@@ -440,13 +441,17 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       if (result === undefined) throw new Error2(ErrorCodes.INTERNAL, 'Prompt admission returned no receipt.');
       return result;
     },
-    cancel: async (sessionId, agentId, promptId, signal) => {
+    cancel: async (sessionId, agentId, promptId, signal, queuedOnly) => {
       const lease = await acquireSessionOperation(core, sessionId, 'prompt-ingress-cancel', signal, { priority: 'interactive' });
       try {
         const resolved = await abortable(resolvePromptFromSession(core, requireSession(lease.handle, sessionId), agentId), signal);
         signal.throwIfAborted();
         if (resolved.prompt.lookup(promptId) === undefined) return;
-        resolved.prompt.abort(promptId);
+        if (queuedOnly === true) {
+          await resolved.prompt.abortQueued(promptId);
+        } else {
+          resolved.prompt.abort(promptId);
+        }
       } catch (error) {
         if (!isError2(error) || error.code !== ErrorCodes.PROMPT_ALREADY_COMPLETED) throw error;
       } finally { await lease.dispose(); }
@@ -1193,13 +1198,18 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           return;
         }
         if (parsed.action === 'abort' || parsed.action === 'cancel') {
-          const aborted = await ingress.abort(session_id, req.query.agent_id ?? MAIN_AGENT_ID, parsed.id);
+          const queuedOnly = parsed.action === 'cancel' || req.query.queued_only === 'true';
+          const aborted = await ingress.abort(session_id, req.query.agent_id ?? MAIN_AGENT_ID, parsed.id, queuedOnly);
           if (aborted !== undefined) { reply.send(okEnvelope({ aborted }, req.id)); return; }
         }
         if (req.query.admission === 'durable' && parsed.action !== 'abort' && parsed.action !== 'cancel') {
           throw new Error2(ErrorCodes.REQUEST_INVALID, 'Cancel the saved request and send a new request to edit it.');
         }
         if (parsed.action === 'replace') {
+          const replaceAgentId = (req as { query?: { agent_id?: string } }).query?.agent_id;
+          if (replaceAgentId !== undefined && replaceAgentId !== MAIN_AGENT_ID) {
+            throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt replace is main-agent only');
+          }
           const replacement = promptReplaceRequestSchema.safeParse(req.body);
           if (!replacement.success) {
             throw new Error2(ErrorCodes.REQUEST_INVALID, 'replacement content is required');
@@ -1291,7 +1301,9 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
                 : (await transcriptService.readColdSnapshot(session_id, targetAgentId, undefined, undefined, undefined, true))
                     ?.prompts.some((item) => item.promptId === parsed.id && item.status === 'queued') === true;
               if (stale && resolved.prompt.lookup(parsed.id) === undefined) {
-                await resolved.accessor.get(IEventDispatcher).dispatch(new PromptAborted({ promptId: parsed.id, abortedAt: new Date().toISOString(), beforeStart: true }));
+                const dispatcher = resolved.accessor.get(IEventDispatcher);
+                await dispatcher.dispatch(new PromptAborted({ promptId: parsed.id, abortedAt: new Date().toISOString(), beforeStart: true }));
+                await dispatcher.dispatch(new PromptOutcomeCommitted({ terminal: { promptId: parsed.id, state: 'cancelled' } }));
                 aborted = true;
               }
             }

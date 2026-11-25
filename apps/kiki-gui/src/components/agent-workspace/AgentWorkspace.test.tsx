@@ -2352,7 +2352,7 @@ it('sends after the second pending switch and freezes that execution payload acr
 });
 
 it.each(['native', 'external'])(
-  'queues busy plain sends behind a pending switch while keeping explicit Send now free of switch dependencies for %s', async (executor) => {
+  'queues busy plain sends behind a pending switch and forwards afterModelSwitch on explicit Send now for %s', async (executor) => {
     harness.listAgentModelSwitches.mockResolvedValue([pendingSwitch('tail-operation', 2)]);
     harness.isNativeAgent.mockResolvedValue(executor === 'native');
     harness.sendAgentMessage.mockResolvedValue(executor === 'native' ? null : mailboxReceipt({ delivery: 'queued' }));
@@ -2374,7 +2374,12 @@ it.each(['native', 'external'])(
     await typeText(textarea, 'send on current binding');
     await sendNowFromComposer();
     await settle();
-    expect(sendPromptNow).toHaveBeenCalledWith({ agentId: 'child', text: 'send on current binding', content: [{ type: 'text', text: 'send on current binding' }] });
+    expect(sendPromptNow).toHaveBeenCalledWith({
+      agentId: 'child',
+      text: 'send on current binding',
+      content: [{ type: 'text', text: 'send on current binding' }],
+      afterModelSwitch: 'tail-operation',
+    });
     expect(harness.sendAgentMessage).not.toHaveBeenCalled();
   },
 );

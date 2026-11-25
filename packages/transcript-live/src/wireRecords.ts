@@ -81,8 +81,11 @@ function compactionHeadlineRecord(line: Buffer): ContextRecord | undefined {
     }
     if (fields['strategy'] === undefined && fields['fallbackFrom'] === undefined && fields['source'] === undefined && fields['phase'] === undefined) return undefined;
     const head = line.subarray(0, Math.min(line.length, 180)).toString('utf8');
+    const anyType = /"type":"([^"]+)"/.exec(head)?.[1];
     const typed = /"type":"(context\.apply_compaction|full_compaction\.(?:begin|cancel|complete))"/.exec(head);
-    const type = typed?.[1] ?? (fields['strategy'] !== undefined || fields['fallbackFrom'] !== undefined ? 'context.apply_compaction' : 'full_compaction.begin');
+    if (anyType !== undefined && typed === null) return undefined;
+    const type = typed?.[1] ?? (fields['strategy'] !== undefined || fields['fallbackFrom'] !== undefined ? 'context.apply_compaction' : undefined);
+    if (type === undefined) return undefined;
     return { type, ...fields };
   } catch {
     return undefined;

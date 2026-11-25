@@ -1,7 +1,7 @@
 import type { AttachmentId, InteractionId, PromptId, TaskId, TodoId, TurnId } from '../model/ids';
 import { turnOrdinal } from '../model/ids';
 import type { TranscriptAttachment } from '../model/attachment';
-import type { TranscriptFrame } from '../model/frame';
+import type { ToolCallFrame, TranscriptFrame } from '../model/frame';
 import type { TranscriptInteraction } from '../model/interaction';
 import type { TranscriptItem } from '../model/item';
 import type { TranscriptMeta, TranscriptMetaMerge } from '../model/meta';
@@ -462,6 +462,21 @@ function stepEquals(step: TranscriptStep, header: StepHeader): boolean {
   return transcriptValueEquals(current, header);
 }
 
+/** Merge an incoming tool frame with an existing frame for the same toolCallId without regressing a settled state back to running. */
+export function mergeToolCallFrame(existing: ToolCallFrame, incoming: ToolCallFrame): ToolCallFrame {
+  const regressingToRunning = existing.state !== 'running' && incoming.state === 'running';
+  const merged: Record<string, unknown> = regressingToRunning ? { ...existing, ...incoming, state: existing.state } : { ...incoming };
+  const preserveKeys = regressingToRunning
+    ? (['output', 'error', 'errorCode', 'endedAt', 'attachmentIds', 'startedAt', 'input', 'inputText', 'display', 'progress', 'todoId', 'taskId', 'agentRefs'] as const)
+    : (['startedAt', 'input', 'inputText', 'display', 'progress', 'todoId', 'taskId', 'agentRefs'] as const);
+  for (const key of preserveKeys) {
+    if (merged[key] === undefined && existing[key] !== undefined) {
+      merged[key] = existing[key];
+    }
+  }
+  return merged as unknown as ToolCallFrame;
+}
+
 function applyFrameUpsert(
   state: AgentState,
   op: Extract<TranscriptOperation, { op: 'frame.upsert' }>,
@@ -493,40 +508,90 @@ function applyFrameUpsert(
       : insertTurn(state.items, bumped);
     return { state: { ...state, items }, changed: true, toolCallCountDelta: 0 };
   }
+  let dupStepIndex = -1;
+  let dupFrame: ToolCallFrame | undefined;
+  if (op.frame.kind === 'tool') {
+    const targetToolCallId = op.frame.toolCallId;
+    const targetFrameId = op.frame.frameId;
+    for (let s = 0; s < turn.steps.length; s += 1) {
+      const candidateStep = turn.steps[s]!;
+      const hit = candidateStep.frames.find(
+        (entry): entry is ToolCallFrame =>
+          entry.kind === 'tool' &&
+          entry.toolCallId === targetToolCallId &&
+          (candidateStep.stepId !== op.stepId || entry.frameId !== targetFrameId),
+      );
+      if (hit !== undefined) {
+        dupStepIndex = s;
+        dupFrame = hit;
+        break;
+      }
+    }
+  }
   let frames: readonly TranscriptFrame[];
   let toolCallCount = state.toolCallCount;
   let toolCallCountDelta = 0;
   if (frameIndex >= 0) {
     const current = step.frames[frameIndex];
-    const incoming = current === undefined ? op.frame : mergeContentPreview(current, op.frame);
-    if (current !== undefined && frameEquals(current, incoming)) {
+    const baseIncoming = current === undefined ? op.frame : mergeContentPreview(current, op.frame);
+    const incoming =
+      baseIncoming.kind === 'tool'
+        ? current?.kind === 'tool'
+          ? mergeToolCallFrame(current, baseIncoming)
+          : dupFrame !== undefined
+            ? mergeToolCallFrame(dupFrame, baseIncoming)
+            : baseIncoming
+        : baseIncoming;
+    if (dupFrame === undefined && current !== undefined && frameEquals(current, incoming)) {
       return { state, changed: false, toolCallCountDelta: 0 };
     }
-    if (current !== undefined && (current.kind === 'tool') !== (op.frame.kind === 'tool')) {
-      toolCallCountDelta = op.frame.kind === 'tool' ? 1 : -1;
+    if (current !== undefined && (current.kind === 'tool') !== (incoming.kind === 'tool')) {
+      toolCallCountDelta = incoming.kind === 'tool' ? 1 : -1;
       toolCallCount = adjustToolCallCount(toolCallCount, toolCallCountDelta);
     }
+    if (dupFrame !== undefined) {
+      toolCallCountDelta -= 1;
+      toolCallCount = adjustToolCallCount(toolCallCount, -1);
+    }
     frames = replaceAt(step.frames, frameIndex, incoming);
+    if (dupStepIndex === stepIndex && dupFrame !== undefined) {
+      frames = frames.filter((entry) => entry.frameId !== dupFrame.frameId);
+    }
   } else {
-    if (op.frame.kind === 'tool') {
+    const incoming =
+      op.frame.kind === 'tool' && dupFrame !== undefined
+        ? mergeToolCallFrame(dupFrame, op.frame)
+        : op.frame;
+    if (incoming.kind === 'tool' && dupFrame === undefined) {
       toolCallCountDelta = 1;
       toolCallCount = adjustToolCallCount(toolCallCount, 1);
     }
+    const baseFrames = dupStepIndex === stepIndex && dupFrame !== undefined
+      ? step.frames.filter((entry) => entry.frameId !== dupFrame.frameId)
+      : step.frames;
     const omittedOffset = omittedFrames?.offset;
-    let index = step.frames.length;
+    let index = baseFrames.length;
     if (op.place === 'safety_boundary') {
-      if (omittedOffset === undefined || omittedOffset === 0) index = safetyBoundaryIndex(step.frames);
-      else if (op.frameIndex !== undefined) index = Math.min(step.frames.length, Math.max(0, op.frameIndex - omittedOffset));
+      if (omittedOffset === undefined || omittedOffset === 0) index = safetyBoundaryIndex(baseFrames);
+      else if (op.frameIndex !== undefined) index = Math.min(baseFrames.length, Math.max(0, op.frameIndex - omittedOffset));
     }
-    frames = index >= step.frames.length
-      ? [...step.frames, op.frame]
-      : [...step.frames.slice(0, index), op.frame, ...step.frames.slice(index)];
+    frames = index >= baseFrames.length
+      ? [...baseFrames, incoming]
+      : [...baseFrames.slice(0, index), incoming, ...baseFrames.slice(index)];
   }
   const nextStep: TranscriptStep = { ...step, frames: [...frames] };
+  let baseSteps = turn.steps;
+  if (dupStepIndex >= 0 && dupStepIndex !== stepIndex && dupFrame !== undefined) {
+    const dupStep = turn.steps[dupStepIndex]!;
+    baseSteps = replaceAt(turn.steps, dupStepIndex, {
+      ...dupStep,
+      frames: dupStep.frames.filter((entry) => entry.frameId !== dupFrame.frameId),
+    });
+  }
   const steps =
     stepIndex >= 0
-      ? replaceAt(turn.steps, stepIndex, nextStep)
-      : [...turn.steps, nextStep].toSorted((a, b) => a.ordinal - b.ordinal);
+      ? replaceAt(baseSteps, stepIndex, nextStep)
+      : [...baseSteps, nextStep].toSorted((a, b) => a.ordinal - b.ordinal);
   const nextTurn: TranscriptTurn = carryContentHydration(turn, { ...turn, steps });
   const items =
     located !== undefined

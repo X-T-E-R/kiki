@@ -29,11 +29,25 @@ export function compactionMarkerFates(items: readonly MarkerLike[]): ReadonlyMap
   const fates = new Map<string, CompactionMarkerFate>();
   const keeperBySummary = new Map<string, { readonly markerId: string; readonly durable: boolean }>();
   let openStart: string | undefined;
+  let openRunning: string | undefined;
+  let openQueued: string | undefined;
+  const openInterrupted: string[] = [];
+  const hideInterrupted = (): void => {
+    for (const id of openInterrupted) fates.set(id, 'hidden');
+    openInterrupted.length = 0;
+  };
   for (const item of items) {
-    // A later turn means the run is over even if its settle event was lost.
-    if (item.kind === 'turn' && openStart !== undefined) {
-      fates.set(openStart, 'hidden');
-      openStart = undefined;
+    // A later turn means an earlier unconfirmed/in-flight compaction is no longer live.
+    if (item.kind === 'turn') {
+      if (openStart !== undefined) {
+        fates.set(openStart, 'hidden');
+        openStart = undefined;
+      }
+      if (openRunning !== undefined) {
+        fates.set(openRunning, 'hidden');
+        openRunning = undefined;
+      }
+      hideInterrupted();
     }
     if (item.kind !== 'marker' || item.marker !== 'compaction' || item.markerId === undefined) continue;
     const payload = recordOf(item.payload);
@@ -44,6 +58,36 @@ export function compactionMarkerFates(items: readonly MarkerLike[]): ReadonlyMap
       fates.set(item.markerId, 'pending');
       continue;
     }
+    if (phase === 'running') {
+      if (openStart !== undefined) {
+        fates.set(openStart, 'hidden');
+        openStart = undefined;
+      }
+      if (openRunning !== undefined && openRunning !== item.markerId) {
+        fates.set(openRunning, 'hidden');
+      }
+      openRunning = item.markerId;
+      continue;
+    }
+    if (phase === 'queued') {
+      if (openQueued !== undefined && openQueued !== item.markerId) {
+        fates.set(openQueued, 'hidden');
+      }
+      openQueued = item.markerId;
+      continue;
+    }
+    if (phase === 'interrupted') {
+      if (openStart !== undefined) {
+        fates.set(openStart, 'hidden');
+        openStart = undefined;
+      }
+      if (openRunning !== undefined && openRunning !== item.markerId) {
+        fates.set(openRunning, 'hidden');
+        openRunning = undefined;
+      }
+      openInterrupted.push(item.markerId);
+      continue;
+    }
     if (phase === 'blocked') {
       fates.set(item.markerId, 'hidden');
       continue;
@@ -51,6 +95,17 @@ export function compactionMarkerFates(items: readonly MarkerLike[]): ReadonlyMap
     if (openStart !== undefined) {
       fates.set(openStart, 'hidden');
       openStart = undefined;
+    }
+    if (openRunning !== undefined && openRunning !== item.markerId) {
+      fates.set(openRunning, 'hidden');
+      openRunning = undefined;
+    }
+    if (openQueued !== undefined && openQueued !== item.markerId && (phase === 'completed' || payload?.['type'] === 'context.apply_compaction')) {
+      fates.set(openQueued, 'hidden');
+      openQueued = undefined;
+    }
+    if (phase === 'completed' || payload?.['type'] === 'context.apply_compaction' || summaryOf(payload) !== undefined) {
+      hideInterrupted();
     }
     const summary = summaryOf(payload);
     if (summary === undefined) continue;

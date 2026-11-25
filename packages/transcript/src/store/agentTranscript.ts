@@ -506,12 +506,21 @@ export class AgentTranscript {
     if (previousToolCallId !== undefined) this.#toolCalls.delete(previousToolCallId);
     this.#toolCallIdByFrame.delete(key);
     if (op.frame.kind !== 'tool') return;
-    this.#toolCalls.set(op.frame.toolCallId, {
+    const prior = this.#toolCalls.get(op.frame.toolCallId);
+    if (prior !== undefined) {
+      this.#toolCallIdByFrame.delete(toolFrameKey(prior.turnId, prior.stepId, prior.frame.frameId));
+    }
+    const storedTurn = state.items.find((item) => item.kind === 'turn' && item.turnId === op.turnId);
+    const storedFrame = storedTurn?.kind === 'turn'
+      ? storedTurn.steps.find((step) => step.stepId === op.stepId)?.frames.find((frame) => frame.frameId === op.frame.frameId)
+      : undefined;
+    const effective = storedFrame?.kind === 'tool' ? storedFrame : op.frame;
+    this.#toolCalls.set(effective.toolCallId, {
       turnId: op.turnId,
       stepId: op.stepId,
-      frame: op.frame,
+      frame: effective,
     });
-    this.#toolCallIdByFrame.set(key, op.frame.toolCallId);
+    this.#toolCallIdByFrame.set(key, effective.toolCallId);
   }
 
   private rebuildToolCallIndex(items: readonly TranscriptItem[]): void {

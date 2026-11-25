@@ -9432,4 +9432,141 @@ describe('terminal-facing transcript facts', () => {
     expect(projected.deliveredAgentMessages).toEqual({ 'msg-1': '2026-01-01T00:00:05.000Z' });
     expect(projected.lostTaskCount).toBe(1);
   });
+
+  it('deduplicates repeated turn tool calls and hides superseded interrupted/running compaction markers while preserving tail interrupted', () => {
+    const duplicated = projectAgentTranscriptView(createViewState(session.id), 'main', emptySnapshot({
+      items: [
+        {
+          kind: 'marker',
+          markerId: 'c-stale-interrupted',
+          marker: 'compaction',
+          at: '2026-01-01T00:00:01.000Z',
+          payload: { phase: 'interrupted', source: 'auto' },
+        },
+        {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'completed',
+          origin: { kind: 'user' },
+          promptId: 'p-dedup',
+          prompt: 'check release',
+          startedAt: '2026-01-01T00:00:02.000Z',
+          endedAt: '2026-01-01T00:00:05.000Z',
+          steps: [
+            {
+              kind: 'step',
+              stepId: 'step-a',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              startedAt: '2026-01-01T00:00:02.000Z',
+              frames: [
+                { kind: 'text', frameId: 'f-user-dup', role: 'user', text: 'check release', part: { messageId: 'p-dedup', partId: 'p-dedup:0', revision: 1, provenance: { source: 'engine', recordOrdinal: 1 } } },
+                { kind: 'tool', frameId: 'step-a.call-1', toolCallId: 'call-1', name: 'Read', state: 'running', input: { path: 'a.json' } },
+              ],
+            },
+            {
+              kind: 'step',
+              stepId: 'step-b',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              startedAt: '2026-01-01T00:00:03.000Z',
+              frames: [
+                { kind: 'tool', frameId: 'step-b.call-1', toolCallId: 'call-1', name: 'Read', state: 'done', input: { path: 'a.json' }, output: 'ok' },
+              ],
+            },
+          ],
+        },
+        {
+          kind: 'marker',
+          markerId: 'c-tail-interrupted',
+          marker: 'compaction',
+          at: '2026-01-01T00:00:06.000Z',
+          payload: { phase: 'interrupted', source: 'auto' },
+        },
+      ],
+    }));
+    const userBlocks = duplicated.blocks.filter((b) => b.kind === 'user');
+    const toolBlocks = duplicated.blocks.filter((b) => b.kind === 'tool');
+    const compactionNotices = duplicated.blocks.filter((b) => b.kind === 'notice' && b.compactionPhase !== undefined);
+    expect(userBlocks).toHaveLength(1);
+    expect(toolBlocks).toHaveLength(1);
+    expect(toolBlocks[0]).toMatchObject({ toolCallId: 'call-1', status: 'done', output: 'ok' });
+    expect(compactionNotices).toHaveLength(1);
+    expect(compactionNotices[0]).toMatchObject({ id: 'agent-marker-c-tail-interrupted', compactionPhase: 'interrupted' });
+  });
+
+  it('excludes historical lost tasks once a subsequent turn completes while keeping fresh post-turn lost tasks', () => {
+    const superseded = projectAgentTranscriptView(createViewState(session.id), 'main', emptySnapshot({
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't262',
+          ordinal: 262,
+          state: 'completed',
+          origin: { kind: 'user' },
+          prompt: 'latest work',
+          startedAt: '2026-01-02T00:00:00.000Z',
+          endedAt: '2026-01-02T00:02:16.000Z',
+          steps: [],
+        },
+      ],
+      tasks: [
+        {
+          taskId: 'task-old-lost',
+          kind: 'subagent',
+          state: 'lost',
+          description: 'Old lost child from earlier restart',
+          detached: false,
+          outputTail: '',
+          ownerTurnId: 40,
+          startedAt: '2026-01-01T00:00:01.000Z',
+          endedAt: '2026-01-01T00:05:00.000Z',
+        },
+        {
+          taskId: 'task-old-lost-no-ended',
+          kind: 'subagent',
+          state: 'lost',
+          description: 'Old lost child without endedAt',
+          detached: false,
+          outputTail: '',
+          ownerTurnId: 100,
+          startedAt: '2026-01-01T01:00:00.000Z',
+        },
+      ],
+    }));
+    expect(superseded.lostTaskCount).toBe(0);
+
+    const freshAfterTurn = projectAgentTranscriptView(createViewState(session.id), 'main', emptySnapshot({
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't262',
+          ordinal: 262,
+          state: 'completed',
+          origin: { kind: 'user' },
+          prompt: 'spawn background work',
+          startedAt: '2026-01-02T00:00:00.000Z',
+          endedAt: '2026-01-02T00:01:00.000Z',
+          steps: [],
+        },
+      ],
+      tasks: [
+        {
+          taskId: 'task-fresh-lost',
+          kind: 'subagent',
+          state: 'lost',
+          description: 'Background child lost on restart after turn 262 started',
+          detached: true,
+          outputTail: '',
+          ownerTurnId: 262,
+          startedAt: '2026-01-02T00:00:10.000Z',
+          endedAt: '2026-01-02T00:03:00.000Z',
+        },
+      ],
+    }));
+    expect(freshAfterTurn.lostTaskCount).toBe(1);
+  });
 });

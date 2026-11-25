@@ -41,7 +41,10 @@ export class CompactionProjection {
     const at = record.time === undefined ? undefined : new Date(record.time).toISOString();
     if (record.type === 'full_compaction.begin') {
       const queued = record['queued'] === true;
-      const previous = record['source'] === 'manual' ? this.#queued : undefined;
+      const previous = queued
+        ? this.#queued
+        : (record['source'] === 'manual' ? this.#queued : undefined) ??
+          (this.#running !== undefined && this.#running.payload['phase'] !== 'completed' ? this.#running : undefined);
       const run: CompactionRun = {
         markerId: previous?.markerId ?? identity(record, ordinal),
         at,

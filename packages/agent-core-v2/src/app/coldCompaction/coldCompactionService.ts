@@ -312,7 +312,7 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
         if (this.disposalAbort.signal.aborted || compactedCount >= limit) break;
         beforePosition = { updatedAt: summary.updatedAt, id: summary.id };
         if (summary.updatedAt > cutoff) continue;
-        if (summary.executionPhase !== undefined && summary.executionPhase !== 'failed') continue;
+        if (summary.executionPhase !== undefined && summary.executionPhase !== 'running' && summary.executionPhase !== 'failed') continue;
         if (this.sessions.get(summary.id) !== undefined || this.hasRecentForegroundAccess(summary.id)) continue;
         if (this.checkedUpdatedAt.get(summary.id) === summary.updatedAt) continue;
         try {

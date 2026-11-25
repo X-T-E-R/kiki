@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
 
 import { createKlient } from '../src/transports/http/index.js';
+import { HttpSessionViews } from '../src/transports/http/session-view.js';
 import { KlientValidationError } from '../src/core/validation.js';
 
 function envelope(data: unknown): Response {
@@ -187,5 +188,42 @@ describe('session history page lifecycle', () => {
       await expect(klient.session('s1').view.transcript.page({ agentId: 'main' })).rejects.toThrow('non-JSON response');
       await expect(klient.session('s1').view.transcript.page({ agentId: 'main' })).rejects.toThrow();
     } finally { await klient.close(); }
+  });
+
+  it('keeps view attached and emits recoverable protocolError when SESSION_BUSY attach retries are exhausted', () => {
+    vi.useFakeTimers();
+    try {
+      const sent: unknown[] = [];
+      let nextSeq = 1;
+      const views = new HttpSessionViews({
+        nextId: () => `v${nextSeq++}`,
+        connect: () => {},
+        isOpen: () => true,
+        send: (frame) => { sent.push(frame); },
+        restart: () => {},
+        nudge: () => {},
+      });
+      const signals: Array<{ type: string; recoverable?: boolean }> = [];
+      const handle = views.subscribe(
+        's1',
+        { sessionCursor: { seq: 0 }, transcriptGrades: { main: 'block' } },
+        (signal) => { signals.push(signal as { type: string; recoverable?: boolean }); },
+      );
+      const attachFrame = sent[0] as { id: string };
+      for (let i = 0; i < 4; i += 1) {
+        views.receive({ type: 'view_error', id: attachFrame.id, code: 40901, msg: 'History readers are busy' });
+        vi.advanceTimersByTime(3_000);
+      }
+      views.receive({ type: 'view_error', id: attachFrame.id, code: 40901, msg: 'History readers are busy' });
+      expect(signals).toContainEqual(
+        expect.objectContaining({ type: 'protocolError', recoverable: true }),
+      );
+      const beforeReconnect = sent.length;
+      views.opened();
+      expect(sent.length).toBeGreaterThan(beforeReconnect);
+      handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

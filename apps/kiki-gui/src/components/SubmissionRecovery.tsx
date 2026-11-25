@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import {
+  UNCONFIRMED_SUBMISSIONS_STORAGE_KEY,
   forgetUnconfirmedSubmission,
+  isSubmissionInFlight,
   readUnconfirmedSubmissions,
   restorePromptToDraft,
   subscribeUnconfirmedSubmissions,
@@ -39,15 +41,43 @@ export function SubmissionRecovery({
   const [items, setItems] = useState(() => readUnconfirmedSubmissions(sessionId, agentId));
   const [expanded, setExpanded] = useState<string | null>(null);
   useEffect(() => {
-    setItems(readUnconfirmedSubmissions(sessionId, agentId));
-    setExpanded(null);
-    return subscribeUnconfirmedSubmissions(() => {
+    const sync = () => {
       setItems(readUnconfirmedSubmissions(sessionId, agentId));
-    });
+    };
+    sync();
+    setExpanded(null);
+    const unsubscribe = subscribeUnconfirmedSubmissions(sync);
+    const onStorage = (event: StorageEvent) => {
+      if (
+        event.key === null ||
+        event.key === UNCONFIRMED_SUBMISSIONS_STORAGE_KEY ||
+        event.key.endsWith(`:${UNCONFIRMED_SUBMISSIONS_STORAGE_KEY}`)
+      ) {
+        sync();
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('storage', onStorage);
+    };
   }, [sessionId, agentId]);
   useEffect(() => {
-    const known = new Set([...state.queuedPromptIds, ...state.blocks.flatMap(block => block.kind === 'user' && block.steerStatus === undefined && block.promptId !== undefined ? [block.promptId] : [])]);
+    const known = new Set<string>(state.queuedPromptIds);
     if (state.activePromptId !== undefined) known.add(state.activePromptId);
+    for (const ingress of state.durableIngress ?? []) {
+      if ((ingress.agent_id ?? MAIN_AGENT_ID) === agentId) {
+        known.add(ingress.prompt_id);
+        if (ingress.user_message_id !== undefined) known.add(ingress.user_message_id);
+      }
+    }
+    for (const block of state.blocks) {
+      if (block.kind !== 'user') continue;
+      if (block.optimisticStatus !== undefined) continue;
+      if (block.steerStatus !== undefined && block.steerStatus !== 'waiting') continue;
+      if (block.promptId !== undefined) known.add(block.promptId);
+      if (block.userMessageId !== undefined) known.add(block.userMessageId);
+    }
     const next = items.filter(item => !known.has(item.promptId));
     if (next.length === items.length) return;
     for (const item of items) if (known.has(item.promptId)) forgetUnconfirmedSubmission(sessionId, item.promptId, agentId);
@@ -60,12 +90,15 @@ export function SubmissionRecovery({
       (block.steerStatus === 'sending' ||
         block.steerStatus === 'preparing' ||
         block.steerStatus === 'waiting' ||
-        block.optimisticStatus === 'sending')
+        block.optimisticStatus === 'sending' ||
+        block.optimisticStatus === 'server')
         ? [block.promptId]
         : [],
     ),
   );
-  const visibleItems = items.filter(item => !inFlightPromptIds.has(item.promptId));
+  const visibleItems = state.resyncing
+    ? []
+    : items.filter(item => !inFlightPromptIds.has(item.promptId) && !isSubmissionInFlight(sessionId, item.promptId, agentId));
   if (visibleItems.length === 0) return null;
   const settle = (item: UnconfirmedSubmission, restore: boolean) => {
     if (restore) restorePromptToDraft(draftKey ?? sessionId, item.content);

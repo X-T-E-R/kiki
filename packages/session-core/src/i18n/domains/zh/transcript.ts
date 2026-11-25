@@ -719,6 +719,7 @@ export const transcriptZh = {
   'transcript.reminder.directive': '提醒 · 长期指令',
   'transcript.reminder.epoch': '窗口 {epoch}',
   'transcript.reminder.history': '提醒 · 引用早前对话',
+  'transcript.reminder.modelSteering': 'Model Steer',
   'transcript.reminder.progress': '提醒 · 更新笔记',
   'transcript.reminder.rebuild': '提醒 · 重建笔记',
   'transcript.reminder.renew': '提醒 · 即将换窗',

@@ -115,11 +115,15 @@ export function withAdmissionUserBlocks(
   const scoped = filterIngressForAgent(ingress, targetAgentId);
   if (scoped === undefined || scoped.length === 0) return blocks;
   const present = new Set<string>();
-  for (const block of blocks) if (block.kind === 'user' && block.promptId !== undefined) present.add(block.promptId);
+  for (const block of blocks) {
+    if (block.kind !== 'user') continue;
+    if (block.promptId !== undefined) present.add(block.promptId);
+    if (block.userMessageId !== undefined) present.add(block.userMessageId);
+  }
   const extra: Block[] = [];
   for (const item of scoped) {
     if (item.admission !== 'restoring' && item.admission !== 'waiting_switch' && item.admission !== 'held' && item.admission !== 'failed') continue;
-    if (present.has(item.prompt_id)) continue;
+    if (present.has(item.prompt_id) || (item.user_message_id !== undefined && present.has(item.user_message_id))) continue;
     const projection = projectMessageContent(item.content);
     extra.push({
       kind: 'user',
@@ -159,7 +163,9 @@ export function withOptimisticUserBlock(
   if (
     pending === undefined ||
     (pending.agentId ?? DEFAULT_AGENT_ID) !== targetAgentId ||
-    blocks.some(block => block.kind === 'user' && block.promptId === pending.id)
+    blocks.some(block =>
+      block.kind === 'user' && (block.promptId === pending.id || block.userMessageId === pending.id || block.id === `user-${pending.id}`),
+    )
   ) return blocks;
   const projected = appendLocalUserMessage(createViewState(pending.id), {
     userMessageId: pending.id, promptId: pending.id, text: pending.text, content: pending.content,

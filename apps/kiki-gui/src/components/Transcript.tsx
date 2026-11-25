@@ -36,7 +36,8 @@ import { isUndoAnchorOrigin, type TextPresentation, type ContentRef, type GoalMa
 import { defaultRangeExtractor, elementScroll, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 import { useStickToBottom } from 'use-stick-to-bottom';
 
-import type { ApprovalDecision, QuestionAnswer, SessionInterruptedWork, SessionSeedMode } from '@kiki/protocol';
+import type { ApprovalDecision, ModelCatalogItem, QuestionAnswer, SessionInterruptedWork, SessionSeedMode } from '@kiki/protocol';
+import { resolveCatalogModel } from '@kiki/session-core/settings';
 import { getSubagentScaleConfig } from '../lib/subagentScaleConfig';
 import { cssZoomFactor } from '../lib/uiZoom';
 import type { TimelineOffshootItem } from './fork/forkLineageModel';
@@ -784,7 +785,9 @@ const UserMessage = memo(function UserMessage({
                 key={segment.key}
                 data-steer-status={block.steerStatus}
                 className={`kiki-user-text max-w-[80%] rounded-[12px] rounded-br-[6px] px-4 py-2 whitespace-pre-wrap text-ink steer-bubble ${
-                  block.steerStatus === undefined ? 'bg-bubble-user' : 'steer-bubble-pending'
+                  block.steerStatus === undefined
+                    ? 'bg-bubble-user'
+                    : 'steer-bubble-pending !border-transparent !bg-bubble-user/75'
                 }`}
               >
                 {projectBody(segment.text)}
@@ -810,7 +813,9 @@ const UserMessage = memo(function UserMessage({
         <div
           data-steer-status={block.steerStatus}
           className={`kiki-user-text max-w-[80%] rounded-[12px] rounded-br-[6px] px-4 py-2 whitespace-pre-wrap text-ink steer-bubble ${
-            block.steerStatus === undefined ? 'bg-bubble-user' : 'steer-bubble-pending'
+            block.steerStatus === undefined
+              ? 'bg-bubble-user'
+              : 'steer-bubble-pending !border-transparent !bg-bubble-user/75'
           }`}
         >
           <div
@@ -940,7 +945,7 @@ const UserMessage = memo(function UserMessage({
           data-optimistic-status={block.optimisticStatus}
           data-optimistic-slow={block.optimisticSlow === true ? '' : undefined}
           title={optimisticStatusTitle}
-          className={`mt-1 mr-1 flex items-center gap-1.5 text-[11px] ${block.optimisticStatus === 'offline' || block.optimisticRetryable ? 'text-amber-ink' : 'text-ink-faint'}`}
+          className={`mt-1 mr-1 flex items-center gap-1.5 text-[12px] leading-[16px] font-normal ${block.optimisticStatus === 'offline' || block.optimisticRetryable ? 'text-amber-ink' : 'text-ink-faint'}`}
         >
           {optimisticStatusIcon}
           <span>{optimisticStatusLabel}</span>
@@ -950,7 +955,7 @@ const UserMessage = memo(function UserMessage({
               data-pending-retry
               aria-label={t('transcript.retryEarlier')}
               onClick={(event) => { event.stopPropagation(); onRetryPending(block.promptId!); }}
-              className="font-medium text-selected-ink underline decoration-dotted hover:decoration-solid focus-visible:outline-2 focus-visible:outline-selected-ink"
+              className="rounded px-1 text-selected-ink transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink"
             >
               {t('transcript.retryEarlier')}
             </button>
@@ -958,13 +963,13 @@ const UserMessage = memo(function UserMessage({
         </span>
       ) : null}
       {block.steerStatus !== undefined ? (
-        <span className="mt-1 mr-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+        <span className="mt-1 mr-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] leading-[16px] font-normal">
           <span role="status" data-steer-line={block.steerStatus} className="flex items-center gap-1.5"
             title={block.steerStatus === 'waiting' ? t('transcript.steerWaitingTitle') : undefined}>
             <span aria-hidden className="steer-mark" />
             {block.steerStatus === 'waiting' ? (
               <>
-                <span className="font-medium text-selected-ink">{t('transcript.steerWaiting')}</span>
+                <span className="text-selected-ink">{t('transcript.steerWaiting')}</span>
                 <span className="text-ink-soft">· {t('transcript.steerWaitingHint')}</span>
               </>
             ) : (
@@ -974,7 +979,7 @@ const UserMessage = memo(function UserMessage({
             )}
           </span>
           {onCancelQueued !== undefined && block.promptId !== undefined && block.steerStatus !== 'sending' ? (
-            <button type="button" className="rounded text-ink-soft underline decoration-dotted hover:text-danger focus-visible:outline-2 focus-visible:outline-selected-ink"
+            <button type="button" className="rounded px-1 text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-danger focus-visible:outline-2 focus-visible:outline-selected-ink"
               onClick={() => onCancelQueued(block.promptId!)}>
               {t('common.cancel')}
             </button>
@@ -982,7 +987,7 @@ const UserMessage = memo(function UserMessage({
         </span>
       ) : null}
       {block.promptStatus === 'queued' && admission === undefined && block.optimisticStatus === undefined ? (
-        <span role="status" data-prompt-queued className="mt-1 mr-1 flex items-center gap-1.5 text-[11px] text-ink-faint">
+        <span role="status" data-prompt-queued className="mt-1 mr-1 flex items-center gap-1.5 text-[12px] leading-[16px] font-normal text-ink-faint">
           <Icon name="clock" size={12} />
           <span>{t('transcript.queued')}</span>
         </span>
@@ -1309,7 +1314,12 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
   const [open, setOpen] = useState(false);
   useFindReveal(block.id, open, setOpen);
   const category = block.category;
-  const labelText = t(category === undefined ? 'transcript.systemReminder' : REMINDER_CATEGORY_KEYS[category.kind]);
+  const variantKey = block.variant === 'model_steering' ? 'transcript.reminder.modelSteering' : undefined;
+  const labelText = t(
+    category !== undefined
+      ? REMINDER_CATEGORY_KEYS[category.kind]
+      : variantKey ?? 'transcript.systemReminder',
+  );
   const facts = category === undefined ? [] : [
     category.triggers.length > 0 ? t('transcript.reminder.triggers', { triggers: category.triggers.join(' · ') }) : undefined,
     category.epoch !== undefined ? t('transcript.reminder.epoch', { epoch: category.epoch }) : undefined,
@@ -1317,7 +1327,7 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
   ].filter((fact): fact is string => fact !== undefined);
   return (
     <ActivityRow
-      attrs={{ 'data-reminder-kind': category?.kind }}
+      attrs={{ 'data-reminder-kind': category?.kind, 'data-reminder-variant': block.variant }}
       glyph={<Icon name="system" />}
       label={<span className="font-normal text-ink-faint">{labelText}</span>}
       detail={<span className="text-ink-faint">{injectionSummary(block.text)}</span>}
@@ -1427,6 +1437,10 @@ function PlainSystemMessage({ block, superseded = false }: { block: SystemBlock;
   );
   let label = t(SYSTEM_VARIANT_KEYS[block.variant]);
   let detail: ReactNode = block.source ?? (block.variant === 'task' ? systemHeadline(block.text) : undefined);
+  if (block.variant === 'injection' && block.source === 'model_steering') {
+    label = t('transcript.reminder.modelSteering');
+    detail = injectionSummary(block.text) || undefined;
+  }
   if (block.variant === 'thread_watch') {
     if (meta?.title !== undefined && meta.title !== '') label = meta.title;
     const previewFirstLine = meta?.outputPreview?.split('\n', 1)[0]?.trim();
@@ -1923,6 +1937,8 @@ function SubagentCardBody({
   depth?: number;
 }) {
   const { t, tp, time } = useI18n();
+  const models = useContext(TranscriptModelsContext);
+  const displayModel = model === undefined ? undefined : (resolveCatalogModel(models, model)?.display_name ?? model);
   const busy = status === 'running' || status === 'background';
   const bodyIndent = depth > 0 ? 'pl-[26px]' : 'pl-4';
   return (
@@ -1936,8 +1952,8 @@ function SubagentCardBody({
           <span className={`h-2 w-2 shrink-0 rounded-full ${subagentStatusTone(status)} ${busy ? 'status-dot-busy' : ''}`} />
         )}
         <span className={`min-w-0 truncate text-[13px] ${depth > 0 ? 'font-medium' : 'font-semibold'} text-ink`}>{name}</span>
-        {model !== undefined ? (
-          <span className="min-w-0 shrink truncate text-[12px] text-ink-faint">{model}</span>
+        {displayModel !== undefined ? (
+          <span title={model} className="min-w-0 shrink truncate text-[12px] text-ink-faint">{displayModel}</span>
         ) : null}
         <span className="ml-auto shrink-0 text-[12px] tabular-nums text-ink-faint">
           {elapsed === undefined ? null : time.formatDuration(elapsed)}
@@ -2671,6 +2687,9 @@ const COMPACTION_ROOTS = ['payload'] as const;
  * failure is visible in a fast scroll, while opening onto the full error or
  * compaction summary on request.
  */
+const EMPTY_MODELS: readonly ModelCatalogItem[] = [];
+const TranscriptModelsContext = createContext<readonly ModelCatalogItem[]>(EMPTY_MODELS);
+
 const CompactionRecoveryContext = createContext<{
   readonly latestFailedNoticeId?: string;
   readonly onRetryCompaction?: (strategy: 'summarize' | 'relay') => void;
@@ -4110,15 +4129,18 @@ function resolveVisibleTurnGaps(
   const hasRawGaps = rawGaps !== undefined && Object.keys(rawGaps).length > 0;
   if (!hasRawGaps && state.incompleteTurnIds.length === 0) return EMPTY_TURN_GAPS;
   const map = new Map<string, TurnGap>();
+  const explicitKeys = new Set<string>();
   if (rawGaps !== undefined) {
     for (const [turnId, gap] of Object.entries(rawGaps)) {
+      const key = normalizeTurnId(turnId);
+      explicitKeys.add(key);
       if (gap.reason === 'stale' && state.busy && sameTurn(turnId, liveTurnId)) continue;
-      map.set(normalizeTurnId(turnId), gap);
+      map.set(key, gap);
     }
   }
   for (const turnId of state.incompleteTurnIds) {
     const key = normalizeTurnId(turnId);
-    if (!map.has(key)) map.set(key, { at: 'turn', reason: 'partial' });
+    if (!explicitKeys.has(key) && !map.has(key)) map.set(key, { at: 'turn', reason: 'partial' });
   }
   return map;
 }
@@ -5571,6 +5593,7 @@ export const Transcript = memo(function Transcript({
   interruptedWork,
   onRecoverInterruption,
   recoveringInterruption = false,
+  models,
 }: {
   state: SessionViewState;
   agentId?: string;
@@ -5632,6 +5655,8 @@ export const Transcript = memo(function Transcript({
   /** 1-click lossless restart recovery via `POST /sessions/:id/recover`. */
   onRecoverInterruption?: () => void;
   recoveringInterruption?: boolean;
+  /** Optional model catalog so subagent rows show human display names instead of raw aliases. */
+  models?: readonly ModelCatalogItem[];
 }) {
   const { t } = useI18n();
   const controller = useTranscriptController();
@@ -6618,12 +6643,17 @@ export const Transcript = memo(function Transcript({
   const contentRef = useRef<HTMLDivElement | null>(null);
   const lastTotalSizeRef = useRef<number>(0);
   const lastObservedScrollTopRef = useRef<number>(0);
+  const lastObservedScrollHeightRef = useRef<number>(0);
   const programmaticScrollTopRef = useRef<number | null>(null);
   const markProgrammaticScroll = useCallback((targetTop: number) => {
     programmaticScrollTopRef.current = targetTop;
     stickToBottomRef.current.state.ignoreScrollToTop = targetTop;
     stickToBottomRef.current.state.lastScrollTop = targetTop;
     lastObservedScrollTopRef.current = targetTop;
+    const el = scrollRef.current;
+    if (el !== null && el.isConnected && el.clientHeight > 0) {
+      lastObservedScrollHeightRef.current = el.scrollHeight;
+    }
   }, []);
   const prevVirtualNodesRef = useRef<readonly TranscriptVirtualNode[] | null>(null);
   const pendingPrependAnchorRef = useRef<{
@@ -6694,10 +6724,10 @@ export const Transcript = memo(function Transcript({
   const lostTaskCount = state.lostTaskCount ?? 0;
   const interruptedBranchCount =
     agentId === 'main' ? (interruptedWork?.interrupted_branches ?? 0) : 0;
-  const effectiveLostTasks = Math.max(
-    lostTaskCount,
-    agentId === 'main' ? (interruptedWork?.lost_tasks ?? 0) : 0,
-  );
+  const effectiveLostTasks =
+    agentId === 'main' && state.session !== undefined
+      ? (interruptedWork?.lost_tasks ?? 0)
+      : Math.max(lostTaskCount, agentId === 'main' ? (interruptedWork?.lost_tasks ?? 0) : 0);
   const hasInterruptedWork =
     isRecoveryCancelledTail
     || effectiveLostTasks > 0
@@ -6759,12 +6789,21 @@ export const Transcript = memo(function Transcript({
   const baseSeatPaddingEnd = seatHeight > 0 ? Math.max(76, seatHeight + 36) : 60;
   const effectiveTailHeight = hasTailContent ? tailSlotHeight : 0;
   const seatPaddingEnd = baseSeatPaddingEnd + (effectiveTailHeight > 0 ? effectiveTailHeight + TRANSCRIPT_TAIL_GAP : 0);
+  const virtualNodeKeys = useMemo(() => {
+    const seen = new Map<string, number>();
+    return virtualNodes.map((node) => {
+      const base = virtualNodeKey(node);
+      const count = seen.get(base) ?? 0;
+      seen.set(base, count + 1);
+      return count === 0 ? base : `${base}#${count}`;
+    });
+  }, [virtualNodes]);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: virtualNodes.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => TRANSCRIPT_ESTIMATED_ROW_HEIGHT,
     measureElement: measureTranscriptRow,
-    getItemKey: (index) => virtualNodeKey(virtualNodes[index]),
+    getItemKey: (index) => virtualNodeKeys[index] ?? virtualNodeKey(virtualNodes[index]),
     scrollEndThreshold: TRANSCRIPT_END_THRESHOLD,
     overscan: TRANSCRIPT_OVERSCAN,
     rangeExtractor,
@@ -6788,8 +6827,9 @@ export const Transcript = memo(function Transcript({
     },
     onChange: (instance) => {
       const nextTotalSize = instance.getTotalSize();
-      if (contentRef.current !== null) {
-        contentRef.current.style.height = `${nextTotalSize}px`;
+      const heightText = `${nextTotalSize}px`;
+      if (contentRef.current !== null && contentRef.current.style.height !== heightText) {
+        contentRef.current.style.height = heightText;
       }
       // A hidden (display:none) box reports scrollTop 0 on every tick, and a
       // pending transcript reset has not restored the pre-reset anchor yet.
@@ -6808,27 +6848,39 @@ export const Transcript = memo(function Transcript({
       if (el !== null && el.isConnected && el.clientHeight > 0) {
         const stick = stickToBottomRef.current;
         const currentTop = el.scrollTop;
+        const prevTop = lastObservedScrollTopRef.current;
+        const prevHeight = lastObservedScrollHeightRef.current;
+        const currentHeight = el.scrollHeight;
         const progTarget = programmaticScrollTopRef.current;
         const isProgrammatic =
           (progTarget !== null && Math.abs(currentTop - progTarget) <= 0.5) ||
           (stick.state.ignoreScrollToTop !== undefined &&
             Math.abs(currentTop - stick.state.ignoreScrollToTop) <= 0.5);
-        if (!isProgrammatic && Math.abs(currentTop - lastObservedScrollTopRef.current) > 0.5) {
+        if (!isProgrammatic && Math.abs(currentTop - prevTop) > 0.5) {
           programmaticScrollTopRef.current = null;
-          const dist = el.scrollHeight - el.clientHeight - currentTop;
+          const dist = currentHeight - el.clientHeight - currentTop;
+          const grewWhileAtBottom =
+            stick.state.isAtBottom &&
+            !stick.state.escapedFromLock &&
+            currentTop >= prevTop - 2 &&
+            currentHeight > prevHeight &&
+            prevHeight > 0 &&
+            prevHeight - el.clientHeight - prevTop <= TRANSCRIPT_END_THRESHOLD;
           // `use-stick-to-bottom` clamps its internal target to `scrollHeight - 1 - clientHeight`
           // and clears `ignoreScrollToTop` in its own scroll handler before ours runs. Ignore
-          // <=2px bottom-clamp jitter so send/streaming never misclassifies it as an upward scroll.
-          if (dist > TRANSCRIPT_END_THRESHOLD || (currentTop < lastObservedScrollTopRef.current - 2 && dist > 2)) {
+          // <=2px bottom-clamp jitter and never disengage bottom-follow solely because content
+          // grew below the viewport while pinned at the bottom.
+          if (!grewWhileAtBottom && (dist > TRANSCRIPT_END_THRESHOLD || (currentTop < prevTop - 2 && dist > 2))) {
             if (stick.state.isAtBottom || !stick.state.escapedFromLock) {
               stick.stopScroll();
             }
-          } else if (currentTop > lastObservedScrollTopRef.current + 0.5 || el.scrollHeight <= el.clientHeight + 1) {
+          } else if (dist <= TRANSCRIPT_END_THRESHOLD && (currentTop > prevTop + 0.5 || currentHeight <= el.clientHeight + 1)) {
             stick.state.escapedFromLock = false;
             stick.state.isAtBottom = true;
           }
         }
         lastObservedScrollTopRef.current = currentTop;
+        lastObservedScrollHeightRef.current = currentHeight;
       }
       const following = isFollowingBottom();
       // `contentRef.current.style.height` has just been synced above; ONLY when
@@ -6897,12 +6949,22 @@ export const Transcript = memo(function Transcript({
       markProgrammaticScroll(target);
       el.scrollTop = target;
       virtualizer.scrollOffset = el.scrollTop;
+      lastObservedScrollTopRef.current = el.scrollTop;
     }
     void stick.scrollToBottom({ animation: 'instant' });
     virtualizer.scrollToEnd();
+    reconcileMountedRows(virtualizer);
     if (el !== null && el.isConnected) {
-      markProgrammaticScroll(el.scrollTop);
+      const settledTarget = Math.max(0, el.scrollHeight - el.clientHeight);
+      if (settledTarget > el.scrollTop + 0.5) {
+        markProgrammaticScroll(settledTarget);
+        el.scrollTop = settledTarget;
+      } else {
+        markProgrammaticScroll(el.scrollTop);
+      }
       virtualizer.scrollOffset = el.scrollTop;
+      lastObservedScrollTopRef.current = el.scrollTop;
+      lastTotalSizeRef.current = virtualizer.getTotalSize();
     }
   }, [virtualizer, markProgrammaticScroll]);
   const stickController = useMemo<TranscriptStickController>(() => ({
@@ -6971,16 +7033,26 @@ export const Transcript = memo(function Transcript({
         return;
       }
       const prevTop = lastObservedScrollTopRef.current;
-      const dist = el.scrollHeight - el.clientHeight - current;
-      if (dist > TRANSCRIPT_END_THRESHOLD || (current < prevTop - 2 && dist > 2)) {
+      const prevHeight = lastObservedScrollHeightRef.current;
+      const currentHeight = el.scrollHeight;
+      const dist = currentHeight - el.clientHeight - current;
+      const grewWhileAtBottom =
+        stick.state.isAtBottom &&
+        !stick.state.escapedFromLock &&
+        current >= prevTop - 2 &&
+        currentHeight > prevHeight &&
+        prevHeight > 0 &&
+        prevHeight - el.clientHeight - prevTop <= TRANSCRIPT_END_THRESHOLD;
+      if (!grewWhileAtBottom && (dist > TRANSCRIPT_END_THRESHOLD || (current < prevTop - 2 && dist > 2))) {
         if (stick.state.isAtBottom || !stick.state.escapedFromLock) {
           stick.stopScroll();
         }
-      } else if (current > prevTop + 0.5 || el.scrollHeight <= el.clientHeight + 1) {
+      } else if (dist <= TRANSCRIPT_END_THRESHOLD && (current > prevTop + 0.5 || currentHeight <= el.clientHeight + 1)) {
         stick.state.escapedFromLock = false;
         stick.state.isAtBottom = true;
       }
       lastObservedScrollTopRef.current = current;
+      lastObservedScrollHeightRef.current = currentHeight;
     };
     el.addEventListener('scroll', onScrollSync, { passive: true });
     return () => { el.removeEventListener('scroll', onScrollSync); };
@@ -8312,6 +8384,7 @@ export const Transcript = memo(function Transcript({
             ) : null}
           </div>
         ) : (
+        <TranscriptModelsContext.Provider value={models ?? EMPTY_MODELS}>
         <CompactionRecoveryContext.Provider value={compactionRecoveryValue}>
         <PhoneMergedPendingLeadContext.Provider value={mergedPendingLeadId}>
         <div
@@ -8536,6 +8609,7 @@ export const Transcript = memo(function Transcript({
         </div>
         </PhoneMergedPendingLeadContext.Provider>
         </CompactionRecoveryContext.Provider>
+        </TranscriptModelsContext.Provider>
         )}
       </div>
       {annotationPopover !== null ? (

@@ -9790,7 +9790,9 @@ describe('settled history folds and the unified locate entry', () => {
       ));
       expect(container.querySelector('[data-transcript-loading]')).not.toBeNull();
 
-      // While t1 is the live running tail, its stale gap is suppressed in favour of the running state.
+      // While t1 is the live running tail, its stale gap is suppressed in favour of the running state
+      // and must NOT be re-emitted as a bogus fallback 'partial' continuation button.
+      const beginReadSpy = vi.spyOn(controller, 'beginContentRead');
       const blocks: Block[] = [
         userBlock({ id: 'u1', text: 'Work while away', turnId: 't1' }),
         assistantBlock('a1', 'Earlier snapshot', { turnId: 't1', stepId: 's0' }),
@@ -9807,7 +9809,25 @@ describe('settled history folds and the unified locate entry', () => {
         </TranscriptDetailProvider>
       ));
       expect(container.querySelector('[data-turn-gap-reason="stale"]')).toBeNull();
+      expect(container.querySelector('[data-turn-gap-reason="partial"]')).toBeNull();
+      expect(container.querySelector('[data-turn-gap]')).toBeNull();
       expect(container.querySelector('[data-transcript-refreshing]')?.textContent).toContain('Catching up');
+
+      // A genuinely stepsPartial visible turn acquires its step-structure reader automatically.
+      beginReadSpy.mockClear();
+      await renderSettled(root, (
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_stale" agentId={agentId}>
+          {virtualTranscript(transcriptState(blocks, {
+            busy: false,
+            incompleteTurnIds: ['t1'],
+            turnGaps: { t1: { at: 'turn', reason: 'partial' } },
+            refreshing: false,
+          }), undefined, agentId)}
+        </TranscriptDetailProvider>
+      ));
+      expect(container.querySelector('[data-turn-gap-reason="partial"]')).not.toBeNull();
+      expect(beginReadSpy).toHaveBeenCalledWith(agentId, { kind: 'turn', id: 't1' }, ['steps']);
+      beginReadSpy.mockRestore();
 
       // Once t1 is no longer the live tail, the stale gap row appears alongside loaded rows while refreshing.
       await renderSettled(root, (
@@ -12300,5 +12320,110 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
     expect(barRecoverBtn).not.toBeNull();
     await act(async () => { barRecoverBtn!.click(); });
     expect(onRecoverInterruption).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders image-only steered user blocks with zero placeholder text bubble and clean non-dotted cancel controls', async () => {
+    const { container, root } = makeRoot();
+    const onCancelQueued = vi.fn();
+    await renderSettled(
+      root,
+      <Transcript
+        state={transcriptState([
+          {
+            kind: 'user',
+            id: 'user-img-steer',
+            promptId: 'img-steer-1',
+            text: '',
+            media: [{ kind: 'image', url: 'data:image/png;base64,AAAA', name: 'shot.png' }],
+            createdAt: '2026-01-01T00:00:01.000Z',
+            steerStatus: 'waiting',
+          },
+        ], { busy: true })}
+        onLoadOlder={async () => false}
+        onResolveApproval={noopActions}
+        onAnswerQuestion={noopActions}
+        onDismissQuestion={noopActions}
+        onCancelQueued={onCancelQueued}
+      />,
+    );
+    expect(container.querySelector('[data-user-media]')).not.toBeNull();
+    expect(container.querySelector('[data-steer-status]')).toBeNull();
+    expect(container.querySelector('[data-steer-line="waiting"]')).not.toBeNull();
+    const cancelBtn = [...container.querySelectorAll('button')].find((btn) => btn.textContent?.trim() === 'Cancel' || btn.textContent?.trim() === '取消');
+    expect(cancelBtn).toBeDefined();
+    expect(cancelBtn?.className).not.toContain('decoration-dotted');
+  });
+
+  it('labels model_steering injections as Model Steer, resolves subagent model display_name, and suppresses lost-task banner when main session has no interrupted_work', async () => {
+    const { container, root } = makeRoot();
+    await renderSettled(
+      root,
+      <Transcript
+        models={[
+          {
+            id: 'axon-message/gemini-4-neon',
+            provider_id: 'axon-message',
+            remote_id: 'gemini-4-neon',
+            display_name: 'Gemini 4 Neon',
+            max_context_size: 1_000_000,
+          },
+        ]}
+        state={transcriptState([
+          {
+            kind: 'system-reminder',
+            id: 'rem-steer-1',
+            text: 'Stay concise and verify diff first.',
+            variant: 'model_steering',
+            createdAt: '2026-01-01T00:00:01.000Z',
+          },
+          {
+            kind: 'subagent',
+            id: 'sub-1',
+            subagentId: 'worker-1',
+            parentAgentId: 'main',
+            parentToolCallId: 'tc-sub-1',
+            name: 'windows_everything_explorer_owner',
+            model: 'axon-message/gemini-4-neon',
+            thinkingEffort: 'high',
+            status: 'running',
+            description: 'Diagnose RAM bloat',
+            summary: undefined,
+            error: undefined,
+            toolCallCount: 0,
+            toolCallCountKnown: false,
+            startedAt: '2026-01-01T00:00:02.000Z',
+            endedAt: undefined,
+            transcript: [],
+          },
+        ], {
+          busy: false,
+          lostTaskCount: 6,
+          session: {
+            id: 'session_e170941a',
+            title: 'Live session',
+            created_at: '2026-01-01T00:00:00.000Z',
+            updated_at: '2026-01-01T00:05:00.000Z',
+            busy: false,
+            metadata: { cwd: '/example' },
+            agent_config: { model: 'axon-message/gemini-4-neon' },
+            usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 },
+            permission_rules: [],
+            message_count: 2,
+            last_seq: 2,
+          } as unknown as SessionViewState['session'],
+        })}
+        onLoadOlder={async () => false}
+        onResolveApproval={noopActions}
+        onAnswerQuestion={noopActions}
+        onDismissQuestion={noopActions}
+        onRecoverInterruption={vi.fn()}
+      />,
+    );
+    const steerRow = container.querySelector('[data-reminder-variant="model_steering"]');
+    expect(steerRow).not.toBeNull();
+    expect(steerRow?.textContent).toContain('Model Steer');
+    expect(steerRow?.textContent).not.toContain('System reminder');
+    expect(container.textContent).toContain('Gemini 4 Neon');
+    expect(container.querySelector('[data-interruption-recovery]')).toBeNull();
   });
 });

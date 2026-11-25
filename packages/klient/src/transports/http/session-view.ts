@@ -144,13 +144,21 @@ export class HttpSessionViews {
     if (frame.type === 'view_error') {
       this.clearAttachTimer(view);
       this.clearRetryTimer(view);
+      const isBusy = frame.code === 40901 || String(frame.code) === 'SESSION_BUSY';
       const backoff = BUSY_ATTACH_BACKOFF_MS[view.attachRetries];
-      if ((frame.code === 40901 || String(frame.code) === 'SESSION_BUSY') && backoff !== undefined) {
+      if (isBusy && backoff !== undefined) {
         view.attachRetries += 1;
         view.retryTimer = setTimeout(() => {
           view.retryTimer = undefined;
           if (this.views.has(view.id) && this.host.isOpen()) this.attach(view);
         }, backoff);
+        return true;
+      }
+      if (isBusy) {
+        // Transient server busy exhaustion stays recoverable and retains the view
+        // so SessionController backoff resync and socket reconnect can self-heal.
+        view.attachRetries = 0;
+        view.handler({ type: 'protocolError', generation: this.generation, recoverable: true, detail: (frame.msg ?? 'Session view busy').slice(0, 512) });
         return true;
       }
       this.views.delete(view.id);

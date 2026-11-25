@@ -565,6 +565,7 @@ export class SessionController {
   private rosterAgentIds = new Set<string>();
   private rosterLeaseTimer: ReturnType<typeof setTimeout> | null = null;
   private resyncTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryResyncRewrite = false;
   private rewriteHold: RewriteHold | undefined;
   private rewriteHoldToken = 0;
   private closed = false;
@@ -1200,8 +1201,7 @@ export class SessionController {
     this.resolveResyncIdleWaiters();
     for (const controller of this.snapshotControllers) controller.abort();
     this.snapshotControllers.clear();
-    this.abortAutomaticRosterRead();
-    this.cancelAllFirstScreenSeeds();
+    this.abortInFlightHistoryReads();
     this.clearResyncTimer();
     this.clearRosterLeaseTimer();
     this.clearRewriteHold();
@@ -1228,25 +1228,10 @@ export class SessionController {
     this.viewHandle = undefined;
   }
 
-  /**
-   * Release in-flight older/detail/range history reads when a busy view is
-   * parked in the background without suspending its live `turn` subscription,
-   * so inactive sessions never head-of-line block the newly focused session's
-   * `HistoryReadLane`.
-   */
-  cancelParkedReads(): void {
-    if (this.closed) return;
-    this.isParked = true;
+  private abortInFlightHistoryReads(): void {
     this.abortAutomaticRosterRead();
     this.olderLoads.cancelAll();
     this.cancelAllFirstScreenSeeds();
-    const agents = new Set<string>([MAIN_AGENT_ID, ...this.timelines.keys()]);
-    for (const agentId of agents) {
-      const view = this.viewOf(agentId);
-      if (view.loadingOlder || view.olderError !== undefined) {
-        this.publishView(agentId, { ...view, loadingOlder: false, olderError: undefined });
-      }
-    }
     for (const key of this.contentReaders.keys()) {
       this.retireContentRead(key);
     }
@@ -1267,6 +1252,25 @@ export class SessionController {
       controller.abort(new DOMException('Read cancelled', 'AbortError'));
     }
     this.rangeControllers.clear();
+  }
+
+  /**
+   * Release in-flight older/detail/range history reads when a busy view is
+   * parked in the background without suspending its live `turn` subscription,
+   * so inactive sessions never head-of-line block the newly focused session's
+   * `HistoryReadLane`.
+   */
+  cancelParkedReads(): void {
+    if (this.closed) return;
+    this.isParked = true;
+    this.abortInFlightHistoryReads();
+    const agents = new Set<string>([MAIN_AGENT_ID, ...this.timelines.keys()]);
+    for (const agentId of agents) {
+      const view = this.viewOf(agentId);
+      if (view.loadingOlder || view.olderError !== undefined) {
+        this.publishView(agentId, { ...view, loadingOlder: false, olderError: undefined });
+      }
+    }
   }
 
   /**
@@ -1888,7 +1892,11 @@ export class SessionController {
         }
         this.advanceSessionCursor(signal.currentSessionCursor);
         if (signal.reconnected) {
-          this.handleReconnectAck();
+          if (this.shell.resyncFailed && this.shell.resyncError?.retryable !== false) {
+            void this.resync();
+          } else {
+            this.handleReconnectAck();
+          }
           void this.refreshDurableIngress();
           if (this.shell.snapshotSubagents.length > 0) void this.refreshRoster(signal.currentSessionCursor);
         }
@@ -2463,7 +2471,7 @@ export class SessionController {
         const attempt = this.shell.resyncAttempt + 1;
         const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
         const retryable = code === undefined || code === -1 || code === API_CODES.TIMEOUT ||
-          code === API_CODES.SESSION_INDEX_BUILDING || code === 408 || code === 429 ||
+          code === API_CODES.SESSION_BUSY || code === API_CODES.SESSION_INDEX_BUILDING || code === 408 || code === 429 ||
           (code >= 500 && code < 600) || code >= 50000;
         this.setShell({
           ...setResyncFailed(setResyncing(this.shell, false), true, attempt),
@@ -2474,8 +2482,9 @@ export class SessionController {
             retryable,
           },
         });
-        if (retryable) this.scheduleResyncRetry();
+        if (retryable) this.scheduleResyncRetry(rewrite);
         else {
+          this.retryResyncRewrite = false;
           for (const { agentId } of this.timelines.values()) this.settleRefresh(agentId);
           this.clearRewriteHold();
           this.hardResyncQueued = false;
@@ -2511,13 +2520,16 @@ export class SessionController {
     }
   }
 
-  private scheduleResyncRetry(): void {
+  private scheduleResyncRetry(rewrite = false): void {
+    if (rewrite) this.retryResyncRewrite = true;
     if (this.closed || this.isSuspended || this.resyncTimer !== null) return;
     const step = Math.min(this.shell.resyncAttempt, RESYNC_BACKOFF_MS.length) - 1;
     const delay = RESYNC_BACKOFF_MS[Math.max(0, step)] ?? 4000;
     this.resyncTimer = setTimeout(() => {
       this.resyncTimer = null;
-      if (!this.closed) void this.resync();
+      const runRewrite = this.retryResyncRewrite;
+      this.retryResyncRewrite = false;
+      if (!this.closed) void this.resync(runRewrite ? { rewrite: true } : {});
     }, delay);
   }
 
@@ -2558,6 +2570,7 @@ export class SessionController {
   private setDurableIngress(records: readonly DurableIngressItem[]): void {
     for (const record of records) {
       const recordAgent = record.agent_id ?? MAIN_AGENT_ID;
+      if (record.admission !== undefined) forgetUnconfirmedSubmission(this.sessionId, record.prompt_id, recordAgent);
       if (record.admission === 'failed' || record.admission === 'cancelled' || record.delivery_state === 'failed' || record.delivery_state === 'cancelled' ||
           (record.admission === 'admitted' && record.delivery_state === 'queued')) {
         this.reconcileSteerOutcome(recordAgent, record.prompt_id, this.settledSteerOutcome(recordAgent, record.prompt_id));
@@ -2569,7 +2582,6 @@ export class SessionController {
         : record.admission === 'admitted' ? 'waiting'
         : (record.admission === 'restoring' || record.admission === 'waiting_switch') && pending.phase !== 'waiting' ? 'preparing' : pending.phase;
       if (phase !== pending.phase) this.setPendingSteer(recordAgent, { ...pending, phase });
-      if (record.admission !== undefined) forgetUnconfirmedSubmission(this.sessionId, record.prompt_id, recordAgent);
     }
     const previous = this.shell.durableIngress ?? [];
     if (previous.length === records.length && previous.every((item, index) => {
@@ -2740,7 +2752,7 @@ export class SessionController {
     }, agentId);
     const admissionRejected = result.admission === 'failed' || result.admission === 'cancelled';
     const targetAgent = (result as DurableIngressItem).agent_id ?? body.agent_id ?? agentId;
-    if (!admissionRejected) forgetUnconfirmedSubmission(this.sessionId, promptId, targetAgent);
+    forgetUnconfirmedSubmission(this.sessionId, promptId, targetAgent);
     const stamped = stampIngressAgent(result, targetAgent);
     if (result.admission !== undefined) {
       this.setDurableIngress([
@@ -2758,7 +2770,9 @@ export class SessionController {
     }
     if (admissionRejected || result.admission === 'restoring' || result.admission === 'waiting_switch' || result.admission === 'held') return stamped;
     const targetView = this.viewOf(targetAgent);
-    if (!targetView.blocks.some((block) => block.kind === 'user' && block.promptId === result.prompt_id)) {
+    if (!targetView.blocks.some((block) =>
+      block.kind === 'user' && (block.promptId === result.prompt_id || (result.user_message_id !== undefined && block.userMessageId === result.user_message_id))
+    )) {
       const projection = projectMessageContent(result.content);
       this.publishView(targetAgent, appendLocalUserMessage(targetView, {
         userMessageId: result.user_message_id,
@@ -3801,11 +3815,14 @@ export class SessionController {
         // baseline replaces the newest turns anyway, and whatever it leaves
         // stale is read once it lands.
         const timeline = this.timelines.get(target.agentId);
+        // Defer partial-turn and content-segment reads while an authoritative
+        // raised WS baseline (`transcript.reset`) is still in flight for this
+        // agent so initial session open does not contend with itself on the
+        // server's bounded history-read lane; `settleRefresh` re-pumps once landed.
+        if (timeline?.refreshing === true) continue;
         const partial = target.source.kind === 'turn' && target.includeOlder && target.roots.includes('steps') &&
           ((entity as TranscriptTurn | undefined)?.stepsPartial === true ||
-            entity !== undefined && timeline?.stale.has(target.source.id) === true && !timeline.refreshing);
-        if (target.source.kind === 'turn' && target.includeOlder && target.roots.includes('steps') && !partial &&
-          entity !== undefined && timeline?.stale.has(target.source.id) === true) continue;
+            entity !== undefined && timeline?.stale.has(target.source.id) === true);
         const ref = partial ? undefined : entity?.contentRefs?.find((candidate) => {
           if (!target.roots.includes(String(candidate.path[0])) || this.isContentRange(target.agentId, candidate) ||
             target.paths !== undefined && !target.paths.some(path =>
@@ -3908,8 +3925,9 @@ export class SessionController {
     const key = `structure:${turnId}`;
     this.snapshotControllers.add(controller);
     this.setDetailLoad(agentId, key, { status: 'loading' });
+    const priority: HistoryReadPriority = agentId === this.focusedAgentId ? 'high' : 'normal';
     try {
-      let preview = await this.readTurnContentPreview(agentId, turnId, controller.signal);
+      let preview = await this.readTurnContentPreview(agentId, turnId, controller.signal, false, priority);
       if (this.closed || controller.signal.aborted || this.generationOf(agentId) !== generation) return 'blocked';
       if (preview?.stepsPartial === true) return 'retry';
       if (preview === undefined) {
@@ -3922,7 +3940,7 @@ export class SessionController {
         const ref: ContentRef | undefined = preview.contentRefs?.find(candidate => this.isTurnStructureRef(candidate));
         if (ref === undefined) break;
         if (content === undefined) throw new Error('Step structure content is unavailable. Retry to continue.');
-        const segment: ContentSegment = await this.readPreparedContent<ContentSegment>(() => content({ agentId, ref }, { signal: controller.signal }), controller.signal);
+        const segment: ContentSegment = await this.readPreparedContent<ContentSegment>(() => content({ agentId, ref }, { signal: controller.signal }), controller.signal, priority);
         controller.signal.throwIfAborted();
         preview = applyContentSegment(preview, segment);
       }
@@ -4004,7 +4022,7 @@ export class SessionController {
     return this.contentEntity(agentId, ref.source)?.contentRefs?.find((current) => sameContentRef(current, fresh));
   }
 
-  private async readTurnContentPreview(agentId: string, turnId: string, signal: AbortSignal, openingOnly = false): Promise<TranscriptTurn | undefined> {
+  private async readTurnContentPreview(agentId: string, turnId: string, signal: AbortSignal, openingOnly = false, priority: HistoryReadPriority = 'normal'): Promise<TranscriptTurn | undefined> {
     const anchor = () => {
       const items = this.windowSnapshot(agentId).items;
       const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === turnId);
@@ -4039,7 +4057,7 @@ export class SessionController {
         page = await this.readPreparedContent(() => this.view.transcript.page(
           { agentId, beforeTurn: effectiveBeforeItem === undefined ? current?.nextTurn?.turnId : undefined, beforeItem: effectiveBeforeItem, pageSize: 1 },
           { signal },
-        ), signal);
+        ), signal, priority);
       } catch (error) {
         const code = error instanceof RPCError || error instanceof ApiError ? error.code : undefined;
         if (beforeItem === undefined && immediateBeforeItem !== undefined && code === 40001) {
@@ -5090,6 +5108,15 @@ export class SessionController {
     if (trimmed && next.historyCoverageKind === 'full') next = { ...next, historyCoverageKind: 'tail' };
     if (agentId === MAIN_AGENT_ID) {
       for (const prompt of snapshot.prompts) this.unprojectedQueueReceipts.delete(prompt.promptId);
+      for (const block of next.blocks) {
+        if (block.kind !== 'user' || block.turnId === undefined) continue;
+        if (block.promptId !== undefined) this.unprojectedQueueReceipts.delete(block.promptId);
+        if (block.userMessageId !== undefined) {
+          for (const [receiptId, receipt] of this.unprojectedQueueReceipts) {
+            if (receipt.user_message_id === block.userMessageId) this.unprojectedQueueReceipts.delete(receiptId);
+          }
+        }
+      }
       for (const receipt of this.unprojectedQueueReceipts.values()) {
         const projection = projectMessageContent(receipt.content);
         next = appendLocalUserMessage(next, { userMessageId: receipt.user_message_id, promptId: receipt.prompt_id,
@@ -5228,33 +5255,43 @@ export class SessionController {
     const content = input.content ?? [{ type: 'text' as const, text: input.text }];
     const promptId = input.promptId ?? newSteerPromptId();
     const durable = this.usesDurableSubmission();
-    const preservation = preserveSubmission({ sessionId: this.sessionId, agentId: MAIN_AGENT_ID, promptId, content, createdAt: new Date().toISOString() }, { persist: durable });
+    const preservation = preserveSubmission({ sessionId: this.sessionId, agentId: MAIN_AGENT_ID, promptId, content, createdAt: new Date().toISOString() }, { persist: durable, inFlight: true });
     input.onPreservation?.(preservation.persisted);
-    const result = await this.client.submitPrompt(this.sessionId, {
-      admission: durable ? 'durable' : undefined,
-      content,
-      profile: input.profile,
-      execution: input.execution,
-      model: input.model,
-      thinking: input.thinking,
-      permission_mode: input.permissionMode,
-      plan_gate: input.planGate,
-      plan_mode: input.planMode,
-      goal_objective:
-        input.goalObjective !== undefined && input.goalObjective.trim() !== ''
-          ? input.goalObjective.trim()
-          : undefined,
-      goal_control: input.goalControl,
-      append_timing: input.appendTiming,
-      after_model_switch: input.afterModelSwitch,
-      model_switch_mode: input.modelSwitchMode,
-      prompt_id: promptId,
-      skills: input.skills === undefined ? undefined : [...input.skills],
-      persona_greeting_reply: input.personaGreetingReply,
-    });
+    let result: PromptSubmitResult;
+    try {
+      result = await this.client.submitPrompt(this.sessionId, {
+        admission: durable ? 'durable' : undefined,
+        content,
+        profile: input.profile,
+        execution: input.execution,
+        model: input.model,
+        thinking: input.thinking,
+        permission_mode: input.permissionMode,
+        plan_gate: input.planGate,
+        plan_mode: input.planMode,
+        goal_objective:
+          input.goalObjective !== undefined && input.goalObjective.trim() !== ''
+            ? input.goalObjective.trim()
+            : undefined,
+        goal_control: input.goalControl,
+        append_timing: input.appendTiming,
+        after_model_switch: input.afterModelSwitch,
+        model_switch_mode: input.modelSwitchMode,
+        prompt_id: promptId,
+        skills: input.skills === undefined ? undefined : [...input.skills],
+        persona_greeting_reply: input.personaGreetingReply,
+      });
+    } catch (error) {
+      if (isUnconfirmedTransportError(error)) {
+        preservation.releaseFlight();
+      } else {
+        preservation.acknowledge();
+      }
+      throw error;
+    }
     const admissionRejected = result.admission === 'failed' || result.admission === 'cancelled';
+    preservation.acknowledge();
     if (!admissionRejected) {
-      preservation.acknowledge();
       input.onAcknowledged?.();
     }
     if (result.admission !== undefined) {
@@ -5471,7 +5508,17 @@ export class SessionController {
     const promptId = main.abortablePromptId;
     if (promptId !== undefined) {
       const content = this.unansweredPromptContent(promptId);
-      const result = await this.client.abortPrompt(this.sessionId, promptId);
+      let result: Awaited<ReturnType<SessionTransport['abortPrompt']>>;
+      try {
+        result = await this.client.abortPrompt(this.sessionId, promptId);
+      } catch (error) {
+        const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
+        if (code === API_CODES.PROMPT_NOT_FOUND || code === API_CODES.PROMPT_ALREADY_COMPLETED) {
+          await this.refreshPrompts();
+          return;
+        }
+        throw error;
+      }
       await this.refreshPrompts();
       if (result.aborted && content !== undefined && this.lastRestoredPromptId !== promptId &&
           this.unansweredPromptContent(promptId, true) !== undefined) {
@@ -5481,7 +5528,18 @@ export class SessionController {
       return;
     }
     const turnId = main.abortableTurnId;
-    if (turnId !== undefined) await this.client.abortTurn(this.sessionId, turnId);
+    if (turnId !== undefined) {
+      try {
+        await this.client.abortTurn(this.sessionId, turnId);
+      } catch (error) {
+        const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
+        if (code === API_CODES.PROMPT_NOT_FOUND || code === API_CODES.PROMPT_ALREADY_COMPLETED) {
+          await this.refreshPrompts();
+          return;
+        }
+        throw error;
+      }
+    }
   }
 
   async abortPrompt(promptId: string, agentId = MAIN_AGENT_ID): Promise<boolean> {
@@ -5490,12 +5548,13 @@ export class SessionController {
       throw error;
     });
     this.clearPendingSteer(agentId, promptId);
+    forgetUnconfirmedSubmission(this.sessionId, promptId, agentId);
+    if (agentId === MAIN_AGENT_ID) this.unprojectedQueueReceipts.delete(promptId);
     if (!result.aborted) {
       await this.resync();
       return false;
     }
     if (agentId !== MAIN_AGENT_ID) return true;
-    this.unprojectedQueueReceipts.delete(promptId);
     const main = this.viewOf(MAIN_AGENT_ID);
     const removedPosition = main.queuedPromptMeta[promptId]?.queuePosition;
     const queuedPromptMeta: Record<string, QueuedPromptMeta> = {};
@@ -5786,7 +5845,7 @@ export class SessionController {
     const content = input.content ?? [{ type: 'text' as const, text: input.text }];
     const projection = projectMessageContent(content);
     const durable = this.usesDurableSubmission();
-    const preservation = preserveSubmission({ sessionId: this.sessionId, agentId, promptId, content, createdAt: new Date().toISOString() }, { persist: durable });
+    const preservation = preserveSubmission({ sessionId: this.sessionId, agentId, promptId, content, createdAt: new Date().toISOString() }, { persist: durable, inFlight: true });
     input.onPreservation?.(preservation.persisted);
     this.setPendingSteer(agentId, {
       promptId,
@@ -5824,6 +5883,7 @@ export class SessionController {
           input.onAcknowledged?.();
           return { promptId, outcome };
         }
+        preservation.releaseFlight();
         if (retained !== undefined) this.setPendingSteer(agentId, { ...retained, phase: 'unconfirmed' });
         if (durable) this.observeDurableSteer(agentId, promptId);
         throw new SendNowError('unknown', error);
@@ -5834,8 +5894,8 @@ export class SessionController {
     }
     const admission = result.admission;
     const admissionRejected = admission === 'failed' || admission === 'cancelled';
+    preservation.acknowledge();
     if (!admissionRejected) {
-      preservation.acknowledge();
       input.onAcknowledged?.();
     }
     if (admission !== undefined) {
@@ -5865,8 +5925,16 @@ export class SessionController {
       const outcome = result.delivery_state ?? (result.status === 'queued' ? 'queued' : 'started');
       const retained = this.findPendingSteer(agentId, promptId);
       if (outcome === 'accepted' || outcome === 'steered') {
-        if (retained !== undefined) this.setPendingSteer(agentId, { ...retained, phase: 'waiting' });
-      } else if (outcome !== 'started') this.clearPendingSteer(agentId, promptId);
+        if (retained !== undefined) {
+          this.setPendingSteer(agentId, {
+            ...retained,
+            userMessageId: result.user_message_id ?? retained.userMessageId,
+            phase: 'waiting',
+          });
+        }
+      } else {
+        this.clearPendingSteer(agentId, promptId);
+      }
       return { promptId: result.prompt_id, outcome, reason: result.delivery_reason };
     }
     if (result.status !== 'queued') {
@@ -6011,13 +6079,42 @@ export class SessionController {
     const current = timeline?.steers ?? [];
     if (timeline === undefined || current.length === 0) return;
     const store = this.timelines.get(agentId)?.store;
+    const activeIngressIds = new Set(
+      (this.shell.durableIngress ?? [])
+        .filter((item) => (item.agent_id ?? MAIN_AGENT_ID) === agentId &&
+          (item.admission === 'restoring' || item.admission === 'waiting_switch' || item.admission === 'held'))
+        .map((item) => item.prompt_id),
+    );
+    const previousBusy = timeline.view?.busy === true;
+    const endedTurnAfter = (at: string): boolean => {
+      if (store === undefined) return false;
+      const since = Date.parse(at);
+      if (!Number.isFinite(since)) return false;
+      const items = store.getItems();
+      for (let i = items.length - 1; i >= 0; i -= 1) {
+        const item = items[i];
+        if (item?.kind !== 'turn') continue;
+        if (item.state === 'running') return false;
+        const ended = item.endedAt === undefined ? Number.NaN : Date.parse(item.endedAt);
+        if (Number.isFinite(ended) && ended >= since) return true;
+        return false;
+      }
+      return false;
+    };
     const live = current.filter(steer => {
       const prompt = store?.getPrompt(steer.promptId);
       if (isSteerSettled(next.blocks, steer)) return false;
       if (prompt !== undefined) {
         if (prompt.status === 'blocked' || prompt.status === 'failed' || prompt.status === 'aborted') return false;
-        if (!next.busy && prompt.status !== 'queued') return false;
+        if (!next.busy && (prompt.status !== 'queued' || !prompt.steerAccepted)) return false;
         if (prompt.steeredAt !== undefined && store !== undefined && isSteerDeliveredBeforeCutTail(store.getItems(), prompt.steeredAt)) return false;
+        return true;
+      }
+      if (steer.phase === 'waiting' && !activeIngressIds.has(steer.promptId)) {
+        if (!next.busy && !next.queuedPromptIds.includes(steer.promptId) && (previousBusy || endedTurnAfter(steer.createdAt))) {
+          return false;
+        }
+        if (store !== undefined && isSteerDeliveredBeforeCutTail(store.getItems(), steer.createdAt)) return false;
       }
       return true;
     });

@@ -182,7 +182,7 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
         this.turnStartedHere = true;
         this.activeRunAgents.add(MAIN_AGENT_ID);
         this.write(undefined);
-        if (this.activityRef?.current !== undefined) this.markRunningWork();
+        if (this.activityRef?.current !== undefined) this.markRunningWork(MAIN_AGENT_ID);
       }),
     );
     subscription.add(
@@ -240,7 +240,7 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
       subscription.add(
         bus.subscribe(TurnStarted, () => {
           this.activeRunAgents.add(handle.id);
-          if (this.activityRef?.current !== undefined) this.markRunningWork();
+          if (this.activityRef?.current !== undefined) this.markRunningWork(handle.id);
         }),
       );
       subscription.add(
@@ -283,21 +283,79 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
     void this.metadata.update({ activeRunAgentIds: activeIds }, { touchUpdatedAt: false }).catch(() => {});
   }
 
-  private markRunningWork(): void {
+  private collectCurrentLostTaskIds(existing: readonly string[] | undefined): readonly string[] | undefined {
+    const merged = new Set<string>(existing ?? []);
+    for (const handle of this.agents.list()) {
+      let taskService: IAgentTaskService | undefined;
+      try {
+        taskService = handle.accessor.get(IAgentTaskService);
+      } catch {
+        taskService = undefined;
+      }
+      if (taskService === undefined) continue;
+      for (const task of taskService.list(false)) {
+        if (task.status === 'lost') merged.add(task.taskId);
+      }
+    }
+    if (merged.size === 0) return existing;
+    const list = [...merged];
+    return list.length > 256 ? list.slice(-256) : list;
+  }
+
+  private markRunningWork(startedAgentId?: string): void {
     const boot = currentRuntimeBootId();
     const activeIds = this.currentActiveRunAgentIds();
     const nextKey = activeIds?.join('\u0000');
     const snapshot = typeof this.metadata.snapshot === 'function' ? this.metadata.snapshot() : undefined;
-    const hadInterrupted = snapshot?.interruptedWork !== undefined;
-    if (this.lastBootId === boot && this.lastRunAgentIdsKey === nextKey && !hadInterrupted) return;
+    const currentInterrupted = snapshot?.interruptedWork;
+    const isChildStart = startedAgentId !== undefined && startedAgentId !== MAIN_AGENT_ID;
+    let nextInterrupted = currentInterrupted;
+    let clearedInterrupted = false;
+    if (currentInterrupted !== undefined) {
+      if (isChildStart) {
+        const hadTarget = currentInterrupted.targets?.some((entry) => entry.agentId === startedAgentId) === true;
+        if (hadTarget) {
+          const remaining = currentInterrupted.targets?.filter((entry) => entry.agentId !== startedAgentId) ?? [];
+          const removedBranch = currentInterrupted.targets?.some((entry) => entry.agentId === startedAgentId && entry.kind === 'branch') === true;
+          const nextBranches = removedBranch
+            ? Math.max(0, (currentInterrupted.interruptedBranches ?? 0) - 1)
+            : (currentInterrupted.interruptedBranches ?? 0);
+          if (
+            currentInterrupted.mainInterrupted !== true &&
+            (currentInterrupted.lostTasks ?? 0) === 0 &&
+            nextBranches === 0 &&
+            remaining.length === 0
+          ) {
+            nextInterrupted = undefined;
+            clearedInterrupted = true;
+          } else {
+            nextInterrupted = {
+              ...currentInterrupted,
+              interruptedBranches: nextBranches > 0 ? nextBranches : undefined,
+              targets: remaining.length > 0 ? remaining : undefined,
+            };
+          }
+        }
+      } else {
+        nextInterrupted = undefined;
+        clearedInterrupted = true;
+      }
+    }
+    const interruptedChanged = nextInterrupted !== currentInterrupted;
+    if (this.lastBootId === boot && this.lastRunAgentIdsKey === nextKey && !interruptedChanged) return;
     this.lastBootId = boot;
     this.lastRunAgentIdsKey = nextKey;
-    const patch = hadInterrupted
+    const patch = interruptedChanged
       ? {
           activeRunBootId: boot,
           activeRunAgentIds: activeIds,
-          interruptedWork: undefined,
-          lastRecoveredAt: Date.now(),
+          interruptedWork: nextInterrupted,
+          ...(clearedInterrupted
+            ? {
+                lastRecoveredAt: Date.now(),
+                recoveredLostTaskIds: this.collectCurrentLostTaskIds(snapshot?.recoveredLostTaskIds),
+              }
+            : {}),
         }
       : { activeRunBootId: boot, activeRunAgentIds: activeIds };
     void this.metadata.update(patch, { touchUpdatedAt: false }).catch(() => {});
@@ -374,6 +432,7 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
       for (const task of taskService.list(false)) {
         if (task.status !== 'lost' || seenLostTasks.has(task.taskId)) continue;
         if (acknowledgedLostTaskIds.has(task.taskId)) continue;
+        if ((task.endedAt ?? task.startedAt) < recoveryWatermark) continue;
         seenLostTasks.add(task.taskId);
         lostTasks += 1;
         lostByOwner.set(handle.id, (lostByOwner.get(handle.id) ?? 0) + 1);
@@ -421,16 +480,20 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
       }
     }
 
-    const effectiveLostTasks = Math.max(lostTasks, meta.interruptedWork?.lostTasks ?? 0);
-    const effectiveBranches = Math.max(interruptedBranches, meta.interruptedWork?.interruptedBranches ?? 0);
+    const scannedLiveAgents = this.agents.list().length > 0;
+    const effectiveLostTasks = scannedLiveAgents ? lostTasks : (meta.interruptedWork?.lostTasks ?? 0);
+    const effectiveBranches = scannedLiveAgents ? interruptedBranches : (meta.interruptedWork?.interruptedBranches ?? 0);
     const hasInterrupted =
       mainInterrupted || effectiveLostTasks > 0 || effectiveBranches > 0 || targets.length > 0;
     if (!hasInterrupted) {
-      if (staleBoot) {
+      if (staleBoot || meta.interruptedWork !== undefined) {
         this.lastBootId = undefined;
         this.lastRunAgentIdsKey = undefined;
         await this.metadata
-          .update({ activeRunBootId: undefined, activeRunAgentIds: undefined }, { touchUpdatedAt: false })
+          .update(
+            { interruptedWork: undefined, activeRunBootId: undefined, activeRunAgentIds: undefined },
+            { touchUpdatedAt: false },
+          )
           .catch(() => {});
       }
       return;

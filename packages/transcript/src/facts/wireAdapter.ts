@@ -2445,7 +2445,11 @@ export class TranscriptWireAdapter {
     if (toolCallId === undefined || stepId === undefined || turnId === undefined) return [];
     const extras = objectOf(event['extras']);
     const name = stringOf(event['name']);
+    const existing = this.#tools.get(toolCallId) ?? this.lookups?.tool?.(toolCallId);
+    const previous = existing?.frame;
+    const terminal = previous !== undefined && previous.state !== 'running';
     const frame: ToolCallFrame = {
+      ...(terminal ? previous : {}),
       kind: 'tool',
       frameId: `${stepId}.${toolCallId}`,
       part: {
@@ -2455,16 +2459,16 @@ export class TranscriptWireAdapter {
         provenance: this.recordProvenance(ordinal, stringOf(event['uuid']) === undefined ? 'legacy-wire' : 'engine'),
       },
       toolCallId,
-      name: name ?? '',
-      state: 'running',
-      input: event['args'],
-      inputText: this.#tools.get(toolCallId)?.frame.inputText ?? this.lookups?.tool?.(toolCallId)?.frame.inputText,
+      name: name ?? previous?.name ?? '',
+      state: terminal ? previous.state : 'running',
+      input: event['args'] ?? previous?.input,
+      inputText: previous?.inputText,
       display: normalizeStoredExternalToolDisplay(event['display'] ?? extras?.['display'], {
         name, title: name, kind: stringOf(extras?.['kind']), rawInput: event['args'],
         content: Array.isArray(extras?.['content']) ? extras['content'] : undefined,
         locations: Array.isArray(event['locations']) ? event['locations'] : Array.isArray(extras?.['locations']) ? extras['locations'] : undefined,
-      }),
-      startedAt: isoOf(time),
+      }) ?? previous?.display,
+      startedAt: isoOf(time) ?? previous?.startedAt,
     };
     const hit = { turnId, stepId, frame };
     this.storeTool(toolCallId, hit);

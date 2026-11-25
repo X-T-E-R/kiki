@@ -13,11 +13,13 @@ export function ResyncStatusBanner({
   resyncing,
   resyncFailed,
   error,
+  sendPaused = false,
   onRetry,
 }: {
   resyncing: boolean;
   resyncFailed: boolean;
   error?: SessionViewState['resyncError'];
+  sendPaused?: boolean;
   onRetry?: () => void;
 }) {
   const { t } = useI18n();
@@ -31,7 +33,10 @@ export function ResyncStatusBanner({
     >
       <div className="flex flex-wrap items-center gap-2">
         {resyncing ? <KikiMark className="status-dot-busy" /> : null}
-        <span>{resyncing ? t('sv.resyncing') : t('sv.resyncFailed')} · {t('sv.sendPaused')}</span>
+        <span>
+          {resyncing ? t('sv.resyncing') : t('sv.resyncFailed')}
+          {sendPaused ? ` · ${t('sv.sendPaused')}` : null}
+        </span>
         {!resyncing && onRetry !== undefined ? (
           <button type="button" onClick={onRetry}
             className="rounded-full border border-hairline px-2 py-0.5 font-medium transition-colors hover:border-accent hover:text-ink">

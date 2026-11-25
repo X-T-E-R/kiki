@@ -5726,3 +5726,75 @@ it('normalizes empty parentToolCallId on subagent.spawned and keeps active subag
     resultSummary: 'Final result',
   });
 });
+
+it('deduplicates toolCallId across stepUuid and synthetic stepId without regressing settled state or inflating toolCallCount', () => {
+  const transcript = new AgentTranscript('main');
+  transcript.apply([
+    {
+      op: 'turn.upsert',
+      turn: { kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin: { kind: 'user' }, startedAt: '2026-01-01T00:00:00.000Z' },
+    },
+    {
+      op: 'step.upsert',
+      turnId: 't1',
+      step: { kind: 'step', stepId: 'step-uuid-1', turnId: 't1', ordinal: 1, state: 'running', startedAt: '2026-01-01T00:00:01.000Z' },
+    },
+    {
+      op: 'frame.upsert',
+      turnId: 't1',
+      stepId: 'step-uuid-1',
+      frame: {
+        kind: 'tool',
+        frameId: 'step-uuid-1.call-1',
+        toolCallId: 'call-1',
+        name: 'Read',
+        state: 'done',
+        input: { path: 'a.json' },
+        output: 'ok',
+      },
+    },
+  ]);
+  const dupResult = transcript.apply([
+    {
+      op: 'step.upsert',
+      turnId: 't1',
+      step: { kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'running', startedAt: '2026-01-01T00:00:02.000Z' },
+    },
+    {
+      op: 'frame.upsert',
+      turnId: 't1',
+      stepId: 't1.1',
+      frame: {
+        kind: 'tool',
+        frameId: 't1.1.call-1',
+        toolCallId: 'call-1',
+        name: 'Read',
+        state: 'running',
+        input: { path: 'a.json' },
+      },
+    },
+  ]);
+  expect(dupResult.toolCallCountDelta).toBe(0);
+  const snap = transcript.snapshot();
+  const turn = snap.items.find((item) => item.kind === 'turn' && item.turnId === 't1');
+  expect(turn?.kind).toBe('turn');
+  const toolFrames = turn?.kind === 'turn'
+    ? turn.steps.flatMap((step) => step.frames.filter((frame) => frame.kind === 'tool'))
+    : [];
+  expect(toolFrames).toHaveLength(1);
+  expect(toolFrames[0]).toMatchObject({ toolCallId: 'call-1', state: 'done', output: 'ok' });
+  expect(snap.toolCallCount).toBe(1);
+});
+
+it('reuses an uncompleted compaction marker on repeated full_compaction.begin instead of stranding an orphan running marker', () => {
+  const transcript = new AgentTranscript('main');
+  const reducer = new TranscriptFactReducer(transcript);
+  const adapter = new TranscriptWireAdapter('main');
+  reducer.apply(adapter.add({ type: 'full_compaction.begin', source: 'auto', time: 1000 }));
+  reducer.apply(adapter.add({ type: 'full_compaction.begin', source: 'auto', time: 2000 }));
+  reducer.apply(adapter.add({ type: 'context.apply_compaction', summary: 'compact ok', time: 3000 }));
+  reducer.apply(adapter.add({ type: 'full_compaction.complete', time: 3001 }));
+  const compactionMarkers = transcript.getItems().filter((item) => item.kind === 'marker' && item.marker === 'compaction');
+  expect(compactionMarkers).toHaveLength(1);
+  expect(compactionMarkers[0]).toMatchObject({ payload: { phase: 'completed', summary: 'compact ok' } });
+});
