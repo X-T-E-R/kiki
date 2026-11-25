@@ -15,7 +15,7 @@
  * `?preset=work` is the browser equivalent and takes the same path.
  */
 
-import type { HostAdapter } from '../host';
+import { isDesktopHost, type HostAdapter } from '../host/host';
 import { adoptWindowId, configureWorkModes, writeWindowModeId, WORK_MODE_ID } from './workModes';
 
 const PRESET_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
@@ -27,7 +27,7 @@ const PRESET_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 export async function adoptWindowModeFromHost(host: HostAdapter, homeId: string): Promise<void> {
   configureWorkModes({ homeId });
 
-  if (host.kind !== 'tauri' || host.windowMode === undefined) {
+  if (!isDesktopHost(host) || host.windowMode === undefined) {
     applyBrowserPreset();
     return;
   }

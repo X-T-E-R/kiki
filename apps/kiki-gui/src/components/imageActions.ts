@@ -4,7 +4,7 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { copyImageToClipboard, copyTextToClipboard, isPngBlob, readBlobBytes } from '../lib/clipboard';
 import { browserSaveSink, bufferedSaveSink } from '../host/saveSink';
-import type { HostSaveSink } from '../host/host';
+import { isDesktopHostKind, type HostAdapter, type HostSaveSink } from '../host/host';
 import {
   classifyResource,
   isKikiComputer,
@@ -253,10 +253,11 @@ class ImageCopyError extends Error {
   }
 }
 
-export function imageCopyFailureText(error: unknown, t: (key: I18nKey) => string, hostKind: 'browser' | 'tauri'): string {
+export function imageCopyFailureText(error: unknown, t: (key: I18nKey) => string, hostKind: HostAdapter['kind']): string {
+  const desktop = isDesktopHostKind(hostKind);
   if (error instanceof ImageCopyError) return t(error.stage === 'read' ? 'media.copyReadFailed' : 'media.copyDecodeFailed');
-  if ((error instanceof Error || error instanceof DOMException) && error.name === 'NotAllowedError') return t(hostKind === 'tauri' ? 'media.copyDeniedDesktop' : 'media.copyDeniedWeb');
-  if (error instanceof Error && error.message === 'Clipboard image write is unavailable') return t(hostKind === 'tauri' ? 'media.copyUnavailableDesktop' : 'media.copyUnavailableWeb');
+  if ((error instanceof Error || error instanceof DOMException) && error.name === 'NotAllowedError') return t(desktop ? 'media.copyDeniedDesktop' : 'media.copyDeniedWeb');
+  if (error instanceof Error && error.message === 'Clipboard image write is unavailable') return t(desktop ? 'media.copyUnavailableDesktop' : 'media.copyUnavailableWeb');
   return t('media.copyFailed');
 }
 

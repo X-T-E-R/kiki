@@ -3,6 +3,7 @@ import type { NotificationGlobalSettings } from '@kiki/klient';
 import { readDesktopPrefs } from '@kiki/session-core/settings';
 
 import { useHost } from '../../../host';
+import { isDesktopHost } from '../../../host/host';
 import { useI18n } from '../../../i18n';
 import { FeedbackLine, Hint, SaveStatus, Toggle } from '../../controls';
 import { SettingField, SettingsBox } from '../fields';
@@ -36,10 +37,10 @@ export function NotificationRulesCard({ global, part = 'all' }: { global: Notifi
   const save = useInstantSave();
   const [pending, setPending] = useState<string | null>(null);
   const [closeToTray, setCloseToTray] = useState(() => readDesktopPrefs().closeToTray);
-  const isDesktop = host.kind === 'tauri';
+  const isDesktop = isDesktopHost(host);
 
   useEffect(() => {
-    if (host.kind !== 'tauri') return;
+    if (!isDesktopHost(host)) return;
     void host.readDesktopPrefs().then((prefs) => { if (prefs !== null) setCloseToTray(prefs.closeToTray); });
   }, [host]);
 

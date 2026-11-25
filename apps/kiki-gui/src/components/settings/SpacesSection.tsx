@@ -11,6 +11,7 @@ import {
 } from '@kiki/session-core/settings';
 
 import { useHost } from '../../host';
+import { isDesktopHost } from '../../host/host';
 import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
 import { useSpaceSettingsTarget, type SpaceSettingsTarget } from '../../lib/spaceSettings';
@@ -61,7 +62,7 @@ export function SpacesSection() {
   const { t } = useI18n();
   const inRemotePair = typeof connectionId === 'string' && connectionId !== '';
   const inRemoteScope = inRemotePair || Boolean(sshLabel);
-  const controlClient = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
+  const controlClient = isDesktopHost(host) ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const controlTarget = useSpaceSettingsTarget(controlClient, controlClient === client ? meta : undefined);
   const here = currentSpace();
   const localHere = here !== null && !here.homeId.startsWith('remote:') ? here : null;
@@ -162,12 +163,12 @@ function WindowModeCard({ sub }: { sub: boolean }) {
   const { t } = useI18n();
   const [prefs, setPrefs] = useState(readDesktopPrefs);
   // Windowing only exists on the desktop app; the browser shows no card at all.
-  const desktop = host.kind === 'tauri';
+  const desktop = isDesktopHost(host);
   // What the running process uses; a new choice waits for the next launch.
   const [launched] = useState(() => launchWindowMode(readDesktopPrefs().windowMode));
 
   useEffect(() => {
-    if (host.kind !== 'tauri') return;
+    if (!isDesktopHost(host)) return;
     void host.readDesktopPrefs().then((native) => {
       if (native === null) return;
       writeDesktopPrefs(native);
@@ -178,7 +179,7 @@ function WindowModeCard({ sub }: { sub: boolean }) {
   const choose = (windowMode: SpaceWindowMode) => {
     writeDesktopPrefs({ windowMode });
     setPrefs(readDesktopPrefs());
-    if (host.kind === 'tauri') void host.writeDesktopPrefs({ windowMode });
+    if (isDesktopHost(host)) void host.writeDesktopPrefs({ windowMode });
   };
 
   if (!desktop) return null;
@@ -238,7 +239,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace, onExportSpace }: {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [restartNote, setRestartNote] = useState<{ id: string; text: string } | null>(null);
   const [entering, setEntering] = useState<string | null>(null);
-  const desktop = host.kind === 'tauri';
+  const desktop = isDesktopHost(host);
   const isWindows = detectShortcutPlatform() === 'windows';
   const mode = launchWindowMode(readDesktopPrefs().windowMode);
   const location = useLocation();

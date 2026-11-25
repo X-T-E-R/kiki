@@ -518,4 +518,39 @@ describe('native desktop bridge', () => {
     await expect(tauriHost.peekSubscribeIntent()).resolves.toBeNull();
     stopSecond();
   });
+
+  it('exposes showMainWindow, onWindowFocus, and pluginFocus through the Tauri host seam', async () => {
+    let emitFocus!: (event: { payload: boolean }) => void;
+    const unlisten = vi.fn();
+    getCurrentWindow.mockReturnValue({
+      onFocusChanged: vi.fn(async (cb: (event: { payload: boolean }) => void) => {
+        emitFocus = cb;
+        return unlisten;
+      }),
+    });
+
+    const onFocus = vi.fn();
+    const stopFocus = tauriHost.onWindowFocus(onFocus);
+    await Promise.resolve();
+    emitFocus({ payload: false });
+    emitFocus({ payload: true });
+    expect(onFocus).toHaveBeenCalledOnce();
+    stopFocus();
+    expect(unlisten).toHaveBeenCalledOnce();
+
+    invoke.mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ homeId: 'space-a', route: '/s/session-1', requestId: 4 })
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
+    await tauriHost.showMainWindow();
+    await expect(tauriHost.pluginFocus.read()).resolves.toEqual({ homeId: 'space-a', route: '/s/session-1', requestId: 4 });
+    await tauriHost.pluginFocus.remember('space-a', 4);
+    await tauriHost.pluginFocus.ack('space-a', 4);
+    expect(invoke.mock.calls).toEqual([
+      ['show_main_window'],
+      ['read_plugin_focus'],
+      ['remember_plugin_focus', { homeId: 'space-a', requestId: 4 }],
+      ['ack_plugin_focus', { homeId: 'space-a', requestId: 4 }],
+    ]);
+  });
 });

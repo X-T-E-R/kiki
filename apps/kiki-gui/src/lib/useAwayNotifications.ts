@@ -72,21 +72,6 @@ export function isViewingRoomPath(pathname: string, roomId: string): boolean {
   return normalized === route || normalized === `${route}/`;
 }
 
-async function subscribeNativeWindowFocus(
-  host: HostAdapter,
-  onFocus: () => void,
-): Promise<(() => void) | undefined> {
-  if (host.kind !== 'tauri') return undefined;
-  try {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window');
-    return await getCurrentWindow().onFocusChanged(({ payload }) => {
-      if (payload) onFocus();
-    });
-  } catch {
-    return undefined;
-  }
-}
-
 /** Poll cadence while the document is hidden (the visible app polls on its own). */
 export const HIDDEN_POLL_INTERVAL_MS = 20_000;
 
@@ -449,7 +434,6 @@ export function useViewedSession(
 
     let stopped = false;
     let recheckTimer: ReturnType<typeof setTimeout> | undefined;
-    let unlistenNative: (() => void) | undefined;
 
     const recordConfirmed = async () => {
       if (stopped || storageKey !== spaceStorageKey('kiki.sessionSeen.v1')) return;
@@ -500,10 +484,7 @@ export function useViewedSession(
     });
     window.addEventListener('focus', confirmFromEvent);
     document.addEventListener('visibilitychange', confirmFromEvent);
-    void subscribeNativeWindowFocus(host, confirmFromEvent).then((dispose) => {
-      if (stopped) dispose?.();
-      else unlistenNative = dispose;
-    });
+    const unlistenNative = host.onWindowFocus?.(confirmFromEvent);
     return () => {
       stopped = true;
       if (recheckTimer !== undefined) clearTimeout(recheckTimer);
@@ -529,7 +510,6 @@ export function useViewedRoom(host: HostAdapter, roomId: string, lastSeq: number
     const storageKey = spaceStorageKey('kiki.sessionSeen.v1');
     let stopped = false;
     let recheckTimer: ReturnType<typeof setTimeout> | undefined;
-    let unlistenNative: (() => void) | undefined;
 
     const confirm = async (allowRecheck: boolean) => {
       const explicitOpen = hasPendingConversationOpen(ref) && document.visibilityState === 'visible';
@@ -553,10 +533,7 @@ export function useViewedRoom(host: HostAdapter, roomId: string, lastSeq: number
     void confirm(true);
     window.addEventListener('focus', confirmFromEvent);
     document.addEventListener('visibilitychange', confirmFromEvent);
-    void subscribeNativeWindowFocus(host, confirmFromEvent).then((dispose) => {
-      if (stopped) dispose?.();
-      else unlistenNative = dispose;
-    });
+    const unlistenNative = host.onWindowFocus?.(confirmFromEvent);
     return () => {
       stopped = true;
       if (recheckTimer !== undefined) clearTimeout(recheckTimer);

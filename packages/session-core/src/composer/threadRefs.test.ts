@@ -32,11 +32,13 @@ describe('findThreadRefs', () => {
     const text = [
       `http://127.0.0.1:5177/s/${ID}?server=x`,
       `https://tauri.localhost/s/${ID}/agent/a1`,
+      `https://electron.localhost/s/${ID}/agent/a2`,
+      `electron://localhost/s/${ID}`,
       `kiki://s/${ID}`,
       `kiki://session/${ID}`,
     ].join(' ');
     const refs = findThreadRefs(text);
-    expect(refs.map((ref) => ref.sessionId)).toEqual([ID, ID, ID, ID]);
+    expect(refs.map((ref) => ref.sessionId)).toEqual([ID, ID, ID, ID, ID, ID]);
     expect(refs[0]?.raw).toBe(`http://127.0.0.1:5177/s/${ID}?server=x`);
   });
 
@@ -55,6 +57,8 @@ describe('findConversationRefs', () => {
     ['kiki://rooms/example-room', ''],
     ['http://localhost:5173/rooms/example-room', ''],
     ['tauri://localhost/r/example-room', ''],
+    ['electron://localhost/r/example-room', ''],
+    ['http://electron.localhost:5173/rooms/example-room', ''],
     ['/rooms/example-room?workspace=ws#message', '?workspace=ws#message'],
     ['/r/example-room/log#message', '/log#message'],
   ])('finds a room link and canonicalises its route: %s', (raw, tail) => {

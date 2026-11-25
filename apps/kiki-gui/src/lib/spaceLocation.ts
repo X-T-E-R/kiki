@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 
 import { useHost } from '../host';
+import { isDesktopHost } from '../host/host';
 import { useI18n } from '../i18n';
 import { useOptionalConnection } from '../state/connection';
 import type { KikiClient } from './client';
@@ -93,13 +94,14 @@ export function useSpaceLocation(options?: {
   const cleanSshLabel = sanitizeHumanLabel(sshLabel);
   const inRemoteScope = resolvedConnectionId !== null || (typeof sshLabel === 'string' && sshLabel.trim().length > 0);
 
+  const desktop = isDesktopHost(host);
   const controlClient = enabled
-    ? (host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client)))
+    ? (desktop ? localClient : (localClient ?? (inRemoteScope ? null : client)))
     : null;
-  const spaces = useSpaces(enabled && host.kind === 'tauri' ? controlClient : null);
+  const spaces = useSpaces(enabled && desktop ? controlClient : null);
   const remoteConnections = useRemoteConnections(enabled && resolvedConnectionId !== null ? controlClient : null);
   const handshake = useServerHandshake(
-    enabled && (includeLocalMachine || (!inRemoteScope && host.kind !== 'tauri')) ? controlClient : null,
+    enabled && (includeLocalMachine || (!inRemoteScope && !desktop)) ? controlClient : null,
   );
 
   const here = currentSpace();
@@ -108,7 +110,7 @@ export function useSpaceLocation(options?: {
   const localSpaceName = localResolved.name;
   const localMachineName = sanitizeHumanLabel(handshake.data?.targetLabel);
   const localComputerName =
-    host.kind === 'tauri'
+    desktop
       ? t('sidebar.space.thisComputer')
       : localMachineName;
 

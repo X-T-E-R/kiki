@@ -34,6 +34,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { ConnectScreen, type WebLinkProblem } from '../components/ConnectScreen';
 import { useHost } from '../host';
+import { isDesktopHost } from '../host/host';
 import { isLocalOwnerRequiredError, isPeerConnectionSource } from '../lib/peerAccess';
 import { translate, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
 import { interactiveInputRemainingMs, type SessionController } from '@kiki/session-core/session';
@@ -559,7 +560,7 @@ function desktopIdentity(previous: MetaResponse, next: MetaResponse): 'same' | '
 
 export function ConnectionProvider({ children }: { children: ReactNode }) {
   const host = useHost();
-  const desktopRuntime = host.kind === 'tauri';
+  const desktopRuntime = isDesktopHost(host);
   const vscodeRuntime = isVscodeWebview();
   const embeddedAndroid = !desktopRuntime && !vscodeRuntime && isEmbeddedAndroidHost();
   const { locale, t } = useI18n();
@@ -743,7 +744,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   // The desktop shell resolves an existing daemon before spawning its own.
   // Keep the shared home token in React memory only.
   useEffect(() => {
-    if (host.kind !== 'tauri') return;
+    if (!isDesktopHost(host)) return;
     let cancelled = false;
     let resolveGeneration = 0;
     desktopCancelledRef.current = false;
@@ -1100,7 +1101,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, [localControl?.client]);
 
   useEffect(() => {
-    if (host.kind !== 'tauri' || localClient === null || (selection?.source !== 'ssh' && selection?.source !== 'remote')) return;
+    if (!isDesktopHost(host) || localClient === null || (selection?.source !== 'ssh' && selection?.source !== 'remote')) return;
     return localClient.klient.terminal.onStatus((status) => {
       if (status === 'closed') rediscoverRef.current?.();
     });
@@ -1123,7 +1124,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const klient = client?.klient ?? null;
 
   useEffect(() => {
-    if (host.kind === 'tauri' || selection?.source !== 'local-detection' || embeddedAndroid) return;
+    if (isDesktopHost(host) || selection?.source !== 'local-detection' || embeddedAndroid) return;
     let cancelled = false;
     let resolving = false;
     let resolveGeneration = 0;
@@ -1592,10 +1593,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       // Socket loss is not proof of a backend replacement. Keep the view while
       // discovery and /meta establish whether this is still the same instance.
       if (status === 'closed' && !desktopRebindingRef.current && desktopRecoveryRef.current?.phase !== 'blocked') {
-        if (host.kind === 'tauri' && isDesktopSelection(selectionRef.current)) {
+        if (isDesktopHost(host) && isDesktopSelection(selectionRef.current)) {
           if (client !== null && verifiedDesktopRef.current?.client === client && desktopRecoveryRef.current === null) desktopRecoveryRef.current = { client, phase: 'checking' };
           rediscoverRef.current?.();
-        } else if (host.kind !== 'tauri' && selectionRef.current?.source === 'local-detection') {
+        } else if (!isDesktopHost(host) && selectionRef.current?.source === 'local-detection') {
           rediscoverRef.current?.();
         }
       }

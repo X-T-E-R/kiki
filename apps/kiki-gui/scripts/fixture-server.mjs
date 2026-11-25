@@ -217,14 +217,15 @@ const fixtureHash = (value) => createHash('sha256').update(JSON.stringify(value)
 function isLoopbackOrigin(origin) {
   try {
     const parsed = new URL(origin);
-    if (parsed.protocol === 'tauri:' && parsed.hostname === 'localhost') return true;
+    if ((parsed.protocol === 'tauri:' || parsed.protocol === 'electron:') && parsed.hostname === 'localhost') return true;
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
     return (
       parsed.hostname === 'localhost' ||
       parsed.hostname === '127.0.0.1' ||
       parsed.hostname === '::1' ||
       parsed.hostname === '[::1]' ||
-      parsed.hostname === 'tauri.localhost'
+      parsed.hostname === 'tauri.localhost' ||
+      parsed.hostname === 'electron.localhost'
     );
   } catch {
     return false;

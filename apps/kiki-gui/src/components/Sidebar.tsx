@@ -95,6 +95,7 @@ import {
   type SidebarNavKey,
 } from '@kiki/session-core/settings';
 import { useHost } from '../host';
+import { isDesktopHost } from '../host/host';
 import { useI18n } from '../i18n';
 import { ROOMS_QUERY_KEY, roomQueryKey, useBotRoomApi } from '../lib/botRooms';
 import { copyTextToClipboard } from '../lib/clipboard';
@@ -1321,7 +1322,7 @@ export function Sidebar({
     const targetHomeId = ref.spaceKey !== '' ? ref.spaceKey : effectiveLocalSpaceKey;
     const isOtherLocalSubspace = !sameSpace && !isRemoteTarget && targetHomeId !== effectiveLocalSpaceKey;
     const opensSeparateWindow =
-      host.kind === 'tauri'
+      isDesktopHost(host)
       && isOtherLocalSubspace
       && host.openSpace !== undefined
       && launchWindowMode(readDesktopPrefs().windowMode) === 'windows';

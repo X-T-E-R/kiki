@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useHost } from '../../../host';
+import { isDesktopHost } from '../../../host/host';
 import { useI18n } from '../../../i18n';
 import { type KikiClient } from '../../../lib/client';
 import { compactIdentifier } from '../../../lib/compactIdentifier';
@@ -59,7 +60,7 @@ export function SpaceCredentialsCard({ client: controlClient, onEnterMain }: {
           {shared ? (
             <button type="button" data-space-copy-here className={SECONDARY_BUTTON} onClick={() => { setCopyOpen(true); }}>{t('st.spaces.copySshHere')}</button>
           ) : null}
-          {host.kind === 'tauri' ? (
+          {isDesktopHost(host) ? (
             <button type="button" data-space-go-main className={SECONDARY_BUTTON}
               onClick={() => { void Promise.resolve(onEnterMain !== undefined ? onEnterMain() : enterSpace(host, MAIN_SPACE_ID, mode))
                 .catch((error: unknown) => {
@@ -69,11 +70,11 @@ export function SpaceCredentialsCard({ client: controlClient, onEnterMain }: {
               {t('st.spaces.switchToMain')}
             </button>
           ) : null}
-          {host.kind === 'tauri' ? (
+          {isDesktopHost(host) ? (
             <button type="button" data-space-restart className={SECONDARY_BUTTON} disabled={busy} onClick={() => { setRestartOpen(true); }}>{t('st.spaces.restartSpace')}</button>
           ) : null}
         </div>
-        {host.kind === 'tauri' ? <Hint>{t('st.spaces.restartHint')}</Hint> : null}
+        {isDesktopHost(host) ? <Hint>{t('st.spaces.restartHint')}</Hint> : null}
         <FeedbackLine feedback={feedback} />
       </div>
       {copyOpen ? (
@@ -89,7 +90,7 @@ export function SpaceCredentialsCard({ client: controlClient, onEnterMain }: {
           onConfirm={() => {
             setRestartOpen(false);
             setBusy(true);
-            if (host.kind !== 'tauri') return;
+            if (!isDesktopHost(host)) return;
             void host.restartServer().catch((error: unknown) => { setFeedback({ tone: 'error', text: errorText(locale, error) }); })
               .finally(() => { setBusy(false); });
           }} />

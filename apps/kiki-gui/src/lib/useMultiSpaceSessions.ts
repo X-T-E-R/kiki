@@ -40,6 +40,7 @@ import {
 } from '@kiki/session-core/sessions';
 
 import { useHost } from '../host';
+import { isDesktopHost } from '../host/host';
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
 import { useOptionalPlaceClientPool } from '../state/placeClients';
@@ -347,7 +348,7 @@ export function useMultiSpaceSessions({
     (typeof connectionId === 'string' && connectionId !== '') ||
     (typeof sshLabel === 'string' && sshLabel.length > 0) ||
     connectionSource === 'remote';
-  const desktop = host.kind === 'tauri';
+  const desktop = isDesktopHost(host);
   const controlClient = desktop ? localClient : (localClient ?? (inBrokeredScope ? null : client));
   const hasRemoteApi = controlClient?.klient?.rest?.connections !== undefined;
 

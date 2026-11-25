@@ -30,6 +30,7 @@ import { durationUntil, relativeTime } from '@kiki/session-core/util/time';
 import type { RemoteConnection, WebAccessLink, WebAccessStatus } from '@kiki/protocol';
 
 import { useHost } from '../../host';
+import { isDesktopHost } from '../../host/host';
 import { ExternalLink } from '../../host/ExternalLink';
 import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
@@ -145,7 +146,7 @@ export function WebAccessSection() {
   // Only this machine's own server can hand out an entry link. A remote space
   // has its own; opening it from here would be configuring somebody else's.
   const inRemoteScope = Boolean(connectionId) || Boolean(sshLabel) || isPeerConnectionSource(connectionSource);
-  const control = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
+  const control = isDesktopHost(host) ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const status = useWebAccessStatus(control);
   const remoteConnections = useRemoteConnections(control);
   const [busy, setBusy] = useState<null | Mode | 'off' | 'revoke' | 'link' | 'shared'>(null);

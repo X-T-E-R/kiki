@@ -11,6 +11,7 @@ import { launchWindowMode } from '../lib/spaces';
 import { readDesktopPrefs } from '@kiki/session-core/settings';
 import { destinationForLocation, isScopeEntityRoute, markScopeReload, prepareScopeDestination, registerScopeNavigation, requestScopeNavigation, ScopeRestoreError, type ScopeDestination, type ScopeLocation, type ScopeRestoreState } from '../lib/navScope';
 import { useHost } from '../host';
+import { isDesktopHost } from '../host/host';
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
 import { DirtyGuardContext, DirtyGuardStateContext, useDirtyGuardState, type GuardedNavigate, type NavigationRedirect } from './dirtyGuard';
@@ -256,7 +257,7 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
     // own home. Nothing is prepared, staged or navigated here — the new window
     // resolves the connection itself, and a cancelled or failed launch leaves
     // this window's page, draft and visit exactly as they were.
-    if (request.inPlace !== true && request.route === undefined && host.kind === 'tauri' && scope.scopeId.startsWith('remote:') && host.openRemoteSpace !== undefined &&
+    if (request.inPlace !== true && request.route === undefined && isDesktopHost(host) && scope.scopeId.startsWith('remote:') && host.openRemoteSpace !== undefined &&
         launchWindowMode(readDesktopPrefs().windowMode) === 'windows') {
       const launch = async (signal = new AbortController().signal) => { await openRemoteScopeWindow(host, scope, signal); };
       retryRef.current = () => { void Promise.resolve(guard.value.runAction?.(launch)).catch(() => {}); };

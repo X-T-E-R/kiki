@@ -7,7 +7,7 @@ import {
   type DesktopNativePrefs,
 } from '@kiki/session-core/settings';
 import { useHost, type DesktopUpdate } from '../../host';
-import { isDesktopUpdateSelectionChanged } from '../../host/host';
+import { isDesktopHost, isDesktopUpdateSelectionChanged } from '../../host/host';
 import { useI18n } from '../../i18n';
 import { checkForUpdateNow, hydrateUpdatePrefs, persistUpdatePreference, resetUpdateCheckCache } from '../../lib/desktopUpdates';
 import { useConnection } from '../../state/connection';
@@ -24,7 +24,7 @@ export function AboutSection() {
   const { t } = useI18n();
   const guiVersion = import.meta.env['VITE_APP_VERSION'] ?? '0.0.0-dev';
   const buildSha = import.meta.env['VITE_BUILD_SHA'] as string | undefined;
-  const isDesktop = host.kind === 'tauri';
+  const isDesktop = isDesktopHost(host);
   const initialPrefs = readDesktopPrefs();
   const [channel, setChannel] = useState<'stable' | 'beta'>(initialPrefs.updateChannel);
   const [autoUpdate, setAutoUpdate] = useState<AutoUpdateMode>(initialPrefs.autoUpdate);
@@ -41,7 +41,7 @@ export function AboutSection() {
   useEffect(() => () => { checkGeneration.current += 1; }, []);
 
   useEffect(() => {
-    if (host.kind !== 'tauri') return;
+    if (!isDesktopHost(host)) return;
     let active = true;
     void host.supportsDesktopUpdates().then(
       (supported) => { if (active) setUpdatesSupported(supported); },
@@ -54,7 +54,7 @@ export function AboutSection() {
   // runs, whatever the automatic preference or a skipped version says, and it
   // says plainly whether there was something new.
   const checkForUpdate = () => {
-    if (host.kind !== 'tauri' || updatesSupported !== true || installRunning.current) return;
+    if (!isDesktopHost(host) || updatesSupported !== true || installRunning.current) return;
     const generation = ++checkGeneration.current;
     setUpdateStatus('checking');
     setUpdateMessage(null);
@@ -106,7 +106,7 @@ export function AboutSection() {
   /** Ordered writes advance the confirmed value; only the latest failure may restore it. */
   const writeNative = <K extends 'autoUpdate' | 'updateChannel'>(key: K, next: DesktopNativePrefs[K]) => {
     setPersistError(null);
-    if (host.kind !== 'tauri') return;
+    if (!isDesktopHost(host)) return;
     const generation = ++writes.current[key];
     void persistUpdatePreference(host, { [key]: next } as Partial<DesktopNativePrefs>).then(
       () => { confirmed.current[key] = next; },

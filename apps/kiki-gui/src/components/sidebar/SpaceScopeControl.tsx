@@ -18,6 +18,7 @@ import { readDesktopPrefs, writeLayoutPreferences } from '@kiki/session-core/set
 import { relativeTime } from '@kiki/session-core/util/time';
 
 import { useHost } from '../../host';
+import { isDesktopHost } from '../../host/host';
 import { useI18n } from '../../i18n';
 import { appShellConnectUrl, isEmbeddedAndroidHost } from '../../lib/appShell';
 import { useLayoutPreferences } from '../../lib/layoutHooks';
@@ -106,7 +107,7 @@ export function SpaceScopeControl({ healthBySpace }: SpaceScopeControlProps = {}
     (typeof connectionId === 'string' && connectionId !== '') ||
     inSshScope ||
     connectionSource === 'remote';
-  const desktop = host.kind === 'tauri';
+  const desktop = isDesktopHost(host);
 
   const browserDirectoryClient = inSshScope
     ? null

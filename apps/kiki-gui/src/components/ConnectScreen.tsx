@@ -10,6 +10,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 
 import { useHost } from '../host';
+import { isDesktopHost } from '../host/host';
 import { useI18n } from '../i18n';
 import { DisclosureChevron } from './icons';
 import type { ConnectionConfig, SshProfile } from '../state/connectionConfig';
@@ -365,7 +366,7 @@ function BrowserConnectForm({
       onConnect(connection.config, connection.persist);
     } catch (error) {
       setDetectNote(
-        host.kind === 'tauri'
+        isDesktopHost(host)
           ? t('connect.desktopStartFailed', {
               detail: error instanceof Error ? error.message : String(error),
             })

@@ -12,6 +12,7 @@ import {
 } from '@kiki/session-core/settings';
 import { relativeTime } from '@kiki/session-core/util/time';
 import { useHost } from '../../host';
+import { isDesktopHost } from '../../host/host';
 import { useI18n } from '../../i18n';
 import {
   androidBridge,
@@ -70,7 +71,7 @@ function CurrentConnectionContent() {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const spaceLocation = useSpaceLocation({ includeLocalMachine: true });
-  const isDesktop = host.kind === 'tauri';
+  const isDesktop = isDesktopHost(host);
   const isSsh = scopeId.startsWith('ssh:');
   const activeConnectionId =
     (typeof connectionId === 'string' && connectionId !== '' ? connectionId : null) ??

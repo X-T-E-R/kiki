@@ -27,6 +27,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { errorText, type Locale } from '@kiki/session-core/i18n';
 
 import { useHost } from '../../host';
+import { isDesktopHost } from '../../host/host';
 import { useI18n } from '../../i18n';
 import type { HostSkillTarget, OAuthMethodStatus } from '../../lib/client';
 import { useConnection } from '../../state/connection';
@@ -89,7 +90,7 @@ export function ModelConnectCard({
   const [lane, setLane] = useState<Lane | null>(initialLane);
   // "This computer" only in the desktop app on its own server; a phone or a
   // browser may be looking at another computer's Kiki.
-  const remote = !(host.kind === 'tauri' && scopeId === 'local');
+  const remote = !(isDesktopHost(host) && scopeId === 'local');
 
   const methodsQuery = useQuery({
     queryKey: OAUTH_METHODS_QUERY_KEY,
