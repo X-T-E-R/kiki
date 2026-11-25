@@ -2,37 +2,22 @@
 
 import { act, useCallback } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   EMPTY_DISCOVERY_STATE,
   type DiscoveryState,
 } from '@kiki/session-core/discovery';
 
+import { browserHost, HostProvider } from '../../host';
 import { I18nProvider } from '../../i18n';
+import { ConnectionContext, type ConnectionValue } from '../../state/connection';
 import { DirtyGuardContext, useDirtyGuardState, type GuardedNavigate } from '../dirtyGuard';
+import { SidebarContext } from '../sidebarContext';
 import { DiscoveryProvider, discoveryDestinationHref } from './DiscoveryContext';
 import { DiscoveryPage } from './DiscoveryPage';
-
-vi.mock('../../state/connection', () => ({
-  useConnection: () => ({
-    scopeId: 'local',
-    wsStatus: 'open',
-  }),
-}));
-
-vi.mock('../../lib/layoutHooks', () => ({
-  usePhoneMode: () => false,
-}));
-
-vi.mock('../../lib/spaceLocation', () => ({
-  useSpaceLocation: () => ({ inRemoteScope: false, spaceName: '' }),
-}));
-
-vi.mock('../sidebarContext', () => ({
-  useSidebarContext: () => ({ sidebarOpen: false }),
-}));
 
 describe('discoveryDestinationHref', () => {
   it('routes the usage-filter anchor to the history panel that mounts it', () => {
@@ -91,13 +76,28 @@ async function mountDiscover(initialState: DiscoveryState): Promise<HTMLDivEleme
   containers.push(container);
   const root = createRoot(container);
   roots.push(root);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const connectionValue = {
+    scopeId: 'local',
+    wsStatus: 'open',
+    client: null,
+    localClient: null,
+  } as unknown as ConnectionValue;
   await act(async () => {
     root.render(
-      <I18nProvider>
-        <MemoryRouter initialEntries={['/discover']}>
-          <DiscoveryHarness initialState={initialState} />
-        </MemoryRouter>
-      </I18nProvider>,
+      <HostProvider host={browserHost}>
+        <QueryClientProvider client={queryClient}>
+          <ConnectionContext.Provider value={connectionValue}>
+            <SidebarContext.Provider value={{ sidebarOpen: false }}>
+              <I18nProvider>
+                <MemoryRouter initialEntries={['/discover']}>
+                  <DiscoveryHarness initialState={initialState} />
+                </MemoryRouter>
+              </I18nProvider>
+            </SidebarContext.Provider>
+          </ConnectionContext.Provider>
+        </QueryClientProvider>
+      </HostProvider>,
     );
   });
   return container;

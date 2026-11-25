@@ -5680,7 +5680,7 @@ export interface AgentStateSnapshot {
         readonly systemPromptMode?: 'inherit' | 'replace' | 'append' | 'prepend';
         readonly prompt: string;
         readonly path: string;
-        readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
+        readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit' | 'inherited';
         readonly delegationNotice?: 'off' | 'auto';
       };
       readonly routeDefinition?: /* AgentProfileRouteDefinition — packages/agent-profiles/src/agentProfile.ts */ {
@@ -6511,7 +6511,7 @@ export interface AgentStateSnapshot {
           readonly systemPromptMode?: 'inherit' | 'replace' | 'append' | 'prepend';
           readonly prompt: string;
           readonly path: string;
-          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
+          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit' | 'inherited';
           readonly delegationNotice?: 'off' | 'auto';
         };
         readonly callerCeiling?: Pick</* ProfileData — packages/agent-core-v2/src/agent/profile/profile.ts */ {
@@ -7511,7 +7511,7 @@ export interface AgentStateSnapshot {
             readonly systemPromptMode?: 'inherit' | 'replace' | 'append' | 'prepend';
             readonly prompt: string;
             readonly path: string;
-            readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
+            readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit' | 'inherited';
             readonly delegationNotice?: 'off' | 'auto';
           };
           readonly diagnostic?: /* AgentProfileDiagnostic — packages/agent-profiles/src/scopedAgentProfile.ts */ {
@@ -7837,7 +7837,7 @@ export interface AgentStateSnapshot {
           readonly systemPromptMode?: 'inherit' | 'replace' | 'append' | 'prepend';
           readonly prompt: string;
           readonly path: string;
-          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'explicit' | 'plugin' | 'inherited';
+          readonly source: /* AgentFileSource — packages/agent-profiles/src/agentFileTypes.ts */ 'project' | 'user' | 'extra' | 'plugin' | 'explicit' | 'inherited';
           readonly delegationNotice?: 'off' | 'auto';
         }>>;
         readonly dependencyIndex: Readonly<Record<string, readonly string[]>>;

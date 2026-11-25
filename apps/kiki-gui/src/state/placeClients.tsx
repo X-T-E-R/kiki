@@ -54,7 +54,7 @@ export interface PlaceClientPoolValue {
   readonly subscribeMutation: (listener: (connectionId: string, sessionId: string) => void) => () => void;
 }
 
-const PlaceClientPoolContext = createContext<PlaceClientPoolValue | null>(null);
+export const PlaceClientPoolContext = createContext<PlaceClientPoolValue | null>(null);
 
 export function useOptionalPlaceClientPool(): PlaceClientPoolValue | null {
   return useContext(PlaceClientPoolContext);

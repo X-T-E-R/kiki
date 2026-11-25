@@ -996,6 +996,7 @@ const GUI_ALLOWED_PORTAL_FILES = new Set([
   'apps/kiki-gui/src/components/agent-workspace/AgentWorkspace.tsx',
   'apps/kiki-gui/src/components/mediaPreview.tsx',
   'apps/kiki-gui/src/components/NewSessionPage.tsx',
+  'apps/kiki-gui/src/components/preview/PreviewHeaderSlot.tsx',
   'apps/kiki-gui/src/components/SessionView.tsx',
   'apps/kiki-gui/src/components/WorkPage.tsx',
   'apps/kiki-gui/src/components/overlays/ActionSheet.tsx',

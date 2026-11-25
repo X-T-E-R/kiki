@@ -21,7 +21,7 @@ import type {
   VideoUploadInput,
 } from '#/kosong/contract/provider';
 import { translateProviderError } from '#/kosong/protocol/errors';
-import type { IPluginLlmDirectoryService } from '#/app/plugin/pluginLlmDirectory';
+import type { IPluginLlmDirectoryService } from './pluginLlmDirectory';
 import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 
 import type { AuthProvider, Model } from './catalog';

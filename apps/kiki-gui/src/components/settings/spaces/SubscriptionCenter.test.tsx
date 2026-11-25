@@ -29,24 +29,18 @@ import {
   type PortableSpacesApi,
 } from '../../../lib/portableSpaces';
 import { useSubscribeIntentQueue } from '../../../lib/subscribeIntent';
-import { handleGlobalConnectionFrame } from '../../../state/connection';
+import { ConnectionContext, handleGlobalConnectionFrame, type ConnectionValue } from '../../../state/connection';
 import { PortableSpacesCard } from './PortableSpacesCard';
 import { SubscribeModal } from './SubscribeModal';
 
-vi.mock('../../../state/connection', async () => {
-  const actual = await vi.importActual<typeof import('../../../state/connection')>('../../../state/connection');
-  return {
-    ...actual,
-    useConnection: () => ({
-      client: { baseUrl: 'http://127.0.0.1:58627' },
-      localClient: { baseUrl: 'http://127.0.0.1:58627' },
-      meta: undefined,
-      connectionId: null,
-      sshLabel: null,
-      config: null,
-    }),
-  };
-});
+const testConnection = {
+  client: { baseUrl: 'http://127.0.0.1:58627' },
+  localClient: { baseUrl: 'http://127.0.0.1:58627' },
+  meta: undefined,
+  connectionId: null,
+  sshLabel: null,
+  config: null,
+} as unknown as ConnectionValue;
 
 const DEVICE_KEY = 'age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p';
 
@@ -380,7 +374,9 @@ async function renderNode(
       <MemoryRouter initialEntries={options.entries ?? ['/settings/spaces']}>
         <HostProvider host={hostMock as unknown as HostAdapter}>
           <QueryClientProvider client={queryClient}>
-            <I18nProvider>{node}</I18nProvider>
+            <ConnectionContext.Provider value={testConnection}>
+              <I18nProvider>{node}</I18nProvider>
+            </ConnectionContext.Provider>
           </QueryClientProvider>
         </HostProvider>
       </MemoryRouter>,

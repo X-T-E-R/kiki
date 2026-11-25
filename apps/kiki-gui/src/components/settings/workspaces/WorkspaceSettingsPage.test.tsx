@@ -29,10 +29,11 @@ import { ErrorCode } from '@kiki/protocol';
 import type { PluginUsageItem, PluginUsageResponse, Workspace, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import { I18nProvider } from '../../../i18n';
+import { ConnectionContext, type ConnectionValue } from '../../../state/connection';
 import { WorktreesCard } from '../WorktreesCard';
 import { WorkspaceSettingsPage } from './WorkspaceSettingsPage';
 
-const mocks = vi.hoisted(() => ({
+const mocks = {
   // Identity and stats come from the catalog and the detail route; the writes
   // this page makes are the scoped catalog ones, so a call to a legacy
   // full-projection write from here is a regression.
@@ -63,51 +64,45 @@ const mocks = vi.hoisted(() => ({
   worktreesInspect: vi.fn(),
   worktreesRemove: vi.fn(),
   worktreesGc: vi.fn(),
-}));
+};
 
-vi.mock('../../../state/connection', () => {
-  const value = {
-    client: {
-      listWorkspaces: mocks.listWorkspaces,
-      listWorkspaceCatalog: mocks.listWorkspaceCatalog,
-      getWorkspaceDetails: mocks.getWorkspaceDetails,
-      renameWorkspaceCatalog: mocks.renameWorkspaceCatalog,
-      setWorkspacePinnedCatalog: mocks.setWorkspacePinnedCatalog,
-      renameWorkspace: mocks.renameWorkspace,
-      setWorkspacePinned: mocks.setWorkspacePinned,
-      getPluginUsage: mocks.getPluginUsage,
-      setPluginUsage: mocks.setPluginUsage,
-      getWorkspaceTrust: mocks.getWorkspaceTrust,
-      setWorkspaceTrust: mocks.setWorkspaceTrust,
-      getWorkspaceMemorySettings: mocks.getWorkspaceMemorySettings,
-      patchWorkspaceMemorySettings: mocks.patchWorkspaceMemorySettings,
-      listWorkspaceSkills: mocks.listWorkspaceSkills,
-      listPlugins: mocks.listPlugins,
-      listPluginMarketplace: mocks.listPluginMarketplace,
-      previewPlugin: mocks.previewPlugin,
-      installPreviewedPlugin: mocks.installPreviewedPlugin,
-      setPluginEnabled: mocks.setPluginEnabled,
-      getPlugin: mocks.getPlugin,
-      getSession: mocks.getSession,
-      getConfig: mocks.getConfig,
-      klient: {
-        rest: {
-          worktrees: {
-            list: mocks.worktreesList,
-            inspect: mocks.worktreesInspect,
-            remove: mocks.worktreesRemove,
-            gc: mocks.worktreesGc,
-          },
+const testConnection = {
+  client: {
+    listWorkspaces: mocks.listWorkspaces,
+    listWorkspaceCatalog: mocks.listWorkspaceCatalog,
+    getWorkspaceDetails: mocks.getWorkspaceDetails,
+    renameWorkspaceCatalog: mocks.renameWorkspaceCatalog,
+    setWorkspacePinnedCatalog: mocks.setWorkspacePinnedCatalog,
+    renameWorkspace: mocks.renameWorkspace,
+    setWorkspacePinned: mocks.setWorkspacePinned,
+    getPluginUsage: mocks.getPluginUsage,
+    setPluginUsage: mocks.setPluginUsage,
+    getWorkspaceTrust: mocks.getWorkspaceTrust,
+    setWorkspaceTrust: mocks.setWorkspaceTrust,
+    getWorkspaceMemorySettings: mocks.getWorkspaceMemorySettings,
+    patchWorkspaceMemorySettings: mocks.patchWorkspaceMemorySettings,
+    listWorkspaceSkills: mocks.listWorkspaceSkills,
+    listPlugins: mocks.listPlugins,
+    listPluginMarketplace: mocks.listPluginMarketplace,
+    previewPlugin: mocks.previewPlugin,
+    installPreviewedPlugin: mocks.installPreviewedPlugin,
+    setPluginEnabled: mocks.setPluginEnabled,
+    getPlugin: mocks.getPlugin,
+    getSession: mocks.getSession,
+    getConfig: mocks.getConfig,
+    klient: {
+      rest: {
+        worktrees: {
+          list: mocks.worktreesList,
+          inspect: mocks.worktreesInspect,
+          remove: mocks.worktreesRemove,
+          gc: mocks.worktreesGc,
         },
       },
     },
-    klient: { global: { mcp: { list: mocks.mcpList } } },
-  };
-  return {
-    useConnection: () => value,
-    useOptionalConnection: () => value,
-  };
-});
+  },
+  klient: { global: { mcp: { list: mocks.mcpList } } },
+} as unknown as ConnectionValue;
 
 let container: HTMLDivElement;
 let root: Root;
@@ -217,9 +212,11 @@ async function renderPage(workspaceId = 'ws-a') {
     root.render(
       <MemoryRouter>
         <QueryClientProvider client={client}>
-          <I18nProvider>
-            <WorkspaceSettingsPage workspaceId={workspaceId} />
-          </I18nProvider>
+          <ConnectionContext.Provider value={testConnection}>
+            <I18nProvider>
+              <WorkspaceSettingsPage workspaceId={workspaceId} />
+            </I18nProvider>
+          </ConnectionContext.Provider>
         </QueryClientProvider>
       </MemoryRouter>,
     );
@@ -546,9 +543,11 @@ describe('WorktreesCard', () => {
       root.render(
         <MemoryRouter>
           <QueryClientProvider client={client}>
-            <I18nProvider>
-              <WorktreesCard />
-            </I18nProvider>
+            <ConnectionContext.Provider value={testConnection}>
+              <I18nProvider>
+                <WorktreesCard />
+              </I18nProvider>
+            </ConnectionContext.Provider>
           </QueryClientProvider>
         </MemoryRouter>,
       );

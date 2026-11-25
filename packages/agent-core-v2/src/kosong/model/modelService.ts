@@ -2,7 +2,7 @@ import { Disposable } from '#/_base/di/lifecycle';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { AsyncEmitter, type Event, type IWaitUntil } from '#/_base/event';
-import { IPluginLlmDirectoryService, type PluginModelLookup } from '#/app/plugin/pluginLlmDirectory';
+import { IPluginLlmDirectoryService, type PluginModelLookup } from './pluginLlmDirectory';
 import { LifecycleScope } from '#/app/scopes';
 
 import { deepEqual, diffRecords, isEmptyDiff } from '#/_base/utils/recordDiff';

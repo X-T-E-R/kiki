@@ -19,6 +19,8 @@ import type { MessageAttachment, MessageBlock, MessageChannelDelivery } from '@k
 
 import { browserHost, HostProvider } from '../../host';
 import { I18nProvider } from '../../i18n';
+import { ConnectionContext, type ConnectionValue } from '../../state/connection';
+import { MediaPreviewContext } from '../mediaPreviewContext';
 import { configureRemoteMediaPlayback } from '../useSessionMediaPlayback';
 import { MessageAttachmentView, MessageRow } from './MessageRow';
 import { deliveryNotes } from './messageDelivery';
@@ -26,7 +28,7 @@ import { messageAttachmentSubtype } from './messageMedia';
 
 // The preview seam: opening an attachment is what a message row offers, and
 // the ref it hands over is what the assertion reads.
-const previewProbe = vi.hoisted(() => ({
+const previewProbe = {
   openAttachment: vi.fn(),
   openAttachmentInWorkspace: vi.fn(),
   openFile: vi.fn(),
@@ -35,33 +37,7 @@ const previewProbe = vi.hoisted(() => ({
   openUrl: vi.fn(async () => {}),
   workspaceEnabled: false,
   connection: null as Record<string, unknown> | null,
-}));
-vi.mock('../../state/connection', async (importOriginal) => {
-  const original = await importOriginal<typeof import('../../state/connection')>();
-  return {
-    ...original,
-    useOptionalConnection: () => previewProbe.connection,
-  };
-});
-vi.mock('../mediaPreviewContext', async (importOriginal) => {
-  const original = await importOriginal<typeof import('../mediaPreviewContext')>();
-  return {
-    ...original,
-    useMediaPreview: () => ({
-      sessionId: 'session',
-      cwd: '/workspace',
-      openImage: previewProbe.openImage,
-      openFile: previewProbe.openFile,
-      openAttachment: previewProbe.openAttachment,
-      openAttachmentInWorkspace: previewProbe.workspaceEnabled ? previewProbe.openAttachmentInWorkspace : undefined,
-      openWeb: previewProbe.openWeb,
-      previewTabCount: 0,
-      previewPanelOpen: false,
-      togglePreviewPanel: () => {},
-      activeAgentPanelId: undefined,
-    }),
-  };
-});
+};
 
 const roots: Root[] = [];
 
@@ -81,12 +57,31 @@ function render(node: ReactNode): HTMLDivElement {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
+  const previewApi = {
+    sessionId: 'session',
+    cwd: '/workspace',
+    openImage: previewProbe.openImage,
+    openFile: previewProbe.openFile,
+    openAgentPanel: () => {},
+    openBuiltinSkill: () => {},
+    openAttachment: previewProbe.openAttachment,
+    openAttachmentInWorkspace: previewProbe.workspaceEnabled ? previewProbe.openAttachmentInWorkspace : undefined,
+    openWeb: previewProbe.openWeb,
+    previewTabCount: 0,
+    previewPanelOpen: false,
+    togglePreviewPanel: () => {},
+    activeAgentPanelId: undefined,
+  };
   act(() => {
     flushSync(() => {
       root.render(
         <HostProvider host={{ ...browserHost, openUrl: previewProbe.openUrl }}>
           <QueryClientProvider client={new QueryClient()}>
-            <I18nProvider>{node}</I18nProvider>
+            <ConnectionContext.Provider value={previewProbe.connection as unknown as ConnectionValue | null}>
+              <MediaPreviewContext.Provider value={previewApi}>
+                <I18nProvider>{node}</I18nProvider>
+              </MediaPreviewContext.Provider>
+            </ConnectionContext.Provider>
           </QueryClientProvider>
         </HostProvider>,
       );

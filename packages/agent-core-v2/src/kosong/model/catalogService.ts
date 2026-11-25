@@ -8,7 +8,7 @@ import {
 import { IRequestAdmission, type RequestAdmissionPort } from './requestAdmission';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
-import { IPluginLlmDirectoryService, type PluginLlmProviderEntry, type PluginModelLookup } from '#/app/plugin/pluginLlmDirectory';
+import { IPluginLlmDirectoryService, type PluginLlmProviderEntry, type PluginModelLookup } from './pluginLlmDirectory';
 import { applyModelSettings } from './modelSettings';
 import { explainModelProtocol, type ExplainedModelProtocol } from './modelProtocol';
 import type { ProviderAdapterDefinition } from '#/kosong/protocol/extensionRegistry';

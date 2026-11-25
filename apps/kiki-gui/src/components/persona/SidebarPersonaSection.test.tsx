@@ -18,6 +18,10 @@ import {
 } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../../i18n';
+import { BOTS_QUERY_KEY } from '../../lib/botRooms';
+import { ConnectionContext, type ConnectionValue } from '../../state/connection';
+import { DirtyGuardContext, type DirtyGuardValue } from '../dirtyGuard';
+import { PERSONAS_QUERY_KEY } from './usePersonas';
 import { buildPersonaDirectory, type PersonaDirectoryEntry } from './usePersonaDirectory';
 import {
   SIDEBAR_PERSONA_INLINE_THREAD_LIMIT,
@@ -30,37 +34,43 @@ import {
 import { personaSwitcherQueryKey, type PersonaSessionHeadsMap } from './usePersonaSwitcherConversations';
 
 const navigate = vi.fn();
-const directory = vi.hoisted(() => ({ entries: [] as unknown[] }));
-const listSessions = vi.hoisted(() => vi.fn(async (_params?: { persona?: string }) => ({ items: [] as unknown[], has_more: false })));
-const listPersonaSessionHeads = vi.hoisted(() =>
-  vi.fn(async (_params?: PersonaSessionHeadsQuery): Promise<PersonaSessionHeadsMap> => ({})),
-);
-const updatePersona = vi.hoisted(() => vi.fn(async (_id: string, patch: { pinned?: boolean; hidden?: boolean }) => ({
+const directory = { entries: [] as PersonaDirectoryEntry[] };
+const listPersonas = vi.fn(async () => directory.entries);
+const listWorkspaceCatalog = vi.fn(async () => ({ items: [] }));
+const listSessions = vi.fn(async (_params?: { persona?: string }) => ({ items: [] as unknown[], has_more: false }));
+const listPersonaSessionHeads = vi.fn(async (_params?: PersonaSessionHeadsQuery): Promise<PersonaSessionHeadsMap> => ({}));
+const updatePersona = vi.fn(async (_id: string, patch: { pinned?: boolean; hidden?: boolean }) => ({
   version: 1 as const,
   archived: false,
   pinned: patch.pinned,
   hidden: patch.hidden,
-})));
-const updateSessionProfile = vi.hoisted(() => vi.fn(async (id: string, body: Record<string, unknown>) => ({ id, ...body })));
-const archiveSession = vi.hoisted(() => vi.fn(async () => undefined));
-const mockedConnection = vi.hoisted(() => ({
-  client: { listSessions, listPersonaSessionHeads, updatePersona, updateSessionProfile, archiveSession },
+}));
+const updateSessionProfile = vi.fn(async (id: string, body: Record<string, unknown>) => ({ id, ...body }));
+const archiveSession = vi.fn(async () => undefined);
+const testConnection = {
+  client: {
+    listPersonas,
+    listWorkspaceCatalog,
+    listSessions,
+    listPersonaSessionHeads,
+    updatePersona,
+    updateSessionProfile,
+    archiveSession,
+    klient: {
+      rest: {
+        bots: { list: async () => [] },
+        rooms: { create: vi.fn() },
+      },
+    },
+  },
   scopeId: 'local',
   spaceKey: 'local:test',
-}));
-vi.mock('../../state/connection', () => ({
-  useConnection: () => mockedConnection,
-  useOptionalConnection: () => mockedConnection,
-}));
-vi.mock('../dirtyGuard', () => ({ useGuardedNavigate: () => navigate }));
-vi.mock('./usePersonaDirectory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./usePersonaDirectory')>();
-  return { ...actual, usePersonaDirectory: () => ({ directory: directory.entries, isLoading: false, isError: false }) };
-});
-vi.mock('../room/CreateRoomDialog', () => ({
-  CreateRoomDialog: ({ initialPersonaId }: { readonly initialPersonaId?: string }) =>
-    createElement('div', { 'data-stub-room-dialog': true, 'data-initial-persona-id': initialPersonaId ?? '' }),
-}));
+} as unknown as ConnectionValue;
+const testDirtyGuard: DirtyGuardValue = {
+  dirty: false,
+  reportDirty: () => {},
+  navigate,
+};
 
 const mounted: Root[] = [];
 const environment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
@@ -119,13 +129,17 @@ async function render(
   const root = createRoot(container);
   mounted.push(root);
   const queryClient = customQueryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData([...PERSONAS_QUERY_KEY, { includeArchived: false }], directory.entries);
+  queryClient.setQueryData(BOTS_QUERY_KEY, []);
   await act(async () => {
     root.render(createElement(QueryClientProvider, { client: queryClient },
-      createElement(I18nProvider, null,
-        createElement(MemoryRouter, { initialEntries: [initialPath] },
-          createElement(SidebarPersonaSection, {
-            sessions, activeSessionId, seen, workspaceOptions: [], rooms: [{ id: 'room_alpha', title: '发布协作室' } as never],
-          })))));
+      createElement(ConnectionContext.Provider, { value: testConnection },
+        createElement(DirtyGuardContext.Provider, { value: testDirtyGuard },
+          createElement(I18nProvider, null,
+            createElement(MemoryRouter, { initialEntries: [initialPath] },
+              createElement(SidebarPersonaSection, {
+                sessions, activeSessionId, seen, workspaceOptions: [], rooms: [{ id: 'room_alpha', title: '发布协作室' } as never],
+              })))))));
   });
   return container;
 }
@@ -151,12 +165,18 @@ function subthreadIds(container: HTMLElement, personaId = 'xiao-you'): string[] 
 describe('the sidebar persona group', () => {
   it('sorts active, urgent, pinned, and recently active personas to the top when no custom order is saved, hides hidden entries, and keeps inline rows free of tagline clutter', async () => {
     directory.entries = [
-      persona({ id: 'zhou', name: '小周', title: '超长设定副标题不应挤占折叠单行空间', life: 'idle', lastActivityAt: 100 }),
-      persona({ id: 'you', name: '小柚', pinned: true, life: 'waiting', unreadCount: 2, unreadSessionIds: ['s1', 's2'], lastActivityAt: 9_000 }),
+      persona({ id: 'zhou', name: '小周', title: '超长设定副标题不应挤占折叠单行空间' }),
+      persona({ id: 'you', name: '小柚', pinned: true }),
       persona({ id: 'gui', name: '小桂', hidden: true }),
-      persona({ id: 'dou', name: '豆豆', homeSessionId: 'active_home', lastActivityAt: 5_000 }),
+      persona({ id: 'dou', name: '豆豆', homeSessionId: 'active_home' }),
     ];
-    const container = await render([session({ id: 'active_home' })], 'active_home');
+    const container = await render([
+      hers({ id: 's_zhou', updated_at: new Date(100).toISOString(), last_seq: 0 }, 'zhou'),
+      hers({ id: 's_you_wait', pending_interaction: 'approval', updated_at: new Date(9_000).toISOString(), last_seq: 2 }, 'you'),
+      hers({ id: 's1', updated_at: new Date(8_000).toISOString(), last_seq: 2 }, 'you'),
+      hers({ id: 's2', updated_at: new Date(7_000).toISOString(), last_seq: 2 }, 'you'),
+      hers({ id: 'active_home', updated_at: new Date(5_000).toISOString(), last_seq: 0 }, 'dou'),
+    ], 'active_home');
     expect(rowIds(container)).toEqual(['dou', 'you', 'zhou']);
     const zhouPrimary = container.querySelector<HTMLButtonElement>('[data-persona-primary="zhou"]')!;
     expect(zhouPrimary.textContent).toContain('小周');
@@ -515,18 +535,32 @@ describe('collapsible and count-bounded persona group', () => {
   it('removes inner scroll, caps folded preview at 5 with active/urgent/pinned/recent priority, and persists expand/collapse', async () => {
     expect(SIDEBAR_PERSONA_PREVIEW_LIMIT).toBe(5);
     directory.entries = [
-      persona({ id: 'p-alpha', name: 'Alpha', lastActivityAt: 100 }),
-      persona({ id: 'p-bravo', name: 'Bravo', lastActivityAt: 200 }),
-      persona({ id: 'p-charlie', name: 'Charlie', lastActivityAt: 300 }),
-      persona({ id: 'p-delta', name: 'Delta', pinned: true, lastActivityAt: 50 }),
-      persona({ id: 'p-echo', name: 'Echo', life: 'waiting', unreadCount: 2, unreadSessionIds: ['s1', 's2'] }),
+      persona({ id: 'p-alpha', name: 'Alpha' }),
+      persona({ id: 'p-bravo', name: 'Bravo' }),
+      persona({ id: 'p-charlie', name: 'Charlie' }),
+      persona({ id: 'p-delta', name: 'Delta', pinned: true }),
+      persona({ id: 'p-echo', name: 'Echo' }),
       persona({ id: 'p-foxtrot', name: 'Foxtrot', homeSessionId: 'active-home' }),
-      persona({ id: 'p-golf', name: 'Golf', life: 'working', lastActivityAt: 150 }),
-      persona({ id: 'p-hotel', name: 'Hotel · Fast', life: 'done', unreadCount: 1, unreadSessionIds: ['s3'], lastActivityAt: 900 }),
-      persona({ id: 'p-india', name: 'India', lastActivityAt: 50 }),
-      persona({ id: 'p-juliet', name: 'Juliet', lastActivityAt: 400 }),
+      persona({ id: 'p-golf', name: 'Golf' }),
+      persona({ id: 'p-hotel', name: 'Hotel · Fast' }),
+      persona({ id: 'p-india', name: 'India' }),
+      persona({ id: 'p-juliet', name: 'Juliet' }),
     ];
-    const container = await render([session({ id: 'active-home' })], 'active-home');
+    const previewSessions = [
+      hers({ id: 's-alpha', updated_at: new Date(100).toISOString(), last_seq: 0 }, 'p-alpha'),
+      hers({ id: 's-bravo', updated_at: new Date(200).toISOString(), last_seq: 0 }, 'p-bravo'),
+      hers({ id: 's-charlie', updated_at: new Date(300).toISOString(), last_seq: 0 }, 'p-charlie'),
+      hers({ id: 's-delta', updated_at: new Date(50).toISOString(), last_seq: 0 }, 'p-delta'),
+      hers({ id: 's-echo-wait', pending_interaction: 'approval', updated_at: new Date(80).toISOString(), last_seq: 2 }, 'p-echo'),
+      hers({ id: 's1', updated_at: new Date(70).toISOString(), last_seq: 2 }, 'p-echo'),
+      hers({ id: 's2', updated_at: new Date(60).toISOString(), last_seq: 2 }, 'p-echo'),
+      hers({ id: 'active-home', updated_at: new Date(500).toISOString(), last_seq: 0 }, 'p-foxtrot'),
+      hers({ id: 's-golf', busy: true, executing: true, updated_at: new Date(150).toISOString(), last_seq: 0 }, 'p-golf'),
+      hers({ id: 's3', updated_at: new Date(900).toISOString(), last_seq: 2 }, 'p-hotel'),
+      hers({ id: 's-india', updated_at: new Date(50).toISOString(), last_seq: 0 }, 'p-india'),
+      hers({ id: 's-juliet', updated_at: new Date(400).toISOString(), last_seq: 0 }, 'p-juliet'),
+    ];
+    const container = await render(previewSessions, 'active-home');
     const wrapper = container.querySelector<HTMLElement>('[data-sidebar-personas]')!;
     expect(wrapper.className).not.toContain('overflow-y-auto');
     expect(wrapper.className).not.toContain('max-h-');
@@ -547,7 +581,7 @@ describe('collapsible and count-bounded persona group', () => {
     expect(container.querySelector('[data-sidebar-personas-more="less"]')).not.toBeNull();
 
     // Remounting preserves the persisted show-all preference.
-    const remounted = await render([session({ id: 'active-home' })], 'active-home');
+    const remounted = await render(previewSessions, 'active-home');
     expect(remounted.querySelectorAll('[data-sidebar-persona-row]')).toHaveLength(10);
 
     const headerToggle = container.querySelector<HTMLButtonElement>('[data-sidebar-personas-toggle]')!;
@@ -603,15 +637,15 @@ describe('collapsible and count-bounded persona group', () => {
       persona({ id: 'archive-scribe', name: '归档 · 历史搭子', homeSessionId: 'session_idle_home', pinned: true }),
     ];
     const container = await render([
-      hers({ id: 'session_home', title: '教练 · 赛事顾问', updated_at: '2026-11-16T08:00:00Z' }, 'contest-coach'),
-      hers({ id: 'session_radar', title: '教练 · 赛事顾问｜全域赛程梳理', updated_at: '2026-11-17T09:30:00Z' }, 'contest-coach'),
-      hers({ id: 'session_review', title: '教练 · 赛事顾问 — 方案复盘', updated_at: '2026-11-17T08:00:00Z' }, 'contest-coach'),
-      hers({ id: 'session_fact_home', title: '米粒 · 事实核查', updated_at: '2026-11-16T07:00:00Z' }, 'fact-check'),
-      hers({ id: 'session_fact_unread', title: '米粒 · 事实核查｜证书续期要多久', updated_at: '2026-11-17T09:00:00Z' }, 'fact-check'),
-      hers({ id: 'session_fact_idle', title: '米粒 · 事实核查｜旧归档核对', updated_at: '2026-11-15T09:00:00Z' }, 'fact-check'),
-      hers({ id: 'session_idle_home', title: '归档 · 历史搭子', updated_at: '2026-11-10T08:00:00Z' }, 'archive-scribe'),
-      hers({ id: 'session_idle_1', title: '归档 · 历史搭子｜十月周报', updated_at: '2026-11-11T08:00:00Z' }, 'archive-scribe'),
-      hers({ id: 'session_idle_2', title: '归档 · 历史搭子｜九月周报', updated_at: '2026-11-09T08:00:00Z' }, 'archive-scribe'),
+      hers({ id: 'session_home', title: '教练 · 赛事顾问', updated_at: '2026-11-16T08:00:00Z', last_seq: 0 }, 'contest-coach'),
+      hers({ id: 'session_radar', title: '教练 · 赛事顾问｜全域赛程梳理', updated_at: '2026-11-17T09:30:00Z', last_seq: 0 }, 'contest-coach'),
+      hers({ id: 'session_review', title: '教练 · 赛事顾问 — 方案复盘', updated_at: '2026-11-17T08:00:00Z', last_seq: 0 }, 'contest-coach'),
+      hers({ id: 'session_fact_home', title: '米粒 · 事实核查', updated_at: '2026-11-16T07:00:00Z', last_seq: 0 }, 'fact-check'),
+      hers({ id: 'session_fact_unread', title: '米粒 · 事实核查｜证书续期要多久', updated_at: '2026-11-17T09:00:00Z', last_seq: 3 }, 'fact-check'),
+      hers({ id: 'session_fact_idle', title: '米粒 · 事实核查｜旧归档核对', updated_at: '2026-11-15T09:00:00Z', last_seq: 0 }, 'fact-check'),
+      hers({ id: 'session_idle_home', title: '归档 · 历史搭子', updated_at: '2026-11-10T08:00:00Z', last_seq: 0 }, 'archive-scribe'),
+      hers({ id: 'session_idle_1', title: '归档 · 历史搭子｜十月周报', updated_at: '2026-11-11T08:00:00Z', last_seq: 0 }, 'archive-scribe'),
+      hers({ id: 'session_idle_2', title: '归档 · 历史搭子｜九月周报', updated_at: '2026-11-09T08:00:00Z', last_seq: 0 }, 'archive-scribe'),
     ], 'session_radar');
 
     expect(container.querySelectorAll('[data-persona-thread-count="3"]')).toHaveLength(3);
@@ -702,8 +736,8 @@ describe('collapsible and count-bounded persona group', () => {
     directory.entries = [
       persona({ id: 'xiao-you', name: '小柚', homeSessionId: 'home_only' }),
     ];
-    const homeSession = hers({ id: 'home_only', title: '小柚 · 每日复盘', updated_at: '2026-11-17T09:00:00Z' });
-    const topicSession = hers({ id: 'topic_two', title: '小柚 · 发布核对', updated_at: '2026-11-17T10:00:00Z' });
+    const homeSession = hers({ id: 'home_only', title: '小柚 · 每日复盘', updated_at: '2026-11-17T09:00:00Z', last_seq: 0 });
+    const topicSession = hers({ id: 'topic_two', title: '小柚 · 发布核对', updated_at: '2026-11-17T10:00:00Z', last_seq: 0 });
     const container = await render([homeSession, topicSession], undefined, '/');
     await flush();
 
@@ -749,7 +783,14 @@ describe('collapsible and count-bounded persona group', () => {
 
     // Header room button opens generic CreateRoomDialog with no preselection.
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-room-create]')!.click(); });
-    expect(container.querySelector('[data-stub-room-dialog]')?.getAttribute('data-initial-persona-id')).toBe('');
+    await flush();
+    expect(document.body.querySelector('[data-create-room]')).not.toBeNull();
+    expect(document.body.querySelector('[data-room-member-option="xiao-you"] input[type="checkbox"]:checked')).toBeNull();
+    const cancelCreateRoom = document.body.querySelector<HTMLButtonElement>('[data-create-room-submit]')?.previousElementSibling as HTMLButtonElement | null;
+    expect(cancelCreateRoom).not.toBeNull();
+    await act(async () => { cancelCreateRoom!.click(); });
+    await flush();
+    expect(document.body.querySelector('[data-create-room]')).toBeNull();
 
     // Persona row menu offers All conversations, Memory, Create room (prefilled), and Mark as read.
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-menu-toggle="xiao-you"]')!.click(); });
@@ -764,7 +805,13 @@ describe('collapsible and count-bounded persona group', () => {
 
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-menu-toggle="xiao-you"]')!.click(); });
     await act(async () => { document.body.querySelector<HTMLButtonElement>('[data-persona-row-menu] [data-menu-item="create-room"]')!.click(); });
-    expect(container.querySelector('[data-stub-room-dialog]')?.getAttribute('data-initial-persona-id')).toBe('xiao-you');
+    await flush();
+    expect(document.body.querySelector('[data-create-room]')).not.toBeNull();
+    const preselectedCheckbox = document.body.querySelector<HTMLInputElement>('[data-room-member-option="xiao-you"] input[type="checkbox"]');
+    expect(preselectedCheckbox?.checked).toBe(true);
+    const cancelPrefilledRoom = document.body.querySelector<HTMLButtonElement>('[data-create-room-submit]')?.previousElementSibling as HTMLButtonElement | null;
+    await act(async () => { cancelPrefilledRoom?.click(); });
+    await flush();
 
     // Mark as read only marks the known eligible unread session, never the approval-waiting session.
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-menu-toggle="xiao-you"]')!.click(); });

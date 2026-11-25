@@ -2,18 +2,20 @@
 
 import { act, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { RemoteConnection, SidebarUnit } from '@kiki/protocol';
 import { projectSidebarUnitGroups } from '@kiki/session-core/sessions';
 import { HostProvider, browserHost } from '../host';
 import { I18nProvider } from '../i18n';
+import { ConnectionContext, type ConnectionValue } from '../state/connection';
+import { PlaceClientPoolContext, type PlaceClientPoolValue } from '../state/placeClients';
 import { useMultiSpaceSessions, type MultiSpaceSessionsResult } from './useMultiSpaceSessions';
 
-const harness = vi.hoisted(() => ({
+const harness = {
   remoteConnections: [] as RemoteConnection[],
   remoteClients: new Map<string, unknown>(),
-  emptySpaces: [] as unknown[],
   connection: {
     scopeId: 'local',
     spaceKey: 'main',
@@ -23,7 +25,12 @@ const harness = vi.hoisted(() => ({
       meta: async () => ({ server_home_id: 'home_local', capabilities: { sidebar_groups: true } }),
       klient: {
         rest: {
-          connections: {},
+          connections: {
+            list: async () => harness.remoteConnections,
+          },
+          homes: {
+            list: async () => ({ items: [] }),
+          },
           sidebar: { list: vi.fn(), resolveUnits: vi.fn(), groupMembers: vi.fn() },
         },
       },
@@ -34,36 +41,13 @@ const harness = vi.hoisted(() => ({
     wsStatus: 'open',
   },
   placePool: {
-    getOrCreateClient: (id: string) => harness.remoteClients.get(id),
+    getOrCreateEntry: () => null,
+    getOrCreateClient: (id: string) => harness.remoteClients.get(id) ?? null,
     revoke: vi.fn(),
     retainOnly: vi.fn(),
     subscribeMutation: vi.fn(() => () => {}),
   },
-}));
-
-vi.mock('../state/connection', () => ({
-  useConnection: () => harness.connection,
-}));
-
-vi.mock('../state/placeClients', () => ({
-  useOptionalPlaceClientPool: () => harness.placePool,
-}));
-
-vi.mock('./remoteConnections', () => ({
-  hasGuiPurpose: () => true,
-  remoteSpaceKey: (id: string) => `remote:${id}`,
-  useRemoteConnections: () => ({ data: harness.remoteConnections }),
-}));
-
-vi.mock('./spaces', () => ({
-  MAIN_SPACE_ID: 'main',
-  useSpaces: () => ({ data: harness.emptySpaces }),
-  useSpaceStatuses: () => ({ data: harness.emptySpaces }),
-}));
-
-vi.mock('./client', () => ({
-  createRemoteSpaceClient: vi.fn(),
-}));
+};
 
 function makeRow(id: string, title: string, updatedAt: string, extra: Record<string, unknown> = {}) {
   return {
@@ -232,13 +216,20 @@ describe('useMultiSpaceSessions sidebar_groups & cross-host coalescing', () => {
       return null;
     }
 
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
-        <I18nProvider>
-          <HostProvider host={browserHost}>
-            <Harness />
-          </HostProvider>
-        </I18nProvider>,
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <HostProvider host={browserHost}>
+              <ConnectionContext.Provider value={harness.connection as unknown as ConnectionValue}>
+                <PlaceClientPoolContext.Provider value={harness.placePool as unknown as PlaceClientPoolValue}>
+                  <Harness />
+                </PlaceClientPoolContext.Provider>
+              </ConnectionContext.Provider>
+            </HostProvider>
+          </I18nProvider>
+        </QueryClientProvider>,
       );
     });
 
