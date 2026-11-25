@@ -77,7 +77,7 @@ import {
   type ConversationShellSlots,
 } from '../ConversationShell';
 import { Composer } from '../Composer';
-import { useLastResponseAt } from '../composerWorking';
+import { useComposerWorking } from '../composerWorking';
 import type { ContextMeterUsage } from '../ContextMeter';
 import { InteractionPlacementContext } from '../Interactions';
 import { MessageViewContext } from '../message/messageViewContext';
@@ -1779,10 +1779,18 @@ function ChildAgentWorkspace({
   );
 
   const composerWorking = headerBusy && agentState.pendingInteraction === 'none';
-  const lastResponseAt = useLastResponseAt(composerWorking, agentBlocks, agentState.turnStartedAt);
+  const workingTiming = useComposerWorking({
+    busy: composerWorking,
+    scopeKey: `${sessionId}:${agentId}`,
+    loaded: agentState.loaded,
+    blocks: timelineBlocks,
+    turnStartedAt: agentState.turnStartedAt,
+  });
   const composerWorkingInfo = useMemo(
-    () => (composerWorking ? { lastResponseAt } : undefined),
-    [composerWorking, lastResponseAt],
+    () => (composerWorking
+      ? { startedAt: workingTiming.startedAt, lastResponseAt: workingTiming.lastResponseAt }
+      : undefined),
+    [composerWorking, workingTiming.startedAt, workingTiming.lastResponseAt],
   );
   // Difference B (`busyPlainSendMode: 'steer'`): a busy child with a live
   // controller steers on plain send unless a pending submission retry or

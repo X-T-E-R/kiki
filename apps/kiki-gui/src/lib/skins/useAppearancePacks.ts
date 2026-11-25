@@ -15,7 +15,7 @@ import { getMedia } from './mediaStore';
 import { packSkinOf, parsePackMediaId } from './packs';
 import { fetchPackFile, getAppearancePack, listAppearancePacks, type ServerEndpoint } from './packsApi';
 import { effectiveSkinPrefs, setPackSkins, subscribeSkinPrefs } from './store';
-import { mapBounded } from './useUserSkins';
+import { isSkinNotFoundError, mapBounded, skinConnectionKey } from './useUserSkins';
 
 const PACK_DETAIL_STALE_MS = 30_000;
 const PACK_DETAIL_CONCURRENCY = 4;
@@ -123,7 +123,10 @@ export function useAppearancePacks(options: UseAppearancePacksOptions = {}): {
   refetch: () => void;
 } {
   const { allDetails = false } = options;
+  const connection = useConnection();
+  const { wsStatus } = connection;
   const endpoint = useServerEndpoint();
+  const connectionKey = skinConnectionKey(connection);
   const queryClient = useQueryClient();
   const selectedId = useSyncExternalStore(
     subscribeSkinPrefs,
@@ -132,7 +135,7 @@ export function useAppearancePacks(options: UseAppearancePacksOptions = {}): {
   );
 
   const listQuery = useQuery({
-    queryKey: ['appearance-packs', endpoint.url, 'list'],
+    queryKey: ['appearance-packs', connectionKey, 'list'] as const,
     staleTime: PACK_DETAIL_STALE_MS,
     queryFn: async () => {
       const listing = await listAppearancePacks(endpoint);
@@ -162,37 +165,44 @@ export function useAppearancePacks(options: UseAppearancePacksOptions = {}): {
 
   const targetKey = targetSummaries.map((summary) => summary.id).join('\0');
   const detailsQuery = useQuery({
-    queryKey: ['appearance-packs', endpoint.url, 'details', targetKey] as const,
+    queryKey: ['appearance-packs', connectionKey, 'details', targetKey] as const,
     enabled: targetSummaries.length > 0,
     staleTime: PACK_DETAIL_STALE_MS,
-    queryFn: async (): Promise<readonly AppearancePackEntry[]> => {
+    queryFn: async (): Promise<{ readonly packs: readonly AppearancePackEntry[]; readonly transientSelectedFailure: boolean }> => {
+      let transientSelectedFailure = false;
       const resolved = await mapBounded(
         targetSummaries,
         PACK_DETAIL_CONCURRENCY,
         async (summary): Promise<AppearancePackEntry | null> => {
           try {
             const pack = await queryClient.fetchQuery({
-              queryKey: ['appearance-packs', endpoint.url, 'detail', summary.id] as const,
+              queryKey: ['appearance-packs', connectionKey, 'detail', summary.id] as const,
               staleTime: PACK_DETAIL_STALE_MS,
               queryFn: async (): Promise<AppearancePack | null> => {
                 try {
                   return (await getAppearancePack(endpoint, summary.id)).pack;
-                } catch {
-                  return null;
+                } catch (error) {
+                  if (isSkinNotFoundError(error)) return null;
+                  throw error;
                 }
               },
             });
             return pack !== null ? { summary, pack } : null;
-          } catch {
+          } catch (error) {
+            if (!allDetails) throw error;
+            if (summary.id === selectedId) transientSelectedFailure = true;
             return null;
           }
         },
       );
-      return resolved.filter((entry): entry is AppearancePackEntry => entry !== null);
+      return {
+        packs: resolved.filter((entry): entry is AppearancePackEntry => entry !== null),
+        transientSelectedFailure,
+      };
     },
   });
 
-  const packs = targetSummaries.length === 0 ? EMPTY_PACKS : (detailsQuery.data ?? EMPTY_PACKS);
+  const packs = targetSummaries.length === 0 ? EMPTY_PACKS : (detailsQuery.data?.packs ?? EMPTY_PACKS);
 
   const data = useMemo<AppearancePackCatalog>(() => {
     const listing = listQuery.data;
@@ -210,7 +220,8 @@ export function useAppearancePacks(options: UseAppearancePacksOptions = {}): {
     };
   }, [listQuery.data, packs]);
 
-  const detailsLoading = targetSummaries.length > 0 && detailsQuery.isLoading;
+  const detailsLoading = targetSummaries.length > 0 && detailsQuery.isPending;
+  const detailsFailed = targetSummaries.length > 0 && (detailsQuery.isError || detailsQuery.data?.transientSelectedFailure === true);
   const isLoading = listQuery.isLoading || detailsLoading;
 
   useEffect(() => {
@@ -218,16 +229,22 @@ export function useAppearancePacks(options: UseAppearancePacksOptions = {}): {
   }, [endpoint]);
 
   useEffect(() => {
-    if (listQuery.data === undefined || detailsLoading) return;
+    if (wsStatus !== 'open') return;
+    if (listQuery.isError) void listQuery.refetch();
+    if (detailsQuery.isError) void detailsQuery.refetch();
+  }, [wsStatus, listQuery.isError, detailsQuery.isError, listQuery.refetch, detailsQuery.refetch]);
+
+  useEffect(() => {
+    if (listQuery.data === undefined || detailsLoading || detailsFailed) return;
     setPackSkins(data.packs.map((entry) => packSkinOf(entry.pack)).filter((skin): skin is SkinFile => skin !== null));
-  }, [listQuery.data, detailsLoading, data.packs]);
+  }, [listQuery.data, detailsLoading, detailsFailed, data.packs]);
 
   return {
     data,
     isLoading,
-    error: listQuery.error,
+    error: listQuery.error ?? detailsQuery.error,
     refetch: () => {
-      void queryClient.invalidateQueries({ queryKey: ['appearance-packs', endpoint.url] });
+      void queryClient.invalidateQueries({ queryKey: ['appearance-packs', connectionKey] });
     },
   };
 }

@@ -118,6 +118,31 @@ const PORTABLE_ITEMS: readonly SpacePreferenceItem[] = [
   'theme', 'proseFont', 'defaultAppendTiming', 'foldSteps', 'worktreeSkipConfirm',
 ];
 
+let bootAuthorityBridgeSubscribed = false;
+
+/**
+ * Hydrate the active space's last-known authoritative preferences before the
+ * initial `startThemeSync` / `startSkinSync` run, so boot never wipes the
+ * pre-paint skin back to device defaults while waiting for React to mount.
+ */
+export function bootstrapSpacePreferences(homeId: string): void {
+  if (!bootAuthorityBridgeSubscribed) {
+    bootAuthorityBridgeSubscribed = true;
+    subscribeSpaceAuthority(() => { refreshSpacePortableSettings(); });
+  }
+  configureSpacePortableSettings({
+    read: portableFromAuthority,
+    write: (patch) => {
+      for (const item of PORTABLE_ITEMS) {
+        const value = patch[item as keyof SpacePortableDesktopSettings];
+        if (value === undefined) continue;
+        void writeSpacePreferenceItem(item, value as never);
+      }
+    },
+  });
+  loadCachedSpacePreferences(homeId);
+}
+
 /**
  * Keep one space's preferences in step with the server: read the detail, hand
  * the values to the consumers above, and offer this device's older values to a
@@ -145,8 +170,11 @@ export function useSpacePreferencesFrame(target: SpaceSettingsTarget | null): vo
 
   useEffect(() => subscribeSpaceAuthority(() => { refreshSpacePortableSettings(); }), []);
   useEffect(() => {
-    clearSpaceAuthority();
-    if (identity !== null) loadCachedSpacePreferences(identity.homeId, identity.serverId);
+    if (identity !== null) {
+      loadCachedSpacePreferences(identity.homeId, identity.serverId);
+    } else {
+      clearSpaceAuthority();
+    }
     return () => { clearSpaceAuthority(); };
   }, [client, serverIdentity, spaceId]);
 

@@ -25,7 +25,7 @@ import { useGuardedNavigate } from './dirtyGuard';
 import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort, type ComposerEngine, type PendingRuntimeControls } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { useCompactionProgress } from './useCompactionProgress';
-import { useLastResponseAt } from './composerWorking';
+import { useComposerWorking } from './composerWorking';
 import { useRequestGovernance } from '../lib/useRequestGovernance';
 import { profileThinkingDefault } from '../lib/profileThinking';
 import {
@@ -5905,7 +5905,13 @@ boundExecution,
   // The working line under the composer: only while the agent itself is
   // busy (an approval or question hands the floor to the tray instead).
   const composerWorking = composerBusy && state.pendingInteraction === 'none';
-  const lastResponseAt = useLastResponseAt(composerWorking, state.blocks, state.turnStartedAt);
+  const workingTiming = useComposerWorking({
+    busy: composerWorking,
+    scopeKey: sessionId,
+    loaded: state.loaded,
+    blocks: mainTranscriptBlocks,
+    turnStartedAt: state.turnStartedAt,
+  });
   // Stopping this turn never touches background work; the working line says
   // how much of it keeps running.
   const continuingCount = useMemo(
@@ -5953,12 +5959,13 @@ boundExecution,
   const composerWorkingInfo = useMemo(
     () => (composerWorking
       ? {
-        lastResponseAt,
+        startedAt: workingTiming.startedAt,
+        lastResponseAt: workingTiming.lastResponseAt,
         continuingCount,
         queued,
       }
       : undefined),
-    [composerWorking, lastResponseAt, continuingCount, queued],
+    [composerWorking, workingTiming.startedAt, workingTiming.lastResponseAt, continuingCount, queued],
   );
   // Child routes dock their mailbox composer locally in AgentWorkspace;
   // only main publishes the resident prompt composer to ConversationShell.

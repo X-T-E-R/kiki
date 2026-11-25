@@ -155,6 +155,7 @@ export const SPACE_SCOPED_STORAGE_KEYS = [
   'kiki.restartRequired',
   'kiki.onboarding',
   'kiki.skin',
+  'kiki.skin.boot',
   'kiki.skin.cache',
   'kiki.skin.packCache',
   'kiki.background',

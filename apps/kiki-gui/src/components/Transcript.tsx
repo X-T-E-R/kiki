@@ -220,6 +220,7 @@ import { MediaPart, MediaPartList, useActiveDraftKey, type MediaFailureKind } fr
 import { basenameOf, extractToolOutputMedia, toolResultMedia, unwrapFileLinkTarget, type MediaRef } from '@kiki/session-core/composer/media';
 import { MediaGalleryOrder, useMediaPreview } from './mediaPreviewContext';
 import { RelativeTime, useElapsedSince } from './RelativeTime';
+import { formatWorkingDuration } from './composerWorking';
 import { NestedFoldContext, NestedFoldStore, countFoldedDescendants, groupDescendantsByDispatch, useDispatchGroup, useNestedFold } from './timeline/nestedFold';
 import { InvocationContext, SubagentResultSummary, useInvocationDetails } from './timeline/SubagentInvocationView';
 import { AgentTurnOutcomeLine } from './timeline/AgentTurnOutcomeLine';
@@ -5395,8 +5396,7 @@ const TurnStatusLine = memo(function TurnStatusLine({
   retry?: TurnRetryInfo;
 }) {
   const { t, time } = useI18n();
-  const now = useSharedSecondClock(startedAt !== undefined);
-  const elapsedMs = startedAt === undefined ? 0 : Math.max(0, now - startedAt);
+  const elapsedMs = useElapsedSince(startedAt) ?? 0;
   // A provider retry names the wait: cause + attempt counter + backoff delay,
   // in warn tone, so a failing relay reads as such instead of a stuck tool.
   const retryText =
@@ -5419,7 +5419,7 @@ const TurnStatusLine = memo(function TurnStatusLine({
       <span>{retryText ?? t('transcript.turnWorking')}</span>
       {startedAt !== undefined && elapsedMs >= TURN_CLOCK_AFTER_MS ? (
         <span aria-hidden className="text-[12px] tabular-nums text-ink-faint">
-          {time.formatDuration(elapsedMs)}
+          {formatWorkingDuration(elapsedMs, t)}
         </span>
       ) : null}
     </div>

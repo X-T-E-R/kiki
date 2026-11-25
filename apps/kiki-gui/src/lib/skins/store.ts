@@ -30,7 +30,7 @@ import {
 } from '../spaceAuthority';
 import type { SkinTweaks } from './apply';
 import { DEFAULT_SKIN_ID, RETIRED_BUILTIN_SKIN_IDS, findBuiltinSkin } from './builtin';
-import { spaceStorage } from '../spaceStorage';
+import { onDidChangeSpaceStorage, spaceStorage } from '../spaceStorage';
 
 /**
  * `user` covers everything the server's `/skins` route lists: skin files in
@@ -240,6 +240,16 @@ function publishStored(next: SkinPrefs): void {
 export function writeSkinPrefs(patch: Partial<SkinPrefs>): void {
   const raw = { ...skinPrefsSnapshot(), ...patch };
   const next = spacePreferenceEnabled() ? normalizeSpaceSkinPrefs(raw) : normalizeSkinPrefs(raw);
+  // Keep the local paint cache warm immediately when selecting a loaded user
+  // skin, so an immediate reload after selection never waits on `/skins`.
+  if (next.selection.source === 'user') {
+    const live = userSkins.find((skin) => skin.id === next.selection.id);
+    if (live !== undefined) {
+      selectedCache = live;
+      selectedCacheLoaded = true;
+      writeSelectedCache(live);
+    }
+  }
   // A space that carries its own preferences owns them: the edit is a space
   // change, and the device key is left alone so it keeps meaning "this machine".
   if (spacePreferenceEnabled()) {
@@ -324,6 +334,7 @@ function writeSelectedCache(skin: SkinFile | null): void {
 
 let userSkins: readonly SkinFile[] = [];
 let userSkinsDirectory: string | null = null;
+let userSkinsSettled = false;
 let selectedCache: SkinFile | null = null;
 let selectedCacheLoaded = false;
 
@@ -331,10 +342,12 @@ export function setUserSkins(skins: readonly SkinFile[], directory: string | nul
   // Notify only on a real change: the catalog query re-runs on focus and
   // refetch, and re-publishing an identical list would churn every subscriber.
   const changed =
-    directory !== userSkinsDirectory
+    !userSkinsSettled
+    || directory !== userSkinsDirectory
     || JSON.stringify(skins) !== JSON.stringify(userSkins);
   userSkins = skins;
   userSkinsDirectory = directory;
+  userSkinsSettled = true;
 
   // Refresh the paint cache from what the server actually serves. A selected
   // skin that is gone clears the cache, so the next reload shows it missing
@@ -357,12 +370,18 @@ export function getUserSkinsDirectory(): string | null {
   return userSkinsDirectory;
 }
 
+export function isUserSkinsSettled(): boolean {
+  return userSkinsSettled;
+}
+
 /**
  * Colors of installed appearance packs, as skins. A pack selection is applied
  * by the pack controller, which also sets the pack's background; this list
  * only lets the palette resolve on the first frame and after a theme flip.
  */
-let packSkins: readonly SkinFile[] = readPackSkinCache();
+let packSkins: readonly SkinFile[] = [];
+let packSkinsLoaded = false;
+let packSkinsSettled = false;
 const PACK_SKIN_CACHE_KEY = 'kiki.skin.packCache';
 
 function readPackSkinCache(): readonly SkinFile[] {
@@ -378,23 +397,55 @@ function readPackSkinCache(): readonly SkinFile[] {
   }
 }
 
+function ensurePackSkinsLoaded(): readonly SkinFile[] {
+  if (!packSkinsLoaded) {
+    packSkins = readPackSkinCache();
+    packSkinsLoaded = true;
+  }
+  return packSkins;
+}
+
 export function setPackSkins(skins: readonly SkinFile[]): void {
-  if (JSON.stringify(skins) === JSON.stringify(packSkins)) return;
+  const current = ensurePackSkinsLoaded();
+  const changed = !packSkinsSettled || JSON.stringify(skins) !== JSON.stringify(current);
   packSkins = skins;
+  packSkinsLoaded = true;
+  packSkinsSettled = true;
   try {
     spaceStorage.setItem(PACK_SKIN_CACHE_KEY, JSON.stringify(skins));
   } catch {
     // Cache is optional.
   }
-  notify();
+  if (changed) notify();
+}
+
+export function isPackSkinsSettled(): boolean {
+  return packSkinsSettled;
 }
 
 /** Drop the cached copy of the selected user skin (test teardown). */
 export function clearSelectedSkinCache(): void {
+  userSkinsSettled = false;
   selectedCache = null;
   selectedCacheLoaded = false;
+  packSkins = [];
+  packSkinsLoaded = false;
+  packSkinsSettled = false;
   writeSelectedCache(null);
 }
+
+onDidChangeSpaceStorage(() => {
+  snapshotCache = undefined;
+  userSkins = [];
+  userSkinsDirectory = null;
+  userSkinsSettled = false;
+  selectedCache = null;
+  selectedCacheLoaded = false;
+  packSkins = [];
+  packSkinsLoaded = false;
+  packSkinsSettled = false;
+  notify();
+});
 
 /**
  * Resolve a selection to a skin.
@@ -406,7 +457,9 @@ export function clearSelectedSkinCache(): void {
  */
 export function resolveSkin(selection: SkinSelection): SkinFile | null {
   if (selection.source === 'builtin') return findBuiltinSkin(selection.id) ?? null;
-  if (selection.source === 'pack') return packSkins.find((skin) => skin.id === selection.id) ?? null;
+  if (selection.source === 'pack') {
+    return ensurePackSkinsLoaded().find((skin) => skin.id === selection.id) ?? null;
+  }
   const live = userSkins.find((skin) => skin.id === selection.id);
   if (live !== undefined) return live;
   if (!selectedCacheLoaded) {

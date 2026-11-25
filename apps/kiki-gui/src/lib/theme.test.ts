@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { writeSettings } from '@kiki/session-core/settings';
@@ -32,6 +34,13 @@ afterEach(() => {
   vi.unstubAllGlobals();
   localStorage.clear();
   delete document.documentElement.dataset['theme'];
+  delete document.documentElement.dataset['skin'];
+  delete document.documentElement.dataset['kikiProse'];
+  delete document.documentElement.dataset['kikiMotion'];
+  delete document.documentElement.dataset['kikiChatWidth'];
+  document.documentElement.removeAttribute('style');
+  delete (window as unknown as Record<string, unknown>)['__KIKI_ACTIVE_SPACE__'];
+  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) meta.remove();
 });
 
 describe('resolveTheme', () => {
@@ -141,5 +150,113 @@ describe('onThemeChange', () => {
     expect(listener).not.toHaveBeenCalled();
     stop();
     delete document.documentElement.dataset['locale'];
+  });
+});
+
+describe('public/theme-boot.js pre-paint boot', () => {
+  const bootScriptSource = readFileSync(
+    resolve(import.meta.dirname, '../../public/theme-boot.js'),
+    'utf8',
+  );
+
+  function runThemeBoot(): void {
+    new Function(bootScriptSource)();
+  }
+
+  function addThemeColorMeta(content = '#fbfaf6'): HTMLMetaElement {
+    const meta = document.createElement('meta');
+    meta.name = 'theme-color';
+    meta.content = content;
+    document.head.append(meta);
+    return meta;
+  }
+
+  it('applies cached skin CSS vars, appearance attrs, and theme-color synchronously before first paint', () => {
+    stubMatchMedia(false);
+    const meta = addThemeColorMeta('#fbfaf6');
+    localStorage.setItem('kiki.skin.boot', JSON.stringify({
+      v: 1,
+      theme: 'dark',
+      skinId: 'porcelain',
+      proseFace: 'serif',
+      motion: 'reduce',
+      chatWidth: 'wide',
+      proseFontSize: 17,
+      codeFontSize: 13,
+      light: { '--color-paper': '#F8FBFF', '--color-canvas': '#E7EDF4' },
+      dark: { '--color-paper': '#152238', '--color-canvas': '#0D1624', '--color-ink': '#E4EDF9' },
+    }));
+
+    runThemeBoot();
+
+    expect(document.documentElement.dataset['theme']).toBe('dark');
+    expect(document.documentElement.dataset['skin']).toBe('porcelain');
+    expect(document.documentElement.dataset['kikiProse']).toBe('serif');
+    expect(document.documentElement.dataset['kikiMotion']).toBe('reduce');
+    expect(document.documentElement.dataset['kikiChatWidth']).toBe('wide');
+    expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('#152238');
+    expect(document.documentElement.style.getPropertyValue('--color-canvas')).toBe('#0D1624');
+    expect(document.documentElement.style.getPropertyValue('--color-ink')).toBe('#E4EDF9');
+    expect(document.documentElement.style.getPropertyValue('--kiki-prose-font-size')).toBe('17px');
+    expect(document.documentElement.style.getPropertyValue('--kiki-code-font-size')).toBe('13px');
+    expect(meta.getAttribute('content')).toBe('#152238');
+  });
+
+  it('uses space-scoped boot payload and space authority cached theme when active space is injected', () => {
+    stubMatchMedia(false);
+    const meta = addThemeColorMeta('#fbfaf6');
+    (window as unknown as Record<string, unknown>)['__KIKI_ACTIVE_SPACE__'] = { homeId: 'acme' };
+    localStorage.setItem('kiki.skin.boot', JSON.stringify({
+      v: 1,
+      theme: 'light',
+      skinId: 'porcelain',
+      light: { '--color-paper': '#F8FBFF' },
+      dark: { '--color-paper': '#152238' },
+    }));
+    localStorage.setItem('kiki.space.acme.kiki.skin.boot', JSON.stringify({
+      v: 1,
+      skinId: 'celadon',
+      light: { '--color-paper': '#F2F7EF' },
+      dark: { '--color-paper': '#1A2925' },
+    }));
+    localStorage.setItem('kiki.spacePreferences.cache', JSON.stringify({
+      entries: {},
+      authorities: { 'srv-1|acme': true },
+      lastKnown: { homeId: 'acme', serverId: 'srv-1', values: { theme: 'dark' } },
+      resolved: {},
+    }));
+
+    runThemeBoot();
+
+    expect(document.documentElement.dataset['theme']).toBe('dark');
+    expect(document.documentElement.dataset['skin']).toBe('celadon');
+    expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('#1A2925');
+    expect(meta.getAttribute('content')).toBe('#1A2925');
+  });
+
+  it('rejects disallowed CSS keys and unsafe values in kiki.skin.boot', () => {
+    stubMatchMedia(false);
+    const meta = addThemeColorMeta('#fbfaf6');
+    localStorage.setItem('kiki.skin.boot', JSON.stringify({
+      v: 1,
+      theme: 'light',
+      skinId: 'bad;skin',
+      light: {
+        '--color-paper': '#F2F7EF',
+        '--evil-var': '#ff0000',
+        background: 'red',
+        '--color-canvas': 'red; } body { display: none',
+      },
+      dark: {},
+    }));
+
+    runThemeBoot();
+
+    expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('#F2F7EF');
+    expect(document.documentElement.style.getPropertyValue('--evil-var')).toBe('');
+    expect(document.documentElement.style.getPropertyValue('background')).toBe('');
+    expect(document.documentElement.style.getPropertyValue('--color-canvas')).toBe('');
+    expect(document.documentElement.dataset['skin']).toBeUndefined();
+    expect(meta.getAttribute('content')).toBe('#F2F7EF');
   });
 });

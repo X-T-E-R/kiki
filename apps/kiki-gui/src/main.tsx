@@ -159,6 +159,7 @@ async function start(): Promise<void> {
     { AppErrorBoundary },
     { I18nProvider },
     { ConnectionProvider },
+    { bootstrapSpacePreferences },
     { startThemeSync },
     { startSkinSync },
     { startZoomSync },
@@ -174,6 +175,7 @@ async function start(): Promise<void> {
       return mod;
     }),
     import('./state/connection'),
+    import('./lib/spacePreferences'),
     import('./lib/theme'),
     import('./lib/skins'),
     import('./lib/uiZoom'),
@@ -182,6 +184,10 @@ async function start(): Promise<void> {
     (bootZh ? import('@kiki/session-core/i18n/zh') : import('@kiki/session-core/i18n/en')).catch(() => undefined),
   ]);
 
+  // Hydrate the active space's cached authoritative preferences before theme
+  // and skin sync run, so a space-scoped skin never flashes back to device
+  // defaults between `theme-boot.js` and the first React render.
+  bootstrapSpacePreferences(homeId);
   // Before the first render: the palette must be right on the first frame, or a
   // dark-theme user gets a paper-white flash on every launch.
   startThemeSync(hostAdapter);

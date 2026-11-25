@@ -20,8 +20,7 @@ function clock(intervalMs: number) {
   const start = () => {
     if (timer !== undefined || listeners.size === 0) return;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-    const now = Date.now();
-    if (now - current >= intervalMs || now < current) current = now;
+    current = Date.now();
     timer = setInterval(tick, intervalMs);
   };
   const onVisibility = () => {

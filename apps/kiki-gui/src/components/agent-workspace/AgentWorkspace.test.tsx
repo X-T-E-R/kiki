@@ -473,8 +473,10 @@ it('renders working status and last-response time in child composer status line 
 
   const workingLine = dock.querySelector('[data-composer-working]');
   expect(workingLine).not.toBeNull();
+  expect(workingLine?.getAttribute('data-turn-started-at')).toBe(String(child1Time - 50_000));
   expect(workingLine?.getAttribute('data-last-response-at')).toBe(String(child1Time));
-  expect(workingLine?.textContent).toContain('Working · last response');
+  expect(workingLine?.textContent).toContain('Working · 1m 5s');
+  expect(workingLine?.textContent).toContain('last response 15s ago');
   expect(header.querySelector('header')?.className).toContain('@container/center');
 });
 

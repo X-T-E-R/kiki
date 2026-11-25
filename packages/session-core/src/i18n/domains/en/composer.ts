@@ -405,6 +405,8 @@ export const composerEn = {
   'composer.status.stop': 'Stop',
   'composer.unknown': 'unknown',
   'composer.working': 'Working',
+  'composer.workingElapsed': 'Working · {elapsed}',
+  'composer.workingElapsedLastResponse': 'Working · {elapsed} · last response {ago}',
   'composer.workingLastResponse': 'Working · last response {ago}',
   'ia.alwaysAllow': 'Always allow',
   'ia.alwaysAllow.failed': 'The rule didn’t save, so this call wasn’t approved either. Approve just this once, or try again.',

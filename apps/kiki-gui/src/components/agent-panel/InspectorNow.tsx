@@ -15,6 +15,7 @@ import type { LifeState } from '../../lib/motion';
 import { Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
 import { useNow } from '../RelativeTime';
+import { formatWorkingDuration } from '../composerWorking';
 import { toolSummary } from '../ToolCard';
 import { RAIL_MARK } from './InspectorAgents';
 import { plainFailure } from './failureText';
@@ -59,11 +60,11 @@ export function latestSaid(blocks: readonly Block[]): string | undefined {
 
 /** Live "3m 12s" since `since`; subscribes to the shared second clock. */
 function Elapsed({ since }: { since: number }) {
-  const { time } = useI18n();
+  const { t } = useI18n();
   const now = useNow();
   // Under a second is noise, not a duration worth reading.
   if (!Number.isFinite(since) || now - since < 1000) return null;
-  return <span className="shrink-0 text-[12px] text-ink-faint tabular-nums">{time.formatDuration(now - since)}</span>;
+  return <span className="shrink-0 text-[12px] text-ink-faint tabular-nums">{formatWorkingDuration(now - since, t)}</span>;
 }
 
 /**
