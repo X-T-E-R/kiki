@@ -2967,3 +2967,74 @@ describe('MemoryPage unsaved-edit guards and search debounce/validation', () => 
     expect(narrowedRows[0]?.getAttribute('data-memory-row')).toBe('m_scale_6789');
   });
 });
+
+describe('MemoryPage desktop split auto-select and provenance guards', () => {
+  function mockMatchMedia(desktop: boolean) {
+    let isDesktop = desktop;
+    const listeners = new Set<() => void>();
+    const impl = vi.fn((query: string): MediaQueryList => ({
+      get matches() {
+        return query === '(min-width: 1024px)' ? isDesktop : false;
+      },
+      media: query,
+      onchange: null,
+      addEventListener: (_event: string, listener: EventListenerOrEventListenerObject) => {
+        if (typeof listener === 'function') listeners.add(listener as () => void);
+      },
+      removeEventListener: (_event: string, listener: EventListenerOrEventListenerObject) => {
+        if (typeof listener === 'function') listeners.delete(listener as () => void);
+      },
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => true,
+    }));
+    vi.stubGlobal('matchMedia', impl);
+    return {
+      setDesktop: async (next: boolean) => {
+        isDesktop = next;
+        await act(async () => {
+          for (const listener of listeners) listener();
+        });
+        await flush();
+      },
+    };
+  }
+
+  it('auto-selects the first visible entry once at >=1024px with at most one journal fetch, and clears auto-selection on narrowing without overriding explicit drill-in', async () => {
+    const mm = mockMatchMedia(true);
+    const first = fixtureEntry({ id: 'm_first', title: 'First memory', source: { writer: 'agent', session: 'sess_local', turn: 4, step: 't4.2' } });
+    const second = fixtureEntry({ id: 'm_second', title: 'Second memory', source: { writer: 'import', session: 'sess_foreign' }, origin_host_id: 'remote-host' });
+    seedMemories({ 'global::': [first, second] });
+
+    const container = await renderPage('/memory');
+    expect(container.querySelector('[data-memory-detail]')?.getAttribute('data-memory-detail')).toBe('m_first');
+    expect(client.memoryJournal).toHaveBeenCalledTimes(1);
+    expect(client.memoryJournal).toHaveBeenCalledWith({ scope: 'global' }, 'm_first');
+    // Local session link renders; turn/step stay plain text.
+    expect(container.querySelector('[data-memory-source-session]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-source-meta]')?.textContent).toContain('Turn 4');
+    expect(container.querySelector('[data-memory-source-meta]')?.textContent).toContain('Step t4.2');
+
+    // Narrowing from desktop clears an auto-selected entry so no synthetic mobile detail covers the list.
+    await mm.setDesktop(false);
+    expect(container.querySelector('[data-memory-detail]')).toBeNull();
+    expect(container.querySelector('[data-memory-list]')?.className).not.toContain('max-lg:hidden');
+
+    // Explicitly clicking an entry preserves drill-in across resize and hides foreign-host source link.
+    await click(container, '[data-memory-row="m_second"]');
+    expect(container.querySelector('[data-memory-detail]')?.getAttribute('data-memory-detail')).toBe('m_second');
+    expect(container.querySelector('[data-memory-source-session]')).toBeNull();
+    await mm.setDesktop(true);
+    await mm.setDesktop(false);
+    expect(container.querySelector('[data-memory-detail]')?.getAttribute('data-memory-detail')).toBe('m_second');
+  });
+
+  it('never turns a missing deep link into auto-selection of another entry on desktop', async () => {
+    mockMatchMedia(true);
+    seedMemories({ 'global::': [fixtureEntry({ id: 'm_only', title: 'Only entry' })] });
+    const container = await renderPage('/memory?entry=m_missing');
+    expect(container.querySelector('[data-memory-detail]')).toBeNull();
+    expect(container.querySelector('[data-memory-detail-empty]')).not.toBeNull();
+    expect(client.memoryJournal).not.toHaveBeenCalled();
+  });
+});

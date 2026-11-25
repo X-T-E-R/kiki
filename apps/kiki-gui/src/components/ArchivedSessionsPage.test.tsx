@@ -602,6 +602,84 @@ describe('ArchivedSessionsPage', () => {
     expect(rowIds(container)).toEqual(['remote-only']);
     expect(container.querySelector('[data-archive-item="local-only"]')).toBeNull();
   });
+
+  it('supports explicit subset restore with <=4 concurrency, keeps failed items selected and retryable, resets selection on query change, and omits bulk subset delete', async () => {
+    const server = archiveFixture([
+      archived('s1'), archived('s2'), archived('s3'), archived('s4'), archived('s5'), archived('s6'),
+    ]);
+    listSpy(server);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
+
+    let inFlight = 0;
+    let peakInFlight = 0;
+    let failS3 = true;
+    const restore = vi.spyOn(client, 'restoreSession').mockImplementation(async (id) => {
+      inFlight += 1;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      inFlight -= 1;
+      if (id === 's3' && failS3) {
+        throw new Error('storage busy');
+      }
+      server.forget(id);
+      return {} as never;
+    });
+    const deleteOne = vi.spyOn(client, 'deleteArchivedSession');
+    const deleteAll = vi.spyOn(client, 'deleteAllArchivedSessions');
+
+    const { container } = await mountPage();
+    expect(container.querySelector('[data-archive-scope-note]')?.textContent).toContain('This connection only');
+
+    // Enter select mode and pick all 6 loaded rows.
+    await click(container.querySelector('[data-archive-select-toggle]'));
+    expect(container.querySelector('[data-list-bulk]')).not.toBeNull();
+    // Strictly cut: no bulk subset delete button exists inside the selection bar.
+    expect(container.querySelector('[data-list-bulk] [data-archive-delete-selected]')).toBeNull();
+    expect(container.querySelector('[data-list-bulk]')?.textContent).not.toContain('Delete');
+
+    await click(container.querySelector('[data-archive-select-all]'));
+    expect(container.querySelectorAll('[data-archive-selected="true"]')).toHaveLength(6);
+
+    // Run subset restore: concurrency stays <= 4; s3 fails and remains selected for retry.
+    await click(container.querySelector('[data-archive-bulk-restore]'));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 120)); });
+    await flush();
+
+    expect(peakInFlight).toBeLessThanOrEqual(4);
+    expect(peakInFlight).toBeGreaterThanOrEqual(2);
+    expect(restore).toHaveBeenCalledTimes(6);
+    expect(deleteOne).not.toHaveBeenCalled();
+    expect(deleteAll).not.toHaveBeenCalled();
+    expect(rowIds(container)).toEqual(['s3']);
+    expect(container.querySelector('[data-archive-failed-item="s3"]')?.textContent).toContain('storage busy');
+    expect(container.querySelectorAll('[data-archive-selected="true"]')).toHaveLength(1);
+    expect(container.querySelector('[data-archive-item="s3"]')?.getAttribute('data-archive-selected')).toBe('true');
+
+    // Retrying restores the remaining failed item and closes select mode.
+    failS3 = false;
+    await click(container.querySelector('[data-archive-bulk-restore]'));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    await flush();
+
+    expect(restore).toHaveBeenLastCalledWith('s3');
+    expect(rowIds(container)).toEqual([]);
+    expect(container.querySelector('[data-list-bulk]')).toBeNull();
+  });
+
+  it('resets multi-select when the search query changes', async () => {
+    listSpy(archiveFixture([archived('alpha', { title: 'Alpha thread' }), archived('beta', { title: 'Beta thread' })]));
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
+
+    const { container } = await mountPage();
+    await click(container.querySelector('[data-archive-select-toggle]'));
+    const checkbox = container.querySelector<HTMLInputElement>('[data-archive-item="alpha"] input[type="checkbox"]')!;
+    await click(checkbox);
+    expect(container.querySelectorAll('[data-archive-selected="true"]')).toHaveLength(1);
+
+    await typeSearch(container, 'beta');
+    expect(container.querySelector('[data-list-bulk]')).toBeNull();
+    expect(container.querySelectorAll('[data-archive-selected="true"]')).toHaveLength(0);
+  });
 });
 
 /**

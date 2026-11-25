@@ -4,9 +4,9 @@
  * Archived conversations are native sessions, so this runs on the ordinary
  * session list, the restore route and the two deletion routes. Reading one
  * lands on `/s/:id`, the ordinary conversation view. A row's own verbs —
- * restore, delete for good — sit behind its ⋯, so no bare × leaves the
- * reader guessing which of the two it means. The way back is the page
- * header's back arrow, like every other page.
+ * restore, delete for good — sit behind its ⋯, while multi-select mode offers
+ * bounded subset restore of explicitly loaded rows without exposing bulk
+ * subset deletion (whole-archive deletion remains explicit at the bottom).
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -30,13 +30,19 @@ import { Icon } from './icons';
 import { PAGE_WIDTH, PageHeader } from './PageChrome';
 import { RelativeTime } from './RelativeTime';
 import { ThreadTitle } from './ThreadTitle';
-import { DANGER_GHOST_BUTTON, SECONDARY_BUTTON } from './ui';
+import { ListBulkBar, RowCheck } from './settings/list/ListParts';
+import { DANGER_GHOST_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 250;
 const DELETE_ALL = 'all';
 export const ARCHIVE_VIRTUALIZE_THRESHOLD = 60;
+export const MAX_ARCHIVE_RESTORE_CONCURRENCY = 4;
+
+/** Fine-hover reveal rule: visible on touch/keyboard/open-menu, quiet at rest on hover-capable desktops. */
+const ROW_ACTION_QUIET =
+  'opacity-100 [@media(hover:hover)_and_(pointer:fine)]:opacity-0 [@media(hover:hover)_and_(pointer:fine)]:group-hover/row:opacity-100 [@media(hover:hover)_and_(pointer:fine)]:group-focus-within/row:opacity-100 focus-visible:opacity-100';
 
 interface FailedEntry {
   readonly id: string;
@@ -44,12 +50,12 @@ interface FailedEntry {
   readonly reason: string;
 }
 
-interface DeleteOutcome {
+interface ActionOutcome {
   readonly failed: readonly FailedEntry[];
   readonly error: string | null;
 }
 
-const NO_FAILURES: DeleteOutcome = { failed: [], error: null };
+const NO_FAILURES: ActionOutcome = { failed: [], error: null };
 
 interface ArchivedPage {
   readonly items: readonly Session[];
@@ -76,13 +82,34 @@ function promotedTopLevelIds(scopeId: string): string[] {
   }
 }
 
+/** Runs async work across `items` with at most `limit` concurrent promises. */
+async function runBounded<T>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  let cursor = 0;
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (cursor < items.length) {
+        const current = items[cursor]!;
+        cursor += 1;
+        await worker(current);
+      }
+    }),
+  );
+}
+
 /**
  * One connection's archive.
  *
  * The whole body is keyed by scope, so a scope switch unmounts it rather than
- * leaving another home's dialogs, pending state or failure list on screen.
- * A deletion started in the previous scope still settles when it answers; it
- * only reaches the previous scope's own query client, and its UI is gone.
+ * leaving another home's dialogs, selection, pending state or failure list on
+ * screen. A deletion or restore started in the previous scope still settles
+ * when it answers; it only reaches the previous scope's own query client, and
+ * its UI is gone.
  */
 export function ArchivedSessionsPage({ onToggleSidebar }: { readonly onToggleSidebar: () => void }) {
   const { scopeId } = useConnection();
@@ -109,11 +136,21 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
   const [confirmOne, setConfirmOne] = useState<Session | null>(null);
   const [confirmAll, setConfirmAll] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [outcome, setOutcome] = useState<DeleteOutcome>(NO_FAILURES);
+  const [restoringIds, setRestoringIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [selecting, setSelecting] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [outcome, setOutcome] = useState<ActionOutcome>(NO_FAILURES);
 
-  // Unmounting stops a stale setState, but not a module-level toast: a
-  // deletion started here can still answer after the connection has changed,
-  // and its result belongs to the scope that asked. The guard closes that.
+  // Reset multi-select whenever the query identity changes so a subset picked
+  // under one search never rides invisibly into another result set.
+  useEffect(() => {
+    setSelectedIds(new Set());
+    setSelecting(false);
+  }, [term]);
+
+  // Unmounting stops a stale setState, but not a module-level toast: an action
+  // started here can still answer after the connection has changed, and its
+  // result belongs to the scope that asked. The guard closes that.
   // The re-read is deliberately not gated — the captured client must still
   // learn what this scope did to its own list.
   const active = useRef(true);
@@ -153,6 +190,16 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
     () => dedupe((listQuery.data?.pages ?? []).flatMap((page) => page.items)),
     [listQuery.data],
   );
+  const loadedIdSet = useMemo(() => new Set(sessions.map((session) => session.id)), [sessions]);
+  const validSelectedIds = useMemo(() => {
+    if (selectedIds.size === 0) return selectedIds;
+    const next = new Set<string>();
+    for (const id of selectedIds) {
+      if (loadedIdSet.has(id)) next.add(id);
+    }
+    return next;
+  }, [loadedIdSet, selectedIds]);
+
   const titles = useMemo(
     () => new Map(sessions.map((session) => [
       session.id,
@@ -168,7 +215,7 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
     ]);
   }, [queryClient]);
 
-  const readOutcome = useCallback((result: DeleteArchivedSessionsResponse): DeleteOutcome => ({
+  const readOutcome = useCallback((result: DeleteArchivedSessionsResponse): ActionOutcome => ({
     failed: result.failed.map((entry) => ({
       id: entry.id,
       name: entry.title?.trim() || titles.get(entry.id) || t('archive.untitled'),
@@ -199,7 +246,7 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
 
   const confirmDeleteOne = useCallback(() => {
     const session = confirmOne;
-    if (session === null || deleting !== null) return;
+    if (session === null || deleting !== null || restoringIds.size > 0) return;
     const exclude = promotedTopLevelIds(scopeId).filter((id) => id !== session.id);
     const title = titles.get(session.id) ?? session.id;
     void runDelete(session.id, () => client.deleteArchivedSession(session.id, { exclude_session_ids: exclude }), (result) => {
@@ -207,10 +254,10 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
       else pushToast({ tone: 'success', text: t('archive.deleteOneDone', { title }) });
       setConfirmOne(null);
     });
-  }, [client, confirmOne, deleting, readOutcome, runDelete, scopeId, t, titles]);
+  }, [client, confirmOne, deleting, readOutcome, restoringIds.size, runDelete, scopeId, t, titles]);
 
   const confirmDeleteAll = useCallback(() => {
-    if (deleting !== null) return;
+    if (deleting !== null || restoringIds.size > 0) return;
     void runDelete(DELETE_ALL, () => client.deleteAllArchivedSessions(), (result) => {
       if (result.failed.length > 0) {
         setOutcome(readOutcome(result));
@@ -229,37 +276,108 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
       }
       setConfirmAll(false);
     });
-  }, [client, deleting, readOutcome, runDelete, t]);
+  }, [client, deleting, readOutcome, restoringIds.size, runDelete, t]);
+
+  const removeFromCache = useCallback((restoredIds: ReadonlySet<string>) => {
+    if (restoredIds.size === 0) return;
+    queryClient.setQueriesData<{ pages: Array<{ items: Session[]; has_more: boolean; next_cursor?: string | null }>; pageParams: unknown[] }>(
+      { queryKey: ['archived-sessions'] },
+      (old) =>
+        old === undefined || !Array.isArray(old.pages)
+          ? old
+          : {
+              ...old,
+              pages: old.pages.map((page) => ({
+                ...page,
+                items: page.items.filter((entry) => !restoredIds.has(entry.id)),
+              })),
+            },
+    );
+  }, [queryClient]);
 
   // Restoring puts the conversation back in the sidebar list, so both lists
   // are read again; a failure lands in the same recovery block a delete uses.
   const restore = useCallback((session: Session) => {
-    if (deleting !== null) return;
+    if (deleting !== null || restoringIds.size > 0) return;
     setOutcome(NO_FAILURES);
+    setRestoringIds(new Set([session.id]));
     void client.restoreSession(session.id)
       .then(async () => {
-        queryClient.setQueriesData<{ pages: Array<{ items: Session[]; has_more: boolean; next_cursor?: string | null }>; pageParams: unknown[] }>(
-          { queryKey: ['archived-sessions'] },
-          (old) =>
-            old === undefined || !Array.isArray(old.pages)
-              ? old
-              : {
-                  ...old,
-                  pages: old.pages.map((page) => ({
-                    ...page,
-                    items: page.items.filter((entry) => entry.id !== session.id),
-                  })),
-                },
-        );
+        removeFromCache(new Set([session.id]));
         invalidatePersonaSessionLists(queryClient);
         await Promise.all([refresh(), queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined)]);
       })
       .catch((error: unknown) => {
         if (active.current) setOutcome({ failed: [], error: errorText(locale, error) });
+      })
+      .finally(() => {
+        if (active.current) setRestoringIds(new Set());
       });
-  }, [client, deleting, locale, queryClient, refresh]);
+  }, [client, deleting, locale, queryClient, refresh, removeFromCache, restoringIds.size]);
 
-  const busy = deleting !== null;
+  const restoreSelected = useCallback(() => {
+    if (deleting !== null || restoringIds.size > 0 || validSelectedIds.size === 0) return;
+    const targets = sessions.filter((session) => validSelectedIds.has(session.id));
+    if (targets.length === 0) return;
+    setOutcome(NO_FAILURES);
+    setRestoringIds(new Set(targets.map((session) => session.id)));
+
+    void (async () => {
+      const succeeded = new Set<string>();
+      const failed: FailedEntry[] = [];
+      await runBounded(targets, MAX_ARCHIVE_RESTORE_CONCURRENCY, async (session) => {
+        try {
+          await client.restoreSession(session.id);
+          succeeded.add(session.id);
+        } catch (error) {
+          failed.push({
+            id: session.id,
+            name: titles.get(session.id) ?? t('archive.untitled'),
+            reason: errorText(locale, error),
+          });
+        }
+      });
+
+      removeFromCache(succeeded);
+      if (succeeded.size > 0) {
+        invalidatePersonaSessionLists(queryClient);
+      }
+      await refresh();
+
+      if (!active.current) return;
+      setRestoringIds(new Set());
+      if (failed.length > 0) {
+        setOutcome({ failed, error: null });
+        // Failed items remain selected and retryable in place.
+        setSelectedIds(new Set(failed.map((entry) => entry.id)));
+        setSelecting(true);
+      } else {
+        setSelectedIds(new Set());
+        setSelecting(false);
+      }
+    })();
+  }, [client, deleting, locale, queryClient, refresh, removeFromCache, restoringIds.size, sessions, t, titles, validSelectedIds]);
+
+  const toggleRowSelection = useCallback((id: string) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    setSelecting(false);
+  }, []);
+
+  const selectAllLoaded = useCallback(() => {
+    setSelectedIds(new Set(sessions.map((session) => session.id)));
+    setSelecting(true);
+  }, [sessions]);
+
+  const busy = deleting !== null || restoringIds.size > 0;
   const searching = term !== '';
   const loaded = sessions.length;
   const firstReadFailed = loaded === 0 && listQuery.isError;
@@ -304,7 +422,7 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
     };
     observeAncestorsAndPreceding();
     return () => { observer.disconnect(); };
-  }, [windowed, loaded]);
+  }, [windowed, loaded, selecting, validSelectedIds.size]);
 
   const virtualizer = useVirtualizer({
     count: windowed ? loaded : 0,
@@ -338,24 +456,67 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
 
   return (
     <>
-      <PageHeader title={t('archive.title')} onToggleSidebar={onToggleSidebar} width="reading" />
+      <PageHeader title={t('archive.title')} onToggleSidebar={onToggleSidebar} width="split" />
 
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 pt-1 pb-12 lg:px-6">
-        <div className={`mx-auto flex w-full ${PAGE_WIDTH.reading} flex-col gap-4`}>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <input
-              type="search"
-              data-archive-search
-              value={search}
-              onChange={(event) => { setSearch(event.target.value); }}
-              placeholder={t('archive.searchPlaceholder')}
-              aria-label={t('archive.searchAria')}
-              className="h-9 w-full max-w-[420px] rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent pointer-coarse:h-11"
-            />
-            <span className="text-[12px] text-ink-faint" title={t('archive.scopeNoteHint')}>
-              {t('archive.scopeNote')}
-            </span>
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 pt-2 pb-12 lg:px-6">
+        <div className={`mx-auto flex w-full ${PAGE_WIDTH.split} flex-col gap-4`}>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-hairline pb-3">
+            <label className="relative flex h-8 min-w-0 flex-1 basis-[240px] max-w-[440px] items-center pointer-coarse:h-11">
+              <Icon name="search" size={14} className="pointer-events-none absolute left-2.5 text-ink-faint" />
+              <input
+                type="search"
+                data-archive-search
+                value={search}
+                onChange={(event) => { setSearch(event.target.value); }}
+                placeholder={t('archive.searchPlaceholder')}
+                aria-label={t('archive.searchAria')}
+                className="h-8 w-full min-w-0 rounded-md bg-ink/[0.04] pr-3 pl-8 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.06] focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)] pointer-coarse:h-11"
+              />
+            </label>
+            <div className="flex items-center gap-3 sm:ml-auto">
+              <span data-archive-scope-note className="text-[12px] text-ink-faint" title={t('archive.scopeNoteHint')}>
+                {t('archive.scopeNote')}
+              </span>
+              {loaded > 0 ? (
+                <button
+                  type="button"
+                  data-archive-select-toggle
+                  aria-pressed={selecting}
+                  disabled={busy}
+                  onClick={() => {
+                    if (selecting) clearSelection();
+                    else setSelecting(true);
+                  }}
+                  className="inline-flex h-8 shrink-0 items-center rounded-md px-2 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
+                >
+                  {selecting ? t('common.cancel') : t('st.workspaces.select')}
+                </button>
+              ) : null}
+            </div>
           </div>
+
+          <ListBulkBar count={validSelectedIds.size} active={selecting} onClear={clearSelection}>
+            {validSelectedIds.size < loaded ? (
+              <button
+                type="button"
+                data-archive-select-all
+                disabled={busy}
+                onClick={selectAllLoaded}
+                className="h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
+              >
+                {t('st.list.selectAll')}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              data-archive-bulk-restore
+              disabled={busy || validSelectedIds.size === 0}
+              onClick={restoreSelected}
+              className={`${PRIMARY_BUTTON} pointer-coarse:min-h-11`}
+            >
+              {t('archive.restore')}
+            </button>
+          </ListBulkBar>
 
           {outcome.error !== null || outcome.failed.length > 0 ? (
             <div data-archive-error role="alert" className="flex flex-col gap-2 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2.5">
@@ -447,6 +608,10 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
                     divider={row.index > 0}
                     busy={busy}
                     deleting={deleting === session.id}
+                    restoring={restoringIds.has(session.id)}
+                    selecting={selecting}
+                    selected={validSelectedIds.has(session.id)}
+                    onToggleSelect={() => { toggleRowSelection(session.id); }}
                     virtualRow={{ index: row.index, top: row.start - scrollMargin, measureRef: virtualizer.measureElement }}
                     onOpen={() => { void navigate(`/s/${encodeURIComponent(session.id)}`); }}
                     onRestore={() => { restore(session); }}
@@ -466,6 +631,10 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
                   divider={index > 0}
                   busy={busy}
                   deleting={deleting === session.id}
+                  restoring={restoringIds.has(session.id)}
+                  selecting={selecting}
+                  selected={validSelectedIds.has(session.id)}
+                  onToggleSelect={() => { toggleRowSelection(session.id); }}
                   onOpen={() => { void navigate(`/s/${encodeURIComponent(session.id)}`); }}
                   onRestore={() => { restore(session); }}
                   onDelete={() => { setConfirmOne(session); }}
@@ -568,6 +737,10 @@ function ArchivedRow({
   divider,
   busy,
   deleting,
+  restoring,
+  selecting,
+  selected,
+  onToggleSelect,
   virtualRow,
   onOpen,
   onRestore,
@@ -579,6 +752,10 @@ function ArchivedRow({
   readonly divider: boolean;
   readonly busy: boolean;
   readonly deleting: boolean;
+  readonly restoring: boolean;
+  readonly selecting: boolean;
+  readonly selected: boolean;
+  readonly onToggleSelect: () => void;
   readonly virtualRow?: { readonly index: number; readonly top: number; readonly measureRef: (node: HTMLElement | null) => void };
   readonly onOpen: () => void;
   readonly onRestore: () => void;
@@ -592,6 +769,7 @@ function ArchivedRow({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const cwd = session.metadata?.cwd ?? '';
   const resolvedWorkspace = workspaceName ?? shortCwd(session.metadata?.cwd);
+  const rowPending = deleting || restoring;
   const entries = useMemo<readonly MiniMenuEntry[]>(() => {
     const list: MiniMenuEntry[] = [
       { key: 'restore', label: t('archive.restore'), run: onRestore },
@@ -631,56 +809,85 @@ function ArchivedRow({
       ref={virtualRow?.measureRef}
       data-index={virtualRow?.index}
       data-archive-item={session.id}
+      data-archive-selected={selected ? 'true' : undefined}
       style={virtualRow !== undefined ? { top: virtualRow.top } : undefined}
       onContextMenu={(event) => {
         if (busy) return;
         event.preventDefault();
         setMenu({ x: event.clientX, y: event.clientY });
       }}
-      className={`group flex min-w-0 items-start gap-1 py-1 ${virtualRow !== undefined ? 'absolute inset-x-0 ' : ''}${divider ? 'border-t border-hairline' : ''}`}
+      className={`group/row flex min-w-0 items-center gap-1 py-1 ${virtualRow !== undefined ? 'absolute inset-x-0 ' : ''}${divider ? 'border-t border-hairline' : ''} ${rowPending ? 'opacity-60' : ''}`}
     >
-      <button
-        type="button"
-        data-archive-open={session.id}
-        onClick={onOpen}
-        title={t('archive.openHint')}
-        className="flex min-h-11 min-w-0 flex-1 flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
-      >
-        <span className="min-w-0 max-w-full truncate text-[13.5px] leading-[19px] font-medium text-ink">
-          <ThreadTitle text={title} />
-        </span>
-        <span className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
+      {selecting ? (
+        <RowCheck
+          checked={selected}
+          onChange={onToggleSelect}
+          label={t('st.list.selectRow', { name: title })}
+        />
+      ) : null}
+      {/* Fixed grid tracks keep every date aligned on a single right edge across hover, focus, menu-open, and touch. */}
+      <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_2.75rem_5.25rem] items-center gap-x-2 rounded-md pr-2 transition-colors group-hover/row:bg-ink/[0.03] sm:grid-cols-[minmax(0,1fr)_7.25rem_5.5rem]">
+        <button
+          type="button"
+          data-archive-open={session.id}
+          onClick={onOpen}
+          title={t('archive.openHint')}
+          className="flex min-h-11 min-w-0 flex-col items-start justify-center gap-0.5 rounded-md px-2 py-1.5 text-left focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+        >
+          <span className="min-w-0 max-w-full truncate text-[13.5px] leading-[19px] font-medium text-ink">
+            <ThreadTitle text={title} />
+          </span>
           {resolvedWorkspace !== undefined ? (
-            <>
-              <Icon name="folder" size={12} />
+            <span className="flex min-w-0 max-w-full items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
+              <Icon name="folder" size={12} className="shrink-0" />
               <span className="min-w-0 truncate">{resolvedWorkspace}</span>
-              <span aria-hidden>·</span>
-            </>
+            </span>
           ) : null}
-          <RelativeTime at={session.updated_at} className="shrink-0 tabular-nums" />
+        </button>
+
+        <div className="flex items-center justify-end gap-0.5">
+          {!selecting ? (
+            <button
+              type="button"
+              data-archive-quick-restore={session.id}
+              disabled={busy}
+              onClick={onRestore}
+              className={`hidden h-8 shrink-0 items-center justify-center rounded-md px-2 text-[12px] font-medium text-ink-soft transition-all hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-40 sm:inline-flex ${
+                menu !== null || rowPending ? 'opacity-100' : ROW_ACTION_QUIET
+              }`}
+            >
+              {t('archive.restore')}
+            </button>
+          ) : null}
+          <button
+            ref={moreRef}
+            type="button"
+            data-archive-more={session.id}
+            // Only the open row's trigger counts as inside its menu, so pressing
+            // it toggles the menu shut while another row's ⋯ still closes it.
+            data-archive-row-menu={menu !== null ? '' : undefined}
+            disabled={busy}
+            aria-haspopup="menu"
+            aria-expanded={menu !== null}
+            onClick={() => {
+              if (menu !== null) { setMenu(null); return; }
+              const rect = moreRef.current?.getBoundingClientRect();
+              setMenu({ x: rect?.left ?? 0, y: (rect?.bottom ?? 0) + 4 });
+            }}
+            aria-label={deleting ? t('archive.pending') : t('transcript.moreActions')}
+            title={deleting ? t('archive.pending') : t('transcript.moreActions')}
+            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-faint transition-all hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-40 ${
+              menu !== null || rowPending ? 'opacity-100' : ROW_ACTION_QUIET
+            }`}
+          >
+            <Icon name={rowPending ? 'clock' : 'more'} size={14} />
+          </button>
+        </div>
+
+        <span data-archive-date={session.id} className="block w-full text-right text-[12px] whitespace-nowrap text-ink-faint tabular-nums">
+          <RelativeTime at={session.updated_at} />
         </span>
-      </button>
-      <button
-        ref={moreRef}
-        type="button"
-        data-archive-more={session.id}
-        // Only the open row's trigger counts as inside its menu, so pressing
-        // it toggles the menu shut while another row's ⋯ still closes it.
-        data-archive-row-menu={menu !== null ? '' : undefined}
-        disabled={busy}
-        aria-haspopup="menu"
-        aria-expanded={menu !== null}
-        onClick={() => {
-          if (menu !== null) { setMenu(null); return; }
-          const rect = moreRef.current?.getBoundingClientRect();
-          setMenu({ x: rect?.left ?? 0, y: (rect?.bottom ?? 0) + 4 });
-        }}
-        aria-label={deleting ? t('archive.pending') : t('transcript.moreActions')}
-        title={deleting ? t('archive.pending') : t('transcript.moreActions')}
-        className="mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-40"
-      >
-        <Icon name={deleting ? 'clock' : 'more'} size={14} />
-      </button>
+      </div>
       {menu !== null ? (
         <MiniContextMenu
           x={menu.x}

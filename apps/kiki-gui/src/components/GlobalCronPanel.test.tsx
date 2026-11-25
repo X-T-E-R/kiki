@@ -12,7 +12,7 @@ import { ApiError, type CronTask } from '../lib/client';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { MemoryRouter } from 'react-router-dom';
 import { en as EN_DICTIONARY } from '@kiki/session-core/i18n/en';
-import { CronPage, filterCronTasks } from './GlobalCronPanel';
+import { CronPage, cronTaskKey, filterCronTasks, projectNextCheckTimeline } from './GlobalCronPanel';
 
 const listCronTasks = vi.fn();
 const pauseCronTask = vi.fn();
@@ -914,5 +914,99 @@ describe('scheduled-task delivery timing', () => {
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-cron-save]')!.click(); });
     await flush();
     expect(updateCronTask.mock.calls[0]?.[1]?.delivery_mode).toBeUndefined();
+  });
+});
+
+describe('next scheduled check timeline and collision safety', () => {
+  it('projects at most one server-returned next_fire_at instant per eligible loaded task with zero clamping or extrapolation', () => {
+    const now = Date.parse('2026-06-01T12:00:00.000Z');
+    const tasks: CronTask[] = [
+      // Half-hour recurring task must produce 1 marker, never 48 extrapolated occurrences.
+      makeCronTask({ id: 'half-hour', cron: '*/30 * * * *', next_fire_at: '2026-06-01T12:30:00.000Z', recurring: true }),
+      // Overdue task (< now) stays in overdue, never clamped onto Now.
+      makeCronTask({ id: 'overdue', next_fire_at: '2026-06-01T11:45:00.000Z' }),
+      // Out-of-24h-window task stays in later, never clamped to the 24h end tick.
+      makeCronTask({ id: 'later', next_fire_at: '2026-06-03T12:00:00.000Z' }),
+      // Paused, null, and unparseable instants are never guessed.
+      makeCronTask({ id: 'paused', paused: true, next_fire_at: '2026-06-01T13:00:00.000Z' }),
+      makeCronTask({ id: 'null-next', next_fire_at: null }),
+      makeCronTask({ id: 'bad-iso', next_fire_at: 'not-a-timestamp' }),
+    ];
+
+    const proj24h = projectNextCheckTimeline(tasks, now, '24h');
+    expect(proj24h.inWindow.map((marker) => marker.task.id)).toEqual(['half-hour']);
+    expect(proj24h.overdue.map((task) => task.id)).toEqual(['overdue']);
+    expect(proj24h.later.map((task) => task.id)).toEqual(['later']);
+
+    const proj7d = projectNextCheckTimeline(tasks, now, '7d');
+    expect(proj7d.inWindow.map((marker) => marker.task.id)).toEqual(['half-hour', 'later']);
+    expect(proj7d.overdue.map((task) => task.id)).toEqual(['overdue']);
+    expect(proj7d.later).toHaveLength(0);
+  });
+
+  it('focuses and expands the exact (session_id, id) row when two sessions share a colliding task id', async () => {
+    const soon = new Date(Date.now() + 20 * 60_000).toISOString();
+    const laterSoon = new Date(Date.now() + 90 * 60_000).toISOString();
+    const taskA = makeCronTask({ id: 'shared-id', session_id: 'sess-1', workspace_id: 'ws-a', next_fire_at: soon, prompt_preview: 'Session one prompt' });
+    const taskB = makeCronTask({ id: 'shared-id', session_id: 'sess-2', workspace_id: 'ws-a', next_fire_at: laterSoon, prompt_preview: 'Session two prompt' });
+    getCronTask.mockImplementation((id: string, sid?: string) => Promise.resolve({
+      task: { ...(sid === 'sess-2' ? taskB : taskA), prompt: `Full prompt for ${id} in ${sid}` },
+    }));
+    seedTasks([taskA, taskB]);
+    await mount();
+    const page = await openPanel();
+
+    const markers = page.querySelectorAll<HTMLButtonElement>('[data-cron-marker]');
+    expect(markers).toHaveLength(2);
+    const markerB = page.querySelector<HTMLButtonElement>(`[data-cron-marker="${cronTaskKey(taskB)}"]`);
+    expect(markerB).not.toBeNull();
+    await act(async () => { markerB!.click(); });
+    await flush();
+
+    const rowA = page.querySelector<HTMLElement>(`[data-cron-key="${cronTaskKey(taskA)}"]`)!;
+    const rowB = page.querySelector<HTMLElement>(`[data-cron-key="${cronTaskKey(taskB)}"]`)!;
+    expect(rowA.querySelector('[data-cron-detail]')).toBeNull();
+    expect(rowB.querySelector('[data-cron-detail-prompt]')?.textContent).toBe('Full prompt for shared-id in sess-2');
+  });
+
+  it('handles 100 mixed schedules with conditional, stale, overdue, out-of-window, and paged indicators cleanly', async () => {
+    const now = Date.now();
+    const mixed: CronTask[] = Array.from({ length: 101 }, (_, index) => {
+      if (index === 0) return makeCronTask({ id: 'c-overdue', next_fire_at: new Date(now - 10 * 60_000).toISOString() });
+      if (index === 1) return makeCronTask({ id: 'c-later', next_fire_at: new Date(now + 48 * 3600_000).toISOString() });
+      if (index === 2) return makeCronTask({ id: 'c-paused', paused: true, next_fire_at: null });
+      if (index === 3) {
+        return makeCronTask({
+          id: 'c-conditional',
+          next_fire_at: new Date(now + 15 * 60_000).toISOString(),
+          stale: true,
+          trigger: { kind: 'probability', probability: 0.5 } as unknown as CronTask['trigger'],
+        });
+      }
+      return makeCronTask({
+        id: `c-${index}`,
+        session_id: index % 2 === 0 ? 'sess-1' : 'sess-2',
+        cron: '*/30 * * * *',
+        next_fire_at: new Date(now + ((index % 20) + 1) * 30 * 60_000).toISOString(),
+      });
+    });
+    seedTasks(mixed);
+    await mount();
+    const page = await openPanel();
+
+    expect(page.querySelector('[data-cron-timeline-overdue]')).not.toBeNull();
+    expect(page.querySelector('[data-cron-timeline-later]')).not.toBeNull();
+    expect(page.querySelector('[data-cron-timeline-more]')).not.toBeNull();
+    expect(page.querySelector('[data-cron-marker-conditional="true"]')).not.toBeNull();
+    expect(page.querySelector('[data-cron-conditional]')).not.toBeNull();
+    // 100 loaded on page 1: minus 1 overdue, 1 later (>24h), 1 paused = 97 in 24h window.
+    expect(page.querySelectorAll('[data-cron-marker]')).toHaveLength(97);
+    expect(getCronTask).not.toHaveBeenCalled();
+
+    // Switching to 7d brings the 48h task into the window without cloning recurring runs.
+    await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-window="7d"]')!.click(); });
+    await flush();
+    expect(page.querySelectorAll('[data-cron-marker]')).toHaveLength(98);
+    expect(page.querySelector('[data-cron-timeline-later]')).toBeNull();
   });
 });

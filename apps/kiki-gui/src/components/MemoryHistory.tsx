@@ -23,6 +23,7 @@ import { MEMORY_TYPES, type MemoryEntry, type MemoryJournalRecord, type MemoryTa
 import { useConnection } from '../state/connection';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from './Dialog';
 import { Icon } from './icons';
+import { RelativeTime } from './RelativeTime';
 import { memoryTargetKey } from './persona/PersonaMemoryScope';
 import { SECONDARY_BUTTON } from './ui';
 import {
@@ -91,6 +92,13 @@ export function TypeTag({ type }: { readonly type: MemoryEntry['type'] }) {
 }
 
 const dateText = (locale: string, value: string) => Number.isNaN(Date.parse(value)) ? value : new Date(value).toLocaleString(locale);
+
+/** Compact tail for opaque revision strings in the history spine; never invents sequence numbers. */
+export function shortJournalRevision(revision: string | null): string | null {
+  if (revision === null || revision === '') return null;
+  const bare = revision.replace(/^mem2:/u, '');
+  return bare.length <= 10 ? bare : bare.slice(-8);
+}
 
 /**
  * Why this content is recorded, separate from who last wrote it. An absent
@@ -228,15 +236,38 @@ export function MemoryReadView({ entry, target, sourceLabel, onOpenReplacement, 
   const reason = entry.status === 'superseded' ? originalReplacement?.reason : entry.reason;
   const view = parseMemoryEntry(entry);
   return (
-    <article data-memory-read={entry.id} className="min-w-0 space-y-3">
-      <div>
-        <p className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-ink-faint">
-          <span>{sourceLabel}</span><span aria-hidden>·</span><span>{t(`memory.type.${entry.type}`)}</span>
+    <article data-memory-read={entry.id} className="min-w-0 space-y-4">
+      <header className="space-y-1.5 border-b border-hairline/80 pb-3">
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-ink-faint">
+          <span>{sourceLabel}</span>
+          <span aria-hidden>·</span>
+          <TypeTag type={entry.type} />
           {entry.status !== 'active' ? <><span aria-hidden>·</span><span>{t(`memory.status.${entry.status}`)}</span></> : null}
         </p>
-        <h3 className="break-words text-[17px] leading-snug font-medium text-ink">{entry.title}</h3>
-      </div>
-      <p data-memory-read-body className="text-[13px] leading-7 break-words whitespace-pre-wrap text-ink">{entry.body}</p>
+        <h3 className="font-display text-[21px] leading-snug font-medium break-words text-ink">{entry.title}</h3>
+        <p data-memory-source-meta className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-ink-faint tabular-nums">
+          <span>{t(`memory.writer.${entry.source.writer}`)}</span>
+          {entry.updated !== '' ? (
+            <>
+              <span aria-hidden>·</span>
+              <RelativeTime at={entry.updated} />
+            </>
+          ) : null}
+          {entry.source.turn !== undefined ? (
+            <>
+              <span aria-hidden>·</span>
+              <span>{t('memory.source.turn', { turn: entry.source.turn })}</span>
+            </>
+          ) : null}
+          {entry.source.step !== undefined ? (
+            <>
+              <span aria-hidden>·</span>
+              <span className="font-mono text-[11px]">{t('memory.source.step', { step: entry.source.step })}</span>
+            </>
+          ) : null}
+        </p>
+      </header>
+      <p data-memory-read-body className="text-[13.5px] leading-7 break-words whitespace-pre-wrap text-ink">{entry.body}</p>
       {reason ? (
         <p className="text-[13px] leading-6 break-words text-ink-soft">
           <span className="font-medium">{t(retired ? 'memory.history.retirementReason' : 'memory.field.reason')}</span>
