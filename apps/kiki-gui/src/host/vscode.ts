@@ -22,30 +22,50 @@ interface HostResponse {
 interface SelectedFilePayload {
   readonly name: string;
   readonly type: string;
-  readonly bytes: readonly number[];
+  readonly bytes: Uint8Array | ArrayBuffer | readonly number[];
 }
 
 type AcquireVscodeApi = () => VscodeApi;
+
+const INTERACTIVE_DIALOG_METHODS = new Set([
+  'file.pick',
+  'directory.pick',
+  'directory.pickMany',
+  'file.save',
+  'file.save.open',
+]);
+const DEFAULT_VSCODE_REQUEST_TIMEOUT_MS = 30_000;
 
 let api: VscodeApi | undefined;
 let listenerInstalled = false;
 const pending = new Map<
   string,
-  { readonly resolve: (value: unknown) => void; readonly reject: (error: Error) => void }
+  {
+    readonly resolve: (value: unknown) => void;
+    readonly reject: (error: Error) => void;
+    readonly timer?: ReturnType<typeof setTimeout>;
+  }
 >();
 
-export function isVscodeWebview(): boolean {
-  return typeof (globalThis as { acquireVsCodeApi?: unknown }).acquireVsCodeApi === 'function';
-}
+import { isVscodeWebview } from './detect';
+export { isVscodeWebview } from './detect';
 
 export function requestVscodeHost<T>(method: string, params: unknown = {}): Promise<T> {
   const vscode = getApi();
   installResponseListener();
   const id = randomUuid();
   return new Promise<T>((resolve, reject) => {
+    const timer = INTERACTIVE_DIALOG_METHODS.has(method)
+      ? undefined
+      : setTimeout(() => {
+          if (pending.delete(id)) {
+            reject(new Error(`VS Code host request timed out: ${method}`));
+          }
+        }, DEFAULT_VSCODE_REQUEST_TIMEOUT_MS);
     pending.set(id, {
       resolve: (value) => resolve(value as T),
       reject,
+      timer,
     });
     // oxlint-disable-next-line unicorn/require-post-message-target-origin
     vscode.postMessage({ channel: 'kiki.vscode-host.request', id, method, params });
@@ -79,7 +99,7 @@ export const vscodeHost: VscodeHostAdapter = {
   notify: (options: HostNotification) => requestVscodeHost<void>('window.notify', options),
   isWindowVisibleAndFocused: () => requestVscodeHost<boolean>('window.focused'),
   async saveBlob(blob, filename) {
-    const bytes = [...new Uint8Array(await blob.arrayBuffer())];
+    const bytes = new Uint8Array(await blob.arrayBuffer());
     return requestVscodeHost<boolean>('file.save', { filename, bytes });
   },
   async openSaveSink(filename) {
@@ -139,6 +159,7 @@ function installResponseListener(): void {
     const request = pending.get(response.id);
     if (request === undefined) return;
     pending.delete(response.id);
+    if (request.timer !== undefined) clearTimeout(request.timer);
     if (response.ok) {
       request.resolve(response.result);
     } else {
@@ -147,13 +168,20 @@ function installResponseListener(): void {
   });
 }
 
+function toUint8Array(bytes: Uint8Array | ArrayBuffer | readonly number[]): Uint8Array {
+  if (bytes instanceof Uint8Array) return bytes;
+  if (bytes instanceof ArrayBuffer) return new Uint8Array(bytes);
+  return new Uint8Array(bytes);
+}
+
 function toSelectedFile(payload: SelectedFilePayload): HostSelectedFile {
+  const data = toUint8Array(payload.bytes);
   return {
     name: payload.name,
-    size: payload.bytes.length,
+    size: data.byteLength,
     type: payload.type,
     async read() {
-      return new File([new Uint8Array(payload.bytes) as BlobPart], payload.name, {
+      return new File([data as BlobPart], payload.name, {
         type: payload.type,
       });
     },

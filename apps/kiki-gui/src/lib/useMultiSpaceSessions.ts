@@ -351,7 +351,7 @@ export function useMultiSpaceSessions({
   const controlClient = desktop ? localClient : (localClient ?? (inBrokeredScope ? null : client));
   const hasRemoteApi = controlClient?.klient?.rest?.connections !== undefined;
 
-  const remoteQuery = useRemoteConnections(hasRemoteApi ? controlClient : null, {
+  const remoteQuery = useRemoteConnections(enabled && hasRemoteApi ? controlClient : null, {
     poll: enabled && hasRemoteApi,
   });
   const localSpacesQuery = useSpaces(desktop ? localClient : null);

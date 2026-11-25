@@ -32,26 +32,83 @@ export type DiffHunk = readonly DiffLine[];
 /** Context lines kept around each change (grok-build's MAX_CONTEXT). */
 export const MAX_CONTEXT_LINES = 3;
 
+/** Bound Myers diff complexity so huge or adversarial inputs never stall the UI thread. */
+const MAX_DIFF_EDIT_LENGTH = 4000;
+const MAX_DIFF_TIMEOUT_MS = 150;
+
+function splitDiffTextLines(text: string): string[] {
+  if (text === '') return [];
+  const lines = text.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  return lines;
+}
+
+function fallbackLinearRows(oldText: string, newText: string, startLine: number): DiffLine[] {
+  const oldLines = splitDiffTextLines(oldText);
+  const newLines = splitDiffTextLines(newText);
+  let prefix = 0;
+  const maxPrefix = Math.min(oldLines.length, newLines.length);
+  while (prefix < maxPrefix && oldLines[prefix] === newLines[prefix]) prefix += 1;
+  let suffix = 0;
+  const maxSuffix = Math.min(oldLines.length - prefix, newLines.length - prefix);
+  while (
+    suffix < maxSuffix &&
+    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  const rows: DiffLine[] = [];
+  let lo = startLine;
+  let ln = startLine;
+  for (let i = 0; i < prefix; i += 1) {
+    rows.push({ text: oldLines[i]!, lo, ln, tag: 'equal' });
+    lo += 1;
+    ln += 1;
+  }
+  for (let i = prefix; i < oldLines.length - suffix; i += 1) {
+    rows.push({ text: oldLines[i]!, lo, ln, tag: 'delete' });
+    lo += 1;
+  }
+  for (let i = prefix; i < newLines.length - suffix; i += 1) {
+    rows.push({ text: newLines[i]!, lo, ln, tag: 'insert' });
+    ln += 1;
+  }
+  for (let i = oldLines.length - suffix; i < oldLines.length; i += 1) {
+    rows.push({ text: oldLines[i]!, lo, ln, tag: 'equal' });
+    lo += 1;
+    ln += 1;
+  }
+  return rows;
+}
+
 /**
  * Build unified hunks from full before/after text. `startLine` is the 1-based
  * line number the texts begin at in their files (1 for whole-file inputs).
  */
 export function buildHunks(oldText: string, newText: string, startLine = 1): DiffHunk[] {
-  const parts = diffLines(oldText, newText);
-  const rows: DiffLine[] = [];
-  let lo = startLine;
-  let ln = startLine;
-  for (const part of parts) {
-    const tag: DiffTag = part.added ? 'insert' : part.removed ? 'delete' : 'equal';
-    const lines = part.value.split('\n');
-    // diffLines values keep their trailing '\n', which splits into a phantom
-    // empty final element — drop it (a real blank line ends the value without
-    // a terminator and survives as a legitimately empty entry mid-list).
-    if (lines.at(-1) === '') lines.pop();
-    for (const text of lines) {
-      rows.push({ text, lo, ln, tag });
-      if (tag !== 'insert') lo += 1;
-      if (tag !== 'delete') ln += 1;
+  const parts = diffLines(oldText, newText, {
+    maxEditLength: MAX_DIFF_EDIT_LENGTH,
+    timeout: MAX_DIFF_TIMEOUT_MS,
+  });
+  let rows: DiffLine[];
+  if (parts === undefined) {
+    rows = fallbackLinearRows(oldText, newText, startLine);
+  } else {
+    rows = [];
+    let lo = startLine;
+    let ln = startLine;
+    for (const part of parts) {
+      const tag: DiffTag = part.added ? 'insert' : part.removed ? 'delete' : 'equal';
+      const lines = part.value.split('\n');
+      // diffLines values keep their trailing '\n', which splits into a phantom
+      // empty final element — drop it (a real blank line ends the value without
+      // a terminator and survives as a legitimately empty entry mid-list).
+      if (lines.at(-1) === '') lines.pop();
+      for (const text of lines) {
+        rows.push({ text, lo, ln, tag });
+        if (tag !== 'insert') lo += 1;
+        if (tag !== 'delete') ln += 1;
+      }
     }
   }
 

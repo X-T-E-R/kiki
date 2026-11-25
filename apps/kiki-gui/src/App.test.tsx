@@ -7,7 +7,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App, SESSION_FIRST_PAGE_POLL_INTERVAL_MS, isEditableTarget } from './App';
-import { HostProvider, browserHost, tauriHost } from './host';
+import { HostProvider, browserHost } from './host';
+import { tauriHost } from './host/tauri';
 import { I18nProvider } from './i18n';
 import { PageHeader } from './components/PageChrome';
 import { canAbortActiveTurn, shouldHandleGlobalAbortOnEscape } from './components/SessionView';
@@ -312,9 +313,16 @@ describe('App sidebar Escape wiring', () => {
         </QueryClientProvider>,
       );
     });
-    // /usage is one of the pages App downloads on first visit: let its module
+    // /usage and deferred shell chrome are downloaded lazily: let their modules
     // arrive inside act so the page has rendered before the test looks at it.
-    await act(async () => { await import('./components/UsagePage'); });
+    await act(async () => {
+      await Promise.all([
+        import('./components/UsagePage'),
+        import('./components/Sidebar'),
+        import('./components/UpdateAvailableDialog'),
+        import('./components/storage/StorageMigrationView'),
+      ]);
+    });
   }
 
   async function withHistoryPop<T>(action: () => Promise<T>): Promise<T> {

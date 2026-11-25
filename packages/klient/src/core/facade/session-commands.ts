@@ -1,85 +1,25 @@
-import type {
-  ApprovalResolveRequest, ApprovalResolveResult, CancelTaskQuery, CreateSessionBranchRequest,
-  CreateSessionBranchResponse, DiscardSessionBranchRequest, DiscardSessionBranchResponse,
-  EditMessageRequest, FoldSessionBranchRequest, FoldSessionBranchResponse, ForkSessionRequest,
-  PromptAbortResponse, PromptMoveRequest, PromptMoveResult, PromptReplaceRequest, PromptReplaceResult, PromoteAgentRequest,
-  PromptSteerResult, PromptTimingRequest, PromptTimingResult, PromptHoldRequest, PromptHoldResult, TurnAbortResponse,
-  PromptSubmission, PromptSubmitResult, QuestionDismissResult, QuestionResolveRequest,
-  QuestionResolveResult, RegenerateMessageRequest, Session, SetSessionBranchToolsLockRequest,
-  SetSessionBranchToolsLockResponse, StartBtwSessionResponse,
-} from '@kiki/protocol';
 import type { z } from 'zod';
-import type { CallOptions } from '../channel.js';
 import { sessionCommandContract, type SessionCommandChannel, type SessionCommandName } from '../../contract/session/commands.js';
 import { KlientValidationError } from '../validation.js';
+import { createSessionCommandsFacadeCore, type SessionCommandsFacade } from './session-commands-core.js';
 
-export interface SessionCommandsFacade {
-  read(options?: CallOptions): Promise<Session>;
-  submit(body: PromptSubmission): Promise<PromptSubmitResult>;
-  edit(messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult>;
-  regenerate(messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult>;
-  fork(body?: ForkSessionRequest): Promise<Session>;
-  btw(): Promise<StartBtwSessionResponse>;
-  branch(body?: CreateSessionBranchRequest): Promise<CreateSessionBranchResponse>;
-  foldBranch(body: FoldSessionBranchRequest): Promise<FoldSessionBranchResponse>;
-  discardBranch(body: DiscardSessionBranchRequest): Promise<DiscardSessionBranchResponse>;
-  setBranchToolsLock(body: SetSessionBranchToolsLockRequest): Promise<SetSessionBranchToolsLockResponse>;
-  /** Copies a subagent's conversation into a new top-level thread; the source session is untouched. */
-  promoteAgent(agentId: string, body?: PromoteAgentRequest): Promise<Session>;
-  abort(promptId: string, agentId?: string, queuedOnly?: boolean): Promise<PromptAbortResponse>;
-  abortTurn(turnId: number): Promise<TurnAbortResponse>;
-  move(promptId: string, body: PromptMoveRequest): Promise<PromptMoveResult>;
-  replace(promptId: string, body: PromptReplaceRequest): Promise<PromptReplaceResult>;
-  timing(promptId: string, body: PromptTimingRequest): Promise<PromptTimingResult>;
-  hold(promptId: string, body: PromptHoldRequest): Promise<PromptHoldResult>;
-  steer(promptId: string, agentId?: string): Promise<PromptSteerResult>;
-  approve(approvalId: string, body: ApprovalResolveRequest): Promise<ApprovalResolveResult>;
-  answer(questionId: string, body: QuestionResolveRequest): Promise<QuestionResolveResult>;
-  dismiss(questionId: string): Promise<QuestionDismissResult>;
-  cancelTask(taskId: string, query?: CancelTaskQuery): Promise<{ cancelled: boolean }>;
-}
+export type { SessionCommandsFacade };
 
-/** Main keeps the bare target; a child agent rides the `agent_id` query. */
-function agentScoped(target: string, agentId: string | undefined): { target: string; query?: { agent_id: string } } {
-  return agentId === undefined || agentId === 'main' ? { target } : { target, query: { agent_id: agentId } };
-}
-
-export function createSessionCommandsFacade(channel: SessionCommandChannel | undefined, sessionId: string, validate: boolean): SessionCommandsFacade {
+export function createSessionCommandsFacade(
+  channel: SessionCommandChannel | undefined,
+  sessionId: string,
+  validate: boolean,
+): SessionCommandsFacade {
+  if (!validate) {
+    return createSessionCommandsFacadeCore(channel, sessionId);
+  }
   const parse = (phase: 'input' | 'output', name: string, schema: z.ZodType, value: unknown): unknown => {
     const result = schema.safeParse(value);
     if (!result.success) throw new KlientValidationError(phase, name, result.error.issues, value);
     return result.data;
   };
-  const invoke = async <T>(command: SessionCommandName, input: unknown, options?: CallOptions): Promise<T> => {
-    if (channel === undefined) throw new Error('session commands are unavailable on this transport');
+  return createSessionCommandsFacadeCore(channel, sessionId, (phase, command: SessionCommandName, value) => {
     const contract = sessionCommandContract[command];
-    const name = `session.commands.${command}`;
-    const wireInput = validate ? parse('input', name, contract.input, input) : input;
-    const result = await channel.execute(sessionId, command, wireInput, options);
-    return (validate ? parse('output', name, contract.output, result) : result) as T;
-  };
-  return {
-    read: (options) => invoke('read', {}, options),
-    submit: (body) => invoke('submit', { body }),
-    edit: (target, body) => invoke('edit', { target, body }),
-    regenerate: (target, body) => invoke('regenerate', { target, body }),
-    fork: (body = {}) => invoke('fork', { body }),
-    btw: () => invoke('btw', {}),
-    branch: (body = {}) => invoke('branch', { body }),
-    foldBranch: (body) => invoke('foldBranch', { body }),
-    discardBranch: (body) => invoke('discardBranch', { body }),
-    setBranchToolsLock: (body) => invoke('setBranchToolsLock', { body }),
-    promoteAgent: (target, body = {}) => invoke('promoteAgent', { target, body }),
-    abort: (target, agentId, queuedOnly) => invoke('abort', queuedOnly ? { target, query: { agent_id: agentId === 'main' ? undefined : agentId, queued_only: 'true' } } : agentScoped(target, agentId)),
-    abortTurn: (turnId) => invoke('abortTurn', { target: String(turnId) }),
-    move: (target, body) => invoke('move', { target, body }),
-    replace: (target, body) => invoke('replace', { target, body }),
-    timing: (target, body) => invoke('timing', { target, body }),
-    hold: (target, body) => invoke('hold', { target, body }),
-    steer: (target, agentId) => invoke('steer', agentScoped(target, agentId)),
-    approve: (target, body) => invoke('approve', { target, body }),
-    answer: (target, body) => invoke('answer', { target, body }),
-    dismiss: (target) => invoke('dismiss', { target }),
-    cancelTask: (target, query = {}) => invoke('cancelTask', { target, query }),
-  };
+    return parse(phase, `session.commands.${command}`, phase === 'input' ? contract.input : contract.output, value);
+  });
 }

@@ -35,6 +35,7 @@ interface Attempt {
   readonly qrcode: string;
   base: string;
   controller: AbortController;
+  inFlight?: Promise<WechatQrPoll>;
 }
 
 export function wechatEndpointAllowed(value: string): boolean {
@@ -90,12 +91,35 @@ export class WechatQrLogin {
   async poll(id: string, verifyCode?: string): Promise<WechatQrPoll> {
     const attempt = this.attempts.get(id);
     if (attempt === undefined) throw new Error('unknown_login');
+    const hasVerifyCode = verifyCode !== undefined && verifyCode.length > 0;
+    if (!hasVerifyCode && attempt.inFlight !== undefined) {
+      return attempt.inFlight;
+    }
     attempt.controller.abort();
     const controller = new AbortController();
     attempt.controller = controller;
+    const run = this.executePoll(id, attempt, controller, hasVerifyCode ? verifyCode : undefined);
+    if (!hasVerifyCode) {
+      attempt.inFlight = run;
+    }
+    try {
+      return await run;
+    } finally {
+      if (attempt.inFlight === run) {
+        attempt.inFlight = undefined;
+      }
+    }
+  }
+
+  private async executePoll(
+    id: string,
+    attempt: Attempt,
+    controller: AbortController,
+    verifyCode?: string,
+  ): Promise<WechatQrPoll> {
     const url = new URL('/ilink/bot/get_qrcode_status', attempt.base);
     url.searchParams.set('qrcode', attempt.qrcode);
-    if (verifyCode !== undefined && verifyCode.length > 0) url.searchParams.set('verify_code', verifyCode);
+    if (verifyCode !== undefined) url.searchParams.set('verify_code', verifyCode);
     const body = await this.request(url.toString(), { method: 'GET', headers: POLL_HEADERS, signal: controller.signal }, attempt.qrcode);
     if (controller.signal.aborted || !this.attempts.has(id)) throw new Error('wechat_login_cancelled');
     const status = typeof body['status'] === 'string' ? body['status'] : '';

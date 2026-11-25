@@ -27,7 +27,7 @@ export interface RoomLogState {
   readonly refresh: () => void;
 }
 
-/** Pages the whole log once, then asks only for entries after the last id. */
+/** Loads the newest tail page once, then asks only for entries after the last id. */
 export function useRoomLog(api: BotRoomApi, roomId: string, pollIntervalMs: number | false = ROOM_POLL_MS): RoomLogState {
   const [entries, setEntries] = useState<readonly RoomLogEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -43,29 +43,57 @@ export function useRoomLog(api: BotRoomApi, roomId: string, pollIntervalMs: numb
     const run = (async () => {
       try {
         let after = lastId.current;
+        const isInitialTailLoad = after === undefined;
+        const batch: RoomLogEntry[] = [];
+        let maxSeq: number | undefined;
+        let sawOlder = false;
         for (;;) {
-          const page = await api.roomLog(roomId, { afterId: after, limit: PAGE });
+          const page = await api.roomLog(
+            roomId,
+            isInitialTailLoad ? { tail: true, limit: PAGE } : { afterId: after, limit: PAGE },
+          );
           if (!alive.current) return;
           if (page.lastSeq !== undefined) {
-            setLastSeq((prev) => (prev === undefined ? page.lastSeq : Math.max(prev, page.lastSeq!)));
+            maxSeq = maxSeq === undefined ? page.lastSeq : Math.max(maxSeq, page.lastSeq);
           }
           if (page.entries.length > 0) {
-            const pageEntries = page.entries;
-            after = pageEntries.at(-1)?.id ?? after;
+            batch.push(...page.entries);
+            after = page.entries.at(-1)?.id ?? after;
             lastId.current = after;
-            let didTruncate = false;
-            setEntries((current) => {
-              const seen = new Set(current.map((entry) => entry.id));
-              const merged = [...current, ...pageEntries.filter((entry) => !seen.has(entry.id))];
-              if (merged.length > ROOM_LOG_WINDOW) didTruncate = true;
-              return merged.length > ROOM_LOG_WINDOW ? merged.slice(-ROOM_LOG_WINDOW) : merged;
-            });
-            if (didTruncate) setTruncated(true);
           }
-          setError(null);
-          setLoaded(true);
+          if (isInitialTailLoad) {
+            if (page.nextCursor !== undefined) sawOlder = true;
+            break;
+          }
           if (page.nextCursor === undefined || page.entries.length === 0) break;
         }
+        if (!alive.current) return;
+        if (maxSeq !== undefined) {
+          setLastSeq((prev) => (prev === undefined ? maxSeq : Math.max(prev, maxSeq!)));
+        }
+        if (batch.length > 0) {
+          let didTruncate = sawOlder;
+          setEntries((current) => {
+            const seen = new Set(current.map((entry) => entry.id));
+            const merged = [...current];
+            for (const entry of batch) {
+              if (!seen.has(entry.id)) {
+                seen.add(entry.id);
+                merged.push(entry);
+              }
+            }
+            if (merged.length > ROOM_LOG_WINDOW) {
+              didTruncate = true;
+              return merged.slice(-ROOM_LOG_WINDOW);
+            }
+            return merged;
+          });
+          if (didTruncate) setTruncated(true);
+        } else if (sawOlder) {
+          setTruncated(true);
+        }
+        setError(null);
+        setLoaded(true);
       } catch (caught) {
         if (alive.current) setError(caught);
       } finally {

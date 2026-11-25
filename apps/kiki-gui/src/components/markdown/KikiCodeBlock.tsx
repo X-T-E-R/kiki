@@ -20,7 +20,7 @@ import { canonicalSelectionText } from '@kiki/session-core/composer';
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import { afterPaint } from '../../lib/afterPaint';
-import { usePhoneMode } from '../../lib/layoutHooks';
+import { useMediaQuery, usePhoneMode } from '../../lib/layoutHooks';
 import { pushToast } from '../../lib/toasts';
 import { Icon } from '../icons';
 import { registerCodeBlockBody, unwrapDomAnnotationMarks } from './domAnnotationMarks';
@@ -101,7 +101,7 @@ export function KikiMarkdownPre(props: PreProps) {
 
 export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
   const { t } = useI18n();
-  const phoneMode = usePhoneMode();
+  const phoneMode = usePhoneMode() || useMediaQuery('(max-width: 767px)');
   // The open/closed decision is taken once, when the block first renders: a
   // fence still streaming in is never clamped (the reader is watching it
   // grow), and once it settles it stays open rather than snapping shut under
@@ -128,8 +128,35 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
 
   useEffect(() => {
     if (!canHighlight || highlight) return;
-    return afterPaint(() => { setHighlight(true); });
-  }, [canHighlight, highlight]);
+    if (!phoneMode) {
+      return afterPaint(() => { setHighlight(true); });
+    }
+    let cancelled = false;
+    let idleId: number | null = null;
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      const win = window as Window & {
+        requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+        cancelIdleCallback?: (id: number) => void;
+      };
+      if (typeof win.requestIdleCallback === 'function') {
+        idleId = win.requestIdleCallback(() => {
+          idleId = null;
+          if (!cancelled) setHighlight(true);
+        }, { timeout: 600 });
+      } else {
+        setHighlight(true);
+      }
+    }, 280);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      const win = window as Window & { cancelIdleCallback?: (id: number) => void };
+      if (idleId !== null && typeof win.cancelIdleCallback === 'function') {
+        win.cancelIdleCallback(idleId);
+      }
+    };
+  }, [canHighlight, highlight, phoneMode]);
 
   useLayoutEffect(() => {
     if (!usesAsyncHighlight || bodyRef.current === null) return;

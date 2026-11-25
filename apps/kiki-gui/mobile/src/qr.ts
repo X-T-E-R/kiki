@@ -39,6 +39,7 @@ export function decodeQrFromImageData(
 export async function decodeQrFromVideo(
   video: HTMLVideoElement,
   detector?: NativeBarcodeDetector | null,
+  options?: { readonly allowFallback?: boolean },
 ): Promise<string | null> {
   if (video.readyState < 2 || video.videoWidth <= 0 || video.videoHeight <= 0) {
     return null;
@@ -54,6 +55,9 @@ export async function decodeQrFromVideo(
       }
     } catch {
     }
+  }
+  if (options?.allowFallback === false) {
+    return null;
   }
   const maxDim = 720;
   const scale = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight));

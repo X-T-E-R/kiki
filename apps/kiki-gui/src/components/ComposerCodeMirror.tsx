@@ -1,0 +1,363 @@
+import { useLayoutEffect, useRef, type RefObject } from 'react';
+import { Compartment, EditorState, StateEffect, StateField, Transaction } from '@codemirror/state';
+import { Decoration, EditorView, WidgetType, keymap, placeholder, type DecorationSet } from '@codemirror/view';
+import { insertNewline, standardKeymap } from '@codemirror/commands';
+import { findAgentRefs, findConversationRefs } from '@kiki/session-core/composer';
+import { markInteractiveInputActive } from '@kiki/session-core/session';
+import { normalizeComposerText, registerComposerInput, type ComposerInputHandle } from '../lib/composerInput';
+
+export interface ComposerReferenceLabel {
+  readonly raw: string;
+  readonly label: string;
+  readonly unresolved?: boolean;
+}
+
+class ReferenceWidget extends WidgetType {
+  constructor(
+    readonly raw: string,
+    readonly label: string,
+    readonly kind: string,
+    readonly unresolved: boolean = false,
+  ) { super(); }
+  override eq(other: ReferenceWidget): boolean {
+    return this.raw === other.raw
+      && this.label === other.label
+      && this.kind === other.kind
+      && this.unresolved === other.unresolved;
+  }
+  toDOM(): HTMLElement {
+    const chip = document.createElement('span');
+    chip.className = this.unresolved ? 'composer-reference composer-reference-unresolved' : 'composer-reference';
+    chip.dataset['threadRefToken'] = '';
+    chip.dataset['threadRefOverlayToken'] = '';
+    chip.dataset['refKind'] = this.kind;
+    if (this.unresolved) {
+      chip.dataset['refUnresolved'] = '';
+      chip.style.borderStyle = 'dashed';
+    }
+    chip.title = `${this.label}\n${this.raw}`;
+    chip.textContent = this.label;
+    chip.setAttribute('aria-label', `${this.label}: ${this.raw}`);
+    return chip;
+  }
+  override ignoreEvent(): boolean { return false; }
+}
+
+export interface ComposerSkillSpan {
+  readonly start: number;
+  readonly end: number;
+  readonly skillName: string;
+}
+
+const refreshReferences = StateEffect.define<null>();
+const refreshSkillTokens = StateEffect.define<null>();
+
+function skillTokenDecorations(state: EditorState, spans: readonly ComposerSkillSpan[]): DecorationSet {
+  if (spans.length === 0) return Decoration.none;
+  const docLength = state.doc.length;
+  const sorted = spans
+    .filter((span) => span.start >= 0 && span.end > span.start && span.end <= docLength)
+    .toSorted((a, b) => a.start - b.start || a.end - b.end);
+  return Decoration.set(
+    sorted.map((span) =>
+      Decoration.mark({
+        class: 'composer-skill-token',
+        attributes: { 'data-composer-skill-token': span.skillName },
+      }).range(span.start, span.end),
+    ),
+  );
+}
+
+function sameReferenceLabels(
+  a: readonly ComposerReferenceLabel[],
+  b: readonly ComposerReferenceLabel[],
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i]!;
+    const right = b[i]!;
+    if (left.raw !== right.raw || left.label !== right.label || left.unresolved !== right.unresolved) return false;
+  }
+  return true;
+}
+
+function sameSkillSpans(
+  a: readonly ComposerSkillSpan[],
+  b: readonly ComposerSkillSpan[],
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i]!;
+    const right = b[i]!;
+    if (left.start !== right.start || left.end !== right.end || left.skillName !== right.skillName) return false;
+  }
+  return true;
+}
+
+/** Adapt CodeMirror's replace-decoration/atomicRanges pattern; raw links remain in the document. */
+function referenceDecorations(state: EditorState, labels: readonly ComposerReferenceLabel[]): DecorationSet {
+  const doc = state.sliceDoc();
+  if (!doc.includes('/') && !doc.includes('[[') && !doc.includes('@')) return Decoration.none;
+  const refs = [
+    ...findConversationRefs(doc),
+    ...findAgentRefs(doc).map((ref) => ({ ...ref, kind: 'agent' })),
+  ].sort((a, b) => a.start - b.start || a.end - b.end);
+  if (refs.length === 0) return Decoration.none;
+  const byRaw = new Map(labels.map((entry) => [entry.raw, entry]));
+  const selection = state.selection.main;
+  return Decoration.set(refs.map((ref) => {
+    const inside = selection.empty && selection.head > ref.start && selection.head < ref.end;
+    const entry = byRaw.get(ref.raw);
+    return inside
+      ? Decoration.mark({ class: 'composer-reference-source', attributes: { 'data-ref-kind': ref.kind, 'data-thread-ref-token': '' } }).range(ref.start, ref.end)
+      : Decoration.replace({
+          widget: new ReferenceWidget(ref.raw, entry?.label ?? ref.raw, ref.kind, entry?.unresolved === true),
+          inclusive: false,
+        }).range(ref.start, ref.end);
+  }));
+}
+
+export interface ComposerInputProps {
+  readonly inputRef: RefObject<ComposerInputHandle | null>;
+  readonly value: string;
+  readonly references: readonly ComposerReferenceLabel[];
+  readonly skillSpans?: readonly ComposerSkillSpan[];
+  readonly disabled: boolean;
+  readonly label: string;
+  readonly placeholder: string;
+  readonly sessionId?: string;
+  readonly agentId: string;
+  readonly autoFocus?: boolean;
+  readonly enterKeyHint?: string;
+  readonly onChange: (value: string, cursor: number) => void;
+  readonly onSelection: (cursor: number) => void;
+  readonly onKeyDown: (event: globalThis.KeyboardEvent) => void;
+  readonly onFocus: () => void;
+  readonly onBlur: () => void;
+  readonly onCompositionStart: () => void;
+  readonly onCompositionEnd: () => void;
+  readonly onPaste: (event: ClipboardEvent) => void;
+}
+
+const inputTheme = EditorView.theme({
+  '&': { backgroundColor: 'transparent', color: 'var(--color-ink)', fontSize: 'inherit', outline: 'none' },
+  '&.cm-focused': { outline: 'none' },
+  '.cm-scroller': { fontFamily: 'inherit', lineHeight: '1.625', overflow: 'auto', maxHeight: '190px' },
+  '.cm-content': { padding: '2px 0', minHeight: '28px', caretColor: 'var(--color-ink)', overflowWrap: 'anywhere' },
+  '.cm-line': { padding: '0' },
+  '.cm-placeholder': { color: 'var(--color-ink-faint)' },
+  '.cm-selectionBackground': { backgroundColor: 'var(--color-selected)' },
+});
+
+export function ComposerCodeMirror(props: ComposerInputProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<EditorView | null>(null);
+  const propsRef = useRef(props);
+  propsRef.current = props;
+  const config = useRef(new Compartment());
+  const externalChange = useRef(false);
+  const labelsRef = useRef(props.references);
+  labelsRef.current = props.references;
+  const emptySkillSpansRef = useRef<readonly ComposerSkillSpan[]>([]);
+  const nextSkillSpans = props.skillSpans ?? emptySkillSpansRef.current;
+  const skillSpansRef = useRef(nextSkillSpans);
+  skillSpansRef.current = nextSkillSpans;
+  const dispatchedLabelsRef = useRef<readonly ComposerReferenceLabel[]>(props.references);
+  const dispatchedSkillSpansRef = useRef<readonly ComposerSkillSpan[]>(nextSkillSpans);
+  const configuration = () => {
+    const current = propsRef.current;
+    return [
+      EditorState.readOnly.of(current.disabled),
+      EditorView.editable.of(!current.disabled),
+      placeholder(current.placeholder),
+      EditorView.contentAttributes.of(() => {
+        const attributes: Record<string, string> = {
+          'aria-label': current.label,
+          'aria-multiline': 'true',
+          'aria-disabled': String(current.disabled),
+          'data-composer': '',
+          'data-composer-input': '',
+          'data-composer-agent': current.agentId,
+          tabindex: current.disabled ? '-1' : '0',
+        };
+        if (current.sessionId !== undefined) attributes['data-composer-session'] = current.sessionId;
+        if (current.autoFocus) attributes['data-autofocus'] = '';
+        if (current.enterKeyHint !== undefined) attributes['enterkeyhint'] = current.enterKeyHint;
+        return attributes;
+      }),
+    ];
+  };
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (container === null) return;
+    const references = StateField.define<DecorationSet>({
+      create: (state) => referenceDecorations(state, labelsRef.current),
+      update: (decorations, transaction) => {
+        if (
+          !transaction.docChanged &&
+          transaction.selection === undefined &&
+          !transaction.effects.some((effect) => effect.is(refreshReferences))
+        ) {
+          return decorations;
+        }
+        if (decorations === Decoration.none) {
+          const doc = transaction.state.sliceDoc();
+          if (!doc.includes('/') && !doc.includes('[[') && !doc.includes('@')) return decorations;
+        }
+        return referenceDecorations(transaction.state, labelsRef.current);
+      },
+      provide: (field) => [
+        EditorView.decorations.from(field),
+        EditorView.atomicRanges.of((view) => view.state.field(field)),
+      ],
+    });
+    const skillTokens = StateField.define<DecorationSet>({
+      create: (state) => skillTokenDecorations(state, skillSpansRef.current),
+      update: (decorations, transaction) => {
+        const force = transaction.effects.some((effect) => effect.is(refreshSkillTokens));
+        if (!transaction.docChanged && !force) return decorations;
+        if (decorations === Decoration.none && skillSpansRef.current.length === 0) return decorations;
+        return skillTokenDecorations(transaction.state, skillSpansRef.current);
+      },
+      provide: (field) => EditorView.decorations.from(field),
+    });
+    let composing = false;
+    let compositionKey = false;
+    const view = new EditorView({
+      parent: container,
+      state: EditorState.create({
+        doc: propsRef.current.value,
+        extensions: [
+          inputTheme, EditorView.lineWrapping, references, skillTokens,
+          config.current.of(configuration()),
+          EditorView.domEventHandlers({
+            beforeinput: () => {
+              markInteractiveInputActive(160);
+              return false;
+            },
+            keydown: (event) => {
+              markInteractiveInputActive(160);
+              compositionKey = composing || event.isComposing || event.keyCode === 229;
+              if (compositionKey) return false;
+              propsRef.current.onKeyDown(event);
+              return event.defaultPrevented;
+            },
+            focus: () => { propsRef.current.onFocus(); },
+            blur: () => { propsRef.current.onBlur(); },
+            compositionstart: () => { composing = true; propsRef.current.onCompositionStart(); },
+            compositionend: () => { composing = false; propsRef.current.onCompositionEnd(); },
+            paste: (event) => {
+              propsRef.current.onPaste(event);
+              return event.defaultPrevented;
+            },
+          }),
+          keymap.of(standardKeymap.map((binding) => ({
+            ...binding,
+            preventDefault: false,
+            run: (view) => !compositionKey && (binding.key === 'Enter' ? insertNewline(view) : binding.run?.(view) ?? false),
+            shift: binding.shift === undefined ? undefined : (view) => !compositionKey && (binding.key === 'Enter' ? insertNewline(view) : binding.shift!(view)),
+          }))),
+          EditorView.updateListener.of((update) => {
+            if (externalChange.current) return;
+            const current = propsRef.current;
+            if (current.disabled) return;
+            if (update.docChanged) current.onChange(update.state.sliceDoc(), update.state.selection.main.head);
+            else if (update.selectionSet) current.onSelection(update.state.selection.main.head);
+          }),
+        ],
+      }),
+    });
+    viewRef.current = view;
+    dispatchedLabelsRef.current = labelsRef.current;
+    dispatchedSkillSpansRef.current = skillSpansRef.current;
+    const handle: ComposerInputHandle = {
+      element: view.contentDOM,
+      get value() { return view.state.sliceDoc(); },
+      get selectionStart() { return view.state.selection.main.from; },
+      get selectionEnd() { return view.state.selection.main.to; },
+      get selectionDirection() { return view.state.selection.main.anchor > view.state.selection.main.head ? 'backward' : 'forward'; },
+      get disabled() { return view.state.readOnly; },
+      focus: (options) => { view.contentDOM.focus(options); },
+      setSelectionRange: (start, end, direction) => {
+        const from = Math.max(0, Math.min(start, view.state.doc.length));
+        const to = Math.max(0, Math.min(end, view.state.doc.length));
+        view.dispatch({ selection: direction === 'backward' ? { anchor: to, head: from } : { anchor: from, head: to } });
+      },
+      setRangeText: (text, start = view.state.selection.main.from, end = view.state.selection.main.to, mode = 'preserve') => {
+        const inserted = view.state.toText(text);
+        const cursor = start + inserted.length;
+        const selection = mode === 'select'
+          ? { anchor: start, head: cursor }
+          : { anchor: mode === 'start' ? start : cursor };
+        view.dispatch({ changes: { from: start, to: end, insert: inserted }, selection, userEvent: 'input' });
+      },
+      setValueAndCursor: (value, cursor) => {
+        const rawAt = Math.max(0, Math.min(cursor, value.length));
+        const at = view.state.toText(value.slice(0, rawAt)).length;
+        externalChange.current = true;
+        try {
+          view.dispatch({
+            changes: { from: 0, to: view.state.doc.length, insert: normalizeComposerText(value) },
+            selection: { anchor: at },
+            annotations: Transaction.addToHistory.of(false),
+          });
+        } finally {
+          externalChange.current = false;
+        }
+      },
+      select: () => { view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } }); },
+    };
+    propsRef.current.inputRef.current = handle;
+    const unregister = registerComposerInput(handle);
+    return () => {
+      unregister();
+      view.destroy();
+      viewRef.current = null;
+      propsRef.current.inputRef.current = null;
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const view = viewRef.current;
+    const value = normalizeComposerText(props.value);
+    if (view === null || view.composing || view.state.sliceDoc() === value) return;
+    externalChange.current = true;
+    try {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value }, annotations: Transaction.addToHistory.of(false) });
+    } finally {
+      externalChange.current = false;
+    }
+  }, [props.value]);
+
+  useLayoutEffect(() => {
+    const view = viewRef.current;
+    if (view === null) return;
+    const focused = view.hasFocus;
+    view.dispatch({ effects: config.current.reconfigure(configuration()) });
+    if (props.disabled && focused) view.contentDOM.blur();
+  }, [props.disabled, props.label, props.placeholder, props.sessionId, props.agentId, props.autoFocus, props.enterKeyHint]);
+
+  useLayoutEffect(() => {
+    const view = viewRef.current;
+    if (view === null || view.composing || sameReferenceLabels(dispatchedLabelsRef.current, props.references)) return;
+    dispatchedLabelsRef.current = props.references;
+    view.dispatch({ effects: refreshReferences.of(null) });
+  }, [props.references]);
+
+  useLayoutEffect(() => {
+    const view = viewRef.current;
+    if (view === null || view.composing || sameSkillSpans(dispatchedSkillSpansRef.current, nextSkillSpans)) return;
+    dispatchedSkillSpansRef.current = nextSkillSpans;
+    view.dispatch({ effects: refreshSkillTokens.of(null) });
+  }, [nextSkillSpans]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="composer-input text-[length:calc(var(--kiki-prose-font-size,15.5px)-1px)] pointer-coarse:text-[length:max(16px,calc(var(--kiki-prose-font-size,15.5px)-1px))]"
+    />
+  );
+}

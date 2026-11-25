@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
@@ -28,13 +28,107 @@ const serverTarget = process.env['KIKI_SERVER_URL'] || 'http://127.0.0.1:58627';
 const STABLE_VENDOR_PACKAGES = new Set(['react', 'react-dom', 'scheduler', 'react-router', 'react-router-dom']);
 
 function vendorChunk(id: string): string | undefined {
-  const packageName = /\/node_modules\/((?:@[^/]+\/)?[^/]+)\/(?!.*\/node_modules\/)/.exec(id)?.[1];
-  if (packageName === 'mermaid' || packageName === '@streamdown/mermaid') return 'mermaid-engine';
+  const normalized = id.replaceAll('\\', '/');
+  const packageName = /\/node_modules\/((?:@[^/]+\/)?[^/]+)\/(?!.*\/node_modules\/)/.exec(normalized)?.[1];
   return packageName !== undefined && STABLE_VENDOR_PACKAGES.has(packageName) ? 'vendor-react' : undefined;
 }
 
+/**
+ * Production browser builds load only the active locale dictionary on boot
+ * (`ensureInitialLocaleLoaded` in `src/i18n/index.tsx`), keeping the inactive
+ * language (~710 KiB raw) out of the entry bundle. Node, CLI, and Vitest keep
+ * both dictionaries loaded synchronously through the real `dictionaries.ts`.
+ */
+function lazyLocaleDictionariesPlugin(): Plugin {
+  return {
+    name: 'kiki-lazy-locale-dictionaries',
+    apply: 'build',
+    load(id) {
+      const normalized = id.replaceAll('\\', '/').split('?')[0] ?? '';
+      if (normalized.endsWith('/packages/session-core/src/i18n/dictionaries.ts')) {
+        return 'export function initialDictionaries() { return { en: {}, zh: {} }; }\n';
+      }
+      if (normalized.endsWith('/packages/session-core/src/i18n/index.ts')) {
+        return "export * from './locale';\n";
+      }
+      return null;
+    },
+  };
+}
+
+const PURE_SCHEMA_PKG_RE = /\/(?:packages\/(?:protocol|plugin-sdk|transcript)\/src|packages\/klient\/src\/contract|packages\/session-core\/src\/settings\/memoryAdvisor\.ts)/;
+
+interface AstNode {
+  readonly type: string;
+  readonly start: number;
+  readonly end: number;
+  readonly body?: readonly AstNode[];
+  readonly declaration?: AstNode | null;
+  readonly declarations?: readonly { readonly init?: AstNode | null }[];
+  readonly kind?: string;
+}
+
+function shouldWrapPureInit(node: AstNode): boolean {
+  return node.type === 'CallExpression'
+    || node.type === 'NewExpression'
+    || node.type === 'ObjectExpression'
+    || node.type === 'ArrayExpression'
+    || node.type === 'MemberExpression';
+}
+
+/**
+ * Mark pure Zod schema modules side-effect-free and wrap their top-level
+ * schema initializers in `/* @__PURE__ *\/ (() => (...))()` for the browser
+ * production build so Rollup drops unreferenced schemas inside partially used
+ * modules instead of constructing hundreds of Zod v4 objects on boot.
+ */
+function pureSchemaPackagesPlugin(): Plugin {
+  return {
+    name: 'kiki-pure-schema-packages',
+    apply: 'build',
+    enforce: 'post',
+    transform(code, id) {
+      const normalized = id.replaceAll('\\', '/').split('?')[0] ?? '';
+      if (!PURE_SCHEMA_PKG_RE.test(normalized)) return null;
+      let ast: AstNode;
+      try {
+        ast = this.parse(code) as unknown as AstNode;
+      } catch {
+        return { code, map: null, moduleSideEffects: false };
+      }
+      const edits: { readonly start: number; readonly end: number }[] = [];
+      for (const stmt of ast.body ?? []) {
+        const decl = stmt.type === 'ExportNamedDeclaration' ? stmt.declaration : stmt;
+        if (decl === null || decl === undefined || decl.type !== 'VariableDeclaration' || decl.kind !== 'const') continue;
+        for (const item of decl.declarations ?? []) {
+          const init = item.init;
+          if (init === null || init === undefined || !shouldWrapPureInit(init)) continue;
+          const slice = code.slice(init.start, init.end);
+          if (slice.includes('await ') || slice.includes('yield ')) continue;
+          edits.push({ start: init.start, end: init.end });
+        }
+      }
+      if (edits.length === 0) return { code, map: null, moduleSideEffects: false };
+      let out = code;
+      for (let i = edits.length - 1; i >= 0; i -= 1) {
+        const { start, end } = edits[i]!;
+        out = `${out.slice(0, start)}/* @__PURE__ */ (() => (${out.slice(start, end)}))()${out.slice(end)}`;
+      }
+      return { code: out, map: null, moduleSideEffects: false };
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), pdfAssetsPlugin(), localServerPlugin({ proxyTarget: serverTarget }), precompressAssetsPlugin()],
+  plugins: [
+    lazyLocaleDictionariesPlugin(),
+    pureSchemaPackagesPlugin(),
+    react(),
+    tailwindcss(),
+    pdfAssetsPlugin(),
+    localServerPlugin({ proxyTarget: serverTarget }),
+    precompressAssetsPlugin(),
+  ],
   define: {
     __KIKI_PROXY_TARGET__: JSON.stringify(serverTarget),
     'import.meta.env.VITE_APP_VERSION': JSON.stringify(packageJson.version),
@@ -70,6 +164,6 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     target: 'es2022',
-    rollupOptions: { output: { manualChunks: vendorChunk, onlyExplicitManualChunks: true } },
+    rollupOptions: { output: { manualChunks: vendorChunk } },
   },
 });

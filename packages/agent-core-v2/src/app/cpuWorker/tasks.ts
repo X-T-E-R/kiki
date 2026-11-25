@@ -11,6 +11,7 @@ import type {
 } from '#/agent/media/image-compress';
 import { LocalLineReader, type LineRangeOptions, type TailRangeOptions } from '#/os/backends/node-local/lineReader';
 import { decodeWireInput, projectWireInput } from './wireTask';
+import { executeWireGoalScan, type WireGoalScanOperation } from './goalScanTask';
 import { parseThreadTurnRecord } from '#/app/threadCommunication/threadTurnRecord';
 import { readCheckpointStatesFromPath } from '#/session/replayCheckpointArchive';
 import {
@@ -33,6 +34,7 @@ export type CpuOperation =
   | ({ readonly type: 'image.toPng' } & ImageToPngWorkerInput)
   | { readonly type: 'wire.context'; readonly input: MessagePort; readonly scope: string; readonly key: string; readonly omitTranscript?: boolean }
   | { readonly type: 'wire.threadTurnRecord'; readonly input: MessagePort }
+  | WireGoalScanOperation
   | { readonly type: 'checkpoint.read'; readonly path: string; readonly names: readonly string[] }
   | FileLineRangeOperation
   | { readonly type: 'file.tailRange'; readonly path: string; readonly options: Omit<TailRangeOptions, 'signal'> }
@@ -90,6 +92,7 @@ export async function executeCpuOperation(operation: CpuOperation, signal?: Abor
       return executeImageToPng(operation, signal);
     }
     case 'wire.context': return projectWireInput(operation.input, operation.scope, operation.key, operation.omitTranscript === true, signal);
+    case 'wire.goalScan': return executeWireGoalScan(operation, signal);
     case 'checkpoint.read': return readCheckpointStatesFromFile(operation.path, operation.names, signal);
     case 'wire.threadTurnRecord': {
       const chunks: string[] = [];

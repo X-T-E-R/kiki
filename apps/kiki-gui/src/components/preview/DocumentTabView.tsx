@@ -304,7 +304,7 @@ export function DocumentTabView({
         <>
           {header}
           <div
-            className="min-h-0 flex-1 overflow-auto bg-canvas px-4 py-5"
+            className="min-h-0 flex-1 overflow-auto bg-canvas px-4 py-5 [scrollbar-gutter:stable]"
             data-preview-document
             data-fidelity={response.fidelity}
             data-format={response.format}

@@ -103,8 +103,15 @@ function VirtualToolText({
     const halfChunk = Math.floor(chunkChars / 2);
     for (let offset = 0; offset < text.length;) {
       let end = Math.min(text.length, offset + chunkChars);
-      const newline = text.lastIndexOf('\n', end);
-      if (newline > offset + halfChunk) end = newline + 1;
+      if (end < text.length) {
+        const minNewline = offset + halfChunk + 1;
+        for (let pos = end; pos >= minNewline; pos -= 1) {
+          if (text.charCodeAt(pos) === 10) {
+            end = pos + 1;
+            break;
+          }
+        }
+      }
       if (end < text.length && /[\uD800-\uDBFF]/u.test(text[end - 1]!)) end -= 1;
       values.push(text.slice(offset, end));
       offset = end;

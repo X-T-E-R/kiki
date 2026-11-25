@@ -12,10 +12,13 @@
  * right scope's event stream on every transport.
  */
 
+import type { z } from 'zod';
 import type { IDisposable, KlientChannel, ScopeRef } from '../channel.js';
-import type { EventRegistration } from '#/contract/types';
+import type { EventSourceDescriptor } from '#/contract/eventDescriptors';
 import type { KlientEventPayloads } from '#/contract/global/events';
 import { parseEvent } from '../validation.js';
+
+type HubEventRegistration = EventSourceDescriptor & { readonly schema?: z.ZodType };
 
 /** Initial source attachment only; subsequent disconnects still report through onError. */
 export interface EventSubscription extends IDisposable {
@@ -54,7 +57,7 @@ interface AttachmentWaiter {
 }
 
 interface SharedSub {
-  readonly reg: EventRegistration;
+  readonly reg: HubEventRegistration;
   disposable: IDisposable;
   refs: number;
   attached: boolean;
@@ -62,7 +65,7 @@ interface SharedSub {
 }
 
 /** Stable identity of a registration's underlying channel subscription. */
-function keyOf(reg: EventRegistration): string {
+function keyOf(reg: HubEventRegistration): string {
   switch (reg.kind) {
     case 'bus':
       return 'bus';
@@ -91,7 +94,7 @@ export class EventHub<TPayloadMap extends object = KlientEventPayloads>
     private readonly channel: KlientChannel,
     private readonly validate: boolean,
     private readonly scope: ScopeRef,
-    private readonly registrations: Record<string, EventRegistration>,
+    private readonly registrations: Record<string, HubEventRegistration>,
   ) {}
 
   on<E extends keyof TPayloadMap & string>(
@@ -152,7 +155,7 @@ export class EventHub<TPayloadMap extends object = KlientEventPayloads>
     if (this.closed) throw new Error('event hub is closed');
     if (options.events.length === 0) throw new Error('observe requires at least one event');
     if (typeof options.read !== 'function') throw new Error('observe requires a snapshot reader');
-    const sources = new Map<string, EventRegistration>();
+    const sources = new Map<string, HubEventRegistration>();
     for (const event of options.events) {
       const reg = this.registrations[event];
       if (reg === undefined) throw new Error(`unknown event: ${event}`);
@@ -342,9 +345,9 @@ export class EventHub<TPayloadMap extends object = KlientEventPayloads>
     }
   }
 
-  private deliverValidated(event: string, reg: EventRegistration, data: unknown): void {
+  private deliverValidated(event: string, reg: HubEventRegistration, data: unknown): void {
     let payload: unknown = data;
-    if (this.validate) {
+    if (this.validate && reg.schema !== undefined) {
       const parsed = parseEvent(event, reg.schema, data);
       if (!parsed.ok) {
         this.reportError(parsed.error);

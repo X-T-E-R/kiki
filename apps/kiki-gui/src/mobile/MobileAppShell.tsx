@@ -7,8 +7,10 @@ import {
   buildUnifiedInbox,
   hasSemanticAttentionCursor,
   isConversationUnread,
+  mergeSessionFirstPage,
   pendingKindOf,
   sessionAttentionCursor,
+  type SessionListData,
   type SpaceConversationSource,
   type UnifiedInboxEntry,
   type UnifiedInboxItem,
@@ -193,18 +195,53 @@ export function MobileAppShell() {
   }, [location.pathname]);
 
   // Paginated local session list (initial head stays paginated; older pages load on demand).
+  const mobileSessionsQueryKey = useMemo(
+    () => ['mobile-sessions', 'local', client.baseUrl] as const,
+    [client.baseUrl],
+  );
   const sessionsQuery = useInfiniteQuery({
     // The shell's own connection is always the local space; remote spaces come from useMultiSpaceSessions.
-    queryKey: ['mobile-sessions', 'local', client.baseUrl] as const,
+    queryKey: mobileSessionsQueryKey,
     staleTime: 8_000,
-    refetchInterval: 15_000,
-    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
       client.listSessions({ before_id: pageParam }, { signal }),
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? (lastPage.next_cursor ?? lastPage.items.at(-1)?.id) : undefined,
   });
+
+  // Poll only page 0 every 15s and merge into the cached infinite pages so deep pagination
+  // never causes N sequential page refetches on every interval.
+  useEffect(() => {
+    let active = true;
+    let inFlight = false;
+    let abort: AbortController | null = null;
+    const pollHead = async () => {
+      if (!active || inFlight) return;
+      if (typeof document !== 'undefined' && document.hidden) return;
+      inFlight = true;
+      abort = new AbortController();
+      try {
+        const freshFirstPage = await client.listSessions({}, { signal: abort.signal });
+        if (!active) return;
+        queryClient.setQueryData<SessionListData>(mobileSessionsQueryKey, (current) =>
+          mergeSessionFirstPage(current, freshFirstPage),
+        );
+      } catch {
+        // Keep cached pages on transient poll failure.
+      } finally {
+        inFlight = false;
+        abort = null;
+      }
+    };
+    const timer = setInterval(() => { void pollHead(); }, 15_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+      abort?.abort();
+    };
+  }, [client, mobileSessionsQueryKey, queryClient]);
 
   const workspacesQuery = useQuery({
     queryKey: ['mobile-workspaces', 'local', client.baseUrl],

@@ -122,7 +122,7 @@ import { isEditableTarget, isImeKeyEvent } from '../lib/shortcuts';
 import { useConnection } from '../state/connection';
 import { useOptionalPlaceClientPool } from '../state/placeClients';
 import { RelativeTime, useElapsedSince } from './RelativeTime';
-import { useSessionSeen } from './ActivityPage';
+import { useSessionSeen } from '../lib/sessionSeen';
 import { useSessionActivity } from './ActivityPanel';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useGuardedNavigate } from './dirtyGuard';

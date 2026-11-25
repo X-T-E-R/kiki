@@ -8,7 +8,7 @@
  * - Collapsible state, resume banner, and compact keyboard controls (Alt+Shift+G / Escape).
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useI18n } from '../../i18n';
 import { useMediaQuery } from '../../lib/layoutHooks';
@@ -41,33 +41,65 @@ export function DiscoveryTourTag() {
   }, [narrow, collapseDiscovery]);
 
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
+  const anchorElementRef = useRef<HTMLElement | null>(null);
 
-  // Monitor anchor element position for live spotlight highlighting and popover docking
+  // Monitor anchor element position for live spotlight highlighting and popover docking.
+  // Cache the resolved element per station and coalesce scroll/resize reads to one rAF
+  // without churning React state when the rounded rect has not changed.
   useEffect(() => {
+    anchorElementRef.current = null;
     if (state.lifecycle !== 'active' || !view.visible || !view.station?.anchor) {
       setAnchorRect(null);
       return;
     }
 
+    const anchorId = view.station.anchor;
+    let rafId: number | null = null;
+
     const updateRect = () => {
-      const anchor = view.station?.anchor;
-      const el = anchor ? resolveAnchorElement(anchor) : null;
-      if (el) {
+      rafId = null;
+      let el = anchorElementRef.current;
+      if (el === null || !el.isConnected) {
+        el = resolveAnchorElement(anchorId);
+        anchorElementRef.current = el;
+      }
+      if (el !== null) {
         const rect = el.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
-          setAnchorRect(rect);
+          setAnchorRect((prev) => {
+            if (
+              prev !== null &&
+              Math.round(prev.top) === Math.round(rect.top) &&
+              Math.round(prev.left) === Math.round(rect.left) &&
+              Math.round(prev.width) === Math.round(rect.width) &&
+              Math.round(prev.height) === Math.round(rect.height)
+            ) {
+              return prev;
+            }
+            return rect;
+          });
           return;
         }
       }
-      setAnchorRect(null);
+      setAnchorRect((prev) => (prev === null ? prev : null));
+    };
+
+    const scheduleUpdate = () => {
+      if (rafId !== null) return;
+      if (typeof requestAnimationFrame === 'function') {
+        rafId = requestAnimationFrame(updateRect);
+      } else {
+        updateRect();
+      }
     };
 
     updateRect();
-    window.addEventListener('resize', updateRect);
-    window.addEventListener('scroll', updateRect, true);
+    window.addEventListener('resize', scheduleUpdate, { passive: true });
+    window.addEventListener('scroll', scheduleUpdate, { capture: true, passive: true });
     return () => {
-      window.removeEventListener('resize', updateRect);
-      window.removeEventListener('scroll', updateRect, true);
+      if (rafId !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', scheduleUpdate);
+      window.removeEventListener('scroll', scheduleUpdate, true);
     };
   }, [state.lifecycle, view.visible, view.station?.id, view.station?.anchor]);
 

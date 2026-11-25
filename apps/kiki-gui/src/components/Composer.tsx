@@ -128,6 +128,7 @@ import { pastedMediaType } from '../lib/pastedFiles';
 import { pushToast } from '../lib/toasts';
 import { matchesShortcutAction } from '../lib/shortcuts';
 import { useRemoteConnections } from '../lib/remoteConnections';
+import { useDeferSecondaryBootQueries } from '../lib/bootHydrationGate';
 import { useConnection } from '../state/connection';
 import { useProfileFilePreview } from '../lib/profileFilePreview';
 import { resolveProfileIcon } from '../lib/profileIcon';
@@ -396,7 +397,55 @@ function hasSpecialDraftSyntax(draft: string): boolean {
   return draft.includes('/') || draft.includes('@') || draft.includes('[[');
 }
 
-export function Composer({
+/**
+ * During the initial mobile cold-open window before the first transcript row
+ * paints, mount a visually identical lightweight composer shell so SessionView
+ * reaches `view_attach` immediately without paying for 20+ composer hooks and
+ * catalog queries ahead of the conversation's own messages.
+ */
+export function Composer(props: Parameters<typeof ComposerFull>[0]) {
+  const deferSecondaryBoot = useDeferSecondaryBootQueries();
+  const { t } = useI18n();
+  if (
+    deferSecondaryBoot &&
+    props.sessionId !== undefined &&
+    props.needsYou === undefined &&
+    props.value === '' &&
+    props.queueEditing !== true &&
+    props.messageEditing !== true
+  ) {
+    return (
+      <div
+        className="w-full"
+        data-composer-variant={props.variant ?? 'main'}
+        data-composer-boot-shell
+      >
+        {props.header}
+        <div
+          data-composer-card
+          data-run-mode="normal"
+          className="composer-card relative rounded-[18px] bg-panel"
+        >
+          <div data-composer-body>
+            <div className="px-3.5 pt-3 pb-1">
+              <textarea
+                rows={1}
+                readOnly
+                aria-label={t('composer.placeholder')}
+                placeholder={props.disabledPlaceholder ?? t('composer.placeholder')}
+                className="min-h-[28px] w-full resize-none bg-transparent text-[15px] leading-6 text-ink placeholder:text-ink-faint/70 focus:outline-none"
+              />
+            </div>
+            <div data-composer-toolbar className="flex h-10 items-center justify-between gap-2 px-2.5 pb-1.5" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return <ComposerFull {...props} />;
+}
+
+function ComposerFull({
   busy,
   disabled,
   variant = 'main',
@@ -1201,10 +1250,11 @@ export function Composer({
 
   // The effective catalog validates selections without erasing them on an
   // unavailable server or directory; the picker remains a recovery path.
+  const deferSecondaryBoot = useDeferSecondaryBootQueries();
   const agentProfilesQuery = useQuery({
     queryKey: agentProfileCatalogQueryKey(agentProfileCatalogMode),
     queryFn: () => loadAgentProfileCatalog(client, agentProfileCatalogMode),
-    enabled: agentProfileCatalogMode.mode !== 'disabled',
+    enabled: !deferSecondaryBoot && agentProfileCatalogMode.mode !== 'disabled',
     staleTime: 60_000,
     retry: retryCatalog,
     retryDelay: catalogRetryDelay,
@@ -1476,7 +1526,7 @@ export function Composer({
       : workspaceId !== undefined
         ? client.listWorkspaceSkills(workspaceId)
         : client.listDraftSkills(skillCwd),
-    enabled: skillCatalogReady,
+    enabled: !deferSecondaryBoot && skillCatalogReady,
     staleTime: 60_000,
     retry: false,
   });

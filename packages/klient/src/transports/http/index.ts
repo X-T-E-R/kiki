@@ -1,6 +1,7 @@
 import { createKlientFromChannel, type Klient, type KlientOptions } from '../../core/klient.js';
 import { HttpChannel, type HttpChannelOptions } from './channel.js';
 import { createConnectionTransport } from './connections.js';
+import { defaultHttpChannelValidator } from './validator.js';
 
 export { HTTP_REQUEST_BODY_LIMIT_BYTES } from './limits.js';
 export { createConnectionTransport };
@@ -38,7 +39,7 @@ export type {
 export interface HttpKlientOptions extends KlientOptions, HttpChannelOptions {}
 
 export function createKlient(options: HttpKlientOptions): Klient {
-  return createKlientFromChannel(new HttpChannel(options), options);
+  return createKlientFromChannel(new HttpChannel({ validator: defaultHttpChannelValidator, ...options }), options);
 }
 /** Retains facade and subscription identities across an owner-verified server replacement. */
 export function createRebindableKlient(options: HttpKlientOptions): {
@@ -46,7 +47,7 @@ export function createRebindableKlient(options: HttpKlientOptions): {
   rebind: (connection: Pick<HttpChannelOptions, 'endpoint' | 'token'>) => void;
   suspend: () => void;
 } {
-  const channel = new HttpChannel(options);
+  const channel = new HttpChannel({ validator: defaultHttpChannelValidator, ...options });
   return { klient: createKlientFromChannel(channel, options), rebind: (connection) => channel.rebind(connection), suspend: () => channel.suspend() };
 }
 

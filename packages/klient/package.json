@@ -26,6 +26,10 @@
       "types": "./src/transports/http/index.ts",
       "default": "./src/transports/http/index.ts"
     },
+    "./http-lite": {
+      "types": "./src/transports/http/lite.ts",
+      "default": "./src/transports/http/lite.ts"
+    },
     "./ipc": {
       "types": "./src/transports/ipc/index.ts",
       "default": "./src/transports/ipc/index.ts"

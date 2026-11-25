@@ -15,7 +15,7 @@
  * `?view=comms` switches to the cross-thread message log (`ActivityComms`).
  */
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -37,12 +37,11 @@ import {
   markConversationsSeen,
   markSessionsSeen,
   roomSeenKey,
-  sessionSeenSnapshot,
-  subscribeSessionSeen,
   type AttentionCursor,
   type ConversationRef,
   type SessionSeenMap,
 } from '@kiki/session-core/settings';
+import { useSessionSeen } from '../lib/sessionSeen';
 
 import { useI18n } from '../i18n';
 import { beginExplicitConversationOpen, useConversationSeen } from '../lib/conversationOpen';
@@ -108,9 +107,7 @@ type FlatActivityRow =
 
 const VALID_FILTERS = new Set<InboxTriageFilter>(['all', 'needs-you', 'unread', 'running']);
 
-export function useSessionSeen() {
-  return useSyncExternalStore(subscribeSessionSeen, sessionSeenSnapshot, sessionSeenSnapshot);
-}
+export { useSessionSeen } from '../lib/sessionSeen';
 
 const REASON_LABEL: Record<InboxReason, string> = {
   approval: 'activity.reason.approval',

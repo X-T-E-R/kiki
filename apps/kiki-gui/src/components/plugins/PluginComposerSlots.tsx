@@ -27,6 +27,7 @@ import {
 import { errorText } from '@kiki/session-core/i18n';
 import { appendToDraft } from '@kiki/session-core/composer';
 import { readLastSessionId } from '@kiki/session-core/settings';
+import { useDeferSecondaryBootQueries } from '../../lib/bootHydrationGate';
 
 import { useI18n } from '../../i18n';
 import { API_CODES, ApiError } from '../../lib/client';
@@ -291,7 +292,8 @@ export function usePluginGuiSlots(scope: PluginGuiSlotScope = {}): {
 } {
   const connection = useSafeOptionalConnection();
   const contextQueryClient = useContext(QueryClientContext);
-  const canQueryBroker = hasBrokerConnection(connection) && contextQueryClient !== undefined && scope.enabled !== false;
+  const deferSecondaryBoot = useDeferSecondaryBootQueries();
+  const canQueryBroker = !deferSecondaryBoot && hasBrokerConnection(connection) && contextQueryClient !== undefined && scope.enabled !== false;
   const scopeId = connection?.scopeId ?? 'disconnected';
   const query = useQuery(
     {
