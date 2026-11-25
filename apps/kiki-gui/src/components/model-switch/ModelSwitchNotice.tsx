@@ -1,38 +1,20 @@
-/**
- * ModelSwitchNotice — the timeline row for one model-switch operation. Same
- * divider rule as every other notice; the state decides the copy, and only
- * actionable states grow a quiet action row underneath:
- *
- *   pending    "空闲时切换到 B · 方式" with 更改 / 取消
- *   preparing  the honest in-flight line — no cancel: by contract only a
- *              pending operation can be cancelled
- *   completed  per-mode done line (same-model fresh reads as a new context)
- *   failed     what failed + why, with 重试 / 使用全新上下文 / 保留原模型
- *   cancelled  one neutral line
- *
- * Actions arrive through ModelSwitchActionsContext so the Transcript renderer
- * stays presentational; without a provider the row is copy only.
- */
-
-import { createContext, memo, useContext } from 'react';
+import { createContext, memo, useContext, useState } from 'react';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import type { NoticeBlock } from '@kiki/session-core/session';
 import { useI18n } from '../../i18n';
-import { TimelineDivider } from '../timeline/ActivityRow';
+import { Icon } from '../icons';
+import { ActivityRow, TimelineDivider } from '../timeline/ActivityRow';
+import { CopyButton } from '../timeline/ContentCopyButton';
+import { useResolvedModelDisplay } from '../timeline/ModelDisplayContext';
+import { TimelineErrorCallout, type TimelineErrorAction } from '../timeline/TimelineErrorCallout';
 
 export interface ModelSwitchNoticeActions {
-  /** Edit a pending operation (reopens the switch panel). */
   readonly edit?: (operationId: string) => void;
-  /** Cancel a pending operation. */
   readonly cancel?: (operationId: string) => void;
-  /** Retry a failed operation with its accepted input. */
   readonly retry?: (operationId: string) => void;
-  /** Retry a failed operation as a fresh-context switch (same operation id). */
   readonly retryAsFresh?: (operationId: string) => void;
-  /** Release dependent messages back onto the original binding. */
   readonly keepOriginal?: (operationId: string) => void;
-  /** Operation with an in-flight action; its buttons hold disabled. */
   readonly pendingOperationId?: string;
 }
 
@@ -73,66 +55,161 @@ function detailKey(info: ModelSwitchBlock): I18nKey | undefined {
 }
 
 const ACTION_CLASS =
-  'h-6 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-8';
+  'inline-flex min-h-7 min-w-7 cursor-pointer items-center justify-center rounded-[6px] border border-hairline bg-paper px-2 text-[12px] leading-[16px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:border-hairline-strong hover:bg-ink/[0.04] hover:text-ink disabled:cursor-default disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11 pointer-coarse:px-3';
 
-export const ModelSwitchNotice = memo(function ModelSwitchNotice({ block }: { readonly block: NoticeBlock }) {
+export const ModelSwitchNotice = memo(function ModelSwitchNotice({
+  block,
+  superseded = false,
+}: {
+  readonly block: NoticeBlock;
+  readonly superseded?: boolean;
+}) {
   const { t, time } = useI18n();
   const actions = useContext(ModelSwitchActionsContext);
+  const [techOpen, setTechOpen] = useState(false);
   const info = block.modelSwitch;
+  const fromResolved = useResolvedModelDisplay(info?.from);
+  const toResolved = useResolvedModelDisplay(info?.to);
   if (info === undefined) return null;
-  const params = { from: info.from, to: info.to };
+
+  const sameModel = info.from === info.to;
+  const params = { from: fromResolved.label, to: toResolved.label };
   const primary = t(primaryKey(info), params);
   const detail = detailKey(info);
   const pendingAction = actions?.pendingOperationId === info.operationId;
   const modeName = t(`modelSwitch.modeName.${info.mode}` as I18nKey);
+  const rawIdsLine = sameModel ? info.to : `${info.from} → ${info.to}`;
+  const isEpoch = info.state === 'completed' && (!sameModel || info.mode === 'fresh' || info.mode === 'compact');
 
-  const row = (
-    label: string, run: ((operationId: string) => void) | undefined, dataAttr: string,
-  ) => run === undefined ? null : (
-    <button
-      key={dataAttr}
-      type="button"
-      data-model-switch-action={dataAttr}
-      disabled={pendingAction}
-      onClick={() => { run(info.operationId); }}
-      className={ACTION_CLASS}
-    >
-      {label}
-    </button>
-  );
+  if (info.state === 'failed') {
+    const errorActions: TimelineErrorAction[] = [];
+    if (actions?.retry !== undefined) {
+      errorActions.push({
+        id: 'retry',
+        label: t('modelSwitch.action.retry'),
+        onClick: () => { actions.retry?.(info.operationId); },
+        primary: true,
+        disabled: pendingAction,
+        busy: pendingAction,
+        dataAttr: 'data-model-switch-action',
+      });
+    }
+    if (actions?.retryAsFresh !== undefined) {
+      errorActions.push({
+        id: 'retry-fresh',
+        label: t('modelSwitch.action.useFresh'),
+        onClick: () => { actions.retryAsFresh?.(info.operationId); },
+        disabled: pendingAction,
+        confirmMessage: t('transcript.error.freshSwitchConfirm'),
+        confirmLabel: t('modelSwitch.action.useFresh'),
+        dataAttr: 'data-model-switch-action',
+      });
+    }
+    if (actions?.keepOriginal !== undefined) {
+      errorActions.push({
+        id: 'keep-original',
+        label: t('modelSwitch.action.keepOriginal'),
+        onClick: () => { actions.keepOriginal?.(info.operationId); },
+        disabled: pendingAction,
+        dataAttr: 'data-model-switch-action',
+      });
+    }
+    const rawDetailParts = [
+      info.error?.code !== undefined ? `code=${info.error.code}` : undefined,
+      `operationId=${info.operationId}`,
+      `mode=${info.mode}`,
+      `from=${info.from}`,
+      `to=${info.to}`,
+    ].filter((part): part is string => part !== undefined);
+    return (
+      <div data-model-switch-notice="failed" data-model-switch-operation={info.operationId}>
+        <TimelineErrorCallout
+          incidentId={`model-switch-${info.operationId}`}
+          severity="error"
+          title={primary}
+          message={info.error?.message}
+          errorDetails={rawDetailParts.join('\n')}
+          createdAt={block.createdAt}
+          superseded={superseded}
+          actions={errorActions}
+          attrs={{ 'data-notice-key': 'transcript.marker.modelSwitch' }}
+        />
+      </div>
+    );
+  }
+
+  if (isEpoch) {
+    return (
+      <div data-model-switch-notice={info.state} data-model-switch-operation={info.operationId}>
+        <TimelineDivider
+          tone="plain"
+          title={[time.absoluteTime(block.createdAt), rawIdsLine].filter(Boolean).join('\n')}
+          attrs={{ 'data-notice-key': 'transcript.marker.modelSwitch' }}
+        >
+          <button
+            type="button"
+            aria-expanded={techOpen}
+            onClick={() => { setTechOpen((value) => !value); }}
+            className="inline-flex min-h-7 min-w-7 cursor-pointer items-center gap-1 rounded-[6px] px-1.5 text-[12px] leading-[16px] font-normal text-ink-faint transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+          >
+            <span>{primary}</span>
+            {detail !== undefined ? <span data-model-switch-detail>· {t(detail, params)}</span> : null}
+          </button>
+        </TimelineDivider>
+        {techOpen ? (
+          <div data-model-switch-tech className="mt-1 flex items-center justify-center gap-2 text-[12px] leading-[16px] text-ink-faint">
+            <span className="select-text font-mono [overflow-wrap:anywhere]">{rawIdsLine}</span>
+            <CopyButton text={rawIdsLine} label={primary} />
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div data-model-switch-notice={info.state} data-model-switch-operation={info.operationId}>
-      <TimelineDivider
-        tone={info.state === 'failed' ? 'warn' : 'plain'}
-        title={time.absoluteTime(block.createdAt)}
+      <ActivityRow
+        glyph={<Icon name={info.state === 'preparing' ? 'clock' : 'sliders'} size={12} />}
+        label={primary}
+        detail={info.state === 'pending' ? modeName : detail !== undefined ? t(detail, params) : undefined}
+        title={[time.absoluteTime(block.createdAt), rawIdsLine].filter(Boolean).join('\n')}
+        expanded={techOpen}
+        onToggle={() => { setTechOpen((value) => !value); }}
         attrs={{ 'data-notice-key': 'transcript.marker.modelSwitch' }}
+        aside={info.state === 'pending' && (actions?.edit !== undefined || actions?.cancel !== undefined) ? (
+          <span data-model-switch-actions className="flex shrink-0 items-center gap-1">
+            {actions.edit !== undefined ? (
+              <button
+                type="button"
+                data-model-switch-action="edit"
+                disabled={pendingAction}
+                onClick={() => { actions.edit?.(info.operationId); }}
+                className={ACTION_CLASS}
+              >
+                {t('modelSwitch.action.edit')}
+              </button>
+            ) : null}
+            {actions.cancel !== undefined ? (
+              <button
+                type="button"
+                data-model-switch-action="cancel"
+                disabled={pendingAction}
+                onClick={() => { actions.cancel?.(info.operationId); }}
+                className={ACTION_CLASS}
+              >
+                {t('modelSwitch.action.cancel')}
+              </button>
+            ) : null}
+          </span>
+        ) : undefined}
       >
-        <span className={info.state === 'failed' ? 'font-medium' : undefined}>
-          {info.state === 'pending' ? `${primary} · ${modeName}` : primary}
-        </span>
-      </TimelineDivider>
-      {detail !== undefined || info.error !== undefined ? (
-        <p data-model-switch-detail className="mt-0.5 mb-1 pl-[1.4em] text-[12px] leading-snug text-ink-faint">
-          {detail !== undefined ? t(detail, params) : null}
-          {info.error !== undefined ? (
-            <span className={detail !== undefined ? 'ml-1' : undefined}>{info.error.message}</span>
-          ) : null}
-        </p>
-      ) : null}
-      {info.state === 'pending' && (actions?.edit !== undefined || actions?.cancel !== undefined) ? (
-        <div data-model-switch-actions className="mt-0.5 mb-1 flex items-center gap-1 pl-[1.4em]">
-          {row(t('modelSwitch.action.edit'), actions.edit, 'edit')}
-          {row(t('modelSwitch.action.cancel'), actions.cancel, 'cancel')}
-        </div>
-      ) : null}
-      {info.state === 'failed' && actions !== undefined ? (
-        <div data-model-switch-actions className="mt-0.5 mb-1 flex flex-wrap items-center gap-1 pl-[1.4em]">
-          {row(t('modelSwitch.action.retry'), actions.retry, 'retry')}
-          {row(t('modelSwitch.action.useFresh'), actions.retryAsFresh, 'retry-fresh')}
-          {row(t('modelSwitch.action.keepOriginal'), actions.keepOriginal, 'keep-original')}
-        </div>
-      ) : null}
+        {techOpen ? (
+          <div data-model-switch-tech className="flex items-center gap-2 border-l border-hairline pl-3 text-[12px] leading-[16px] text-ink-faint">
+            <span className="select-text font-mono [overflow-wrap:anywhere]">{rawIdsLine}</span>
+            <CopyButton text={rawIdsLine} label={primary} />
+          </div>
+        ) : undefined}
+      </ActivityRow>
     </div>
   );
 });

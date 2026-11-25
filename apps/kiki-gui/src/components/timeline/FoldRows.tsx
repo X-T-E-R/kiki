@@ -262,6 +262,7 @@ export function SubagentEndedRow({
   ending,
   name,
   model,
+  modelRawId,
   summary,
   elapsed,
   onOpenAgent,
@@ -271,6 +272,7 @@ export function SubagentEndedRow({
   ending: SubagentEnding;
   name: string;
   model: string | undefined;
+  modelRawId?: string;
   summary: string | undefined;
   elapsed: string | undefined;
   onOpenAgent?: (agentId: string) => void;
@@ -295,7 +297,8 @@ export function SubagentEndedRow({
   const activeRoots = useTaskContinuation ? TASK_SUMMARY_ROOTS : ENDED_NOTE_ROOTS;
   const pending = (useTaskContinuation ? taskContinuation.pending : noteContinuation.pending).length > 0;
   const receipt = endingReceipt(ending, summary);
-  const canExpand = receipt !== '' || pending;
+  const hasModelRawId = modelRawId !== undefined && modelRawId !== '';
+  const canExpand = receipt !== '' || pending || hasModelRawId;
   const headline = firstSentence(receipt);
   const how = t(`transcript.agentEnd.${ending.outcome}` as const);
   const receiptLabel = t('transcript.agentEnd.receiptAria', { name });
@@ -315,7 +318,15 @@ export function SubagentEndedRow({
       label={
         <span>
           <span className="text-ink">{name}</span>
-          {model === undefined ? null : <span className="pl-1.5 font-normal text-ink-faint">{model}</span>}
+          {model === undefined ? null : (
+            <span
+              data-subagent-model={modelRawId}
+              title={modelRawId}
+              className="pl-1.5 font-normal text-ink-faint"
+            >
+              {model}
+            </span>
+          )}
         </span>
       }
       detail={
@@ -362,6 +373,14 @@ export function SubagentEndedRow({
           aria-label={receiptLabel}
           className="space-y-1.5 border-l border-hairline pl-3"
         >
+          {hasModelRawId ? (
+            <div data-subagent-model-details className="flex items-center gap-2 text-[12px] leading-[16px] text-ink-soft">
+              <code data-subagent-model-raw className="min-w-0 flex-1 select-text font-mono [overflow-wrap:anywhere]">
+                {modelRawId}
+              </code>
+              <CopyButton text={modelRawId} label={t('cb.copy')} showLabel />
+            </div>
+          ) : null}
           {receipt !== '' ? (
             <div className="flex items-start gap-2">
               <div

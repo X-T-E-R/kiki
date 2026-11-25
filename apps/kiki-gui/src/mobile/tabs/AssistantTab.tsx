@@ -25,6 +25,7 @@ interface AssistantTabProps {
   readonly onRefresh: () => void;
   readonly onPairComputer: () => void;
   readonly onOpenWorkbench: (spaceKey: string, sessionId: string) => void;
+  readonly onOpenProviderSettings?: (spaceKey: string) => void;
   readonly onOpenVoiceForChat: (onResult: (text: string) => void) => void;
   /** Moves the global space scope (a `spaceScope` token). */
   readonly onScopeChange: (scope: string) => void;
@@ -45,6 +46,7 @@ export function AssistantTab({
   onRefresh,
   onPairComputer,
   onOpenWorkbench,
+  onOpenProviderSettings,
   onOpenVoiceForChat,
   onScopeChange,
 }: AssistantTabProps) {
@@ -136,6 +138,7 @@ export function AssistantTab({
         }
         belowHeader={<NeedsYouStrip count={needsYouItems.length} onOpen={() => { setNeedsYouOpen(true); }} />}
         onOpenWorkbench={() => { onOpenWorkbench(binding.spaceKey, binding.sessionId); }}
+        onOpenProviderSettings={onOpenProviderSettings === undefined ? undefined : () => { onOpenProviderSettings(binding.spaceKey); }}
         onOpenVoiceForChat={onOpenVoiceForChat}
         personaNameHint={boundPersona?.name}
       />

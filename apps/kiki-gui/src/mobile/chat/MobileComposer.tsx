@@ -18,6 +18,7 @@ interface MobileComposerProps {
   readonly onOpenVoice: () => void;
   readonly onSend: (text: string, timing?: DeferredAppendTiming) => Promise<boolean>;
   readonly onAbort: () => Promise<void>;
+  readonly restoreDraft?: { readonly text: string; readonly nonce: number };
 }
 
 export function MobileComposer({
@@ -30,6 +31,7 @@ export function MobileComposer({
   onOpenVoice,
   onSend,
   onAbort,
+  restoreDraft,
 }: MobileComposerProps) {
   const { t } = useI18n();
   const [text, setText] = useState(() => readDraft(draftKey));
@@ -40,6 +42,13 @@ export function MobileComposer({
   useEffect(() => {
     setText(readDraft(draftKey));
   }, [draftKey]);
+
+  useEffect(() => {
+    if (restoreDraft === undefined) return;
+    setText(restoreDraft.text);
+    writeDraft(draftKey, restoreDraft.text);
+    textareaRef.current?.focus();
+  }, [draftKey, restoreDraft]);
 
   useEffect(() => {
     const el = textareaRef.current;

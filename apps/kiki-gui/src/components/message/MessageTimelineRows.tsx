@@ -14,6 +14,7 @@ import { useI18n } from '../../i18n';
 import { plainFailure } from '../agent-panel/failureText';
 import { LifeMark } from '../LifeMark';
 import { DisclosureChevron, Icon, Spinner } from '../icons';
+import { TimelineErrorCallout, type TimelineErrorAction } from '../timeline/TimelineErrorCallout';
 import { MESSAGE_FACE } from './MessageRow';
 
 /** Tool calls and shell runs: the same unit the process view's fold counts as steps. */
@@ -209,13 +210,50 @@ function cleanOutcomeText(raw: string, danger: boolean): string {
   return plainFailure(deduped) ?? deduped;
 }
 
-/** A turn's outcome in the message view: no reply (neutral) or a failure (danger). */
-export function OutcomeLine({ notice, onOpenProcess }: { readonly notice: NoticeBlock; readonly onOpenProcess?: () => void }) {
+export function OutcomeLine({
+  notice,
+  onOpenProcess,
+  superseded = false,
+}: {
+  readonly notice: NoticeBlock;
+  readonly onOpenProcess?: () => void;
+  readonly superseded?: boolean;
+}) {
   const { t } = useI18n();
   const rawText = notice.i18n !== undefined ? t(notice.i18n.key, notice.i18n.params) : notice.text;
   const danger = notice.tone === 'danger';
-  const text = cleanOutcomeText(rawText, danger);
   const noReply = notice.reasonCodes?.includes('message.no_reply') === true;
+
+  if (danger) {
+    const actions: TimelineErrorAction[] = onOpenProcess === undefined ? [] : [{
+      id: 'open-process',
+      label: t('room.openProcess'),
+      onClick: onOpenProcess,
+      dataAttr: 'data-message-outcome-action',
+      navigation: true,
+    }];
+    const cleanedMessage = (notice.text !== '' ? notice.text : rawText)
+      .replaceAll(/(\s[—–-]\s*)(?:Error:\s*){2,}/gi, '$1Error: ')
+      .replace(/^(?:Error:\s*){2,}/i, 'Error: ');
+    return (
+      <div data-message-outcome="danger" className="flex min-w-0 items-start gap-2">
+        <span className={MESSAGE_FACE} />
+        <div className="min-w-0 flex-1">
+          <TimelineErrorCallout
+            incidentId={`message-outcome-${notice.id}`}
+            severity="error"
+            message={cleanedMessage}
+            errorDetails={notice.errorDetails}
+            createdAt={notice.createdAt}
+            superseded={superseded}
+            actions={actions}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  const text = cleanOutcomeText(rawText, false);
   return (
     <div data-message-outcome={noReply ? 'no-reply' : notice.tone} className="flex min-w-0 items-center gap-2">
       <span className={MESSAGE_FACE} />
@@ -224,17 +262,9 @@ export function OutcomeLine({ notice, onOpenProcess }: { readonly notice: Notice
         onClick={onOpenProcess}
         disabled={onOpenProcess === undefined}
         title={rawText}
-        className={`-ml-1.5 flex max-w-full min-h-7 min-w-0 items-center rounded-md px-1.5 text-left text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default ${
-          danger ? 'font-medium text-danger hover:bg-danger/[0.06]' : 'text-ink-faint hover:bg-ink/[0.04] hover:text-ink'
-        }`}
+        className="-ml-1.5 flex max-w-full min-h-7 min-w-0 items-center rounded-[6px] px-1.5 text-left text-[13px] leading-[20px] font-normal text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default pointer-coarse:min-h-11"
       >
-        <span data-message-outcome-text className="min-w-0 truncate">{text}</span>
-        {danger ? (
-          <span data-message-outcome-action className="shrink-0 whitespace-nowrap font-normal">
-            {' · '}
-            {t('room.openProcess')}
-          </span>
-        ) : null}
+        <span data-message-outcome-text className="min-w-0 [overflow-wrap:anywhere]">{text}</span>
       </button>
     </div>
   );

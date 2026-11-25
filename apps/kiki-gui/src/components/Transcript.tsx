@@ -50,6 +50,7 @@ import {
   sourceTextVersion,
   parseSelectionCarryovers,
   buildQuotePrefix,
+  isNativeExecutor,
   type TimelineAnnotation,
   type ComposerAttachment,
   appendToDraft,
@@ -58,23 +59,32 @@ import {
   subscribeSettings,
   settingsServerSnapshot,
   settingsSnapshot,
+  type CatalogModelLike,
 } from '@kiki/session-core/settings';
 import {
   agentChildren,
   agentRefsOfBlock,
   assistantMessageIdFromBlock,
+  buildNoticePlacementContext,
+  classifyNoticePlacement,
   foldHistory,
   groupBlocks,
   groupHasError,
   groupHasRunning,
   effectiveSubagentStatus,
   groupSummary,
+  hasConfirmedSubsequentSuccess,
+  hasSubsequentCompactionResolution,
+  hasSubsequentModelSwitchResolution,
   isMediaTool,
   latestFinalAssistantBlockId,
+  latestUnresolvedCompactionId,
   settledFinalAssistantBlockIds,
   latestTurnId,
   MAIN_AGENT_ID,
   readSubagentEndings,
+  resolveInjectionHeading,
+  resolveRecoverableInterruption,
   snapshotSubagentAgentId,
   stepObject,
   stabilizeAgentForest,
@@ -87,6 +97,8 @@ import {
   type HistoryFold,
   type MediaRun,
   type NoticeBlock,
+  type NoticePlacementContext,
+  type TimelinePlacement,
   type SubagentEnding,
   type SessionController,
   type SessionViewState,
@@ -151,6 +163,10 @@ import {
 } from './timeline/transcriptAnnotationStore';
 import { QuoteChip } from './ContextChips';
 import { ModelSwitchNotice } from './model-switch/ModelSwitchNotice';
+import { ModelDisplayProvider, useResolvedModelDisplay } from './timeline/ModelDisplayContext';
+import { TimelineErrorCallout, type TimelineErrorAction } from './timeline/TimelineErrorCallout';
+import { TurnFootnote } from './timeline/TurnFootnote';
+import { TurnTailSurface, canFaithfullyRetryUserBlock, hasTurnTailSurfaceContent } from './timeline/TurnTailSurface';
 import { SentAnnotationsBubble } from './SentAnnotationsBubble';
 import { useConversationSeatHeight } from './ConversationShell';
 import { FloorNavRail } from './FloorNavRail';
@@ -414,6 +430,7 @@ const UserMessage = memo(function UserMessage({
   annotations,
   senderIdentities,
   onOpenAgent,
+  superseded = false,
 }: {
   block: UserBlock;
   onCancelQueued?: (promptId: string) => void;
@@ -429,6 +446,7 @@ const UserMessage = memo(function UserMessage({
    * agent id; with no opener (a read-only surface) that name stays a label.
    */
   onOpenAgent?: (agentId: string) => void;
+  superseded?: boolean;
 }) {
   const { t, time } = useI18n();
   const scopedAnnotations = useBlockAnnotationMarks(block.id);
@@ -562,16 +580,18 @@ const UserMessage = memo(function UserMessage({
     : block.agentMessage === undefined ? undefined
     : senderAgentId === 'main' ? t('agentMessage.fromMain')
     : t('agentMessage.fromAgent', { name: senderIdentity?.title ?? block.agentMessage.senderTaskName ?? senderAgentId ?? t('agentMessage.agent') });
+  const senderModelDisplay = useResolvedModelDisplay(senderIdentity?.model);
   const senderMeta = branchFold !== undefined ? '' : [
     senderIdentity?.profile === undefined
       ? undefined
       : t('agentMessage.senderProfile', { profile: senderIdentity.profile }),
     senderIdentity?.model === undefined
       ? undefined
-      : t('agentMessage.senderModel', { model: senderIdentity.model }),
+      : t('agentMessage.senderModel', { model: senderModelDisplay.label }),
   ].filter((part): part is string => part !== undefined).join(' · ');
-  // Hover details: every field the row knows, with an explicit "unknown" for
-  // the roster facts the client has no row for (rather than omitting a line).
+  const [senderDetailsOpen, setSenderDetailsOpen] = useState(false);
+  const senderDetailsId = useId();
+  const senderModelRaw = senderIdentity?.model;
   const unknownDetail = t('agentMessage.detailsUnknown');
   const senderDetails =
     senderAgentId === undefined
@@ -705,7 +725,7 @@ const UserMessage = memo(function UserMessage({
         {senderLabel === undefined ? null : senderOpen === undefined ? (
           <span
             {...senderAttrs}
-            className="text-[12px] font-medium text-ink-soft"
+            className="text-[12px] font-normal text-ink-soft"
             title={senderDetails}
           >
             {senderLabel}
@@ -721,7 +741,7 @@ const UserMessage = memo(function UserMessage({
             {...senderAttrs}
             onClick={senderOpen}
             title={senderDetails}
-            className="-mx-1 cursor-pointer rounded-md px-1 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            className="-mx-1 cursor-pointer rounded-md px-1 text-[12px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
           >
             {senderLabel}
           </button>
@@ -729,12 +749,25 @@ const UserMessage = memo(function UserMessage({
         {senderMeta === '' ? null : (
           <span
             data-agent-message-sender-meta={block.agentMessage?.senderAgentId}
-            className="text-[12px] text-ink-faint"
+            className="text-[12px] font-normal text-ink-faint"
             title={senderDetails}
           >
             {senderMeta}
           </span>
         )}
+        {senderDetails !== undefined && (senderModelRaw !== undefined || senderMeta !== '') ? (
+          <button
+            type="button"
+            data-agent-message-sender-details-toggle={block.agentMessage?.senderAgentId ?? senderAgentId}
+            aria-expanded={senderDetailsOpen}
+            aria-controls={senderDetailsId}
+            aria-label={t('transcript.promptOutcome.details')}
+            onClick={() => { setSenderDetailsOpen((value) => !value); }}
+            className="inline-flex min-h-6 min-w-6 cursor-pointer items-center justify-center rounded-[6px] px-1 text-[12px] font-normal text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+          >
+            <DisclosureChevron open={senderDetailsOpen} />
+          </button>
+        ) : null}
         {branchFold !== undefined && senderOpen !== undefined ? (
           <button
             type="button"
@@ -756,6 +789,23 @@ const UserMessage = memo(function UserMessage({
           <RelativeTime at={block.createdAt} />
         </span>
       </span>
+      {senderDetailsOpen && senderDetails !== undefined ? (
+        <div
+          id={senderDetailsId}
+          data-agent-message-sender-details={block.agentMessage?.senderAgentId ?? senderAgentId}
+          className="mb-1.5 flex max-w-full items-start gap-2 rounded-[6px] border border-hairline bg-panel px-2.5 py-1.5 text-[12px] leading-[16px] text-ink-soft"
+        >
+          <div className="min-w-0 flex-1 space-y-0.5">
+            {senderModelRaw !== undefined ? (
+              <code data-sender-model-raw className="block select-text font-mono [overflow-wrap:anywhere] text-ink">
+                {senderModelRaw}
+              </code>
+            ) : null}
+            <p className="select-text whitespace-pre-wrap [overflow-wrap:anywhere] text-ink-faint">{senderDetails}</p>
+          </div>
+          <CopyButton text={senderModelRaw ?? senderDetails} label={t('cb.copy')} showLabel />
+        </div>
+      ) : null}
       {carried && !editing ? (
         <div data-user-context className="mb-1.5 flex max-w-[80%] flex-wrap items-center justify-end gap-1.5">
           {quoteItems.map((item, index) => (
@@ -995,6 +1045,7 @@ const UserMessage = memo(function UserMessage({
             : handleOutcomeRetry}
           retryLoading={retryWaiting && incomplete && !anyContinuationFailed}
           retryDisabled={outcomeActions.disabled === true || (incomplete && !canLoadIncomplete)}
+          superseded={superseded}
         />
       ) : null}
     </div>
@@ -1309,18 +1360,23 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
   const [open, setOpen] = useState(false);
   useFindReveal(block.id, open, setOpen);
   const category = block.category;
-  const labelText = t(category === undefined ? 'transcript.systemReminder' : REMINDER_CATEGORY_KEYS[category.kind]);
-  const facts = category === undefined ? [] : [
-    category.triggers.length > 0 ? t('transcript.reminder.triggers', { triggers: category.triggers.join(' · ') }) : undefined,
-    category.epoch !== undefined ? t('transcript.reminder.epoch', { epoch: category.epoch }) : undefined,
-    category.userTurn !== undefined ? t('transcript.reminder.userTurn', { turn: category.userTurn }) : undefined,
+  const resolved = resolveInjectionHeading({ category, variant: block.variant });
+  const heading = t(resolved.labelKey);
+  const labelText = resolved.secondary === undefined ? heading : `${heading} · ${resolved.secondary}`;
+  const facts = [
+    ...(category === undefined ? [] : [
+      category.triggers.length > 0 ? t('transcript.reminder.triggers', { triggers: category.triggers.join(' · ') }) : undefined,
+      category.epoch !== undefined ? t('transcript.reminder.epoch', { epoch: category.epoch }) : undefined,
+      category.userTurn !== undefined ? t('transcript.reminder.userTurn', { turn: category.userTurn }) : undefined,
+    ]),
+    resolved.verbatimSource !== undefined ? t('transcript.injection.sourceLabel', { source: resolved.verbatimSource }) : undefined,
   ].filter((fact): fact is string => fact !== undefined);
   return (
     <ActivityRow
-      attrs={{ 'data-reminder-kind': category?.kind }}
+      attrs={{ 'data-reminder-kind': category?.kind, 'data-reminder-variant': block.variant }}
       glyph={<Icon name="system" />}
-      label={<span className="font-normal text-ink-faint">{labelText}</span>}
-      detail={<span className="text-ink-faint/80">{injectionSummary(block.text)}</span>}
+      label={<span className="font-normal text-ink-soft">{labelText}</span>}
+      detail={<span className="text-ink-faint">{injectionSummary(block.text)}</span>}
       title={time.absoluteTime(block.createdAt)}
       expanded={open}
       onToggle={() => { setOpen((value) => !value); }}
@@ -1330,7 +1386,7 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
           <div className="flex max-w-full items-start gap-2 border-l border-hairline pl-3">
             <div className="min-w-0 flex-1 max-h-[28rem] overflow-auto pr-2 text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink-faint">
               {facts.length > 0 ? (
-                <p data-reminder-facts className="mb-1 font-mono text-[11px] whitespace-normal text-ink-faint/80">{facts.join('  ·  ')}</p>
+                <p data-reminder-facts className="mb-1 select-text font-mono text-[12px] leading-[16px] whitespace-normal text-ink-faint">{facts.join('  ·  ')}</p>
               ) : null}
               {block.text}
             </div>
@@ -1393,7 +1449,7 @@ const SystemMessage = memo(function SystemMessage({ block, superseded = false }:
 function PlainSystemMessage({ block, superseded = false }: { block: SystemBlock; superseded?: boolean }) {
   const { t, time } = useI18n();
   const resolution = useAgentRefResolution();
-  const [open, setOpen] = useState(block.variant === 'injection');
+  const [open, setOpen] = useState(false);
   useFindReveal(block.id, open, setOpen);
   const task = block.variant === 'task' && block.taskId !== undefined
     ? resolution?.tasks.find((candidate) => candidate.id === block.taskId)
@@ -1425,8 +1481,23 @@ function PlainSystemMessage({ block, superseded = false }: { block: SystemBlock;
     task?.command !== undefined ||
     (meta?.title !== undefined && /^Background process\b/i.test(meta.title))
   );
-  let label = t(SYSTEM_VARIANT_KEYS[block.variant]);
-  let detail: ReactNode = block.source ?? (block.variant === 'task' ? systemHeadline(block.text) : undefined);
+  const injectionHeading = block.variant === 'injection'
+    ? resolveInjectionHeading({ category: block.category, variant: block.originVariant, fallbackSource: block.source })
+    : undefined;
+  let label = injectionHeading !== undefined
+    ? (injectionHeading.secondary === undefined ? t(injectionHeading.labelKey) : `${t(injectionHeading.labelKey)} · ${injectionHeading.secondary}`)
+    : t(SYSTEM_VARIANT_KEYS[block.variant]);
+  let detail: ReactNode = injectionHeading !== undefined
+    ? injectionSummary(block.text)
+    : (block.source ?? (block.variant === 'task' ? systemHeadline(block.text) : undefined));
+  const injectionFacts = injectionHeading === undefined ? [] : [
+    ...(block.category === undefined ? [] : [
+      block.category.triggers.length > 0 ? t('transcript.reminder.triggers', { triggers: block.category.triggers.join(' · ') }) : undefined,
+      block.category.epoch !== undefined ? t('transcript.reminder.epoch', { epoch: block.category.epoch }) : undefined,
+      block.category.userTurn !== undefined ? t('transcript.reminder.userTurn', { turn: block.category.userTurn }) : undefined,
+    ]),
+    injectionHeading.verbatimSource !== undefined ? t('transcript.injection.sourceLabel', { source: injectionHeading.verbatimSource }) : undefined,
+  ].filter((fact): fact is string => fact !== undefined);
   if (block.variant === 'thread_watch') {
     if (meta?.title !== undefined && meta.title !== '') label = meta.title;
     const previewFirstLine = meta?.outputPreview?.split('\n', 1)[0]?.trim();
@@ -1451,9 +1522,23 @@ function PlainSystemMessage({ block, superseded = false }: { block: SystemBlock;
   }
   const watchBody = block.variant === 'thread_watch' ? (meta?.body ?? block.text) : block.text;
   const watchPreview = block.variant === 'thread_watch' ? meta?.outputPreview : undefined;
+  if (isFailed && block.variant === 'task') {
+    return (
+      <TimelineErrorCallout
+        incidentId={`task-system-${block.id}`}
+        severity="error"
+        title={label}
+        message={typeof detail === 'string' && detail !== '' ? detail : watchBody}
+        errorDetails={watchBody}
+        createdAt={block.createdAt}
+        superseded={superseded}
+        attrs={{ 'data-system': block.variant, 'data-superseded': superseded || undefined }}
+      />
+    );
+  }
   return (
     <ActivityRow
-      attrs={{ 'data-system': block.variant, 'data-superseded': superseded || undefined }}
+      attrs={{ 'data-system': block.variant, 'data-injection-variant': block.originVariant, 'data-superseded': superseded || undefined }}
       glyph={<Icon name={block.variant === 'task' ? 'task' : block.variant === 'cron_job' || block.variant === 'cron_missed' ? 'clock' : 'system'} />}
       tone={isFailed && !superseded ? 'danger' : 'plain'}
       status={isFailed && superseded ? <span aria-label={t('transcript.failedAria')} className="text-ink-faint"><Icon name="warning" size={12} /></span> : undefined}
@@ -1467,13 +1552,16 @@ function PlainSystemMessage({ block, superseded = false }: { block: SystemBlock;
         <div className="space-y-1.5">
           <div className="flex max-w-full items-start gap-2 border-l border-hairline pl-3">
             <div className="min-w-0 flex-1 max-h-[28rem] overflow-auto pr-2 text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink-faint">
+              {injectionFacts.length > 0 ? (
+                <p data-injection-facts className="mb-1 select-text font-mono text-[12px] leading-[16px] whitespace-normal text-ink-faint">{injectionFacts.join('  ·  ')}</p>
+              ) : null}
               {watchBody}
             </div>
             {watchBody !== '' ? <CopyButton text={block.text} label={label} /> : null}
           </div>
           {watchPreview !== undefined && watchPreview !== '' ? (
             <div className="ml-3 rounded border border-hairline/70 bg-paper/70 px-2.5 py-2">
-              <div className="mb-1 text-[11px] font-medium text-ink-faint">
+              <div className="mb-1 text-[12px] leading-[16px] font-normal text-ink-faint">
                 {t('transcript.threadWatch.latestOutput')}
               </div>
               <div className="max-h-[16rem] overflow-auto text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink-soft">
@@ -1907,6 +1995,7 @@ function SubagentCardBody({
   error,
   elapsed,
   depth = 0,
+  externalExecutor = false,
 }: {
   name: string;
   model?: string;
@@ -1918,11 +2007,12 @@ function SubagentCardBody({
   thinkingEffort?: string;
   description?: string;
   error?: string;
-  /** undefined = start or end unknown — rendered as an explicit "—". */
   elapsed: number | undefined;
   depth?: number;
+  externalExecutor?: boolean;
 }) {
   const { t, tp, time } = useI18n();
+  const resolvedModel = useResolvedModelDisplay(model, { externalExecutor });
   const busy = status === 'running' || status === 'background';
   const bodyIndent = depth > 0 ? 'pl-[26px]' : 'pl-4';
   return (
@@ -1935,9 +2025,15 @@ function SubagentCardBody({
         ) : (
           <span className={`h-2 w-2 shrink-0 rounded-full ${subagentStatusTone(status)} ${busy ? 'status-dot-busy' : ''}`} />
         )}
-        <span className={`min-w-0 truncate text-[13px] ${depth > 0 ? 'font-medium' : 'font-semibold'} text-ink`}>{name}</span>
+        <span className={`min-w-0 truncate text-[13px] leading-[20px] ${depth > 0 ? 'font-normal' : 'font-bold'} text-ink`}>{name}</span>
         {model !== undefined ? (
-          <span className="min-w-0 shrink truncate text-[12px] text-ink-faint">{model}</span>
+          <span
+            data-subagent-model={model}
+            title={resolvedModel.rawId}
+            className="min-w-0 shrink truncate text-[12px] leading-[16px] font-normal text-ink-faint"
+          >
+            {resolvedModel.label}
+          </span>
         ) : null}
         <span className="ml-auto shrink-0 text-[12px] tabular-nums text-ink-faint">
           {elapsed === undefined ? null : time.formatDuration(elapsed)}
@@ -2245,8 +2341,39 @@ const SubagentCard = memo(function SubagentCard({
   const status = displayStatus ?? (isLatestRun ? effectiveSubagentStatus(block, forest) : block.status);
   const elapsed = useSubagentElapsed(block, node, status, isLatestRun);
   const runIsLive = status === 'running' || status === 'background' || status === 'suspended';
-  const model = isLatestRun ? (node?.model ?? block.model) : (block.model ?? node?.model);
-  const thinkingEffort = isLatestRun ? (node?.thinkingEffort ?? block.thinkingEffort) : (block.thinkingEffort ?? node?.thinkingEffort);
+  const model = isLatestRun ? (node?.model ?? block.model) : block.model;
+  const rawExecutorId = block.executorId ?? (isLatestRun ? node?.executorId : undefined);
+  const externalExecutor = rawExecutorId !== undefined && !isNativeExecutor(rawExecutorId);
+  const [modelDetailsOpen, setModelDetailsOpen] = useState(false);
+  const modelDetailsId = useId();
+  const hasModelRawId = model !== undefined && model !== '';
+  const modelDetailsButton = hasModelRawId ? (
+    <button
+      type="button"
+      data-subagent-model-toggle={block.subagentId}
+      aria-expanded={modelDetailsOpen}
+      aria-controls={modelDetailsId}
+      aria-label={t('transcript.promptOutcome.details')}
+      title={model}
+      onClick={() => { setModelDetailsOpen((value) => !value); }}
+      className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-paper hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+    >
+      <DisclosureChevron open={modelDetailsOpen} />
+    </button>
+  ) : null;
+  const modelDetailsBody = hasModelRawId && modelDetailsOpen ? (
+    <div
+      id={modelDetailsId}
+      data-subagent-model-details={block.subagentId}
+      className="mt-1 flex items-center gap-2 border-l border-hairline pl-3 text-[12px] leading-[16px] text-ink-soft"
+    >
+      <code data-subagent-model-raw className="min-w-0 flex-1 select-text font-mono [overflow-wrap:anywhere]">
+        {model}
+      </code>
+      <CopyButton text={model} label={t('cb.copy')} showLabel />
+    </div>
+  ) : null;
+  const thinkingEffort = isLatestRun ? (node?.thinkingEffort ?? block.thinkingEffort) : block.thinkingEffort;
   const runError = runIsLive ? undefined : (isLatestRun ? (node?.error ?? block.error) : (block.error ?? node?.error));
   const blockSummary = block.summary !== undefined && block.summary !== '' ? block.summary : undefined;
   const continuationOwnedByEnding =
@@ -2328,8 +2455,8 @@ const SubagentCard = memo(function SubagentCard({
         onOpenAgent={onOpenAgent}
         folded={nested}
         superseded={superseded}
-        invocationButton={invocation.button}
-        invocationBody={<><AgentTurnOutcomeLine outcome={node?.turnOutcome} />{invocation.body}</>}
+        invocationButton={<>{modelDetailsButton}{invocation.button}</>}
+        invocationBody={<>{modelDetailsBody}<AgentTurnOutcomeLine outcome={node?.turnOutcome} />{invocation.body}</>}
         onExpand={
           nested
             ? nestedFold.open
@@ -2355,6 +2482,7 @@ const SubagentCard = memo(function SubagentCard({
       error={runError}
       elapsed={elapsed}
       depth={depth}
+      externalExecutor={externalExecutor}
     />
   );
   return (
@@ -2418,9 +2546,11 @@ const SubagentCard = memo(function SubagentCard({
             <AgentTurnOutcomeLine outcome={node?.turnOutcome} />
           </div>
           <div className="-mt-1 -mr-1.5 flex shrink-0 items-center gap-0.5">
+            {modelDetailsButton}
             {invocation.button}
           </div>
         </div>
+        {modelDetailsBody}
         {showInlineFullResult ? (
           <div className="mt-1 space-y-3 border-l border-hairline pl-3">
             <SubagentResultSummary taskId={resultTaskId} summary={resultSummary} callerAgentId={block.parentAgentId} />
@@ -2676,6 +2806,13 @@ const CompactionRecoveryContext = createContext<{
   readonly onRetryCompaction?: (strategy: 'summarize' | 'relay') => void;
 }>({});
 
+const NoticePlacementCtx = createContext<{
+  readonly placement: NoticePlacementContext;
+  readonly blocks: readonly Block[];
+  readonly onOpenAgent?: (agentId: string) => void;
+  readonly knownAgentIds?: ReadonlySet<string>;
+}>({ placement: {}, blocks: [] });
+
 interface TurnLocateHint {
   readonly stepId?: string;
   readonly query?: string;
@@ -2856,151 +2993,285 @@ function isTurnFailureNotice(
 }
 
 const Notice = memo(function Notice({ block, superseded = false }: { block: NoticeBlock; superseded?: boolean }) {
-  const { t, time, locale } = useI18n();
+  const { t, time } = useI18n();
   const compactionRecovery = useContext(CompactionRecoveryContext);
-  const canRecoverCompaction =
-    compactionRecovery.onRetryCompaction !== undefined &&
-    compactionRecovery.latestFailedNoticeId === block.id;
+  const { placement: placementContext, blocks: allBlocks, onOpenAgent, knownAgentIds } = useContext(NoticePlacementCtx);
+  const fromResolved = useResolvedModelDisplay(block.modelSwitchFrom);
+  const toResolved = useResolvedModelDisplay(block.modelSwitchTo);
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   useFindReveal(block.id, open, setOpen);
+
+  const placement = classifyNoticePlacement(block, placementContext);
+  const canRecoverCompaction =
+    compactionRecovery.onRetryCompaction !== undefined &&
+    compactionRecovery.latestFailedNoticeId === block.id;
+
+  const isLegacyModelSwitch = block.modelSwitch === undefined && block.modelSwitchFrom !== undefined && block.modelSwitchTo !== undefined;
   const fullText = block.goalChange !== undefined
     ? t(GOAL_CHANGE_I18N_KEY[block.goalChange.kind])
-    : block.i18n !== undefined ? t(block.i18n.key, block.i18n.params) : block.text;
-  const isDangerOrError = block.tone === 'danger' || block.errorDetails !== undefined;
-  const rawErrorText = block.compactionFailure ?? (isDangerOrError ? (block.text !== '' && block.text !== 'compaction' ? block.text : fullText) : undefined);
-  const fullErrorDetails = block.errorDetails !== undefined
-    ? (rawErrorText !== undefined && !block.errorDetails.includes(rawErrorText) ? `${rawErrorText}\n\n${block.errorDetails}` : block.errorDetails)
-    : rawErrorText;
-  const errorExpandable = block.compactionFailure !== undefined || block.errorDetails !== undefined ||
-    (block.tone === 'danger' && rawErrorText !== undefined && (rawErrorText.includes('\n') || rawErrorText.length > 72 || humanizeTimelineError(rawErrorText, locale) !== rawErrorText));
-  const summaryHeadline = isDangerOrError && block.compactionFailure === undefined
-    ? (block.i18n?.key === 'notice.turnFailedDetail' && block.text !== ''
-      ? t('notice.turnFailedDetail', { detail: `: ${humanizeTimelineError(block.text, locale) ?? firstLineOf(block.text)}` })
-      : humanizeTimelineError(fullText, locale) ?? firstLineOf(fullText))
-    : fullText;
-  const history = block.compactionHistory ?? [];
-  const hasCompactionSummary = block.summary !== undefined || block.summaryPending === true ||
-    history.some((entry) => entry.summary !== undefined || entry.summaryPending === true);
-  const expandable = errorExpandable || history.length > 1 || hasCompactionSummary;
-  const title = [time.absoluteTime(block.createdAt), block.goalChange?.reason, block.compactionFailure]
-    .filter((part) => part !== undefined && part !== '')
-    .join('\n');
-  const count = block.markerRepeatCount ?? 1;
-  const repeatedText = count > 1 ? history.length > 0
-    ? t('transcript.marker.compactionRepeated', { label: summaryHeadline, count }) : `${summaryHeadline} ×${count}` : summaryHeadline;
-  const activeDanger = block.tone === 'danger' && !superseded;
-  const label = activeDanger
-    ? <span className="min-w-0 truncate font-medium text-danger">{repeatedText}</span>
-    : <span className="min-w-0 truncate text-ink-faint">{repeatedText}</span>;
-  return (
-    <div>
-      <TimelineDivider
-        tone={activeDanger ? 'warn' : 'plain'}
-        title={title === '' ? undefined : title}
+    : isLegacyModelSwitch && block.i18n !== undefined
+      ? t(block.i18n.key, { ...block.i18n.params, from: fromResolved.label, to: toResolved.label })
+      : block.i18n !== undefined ? t(block.i18n.key, block.i18n.params) : block.text;
+
+  const isCompactionError =
+    block.compactionPhase === 'failed' ||
+    block.compactionPhase === 'interrupted' ||
+    block.compactionFailure !== undefined;
+
+  if (placement === 'error') {
+    const compactionSuperseded = isCompactionError && hasSubsequentCompactionResolution(allBlocks, block.id);
+    const effectiveSuperseded = isCompactionError ? compactionSuperseded : superseded;
+    const isInterruptedCompaction = block.compactionPhase === 'interrupted';
+    const actions: TimelineErrorAction[] = [];
+    if (isCompactionError && canRecoverCompaction && !effectiveSuperseded) {
+      actions.push({
+        id: 'retry-compaction',
+        label: t('transcript.error.retryCompaction'),
+        onClick: () => { compactionRecovery.onRetryCompaction?.('summarize'); },
+        primary: true,
+        dataAttr: 'data-compaction-retry-summarize',
+      });
+      actions.push({
+        id: 'relay-compaction',
+        label: t('transcript.error.relayCompaction'),
+        onClick: () => { compactionRecovery.onRetryCompaction?.('relay'); },
+        confirmMessage: t('transcript.error.relayConfirm'),
+        confirmLabel: t('transcript.error.relayConfirmAction'),
+        dataAttr: 'data-compaction-retry-fresh',
+      });
+    }
+    const rawMsg = isCompactionError
+      ? (block.compactionFailure ?? (isInterruptedCompaction ? t('transcript.error.compactionInterruptedDefault') : fullText))
+      : (block.text !== '' && block.text !== 'compaction' ? block.text : fullText);
+    const title = isCompactionError
+      ? fullText
+      : block.taskRef !== undefined
+        ? fullText
+        : undefined;
+    return (
+      <TimelineErrorCallout
+        incidentId={`notice-${block.id}`}
+        severity={isInterruptedCompaction ? 'warn' : 'error'}
+        title={title}
+        message={rawMsg}
+        errorDetails={block.errorDetails}
+        createdAt={block.createdAt}
+        superseded={effectiveSuperseded}
+        actions={actions}
         attrs={{
-          'data-notice-tone': activeDanger ? 'danger' : 'neutral',
-          'data-notice-superseded': superseded && block.tone === 'danger' ? 'true' : undefined,
+          'data-notice-tone': effectiveSuperseded ? 'neutral' : 'danger',
+          'data-notice-superseded': effectiveSuperseded ? 'true' : undefined,
           'data-notice-key': block.i18n?.key,
-          'data-goal-change': block.goalChange?.kind,
         }}
-      >
-        {expandable ? (
-          <button
-            type="button"
-            data-notice-toggle
-            data-notice-reasons-toggle
-            aria-expanded={open}
-            aria-controls={detailsId}
-            onClick={() => { setOpen((value) => !value); }}
-            className="inline-flex max-w-full min-h-6 min-w-0 items-center gap-1 rounded-sm px-1 transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-selected-ink"
-          >
-            {label}
-            <DisclosureChevron open={open} />
-          </button>
-        ) : label}
-        {canRecoverCompaction ? (
-          <span className="ml-1 inline-flex shrink-0 items-center gap-1.5">
+      />
+    );
+  }
+
+  if (placement === 'epoch') {
+    const history = block.compactionHistory ?? [];
+    const hasCompactionSummary = block.summary !== undefined || block.summaryPending === true ||
+      history.some((entry) => entry.summary !== undefined || entry.summaryPending === true);
+    const translatedReasons = (block.reasonCodes ?? [])
+      .map((code) => {
+        const key = `transcript.marker.reason.${code}` as I18nKey;
+        const translated = t(key);
+        return translated === key ? undefined : translated;
+      })
+      .filter((label): label is string => label !== undefined);
+    const hasReasons = !hasCompactionSummary && translatedReasons.length > 0;
+    const hasTechSwitchIds = isLegacyModelSwitch;
+    const expandable = history.length > 1 || hasCompactionSummary || hasReasons || hasTechSwitchIds;
+    const count = block.markerRepeatCount ?? 1;
+    const repeatedText = count > 1
+      ? (history.length > 0 ? t('transcript.marker.compactionRepeated', { label: fullText, count }) : `${fullText} ×${count}`)
+      : fullText;
+    const isRunningCompaction = block.compactionPhase === 'running' || block.i18n?.key === 'notice.compacting';
+    const metrics = block.compactionMetrics;
+    const metricsText = metrics === undefined ? undefined : [
+      metrics.beforeTokens !== undefined && metrics.afterTokens !== undefined
+        ? `${metrics.beforeTokens.toLocaleString()} → ${metrics.afterTokens.toLocaleString()} tokens`
+        : undefined,
+      metrics.beforeMessages !== undefined && metrics.afterMessages !== undefined
+        ? `${metrics.beforeMessages} → ${metrics.afterMessages}`
+        : undefined,
+    ].filter((part): part is string => part !== undefined).join(' · ');
+    const canLinkBranchSource =
+      block.branchBase !== undefined &&
+      onOpenAgent !== undefined &&
+      knownAgentIds?.has(block.branchBase.sourceAgentId) === true;
+    const title = [
+      time.absoluteTime(block.createdAt),
+      isLegacyModelSwitch ? `${block.modelSwitchFrom} → ${block.modelSwitchTo}` : undefined,
+    ].filter((part): part is string => part !== undefined && part !== '').join('\n');
+
+    return (
+      <div>
+        <TimelineDivider
+          tone="plain"
+          title={title === '' ? undefined : title}
+          attrs={{
+            'data-notice-tone': 'neutral',
+            'data-notice-placement': 'epoch',
+            'data-notice-key': block.i18n?.key,
+            'data-compaction-phase': block.compactionPhase,
+          }}
+        >
+          {expandable ? (
             <button
               type="button"
-              data-compaction-retry-summarize
-              onClick={() => { compactionRecovery.onRetryCompaction?.('summarize'); }}
-              className="min-h-6 cursor-pointer rounded-md border border-hairline bg-paper px-2 text-[11.5px] font-medium text-ink transition-colors hover:border-hairline-strong hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-selected-ink"
+              data-notice-toggle
+              data-notice-reasons-toggle
+              data-notice-summary-toggle={hasCompactionSummary ? '' : undefined}
+              aria-expanded={open}
+              aria-controls={detailsId}
+              onClick={() => { setOpen((value) => !value); }}
+              className="inline-flex min-h-7 min-w-7 max-w-full cursor-pointer items-center justify-center gap-1 rounded-[6px] px-1.5 text-[12px] leading-[16px] font-normal text-ink-faint transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
             >
-              {locale === 'zh' ? '重试压缩' : 'Retry compaction'}
+              {isRunningCompaction ? (
+                <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft motion-reduce:animate-none" />
+              ) : null}
+              <span>{repeatedText}</span>
+              {metricsText !== undefined && metricsText !== '' ? (
+                <span className="tabular-nums text-ink-faint">· {metricsText}</span>
+              ) : null}
+              <DisclosureChevron open={open} />
             </button>
-            <button
-              type="button"
-              data-compaction-retry-fresh
-              onClick={() => { compactionRecovery.onRetryCompaction?.('relay'); }}
-              className="min-h-6 cursor-pointer rounded-md border border-hairline bg-paper px-2 text-[11.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
-            >
-              {locale === 'zh' ? '清空较早上下文' : 'Compact fresh'}
-            </button>
-          </span>
-        ) : null}
-      </TimelineDivider>
-      {open ? (
-        <div id={detailsId} className="mt-1 mb-1.5 space-y-2">
-          {errorExpandable && fullErrorDetails !== undefined ? (
-            <div data-notice-error-details className="flex max-w-full items-start gap-1 rounded-md bg-ink/[0.04] px-3 py-1.5 text-ink-soft">
-              <p className="min-w-0 flex-1 text-left font-mono text-[12px] leading-relaxed break-words whitespace-pre-wrap">
-                {fullErrorDetails}
-              </p>
-              <CopyButton text={fullErrorDetails} label={t('transcript.promptOutcome.details')} />
-            </div>
-          ) : null}
-          {history.length > 1 ? (
-            <ol data-compaction-history className="flex list-decimal flex-col gap-2.5 pl-[1.4em] text-[12px] leading-snug text-ink-soft marker:text-ink-faint">
-              {history.map((entry) => (
-                <li key={entry.id} className="space-y-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="min-w-0 truncate">
-                      <span>{time.absoluteTime(entry.createdAt)}</span>
-                      {entry.source !== undefined ? <span> · {t(`transcript.marker.compactionSource.${entry.source}` as I18nKey)}</span> : null}
-                      {entry.startedAt !== undefined ? <span className="text-ink-faint"> · {t('transcript.marker.compactionStartedAt', { time: time.absoluteTime(entry.startedAt) ?? entry.startedAt })}</span> : null}
-                    </span>
-                    {entry.summary !== undefined && entry.summary !== '' ? (
-                      <CopyButton text={entry.summary} label={summaryHeadline} />
-                    ) : null}
-                  </div>
-                  {entry.summary !== undefined && entry.summary !== '' ? (
-                    <div data-compaction-summary className="border-l border-hairline pl-3 text-[13px] leading-6 text-ink-soft">
-                      <Markdown text={entry.summary} />
+          ) : (
+            <span className="inline-flex items-center gap-1.5">
+              {isRunningCompaction ? (
+                <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft motion-reduce:animate-none" />
+              ) : null}
+              <span>{repeatedText}</span>
+              {metricsText !== undefined && metricsText !== '' ? (
+                <span className="tabular-nums text-ink-faint">· {metricsText}</span>
+              ) : null}
+              {canLinkBranchSource && block.branchBase !== undefined ? (
+                <button
+                  type="button"
+                  data-branch-source-link={block.branchBase.sourceAgentId}
+                  onClick={() => { onOpenAgent?.(block.branchBase!.sourceAgentId); }}
+                  className="inline-flex min-h-7 cursor-pointer items-center rounded-[6px] px-1 text-[12px] leading-[16px] font-normal text-selected-ink underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                >
+                  {block.branchBase.sourceAgentId}
+                </button>
+              ) : null}
+            </span>
+          )}
+        </TimelineDivider>
+        {open ? (
+          <div id={detailsId} className="mt-1 mb-1.5 space-y-2">
+            {isLegacyModelSwitch ? (
+              <div className="flex items-center justify-center gap-2 text-[12px] leading-[16px] text-ink-faint">
+                <span className="select-text font-mono [overflow-wrap:anywhere]">{block.modelSwitchFrom} → {block.modelSwitchTo}</span>
+                <CopyButton text={`${block.modelSwitchFrom} → ${block.modelSwitchTo}`} label={fullText} />
+              </div>
+            ) : null}
+            {hasReasons && history.length <= 1 ? (
+              <ul data-compaction-reasons className="space-y-0.5 pl-4 text-[12px] leading-[16px] text-ink-faint">
+                {translatedReasons.map((reasonLabel) => (
+                  <li key={reasonLabel}>{reasonLabel}</li>
+                ))}
+              </ul>
+            ) : null}
+            {history.length > 1 ? (
+              <ol data-compaction-history className="flex list-decimal flex-col gap-2.5 pl-[1.4em] text-[12px] leading-snug text-ink-soft marker:text-ink-faint">
+                {history.map((entry) => (
+                  <li key={entry.id} className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 truncate">
+                        <span>{time.absoluteTime(entry.createdAt)}</span>
+                        {entry.source !== undefined ? <span> · {t(`transcript.marker.compactionSource.${entry.source}` as I18nKey)}</span> : null}
+                        {entry.startedAt !== undefined ? <span className="text-ink-faint"> · {t('transcript.marker.compactionStartedAt', { time: time.absoluteTime(entry.startedAt) ?? entry.startedAt })}</span> : null}
+                      </span>
+                      {entry.summary !== undefined && entry.summary !== '' ? (
+                        <CopyButton text={entry.summary} label={fullText} />
+                      ) : null}
                     </div>
-                  ) : null}
-                  {entry.markerId !== undefined ? (
-                    <ContentContinuation
-                      source={{ kind: 'marker', id: entry.markerId }}
-                      roots={COMPACTION_ROOTS}
-                      label={summaryHeadline}
-                    />
-                  ) : null}
-                </li>
-              ))}
-            </ol>
-          ) : hasCompactionSummary ? (
-            <div data-compaction-summary className="space-y-1.5">
-              {block.summary !== undefined && block.summary !== '' ? (
-                <div className="flex items-start gap-2 border-l border-hairline pl-3">
-                  <div className="min-w-0 flex-1 text-[13px] leading-6 text-ink-soft">
-                    <Markdown text={block.summary} />
+                    {entry.summary !== undefined && entry.summary !== '' ? (
+                      <div data-compaction-summary className="border-l border-hairline pl-3 text-[13px] leading-6 text-ink-soft">
+                        <Markdown text={entry.summary} />
+                      </div>
+                    ) : null}
+                    {entry.markerId !== undefined ? (
+                      <ContentContinuation
+                        source={{ kind: 'marker', id: entry.markerId }}
+                        roots={COMPACTION_ROOTS}
+                        label={fullText}
+                      />
+                    ) : null}
+                  </li>
+                ))}
+              </ol>
+            ) : hasCompactionSummary ? (
+              <div data-compaction-summary className="space-y-1.5">
+                {block.summary !== undefined && block.summary !== '' ? (
+                  <div className="flex items-start gap-2 border-l border-hairline pl-3">
+                    <div className="min-w-0 flex-1 text-[13px] leading-6 text-ink-soft">
+                      <Markdown text={block.summary} />
+                    </div>
+                    <CopyButton text={block.summary} label={fullText} />
                   </div>
-                  <CopyButton text={block.summary} label={summaryHeadline} />
-                </div>
-              ) : null}
-              {block.markerId !== undefined ? (
-                <ContentContinuation
-                  source={{ kind: 'marker', id: block.markerId }}
-                  roots={COMPACTION_ROOTS}
-                  label={summaryHeadline}
-                />
-              ) : null}
-            </div>
-          ) : null}
+                ) : null}
+                {block.markerId !== undefined ? (
+                  <ContentContinuation
+                    source={{ kind: 'marker', id: block.markerId }}
+                    roots={COMPACTION_ROOTS}
+                    label={fullText}
+                  />
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  const goalReason = block.goalChange?.reason?.trim();
+  const planPath = block.planRevision?.path;
+  const switchTech = isLegacyModelSwitch ? `${block.modelSwitchFrom} → ${block.modelSwitchTo}` : undefined;
+  const bodyDetail = goalReason ?? planPath ?? switchTech ?? (block.i18n === undefined && block.text.includes('\n') ? block.text : undefined);
+  const inlineExcerpt = goalReason !== undefined
+    ? goalReason
+    : planPath !== undefined
+      ? planPath
+      : undefined;
+  const isGoalWarn = block.goalChange?.kind === 'blocked' || block.goalChange?.kind === 'paused';
+  const glyph = block.markerKind === 'interruption' || block.i18n?.key === 'transcript.marker.interruption'
+    ? <span aria-hidden className="inline-block h-2 w-2 rounded-[2px] bg-ink-faint" />
+    : block.goalChange !== undefined
+      ? <Icon name={isGoalWarn ? 'warning' : 'check'} size={12} />
+      : block.markerKind?.startsWith('plan.')
+        ? <Icon name="file" size={12} />
+        : block.taskRef !== undefined
+          ? <Icon name="task" size={12} />
+          : <Icon name="dash" size={12} />;
+
+  return (
+    <ActivityRow
+      glyph={glyph}
+      tone={isGoalWarn ? 'warn' : 'plain'}
+      label={fullText}
+      detail={inlineExcerpt}
+      meta={block.createdAt !== undefined ? <RelativeTime at={block.createdAt} /> : undefined}
+      metaTitle={time.absoluteTime(block.createdAt)}
+      expanded={bodyDetail === undefined ? undefined : open}
+      onToggle={bodyDetail === undefined ? undefined : () => { setOpen((value) => !value); }}
+      attrs={{
+        'data-notice-tone': 'neutral',
+        'data-notice-placement': placement,
+        'data-notice-key': block.i18n?.key,
+        'data-goal-change': block.goalChange?.kind,
+      }}
+    >
+      {open && bodyDetail !== undefined ? (
+        <div id={detailsId} data-notice-detail className="flex items-start gap-2 border-l border-hairline pl-3 text-[12px] leading-[16px] text-ink-soft">
+          <p className="min-w-0 flex-1 select-text whitespace-pre-wrap [overflow-wrap:anywhere]">{bodyDetail}</p>
+          <CopyButton text={bodyDetail} label={fullText} />
         </div>
-      ) : null}
-    </div>
+      ) : undefined}
+    </ActivityRow>
   );
 });
 
@@ -3165,12 +3436,16 @@ function EndedRow({
   const end = parseTimelineMs(ending.task?.completed_at);
   const elapsed = start === undefined || end === undefined ? undefined : Math.max(0, end - start);
   const model = ending.task?.model ?? card?.model;
+  const resolvedModel = useResolvedModelDisplay(model, {
+    externalExecutor: card?.executorId !== undefined && !isNativeExecutor(card.executorId),
+  });
   const effort = ending.task?.thinking_effort ?? card?.thinkingEffort;
   return (
     <SubagentEndedRow
       ending={ending}
       name={card?.name ?? node?.label ?? ending.agentId}
-      model={model === undefined ? undefined : [model.replace(/^.*\//, ''), effort].filter(Boolean).join(' · ')}
+      model={model === undefined ? undefined : [resolvedModel.label, effort].filter(Boolean).join(' · ')}
+      modelRawId={resolvedModel.rawId}
       summary={ending.task?.output_preview}
       elapsed={elapsed === undefined ? undefined : time.formatDuration(elapsed)}
       onOpenAgent={onOpenAgent}
@@ -3400,6 +3675,7 @@ const BlockView = memo(function BlockView({
           annotations={annotations}
           senderIdentities={senderIdentities}
           onOpenAgent={onOpenAgent}
+          superseded={superseded}
         />
       );
     case 'system-reminder':
@@ -3448,7 +3724,7 @@ const BlockView = memo(function BlockView({
           : block.earlierPromptOutcomes !== undefined
             ? <EarlierPromptOutcomesRow block={block} />
             : block.modelSwitch !== undefined
-              ? <ModelSwitchNotice block={block} />
+              ? <ModelSwitchNotice block={block} superseded={superseded} />
               : <Notice block={block} superseded={superseded} />;
     case 'approval':
       // Terminal facts stay inline as one compact history line (readOnly or
@@ -3651,15 +3927,16 @@ const MessageViewRow = memo(function MessageViewRow({
       />
     );
   } else if (node.kind === 'notice') {
-    // A switch never claims success before it has: its row carries the real
-    // state and its own actions in both views. A saved record shows its own
-    // body in both views, so neither one can be mistaken for a status line.
+    const placement = classifyNoticePlacement(node);
     body = node.externalText !== undefined
       ? <ExternalTextRow note={node.externalText} createdAt={node.createdAt} />
       : node.modelSwitch !== undefined
         ? <ModelSwitchNotice block={node} />
-        : node.compactionPhase !== undefined ? <Notice block={node} />
-        : <OutcomeLine notice={node} onOpenProcess={() => { onOpenProcess(turnId, node.id); }} />;
+        : node.earlierPromptOutcomes !== undefined
+          ? <EarlierPromptOutcomesRow block={node} />
+          : node.compactionPhase !== undefined || placement === 'epoch' || placement === 'visible-activity'
+            ? <Notice block={node} />
+            : <OutcomeLine notice={node} onOpenProcess={() => { onOpenProcess(turnId, node.id); }} />;
   } else {
     body = (
       <ActivitySummaryRow
@@ -3925,7 +4202,7 @@ function collectDisplayNodeTurnIds(node: TimelineNode, out: string[]): void {
  * `divider`: a boundary between regions rather than an event inside one
  *   (compaction, markers, stop notices, system injections) — spans the column.
  */
-function timelineLane(node: TimelineNode): 'conversation' | 'activity' | 'divider' {
+function timelineLane(node: TimelineNode, noticePlacement?: TimelinePlacement): 'conversation' | 'activity' | 'divider' {
   switch (node.kind) {
     case 'user':
     case 'assistant':
@@ -3935,14 +4212,14 @@ function timelineLane(node: TimelineNode): 'conversation' | 'activity' | 'divide
       return node.resolution === undefined ? 'conversation' : 'activity';
     case 'question':
       return node.outcome === undefined ? 'conversation' : 'activity';
-    case 'notice':
-      // An engine compaction is a boundary; other engine notes happened in the turn.
-      // A saved external record is a thing that happened, never a divider: a
-      // rule above the record would read as the record having no content.
+    case 'notice': {
       if (node.externalText !== undefined) return 'activity';
-      return node.executor === undefined || node.executor.kind === 'compaction' ? 'divider' : 'activity';
+      const placement = noticePlacement ?? classifyNoticePlacement(node);
+      if (placement === 'epoch') return 'divider';
+      if (placement === 'error') return 'conversation';
+      return 'activity';
+    }
     case 'system':
-      // A compaction summary is a boundary; the rest are things that happened.
       return node.variant === 'compaction_summary' ? 'divider' : 'activity';
     default:
       return 'activity';
@@ -4508,6 +4785,7 @@ type TranscriptRowProps = {
   promotedReplyIds?: ReadonlySet<string>;
   forkableAssistantIds?: ReadonlySet<string>;
   nonUserTurn?: boolean;
+  noticePlacement?: TimelinePlacement;
 };
 
 function nodeUsesAgentNames(node: RenderNode): boolean {
@@ -4714,6 +4992,7 @@ const TranscriptRow = memo(
     promotedReplyIds,
     forkableAssistantIds,
     nonUserTurn,
+    noticePlacement,
   }: TranscriptRowProps) {
     const { locale } = useI18n();
     // data-turn-id makes a turn addressable from outside the transcript (the
@@ -4806,13 +5085,14 @@ const TranscriptRow = memo(
     // Conversation keeps the full content column; everything the agent DID is
     // inset into the shared activity lane, so a scan follows one glyph axis.
     // Dividers span the column by design and are therefore not inset.
+    const lane = timelineLane(node, noticePlacement);
     return (
       <div
         data-block-id={nodeKey(node)}
         data-turn-id={rowTurnId}
         data-turn-origin={nonUserTurn ? 'non-user' : undefined}
-        data-timeline-lane={timelineLane(node)}
-        className={timelineLane(node) === 'activity' ? ACTIVITY_GUTTER : undefined}
+        data-timeline-lane={lane}
+        className={lane === 'activity' ? ACTIVITY_GUTTER : undefined}
       >
         {executionBadge !== undefined ? <TurnExecutionBadge execution={executionBadge} /> : null}
         {renderNode(node)}
@@ -4850,7 +5130,8 @@ const TranscriptRow = memo(
     prev.onLocateDispatch === next.onLocateDispatch &&
     promotionEqual(prev, next) &&
     forkableAssistantEqual(prev, next) &&
-    prev.nonUserTurn === next.nonUserTurn,
+    prev.nonUserTurn === next.nonUserTurn &&
+    prev.noticePlacement === next.noticePlacement,
 );
 
 /**
@@ -5011,12 +5292,9 @@ function TopEdge({ state, onLoadOlder, onCancel, reserveFeedback = false }: {
   );
   if (state.historyCoverageKind === 'unknown' && !state.hasMoreHistory && !state.loadingOlder && state.olderError === undefined) {
     return (
-      <div role="status" data-top-edge="unverified" className="flex items-center gap-3 pb-1">
-        <span className="h-px flex-1 bg-hairline" />
-        <span role="img" title={t('transcript.historyPartial')} aria-label={t('transcript.historyPartial')} className="inline-flex text-ink-faint">
-          <Icon name="partial" size={12} />
-        </span>
-        <span className="h-px flex-1 bg-hairline" />
+      <div role="status" data-top-edge="unverified" className="flex items-center justify-center gap-1.5 pb-1 font-sans text-[12px] leading-[16px] font-normal text-ink-faint">
+        <Icon name="partial" size={12} />
+        <span>{t('transcript.historyPartial')}</span>
       </div>
     );
   }
@@ -5039,13 +5317,17 @@ function TopEdge({ state, onLoadOlder, onCancel, reserveFeedback = false }: {
       </div>
     );
   }
-  if (!state.hasMoreHistory && state.fetchedOlder) {
+  const firstBlock = state.blocks[0];
+  const topAlreadyEpoch = firstBlock?.kind === 'notice' && (
+    firstBlock.markerKind === 'context.clear' ||
+    firstBlock.markerKind === 'branch.base' ||
+    firstBlock.branchBase !== undefined
+  );
+  if (!state.hasMoreHistory && state.fetchedOlder && !topAlreadyEpoch) {
     return (
-      <div role="status" data-top-edge="beginning" className="flex items-center gap-3 pb-1">
-        <span className="h-px flex-1 bg-hairline" />
-        <span className="text-[12px] text-ink-faint">{t('transcript.beginning')}</span>
-        <span className="h-px flex-1 bg-hairline" />
-      </div>
+      <TimelineDivider attrs={{ role: 'status', 'data-top-edge': 'beginning' }}>
+        {t('transcript.beginning')}
+      </TimelineDivider>
     );
   }
   if (state.hasMoreHistory) {
@@ -5121,59 +5403,6 @@ function formatLatencySeconds(ms: number): string {
 
 export { TurnExecutionBadge };
 
-const CANCELLATION_LABEL_KEY = {
-  user: 'transcript.stoppedByYou',
-  aborted: 'transcript.interrupted',
-  recovery: 'transcript.interruptedByRestart',
-  unknown: 'transcript.interrupted',
-} as const satisfies Record<NonNullable<TurnTailInfo['cancellation']>, I18nKey>;
-
-/**
- * End-of-turn readout (deepseek-harness's turn tail, MIT): end clock ·
- * Ran for … · TTFT … · output decode throughput.
- */
-function InterruptionRecoveryLine({
-  summary,
-  recovering,
-  disabled,
-  onRecover,
-}: {
-  summary: string;
-  recovering: boolean;
-  disabled: boolean;
-  onRecover: () => void;
-}) {
-  const { t } = useI18n();
-  return (
-    <div
-      data-interruption-recovery
-      role="status"
-      aria-live="polite"
-      className="anim-enter min-h-7 py-1 text-amber-ink [contain:layout_style]"
-    >
-      <div className="flex items-center gap-3">
-        <span className="h-px flex-1 bg-amber-rule/30" />
-        <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
-          <span className="text-[12px] font-semibold text-amber-ink">{summary}</span>
-          <span aria-hidden className="text-[12px] text-amber-ink">·</span>
-          <button
-            type="button"
-            data-interruption-recover
-            onClick={onRecover}
-            disabled={recovering || disabled}
-            className="min-h-6 rounded-md px-1 text-[12px] font-semibold text-amber-ink underline underline-offset-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-amber-rule/15 disabled:cursor-default disabled:no-underline disabled:opacity-60"
-          >
-            {recovering ? t('transcript.recoveringInterruption') : t('transcript.recoverInterruption')}
-          </button>
-        </div>
-        <span className="h-px flex-1 bg-amber-rule/30" />
-      </div>
-    </div>
-  );
-}
-
-const TAIL_ACTION = 'min-h-6 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-60';
-
 export const TurnTailLine = memo(function TurnTailLine({
   tail,
   gap: replyGap,
@@ -5186,211 +5415,43 @@ export const TurnTailLine = memo(function TurnTailLine({
   onContinueFailed,
   onRetryFailed,
   failedHasWork,
-  errorOpen: controlledErrorOpen,
+  errorOpen,
   onToggleErrorOpen,
 }: {
   tail: TurnTailInfo;
-  /**
-   * The turn completed without leaving anything to read. The line says so
-   * instead of letting the page end in silence.
-   */
   gap?: TurnReplyGap;
-  /** Present when the stopped turn can be re-run (cancelled tails only). */
   onResume?: () => void;
   resumeDisabled?: boolean;
-  /** True when the resume action invokes lossless restart recovery rather than prompt regeneration. */
   resumeIsRecovery?: boolean;
   recoveringInterruption?: boolean;
-  /** Present when this turn's message can be sent again. */
   onRetry?: () => void;
   retryDisabled?: boolean;
-  /** 1-click Continue for a failed turn that already ran partial steps. */
   onContinueFailed?: () => void;
-  /** 1-click Retry for a failed turn. */
   onRetryFailed?: () => void;
-  /** True when the failed turn already executed tool/subagent steps. */
   failedHasWork?: boolean;
-  /** Controlled error disclosure state so scrolling into history preserves expansion. */
   errorOpen?: boolean;
   onToggleErrorOpen?: () => void;
 }) {
-  const { t, time, locale } = useI18n();
-  const [copied, setCopied] = useState(false);
-  const [localErrorOpen, setLocalErrorOpen] = useState(false);
-  const errorOpen = controlledErrorOpen ?? localErrorOpen;
-  const toggleErrorOpen = onToggleErrorOpen ?? (() => { setLocalErrorOpen((value) => !value); });
-  const isFailed = tail.state === 'failed';
-  const isCancelled = tail.state === 'cancelled';
-  // Failure and a stop each own their line; an empty completion only exists
-  // where the turn actually completed.
-  const gap = isFailed || isCancelled ? undefined : replyGap;
-  // Only an explicit stop request reads as "Stopped by you"; engine aborts,
-  // restarts and records without provenance say "Interrupted".
-  const cancellation = tail.cancellation ?? 'unknown';
-  const fullErrorText = tail.errorDetails !== undefined
-    ? (tail.error !== undefined && !tail.errorDetails.includes(tail.error) ? `${tail.error}\n\n${tail.errorDetails}` : tail.errorDetails)
-    : tail.error;
-  const errorSummary = tail.error !== undefined
-    ? (humanizeTimelineError(tail.error, locale) ?? firstLineOf(tail.error))
-    : (fullErrorText === undefined ? undefined : humanizeTimelineError(fullErrorText, locale) ?? firstLineOf(fullErrorText));
-  const facts: string[] = [];
-  if (tail.durationMs !== undefined) {
-    facts.push(t('transcript.ranFor', { duration: time.formatDuration(tail.durationMs) }));
-  }
-  if (tail.ttftMs !== undefined) {
-    facts.push(t('transcript.ttft', { seconds: formatLatencySeconds(tail.ttftMs) }));
-  }
-  if (tail.tokensPerSecond !== undefined) {
-    facts.push(
-      t('transcript.tokensPerSecond', { rate: formatTokensPerSecond(tail.tokensPerSecond) }),
-    );
-  }
-
-  const handleCopyError = useCallback(() => {
-    if (fullErrorText === undefined) return;
-    void copyTextToClipboard(fullErrorText).then(() => {
-      setCopied(true);
-      setTimeout(() => { setCopied(false); }, 1500);
-    });
-  }, [fullErrorText]);
-
-  // A failed turn is a settled fact, not a call to act: it reads in neutral
-  // ink with one small danger dot as the only colour (FOLDING: failures are
-  // neutral; only what waits on the reader is emphasised).
   return (
-    <div
-      data-turn-tail
-      data-turn-tail-state={tail.state}
-      role={gap === undefined ? undefined : 'status'}
-      aria-live={gap === undefined ? undefined : 'polite'}
-      className={`anim-enter min-h-7 py-1 [contain:layout_style] ${isCancelled ? 'text-amber-ink' : ''}`}
-    >
-      <div className="flex items-center gap-3">
-        <span className={`h-px flex-1 ${isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
-        <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
-          {isFailed ? (
-            <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-[12px] font-medium text-ink-soft">
-              <span aria-hidden data-turn-tail-dot className="h-1.5 w-1.5 shrink-0 rounded-full bg-danger" />
-              <span className="shrink-0">{t('notice.turnFailed')}</span>
-              {errorSummary !== undefined && errorSummary !== '' ? (
-                <>
-                  <span aria-hidden className="shrink-0 text-ink-faint">·</span>
-                  <span className="min-w-0 max-w-[26rem] truncate font-normal text-ink-soft" title={fullErrorText}>
-                    {errorSummary}
-                  </span>
-                </>
-              ) : null}
-            </span>
-          ) : isCancelled ? (
-            <span data-turn-tail-cancellation={cancellation} className="text-[12px] font-semibold text-amber-ink">
-              {t(CANCELLATION_LABEL_KEY[cancellation])}
-            </span>
-          ) : gap !== undefined ? (
-            <span data-turn-tail-gap={gap.work} className="text-[12px] font-medium text-ink-soft">
-              {t('transcript.noReply')}
-            </span>
-          ) : null}
-          {gap !== undefined ? (
-            <>
-              <span aria-hidden className="text-[12px] text-ink-faint">·</span>
-              <span data-turn-tail-gap-work className="text-[12px] text-ink-faint">
-                {t(gap.work === 'running' ? 'transcript.noReplyBackground'
-                  : gap.work === 'idle' ? 'transcript.noReplyIdle' : 'transcript.noReplyUnknown')}
-              </span>
-            </>
-          ) : null}
-          {isCancelled && onResume !== undefined ? (
-            <>
-              <span aria-hidden className="text-[12px] text-amber-ink">·</span>
-              <button
-                type="button"
-                data-turn-tail-resume
-                data-interruption-recover={resumeIsRecovery ? 'true' : undefined}
-                onClick={onResume}
-                disabled={resumeDisabled || (resumeIsRecovery && recoveringInterruption)}
-                title={resumeIsRecovery ? t('transcript.interruptedByRestart') : t('transcript.resumeTitle')}
-                className="min-h-6 rounded-md px-1 text-[12px] font-semibold text-amber-ink underline underline-offset-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-amber-rule/15 disabled:cursor-default disabled:no-underline disabled:opacity-60"
-              >
-                {resumeIsRecovery
-                  ? (recoveringInterruption ? t('transcript.recoveringInterruption') : t('transcript.recoverInterruption'))
-                  : t('transcript.resume')}
-              </button>
-            </>
-          ) : null}
-          {gap !== undefined ? <span aria-hidden className="text-[12px] text-ink-faint">·</span> : null}
-          <span className={`text-[12px] tabular-nums ${isCancelled ? 'text-amber-ink' : 'text-ink-faint'}`}>
-            <RelativeTime at={tail.endedAt} />{facts.length > 0 ? ` · ${facts.join(' · ')}` : ''}
-          </span>
-          {isFailed && onContinueFailed !== undefined && failedHasWork === true ? (
-            <button
-              type="button"
-              data-turn-tail-continue
-              onClick={onContinueFailed}
-              disabled={retryDisabled}
-              className="min-h-6 cursor-pointer rounded-md bg-ink/[0.07] px-2 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.12] disabled:cursor-default disabled:opacity-50"
-            >
-              {locale === 'zh' ? '继续' : 'Continue'}
-            </button>
-          ) : null}
-          {isFailed && onRetryFailed !== undefined ? (
-            <button
-              type="button"
-              data-turn-tail-retry-now
-              onClick={onRetryFailed}
-              disabled={retryDisabled}
-              className={failedHasWork === true ? TAIL_ACTION : 'min-h-6 cursor-pointer rounded-md bg-ink/[0.07] px-2 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.12] disabled:cursor-default disabled:opacity-50'}
-            >
-              {locale === 'zh' ? '重试' : 'Retry'}
-            </button>
-          ) : (isFailed || (gap !== undefined && gap.work === 'idle')) && onRetry !== undefined ? (
-            <button
-              type="button"
-              data-turn-tail-retry={isFailed ? '' : undefined}
-              data-turn-tail-gap-retry={isFailed ? undefined : ''}
-              onClick={onRetry}
-              disabled={retryDisabled}
-              title={t('transcript.promptOutcome.retryTitle')}
-              className={TAIL_ACTION}
-            >
-              {t('transcript.promptOutcome.retry')}
-            </button>
-          ) : null}
-          {isFailed && fullErrorText !== undefined ? (
-            <button
-              type="button"
-              data-turn-tail-error-toggle
-              aria-expanded={errorOpen}
-              title={errorOpen ? undefined : fullErrorText}
-              onClick={toggleErrorOpen}
-              className={`inline-flex cursor-pointer items-center gap-0.5 ${TAIL_ACTION}`}
-            >
-              <span>{t('transcript.promptOutcome.details')}</span>
-              <DisclosureChevron open={errorOpen} className="shrink-0" />
-            </button>
-          ) : null}
-        </div>
-        <span className={`h-px flex-1 ${isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
-      </div>
-      {isFailed && fullErrorText !== undefined && errorOpen ? (
-        <div
-          data-turn-tail-error
-          className="mx-auto mt-1.5 flex w-full max-w-[var(--kiki-chat-content-width,760px)] items-start gap-2 rounded-md bg-ink/[0.04] px-3 py-1.5 font-mono text-[12px] text-ink-soft"
-        >
-          <span className="min-w-0 flex-1 text-left leading-relaxed break-words whitespace-pre-wrap">
-            {fullErrorText}
-          </span>
-          <button
-            type="button"
-            data-turn-tail-copy
-            onClick={handleCopyError}
-            className={`shrink-0 font-sans ${TAIL_ACTION}`}
-            title={fullErrorText}
-          >
-            {copied ? t('cb.copied') : t('cb.copy')}
-          </button>
-        </div>
-      ) : null}
-    </div>
+    <TurnTailSurface
+      agentId="main"
+      tail={tail}
+      gap={replyGap}
+      footnoteAttachedInline={false}
+      failedHasWork={failedHasWork}
+      hasOriginalRetry={onRetryFailed !== undefined}
+      hasDraftRestore={onRetry !== undefined}
+      retryDisabled={retryDisabled}
+      resumeDisabled={resumeDisabled}
+      recoveringInterruption={recoveringInterruption}
+      onContinueFailed={onContinueFailed}
+      onRetryFailed={onRetryFailed === undefined ? undefined : () => { onRetryFailed(); }}
+      onRestoreDraft={onRetry}
+      onResumeStopped={resumeIsRecovery ? undefined : onResume}
+      onRecoverInterruption={resumeIsRecovery ? onResume : undefined}
+      errorOpen={errorOpen}
+      onToggleErrorOpen={onToggleErrorOpen}
+    />
   );
 });
 
@@ -5571,6 +5632,12 @@ export const Transcript = memo(function Transcript({
   interruptedWork,
   onRecoverInterruption,
   recoveringInterruption = false,
+  modelCatalog,
+  modelCatalogScope,
+  externalExecutor = false,
+  onOpenModelPicker,
+  onOpenProviderSettings,
+  onCompactContext,
 }: {
   state: SessionViewState;
   agentId?: string;
@@ -5632,6 +5699,12 @@ export const Transcript = memo(function Transcript({
   /** 1-click lossless restart recovery via `POST /sessions/:id/recover`. */
   onRecoverInterruption?: () => void;
   recoveringInterruption?: boolean;
+  modelCatalog?: readonly CatalogModelLike[];
+  modelCatalogScope?: string;
+  externalExecutor?: boolean;
+  onOpenModelPicker?: () => void;
+  onOpenProviderSettings?: () => void;
+  onCompactContext?: () => void;
 }) {
   const { t } = useI18n();
   const controller = useTranscriptController();
@@ -5896,27 +5969,28 @@ export const Transcript = memo(function Transcript({
   }, [failedTurnUserBlock, state.contentRefs]);
   const latestUnresolvedCompactionFailureId = useMemo(() => {
     if (readOnly || state.busy || onRetryCompaction === undefined) return undefined;
-    for (let i = blocks.length - 1; i >= 0; i -= 1) {
-      const block = blocks[i];
-      if (block?.kind !== 'notice') continue;
-      if (
-        block.compactionPhase === 'completed' ||
-        block.i18n?.key === 'transcript.marker.compaction' ||
-        block.i18n?.key === 'transcript.marker.compactionSummarize' ||
-        block.i18n?.key === 'transcript.marker.compactionFresh'
-      ) {
-        return undefined;
-      }
-      if (
-        block.compactionPhase === 'failed' ||
-        block.compactionFailure !== undefined ||
-        block.i18n?.key === 'transcript.marker.compactionFailed'
-      ) {
-        return block.id;
-      }
-    }
-    return undefined;
+    return latestUnresolvedCompactionId(blocks);
   }, [blocks, readOnly, state.busy, onRetryCompaction]);
+  const noticePlacementContext = useMemo(
+    () => buildNoticePlacementContext(blocks, { planModeActive: state.planMode }),
+    [blocks, state.planMode],
+  );
+  const knownAgentIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (forest !== undefined) {
+      for (const id of Object.keys(forest.byId)) ids.add(id);
+    }
+    return ids;
+  }, [forest]);
+  const noticePlacementValue = useMemo(
+    () => ({
+      placement: noticePlacementContext,
+      blocks,
+      onOpenAgent,
+      knownAgentIds,
+    }),
+    [noticePlacementContext, blocks, onOpenAgent, knownAgentIds],
+  );
   const compactionRecoveryValue = useMemo(
     () => ({
       latestFailedNoticeId: latestUnresolvedCompactionFailureId,
@@ -6689,36 +6763,45 @@ export const Transcript = memo(function Transcript({
     priorHistoryShapeRef.current = { resetVersion: state.transcriptResetVersion, length: virtualNodes.length };
   }, [state.transcriptResetVersion, virtualNodes.length]);
   const seatHeight = useConversationSeatHeight();
-  const isRecoveryCancelledTail =
-    state.turnTail?.state === 'cancelled' && state.turnTail.cancellation === 'recovery';
-  const lostTaskCount = state.lostTaskCount ?? 0;
-  const interruptedBranchCount =
-    agentId === 'main' ? (interruptedWork?.interrupted_branches ?? 0) : 0;
-  const effectiveLostTasks = Math.max(
-    lostTaskCount,
-    agentId === 'main' ? (interruptedWork?.lost_tasks ?? 0) : 0,
-  );
-  const hasInterruptedWork =
-    isRecoveryCancelledTail
-    || effectiveLostTasks > 0
-    || interruptedBranchCount > 0
-    || (agentId === 'main' && interruptedWork !== undefined);
-  const showInterruptionRecoveryLine =
-    !turnBusy
-    && !readOnly
-    && !isRecoveryCancelledTail
-    && hasInterruptedWork
-    && onRecoverInterruption !== undefined;
-  const interruptionRecoverySummary = effectiveLostTasks > 0
-    ? t('transcript.interruptedTasksSummary', { count: effectiveLostTasks })
-    : interruptedBranchCount > 0
-      ? t('transcript.interruptedBranchesSummary', { count: interruptedBranchCount })
-      : t('transcript.interruptedByRestart');
+  const completedTurnFootnotes = useMemo(() => {
+    const map = new Map<string, TurnTailInfo>();
+    if (state.turnTerminals !== undefined) {
+      for (const [id, info] of Object.entries(state.turnTerminals)) {
+        if (info.state === 'completed') {
+          const norm = normalizeTurnId(id);
+          if (norm !== undefined) map.set(norm, info);
+        }
+      }
+    }
+    if (state.turnTail?.state === 'completed') {
+      const norm = normalizeTurnId(state.turnTail.turnId);
+      if (norm !== undefined) map.set(norm, state.turnTail);
+    }
+    return map;
+  }, [state.turnTerminals, state.turnTail]);
+  const latestCompletedTurnId = !turnBusy && state.turnTail?.state === 'completed'
+    ? normalizeTurnId(state.turnTail.turnId)
+    : undefined;
+  const latestCompletedAttachedInline = useMemo(() => {
+    if (latestCompletedTurnId === undefined) return false;
+    return virtualNodes.some((node) => {
+      if (node === undefined) return false;
+      const tid = displayNodeTurnId(node);
+      return tid !== undefined && normalizeTurnId(tid) === latestCompletedTurnId;
+    });
+  }, [latestCompletedTurnId, virtualNodes]);
+  const hasTailSurface = hasTurnTailSurfaceContent({
+    agentId,
+    tail: state.turnTail,
+    interruptedWork,
+    promptQueueHold: state.promptQueueHold,
+    busy: turnBusy,
+    footnoteAttachedInline: latestCompletedAttachedInline,
+  });
   const hasTailContent =
     (view === 'message' && presence !== undefined)
     || (showTurnStatus && view !== 'message')
-    || (!turnBusy && state.turnTail !== undefined)
-    || showInterruptionRecoveryLine
+    || hasTailSurface
     || state.refreshing === true;
   const [tailSlotElement, setTailSlotElement] = useState<HTMLDivElement | null>(null);
   const handleTailSlotRef = useCallback((node: HTMLDivElement | null) => {
@@ -8312,6 +8395,12 @@ export const Transcript = memo(function Transcript({
             ) : null}
           </div>
         ) : (
+        <ModelDisplayProvider
+          catalog={modelCatalog}
+          scope={modelCatalogScope}
+          externalExecutor={externalExecutor}
+        >
+        <NoticePlacementCtx.Provider value={noticePlacementValue}>
         <CompactionRecoveryContext.Provider value={compactionRecoveryValue}>
         <PhoneMergedPendingLeadContext.Provider value={mergedPendingLeadId}>
         <div
@@ -8417,8 +8506,13 @@ export const Transcript = memo(function Transcript({
                           executionBadge={executionBadges.get(virtualNodeKey(node))}
                           stoppedTailTurnId={node.kind === 'assistant' ? stoppedTailTurnId : undefined}
                           superseded={
-                            (lastUserVirtualIndex >= 0 && virtualItem.index < lastUserVirtualIndex) ||
-                            ((node.kind === 'tool' || node.kind === 'media-run') && virtualItem.index < lastWorkOrReplyVirtualIndex)
+                            node.kind === 'notice' && (node.compactionPhase === 'failed' || node.compactionPhase === 'interrupted')
+                              ? hasSubsequentCompactionResolution(blocks, node.id)
+                              : node.kind === 'notice' && node.modelSwitch?.state === 'failed'
+                                ? hasSubsequentModelSwitchResolution(blocks, node.id)
+                                : node.kind === 'tool' || node.kind === 'media-run'
+                                  ? (virtualItem.index < lastWorkOrReplyVirtualIndex || hasConfirmedSubsequentSuccess(normalizedTurnId, blocks, state.turnTerminals))
+                                  : hasConfirmedSubsequentSuccess(normalizedTurnId, blocks, state.turnTerminals)
                           }
                           failedTailTurnId={failedTailTurnId}
                           subagentFormOverrides={cardForms}
@@ -8438,6 +8532,7 @@ export const Transcript = memo(function Transcript({
                           promotedReplyIds={promotedReplyIds}
                           forkableAssistantIds={forkableAssistantIds}
                           nonUserTurn={normalizedTurnId !== undefined && nonUserTurns.has(normalizedTurnId)}
+                          noticePlacement={node.kind === 'notice' ? classifyNoticePlacement(node, noticePlacementContext) : undefined}
                         />
                         {(node.kind === 'user' || node.kind === 'assistant') && offshootsByBlockId?.has(node.id) === true ? (
                           <TimelineOffshootRail
@@ -8449,6 +8544,21 @@ export const Transcript = memo(function Transcript({
                         ) : null}
                       </div>
                     )}
+                    {isTurnTail && normalizedTurnId !== undefined && completedTurnFootnotes.has(normalizedTurnId) ? (() => {
+                      const footnoteTail = completedTurnFootnotes.get(normalizedTurnId)!;
+                      const isLatestCompleted = normalizedTurnId === latestCompletedTurnId;
+                      return (
+                        <div className={node?.kind === 'assistant' ? `${AGENT_LANE} pt-4` : AGENT_LANE}>
+                          <TurnFootnote
+                            tail={footnoteTail}
+                            gap={isLatestCompleted ? replyGap : undefined}
+                            revealOnHover={!isLatestCompleted}
+                            onRetryGap={isLatestCompleted && !readOnly ? tailRetry : undefined}
+                            retryDisabled={promptOutcomeActions.disabled === true}
+                          />
+                        </div>
+                      );
+                    })() : null}
                     {isTurnTail && turnTailId !== undefined && (normalizedTurnId === undefined || !incompleteTurns.has(normalizedTurnId)) ? (
                       <TurnStepsContinuation turnId={turnTailId} visible={visible} foldOpen={!closedFoldTurns.has(turnTailId)} />
                     ) : null}
@@ -8491,36 +8601,34 @@ export const Transcript = memo(function Transcript({
                     <TurnStatusLine startedAt={state.turnStartedAt} retry={state.turnRetry} />
                   </div>
                 ) : null}
-                {!turnBusy && state.turnTail !== undefined ? (
+                {hasTailSurface ? (
                   <div className={AGENT_LANE}>
-                    <TurnTailLine
+                    <TurnTailSurface
+                      agentId={agentId}
                       tail={state.turnTail}
                       gap={replyGap}
-                      onResume={
-                        isRecoveryCancelledTail && !readOnly && onRecoverInterruption !== undefined
-                          ? onRecoverInterruption
-                          : resumeStopped
-                      }
-                      resumeDisabled={rowActions?.disabled === true}
-                      resumeIsRecovery={isRecoveryCancelledTail && !readOnly && onRecoverInterruption !== undefined}
-                      recoveringInterruption={recoveringInterruption}
-                      onRetry={tailRetry}
-                      retryDisabled={promptOutcomeActions.disabled === true}
-                      onContinueFailed={!readOnly && onContinueFailedTurn !== undefined ? onContinueFailedTurn : undefined}
-                      onRetryFailed={!readOnly && onRetryFailedTurn !== undefined ? () => { onRetryFailedTurn(failedTurnUserBlock); } : undefined}
+                      interruptedWork={interruptedWork}
+                      promptQueueHold={state.promptQueueHold}
+                      readOnly={readOnly}
+                      busy={turnBusy}
+                      footnoteAttachedInline={latestCompletedAttachedInline}
+                      failedTurnUserBlock={failedTurnUserBlock}
                       failedHasWork={failedTurnHasWork}
+                      hasOriginalRetry={canFaithfullyRetryUserBlock(failedTurnUserBlock, agentId === MAIN_AGENT_ID)}
+                      hasDraftRestore={tailRetry !== undefined}
+                      retryDisabled={promptOutcomeActions.disabled === true}
+                      resumeDisabled={rowActions?.disabled === true}
+                      recoveringInterruption={recoveringInterruption}
+                      onContinueFailed={!readOnly && onContinueFailedTurn !== undefined ? onContinueFailedTurn : undefined}
+                      onRetryFailed={!readOnly && onRetryFailedTurn !== undefined ? onRetryFailedTurn : undefined}
+                      onRestoreDraft={!readOnly ? tailRetry : undefined}
+                      onOpenModelPicker={!readOnly ? onOpenModelPicker : undefined}
+                      onOpenProviderSettings={!readOnly ? onOpenProviderSettings : undefined}
+                      onCompactContext={!readOnly ? onCompactContext : undefined}
+                      onResumeStopped={!readOnly ? resumeStopped : undefined}
+                      onRecoverInterruption={!readOnly ? onRecoverInterruption : undefined}
                       errorOpen={tailErrorOpen}
                       onToggleErrorOpen={handleToggleTailErrorOpen}
-                    />
-                  </div>
-                ) : null}
-                {showInterruptionRecoveryLine ? (
-                  <div className={AGENT_LANE}>
-                    <InterruptionRecoveryLine
-                      summary={interruptionRecoverySummary}
-                      recovering={recoveringInterruption}
-                      disabled={rowActions?.disabled === true}
-                      onRecover={onRecoverInterruption}
                     />
                   </div>
                 ) : null}
@@ -8536,6 +8644,8 @@ export const Transcript = memo(function Transcript({
         </div>
         </PhoneMergedPendingLeadContext.Provider>
         </CompactionRecoveryContext.Provider>
+        </NoticePlacementCtx.Provider>
+        </ModelDisplayProvider>
         )}
       </div>
       {annotationPopover !== null ? (

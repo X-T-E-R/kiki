@@ -19,6 +19,7 @@ import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSync
 import { createPortal } from 'react-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ExecutorLabelProvider } from '../timeline/ExecutorNotes';
+import { canFaithfullyRetryUserBlock } from '../timeline/TurnTailSurface';
 import { useExecutorCatalog } from '../settings/profileEditor/engines';
 
 import type { PermissionMode, PromptSkillActivation, SessionAgentCounts } from '@kiki/protocol';
@@ -48,6 +49,7 @@ import {
   type AgentForest,
   type AgentTreeNode,
   type SessionController,
+  type UserBlock,
   type SessionViewState,
   type SubagentBlock,
   type TranscriptDetailKind,
@@ -139,6 +141,7 @@ export interface AgentWorkspaceNavigation {
   /** Route-level open, bypassing any preview interception (spawn jump-back). */
   readonly openAgentRoute: (agentId: string) => void;
   readonly openSession: () => void;
+  readonly openProviderSettings?: () => void;
   /** The preview tab can reopen the session's one shared rail even when it is
    * covered by the focused surface. `available` is false where no rail can
    * open at all (the shell hides it below lg), so no entry point renders. */
@@ -1791,10 +1794,35 @@ function ChildAgentWorkspace({
   const handleContinueFailedTurn = useCallback(() => {
     void handleComposerSendRef.current(locale === 'zh' ? '继续' : 'Continue', []);
   }, [locale]);
-  const handleRetryFailedTurn = useCallback((failedUserBlock: { readonly text: string } | undefined) => {
-    const text = failedUserBlock?.text.trim() || (locale === 'zh' ? '继续' : 'Continue');
-    void handleComposerSendRef.current(text, []);
-  }, [locale]);
+  const handleRetryFailedTurn = useCallback((failedUserBlock: UserBlock | undefined) => {
+    if (failedUserBlock === undefined) return;
+    if (failedUserBlock.userMessageId !== undefined && controller !== null && agentId === MAIN_AGENT_ID) {
+      void controller.regenerateMessage(failedUserBlock.userMessageId).catch((error: unknown) => {
+        pushToast({
+          tone: 'error',
+          text: t('action.regenerateFailed', { detail: error instanceof Error ? error.message : String(error) }),
+        });
+      });
+      return;
+    }
+    if (!canFaithfullyRetryUserBlock(failedUserBlock, false)) {
+      const text = failedUserBlock.text.trim();
+      if (text !== '') setDraft(text);
+      return;
+    }
+    void handleComposerSendRef.current(failedUserBlock.text.trim(), []);
+  }, [agentId, controller, setDraft, t]);
+  const handleOpenModelPicker = useCallback(() => {
+    const trigger = document.querySelector<HTMLButtonElement>('[data-execution-trigger], [data-compact-model-trigger]');
+    trigger?.focus();
+    trigger?.click();
+  }, []);
+  const handleCompactFromError = useCallback(() => {
+    if (composerDisabled) return;
+    void client.compactSession(sessionId, { strategy: 'summarize' }).catch((error: unknown) => {
+      pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+    });
+  }, [client, composerDisabled, sessionId]);
 
   const chrome = (
     <ActiveDraftKeyProvider sessionId={sessionId} draftKey={draftKey}>
@@ -1841,8 +1869,14 @@ function ChildAgentWorkspace({
         onCancelQueued: handleCancelQueued,
         onContinueFailedTurn: composerDisabled ? undefined : handleContinueFailedTurn,
         onRetryFailedTurn: composerDisabled ? undefined : handleRetryFailedTurn,
+        onOpenModelPicker: composerDisabled ? undefined : handleOpenModelPicker,
+        onOpenProviderSettings: navigation.openProviderSettings,
+        onCompactContext: composerDisabled ? undefined : handleCompactFromError,
         onRecoverInterruption: composerDisabled ? undefined : handleRecoverInterruption,
         recoveringInterruption,
+        modelCatalog: modelsQuery.data?.items,
+        modelCatalogScope: scopeId,
+        externalExecutor,
         visible: transcriptVisible,
       }}
       annotations={annotationSurface}

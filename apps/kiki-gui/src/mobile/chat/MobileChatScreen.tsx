@@ -1,9 +1,15 @@
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import { personaGreeting } from '@kiki/session-core/session';
+import { MAIN_AGENT_ID, personaGreeting, type UserBlock } from '@kiki/session-core/session';
+import { pushToast } from '../../lib/toasts';
 
 import { Icon } from '../../components/icons';
+import {
+  ModelSwitchActionsContext,
+  type ModelSwitchNoticeActions,
+} from '../../components/model-switch/ModelSwitchNotice';
+import { canFaithfullyRetryUserBlock } from '../../components/timeline/TurnTailSurface';
 import { ToastAnchor } from '../../components/Toasts';
 import { useI18n } from '../../i18n';
 import { isSessionNotFoundMessage, type KikiClient } from '../../lib/client';
@@ -28,6 +34,7 @@ interface MobileChatScreenProps {
   readonly belowHeader?: ReactNode;
   readonly onBack?: () => void;
   readonly onOpenWorkbench: () => void;
+  readonly onOpenProviderSettings?: () => void;
   readonly onOpenVoiceForChat: (onResult: (text: string) => void) => void;
   /** Persona name known before the session snapshot loads (composer placeholder). */
   readonly personaNameHint?: string;
@@ -43,10 +50,11 @@ export function MobileChatScreen({
   belowHeader,
   onBack,
   onOpenWorkbench,
+  onOpenProviderSettings,
   onOpenVoiceForChat,
   personaNameHint,
 }: MobileChatScreenProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const stream = useMobileSessionStream(client, spaceKey, sessionId);
   const [hoodOpen, setHoodOpen] = useState(false);
   const [hoodTab, setHoodTab] = useState<HoodTab>('info');
@@ -54,6 +62,9 @@ export function MobileChatScreen({
   const [hoodModels, setHoodModels] = useState(false);
   const [selectedModel, setSelectedModel] = useState<string | undefined>(undefined);
   const [planMode, setPlanMode] = useState(false);
+  const [recoveringInterruption, setRecoveringInterruption] = useState(false);
+  const [pendingSwitchOperationId, setPendingSwitchOperationId] = useState<string | undefined>(undefined);
+  const [restoreDraft, setRestoreDraft] = useState<{ readonly text: string; readonly nonce: number } | undefined>(undefined);
   const isRoot = variant === 'root';
 
   // Smooth touch left-edge swipe-back gesture (zero document reload).
@@ -96,14 +107,154 @@ export function MobileChatScreen({
     !isSessionNotFoundMessage(loadError) &&
     (stream.state.loadError !== undefined || stream.state.resyncError?.retryable !== false);
 
-  const send = (text: string, timing?: Parameters<typeof stream.sendPrompt>[0]['timing']) =>
-    stream.sendPrompt({
-      text,
-      model: selectedModel,
-      planMode,
-      timing,
-      ...(greeting !== undefined ? { personaGreetingReply: true } : {}),
+  const modelsQuery = useQuery({
+    queryKey: ['mobile-models-catalog', spaceKey, client.baseUrl],
+    enabled: typeof client.listModels === 'function',
+    staleTime: 60_000,
+    queryFn: async () => (await client.listModels()).items,
+  });
+
+  const send = useCallback(
+    (text: string, timing?: Parameters<typeof stream.sendPrompt>[0]['timing']) =>
+      stream.sendPrompt({
+        text,
+        model: selectedModel,
+        planMode,
+        timing,
+        ...(greeting !== undefined ? { personaGreetingReply: true } : {}),
+      }),
+    [greeting, planMode, selectedModel, stream],
+  );
+
+  const handleContinueFailedTurn = useCallback(() => {
+    if (stream.state.busy) return;
+    void send(locale === 'zh' ? '继续' : 'Continue');
+  }, [locale, send, stream.state.busy]);
+
+  const handleRestoreDraft = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (trimmed === '') return;
+    setRestoreDraft((prev) => ({ text: trimmed, nonce: (prev?.nonce ?? 0) + 1 }));
+  }, []);
+
+  const handleRetryFailedTurn = useCallback((failedUserBlock: UserBlock | undefined) => {
+    if (stream.state.busy || failedUserBlock === undefined) return;
+    if (failedUserBlock.userMessageId !== undefined) {
+      void stream.regenerateMessage(failedUserBlock.userMessageId);
+      return;
+    }
+    if (!canFaithfullyRetryUserBlock(failedUserBlock, false)) {
+      handleRestoreDraft(failedUserBlock.text);
+      return;
+    }
+    const text = failedUserBlock.text.trim();
+    if (text === '') return;
+    void send(text);
+  }, [handleRestoreDraft, send, stream]);
+
+  const handleOpenProviderSettings = useCallback(() => {
+    if (onOpenProviderSettings !== undefined) {
+      onOpenProviderSettings();
+      return;
+    }
+    onOpenWorkbench();
+  }, [onOpenProviderSettings, onOpenWorkbench]);
+
+  const runModelSwitchAction = useCallback(
+    (
+      operationId: string,
+      run: () => Promise<unknown>,
+      failureKey: 'modelSwitch.cancelFailed' | 'modelSwitch.recoverFailed',
+    ) => {
+      setPendingSwitchOperationId(operationId);
+      void run()
+        .then(() => {
+          void stream.resync();
+        })
+        .catch((error: unknown) => {
+          pushToast({
+            tone: 'error',
+            text: t(failureKey, {
+              detail: error instanceof Error ? error.message : String(error),
+            }),
+          });
+        })
+        .finally(() => {
+          setPendingSwitchOperationId((current) => (current === operationId ? undefined : current));
+        });
+    },
+    [stream, t],
+  );
+
+  const modelSwitchActions = useMemo<ModelSwitchNoticeActions>(() => ({
+    pendingOperationId: pendingSwitchOperationId,
+    edit: () => { openHood('info', undefined, true); },
+    cancel: typeof client.cancelAgentModelSwitch === 'function'
+      ? (operationId) => {
+          runModelSwitchAction(
+            operationId,
+            () => client.cancelAgentModelSwitch(sessionId, MAIN_AGENT_ID, operationId),
+            'modelSwitch.cancelFailed',
+          );
+        }
+      : undefined,
+    retry: typeof client.recoverAgentModelSwitch === 'function'
+      ? (operationId) => {
+          runModelSwitchAction(
+            operationId,
+            () => client.recoverAgentModelSwitch(sessionId, MAIN_AGENT_ID, operationId, 'retry'),
+            'modelSwitch.recoverFailed',
+          );
+        }
+      : undefined,
+    retryAsFresh: typeof client.recoverAgentModelSwitch === 'function'
+      ? (operationId) => {
+          runModelSwitchAction(
+            operationId,
+            () => client.recoverAgentModelSwitch(sessionId, MAIN_AGENT_ID, operationId, 'retry', 'fresh'),
+            'modelSwitch.recoverFailed',
+          );
+        }
+      : undefined,
+    keepOriginal: typeof client.recoverAgentModelSwitch === 'function'
+      ? (operationId) => {
+          runModelSwitchAction(
+            operationId,
+            () => client.recoverAgentModelSwitch(sessionId, MAIN_AGENT_ID, operationId, 'keep_original'),
+            'modelSwitch.recoverFailed',
+          );
+        }
+      : undefined,
+  }), [client, pendingSwitchOperationId, runModelSwitchAction, sessionId]);
+
+  const handleRecoverInterruption = useCallback(() => {
+    if (recoveringInterruption || stream.state.busy || typeof client.recoverSession !== 'function') return;
+    setRecoveringInterruption(true);
+    void client
+      .recoverSession(sessionId)
+      .then((receipt) => {
+        if (receipt?.status === 'nothing_to_recover') {
+          void stream.resync();
+        }
+      })
+      .catch((error: unknown) => {
+        pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      })
+      .finally(() => {
+        setRecoveringInterruption(false);
+      });
+  }, [client, recoveringInterruption, sessionId, stream]);
+
+  const handleRetryCompaction = useCallback((strategy: 'summarize' | 'relay') => {
+    if (stream.state.busy || typeof client.compactSession !== 'function') return;
+    void client.compactSession(sessionId, { strategy }).catch((error: unknown) => {
+      pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
     });
+  }, [client, sessionId, stream.state.busy]);
+
+  const handleOpenModelPicker = useCallback(() => {
+    openHood('info', undefined, true);
+  }, []);
 
   return (
     <div
@@ -183,24 +334,38 @@ export function MobileChatScreen({
 
       {belowHeader}
 
-      <MobileTranscript
-        blocks={stream.state.blocks}
-        loaded={stream.state.loaded}
-        loadError={loadError}
-        busy={stream.state.busy}
-        hasMoreHistory={stream.state.hasMoreHistory}
-        loadingOlder={stream.loadingOlder}
-        messageMode={messageMode}
-        personaName={persona?.name}
-        greeting={greeting}
-        onLoadOlder={() => { void stream.loadOlder(); }}
-        onRetryLoad={canRetryLoad ? () => { void stream.retryLoad(); } : undefined}
-        onOpenHood={openHood}
-        onResolveApproval={(approvalId, decision, reason) => { void stream.resolveApproval(approvalId, decision, reason); }}
-        onAnswerQuestion={stream.answerQuestion}
-        onDismissQuestion={stream.dismissQuestion}
-        onOpenWorkbench={onOpenWorkbench}
-      />
+      <ModelSwitchActionsContext.Provider value={modelSwitchActions}>
+        <MobileTranscript
+          state={stream.state}
+          blocks={stream.state.blocks}
+          loaded={stream.state.loaded}
+          loadError={loadError}
+          busy={stream.state.busy}
+          hasMoreHistory={stream.state.hasMoreHistory}
+          loadingOlder={stream.loadingOlder}
+          messageMode={messageMode}
+          personaName={persona?.name}
+          greeting={greeting}
+          modelCatalog={modelsQuery.data}
+          modelCatalogScope={spaceKey}
+          interruptedWork={session?.interrupted_work}
+          recoveringInterruption={recoveringInterruption}
+          onLoadOlder={() => { void stream.loadOlder(); }}
+          onRetryLoad={canRetryLoad ? () => { void stream.retryLoad(); } : undefined}
+          onOpenHood={openHood}
+          onResolveApproval={(approvalId, decision, reason) => { void stream.resolveApproval(approvalId, decision, reason); }}
+          onAnswerQuestion={stream.answerQuestion}
+          onDismissQuestion={stream.dismissQuestion}
+          onOpenWorkbench={onOpenWorkbench}
+          onContinueFailedTurn={handleContinueFailedTurn}
+          onRetryFailedTurn={handleRetryFailedTurn}
+          onRestoreDraft={handleRestoreDraft}
+          onOpenModelPicker={handleOpenModelPicker}
+          onOpenProviderSettings={handleOpenProviderSettings}
+          onRecoverInterruption={typeof client.recoverSession === 'function' ? handleRecoverInterruption : undefined}
+          onRetryCompaction={typeof client.compactSession === 'function' ? handleRetryCompaction : undefined}
+        />
+      </ModelSwitchActionsContext.Provider>
 
       <div className="relative shrink-0">
         <ToastAnchor className="kiki-mobile-toast-anchor-inline" />
@@ -237,6 +402,7 @@ export function MobileChatScreen({
           }}
           onSend={(text, timing) => send(text, timing)}
           onAbort={stream.abort}
+          restoreDraft={restoreDraft}
         />
       </div>
 

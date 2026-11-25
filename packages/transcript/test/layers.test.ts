@@ -1787,7 +1787,12 @@ describe('TranscriptWireAdapter', () => {
   it('clears unanchored deliveries and respects accepted undo of the uncompressed tail', () => {
     const message = { type: 'context.append_message', time: 1_000, message: { id: 'mail-idle', role: 'user', content: [{ type: 'text', text: 'mail' }], origin: { kind: 'agent_message', messageId: 'mail-idle' } } };
     const tail = { type: 'context.append_message', time: 1_500, message: { id: 'mail-tail', role: 'user', content: [{ type: 'text', text: 'tail' }], origin: { kind: 'agent_message', messageId: 'mail-tail' } } };
-    expect(replay([message, { type: 'context.clear', time: 2_000 }]).getItems()).toEqual([]);
+    expect(replay([message, { type: 'context.clear', time: 2_000 }]).getItems()).toEqual([
+      { kind: 'marker', markerId: 'context.clear', marker: 'context.clear', at: new Date(2_000).toISOString() },
+    ]);
+    expect(replay([message, { type: 'context.clear', time: 2_000 }, { type: 'context.clear', time: 3_000 }]).getItems()).toEqual([
+      { kind: 'marker', markerId: 'context.clear', marker: 'context.clear', at: new Date(3_000).toISOString() },
+    ]);
     const compacted = replay([message, tail, { type: 'context.apply_compaction', summary: 'summary', compactedCount: 1, time: 2_000 }, { type: 'context.undo', count: 1, time: 3_000 }]);
     expect(compacted.getItems().flatMap((item) => item.kind === 'marker' && item.marker === 'message.delivery' ? [item.markerId] : [])).toEqual(['message-delivery:mail-idle']);
   });
@@ -1814,8 +1819,13 @@ describe('TranscriptWireAdapter', () => {
     expect(undo.acceptedOperations).toEqual([{ op: 'items.remove', ids: ['t1'] }]);
     expect(transcript.getItems().map((item) => item.kind === 'turn' && item.turnId)).toEqual(['t0']);
     const clear = reducer.apply(adapter.add({ type: 'context.clear' }));
-    expect(clear.acceptedOperations).toEqual([{ op: 'items.remove', ids: ['t0'] }]);
-    expect(transcript.getItems()).toEqual([]);
+    expect(clear.acceptedOperations).toEqual([
+      { op: 'items.remove', ids: ['t0'] },
+      { op: 'marker.upsert', item: { kind: 'marker', markerId: 'context.clear', marker: 'context.clear', at: undefined } },
+    ]);
+    expect(transcript.getItems()).toEqual([
+      { kind: 'marker', markerId: 'context.clear', marker: 'context.clear', at: undefined },
+    ]);
   });
 
   it('undoes the full suffix from the requested conversation anchor', () => {
@@ -4814,7 +4824,9 @@ describe('AgentTranscriptDraft differential replay', () => {
       { kind: 'finish' },
     ]);
 
-    expect(result.snapshot.items).toEqual([]);
+    expect(result.snapshot.items).toEqual([
+      { kind: 'marker', markerId: 'context.clear', marker: 'context.clear', at: undefined },
+    ]);
     const removals = result.trace.flatMap((entry) => {
       const normalized = entry as { result: { acceptedOperations: TranscriptOperation[] } };
       return normalized.result.acceptedOperations.filter((operation) => operation.op === 'items.remove');

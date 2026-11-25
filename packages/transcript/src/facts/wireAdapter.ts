@@ -588,7 +588,17 @@ export class TranscriptWireAdapter {
       return operations;
     }
     if (record.type === 'context.clear') {
-      return this.removeTurns(this.#turns.length);
+      const operations = this.removeTurns(this.#turns.length);
+      operations.push({
+        op: 'marker.upsert',
+        item: {
+          kind: 'marker',
+          markerId: 'context.clear',
+          marker: 'context.clear',
+          at: isoOf(record.time),
+        },
+      });
+      return operations;
     }
     if (record.type === 'branch.base') {
       const operations = this.removeTurns(this.#turns.length);
