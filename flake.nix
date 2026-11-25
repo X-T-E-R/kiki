@@ -149,6 +149,7 @@
         ./packages/transcript-live
         ./packages/tree-sitter-bash
         ./apps/kimi-code
+        ./apps/kiki-desktop
         ./apps/kiki-gui
         ./apps/vscode
         ./docs
@@ -176,6 +177,7 @@
         "@kiki/transcript-live"
         "@kiki/tree-sitter-bash"
         "@kiki/cli"
+        "@kiki/desktop"
         "@kiki/gui"
         "kiki"
         "@kiki/docs"

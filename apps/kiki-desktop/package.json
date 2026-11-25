@@ -1,0 +1,87 @@
+{
+  "name": "@kiki/desktop",
+  "version": "0.7.0",
+  "private": true,
+  "description": "Kiki Electron 44 desktop shell with detached kiki-server daemon supervisor",
+  "homepage": "https://github.com/X-T-E-R/kiki/releases",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/X-T-E-R/kiki.git",
+    "directory": "apps/kiki-desktop"
+  },
+  "bugs": {
+    "url": "https://github.com/X-T-E-R/kiki/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/main/index.js",
+  "imports": {
+    "#/*": "./src/*.ts"
+  },
+  "scripts": {
+    "build": "tsdown --config tsdown.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "test:fast": "vitest run --config vitest.config.ts --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "verify:fuses": "node scripts/verify-fuses.mjs",
+    "clean": "node -e \"import('node:fs').then((fs) => fs.rmSync('dist', { recursive: true, force: true }))\""
+  },
+  "dependencies": {
+    "@kiki/node-sdk": "workspace:^",
+    "@kiki/session-core": "workspace:^",
+    "electron-updater": "6.8.11",
+    "pathe": "^2.0.3",
+    "smol-toml": "^1.9.0",
+    "write-file-atomic": "8.0.0",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@electron/fuses": "2.1.3",
+    "@types/node": "^22.15.3",
+    "@types/write-file-atomic": "4.0.3",
+    "electron": "44.10.1",
+    "tsdown": "0.22.0",
+    "typescript": "6.0.2",
+    "vitest": "4.1.4"
+  },
+  "build": {
+    "appId": "com.kiki.desktop",
+    "productName": "Kiki",
+    "asar": true,
+    "asarUnpack": [
+      "dist/server/**",
+      "**/*.node",
+      "**/node-pty/**"
+    ],
+    "files": [
+      "dist/**",
+      "package.json"
+    ],
+    "protocols": [
+      {
+        "name": "Kiki",
+        "schemes": [
+          "kiki"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "dir"
+      ]
+    },
+    "linux": {
+      "category": "Development",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "sourceMap": true,
+    "declaration": false,
+    "noEmit": true
+  },
+  "include": ["src/**/*", "test/**/*", "../../packages/agent-core-v2/src/env.d.ts"],
+  "exclude": ["**/dist/**", "**/out/**", "**/node_modules/**", "**/.tmp/**", "**/.worktrees/**"]
+}

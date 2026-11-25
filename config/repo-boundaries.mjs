@@ -164,6 +164,20 @@ export const BOUNDARY_RULES = [
     forbiddenPlatformFlags: [],
   },
   {
+    id: 'kiki-desktop',
+    root: 'apps/kiki-desktop',
+    forbiddenInternal: new Set(['@kiki/agent-core-v2', '@kiki/kap-server', '@kiki/gui']),
+    forbiddenExternal: [
+      /^react(?:$|\/)/,
+      /^react-dom(?:$|\/)/,
+      /^@tauri-apps\//,
+      /^@capacitor\//,
+      /^vscode$/,
+    ],
+    forbiddenGlobals: [],
+    forbiddenPlatformFlags: ['isTauri', 'isCapacitor'],
+  },
+  {
     id: 'kiki-gui',
     root: 'apps/kiki-gui',
     forbiddenInternal: new Set(['@kiki/agent-core-v2', '@kiki/kap-server', '@kiki/node-sdk']),

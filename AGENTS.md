@@ -11,7 +11,7 @@ Keep this root guide limited to hot-path rules. Follow the nearest subtree `AGEN
 ## Workspace Map
 
 Kiki maintains **two UI codebases** across all client surfaces:
-- **GUI base (`apps/kiki-gui`)**: shared React 19 UI serving Web (`kiki web`), Tauri Desktop (`apps/kiki-gui/src-tauri`), VS Code thin Webview bridge (`apps/vscode`), Capacitor Mobile remote shells (`apps/kiki-gui/mobile`), and the Android local host (`apps/kiki-android` via `KikiWebActivity`). Do not create parallel graphical frontends.
+- **GUI base (`apps/kiki-gui`)**: shared React 19 UI serving Web (`kiki web`), Electron Desktop (`apps/kiki-desktop`), Tauri Desktop (`apps/kiki-gui/src-tauri`), VS Code thin Webview bridge (`apps/vscode`), Capacitor Mobile remote shells (`apps/kiki-gui/mobile`), and the Android local host (`apps/kiki-android` via `KikiWebActivity`). Do not create parallel graphical frontends.
 - **CLI/TUI base (`apps/kimi-code`)**: CLI, `DaemonTUI` (`@kiki/pi-tui`), and SEA binary consuming `@kiki/session-core` and `@kiki/klient`.
 
 ### Apps, Surfaces & Docs
@@ -19,6 +19,7 @@ Kiki maintains **two UI codebases** across all client surfaces:
 | Path | Role & Key Entrypoints |
 | --- | --- |
 | `apps/kimi-code` | CLI, `DaemonTUI`, and SEA entrypoint (`@kiki/cli`); uses `@kiki/klient`, `@kiki/session-core`, `@kiki/node-sdk`; TUI work uses `.agents/skills/write-tui/SKILL.md` and `apps/kimi-code/AGENTS.md`. |
+| `apps/kiki-desktop` | Electron 44 desktop shell (`@kiki/desktop`) supervising a detached `kiki-server` daemon and exposing the typed preload bridge to `apps/kiki-gui`. |
 | `apps/kiki-gui` | Shared browser, desktop, and responsive mobile React UI (`@kiki/gui`); visual acceptance uses `apps/kiki-gui/scripts/visual-proof.mjs`; see `apps/kiki-gui/AGENTS.md`. |
 | `apps/kiki-gui/src-tauri` | Tauri v2 desktop shell wrapping `apps/kiki-gui` and the local SEA sidecar. |
 | `apps/kiki-gui/mobile` | Unified Capacitor (`@capacitor/{ios,android}`) remote pairing shell (`launcher/`, iOS `SceneDelegate.swift`, Android `KikiShellPlugin.java`). |
