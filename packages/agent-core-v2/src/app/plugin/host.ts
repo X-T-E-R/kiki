@@ -10,18 +10,19 @@ import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
 
 import {
   PLUGIN_IM_COMPLETE_LIMITS, PLUGIN_IM_DIAGNOSTIC_LIMITS,
-  asrProviderDefinitionSchema, asrTranscribeInputSchema, asrTranscribeResultSchema, harnessAccountConnectionSchema, harnessAccountListSchema, harnessAccountSourceDefinitionSchema, harnessQuotaActionResponseSchema, harnessQuotaBatchSchema, harnessQuotaSourceDefinitionSchema, mediaProviderDefinitionSchema,
-  pluginImAdapterDefinitionSchema, pluginImDiagnosticReportSchema, pluginImHistoryPageSchema, pluginImHistoryRequestSchema, sessionSourceDefinitionSchema,
+  asrProviderDefinitionSchema, asrTranscribeInputSchema, asrTranscribeResultSchema, harnessAccountConnectionSchema, harnessAccountListSchema, harnessAccountSourceDefinitionSchema, harnessQuotaActionResponseSchema, harnessQuotaBatchSchema, harnessQuotaSourceDefinitionSchema, llmProviderContributionDefinitionSchema, mediaProviderDefinitionSchema,
+  pluginImAdapterDefinitionSchema, pluginImDiagnosticReportSchema, pluginImHistoryPageSchema, pluginImHistoryRequestSchema, pluginLlmProviderDescriptionSchema, pluginLlmStreamEventSchema, pluginProviderQuotaReadResultSchema, pluginProviderQuotaTargetDescriptorSchema, providerQuotaSourceDefinitionSchema, sessionSourceDefinitionSchema,
   type AsrProviderDefinition, type AsrTranscribeInput, type AsrTranscribeResult, type HarnessAccount, type HarnessAccountConnection, type HarnessAccountPrepareInput, type HarnessAccountSourceDefinition,
-  type HarnessQuotaActionId, type HarnessQuotaActionResponse, type HarnessQuotaReading, type HarnessQuotaSourceDefinition, type PluginHarnessQuotaSnapshot,
-  type ImInboundDiagnostic, type MediaConnection, type MediaProviderDefinition, type PluginImAdapterDefinition, type PluginImEvent, type PluginMediaApi, type PluginMessagesApi, type SessionSourceDefinition,
+  type HarnessQuotaActionId, type HarnessQuotaActionResponse, type HarnessQuotaReading, type HarnessQuotaSourceDefinition, type LlmProviderContributionDefinition, type PluginHarnessQuotaSnapshot,
+  type ImInboundDiagnostic, type MediaConnection, type MediaProviderDefinition, type PluginImAdapterDefinition, type PluginImEvent, type PluginLlmProviderDescription, type PluginLlmStreamEvent, type PluginLlmStreamRequest, type PluginMediaApi, type PluginMessagesApi, type PluginProviderQuotaReadResult, type PluginProviderQuotaTargetDescriptor, type ProviderQuotaSourceDefinition, type SessionSourceDefinition,
 } from '@kiki/protocol';
+import { AsyncEventQueue } from '#/_base/asyncEventQueue';
 import { parsePluginImEvent, pluginImDeliverySchema, pluginImIdentitySchema, type PluginImConnection } from './imAdapter';
 import { toolContributionSchema, type PluginTool } from './contributions';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
 import type { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { PluginToolOutput } from './toolOutput';
-import { PanelStream, type PluginPanelStream } from './panelStream';
+import { MAX_UPLOAD_CHUNK_BYTES, PanelStream, type PluginPanelStream } from './panelStream';
 import type { IsolatedPluginInvocation, IsolatedPluginResult } from '#/app/cordisRuntime/cordisRuntime';
 import { matchesInvocation } from '#/app/cordisRuntime/isolationProtocol';
 import {
@@ -63,8 +64,15 @@ function killWindowsProcessTree(pid: number): Promise<void> {
 const HANDSHAKE_BACKOFF_BASE_MS = 15_000;
 const HANDSHAKE_BACKOFF_MAX_MS = 120_000;
 const MAX_RPC_LINE_CHARS = 16 * 1024 * 1024;
+const MAX_LLM_REQUEST_BYTES = 128 * 1024 * 1024;
 const PANEL_REQUEST_TIMEOUT_MS = 60_000;
+const LLM_DESCRIBE_TIMEOUT_MS = 30_000;
 const MAX_STDERR_TAIL_CHARS = 4_096;
+
+export interface PluginContributionInvalidationEvent {
+  readonly kind: 'llm_provider' | 'provider_quota';
+  readonly id: string;
+}
 
 export interface PluginHostUnexpectedExit {
   readonly pluginId: string;
@@ -159,6 +167,9 @@ export class PluginHost {
     private readonly onUnexpectedExit?: (event: PluginHostUnexpectedExit) => void,
     private readonly asrProviders: readonly AsrProviderDefinition[] = [],
     private readonly asrStringSettings: readonly string[] = [],
+    private readonly llmProviders: readonly LlmProviderContributionDefinition[] = [],
+    private readonly providerQuotaSources: readonly ProviderQuotaSourceDefinition[] = [],
+    private readonly onContributionInvalidated?: (event: PluginContributionInvalidationEvent) => void,
   ) {}
 
   private readonly modelStreams = new Map<number, { readonly owner: number; readonly controller: AbortController; readonly iterator: AsyncIterator<import('@kiki/protocol').PluginModelEvent>; busy: boolean }>();
@@ -174,8 +185,319 @@ export class PluginHost {
 
   private readonly registeredHarnessAccountSources = new Set<string>();
   private readonly registeredHarnessQuotaSources = new Set<string>();
+  private readonly registeredLlmProviders = new Map<string, { readonly supportsForceRefreshAuth: boolean }>();
+  private readonly registeredProviderQuotaSources = new Set<string>();
   private readonly harnessAccountLeases = new Set<number>();
   private shutdown?: Promise<void>;
+
+  async describeLlmProvider(
+    providerId: string,
+    settings: Record<string, unknown>,
+    dataDir: string,
+    signal?: AbortSignal,
+  ): Promise<{ readonly description: PluginLlmProviderDescription; readonly supportsForceRefreshAuth: boolean }> {
+    const raw = await this.requestCancellable(
+      'llm-provider-describe',
+      { providerId, settings, dataDir, kikiHome: this.kikiHome },
+      signal,
+      LLM_DESCRIBE_TIMEOUT_MS,
+      () => {
+        if (!this.registeredLlmProviders.has(providerId)) {
+          throw new Error(`Plugin ${this.id} did not register LLM provider ${providerId}`);
+        }
+      },
+    );
+    const parsed = pluginLlmProviderDescriptionSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new Error(`Plugin ${this.id} returned invalid LLM provider description for ${providerId}: ${parsed.error.message}`);
+    }
+    return {
+      description: parsed.data,
+      supportsForceRefreshAuth: this.registeredLlmProviders.get(providerId)?.supportsForceRefreshAuth === true,
+    };
+  }
+
+  async forceRefreshLlmProviderAuth(
+    providerId: string,
+    settings: Record<string, unknown>,
+    dataDir: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const raw = await this.requestCancellable(
+      'llm-provider-force-refresh-auth',
+      { providerId, settings, dataDir, kikiHome: this.kikiHome },
+      signal,
+      LLM_DESCRIBE_TIMEOUT_MS,
+      () => {
+        if (!this.registeredLlmProviders.has(providerId)) {
+          throw new Error(`Plugin ${this.id} did not register LLM provider ${providerId}`);
+        }
+      },
+    );
+    return raw === true;
+  }
+
+  async listProviderQuotaTargets(
+    sourceId: string,
+    settings: Record<string, unknown>,
+    dataDir: string,
+    signal?: AbortSignal,
+  ): Promise<readonly PluginProviderQuotaTargetDescriptor[]> {
+    const raw = await this.requestCancellable(
+      'provider-quota-list-targets',
+      { sourceId, settings, dataDir, kikiHome: this.kikiHome },
+      signal,
+      LLM_DESCRIBE_TIMEOUT_MS,
+      () => {
+        if (!this.registeredProviderQuotaSources.has(sourceId)) {
+          throw new Error(`Plugin ${this.id} did not register provider quota source ${sourceId}`);
+        }
+      },
+    );
+    if (!Array.isArray(raw)) throw new Error(`Plugin ${this.id} returned invalid quota target list`);
+    const result: PluginProviderQuotaTargetDescriptor[] = [];
+    for (const entry of raw) {
+      const parsed = pluginProviderQuotaTargetDescriptorSchema.safeParse(entry);
+      if (!parsed.success) throw new Error(`Plugin ${this.id} returned invalid quota target descriptor`);
+      result.push(parsed.data);
+    }
+    return result;
+  }
+
+  async readProviderQuota(
+    sourceId: string,
+    targetId: string,
+    settings: Record<string, unknown>,
+    dataDir: string,
+    signal?: AbortSignal,
+  ): Promise<PluginProviderQuotaReadResult> {
+    const raw = await this.requestCancellable(
+      'provider-quota-read',
+      { sourceId, targetId, settings, dataDir, kikiHome: this.kikiHome },
+      signal,
+      PANEL_REQUEST_TIMEOUT_MS,
+      () => {
+        if (!this.registeredProviderQuotaSources.has(sourceId)) {
+          throw new Error(`Plugin ${this.id} did not register provider quota source ${sourceId}`);
+        }
+      },
+    );
+    const parsed = pluginProviderQuotaReadResultSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new Error(`Plugin ${this.id} returned invalid quota read result for ${sourceId}`);
+    }
+    return parsed.data;
+  }
+
+  async *streamLlmProvider(
+    providerId: string,
+    request: PluginLlmStreamRequest,
+    settings: Record<string, unknown>,
+    dataDir: string,
+    signal?: AbortSignal,
+  ): AsyncIterable<PluginLlmStreamEvent> {
+    if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+    signal?.throwIfAborted();
+    const encoded = Buffer.from(JSON.stringify(request), 'utf8');
+    if (encoded.byteLength > MAX_LLM_REQUEST_BYTES) {
+      yield {
+        type: 'error',
+        failure: {
+          kind: 'request_too_large',
+          message: `Plugin LLM request size (${encoded.byteLength} bytes) exceeds maximum limit (${MAX_LLM_REQUEST_BYTES} bytes).`,
+          status: 413,
+          retryable: false,
+        },
+      };
+      return;
+    }
+    await (signal === undefined ? this.start() : abortable(this.start(), signal));
+    signal?.throwIfAborted();
+    const child = this.child;
+    if (this.stopped || child === undefined) throw new Error('Plugin host was withdrawn');
+    if (!this.registeredLlmProviders.has(providerId)) {
+      throw new Error(`Plugin ${this.id} did not register LLM provider ${providerId}`);
+    }
+    const chunkCount = Math.max(1, Math.ceil(encoded.byteLength / MAX_UPLOAD_CHUNK_BYTES));
+    const id = ++this.nextId;
+    const controller = new AbortController();
+    let connection: PanelStream | undefined;
+    const queue = new AsyncEventQueue<PluginLlmStreamEvent>();
+    let terminalReceived = false;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      if (connection !== undefined) this.streams.delete(connection);
+      this.streamCalls.delete(id);
+      signal?.removeEventListener('abort', onAbort);
+      controller.abort();
+      this.scheduleIdle();
+    };
+    const interrupt = (reason: Error) => {
+      this.send({ method: 'cancel', params: { id } });
+      controller.abort(reason);
+      const call = this.pending.get(id);
+      this.pending.delete(id);
+      call?.reject(reason);
+      connection?.destroy(reason.message);
+      if (!terminalReceived) {
+        queue.fail(reason);
+      }
+      release();
+    };
+    const onAbort = () => interrupt(signal?.reason instanceof Error ? signal.reason : abortError('Plugin LLM stream cancelled'));
+    signal?.addEventListener('abort', onAbort, { once: true });
+    this.streamCalls.set(id, { resolve: () => {}, reject: (error) => interrupt(error), signal: controller.signal });
+    this.clearIdle();
+    try {
+      const opened = await new Promise<{ port: number; token: string }>((resolve, reject) => {
+        const timer = setTimeout(() => interrupt(new Error('Plugin LLM stream open timed out')), 15_000);
+        timer.unref();
+        this.pending.set(id, {
+          signal: controller.signal,
+          resolve: (result) => { clearTimeout(timer); resolve(result as { port: number; token: string }); },
+          reject: (error) => { clearTimeout(timer); reject(error); },
+        });
+        this.send({
+          id,
+          method: 'llm-provider-stream-open',
+          params: {
+            providerId,
+            settings,
+            dataDir,
+            kikiHome: this.kikiHome,
+            totalBytes: encoded.byteLength,
+            chunkCount,
+          },
+        });
+      });
+      controller.signal.throwIfAborted();
+      if (this.stopped || child !== this.child) throw new Error('Plugin host was withdrawn');
+      if (!Number.isInteger(opened.port) || opened.port < 1 || opened.port > 65535 || !/^[a-f0-9]{64}$/.test(opened.token)) {
+        throw new Error('Invalid plugin LLM stream endpoint');
+      }
+      connection = new PanelStream(undefined, opened.port, opened.token, release);
+      this.streams.add(connection);
+      this.clearIdle();
+      connection.onText((raw) => {
+        if (terminalReceived) return;
+        let parsedJson: unknown;
+        try {
+          parsedJson = JSON.parse(raw);
+        } catch {
+          terminalReceived = true;
+          queue.push({
+            type: 'error',
+            failure: { kind: 'invalid_stream', message: 'Plugin emitted malformed JSON stream frame', retryable: false },
+          });
+          queue.end();
+          connection?.destroy('invalid-frame');
+          return;
+        }
+        const parsed = pluginLlmStreamEventSchema.safeParse(parsedJson);
+        if (!parsed.success) {
+          terminalReceived = true;
+          queue.push({
+            type: 'error',
+            failure: { kind: 'invalid_stream', message: `Plugin emitted invalid stream event: ${parsed.error.message}`, retryable: false },
+          });
+          queue.end();
+          connection?.destroy('invalid-event');
+          return;
+        }
+        const event = parsed.data;
+        queue.push(event);
+        if (event.type === 'finish' || event.type === 'error') {
+          terminalReceived = true;
+          queue.end();
+        }
+      });
+      connection.onClose((reason) => {
+        if (terminalReceived) {
+          queue.end();
+          return;
+        }
+        terminalReceived = true;
+        if (controller.signal.aborted) {
+          queue.fail(controller.signal.reason instanceof Error ? controller.signal.reason : abortError('Plugin LLM stream cancelled'));
+        } else {
+          queue.push({
+            type: 'error',
+            failure: {
+              kind: 'invalid_stream',
+              message: reason ? `Plugin LLM stream closed before terminal event: ${reason}` : 'Plugin LLM stream closed before terminal event',
+              requestDispatched: true,
+              retryable: false,
+            },
+          });
+          queue.end();
+        }
+      });
+      await connection.connected();
+      controller.signal.throwIfAborted();
+      for (let offset = 0; offset < encoded.byteLength; offset += MAX_UPLOAD_CHUNK_BYTES) {
+        controller.signal.throwIfAborted();
+        const slice = encoded.subarray(offset, Math.min(encoded.byteLength, offset + MAX_UPLOAD_CHUNK_BYTES));
+        await connection.sendBinaryAsync(slice, controller.signal);
+      }
+      for (;;) {
+        const next = await queue.next();
+        if (next.done) break;
+        yield next.value;
+      }
+    } finally {
+      if (!terminalReceived) {
+        this.send({ method: 'cancel', params: { id } });
+      }
+      if (connection !== undefined) connection.destroy();
+      release();
+    }
+  }
+
+  private async requestCancellable(
+    method: string,
+    params: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+    timeoutMs: number,
+    validateRegistered?: () => void,
+  ): Promise<unknown> {
+    if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+    signal?.throwIfAborted();
+    await (signal === undefined ? this.start() : abortable(this.start(), signal));
+    signal?.throwIfAborted();
+    if (this.stopped || this.child === undefined) throw new Error('Plugin host was withdrawn');
+    validateRegistered?.();
+    this.clearIdle();
+    const requestId = ++this.nextId;
+    const controller = new AbortController();
+    return new Promise<unknown>((resolve, reject) => {
+      const finish = (error?: Error, value?: unknown) => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        this.pending.delete(requestId);
+        this.scheduleIdle();
+        if (error !== undefined) reject(error);
+        else resolve(value);
+      };
+      const interrupt = (reason: Error) => {
+        if (!this.pending.has(requestId)) return;
+        controller.abort(reason);
+        this.send({ method: 'cancel', params: { id: requestId } });
+        finish(reason);
+      };
+      const timer = setTimeout(() => interrupt(new Error(`Plugin ${method} timed out`)), timeoutMs);
+      timer.unref();
+      const onAbort = () => interrupt(signal?.reason instanceof Error ? signal.reason : abortError(`Plugin ${method} cancelled`));
+      signal?.addEventListener('abort', onAbort, { once: true });
+      this.pending.set(requestId, {
+        resolve: (result) => finish(undefined, result),
+        reject: (error) => finish(error),
+        signal: controller.signal,
+      });
+      this.send({ id: requestId, method, params });
+    });
+  }
 
   async listHarnessAccounts(sourceId: string, engineId: string, signal: AbortSignal, settings: Record<string, unknown>): Promise<readonly HarnessAccount[]> {
     const { result } = await this.requestHarnessAccount(sourceId, 'list', { engineId }, signal, settings);
@@ -583,7 +905,8 @@ export class PluginHost {
           resolve: (result) => { clearTimeout(timer); resolve(result as { result: unknown; port: number; token: string }); },
           reject: (error) => { clearTimeout(timer); reject(error); },
         });
-        this.send({ id, method: 'panel-stream-open', params: { panelId, stream, args, settings, kikiHome: this.kikiHome, ...scope } });
+        const dataDir = this.kikiHome === undefined ? undefined : path.join(this.kikiHome, 'plugins', 'data', this.id);
+        this.send({ id, method: 'panel-stream-open', params: { panelId, stream, args, settings, kikiHome: this.kikiHome, dataDir, ...scope } });
       });
       controller.signal.throwIfAborted();
       if (this.stopped || child !== this.child) throw new Error('Plugin host was withdrawn');
@@ -635,7 +958,8 @@ export class PluginHost {
         reject: (error) => finish(error),
         signal: controller.signal,
       });
-      this.send({ id: requestId, method: 'panel-request', params: { action, args, settings, kikiHome: this.kikiHome } });
+      const dataDir = this.kikiHome === undefined ? undefined : path.join(this.kikiHome, 'plugins', 'data', this.id);
+      this.send({ id: requestId, method: 'panel-request', params: { action, args, settings, kikiHome: this.kikiHome, dataDir } });
     });
   }
 
@@ -884,6 +1208,24 @@ export class PluginHost {
             const expected = this.imAdapters.find((item) => item.id === definition.id);
             if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredImAdapters.has(definition.id)) throw new Error('Plugin IM adapter definition mismatch');
             this.registeredImAdapters.add(definition.id);
+          } else if (message.method === 'register-llm-provider') {
+            if (!handshake || message.params?.version !== PLUGIN_RPC_VERSION) throw new Error('Plugin registered before handshake');
+            const definition = llmProviderContributionDefinitionSchema.parse(message.params?.definition);
+            const expected = this.llmProviders.find((item) => item.id === definition.id);
+            if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredLlmProviders.has(definition.id)) throw new Error('Plugin LLM provider definition mismatch');
+            this.registeredLlmProviders.set(definition.id, { supportsForceRefreshAuth: message.params?.supportsForceRefreshAuth === true });
+          } else if (message.method === 'register-provider-quota-source') {
+            if (!handshake || message.params?.version !== PLUGIN_RPC_VERSION) throw new Error('Plugin registered before handshake');
+            const definition = providerQuotaSourceDefinitionSchema.parse(message.params?.definition);
+            const expected = this.providerQuotaSources.find((item) => item.id === definition.id);
+            if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredProviderQuotaSources.has(definition.id)) throw new Error('Plugin provider quota source definition mismatch');
+            this.registeredProviderQuotaSources.add(definition.id);
+          } else if (message.method === 'plugin/invalidateContribution') {
+            const kind = message.params?.kind;
+            const id = message.params?.id;
+            if ((kind === 'llm_provider' || kind === 'provider_quota') && typeof id === 'string' && id.length > 0 && !this.stopped) {
+              this.onContributionInvalidated?.({ kind, id });
+            }
           } else if (message.method === 'im-adapter-report') {
             const { adapterId, connectionId, callId, diagnostic } = message.params ?? {};
             void Promise.resolve().then(() => {
@@ -914,7 +1256,7 @@ export class PluginHost {
               () => this.send({ method: 'im-adapter-event-result', params: { callId, error: 'IM event was not admitted' } }));
           } else if (message.method === 'ready') {
             const registeredAllDeclaredAsrProviders = this.asrProviders.every((definition) => this.registeredAsrProviders.has(definition.id));
-            if (!handshake || this.registered.size !== this.definitions.length || this.registeredSources.size !== this.sources.length || this.registeredProviders.size !== this.providers.length || !registeredAllDeclaredAsrProviders || this.registeredImAdapters.size !== this.imAdapters.length || this.registeredHarnessAccountSources.size !== this.harnessAccountSources.length || this.registeredHarnessQuotaSources.size !== this.harnessQuotaSources.length) throw new Error('Plugin registered incomplete contributions');
+            if (!handshake || this.registered.size !== this.definitions.length || this.registeredSources.size !== this.sources.length || this.registeredProviders.size !== this.providers.length || !registeredAllDeclaredAsrProviders || this.registeredImAdapters.size !== this.imAdapters.length || this.registeredHarnessAccountSources.size !== this.harnessAccountSources.length || this.registeredHarnessQuotaSources.size !== this.harnessQuotaSources.length || this.registeredLlmProviders.size !== this.llmProviders.length || this.registeredProviderQuotaSources.size !== this.providerQuotaSources.length) throw new Error('Plugin registered incomplete contributions');
             clearTimeout(startupTimeout);
             this.handshakeFailures = 0;
             this.handshakeCooldownUntil = 0;
@@ -1135,6 +1477,8 @@ export class PluginHost {
     this.registeredImAdapters.clear();
     this.registeredHarnessAccountSources.clear();
     this.registeredHarnessQuotaSources.clear();
+    this.registeredLlmProviders.clear();
+    this.registeredProviderQuotaSources.clear();
     this.harnessAccountLeases.clear();
     for (const adapterId of this.imAssemblies.keys()) this.clearImAssembly(adapterId);
     this.imListeners.clear();

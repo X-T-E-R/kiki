@@ -46,6 +46,8 @@ import {
   refreshProviderModelsResponseSchema,
   revisionConflictDetailsSchema,
   setDefaultModelResponseSchema,
+  type ModelCatalogItem,
+  type ModelEntity,
   type ProviderCollectionActionBody,
 } from '@kiki/protocol';
 import { IMemorySelector } from '@kiki/agent-core-v2/app/memory/memorySelector';
@@ -237,6 +239,13 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         const model = await (await loadMutation(core)).readModel(req.params.model_id);
         reply.send(okEnvelope(model, req.id));
       } catch (err) {
+        if (isError2(err) && err.code === 'model.not_found') {
+          const pluginModel = await findPluginCatalogModel(core, req.params.model_id);
+          if (pluginModel !== undefined) {
+            reply.send(okEnvelope(toReadonlyPluginModelEntity(pluginModel), req.id));
+            return;
+          }
+        }
         if (sendMappedError(reply, req.id, err)) return;
         throw err;
       }
@@ -308,6 +317,19 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
           );
           reply.send(okEnvelope(model, req.id));
         } catch (err) {
+          if (isError2(err) && err.code === 'model.not_found') {
+            const pluginModel = await findPluginCatalogModel(core, req.params.model_id);
+            if (pluginModel !== undefined) {
+              reply.send(
+                errEnvelope(
+                  ErrorCode.VALIDATION_FAILED,
+                  `model ${req.params.model_id} is provided by a plugin and cannot be modified in config`,
+                  req.id,
+                ),
+              );
+              return;
+            }
+          }
           if (sendMappedError(reply, req.id, err)) return;
           throw err;
         }
@@ -343,6 +365,19 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
           await (await loadMutation(core)).deleteModel(req.params.model_id);
           (reply as unknown as StatusReply).code(204).send();
         } catch (err) {
+          if (isError2(err) && err.code === 'model.not_found') {
+            const pluginModel = await findPluginCatalogModel(core, req.params.model_id);
+            if (pluginModel !== undefined) {
+              reply.send(
+                errEnvelope(
+                  ErrorCode.VALIDATION_FAILED,
+                  `model ${req.params.model_id} is provided by a plugin and cannot be deleted from config`,
+                  req.id,
+                ),
+              );
+              return;
+            }
+          }
           if (sendMappedError(reply, req.id, err)) return;
           throw err;
         }
@@ -767,6 +802,38 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
 function stripRevision(provider: ProviderEntity): Record<string, unknown> {
   const { revision: _revision, ...rest } = provider;
   return rest;
+}
+
+async function findPluginCatalogModel(
+  core: Scope,
+  modelId: string,
+): Promise<ModelCatalogItem | undefined> {
+  const items = await (await loadCatalog(core)).listModels();
+  return items.find(
+    (item) => item.id === modelId && (item.protocol_source === 'plugin' || item.effective_protocol === 'plugin'),
+  );
+}
+
+function toReadonlyPluginModelEntity(item: ModelCatalogItem): ModelEntity {
+  const entity: ModelEntity = {
+    id: item.id,
+    provider_id: item.provider_id,
+    enabled: true,
+    provider_source: 'provider',
+    remote_id: item.remote_id,
+    effective_protocol: 'plugin',
+    protocol_source: 'plugin',
+    effective_parameters: {},
+    parameter_sources: {},
+    revision: 'plugin-readonly',
+    issues: [],
+  };
+  if (item.display_name !== undefined) entity.display_name = item.display_name;
+  if (item.max_context_size !== undefined) entity.max_context_size = item.max_context_size;
+  if (item.capabilities !== undefined) entity.capabilities = [...item.capabilities];
+  if (item.support_efforts !== undefined) entity.support_efforts = [...item.support_efforts];
+  if (item.default_effort !== undefined) entity.default_effort = item.default_effort;
+  return entity;
 }
 
 function sendMappedError(

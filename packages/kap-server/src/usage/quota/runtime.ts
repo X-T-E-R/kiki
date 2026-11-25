@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { IAtomicDocumentStore, IBootstrapService, IProviderService, IOAuthService, explainProviderEndpoint, type Scope } from '@kiki/agent-core-v2';
+import { IAtomicDocumentStore, IBootstrapService, IPluginLlmDirectoryService, IProviderService, IOAuthService, explainProviderEndpoint, type Scope } from '@kiki/agent-core-v2';
 import { INbSearchService } from '@kiki/agent-core-v2/app/nbSearch/nbSearch';
 import { executorSourceId, IAgentExecutorRegistry } from '@kiki/agent-core-v2/app/agentExecutor/agentExecutor';
 import { antigravitySettingsHome } from '@kiki/agent-core-v2/app/agentExecutor/antigravityProcess';
@@ -7,10 +7,33 @@ import { AntigravityQuotaCollector, type AntigravityQuotaWindow } from '@kiki/ag
 import { executorProcessEnv } from '@kiki/agent-core-v2/app/agentExecutor/executorOverrides';
 import { readAntigravityLocalCredentials, readAntigravityProfileCache } from '@kiki/agent-core-v2/os/backends/node-local/antigravityHostOps';
 import { OAuthUnauthorizedError, decodeJwtPayload } from '@kiki/oauth';
-import type { ProviderQuotaMeter } from '@kiki/protocol';
+import type { PluginProviderQuotaMeter, ProviderQuotaMeter, ProviderQuotaSource } from '@kiki/protocol';
 import { selectQuotaAdapter } from './adapters';
 import { fetchOfficialQuota } from './fetch';
 import { ProviderQuotaService, QuotaFailure, type QuotaTarget } from './service';
+
+const PLUGIN_QUOTA_LIST_TIMEOUT_MS = 15_000;
+
+function toProtocolQuotaMeter(meter: PluginProviderQuotaMeter): ProviderQuotaMeter {
+  const isUsd = meter.unit === 'usd';
+  const unit: ProviderQuotaMeter['unit'] = isUsd ? 'money' : meter.unit;
+  const unitLabel = meter.unit_label ?? (isUsd ? 'USD' : meter.unit === 'percent' ? '%' : meter.unit);
+  return {
+    id: meter.id,
+    label: meter.label,
+    unit,
+    unit_label: unitLabel,
+    ...(isUsd ? { currency: 'USD' } : {}),
+    used: meter.used,
+    limit: meter.limit,
+    remaining: meter.remaining,
+    scope: meter.scope ?? 'account',
+    status: meter.status,
+    ...(meter.message !== undefined ? { message: meter.message } : {}),
+    ...(meter.data_as_of !== undefined ? { data_as_of: meter.data_as_of } : {}),
+    ...(meter.window !== undefined ? { window: meter.window } : {}),
+  };
+}
 
 const fingerprint = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
@@ -53,12 +76,24 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
   const nbSearch = core.accessor.get(INbSearchService);
   const executors = core.accessor.get(IAgentExecutorRegistry);
   const antigravityCollector = new AntigravityQuotaCollector();
+  let pluginLlm: IPluginLlmDirectoryService | undefined;
+  try {
+    pluginLlm = core.accessor.get(IPluginLlmDirectoryService);
+  } catch {
+    pluginLlm = undefined;
+  }
   const scope = 'provider-quota';
   const key = 'preferences';
 
   const targets = async (): Promise<QuotaTarget[]> => {
     await providers.ready;
-    const entries = await Promise.all(Object.entries(providers.list()).map(async ([id, config]) => {
+    const pluginQuotaSources = pluginLlm?.listQuotaSources() ?? [];
+    const pluginOwnedProviders = new Set<string>([
+      ...(pluginLlm?.listProviders().map((entry) => entry.definition.id) ?? []),
+      ...pluginQuotaSources.map((entry) => entry.definition.providerId),
+    ]);
+    const configuredEntries = Object.entries(providers.list()).filter(([id]) => !pluginOwnedProviders.has(id));
+    const entries = await Promise.all(configuredEntries.map(async ([id, config]) => {
       const endpoint = explainProviderEndpoint(config.type ?? '', config.env ?? {});
       const adapter = selectQuotaAdapter(config.baseUrl ?? endpoint.baseUrl, config.oauth !== undefined);
       let identity: unknown;
@@ -261,6 +296,75 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
         source: { label: '执行器登录不等于已批准的提供商额度连接' },
         fetch: async () => [],
       });
+    }
+    for (const quotaSource of pluginQuotaSources) {
+      const resolvedPanelId =
+        quotaSource.definition.panelId ??
+        pluginLlm?.getProvider(quotaSource.definition.providerId)?.definition.panelId;
+      const auth: ProviderQuotaSource['auth'] = resolvedPanelId !== undefined
+        ? {
+            action: 'open_plugin_panel',
+            provider: quotaSource.definition.providerId,
+            plugin_id: quotaSource.pluginId,
+            panel_id: resolvedPanelId,
+          }
+        : { action: 'provider_settings', provider: quotaSource.definition.providerId };
+      let descriptors: readonly import('@kiki/protocol').PluginProviderQuotaTargetDescriptor[] = [];
+      let listFailed = false;
+      const listController = new AbortController();
+      const listTimer = setTimeout(() => listController.abort(), PLUGIN_QUOTA_LIST_TIMEOUT_MS);
+      listTimer.unref();
+      try {
+        descriptors = await quotaSource.runtime.listTargets(listController.signal);
+      } catch {
+        listFailed = true;
+      } finally {
+        clearTimeout(listTimer);
+      }
+      if (descriptors.length === 0) {
+        result.push({
+          id: `plugin-quota:${quotaSource.pluginId}/${quotaSource.definition.id}:signin`,
+          label: quotaSource.definition.label,
+          kind: 'provider',
+          providerId: quotaSource.definition.providerId,
+          accountLabel: listFailed ? '插件额度源暂不可用' : '未登录账号',
+          revision: `${quotaSource.generation}:${listFailed ? 'error' : 'empty'}`,
+          active: true,
+          supported: true,
+          auth,
+          source: { label: quotaSource.definition.label },
+          fetch: async () => {
+            throw new QuotaFailure(listFailed ? 'request_failed' : 'auth_required');
+          },
+        });
+        continue;
+      }
+      for (const descriptor of descriptors) {
+        const targetId = `plugin-quota:${quotaSource.pluginId}/${quotaSource.definition.id}/${descriptor.id}`;
+        result.push({
+          id: targetId,
+          label: descriptor.label,
+          kind: 'provider',
+          providerId: quotaSource.definition.providerId,
+          accountLabel: descriptor.accountLabel ?? quotaSource.definition.label,
+          revision: `${quotaSource.generation}:${descriptor.revision}`,
+          active: descriptor.active,
+          supported: true,
+          auth,
+          source: { label: descriptor.sourceLabel ?? quotaSource.definition.label },
+          fetch: async (signal) => {
+            signal.throwIfAborted();
+            const readResult = await quotaSource.runtime.read(descriptor.id, signal);
+            if (!readResult.ok) {
+              const reason = readResult.reason === 'unsupported' ? 'request_failed' : readResult.reason;
+              throw new QuotaFailure(reason, {
+                partialMeters: readResult.partialMeters?.map(toProtocolQuotaMeter),
+              });
+            }
+            return readResult.meters.map(toProtocolQuotaMeter);
+          },
+        });
+      }
     }
     return result;
   };

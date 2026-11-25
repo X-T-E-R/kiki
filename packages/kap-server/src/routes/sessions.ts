@@ -44,6 +44,7 @@ import {
   DEFAULT_AGENT_PROFILE_NAME,
   stripSessionGroupControls,
   IAgentProfileRegistry,
+  IPluginLlmDirectoryService,
   IAgentPermissionModeService,
   IAgentPlanService,
   IAgentStateService,
@@ -2301,6 +2302,9 @@ function getColdSessionCacheState(core: Scope): ColdSessionCacheState {
   } catch {}
   try {
     core.accessor.get(IAgentProfileRegistry).onDidChange(bumpGeneration);
+  } catch {}
+  try {
+    core.accessor.get(IPluginLlmDirectoryService).onDidChange(bumpGeneration);
   } catch {}
   try {
     const manager = core.accessor.get(ISessionManager);

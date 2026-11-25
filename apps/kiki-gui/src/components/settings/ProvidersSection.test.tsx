@@ -21,6 +21,7 @@ const listExecutors = vi.fn();
 const getCatalogProvider = vi.fn();
 const getProviderEntity = vi.fn();
 const getModel = vi.fn();
+const setDefaultModel = vi.fn();
 const listCatalogProviders = vi.fn();
 const listRecipes = vi.fn();
 const getRequestGovernance = vi.fn();
@@ -41,6 +42,7 @@ vi.mock('../../state/connection', () => ({
       getCatalogProvider,
       getProviderEntity,
       getModel,
+      setDefaultModel,
       listCatalogProviders,
       listRecipes,
       getRequestGovernance,
@@ -497,5 +499,110 @@ describe('ProvidersSection unified connections list and folds', () => {
     await act(async () => { addPanel.querySelector<HTMLButtonElement>('[data-first-run-lane="account"]')!.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(addPanel.querySelector('[data-oauth-method="kimi-code"]')).not.toBeNull();
+  });
+
+  it('renders plugin-owned providers with readiness states, plugin filter chip, read-only model rows, panel links, and zero API-key inputs', async () => {
+    listProviders.mockResolvedValue({
+      items: [
+        API_PROVIDER,
+        {
+          id: 'acme-ready',
+          type: 'plugin',
+          label: 'Acme Ready Bridge',
+          status: 'connected',
+          has_api_key: false,
+          models: ['acme-ready/alpha-1'],
+          plugin: {
+            plugin_id: 'acme-bridge-plugin',
+            panel_id: 'accounts',
+            readiness: 'ready',
+            account_summary: 'alice@example.test',
+            status_text: 'Connected',
+            model_count: 1,
+          },
+        },
+        {
+          id: 'acme-auth',
+          type: 'plugin',
+          label: 'Acme Sign-In Bridge',
+          status: 'unconfigured',
+          has_api_key: false,
+          models: [],
+          plugin: {
+            plugin_id: 'acme-auth-plugin',
+            panel_id: 'login',
+            readiness: 'auth_required',
+            status_text: 'Sign in via plugin panel',
+            model_count: 0,
+          },
+        },
+        ...SEARCHABLE_FILLERS,
+      ],
+    });
+    listModels.mockResolvedValue({
+      items: [
+        { id: 'gpt-4o', provider_id: 'openai-api', remote_id: 'gpt-4o', display_name: 'GPT-4o', max_context_size: 128000 },
+        {
+          id: 'acme-ready/alpha-1',
+          provider_id: 'acme-ready',
+          remote_id: 'alpha-1',
+          display_name: 'Acme Alpha 1',
+          max_context_size: 200000,
+          effective_protocol: 'plugin',
+          protocol_source: 'plugin',
+        },
+      ],
+    });
+
+    const container = await render();
+    const readyRow = container.querySelector<HTMLDetailsElement>('[data-plugin-provider-row="acme-ready"]')!;
+    const authRow = container.querySelector<HTMLDetailsElement>('[data-plugin-provider-row="acme-auth"]')!;
+    expect(readyRow).not.toBeNull();
+    expect(authRow).not.toBeNull();
+    expect(readyRow.dataset['connectionKind']).toBe('plugin');
+    expect(authRow.dataset['connectionKind']).toBe('plugin');
+    expect(readyRow.querySelector('input[type="password"]')).toBeNull();
+    expect(authRow.querySelector('input[type="password"]')).toBeNull();
+    expect(readyRow.querySelector<HTMLAnchorElement>('[data-plugin-provider-action="acme-ready"]')?.getAttribute('href'))
+      .toBe('/settings/plugins?plugin=acme-bridge-plugin&panel=accounts');
+    expect(authRow.querySelector<HTMLAnchorElement>('[data-plugin-provider-action="acme-auth"]')?.getAttribute('href'))
+      .toBe('/settings/plugins?plugin=acme-auth-plugin&panel=login');
+
+    expect(readyRow.querySelector('[data-plugin-provider-status="ready"] .rounded-full')).toBeNull();
+    expect(authRow.querySelector('[data-plugin-provider-status="auth_required"] .bg-amber-rule')).not.toBeNull();
+
+    const attentionRow = container.querySelector<HTMLElement>('[data-attention-row="acme-auth"]');
+    expect(attentionRow).not.toBeNull();
+    expect(attentionRow?.querySelector<HTMLAnchorElement>('[data-attention-fix="acme-auth"]')?.getAttribute('href'))
+      .toBe('/settings/plugins?plugin=acme-auth-plugin&panel=login');
+    expect(container.querySelector('[data-attention-row="acme-ready"]')).toBeNull();
+
+    const pluginChip = container.querySelector<HTMLButtonElement>('[data-list-filter="plugin"]');
+    const apiChip = container.querySelector<HTMLButtonElement>('[data-list-filter="api"]');
+    expect(pluginChip).not.toBeNull();
+    expect(apiChip).not.toBeNull();
+    await act(async () => { pluginChip!.click(); });
+    expect(connectionRows(container)).toEqual(['acme-auth', 'acme-ready']);
+    await act(async () => { apiChip!.click(); });
+    expect(connectionRows(container)).not.toContain('acme-ready');
+    expect(connectionRows(container)).not.toContain('acme-auth');
+    expect(connectionRows(container)).toContain('openai-api');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-list-filter="all"]')!.click(); });
+
+    setDefaultModel.mockResolvedValue({ default_model: 'acme-ready/alpha-1' });
+    const readyRowAfterFilter = container.querySelector<HTMLDetailsElement>('[data-plugin-provider-row="acme-ready"]')!;
+    await act(async () => { readyRowAfterFilter.open = true; });
+    const modelRow = readyRowAfterFilter.querySelector<HTMLElement>('[data-plugin-model-row="acme-ready/alpha-1"]')!;
+    expect(modelRow).not.toBeNull();
+    expect(modelRow.querySelector('[data-detail-trigger]')).toBeNull();
+    const starBtn = modelRow.querySelector<HTMLButtonElement>('button[aria-pressed]')!;
+    expect(starBtn).not.toBeNull();
+    await act(async () => { starBtn.click(); });
+    expect(setDefaultModel).toHaveBeenCalledWith('acme-ready/alpha-1');
+    expect(getModel).not.toHaveBeenCalled();
+
+    const deepLinked = await render(<ProvidersSection />, ['/settings/ai?tab=providers&model=acme-ready%2Falpha-1']);
+    expect(deepLinked.querySelector('[data-model-row-editor]')).toBeNull();
+    expect(getModel).not.toHaveBeenCalled();
   });
 });

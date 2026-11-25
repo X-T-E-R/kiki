@@ -3157,7 +3157,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         : undefined;
       const slots = { ...nativeSlots, steering: branch?.steering ?? nativeSlots.steering, parentSteering, anchor: branch?.anchor?.content ?? nativeSlots.anchor };
       const steeringSources = await loadSteeringSources(this.hostFs, this.bootstrap.homeDir, config, branch, this.hostEnv.pathClass);
-      const modelSettings = recipe === undefined ? undefined : snapshotRecipeModelSettings(this.models.get(modelAlias)!, recipe.model);
+      const modelSettings = recipe === undefined ? undefined : snapshotRecipeModelSettings(this.models.get(modelAlias) ?? this.models.getEffective?.(modelAlias) ?? {}, recipe.model);
       this.cognitionBinding = {
         position: this.delegationPosition,
         modelAlias,

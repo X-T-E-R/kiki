@@ -256,7 +256,7 @@ export function AttentionQuotaRow({
               disabled={authBusy || flow.busy !== null || (flow.showing && flow.snapshot?.status === 'pending')}
               className={QUOTA_SMALL_BUTTON}
             >
-              {t(source.auth.action === 'oauth_login' || source.auth.action === 'executor_login' ? 'usage.quota.action.login' : 'usage.quota.action.settings')}
+              {t(source.auth.action === 'oauth_login' || source.auth.action === 'executor_login' || source.auth.action === 'open_plugin_panel' ? 'usage.quota.action.login' : 'usage.quota.action.settings')}
             </button>
           ) : canRefresh ? (
             <button

@@ -852,6 +852,17 @@ describe('SSH tools over a real ssh2 transport', () => {
     expect(local.output).not.toContain('host: dev');
     expect(await f.remote.fs.readBytes('/home/tester/test.txt', 4, 0)).toEqual(Buffer.from('beta'));
     expect(await f.remote.fs.createExclusive('/home/tester/test.txt', Buffer.from('no'))).toBe(false);
+    expect((await execute(await write.resolveExecution({ host: 'dev', path: '/home/tester/test.txt', content: 'no', mode: 'create' }))).isError).toBe(true);
+    expect((await execute(await write.resolveExecution({ host: 'dev', path: '/home/tester/exclusive.txt', content: 'fresh\n', mode: 'create' }))).output).toContain('Created 6 bytes');
+    expect(filesText(f.files.get('/home/tester/exclusive.txt'))).toBe('fresh\n');
+    expect(await f.remote.fs.createExclusive('/home/tester/zero-exclusive.txt', Buffer.alloc(0))).toBe(true);
+    expect(await f.remote.fs.createExclusive('/home/tester/zero-exclusive.txt', Buffer.alloc(0))).toBe(false);
+    const [firstRace, secondRace] = await Promise.all([
+      f.remote.fs.createExclusive('/home/tester/race-exclusive.txt', Buffer.from('one')),
+      f.remote.fs.createExclusive('/home/tester/race-exclusive.txt', Buffer.from('two')),
+    ]);
+    expect([firstRace, secondRace].sort()).toEqual([false, true]);
+    expect(filesText(f.files.get('/home/tester/race-exclusive.txt'))).toMatch(/^(?:one|two)$/);
     expect((await f.remote.fs.readdir('/home/tester')).map((entry) => entry.name)).toContain('test.txt');
     await f.manager.disconnect('dev');
     expect((await execute(await read.resolveExecution({ host: 'dev', path: '/home/tester/test.txt' }))).output).toContain('beta');

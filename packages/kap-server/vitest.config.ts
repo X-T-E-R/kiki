@@ -37,12 +37,26 @@ const defaultExcludes = isExplicitPerfRun
   ? DEFAULT_VITEST_EXCLUDE
   : [...DEFAULT_VITEST_EXCLUDE, 'test/perf/**'];
 
+const pkg = (rel: string) => fileURLToPath(new URL(`../${rel}`, import.meta.url));
+
+const workspaceAlias = [
+  { find: /^@kiki\/plugin-sdk$/, replacement: pkg('plugin-sdk/src/index.ts') },
+  { find: /^@kiki\/plugin-sdk\/(.+)$/, replacement: pkg('plugin-sdk/src/$1.ts') },
+  { find: /^@kiki\/protocol$/, replacement: pkg('protocol/src/index.ts') },
+  { find: /^@kiki\/protocol\/(.+)$/, replacement: pkg('protocol/src/$1.ts') },
+  { find: /^@kiki\/kaos$/, replacement: pkg('kaos/src/index.ts') },
+  { find: /^@kiki\/kaos\/(.+)$/, replacement: pkg('kaos/src/$1') },
+  { find: /^@kiki\/agent-core-v2$/, replacement: pkg('agent-core-v2/src/index.ts') },
+  { find: /^@kiki\/agent-core-v2\/(.+)$/, replacement: pkg('agent-core-v2/src/$1') },
+  { find: /^@kiki\/agent-profiles$/, replacement: pkg('agent-profiles/src/index.ts') },
+  { find: /^@kiki\/agent-profiles\/(.+)$/, replacement: pkg('agent-profiles/src/$1.ts') },
+  { find: /^@kiki\/transcript$/, replacement: pkg('transcript/src/index.ts') },
+];
+
 const parallel = {
   plugins: [rawTextPlugin()],
   resolve: {
-    alias: {
-      '@kiki/plugin-sdk/harness-quota': fileURLToPath(new URL('../plugin-sdk/src/harness-quota.ts', import.meta.url)),
-    },
+    alias: workspaceAlias,
   },
   test: {
     ...sharedTestOptions,

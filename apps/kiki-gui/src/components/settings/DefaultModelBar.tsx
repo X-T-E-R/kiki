@@ -20,6 +20,9 @@ export function connectionNeedsAttention(
   provider: ProviderCatalogItem,
   method: OAuthMethodStatus | undefined,
 ): boolean {
+  if (provider.plugin !== undefined) {
+    return provider.plugin.readiness === 'auth_required' || provider.plugin.readiness === 'degraded';
+  }
   if (isDecisionConnection(provider)) {
     const envMissing = provider.api_key_env !== undefined && !provider.has_api_key;
     const needsModel = (provider.default_model ?? '') === '';
@@ -48,11 +51,11 @@ export function DefaultModelBar({ tab: _tab }: { tab?: AiSettingsTab } = {}) {
   const [delayedLoading, setDelayedLoading] = useState(false);
 
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
-  const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
+  const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 10_000 });
   const providersQuery = useQuery({
     queryKey: ['providers'],
     queryFn: () => client.listProviders(),
-    staleTime: 60_000,
+    staleTime: 10_000,
     enabled: typeof client.listProviders === 'function',
   });
   const methodsQuery = useQuery({
@@ -121,7 +124,7 @@ export function DefaultModelBar({ tab: _tab }: { tab?: AiSettingsTab } = {}) {
       data-default-model-bar
       data-default-model-line
       data-ai-status-card
-      className="rounded-lg bg-ink/[0.03] px-4 py-2.5"
+      className="border-b border-hairline pb-3"
     >
       {emptyConnections ? (
         <p data-ai-status-empty className="text-[13px] leading-5 text-ink-soft">

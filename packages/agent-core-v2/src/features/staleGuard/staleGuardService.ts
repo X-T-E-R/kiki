@@ -27,6 +27,7 @@ interface WriteCheck {
   readonly displayPath: string;
   readonly runtimeId: string;
   readonly knowledge: Knowledge;
+  readonly create?: boolean;
 }
 
 interface ToolTarget {
@@ -170,7 +171,8 @@ export class StaleGuardService extends Disposable implements IStaleGuardService 
     if (path === undefined) return;
     const displayPath = stringArg(event.args, 'path') ?? path;
     const target = targetFromArgs(event.args, path);
-    const overwrite = name === 'Write' && stringArg(event.args, 'mode') !== 'append';
+    const mode = stringArg(event.args, 'mode');
+    const overwrite = name === 'Write' && mode !== 'append' && mode !== 'create';
     event.waitUntil(async () => {
       let inspected: Runtime | undefined;
       try {
@@ -181,7 +183,7 @@ export class StaleGuardService extends Disposable implements IStaleGuardService 
       const runtimeId = this.runtimeIdForHost(target.host, inspected);
       const knowledge = this.knowledgeFromBatch(event, target, path, runtimeId, inspected) ??
         await this.knowledgeOnDisk(path, target.host, inspected);
-      this.writeChecks.set(event.toolCall, { path, displayPath, runtimeId, knowledge });
+      this.writeChecks.set(event.toolCall, { path, displayPath, runtimeId, knowledge, create: mode === 'create' });
       const veto = overwrite ? overwriteVeto(knowledge, displayPath) : undefined;
       return veto === undefined ? undefined : { veto: denyToolExecution(veto) };
     });
@@ -205,7 +207,7 @@ export class StaleGuardService extends Disposable implements IStaleGuardService 
         continue;
       }
       const earlier = call.name === 'Edit' || call.name === 'Write' ? this.writeChecks.get(call) : undefined;
-      if (earlier?.runtimeId === runtimeId && samePath(earlier.path, path, inspected)) knowledge = earlier.knowledge;
+      if (earlier?.create !== true && earlier?.runtimeId === runtimeId && samePath(earlier.path, path, inspected)) knowledge = earlier.knowledge;
     }
     return knowledge;
   }
@@ -222,7 +224,7 @@ export class StaleGuardService extends Disposable implements IStaleGuardService 
     const path = accessedFilePath(ctx.accesses, WRITE_OPERATIONS);
     if (path === undefined) return;
     const check = this.writeChecks.get(ctx.toolCall);
-    if (check === undefined || check.knowledge === 'current') {
+    if (check === undefined || check.knowledge === 'current' || check.create === true || (name === 'Write' && stringArg(ctx.args, 'mode') === 'create')) {
       await this.recordCurrentMtime(path, ctx.args, false);
       return;
     }

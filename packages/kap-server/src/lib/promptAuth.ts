@@ -9,6 +9,7 @@ import {
   IBootstrapService,
   IConfigService,
   IModelService,
+  IPluginLlmDirectoryService,
   IProviderService,
   ISessionAgentProfileCatalog,
   type IAgentScopeHandle,
@@ -100,6 +101,12 @@ function isStaticApiKeyModelReadyInMemory(
     if (expected !== undefined && expected.resolvedModelId !== resolvedModelId) return undefined;
     const configured = models.get(resolvedModelId);
     if (configured === undefined) return undefined;
+    try {
+      const pluginLlm = accessor.get(IPluginLlmDirectoryService);
+      if (pluginLlm.getModel(resolvedModelId) !== undefined && !(typeof configured.baseUrl === 'string' && configured.baseUrl.trim().length > 0)) {
+        return undefined;
+      }
+    } catch {}
     if (configured.oauth !== undefined) return undefined;
     const rawProviderId = resolveModelProviderId(
       {

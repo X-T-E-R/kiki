@@ -5,7 +5,7 @@ import type { ProviderConfig } from '#/kosong/provider/provider';
 import { getProviderDefinition } from '#/kosong/provider/providerDefinition';
 import type { ModelRecord } from './model';
 
-export type ModelProtocolSource = 'model' | 'provider' | 'vendor';
+export type ModelProtocolSource = 'model' | 'provider' | 'vendor' | 'plugin';
 
 export interface ExplainedModelProtocol {
   readonly protocol: Protocol;
@@ -31,6 +31,10 @@ export function explainModelProtocol(
   }
   const providerType = provider?.type;
   if (providerType === undefined) return undefined;
+  if (providerType === 'plugin') {
+    trace?.record('resolved.protocol', { kind: 'builtin', detail: `provider type 'plugin' is managed by a plugin` });
+    return { protocol: 'plugin', source: 'plugin' };
+  }
   if (VALID_PROTOCOLS.has(providerType)) {
     trace?.record('resolved.protocol', { kind: 'config', detail: `provider type '${providerType}' is itself a wire protocol` });
     return { protocol: providerType as Protocol, source: 'provider' };

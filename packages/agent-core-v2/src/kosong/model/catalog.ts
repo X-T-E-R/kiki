@@ -8,9 +8,11 @@ import {
   modelBehaviorToWire,
   modelBehaviorWireSchema,
   modelProtocolSourceSchema,
+  providerPluginInfoSchema,
   type DecisionCapabilitiesWire,
   type DecisionProtocol,
   type DecisionSourceStatus,
+  type ProviderPluginInfo,
 } from '@kiki/protocol';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
@@ -20,7 +22,7 @@ import type { TokenUsage } from '#/kosong/contract/usage';
 import type { AnthropicMessageThreadsConfig } from '#/kosong/contract/anthropicThreads';
 import type { RequestCompression } from '#/kosong/contract/requestCompression';
 import type { ResponsesWebSocketConfig } from '#/kosong/contract/responsesTransport';
-import { ProtocolSchema, type Protocol, type ProtocolProviderOptions } from '#/kosong/protocol/protocol';
+import { EffectiveProtocolSchema, ProtocolSchema, type Protocol, type ProtocolProviderOptions } from '#/kosong/protocol/protocol';
 
 import { ENV_MODEL_PROVIDER_KEY, type ProviderConfig, type ProviderDecisionConfig } from '../provider/provider';
 import { resolveProviderApiKey } from '../provider/providerDefinition';
@@ -71,7 +73,8 @@ export interface Model {
   readonly pricingModel?: string;
   readonly aliases: readonly string[];
   readonly protocol: Protocol;
-  readonly protocolSource?: 'model' | 'provider' | 'vendor';
+  readonly protocolSource?: 'model' | 'provider' | 'vendor' | 'plugin';
+  readonly pluginOwner?: { readonly pluginId: string; readonly providerId: string; readonly generation: number };
   readonly baseUrl?: string;
   readonly requestCompression?: RequestCompression;
   readonly responsesWebSocket?: ResponsesWebSocketConfig;
@@ -136,7 +139,7 @@ export const modelCatalogItemSchema = z.object({
   capabilities: z.array(z.string()).optional(),
   effective_capabilities: z.array(z.string()).optional(),
   protocol: ProtocolSchema.optional(),
-  effective_protocol: ProtocolSchema.optional(),
+  effective_protocol: EffectiveProtocolSchema.optional(),
   protocol_source: modelProtocolSourceSchema.optional(),
   endpoint_source: bindingOriginSchema.optional(),
   endpoint_env: z.string().min(1).optional(),
@@ -163,6 +166,7 @@ export type ProviderCatalogStatus = z.infer<typeof providerCatalogStatusSchema>;
 
 export const providerCatalogItemSchema = z.object({
   id: z.string().min(1),
+  label: z.string().min(1).optional(),
   enabled: z.boolean().optional(),
   type: z.string().min(1),
   service: z.enum(['chat', 'decision']).optional(),
@@ -187,8 +191,10 @@ export const providerCatalogItemSchema = z.object({
   custom_header_keys: z.array(z.string()).optional(),
   env_keys: z.array(z.string()).optional(),
   oauth: z.object({ storage: z.enum(['file', 'keyring']), signed_in: z.boolean() }).optional(),
+  plugin: providerPluginInfoSchema.optional(),
 });
 export type ProviderCatalogItem = z.infer<typeof providerCatalogItemSchema>;
+export type { ProviderPluginInfo };
 
 export const setDefaultModelResponseSchema = z.object({
   default_model: z.string().min(1),

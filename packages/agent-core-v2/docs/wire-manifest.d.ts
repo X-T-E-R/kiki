@@ -750,8 +750,8 @@ interface LlmRequestPayload {
   _name: 'llm.request';
   kind: 'loop' | 'compaction';
   provider: string;
-  protocol?: 'anthropic' | 'openai' | 'openai_responses' | 'google-genai';
-  protocol_source?: 'model' | 'provider' | 'vendor';
+  protocol?: 'anthropic' | 'openai' | 'openai_responses' | 'google-genai' | 'plugin';
+  protocol_source?: 'model' | 'provider' | 'vendor' | 'plugin';
   model: string;
   modelAlias?: string;
   /** ThinkingEffort */

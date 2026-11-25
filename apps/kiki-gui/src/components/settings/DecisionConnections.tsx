@@ -552,9 +552,11 @@ export function DecisionConnectionEditor({
   const statusBadge = (
     <span data-connection-status={state} data-decision-status={state}
       className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] ${
-        state === 'error' ? 'text-danger' : state === 'setup' ? 'text-amber-ink' : 'text-ink-faint'}`}>
-      <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
-        state === 'error' ? 'bg-danger' : state === 'setup' ? 'bg-amber-rule' : 'bg-success'}`} />
+        state === 'error' ? 'text-danger' : state === 'setup' ? 'text-amber-ink' : 'text-ink-soft'}`}>
+      {state === 'error' || state === 'setup' ? (
+        <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
+          state === 'error' ? 'bg-danger' : 'bg-amber-rule'}`} />
+      ) : null}
       <span>{stateText}</span>
     </span>
   );

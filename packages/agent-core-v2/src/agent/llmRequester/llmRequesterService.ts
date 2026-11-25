@@ -306,7 +306,7 @@ interface ToolsetDigest {
 
 interface LLMRequestLogInput {
   readonly protocol: Protocol;
-  readonly protocolSource?: 'model' | 'provider' | 'vendor';
+  readonly protocolSource?: 'model' | 'provider' | 'vendor' | 'plugin';
   readonly providerType?: string;
   readonly modelName: string;
   readonly modelAlias?: string;
