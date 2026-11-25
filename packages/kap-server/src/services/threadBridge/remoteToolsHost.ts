@@ -165,14 +165,104 @@ async function resolveRemoteWorkspace(
   return { id: sorted[0]!.id, root: sorted[0]!.root };
 }
 
+interface InFlightExportedTools {
+  readonly controller: AbortController;
+  readonly promise: Promise<BridgeToolsListResult>;
+  readonly state: {
+    waiters: number;
+    settled: boolean;
+  };
+}
+
+const exportedToolsInFlight = new WeakMap<Scope, Map<string, InFlightExportedTools>>();
+
+function attachExportedToolsWaiter(
+  flights: Map<string, InFlightExportedTools>,
+  key: string,
+  entry: InFlightExportedTools,
+  signal?: AbortSignal,
+): Promise<BridgeToolsListResult> {
+  entry.state.waiters += 1;
+  if (signal === undefined) {
+    return entry.promise.finally(() => {
+      entry.state.waiters = Math.max(0, entry.state.waiters - 1);
+    });
+  }
+  if (signal.aborted) {
+    entry.state.waiters = Math.max(0, entry.state.waiters - 1);
+    return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  }
+  return new Promise<BridgeToolsListResult>((resolve, reject) => {
+    let released = false;
+    const release = (): number => {
+      if (!released) {
+        released = true;
+        entry.state.waiters = Math.max(0, entry.state.waiters - 1);
+      }
+      return entry.state.waiters;
+    };
+    const onAbort = (): void => {
+      const remaining = release();
+      if (remaining === 0 && !entry.state.settled) {
+        if (flights.get(key) === entry) flights.delete(key);
+        entry.controller.abort(signal.reason);
+      }
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    void entry.promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        release();
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        release();
+        reject(error);
+      },
+    );
+  });
+}
+
 export async function listExportedTools(
   core: Scope,
   workspaceId?: string,
   options?: { signal?: AbortSignal; materializeCold?: boolean },
 ): Promise<BridgeToolsListResult> {
   const signal = options?.signal;
-  const materializeCold = options?.materializeCold !== false;
   signal?.throwIfAborted();
+  const materializeCold = options?.materializeCold !== false;
+  let flights = exportedToolsInFlight.get(core);
+  if (flights === undefined) {
+    flights = new Map();
+    exportedToolsInFlight.set(core, flights);
+  }
+  const key = `${workspaceId ?? ''}\0${materializeCold ? '1' : '0'}`;
+  const existing = flights.get(key);
+  if (existing !== undefined && !existing.state.settled && !existing.controller.signal.aborted) {
+    return attachExportedToolsWaiter(flights, key, existing, signal);
+  }
+  const controller = new AbortController();
+  const state = { waiters: 0, settled: false };
+  const promise = listExportedToolsUncached(core, workspaceId, materializeCold, controller.signal).finally(() => {
+    state.settled = true;
+    const current = flights.get(key);
+    if (current?.controller === controller) flights.delete(key);
+  });
+  void promise.catch(() => {});
+  const entry: InFlightExportedTools = { controller, promise, state };
+  flights.set(key, entry);
+  return attachExportedToolsWaiter(flights, key, entry, signal);
+}
+
+async function listExportedToolsUncached(
+  core: Scope,
+  workspaceId: string | undefined,
+  materializeCold: boolean,
+  signal: AbortSignal,
+): Promise<BridgeToolsListResult> {
+  signal.throwIfAborted();
   const targetWorkspace = await resolveRemoteWorkspace(core, workspaceId, workspaceId !== undefined && materializeCold);
   signal?.throwIfAborted();
   const effectiveWorkspaceId = targetWorkspace?.id ?? workspaceId;

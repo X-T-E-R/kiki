@@ -1421,6 +1421,30 @@ describe('agentsMdReminder discovery cache', () => {
     await discovery.resolveRealPath(lease, subDir);
     expect(realpath).toHaveBeenCalledTimes(2);
   });
+
+  it('does not open OS watchers on individual files or non-existent paths', async () => {
+    const hostFs = new HostFileSystem();
+    const watch = watchHarness();
+    const environment = {
+      _serviceBrand: undefined,
+      homeDir,
+      pathClass: process.platform === 'win32' ? 'win32' : 'posix',
+    } as unknown as IHostEnvironment;
+    const runtime = testRuntime(hostFs, environment, watch.service);
+    const discovery = new AgentsMdDiscoveryService(60_000, () => 1_000);
+    const lease = { runtime, track: () => {}, dispose: () => {} } as unknown as import('#/runtime/runtime').RuntimeLease;
+
+    const mediaFile = join(workDir, 'clip.mp4');
+    await writeFile(mediaFile, 'bytes');
+    const missingPath = join(workDir, 'does-not-exist');
+
+    await discovery.discover(lease, mediaFile, workDir);
+    await discovery.discover(lease, missingPath, workDir);
+
+    expect(watch.paths).toContain(normalize(workDir));
+    expect(watch.paths).not.toContain(normalize(mediaFile));
+    expect(watch.paths).not.toContain(normalize(missingPath));
+  });
 });
 
 describe('agentsMdReminder round-2 hardening', () => {

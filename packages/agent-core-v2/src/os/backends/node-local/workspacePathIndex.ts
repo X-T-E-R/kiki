@@ -5,7 +5,7 @@ import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import picomatch from 'picomatch';
 import { computeFuzzyScore } from '#/_base/text/fuzzy';
 import type { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
-import type { WorkspacePathEntry, WorkspacePathInventory } from './workspacePathInventory';
+import { isAlwaysIgnoredPathSegment, type WorkspacePathEntry, type WorkspacePathInventory } from './workspacePathInventory';
 import { WorkspaceTrigramIndex } from './workspaceTrigramIndex';
 
 export interface WorkspacePathSnapshot {
@@ -45,6 +45,8 @@ interface ActiveScan {
 const MUTATION_COALESCE_MS = 16;
 const DEFAULT_RECONCILE_DEBOUNCE_MS = 250;
 const DEFAULT_MAX_SCAN_RETAINED_MUTATIONS = 4_096;
+const WATCHER_BURST_RECONCILE_THRESHOLD = 64;
+const MAX_CONCURRENT_WATCHER_UPDATES = 4;
 
 /** Returns true when a workspace root targets a UNC or SMB network share (`\\server\share`, `//server/share`, `\\?\UNC\server\share`). */
 export function isUncRoot(path: string): boolean {
@@ -165,8 +167,11 @@ export class WorkspacePathIndex {
   private watcher?: FSWatcher;
   private timer?: ReturnType<typeof setTimeout>;
   private publishTimer?: ReturnType<typeof setTimeout>;
+  private watcherTimer?: ReturnType<typeof setTimeout>;
   private repair?: ReturnType<typeof setInterval>;
   private pending?: Promise<void>;
+  private watcherDrain?: Promise<void>;
+  private readonly watcherPending = new Set<string>();
   private revision = 0;
   private snapshotRevision = 0;
   private mutationSeq = 0;
@@ -263,6 +268,7 @@ export class WorkspacePathIndex {
           this.activeScan = undefined;
           this.refreshController?.abort();
           this.refreshController = undefined;
+          this.clearWatcherPending();
           this.clearPublishedState();
           this.trigram?.reset();
           this.emitMutation(undefined);
@@ -270,13 +276,14 @@ export class WorkspacePathIndex {
           this.watcher = undefined;
           return;
         }
-        if (filename !== null && filename.split(/[\\/]/u).some(part => ['.git', '.hg', '.svn', '.jj', '.bzr', '.sl'].includes(part.toLowerCase()))) return;
+        if (filename !== null && filename.split(/[\\/]/u).some(isAlwaysIgnoredPathSegment)) return;
         if (filename === null) {
+          this.clearWatcherPending();
           this.invalidate();
         } else {
           const fullPath = resolve(this.root, filename);
           this.emitMutation(fullPath);
-          void this.mutation(fullPath);
+          this.enqueueWatcherMutation(fullPath);
         }
       });
       this.watcher.on('error', error => {
@@ -285,6 +292,7 @@ export class WorkspacePathIndex {
         }
         this.error = error;
         this.watching = false;
+        this.clearWatcherPending();
         if (this.activeScan !== undefined) {
           this.loseScanFidelity(this.activeScan);
         } else {
@@ -356,8 +364,90 @@ export class WorkspacePathIndex {
     if (this.activeScan === scan) this.refreshController?.abort();
   }
 
+  private clearWatcherPending(): void {
+    if (this.watcherTimer !== undefined) {
+      clearTimeout(this.watcherTimer);
+      this.watcherTimer = undefined;
+    }
+    this.watcherPending.clear();
+  }
+
+  private enqueueWatcherMutation(fullPath: string): void {
+    if (!this.started || this.disposed || this.networkRoot || this.rootDeleted) return;
+    const local = relative(this.root, fullPath).replaceAll('\\', '/');
+    if (local === '..' || local.startsWith('../') || isAbsolute(local)) return;
+    if (local.split('/').some(isAlwaysIgnoredPathSegment)) return;
+    if (local === '' || ['.gitignore', '.ignore', '.rgignore'].includes(basename(local).toLowerCase())) {
+      this.clearWatcherPending();
+      this.invalidate();
+      return;
+    }
+    if (this.overflowed) {
+      if (this.activeScan !== undefined) this.activeScan.fidelityLost = true;
+      return;
+    }
+    if (this.reconcileQueued) return;
+    if (this.timer !== undefined) {
+      this.armReconcileTimer();
+      return;
+    }
+    this.watcherPending.add(fullPath);
+    if (this.watcherPending.size > WATCHER_BURST_RECONCILE_THRESHOLD) {
+      this.clearWatcherPending();
+      if (this.activeScan !== undefined) {
+        this.loseScanFidelity(this.activeScan);
+      }
+      this.scheduleReconcile();
+      return;
+    }
+    if (this.watcherTimer === undefined) {
+      this.watcherTimer = setTimeout(() => {
+        this.watcherTimer = undefined;
+        this.flushWatcherPending();
+      }, MUTATION_COALESCE_MS);
+      this.watcherTimer.unref();
+    }
+  }
+
+  private flushWatcherPending(): void {
+    if (this.watcherTimer !== undefined) {
+      clearTimeout(this.watcherTimer);
+      this.watcherTimer = undefined;
+    }
+    if (this.watcherPending.size === 0 || this.disposed || this.networkRoot || this.rootDeleted) {
+      this.watcherPending.clear();
+      return;
+    }
+    const batch = [...this.watcherPending];
+    this.watcherPending.clear();
+    const previous = this.watcherDrain ?? Promise.resolve();
+    const drain = previous.then(async () => {
+      if (this.disposed || this.networkRoot || this.rootDeleted) return;
+      let cursor = 0;
+      const workerCount = Math.min(MAX_CONCURRENT_WATCHER_UPDATES, batch.length);
+      const workers = Array.from({ length: workerCount }, async () => {
+        while (
+          cursor < batch.length
+          && !this.disposed
+          && !this.networkRoot
+          && !this.rootDeleted
+          && !this.reconcileQueued
+          && this.timer === undefined
+        ) {
+          const nextPath = batch[cursor++];
+          if (nextPath !== undefined) await this.applyMutation(nextPath, false);
+        }
+      });
+      await Promise.all(workers);
+    }).finally(() => {
+      if (this.watcherDrain === drain) this.watcherDrain = undefined;
+    });
+    this.watcherDrain = drain;
+  }
+
   invalidate(): void {
     if (!this.started || this.disposed || this.networkRoot || this.rootDeleted) return;
+    this.clearWatcherPending();
     this.revision++;
     this.reconcileQueued = false;
     this.activeScan = undefined;
@@ -418,11 +508,16 @@ export class WorkspacePathIndex {
   }
 
   async mutation(path: string): Promise<void> {
+    await this.applyMutation(path, true);
+  }
+
+  private async applyMutation(path: string, emitEvent: boolean): Promise<void> {
     if (!this.started || this.disposed || this.networkRoot || this.rootDeleted) return;
     const resolved = resolve(path);
     const local = relative(this.root, resolved).replaceAll('\\', '/');
     if (local === '..' || local.startsWith('../') || isAbsolute(local)) return;
-    this.emitMutation(resolved);
+    if (local.split('/').some(isAlwaysIgnoredPathSegment)) return;
+    if (emitEvent) this.emitMutation(resolved);
     if (local === '' || ['.gitignore', '.ignore', '.rgignore'].includes(basename(local).toLowerCase())) {
       this.invalidate();
       return;
@@ -485,7 +580,20 @@ export class WorkspacePathIndex {
   }
 
   async whenSettled(): Promise<void> {
-    while (this.pathUpdates.size > 0) await Promise.all(this.pathUpdates.values());
+    for (;;) {
+      if (this.watcherTimer !== undefined || this.watcherPending.size > 0) {
+        this.flushWatcherPending();
+      }
+      if (this.watcherDrain !== undefined) {
+        await this.watcherDrain;
+        continue;
+      }
+      if (this.pathUpdates.size > 0) {
+        await Promise.all(this.pathUpdates.values());
+        continue;
+      }
+      break;
+    }
   }
 
   async refresh(): Promise<void> {
@@ -727,6 +835,7 @@ export class WorkspacePathIndex {
     if (this.timer !== undefined) clearTimeout(this.timer);
     if (this.publishTimer !== undefined) clearTimeout(this.publishTimer);
     if (this.repair !== undefined) clearInterval(this.repair);
+    this.clearWatcherPending();
     this.clearPublishedState();
     this.activeScan = undefined;
     this.refreshController = undefined;

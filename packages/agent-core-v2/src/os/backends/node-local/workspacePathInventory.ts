@@ -19,7 +19,24 @@ export interface WorkspacePathInventory {
   readonly overflow: boolean;
 }
 
-const VCS = new Set(['.git', '.hg', '.svn', '.jj', '.bzr', '.sl']);
+const ALWAYS_IGNORED_SEGMENTS = new Set([
+  '.git',
+  '.hg',
+  '.svn',
+  '.jj',
+  '.bzr',
+  '.sl',
+  'deriveddata',
+  '.swiftpm',
+  'xcuserdata',
+  '.ds_store',
+]);
+
+/** Returns true when a path segment belongs to VCS metadata or Apple/Xcode build-artifact bundles that must never be indexed or watched. */
+export function isAlwaysIgnoredPathSegment(segment: string): boolean {
+  const lower = segment.toLowerCase();
+  return ALWAYS_IGNORED_SEGMENTS.has(lower) || lower.endsWith('.xcresult');
+}
 const IGNORE_FILES = ['.gitignore', '.ignore', '.rgignore'];
 const SKIPPABLE = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR']);
 
@@ -119,7 +136,7 @@ export function workspacePathEntry(root: string, path: string, signal?: AbortSig
   signal?.throwIfAborted();
   const local = relative(root, path);
   if (local === '' || local === '..' || local.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(local) ||
-      local.split(/[\\/]/u).some(part => VCS.has(part.toLowerCase()))) return undefined;
+      local.split(/[\\/]/u).some(isAlwaysIgnoredPathSegment)) return undefined;
   const entry = pathEntry(root, path, signal);
   return entry === undefined || new PathRules(root, signal).ignored(path, entry.kind === 'directory') ? undefined : entry;
 }
@@ -172,7 +189,7 @@ export function workspacePathInventory(root: string, limit: number, signal?: Abo
     if (dirent === undefined) { stack.pop(); continue; }
     const path = join(frame.path, dirent.name);
     if (dirent.isDirectory()) {
-      if (VCS.has(dirent.name.toLowerCase()) || rules.ignored(path, true)) continue;
+      if (isAlwaysIgnoredPathSegment(dirent.name) || rules.ignored(path, true)) continue;
       const entry = pathEntry(root, path, signal);
       if (entry === undefined) continue;
       entries.push(entry);
@@ -180,7 +197,7 @@ export function workspacePathInventory(root: string, limit: number, signal?: Abo
       stack.push({ path, index: 0 });
       continue;
     }
-    if (VCS.has(dirent.name.toLowerCase()) || rules.ignored(path, false)) continue;
+    if (isAlwaysIgnoredPathSegment(dirent.name) || rules.ignored(path, false)) continue;
     const entry = pathEntry(root, path, signal);
     if (entry === undefined) continue;
     entries.push(entry);

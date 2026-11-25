@@ -8,7 +8,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import type { CpuRequestOptions } from '#/app/cpuWorker/host';
 import { isUncRoot, WorkspacePathIndex } from '#/os/backends/node-local/workspacePathIndex';
-import type { WorkspacePathEntry } from '#/os/backends/node-local/workspacePathInventory';
+import {
+  isAlwaysIgnoredPathSegment,
+  workspacePathEntry,
+  workspacePathInventory,
+  type WorkspacePathEntry,
+} from '#/os/backends/node-local/workspacePathInventory';
 
 interface FakeWatcherController {
   readonly watch: typeof import('node:fs').watch;
@@ -811,6 +816,113 @@ describe('WorkspacePathIndex demand start and coalesced mutations', () => {
       expect(index.isStarted).toBe(true);
       expect(index.isWatching).toBe(false);
       expect(index.error).toBeUndefined();
+    } finally {
+      await index.dispose();
+    }
+  });
+
+  it('skips Xcode/Apple build artifacts in inventory, single-path lookups, and watcher events', async () => {
+    expect(isAlwaysIgnoredPathSegment('DerivedData')).toBe(true);
+    expect(isAlwaysIgnoredPathSegment('.swiftpm')).toBe(true);
+    expect(isAlwaysIgnoredPathSegment('xcuserdata')).toBe(true);
+    expect(isAlwaysIgnoredPathSegment('TestRun.xcresult')).toBe(true);
+    expect(isAlwaysIgnoredPathSegment('.DS_Store')).toBe(true);
+    expect(isAlwaysIgnoredPathSegment('Sources')).toBe(false);
+
+    const root = await makeTempDir();
+    await mkdir(join(root, 'Sources'), { recursive: true });
+    await mkdir(join(root, 'DerivedData', 'Build', 'Intermediates'), { recursive: true });
+    await mkdir(join(root, '.swiftpm', 'xcode'), { recursive: true });
+    await mkdir(join(root, 'App.xcodeproj', 'xcuserdata', 'dev.xcuserdatad'), { recursive: true });
+    await mkdir(join(root, 'Artifacts', 'Build.xcresult', 'Data'), { recursive: true });
+    await writeFile(join(root, 'Sources', 'App.swift'), 'struct App {}\n');
+    await writeFile(join(root, 'DerivedData', 'Build', 'Intermediates', 'a.o'), 'bin');
+    await writeFile(join(root, '.swiftpm', 'xcode', 'package.xcworkspace'), 'xml');
+    await writeFile(join(root, 'App.xcodeproj', 'xcuserdata', 'dev.xcuserdatad', 'state.plist'), 'plist');
+    await writeFile(join(root, 'Artifacts', 'Build.xcresult', 'Data', 'info.plist'), 'plist');
+    await writeFile(join(root, '.DS_Store'), 'ds');
+
+    const inv = workspacePathInventory(root, 1_000);
+    expect(inv.overflow).toBe(false);
+    expect(inv.entries.map((entry) => entry.path)).toEqual([
+      'App.xcodeproj',
+      'Artifacts',
+      'Sources',
+      'Sources/App.swift',
+    ].filter((path) => inv.entries.some((entry) => entry.path === path)));
+    expect(inv.entries.some((entry) => entry.path.includes('DerivedData') || entry.path.includes('.swiftpm') || entry.path.includes('xcuserdata') || entry.path.includes('.xcresult') || entry.path.includes('.DS_Store'))).toBe(false);
+    expect(workspacePathEntry(root, join(root, 'DerivedData', 'Build', 'Intermediates', 'a.o'))).toBeUndefined();
+    expect(workspacePathEntry(root, join(root, 'Artifacts', 'Build.xcresult', 'Data', 'info.plist'))).toBeUndefined();
+
+    const pathCalls: string[] = [];
+    const cpu: ICpuWorkerService = {
+      _serviceBrand: undefined,
+      request: async <T>(operation: unknown) => {
+        const op = operation as { readonly type: string; readonly path?: string };
+        if (op.type === 'workspace.paths') return { overflow: false, entries: inv.entries } as T;
+        if (op.type === 'workspace.path') {
+          pathCalls.push(op.path ?? '');
+          return undefined as T;
+        }
+        return undefined as T;
+      },
+    };
+    const fakeWatcher = createFakeWatcher();
+    const index = new WorkspacePathIndex(root, cpu, undefined, { watch: fakeWatcher.watch });
+    try {
+      await index.refresh();
+      fakeWatcher.emit('change', join('DerivedData', 'Build', 'Intermediates', 'a.o'));
+      fakeWatcher.emit('change', join('.swiftpm', 'xcode', 'package.xcworkspace'));
+      fakeWatcher.emit('change', join('App.xcodeproj', 'xcuserdata', 'dev.xcuserdatad', 'state.plist'));
+      fakeWatcher.emit('change', join('Artifacts', 'Build.xcresult', 'Data', 'info.plist'));
+      fakeWatcher.emit('change', '.DS_Store');
+      await index.whenSettled();
+      expect(pathCalls).toEqual([]);
+    } finally {
+      await index.dispose();
+    }
+  });
+
+  it('collapses large watcher build storms into a single debounced reconcile instead of flooding workspace.path', async () => {
+    const root = await makeTempDir();
+    let inventoryCalls = 0;
+    let pathCalls = 0;
+    const cpu: ICpuWorkerService = {
+      _serviceBrand: undefined,
+      request: async <T>(operation: unknown) => {
+        const op = operation as { readonly type: string };
+        if (op.type === 'workspace.paths') {
+          inventoryCalls += 1;
+          return {
+            overflow: false,
+            entries: [{ path: 'src/index.ts', name: 'index.ts', kind: 'file', mtimeMs: 10, ctimeMs: 10, size: 12, ino: 1 }],
+          } as T;
+        }
+        if (op.type === 'workspace.path') {
+          pathCalls += 1;
+          return undefined as T;
+        }
+        return undefined as T;
+      },
+    };
+    const fakeWatcher = createFakeWatcher();
+    const index = new WorkspacePathIndex(root, cpu, undefined, {
+      watch: fakeWatcher.watch,
+      reconcileDebounceMs: 25,
+    });
+    try {
+      await index.refresh();
+      expect(inventoryCalls).toBe(1);
+
+      for (let i = 0; i < 120; i += 1) {
+        fakeWatcher.emit('change', join('build', 'deps', `crate-${i}.rlib`));
+      }
+      await index.whenSettled();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      await index.whenSettled();
+
+      expect(pathCalls).toBe(0);
+      expect(inventoryCalls).toBe(2);
     } finally {
       await index.dispose();
     }

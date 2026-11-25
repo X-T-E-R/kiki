@@ -132,6 +132,7 @@ describe('createOriginHook (onRequest hook)', () => {
     expect(res.headers['access-control-allow-methods']).toBe(
       'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     );
+    expect(res.headers['access-control-max-age']).toBe('600');
   });
 
   it('withholds CORS headers for a non-whitelisted cross-origin', async () => {
@@ -154,6 +155,7 @@ describe('createOriginHook (onRequest hook)', () => {
     expect(res.statusCode).toBe(204);
     expect(res.headers['access-control-allow-origin']).toBeUndefined();
     expect(res.headers['access-control-expose-headers']).toBeUndefined();
+    expect(res.headers['access-control-max-age']).toBeUndefined();
   });
 
   it('emits no CORS headers when Origin is absent', async () => {
@@ -195,5 +197,6 @@ describe('createOriginHook (onRequest hook)', () => {
     expect(res.headers['access-control-allow-headers']).toBe(
       'Content-Type, Authorization, X-Kimi-Client-Id, X-Kimi-Client-Name, X-Kimi-Client-Version, X-Kimi-Client-Ui-Mode',
     );
+    expect(res.headers['access-control-max-age']).toBeUndefined();
   });
 });
