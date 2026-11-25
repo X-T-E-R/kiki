@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Fastify from 'fastify';
-import { IConfigService, ISessionManager, ISessionActivityView, ISessionInteractionService, IAgentLifecycleService, IInstantiationService, IAgentLoopService, IAgentTaskService, IAgentPromptService, IAgentActivityView, IEventBus, IAgentExecutionService, IAgentGoalService, type Scope } from '@kiki/agent-core-v2';
+import { IConfigService, ISessionManager, ISessionActivityView, ISessionContext, ISessionMetadata, ISessionInteractionService, IAgentLifecycleService, IInstantiationService, IAgentLoopService, IAgentTaskService, IAgentPromptService, IAgentActivityView, IEventBus, IAgentExecutionService, IAgentGoalService, type Scope } from '@kiki/agent-core-v2';
 import { DEFAULT_NOTIFICATIONS_CONFIG, NotificationsConfigSchema } from '@kiki/agent-core-v2/app/notifications/configSection';
 import type { NotificationChannel, NotificationSettings } from '@kiki/klient';
 import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
@@ -83,6 +83,8 @@ describe('notification coordinator', () => {
     const session = { id: 'receipt-fold', accessor: { get: (key: unknown) => {
       if (key === ISessionActivityView) return folded;
       if (key === ISessionInteractionService) return interactions;
+      if (key === ISessionContext) return { ephemeral: false };
+      if (key === ISessionMetadata) return { snapshot: () => ({ private: false }) };
       if (key === IInstantiationService) return { onWillDispose: Event.None };
       throw new Error('unexpected_session_service');
     } } };
@@ -150,6 +152,8 @@ describe('notification coordinator', () => {
     const session = { id: 'work-chain', accessor: { get: (key: unknown) => {
       if (key === IInstantiationService) return { onWillDispose: noEvent.on };
       if (key === ISessionActivityView) return activityView;
+      if (key === ISessionContext) return { ephemeral: false };
+      if (key === ISessionMetadata) return { snapshot: () => ({ private: false }) };
       if (key === ISessionInteractionService) return { listPending: () => [], onDidChangePending: noEvent.on, onDidResolve: noEvent.on };
       if (key === IAgentLifecycleService) return { list: roster };
       throw new Error('unexpected_session_service');
@@ -344,6 +348,8 @@ describe('notification coordinator', () => {
       if (sessionDisposed) throw new Error('session_scope_disposed');
       if (key === IInstantiationService) return { onWillDispose: disposing.on };
       if (key === ISessionActivityView) return activityView;
+      if (key === ISessionContext) return { ephemeral: false };
+      if (key === ISessionMetadata) return { snapshot: () => ({ private: false }) };
       if (key === ISessionInteractionService) return interaction;
       if (key === IAgentLifecycleService) return { list: () => [main], onDidCreate: created.on, onDidDispose: disposing.on };
       throw new Error('unexpected_session_service');

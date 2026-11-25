@@ -7017,7 +7017,19 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     }
     const grouped = groupBlocks(projected.blocks);
     const folded = foldHistory(grouped, undefined);
-    expect(JSON.stringify(folded.filter((item) => item.kind !== 'system-reminder'))).not.toContain('Treat this Sol review verdict');
+    const visibleTopLevel = folded.filter((item) => item.kind !== 'history-fold' && item.kind !== 'system-reminder');
+    expect(JSON.stringify(visibleTopLevel)).not.toContain('Treat this Sol review verdict');
+    expect(JSON.stringify(visibleTopLevel)).not.toContain('Subagent parent steering');
+    const foldNonReminderMembers = folded.flatMap((item) =>
+      item.kind === 'history-fold' ? item.members.filter((member) => member.kind !== 'system-reminder') : [],
+    );
+    expect(JSON.stringify(foldNonReminderMembers)).not.toContain('Treat this Sol review verdict');
+    const foldedSteeringReminders = folded.flatMap((item) =>
+      item.kind === 'history-fold'
+        ? item.members.filter((member) => member.kind === 'system-reminder' && member.variant === 'subagent_parent_steering')
+        : [],
+    );
+    expect(foldedSteeringReminders).toHaveLength(2);
   });
 
   it('reads a reminder category only from a known disclosure kind', () => {

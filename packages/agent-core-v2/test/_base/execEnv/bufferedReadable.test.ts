@@ -84,4 +84,15 @@ describe('BufferedReadable', () => {
     await expect(withTimeout(errorReceived, 250)).resolves.toBe(boom);
     expect(buffered.destroyed).toBe(true);
   });
+
+  it('ends async iteration cleanly when destroyed without an error', async () => {
+    const source = new PassThrough();
+    const buffered = new BufferedReadable(source);
+    const reading = withTimeout(collectText(buffered), 250);
+    await defer();
+    source.write(Buffer.from('before-dispose'));
+    await defer();
+    buffered.destroy();
+    await expect(reading).resolves.toBe('before-dispose');
+  });
 });

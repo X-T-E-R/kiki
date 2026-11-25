@@ -551,7 +551,7 @@ describe('http transport', () => {
     } finally { subscription.close(); await klient.close(); vi.useRealTimers(); }
   });
 
-  it('bounds busy attachment retries and reports a terminal error after exhaustion', async () => {
+  it('bounds busy attachment retries and reports a recoverable protocolError after exhaustion', async () => {
     vi.useFakeTimers();
     const server = new FakeWebSocketServer();
     const klient = createKlient({ endpoint: 'http://example.test', WebSocket: fakeWebSocket(server) });
@@ -568,7 +568,7 @@ describe('http transport', () => {
       expect(attaches()).toHaveLength(5);
       server.push({ type: 'view_error', id, code: 40901, msg: 'Busy' });
       await vi.advanceTimersByTimeAsync(0);
-      expect(signals).toContainEqual(expect.objectContaining({ type: 'protocolError', recoverable: false, detail: 'Busy' }));
+      expect(signals).toContainEqual(expect.objectContaining({ type: 'protocolError', recoverable: true, detail: 'Busy' }));
       await vi.advanceTimersByTimeAsync(5000);
       expect(attaches()).toHaveLength(5);
     } finally { subscription.close(); await klient.close(); vi.useRealTimers(); }

@@ -629,8 +629,8 @@ describe('AgentTranscriptLiveAdapter', () => {
       expect(JSON.stringify(cold.snapshot())).not.toContain('fixture unauthorized');
       const assistant = ctx.contextData().history.find((message) => message.role === 'assistant');
       expect(assistant?.content).toEqual([
-        { type: 'think', think: 'Successful reasoning', encrypted: 'fixture-reasoning-opaque' },
-        { type: 'think', think: 'Successful summary', encrypted: 'fixture-summary-opaque' },
+        { type: 'think', think: 'Successful reasoning', encrypted: 'fixture-reasoning-opaque', reasoningOrigin: expect.any(String) },
+        { type: 'think', think: 'Successful summary', encrypted: 'fixture-summary-opaque', reasoningOrigin: expect.any(String) },
         { type: 'text', text: 'Final body' },
       ]);
     } finally {

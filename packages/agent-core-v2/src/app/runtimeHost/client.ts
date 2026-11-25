@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Socket } from 'node:net';
 import { createConnection } from 'node:net';
 
+import { isBrokenPipeError, isWritableStreamOpen } from '#/_base/errors/brokenPipe';
 import { createFrameDecoder, encodeCall, encodeCancel, encodeHello, encodeTokens } from './codec';
 import { HomeRuntimeError, fromErrorPayloadCode, runtimeAbortReason } from './errors';
 import {
@@ -99,9 +100,25 @@ export function createRuntimeClient(
     if (previous === 'ready') callbacks.onDisconnected(error.message);
   };
 
+  const writeSocket = (encoded: string): boolean => {
+    if (socket === undefined || !isWritableStreamOpen(socket)) {
+      return false;
+    }
+    try {
+      socket.write(encoded);
+      return true;
+    } catch (error) {
+      if (isBrokenPipeError(error)) {
+        teardown(new HomeRuntimeError('runtime.connection_failed', error instanceof Error ? error.message : String(error), { cause: error }));
+        return false;
+      }
+      throw error;
+    }
+  };
+
   const sendCancel = (requestId: string): void => {
-    if (socket !== undefined && !socket.destroyed && phase === 'ready') {
-      socket.write(encodeCancel({ requestId, epoch: peerEpoch }));
+    if (phase === 'ready') {
+      writeSocket(encodeCancel({ requestId, epoch: peerEpoch }));
     }
   };
 
@@ -181,13 +198,17 @@ export function createRuntimeClient(
       teardown(new HomeRuntimeError('runtime.owner_gone', 'runtime owner connection closed'));
     });
     socket.setNoDelay(true);
-    socket.write(encodeHello({
-      v: RUNTIME_PROTOCOL_VERSION,
-      protocol: RUNTIME_PROTOCOL_NAME,
-      hostId: callbacks.hostId,
-      canonicalHomeDir: callbacks.canonicalHomeDir,
-    }));
-    socket.write(encodeTokens(callbacks.tokens));
+    if (
+      !writeSocket(encodeHello({
+        v: RUNTIME_PROTOCOL_VERSION,
+        protocol: RUNTIME_PROTOCOL_NAME,
+        hostId: callbacks.hostId,
+        canonicalHomeDir: callbacks.canonicalHomeDir,
+      })) ||
+      !writeSocket(encodeTokens(callbacks.tokens))
+    ) {
+      return Promise.reject(new HomeRuntimeError('runtime.connection_failed', 'runtime handshake write failed'));
+    }
     return new Promise<void>((resolve, reject) => {
       handshakeResolve = resolve;
       handshakeReject = reject;
@@ -287,14 +308,14 @@ export function createRuntimeClient(
         }, timeoutMs);
         call.timer.unref?.();
         pending.set(requestId, call);
-        const written = socket!.write(encodeCall({
+        const written = writeSocket(encodeCall({
           requestId,
           method,
           epoch: peerEpoch,
           payload,
           timeoutMs,
         }));
-        if (!written && socket!.destroyed) finish(new HomeRuntimeError('runtime.connection_failed', 'runtime connection closed'));
+        if (!written && (socket === undefined || socket.destroyed)) finish(new HomeRuntimeError('runtime.connection_failed', 'runtime connection closed'));
       });
     },
   };

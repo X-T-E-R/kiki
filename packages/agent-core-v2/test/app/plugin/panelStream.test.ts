@@ -1,9 +1,11 @@
+import { createServer, type Socket } from 'node:net';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it, vi } from 'vitest';
 import { PluginHost } from '#/app/plugin/host';
+import { PanelStream } from '#/app/plugin/panelStream';
 
 const entry = fileURLToPath(new URL('../../fixtures/plugin-host/panel-stream.mjs', import.meta.url));
 
@@ -205,5 +207,54 @@ it('buffers initial binary and text frames sent before listeners attach and enfo
   } finally {
     await host.stopAndWait();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('absorbs synchronous broken-pipe socket.write throws in PanelStream.sendText and sendTextAsync and tears down cleanly', async () => {
+  const accepted = new Set<Socket>();
+  const server = createServer((socket) => {
+    accepted.add(socket);
+    socket.on('error', () => {});
+    socket.resume();
+    socket.once('close', () => accepted.delete(socket));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('expected TCP port');
+  try {
+    for (const code of ['EPIPE', 'ECONNRESET', 'EOF', 'ERR_STREAM_DESTROYED'] as const) {
+      const onEnd = vi.fn();
+      const closed = vi.fn();
+      const stream = new PanelStream({ ok: true }, address.port, '00'.repeat(32), onEnd);
+      stream.onClose(closed);
+      await stream.connected();
+      const socket = (stream as unknown as { socket: Socket }).socket;
+      socket.write = (() => {
+        throw Object.assign(new Error(`write ${code}`), { code });
+      }) as typeof socket.write;
+
+      expect(() => expect(stream.sendText('ping')).toBe(false)).not.toThrow();
+      expect(socket.destroyed).toBe(true);
+      expect(onEnd).toHaveBeenCalledOnce();
+      expect(closed).toHaveBeenCalledWith(`write ${code}`);
+    }
+
+    const onEndAsync = vi.fn();
+    const closedAsync = vi.fn();
+    const asyncStream = new PanelStream({ ok: true }, address.port, '00'.repeat(32), onEndAsync);
+    asyncStream.onClose(closedAsync);
+    await asyncStream.connected();
+    const asyncSocket = (asyncStream as unknown as { socket: Socket }).socket;
+    asyncSocket.write = (() => {
+      throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    }) as typeof asyncSocket.write;
+
+    await expect(asyncStream.sendTextAsync('ping')).rejects.toThrow('write EPIPE');
+    expect(asyncSocket.destroyed).toBe(true);
+    expect(onEndAsync).toHaveBeenCalledOnce();
+    expect(closedAsync).toHaveBeenCalledWith('write EPIPE');
+  } finally {
+    for (const sock of accepted) sock.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });

@@ -1,4 +1,5 @@
 import { createConnection, type Socket } from 'node:net';
+import { isBrokenPipeError, isWritableStreamOpen } from '#/_base/errors/brokenPipe';
 
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 export const MAX_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
@@ -36,7 +37,21 @@ export class PanelStream implements PluginPanelStream {
     this.socket.on('data', (chunk) => this.receive(chunk));
     this.socket.on('error', (error) => this.destroy(error.message));
     this.socket.on('close', () => this.destroy());
-    this.socket.once('connect', () => this.socket.write(Buffer.from(token, 'hex')));
+    this.socket.once('connect', () => {
+      if (this.ended || !isWritableStreamOpen(this.socket)) {
+        this.destroy('Plugin stream closed before handshake');
+        return;
+      }
+      try {
+        this.socket.write(Buffer.from(token, 'hex'));
+      } catch (error) {
+        if (isBrokenPipeError(error)) {
+          this.destroy(error instanceof Error ? error.message : String(error));
+          return;
+        }
+        throw error;
+      }
+    });
   }
 
   connected(): Promise<void> {
@@ -79,14 +94,31 @@ export class PanelStream implements PluginPanelStream {
       await this.waitDrain(signal);
     }
     signal?.throwIfAborted();
-    if (this.ended) throw new Error(this.reason ?? 'Plugin stream closed');
+    if (this.ended || !isWritableStreamOpen(this.socket)) {
+      const reason = this.reason ?? 'Plugin stream closed';
+      this.destroy(reason);
+      throw new Error(reason);
+    }
     const header = Buffer.allocUnsafe(5);
     header[0] = opcode;
     header.writeUInt32BE(payload.length, 1);
-    this.socket.cork();
-    this.socket.write(header);
-    const writable = this.socket.write(payload);
-    this.socket.uncork();
+    let writable: boolean;
+    try {
+      this.socket.cork();
+      this.socket.write(header);
+      writable = this.socket.write(payload);
+      this.socket.uncork();
+    } catch (error) {
+      if (!this.socket.destroyed) {
+        try { this.socket.uncork(); } catch {}
+      }
+      if (isBrokenPipeError(error)) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.destroy(message);
+        throw new Error(message, { cause: error });
+      }
+      throw error;
+    }
     if (!writable) await this.waitDrain(signal);
   }
 
@@ -113,6 +145,10 @@ export class PanelStream implements PluginPanelStream {
 
   private send(opcode: number, payload: Buffer): boolean {
     if (this.ended) return false;
+    if (!isWritableStreamOpen(this.socket)) {
+      this.destroy(this.reason ?? 'Plugin stream closed');
+      return false;
+    }
     if (payload.length > MAX_FRAME_BYTES || this.socket.writableLength + payload.length + 5 > MAX_FRAME_BYTES + 5) {
       this.destroy('Plugin stream buffer limit exceeded');
       return false;
@@ -120,11 +156,22 @@ export class PanelStream implements PluginPanelStream {
     const header = Buffer.allocUnsafe(5);
     header[0] = opcode;
     header.writeUInt32BE(payload.length, 1);
-    this.socket.cork();
-    this.socket.write(header);
-    const writable = this.socket.write(payload);
-    this.socket.uncork();
-    return writable;
+    try {
+      this.socket.cork();
+      this.socket.write(header);
+      const writable = this.socket.write(payload);
+      this.socket.uncork();
+      return writable;
+    } catch (error) {
+      if (!this.socket.destroyed) {
+        try { this.socket.uncork(); } catch {}
+      }
+      if (isBrokenPipeError(error)) {
+        this.destroy(error instanceof Error ? error.message : String(error));
+        return false;
+      }
+      throw error;
+    }
   }
 
   close(reason?: string): void {
@@ -136,8 +183,12 @@ export class PanelStream implements PluginPanelStream {
     if (this.ended) return;
     this.ended = true;
     this.reason = reason;
-    if (graceful) {
-      this.socket.end();
+    if (graceful && !this.socket.destroyed) {
+      try {
+        this.socket.end();
+      } catch {
+        this.socket.destroy();
+      }
       const timer = setTimeout(() => this.socket.destroy(), 1000);
       timer.unref();
       this.socket.once('close', () => clearTimeout(timer));

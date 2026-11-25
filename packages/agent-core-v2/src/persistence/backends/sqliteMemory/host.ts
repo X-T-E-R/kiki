@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
+import { closeWorkerWithTimeout, WORKER_CLOSE_TIMEOUT_MS } from '#/_base/node/workerClose';
 import { resolveWorkerEntry } from '#/_base/node/workerEntry';
 import { memoryWorkerEntry, type MemoryOperation, type MemoryRequest, type MemoryResponse } from './protocol';
 
@@ -53,11 +54,11 @@ export class MemoryWorker {
     try { this.worker.postMessage({ id: ++this.serial, operation: pending.operation } satisfies MemoryRequest, []); }
     catch (error) { this.fail(error instanceof Error ? error : new Error(String(error))); }
   }
-  close(): Promise<void> {
+  close(timeoutMs = WORKER_CLOSE_TIMEOUT_MS): Promise<void> {
     if (this.closing !== undefined) return this.closing;
     if (this.stopped) return this.exited;
     const drain = this.enqueue<void>({ type: 'close' });
-    this.closing = (async () => { try { await drain; } finally { await this.exited; } })();
+    this.closing = closeWorkerWithTimeout(this.worker, drain, this.exited, timeoutMs);
     return this.closing;
   }
   private fail(error: Error): void {

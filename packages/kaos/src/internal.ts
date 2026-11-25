@@ -239,6 +239,14 @@ export function globPatternToRegex(pattern: string, caseSensitive: boolean): Reg
   return new RegExp(regex, caseSensitive ? '' : 'i');
 }
 
+function isPrematureCloseError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === 'ERR_STREAM_PREMATURE_CLOSE'
+  );
+}
+
 /**
  * A Readable wrapper that preserves source backpressure while still allowing
  * consumers to read buffered output after the source has ended.
@@ -274,6 +282,17 @@ export class BufferedReadable extends Readable {
     if ((source.readableEnded || source.destroyed) && source.readableLength === 0) {
       this._ended = true;
       this.push(null);
+    }
+  }
+
+  override async *[Symbol.asyncIterator]() {
+    try {
+      yield* super[Symbol.asyncIterator]();
+    } catch (error) {
+      if (isPrematureCloseError(error) && this.errored === null) {
+        return;
+      }
+      throw error;
     }
   }
 

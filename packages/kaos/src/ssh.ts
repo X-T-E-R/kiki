@@ -49,6 +49,99 @@ const DEFAULT_SFTP_STATUS_CODE = {
   PERMISSION_DENIED: 3,
 } as const;
 
+const DEFAULT_SSH_OPERATION_TIMEOUT_MS = 60_000;
+const DEFAULT_SSH_CLOSE_TIMEOUT_MS = 5_000;
+
+function isPrematureCloseError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === 'ERR_STREAM_PREMATURE_CLOSE'
+  );
+}
+
+function normalizeTimeoutMs(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+interface SshOperationOptions {
+  readonly timeoutMs?: number;
+  readonly signal?: AbortSignal;
+  readonly client?: Client;
+  readonly mapError?: (error: unknown) => Error;
+  readonly destroyOnTimeout?: boolean;
+}
+
+function withSshOperationGuard<T>(
+  operation: string,
+  invoke: (done: (error: unknown, value?: T) => void) => void,
+  options: SshOperationOptions = {},
+): Promise<T> {
+  const { signal, client, mapError, destroyOnTimeout = true } = options;
+  if (signal?.aborted) {
+    return Promise.reject(
+      signal.reason instanceof Error
+        ? signal.reason
+        : new KaosConnectionError(`SSH ${operation} aborted`),
+    );
+  }
+  const timeoutMs = normalizeTimeoutMs(options.timeoutMs, DEFAULT_SSH_OPERATION_TIMEOUT_MS);
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      if (typeof client?.off === 'function') client.off('close', onClientClose);
+    };
+    const finishResolve = (value: T): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const finishReject = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onAbort = (): void => {
+      finishReject(
+        signal?.reason instanceof Error
+          ? signal.reason
+          : new KaosConnectionError(`SSH ${operation} aborted`),
+      );
+    };
+    const onClientClose = (): void => {
+      finishReject(new KaosConnectionError(`SSH ${operation} failed: connection closed`));
+    };
+    const timer = setTimeout(() => {
+      finishReject(new KaosConnectionError(`SSH ${operation} timed out after ${timeoutMs}ms`));
+      if (destroyOnTimeout && typeof client?.destroy === 'function') {
+        try {
+          client.destroy();
+        } catch {
+          // Ignore synchronous destroy errors on an already-closed socket.
+        }
+      }
+    }, timeoutMs);
+    timer.unref();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (typeof client?.once === 'function') client.once('close', onClientClose);
+    try {
+      invoke((error, value) => {
+        if (error) {
+          finishReject(mapError ? mapError(error) : error);
+        } else {
+          finishResolve(value as T);
+        }
+      });
+    } catch (error) {
+      finishReject(mapError ? mapError(error) : error);
+    }
+  });
+}
+
 // ── SSH options ────────────────────────────────────────────────────────
 
 /**
@@ -85,6 +178,10 @@ export interface SSHKaosOptions {
    * host key verification always receives raw key bytes.
    */
   extraOptions?: SSHKaosExtraOptions;
+  /** Maximum time in milliseconds for a single SFTP/exec control callback before timing out (default: 60_000). */
+  operationTimeoutMs?: number;
+  /** Maximum time in milliseconds for graceful `close()` before forcing `client.destroy()` (default: 5_000). */
+  closeTimeoutMs?: number;
 }
 
 // ── SSH error types ───────────────────────────────────────────────────
@@ -341,16 +438,17 @@ function connectClient(config: ConnectConfig, signal?: AbortSignal): Promise<Cli
   });
 }
 
-function getSftp(client: Client): Promise<SFTPWrapper> {
-  return new Promise<SFTPWrapper>((resolve, reject) => {
-    client.sftp((err, sftp) => {
-      if (err) {
-        reject(err);
-      } else {
-        resolve(sftp);
-      }
-    });
-  });
+function getSftp(client: Client, options?: SshOperationOptions): Promise<SFTPWrapper> {
+  return withSshOperationGuard<SFTPWrapper>(
+    'sftp',
+    (done) => {
+      client.sftp((err, sftp) => {
+        if (err) done(err);
+        else done(undefined, sftp);
+      });
+    },
+    { ...options, client },
+  );
 }
 
 // Every promisified SFTP helper funnels rejections through `mapSftpError` so
@@ -360,42 +458,48 @@ function getSftp(client: Client): Promise<SFTPWrapper> {
 // error message for debugging and is the same label used by `stat()` before
 // this was hoisted into the helpers.
 
-function sftpRealpath(sftp: SFTPWrapper, path: string): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    sftp.realpath(path, (err, absPath) => {
-      if (err) {
-        reject(mapSftpError('realpath', err));
-      } else if (typeof absPath !== 'string' || absPath.length === 0) {
-        reject(new KaosSSHError(`SFTP realpath returned no canonical path for ${JSON.stringify(path)}`));
-      } else {
-        resolve(absPath);
-      }
-    });
-  });
+function sftpRealpath(sftp: SFTPWrapper, path: string, options?: SshOperationOptions): Promise<string> {
+  return withSshOperationGuard<string>(
+    'realpath',
+    (done) => {
+      sftp.realpath(path, (err, absPath) => {
+        if (err) {
+          done(mapSftpError('realpath', err));
+        } else if (typeof absPath !== 'string' || absPath.length === 0) {
+          done(new KaosSSHError(`SFTP realpath returned no canonical path for ${JSON.stringify(path)}`));
+        } else {
+          done(undefined, absPath);
+        }
+      });
+    },
+    options,
+  );
 }
 
-function sftpStat(sftp: SFTPWrapper, path: string): Promise<SFTPStats> {
-  return new Promise<SFTPStats>((resolve, reject) => {
-    sftp.stat(path, (err, stats) => {
-      if (err) {
-        reject(mapSftpError('stat', err));
-      } else {
-        resolve(stats);
-      }
-    });
-  });
+function sftpStat(sftp: SFTPWrapper, path: string, options?: SshOperationOptions): Promise<SFTPStats> {
+  return withSshOperationGuard<SFTPStats>(
+    'stat',
+    (done) => {
+      sftp.stat(path, (err, stats) => {
+        if (err) done(err);
+        else done(undefined, stats);
+      });
+    },
+    { ...options, mapError: (err) => mapSftpError('stat', err) },
+  );
 }
 
-function sftpLstat(sftp: SFTPWrapper, path: string): Promise<SFTPStats> {
-  return new Promise<SFTPStats>((resolve, reject) => {
-    sftp.lstat(path, (err, stats) => {
-      if (err) {
-        reject(mapSftpError('lstat', err));
-      } else {
-        resolve(stats);
-      }
-    });
-  });
+function sftpLstat(sftp: SFTPWrapper, path: string, options?: SshOperationOptions): Promise<SFTPStats> {
+  return withSshOperationGuard<SFTPStats>(
+    'lstat',
+    (done) => {
+      sftp.lstat(path, (err, stats) => {
+        if (err) done(err);
+        else done(undefined, stats);
+      });
+    },
+    { ...options, mapError: (err) => mapSftpError('lstat', err) },
+  );
 }
 
 interface SFTPFileEntry {
@@ -403,84 +507,104 @@ interface SFTPFileEntry {
   attrs: SFTPStats;
 }
 
-function sftpReaddir(sftp: SFTPWrapper, path: string): Promise<SFTPFileEntry[]> {
-  return new Promise<SFTPFileEntry[]>((resolve, reject) => {
-    sftp.readdir(path, (err, list) => {
-      if (err) {
-        reject(mapSftpError('readdir', err));
-      } else {
-        resolve(list as SFTPFileEntry[]);
-      }
-    });
-  });
+function sftpReaddir(sftp: SFTPWrapper, path: string, options?: SshOperationOptions): Promise<SFTPFileEntry[]> {
+  return withSshOperationGuard<SFTPFileEntry[]>(
+    'readdir',
+    (done) => {
+      sftp.readdir(path, (err, list) => {
+        if (err) done(err);
+        else done(undefined, list as SFTPFileEntry[]);
+      });
+    },
+    { ...options, mapError: (err) => mapSftpError('readdir', err) },
+  );
 }
 
-function sftpMkdir(sftp: SFTPWrapper, path: string): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    sftp.mkdir(path, (err) => {
-      if (err) {
-        reject(mapSftpError('mkdir', err));
-      } else {
-        resolve();
-      }
-    });
-  });
+function sftpMkdir(sftp: SFTPWrapper, path: string, options?: SshOperationOptions): Promise<void> {
+  return withSshOperationGuard<void>(
+    'mkdir',
+    (done) => {
+      sftp.mkdir(path, (err) => {
+        if (err) done(err);
+        else done(undefined, undefined);
+      });
+    },
+    { ...options, mapError: (err) => mapSftpError('mkdir', err) },
+  );
 }
 
-function sftpExists(sftp: SFTPWrapper, path: string): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    sftp.exists(path, (exists) => {
-      resolve(exists);
-    });
-  });
+function sftpExists(sftp: SFTPWrapper, path: string, options?: SshOperationOptions): Promise<boolean> {
+  return withSshOperationGuard<boolean>(
+    'exists',
+    (done) => {
+      sftp.exists(path, (exists) => {
+        done(undefined, exists);
+      });
+    },
+    options,
+  );
 }
 
-function sftpReadFile(sftp: SFTPWrapper, path: string): Promise<Buffer> {
-  return new Promise<Buffer>((resolve, reject) => {
-    sftp.readFile(path, (err, data) => {
-      if (err) {
-        reject(mapSftpError('readFile', err));
-      } else {
-        resolve(data);
-      }
-    });
-  });
+function sftpReadFile(sftp: SFTPWrapper, path: string, options?: SshOperationOptions): Promise<Buffer> {
+  return withSshOperationGuard<Buffer>(
+    'readFile',
+    (done) => {
+      sftp.readFile(path, (err, data) => {
+        if (err) done(err);
+        else done(undefined, data);
+      });
+    },
+    { ...options, mapError: (err) => mapSftpError('readFile', err) },
+  );
 }
 
-function sftpWriteFile(sftp: SFTPWrapper, path: string, data: string | Buffer): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    sftp.writeFile(path, data, (err) => {
-      if (err) {
-        reject(mapSftpError('writeFile', err));
-      } else {
-        resolve();
-      }
-    });
-  });
+function sftpWriteFile(
+  sftp: SFTPWrapper,
+  path: string,
+  data: string | Buffer,
+  options?: SshOperationOptions,
+): Promise<void> {
+  return withSshOperationGuard<void>(
+    'writeFile',
+    (done) => {
+      sftp.writeFile(path, data, (err) => {
+        if (err) done(err);
+        else done(undefined, undefined);
+      });
+    },
+    { ...options, mapError: (err) => mapSftpError('writeFile', err) },
+  );
 }
 
-function sftpAppendFile(sftp: SFTPWrapper, path: string, data: string | Buffer): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    sftp.appendFile(path, data, (err) => {
-      if (err) {
-        reject(mapSftpError('appendFile', err));
-      } else {
-        resolve();
-      }
-    });
-  });
+function sftpAppendFile(
+  sftp: SFTPWrapper,
+  path: string,
+  data: string | Buffer,
+  options?: SshOperationOptions,
+): Promise<void> {
+  return withSshOperationGuard<void>(
+    'appendFile',
+    (done) => {
+      sftp.appendFile(path, data, (err) => {
+        if (err) done(err);
+        else done(undefined, undefined);
+      });
+    },
+    { ...options, mapError: (err) => mapSftpError('appendFile', err) },
+  );
 }
 
-function clientExec(client: Client, command: string): Promise<ClientChannel> {
-  return new Promise<ClientChannel>((resolve, reject) => {
-    client.exec(command, (err: Error | undefined, channel: ClientChannel) => {
-      if (err) {
-        reject(err);
-      } else {
-        resolve(channel);
-      }
-    });
-  });
+function clientExec(client: Client, command: string, options?: SshOperationOptions): Promise<ClientChannel> {
+  return withSshOperationGuard<ClientChannel>(
+    'exec',
+    (done) => {
+      client.exec(command, (err: Error | undefined, channel: ClientChannel) => {
+        if (err) done(err);
+        else done(undefined, channel);
+      });
+    },
+    { ...options, client },
+  );
 }
 
 // ── SSHKaos ────────────────────────────────────────────────────────────
@@ -497,6 +621,8 @@ export class SSHKaos implements Kaos {
   private _cwd: string;
   private readonly _envLayers: readonly Record<string, string>[];
   private readonly _activity: { count: number; closed: boolean };
+  private readonly _operationTimeoutMs: number;
+  private readonly _closeTimeoutMs: number;
   private _environmentProbe?: Promise<Environment>;
   private _osEnv: Environment & { defaultShellName?: string; codePage?: number; tempDir?: string } = {
     osKind: 'POSIX', osArch: 'unknown', osVersion: 'unknown', shellName: 'sh', shellPath: '/bin/sh',
@@ -507,17 +633,29 @@ export class SSHKaos implements Kaos {
     return this._osEnv;
   }
 
-  private async _probe(command: string): Promise<string | undefined> {
+  private _opOptions(overrides?: { signal?: AbortSignal; timeoutMs?: number }): SshOperationOptions {
+    return {
+      client: this._client,
+      timeoutMs: overrides?.timeoutMs ?? this._operationTimeoutMs ?? DEFAULT_SSH_OPERATION_TIMEOUT_MS,
+      signal: overrides?.signal,
+    };
+  }
+
+  private async _probe(command: string, signal?: AbortSignal): Promise<string | undefined> {
     this._activity.count += 1;
     let proc: SSHProcess | undefined;
     try {
-      proc = new SSHProcess(await clientExec(this._client, command));
+      proc = new SSHProcess(await clientExec(this._client, command, this._opOptions({ signal })));
+      proc.stdin.on('error', () => {});
       proc.stdin.end();
       proc.stderr.on('error', () => {});
       proc.stderr.resume();
       const chunks: Buffer[] = [];
       for await (const chunk of proc.stdout) chunks.push(Buffer.from(chunk as Buffer));
       return await proc.wait() === 0 ? Buffer.concat(chunks).toString('utf8').trim() : undefined;
+    } catch (error) {
+      if (isPrematureCloseError(error)) return undefined;
+      throw error;
     } finally {
       proc?.dispose();
       this._activity.count -= 1;
@@ -576,12 +714,16 @@ export class SSHKaos implements Kaos {
     cwd: string,
     envLayers: readonly Record<string, string>[] = [],
     activity?: { count: number; closed: boolean },
+    operationTimeoutMs = DEFAULT_SSH_OPERATION_TIMEOUT_MS,
+    closeTimeoutMs = DEFAULT_SSH_CLOSE_TIMEOUT_MS,
   ) {
     this._client = client;
     this._sftp = sftp;
     this._home = home;
     this._cwd = cwd;
     this._envLayers = envLayers;
+    this._operationTimeoutMs = normalizeTimeoutMs(operationTimeoutMs, DEFAULT_SSH_OPERATION_TIMEOUT_MS);
+    this._closeTimeoutMs = normalizeTimeoutMs(closeTimeoutMs, DEFAULT_SSH_CLOSE_TIMEOUT_MS);
     if (activity === undefined) {
       const shared = { count: 0, closed: false };
       client.once('close', () => { shared.closed = true; });
@@ -601,13 +743,31 @@ export class SSHKaos implements Kaos {
   }
 
   withCwd(cwd: string): SSHKaos {
-    const scoped = new SSHKaos(this._client, this._sftp, this._home, this._resolvePath(cwd), this._envLayers, this._activity);
+    const scoped = new SSHKaos(
+      this._client,
+      this._sftp,
+      this._home,
+      this._resolvePath(cwd),
+      this._envLayers,
+      this._activity,
+      this._operationTimeoutMs,
+      this._closeTimeoutMs,
+    );
     scoped._osEnv = this._osEnv;
     return scoped;
   }
 
   withEnv(env: Record<string, string>): SSHKaos {
-    const scoped = new SSHKaos(this._client, this._sftp, this._home, this._cwd, [...this._envLayers, env], this._activity);
+    const scoped = new SSHKaos(
+      this._client,
+      this._sftp,
+      this._home,
+      this._cwd,
+      [...this._envLayers, env],
+      this._activity,
+      this._operationTimeoutMs,
+      this._closeTimeoutMs,
+    );
     scoped._osEnv = this._osEnv;
     return scoped;
   }
@@ -682,28 +842,31 @@ export class SSHKaos implements Kaos {
     // A missing trust source must not silently accept an unknown or changed server key.
     config.hostVerifier = options.hostVerifier ?? (() => false);
 
+    const operationTimeoutMs = normalizeTimeoutMs(options.operationTimeoutMs, DEFAULT_SSH_OPERATION_TIMEOUT_MS);
+    const closeTimeoutMs = normalizeTimeoutMs(options.closeTimeoutMs, DEFAULT_SSH_CLOSE_TIMEOUT_MS);
     const client = await connectClient(config, options.signal);
     const onAbort = (): void => { client.destroy(); };
     options.signal?.addEventListener('abort', onAbort, { once: true });
+    const initOp: SshOperationOptions = { client, signal: options.signal, timeoutMs: operationTimeoutMs };
     try {
       options.signal?.throwIfAborted();
-      const sftp = await getSftp(client);
+      const sftp = await getSftp(client, initOp);
 
       // Determine home and cwd
-      const home = await sftpRealpath(sftp, '.');
+      const home = await sftpRealpath(sftp, '.', initOp);
       let cwd: string;
       if (options.cwd === undefined) {
         cwd = home;
       } else {
-        cwd = await sftpRealpath(sftp, options.cwd);
-        const attrs = await sftpStat(sftp, cwd);
+        cwd = await sftpRealpath(sftp, options.cwd, initOp);
+        const attrs = await sftpStat(sftp, cwd, initOp);
         if (!attrs.isDirectory()) {
           throw new KaosValueError(`${cwd} is not a directory`);
         }
       }
 
       options.signal?.throwIfAborted();
-      return new SSHKaos(client, sftp, home, cwd);
+      return new SSHKaos(client, sftp, home, cwd, [], undefined, operationTimeoutMs, closeTimeoutMs);
     } catch (error) {
       client.destroy();
       throw error;
@@ -732,25 +895,27 @@ export class SSHKaos implements Kaos {
 
   // ── Directory operations (async) ───────────────────────────────────
 
-  async chdir(path: string): Promise<void> {
-    const resolved = this._nativePath(await sftpRealpath(this._sftp, this._resolvePath(path)));
+  async chdir(path: string, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void> {
+    const op = this._opOptions(options);
+    const resolved = this._nativePath(await sftpRealpath(this._sftp, this._resolvePath(path), op));
     // Verify the resolved target is actually a directory. Without this
     // guard, `realpath` happily returns file paths, causing later relative
     // reads/writes/execs to treat a regular file as a working directory.
-    const attrs = await sftpStat(this._sftp, resolved);
+    const attrs = await sftpStat(this._sftp, resolved, op);
     if (!attrs.isDirectory()) {
       throw new KaosValueError(`${resolved} is not a directory`);
     }
     this._cwd = resolved;
   }
 
-  async stat(path: string, options?: { followSymlinks?: boolean }): Promise<StatResult> {
+  async stat(path: string, options?: { followSymlinks?: boolean; signal?: AbortSignal; timeoutMs?: number }): Promise<StatResult> {
     const resolved = this._resolvePath(path);
     const followSymlinks = options?.followSymlinks ?? true;
+    const op = this._opOptions(options);
     // sftpStat / sftpLstat already wrap errors via mapSftpError.
     const st = followSymlinks
-      ? await sftpStat(this._sftp, resolved)
-      : await sftpLstat(this._sftp, resolved);
+      ? await sftpStat(this._sftp, resolved, op)
+      : await sftpLstat(this._sftp, resolved, op);
 
     return {
       stMode: buildStMode(st),
@@ -770,9 +935,9 @@ export class SSHKaos implements Kaos {
     };
   }
 
-  async *iterdir(path: string): AsyncGenerator<string> {
+  async *iterdir(path: string, options?: { signal?: AbortSignal; timeoutMs?: number }): AsyncGenerator<string> {
     const resolved = this._resolvePath(path);
-    const entries = await sftpReaddir(this._sftp, resolved);
+    const entries = await sftpReaddir(this._sftp, resolved, this._opOptions(options));
     for (const entry of entries) {
       if (entry.filename === '.' || entry.filename === '..') continue;
       yield join(resolved, entry.filename);
@@ -825,7 +990,7 @@ export class SSHKaos implements Kaos {
         yield basePath;
       }
 
-      const entries = await sftpReaddir(this._sftp, basePath);
+      const entries = await sftpReaddir(this._sftp, basePath, this._opOptions());
 
       for (const entry of entries) {
         if (entry.filename === '.' || entry.filename === '..') continue;
@@ -840,7 +1005,7 @@ export class SSHKaos implements Kaos {
     } else {
       const regex = globPatternToRegex(currentPattern ?? '', caseSensitive);
 
-      const entries = await sftpReaddir(this._sftp, basePath);
+      const entries = await sftpReaddir(this._sftp, basePath, this._opOptions());
 
       for (const entry of entries) {
         if (entry.filename === '.' || entry.filename === '..') continue;
@@ -885,12 +1050,14 @@ export class SSHKaos implements Kaos {
     }
   }
 
-  async readBytes(path: string, n?: number, offset = 0): Promise<Buffer> {
+  async readBytes(path: string, n?: number, offset = 0, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<Buffer> {
     const resolved = this._resolvePath(path);
-    if (n === undefined && offset === 0) return sftpReadFile(this._sftp, resolved);
+    const op = this._opOptions(options);
+    if (n === undefined && offset === 0) return sftpReadFile(this._sftp, resolved, op);
     if (typeof this._sftp.createReadStream !== 'function') {
-      return (await sftpReadFile(this._sftp, resolved)).subarray(offset, n === undefined ? undefined : offset + n);
+      return (await sftpReadFile(this._sftp, resolved, op)).subarray(offset, n === undefined ? undefined : offset + n);
     }
+    options?.signal?.throwIfAborted();
     const stream = this._sftp.createReadStream(resolved, {
       start: offset,
       ...(n === undefined ? {} : { end: offset + n - 1 }),
@@ -899,39 +1066,57 @@ export class SSHKaos implements Kaos {
       stream.destroy();
       return Buffer.alloc(0);
     }
+    stream.on('error', () => {});
+    const onAbort = () => {
+      stream.destroy(options?.signal?.reason instanceof Error ? options.signal.reason : new KaosConnectionError('SSH readBytes aborted'));
+    };
+    options?.signal?.addEventListener('abort', onAbort, { once: true });
     const chunks: Buffer[] = [];
     try {
-      for await (const chunk of stream) chunks.push(Buffer.from(chunk as Buffer));
+      for await (const chunk of stream) {
+        options?.signal?.throwIfAborted();
+        chunks.push(Buffer.from(chunk as Buffer));
+      }
       return Buffer.concat(chunks);
     } catch (error) {
+      options?.signal?.throwIfAborted();
       throw mapSftpError('read', error);
+    } finally {
+      options?.signal?.removeEventListener('abort', onAbort);
+      stream.destroy();
     }
   }
 
-  async readdir(path: string): Promise<readonly { name: string; mode: number }[]> {
-    const entries = await sftpReaddir(this._sftp, this._resolvePath(path));
+  async readdir(path: string, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<readonly { name: string; mode: number }[]> {
+    const entries = await sftpReaddir(this._sftp, this._resolvePath(path), this._opOptions(options));
     return entries.filter((entry) => entry.filename !== '.' && entry.filename !== '..')
       .map((entry) => ({ name: entry.filename, mode: buildStMode(entry.attrs) }));
   }
 
-  async realpath(path: string): Promise<string> {
-    return this._nativePath(await sftpRealpath(this._sftp, this._resolvePath(path)));
+  async realpath(path: string, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<string> {
+    return this._nativePath(await sftpRealpath(this._sftp, this._resolvePath(path), this._opOptions(options)));
   }
 
-  async createExclusive(path: string, data: Buffer): Promise<boolean> {
+  async createExclusive(path: string, data: Buffer, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<boolean> {
     const target = this._resolvePath(path);
+    const op = this._opOptions(options);
     let handle: Buffer;
     try {
-      handle = await new Promise<Buffer>((resolve, reject) => {
-        this._sftp.open(target, 'wx', (error, fd) => {
-          if (error) reject(error);
-          else resolve(fd);
-        });
-      });
+      handle = await withSshOperationGuard<Buffer>(
+        'open',
+        (done) => {
+          this._sftp.open(target, 'wx', (error, fd) => {
+            if (error) done(error);
+            else done(undefined, fd);
+          });
+        },
+        op,
+      );
     } catch (error) {
+      if (error instanceof KaosConnectionError) throw error;
       const code = getErrorCode(error);
       const stringCode = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
-      if (stringCode === 'EEXIST' || (code === getSftpStatusCode().FAILURE && await sftpExists(this._sftp, target))) {
+      if (stringCode === 'EEXIST' || (code === getSftpStatusCode().FAILURE && await sftpExists(this._sftp, target, op))) {
         return false;
       }
       throw mapSftpError('createExclusive', error);
@@ -941,55 +1126,71 @@ export class SSHKaos implements Kaos {
       const chunkSize = 32 * 1024;
       for (let offset = 0; offset < data.length; offset += chunkSize) {
         const length = Math.min(chunkSize, data.length - offset);
-        await new Promise<void>((resolve, reject) => {
-          this._sftp.write(handle, data, offset, length, offset, (error) => {
-            if (error) reject(error);
-            else resolve();
-          });
-        });
+        await withSshOperationGuard<void>(
+          'write',
+          (done) => {
+            this._sftp.write(handle, data, offset, length, offset, (error) => {
+              if (error) done(error);
+              else done(undefined, undefined);
+            });
+          },
+          op,
+        );
       }
     } catch (error) {
       writeError = error;
     }
     let closeError: unknown;
     try {
-      await new Promise<void>((resolve, reject) => {
-        this._sftp.close(handle, (error) => {
-          if (error) reject(error);
-          else resolve();
-        });
-      });
+      await withSshOperationGuard<void>(
+        'close',
+        (done) => {
+          this._sftp.close(handle, (error) => {
+            if (error) done(error);
+            else done(undefined, undefined);
+          });
+        },
+        op,
+      );
     } catch (error) {
       closeError = error;
     }
-    if (writeError !== undefined) throw mapSftpError('createExclusive', writeError);
-    if (closeError !== undefined) throw mapSftpError('createExclusive', closeError);
+    if (writeError !== undefined) throw writeError instanceof KaosConnectionError ? writeError : mapSftpError('createExclusive', writeError);
+    if (closeError !== undefined) throw closeError instanceof KaosConnectionError ? closeError : mapSftpError('createExclusive', closeError);
     return true;
   }
 
-  async remove(path: string): Promise<void> {
+  async remove(path: string, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void> {
     const target = this._resolvePath(path);
-    const attrs = await sftpLstat(this._sftp, target);
-    await new Promise<void>((resolve, reject) => {
-      const done = (error: Error | null | undefined): void => error ? reject(mapSftpError('remove', error)) : resolve();
-      if (attrs.isDirectory()) this._sftp.rmdir(target, done);
-      else this._sftp.unlink(target, done);
-    });
+    const op = this._opOptions(options);
+    const attrs = await sftpLstat(this._sftp, target, op);
+    await withSshOperationGuard<void>(
+      'remove',
+      (done) => {
+        const callback = (error: Error | null | undefined): void => {
+          if (error) done(error);
+          else done(undefined, undefined);
+        };
+        if (attrs.isDirectory()) this._sftp.rmdir(target, callback);
+        else this._sftp.unlink(target, callback);
+      },
+      { ...op, mapError: (error) => mapSftpError('remove', error) },
+    );
   }
 
   async readText(
     path: string,
-    options?: { encoding?: BufferEncoding; errors?: 'strict' | 'replace' | 'ignore' },
+    options?: { encoding?: BufferEncoding; errors?: 'strict' | 'replace' | 'ignore'; signal?: AbortSignal; timeoutMs?: number },
   ): Promise<string> {
     const encoding = options?.encoding ?? 'utf-8';
     const errors = options?.errors ?? 'strict';
-    const data = await sftpReadFile(this._sftp, this._resolvePath(path));
+    const data = await sftpReadFile(this._sftp, this._resolvePath(path), this._opOptions(options));
     return decodeTextWithErrors(data, encoding, errors);
   }
 
   async *readLines(
     path: string,
-    options?: { encoding?: BufferEncoding; errors?: 'strict' | 'replace' | 'ignore' },
+    options?: { encoding?: BufferEncoding; errors?: 'strict' | 'replace' | 'ignore'; signal?: AbortSignal; timeoutMs?: number },
   ): AsyncGenerator<string> {
     // SFTP does not support streaming line reads; read all then split.
     // Match Python's splitlines() semantics: returned lines do NOT include
@@ -1009,37 +1210,39 @@ export class SSHKaos implements Kaos {
     }
   }
 
-  async writeBytes(path: string, data: Buffer): Promise<number> {
-    await sftpWriteFile(this._sftp, this._resolvePath(path), data);
+  async writeBytes(path: string, data: Buffer, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<number> {
+    await sftpWriteFile(this._sftp, this._resolvePath(path), data, this._opOptions(options));
     return data.length;
   }
 
   async writeText(
     path: string,
     data: string,
-    options?: { mode?: 'w' | 'a'; encoding?: BufferEncoding },
+    options?: { mode?: 'w' | 'a'; encoding?: BufferEncoding; signal?: AbortSignal; timeoutMs?: number },
   ): Promise<number> {
     const resolved = this._resolvePath(path);
     const mode = options?.mode ?? 'w';
     const encoding = options?.encoding ?? 'utf-8';
     const buf = Buffer.from(data, encoding);
+    const op = this._opOptions(options);
     if (mode === 'a') {
-      await sftpAppendFile(this._sftp, resolved, buf);
+      await sftpAppendFile(this._sftp, resolved, buf, op);
     } else {
-      await sftpWriteFile(this._sftp, resolved, buf);
+      await sftpWriteFile(this._sftp, resolved, buf, op);
     }
     return data.length;
   }
 
-  async mkdir(path: string, options?: { parents?: boolean; existOk?: boolean }): Promise<void> {
+  async mkdir(path: string, options?: { parents?: boolean; existOk?: boolean; signal?: AbortSignal; timeoutMs?: number }): Promise<void> {
     const resolved = this._resolvePath(path);
     const parents = options?.parents ?? false;
     const existOk = options?.existOk ?? false;
+    const op = this._opOptions(options);
 
     if (parents) {
-      await this._mkdirRecursive(resolved, existOk);
+      await this._mkdirRecursive(resolved, existOk, op);
     } else {
-      const exists = await sftpExists(this._sftp, resolved);
+      const exists = await sftpExists(this._sftp, resolved, op);
       if (exists) {
         if (!existOk) {
           throw new KaosFileExistsError(`${resolved} already exists`);
@@ -1047,17 +1250,17 @@ export class SSHKaos implements Kaos {
         // `existOk` only applies when the conflicting path is itself a
         // directory. A regular file sitting at the target path is still
         // a conflict — we must not pretend mkdir succeeded.
-        const st = await sftpStat(this._sftp, resolved);
+        const st = await sftpStat(this._sftp, resolved, op);
         if (!st.isDirectory()) {
           throw new KaosFileExistsError(`${resolved} already exists but is not a directory`);
         }
         return;
       }
-      await sftpMkdir(this._sftp, resolved);
+      await sftpMkdir(this._sftp, resolved, op);
     }
   }
 
-  private async _mkdirRecursive(path: string, existOk: boolean): Promise<void> {
+  private async _mkdirRecursive(path: string, existOk: boolean, op: SshOperationOptions): Promise<void> {
     // Split path into components and create each level.
     const parts = path.split('/').filter(Boolean);
     let current = path.startsWith('/') ? '/' : '';
@@ -1068,7 +1271,7 @@ export class SSHKaos implements Kaos {
       const isFinal = i === lastIndex;
 
       // eslint-disable-next-line no-await-in-loop
-      const exists = await sftpExists(this._sftp, current);
+      const exists = await sftpExists(this._sftp, current, op);
       if (exists) {
         // For intermediate components, it's fine (and expected) for the
         // path to already exist. For the final target, honor `existOk`.
@@ -1081,7 +1284,7 @@ export class SSHKaos implements Kaos {
         // to fail with a confusing error; a final non-directory would
         // otherwise be silently accepted when `existOk` is true.
         // eslint-disable-next-line no-await-in-loop
-        const st = await sftpStat(this._sftp, current);
+        const st = await sftpStat(this._sftp, current, op);
         if (!st.isDirectory()) {
           throw new KaosFileExistsError(`${current} already exists but is not a directory`);
         }
@@ -1089,17 +1292,18 @@ export class SSHKaos implements Kaos {
       }
       try {
         // eslint-disable-next-line no-await-in-loop
-        await sftpMkdir(this._sftp, current);
+        await sftpMkdir(this._sftp, current, op);
       } catch (error) {
+        if (error instanceof KaosConnectionError) throw error;
         // Race condition: another process may have created it.
         // eslint-disable-next-line no-await-in-loop
-        const nowExists = await sftpExists(this._sftp, current);
+        const nowExists = await sftpExists(this._sftp, current, op);
         if (!nowExists) throw new Error(`Failed to create directory: ${current}`, { cause: error });
         // A raced path must still be a directory. Another process may have
         // created a regular file at the same pathname after our exists()
         // check but before mkdir(), which must remain a hard conflict.
         // eslint-disable-next-line no-await-in-loop
-        const st = await sftpStat(this._sftp, current);
+        const st = await sftpStat(this._sftp, current, op);
         if (!st.isDirectory()) {
           throw new KaosFileExistsError(`${current} already exists but is not a directory`);
         }
@@ -1123,13 +1327,17 @@ export class SSHKaos implements Kaos {
     return this._execInternal(args, this._buildExecEnv());
   }
 
-  execWithEnv(args: string[], env?: Record<string, string>): Promise<KaosProcess> {
+  execWithEnv(
+    args: string[],
+    env?: Record<string, string>,
+    options?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<KaosProcess> {
     if (args.length === 0) {
       throw new KaosValueError(
         'SSHKaos.execWithEnv(): at least one argument (the command to run) is required.',
       );
     }
-    return this._execInternal(args, this._buildExecEnv(env));
+    return this._execInternal(args, this._buildExecEnv(env), options);
   }
 
   private _buildExecEnv(invocationEnv?: Record<string, string>): Record<string, string> | undefined {
@@ -1204,20 +1412,31 @@ export class SSHKaos implements Kaos {
     return SSHKaos._buildWindowsScript(`& ${args.map(quote).join(' ')}`, cwd, env);
   }
 
-  execPowerShell(script: string, env?: Record<string, string>): Promise<KaosProcess> {
+  execPowerShell(
+    script: string,
+    env?: Record<string, string>,
+    options?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<KaosProcess> {
     if (this.pathClass() !== 'win32') throw new KaosValueError('PowerShell execution requires a Windows SSH host');
-    return this._execWindowsScript(SSHKaos._buildWindowsScript(script, this._cwd, this._buildExecEnv(env)));
+    return this._execWindowsScript(SSHKaos._buildWindowsScript(script, this._cwd, this._buildExecEnv(env)), options);
   }
 
-  private _execInternal(args: string[], env?: Record<string, string>): Promise<KaosProcess> {
+  private _execInternal(
+    args: string[],
+    env?: Record<string, string>,
+    options?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<KaosProcess> {
     return this.pathClass() === 'win32'
-      ? this._execWindowsScript(SSHKaos._buildWindowsExecCommand(args, this._cwd, env))
-      : this._execCommand(SSHKaos._buildExecCommand(args, this._cwd, env));
+      ? this._execWindowsScript(SSHKaos._buildWindowsExecCommand(args, this._cwd, env), options)
+      : this._execCommand(SSHKaos._buildExecCommand(args, this._cwd, env), options);
   }
 
-  private async _execWindowsScript(script: string): Promise<KaosProcess> {
+  private async _execWindowsScript(
+    script: string,
+    options?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<KaosProcess> {
     const command = powershellCommand(script);
-    if (command.length <= 8191) return this._execCommand(command);
+    if (command.length <= 8191) return this._execCommand(command, options);
     const tempDir = this._osEnv.tempDir;
     if (!tempDir || !win32.isAbsolute(tempDir)) throw new KaosSSHError('Windows SSH host did not provide an absolute TEMP directory for script execution');
     const path = win32.join(tempDir, `kiki-ssh-${randomUUID()}.ps1`).replaceAll('\\', '/');
@@ -1227,8 +1446,8 @@ export class SSHKaos implements Kaos {
       if (!(error instanceof KaosFileNotFoundError)) throw new KaosSSHError(`Could not remove temporary SSH script ${path}: ${getErrorMessage(error)}`);
     });
     try {
-      await this.writeBytes(path, Buffer.from(`\uFEFF${POWERSHELL_PREAMBLE}; ${script}`, 'utf8'));
-      const process = await this._execCommand(powershellCommand(`try { & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${quoted}; exit $LASTEXITCODE } finally { Remove-Item -LiteralPath ${quoted} -Force -ErrorAction SilentlyContinue }`));
+      await this.writeBytes(path, Buffer.from(`\uFEFF${POWERSHELL_PREAMBLE}; ${script}`, 'utf8'), options);
+      const process = await this._execCommand(powershellCommand(`try { & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${quoted}; exit $LASTEXITCODE } finally { Remove-Item -LiteralPath ${quoted} -Force -ErrorAction SilentlyContinue }`), options);
       const completion = process.wait().then(async (code) => { await cleanup(); return code; });
       void completion.catch(() => {});
       return {
@@ -1243,10 +1462,13 @@ export class SSHKaos implements Kaos {
     }
   }
 
-  private async _execCommand(command: string): Promise<KaosProcess> {
+  private async _execCommand(
+    command: string,
+    options?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<KaosProcess> {
     this._activity.count += 1;
     try {
-      const channel = await clientExec(this._client, command);
+      const channel = await clientExec(this._client, command, this._opOptions(options));
       const process = new SSHProcess(channel, this.pathClass() === 'win32' ? this._osEnv.codePage ?? 936 : undefined);
       const release = (): void => { this._activity.count -= 1; };
       void process.wait().then(release, release);
@@ -1262,12 +1484,51 @@ export class SSHKaos implements Kaos {
   /**
    * Close the SSH connection. After this, the SSHKaos instance is unusable.
    */
-  close(): Promise<void> {
-    if (this._activity.closed) return Promise.resolve();
-    this._sftp.end();
+  close(timeoutMs?: number): Promise<void> {
+    if (this._activity?.closed) return Promise.resolve();
+    const effectiveTimeoutMs = normalizeTimeoutMs(
+      timeoutMs ?? this._closeTimeoutMs,
+      DEFAULT_SSH_CLOSE_TIMEOUT_MS,
+    );
+    try {
+      this._sftp?.end();
+    } catch {
+      // Ignore synchronous SFTP teardown errors on an already-closed socket.
+    }
     return new Promise<void>((resolve) => {
-      this._client.once('close', () => { resolve(); });
-      this._client.end();
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        if (typeof this._client?.off === 'function') this._client.off('close', finish);
+        if (this._activity !== undefined) this._activity.closed = true;
+        resolve();
+      };
+      const deadline = setTimeout(() => {
+        if (typeof this._client?.destroy === 'function') {
+          try {
+            this._client.destroy();
+          } catch {
+            // Ignore synchronous destroy errors on an already-closed socket.
+          }
+        }
+        finish();
+      }, effectiveTimeoutMs);
+      deadline.unref();
+      this._client.once('close', finish);
+      try {
+        this._client.end();
+      } catch {
+        if (typeof this._client?.destroy === 'function') {
+          try {
+            this._client.destroy();
+          } catch {
+            // Ignore synchronous destroy errors on an already-closed socket.
+          }
+        }
+        finish();
+      }
     });
   }
 }
