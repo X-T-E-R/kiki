@@ -45,7 +45,7 @@ import { PersonaConversationsSection } from './PersonaConversationsSection';
 import { matchesPersona, sortPersonas, usePersonaList } from './usePersonas';
 
 export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: () => void }) {
-  const { t, tp, locale } = useI18n();
+  const { t, tp } = useI18n();
   const [params, setParams] = useSearchParams();
   const [search, setSearch] = useState('');
   const [showHidden, setShowHidden] = useState(false);
@@ -115,7 +115,7 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
             aria-expanded={newMenuOpen}
             className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5 pointer-coarse:min-h-11`}
           >
-            <span>{locale === 'zh' ? '新建' : 'New'}</span>
+            <span>{t('persona.newMenu')}</span>
             <Icon
               name="chevron"
               size={12}
@@ -147,7 +147,7 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                   }}
                   className="flex w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] text-ink transition-colors hover:bg-ink/[0.05] focus-visible:bg-ink/[0.05] focus-visible:outline-none pointer-coarse:min-h-11"
                 >
-                  {locale === 'zh' ? '空白角色' : t('persona.new')}
+                  {t('persona.newBlank')}
                 </button>
                 <button
                   type="button"
@@ -212,7 +212,7 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
             />
           ) : (
             <SettingsPageScopeContext.Provider value="server">
-            <div className="grid min-w-0 gap-6 md:grid-cols-[minmax(248px,0.8fr)_minmax(0,1.7fr)]" data-persona-list-detail>
+            <div className="grid min-w-0 gap-8 md:grid-cols-[minmax(244px,0.72fr)_minmax(0,1.78fr)]" data-persona-list-detail>
               <div className={`min-w-0 ${detailOpen ? 'max-md:hidden' : ''}`}>
                 {searchable ? (
                   <div className="mb-3">
@@ -269,7 +269,7 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                   </div>
                 ) : null}
               </div>
-              <div className={`min-w-0 md:border-l md:border-hairline md:pl-6 ${detailOpen ? '' : 'max-md:hidden'}`}>
+              <div className={`min-w-0 md:border-l md:border-hairline md:pl-8 ${detailOpen ? '' : 'max-md:hidden'}`}>
                 {detailOpen ? (
                   <button type="button" data-persona-back onClick={() => { select(undefined); }} className="mb-3 inline-flex min-h-8 items-center gap-1 text-[13px] text-ink-soft hover:text-ink md:hidden pointer-coarse:min-h-11">
                     <Icon name="arrowLeft" size={14} />
@@ -277,9 +277,11 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                   </button>
                 ) : null}
                 {creating ? (
-                  <PersonaEditor key="new" personaId={undefined} takenIds={new Set(all.map((item) => item.id))} onSaved={(id) => { select(id); }} onClosed={() => { select(undefined); }} />
+                  <div className="max-w-[760px]">
+                    <PersonaEditor key="new" personaId={undefined} takenIds={new Set(all.map((item) => item.id))} onSaved={(id) => { select(id); }} onClosed={() => { select(undefined); }} />
+                  </div>
                 ) : selected !== undefined ? (
-                  <div className="space-y-5">
+                  <div className="max-w-[760px] space-y-5">
                     {/* The default view leads; the conversations view keeps a
                         small face and name, since its list has no masthead and
                         the roster is off screen on narrow layouts. */}
@@ -371,8 +373,8 @@ function PersonaRow({ persona, active, onOpen }: { readonly persona: PersonaSumm
       data-persona-row={persona.id}
       aria-current={active ? 'true' : undefined}
       onClick={onOpen}
-      className={`flex w-full min-w-0 items-center gap-3 rounded-lg px-2 py-2 text-left transition-[background-color,box-shadow] duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-14 ${
-        active ? 'bg-panel shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'
+      className={`flex w-full min-w-0 items-center gap-3 rounded-lg px-2.5 py-2.5 text-left transition-[background-color,box-shadow] duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-14 ${
+        active ? 'bg-panel ring-1 ring-hairline/80 shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'
       }`}
     >
       <PersonaAvatar persona={personaAvatarOf(persona)} size={36} decorative className={persona.archived ? 'opacity-60' : ''} />

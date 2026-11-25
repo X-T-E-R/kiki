@@ -88,29 +88,39 @@ async function shot(name) {
 }
 
 const walkers = {
-  // The sidebar panel now asks the server for this persona's conversations.
+  // The sidebar persona group opens singletons directly and expands multi-thread personas inline.
   async switcher() {
     await page.goto(url('/new'), { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('[data-sidebar-persona-row]', { timeout: 30_000 });
     const ids = await page.locator('[data-sidebar-persona-row]').evaluateAll((nodes) => nodes.map((n) => n.getAttribute('data-sidebar-persona-row')));
-    // Find the persona the fixture actually gave a conversation, so this is
-    // the list the fix is about rather than the empty case.
     let shown = null;
     for (const id of ids) {
-      await page.locator(`[data-persona-switcher-toggle="${id}"]`).click();
-      await page.locator('[data-persona-conversation-switcher]').waitFor({ timeout: 10_000 });
-      await page.waitForTimeout(400);
-      const rows = await page.locator('[data-persona-conversation-switcher] [data-conversation-item]').count();
-      if (shown === null) await shot(`sidebar-switcher-${id}`);
+      const toggle = page.locator(`[data-persona-switcher-toggle="${id}"]`);
+      if (await toggle.count() === 0) {
+        // Singleton or 0-thread persona opens directly without [1 ▾] or a duplicate inline child.
+        if (await page.locator(`[data-persona-subthreads="${id}"]`).count() !== 0) {
+          errors.push(`switcher: singleton persona ${id} unexpectedly rendered inline children`);
+        }
+        continue;
+      }
+      if (await toggle.getAttribute('aria-expanded') !== 'true') {
+        await toggle.click();
+      }
+      await page.locator(`[data-persona-subthreads="${id}"] [data-persona-subthread]`).first().waitFor({ timeout: 10_000 });
+      const rows = await page.locator(`[data-persona-subthreads="${id}"] [data-persona-subthread]`).count();
+      if (shown === null) await shot(`sidebar-inline-${id}`);
       if (rows > 1) { shown = id; break; }
-      await page.keyboard.press('Escape');
     }
-    if (shown === null) errors.push('switcher: no persona in the fixture has a conversation to show');
-    // The exit to the full list stays reachable, and the daily row is first.
-    const kinds = await page.locator('[data-persona-conversation-switcher] [data-conversation-kind]').evaluateAll((nodes) => nodes.map((n) => n.getAttribute('data-conversation-kind')));
-    if (kinds[0] !== 'daily') errors.push(`switcher: the daily row must come first, saw ${kinds.join(',')}`);
-    if (await page.locator('[data-persona-switcher-all]').count() !== 1) errors.push('switcher: the all-conversations exit is missing');
-    if (shown !== null) await shot(`sidebar-switcher-with-conversations-${shown}`);
+    if (shown !== null) {
+      const kinds = await page.locator(`[data-persona-subthreads="${shown}"] [data-persona-subthread-kind]`).evaluateAll((nodes) => nodes.map((n) => n.getAttribute('data-persona-subthread-kind')));
+      if (kinds[0] !== 'daily') errors.push(`switcher: the daily row must come first, saw ${kinds.join(',')}`);
+      await shot(`sidebar-inline-with-conversations-${shown}`);
+    } else {
+      // Fixture has only singleton personas: verify direct one-click open on the first row with a conversation.
+      await page.locator('[data-persona-primary="xiao-you"]').click();
+      await page.waitForURL(/\/(s|p)\//, { timeout: 10_000 });
+      await shot('sidebar-singleton-direct-open');
+    }
   },
 
   // The workspace override row whose card read-back is now invalidated.

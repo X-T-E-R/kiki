@@ -19,13 +19,14 @@ import { Popover } from '@base-ui/react/popover';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams, useSearchParams } from 'react-router-dom';
 
-import type { QuestionAnswer, RoomDocument, RoomLogEntry, RoomMemberInput, RoomMessage, Session, UpdateRoomInput } from '@kiki/protocol';
+import type { QuestionAnswer, RoomAttachment, RoomDocument, RoomLogEntry, RoomMemberInput, RoomMessage, Session, UpdateRoomInput } from '@kiki/protocol';
 import { formatTokens, randomUuid } from '@kiki/session-core/util';
 import { ApiError, API_CODES } from '@kiki/session-core/transport';
 
 import { errorText } from '@kiki/session-core/i18n';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
+import { copyTextToClipboard } from '../../lib/clipboard';
 import { useViewedRoom } from '../../lib/useAwayNotifications';
 import { ROOMS_QUERY_KEY, roomQueryKey, roomUsageQueryKey, useBotRoomApi } from '../../lib/botRooms';
 import { pushToast } from '../../lib/toasts';
@@ -40,6 +41,7 @@ import { useSidebarContext } from '../sidebarContext';
 import { Icon } from '../icons';
 import { QuestionCard } from '../Interactions';
 import { Markdown } from '../Markdown';
+import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
 import { MESSAGE_FACE, SpeakerHead } from '../message/MessageRow';
 import { PresenceLine } from '../message/MessageTimelineRows';
 import { personaAvatarOf, type PersonaAvatarData } from '../persona/PersonaAvatar';
@@ -294,10 +296,17 @@ function RoomView({
   const faces = new Map(room.members.map((member) => [roomMemberId(member), faceOf(roomMemberId(member))] as const));
   const { sidebarOpen } = useSidebarContext();
 
+  const openBudgetEditor = () => {
+    setMembersOpen(true);
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLInputElement>('[data-room-budget-input]')?.focus();
+    });
+  };
+
   return (
     <div className="flex h-full min-h-0 bg-paper" data-room-page={room.id} data-room-paused={room.paused || undefined}>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex min-h-12 shrink-0 items-center gap-1.5 px-3 lg:px-5" data-room-header>
+        <header className="flex min-h-12 shrink-0 items-center gap-1.5 border-b border-hairline/70 px-3 lg:px-5" data-room-header>
           <button
             type="button"
             onClick={onToggleSidebar}
@@ -320,10 +329,20 @@ function RoomView({
             {t('room.hostLine', { name: hostName })}
           </span>
           <span className="min-w-0 flex-1" />
-          <span className="hidden shrink-0 text-[12px] text-ink-faint tabular-nums sm:inline" title={t('room.usageTitle')} data-room-usage>
-            {t('room.budget', { count: room.budget.botMessagesPerUserMessage })}
-            {tokens !== undefined ? ` · ${formatTokens(tokens)} tok` : ''}
-          </span>
+          <button
+            type="button"
+            data-room-budget-trigger
+            data-room-usage
+            onClick={openBudgetEditor}
+            aria-label={`${t('room.adjustBudget')} · ${t('room.budget', { count: room.budget.botMessagesPerUserMessage })}`}
+            title={t('room.usageTitle')}
+            className={`${HEADER_BUTTON} hidden text-[12px] text-ink-faint tabular-nums sm:flex`}
+          >
+            <span>
+              {t('room.budget', { count: room.budget.botMessagesPerUserMessage })}
+              {tokens !== undefined ? ` · ${formatTokens(tokens)} tok` : ''}
+            </span>
+          </button>
           {room.paused ? (
             <button type="button" data-room-continue disabled={action.isPending}
               onClick={() => { action.mutate('continue'); }} className={`${HEADER_BUTTON} font-medium text-ink`}>
@@ -369,10 +388,7 @@ function RoomView({
             : personaMembers.find((member) => member.sessionId === questions.activeSessionId)?.personaId}
           busy={action.isPending}
           onContinue={() => { action.mutate('continue'); }}
-          onAdjustBudget={() => {
-            setMembersOpen(true);
-            window.requestAnimationFrame(() => { document.querySelector<HTMLInputElement>('[data-room-budget-input]')?.focus(); });
-          }}
+          onAdjustBudget={openBudgetEditor}
         />
 
         <div className="shrink-0 px-3 pt-1 pb-3 sm:px-6">
@@ -696,13 +712,135 @@ function SystemRow({
   );
 }
 
+function formatAttachmentBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function attachmentDisplayName(attachment: RoomAttachment): string {
+  const titled = attachment.title?.trim();
+  if (titled !== undefined && titled !== '') return titled;
+  const segment = attachment.path.split(/[\\/]/u).pop()?.trim();
+  return segment !== undefined && segment !== '' ? segment : attachment.path;
+}
+
+/**
+ * Honest room-log attachment chips. A room log carries normalized metadata
+ * (`blobId`, `path`, `title?`, `mimeType?`, `size?`) without a room-scoped
+ * immutable blob endpoint, so we never forge `MessageAttachment` or probe
+ * arbitrary live paths; we render both user and member attachments cleanly
+ * with copyable path/name identity and an explicit unavailable-original state.
+ */
+function RoomAttachmentList({
+  attachments,
+  align = 'start',
+}: {
+  readonly attachments: readonly RoomAttachment[] | undefined;
+  readonly align?: 'start' | 'end';
+}) {
+  const { t, locale } = useI18n();
+  const [menu, setMenu] = useState<{ readonly attachment: RoomAttachment; readonly x: number; readonly y: number } | null>(null);
+
+  if (attachments === undefined || attachments.length === 0) return null;
+
+  const copyValue = async (value: string, labelName: string) => {
+    try {
+      await copyTextToClipboard(value);
+      pushToast({ tone: 'success', text: t('room.attachmentCopied', { name: labelName }) });
+    } catch (error) {
+      pushToast({ tone: 'error', text: t('room.actionFailed', { detail: errorText(locale, error) }) });
+    }
+  };
+
+  const menuEntries: readonly MiniMenuEntry[] = menu === null
+    ? []
+    : [
+        {
+          key: 'copy-path',
+          label: t('room.attachmentCopyPathAction'),
+          run: () => copyValue(menu.attachment.path, attachmentDisplayName(menu.attachment)),
+        },
+        {
+          key: 'copy-name',
+          label: t('room.attachmentCopyNameAction'),
+          run: () => copyValue(attachmentDisplayName(menu.attachment), attachmentDisplayName(menu.attachment)),
+        },
+      ];
+
+  return (
+    <>
+      <ul
+        data-room-attachments
+        className={`mt-2 flex max-w-full flex-col gap-1.5 ${align === 'end' ? 'items-end' : 'items-start'}`}
+      >
+        {attachments.map((attachment) => {
+          const displayName = attachmentDisplayName(attachment);
+          const metaParts = [
+            attachment.size !== undefined ? formatAttachmentBytes(attachment.size) : undefined,
+            attachment.mimeType,
+          ].filter((part): part is string => part !== undefined && part !== '');
+
+          return (
+            <li
+              key={attachment.blobId}
+              data-room-attachment={attachment.blobId}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setMenu({ attachment, x: event.clientX, y: event.clientY });
+              }}
+              className="flex max-w-full items-center gap-2.5 rounded-lg bg-ink/[0.035] px-3 py-2 ring-1 ring-hairline/80 sm:max-w-[380px]"
+            >
+              <span aria-hidden className="shrink-0 text-ink-faint">
+                <Icon name="file" size={14} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-mono text-[12.5px] leading-4 text-ink" title={attachment.path}>
+                  {displayName}
+                </p>
+                <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] leading-4 text-ink-faint">
+                  {metaParts.length > 0 ? <span className="tabular-nums">{metaParts.join(' · ')}</span> : null}
+                  {metaParts.length > 0 ? <span aria-hidden>·</span> : null}
+                  <span data-room-attachment-unavailable>{t('room.attachmentOriginalUnavailable')}</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                data-room-attachment-copy={attachment.blobId}
+                aria-label={t('room.attachmentCopyPath', { name: displayName })}
+                title={t('room.attachmentCopyPath', { name: displayName })}
+                onClick={() => { void copyValue(attachment.path, displayName); }}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11"
+              >
+                <Icon name="copy" size={14} />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {menu !== null ? (
+        <MiniContextMenu
+          x={menu.x}
+          y={menu.y}
+          entries={menuEntries}
+          onClose={() => { setMenu(null); }}
+          ariaLabel={attachmentDisplayName(menu.attachment)}
+          overlayId="room-attachment-menu"
+          dataAttribute="data-room-attachment-menu"
+        />
+      ) : null}
+    </>
+  );
+}
+
 function UserRoomRow({ entry, spaced }: { readonly entry: RoomMessage; readonly spaced: boolean }) {
   return (
     <div data-room-message={entry.id} data-room-from="user" className={`anim-enter group/msg flex flex-col items-end ${spaced ? 'mt-5' : ''}`}>
       <div className="max-w-[80%] rounded-[14px] rounded-br-[6px] bg-bubble-user px-4 py-2 text-[length:calc(var(--kiki-prose-font-size,15.5px)-1.5px)] leading-[1.6] break-words whitespace-pre-wrap text-ink">
         {entry.text}
       </div>
-      <span className="mt-1 text-[12px] text-ink-faint tabular-nums opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 [@media(hover:none)]:opacity-100">
+      <RoomAttachmentList attachments={entry.attachments} align="end" />
+      <span className="mt-1 text-[12px] text-ink-faint tabular-nums opacity-100 transition-opacity duration-[var(--kiki-motion-quick)] [@media(hover:hover)_and_(pointer:fine)]:opacity-0 [@media(hover:hover)_and_(pointer:fine)]:group-hover/msg:opacity-100 [@media(hover:hover)_and_(pointer:fine)]:group-focus-within/msg:opacity-100">
         <RelativeTime at={entry.at} />
       </span>
     </div>
@@ -733,18 +871,7 @@ function BotRoomRow({
             <p className="mb-1 truncate border-l-2 border-hairline-strong pl-2 text-[12.5px] text-ink-faint">{t('message.replyTo', { text: quote })}</p>
           ) : null}
           <div className="kiki-prose min-w-0"><Markdown text={entry.text} mode="static" /></div>
-          {entry.attachments !== undefined && entry.attachments.length > 0 ? (
-            <ul className="mt-2 flex flex-col gap-1.5">
-              {entry.attachments.map((attachment) => (
-                <li key={attachment.blobId} className="flex max-w-full items-center gap-2 rounded-lg bg-panel px-3 py-2 ring-1 ring-hairline sm:max-w-[360px]">
-                  <span className="text-ink-faint"><Icon name="file" size={16} /></span>
-                  <span className="min-w-0 truncate font-mono text-[12.5px] text-ink" title={attachment.path}>
-                    {attachment.title ?? attachment.path.split(/[\\/]/u).pop()}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
+          <RoomAttachmentList attachments={entry.attachments} align="start" />
         </div>
       </div>
     </div>

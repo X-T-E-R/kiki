@@ -349,6 +349,10 @@ function PersonaForm({
     return issue === undefined ? null : t(`persona.${issue}`);
   };
 
+  const hasHome = summary?.homeSessionId !== undefined;
+  const activeModelLabel = draft.modelAlias !== '' ? draft.modelAlias : t('persona.modelFollow');
+  const activeProfileLabel = draft.profile !== '' ? draft.profile : t('persona.profileDefault');
+
   return (
     <form
       data-persona-editor={snapshot?.definition.id ?? 'new'}
@@ -357,24 +361,51 @@ function PersonaForm({
       onSubmit={(event) => { event.preventDefault(); save(); }}
       className="min-w-0 space-y-6"
     >
-      {/* Masthead: the face and the name, set large — this is the card. */}
-      <div className="flex min-w-0 items-start gap-4">
-        <PersonaAvatarControl
-          persona={identity}
-          personaId={snapshot?.definition.id}
-          stagedAvatar={creating ? stagedAvatar : undefined}
-          onStageAvatar={creating ? setStagedAvatar : undefined}
-        />
-        <div className="min-w-0 flex-1 pt-1">
-          <h2 className="truncate font-display text-[22px] leading-7 font-semibold tracking-normal text-ink">
-            {draft.name.trim() === '' ? t('persona.newTitle') : draft.name}
-          </h2>
-          <p className="mt-0.5 truncate text-[13px] text-ink-soft">
-            {[draft.title.trim(), draft.job.trim()].filter((part) => part !== '').join(' · ') || '\u00a0'}
-          </p>
+      {/* Masthead: portrait face, display name, subtitle, and honest fact line. */}
+      <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:gap-4">
+        <div className="flex min-w-0 flex-1 items-start gap-4">
+          <PersonaAvatarControl
+            persona={identity}
+            personaId={snapshot?.definition.id}
+            stagedAvatar={creating ? stagedAvatar : undefined}
+            onStageAvatar={creating ? setStagedAvatar : undefined}
+          />
+          <div className="min-w-0 flex-1 pt-0.5">
+            <h2 className="truncate font-display text-[24px] leading-8 font-semibold tracking-tight text-ink">
+              {draft.name.trim() === '' ? t('persona.newTitle') : draft.name}
+            </h2>
+            <p className="mt-0.5 truncate text-[13px] text-ink-soft">
+              {[draft.title.trim(), draft.job.trim()].filter((part) => part !== '').join(' · ') || '\u00a0'}
+            </p>
+            {snapshot !== undefined ? (
+              <div data-persona-masthead-meta className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px] text-ink-faint">
+                {hasHome ? <span className="whitespace-nowrap">{t('persona.dailyTitle')}</span> : null}
+                <span className="inline-flex max-w-full items-center gap-1.5">
+                  {hasHome ? <span aria-hidden className="text-ink-faint/60">·</span> : null}
+                  <span className="truncate">{activeProfileLabel}</span>
+                </span>
+                <span className="inline-flex max-w-full items-center gap-1.5">
+                  <span aria-hidden className="text-ink-faint/60">·</span>
+                  <span className="truncate">{activeModelLabel}</span>
+                </span>
+                <button
+                  type="button"
+                  data-persona-masthead-memory
+                  onClick={() => { void navigate(`/memory?persona=${encodeURIComponent(snapshot.definition.id)}`); }}
+                  className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+                >
+                  <span aria-hidden className="text-ink-faint/60">·</span>
+                  <span className="inline-flex items-center gap-0.5">
+                    <span>{t('persona.menu.memory')}</span>
+                    <Icon name="arrowRight" size={12} />
+                  </span>
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
         {snapshot !== undefined ? (
-          <div className="flex shrink-0 items-center gap-1.5">
+          <div className="flex shrink-0 items-center gap-1.5 sm:pt-0.5">
             {!archived ? (
               <button
                 type="button"

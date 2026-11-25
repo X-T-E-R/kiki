@@ -28,6 +28,11 @@ import { SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { AddThreadMember } from './AddThreadMember';
 import { ROOM_MAX_MEMBERS, threadMemberFace, threadMemberName, type ThreadRoomMember } from './threadRooms';
 
+const MEMBER_ACTION_SLOT =
+  'mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 pl-9 opacity-100 transition-opacity duration-[var(--kiki-motion-quick)] [@media(hover:hover)_and_(pointer:fine)]:opacity-70 [@media(hover:hover)_and_(pointer:fine)]:group-hover/member:opacity-100 [@media(hover:hover)_and_(pointer:fine)]:group-focus-within/member:opacity-100';
+
+const MEMBER_LINK = `${INSPECTOR_LINK} text-[11.5px] pointer-coarse:min-h-11`;
+
 export function RoomMembersPanel({
   room,
   personas,
@@ -63,6 +68,13 @@ export function RoomMembersPanel({
   const budgetValue = Number(budget);
   const budgetValid = Number.isInteger(budgetValue) && budgetValue >= 1 && budgetValue <= 1000;
   const budgetDirty = budgetValid && budgetValue !== room.budget.botMessagesPerUserMessage;
+  const budgetLimit = Math.max(1, room.budget.botMessagesPerUserMessage);
+  const budgetPercent = Math.min(100, Math.round((room.budgetUsed / budgetLimit) * 100));
+  const budgetTone = room.budgetUsed >= budgetLimit
+    ? 'bg-accent'
+    : budgetPercent >= 80
+      ? 'bg-amber-rule'
+      : 'bg-selected-ink';
   const membersInput = (members: RoomDocument['members']): NonNullable<UpdateRoomInput['members']> => members.map((member) => member.kind === 'persona'
     ? { kind: 'persona', personaId: member.personaId, muted: member.muted }
     : { kind: 'thread', sessionId: member.sessionId, muted: member.muted, queueWhenBusy: member.queueWhenBusy });
@@ -72,27 +84,27 @@ export function RoomMembersPanel({
   return (
     <aside data-room-members aria-label={t('room.members')}
       className="flex h-full min-h-0 flex-col bg-paper">
-      <div className="flex h-12 shrink-0 items-center gap-2 px-4">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-hairline/70 px-4">
         <h2 className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">{t('room.members')}</h2>
         <span className="text-[12px] text-ink-faint tabular-nums">{room.members.length}</span>
         <button type="button" onClick={onClose} aria-label={t('room.close')} title={t('room.close')}
-          className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7">
+          className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7 pointer-coarse:h-11 pointer-coarse:w-11">
           <Icon name="close" size={16} />
         </button>
       </div>
-      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 pb-6">
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 pt-3 pb-6">
         {stopFirst || running ? (
           <div role={stopFirst ? 'alert' : 'status'} data-room-roster-locked
             className={`flex flex-col items-start gap-0.5 rounded-lg px-3 py-2 text-[12.5px] ${stopFirst ? 'bg-amber-card text-amber-ink' : 'bg-ink/[0.04] text-ink-soft'}`}>
             <span className="leading-5 text-pretty">{stopFirst ? t('room.stopFirst') : t('room.membersLocked')}</span>
             <button type="button" onClick={onStop} disabled={busy} data-room-stop-inline
-              className="-mx-1.5 min-h-7 rounded-md px-1.5 text-[12.5px] leading-5 font-medium underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-60">
+              className="-mx-1.5 min-h-7 rounded-md px-1.5 text-[12.5px] leading-5 font-medium underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-60 pointer-coarse:min-h-11">
               {t('room.stopAll')}
             </button>
           </div>
         ) : null}
 
-        <ul className="space-y-1">
+        <ul className="divide-y divide-hairline">
           {room.members.map((member) => {
             if (member.kind === 'thread') {
               return (
@@ -113,40 +125,48 @@ export function RoomMembersPanel({
             const host = member.personaId === room.host;
             const name = summary?.name ?? member.personaId;
             return (
-              <li key={member.personaId} data-room-member={member.personaId} className="rounded-lg py-2">
+              <li key={member.personaId} data-room-member={member.personaId} className="group/member py-2.5 first:pt-1">
                 <div className="flex items-start gap-2">
-                  <PersonaAvatar persona={face} size={32} decorative />
+                  <PersonaAvatar persona={face} size={28} decorative />
                   <div className="min-w-0 flex-1">
                     <p className="flex min-w-0 items-center gap-1.5">
                       <span className={`truncate text-[13px] font-medium ${member.muted ? 'text-ink-soft' : 'text-ink'}`}>{name}</span>
-                      {host ? <span className="shrink-0 rounded-full bg-selected px-1.5 text-[11px] leading-[18px] text-selected-ink">{t('room.hostTag')}</span> : null}
-                      {member.muted ? <span className="shrink-0 text-[11.5px] text-ink-faint">{t('room.mutedTag')}</span> : null}
+                      {host ? <span className="shrink-0 rounded-full bg-selected px-1.5 text-[10.5px] leading-[18px] text-selected-ink">{t('room.hostTag')}</span> : null}
+                      {member.muted ? <span className="shrink-0 text-[11px] text-ink-faint">{t('room.mutedTag')}</span> : null}
                     </p>
-                    <p className="flex min-w-0 items-center gap-1.5 text-[12px] text-ink-faint">
-                      {working || waiting ? (
-                        <>
-                          <LifeMark markId={`room-member:${member.sessionId}`} life={waiting ? 'waiting' : 'working'} still
-                            tone={waiting ? 'bg-attention' : undefined} />
-                          <span className={waiting ? 'text-attention' : 'text-ink-soft'}>
-                            {waiting ? t('sidebar.status.question') : t('room.memberWorking')}
-                          </span>
-                        </>
-                      ) : <span className="truncate">{summary?.title ?? summary?.job ?? ''}</span>}
-                    </p>
+                    <div className="mt-1 flex min-w-0 items-center justify-between gap-2">
+                      <p className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-ink-faint">
+                        {working || waiting ? (
+                          <>
+                            <LifeMark markId={`room-member:${member.sessionId}`} life={waiting ? 'waiting' : 'working'} still
+                              tone={waiting ? 'bg-attention' : undefined} />
+                            <span className={waiting ? 'text-attention' : 'text-ink-soft'}>
+                              {waiting ? t('sidebar.status.question') : t('room.memberWorking')}
+                            </span>
+                          </>
+                        ) : <span className="truncate">{summary?.title ?? summary?.job ?? ''}</span>}
+                      </p>
+                      <span className="shrink-0">
+                        <Toggle label={t('room.mute')} checked={member.muted} disabled={busy}
+                          onChange={(muted) => {
+                            onUpdate({ members: membersInput(room.members.map((item) => item.kind === 'persona' && item.personaId === member.personaId ? { ...item, muted } : item)) });
+                          }} />
+                      </span>
+                    </div>
                   </div>
                 </div>
-                <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 pl-[42px]">
-                  <Link to={`/s/${encodeURIComponent(member.sessionId)}`} className={INSPECTOR_LINK} data-room-member-process>
+                <div className={MEMBER_ACTION_SLOT}>
+                  <Link to={`/s/${encodeURIComponent(member.sessionId)}`} className={MEMBER_LINK} data-room-member-process>
                     {t('room.openProcess')}
                   </Link>
                   {host ? null : (
-                    <button type="button" className={INSPECTOR_LINK} disabled={busy}
+                    <button type="button" className={MEMBER_LINK} disabled={busy}
                       data-room-set-host onClick={() => { onUpdate({ host: member.personaId }); }}>
                       {t('room.setHost')}
                     </button>
                   )}
                   {room.members.length > 2 && !host ? (
-                    <button type="button" className={`${INSPECTOR_LINK} disabled:cursor-not-allowed disabled:opacity-50`}
+                    <button type="button" className={`${MEMBER_LINK} disabled:cursor-not-allowed disabled:opacity-50`}
                       disabled={rosterLocked} title={running ? t('room.membersLocked') : undefined}
                       aria-label={t('room.removeMember', { name })}
                       data-room-remove-member
@@ -154,12 +174,6 @@ export function RoomMembersPanel({
                       {t('room.remove')}
                     </button>
                   ) : null}
-                  <span className="ml-auto">
-                    <Toggle label={t('room.mute')} checked={member.muted} disabled={busy}
-                      onChange={(muted) => {
-                        onUpdate({ members: membersInput(room.members.map((item) => item.kind === 'persona' && item.personaId === member.personaId ? { ...item, muted } : item)) });
-                      }} />
-                  </span>
                 </div>
               </li>
             );
@@ -167,14 +181,14 @@ export function RoomMembersPanel({
         </ul>
 
         {room.members.length < ROOM_MAX_MEMBERS ? (
-          <section aria-label={t('room.addMember')} data-room-add className="space-y-2">
+          <section aria-label={t('room.addMember')} data-room-add className="space-y-2.5 border-t border-hairline pt-4">
             <div className="flex items-center gap-2">
-              <h3 className="min-w-0 flex-1 text-[12.5px] font-medium text-ink-soft">{t('room.addMember')}</h3>
-              <div role="tablist" aria-label={t('room.addMember')} className="flex shrink-0 rounded-md bg-ink/[0.04] p-0.5">
+              <h3 className="min-w-0 flex-1 text-[12px] font-medium text-section-ink">{t('room.addMember')}</h3>
+              <div role="tablist" aria-label={t('room.addMember')} className="flex shrink-0 items-center gap-1 rounded-md bg-ink/[0.04] p-0.5">
                 {(['personas', 'threads'] as const).map((tab) => (
                   <button key={tab} type="button" role="tab" aria-selected={addTab === tab} data-room-add-tab={tab}
                     onClick={() => { setAddTab(tab); }}
-                    className="h-7 rounded-[5px] px-3 text-[12px] text-ink-soft transition-colors hover:text-ink aria-selected:bg-paper aria-selected:font-medium aria-selected:text-selected-ink aria-selected:shadow-[0_0_0_1px_var(--color-hairline)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
+                    className="h-6 rounded-[4px] px-2.5 text-[11.5px] text-ink-soft transition-colors hover:text-ink aria-selected:bg-ink/[0.08] aria-selected:font-medium aria-selected:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11">
                     {t(tab === 'personas' ? 'room.addTab.personas' : 'room.addTab.threads')}
                   </button>
                 ))}
@@ -195,7 +209,7 @@ export function RoomMembersPanel({
                     onChange={setAdding}
                     buttonClassName={`${FORM_SELECT_TRIGGER} min-h-8 text-[12.5px]`}
                   />
-                  <button type="button" className={SECONDARY_BUTTON} disabled={rosterLocked || adding === ''} data-room-add-member
+                  <button type="button" className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`} disabled={rosterLocked || adding === ''} data-room-add-member
                     onClick={() => {
                       onUpdate({ members: [...membersInput(room.members), { kind: 'persona', personaId: adding, muted: false }] });
                       setAdding('');
@@ -218,27 +232,54 @@ export function RoomMembersPanel({
         ) : null}
 
         <InspectorSection title={t('room.budget', { count: room.budget.botMessagesPerUserMessage })} collapsible={false} data-room-budget-section>
-          <form className="space-y-2" onSubmit={(event) => {
-            event.preventDefault();
-            if (budgetDirty) onUpdate({ budget: { botMessagesPerUserMessage: budgetValue } });
-          }}>
-            <label className="flex flex-wrap items-center gap-2 text-[12.5px] text-ink-soft">
-              <span>{t('room.budgetLabel')}</span>
-              <input type="number" inputMode="numeric" min={1} max={1000} step={1} value={budget}
-                data-room-budget-input aria-invalid={!budgetValid}
-                onChange={(event) => { setBudget(event.target.value); }}
-                className={`${SMALL_INPUT} h-8 w-20 text-right tabular-nums`} />
-              <span>{t('room.budgetUnit')}</span>
-            </label>
-            <div className="flex items-center gap-2">
-              <span className="min-w-0 flex-1 text-[12px] text-ink-faint tabular-nums">
-                {t('room.budgetUsed', { used: room.budgetUsed, limit: room.budget.botMessagesPerUserMessage })}
-              </span>
-              <button type="submit" className={SECONDARY_BUTTON} disabled={!budgetDirty || busy} data-room-budget-save>
-                {t('room.budgetSave')}
-              </button>
+          <div className="space-y-2.5">
+            <div className="space-y-1">
+              <div className="flex items-baseline justify-between gap-2 text-[12px] text-ink-faint tabular-nums">
+                <span data-room-budget-used>
+                  {t('room.budgetUsed', { used: room.budgetUsed, limit: room.budget.botMessagesPerUserMessage })}
+                </span>
+              </div>
+              <div aria-hidden className="h-1 w-full overflow-hidden rounded-full bg-hairline">
+                <div
+                  data-room-budget-bar
+                  className={`h-full rounded-full transition-[width] duration-[var(--kiki-motion-quick)] ${budgetTone}`}
+                  style={{ width: `${budgetPercent}%` }}
+                />
+              </div>
             </div>
-          </form>
+            <form className="space-y-2" onSubmit={(event) => {
+              event.preventDefault();
+              if (budgetDirty) onUpdate({ budget: { botMessagesPerUserMessage: budgetValue } });
+            }}>
+              <label className="block text-[12px] text-ink-soft" htmlFor="room-budget-input">
+                {t('room.budgetLabel')}
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  id="room-budget-input"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={1000}
+                  step={1}
+                  value={budget}
+                  data-room-budget-input
+                  aria-invalid={!budgetValid}
+                  onChange={(event) => { setBudget(event.target.value); }}
+                  className={`${SMALL_INPUT} h-8 w-20 text-right tabular-nums pointer-coarse:h-11`}
+                />
+                <span className="text-[12px] text-ink-soft">{t('room.budgetUnit')}</span>
+                <button
+                  type="submit"
+                  className={`${SECONDARY_BUTTON} ml-auto pointer-coarse:min-h-11`}
+                  disabled={!budgetDirty || busy}
+                  data-room-budget-save
+                >
+                  {t('room.budgetSave')}
+                </button>
+              </div>
+            </form>
+          </div>
         </InspectorSection>
       </div>
     </aside>
@@ -273,42 +314,44 @@ function ThreadMemberRow({
     : working ? (member.queueWhenBusy ? t('room.threadBusyShort') : t('room.threadWorking'))
       : session === undefined ? t('room.threadCold') : t('room.threadIdle');
   return (
-    <li data-room-member={member.sessionId} data-room-member-kind="thread" data-room-member-busy={working || undefined} className="rounded-lg py-2">
+    <li data-room-member={member.sessionId} data-room-member-kind="thread" data-room-member-busy={working || undefined} className="group/member py-2.5 first:pt-1">
       <div className="flex items-start gap-2">
-        <PersonaAvatar persona={face} size={32} decorative />
+        <PersonaAvatar persona={face} size={28} decorative />
         <div className="min-w-0 flex-1">
           <p className="flex min-w-0 items-center gap-1.5">
             <span className={`truncate text-[13px] font-medium ${member.muted ? 'text-ink-soft' : 'text-ink'}`} title={name}>{name}</span>
-            <span className="shrink-0 rounded-full bg-ink/[0.05] px-1.5 text-[11px] leading-[18px] text-ink-soft">{t('room.threadTag')}</span>
-            {host ? <span className="shrink-0 rounded-full bg-selected px-1.5 text-[11px] leading-[18px] text-selected-ink">{t('room.hostTag')}</span> : null}
+            <span className="shrink-0 rounded-full bg-ink/[0.05] px-1.5 text-[10.5px] leading-[18px] text-ink-soft">{t('room.threadTag')}</span>
+            {host ? <span className="shrink-0 rounded-full bg-selected px-1.5 text-[10.5px] leading-[18px] text-selected-ink">{t('room.hostTag')}</span> : null}
           </p>
-          <p className="flex min-w-0 items-center gap-1.5 text-[12px] text-ink-faint" data-room-member-status>
-            {working || waiting ? (
-              <LifeMark markId={`room-member:${member.sessionId}`} life={waiting ? 'waiting' : 'working'} still
-                tone={waiting ? 'bg-attention' : undefined} />
-            ) : null}
-            <span className={`truncate ${waiting ? 'text-attention' : working ? 'text-ink-soft' : ''}`}>{status}</span>
-          </p>
+          <div className="mt-1 flex min-w-0 items-center justify-between gap-2">
+            <p className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-ink-faint" data-room-member-status>
+              {working || waiting ? (
+                <LifeMark markId={`room-member:${member.sessionId}`} life={waiting ? 'waiting' : 'working'} still
+                  tone={waiting ? 'bg-attention' : undefined} />
+              ) : null}
+              <span className={`truncate ${waiting ? 'text-attention' : working ? 'text-ink-soft' : ''}`}>{status}</span>
+            </p>
+            <span className="shrink-0" title={t('room.queueWhenBusyHint')}>
+              <Toggle label={t('room.queueWhenBusy')} checked={member.queueWhenBusy} disabled={busy} onChange={onQueueChange} />
+            </span>
+          </div>
         </div>
       </div>
-      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 pl-[42px]">
-        <Link to={`/s/${encodeURIComponent(member.sessionId)}`} className={INSPECTOR_LINK} data-room-member-process>
+      <div className={MEMBER_ACTION_SLOT}>
+        <Link to={`/s/${encodeURIComponent(member.sessionId)}`} className={MEMBER_LINK} data-room-member-process>
           {t('room.openThread')}
         </Link>
         {host ? null : (
-          <button type="button" className={INSPECTOR_LINK} disabled={busy} data-room-set-host onClick={onSetHost}>
+          <button type="button" className={MEMBER_LINK} disabled={busy} data-room-set-host onClick={onSetHost}>
             {t('room.setHost')}
           </button>
         )}
         {canLeave ? (
-          <button type="button" className={`${INSPECTOR_LINK} disabled:cursor-not-allowed disabled:opacity-50`} disabled={busy}
+          <button type="button" className={`${MEMBER_LINK} disabled:cursor-not-allowed disabled:opacity-50`} disabled={busy}
             aria-label={t('room.leaveMember', { name })} data-room-leave onClick={onLeave}>
             {t('room.leave')}
           </button>
         ) : null}
-      </div>
-      <div className="mt-1 pl-[42px]" title={t('room.queueWhenBusyHint')}>
-        <Toggle label={t('room.queueWhenBusy')} checked={member.queueWhenBusy} disabled={busy} onChange={onQueueChange} />
       </div>
     </li>
   );

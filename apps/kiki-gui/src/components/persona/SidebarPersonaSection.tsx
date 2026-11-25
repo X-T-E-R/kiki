@@ -12,8 +12,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import type { PersonaSummary, RoomListItem, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
-import { isPinnedSession, sessionRowState } from '@kiki/session-core/sessions';
+import { isPinnedSession, sessionAttentionCursor, sessionRowState } from '@kiki/session-core/sessions';
 import {
+  markConversationSeen,
+  markSessionSeen,
   setSidebarPersonaSectionCollapsed,
   setSidebarPersonasShowAll,
   type SessionSeenMap,
@@ -78,7 +80,7 @@ const GROUP_HEAD = 'flex h-7 items-center gap-0.5 pr-0.5 pl-1';
 const HEAD_BUTTON =
   'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 const HOVER_ICON_BUTTON =
-  'flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink';
+  'flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11';
 
 function activeRoutePersonaId(pathname: string, search: string): string | undefined {
   const dailyMatch = /^\/p\/([^/]+)\/daily(?:\/|$)/.exec(pathname);
@@ -223,7 +225,7 @@ export function SidebarPersonaSection({
   const navigate = useGuardedNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
-  const { client } = useConnection();
+  const { client, spaceKey } = useConnection();
   const sessionMenu = useSessionContextMenu({ activeSessionId, portal: true });
   const layoutPrefs = useLayoutPreferences();
   const collapsed = layoutPrefs.sidebarPersonaSectionCollapsed === true;
@@ -240,7 +242,7 @@ export function SidebarPersonaSection({
   const [expandedOverrides, setExpandedOverrides] = useState<Readonly<Record<string, boolean>>>({});
   const [showAllThreadsFor, setShowAllThreadsFor] = useState<Readonly<Record<string, boolean>>>({});
   const [rowMenu, setRowMenu] = useState<{ persona: PersonaDirectoryEntry; x: number; y: number } | null>(null);
-  const [creatingRoom, setCreatingRoom] = useState(false);
+  const [roomDialog, setRoomDialog] = useState<{ readonly initialPersonaId?: string } | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; position: 'before' | 'after' } | null>(null);
 
@@ -328,6 +330,7 @@ export function SidebarPersonaSection({
       readonly totalConversations: number;
       readonly totalNonHomeConversations: number;
       readonly unreadIds: readonly string[];
+      readonly eligibleUnreadSessions: readonly Session[];
       readonly unreadCount: number;
       readonly life: PersonaDirectoryEntry['life'];
       readonly latestActivityAt: number;
@@ -518,12 +521,22 @@ export function SidebarPersonaSection({
       }
       const totalConversations = Math.max(allThreads.length, extraThreads.length + hasHomeSlot, serverTotal);
       const totalNonHomeConversations = Math.max(extraThreads.length, totalConversations - hasHomeSlot);
+      // Only known eligible unread sessions with no unresolved approval/question wait can be marked read.
+      const eligibleUnreadSessions: Session[] = [];
+      for (const thread of allThreads) {
+        const candidate = thread.session;
+        if (candidate === undefined) continue;
+        if (thread.life !== 'done' || thread.needsYou || candidate.busy === true || candidate.archived === true) continue;
+        if (candidate.pending_interaction !== undefined && candidate.pending_interaction !== 'none') continue;
+        eligibleUnreadSessions.push(candidate);
+      }
       map.set(persona.id, {
         allThreads,
         extraThreads,
         totalConversations,
         totalNonHomeConversations,
         unreadIds: computedUnreadIds,
+        eligibleUnreadSessions,
         unreadCount,
         life,
         latestActivityAt,
@@ -692,6 +705,27 @@ export function SidebarPersonaSection({
     ]);
   };
 
+  const markSessionsRead = (targets: readonly Session[]) => {
+    for (const target of targets) {
+      if (target.pending_interaction !== undefined && target.pending_interaction !== 'none') continue;
+      if (target.busy === true || target.archived === true) continue;
+      const cursor = sessionAttentionCursor(target);
+      if (spaceKey !== undefined && spaceKey !== '') {
+        markConversationSeen({ spaceKey, kind: 'session', id: target.id }, cursor);
+      }
+      markSessionSeen(target.id, cursor.seq);
+    }
+  };
+
+  const rowMenuStats = rowMenu === null ? undefined : personaThreadStats.get(rowMenu.persona.id);
+  const rowMenuTotal = rowMenu === null
+    ? 0
+    : (rowMenuStats?.totalConversations ?? (rowMenu.persona.homeSessionId !== undefined ? 1 : 0));
+  const rowMenuSoleThread = rowMenuTotal === 1 && rowMenuStats?.allThreads.length === 1
+    ? rowMenuStats.allThreads[0]
+    : undefined;
+  const rowMenuEligibleUnread = rowMenuStats?.eligibleUnreadSessions ?? [];
+
   const rowMenuEntries: readonly MiniMenuEntry[] = rowMenu === null
     ? []
     : [
@@ -706,6 +740,40 @@ export function SidebarPersonaSection({
               label: t('sidebar.persona.dailyConversation'),
               run: () => { void navigate(`/p/${encodeURIComponent(rowMenu.persona.id)}/daily`); },
             }]
+          : []),
+        {
+          key: 'all-conversations',
+          label: rowMenuTotal > 0 ? `${t('persona.menu.conversations')} (${rowMenuTotal})` : t('persona.menu.conversations'),
+          run: () => { void navigate(`/personas?persona=${encodeURIComponent(rowMenu.persona.id)}&view=conversations`); },
+        },
+        {
+          key: 'memory',
+          label: t('persona.menu.memory'),
+          run: () => { void navigate(`/memory?persona=${encodeURIComponent(rowMenu.persona.id)}`); },
+        },
+        ...(!rowMenu.persona.archived && !rowMenu.persona.hidden
+          ? [{
+              key: 'create-room',
+              label: t('persona.menu.createRoom'),
+              run: () => { setRoomDialog({ initialPersonaId: rowMenu.persona.id }); },
+            }]
+          : []),
+        ...(rowMenuEligibleUnread.length > 0
+          ? [{
+              key: 'mark-read',
+              label: t('persona.menu.markRead'),
+              run: () => { markSessionsRead(rowMenuEligibleUnread); },
+            }]
+          : []),
+        ...(rowMenuSoleThread?.session !== undefined
+          ? [
+              { separator: true } as const,
+              {
+                key: 'session-actions',
+                label: t('persona.menu.conversationActions'),
+                run: () => { openSubthreadMenu(rowMenu.persona, rowMenuSoleThread, rowMenu.x, rowMenu.y); },
+              },
+            ]
           : []),
         { separator: true },
         {
@@ -797,7 +865,7 @@ export function SidebarPersonaSection({
             data-room-create
             aria-label={t('room.new')}
             title={t('room.new')}
-            onClick={() => { setCreatingRoom(true); }}
+            onClick={() => { setRoomDialog({}); }}
             className={HEAD_BUTTON}
           >
             <span aria-hidden className="font-mono text-[13px] leading-none">#</span>
@@ -822,7 +890,10 @@ export function SidebarPersonaSection({
                 const allThreads = stats?.allThreads ?? [];
                 const extraThreads = stats?.extraThreads ?? [];
                 const totalConversations = stats?.totalConversations ?? (persona.homeSessionId !== undefined ? 1 : 0);
-                const hasThreads = totalConversations > 0 && allThreads.length > 0;
+                // Singleton personas (0 or 1 known eligible conversation) open directly on row click
+                // with no [1 ▾] toggle and no auto-expanded duplicate child.
+                const hasMultiThreads = totalConversations > 1;
+                const hasThreads = hasMultiThreads && allThreads.length > 0;
                 const unreadCount = stats?.unreadCount ?? persona.unreadCount;
                 const unreadIds = stats?.unreadIds ?? persona.unreadSessionIds;
                 const effectiveLife = stats?.life ?? persona.life;
@@ -862,8 +933,10 @@ export function SidebarPersonaSection({
                 const overflowThreadCount = inlineThreads.length > 0
                   ? Math.max(0, totalConversations - inlineThreads.length)
                   : 0;
-                const atDaily = (persona.homeSessionId !== undefined && persona.homeSessionId === activeSessionId)
-                  || (activePersonaId === persona.id && !inlineSubthreadActive);
+                const atDaily = !hasMultiThreads
+                  ? isSelectedPersona
+                  : ((persona.homeSessionId !== undefined && persona.homeSessionId === activeSessionId)
+                    || (activePersonaId === persona.id && !inlineSubthreadActive));
                 const emphasis = isSelectedPersona || effectiveLife === 'waiting' || effectiveLife === 'done';
                 const menuOpenForRow = rowMenu?.persona.id === persona.id;
                 const isDragging = draggingId === persona.id;
@@ -955,8 +1028,8 @@ export function SidebarPersonaSection({
                     ) : null}
 
                     <div
-                      className={`row-interactive flex h-8 items-center gap-1 pr-1 pl-2 pointer-coarse:min-h-10 ${
-                        isSelectedPersona && !inlineSubthreadActive ? 'bg-ink/[0.055]' : ''
+                      className={`row-interactive flex h-8 items-center gap-1 pr-1 pl-2 pointer-coarse:min-h-11 ${
+                        isSelectedPersona && (!isExpanded || !inlineSubthreadActive) ? 'bg-ink/[0.055]' : ''
                       }`}
                     >
                       <button
@@ -1006,7 +1079,7 @@ export function SidebarPersonaSection({
                         <span className={`flex items-center gap-0.5 transition-opacity duration-[var(--kiki-motion-quick)] ${
                           menuOpenForRow
                             ? 'w-auto overflow-visible opacity-100'
-                            : 'w-0 overflow-hidden opacity-0 group-hover:w-auto group-hover:overflow-visible group-hover:opacity-100 group-focus-within:w-auto group-focus-within:overflow-visible group-focus-within:opacity-100 [@media(hover:none)]:w-auto [@media(hover:none)]:overflow-visible [@media(hover:none)]:opacity-100'
+                            : 'w-auto overflow-visible opacity-100 [@media(hover:hover)_and_(pointer:fine)]:w-0 [@media(hover:hover)_and_(pointer:fine)]:overflow-hidden [@media(hover:hover)_and_(pointer:fine)]:opacity-0 [@media(hover:hover)_and_(pointer:fine)]:group-hover:w-auto [@media(hover:hover)_and_(pointer:fine)]:group-hover:overflow-visible [@media(hover:hover)_and_(pointer:fine)]:group-hover:opacity-100 [@media(hover:hover)_and_(pointer:fine)]:group-focus-within:w-auto [@media(hover:hover)_and_(pointer:fine)]:group-focus-within:overflow-visible [@media(hover:hover)_and_(pointer:fine)]:group-focus-within:opacity-100'
                         }`}>
                           <button
                             type="button"
@@ -1040,7 +1113,7 @@ export function SidebarPersonaSection({
                           </button>
                         </span>
 
-                        {totalConversations > 0 ? (
+                        {hasMultiThreads ? (
                           <button
                             type="button"
                             data-persona-switcher-toggle={persona.id}
@@ -1052,7 +1125,7 @@ export function SidebarPersonaSection({
                               event.stopPropagation();
                               toggleInlineExpand(persona.id, isExpanded);
                             }}
-                            className={`flex h-6 min-w-7 shrink-0 items-center justify-center gap-0.5 rounded-md px-1.5 text-[11px] leading-none font-medium tabular-nums transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink ${
+                            className={`flex h-6 min-w-7 shrink-0 items-center justify-center gap-0.5 rounded-md px-1.5 text-[11px] leading-none font-medium tabular-nums transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${
                               isExpanded
                                 ? 'bg-ink/[0.08] text-ink'
                                 : 'bg-ink/[0.045] text-ink-soft hover:bg-ink/[0.08] hover:text-ink'
@@ -1139,10 +1212,10 @@ export function SidebarPersonaSection({
                                       const rect = event.currentTarget.getBoundingClientRect();
                                       openSubthreadMenu(persona, thread, rect.right + 4, rect.top);
                                     }}
-                                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint transition-opacity duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.07] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink ${
+                                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint transition-opacity duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.07] hover:text-ink focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11 ${
                                       subMenuOpen
                                         ? 'opacity-100'
-                                        : 'opacity-0 group-hover/sub:opacity-100 group-focus-within/sub:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100'
+                                        : 'opacity-100 [@media(hover:hover)_and_(pointer:fine)]:opacity-0 [@media(hover:hover)_and_(pointer:fine)]:group-hover/sub:opacity-100 [@media(hover:hover)_and_(pointer:fine)]:group-focus-within/sub:opacity-100'
                                     }`}
                                   >
                                     <Icon name="more" size={12} />
@@ -1219,7 +1292,12 @@ export function SidebarPersonaSection({
         ) : null}
       </div>
 
-      {creatingRoom ? <CreateRoomDialog onClose={() => { setCreatingRoom(false); }} /> : null}
+      {roomDialog !== null ? (
+        <CreateRoomDialog
+          initialPersonaId={roomDialog.initialPersonaId}
+          onClose={() => { setRoomDialog(null); }}
+        />
+      ) : null}
 
       {rowMenu !== null ? (
         <MiniContextMenu
