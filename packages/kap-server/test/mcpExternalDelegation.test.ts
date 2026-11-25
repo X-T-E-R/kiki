@@ -142,12 +142,12 @@ describe('Kiki external delegation MCP projector', () => {
     const schema = listed?.inputSchema as Record<string, unknown>;
     expect(['anyOf', 'oneOf', 'allOf'].filter((key) => key in schema)).toEqual([]);
     expect(schema).toMatchObject({ $schema: parameters['$schema'], type: 'object', required: ['content'], additionalProperties: false });
-    expect(Object.keys(schema['properties'] as object).toSorted()).toEqual(['content', 'idempotency_key', 'mentions', 'raw', 'room', 'thread']);
-    expect(listed?.description).toBe('Send to a thread.\n\nInput constraint: use one of these parameter sets: (thread, content, idempotency_key) or (room, content).');
+    expect(Object.keys(schema['properties'] as object).toSorted()).toEqual(['content', 'idempotency_key', 'mentions', 'notify_on_terminal', 'raw', 'room', 'thread']);
+    expect(listed?.description).toBe('Send to a thread.\n\nInput constraint: use one of these parameter sets: (thread, content) or (room, content).');
     const sent = { thread: { workspace_id: 'workspace-example', session_id: 'session-example' }, content: 'nonce', idempotency_key: 'nonce' };
     expect((await client.callTool({ name: 'kiki_ThreadSend', arguments: sent })).isError).not.toBe(true);
     expect(contextCall).toHaveBeenLastCalledWith({ name: 'ThreadSend', arguments: sent }, expect.any(AbortSignal));
-    for (const invalid of [{ ...sent, room: 'room-example' }, { content: 'nonce' }, { thread: sent.thread, content: 'nonce' }]) {
+    for (const invalid of [{ ...sent, room: 'room-example' }, { content: 'nonce' }, { room: 'room-example', content: 'nonce', notify_on_terminal: true }]) {
       expect(validateToolArgs(validator, invalid as never)).not.toBeNull();
       expect((await client.callTool({ name: 'kiki_ThreadSend', arguments: invalid })).isError).toBe(true);
     }
