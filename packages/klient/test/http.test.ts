@@ -389,7 +389,7 @@ describe('http transport', () => {
     let metaCalls = 0;
     let callAttempts = 0;
     const fetcher = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
-      const url = String(input);
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       if (url.endsWith('/api/meta')) {
         metaCalls += 1;
         if (metaCalls === 1) throw new TypeError('fetch failed: socket hang up');

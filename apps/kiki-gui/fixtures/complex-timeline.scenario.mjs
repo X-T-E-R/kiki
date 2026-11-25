@@ -127,7 +127,7 @@ const ssh = {
   hosts: [
     { id: 'dorm-3090', name: 'dorm-3090', hostname: '100.94.23.86', user: 'ubuntu', port: 22, roots: ['/srv/render'] },
     { id: 'macbook-air', name: 'macbook-air', hostname: '100.69.108.120', user: 'dev', port: 22, roots: ['/Users/dev/work'] },
-    { id: 'wuhan-mac', name: 'wuhan-mac', hostname: '192.168.89.100', user: 'ops', port: 22, roots: ['/Users/ops/stack'] },
+    { id: 'wuhan-mac', name: 'wuhan-mac', hostname: '192.168.89.100', user: 'ops', port: 22, roots: ['/Users/example/stack'] },
   ],
   session: {
     [SID_COMPLEX]: ['dorm-3090', 'macbook-air', 'wuhan-mac'],
