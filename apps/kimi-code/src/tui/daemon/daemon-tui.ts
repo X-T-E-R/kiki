@@ -3025,7 +3025,7 @@ export class DaemonTUI {
       capabilities: item.effective_capabilities ?? item.capabilities,
       supportEfforts: item.support_efforts,
       defaultEffort: item.default_effort,
-      protocol: item.effective_protocol ?? item.protocol,
+      protocol: item.effective_protocol === 'plugin' ? undefined : (item.effective_protocol ?? item.protocol),
     }])) });
     return available;
   }

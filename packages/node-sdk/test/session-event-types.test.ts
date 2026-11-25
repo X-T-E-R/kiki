@@ -150,6 +150,7 @@ describe('Event public types', () => {
         case 'agent.disposed':
         case 'event.config.warning':
         case 'event.persona.changed':
+        case 'event.portable_spaces.changed':
         case 'event.session.history_rewritten':
           return;
         default:
