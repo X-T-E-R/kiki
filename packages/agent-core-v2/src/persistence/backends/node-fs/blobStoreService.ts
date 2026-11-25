@@ -4,6 +4,8 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IBlobStore, type BlobReadRange } from '#/persistence/interface/blobStore';
 
+const BLOB_STREAM_CHUNK_BYTES = 64 * 1024;
+
 export class BlobStoreService implements IBlobStore {
   declare readonly _serviceBrand: undefined;
 
@@ -26,7 +28,7 @@ export class BlobStoreService implements IBlobStore {
   }
 
   getStream(scope: string, key: string, range?: BlobReadRange): AsyncIterable<Uint8Array> {
-    return this.storage.readStream(scope, key, range);
+    return this.storage.readStream(scope, key, range, { chunkBytes: BLOB_STREAM_CHUNK_BYTES });
   }
 
   async has(scope: string, key: string): Promise<boolean> {

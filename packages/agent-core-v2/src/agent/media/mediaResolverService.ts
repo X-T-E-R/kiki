@@ -18,6 +18,15 @@ import type { ResolvedImagePolicy } from '#/kosong/provider/providerImagePolicy'
 import { mergeProviderRequestAuth } from '#/kosong/provider/bases/request-auth';
 import { REQUEST_IDENTITY_RESERVED_HEADERS } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import { IBlobStore } from '#/persistence/interface/blobStore';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import {
+  HOSTREF_PROTOCOL,
+  HostPinnedSourceChangedError,
+  openVerifiedHostPinnedStream,
+  parseHostPinnedUrl,
+  readHostPinnedRefRecord,
+} from './hostPinnedMedia';
 
 import './flag';
 import {
@@ -82,7 +91,6 @@ const AUDIO_CORRUPT_TEXT =
   '[audio omitted: the file or media data is empty, corrupted, or incomplete]';
 const POISONED_MEDIA_TEXT =
   '[media omitted: rejected by model provider as empty, corrupted, or unsupported]';
-const AUDIO_BLOBREF_RE = /^blobref:(audio\/[A-Za-z0-9.+_*-]+);([0-9a-f]{64})$/u;
 const AUDIO_MIME_ALIASES: Readonly<Record<string, string>> = {
   'audio/x-wav': 'audio/wav',
   'audio/wave': 'audio/wav',
@@ -115,6 +123,8 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     @ref(IAgentScopeContext) private readonly agentScope?: LiveRef<IAgentScopeContext>,
     @ref(ICpuWorkerService) private readonly cpuWorkerRef?: LiveRef<ICpuWorkerService>,
     @ref(IImageConfigBridge) private readonly imageConfigRef?: LiveRef<IImageConfigBridge>,
+    @ref(IAtomicDocumentStore) private readonly documentsRef?: LiveRef<IAtomicDocumentStore>,
+    @ref(ISessionContext) private readonly sessionRef?: LiveRef<ISessionContext>,
   ) {
     this.states.contributeState(mediaResolvedKey);
   }
@@ -329,20 +339,26 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     if (url === MISSING_MEDIA_PLACEHOLDER) {
       return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
     }
+    if (url.startsWith(HOSTREF_PROTOCOL)) {
+      return this.resolveHostPinnedAudioPart(part, url, signal);
+    }
     if (url.startsWith('blobref:')) {
-      const match = AUDIO_BLOBREF_RE.exec(url);
-      if (match === null) {
-        return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
-      }
-      const mime = normalizeAudioMime(match[1]!);
-      if (!SUPPORTED_AUDIO_MIMES.has(mime)) {
+      const ref = parseMediaBlobRef(url);
+      if (ref === undefined || (ref.kind === 'mime' && !ref.mime.startsWith('audio/'))) {
         return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
       }
       signal?.throwIfAborted();
-      const scope = this.agentScope?.current?.scope('blobs') ?? 'blobs';
-      const bytes = await this.blobs.get(scope, match[2]!);
+      const scope = resolveBlobScope(this.agentScope?.current, ref);
+      const bytes = await this.blobs.get(scope, ref.hash);
       signal?.throwIfAborted();
       if (bytes === undefined) {
+        return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
+      }
+      const rawMime = ref.kind === 'mime'
+        ? ref.mime
+        : detectFileType('audio.bin', bytes.subarray(0, MEDIA_SNIFF_BYTES), 'media').mimeType;
+      const mime = normalizeAudioMime(rawMime);
+      if (!SUPPORTED_AUDIO_MIMES.has(mime)) {
         return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
       }
       if (!validateMediaBytesIntegrity(bytes, mime).valid) {
@@ -389,6 +405,9 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     if (url === MISSING_MEDIA_PLACEHOLDER) {
       return { type: 'text', text: VIDEO_UNAVAILABLE_TEXT };
     }
+    if (url.startsWith(HOSTREF_PROTOCOL)) {
+      return this.resolveHostPinnedVideoPart(part, url, requester, signal);
+    }
     if (url.startsWith('blobref:')) {
       const ref = parseMediaBlobRef(url);
       if (ref === undefined || (ref.kind === 'mime' && !ref.mime.startsWith('video/'))) {
@@ -410,6 +429,37 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       }
       if (mimeType === undefined || !validateMediaBytesIntegrity(bytes, mimeType).valid) {
         return { type: 'text', text: VIDEO_CORRUPT_TEXT };
+      }
+      const model = requester.model;
+      const uploader = createVideoUploader(requester, {
+        client: this.telemetry,
+        props: {
+          model: model.name,
+          provider_type: model.providerType ?? model.protocol,
+          protocol: model.protocol,
+        },
+      });
+      if (uploader !== undefined) {
+        const providerKey = model.providerType ?? model.protocol;
+        const uploadCacheKey = `blobref\0${ref.hash}\0${providerKey}`;
+        const cachedUpload = await this.readCachedUpload(uploadCacheKey);
+        if (cachedUpload !== undefined) {
+          const uploadedUrl = `ms://${cachedUpload.llmFileId}`;
+          this.rememberUploadCache([url, uploadedUrl], CACHE_SCOPE, blobKey(uploadCacheKey));
+          return { type: 'video_url', videoUrl: { ...part.videoUrl, url: uploadedUrl, id: cachedUpload.llmFileId } };
+        }
+        try {
+          const uploaded = await uploader({ data: Buffer.from(bytes), mimeType, filename: `${ref.hash}.mp4` }, { signal });
+          const llmFileId = uploaded.videoUrl.id ?? msFileIdFromUrl(uploaded.videoUrl.url);
+          if (llmFileId !== undefined) {
+            await this.writeCachedUpload(uploadCacheKey, llmFileId, CACHE_SCOPE);
+            this.rememberUploadCache([url, uploaded.videoUrl.url, `ms://${llmFileId}`], CACHE_SCOPE, blobKey(uploadCacheKey));
+          }
+          return uploaded;
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          if (isVideoUploadAuthError(error)) throw error;
+        }
       }
       return {
         type: 'video_url',
@@ -891,6 +941,111 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     payload.set(header, 0);
     payload.set(data, header.length);
     await this.blobs.put(AV_COMPRESS_CACHE_SCOPE, blobKey(cacheKey), payload).catch(() => undefined);
+  }
+
+  private async resolveHostPinnedAudioPart(
+    part: Extract<ContentPart, { type: 'audio_url' }>,
+    url: string,
+    signal: AbortSignal | undefined,
+  ): Promise<ContentPart> {
+    const parsed = parseHostPinnedUrl(url);
+    const documents = this.documentsRef?.current;
+    const session = this.sessionRef?.current;
+    if (parsed === undefined || documents === undefined || session === undefined) {
+      return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
+    }
+    const record = await readHostPinnedRefRecord(documents, session.scope(), session.sessionId, parsed.refId);
+    if (record === undefined || !record.mimeType.startsWith('audio/')) {
+      return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
+    }
+    let opened: Awaited<ReturnType<typeof openVerifiedHostPinnedStream>> | undefined;
+    try {
+      opened = await openVerifiedHostPinnedStream(record, { signal });
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of opened.stream) {
+        signal?.throwIfAborted();
+        chunks.push(chunk as Uint8Array);
+      }
+      const bytes = Buffer.concat(chunks);
+      const mime = normalizeAudioMime(record.mimeType);
+      if (!SUPPORTED_AUDIO_MIMES.has(mime) || !validateMediaBytesIntegrity(bytes, mime).valid) {
+        return { type: 'text', text: AUDIO_CORRUPT_TEXT };
+      }
+      return {
+        type: 'audio_url',
+        audioUrl: {
+          ...part.audioUrl,
+          url: `data:${mime};base64,${bytes.toString('base64')}`,
+        },
+      };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (error instanceof HostPinnedSourceChangedError) return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
+      return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
+    } finally {
+      opened?.close();
+    }
+  }
+
+  private async resolveHostPinnedVideoPart(
+    part: Extract<ContentPart, { type: 'video_url' }>,
+    url: string,
+    requester: ModelRequester,
+    signal: AbortSignal | undefined,
+  ): Promise<ContentPart> {
+    const parsed = parseHostPinnedUrl(url);
+    const documents = this.documentsRef?.current;
+    const session = this.sessionRef?.current;
+    if (parsed === undefined || documents === undefined || session === undefined) {
+      return { type: 'text', text: VIDEO_UNAVAILABLE_TEXT };
+    }
+    const record = await readHostPinnedRefRecord(documents, session.scope(), session.sessionId, parsed.refId);
+    if (record === undefined || !record.mimeType.startsWith('video/')) {
+      return { type: 'text', text: VIDEO_UNAVAILABLE_TEXT };
+    }
+    let opened: Awaited<ReturnType<typeof openVerifiedHostPinnedStream>> | undefined;
+    try {
+      opened = await openVerifiedHostPinnedStream(record, { signal });
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of opened.stream) {
+        signal?.throwIfAborted();
+        chunks.push(chunk as Uint8Array);
+      }
+      const bytes = Buffer.concat(chunks);
+      if (!validateMediaBytesIntegrity(bytes, record.mimeType).valid) {
+        return { type: 'text', text: VIDEO_CORRUPT_TEXT };
+      }
+      const model = requester.model;
+      const uploader = createVideoUploader(requester, {
+        client: this.telemetry,
+        props: {
+          model: model.name,
+          provider_type: model.providerType ?? model.protocol,
+          protocol: model.protocol,
+        },
+      });
+      if (uploader !== undefined) {
+        try {
+          return await uploader({ data: bytes, mimeType: record.mimeType, filename: `${record.refId}.mp4` }, { signal });
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          if (isVideoUploadAuthError(error)) throw error;
+        }
+      }
+      return {
+        type: 'video_url',
+        videoUrl: {
+          ...part.videoUrl,
+          url: `data:${record.mimeType};base64,${bytes.toString('base64')}`,
+        },
+      };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (error instanceof HostPinnedSourceChangedError) return { type: 'text', text: VIDEO_UNAVAILABLE_TEXT };
+      return { type: 'text', text: VIDEO_UNAVAILABLE_TEXT };
+    } finally {
+      opened?.close();
+    }
   }
 
   private async readCachedUpload(

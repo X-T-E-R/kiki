@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { gunzipSync, zstdDecompressSync } from 'node:zlib';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { produce } from 'immer';
 import { join } from 'pathe';
@@ -81,12 +82,30 @@ async function readHostPlanCheckpoint(
   signal?: AbortSignal,
 ): Promise<PlanCheckpointSeed | undefined> {
   signal?.throwIfAborted();
-  const ckptPath = join(agentDir, 'replay-checkpoints', 'engine-v1');
+  let ckptPath = join(agentDir, 'replay-checkpoints', 'engine-v1');
+  let mode: 'primary' | 'projection' | 'zst' | 'gz' = 'primary';
   let ckptStat: Awaited<ReturnType<IHostFileSystem['stat']>>;
   try {
     ckptStat = await hostFs.stat(ckptPath);
   } catch {
-    return undefined;
+    const fallbacks: ReadonlyArray<{ readonly file: string; readonly mode: 'projection' | 'zst' | 'gz' }> = [
+      { file: 'cold-projection-v1.json', mode: 'projection' },
+      { file: 'engine-v1.archive.zst', mode: 'zst' },
+      { file: 'engine-v1.archive.gz', mode: 'gz' },
+    ];
+    let foundStat: Awaited<ReturnType<IHostFileSystem['stat']>> | undefined;
+    for (const candidate of fallbacks) {
+      const candidatePath = join(agentDir, 'replay-checkpoints', candidate.file);
+      try {
+        foundStat = await hostFs.stat(candidatePath);
+        ckptPath = candidatePath;
+        mode = candidate.mode;
+        break;
+      } catch {
+      }
+    }
+    if (foundStat === undefined) return undefined;
+    ckptStat = foundStat;
   }
   if (!ckptStat.isFile) return undefined;
   const cacheKey = `${ckptPath}:${ckptStat.size}:${ckptStat.mtimeMs ?? 0}:${size}:${mtimeMs}`;
@@ -97,19 +116,25 @@ async function readHostPlanCheckpoint(
   }
   let raw: string;
   try {
-    raw = await hostFs.readText(ckptPath);
+    if (mode === 'zst' || mode === 'gz') {
+      const compressed = await hostFs.readBytes(ckptPath, ckptStat.size, 0);
+      raw = (mode === 'zst' ? zstdDecompressSync(compressed) : gunzipSync(compressed)).toString('utf8');
+    } else {
+      raw = await hostFs.readText(ckptPath);
+    }
   } catch {
     return undefined;
   }
   signal?.throwIfAborted();
-  let checkpoint: HostCheckpointEnvelope | undefined;
+  let checkpoint: (HostCheckpointEnvelope & { readonly projectedGraph?: HostCheckpointEnvelope['graph'] }) | undefined;
   try {
-    checkpoint = JSON.parse(raw) as HostCheckpointEnvelope;
+    checkpoint = JSON.parse(raw) as HostCheckpointEnvelope & { readonly projectedGraph?: HostCheckpointEnvelope['graph'] };
   } catch {
     cacheHostCheckpoint(cacheKey, null);
     return undefined;
   }
-  if (checkpoint?.format !== 1 || checkpoint.replayAbi !== REPLAY_ABI_VERSION) {
+  const graph = mode === 'projection' ? checkpoint?.projectedGraph : checkpoint?.graph;
+  if (checkpoint?.format !== 1 || checkpoint.replayAbi !== REPLAY_ABI_VERSION || graph === undefined) {
     cacheHostCheckpoint(cacheKey, null);
     return undefined;
   }
@@ -142,7 +167,7 @@ async function readHostPlanCheckpoint(
     return undefined;
   }
   try {
-    const states = decodeReplayCheckpointStates(checkpoint.graph, new Set([planKey.name]));
+    const states = decodeReplayCheckpointStates(graph, new Set([planKey.name]));
     const planState = states.get(planKey.name) as PlanState | undefined;
     if (planState === undefined) {
       cacheHostCheckpoint(cacheKey, null);

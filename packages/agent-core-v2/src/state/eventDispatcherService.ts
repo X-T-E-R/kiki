@@ -21,6 +21,11 @@ import { IEventBus } from '#/app/event/eventBus';
 import type { ContentPart } from '#/kosong/contract/message';
 import { OrderedHookSlot } from '#/hooks';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import {
+  cleanupColdCheckpointArchives,
+  readArchivedReplayCheckpointEnvelope,
+} from '#/session/replayCheckpointArchive';
 import { IWireService, JOURNAL_HEAD_HASH_BYTES, JournalTailUnreadableError } from '#/wire/wire';
 import { WireError, WireErrors } from '#/wire/errors';
 import type { PartsTransformer } from '#/wire/record';
@@ -58,7 +63,7 @@ export const REPLAY_CHECKPOINT_GROWTH_BYTES = 8 * 1024 * 1024;
 const REPLAY_CHECKPOINT_GROWTH_DELAY_MS = 1_000;
 export { REPLAY_ABI_VERSION, type ReplayCheckpointWire };
 
-interface ReplayCheckpointEnvelope {
+export interface ReplayCheckpointEnvelope {
   readonly format: 1;
   readonly replayAbi: number;
   readonly wire: ReplayCheckpointWire;
@@ -177,6 +182,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     @ref(IAgentScopeContext) private readonly scope: LiveRef<IAgentScopeContext>,
     @ref(ILogService) private readonly log: LiveRef<ILogService>,
     @ref(IPluginStateRegistryService) private readonly pluginStates: LiveRef<IPluginStateRegistryService>,
+    @ref(IFileSystemStorageService) private readonly storage?: LiveRef<IFileSystemStorageService>,
   ) {
     super();
     this.folded = this.foldContributions(view);
@@ -625,6 +631,9 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       };
       phase = 'write';
       await docs.set(checkpointScope, REPLAY_CHECKPOINT_KEY, envelope, { cooperative: true });
+      if (this.storage?.current !== undefined) {
+        await cleanupColdCheckpointArchives(this.storage.current, checkpointScope).catch(() => undefined);
+      }
       if (!this.isCheckpointGenerationCurrent(generation)) return this.skipReplayCheckpoint('disposed');
       this.savedCheckpoint = { revision, wire };
       this.growthCheckpointBaseline = coveredAppendedBytes;
@@ -641,10 +650,17 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       return undefined;
     }
     try {
-      const envelope = await docs.get<ReplayCheckpointEnvelope>(
+      let envelope = await docs.get<ReplayCheckpointEnvelope>(
         checkpointScope,
         REPLAY_CHECKPOINT_KEY,
       );
+      if (envelope === undefined && this.storage?.current !== undefined) {
+        envelope = await readArchivedReplayCheckpointEnvelope(
+          this.storage.current,
+          checkpointScope,
+          REPLAY_ABI_VERSION,
+        );
+      }
       if (envelope?.format !== 1 || envelope.replayAbi !== REPLAY_ABI_VERSION) return undefined;
       const names = new Set(envelope.stateNames);
       if (names.size !== envelope.stateNames.length) return undefined;

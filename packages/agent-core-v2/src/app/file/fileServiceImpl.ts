@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 
 import { LifecycleScope } from '#/app/scopes';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { Disposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
 import { IBlobStore } from '#/persistence/interface/blobStore';
+import { IContentAddressedStore } from '#/persistence/interface/contentAddressedStore';
 import {
   IFileService,
   fileNotFoundError,
@@ -63,6 +65,7 @@ export class FileServiceImpl extends Disposable implements IFileService {
   private readonly metaRevisions = new Map<string, number>();
   private metaRevision = 0;
   private readonly gcPending = new Set<string>();
+  private readonly pinnedRefs = new Map<string, number>();
   private gcScanRequested = false;
   private gcTimer: ReturnType<typeof setTimeout> | undefined;
   private gcYield: GcYield | undefined;
@@ -73,8 +76,47 @@ export class FileServiceImpl extends Disposable implements IFileService {
   constructor(
     @IBlobStore private readonly blobs: IBlobStore,
     @ILogService private readonly log: ILogService,
+    @ref(IContentAddressedStore) private readonly casRef?: LiveRef<IContentAddressedStore>,
   ) {
     super();
+  }
+
+  pin(fileId: string): () => void {
+    const next = (this.pinnedRefs.get(fileId) ?? 0) + 1;
+    this.pinnedRefs.set(fileId, next);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const current = this.pinnedRefs.get(fileId) ?? 0;
+      if (current <= 1) {
+        this.pinnedRefs.delete(fileId);
+        const meta = this.indexCache?.get(fileId);
+        if (meta !== undefined && this.isExpired(meta)) this.requestGc(fileId);
+      } else {
+        this.pinnedRefs.set(fileId, current - 1);
+      }
+    };
+  }
+
+  async promoteToCas(fileId: string, expectedSessionId?: string): Promise<string | undefined> {
+    const cas = this.casRef?.current;
+    if (cas === undefined || !isFileId(fileId)) return undefined;
+    await this.ensureIndex();
+    const meta = this.indexCache!.get(fileId);
+    if (meta === undefined) return undefined;
+    if (
+      expectedSessionId !== undefined &&
+      meta.session_id !== undefined &&
+      meta.session_id !== expectedSessionId
+    ) {
+      return undefined;
+    }
+    const present = await this.blobs.has(BLOB_SCOPE, fileId).catch(() => false);
+    if (!present) return undefined;
+    const stored = await cas.putStream(this.blobs.getStream(BLOB_SCOPE, fileId));
+    await cas.linkAlias(stored.sha256, BLOB_SCOPE, fileId);
+    return stored.sha256;
   }
 
   async save(source: Readable, filename: string, options?: SaveOptions): Promise<FileMeta>;
@@ -188,7 +230,7 @@ export class FileServiceImpl extends Disposable implements IFileService {
     if (meta === undefined) {
       throw fileNotFoundError(fileId);
     }
-    if (this.isExpired(meta)) {
+    if (this.isExpired(meta) && !this.isPinned(fileId)) {
       this.requestGc(fileId);
       throw fileNotFoundError(fileId);
     }
@@ -336,6 +378,10 @@ export class FileServiceImpl extends Disposable implements IFileService {
     return revision;
   }
 
+  private isPinned(fileId: string): boolean {
+    return (this.pinnedRefs.get(fileId) ?? 0) > 0;
+  }
+
   private isExpired(meta: FileMeta): boolean {
     return meta.expires_at !== undefined && Date.parse(meta.expires_at) <= Date.now();
   }
@@ -385,7 +431,7 @@ export class FileServiceImpl extends Disposable implements IFileService {
         this.gcPending.delete(fileId);
         processed += 1;
         const meta = cache.get(fileId);
-        if (meta !== undefined && this.isExpired(meta)) {
+        if (meta !== undefined && this.isExpired(meta) && !this.isPinned(fileId)) {
           batch.push({ meta, revision: this.metaRevisions.get(fileId) ?? 0 });
         }
       }

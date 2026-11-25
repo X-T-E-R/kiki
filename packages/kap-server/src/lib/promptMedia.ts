@@ -1,5 +1,6 @@
-import { createWriteStream } from 'node:fs';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { mkdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -54,6 +55,8 @@ export function sessionPromptFiles(staged: IFileService, media: ISessionMediaSto
     _serviceBrand: undefined,
     save,
     delete: (fileId) => staged.delete(fileId),
+    pin: staged.pin === undefined ? undefined : (fileId) => staged.pin!(fileId),
+    promoteToCas: staged.promoteToCas === undefined ? undefined : (fileId, expectedSessionId) => staged.promoteToCas!(fileId, expectedSessionId),
     get: async (fileId) => {
       const file = await media.open(fileId);
       if (file === undefined) return staged.get(fileId);
@@ -65,7 +68,12 @@ export function sessionPromptFiles(staged: IFileService, media: ISessionMediaSto
   };
 }
 
-async function materializeSessionMedia(media: ISessionMediaStore, file: GetResult, preloaded?: Buffer): Promise<SessionMediaFile> {
+async function materializeSessionMedia(
+  media: ISessionMediaStore,
+  file: GetResult,
+  preloaded?: Buffer,
+  staged?: IFileService,
+): Promise<SessionMediaFile> {
   await media.materialize({
     fileId: file.meta.id,
     size: file.meta.size,
@@ -74,6 +82,9 @@ async function materializeSessionMedia(media: ISessionMediaStore, file: GetResul
     data: preloaded,
     stream: () => (preloaded !== undefined ? Readable.from(preloaded) : file.stream()),
   });
+  if (media.isSharedCasEnabled?.() === true && staged?.promoteToCas !== undefined) {
+    await staged.promoteToCas(file.meta.id).catch(() => undefined);
+  }
   const retained = await media.open(file.meta.id);
   if (retained === undefined) {
     throw new Error2('storage.io_failed', 'Failed to save the message attachment. Retry the request.');
@@ -81,9 +92,20 @@ async function materializeSessionMedia(media: ISessionMediaStore, file: GetResul
   return retained;
 }
 
-async function retainSessionMedia(media: ISessionMediaStore | undefined, file: GetResult, preloaded?: Buffer, knownAbsent = false): Promise<void> {
+async function retainSessionMedia(
+  media: ISessionMediaStore | undefined,
+  file: GetResult,
+  preloaded?: Buffer,
+  knownAbsent = false,
+  staged?: IFileService,
+): Promise<void> {
   if (media === undefined) return;
-  if (!knownAbsent && await media.open(file.meta.id) !== undefined) return;
+  if (!knownAbsent && await media.open(file.meta.id) !== undefined) {
+    if (media.isSharedCasEnabled?.() === true && staged?.promoteToCas !== undefined) {
+      await staged.promoteToCas(file.meta.id).catch(() => undefined);
+    }
+    return;
+  }
   const materialized = await media.materialize({
     fileId: file.meta.id,
     size: file.meta.size,
@@ -94,6 +116,9 @@ async function retainSessionMedia(media: ISessionMediaStore | undefined, file: G
   });
   if (materialized === undefined) {
     throw new Error2('storage.io_failed', 'Failed to save the message attachment. Retry the request.');
+  }
+  if (media.isSharedCasEnabled?.() === true && staged?.promoteToCas !== undefined) {
+    await staged.promoteToCas(file.meta.id).catch(() => undefined);
   }
 }
 
@@ -147,7 +172,7 @@ export async function resolvePromptSessionMediaRefs(
       const upload = await staged.get(fileId);
       if (part.type === 'audio') assertAudioFile(upload, false);
       else assertMediaFile(upload, part.type);
-      file = await materializeSessionMedia(store, upload);
+      file = await materializeSessionMedia(store, upload, undefined, staged);
     }
     if (file === undefined) throw fileNotFoundError(fileId);
     if (published) {
@@ -290,6 +315,12 @@ export async function resolvePromptMediaFiles(
   const knownAbsentInSessionMedia = new Set<string>();
   const attachmentPaths = new Map<string, Promise<string>>();
   const attachmentNotes = new Set<string>();
+  const pinReleases: Array<() => void> = [];
+  const releasePins = (): void => {
+    while (pinReleases.length > 0) {
+      try { pinReleases.pop()!(); } catch {}
+    }
+  };
   const getFile = (fileId: string): Promise<GetResult> => {
     let pending = resolvedFiles.get(fileId);
     if (pending === undefined) {
@@ -304,6 +335,11 @@ export async function resolvePromptMediaFiles(
           }
           knownAbsentInSessionMedia.add(fileId);
         }
+        const releasePin = store.pin?.(fileId);
+        if (releasePin !== undefined) {
+          if (discarded) releasePin();
+          else pinReleases.push(releasePin);
+        }
         return store.get(fileId);
       })();
       resolvedFiles.set(fileId, pending);
@@ -313,7 +349,7 @@ export async function resolvePromptMediaFiles(
   const materialize = (file: GetResult, dir: string, preloaded?: Buffer): Promise<string> => {
     let pending = attachmentPaths.get(file.meta.id);
     if (pending === undefined) {
-      pending = materializeAttachmentToDir(file, dir, preloaded);
+      pending = materializeAttachmentToDir(file, dir, preloaded, options.sessionMedia);
       attachmentPaths.set(file.meta.id, pending);
     }
     return pending;
@@ -324,6 +360,7 @@ export async function resolvePromptMediaFiles(
   const discard = async (): Promise<void> => {
     if (discarded) return;
     discarded = true;
+    releasePins();
     await Promise.all(
       [...ownedFileIds].map((fileId) => store.delete(fileId).catch(() => undefined)),
     );
@@ -415,12 +452,39 @@ export async function resolvePromptMediaFiles(
         cpuWorker: options.cpuWorker,
       });
       if (compressed.changed) {
-        const dir = await resolveOriginalsDir();
-        const originalPath = await persistOriginalImage(
-          Buffer.from(part.source.data, 'base64'),
-          part.source.media_type,
-          { dir },
-        );
+        const rawBytes = Buffer.from(part.source.data, 'base64');
+        let originalPath: string | null = null;
+        if (options.sessionMedia !== undefined) {
+          const origId = `f_${randomUUID()}`;
+          const origName = part.name ?? `original.${imageExtensionForMime(part.source.media_type)}`;
+          await options.sessionMedia.materialize({
+            fileId: origId,
+            size: rawBytes.byteLength,
+            name: origName,
+            mimeType: part.source.media_type,
+            data: rawBytes,
+            stream: () => Readable.from(rawBytes),
+          });
+          const attachmentsDir = await resolveAttachmentsDir();
+          originalPath = await materializeAttachmentToDir(
+            {
+              meta: {
+                id: origId,
+                name: origName,
+                media_type: part.source.media_type,
+                size: rawBytes.byteLength,
+                created_at: new Date().toISOString(),
+              },
+              stream: () => Readable.from(rawBytes),
+            },
+            attachmentsDir,
+            rawBytes,
+            options.sessionMedia,
+          ).catch(() => null);
+        } else {
+          const dir = await resolveOriginalsDir();
+          originalPath = await persistOriginalImage(rawBytes, part.source.media_type, { dir });
+        }
         const text = buildImageCompressionCaption({
           original: {
             width: compressed.originalWidth,
@@ -469,7 +533,7 @@ export async function resolvePromptMediaFiles(
     if (part.type === 'audio' && (part.source.kind === 'file' || part.source.kind === 'session_media')) {
       const fileId = part.source.file_id;
       const file = await getFile(fileId);
-      if (part.source.kind === 'file' && options.sessionMedia !== undefined) await retainSessionMedia(options.sessionMedia, file);
+      if (part.source.kind === 'file' && options.sessionMedia !== undefined) await retainSessionMedia(options.sessionMedia, file, undefined, false, store);
       const dir = await resolveAttachmentsDir();
       const wavPath = audioWavAttachmentPath(dir, file.meta.id);
       const wavFormat = await inspectWav(wavPath);
@@ -495,12 +559,10 @@ export async function resolvePromptMediaFiles(
 
     if (part.type === 'file') {
       const file = await getFile(part.file_id);
-      const [attachedPath] = await Promise.all([
-        resolveAttachmentsDir().then((dir) => materialize(file, dir)),
-        options.sessionMedia !== undefined
-          ? retainSessionMedia(options.sessionMedia, file, undefined, knownAbsentInSessionMedia.has(file.meta.id))
-          : Promise.resolve(),
-      ]);
+      if (options.sessionMedia !== undefined) {
+        await retainSessionMedia(options.sessionMedia, file, undefined, knownAbsentInSessionMedia.has(file.meta.id), store);
+      }
+      const attachedPath = await materialize(file, await resolveAttachmentsDir());
       notes.push({ path: attachedPath, fileId: file.meta.id, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: 'file' });
       return { notes, items, changed: true };
     }
@@ -518,6 +580,9 @@ export async function resolvePromptMediaFiles(
       mediaType = resolveEffectiveImageMime(mediaType, data);
       mediaType = normalizeImageMime(mediaType);
       let compressMs = 0;
+      if (part.source.kind === 'file' && options.sessionMedia !== undefined) {
+        await retainSessionMedia(options.sessionMedia, file, data, knownAbsentInSessionMedia.has(file.meta.id), store);
+      }
       const [attachedPath, compressed] = await Promise.all([
         resolveAttachmentsDir().then((dir) => materialize(file, dir, data)),
         (async () => {
@@ -529,9 +594,6 @@ export async function resolvePromptMediaFiles(
           compressMs = Number((performance.now() - compressStarted).toFixed(2));
           return result;
         })(),
-        part.source.kind === 'file' && options.sessionMedia !== undefined
-          ? retainSessionMedia(options.sessionMedia, file, data, knownAbsentInSessionMedia.has(file.meta.id))
-          : Promise.resolve(),
       ]);
       imageStats.push({
         bytes: data.length,
@@ -547,24 +609,18 @@ export async function resolvePromptMediaFiles(
       if (compressed.changed) {
         const compressedBuffer = Buffer.from(compressed.data.buffer, compressed.data.byteOffset, compressed.data.byteLength);
         const compressedName = compressedUploadName(file.meta.name, compressed.mimeType);
-        const [originalPath, finalSaved] = await Promise.all([
-          resolveOriginalsDir().then((dir) => persistOriginalImage(data, mediaType, { dir })),
-          (async () => {
-            const saved = await store.save(
-              Readable.from(compressedBuffer),
-              compressedName,
-              { mimeType: compressed.mimeType },
-            );
-            ownedFileIds.add(saved.id);
-            const savedFile: GetResult = {
-              meta: saved,
-              stream: () => Readable.from(compressedBuffer),
-            };
-            await retainSessionMedia(options.sessionMedia, savedFile, compressedBuffer, true);
-            return savedFile;
-          })(),
-        ]);
-        finalFile = finalSaved;
+        const saved = await store.save(
+          Readable.from(compressedBuffer),
+          compressedName,
+          { mimeType: compressed.mimeType },
+        );
+        ownedFileIds.add(saved.id);
+        const savedFile: GetResult = {
+          meta: saved,
+          stream: () => Readable.from(compressedBuffer),
+        };
+        await retainSessionMedia(options.sessionMedia, savedFile, compressedBuffer, true, store);
+        finalFile = savedFile;
         const text = buildImageCompressionCaption({
           original: {
             width: compressed.originalWidth,
@@ -578,7 +634,7 @@ export async function resolvePromptMediaFiles(
             byteLength: compressed.finalByteLength,
             mimeType: compressed.mimeType,
           },
-          originalPath,
+          originalPath: attachedPath,
         });
         items.push({
           type: 'text',
@@ -594,7 +650,7 @@ export async function resolvePromptMediaFiles(
       return { notes, items, changed: true };
     }
 
-    if (part.source.kind === 'file' && options.sessionMedia !== undefined) await retainSessionMedia(options.sessionMedia, file);
+    if (part.source.kind === 'file' && options.sessionMedia !== undefined) await retainSessionMedia(options.sessionMedia, file, undefined, false, store);
     const attachedPath = await materialize(file, await resolveAttachmentsDir());
     notes.push({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: part.type });
     items.push({
@@ -609,15 +665,23 @@ export async function resolvePromptMediaFiles(
   try {
     const slots: (PreparedSlot | undefined)[] = Array.from({ length: input.length });
     let nextIndex = 0;
+    let failed = false;
     const concurrency = Math.min(6, input.length);
-    await Promise.all(
+    const settled = await Promise.allSettled(
       Array.from({ length: concurrency }, async () => {
-        while (nextIndex < input.length) {
+        while (!failed && nextIndex < input.length) {
           const index = nextIndex++;
-          slots[index] = await preparePart(input[index]!);
+          try {
+            slots[index] = await preparePart(input[index]!);
+          } catch (error) {
+            failed = true;
+            throw error;
+          }
         }
       }),
     );
+    const rejected = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (rejected !== undefined) throw rejected.reason;
     for (let index = 0; index < slots.length; index += 1) {
       sourceStarts.push(content.length);
       const slot = slots[index]!;
@@ -659,18 +723,65 @@ export function sanitizeAttachmentName(name: string): string {
   return cleaned.length > 0 ? cleaned : 'attachment';
 }
 
-async function materializeAttachmentToDir(file: GetResult, dir: string, preloaded?: Buffer): Promise<string> {
-  await mkdir(dir, { recursive: true });
-  const target = join(dir, `${file.meta.id}-${sanitizeAttachmentName(file.meta.name)}`);
-  const info = await stat(target).catch(() => undefined);
-  if (info?.size === file.meta.size) return target;
-
-  if (preloaded !== undefined) {
-    await writeFile(target, preloaded);
-    return target;
+async function digestTargetFile(filePath: string): Promise<string | undefined> {
+  try {
+    const hash = createHash('sha256');
+    const stream = createReadStream(filePath, { highWaterMark: 64 * 1024 });
+    try {
+      for await (const chunk of stream) hash.update(chunk as Uint8Array);
+      return hash.digest('hex');
+    } finally {
+      stream.destroy();
+    }
+  } catch {
+    return undefined;
   }
-  await pipeline(file.stream(), createWriteStream(target));
-  return target;
+}
+
+async function materializeAttachmentToDir(
+  file: GetResult,
+  dir: string,
+  preloaded?: Buffer,
+  sessionMedia?: ISessionMediaStore,
+): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  const leafName = `${file.meta.id}-${sanitizeAttachmentName(file.meta.name)}`;
+  if (sessionMedia?.linkAttachmentAlias !== undefined) {
+    const linked = await sessionMedia.linkAttachmentAlias(file.meta.id, dir, leafName).catch(() => undefined);
+    if (linked !== undefined) return linked;
+  }
+  const target = join(dir, leafName);
+  const tempPath = `${target}.tmp.${process.pid}.${randomUUID()}`;
+  try {
+    if (preloaded !== undefined) {
+      const existingDigest = await digestTargetFile(target);
+      if (existingDigest !== undefined && existingDigest === createHash('sha256').update(preloaded).digest('hex')) {
+        return target;
+      }
+      await writeFile(tempPath, preloaded);
+    } else {
+      const hash = createHash('sha256');
+      const source = Readable.from((async function* () {
+        for await (const chunk of file.stream()) {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+          hash.update(buf);
+          yield buf;
+        }
+      })());
+      await pipeline(source, createWriteStream(tempPath));
+      const newDigest = hash.digest('hex');
+      const existingDigest = await digestTargetFile(target);
+      if (existingDigest !== undefined && existingDigest === newDigest) {
+        await unlink(tempPath).catch(() => undefined);
+        return target;
+      }
+    }
+    await rename(tempPath, target);
+    return target;
+  } catch (error) {
+    await unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
 }
 
 function imageExtensionForMime(mediaType: string): string {

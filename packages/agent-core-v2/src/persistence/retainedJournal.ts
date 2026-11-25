@@ -31,6 +31,14 @@ import {
   type IFileSystemStorageService,
 } from '#/persistence/interface/storage';
 import { readPinnedRange, wireFileAddress } from '#/persistence/logicalWireFile';
+import { gunzipSync, zstdDecompressSync } from 'node:zlib';
+import {
+  COLD_CHECKPOINT_ARCHIVE_GZ_KEY,
+  COLD_CHECKPOINT_ARCHIVE_ZST_KEY,
+  COLD_CHECKPOINT_PROJECTION_KEY,
+  REPLAY_CHECKPOINT_PRIMARY_KEY,
+  REPLAY_CHECKPOINT_SUBSCOPE,
+} from '#/session/replayCheckpointArchive';
 
 const WIRE_FILENAME = 'wire.jsonl';
 const DEFAULT_MAIN_LARGE_THRESHOLD_BYTES = 4 * 1024 * 1024;
@@ -308,38 +316,69 @@ type CheckpointWireOffset =
   | { readonly kind: 'unreadable' };
 
 async function inspectCheckpointWireOffset(agentDir: string, signal?: AbortSignal): Promise<CheckpointWireOffset> {
-  const checkpointPath = join(agentDir, 'replay-checkpoints', 'engine-v1');
-  let handle;
-  try {
-    handle = await open(checkpointPath, 'r');
-    const buffer = Buffer.alloc(4096);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
-    await handle.close();
-    handle = undefined;
-    if (bytesRead > 0) {
-      const head = buffer.subarray(0, bytesRead).toString('utf8');
-      const match = /"wire"\s*:\s*\{[^{}]*?"size"\s*:\s*(\d+)/.exec(head);
-      if (match !== null) {
-        const parsed = Number(match[1]);
-        if (Number.isSafeInteger(parsed) && parsed >= 0) {
-          return { kind: 'found', offset: parsed };
+  const candidates = [
+    join(agentDir, REPLAY_CHECKPOINT_SUBSCOPE, REPLAY_CHECKPOINT_PRIMARY_KEY),
+    join(agentDir, REPLAY_CHECKPOINT_SUBSCOPE, COLD_CHECKPOINT_PROJECTION_KEY),
+  ];
+  let sawMissing = 0;
+  for (const checkpointPath of candidates) {
+    let handle;
+    try {
+      handle = await open(checkpointPath, 'r');
+      const buffer = Buffer.alloc(4096);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
+      await handle.close();
+      handle = undefined;
+      if (bytesRead > 0) {
+        const head = buffer.subarray(0, bytesRead).toString('utf8');
+        const match = /"wire"\s*:\s*\{[^{}]*?"size"\s*:\s*(\d+)/.exec(head);
+        if (match !== null) {
+          const parsed = Number(match[1]);
+          if (Number.isSafeInteger(parsed) && parsed >= 0) {
+            return { kind: 'found', offset: parsed };
+          }
         }
       }
+      const fullText = await readFile(checkpointPath, { encoding: 'utf8', signal });
+      const parsedJson = JSON.parse(fullText) as { wire?: { size?: unknown } } | null;
+      const wireSize = parsedJson?.wire?.size;
+      if (typeof wireSize === 'number' && Number.isSafeInteger(wireSize) && wireSize >= 0) {
+        return { kind: 'found', offset: wireSize };
+      }
+      return { kind: 'unreadable' };
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      if (isEnoent(error)) {
+        sawMissing += 1;
+        continue;
+      }
+      return { kind: 'unreadable' };
+    } finally {
+      await handle?.close().catch(() => undefined);
     }
-    const fullText = await readFile(checkpointPath, { encoding: 'utf8', signal });
-    const parsedJson = JSON.parse(fullText) as { wire?: { size?: unknown } } | null;
-    const wireSize = parsedJson?.wire?.size;
-    if (typeof wireSize === 'number' && Number.isSafeInteger(wireSize) && wireSize >= 0) {
-      return { kind: 'found', offset: wireSize };
-    }
-    return { kind: 'unreadable' };
-  } catch (error) {
-    if (signal?.aborted) throw signal.reason;
-    if (isEnoent(error)) return { kind: 'absent' };
-    return { kind: 'unreadable' };
-  } finally {
-    await handle?.close().catch(() => undefined);
   }
+  const archives: ReadonlyArray<{ readonly key: string; readonly kind: 'zst' | 'gz' }> = [
+    { key: COLD_CHECKPOINT_ARCHIVE_ZST_KEY, kind: 'zst' },
+    { key: COLD_CHECKPOINT_ARCHIVE_GZ_KEY, kind: 'gz' },
+  ];
+  for (const archive of archives) {
+    const archivePath = join(agentDir, REPLAY_CHECKPOINT_SUBSCOPE, archive.key);
+    try {
+      const compressed = await readFile(archivePath, { signal });
+      const decompressed = archive.kind === 'zst' ? zstdDecompressSync(compressed) : gunzipSync(compressed);
+      const parsedJson = JSON.parse(decompressed.toString('utf8')) as { wire?: { size?: unknown } } | null;
+      const wireSize = parsedJson?.wire?.size;
+      if (typeof wireSize === 'number' && Number.isSafeInteger(wireSize) && wireSize >= 0) {
+        return { kind: 'found', offset: wireSize };
+      }
+      return { kind: 'unreadable' };
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      if (isEnoent(error)) continue;
+      return { kind: 'unreadable' };
+    }
+  }
+  return sawMissing === candidates.length ? { kind: 'absent' } : { kind: 'unreadable' };
 }
 
 async function directoryAllocatedBytes(dirPath: string): Promise<number> {

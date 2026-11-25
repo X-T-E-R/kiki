@@ -56,6 +56,7 @@ import { BugIndicatingError, ErrorCodes, Error2, isError2, toKimiErrorPayload } 
 import { OrderedHookSlot } from '#/hooks';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import type { LoopRecordedEvent } from '#/agent/contextMemory/loopEventFold';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { deliveryOriginOf, newDeliveryId } from '#/agent/contextMemory/messageDelivery';
@@ -332,6 +333,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     @ISessionExecutionControl private readonly executionControl: ISessionExecutionControl,
     @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
     @ref(IPluginExtensionPortRegistryReader) private readonly extensions?: LiveRef<IPluginExtensionPortRegistryReader>,
+    @ref(IAgentBlobService) private readonly blobServiceRef?: LiveRef<IAgentBlobService>,
   ) {
     super();
     this._register(executionControl.register(scope.agentId, {
@@ -1931,11 +1933,25 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
               callUuid: uuids.get(toolCallId), wait: result.executionWait });
             continue;
           }
+          let toolOutput = result.output;
+          let toolIsError = result.isError;
+          if (Array.isArray(toolOutput) && this.blobServiceRef?.current !== undefined) {
+            try {
+              toolOutput = [...(await this.blobServiceRef.current.offloadParts(toolOutput))];
+            } catch (error) {
+              if (isError2(error) && error.code === StorageErrors.codes.STORAGE_DISK_FULL) {
+                toolOutput = `Failed to persist large tool media output: ${error.message}`;
+                toolIsError = true;
+              } else {
+                throw error;
+              }
+            }
+          }
           this.context.appendLoopEvent({ type: 'tool.result', parentUuid: uuids.get(toolCallId), toolCallId,
-            result: { output: result.output, isError: result.isError, note: result.note, runtimeId: result.runtimeId, memoryReceipt: result.memoryReceipt,
+            result: { output: toolOutput, isError: toolIsError, note: result.note, runtimeId: result.runtimeId, memoryReceipt: result.memoryReceipt,
               fileRead: result.fileRead === undefined ? undefined : { ...result.fileRead, truncated: result.truncated === true || result.fileRead.truncated } } });
-          await this.hooks.onDidAppendToolResult.run({ toolCallId, isError: result.isError });
-          if (result.isError === true) anyToolError = true;
+          await this.hooks.onDidAppendToolResult.run({ toolCallId, isError: toolIsError });
+          if (toolIsError === true) anyToolError = true;
           if (toolResult.toolName === 'SendMessage') {
             if (result.isError === true || result.userDeliveryConfirmed !== true) {
               anySendMessageUnconfirmed = true;
