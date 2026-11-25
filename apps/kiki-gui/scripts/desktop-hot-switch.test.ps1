@@ -30,6 +30,12 @@ $taskId = 'fixture-task-running'
 $terminalReceiptId = 'terminal-receipt-running'
 $notificationId = 'task-notification-running'
 $originalKikiHome = $env:KIKI_HOME
+$originalKikiBuildId = $env:KIKI_BUILD_ID
+$originalKikiDesktopBundled = $env:KIKI_DESKTOP_BUNDLED
+$originalKikiRuntimeManaged = $env:KIKI_RUNTIME_MANAGED
+Remove-Item Env:KIKI_BUILD_ID -ErrorAction SilentlyContinue
+Remove-Item Env:KIKI_DESKTOP_BUNDLED -ErrorAction SilentlyContinue
+Remove-Item Env:KIKI_RUNTIME_MANAGED -ErrorAction SilentlyContinue
 $completed = $false
 
 function Assert-True([bool]$Condition, [string]$Message) {
@@ -181,6 +187,8 @@ internal static class Program
     private static bool stopping;
     private static bool recoverableOnlyLogged;
     private static bool desktopManaged = true;
+    private static bool runtimeManaged = true;
+    private static string effectiveBuildId = BuildId;
     private static string fencedOperationId = null;
 
     private sealed class SessionState
@@ -269,6 +277,8 @@ internal static class Program
                     CreateNoWindow = true
                 };
                 psi.EnvironmentVariables["KIKI_HOME"] = launcherHome;
+                psi.EnvironmentVariables["KIKI_DESKTOP_BUNDLED"] = "1";
+                psi.EnvironmentVariables["KIKI_BUILD_ID"] = BuildId;
                 Process process = Process.Start(psi);
                 backend = process;
                 int backendPid = process.Id;
@@ -316,6 +326,12 @@ internal static class Program
             else if (String.Equals(cmdArgs[i], "--headless-unmanaged", StringComparison.OrdinalIgnoreCase))
             {
                 desktopManaged = false;
+                runtimeManaged = false;
+            }
+            else if (String.Equals(cmdArgs[i], "--headless-runtime-managed", StringComparison.OrdinalIgnoreCase))
+            {
+                desktopManaged = false;
+                runtimeManaged = true;
             }
             else if (String.Equals(cmdArgs[i], "--heap-reexec", StringComparison.OrdinalIgnoreCase))
             {
@@ -360,6 +376,23 @@ internal static class Program
         if (File.Exists(Path.Combine(home, "fixture-headless-unmanaged")))
         {
             desktopManaged = false;
+            runtimeManaged = false;
+        }
+        bool envDesktopBundled = String.Equals(Environment.GetEnvironmentVariable("KIKI_DESKTOP_BUNDLED"), "1", StringComparison.Ordinal);
+        bool envRuntimeManaged = String.Equals(Environment.GetEnvironmentVariable("KIKI_RUNTIME_MANAGED"), "1", StringComparison.Ordinal);
+        if (envRuntimeManaged && !envDesktopBundled)
+        {
+            desktopManaged = false;
+            runtimeManaged = true;
+        }
+        string envBuildId = Environment.GetEnvironmentVariable("KIKI_BUILD_ID");
+        if (!String.IsNullOrEmpty(envBuildId))
+        {
+            effectiveBuildId = envBuildId;
+        }
+        else if (!desktopManaged)
+        {
+            effectiveBuildId = null;
         }
         token = File.ReadAllText(Path.Combine(home, "server.local-owner")).Trim();
         if (!Regex.IsMatch(token, "^[A-Za-z0-9_-]{43}$")) throw new InvalidOperationException("The fixture token is invalid.");
@@ -412,9 +445,10 @@ internal static class Program
 
     private static void WriteInstance(int port)
     {
+        string buildField = String.IsNullOrEmpty(effectiveBuildId) ? "" : (",\"build_id\":" + Json(effectiveBuildId));
         string body = "{\"server_id\":" + Json(serverId) + ",\"pid\":" + Process.GetCurrentProcess().Id +
             ",\"host\":\"127.0.0.1\",\"port\":" + port + ",\"started_at\":" + startedAt +
-            ",\"heartbeat_at\":" + startedAt + ",\"build_id\":" + Json(BuildId) + "}";
+            ",\"heartbeat_at\":" + startedAt + buildField + "}";
         File.WriteAllText(instancePath, body, new UTF8Encoding(false));
     }
 
@@ -543,9 +577,10 @@ internal static class Program
 
     private static string Meta()
     {
+        string buildField = String.IsNullOrEmpty(effectiveBuildId) ? "" : (",\"build_id\":" + Json(effectiveBuildId));
         return "{\"server_id\":" + Json(serverId) + ",\"server_home_id\":" + Json(ServerHomeId) +
             ",\"current_space_id\":\"main\",\"server_version\":\"fixture\",\"started_at\":" + Json(startedIso) +
-            ",\"desktop_managed\":" + (desktopManaged ? "true" : "false") + ",\"dangerous_bypass_auth\":false,\"backend\":\"fixture\",\"build_id\":" + Json(BuildId) + "}";
+            ",\"desktop_managed\":" + (desktopManaged ? "true" : "false") + ",\"dangerous_bypass_auth\":false,\"backend\":\"fixture\"" + buildField + "}";
     }
 
     private static void HandleLifecycle(HttpListenerContext context)
@@ -560,7 +595,7 @@ internal static class Program
             Send(context, 405, Envelope(40500, "Fixture method not allowed", "null"));
             return;
         }
-        if (!desktopManaged)
+        if (!runtimeManaged)
         {
             Send(context, 200, Envelope(40005, "This service is externally managed; stop it through its owner", "null"));
             return;
@@ -641,7 +676,7 @@ internal static class Program
             if (index > 0) ids.Append(',');
             ids.Append(Json(pending[index]));
         }
-        return "{\"server_id\":" + Json(serverId) + ",\"home_id\":\"main\",\"managed\":" + (desktopManaged ? "true" : "false") + ",\"draining\":false,\"hot_switch_prepared\":false,\"work_pending\":[" + ids + "],\"impact\":\"all-windows-in-this-space\"}";
+        return "{\"server_id\":" + Json(serverId) + ",\"home_id\":\"main\",\"managed\":" + (runtimeManaged ? "true" : "false") + ",\"draining\":false,\"hot_switch_prepared\":false,\"work_pending\":[" + ids + "],\"impact\":\"all-windows-in-this-space\"}";
     }
 
     private static void HandleCall(HttpListenerContext context, string body)
@@ -1743,7 +1778,8 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
                     $inst = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
                     $proc = Get-Process -Id ([int]$inst.pid) -ErrorAction Stop
                     $reply = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/api/meta" -f $inst.port) -Headers @{ Authorization = 'Bearer ' + $fixtureToken } -TimeoutSec 3
-                    if ($reply.code -eq 0 -and $reply.data.build_id -ceq $ExpectedCommit) {
+                    $replyBuildId = if ($null -ne $reply.data -and $null -ne $reply.data.PSObject.Properties['build_id']) { [string]$reply.data.build_id } else { '' }
+                    if ($reply.code -eq 0 -and ([string]::IsNullOrEmpty($ExpectedCommit) -or $replyBuildId -ceq $ExpectedCommit)) {
                         return [pscustomobject]@{ instance = $inst; process = $proc; meta = $reply.data }
                     }
                 } catch {}
@@ -1829,13 +1865,14 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
     $portProbe.Stop()
 
     $activeServerPath = Join-Path (Join-Path $runtimeRoot 'active') 'kiki-server.exe'
-    $headlessArgs = ('serve --home "{0}" --port {1} --headless-unmanaged --heap-reexec' -f $headlessHome, $headlessFixedPort)
+    $headlessArgs = ('serve --home "{0}" --port {1} --headless-runtime-managed --heap-reexec' -f $headlessHome, $headlessFixedPort)
     $null = Start-Process -FilePath $activeServerPath -WorkingDirectory (Split-Path -Parent $activeServerPath) -ArgumentList $headlessArgs -WindowStyle Hidden -PassThru
-    $headlessOldServer = Wait-ForSpaceServer $headlessHome $oldCommit 15
+    $headlessOldServer = Wait-ForSpaceServer $headlessHome '' 15
     Assert-Equal $headlessFixedPort ([int]$headlessOldServer.instance.port) 'Headless Space Home did not bind to its requested fixed port.'
     Assert-Equal $false ([bool]$headlessOldServer.meta.desktop_managed) 'Headless fixture server should report desktop_managed=false.'
+    Assert-Equal $null ($headlessOldServer.meta.PSObject.Properties['build_id']) 'Initial headless server spawned without KIKI_BUILD_ID should omit build_id just like real kiki-server.'
 
-    # 11a. -InspectOnly -AppScopeOnly must discover Primary GUI + Secondary GUI + Headless Space Home (3 total, including heap-reexec parent attribution).
+    # 11a. -InspectOnly -AppScopeOnly must discover Primary GUI + Secondary GUI + Headless Space Home (3 total, including heap-reexec parent attribution and missing build_id under StrictMode).
     $headlessInspectRaw = Invoke-Script $hotSwitch @(
         '-RuntimeRoot', $runtimeRoot,
         '-KikiHome', $homePath,
@@ -1848,6 +1885,7 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
     Assert-True ($null -ne $headlessSpaceInspect) 'Inspect output missing headless Space Home entry.'
     Assert-Equal $false ([bool]$headlessSpaceInspect.hadDesktop) 'Headless Space Home should report hadDesktop=false.'
     Assert-Equal $true ([bool]$headlessSpaceInspect.isHeadless) 'Headless Space Home should report isHeadless=true.'
+    Assert-Equal $true ([bool]$headlessSpaceInspect.desktopManaged) 'Headless runtime-managed Space Home should preserve desktopManaged=true from lifecycle.managed.'
     Assert-Contains ("--port $headlessFixedPort") ([string]$headlessSpaceInspect.headlessLaunchArgs) 'Headless Space Home did not preserve original --port launch args.'
 
     # 11a2. Unfenced headless server (404 on /api/runtime-switch) MUST be rejected before draining unless -AllowUnfencedHeadless is passed.
@@ -1863,8 +1901,8 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
             '-StartupSeconds', '15'
         ) 1
         Assert-Contains 'admission fencing' $unfencedFailOut 'Unfenced headless server should be refused before draining.'
-        $headlessStillOld = Wait-ForSpaceServer $headlessHome $oldCommit 10
-        Assert-Equal $oldCommit ([string]$headlessStillOld.meta.build_id) 'Refused unfenced headless switch must leave old server running untouched.'
+        $headlessStillOld = Wait-ForSpaceServer $headlessHome '' 10
+        Assert-Equal $headlessOldServer.instance.server_id ([string]$headlessStillOld.meta.server_id) 'Refused unfenced headless switch must leave old server running untouched.'
     } finally {
         if (Test-Path -LiteralPath $noSwitchFlag) { Remove-Item -LiteralPath $noSwitchFlag -Force }
     }
@@ -1954,6 +1992,9 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
 }
 finally {
     $env:KIKI_HOME = $originalKikiHome
+    if ($null -eq $originalKikiBuildId) { Remove-Item Env:KIKI_BUILD_ID -ErrorAction SilentlyContinue } else { $env:KIKI_BUILD_ID = $originalKikiBuildId }
+    if ($null -eq $originalKikiDesktopBundled) { Remove-Item Env:KIKI_DESKTOP_BUNDLED -ErrorAction SilentlyContinue } else { $env:KIKI_DESKTOP_BUNDLED = $originalKikiDesktopBundled }
+    if ($null -eq $originalKikiRuntimeManaged) { Remove-Item Env:KIKI_RUNTIME_MANAGED -ErrorAction SilentlyContinue } else { $env:KIKI_RUNTIME_MANAGED = $originalKikiRuntimeManaged }
     # Close launchers before their servers. An open fixture window restarts a server that exits.
     Get-Process -Name 'kiki-desktop' -ErrorAction SilentlyContinue | Where-Object {
         $_.Path -and $_.Path.StartsWith($testRoot + '\', [StringComparison]::OrdinalIgnoreCase)

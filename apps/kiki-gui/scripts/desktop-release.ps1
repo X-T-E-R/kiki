@@ -828,6 +828,7 @@ function Invoke-HeadlessLaunch(
     $previousNoRedirect = $env:KIKI_NO_RELEASE_REDIRECT
     $previousDesktopBundled = $env:KIKI_DESKTOP_BUNDLED
     $previousRuntimeManaged = $env:KIKI_RUNTIME_MANAGED
+    $previousBuildId = $env:KIKI_BUILD_ID
     try {
         if ($null -ne $launchLock -and (-not (Test-ActiveReleaseAligned $rootPath $releaseId))) {
             $releasePath = Get-ReleasePath $rootPath $releaseId
@@ -844,11 +845,34 @@ function Invoke-HeadlessLaunch(
             }
         }
         $target = Resolve-LaunchTarget $rootPath
+        $launchBuildId = $null
+        if ($target.UsingActive) {
+            $activeManifestForLaunch = Read-ActiveManifest $rootPath -AllowMissing
+            if ($null -ne $activeManifestForLaunch) {
+                $launchBuildId = [string](Get-ObjectProperty $activeManifestForLaunch 'gitSha')
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($launchBuildId) -or $launchBuildId -ceq 'unknown') {
+            $launchBuildId = [string](Get-ObjectProperty $manifest 'gitSha')
+        }
+        if ([string]::IsNullOrWhiteSpace($launchBuildId) -or $launchBuildId -ceq 'unknown') {
+            $buildInfoCandidate = Join-Path $target.LaunchDirectory 'build-info.txt'
+            if (Test-Path -LiteralPath $buildInfoCandidate -PathType Leaf) {
+                $rawBuildInfo = ([IO.File]::ReadAllText($buildInfoCandidate)).Trim()
+                if ($rawBuildInfo -match '^gitSha:\s*(\S+)') { $launchBuildId = $Matches[1] }
+            }
+        }
         if (-not [string]::IsNullOrWhiteSpace($LaunchHome)) {
             $env:KIKI_HOME = $LaunchHome
         }
         Remove-Item Env:KIKI_NO_RELEASE_REDIRECT -ErrorAction SilentlyContinue
         Remove-Item Env:KIKI_DESKTOP_BUNDLED -ErrorAction SilentlyContinue
+        if (-not [string]::IsNullOrWhiteSpace($launchBuildId) -and $launchBuildId -cne 'unknown') {
+            $env:KIKI_BUILD_ID = $launchBuildId
+        }
+        else {
+            Remove-Item Env:KIKI_BUILD_ID -ErrorAction SilentlyContinue
+        }
         if ($RuntimeManaged) {
             $env:KIKI_RUNTIME_MANAGED = '1'
         }
@@ -884,6 +908,12 @@ function Invoke-HeadlessLaunch(
         }
         else {
             $env:KIKI_RUNTIME_MANAGED = $previousRuntimeManaged
+        }
+        if ($null -eq $previousBuildId) {
+            Remove-Item Env:KIKI_BUILD_ID -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:KIKI_BUILD_ID = $previousBuildId
         }
         if ($null -ne $launchLock) { $launchLock.Dispose() }
     }

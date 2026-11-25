@@ -386,18 +386,27 @@ function Find-Server([string]$SpaceHome = $homePath, [string]$SpaceToken = $null
     $matches = @(
         foreach ($file in Get-ChildItem -LiteralPath $spaceInstances -Filter '*.json' -File -ErrorAction SilentlyContinue) {
             $instance = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
-            if ($instance.host -notin @('127.0.0.1', 'localhost') -or $instance.port -le 0) { continue }
-            $process = Get-Process -Id $instance.pid -ErrorAction SilentlyContinue
-            if ($null -eq $process -or $file.BaseName -cne $instance.server_id) { continue }
+            $instHost = [string](Get-ObjectProperty $instance 'host')
+            $instPort = [int](Get-ObjectProperty $instance 'port')
+            if ($instHost -notin @('127.0.0.1', 'localhost') -or $instPort -le 0) { continue }
+            $instPid = [int](Get-ObjectProperty $instance 'pid')
+            $instServerId = [string](Get-ObjectProperty $instance 'server_id')
+            $process = Get-Process -Id $instPid -ErrorAction SilentlyContinue
+            if ($null -eq $process -or $file.BaseName -cne $instServerId) { continue }
             $startedAt = ([DateTimeOffset]$process.StartTime).ToUnixTimeMilliseconds()
-            if ([Math]::Abs($startedAt - [long]$instance.started_at) -gt 60000) { continue }
+            if ([Math]::Abs($startedAt - [long](Get-ObjectProperty $instance 'started_at')) -gt 60000) { continue }
             $binary = Get-ProcessPathSafe $process
             $binaryInfo = Get-RuntimeServerBinaryInfo $binary
             if ($null -eq $binaryInfo) { continue }
             $instance | Add-Member -NotePropertyName ownerToken -NotePropertyValue $effectiveToken -Force
             $meta = Call-Local $instance 'meta' $null 10 $effectiveToken
-            if ($meta.server_id -cne $instance.server_id -or ((-not $AllowHeadless) -and (!$meta.desktop_managed)) -or $meta.dangerous_bypass_auth `
-                -or $meta.build_id -cne $instance.build_id) { throw 'The local service identity does not match its registration.' }
+            $metaServerId = [string](Get-ObjectProperty $meta 'server_id')
+            $metaDesktopManaged = [bool](Get-ObjectProperty $meta 'desktop_managed')
+            $metaBypassAuth = [bool](Get-ObjectProperty $meta 'dangerous_bypass_auth')
+            $metaBuildId = [string](Get-ObjectProperty $meta 'build_id')
+            $instBuildId = [string](Get-ObjectProperty $instance 'build_id')
+            if ($metaServerId -cne $instServerId -or ((-not $AllowHeadless) -and (-not $metaDesktopManaged)) -or $metaBypassAuth `
+                -or $metaBuildId -cne $instBuildId) { throw 'The local service identity does not match its registration.' }
             $process.EnableRaisingEvents = $true
             $null = $process.Handle
             [pscustomobject]@{
@@ -689,6 +698,14 @@ function Discover-RuntimeSpaces([switch]$AllowMissingTokens) {
         }
         $headlessExplicitPort = if (-not $hadDesktop) { Get-ExplicitPortFromCommandLine $headlessLaunchArgs } else { $null }
         $expectedPort = Resolve-ExpectedHeadlessPort $hadDesktop $headlessLaunchArgs $headlessOriginalPort
+        $effectiveManaged = if ($null -ne $server) { [bool](Get-ObjectProperty $server.meta 'desktop_managed') } else { $false }
+        if ((-not $effectiveManaged) -and (-not $hadDesktop) -and $null -ne $server) {
+            try {
+                $effectiveManaged = [bool](Get-ObjectProperty (Lifecycle $server.instance '') 'managed')
+            } catch {
+                $effectiveManaged = $false
+            }
+        }
         $spaces += [pscustomobject]@{
             kikiHome = $spaceHome
             isPrimary = $isPrimary
@@ -702,7 +719,7 @@ function Discover-RuntimeSpaces([switch]$AllowMissingTokens) {
             headlessPid = if ($null -ne $servingEntry) { [int]$servingEntry.pid } else { 0 }
             launcherPid = $launcherPid
             launcherProcess = $launcherProcess
-            desktopManaged = if ($null -ne $server) { [bool]$server.meta.desktop_managed } else { $false }
+            desktopManaged = $effectiveManaged
             ownerToken = $spaceToken
             tokenError = $tokenError
             server = $server
@@ -742,8 +759,8 @@ function Get-RecordedSpaces([object]$StateObj) {
 }
 
 function Stop-SpaceServerGracefully([object]$ServerInfo, [bool]$InterruptWork = $false, [object]$LastLifecycle = $null) {
-    $isDesktopManaged = [bool](Get-ObjectProperty $ServerInfo.meta 'desktop_managed')
-    if ($isDesktopManaged) {
+    $isLifecycleManaged = [bool](Get-ObjectProperty $ServerInfo.meta 'desktop_managed') -or [bool](Get-ObjectProperty $LastLifecycle 'managed')
+    if ($isLifecycleManaged) {
         if ($InterruptWork) {
             if ((Get-ObjectProperty $LastLifecycle 'hot_switch_prepared') -eq $true) {
                 try { Lifecycle $ServerInfo.instance 'cancel-update' | Out-Null } catch { Write-Warning "cancel-update failed ($($ServerInfo.kikiHome)): $($_.Exception.Message)" }
@@ -890,17 +907,17 @@ function Get-LiveInspectionSnapshot([object]$ServerInfo, [object[]]$Shells = @()
     }
     return [ordered]@{
         server = [ordered]@{
-            server_id = [string]$ServerInfo.meta.server_id
+            server_id = [string](Get-ObjectProperty $ServerInfo.meta 'server_id')
             pid = [int]$ServerInfo.process.Id
-            port = [int]$ServerInfo.instance.port
+            port = [int](Get-ObjectProperty $ServerInfo.instance 'port')
             executablePath = [string]$ServerInfo.executablePath
             layout = [string]$ServerInfo.layout
             releaseId = [string]$ServerInfo.releaseId
-            build_id = [string]$ServerInfo.meta.build_id
+            build_id = Get-ObjectProperty $ServerInfo.meta 'build_id'
             server_version = Get-ObjectProperty $ServerInfo.meta 'server_version'
-            server_home_id = [string]$ServerInfo.meta.server_home_id
-            current_space_id = [string]$ServerInfo.meta.current_space_id
-            desktop_managed = [bool]$ServerInfo.meta.desktop_managed
+            server_home_id = [string](Get-ObjectProperty $ServerInfo.meta 'server_home_id')
+            current_space_id = [string](Get-ObjectProperty $ServerInfo.meta 'current_space_id')
+            desktop_managed = [bool](Get-ObjectProperty $ServerInfo.meta 'desktop_managed')
         }
         shells = @($Shells | ForEach-Object { [ordered]@{ pid = [int]$_.Id; executablePath = (Get-ProcessPathSafe $_) } })
         lifecycle = [ordered]@{
@@ -1328,12 +1345,17 @@ function Await-AllReleases([object[]]$SpaceStates, [string]$ReleaseId, [string]$
             $isHeadlessSpace = -not [bool]$spaceState.hadDesktop
             $new = Find-Server $spaceState.kikiHome $spaceToken -AllowHeadless:$isHeadlessSpace
             if ($null -ne $new) {
-                if ($new.releaseId -cne $ReleaseId -or $new.meta.server_id -ceq $spaceState.oldServerId `
-                    -or $new.meta.server_home_id -cne $spaceState.serverHomeId -or $new.meta.current_space_id -cne $spaceState.spaceId) {
+                $newServerId = [string](Get-ObjectProperty $new.meta 'server_id')
+                $newHomeId = [string](Get-ObjectProperty $new.meta 'server_home_id')
+                $newSpaceId = [string](Get-ObjectProperty $new.meta 'current_space_id')
+                if ($new.releaseId -cne $ReleaseId -or $newServerId -ceq $spaceState.oldServerId `
+                    -or $newHomeId -cne $spaceState.serverHomeId -or $newSpaceId -cne $spaceState.spaceId) {
                     throw ("The service that started for {0} does not match the selected release and home." -f $spaceState.kikiHome)
                 }
-                if ($new.meta.build_id -cne $ExpectedBuildId -or $new.instance.build_id -cne $ExpectedBuildId) {
-                    throw ("The started service for {0} reported build_id '{1}' instead of expected commit '{2}'." -f $spaceState.kikiHome, $new.meta.build_id, $ExpectedBuildId)
+                $newMetaBuildId = [string](Get-ObjectProperty $new.meta 'build_id')
+                $newInstBuildId = [string](Get-ObjectProperty $new.instance 'build_id')
+                if ($newMetaBuildId -cne $ExpectedBuildId -or $newInstBuildId -cne $ExpectedBuildId) {
+                    throw ("The started service for {0} reported build_id '{1}' instead of expected commit '{2}'." -f $spaceState.kikiHome, $newMetaBuildId, $ExpectedBuildId)
                 }
                 $newExePath = Get-ObjectProperty $new 'executablePath'
                 if (-not [string]::IsNullOrWhiteSpace([string]$newExePath) -and ([string]$newExePath) -ine $expectedActiveServer) {
@@ -1483,15 +1505,15 @@ function Stop-ReleaseProcesses([string]$ReleaseId, [object[]]$Launchers = @(), [
 function Format-ServerMetaReport([object]$ServerInfo) {
     if ($null -eq $ServerInfo) { return $null }
     return [ordered]@{
-        server_id = [string]$ServerInfo.meta.server_id
+        server_id = [string](Get-ObjectProperty $ServerInfo.meta 'server_id')
         pid = [int]$ServerInfo.process.Id
         executablePath = [string]$ServerInfo.executablePath
         layout = [string]$ServerInfo.layout
         releaseId = [string]$ServerInfo.releaseId
-        build_id = [string]$ServerInfo.meta.build_id
+        build_id = Get-ObjectProperty $ServerInfo.meta 'build_id'
         server_version = Get-ObjectProperty $ServerInfo.meta 'server_version'
-        server_home_id = [string]$ServerInfo.meta.server_home_id
-        current_space_id = [string]$ServerInfo.meta.current_space_id
+        server_home_id = [string](Get-ObjectProperty $ServerInfo.meta 'server_home_id')
+        current_space_id = [string](Get-ObjectProperty $ServerInfo.meta 'current_space_id')
     }
 }
 
@@ -1823,7 +1845,8 @@ try {
             if ($unhealthyByHome.ContainsKey($k)) { return $true }
             if (-not $runningByHome.ContainsKey($k)) { return $false }
             $srv = $runningByHome[$k]
-            if ($srv.releaseId -cne $desiredReleaseId -or $srv.meta.build_id -cne $desiredBuildId -or $srv.layout -ne 'active') { return $true }
+            $srvBuildId = [string](Get-ObjectProperty $srv.meta 'build_id')
+            if ($srv.releaseId -cne $desiredReleaseId -or $srvBuildId -cne $desiredBuildId -or $srv.layout -ne 'active') { return $true }
             if (-not (Test-RecordedHeadlessPortMatch $_ $srv)) { return $true }
             return (-not (Test-ServerHealthz $srv.instance $tokensByHome[$k]))
         })
@@ -2200,6 +2223,10 @@ try {
     $tokensByHome = @{}
     foreach ($plan in $spacePlans) { $tokensByHome[$plan.key] = $plan.ownerToken }
 
+    $activeFallbackBuildId = [string](Get-ObjectProperty (Read-ActiveManifest $runtime -AllowMissing) 'gitSha')
+    if ([string]::IsNullOrWhiteSpace($activeFallbackBuildId)) {
+        $activeFallbackBuildId = [string](Get-ObjectProperty $current 'gitSha')
+    }
     if ($continuing) {
         if (-not (Get-ObjectProperty $state 'fenceOperationId')) {
             $state | Add-Member -NotePropertyName fenceOperationId -NotePropertyValue ('hot-switch:' + [guid]::NewGuid().ToString('N')) -Force
@@ -2211,11 +2238,13 @@ try {
             $primarySessions = @(if ($null -ne $rawPrimarySessions) { @($rawPrimarySessions) | Where-Object { $null -ne $_ } })
             $state | Add-Member -NotePropertyName spaces -NotePropertyValue @(
                 foreach ($plan in $spacePlans) {
+                    $planOldBuildId = [string](Get-ObjectProperty $plan.server.meta 'build_id')
+                    if ([string]::IsNullOrWhiteSpace($planOldBuildId)) { $planOldBuildId = $activeFallbackBuildId }
                     [pscustomobject]@{
                         kikiHome = $plan.kikiHome; isPrimary = $plan.isPrimary; passHomeArg = $plan.passHomeArg
-                        oldReleaseId = $plan.server.releaseId; oldBuildId = $plan.server.meta.build_id
-                        oldServerId = $plan.server.meta.server_id; serverHomeId = $plan.server.meta.server_home_id
-                        spaceId = $plan.server.meta.current_space_id; hadDesktop = [bool]$plan.hadDesktop
+                        oldReleaseId = $plan.server.releaseId; oldBuildId = $planOldBuildId
+                        oldServerId = [string](Get-ObjectProperty $plan.server.meta 'server_id'); serverHomeId = [string](Get-ObjectProperty $plan.server.meta 'server_home_id')
+                        spaceId = [string](Get-ObjectProperty $plan.server.meta 'current_space_id'); hadDesktop = [bool]$plan.hadDesktop
                         headlessLaunchArgs = $plan.headlessLaunchArgs
                         headlessOriginalPort = $plan.headlessOriginalPort; headlessExplicitPort = $plan.headlessExplicitPort; expectedPort = $plan.expectedPort
                         desktopManaged = [bool]$plan.desktopManaged
@@ -2230,11 +2259,13 @@ try {
         $primaryFenceId = 'hot-switch:' + [guid]::NewGuid().ToString('N')
         $spaceStateList = @(
             foreach ($plan in $spacePlans) {
+                $planOldBuildId = [string](Get-ObjectProperty $plan.server.meta 'build_id')
+                if ([string]::IsNullOrWhiteSpace($planOldBuildId)) { $planOldBuildId = $activeFallbackBuildId }
                 [pscustomobject]@{
                     kikiHome = $plan.kikiHome; isPrimary = $plan.isPrimary; passHomeArg = $plan.passHomeArg
-                    oldReleaseId = $plan.server.releaseId; oldBuildId = $plan.server.meta.build_id
-                    oldServerId = $plan.server.meta.server_id; serverHomeId = $plan.server.meta.server_home_id
-                    spaceId = $plan.server.meta.current_space_id; hadDesktop = [bool]$plan.hadDesktop
+                    oldReleaseId = $plan.server.releaseId; oldBuildId = $planOldBuildId
+                    oldServerId = [string](Get-ObjectProperty $plan.server.meta 'server_id'); serverHomeId = [string](Get-ObjectProperty $plan.server.meta 'server_home_id')
+                    spaceId = [string](Get-ObjectProperty $plan.server.meta 'current_space_id'); hadDesktop = [bool]$plan.hadDesktop
                     headlessLaunchArgs = $plan.headlessLaunchArgs
                     headlessOriginalPort = $plan.headlessOriginalPort; headlessExplicitPort = $plan.headlessExplicitPort; expectedPort = $plan.expectedPort
                     desktopManaged = [bool]$plan.desktopManaged
@@ -2243,9 +2274,11 @@ try {
                 }
             }
         )
+        $primaryOldBuildId = [string](Get-ObjectProperty $old.meta 'build_id')
+        if ([string]::IsNullOrWhiteSpace($primaryOldBuildId)) { $primaryOldBuildId = $activeFallbackBuildId }
         $state = [pscustomobject]@{
-            schemaVersion = 1; phase = 'pausing'; kikiHome = $homePath; oldReleaseId = $old.releaseId; oldBuildId = $old.meta.build_id
-            oldServerId = $old.meta.server_id; serverHomeId = $old.meta.server_home_id; spaceId = $old.meta.current_space_id
+            schemaVersion = 1; phase = 'pausing'; kikiHome = $homePath; oldReleaseId = $old.releaseId; oldBuildId = $primaryOldBuildId
+            oldServerId = [string](Get-ObjectProperty $old.meta 'server_id'); serverHomeId = [string](Get-ObjectProperty $old.meta 'server_home_id'); spaceId = [string](Get-ObjectProperty $old.meta 'current_space_id')
             priorPointerReleaseId = $priorPointerReleaseId; targetReleaseId = $targetRelease; targetBuildId = $expectedBuildId; hadDesktop = [bool]$primarySpace.hadDesktop
             headlessLaunchArgs = $primarySpace.headlessLaunchArgs
             headlessOriginalPort = $primarySpace.headlessOriginalPort; headlessExplicitPort = $primarySpace.headlessExplicitPort; expectedPort = $primarySpace.expectedPort
