@@ -186,12 +186,10 @@ export async function handleProviderList(
     return;
   }
 
-  const modelsByProvider = new Map<string, string[]>();
-  for (const [alias, model] of Object.entries(config.models ?? {})) {
-    const list = modelsByProvider.get(model.provider) ?? [];
-    list.push(alias);
-    modelsByProvider.set(model.provider, list);
-  }
+  const modelsByProvider = Map.groupBy(
+    Object.entries(config.models ?? {}),
+    ([, model]) => model.provider,
+  );
 
   const providerIds = Object.keys(config.providers).toSorted();
   if (providerIds.length === 0) {

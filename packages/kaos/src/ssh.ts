@@ -4,6 +4,7 @@ import { win32 } from 'node:path';
 import { isAbsolute, join, normalize } from 'pathe';
 import type { Readable, Writable } from 'node:stream';
 
+import { quotePosixShellArg as shellQuote } from '@kiki/shell-quoting';
 import * as ssh2 from 'ssh2';
 import type {
   AnyAuthMethod,
@@ -118,20 +119,6 @@ export class KaosConnectionError extends KaosSSHError {
     super(message, code);
     this.name = 'KaosConnectionError';
   }
-}
-
-// ── shell quoting ──────────────────────────────────────────────────────
-
-/**
- * Shell-escape a single argument (POSIX sh compatible).
- * Mirrors Python's shlex.quote().
- */
-function shellQuote(arg: string): string {
-  if (arg === '') return "''";
-  // If the string is safe (only contains safe chars), return as-is
-  if (/^[A-Za-z0-9_./:=@%^,+-]+$/.test(arg)) return arg;
-  // Otherwise wrap in single quotes, escaping any embedded single quotes
-  return "'" + arg.replaceAll("'", "'\"'\"'") + "'";
 }
 
 // ── stat mode builder ──────────────────────────────────────────────────

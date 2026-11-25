@@ -13,7 +13,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { quoteShellArg } from '#/utils/shell-quote';
+import { quoteShellArg } from '@kiki/shell-quoting';
 
 export function resolveEditorCommand(configured?: string | null): string | undefined {
   const candidates = [configured, process.env['VISUAL'], process.env['EDITOR']];

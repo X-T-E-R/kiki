@@ -145,6 +145,7 @@
         ./packages/plugin-sdk
         ./packages/protocol
         ./packages/session-core
+        ./packages/shell-quoting
         ./packages/transcript
         ./packages/transcript-live
         ./packages/tree-sitter-bash
@@ -173,6 +174,7 @@
         "@kiki/plugin-sdk"
         "@kiki/protocol"
         "@kiki/session-core"
+        "@kiki/shell-quoting"
         "@kiki/transcript"
         "@kiki/transcript-live"
         "@kiki/tree-sitter-bash"

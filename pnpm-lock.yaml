@@ -260,6 +260,9 @@ importers:
       katex:
         specifier: ^0.16.47
         version: 0.16.47
+      lru-cache:
+        specifier: ^11.3.3
+        version: 11.3.3
       lucide-react:
         specifier: ^1.76.0
         version: 1.76.0(@types/react@19.2.14)(react@19.2.5)
@@ -370,6 +373,9 @@ importers:
       '@kiki/pi-tui':
         specifier: workspace:^
         version: link:../../packages/pi-tui
+      '@kiki/shell-quoting':
+        specifier: workspace:^
+        version: link:../../packages/shell-quoting
       '@types/diff':
         specifier: ^8.0.0
         version: 8.0.0
@@ -727,6 +733,12 @@ importers:
 
   packages/kaos:
     dependencies:
+      '@kiki/shell-quoting':
+        specifier: workspace:^
+        version: link:../shell-quoting
+      lru-cache:
+        specifier: ^11.3.3
+        version: 11.3.3
       pathe:
         specifier: ^2.0.3
         version: 2.0.3
@@ -916,6 +928,9 @@ importers:
       '@kiki/auth-native':
         specifier: workspace:*
         version: link:../auth-native
+      lru-cache:
+        specifier: ^11.3.3
+        version: 11.3.3
       proper-lockfile:
         specifier: ^4.1.2
         version: 4.1.2
@@ -997,6 +1012,8 @@ importers:
       diff:
         specifier: ^8.0.2
         version: 8.0.4
+
+  packages/shell-quoting: {}
 
   packages/transcript:
     dependencies:
@@ -12320,7 +12337,7 @@ snapshots:
       obug: 2.1.1
       std-env: 4.0.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.4(@types/node@22.19.17)(@vitest/coverage-v8@4.1.4)(jsdom@25.0.1)(msw@2.15.0(@types/node@22.19.17)(typescript@6.0.2))(vite@8.1.6(@types/node@22.19.17)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.3))
+      vitest: 4.1.4(@types/node@22.19.17)(@vitest/coverage-v8@4.1.4)(jsdom@25.0.1)(msw@2.15.0(@types/node@22.19.17)(typescript@6.0.2))(vite@6.4.4(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3))
 
   '@vitest/expect@4.1.4':
     dependencies:

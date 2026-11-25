@@ -6,7 +6,7 @@ import type { WorkspaceCatalogEntry } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import { mcpTimeoutsPatch, workspacesSettingsPath } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
-import { toolDisplayName } from '../../lib/pluginCatalog';
+import { groupMcpToolsByServer } from '../../lib/pluginCatalog';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { Spinner } from '../icons';
@@ -165,13 +165,7 @@ function GlobalMcpEntries() {
     retry: false,
   });
 
-  const toolsByServer = new Map<string, string[]>();
-  for (const tool of toolsQuery.data?.tools ?? []) {
-    if (tool.source !== 'mcp' || tool.mcp_server_id === undefined) continue;
-    const bucket = toolsByServer.get(tool.mcp_server_id) ?? [];
-    bucket.push(toolDisplayName(tool.name));
-    toolsByServer.set(tool.mcp_server_id, bucket);
-  }
+  const toolsByServer = groupMcpToolsByServer(toolsQuery.data?.tools);
 
   const restart = async (serverId: string) => {
     setFeedback(null);

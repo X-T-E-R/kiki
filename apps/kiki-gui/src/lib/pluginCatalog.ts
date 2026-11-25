@@ -349,6 +349,25 @@ export function toolDisplayName(name: string): string {
 }
 
 /**
+ * Group MCP tool display names by `mcp_server_id`, ignoring non-MCP tools
+ * and tools without a server id while preserving input order.
+ */
+export function groupMcpToolsByServer(
+  tools: readonly { readonly name: string; readonly source?: string; readonly mcp_server_id?: string }[] | undefined,
+): Map<string, string[]> {
+  const grouped = Map.groupBy(
+    (tools ?? []).filter((tool) => tool.source === 'mcp' && tool.mcp_server_id !== undefined),
+    (tool) => tool.mcp_server_id!,
+  );
+  return new Map(
+    Array.from(grouped, ([serverId, serverTools]) => [
+      serverId,
+      serverTools.map((tool) => toolDisplayName(tool.name)),
+    ]),
+  );
+}
+
+/**
  * Contribution ids from a preview plan (`tool:office_view`, `panel:manuscript`,
  * `skill:0`) grouped by kind with counts, in a stable display order.
  */

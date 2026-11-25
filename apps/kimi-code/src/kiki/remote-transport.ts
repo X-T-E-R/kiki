@@ -12,10 +12,6 @@ export type RemoteCommandRunner = (
   outputArchive?: string,
 ) => Promise<string>;
 
-export function quotePosixShellArg(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
 export function isRemoteTarget(value: string | undefined): value is string {
   return value !== undefined && (value.startsWith('ccp:') || value.startsWith('ssh://'));
 }

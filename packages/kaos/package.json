@@ -34,6 +34,10 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./atomic-fs": {
+      "types": "./src/atomic-fs.ts",
+      "default": "./src/atomic-fs.ts"
+    },
     "./exec-env": {
       "types": "./src/exec-env.ts",
       "default": "./src/exec-env.ts"
@@ -56,6 +60,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@kiki/shell-quoting": "workspace:^",
+    "lru-cache": "^11.3.3",
     "pathe": "^2.0.3",
     "ssh2": "^1.17.0"
   },

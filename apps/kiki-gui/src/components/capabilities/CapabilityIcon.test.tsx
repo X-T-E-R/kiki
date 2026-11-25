@@ -261,6 +261,20 @@ describe('CapabilityIcon', () => {
     expect(shownMarkup()).toContain('#7a1f6b');
   });
 
+  it('remembers failed remote fetches so remounting does not refetch', async () => {
+    const fetchIcon = vi.fn(async () => new Response('missing', { status: 404 }));
+    vi.stubGlobal('fetch', fetchIcon);
+    const missing = 'https://example.test/gone.svg';
+    render({ icon: missing });
+    await act(async () => { await Promise.resolve(); });
+    expect(host.querySelector('img')).toBeNull();
+    act(() => { root.render(null); });
+    render({ icon: missing });
+    await act(async () => { await Promise.resolve(); });
+    expect(host.querySelector('img')).toBeNull();
+    expect(fetchIcon).toHaveBeenCalledTimes(1);
+  });
+
   it('never writes an icon into the page as markup', () => {
     render({ icon: dataUri(MONO) });
     // The tint is an <img src>; the document holds no svg element from it.

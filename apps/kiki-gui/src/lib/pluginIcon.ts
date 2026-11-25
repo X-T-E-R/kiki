@@ -22,6 +22,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { LRUCache } from 'lru-cache';
 
 import { onThemeChange } from './theme';
 
@@ -39,7 +40,8 @@ interface IconPayload {
 
 /** Bounded like displayMedia's cache; a theme flip needs no second round trip. */
 const MAX_ENTRIES = 64;
-const payloads = new Map<string, IconPayload | undefined>();
+const MISSING_ICON = Symbol('missing-icon');
+const payloads = new LRUCache<string, IconPayload | typeof MISSING_ICON>({ max: MAX_ENTRIES });
 const inFlight = new Map<string, Promise<IconPayload | undefined>>();
 
 /** Drop every remembered icon. A new document (or a test) starts clean. */
@@ -93,7 +95,8 @@ function remembered(source: string | undefined): IconPayload | undefined {
   if (source.startsWith('data:')) {
     return { uri: source, svg: readDataUri(source) ?? undefined };
   }
-  return payloads.get(source);
+  const hit = payloads.peek(source);
+  return hit === MISSING_ICON ? undefined : hit;
 }
 
 /** Enforce the byte limit while reading, not after buffering an arbitrary body. */
@@ -176,20 +179,14 @@ function watchInkToken(listener: () => void): () => void {
 }
 
 function resolve(source: string): Promise<IconPayload | undefined> {
-  if (payloads.has(source)) {
-    const hit = payloads.get(source);
-    payloads.delete(source);
-    payloads.set(source, hit);
-    return Promise.resolve(hit);
+  const hit = payloads.get(source);
+  if (hit !== undefined) {
+    return Promise.resolve(hit === MISSING_ICON ? undefined : hit);
   }
   const pending = inFlight.get(source);
   if (pending !== undefined) return pending;
   const work = learn(source).then((payload) => {
-    payloads.set(source, payload);
-    while (payloads.size > MAX_ENTRIES) {
-      const oldest = payloads.keys().next().value;
-      if (oldest !== undefined) payloads.delete(oldest);
-    }
+    payloads.set(source, payload ?? MISSING_ICON);
     return payload;
   }).finally(() => { inFlight.delete(source); });
   inFlight.set(source, work);

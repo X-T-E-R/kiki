@@ -7,6 +7,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { readFile as readFileAsync, stat as statAsync } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { LRUCache } from 'lru-cache';
 import { parse as parseCredentialsStoreConfig } from 'smol-toml';
 
 import { assertValidTokenName, FileTokenStorage } from './storage';
@@ -488,28 +489,15 @@ interface CredentialsStoreModeCacheEntry {
 }
 
 const MAX_CONFIG_MODE_CACHE_ENTRIES = 64;
-const credentialsStoreModeCache = new WeakMap<ConfigParser, Map<string, CredentialsStoreModeCacheEntry>>();
+const credentialsStoreModeCache = new WeakMap<ConfigParser, LRUCache<string, CredentialsStoreModeCacheEntry>>();
 
-function getModeCacheForParser(parser: ConfigParser): Map<string, CredentialsStoreModeCacheEntry> {
+function getModeCacheForParser(parser: ConfigParser): LRUCache<string, CredentialsStoreModeCacheEntry> {
   let cache = credentialsStoreModeCache.get(parser);
   if (cache === undefined) {
-    cache = new Map();
+    cache = new LRUCache({ max: MAX_CONFIG_MODE_CACHE_ENTRIES });
     credentialsStoreModeCache.set(parser, cache);
   }
   return cache;
-}
-
-function setModeCacheEntry(
-  cache: Map<string, CredentialsStoreModeCacheEntry>,
-  configPath: string,
-  entry: CredentialsStoreModeCacheEntry,
-): void {
-  if (cache.has(configPath)) cache.delete(configPath);
-  else if (cache.size >= MAX_CONFIG_MODE_CACHE_ENTRIES) {
-    const oldest = cache.keys().next().value;
-    if (oldest !== undefined) cache.delete(oldest);
-  }
-  cache.set(configPath, entry);
 }
 
 function parseModeFromText(parser: ConfigParser, text: string): CredentialsStoreMode {
@@ -564,7 +552,7 @@ export function resolveCredentialsStoreMode(
     return 'auto';
   }
   const mode = parseModeFromText(parser, text);
-  setModeCacheEntry(cache, configPath, {
+  cache.set(configPath, {
     mtimeMs: st.mtimeMs,
     ctimeMs: st.ctimeMs,
     size: st.size,
@@ -607,7 +595,7 @@ async function resolveCredentialsStoreModeAsync(
     return 'auto';
   }
   const mode = parseModeFromText(parser, text);
-  setModeCacheEntry(cache, configPath, {
+  cache.set(configPath, {
     mtimeMs: st.mtimeMs,
     ctimeMs: st.ctimeMs,
     size: st.size,

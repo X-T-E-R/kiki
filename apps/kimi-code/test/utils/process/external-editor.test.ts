@@ -47,8 +47,8 @@ describe('external-editor helpers', () => {
     mocks.spawn.mockImplementation((cmd: string, _opts: Record<string, unknown>) => {
       const child = new EventEmitter();
       // Extract the file path from the shell command (last argument after quoting).
-      const match = cmd.match(/'([^']+prompt\.md)'/) || cmd.match(/"([^"]+prompt\.md)"/);
-      const tmpFile = match![1]!;
+      const match = /(?:'([^']+prompt\.md)'|"([^"]+prompt\.md)"|(\S+prompt\.md))/.exec(cmd);
+      const tmpFile = (match?.[1] ?? match?.[2] ?? match?.[3])!;
       void writeFile(tmpFile, 'edited text', 'utf8').then(() => {
         child.emit('exit', 0);
       });

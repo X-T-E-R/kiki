@@ -96,6 +96,7 @@
     "@kiki/node-sdk": "workspace:^",
     "@kiki/oauth": "workspace:^",
     "@kiki/pi-tui": "workspace:^",
+    "@kiki/shell-quoting": "workspace:^",
     "@types/diff": "^8.0.0",
     "@types/semver": "^7.7.0",
     "@types/ws": "^8.18.1",

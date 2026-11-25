@@ -79,21 +79,17 @@ export function createDeadlineAbortSignal(
   source: AbortSignal,
   timeoutMs: number,
 ): DeadlineAbortSignal {
-  const controller = new AbortController();
-  const unlinkAbortSignal = linkAbortSignal(source, controller);
-  let didTimeout = false;
-  let timeout: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
-    didTimeout = true;
-    controller.abort(abortError());
+  const timeoutController = new AbortController();
+  const signal = AbortSignal.any([source, timeoutController.signal]);
+  let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+    timeoutController.abort(abortError());
   }, timeoutMs);
-
   return {
-    signal: controller.signal,
-    timedOut: () => didTimeout,
+    signal,
+    timedOut: () => timeoutController.signal.aborted && signal.reason === timeoutController.signal.reason,
     clear: () => {
-      if (timeout !== undefined) clearTimeout(timeout);
-      timeout = undefined;
-      unlinkAbortSignal();
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
     },
   };
 }

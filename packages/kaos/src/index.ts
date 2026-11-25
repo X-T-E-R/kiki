@@ -21,6 +21,20 @@ export {
   KaosFileExistsError,
   KaosShellNotFoundError,
 } from './errors';
+export {
+  ATOMIC_TEMP_READY_SUFFIX,
+  AtomicWriteChmodError,
+  atomicCreate,
+  atomicWrite,
+  atomicWriteStream,
+  atomicWriteSync,
+  registerWin32MoveFileReplace,
+  replaceFileNonDestructive,
+  syncDir,
+  syncDirSync,
+  writeFileAtomicDurable,
+  type Win32MoveFileReplace,
+} from './atomic-fs';
 export { LocalKaos } from './local';
 export {
   chdir,

@@ -1,4 +1,4 @@
-import { abortable } from '#/_base/utils/abort';
+import { abortReason } from '#/_base/utils/abort';
 
 export const DEFAULT_MAX_RETRY_ATTEMPTS = 5;
 
@@ -43,14 +43,19 @@ export function readRetryAfterMs(error: unknown): number | null {
   return maybeStatusCode(error) === 429 ? value : Math.min(value, MAX_RETRY_AFTER_MS);
 }
 
-export async function sleepForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
-  signal?.throwIfAborted();
-  const sleepPromise = sleep(delayMs);
-  if (signal === undefined) {
-    await sleepPromise;
-    return;
-  }
-  await abortable(sleepPromise, signal);
+export function sleepForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(abortReason(signal!));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 export function retryErrorFields(error: unknown): RetryErrorFields {
@@ -59,12 +64,6 @@ export function retryErrorFields(error: unknown): RetryErrorFields {
     errorMessage: error instanceof Error ? error.message : String(error),
     statusCode: maybeStatusCode(error),
   };
-}
-
-function sleep(delayMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, delayMs);
-  });
 }
 
 function maybeStatusCode(error: unknown): number | undefined {

@@ -226,13 +226,7 @@ function groupCommands(commands: readonly HelpPanelCommand[]): CommandGroup[] {
     SKILLS_GROUP,
     DISABLED_GROUP,
   ];
-  const byGroup = new Map<string, HelpPanelCommand[]>();
-  for (const command of commands) {
-    const title = groupTitleFor(command);
-    const bucket = byGroup.get(title) ?? [];
-    bucket.push(command);
-    byGroup.set(title, bucket);
-  }
+  const byGroup = Map.groupBy(commands, groupTitleFor);
   const groups: CommandGroup[] = [];
   for (const title of order) {
     const bucket = byGroup.get(title);
