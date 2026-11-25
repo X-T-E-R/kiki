@@ -2089,6 +2089,7 @@ export class DaemonTUI {
       this.showStatus('Prompt delivery is unconfirmed. Check the queue before retrying.', 'error');
       return;
     }
+    let acknowledged = false;
     editor.disableSubmit = true;
     try {
       const prepared = await prepareDaemonPrompt(text, this.imageAttachments, this.fileAttachments, {
@@ -2103,7 +2104,6 @@ export class DaemonTUI {
       }
       const skills = extractInlineSkillActivations(text, skillMap);
       const promptId = newSteerPromptId();
-      let acknowledged = false;
       const result = await controller
         .sendPromptNow({
           agentId: targetAgentId,
@@ -2122,10 +2122,6 @@ export class DaemonTUI {
               this.unconfirmedUploadIds.add(id);
             }
           }
-          if (!acknowledged && this.controller === controller && editor.getText() === '') {
-            editor.setInputMode(mode);
-            editor.setText(raw);
-          }
           throw error;
         });
       if (
@@ -2143,7 +2139,11 @@ export class DaemonTUI {
         { tone: result.outcome === 'failed' ? 'error' : 'normal', transient: true },
       );
     } catch (error) {
-      if (this.controller === controller && editor.getText() === '') {
+      const canRestoreDraft =
+        error instanceof SendNowError
+          ? error.reason === 'refused' || (error.reason === 'submit' && !acknowledged)
+          : !acknowledged;
+      if (canRestoreDraft && this.controller === controller && editor.getText() === '') {
         editor.setInputMode(mode);
         editor.setText(raw);
       }

@@ -179,16 +179,28 @@ const scenarios = [
       }, MERGED, { timeout: 15_000 });
       if (!phone) await shot('memory-undone');
 
-      // A concurrent change: a second writer moves the entry on, so the first
-      // operation can no longer be replayed over it. The newer version stays.
-      const token = link('').match(/token=([^&]+)/)?.[1];
-      const conflict = await page.evaluate(async ({ id, target, token }) => {
-        const base = `/api/memory/global/${id}`;
+      // A concurrent change: open APPLIED before another session moves it on,
+      // then drive the stale undo through the GUI Undo button so the real 40944
+      // empty-data conflict envelope and UUID operation_id contract are exercised.
+      await backToList(page);
+      await page.locator(`[data-memory-row="${APPLIED}"]`).waitFor({ state: 'visible', timeout: 15_000 });
+      await page.locator(`[data-memory-row="${APPLIED}"]`).click();
+      await page.waitForSelector(`[data-memory-read="${APPLIED}"]`, { timeout: 15_000 });
+      await page.waitForSelector('[data-memory-history]', { timeout: 15_000 });
+
+      const preflight = await page.evaluate(async ({ id, target, token }) => {
         const headers = { 'content-type': 'application/json', authorization: `Bearer ${token}` };
+        const journal = await (await fetch(`${target}/api/memory/global/journal?id=${id}`, { headers })).json();
+        const record = (journal.data ?? [])[0];
+        const invalidResp = await (await fetch(`${target}/api/memory/global/undo`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ operation_id: 'not-a-uuid' }),
+        })).json();
+        const base = `/api/memory/global/${id}`;
         const current = await (await fetch(`${target}${base}`, { headers })).json();
         const entry = current.data;
-        // A different session writes the same entry with its own revision.
-        const written = await fetch(`${target}${base}`, {
+        const written = await (await fetch(`${target}${base}`, {
           method: 'PUT',
           headers,
           body: JSON.stringify({
@@ -196,26 +208,28 @@ const scenarios = [
             body: `${entry.body}（另一会话补充的当前条件）`,
             reason: '另一个会话的并发更新', expected_revision: entry.revision,
           }),
-        });
-        return { writeStatus: (await written.json()).code };
-      }, { id: APPLIED, target: fixtureUrl, token: FIXTURE_TOKEN });
-      if (conflict.writeStatus !== 0) throw new Error(`concurrent write failed: ${JSON.stringify(conflict)}`);
-
-      const undoRefused = await page.evaluate(async ({ id, target, token }) => {
-        const journal = await (await fetch(`${target}/api/memory/global/journal?id=${id}`, {
-          headers: { authorization: `Bearer ${token}` },
         })).json();
-        const record = (journal.data ?? [])[0];
-        if (record === undefined) return { reason: 'no journal record' };
-        const response = await fetch(`${target}/api/memory/global/undo`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-          body: JSON.stringify({ operation_id: record.operationId }),
-        });
-        const body = await response.json();
-        return { code: body.code, revision: body.data?.revision };
+        return { operationId: record?.operationId ?? null, invalidCode: invalidResp.code, writeStatus: written.code };
       }, { id: APPLIED, target: fixtureUrl, token: FIXTURE_TOKEN });
-      if (undoRefused.code !== 40944) throw new Error(`stale undo was not refused: ${JSON.stringify(undoRefused)}`);
+      const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+      if (typeof preflight.operationId !== 'string' || !uuidRe.test(preflight.operationId)) {
+        throw new Error(`journal operationId is not a UUID: ${JSON.stringify(preflight)}`);
+      }
+      if (preflight.invalidCode !== 40001) {
+        throw new Error(`non-UUID undo was not rejected with 40001: ${JSON.stringify(preflight)}`);
+      }
+      if (preflight.writeStatus !== 0) throw new Error(`concurrent write failed: ${JSON.stringify(preflight)}`);
+
+      const undoResponsePromise = page.waitForResponse(
+        (response) => response.url().includes('/api/memory/global/undo') && response.request().method() === 'POST',
+        { timeout: 15_000 },
+      );
+      await page.locator(`[data-memory-detail="${APPLIED}"] [data-memory-undo]`).first().click();
+      const undoResponse = await undoResponsePromise;
+      const undoBody = await undoResponse.json();
+      if (undoBody.code !== 40944 || undoBody.data !== null) {
+        throw new Error(`stale GUI undo did not receive empty-data 40944 conflict: ${JSON.stringify(undoBody)}`);
+      }
 
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.waitForSelector(`[data-memory-row="${APPLIED}"]`, { timeout: 30_000 });

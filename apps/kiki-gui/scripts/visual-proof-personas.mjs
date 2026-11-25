@@ -139,10 +139,15 @@ const walkers = {
   },
   async new(page, tag) {
     // Record what the GUI sends: the create body must carry the persona, and
-    // the first prompt (answering the greeting) the greeting-reply bit.
+    // the first prompt (answering the greeting) must carry snake_case
+    // `persona_greeting_reply: true` on `/prompts`.
     const posts = [];
     page.on('request', (request) => {
-      if (request.method() === 'POST' && request.url().startsWith(endpoint)) posts.push(request.postData() ?? '');
+      if (request.method() === 'POST' && request.url().startsWith(endpoint)) {
+        let body = null;
+        try { body = request.postDataJSON(); } catch { body = null; }
+        posts.push({ pathname: new URL(request.url()).pathname, body });
+      }
     });
     await page.goto(url('/new'), { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#composer-agent-profile-select', { timeout: 30_000 });
@@ -153,14 +158,26 @@ const walkers = {
     await page.waitForSelector('[data-composer-persona-chip="xiao-you"]', { timeout: 10_000 });
     await page.waitForSelector('[data-hero-persona-greeting="xiao-you"]', { timeout: 10_000 });
     await shot(page, `new-picked-${tag}`);
+    const promptRequest = page.waitForRequest(
+      (request) => request.method() === 'POST' && /^\/api\/sessions\/[^/]+\/prompts$/.test(new URL(request.url()).pathname),
+      { timeout: 15_000 },
+    );
     await page.fill('textarea[data-composer]', '这周发 0.9，先看发布清单。');
     await page.press('textarea[data-composer]', 'Control+Enter');
     await page.waitForURL(/\/s\/session_/, { timeout: 15_000 });
     await page.waitForSelector('[data-session-persona="xiao-you"]', { timeout: 15_000 });
-    await page.waitForTimeout(800);
-    const create = posts.find((body) => body.includes('"agent_config"'));
-    if (create === undefined || !create.includes('"persona"') || !create.includes('xiao-you')) errors.push(`${tag}: create body lacks persona: ${create}`);
-    if (!posts.some((body) => body.includes('persona_greeting_reply') || body.includes('personaGreetingReply'))) errors.push(`${tag}: first prompt lacks greeting-reply bit: ${posts.join(' | ').slice(0, 600)}`);
+    await promptRequest;
+    const create = posts.find((entry) => entry.pathname === '/api/sessions');
+    if (create?.body?.agent_config?.persona !== 'xiao-you') {
+      errors.push(`${tag}: create body lacks persona xiao-you: ${JSON.stringify(create)}`);
+    }
+    const promptPost = posts.find((entry) => /^\/api\/sessions\/[^/]+\/prompts$/.test(entry.pathname));
+    if (promptPost?.body?.persona_greeting_reply !== true) {
+      errors.push(`${tag}: first prompt lacks persona_greeting_reply === true: ${JSON.stringify(promptPost)}`);
+    }
+    if (promptPost?.body?.personaGreetingReply !== undefined) {
+      errors.push(`${tag}: first prompt sent unsupported camelCase personaGreetingReply: ${JSON.stringify(promptPost)}`);
+    }
     await shot(page, `new-sent-${tag}`);
   },
   async header(page, tag) {

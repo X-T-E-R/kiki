@@ -799,6 +799,88 @@ describe('DaemonTUI steering and background shortcuts', () => {
     expect(tui.state.editor.getText()).toBe(text);
   });
 
+  it('does not restore an already-queued Enter Send now draft after an unknown steer failure on a real SessionController', async () => {
+    const { tui, internal } = driver();
+    const submitPrompt = vi.fn(async (_sid: string, body: { prompt_id?: string; content: MessageContent[] }) => ({
+      prompt_id: body.prompt_id ?? 'queued-prompt-1',
+      user_message_id: body.prompt_id ?? 'queued-prompt-1',
+      status: 'queued' as const,
+      content: body.content,
+      created_at: '2026-01-01T00:00:01.000Z',
+    }));
+    const steerPrompt = vi.fn(async () => {
+      throw new Error('steer socket dropped');
+    });
+    const busySnap: SessionSnapshotResponse = {
+      ...sessionSnapshot('session-real'),
+      session: { ...sessionSnapshot('session-real').session, busy: true, main_turn_active: true },
+    };
+    const transport = {
+      snapshot: vi.fn(async () => busySnap),
+      getAgentTranscript: vi.fn(async () => transcriptPage('session-real')),
+      getTranscriptOps: vi.fn(async () => transcriptCatchup('session-real')),
+      listPrompts: vi.fn(async () => ({ active: null, queued: [] })),
+      submitPrompt,
+      steerPrompt,
+      abortPrompt: vi.fn(async () => ({ aborted: false, at_seq: 1 })),
+    };
+    const realView: SessionViewFacade = {
+      ...sessionView('session-real'),
+      snapshot: vi.fn(async () => busySnap),
+    };
+    const realController = new SessionController(
+      transport as unknown as ConstructorParameters<typeof SessionController>[0],
+      realView,
+      'session-real',
+    );
+    try {
+      await realController.open();
+      await vi.waitFor(() => expect(realController.getState().busy).toBe(true));
+      (internal as unknown as { controller: SessionController }).controller = realController;
+      tui.state.appState.busySubmit = 'send_now';
+      tui.state.editor.setText('do not send me twice');
+      tui.state.editor.handleInput('\r');
+
+      await vi.waitFor(() =>
+        expect(internal.showStatus).toHaveBeenCalledWith(
+          'Prompt delivery is unconfirmed. Check the queue before retrying.',
+          'error',
+        ),
+      );
+      expect(submitPrompt).toHaveBeenCalledTimes(1);
+      expect(steerPrompt).toHaveBeenCalledTimes(1);
+      expect(tui.state.editor.getText()).toBe('');
+      expect(tui.state.editor.disableSubmit).toBe(false);
+
+      tui.state.editor.handleInput('\r');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(submitPrompt).toHaveBeenCalledTimes(1);
+    } finally {
+      realController.close();
+    }
+  });
+
+  it('restores Enter Send now drafts only for refused or unacknowledged submit failures', async () => {
+    const { tui, internal, controller, controllerState } = driver();
+    controllerState.busy = true;
+    tui.state.appState.busySubmit = 'send_now';
+
+    controller.sendPromptNow.mockImplementationOnce(async (input) => {
+      input.onAcknowledged?.();
+      throw new SendNowError('refused', new Error('needs its own turn'));
+    });
+    tui.state.editor.setText('restore after refusal');
+    tui.state.editor.handleInput('\r');
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith('needs its own turn', 'error'));
+    expect(tui.state.editor.getText()).toBe('restore after refusal');
+
+    controller.sendPromptNow.mockRejectedValueOnce(new SendNowError('submit', new Error('bad request')));
+    tui.state.editor.setText('restore after submit error');
+    tui.state.editor.handleInput('\r');
+    await vi.waitFor(() => expect(internal.showStatus).toHaveBeenCalledWith('bad request', 'error'));
+    expect(tui.state.editor.getText()).toBe('restore after submit error');
+  });
+
   it.each([
     { outcome: 'accepted' as const },
     { outcome: 'steered' as const },

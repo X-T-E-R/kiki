@@ -53,6 +53,43 @@ describe('SessionViewTarget', () => {
     expect(signals.at(-1)).toMatchObject({ currentSessionCursor: { seq: 12, epoch: 'session-epoch' } });
   });
 
+  it('suppresses bootstrap historyRewritten hints already covered by the snapshot while keeping newer and mismatched-epoch ones', async () => {
+    const signals: SessionViewSignal[] = [];
+    const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
+    target.begin(5, true);
+    target.replay({ ...durable(9), type: 'event.session.history_rewritten', payload: {
+      type: 'event.session.history_rewritten', reason: 'regenerate', target_message_id: 'message-old',
+    } });
+    target.send({ ...durable(10), type: 'event.session.history_rewritten', payload: {
+      type: 'event.session.history_rewritten', reason: 'edit_resend', target_message_id: 'message-at-snapshot',
+    } });
+    target.send({ ...durable(12), type: 'event.session.history_rewritten', payload: {
+      type: 'event.session.history_rewritten', reason: 'regenerate', target_message_id: 'message-new',
+    } });
+    await target.drain();
+    target.seedSnapshot(shellSnapshot());
+    target.finish({ seq: 10, epoch: 'session-epoch' }, false);
+    expect(signals.map((signal) => signal.type)).toEqual(['snapshot', 'historyRewritten', 'ready']);
+    expect(signals[1]).toMatchObject({
+      type: 'historyRewritten',
+      reason: 'regenerate',
+      targetMessageId: 'message-new',
+      cursor: { seq: 12, epoch: 'session-epoch' },
+    });
+
+    const epochSignals: SessionViewSignal[] = [];
+    const epochTarget = new SessionViewTarget('s1', (signal) => epochSignals.push(signal));
+    epochTarget.begin(6, true);
+    epochTarget.replay({ ...durable(9), type: 'event.session.history_rewritten', payload: {
+      type: 'event.session.history_rewritten', reason: 'regenerate', target_message_id: 'message-stale-epoch',
+    } });
+    await epochTarget.drain();
+    epochTarget.seedSnapshot(shellSnapshot('new-session-epoch'));
+    epochTarget.finish({ seq: 10, epoch: 'new-session-epoch' }, false);
+    expect(epochSignals.map((signal) => signal.type)).toEqual(['snapshot', 'resyncRequired']);
+    expect(epochSignals[1]).toMatchObject({ reason: 'epoch_changed', currentSessionCursor: { seq: 10, epoch: 'new-session-epoch' } });
+  });
+
   it('emits rosterAgentId cursor hints for agent.branch_sealed and agent.tool_lock_changed', () => {
     const signals: SessionViewSignal[] = [];
     const target = new SessionViewTarget('s1', (signal) => signals.push(signal));

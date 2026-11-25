@@ -84,7 +84,7 @@ const result = await runProof({
     assert.equal(afterA.retained.length, 1);
     assert.equal(afterA.acknowledged.filter((entry) => entry.sessionId === 'conversation-b').length, 1);
     const c = { session_id: 'conversation-c', episode_id: 'finished-c', completed_at: Date.now() };
-    await control({ action: 'notification_completions', completions: [b, c] });
+    await control({ action: 'notification_completions', completions: [b, c], window_ms: 600_000 });
     await page.waitForFunction(() => window.__completionBridge.state.sent.length === 2);
     await page.reload();
     await page.locator('[data-composer-session]').first().waitFor();
@@ -92,6 +92,23 @@ const result = await runProof({
     assert.equal((await state()).sent.length, 2);
     assert.equal(await page.locator('[data-session-row="conversation-b"]').getAttribute('data-session-row-state'), 'unread');
     assert.equal(await page.locator('[data-session-row="conversation-c"]').getAttribute('data-session-row-state'), 'unread');
+
+    // Expiry matches real kap-server's 10-minute window: a completion older than
+    // the window is dropped by GET /notifications/completions and does not re-fire
+    // or resurrect after reload, while fresh entries remain.
+    const expired = { session_id: 'conversation-b', episode_id: 'expired-b', completed_at: Date.now() - 601_000 };
+    await control({ action: 'notification_completions', completions: [expired, c], window_ms: 600_000 });
+    const filteredList = await (await fetch(`${fixtureUrl}/api/notifications/completions`, {
+      headers: { authorization: `Bearer ${FIXTURE_TOKEN}` },
+    })).json();
+    assert.deepEqual(filteredList.data.map((entry) => entry.episode_id), ['finished-c']);
+    await page.reload();
+    await page.locator('[data-composer-session]').first().waitFor();
+    await page.waitForResponse((response) => response.url().endsWith('/api/notifications/completions'));
+    assert.equal((await state()).sent.length, 2);
+    assert.equal(await page.locator('[data-session-row="conversation-c"]').getAttribute('data-session-row-state'), 'unread');
+    // Restore [b, c] inside window for the click-acknowledge check below.
+    await control({ action: 'notification_completions', completions: [b, c], window_ms: 600_000 });
     await control({ action: 'drop_ws' });
     await page.evaluate(() => { window.__completionBridge.focused = false; });
     await page.evaluate(() => window.__completionBridge.click(window.__completionBridge.state.sent[0]));

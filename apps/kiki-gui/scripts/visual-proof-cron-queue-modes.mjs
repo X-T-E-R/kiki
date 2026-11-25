@@ -52,6 +52,8 @@ const web = `http://127.0.0.1:${vite.httpServer.address().port}`;
 const browser = await chromium.launch({ args: ['--no-proxy-server'] });
 const errors = [];
 
+const control = (body) => fetch(`${endpoint}/__control`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+const api = (path, init) => fetch(`${endpoint}/api${path}`, { ...init, headers: { authorization: `Bearer ${FIXTURE_TOKEN}`, 'content-type': 'application/json', ...init?.headers } });
 const url = (path) => `${web}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(endpoint)}&token=${FIXTURE_TOKEN}`;
 
 async function withPage({ theme, width, locale = 'zh' }, run) {
@@ -101,7 +103,7 @@ async function openRowActions(page, id) {
   await page.waitForFunction((promptId) => {
     const node = document.querySelector(`[data-queue-item="${promptId}"] [data-queue-row-actions]`);
     return node !== null && getComputedStyle(node).display !== 'none' && node.getBoundingClientRect().width > 0;
-  }, id, { timeout: 10_000 }).catch(() => { /* a hover-capable device already revealed it */ });
+  }, id, { timeout: 10_000 });
   return target;
 }
 
@@ -180,6 +182,9 @@ async function walk(page, tag, locale) {
     const mode = await heldRow.locator('[data-queue-held-mode]').innerText();
     if (!mode.includes(label)) errors.push(`${tag}: ${id} names "${mode}", expected it to name ${label}`);
     await openRowActions(page, id);
+    if (await hasControl(page, id, `button[aria-label="${L['sv.queueRemove']}"]`) !== 1) {
+      errors.push(`${tag}: ${id} lost its Remove`);
+    }
     if (await hasControl(page, id, dragHandle) !== 0) errors.push(`${tag}: ${id} still offers a reorder handle`);
     if (await hasControl(page, id, '[data-timing-picker]') !== 0) errors.push(`${tag}: ${id} still offers a per-message timing picker`);
     // Absent, not greyed out: a dead control beside a live one reads as a
@@ -189,9 +194,6 @@ async function walk(page, tag, locale) {
     }
     if (await heldRow.locator('[data-queue-read-only]').count() !== 0) {
       errors.push(`${tag}: ${id} still carries the read-only note`);
-    }
-    if (await hasControl(page, id, `button[aria-label="${ZH['sv.queueRemove']}"]`) !== 1) {
-      errors.push(`${tag}: ${id} lost its Remove`);
     }
     // The preview keeps the width the note used to take: at the narrow width
     // the note pushed the text to an ellipsis on a row with room to show it.
@@ -232,14 +234,14 @@ async function walk(page, tag, locale) {
       errors.push(`${tag}: ${id} does not name its timing`);
     }
     await openRowActions(page, id);
-    if (await hasControl(page, id, `button[aria-label="${L['sv.queueSendNow']}"]`) !== 0) {
-      errors.push(`${tag}: ${id} gains a Send now just because nothing else is queued`);
-    }
     if (await hasControl(page, id, `button[aria-label="${L['sv.queueRemove']}"]`) !== 1) {
       errors.push(`${tag}: ${id} lost its Remove in the held-only queue`);
     }
+    if (await hasControl(page, id, `button[aria-label="${L['sv.queueSendNow']}"]`) !== 0) {
+      errors.push(`${tag}: ${id} gains a Send now just because nothing else is queued`);
+    }
   }
-  // Clearing still reaches them, so the confirmation has to say it does.
+  // Clearing still reaches them: confirm the dialog and verify both UI and server queue clear.
   await page.locator('[data-queue-strip]').getByText(L['sv.queueClearAll']).click();
   await page.waitForSelector('[role="alertdialog"]', { timeout: 10_000 })
     .catch(() => { errors.push(`${tag}: Clear all did not ask before touching held jobs`); });
@@ -248,15 +250,24 @@ async function walk(page, tag, locale) {
     errors.push(`${tag}: the Clear all confirmation does not describe what it removes`);
   }
   await shot(page, `queue-held-only-clear-${tag}`);
+  await page.locator('[role="alertdialog"] [data-confirm-action="confirm"]').click();
+  await page.waitForSelector('[data-queue-held-count]', { state: 'detached', timeout: 10_000 })
+    .catch(() => { errors.push(`${tag}: confirming Clear all did not clear the held queue strip`); });
+  const serverQueue = await (await api(`/sessions/${HELD_ONLY}/prompts`)).json();
+  if ((serverQueue.data?.queued ?? []).length !== 0) {
+    errors.push(`${tag}: server still holds ${serverQueue.data.queued.length} queued prompt(s) after Clear all`);
+  }
 }
 
 try {
   for (const theme of themes) {
     for (const width of widths) {
+      await control({ action: 'scenario', name: SCENARIO });
       await walkIn({ theme, width }, (page, tag) => walk(page, tag, 'zh'));
     }
   }
   // The other locale, so the labels are exercised in both.
+  await control({ action: 'scenario', name: SCENARIO });
   await walkIn({ theme: themes[0], width: widths[0], locale: 'en' }, async (page, tag) => {
     await page.goto(url(`/s/${SID}`), { waitUntil: 'domcontentloaded', timeout: 240_000 });
     await page.waitForSelector('[data-queue-count], [data-queue-held-count]', { timeout: 60_000 });
@@ -272,6 +283,9 @@ try {
     // The English walk still proves the boundary, so a label change cannot
     // quietly stop the check from running at all.
     await openRowActions(page, IDLE);
+    if (await hasControl(page, IDLE, `button[aria-label="${EN['sv.queueRemove']}"]`) !== 1) {
+      errors.push(`${tag}: a held job lost its Remove in English`);
+    }
     if (await hasControl(page, IDLE, `button[aria-label="${EN['sv.queueSendNow']}"]`) !== 0) {
       errors.push(`${tag}: a held job still offers Send now in English`);
     }

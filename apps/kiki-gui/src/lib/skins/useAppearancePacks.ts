@@ -4,7 +4,7 @@
  * route, so a pack selected on a previous launch repaints on this one.
  */
 
-import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 
 import type { AppearancePack, AppearancePackSummary, SkinFile } from '@kiki/protocol';
@@ -15,6 +15,10 @@ import { getMedia } from './mediaStore';
 import { packSkinOf, parsePackMediaId } from './packs';
 import { fetchPackFile, getAppearancePack, listAppearancePacks, type ServerEndpoint } from './packsApi';
 import { effectiveSkinPrefs, setPackSkins, subscribeSkinPrefs } from './store';
+import { mapBounded } from './useUserSkins';
+
+const PACK_DETAIL_STALE_MS = 30_000;
+const PACK_DETAIL_CONCURRENCY = 4;
 
 export interface AppearancePackEntry {
   readonly summary: AppearancePackSummary;
@@ -129,7 +133,7 @@ export function useAppearancePacks(options: UseAppearancePacksOptions = {}): {
 
   const listQuery = useQuery({
     queryKey: ['appearance-packs', endpoint.url, 'list'],
-    staleTime: 30_000,
+    staleTime: PACK_DETAIL_STALE_MS,
     queryFn: async () => {
       const listing = await listAppearancePacks(endpoint);
       return listing ?? null;
@@ -139,7 +143,16 @@ export function useAppearancePacks(options: UseAppearancePacksOptions = {}): {
   const targetSummaries = useMemo(() => {
     const listing = listQuery.data;
     if (listing === undefined || listing === null) return [] as readonly AppearancePackSummary[];
-    if (allDetails) return listing.items;
+    if (allDetails) {
+      const seen = new Set<string>();
+      const unique: AppearancePackSummary[] = [];
+      for (const item of listing.items) {
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+        unique.push(item);
+      }
+      return unique;
+    }
     if (selectedId !== null) {
       const found = listing.items.find((item) => item.id === selectedId);
       return found !== undefined ? [found] : ([] as readonly AppearancePackSummary[]);
@@ -147,31 +160,39 @@ export function useAppearancePacks(options: UseAppearancePacksOptions = {}): {
     return [] as readonly AppearancePackSummary[];
   }, [allDetails, listQuery.data, selectedId]);
 
-  const detailQueries = useQueries({
-    queries: targetSummaries.map((summary) => ({
-      queryKey: ['appearance-packs', endpoint.url, 'detail', summary.id] as const,
-      staleTime: 30_000,
-      queryFn: async (): Promise<AppearancePack | null> => {
-        try {
-          return (await getAppearancePack(endpoint, summary.id)).pack;
-        } catch {
-          return null;
-        }
-      },
-    })),
+  const targetKey = targetSummaries.map((summary) => summary.id).join('\0');
+  const detailsQuery = useQuery({
+    queryKey: ['appearance-packs', endpoint.url, 'details', targetKey] as const,
+    enabled: targetSummaries.length > 0,
+    staleTime: PACK_DETAIL_STALE_MS,
+    queryFn: async (): Promise<readonly AppearancePackEntry[]> => {
+      const resolved = await mapBounded(
+        targetSummaries,
+        PACK_DETAIL_CONCURRENCY,
+        async (summary): Promise<AppearancePackEntry | null> => {
+          try {
+            const pack = await queryClient.fetchQuery({
+              queryKey: ['appearance-packs', endpoint.url, 'detail', summary.id] as const,
+              staleTime: PACK_DETAIL_STALE_MS,
+              queryFn: async (): Promise<AppearancePack | null> => {
+                try {
+                  return (await getAppearancePack(endpoint, summary.id)).pack;
+                } catch {
+                  return null;
+                }
+              },
+            });
+            return pack !== null ? { summary, pack } : null;
+          } catch {
+            return null;
+          }
+        },
+      );
+      return resolved.filter((entry): entry is AppearancePackEntry => entry !== null);
+    },
   });
 
-  const packsKey = detailQueries.map((q) => q.dataUpdatedAt).join(',');
-  const packs = useMemo(() => {
-    void packsKey;
-    return targetSummaries
-      .map((summary, index) => {
-        const pack = detailQueries[index]?.data ?? null;
-        return pack !== null ? { summary, pack } : null;
-      })
-      .filter((entry): entry is AppearancePackEntry => entry !== null);
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [packsKey, targetSummaries]);
+  const packs = targetSummaries.length === 0 ? EMPTY_PACKS : (detailsQuery.data ?? EMPTY_PACKS);
 
   const data = useMemo<AppearancePackCatalog>(() => {
     const listing = listQuery.data;
@@ -189,7 +210,7 @@ export function useAppearancePacks(options: UseAppearancePacksOptions = {}): {
     };
   }, [listQuery.data, packs]);
 
-  const detailsLoading = detailQueries.some((q) => q.isLoading);
+  const detailsLoading = targetSummaries.length > 0 && detailsQuery.isLoading;
   const isLoading = listQuery.isLoading || detailsLoading;
 
   useEffect(() => {

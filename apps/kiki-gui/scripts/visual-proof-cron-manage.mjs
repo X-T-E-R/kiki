@@ -335,15 +335,34 @@ async function walk(page, tag) {
   if (after.cron !== '5,25 9,17 * * *') errors.push(`${tag}: saving rewrote the complex rule to "${after.cron}"`);
   if (after.id !== COMPLEX) errors.push(`${tag}: editing replaced the task id`);
 
-  // A refused save keeps the draft and the panel, and says what to do.
+  // Verify real-KAP validation boundaries: invalid cron syntax, missing target
+  // session, and 200-byte UTF-8 prompt preview truncation.
+  const badExpr = await (await api('/cron', {
+    method: 'POST',
+    body: JSON.stringify({ session_id: 'session_fixture_cron_review', cron: 'not-a-cron', prompt: 'test' }),
+  })).json();
+  if (badExpr.code !== 40001) errors.push(`${tag}: POST /cron accepted invalid expression (code=${badExpr.code})`);
+  const missingSession = await (await api('/cron', {
+    method: 'POST',
+    body: JSON.stringify({ session_id: 'session_does_not_exist', cron: '0 * * * *', prompt: 'test' }),
+  })).json();
+  if (missingSession.code !== 40401) errors.push(`${tag}: POST /cron accepted missing session (code=${missingSession.code})`);
+  const unboundRun = await (await api(`/cron/${WORKSPACE_TASK}:run`, { method: 'POST', body: '{}' })).json();
+  if (unboundRun.code !== 40401) errors.push(`${tag}: :run on unbound task did not return 40401 (code=${unboundRun.code})`);
+
+  // A refused save keeps the draft and the panel, and surfaces a real PATCH error.
   await expandRow(page, DAILY);
   await clickRow(page, DAILY, "edit");
   await page.waitForSelector('[data-cron-prompt]', { timeout: 15_000 });
   await page.locator('[data-cron-prompt]').fill('换一条提示词，看看保存失败时草稿还在不在。');
-  await control({ action: 'cron_fail_next_write' });
+  await control({ action: 'cron_fail_next_write', code: 40406, msg: `cron task ${DAILY} was not found` });
   await page.locator('[data-cron-save]').click();
   await page.waitForSelector('[data-cron-submit-error]', { timeout: 20_000 })
     .catch(() => { errors.push(`${tag}: a refused save did not surface an error`); });
+  const submitErrorText = (await page.locator('[data-cron-submit-error]').innerText()).trim();
+  if (submitErrorText === '' || submitErrorText.includes('rebound within the same workspace')) {
+    errors.push(`${tag}: refused prompt-only edit showed wrong error "${submitErrorText}"`);
+  }
   const keptDraft = await page.locator('[data-cron-prompt]').inputValue();
   if (!keptDraft.startsWith('换一条提示词')) errors.push(`${tag}: the refused save lost the draft ("${keptDraft.slice(0, 20)}")`);
   if (await page.locator('[data-cron-editor-title]').count() === 0) errors.push(`${tag}: the refused save closed the editor`);

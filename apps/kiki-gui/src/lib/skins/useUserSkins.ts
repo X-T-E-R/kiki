@@ -7,13 +7,35 @@
  * Appearance opens.
  */
 
-import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 
 import type { SkinFile, SkinPluginOrigin } from '@kiki/protocol';
 
 import { useConnection } from '../../state/connection';
 import { effectiveSkinPrefs, setUserSkins, subscribeSkinPrefs } from './store';
+
+const SKIN_DETAIL_STALE_MS = 30_000;
+const SKIN_DETAIL_CONCURRENCY = 4;
+
+export async function mapBounded<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index]!);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
 
 export interface UserSkinCatalog {
   readonly skins: readonly SkinFile[];
@@ -60,7 +82,7 @@ export function useUserSkins(options: UseUserSkinsOptions = {}): {
 
   const listQuery = useQuery({
     queryKey: ['skins', 'list'],
-    staleTime: 30_000,
+    staleTime: SKIN_DETAIL_STALE_MS,
     queryFn: async () => {
       const listing = await client.listSkins();
       return listing ?? null;
@@ -70,37 +92,43 @@ export function useUserSkins(options: UseUserSkinsOptions = {}): {
   const targetIds = useMemo(() => {
     const listing = listQuery.data;
     if (listing === undefined || listing === null) return [] as readonly string[];
-    if (allDetails) return listing.items.map((item) => item.id);
+    if (allDetails) return [...new Set(listing.items.map((item) => item.id))];
     if (selectedId !== null && listing.items.some((item) => item.id === selectedId)) {
       return [selectedId];
     }
     return [] as readonly string[];
   }, [allDetails, listQuery.data, selectedId]);
 
-  const detailQueries = useQueries({
-    queries: targetIds.map((id) => ({
-      queryKey: ['skins', 'detail', id] as const,
-      staleTime: 30_000,
-      queryFn: async (): Promise<SkinFile | null> => {
+  const targetKey = targetIds.join('\0');
+  const detailsQuery = useQuery({
+    queryKey: ['skins', 'details', targetKey] as const,
+    enabled: targetIds.length > 0,
+    staleTime: SKIN_DETAIL_STALE_MS,
+    queryFn: async (): Promise<readonly SkinFile[]> => {
+      const resolved = await mapBounded(targetIds, SKIN_DETAIL_CONCURRENCY, async (id): Promise<SkinFile | null> => {
         try {
-          return (await client.getSkin(id)).skin;
+          return await queryClient.fetchQuery({
+            queryKey: ['skins', 'detail', id] as const,
+            staleTime: SKIN_DETAIL_STALE_MS,
+            queryFn: async (): Promise<SkinFile | null> => {
+              try {
+                return (await client.getSkin(id)).skin;
+              } catch {
+                // A file that vanished between list and read is not an error worth
+                // failing the whole catalog for.
+                return null;
+              }
+            },
+          });
         } catch {
-          // A file that vanished between list and read is not an error worth
-          // failing the whole catalog for.
           return null;
         }
-      },
-    })),
+      });
+      return resolved.filter((file): file is SkinFile => file !== null);
+    },
   });
 
-  const skinsKey = detailQueries.map((q) => q.dataUpdatedAt).join(',');
-  const skins = useMemo(() => {
-    void skinsKey;
-    return detailQueries
-      .map((q) => q.data ?? null)
-      .filter((file): file is SkinFile => file !== null);
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [skinsKey, targetIds]);
+  const skins = targetIds.length === 0 ? EMPTY_SKINS : (detailsQuery.data ?? EMPTY_SKINS);
 
   const data = useMemo<UserSkinCatalog>(() => {
     const listing = listQuery.data;
@@ -135,7 +163,7 @@ export function useUserSkins(options: UseUserSkinsOptions = {}): {
     };
   }, [listQuery.data, skins]);
 
-  const detailsLoading = detailQueries.some((q) => q.isLoading);
+  const detailsLoading = targetIds.length > 0 && detailsQuery.isPending;
   const isLoading = listQuery.isLoading || detailsLoading;
 
   // Push into the store once any needed detail query has settled, so a cold

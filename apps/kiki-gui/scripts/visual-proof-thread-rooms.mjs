@@ -142,6 +142,44 @@ async function walk(page, tag) {
   await page.waitForSelector('[data-activity-comms-item="rm_1"]', { timeout: 30_000 });
   await shot(page, `activity-comms-room-${tag}`);
 
+  // Per-workspace thread communication off (global switch still ON): threads in
+  // the disabled workspace (`wd_fixture_web_0000000`) vanish from `/rooms/threads`
+  // and room creation/member addition with them is refused with 40928.
+  await control({ action: 'thread_workspace_override', workspace_id: 'wd_fixture_web_0000000', enabled: false });
+  const filteredThreadsBody = await (await api('/rooms/threads')).json();
+  const filteredIds = (filteredThreadsBody.data?.threads ?? []).map((entry) => entry.ref.sessionId);
+  if (filteredIds.includes('session_thread_docs') || filteredIds.includes('session_thread_frontend')) {
+    errors.push(`${tag}: /rooms/threads still offered threads from disabled workspace: ${filteredIds.join(',')}`);
+  }
+  if (!filteredIds.includes('session_thread_release')) {
+    errors.push(`${tag}: /rooms/threads dropped enabled workspace thread when sibling workspace was disabled`);
+  }
+  const refusedCreate = await (await api('/rooms/from-threads', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Blocked workspace room', sessionIds: ['session_thread_release', 'session_thread_docs'] }),
+  })).json();
+  if (refusedCreate.code !== 40928) {
+    errors.push(`${tag}: /rooms/from-threads accepted a disabled-workspace member (code=${refusedCreate.code})`);
+  }
+  const refusedAdd = await (await api('/rooms/api-contract/members', {
+    method: 'POST',
+    body: JSON.stringify({ kind: 'thread', sessionId: 'session_thread_docs' }),
+  })).json();
+  if (refusedAdd.code !== 40928) {
+    errors.push(`${tag}: POST /rooms/api-contract/members accepted a disabled-workspace member (code=${refusedAdd.code})`);
+  }
+  await page.goto(url('/rooms/api-contract'), { waitUntil: 'domcontentloaded' });
+  const wsOffRoster = page.locator('[data-room-roster]');
+  if (await wsOffRoster.getAttribute('aria-expanded') === 'false') await wsOffRoster.click();
+  await page.waitForSelector('[data-room-member="session_thread_backend"]', { timeout: 30_000 });
+  await page.locator('[data-room-add-tab="threads"]').click();
+  await page.waitForSelector('[data-room-add-thread="session_thread_release"]', { timeout: 10_000 });
+  const offeredWithWsOff = await page.locator('[data-room-add-thread]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-room-add-thread')));
+  if (offeredWithWsOff.includes('session_thread_docs')) {
+    errors.push(`${tag}: GUI thread picker offered disabled-workspace thread session_thread_docs`);
+  }
+  await control({ action: 'thread_workspace_override', workspace_id: 'wd_fixture_web_0000000', enabled: null });
+
   // Communication off: the ThreadRefChip menu explains why room creation is unavailable.
   await api('/config', { method: 'POST', body: JSON.stringify({ thread_communication: { enabled: false } }) });
   await page.goto(url('/rooms/api-contract'), { waitUntil: 'domcontentloaded' });

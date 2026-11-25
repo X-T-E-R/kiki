@@ -263,10 +263,20 @@ try {
   await remember('session-delayed-binding-reload');
   assert.equal(evidence.states.at(-1).storage.sessions[SID]?.effortOverride, 'high');
   assert.equal(evidence.states.at(-1).storage.sessions[SID]?.modelOverride, undefined);
+  const delayedPayloadStart = evidence.payloads.length;
+  const delayedPromptRequest = page.waitForRequest(
+    (request) => request.method() === 'POST' && new URL(request.url()).pathname === `/api/sessions/${SID}/prompts`,
+    { timeout: 15_000 },
+  );
   await page.locator('textarea[data-composer]').fill('延迟快照后保持 high');
   await page.getByRole('button', { name: '发送消息', exact: true }).click();
-  await page.waitForTimeout(250);
-  assert.ok(evidence.payloads.some(({ body }) => body.thinking === 'high' || body.thinking_effort === 'high'));
+  await delayedPromptRequest;
+  const delayedPrompts = evidence.payloads
+    .slice(delayedPayloadStart)
+    .filter(({ url }) => url === `/api/sessions/${SID}/prompts`);
+  assert.equal(delayedPrompts.length, 1);
+  assert.equal(delayedPrompts[0].body?.thinking, 'high');
+  assert.equal(delayedPrompts[0].body?.thinking_effort, undefined);
   // Live dispatch restrictions, through the inspector's capability section:
   // the research target is offered, and its Plan-mode read-only restriction is
   // stated on the target's own detail. Same facts as before, new surface.
