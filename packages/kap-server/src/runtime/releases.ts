@@ -8,27 +8,94 @@ import { runtimeReleaseSchema, type RuntimeRelease } from './controller';
 
 export const releaseIdSchema = z.string().regex(/^[0-9a-f]{24}-[0-9a-f]{24}$/);
 const fileDigestSchema = z.object({ sha256: z.string().regex(/^[0-9a-f]{64}$/), bytes: z.number().int().positive() });
-const releaseManifestSchema = z.object({
+
+const releaseFilesV1Schema = z.object({ 'kiki-server.exe': fileDigestSchema, 'kiki-desktop.exe': fileDigestSchema });
+const releaseFilesV2Schema = z.object({
+  'kiki-desktop.exe': fileDigestSchema,
+  'server-entry.mjs': fileDigestSchema,
+  'native-addons.json': fileDigestSchema,
+});
+
+const releaseManifestV1Schema = z.object({
   schemaVersion: z.literal(1), releaseId: releaseIdSchema, gitSha: z.string(), installedAt: z.string(),
   promotedAtUtc: z.string().optional(),
   serverVersion: z.string(), buildId: z.string().optional(), buildChannel: z.string().optional(),
   rollbackVerifiedWith: z.array(releaseIdSchema).default([]),
-  files: z.object({ 'kiki-server.exe': fileDigestSchema, 'kiki-desktop.exe': fileDigestSchema }),
+  files: releaseFilesV1Schema,
 });
-const currentManifestSchema = z.object({
+const releaseManifestV2Schema = z.object({
+  schemaVersion: z.literal(2), runtimeKind: z.literal('electron-single-binary'),
+  releaseId: releaseIdSchema, gitSha: z.string(), installedAt: z.string(),
+  promotedAtUtc: z.string().optional(),
+  serverVersion: z.string(), buildId: z.string().optional(), buildChannel: z.string().optional(),
+  rollbackVerifiedWith: z.array(releaseIdSchema).default([]),
+  files: releaseFilesV2Schema,
+});
+const releaseManifestSchema = z.discriminatedUnion('schemaVersion', [releaseManifestV1Schema, releaseManifestV2Schema]);
+
+const currentManifestV1Schema = z.object({
   schemaVersion: z.literal(1), releaseId: releaseIdSchema, gitSha: z.string(), promotedAtUtc: z.string(),
   installedAt: z.string().optional(), serverVersion: z.string().optional(), buildId: z.string().optional(),
   buildChannel: z.string().optional(), rollbackVerifiedWith: z.array(releaseIdSchema).optional(),
-  files: z.object({ 'kiki-server.exe': fileDigestSchema, 'kiki-desktop.exe': fileDigestSchema }),
+  files: releaseFilesV1Schema,
 });
+const currentManifestV2Schema = z.object({
+  schemaVersion: z.literal(2), runtimeKind: z.literal('electron-single-binary'),
+  releaseId: releaseIdSchema, gitSha: z.string(), promotedAtUtc: z.string(),
+  installedAt: z.string().optional(), serverVersion: z.string().optional(), buildId: z.string().optional(),
+  buildChannel: z.string().optional(), rollbackVerifiedWith: z.array(releaseIdSchema).optional(),
+  files: releaseFilesV2Schema,
+});
+const currentManifestSchema = z.discriminatedUnion('schemaVersion', [currentManifestV1Schema, currentManifestV2Schema]);
+
 export type InstalledRuntimeRelease = z.infer<typeof releaseManifestSchema>;
 
-async function hashExecutable(filePath: string): Promise<{ sha256: string; bytes: number }> {
+async function fileExists(filePath: string): Promise<boolean> {
+  try { return (await stat(filePath)).isFile(); } catch { return false; }
+}
+
+async function hashFile(filePath: string): Promise<{ sha256: string; bytes: number }> {
   const source = await stat(filePath);
-  if (!source.isFile()) throw Object.assign(new Error(`Missing executable: ${filePath}`), { code: 'ENOENT' });
+  if (!source.isFile()) throw Object.assign(new Error(`Missing release file: ${filePath}`), { code: 'ENOENT' });
   const digest = createHash('sha256');
   for await (const chunk of createReadStream(filePath)) digest.update(chunk);
   return { sha256: digest.digest('hex').toLowerCase(), bytes: source.size };
+}
+
+type ManifestFiles = InstalledRuntimeRelease['files'];
+
+async function hashReleaseFiles(releaseDir: string, schemaVersion: 1 | 2): Promise<ManifestFiles> {
+  if (schemaVersion === 1) {
+    const [serverFile, desktopFile] = await Promise.all([
+      hashFile(join(releaseDir, 'kiki-server.exe')),
+      hashFile(join(releaseDir, 'kiki-desktop.exe')),
+    ]);
+    return { 'kiki-server.exe': serverFile, 'kiki-desktop.exe': desktopFile };
+  }
+  const [desktopFile, serverEntry, nativeAddons] = await Promise.all([
+    hashFile(join(releaseDir, 'kiki-desktop.exe')),
+    hashFile(join(releaseDir, 'server-entry.mjs')),
+    hashFile(join(releaseDir, 'native-addons.json')),
+  ]);
+  return { 'kiki-desktop.exe': desktopFile, 'server-entry.mjs': serverEntry, 'native-addons.json': nativeAddons };
+}
+
+function manifestForCurrent(current: z.infer<typeof currentManifestSchema>, releaseId: string): InstalledRuntimeRelease {
+  const shared = {
+    releaseId,
+    gitSha: current.gitSha,
+    installedAt: current.installedAt ?? current.promotedAtUtc,
+    promotedAtUtc: current.promotedAtUtc,
+    serverVersion: current.serverVersion ?? getServerVersion(),
+    buildId: current.buildId,
+    buildChannel: current.buildChannel,
+    rollbackVerifiedWith: current.rollbackVerifiedWith ?? [],
+    files: current.files,
+  };
+  if (current.schemaVersion === 2) {
+    return releaseManifestV2Schema.parse({ ...shared, schemaVersion: 2, runtimeKind: 'electron-single-binary' });
+  }
+  return releaseManifestV1Schema.parse({ ...shared, schemaVersion: 1 });
 }
 
 async function fallbackInstalledRelease(root: string, releaseId: string): Promise<InstalledRuntimeRelease> {
@@ -42,20 +109,7 @@ async function fallbackInstalledRelease(root: string, releaseId: string): Promis
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  if (current !== undefined) {
-    return releaseManifestSchema.parse({
-      schemaVersion: 1,
-      releaseId,
-      gitSha: current.gitSha,
-      installedAt: current.installedAt ?? current.promotedAtUtc,
-      promotedAtUtc: current.promotedAtUtc,
-      serverVersion: current.serverVersion ?? getServerVersion(),
-      buildId: current.buildId,
-      buildChannel: current.buildChannel,
-      rollbackVerifiedWith: current.rollbackVerifiedWith ?? [],
-      files: current.files,
-    });
-  }
+  if (current !== undefined) return manifestForCurrent(current, releaseId);
   let gitSha = 'unknown';
   try {
     const buildInfo = await readFile(join(releaseDir, 'build-info.txt'), 'utf8');
@@ -64,20 +118,18 @@ async function fallbackInstalledRelease(root: string, releaseId: string): Promis
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  const [serverFile, desktopFile] = await Promise.all([
-    hashExecutable(join(releaseDir, 'kiki-server.exe')),
-    hashExecutable(join(releaseDir, 'kiki-desktop.exe')),
-  ]);
   const timestamp = dirStat.mtime.toISOString();
-  return releaseManifestSchema.parse({
-    schemaVersion: 1,
-    releaseId,
-    gitSha,
-    installedAt: timestamp,
-    promotedAtUtc: timestamp,
-    serverVersion: getServerVersion(),
-    rollbackVerifiedWith: [],
-    files: { 'kiki-server.exe': serverFile, 'kiki-desktop.exe': desktopFile },
+  const shared = { releaseId, gitSha, installedAt: timestamp, promotedAtUtc: timestamp, serverVersion: getServerVersion(), rollbackVerifiedWith: [] as string[] };
+  const v2Layout = !(await fileExists(join(releaseDir, 'kiki-server.exe'))) &&
+    await fileExists(join(releaseDir, 'server-entry.mjs')) &&
+    await fileExists(join(releaseDir, 'native-addons.json'));
+  if (v2Layout) {
+    return releaseManifestV2Schema.parse({
+      ...shared, schemaVersion: 2, runtimeKind: 'electron-single-binary', files: await hashReleaseFiles(releaseDir, 2),
+    });
+  }
+  return releaseManifestV1Schema.parse({
+    ...shared, schemaVersion: 1, files: await hashReleaseFiles(releaseDir, 1),
   });
 }
 
@@ -107,15 +159,32 @@ export async function installedRuntimeReleases(root: string): Promise<InstalledR
   return releases.toSorted((left, right) => right.installedAt.localeCompare(left.installedAt));
 }
 
+async function verifyFileDigest(filePath: string, expected: { sha256: string; bytes: number }, label: string): Promise<void> {
+  let actual: { sha256: string; bytes: number };
+  try {
+    actual = await hashFile(filePath);
+  } catch {
+    throw new Error(`The installed ${label} does not match its release manifest.`);
+  }
+  if (actual.bytes !== expected.bytes) throw new Error(`The installed ${label} does not match its release manifest.`);
+  if (actual.sha256 !== expected.sha256) throw new Error(`The installed ${label} failed its release integrity check.`);
+}
+
 export async function verifiedRuntimeRelease(root: string, releaseId: string): Promise<RuntimeRelease> {
   const manifest = await readInstalledRuntimeRelease(root, releaseId);
-  const executable = join(root, 'releases', releaseId, 'kiki-server.exe');
-  const expected = manifest.files['kiki-server.exe'];
-  const source = await stat(executable);
-  if (!source.isFile() || source.size !== expected.bytes) throw new Error('The installed server does not match its release manifest.');
-  const digest = createHash('sha256');
-  for await (const chunk of createReadStream(executable)) digest.update(chunk);
-  if (digest.digest('hex').toLowerCase() !== expected.sha256) throw new Error('The installed server failed its release integrity check.');
+  const releaseDir = join(root, 'releases', releaseId);
+  if (manifest.schemaVersion === 2) {
+    const desktop = join(releaseDir, 'kiki-desktop.exe');
+    await verifyFileDigest(desktop, manifest.files['kiki-desktop.exe'], 'desktop binary');
+    await verifyFileDigest(join(releaseDir, 'server-entry.mjs'), manifest.files['server-entry.mjs'], 'server entry');
+    await verifyFileDigest(join(releaseDir, 'native-addons.json'), manifest.files['native-addons.json'], 'native addon manifest');
+    return runtimeReleaseSchema.parse({
+      releaseId, executable: desktop, args: [join(releaseDir, 'server-entry.mjs')], serverVersion: manifest.serverVersion,
+      buildId: manifest.buildId, buildChannel: manifest.buildChannel, rollbackVerifiedWith: manifest.rollbackVerifiedWith,
+    });
+  }
+  const executable = join(releaseDir, 'kiki-server.exe');
+  await verifyFileDigest(executable, manifest.files['kiki-server.exe'], 'server');
   return runtimeReleaseSchema.parse({ releaseId, executable, args: [], serverVersion: manifest.serverVersion,
     buildId: manifest.buildId, buildChannel: manifest.buildChannel, rollbackVerifiedWith: manifest.rollbackVerifiedWith });
 }
@@ -124,5 +193,5 @@ export async function readRuntimeReleasePointer(root: string, kind: 'installed' 
   let raw: unknown;
   try { raw = JSON.parse(await readFile(join(root, `${kind}.json`), 'utf8')); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
-  return z.object({ schemaVersion: z.literal(1), releaseId: releaseIdSchema }).parse(raw).releaseId;
+  return z.object({ schemaVersion: z.union([z.literal(1), z.literal(2)]), releaseId: releaseIdSchema }).parse(raw).releaseId;
 }
