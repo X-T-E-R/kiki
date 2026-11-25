@@ -98,6 +98,113 @@ describe('durable managed writer ownership', () => {
       await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
+
+  it('verifies schemaVersion 2 electron-single-binary releases without a server SEA and rejects tampering', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-runtime-releases-v2-'));
+    const releaseId = `${'e'.repeat(24)}-${'f'.repeat(24)}`;
+    try {
+      const releaseDir = join(root, 'releases', releaseId);
+      await mkdir(releaseDir, { recursive: true });
+      const desktopBytes = Buffer.from('example-electron-binary');
+      const serverEntryBytes = Buffer.from('example-server-entry');
+      const nativeAddonsBytes = Buffer.from(JSON.stringify({ addons: { 'node-pty': { sha256: '0'.repeat(64) } } }));
+      const sha = (buf: Buffer) => createHash('sha256').update(buf).digest('hex');
+      await writeFile(join(releaseDir, 'kiki-desktop.exe'), desktopBytes);
+      await writeFile(join(releaseDir, 'server-entry.mjs'), serverEntryBytes);
+      await writeFile(join(releaseDir, 'native-addons.json'), nativeAddonsBytes);
+      const manifest = {
+        schemaVersion: 2,
+        runtimeKind: 'electron-single-binary',
+        releaseId,
+        gitSha: 'aabbccdd',
+        installedAt: '2026-11-25T00:00:00Z',
+        serverVersion: '0.7.0',
+        buildChannel: 'stable',
+        rollbackVerifiedWith: [],
+        files: {
+          'kiki-desktop.exe': { sha256: sha(desktopBytes), bytes: desktopBytes.length },
+          'server-entry.mjs': { sha256: sha(serverEntryBytes), bytes: serverEntryBytes.length },
+          'native-addons.json': { sha256: sha(nativeAddonsBytes), bytes: nativeAddonsBytes.length },
+        },
+      };
+      await writeFile(join(releaseDir, 'runtime-release.json'), JSON.stringify(manifest));
+      const listed = await installedRuntimeReleases(root);
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({ schemaVersion: 2, runtimeKind: 'electron-single-binary', releaseId });
+      expect(listed[0]?.files).not.toHaveProperty('kiki-server.exe');
+      const verified = await verifiedRuntimeRelease(root, releaseId);
+      expect(verified.releaseId).toBe(releaseId);
+      expect(verified.executable).toBe(join(releaseDir, 'kiki-desktop.exe'));
+      expect(verified.args).toEqual([join(releaseDir, 'server-entry.mjs')]);
+      await writeFile(join(releaseDir, 'server-entry.mjs'), Buffer.from('tampered-server-entry'));
+      await expect(verifiedRuntimeRelease(root, releaseId)).rejects.toThrow(/integrity|does not match/);
+      await writeFile(join(releaseDir, 'server-entry.mjs'), serverEntryBytes);
+      await writeFile(join(releaseDir, 'native-addons.json'), Buffer.from('tampered-addons'));
+      await expect(verifiedRuntimeRelease(root, releaseId)).rejects.toThrow(/integrity|does not match/);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('reads schemaVersion 2 fallback from current.json and v2 pointers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-runtime-releases-v2-current-'));
+    const releaseId = `${'1a'.repeat(12)}-${'2b'.repeat(12)}`;
+    try {
+      const releaseDir = join(root, 'releases', releaseId);
+      await mkdir(releaseDir, { recursive: true });
+      const desktopBytes = Buffer.from('desktop-v2');
+      const serverEntryBytes = Buffer.from('entry-v2');
+      const nativeAddonsBytes = Buffer.from('addons-v2');
+      const sha = (buf: Buffer) => createHash('sha256').update(buf).digest('hex');
+      await writeFile(join(releaseDir, 'kiki-desktop.exe'), desktopBytes);
+      await writeFile(join(releaseDir, 'server-entry.mjs'), serverEntryBytes);
+      await writeFile(join(releaseDir, 'native-addons.json'), nativeAddonsBytes);
+      await writeFile(join(root, 'current.json'), JSON.stringify({
+        schemaVersion: 2,
+        runtimeKind: 'electron-single-binary',
+        releaseId,
+        gitSha: '0011223344556677',
+        promotedAtUtc: '2026-11-25T01:00:00Z',
+        files: {
+          'kiki-desktop.exe': { sha256: sha(desktopBytes), bytes: desktopBytes.length },
+          'server-entry.mjs': { sha256: sha(serverEntryBytes), bytes: serverEntryBytes.length },
+          'native-addons.json': { sha256: sha(nativeAddonsBytes), bytes: nativeAddonsBytes.length },
+        },
+      }));
+      const { readRuntimeReleasePointer, readInstalledRuntimeRelease } = await import('../src/runtime/releases');
+      expect(await readRuntimeReleasePointer(root, 'current')).toBe(releaseId);
+      const installed = await readInstalledRuntimeRelease(root, releaseId);
+      expect(installed).toMatchObject({ schemaVersion: 2, releaseId, gitSha: '0011223344556677' });
+      const verified = await verifiedRuntimeRelease(root, releaseId);
+      expect(verified.executable).toBe(join(releaseDir, 'kiki-desktop.exe'));
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('discovers a non-current schemaVersion 2 release directory without runtime-release.json', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-runtime-releases-v2-fallback-'));
+    const releaseId = `${'3c'.repeat(12)}-${'4d'.repeat(12)}`;
+    try {
+      const releaseDir = join(root, 'releases', releaseId);
+      await mkdir(releaseDir, { recursive: true });
+      const desktopBytes = Buffer.from('desktop-fallback-v2');
+      const serverEntryBytes = Buffer.from('entry-fallback-v2');
+      const nativeAddonsBytes = Buffer.from('addons-fallback-v2');
+      await writeFile(join(releaseDir, 'kiki-desktop.exe'), desktopBytes);
+      await writeFile(join(releaseDir, 'server-entry.mjs'), serverEntryBytes);
+      await writeFile(join(releaseDir, 'native-addons.json'), nativeAddonsBytes);
+      await writeFile(join(releaseDir, 'build-info.txt'), 'gitSha: aabbccddeeff00\n');
+      const listed = await installedRuntimeReleases(root);
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({ schemaVersion: 2, runtimeKind: 'electron-single-binary', releaseId, gitSha: 'aabbccddeeff00' });
+      const verified = await verifiedRuntimeRelease(root, releaseId);
+      expect(verified.executable).toBe(join(releaseDir, 'kiki-desktop.exe'));
+      expect(verified.args).toEqual([join(releaseDir, 'server-entry.mjs')]);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
 });
 
 async function controllerFixture() {

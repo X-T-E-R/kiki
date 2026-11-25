@@ -92,13 +92,22 @@ export class SystemSshProcess {
     });
   }
   async tunnel(profile: SshRemoteProfile, remotePort: number, parent: AbortSignal): Promise<SshTunnelProcess> {
+    return this.forward(sshArguments(profile), remotePort, parent);
+  }
+  /**
+   * Open a verified local port forward for already-validated ssh arguments.
+   * Shared by the connection-plane tunnel path and the desktop SSH lease
+   * service; both reserve an ephemeral loopback port with `node:net`, wait for
+   * OpenSSH's exact readiness line, and own deterministic child cleanup.
+   */
+  async forward(baseArgs: readonly string[], remotePort: number, parent: AbortSignal): Promise<SshTunnelProcess> {
     parent.throwIfAborted();
     const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
     const address = reservation.address();
     if (address === null || typeof address === 'string') throw new AdmissionError(502, 'ssh_port_unavailable');
     const port = address.port;
     await new Promise<void>((done, reject) => { reservation.close((error) => error === undefined ? done() : reject(error)); });
-    const args = sshArguments(profile);
+    const args = [...baseArgs];
     args.splice(args.length - 1, 0, '-v', '-N', '-o', 'ExitOnForwardFailure=yes', '-L', `127.0.0.1:${port}:127.0.0.1:${remotePort}`);
     const child = await this.start(args); const failure = inspectFailure(child); child.stdout?.resume();
     const lifetime = new AbortController();

@@ -1,5 +1,5 @@
 import type { IncomingMessage } from 'node:http';
-import { IBootstrapService, IConfigService, type Scope } from '@kiki/agent-core-v2';
+import { IBootstrapService, IConfigService, ISessionActivityView, ISessionManager, type Scope } from '@kiki/agent-core-v2';
 import { FiberState } from '@kiki/agent-core-v2/_base/di/fiber';
 import { IFeatureManager } from '@kiki/agent-core-v2/app/feature/featureManager';
 import { IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
@@ -73,6 +73,13 @@ import { registerSidebarRoutes } from './sidebar';
 import { registerShippedAgentProfilesRoute } from './shippedAgentProfiles';
 import { registerShutdownRoutes } from './shutdown';
 import { registerDesktopLifecycleRoutes } from './desktopLifecycle';
+import { registerDesktopSshRoutes } from './desktopSsh';
+import { registerDesktopSpacesRoutes } from './desktopSpaces';
+import { DesktopSshProfileStore, defaultDesktopSshProfilePath } from '../services/desktopSsh/profileStore';
+import { DesktopSshTunnelManager } from '../services/desktopSsh/tunnelManager';
+import { PluginFocusPoller } from '../services/pluginFocus/pluginFocusPoller';
+import { LocalSpacesService } from '../services/localSpaces/localSpacesService';
+import { PluginFocusService } from '../services/pluginFocus/pluginFocusService';
 import { registerSnapshotRoutes } from './snapshot';
 import { registerSkillsRoutes } from './skills';
 import { registerSkinsRoutes } from './skins';
@@ -165,9 +172,51 @@ export async function registerApiV1Routes(
     registerDesktopLifecycleRoutes(app as unknown as Parameters<typeof registerDesktopLifecycleRoutes>[0], core,
       { serverId: opts.serverId, onShutdown: opts.onShutdown, pathPrefix: '/api', explicitExitPath: opts.explicitExitPath, pid: opts.pid, startedAt: Date.parse(opts.startedAt) });
   }
+  const desktopBootstrap = core.accessor.get(IBootstrapService);
+  const desktopMainHome = desktopBootstrap.baseHomeDir ?? desktopBootstrap.homeDir;
+  const desktopTunnels = new DesktopSshTunnelManager();
+  const desktopPluginFocus = new PluginFocusService();
+  const desktopFocusPoller = new PluginFocusPoller({
+    focus: desktopPluginFocus,
+    mainHomeDir: desktopMainHome,
+    currentSpaceId: desktopBootstrap.spaceId ?? 'main',
+    serverToken: opts.pluginBridgeServerToken,
+  });
+  desktopFocusPoller.start();
+  opts.shutdownSignal?.addEventListener('abort', () => { void desktopTunnels.shutdown().catch(() => undefined); }, { once: true });
+  (app as unknown as FastifyInstance).addHook('onClose', async () => {
+    await desktopFocusPoller.stop().catch(() => undefined);
+    await desktopTunnels.shutdown().catch(() => undefined);
+  });
   await app.register(
     async (apiV1) => {
       registerHealthRoute(apiV1);
+
+      registerDesktopSshRoutes(apiV1 as unknown as Parameters<typeof registerDesktopSshRoutes>[0], {
+        profiles: new DesktopSshProfileStore({ filePath: defaultDesktopSshProfilePath(desktopMainHome) }),
+        tunnels: desktopTunnels,
+        homeId: desktopBootstrap.spaceId ?? 'main',
+      });
+      registerDesktopSpacesRoutes(apiV1 as unknown as Parameters<typeof registerDesktopSpacesRoutes>[0], {
+        spaces: new LocalSpacesService({
+          mainHomeDir: desktopMainHome,
+                currentSpaceId: desktopBootstrap.spaceId ?? 'main',
+          desktopManaged: desktopBootstrap.getEnv('KIKI_DESKTOP_BUNDLED') === '1' || desktopBootstrap.getEnv('KIKI_RUNTIME_MANAGED') === '1',
+          readBusySessions: async (homeDir) => {
+            if (homeDir !== desktopBootstrap.homeDir) return undefined;
+            const sessions = core.accessor.get(ISessionManager);
+            let busy = 0;
+            let needsYou = 0;
+            for (const session of [...new Set([...sessions.list(), ...sessions.listEphemeral()])]) {
+              const state = session.accessor.get(ISessionActivityView).state();
+              if (state.pendingInteraction !== 'none') needsYou += 1;
+              else if (state.busy) busy += 1;
+            }
+            return { busy, needsYou };
+          },
+        }),
+        pluginFocus: desktopPluginFocus,
+      });
 
       if (opts.debugEndpoints === true) {
         registerDebugRoutes(
