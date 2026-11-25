@@ -116,6 +116,8 @@ export interface ModelRequester {
     input: string | VideoUploadInput,
     options?: { readonly signal?: AbortSignal },
   ): Promise<VideoURLPart>;
+
+  supportsVideoUpload?(): boolean;
 }
 
 export function effectiveMaxCompletionTokens(params?: ModelRequestParams): number | undefined {

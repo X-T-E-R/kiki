@@ -52,6 +52,7 @@ import {
   type AvCompressRunner,
 } from '#/agent/media/av-compress';
 import { createVideoUploader, registerMediaTools } from '#/agent/media/registerMediaTools';
+import type { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { AgentMediaToolsRegistrar } from '#/agent/media/mediaToolsRegistrar';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
@@ -1433,6 +1434,136 @@ describe('createVideoUploader', () => {
   it('returns undefined when the model does not support video upload', () => {
     expect(createVideoUploader(undefined)).toBeUndefined();
     expect(createVideoUploader({} as Pick<ModelRequester, 'uploadVideo'>)).toBeUndefined();
+    expect(
+      createVideoUploader({
+        uploadVideo: vi.fn().mockRejectedValue(new VideoUploadUnsupportedError('no upload')),
+        supportsVideoUpload: () => false,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('pre-compresses oversized local videos before blob archiving when supportsVideoUpload is false and refreshes stale WinGet ffmpeg cache on ENOENT', async () => {
+    const bigVideo = mp4Buffer(1024);
+    const pass1Mp4 = mp4Buffer(568);
+    const pass2Mp4 = mp4Buffer(48);
+    const runner = vi.fn<AvCompressRunner>(async (cmd, args) => {
+      if (cmd.includes('ffprobe')) return { stdout: '30/1\n', stderr: '' };
+      const outPath = args.at(-1)!;
+      if (outPath.endsWith('out-pass1.mp4')) {
+        await writeFile(outPath, pass1Mp4);
+      } else if (outPath.endsWith('out-pass2.mp4')) {
+        await writeFile(outPath, pass2Mp4);
+      }
+      return { stdout: '', stderr: '' };
+    });
+    setConfiguredAvInlineByteBudget(200);
+    setConfiguredAvCompressRunner(runner);
+
+    const offloadFile = vi.fn(async () => 'kiki-blob://raw-uncompressed.mp4');
+    const offloadParts = vi.fn(async (parts: readonly ContentPart[]) =>
+      parts.map(() => ({
+        type: 'video_url' as const,
+        videoUrl: { url: 'kiki-blob://compressed-pass2.mp4' },
+      })),
+    );
+    const blobService: IAgentBlobService = {
+      _serviceBrand: undefined,
+      offloadFile,
+      offloadParts,
+      offloadBytes: vi.fn(async () => 'kiki-blob://bytes'),
+      resolveUrl: vi.fn(async () => undefined),
+    } as unknown as IAgentBlobService;
+
+    const nonUploadingRequester: Pick<ModelRequester, 'uploadVideo' | 'supportsVideoUpload'> = {
+      uploadVideo: vi.fn().mockRejectedValue(new VideoUploadUnsupportedError('anthropic inline only')),
+      supportsVideoUpload: () => false,
+    };
+    const tool = new ReadMediaFileTool(
+      runtimeFor(createTestFs({ '/workspace/big.mp4': { data: bigVideo } }), createTestEnv(), 'local'),
+      WORKSPACE,
+      capabilities(),
+      createVideoUploader(nonUploadingRequester),
+      undefined,
+      true,
+      'anthropic',
+      undefined,
+      undefined,
+      undefined,
+      blobService,
+    );
+    const result = await execute(tool, { path: '/workspace/big.mp4' });
+    expect(result.isError).toBe(false);
+    expect(offloadFile).not.toHaveBeenCalled();
+    expect(offloadParts).toHaveBeenCalledOnce();
+    expect(noteText(result)).toContain('pre-compressed to video/mp4');
+    expect(outputParts(result)[1]).toEqual({
+      type: 'video_url',
+      videoUrl: { url: 'kiki-blob://compressed-pass2.mp4' },
+    });
+
+    const prevLocalAppData = process.env['LOCALAPPDATA'];
+    const winGetAppData = await mkdtemp(join(tmpdir(), 'kiki-winget-upgrade-'));
+    const pkgDir = join(winGetAppData, 'Microsoft', 'WinGet', 'Packages', 'Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe');
+    const oldSub = join(pkgDir, 'ffmpeg-9.0.2-full_build', 'bin');
+    const newSub = join(pkgDir, 'ffmpeg-9.1-full_build', 'bin');
+    try {
+      process.env['LOCALAPPDATA'] = winGetAppData;
+      await mkdir(oldSub, { recursive: true });
+      await writeFile(join(oldSub, 'ffmpeg.exe'), 'old');
+      const seenCommands: string[] = [];
+      const winGetRunner: AvCompressRunner = async (cmd, args) => {
+        seenCommands.push(cmd);
+        if (cmd === 'ffmpeg' || cmd === 'ffprobe' || cmd.includes('ffmpeg-9.0.2-full_build')) {
+          throw Object.assign(new Error(`spawn ${cmd} ENOENT`), { code: 'ENOENT' });
+        }
+        if (cmd.includes('ffprobe')) return { stdout: '24/1\n', stderr: '' };
+        const outPath = args.at(-1)!;
+        await writeFile(outPath, outPath.endsWith('out-pass1.mp4') ? pass1Mp4 : pass2Mp4);
+        return { stdout: '', stderr: '' };
+      };
+      await mkdir(newSub, { recursive: true });
+      await writeFile(join(newSub, 'ffmpeg.exe'), 'new');
+      await rm(oldSub, { recursive: true, force: true });
+      await mkdir(oldSub, { recursive: true });
+      await writeFile(join(oldSub, 'ffmpeg.exe'), 'old');
+
+      const seedRunner: AvCompressRunner = async (cmd, args) => {
+        if (cmd === 'ffmpeg' || cmd === 'ffprobe') {
+          throw Object.assign(new Error(`spawn ${cmd} ENOENT`), { code: 'ENOENT' });
+        }
+        if (cmd.includes('ffprobe')) return { stdout: '24/1\n', stderr: '' };
+        const outPath = args.at(-1)!;
+        await writeFile(outPath, outPath.endsWith('out-pass1.mp4') ? pass1Mp4 : pass2Mp4);
+        return { stdout: '', stderr: '' };
+      };
+      await rm(newSub, { recursive: true, force: true });
+      const firstRun = await compressVideoForModel(bigVideo, 'video/mp4', {
+        byteBudget: 200,
+        runner: seedRunner,
+        allowWinGetFallback: true,
+      });
+      expect(firstRun.changed).toBe(true);
+
+      await rm(oldSub, { recursive: true, force: true });
+      await mkdir(newSub, { recursive: true });
+      await writeFile(join(newSub, 'ffmpeg.exe'), 'new');
+
+      const upgradedRun = await compressVideoForModel(bigVideo, 'video/mp4', {
+        byteBudget: 200,
+        runner: winGetRunner,
+        allowWinGetFallback: true,
+      });
+      expect(upgradedRun.changed).toBe(true);
+      expect(seenCommands.some((cmd) => cmd.includes('ffmpeg-9.0.2-full_build'))).toBe(true);
+      expect(seenCommands.some((cmd) => cmd.includes('ffmpeg-9.1-full_build'))).toBe(true);
+    } finally {
+      if (prevLocalAppData === undefined) {
+        delete process.env['LOCALAPPDATA'];
+      } else {
+        process.env['LOCALAPPDATA'] = prevLocalAppData;
+      }
+      await rm(winGetAppData, { recursive: true, force: true });
+    }
   });
 
   it('binds uploadVideo without telemetry', async () => {

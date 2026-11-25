@@ -56,11 +56,11 @@ export function registerMediaTools(
 }
 
 export function createVideoUploader(
-  requester: Pick<ModelRequester, 'uploadVideo'> | undefined,
+  requester: Pick<ModelRequester, 'uploadVideo' | 'supportsVideoUpload'> | undefined,
   telemetry?: VideoUploadTelemetry,
 ): VideoUploader | undefined {
   const uploadVideo = requester?.uploadVideo;
-  if (uploadVideo === undefined) return undefined;
+  if (uploadVideo === undefined || requester?.supportsVideoUpload?.() === false) return undefined;
   const bound = uploadVideo.bind(requester);
   if (telemetry === undefined) return (input, options) => bound(input, options);
 

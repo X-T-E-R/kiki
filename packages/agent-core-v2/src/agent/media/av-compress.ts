@@ -39,6 +39,7 @@ export interface CompressAvOptions {
   readonly ffprobePath?: string;
   readonly timeoutMs?: number;
   readonly runner?: AvCompressRunner;
+  readonly allowWinGetFallback?: boolean;
 }
 
 export interface CompressAvResult {
@@ -143,8 +144,11 @@ export async function findWinGetFfmpegBinary(localAppData: string): Promise<stri
   return null;
 }
 
-async function resolveCachedWinGetFfmpegPath(): Promise<string | null> {
-  if (cachedWinGetFfmpegPath !== undefined) return cachedWinGetFfmpegPath;
+async function resolveCachedWinGetFfmpegPath(forceRefresh = false): Promise<string | null> {
+  if (!forceRefresh && typeof cachedWinGetFfmpegPath === 'string') return cachedWinGetFfmpegPath;
+  if (forceRefresh || cachedWinGetFfmpegPath === null) {
+    cachedWinGetFfmpegPath = undefined;
+  }
   if (winGetLookupInFlight === undefined) {
     const localAppData = process.env['LOCALAPPDATA'] ?? '';
     winGetLookupInFlight = findWinGetFfmpegBinary(localAppData)
@@ -166,12 +170,12 @@ function hasExplicitFfmpegPath(explicit: string | undefined): boolean {
   return envPath !== undefined && envPath.length > 0;
 }
 
-function resolveFfmpegPath(explicit: string | undefined, useDefaultRunner: boolean): string {
+function resolveFfmpegPath(explicit: string | undefined, allowWinGetFallback: boolean): string {
   const trimmed = explicit?.trim();
   if (trimmed !== undefined && trimmed.length > 0) return trimmed;
   const envPath = process.env['KIKI_FFMPEG_PATH']?.trim();
   if (envPath !== undefined && envPath.length > 0) return envPath;
-  if (useDefaultRunner && process.platform === 'win32' && typeof cachedWinGetFfmpegPath === 'string') {
+  if (allowWinGetFallback && typeof cachedWinGetFfmpegPath === 'string') {
     return cachedWinGetFfmpegPath;
   }
   return 'ffmpeg';
@@ -204,13 +208,15 @@ async function runFfmpegCommand(
       timeoutMs: options.timeoutMs,
     });
   } catch (error) {
+    const usedStaleWinGetCache =
+      typeof cachedWinGetFfmpegPath === 'string' && state.ffmpegPath === cachedWinGetFfmpegPath;
     if (
       options.allowWinGetFallback &&
-      state.ffmpegPath === 'ffmpeg' &&
+      (state.ffmpegPath === 'ffmpeg' || usedStaleWinGetCache) &&
       isEnoentError(error)
     ) {
-      const discovered = await resolveCachedWinGetFfmpegPath();
-      if (discovered !== null) {
+      const discovered = await resolveCachedWinGetFfmpegPath(usedStaleWinGetCache);
+      if (discovered !== null && discovered !== state.ffmpegPath) {
         state.ffmpegPath = discovered;
         return runner(discovered, args, {
           signal: options.signal,
@@ -277,13 +283,15 @@ async function runFfprobe(
     return stdout;
   } catch (error) {
     if (signal?.aborted === true || isAbortError(error)) throw createAbortError();
+    const usedStaleWinGetCache =
+      typeof cachedWinGetFfmpegPath === 'string' && state.ffmpegPath === cachedWinGetFfmpegPath;
     if (
       allowWinGetFallback &&
-      initialProbe === 'ffprobe' &&
+      (initialProbe === 'ffprobe' || usedStaleWinGetCache) &&
       isEnoentError(error)
     ) {
-      const discovered = await resolveCachedWinGetFfmpegPath();
-      if (discovered !== null) {
+      const discovered = await resolveCachedWinGetFfmpegPath(usedStaleWinGetCache);
+      if (discovered !== null && discovered !== state.ffmpegPath) {
         state.ffmpegPath = discovered;
         const fallbackProbe = resolveFfprobePath(explicitFfprobePath, discovered);
         try {
@@ -385,8 +393,9 @@ export async function compressVideoForModel(
   const runner = options.runner ?? configuredAvRunner ?? defaultRunner;
   const useDefaultRunner = runner === defaultRunner;
   const allowWinGetFallback =
-    useDefaultRunner && process.platform === 'win32' && !hasExplicitFfmpegPath(options.ffmpegPath);
-  const binState = { ffmpegPath: resolveFfmpegPath(options.ffmpegPath, useDefaultRunner) };
+    options.allowWinGetFallback ??
+    (useDefaultRunner && process.platform === 'win32' && !hasExplicitFfmpegPath(options.ffmpegPath));
+  const binState = { ffmpegPath: resolveFfmpegPath(options.ffmpegPath, allowWinGetFallback) };
   const timeoutMs = options.timeoutMs ?? DEFAULT_FFMPEG_TIMEOUT_MS;
   const inputExt = mediaExtensionForMime(mimeType) ?? '.bin';
   const workDir = await mkdtemp(join(tmpdir(), 'kiki-av-'));
@@ -585,8 +594,9 @@ export async function compressAudioForModel(
   const runner = options.runner ?? configuredAvRunner ?? defaultRunner;
   const useDefaultRunner = runner === defaultRunner;
   const allowWinGetFallback =
-    useDefaultRunner && process.platform === 'win32' && !hasExplicitFfmpegPath(options.ffmpegPath);
-  const binState = { ffmpegPath: resolveFfmpegPath(options.ffmpegPath, useDefaultRunner) };
+    options.allowWinGetFallback ??
+    (useDefaultRunner && process.platform === 'win32' && !hasExplicitFfmpegPath(options.ffmpegPath));
+  const binState = { ffmpegPath: resolveFfmpegPath(options.ffmpegPath, allowWinGetFallback) };
   const timeoutMs = options.timeoutMs ?? DEFAULT_FFMPEG_TIMEOUT_MS;
   const inputExt = mediaExtensionForMime(mimeType) ?? '.bin';
   const workDir = await mkdtemp(join(tmpdir(), 'kiki-av-'));

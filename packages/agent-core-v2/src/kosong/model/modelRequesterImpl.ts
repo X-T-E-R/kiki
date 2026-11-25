@@ -172,6 +172,10 @@ export class ModelRequesterImpl implements ModelRequester {
     );
   }
 
+  supportsVideoUpload(): boolean {
+    return this.resolveChatProvider().uploadVideo !== undefined;
+  }
+
   async uploadVideo(
     input: string | VideoUploadInput,
     options?: { readonly signal?: AbortSignal },

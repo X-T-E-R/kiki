@@ -658,6 +658,7 @@ describe('ModelRequesterImpl request execution', () => {
       modelWith(staticAuth('sk-1')),
       registryReturning(provider),
     );
+    expect(requester.supportsVideoUpload()).toBe(false);
     await expect(requester.uploadVideo('file-id')).rejects.toThrow(/does not support video upload/);
 
     const uploadCalls: Array<GenerateOptions | undefined> = [];
@@ -665,6 +666,7 @@ describe('ModelRequesterImpl request execution', () => {
       uploadCalls.push(options);
       return Promise.resolve({ type: 'video_url', videoUrl: { url: 'https://cdn.example.test/v.mp4' } });
     };
+    expect(requester.supportsVideoUpload()).toBe(true);
     const part = await requester.uploadVideo('file-id');
     expect(part).toEqual({ type: 'video_url', videoUrl: { url: 'https://cdn.example.test/v.mp4' } });
     expect(uploadCalls[0]?.auth).toEqual({ apiKey: 'sk-1' });

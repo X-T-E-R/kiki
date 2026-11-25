@@ -61,5 +61,6 @@ export function materializeAdhocRequester(endpoint: BoundEndpoint, vault: IAdhoc
     },
     uploadImage: (input, options) => inner.uploadImage(input, { ...options, headers: undefined }),
     uploadVideo: (input, options) => inner.uploadVideo(input, options),
+    supportsVideoUpload: () => inner.supportsVideoUpload?.() ?? false,
   };
 }
