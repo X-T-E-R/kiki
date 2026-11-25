@@ -898,9 +898,13 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         }, terminal);
         if (wrapperPreBodyController !== undefined) {
           void wrapperPromise.catch(() => {});
-          rawResult = await abortable(wrapperPromise, wrapperPreBodyController.signal);
+          rawResult = await raceWithAbortGrace(
+            abortable(wrapperPromise, wrapperPreBodyController.signal),
+            signal,
+            call.toolName,
+          );
         } else {
-          rawResult = await wrapperPromise;
+          rawResult = await raceWithAbortGrace(wrapperPromise, signal, call.toolName);
         }
       } else {
         rawResult = await raceWithAbortGrace(terminal(signal), signal, call.toolName);
@@ -1419,6 +1423,8 @@ async function raceWithAbortGrace<Result>(
   let graceTimer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
 
+  void executePromise.catch(() => {});
+
   const graceSentinel: Promise<Result> = new Promise((resolve) => {
     const armTimer = (): void => {
       graceTimer = setTimeout(() => {
@@ -1427,6 +1433,7 @@ async function raceWithAbortGrace<Result>(
           isError: true,
         } as unknown as Result);
       }, ABORT_GRACE_MS);
+      graceTimer.unref?.();
     };
     if (signal.aborted) {
       armTimer();

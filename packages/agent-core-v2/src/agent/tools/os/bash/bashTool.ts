@@ -114,35 +114,62 @@ function releaseLocalForegroundBashCount(): void {
   }
 }
 
-async function acquireLocalForegroundBashSlot(signal: AbortSignal): Promise<(() => void) | undefined> {
-  if (signal.aborted) return undefined;
+type LocalForegroundBashSlotResult =
+  | { readonly kind: 'acquired'; readonly release: () => void }
+  | { readonly kind: 'aborted' }
+  | { readonly kind: 'timed_out' };
+
+async function acquireLocalForegroundBashSlot(
+  signal: AbortSignal,
+  timeoutMs?: number,
+): Promise<LocalForegroundBashSlotResult> {
+  if (signal.aborted) return { kind: 'aborted' };
   if (activeLocalForegroundBash >= MAX_CONCURRENT_LOCAL_FOREGROUND_BASH) {
-    const acquired = await new Promise<boolean>((resolve) => {
-      const onWake = (): void => {
+    const outcome = await new Promise<'acquired' | 'aborted' | 'timed_out'>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = (): void => {
+        if (timer !== undefined) clearTimeout(timer);
         signal.removeEventListener('abort', onAbort);
-        resolve(true);
+      };
+      const onWake = (): void => {
+        cleanup();
+        resolve('acquired');
       };
       const onAbort = (): void => {
+        cleanup();
         const idx = localForegroundBashWaitQueue.indexOf(onWake);
         if (idx !== -1) localForegroundBashWaitQueue.splice(idx, 1);
-        resolve(false);
+        resolve('aborted');
+      };
+      const onTimeout = (): void => {
+        cleanup();
+        const idx = localForegroundBashWaitQueue.indexOf(onWake);
+        if (idx !== -1) localForegroundBashWaitQueue.splice(idx, 1);
+        resolve('timed_out');
       };
       localForegroundBashWaitQueue.push(onWake);
       signal.addEventListener('abort', onAbort, { once: true });
+      if (timeoutMs !== undefined && timeoutMs > 0) {
+        timer = setTimeout(onTimeout, timeoutMs);
+        timer.unref?.();
+      }
     });
-    if (!acquired) return undefined;
+    if (outcome !== 'acquired') return { kind: outcome };
     if (signal.aborted) {
       releaseLocalForegroundBashCount();
-      return undefined;
+      return { kind: 'aborted' };
     }
   } else {
     activeLocalForegroundBash += 1;
   }
   let released = false;
-  return (): void => {
-    if (released) return;
-    released = true;
-    releaseLocalForegroundBashCount();
+  return {
+    kind: 'acquired',
+    release: (): void => {
+      if (released) return;
+      released = true;
+      releaseLocalForegroundBashCount();
+    },
   };
 }
 
@@ -256,9 +283,14 @@ export class BashTool implements IBashTool {
     effectiveCwd: string,
     command: string,
     local: boolean,
+    signal?: AbortSignal,
   ): Promise<IHostProcess> {
     if (!local && env.shellName === 'powershell') {
-      return processService.spawn(env.shellPath, ['-Command', command], { cwd: effectiveCwd, env: { NO_COLOR: '1', TERM: 'dumb' } });
+      return processService.spawn(env.shellPath, ['-Command', command], {
+        cwd: effectiveCwd,
+        env: { NO_COLOR: '1', TERM: 'dumb' },
+        signal,
+      });
     }
     const shellCwd = getShellPathBridge(env).toShellPath(effectiveCwd);
     const shellCommand = `cd ${shellQuote(shellCwd)} && ${command}`;
@@ -273,6 +305,7 @@ export class BashTool implements IBashTool {
       env: noninteractiveEnv,
       ownedProcessTree: env.osKind === 'Windows',
       ownedProcessLifetime: local && env.osKind === 'Windows' ? 'owner' : undefined,
+      signal,
     });
   }
 
@@ -321,14 +354,24 @@ export class BashTool implements IBashTool {
 
     const builder = new ToolOutputAccumulator();
     await prepareToolRuntime(this.runtime, args.host);
+    if (signal.aborted) {
+      return { isError: true, output: 'Aborted before command started' };
+    }
     const lease = args.host === undefined
       ? this.runtime.acquire(['process']) : acquireToolRuntime(this.runtime, args.host, ['process']);
     const isLocalForeground = !startsInBackground && lease.runtime.identity.runtimeId === 'local';
+    const canAutoDetachWait = !startsInBackground && autoBackgroundEnabled && callerPolicy.autoBackgroundMainWait;
     let releaseBashSlot: () => void = () => {};
+    let autoDetachedOnSlotWait = false;
     if (isLocalForeground) {
       const slotSignal = steer === undefined ? signal : AbortSignal.any([signal, steer]);
-      const acquired = await acquireLocalForegroundBashSlot(slotSignal);
-      if (acquired === undefined) {
+      const slotWaitBudgetMs = canAutoDetachWait
+        ? Math.max(1, effectiveForegroundTimeoutMs - Math.max(0, Date.now() - callStartedAt))
+        : undefined;
+      const acquired = await acquireLocalForegroundBashSlot(slotSignal, slotWaitBudgetMs);
+      if (acquired.kind === 'timed_out') {
+        autoDetachedOnSlotWait = true;
+      } else if (acquired.kind !== 'acquired') {
         if (signal.aborted) {
           lease.dispose();
           return { isError: true, output: 'Aborted before command started' };
@@ -339,26 +382,30 @@ export class BashTool implements IBashTool {
             isError: false,
             output: 'New input arrived before this command started; it was not started. Read the new input before deciding whether to run it.',
           };
+        }
+        if (steer?.aborted !== true) {
+          lease.dispose();
+          return { isError: true, output: 'Aborted before command started' };
         }
       } else {
-        releaseBashSlot = acquired;
-        if (signal.aborted) {
-          releaseBashSlot();
-          lease.dispose();
-          return { isError: true, output: 'Aborted before command started' };
-        }
-        if (skipUnstartedOnInput && steer?.aborted === true) {
-          releaseBashSlot();
-          lease.dispose();
-          return {
-            isError: false,
-            output: 'New input arrived before this command started; it was not started. Read the new input before deciding whether to run it.',
-          };
-        }
-        if (steer?.aborted === true) {
-          releaseBashSlot();
-          releaseBashSlot = () => {};
-        }
+        releaseBashSlot = acquired.release;
+      }
+      if (signal.aborted) {
+        releaseBashSlot();
+        lease.dispose();
+        return { isError: true, output: 'Aborted before command started' };
+      }
+      if (skipUnstartedOnInput && steer?.aborted === true) {
+        releaseBashSlot();
+        lease.dispose();
+        return {
+          isError: false,
+          output: 'New input arrived before this command started; it was not started. Read the new input before deciding whether to run it.',
+        };
+      }
+      if (steer?.aborted === true) {
+        releaseBashSlot();
+        releaseBashSlot = () => {};
       }
     } else if (skipUnstartedOnInput && !startsInBackground && !signal.aborted && steer?.aborted === true) {
       lease.dispose();
@@ -376,10 +423,22 @@ export class BashTool implements IBashTool {
       isReadOnlyBash = env.shellName === 'bash' && isConcurrencySafeBash(args.command);
       command = env.osKind === 'Windows' && env.shellName === 'bash' ? rewriteWindowsNullRedirect(args.command) : args.command;
       const effectiveCwd = view.resolve(args.cwd ?? view.workDir, view.workDir, this.permissionMode.mode === 'yolo');
-      proc = lease.track(await this.spawn(lease.runtime.process!, env, effectiveCwd, command, lease.runtime.identity.runtimeId === 'local'));
+      proc = lease.track(
+        await this.spawn(
+          lease.runtime.process!,
+          env,
+          effectiveCwd,
+          command,
+          lease.runtime.identity.runtimeId === 'local',
+          signal,
+        ),
+      );
     } catch (error) {
       releaseBashSlot();
       lease.dispose();
+      if (signal.aborted) {
+        return { isError: true, output: 'Aborted before command started' };
+      }
       return {
         isError: true,
         output: error instanceof Error ? error.message : String(error),
@@ -421,11 +480,12 @@ export class BashTool implements IBashTool {
     const steeredAfterSpawn = !startsInBackground && !signal.aborted && steer?.aborted === true;
     const remainingFgTimeoutMs = effectiveForegroundTimeoutMs - preRegisterElapsedMs;
     const autoDetachedBeforeRegister =
-      !startsInBackground &&
-      !signal.aborted &&
-      autoBackgroundEnabled &&
-      callerPolicy.autoBackgroundMainWait &&
-      remainingFgTimeoutMs <= 0;
+      autoDetachedOnSlotWait ||
+      (!startsInBackground &&
+        !signal.aborted &&
+        autoBackgroundEnabled &&
+        callerPolicy.autoBackgroundMainWait &&
+        remainingFgTimeoutMs <= 0);
     const startDetached = startsInBackground || steeredAfterSpawn || autoDetachedBeforeRegister;
     const registeredTimeoutMs = startDetached
       ? (startsInBackground ? timeoutMs : this.detachTimeoutMs())
@@ -469,6 +529,7 @@ export class BashTool implements IBashTool {
 
     if (startDetached) {
       collectForegroundOutput = false;
+      releaseBashSlot();
       const labels = startsInBackground
         ? {
             title: 'Background task started',

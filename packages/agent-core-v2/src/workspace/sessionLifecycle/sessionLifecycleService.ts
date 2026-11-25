@@ -1292,11 +1292,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (mode === 'preserve-pending') {
       for (const agent of agents) agent.accessor.get(IAgentPromptService).preservePendingForClose();
     }
-    for (const agent of agents) {
-      try {
-        await agentLifecycle.remove(agent.id, mode);
-      } catch (error) {
-        failures.push(error);
+    const outcomes = await Promise.allSettled(
+      agents.map((agent) => agentLifecycle.remove(agent.id, mode)),
+    );
+    for (const outcome of outcomes) {
+      if (outcome.status === 'rejected') {
+        failures.push(outcome.reason);
       }
     }
     if (failures.length === 1) throw failures[0];

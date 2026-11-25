@@ -1690,4 +1690,76 @@ describe('createVideoUploader', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('propagates ctx.signal into ReadMediaFile compression and blob offloadParts', async () => {
+    const abortController = new AbortController();
+    const oversizedPng = Buffer.alloc(6 * 1024 * 1024, 0);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(oversizedPng, 0);
+    const abortWorker = {
+      _serviceBrand: undefined,
+      size: 1,
+      request: vi.fn(async () => {
+        abortController.abort(new DOMException('read media cancelled', 'AbortError'));
+        throw abortController.signal.reason;
+      }),
+    };
+    const tool = new ReadMediaFileTool(
+      runtimeFor(createTestFs({ '/workspace/huge.png': { data: oversizedPng } }), createTestEnv(), 'local'),
+      WORKSPACE,
+      capabilities({ image_in: true }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      abortWorker as never,
+    );
+    const resolved = await tool.resolveExecution({ path: '/workspace/huge.png' });
+    expect('execute' in resolved).toBe(true);
+    if ('execute' in resolved) {
+      await expect(
+        resolved.execute({ turnId: 1, toolCallId: 'call_media_abort', signal: abortController.signal }),
+      ).rejects.toThrow('read media cancelled');
+    }
+
+    const offloadParts = vi.fn(async (parts: readonly ContentPart[], options?: { readonly signal?: AbortSignal }) => {
+      expect(options?.signal).toBeInstanceOf(AbortSignal);
+      return parts;
+    });
+    const fakeMp4 = Buffer.alloc(64, 0);
+    fakeMp4.writeUInt32BE(24, 0);
+    fakeMp4.write('ftyp', 4, 'latin1');
+    fakeMp4.write('isom', 8, 'latin1');
+    fakeMp4.writeUInt32BE(40, 24);
+    fakeMp4.write('moov', 28, 'latin1');
+    const videoSignal = new AbortController().signal;
+    const videoTool = new ReadMediaFileTool(
+      runtimeFor(createTestFs({ '/workspace/clip.mp4': { data: fakeMp4 } }), createTestEnv(), 'local'),
+      WORKSPACE,
+      capabilities({ image_in: true, video_in: true }),
+      async () => ({ type: 'video_url', videoUrl: { url: 'data:video/mp4;base64,AAAA' } }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        _serviceBrand: undefined,
+        offloadParts: offloadParts as never,
+        loadParts: async (parts) => parts,
+        isBlobRef: () => false,
+      },
+    );
+    const videoResolved = await videoTool.resolveExecution({ path: '/workspace/clip.mp4' });
+    expect('execute' in videoResolved).toBe(true);
+    if ('execute' in videoResolved) {
+      const videoRes = await videoResolved.execute({ turnId: 1, toolCallId: 'call_video', signal: videoSignal });
+      expect(videoRes.isError).toBe(false);
+    }
+    expect(offloadParts).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ signal: videoSignal }),
+    );
+  });
 });

@@ -178,11 +178,13 @@ export class AgentBlobServiceImpl implements IAgentBlobService {
     });
   }
 
-  async offloadParts(parts: readonly ContentPart[]): Promise<readonly ContentPart[]> {
+  async offloadParts(parts: readonly ContentPart[], options?: AgentBlobOffloadOptions): Promise<readonly ContentPart[]> {
+    options?.signal?.throwIfAborted();
     let changed = false;
     const out: ContentPart[] = [];
     for (const part of parts) {
-      const next = await this.offloadContentPart(part);
+      options?.signal?.throwIfAborted();
+      const next = await this.offloadContentPart(part, options);
       if (next !== part) changed = true;
       out.push(next);
     }
@@ -218,14 +220,15 @@ export class AgentBlobServiceImpl implements IAgentBlobService {
     return changed ? out : parts;
   }
 
-  private async offloadContentPart(part: ContentPart): Promise<ContentPart> {
+  private async offloadContentPart(part: ContentPart, options?: AgentBlobOffloadOptions): Promise<ContentPart> {
+    options?.signal?.throwIfAborted();
     const remembered = this.offloadedPartRefs.get(part);
     if (remembered !== undefined && await this.hasAllBlobs(remembered.hashes)) {
       return remembered.part;
     }
     const hashes: string[] = [];
     const next = await this.rewriteMediaUrls(part, async (url) => {
-      const rewritten = await this.maybeOffloadString(url);
+      const rewritten = await this.maybeOffloadString(url, options);
       if (this.isBlobRef(rewritten)) {
         const parsed = parseBlobRef(rewritten);
         if (parsed !== undefined) hashes.push(parsed.hash);
@@ -339,7 +342,8 @@ export class AgentBlobServiceImpl implements IAgentBlobService {
     return buffer;
   }
 
-  private async maybeOffloadString(value: string): Promise<string> {
+  private async maybeOffloadString(value: string, options?: AgentBlobOffloadOptions): Promise<string> {
+    options?.signal?.throwIfAborted();
     if (this.isBlobRef(value) || value.startsWith(HOSTREF_PROTOCOL)) return value;
 
     const match = DATA_URI_HEADER_RE.exec(value);
@@ -350,8 +354,9 @@ export class AgentBlobServiceImpl implements IAgentBlobService {
     if (payload.length < this.threshold) return value;
 
     try {
-      return await this.writeBlob(mimeType, payload);
+      return await this.writeBlob(mimeType, payload, options);
     } catch (error) {
+      if (options?.signal?.aborted === true) throw error;
       if (isDiskFullError(error) && payload.length <= LARGE_ENOSPC_FAIL_BASE64_CHARS) {
         return value;
       }
@@ -359,9 +364,9 @@ export class AgentBlobServiceImpl implements IAgentBlobService {
     }
   }
 
-  private async writeBlob(mimeType: string, base64Payload: string): Promise<string> {
+  private async writeBlob(mimeType: string, base64Payload: string, options?: AgentBlobOffloadOptions): Promise<string> {
     const binary = Buffer.from(base64Payload, 'base64');
-    return this.offloadBytes(mimeType, binary);
+    return this.offloadBytes(mimeType, binary, options);
   }
 }
 

@@ -55,6 +55,7 @@ const RECODABLE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/
 export interface ImageWorkerOptions {
   readonly cpuWorker?: ICpuWorkerService;
   readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
 }
 
 export interface CompressImageOptions extends ImageWorkerOptions {
@@ -1204,6 +1205,7 @@ function dispatchCpuImageTask<T>(
   if (options?.cpuWorker !== undefined) {
     return options.cpuWorker.request<T>(operation, {
       signal: options.signal,
+      timeoutMs: options.timeoutMs,
       transferList: [transfer],
       bytes: transfer.byteLength,
       priority: 'high',
@@ -1212,6 +1214,7 @@ function dispatchCpuImageTask<T>(
   if (hasRegisteredCpuPool()) {
     return runCpuTask<T>(operation, {
       signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
       transferList: [transfer],
       bytes: transfer.byteLength,
       priority: 'high',

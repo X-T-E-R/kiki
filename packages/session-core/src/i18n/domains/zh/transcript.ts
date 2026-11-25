@@ -160,6 +160,7 @@ export const transcriptZh = {
   'sv.queueNoText': '（仅附件）',
   'sv.queueRecovered.body.one': '{count} 项队列内容（消息或模型切换）已随会话恢复，确认后继续执行。',
   'sv.queueRecovered.body.other': '{count} 项队列内容（消息或模型切换）已随会话恢复，确认后继续执行。',
+  'sv.queueRecovered.clear': '清空队列',
   'sv.queueRecovered.confirm': '继续队列',
   'sv.queueRecovered.dismiss': '稍后',
   'sv.queueRecovered.failed': '无法继续队列：{detail}',

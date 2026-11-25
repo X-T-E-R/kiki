@@ -5664,6 +5664,7 @@ export const Transcript = memo(function Transcript({
   interruptedWork,
   onRecoverInterruption,
   recoveringInterruption = false,
+  suppressQueueOnlyRecovery = false,
   modelCatalog,
   modelCatalogScope,
   externalExecutor = false,
@@ -5731,6 +5732,8 @@ export const Transcript = memo(function Transcript({
   /** 1-click lossless restart recovery via `POST /sessions/:id/recover`. */
   onRecoverInterruption?: () => void;
   recoveringInterruption?: boolean;
+  /** Suppress queue-only TurnTailSurface recovery callout when the composer dock RecoveryHoldBar owns it. */
+  suppressQueueOnlyRecovery?: boolean;
   modelCatalog?: readonly CatalogModelLike[];
   modelCatalogScope?: string;
   externalExecutor?: boolean;
@@ -6804,11 +6807,12 @@ export const Transcript = memo(function Transcript({
     () => buildSupersededIncidentState(blocks, state.turnTerminals),
     [blocks, state.turnTerminals],
   );
+  const effectivePromptQueueHold = suppressQueueOnlyRecovery ? undefined : state.promptQueueHold;
   const hasTailSurface = hasTurnTailSurfaceContent({
     agentId,
     tail: state.turnTail,
     interruptedWork,
-    promptQueueHold: state.promptQueueHold,
+    promptQueueHold: effectivePromptQueueHold,
     busy: turnBusy,
     footnoteAttachedInline: false,
   });
@@ -8662,7 +8666,7 @@ export const Transcript = memo(function Transcript({
                       tail={state.turnTail}
                       gap={replyGap}
                       interruptedWork={interruptedWork}
-                      promptQueueHold={state.promptQueueHold}
+                      promptQueueHold={effectivePromptQueueHold}
                       readOnly={readOnly}
                       busy={turnBusy}
                       footnoteAttachedInline={false}

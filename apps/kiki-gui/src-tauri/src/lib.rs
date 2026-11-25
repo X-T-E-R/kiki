@@ -1239,29 +1239,45 @@ impl BackendManager {
             return Err("The service changed after confirmation; review the affected space again".to_string());
         }
         let home = self.home.as_ref().ok_or("The shared service home is unavailable")?;
+        let records = read_instance_records(home)?;
+        let record = records.iter().find(|record| record.server_id.as_deref() == Some(&identity.server_id));
         #[cfg(windows)]
         let exit_probe = {
-            let records = read_instance_records(home)?;
-            let record = records.iter().find(|record| record.server_id.as_deref() == Some(&identity.server_id))
-                .ok_or("The confirmed service registration is unavailable; no stop request was sent")?;
+            let record = record.ok_or("The confirmed service registration is unavailable; no stop request was sent")?;
             BackendExitProbe::open(record.pid, record.started_at)?
         };
+        let target_pid = record.map(|entry| (entry.pid, entry.started_at));
+        let is_quit = action == "quit";
         let body = serde_json::json!({"action": action, "server_id": identity.server_id, "consent": true, "interrupt_work": true}).to_string();
-        let response = http_json_body(connection_port(connection)?, "/api/desktop-lifecycle", &connection.token, &body, 64 * 1024)?;
-        let boundary = response.windows(4).position(|part| part == b"\r\n\r\n").ok_or("The lifecycle response is incomplete")?;
-        let envelope: serde_json::Value = serde_json::from_slice(&response[boundary + 4..]).map_err(|error| error.to_string())?;
-        if envelope.get("code").and_then(serde_json::Value::as_i64) != Some(0) {
-            return Err(envelope.get("msg").and_then(serde_json::Value::as_str).unwrap_or("The service refused the lifecycle request").to_string());
-        }
-        #[cfg(windows)]
-        exit_probe.wait_for_shutdown(Duration::from_secs(90))?;
-        #[cfg(not(windows))]
-        {
-            let deadline = Instant::now() + Duration::from_secs(90);
-            while read_instance_records(home)?.iter().any(|record| record.server_id.as_deref() == Some(&identity.server_id) && pid_alive(record.pid)) {
-                if Instant::now() >= deadline { return Err("The space is still draining. Keep its windows open and retry after work settles; no process was forcibly stopped".to_string()); }
-                thread::sleep(Duration::from_millis(100));
+        let lifecycle_result = (|| -> Result<(), String> {
+            let response = http_json_body(connection_port(connection)?, "/api/desktop-lifecycle", &connection.token, &body, 64 * 1024)?;
+            let boundary = response.windows(4).position(|part| part == b"\r\n\r\n").ok_or("The lifecycle response is incomplete")?;
+            let envelope: serde_json::Value = serde_json::from_slice(&response[boundary + 4..]).map_err(|error| error.to_string())?;
+            if envelope.get("code").and_then(serde_json::Value::as_i64) != Some(0) {
+                return Err(envelope.get("msg").and_then(serde_json::Value::as_str).unwrap_or("The service refused the lifecycle request").to_string());
             }
+            let wait_timeout = if is_quit { QUIT_SHUTDOWN_GRACE } else { Duration::from_secs(90) };
+            #[cfg(windows)]
+            exit_probe.wait_for_shutdown(wait_timeout)?;
+            #[cfg(not(windows))]
+            {
+                let deadline = Instant::now() + wait_timeout;
+                while read_instance_records(home)?.iter().any(|entry| entry.server_id.as_deref() == Some(&identity.server_id) && pid_alive(entry.pid)) {
+                    if Instant::now() >= deadline { return Err("The space is still draining. Keep its windows open and retry after work settles; no process was forcibly stopped".to_string()); }
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = lifecycle_result {
+            if is_quit {
+                if let Some((pid, started_at)) = target_pid {
+                    let forced = force_kill_shared_sidecar(home, pid, started_at, &error);
+                    self.clear_attached(connection);
+                    return forced;
+                }
+            }
+            return Err(error);
         }
         self.clear_attached(connection);
         Ok(())
@@ -4229,6 +4245,31 @@ fn parse_http_status_line(bytes: &[u8]) -> StatusLineParse {
     }
 }
 
+const QUIT_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+const QUIT_FORCE_KILL_WAIT: Duration = Duration::from_millis(500);
+
+fn force_kill_shared_sidecar(home: &Path, pid: u32, started_at: u64, reason: &str) -> Result<(), String> {
+    BackendMonitor::open(home).record_stderr_line(&format!(
+        "Kiki desktop phase=quit_force_kill_sidecar pid={pid} reason={reason}"
+    ));
+    let tree_killed = kill_tree::blocking::kill_tree(pid).is_ok();
+    let deadline = Instant::now() + QUIT_FORCE_KILL_WAIT;
+    while pid_alive(pid) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(50));
+    }
+    let gone = !pid_alive(pid);
+    if gone || tree_killed {
+        remove_owned_instance_records(home, pid, started_at);
+    }
+    if gone {
+        Ok(())
+    } else {
+        Err(format!(
+            "Failed to stop hung backend process {pid} after quit grace elapsed ({reason})"
+        ))
+    }
+}
+
 fn force_stop(backend: OwnedBackend) -> bool {
     let tree_stopped = kill_tree::blocking::kill_tree(backend.pid).is_ok();
     let _ = backend.child.kill();
@@ -4452,35 +4493,35 @@ fn request_confirmed_exit(
         }
         let zh = read_desktop_prefs_file().locale.as_deref() == Some("zh");
         let stopping = desktop_quit_dialog(&app, zh, "Kiki");
-        if !stopping { prompting.store(false, Ordering::SeqCst); }
+        if !stopping {
+            prompting.store(false, Ordering::SeqCst);
+        } else {
+            for (_, window) in app.webview_windows() {
+                let _ = window.hide();
+            }
+        }
         desktop_exit_requested(false, stopping, || {
-            manager.shared_shutdown_targets("quit").and_then(|targets| manager.shutdown_for_quit(targets))
+            let outcome = manager.shared_shutdown_targets("quit").and_then(|targets| manager.shutdown_for_quit(targets));
+            if outcome.is_err() {
+                if let Ok(slots) = manager.inner.lock().map(|state| {
+                    state.slots.values().map(|(_, backend)| backend.clone()).collect::<Vec<_>>()
+                }) {
+                    for backend in slots {
+                        if let Ok(mut state) = backend.inner.lock() {
+                            if let Some(owned) = state.backend.take() {
+                                let _ = force_stop(owned);
+                            }
+                        }
+                    }
+                }
+            }
+            outcome
         }, |error| {
             eprintln!("Kiki service shutdown not confirmed: {error}");
             let home = manager.inner.try_lock().ok().and_then(|state| state.slots.get(&state.active).map(|(space, _)| PathBuf::from(&space.path)));
             if let Some(home) = home {
                 BackendMonitor::open(&home).record_stderr_line(&format!("Kiki desktop phase=quit_shutdown_unconfirmed: {error}"));
             }
-            let (title, body) = if zh {
-                (
-                    "Kiki · 后台服务停止未确认",
-                    format!(
-                        "未能确认本机后台服务已完全停止：{error}\n\nKiki 桌面将按约定继续退出以免困住窗口，请检查是否仍有残留的 kiki-server 进程。"
-                    ),
-                )
-            } else {
-                (
-                    "Kiki · Backend shutdown unconfirmed",
-                    format!(
-                        "Could not confirm local backend shutdown: {error}\n\nKiki desktop will still exit so you are not trapped; check if a local kiki-server process remains running."
-                    ),
-                )
-            };
-            app.dialog()
-                .message(body)
-                .title(title)
-                .kind(tauri_plugin_dialog::MessageDialogKind::Warning)
-                .blocking_show();
         }, || {
             confirmed.store(true, Ordering::SeqCst);
             app.exit(0);
@@ -5655,6 +5696,45 @@ mod tests {
                 assert!(probe.wait_for_shutdown(Duration::from_millis(20)).unwrap_err().contains("code 23"));
             }
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn quit_force_kills_hung_shared_sidecar_and_cleans_owned_instance_record() {
+        let home = env::temp_dir().join(format!(
+            "kiki-quit-force-kill-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        fs::create_dir_all(home.join("server").join("instances")).unwrap();
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "set /p hold= >nul"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let started_at = unix_epoch_millis().unwrap();
+        let record_path = home.join("server").join("instances").join(format!("{pid}.json"));
+        fs::write(
+            &record_path,
+            serde_json::json!({
+                "pid": pid,
+                "url": "http://127.0.0.1:49999",
+                "startedAt": started_at,
+                "serverId": "hung-sidecar",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(pid_alive(pid));
+        let outcome = force_kill_shared_sidecar(&home, pid, started_at, "grace elapsed");
+        let _ = child.wait();
+        assert!(outcome.is_ok(), "expected force kill to succeed: {outcome:?}");
+        assert!(!pid_alive(pid));
+        assert!(!record_path.exists());
+        let _ = fs::remove_dir_all(&home);
     }
 
     #[test]

@@ -160,6 +160,7 @@ export const transcriptEn = {
   'sv.queueNoText': '(attachment only)',
   'sv.queueRecovered.body.one': '{count} queued item (message or model switch) was restored with this session and is waiting for your go-ahead.',
   'sv.queueRecovered.body.other': '{count} queued items (messages or model switches) were restored with this session and are waiting for your go-ahead.',
+  'sv.queueRecovered.clear': 'Clear queue',
   'sv.queueRecovered.confirm': 'Resume queue',
   'sv.queueRecovered.dismiss': 'Later',
   'sv.queueRecovered.failed': 'Could not resume the queue: {detail}',

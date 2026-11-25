@@ -27,7 +27,7 @@ export interface AgentHostPinnedInput {
 export interface IAgentBlobService {
   readonly _serviceBrand: undefined;
 
-  offloadParts(parts: readonly ContentPart[]): Promise<readonly ContentPart[]>;
+  offloadParts(parts: readonly ContentPart[], options?: AgentBlobOffloadOptions): Promise<readonly ContentPart[]>;
   offloadBytes?(mimeType: string, data: Uint8Array, options?: AgentBlobOffloadOptions): Promise<string>;
   offloadStream?(mimeType: string, source: AsyncIterable<Uint8Array>, options?: AgentBlobOffloadOptions): Promise<string>;
   offloadFile?(mimeType: string, sourcePath: string, options?: AgentBlobOffloadOptions): Promise<string>;

@@ -139,6 +139,7 @@ import {
   isOrdinaryQueueItem,
   pendingQuestionCount,
   queuedPromptPreviews,
+  resolveRecoverableInterruption,
   sessionAgentForest,
   type SessionViewState,
   type ApprovalBlock,
@@ -4663,6 +4664,53 @@ boundExecution,
     [controller, resolveAssistantMessageId, t, locale],
   );
 
+  const handleResumeStopped = useCallback(
+    (block: AssistantBlock) => {
+      if ((state.promptQueueHold?.count ?? 0) > 0) {
+        void client.resumeRecoveredQueue(sessionId).catch((error: unknown) => {
+          pushToast({
+            tone: 'error',
+            text: t('sv.queueRecovered.failed', {
+              detail: error instanceof Error ? error.message : String(error),
+            }),
+          });
+        });
+        return;
+      }
+      if (controller === null) return;
+      void (async () => {
+        const messageId = await resolveAssistantMessageId(block);
+        if (messageId === undefined) {
+          pushToast({ tone: 'error', text: t('error.messageActionUnavailable') });
+          return;
+        }
+        try {
+          await controller.regenerateMessage(messageId);
+        } catch (error: unknown) {
+          if (
+            error instanceof ApiError &&
+            error.code === API_CODES.SESSION_BUSY &&
+            (error.details as { reason?: unknown } | undefined)?.reason === 'queued_prompt'
+          ) {
+            const receipt = await client.recoverSession(sessionId);
+            void queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined);
+            if (receipt?.status === 'nothing_to_recover') {
+              await client.resumeRecoveredQueue(sessionId);
+            }
+            return;
+          }
+          throw error;
+        }
+      })().catch((error: unknown) => {
+        pushToast({
+          tone: 'error',
+          text: t('action.regenerateFailed', { detail: sessionActionErrorText(locale, error) }),
+        });
+      });
+    },
+    [client, controller, locale, queryClient, resolveAssistantMessageId, sessionId, state.promptQueueHold, t],
+  );
+
   const pendingMessageForkRef = useRef(false);
   const [forkingMessage, setForkingMessage] = useState(false);
   const handleForkMessage = useCallback(
@@ -4709,10 +4757,10 @@ boundExecution,
       onFork: handleForkMessage,
       forkBusy: forkingMessage,
       canFork: composerEngine?.fork !== false,
-      // Resume after a user stop re-runs the stopped reply (same path as regenerate).
-      onResumeStopped: handleRegenerate,
+      // Resume after a user stop re-runs the stopped reply (or releases a recovered pending queue).
+      onResumeStopped: handleResumeStopped,
     }),
-    [state.busy, state.resyncing, state.resyncFailed, handleEditMessage, loadMessageEditAttachments, handleRegenerate, handleForkMessage, forkingMessage, composerEngine?.fork],
+    [state.busy, state.resyncing, state.resyncFailed, handleEditMessage, loadMessageEditAttachments, handleRegenerate, handleResumeStopped, handleForkMessage, forkingMessage, composerEngine?.fork],
   );
 
   const [btwSessionKeys, setBtwSessionKeys] = useState<ReadonlySet<string>>(() => new Set());
@@ -5440,9 +5488,12 @@ boundExecution,
     setRecoveringInterruption(true);
     void client
       .recoverSession(sessionId)
-      .then((receipt) => {
+      .then(async (receipt) => {
         void queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined);
         if (receipt?.status === 'nothing_to_recover') {
+          if ((state.promptQueueHold?.count ?? 0) > 0) {
+            await client.resumeRecoveredQueue(sessionId);
+          }
           void controller?.resync();
         }
       })
@@ -5455,7 +5506,7 @@ boundExecution,
       .finally(() => {
         setRecoveringInterruption(false);
       });
-  }, [client, controller, locale, queryClient, recoveringInterruption, sessionId, state.busy]);
+  }, [client, controller, locale, queryClient, recoveringInterruption, sessionId, state.busy, state.promptQueueHold]);
 
   const handleContinueFailedTurn = useCallback(() => {
     if (state.busy || actions === null) return;
@@ -5572,6 +5623,17 @@ boundExecution,
   const composerBusy = canAbortActiveTurn(state);
   const recoveryHoldCount = state.promptQueueHold?.count ?? 0;
   const recoveryHold = recoveryHoldCount > 0;
+  const hasInterruptionRecovery = useMemo(
+    () =>
+      !state.busy &&
+      resolveRecoverableInterruption({
+        agentId: MAIN_AGENT_ID,
+        turnTail: state.turnTail,
+        interruptedWork: state.session?.interrupted_work,
+      }).recoverable,
+    [state.busy, state.turnTail, state.session?.interrupted_work],
+  );
+  const showRecoveryHoldBar = recoveryHold && !hasInterruptionRecovery;
   // The composer footer carries connection facts and actionable continuation only;
   // idle completed-history prompt caps stay out of the footer unless recovery
   // hold, held/failed durable ingress, or an explicit load error needs attention.
@@ -6191,6 +6253,7 @@ boundExecution,
     interruptedWork: state.session?.interrupted_work,
     onRecoverInterruption: handleRecoverInterruption,
     recoveringInterruption,
+    suppressQueueOnlyRecovery: showRecoveryHoldBar,
     modelCatalog: modelsQuery.data?.items,
     modelCatalogScope: connectionId ?? 'local',
     onOpenModelPicker: handleOpenModelPicker,
@@ -6204,7 +6267,7 @@ boundExecution,
     forest, openAgent, transcriptRowActionsWithBranch, forkLineage.byBlockId,
     openForkSession, openAgentRoute, handleContinueFailedTurn, handleRetryFailedTurn,
     handleRetryCompaction, state.session?.interrupted_work, handleRecoverInterruption,
-    recoveringInterruption, modelsQuery.data?.items, connectionId,
+    recoveringInterruption, showRecoveryHoldBar, modelsQuery.data?.items, connectionId,
     handleOpenModelPicker, handleOpenProviderSettings, handleCompactFromError,
   ]);
   const mainDockNode = useMemo(() => (
@@ -6227,9 +6290,9 @@ boundExecution,
         sendPaused={!sessionSendReady}
         onRetry={handleResyncRetry}
       />
-      {recoveryHold ? (
+      {showRecoveryHoldBar ? (
         <RecoveryHoldBar count={recoveryHoldCount} pending={recoveryPending}
-          onConfirm={handleRecoveryConfirm} />
+          onConfirm={handleRecoveryConfirm} onClear={handleClearQueue} />
       ) : null}
       {state.session?.archived === true ? (
         <div
@@ -6257,8 +6320,8 @@ boundExecution,
     </>
   ), [
     shownBtw, sessionId, controller, handleSendBtwQuestion, handleExpandBtw, handleCloseBtw,
-    state, timelineState, sessionSendReady, handleResyncRetry, recoveryHold, recoveryHoldCount, recoveryPending,
-    handleRecoveryConfirm, locale, handleRestoreArchivedSession, t, handleRefreshSessionSaved,
+    state, timelineState, sessionSendReady, handleResyncRetry, showRecoveryHoldBar, recoveryHoldCount, recoveryPending,
+    handleRecoveryConfirm, handleClearQueue, locale, handleRestoreArchivedSession, t, handleRefreshSessionSaved,
   ]);
   const mainRailNode = useMemo(() => (
     controller !== null && railOpen ? (

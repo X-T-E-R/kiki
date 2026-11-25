@@ -336,6 +336,7 @@ class RuntimeStdioTransport implements Transport {
   private closed = false;
   private closeNotified = false;
   private closeWork: Promise<void> | undefined;
+  private readonly closeController = new AbortController();
 
   constructor(
     private readonly config: McpServerStdioConfig,
@@ -366,7 +367,12 @@ class RuntimeStdioTransport implements Transport {
       this.spawnWork = lease.runtime.process!.spawn(
         this.config.command,
         this.config.args,
-        { cwd, env: mergeStdioEnv(this.config.env, process.env, this.options.childDefaults, lease.runtime.identity.runtimeId === 'local'), ownedProcessTree: this.ownedProcessTree },
+        {
+          cwd,
+          env: mergeStdioEnv(this.config.env, process.env, this.options.childDefaults, lease.runtime.identity.runtimeId === 'local'),
+          ownedProcessTree: this.ownedProcessTree,
+          signal: this.closeController.signal,
+        },
       );
       const child = await this.spawnWork;
       this.process = child;
@@ -411,6 +417,7 @@ class RuntimeStdioTransport implements Transport {
   close(): Promise<void> {
     if (this.closeWork !== undefined) return this.closeWork;
     this.closed = true;
+    this.closeController.abort(new DOMException('MCP stdio transport closed', 'AbortError'));
     this.closeWork = this.closeProcess();
     void this.closeWork.catch(() => { this.closeWork = undefined; });
     return this.closeWork;

@@ -218,6 +218,36 @@ function shouldSurfaceVideoUploadError(error: unknown, inlineVideoSupported: boo
 
 const SMALL_MEDIA_READ_BYTES = 256 * 1024;
 
+async function withSignal<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return await promise;
+  if (signal.aborted) {
+    throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+  }
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'ReadMediaFile' as const;
@@ -349,6 +379,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
           homeDir: env.homeDir,
         }),
       execute: async (ctx) => {
+        const signal = ctx?.signal;
         const lease = target.host === undefined
           ? this.runtime.acquire(['fs']) : acquireToolRuntime(this.runtime, target.host, ['fs']);
         try {
@@ -356,28 +387,35 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
             return { isError: true, output: 'Runtime changed before execution. Retry the tool call.' };
           }
           try {
-            const currentPath = await resolveRealPathAccessPath(args.path, pathOptions, lease.runtime.fs!);
+            const currentPath = await withSignal(
+              resolveRealPathAccessPath(args.path, pathOptions, lease.runtime.fs!),
+              signal,
+            );
             if ((env.pathClass === 'win32' ? currentPath.toLowerCase() : currentPath) !==
               (env.pathClass === 'win32' ? path.toLowerCase() : path)) {
               return { isError: true, output: `File target changed after path admission: admitted "${path}", actual "${currentPath}". Use the actual absolute path or resolve a changed link first.` };
             }
           } catch (error) {
+            if (signal?.aborted === true) throw error;
             return { isError: true, output: error instanceof Error ? error.message : String(error) };
           }
           return tagSshResult(
-            await this.execution(
-              args,
-              path,
-              lease.runtime.fs!,
-              env,
-              !inspected.identity.runtimeId.startsWith('ssh:'),
-              [
-                workspace.workspaceDir,
-                ...workspace.additionalDirs,
-                ...(workspace.definitionReadRoots ?? []),
-                ...(workspace.sessionAttachmentsReadRoot === undefined ? [] : [workspace.sessionAttachmentsReadRoot]),
-              ],
-              ctx?.signal,
+            await withSignal(
+              this.execution(
+                args,
+                path,
+                lease.runtime.fs!,
+                env,
+                !inspected.identity.runtimeId.startsWith('ssh:'),
+                [
+                  workspace.workspaceDir,
+                  ...workspace.additionalDirs,
+                  ...(workspace.definitionReadRoots ?? []),
+                  ...(workspace.sessionAttachmentsReadRoot === undefined ? [] : [workspace.sessionAttachmentsReadRoot]),
+                ],
+                signal,
+              ),
+              signal,
             ),
             inspected,
           );
@@ -402,11 +440,12 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     }
 
     try {
-      const stat = await fs.stat(safePath);
+      const stat = await withSignal(fs.stat(safePath), signal);
       const data = stat.size <= SMALL_MEDIA_READ_BYTES && stat.size <= MAX_MEDIA_BYTES
-        ? Buffer.from(await fs.readBytes(safePath))
+        ? Buffer.from(await withSignal(fs.readBytes(safePath), signal))
         : undefined;
-      const header = data?.subarray(0, MEDIA_SNIFF_BYTES) ?? await fs.readBytes(safePath, MEDIA_SNIFF_BYTES);
+      const header = data?.subarray(0, MEDIA_SNIFF_BYTES)
+        ?? await withSignal(fs.readBytes(safePath, MEDIA_SNIFF_BYTES), signal);
       const fileType = detectFileType(safePath, header, 'media');
 
       if (fileType.kind === 'text') {
@@ -607,7 +646,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
               mimeType: fileType.mimeType,
             };
           } else {
-            const mediaData = data ?? Buffer.from(await fs.readBytes(safePath));
+            const mediaData = data ?? Buffer.from(await withSignal(fs.readBytes(safePath), signal));
             if (fileType.kind === 'video') {
               const videoOutcome = await this.videoContentPart(
                 mediaData,
@@ -641,7 +680,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
           }
         }
       } else {
-        const mediaData = data ?? Buffer.from(await fs.readBytes(safePath));
+        const mediaData = data ?? Buffer.from(await withSignal(fs.readBytes(safePath), signal));
         dimensions = sniffImageDimensions(mediaData);
         if (args.region !== undefined) {
           const outcome = await cropImageForModel(mediaData, fileType.mimeType, args.region, {
@@ -653,6 +692,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
             cpuWorker: this.cpuWorker,
             signal,
           });
+          signal?.throwIfAborted();
           if (!outcome.ok) {
             return { isError: true, output: `Cannot read region from "${args.path}": ${outcome.error}` };
           }
@@ -693,6 +733,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
             cpuWorker: this.cpuWorker,
             signal,
           });
+          signal?.throwIfAborted();
           if (
             compressed.finalByteLength > readByteBudget ||
             Math.max(compressed.width, compressed.height) > maxEdge
@@ -741,6 +782,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
 
       return { output, note, isError: false };
     } catch (error) {
+      if (signal?.aborted === true) throw error;
       return {
         isError: true,
         output: `Failed to read ${args.path}: ${error instanceof Error ? error.message : String(error)}`,
@@ -777,7 +819,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
   private async maybeDehydratePart(part: ContentPart, signal: AbortSignal | undefined): Promise<ContentPart> {
     if (this.blobService === undefined) return part;
     signal?.throwIfAborted();
-    const offloaded = await this.blobService.offloadParts([part]);
+    const offloaded = await this.blobService.offloadParts([part], { signal });
     return offloaded[0] ?? part;
   }
 }

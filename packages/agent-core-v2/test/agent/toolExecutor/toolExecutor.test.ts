@@ -2469,6 +2469,75 @@ describe('truncation pipeline', () => {
     expect(observedStartedAt).toEqual(expect.any(Number));
     expect(detachedTaskIds).toEqual(['task-kernel-1']);
   });
+
+  it('detaches from a wedged tool ignoring ctx.signal within post-abort grace for both direct and wrapped execution', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const wedgedEntered = deferred<void>();
+      const wedgedTool: ExecutableTool = {
+        name: 'WedgedTool',
+        foregroundPolicy: 'bounded_io',
+        description: 'Ignores abort signal forever',
+        parameters: { type: 'object', properties: {} },
+        resolveExecution: () => ({
+          approvalRule: 'WedgedTool',
+          execute: () => {
+            wedgedEntered.resolve();
+            return new Promise<ExecutableToolResult>(() => {});
+          },
+        }),
+      };
+      registry.register(wedgedTool);
+
+      const directController = new AbortController();
+      const directResults: ToolResult[] = [];
+      const directRun = (async () => {
+        for await (const item of executor.execute([toolCall('c_wedged_direct', 'WedgedTool', {})], {
+          turnId: 10,
+          signal: directController.signal,
+        })) {
+          directResults.push(item.result);
+        }
+      })();
+      await wedgedEntered.promise;
+      directController.abort(new Error('user_cancelled'));
+      await vi.advanceTimersByTimeAsync(2_100);
+      await directRun;
+      expect(directResults).toHaveLength(1);
+      expect(directResults[0]?.isError).toBe(true);
+      expect(directResults[0]?.output).toContain('aborted');
+
+      const wrappedEntered = deferred<void>();
+      ix.stub(ISessionContext, { sessionId: 'session-extension' });
+      const wrapSub = extensions.registerApprovedToolExecutionWrapper('plugin-wedged-wrap', () => {
+        wrappedEntered.resolve();
+        return new Promise<ExecutableToolResult>(() => {});
+      });
+      try {
+        const wrappedController = new AbortController();
+        const wrappedResults: ToolResult[] = [];
+        const wrappedRun = (async () => {
+          for await (const item of executor.execute([toolCall('c_wedged_wrapped', 'WedgedTool', {})], {
+            turnId: 11,
+            signal: wrappedController.signal,
+          })) {
+            wrappedResults.push(item.result);
+          }
+        })();
+        await wrappedEntered.promise;
+        wrappedController.abort(new Error('user_cancelled'));
+        await vi.advanceTimersByTimeAsync(2_100);
+        await wrappedRun;
+        expect(wrappedResults).toHaveLength(1);
+        expect(wrappedResults[0]?.isError).toBe(true);
+        expect(wrappedResults[0]?.output).toContain('aborted');
+      } finally {
+        wrapSub.dispose();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function toPosix(path: string): string {

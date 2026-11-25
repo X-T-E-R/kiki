@@ -211,7 +211,7 @@ export class GrepTool implements IGrepTool {
         if (processService instanceof SshHostProcessService) {
           return 'rg';
         }
-        const resolution = await ensureRgPath(this.createRgProbe(processService), {
+        const resolution = await ensureRgPath(this.createRgProbe(processService, signal), {
           signal,
           allowCachedFallback: true,
           ...this.rgShareOptions(),
@@ -409,24 +409,36 @@ export class GrepTool implements IGrepTool {
     else this.log?.debug('grep phase', data);
   }
 
-  private createRgProbe(processService: IHostProcessService): RgProbe {
+  private createRgProbe(processService: IHostProcessService, signal?: AbortSignal): RgProbe {
     return {
       exec: async (args) => {
         const [command, ...rest] = args;
         if (command === undefined) return { exitCode: -1 };
-        const proc = await processService.spawn(command, rest);
-        try {
-          proc.stdin.end();
-        } catch {
+        const proc = await processService.spawn(command, rest, { signal });
+        const onAbort = (): void => {
+          void proc.kill('SIGTERM').catch(() => undefined);
+        };
+        if (signal?.aborted === true) {
+          onAbort();
+        } else {
+          signal?.addEventListener('abort', onAbort, { once: true });
         }
-        proc.stdout.resume();
-        proc.stderr.resume();
-        const exitCode = await proc.wait();
         try {
-          void proc.dispose();
-        } catch {
+          try {
+            proc.stdin.end();
+          } catch {
+          }
+          proc.stdout.resume();
+          proc.stderr.resume();
+          const exitCode = await proc.wait();
+          return { exitCode };
+        } finally {
+          signal?.removeEventListener('abort', onAbort);
+          try {
+            void proc.dispose();
+          } catch {
+          }
         }
-        return { exitCode };
       },
     };
   }

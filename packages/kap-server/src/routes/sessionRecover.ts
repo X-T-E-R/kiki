@@ -390,10 +390,11 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
             }
             const branchLostTasks = lostTasks.filter((task) => task.ownerAgentId === branchId);
             const branchHold = branchQueue.hold?.reason === 'recovery';
+            const branchHasHeldItems = branchHold && (branchQueue.pending.length > 0 || (branchQueue.hold?.count ?? 0) > 0);
             if (branchHold) {
               branchPrompts.resumeRecoveredQueue();
             }
-            if (branchHold && branchQueue.pending.length > 0) {
+            if (branchHasHeldItems) {
               promptId ??= branchQueue.pending[0]?.id;
               wokeAny = true;
             } else {
@@ -427,10 +428,21 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
             return;
           }
         } else {
+          const hasHeldItems = hasRecoveryHold && (queue.pending.length > 0 || (queue.hold?.count ?? 0) > 0);
           if (hasRecoveryHold) {
             prompts.resumeRecoveredQueue();
           }
-          if (hasRecoveryHold && queue.pending.length > 0) {
+          if (targetAgentId === MAIN_AGENT_ID && interruptedBranchIds.length > 0) {
+            for (const branchId of interruptedBranchIds) {
+              const branchHandle = lifecycle.get(branchId);
+              if (branchHandle === undefined) continue;
+              const branchPrompts = branchHandle.accessor.get(IAgentPromptService);
+              if (branchPrompts.list().hold?.reason === 'recovery') {
+                branchPrompts.resumeRecoveredQueue();
+              }
+            }
+          }
+          if (hasHeldItems) {
             promptId = queue.pending[0]?.id;
           } else {
             const reminderBody = buildRecoveryReminderBody(targetAgentId, targets, lostTasks);

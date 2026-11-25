@@ -111,7 +111,7 @@ export async function runRgOnce(
   }
   let proc: IHostProcess;
   try {
-    proc = await processService.spawn(command, args, { cwd: options?.cwd });
+    proc = await processService.spawn(command, args, { cwd: options?.cwd, signal });
   } catch (error) {
     releaseSlot();
     throw error;

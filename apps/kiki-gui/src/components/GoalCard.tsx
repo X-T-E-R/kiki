@@ -718,10 +718,12 @@ export function RecoveryHoldBar({
   count,
   pending,
   onConfirm,
+  onClear,
 }: {
   readonly count: number;
   readonly pending: boolean;
   readonly onConfirm: () => void;
+  readonly onClear?: () => void;
 }) {
   const { t, tp } = useI18n();
   const [compact, setCompact] = useState(false);
@@ -768,6 +770,17 @@ export function RecoveryHoldBar({
           >
             {t('sv.queueRecovered.confirm')}
           </button>
+          {onClear !== undefined ? (
+            <button
+              type="button"
+              data-recovery-hold-clear
+              disabled={pending}
+              onClick={onClear}
+              className="h-7 shrink-0 rounded-md px-2 text-[12px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+            >
+              {t('sv.queueRecovered.clear')}
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={pending}

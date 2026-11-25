@@ -81,6 +81,49 @@ import {
 } from './subagentMetadata';
 import { resolveDelegationPosition } from '#/agent/profile/delegationContext';
 
+const DEFAULT_AGENT_EXIT_DRAIN_TIMEOUT_MS = 2_500;
+let agentExitDrainTimeoutMs = DEFAULT_AGENT_EXIT_DRAIN_TIMEOUT_MS;
+
+/** Overrides the agent exit-drain timeout in tests and returns the previous value. */
+export function setAgentExitDrainTimeoutForTesting(timeoutMs: number): number {
+  const previous = agentExitDrainTimeoutMs;
+  agentExitDrainTimeoutMs = timeoutMs;
+  return previous;
+}
+
+async function runWithinDeadline<T>(
+  operation: () => T | Promise<T>,
+  deadlineAt: number,
+  onTimeout: () => Error,
+): Promise<T> {
+  const remainingMs = Math.max(0, deadlineAt - Date.now());
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(onTimeout());
+    }, remainingMs);
+    timer.unref?.();
+    Promise.resolve()
+      .then(operation)
+      .then(
+        (value) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+  });
+}
+
 interface AgentCreation {
   generation: number;
   pending: Promise<IAgentScopeHandle>;
@@ -941,10 +984,31 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         failures.push({ error, domain });
       }
     };
+    const drainTimeoutMs = agentExitDrainTimeoutMs;
+    const drainDeadline = Date.now() + drainTimeoutMs;
+    const collectBounded = async (
+      stage: string,
+      operation: () => unknown,
+      domain: AgentFailureDomain,
+      deadlineAt = drainDeadline,
+    ): Promise<void> => {
+      try {
+        await runWithinDeadline(operation, deadlineAt, () => {
+          this.log.warn('agent exit drain timed out; continuing teardown', {
+            agentId,
+            stage,
+            timeoutMs: drainTimeoutMs,
+          });
+          return new Error(`Agent "${agentId}" exit drain timed out at stage "${stage}" after ${String(drainTimeoutMs)}ms`);
+        });
+      } catch (error) {
+        failures.push({ error, domain });
+      }
+    };
     this.inFlightLifecycleOps += 1;
     try {
       if (mode === 'preserve-pending') handle.accessor.get(IAgentPromptService).preservePendingForClose();
-      await collect(() => handle.accessor.get(IAgentTaskService).stopAllOnExit('Session closed'), 'cleanup');
+      await collectBounded('tasks', () => handle.accessor.get(IAgentTaskService).stopAllOnExit('Session closed'), 'cleanup');
       const reason = abortError('Agent removed');
       let execution: IAgentExecutionService | undefined;
       let loop: IAgentLoopService | undefined;
@@ -985,10 +1049,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       if (compaction !== null && compaction !== undefined && !compaction.abortController.signal.aborted) {
         await collect(() => compaction!.abortController.abort(reason), 'cleanup');
       }
-      if (execution !== undefined) await collect(() => execution!.shutdown(reason), 'cleanup');
-      if (compaction?.promise !== undefined) await collect(() => compaction!.promise.catch(() => undefined), 'cleanup');
-      if (promptDrain !== undefined) await collect(() => promptDrain!, 'cleanup');
-      if (loop !== undefined) await collect(() => loop!.settled(), 'cleanup');
+      if (execution !== undefined) await collectBounded('execution_shutdown', () => execution!.shutdown(reason), 'cleanup');
+      if (compaction?.promise !== undefined) await collectBounded('compaction', () => compaction!.promise.catch(() => undefined), 'cleanup');
+      if (promptDrain !== undefined) await collectBounded('prompt_drain', () => promptDrain!, 'cleanup');
+      if (loop !== undefined) await collectBounded('loop_settled', () => loop!.settled(), 'cleanup');
       await collect(() => this.onWillSealTranscriptEmitter.fireAsync({ handle,
         fail: (error) => { failures.push({ error, domain: 'persistence' }); },
       }, new AbortController().signal), 'persistence');
@@ -1023,11 +1087,11 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           });
         }
       }, 'cleanup');
-      await collect(async () => {
+      await collectBounded('dispose', async () => {
         if (this.inFlightLifecycleOps > 1) await this.yieldIfTurnBudgetExceeded();
         await handle.dispose();
         disposed = true;
-      }, 'cleanup');
+      }, 'cleanup', Date.now() + Math.max(2_000, drainTimeoutMs));
       if (disposed) this.onDidDisposeEmitter.fire(agentId);
       if (failures.length > 0) {
         const primary = failures.find((failure) => failure.domain === 'persistence') ?? failures[0]!;

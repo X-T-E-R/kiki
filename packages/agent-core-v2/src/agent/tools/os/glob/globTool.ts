@@ -235,7 +235,7 @@ export class GlobTool implements IGlobTool {
             if (processService instanceof SshHostProcessService) {
               rgPath = 'rg';
             } else {
-              const resolution = await ensureRgPath(createRgProbe(processService), {
+              const resolution = await ensureRgPath(createRgProbe(processService, flightSignal), {
                 signal: flightSignal,
                 allowCachedFallback: true,
                 ...this.rgShareOptions(),
@@ -531,24 +531,36 @@ registerAgentToolService(IGlobTool, GlobTool, {
   requiredRuntimeCapabilities: ['fs', 'process'],
 });
 
-function createRgProbe(processService: IHostProcessService): RgProbe {
+function createRgProbe(processService: IHostProcessService, signal?: AbortSignal): RgProbe {
   return {
     exec: async (args) => {
       const [command, ...rest] = args;
       if (command === undefined) return { exitCode: -1 };
-      const proc = await processService.spawn(command, rest);
-      try {
-        proc.stdin.end();
-      } catch {
+      const proc = await processService.spawn(command, rest, { signal });
+      const onAbort = (): void => {
+        void proc.kill('SIGTERM').catch(() => undefined);
+      };
+      if (signal?.aborted === true) {
+        onAbort();
+      } else {
+        signal?.addEventListener('abort', onAbort, { once: true });
       }
-      proc.stdout.resume();
-      proc.stderr.resume();
-      const exitCode = await proc.wait();
       try {
-        void proc.dispose();
-      } catch {
+        try {
+          proc.stdin.end();
+        } catch {
+        }
+        proc.stdout.resume();
+        proc.stderr.resume();
+        const exitCode = await proc.wait();
+        return { exitCode };
+      } finally {
+        signal?.removeEventListener('abort', onAbort);
+        try {
+          void proc.dispose();
+        } catch {
+        }
       }
-      return { exitCode };
     },
   };
 }

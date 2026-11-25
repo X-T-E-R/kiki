@@ -157,13 +157,25 @@ export class GitService implements IGitService {
   ): Promise<RunResult> {
     const workspaceId = await this.resolveWorkspaceId(cwd);
     const lease = this.resolver.acquire({ workspaceId, runtimeId: 'local' }, ['process']);
+    const spawnController = options.timeoutMs === undefined ? undefined : new AbortController();
+    let spawnTimer: ReturnType<typeof setTimeout> | undefined;
+    if (spawnController !== undefined && options.timeoutMs !== undefined) {
+      spawnTimer = setTimeout(() => {
+        spawnController.abort(new DOMException('Git command timed out', 'TimeoutError'));
+      }, options.timeoutMs);
+      spawnTimer.unref?.();
+    }
     const spawned = await lease.runtime.process!
-      .spawn(cmd, args, { cwd, env: options.env })
+      .spawn(cmd, args, { cwd, env: options.env, signal: spawnController?.signal })
       .then(
         (proc) => ({ ok: true as const, proc }),
         () => ({ ok: false as const }),
-      );
+      )
+      .finally(() => {
+        if (spawnTimer !== undefined) clearTimeout(spawnTimer);
+      });
     if (!spawned.ok) {
+      lease.dispose();
       return { exitCode: -1, stdout: '', stderr: '' };
     }
     const { proc } = spawned;

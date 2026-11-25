@@ -14,6 +14,8 @@ import { HostProcessError, HostProcessErrorCode, type IHostProcess } from '#/os/
 import { quoteWindowsArgument } from './windowsCommandLine';
 
 const CONTROL_TIMEOUT_MS = 5_000;
+const HELPER_CONNECT_TIMEOUT_MS = 15_000;
+const HELPER_INIT_TIMEOUT_MS = 15_000;
 const STREAM_EOF_IDLE_MS = 250;
 const STREAM_EOF_MAX_MS = 2_000;
 const RELEASE_EXIT_CAPABILITY = 'release-exit-v2';
@@ -46,9 +48,35 @@ export async function connectWindowsHelperPipe(
     }
     attempts += 1;
     const socket = connect({ path: `\\\\.\\pipe\\${name}`, allowHalfOpen: true });
-    const result = await new Promise<Socket | NodeJS.ErrnoException>((done) => {
-      socket.once('connect', () => done(socket));
-      socket.once('error', done);
+    const result = await new Promise<Socket | NodeJS.ErrnoException>((done, fail) => {
+      let settled = false;
+      const cleanup = (): void => {
+        signal?.removeEventListener('abort', onAbort);
+        socket.off('connect', onConnect);
+        socket.off('error', onError);
+      };
+      const onConnect = (): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        done(socket);
+      };
+      const onError = (err: NodeJS.ErrnoException): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        done(err);
+      };
+      const onAbort = (): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        socket.destroy();
+        fail(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      socket.once('connect', onConnect);
+      socket.once('error', onError);
     });
     if (result === socket) return socket;
     socket.destroy();
@@ -56,7 +84,19 @@ export async function connectWindowsHelperPipe(
     lastCode = error.code;
     if (error.code !== 'ENOENT' && error.code !== 'ECONNREFUSED') throw error;
     if (deadline !== undefined && (finalCheckAfterWake || now() >= deadline)) break;
-    await new Promise<void>((done) => { setTimeout(done, 20); });
+    await new Promise<void>((done, fail) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const onAbort = (): void => {
+        if (timer !== undefined) clearTimeout(timer);
+        fail(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        done();
+      }, 20);
+      timer.unref?.();
+    });
     if (deadline !== undefined && now() >= deadline) finalCheckAfterWake = true;
   }
   const elapsedMs = Math.max(0, Math.round(now() - startedAt));
@@ -153,18 +193,46 @@ class WindowsProcessTree implements IHostProcess {
   get pid(): number { return this.rootPid; }
   get exitCode(): number | null { return this.code; }
 
-  async initialize(signal?: AbortSignal): Promise<void> {
+  async initialize(signal?: AbortSignal, timeoutMs = HELPER_INIT_TIMEOUT_MS): Promise<void> {
     signal?.throwIfAborted();
-    this.rootPid = signal === undefined
-      ? await this.ready.promise
-      : await new Promise<number>((resolveReady, rejectReady) => {
-        const onAbort = (): void => { rejectReady(signal.reason ?? new Error('Windows process launch aborted.')); };
-        signal.addEventListener('abort', onAbort, { once: true });
-        this.ready.promise.then(
-          (pid) => { signal.removeEventListener('abort', onAbort); resolveReady(pid); },
-          (error) => { signal.removeEventListener('abort', onAbort); rejectReady(error); },
-        );
-      });
+    this.rootPid = await new Promise<number>((resolveReady, rejectReady) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = (): void => {
+        if (timer !== undefined) clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const onAbort = (): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        rejectReady(signal?.reason ?? new Error('Windows process launch aborted.'));
+      };
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          rejectReady(new Error(`Windows process helper initialization timed out after ${String(timeoutMs)}ms.`));
+        }, timeoutMs);
+        timer.unref?.();
+      }
+      signal?.addEventListener('abort', onAbort, { once: true });
+      this.ready.promise.then(
+        (pid) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolveReady(pid);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          rejectReady(error);
+        },
+      );
+    });
     if (this.rootPid > 0) {
       try {
         setPriority(this.rootPid, osConstants.priority.PRIORITY_NORMAL);
@@ -435,10 +503,13 @@ async function launchWindowsProcessTreeOnce(
   const onError = (error: Error): void => { spawnError.reject(error); };
   child.once('error', onError);
   try {
-    const control = await Promise.race([connectWindowsHelperPipe(name, child, undefined, undefined, signal), spawnError.promise]);
+    const control = await Promise.race([
+      connectWindowsHelperPipe(name, child, HELPER_CONNECT_TIMEOUT_MS, undefined, signal),
+      spawnError.promise,
+    ]);
     sockets.push(control);
     const [input, output, error] = await Promise.all(['in', 'out', 'err'].map(async (suffix) => {
-      const socket = await connectWindowsHelperPipe(`${name}-${suffix}`, child, undefined, undefined, signal);
+      const socket = await connectWindowsHelperPipe(`${name}-${suffix}`, child, HELPER_CONNECT_TIMEOUT_MS, undefined, signal);
       sockets.push(socket);
       return socket;
     }));
@@ -446,7 +517,7 @@ async function launchWindowsProcessTreeOnce(
     const launch = [...encoded, mergeStderr ? 'merge' : 'separate'];
     if (ownerLifetime) launch.push('owner-v1');
     control.write(`${launch.join(':')}\n`);
-    await processTree.initialize(signal);
+    await processTree.initialize(signal, HELPER_INIT_TIMEOUT_MS);
     return processTree;
   } catch (error) {
     child.kill();
