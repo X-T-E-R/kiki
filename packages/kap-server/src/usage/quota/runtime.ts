@@ -58,7 +58,7 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
 
   const targets = async (): Promise<QuotaTarget[]> => {
     await providers.ready;
-    const result = await Promise.all(Object.entries(providers.list()).map(async ([id, config]): Promise<QuotaTarget> => {
+    const entries = await Promise.all(Object.entries(providers.list()).map(async ([id, config]) => {
       const endpoint = explainProviderEndpoint(config.type ?? '', config.env ?? {});
       const adapter = selectQuotaAdapter(config.baseUrl ?? endpoint.baseUrl, config.oauth !== undefined);
       let identity: unknown;
@@ -66,13 +66,45 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
         try { identity = credentialIdentity(await oauth.getCachedAccessToken(id, config.oauth)); }
         catch { identity = 'unavailable'; }
       }
+      const apiKey = !config.oauth ? (config.apiKey ?? endpoint.apiKey)?.trim() : undefined;
+      const dedupeKey = adapter && apiKey ? fingerprint([adapter.id, adapter.url, adapter.secondaryUrl ?? '', apiKey]) : undefined;
+      return { id, config, endpoint, adapter, identity, dedupeKey };
+    }));
+    const groups: Array<typeof entries> = [];
+    const groupByKey = new Map<string, typeof entries>();
+    for (const entry of entries) {
+      if (entry.dedupeKey !== undefined) {
+        const existing = groupByKey.get(entry.dedupeKey);
+        if (existing) {
+          existing.push(entry);
+          continue;
+        }
+        const created = [entry];
+        groupByKey.set(entry.dedupeKey, created);
+        groups.push(created);
+      } else {
+        groups.push([entry]);
+      }
+    }
+    const result: QuotaTarget[] = groups.map((group): QuotaTarget => {
+      const primary = group[0]!;
+      const { id, config, endpoint, adapter, identity } = primary;
+      const sharedIds = group.map((member) => member.id);
+      const accountLabel = config.oauth
+        ? '已连接 OAuth 账户'
+        : sharedIds.length > 1
+          ? `共享凭据：${sharedIds.join(' · ')}`
+          : '此提供商的 API Key';
+      const revision = sharedIds.length > 1
+        ? fingerprint(group.map((member) => [member.id, member.config, member.identity]))
+        : fingerprint([config, identity]);
       return {
         id: `provider:${id}`,
         label: id,
         kind: 'provider',
         providerId: id,
-        accountLabel: config.oauth ? '已连接 OAuth 账户' : '此提供商的 API Key',
-        revision: fingerprint([config, identity]),
+        accountLabel,
+        revision,
         active: true,
         supported: adapter !== undefined,
         auth: { action: config.oauth ? 'oauth_login' : 'provider_settings', provider: id },
@@ -84,9 +116,10 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
           let token: string | undefined;
           try { token = tokenProvider ? await tokenProvider.getAccessToken() : config.apiKey ?? endpoint.apiKey; }
           catch (error) { throw error instanceof OAuthUnauthorizedError ? new QuotaFailure('auth_required') : new QuotaFailure('request_failed'); }
-          if (!token?.trim()) throw new QuotaFailure('auth_required');
+          const trimmedToken = token?.trim();
+          if (!trimmedToken) throw new QuotaFailure('auth_required');
           signal.throwIfAborted();
-          try { return await fetchOfficialQuota(adapter, token, fetchImpl, signal); }
+          try { return await fetchOfficialQuota(adapter, trimmedToken, fetchImpl, signal); }
           catch (error) {
             if (!(error instanceof QuotaFailure) || error.reason !== 'auth_required' || !tokenProvider) throw error;
             signal.throwIfAborted();
@@ -98,7 +131,7 @@ export function createProviderQuotaService(core: Scope, fetchImpl: typeof fetch 
           }
         },
       };
-    }));
+    });
     const instances = await nbSearch.quotaSources();
     for (const instance of instances) {
       const supported = instance.provider_id === 'tavily' || instance.provider_id === 'firecrawl' || instance.provider_id === 'zhihu';

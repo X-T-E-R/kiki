@@ -1,7 +1,7 @@
 import type { ProviderQuotaMeter } from '@kiki/protocol';
 import { parseManagedUsagePayload, openaiCodexAccountId } from '@kiki/oauth';
 
-export type QuotaAdapterId = 'kimi' | 'codex' | 'claude' | 'deepseek' | 'minimax' | 'zai' | 'openrouter' | 'stepfun' | 'siliconflow-cn' | 'siliconflow-global' | 'novita';
+export type QuotaAdapterId = 'kimi' | 'codex' | 'claude' | 'deepseek' | 'minimax' | 'zai' | 'openrouter' | 'stepfun' | 'siliconflow-cn' | 'siliconflow-global' | 'novita' | 'kiki-quota';
 export interface QuotaAdapter { id: QuotaAdapterId; label: string; url: string; secondaryUrl?: string; oauth: boolean }
 export const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
@@ -32,8 +32,39 @@ function stepLeftRateToUsedPercent(value: unknown): number | null {
 function percent(id: string, label: string, used: unknown, reset?: string, seconds?: number, group?: string): ProviderQuotaMeter | undefined {
   const value = num(used);
   if (value === null || value < 0 || value > 100) return undefined;
-  return { id, label, unit: 'percent', unit_label: '%', used: value, limit: 100, remaining: 100 - value, scope: 'account', model_group: group,
+  return { id, label, unit: 'percent', unit_label: '%', used: value, limit: 100, remaining: Math.round((100 - value) * 1e6) / 1e6, scope: 'account', model_group: group,
     window: { label, duration_seconds: seconds && seconds > 0 ? seconds : undefined, reset_at: reset, reset_timezone: reset ? 'UTC' : undefined } };
+}
+function parseDurationToken(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const lower = raw.toLowerCase();
+  const unitMatch = /(?:^|[^a-z0-9])(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks)(?=$|[^a-z0-9])/.exec(lower);
+  if (unitMatch) {
+    const amount = Number(unitMatch[1]);
+    const unit = unitMatch[2]!;
+    if (!Number.isFinite(amount) || amount <= 0) return undefined;
+    if (unit.startsWith('m')) return amount * 60;
+    if (unit.startsWith('h')) return amount * 3600;
+    if (unit.startsWith('d')) return amount * 86400;
+    if (unit.startsWith('w')) return amount * 604800;
+  }
+  const zhMatch = /(\d+)\s*(分钟|小时|天|周)/.exec(raw);
+  if (zhMatch) {
+    const amount = Number(zhMatch[1]);
+    const unit = zhMatch[2]!;
+    if (!Number.isFinite(amount) || amount <= 0) return undefined;
+    if (unit === '分钟') return amount * 60;
+    if (unit === '小时') return amount * 3600;
+    if (unit === '天') return amount * 86400;
+    if (unit === '周') return amount * 604800;
+  }
+  if (/(?:^|[^a-z0-9])daily(?=$|[^a-z0-9])/.test(lower)) return 86400;
+  if (/(?:^|[^a-z0-9])weekly(?=$|[^a-z0-9])/.test(lower)) return 604800;
+  if (/(?:^|[^a-z0-9])monthly(?=$|[^a-z0-9])/.test(lower)) return 2592000;
+  return undefined;
+}
+function inferWindowDurationSeconds(key: string | undefined, label: string | undefined): number | undefined {
+  return parseDurationToken(key) ?? parseDurationToken(label);
 }
 export function selectQuotaAdapter(baseUrl: string | undefined, oauth: boolean): QuotaAdapter | undefined {
   if (!baseUrl) return undefined;
@@ -52,6 +83,7 @@ export function selectQuotaAdapter(baseUrl: string | undefined, oauth: boolean):
   if (host === 'api.stepfun.com') return { id: 'stepfun', label: 'StepFun 官方额度', url: 'https://api.stepfun.com/v1/accounts', secondaryUrl: 'https://api.stepfun.com/step_plan/v1/usage', oauth: false };
   if (host === 'api.siliconflow.cn' || host === 'api.siliconflow.com') return { id: host.endsWith('.cn') ? 'siliconflow-cn' : 'siliconflow-global', label: 'SiliconFlow 官方余额', url: `https://${host}/v1/user/info`, oauth: false };
   if (host === 'api.novita.ai') return { id: 'novita', label: 'Novita AI 官方余额', url: 'https://api.novita.ai/v3/user/balance', oauth: false };
+  if (host === 'api.zjuam.art') return { id: 'kiki-quota', label: 'AxonHub 订阅额度', url: 'https://api.zjuam.art/v1/kiki/quota', oauth: false };
   return undefined;
 }
 export function quotaHeaders(adapter: QuotaAdapter, token: string): Record<string, string> {
@@ -74,6 +106,7 @@ export function parseQuota(adapter: QuotaAdapterId, payload: unknown, now: numbe
     : adapter === 'zai' ? Array.isArray(record(body['data'])['limits'])
     : adapter === 'openrouter' ? body['data'] !== undefined || body['credits'] !== undefined || body['key'] !== undefined
     : adapter === 'stepfun' ? body['balance'] !== undefined || isStepPlanPayload(body)
+    : adapter === 'kiki-quota' ? body['object'] === 'kiki.key_quota' || Array.isArray(body['pool_quotas'])
     : adapter === 'novita' ? body['availableBalance'] !== undefined : body['data'] !== undefined;
   if (!shape) throw new Error('invalid_response');
   const meters: (ProviderQuotaMeter | undefined)[] = [];
@@ -262,6 +295,57 @@ export function parseQuota(adapter: QuotaAdapterId, payload: unknown, now: numbe
     const value = num(raw);
     const currency = adapter === 'siliconflow-cn' ? 'CNY' : 'USD';
     if (value !== null) meters.push({ id: 'balance', label: `${currency} 余额`, unit: 'money', unit_label: currency, currency, scope: 'account', used: null, limit: null, remaining: adapter === 'novita' ? value / 10000 : value });
+  }
+  if (adapter === 'kiki-quota') {
+    const usedIds = new Set<string>();
+    const uniqueId = (base: string, fallback: string): string => {
+      const candidate = usedIds.has(base) ? `${base}-${fallback}` : base;
+      usedIds.add(candidate);
+      return candidate;
+    };
+    const keyInfo = record(body['key']);
+    const channelTag = array(keyInfo['channel_tags']).map(text).find((tag): tag is string => tag !== undefined);
+    const groupTag = channelTag ?? text(keyInfo['group_name']);
+    for (const [poolIndex, rawPool] of array(body['pool_quotas']).entries()) {
+      const pool = record(rawPool);
+      const slug = text(pool['slug']);
+      const title = text(pool['title']) ?? slug ?? `Pool ${poolIndex + 1}`;
+      const poolKey = slug ?? String(poolIndex);
+      for (const [windowIndex, rawWindow] of array(pool['windows']).entries()) {
+        const win = record(rawWindow);
+        const winKey = text(win['key']);
+        const winLabel = text(win['label']) ?? winKey;
+        const usedDirect = num(win['usedPercent']);
+        const remainingDirect = num(win['remainingPercent']);
+        const used = usedDirect ?? (remainingDirect !== null ? Math.round((100 - remainingDirect) * 1e6) / 1e6 : null);
+        if (used === null) continue;
+        const durationSeconds = inferWindowDurationSeconds(winKey, winLabel);
+        const label = winLabel ? `${title} · ${winLabel}` : title;
+        const id = uniqueId(`pool-${poolKey}-${winKey ?? windowIndex}`, `${poolIndex}-${windowIndex}`);
+        meters.push(percent(id, label, used, date(win['resetAt']), durationSeconds, title));
+      }
+    }
+    const personal = record(body['personal_usage']);
+    const personalSpecs: ReadonlyArray<readonly [string, string, string, string]> = [
+      ['requests_today', 'personal-requests-today', '今日请求', '次'],
+      ['tokens_today', 'personal-tokens-today', '今日 Tokens', 'tokens'],
+      ['tokens_7d', 'personal-tokens-7d', '7日 Tokens', 'tokens'],
+    ];
+    for (const [field, id, title, unitLabel] of personalSpecs) {
+      const value = num(personal[field]);
+      if (value === null || value < 0) continue;
+      meters.push({
+        id: uniqueId(id, field),
+        label: groupTag ? `${groupTag} · ${title}` : title,
+        unit: 'count',
+        unit_label: unitLabel,
+        scope: 'key',
+        model_group: groupTag,
+        used: value,
+        limit: null,
+        remaining: null,
+      });
+    }
   }
   return meters.filter((meter): meter is ProviderQuotaMeter => meter !== undefined);
 }
