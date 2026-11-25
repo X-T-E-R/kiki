@@ -175,7 +175,7 @@ describe('WorkspacePathIndex demand start and coalesced mutations', () => {
       expect(afterBurst?.entries.some((entry) => entry.path === 'src/burst-97.ts')).toBe(true);
 
       await index.trigram!.whenReady();
-      expect(trigramUpdateBatches).toEqual([98 + 1 + 1 + 50]);
+      expect(trigramUpdateBatches).toEqual([98 + 1 + 50]);
 
       await index.mutation(join(root, '.gitignore'));
       expect(index.snapshot()).toBeUndefined();
@@ -926,5 +926,228 @@ describe('WorkspacePathIndex demand start and coalesced mutations', () => {
     } finally {
       await index.dispose();
     }
+  });
+
+  it('bounds whenSettled() under continuous file churn and falls back cleanly on stalled worker updates', async () => {
+    const root = await makeTempDir();
+    let releaseStalled: (() => void) | undefined;
+    let stallPathRequests = false;
+    const cpu: ICpuWorkerService = {
+      _serviceBrand: undefined,
+      request: async <T>(operation: unknown) => {
+        const op = operation as { readonly type: string; readonly path?: string };
+        if (op.type === 'workspace.paths') {
+          return {
+            overflow: false,
+            entries: [
+              { path: 'src/app.ts', name: 'app.ts', kind: 'file', mtimeMs: 10, ctimeMs: 10, size: 12, ino: 1 },
+              { path: 'dev.log', name: 'dev.log', kind: 'file', mtimeMs: 10, ctimeMs: 10, size: 12, ino: 2 },
+            ],
+          } as T;
+        }
+        if (op.type === 'workspace.path') {
+          if (stallPathRequests) {
+            await new Promise<void>((resolveWait) => {
+              releaseStalled = resolveWait;
+            });
+          } else {
+            await new Promise((resolveWait) => setTimeout(resolveWait, 2));
+          }
+          return { path: 'dev.log', name: 'dev.log', kind: 'file', mtimeMs: Date.now(), ctimeMs: 10, size: 16, ino: 2 } as T;
+        }
+        return undefined as T;
+      },
+    };
+    const fakeWatcher = createFakeWatcher();
+    const index = new WorkspacePathIndex(root, cpu, undefined, {
+      watch: fakeWatcher.watch,
+      settleTimeoutMs: 40,
+    });
+    let churnTimer: ReturnType<typeof setInterval> | undefined;
+    try {
+      await index.refresh();
+
+      churnTimer = setInterval(() => {
+        void index.mutation(join(root, 'dev.log'));
+      }, 1);
+      const churnStartedAt = performance.now();
+      const matches = await index.glob(root, 'src/*.ts');
+      const churnElapsedMs = performance.now() - churnStartedAt;
+      clearInterval(churnTimer);
+      churnTimer = undefined;
+
+      expect(matches).toEqual([join(root, 'src', 'app.ts')]);
+      expect(churnElapsedMs).toBeLessThan(250);
+
+      stallPathRequests = true;
+      const stalledMutation = index.mutation(join(root, 'dev.log'));
+      const stallStartedAt = performance.now();
+      const settled = await index.whenSettled(40);
+      const fallbackGlob = await index.glob(root, 'src/*.ts');
+      const stallElapsedMs = performance.now() - stallStartedAt;
+
+      expect(settled).toBe(false);
+      expect(fallbackGlob).toBeUndefined();
+      expect(stallElapsedMs).toBeLessThan(250);
+
+      releaseStalled?.();
+      await stalledMutation;
+    } finally {
+      if (churnTimer !== undefined) clearInterval(churnTimer);
+      releaseStalled?.();
+      await index.dispose();
+    }
+  });
+
+  it('ignores no-op gitignored mutations without dirtying snapshot revision or clearing fuzzy cache', async () => {
+    const root = await makeTempDir();
+    const cpu: ICpuWorkerService = {
+      _serviceBrand: undefined,
+      request: async <T>(operation: unknown) => {
+        const op = operation as { readonly type: string };
+        if (op.type === 'workspace.paths') {
+          return {
+            overflow: false,
+            entries: [{ path: 'src/keep.ts', name: 'keep.ts', kind: 'file', mtimeMs: 10, ctimeMs: 10, size: 12, ino: 1 }],
+          } as T;
+        }
+        if (op.type === 'workspace.path') return undefined as T;
+        return undefined as T;
+      },
+    };
+    const fakeWatcher = createFakeWatcher();
+    const index = new WorkspacePathIndex(root, cpu, undefined, { watch: fakeWatcher.watch });
+    try {
+      await index.refresh();
+      const revBefore = index.snapshot()?.revision;
+      const firstFuzzy = index.fuzzy('keep', false);
+      expect(firstFuzzy?.map((entry) => entry.path)).toEqual(['src/keep.ts']);
+
+      await index.mutation(join(root, 'node_modules', 'pkg', 'index.js'));
+      await index.whenSettled();
+
+      expect(index.snapshot()?.revision).toBe(revBefore);
+      expect(index.fuzzy('keep', false)).toBe(firstFuzzy);
+    } finally {
+      await index.dispose();
+    }
+  });
+
+  it('keeps fuzzy() deterministic across live updates and fast on 100k paths without sorting', async () => {
+    const root = await makeTempDir();
+    const syntheticEntries: WorkspacePathEntry[] = [];
+    for (let i = 0; i < 100_000; i += 1) {
+      const padded = String(i).padStart(6, '0');
+      const name = i % 50 === 0 ? `service-${padded}.ts` : `module-${padded}.txt`;
+      const path = `packages/pkg-${Math.floor(i / 5000)}/${name}`;
+      syntheticEntries.push({ path, name, kind: 'file', mtimeMs: i, ctimeMs: i, size: 10, ino: i + 1 });
+    }
+    syntheticEntries.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+
+    let liveState = new Map<string, WorkspacePathEntry | undefined>();
+    const cpu: ICpuWorkerService = {
+      _serviceBrand: undefined,
+      request: async <T>(operation: unknown) => {
+        const op = operation as { readonly type: string; readonly path?: string };
+        if (op.type === 'workspace.paths') {
+          return { overflow: false, entries: syntheticEntries } as T;
+        }
+        if (op.type === 'workspace.path') {
+          return liveState.get(op.path ?? '') as T;
+        }
+        return undefined as T;
+      },
+    };
+    const fakeWatcher = createFakeWatcher();
+    const index = new WorkspacePathIndex(root, cpu, undefined, { watch: fakeWatcher.watch });
+    try {
+      await index.refresh();
+
+      const t0 = performance.now();
+      const matches = index.fuzzy('svc', false);
+      const elapsedMs = performance.now() - t0;
+
+      expect(matches).toBeDefined();
+      expect(matches).toHaveLength(2_000);
+      expect(elapsedMs).toBeLessThan(250);
+      for (let i = 1; i < matches!.length; i += 1) {
+        expect(matches![i - 1]!.path < matches![i]!.path).toBe(true);
+      }
+
+      const addedPath = join(root, 'packages', 'pkg-0', 'service-000001-live.ts');
+      const deletedPath = join(root, 'packages', 'pkg-0', 'service-000000.ts');
+      liveState.set(addedPath, {
+        path: 'packages/pkg-0/service-000001-live.ts',
+        name: 'service-000001-live.ts',
+        kind: 'file',
+        mtimeMs: 999_999,
+        ctimeMs: 999_999,
+        size: 20,
+        ino: 999_999,
+      });
+      liveState.set(deletedPath, undefined);
+
+      await index.mutation(addedPath);
+      await index.mutation(deletedPath);
+      await index.whenSettled();
+
+      const updated = index.fuzzy('svc', false);
+      expect(updated).toHaveLength(2_000);
+      expect(updated![0]!.path).toBe('packages/pkg-0/service-000001-live.ts');
+      expect(updated!.some((entry) => entry.path === 'packages/pkg-0/service-000000.ts')).toBe(false);
+      for (let i = 1; i < updated!.length; i += 1) {
+        expect(updated![i - 1]!.path < updated![i]!.path).toBe(true);
+      }
+
+      liveState.set(deletedPath, {
+        path: 'packages/pkg-0/service-000000.ts',
+        name: 'service-000000.ts',
+        kind: 'file',
+        mtimeMs: 1_000_000,
+        ctimeMs: 1_000_000,
+        size: 20,
+        ino: 1_000_000,
+      });
+      await index.mutation(deletedPath);
+      await index.whenSettled();
+
+      const recreated = index.fuzzy('svc', false);
+      expect(recreated).toHaveLength(2_001);
+      expect(recreated![0]!.path).toBe('packages/pkg-0/service-000000.ts');
+      expect(recreated![1]!.path).toBe('packages/pkg-0/service-000001-live.ts');
+    } finally {
+      await index.dispose();
+    }
+  });
+
+  it('caches parsed ignore rules across workspacePathEntry calls and invalidates immediately when ignore files change', async () => {
+    const root = await makeTempDir();
+    const nested = join(root, 'packages', 'app', 'src');
+    await mkdir(nested, { recursive: true });
+    const gitignorePath = join(root, '.gitignore');
+    const ruleLines = Array.from({ length: 1_500 }, (_, i) => `ignored-pattern-${i}.tmp`).join('\n');
+    await writeFile(gitignorePath, `${ruleLines}\nfirst.log\n`);
+    const firstFile = join(nested, 'first.log');
+    const secondFile = join(nested, 'second.log');
+    await writeFile(firstFile, 'a');
+    await writeFile(secondFile, 'b');
+
+    expect(workspacePathEntry(root, firstFile)).toBeUndefined();
+    expect(workspacePathEntry(root, secondFile)?.path).toBe('packages/app/src/second.log');
+
+    const t0 = performance.now();
+    for (let i = 0; i < 100; i += 1) {
+      expect(workspacePathEntry(root, firstFile)).toBeUndefined();
+      expect(workspacePathEntry(root, secondFile)?.path).toBe('packages/app/src/second.log');
+    }
+    const cachedMs = performance.now() - t0;
+    expect(cachedMs).toBeLessThan(1_500);
+
+    await writeFile(gitignorePath, `${ruleLines}\nsecond.log\nextra-rule.tmp\n`);
+    expect(workspacePathEntry(root, firstFile)?.path).toBe('packages/app/src/first.log');
+    expect(workspacePathEntry(root, secondFile)).toBeUndefined();
+
+    await rm(gitignorePath);
+    expect(workspacePathEntry(root, secondFile)?.path).toBe('packages/app/src/second.log');
   });
 });
