@@ -3,11 +3,12 @@
  * permission-denied contexts. Rejects when both channels fail.
  */
 
-import { isVscodeWebview, vscodeHost } from '../host/vscode';
+import { isVscodeWebview } from '../host/detect';
 import { androidBridge, hasAndroidBridge } from './androidBridge';
 
 export async function copyTextToClipboard(text: string): Promise<void> {
   if (isVscodeWebview()) {
+    const { vscodeHost } = await import('../host/vscode');
     await vscodeHost.writeClipboard(text);
     return;
   }

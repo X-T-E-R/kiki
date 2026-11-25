@@ -110,7 +110,14 @@ export function workspaceUsageCacheToken(queryClient: QueryClient, pluginId: str
 export function useWorkspaceUsageCacheToken(pluginId: string): string {
   const queryClient = useQueryClient();
   const subscribe = useCallback(
-    (listener: () => void) => queryClient.getQueryCache().subscribe(listener),
+    (listener: () => void) => queryClient.getQueryCache().subscribe((event) => {
+      if (
+        (event.type === 'added' || event.type === 'updated' || event.type === 'removed') &&
+        event.query.queryKey[0] === 'plugin-usage'
+      ) {
+        listener();
+      }
+    }),
     [queryClient],
   );
   const read = useCallback(

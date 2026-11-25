@@ -17,7 +17,9 @@ import {
 
 import {
   detectLocale,
+  hasLocaleDictionary,
   LOCALE_STORAGE_KEY,
+  registerLocaleDictionary,
   translate,
   translatePlural,
   type I18nKey,
@@ -61,20 +63,65 @@ function initialLocale(): Locale {
   });
 }
 
+const LOCALE_LOADERS: Record<Locale, () => Promise<Partial<Record<I18nKey, string>>>> = {
+  en: async () => (await import('@kiki/session-core/i18n/en')).en,
+  zh: async () => (await import('@kiki/session-core/i18n/zh')).zh,
+};
+
+const inFlightLocaleLoads = new Map<Locale, Promise<void>>();
+
+export async function ensureLocaleLoaded(locale: Locale): Promise<void> {
+  if (hasLocaleDictionary(locale)) return;
+  let pending = inFlightLocaleLoads.get(locale);
+  if (pending === undefined) {
+    pending = LOCALE_LOADERS[locale]()
+      .then((dict) => {
+        registerLocaleDictionary(locale, dict);
+      })
+      .finally(() => {
+        inFlightLocaleLoads.delete(locale);
+      });
+    inFlightLocaleLoads.set(locale, pending);
+  }
+  await pending;
+}
+
+export async function ensureInitialLocaleLoaded(): Promise<void> {
+  await ensureLocaleLoaded(initialLocale());
+}
+
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(initialLocale);
+  const [, setDictionaryRevision] = useState(0);
 
   useEffect(() => {
     document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
   }, [locale]);
 
+  useEffect(() => {
+    if (hasLocaleDictionary(locale)) return;
+    let active = true;
+    void ensureLocaleLoaded(locale).then(() => {
+      if (active) setDictionaryRevision((n) => n + 1);
+    });
+    return () => {
+      active = false;
+    };
+  }, [locale]);
+
   const setLocale = useCallback((next: Locale) => {
-    setLocaleState(next);
     try {
       localStorage.setItem(LOCALE_STORAGE_KEY, next);
     } catch {
       // A session-only switch is still useful when storage is unavailable.
     }
+    if (hasLocaleDictionary(next)) {
+      setLocaleState(next);
+      return;
+    }
+    void ensureLocaleLoaded(next).then(() => {
+      setLocaleState(next);
+    });
   }, []);
 
   const t = useCallback(
@@ -87,22 +134,39 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     [locale],
   );
 
-  const time = useMemo<TimeFormatters>(
-    () => ({
+  const time = useMemo<TimeFormatters>(() => {
+    const absoluteLocale = locale === 'zh' ? 'zh-CN' : undefined;
+    const absoluteFormatter = typeof Intl !== 'undefined' && typeof Intl.DateTimeFormat === 'function'
+      ? new Intl.DateTimeFormat(absoluteLocale, {
+          year: 'numeric',
+          month: 'numeric',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+          second: '2-digit',
+        })
+      : null;
+    const absoluteCache = new Map<string, string>();
+    return {
       relativeTime: (iso) => relativeTime(iso, locale),
       timeUntil: (iso) => timeUntil(iso, locale),
       formatDuration: (ms) => formatDuration(ms, locale),
       formatTokens,
       absoluteTime: (iso) => {
         if (iso === undefined) return undefined;
+        const cached = absoluteCache.get(iso);
+        if (cached !== undefined) return cached;
         const date = new Date(iso);
-        return Number.isNaN(date.getTime())
-          ? undefined
-          : date.toLocaleString(locale === 'zh' ? 'zh-CN' : undefined);
+        if (Number.isNaN(date.getTime())) return undefined;
+        const formatted = absoluteFormatter !== null
+          ? absoluteFormatter.format(date)
+          : date.toLocaleString(absoluteLocale);
+        if (absoluteCache.size >= 512) absoluteCache.clear();
+        absoluteCache.set(iso, formatted);
+        return formatted;
       },
-    }),
-    [locale],
-  );
+    };
+  }, [locale]);
 
   const value = useMemo<I18nValue>(
     () => ({ locale, setLocale, t, tp, time }),

@@ -13,7 +13,6 @@ import {
 import { useHost } from '../../../host';
 import { browserNotificationPermission } from '../../../host/browser';
 import type { SystemNotificationPermission } from '../../../host/notificationPermission';
-import { tauriNotificationPermission } from '../../../host/tauri';
 import { useI18n } from '../../../i18n';
 import { Toggle } from '../../controls';
 import { SettingField, SettingsBox } from '../fields';
@@ -51,7 +50,8 @@ export function AwayNotificationsCard() {
     let live = true;
     const refreshPermission = () => {
       if (host.kind === 'tauri') {
-        void tauriNotificationPermission()
+        void import('../../../host/tauri')
+          .then(({ tauriNotificationPermission }) => tauriNotificationPermission())
           .then((next) => { if (live) setPermission(next); })
           .catch(() => { if (live) setPermission(undefined); });
         return;

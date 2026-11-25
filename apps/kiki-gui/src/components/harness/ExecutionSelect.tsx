@@ -30,6 +30,7 @@ import {
 
 import { useI18n } from '../../i18n';
 import { externalClientsFacade } from '../../lib/externalClients';
+import { useDeferSecondaryBootQueries } from '../../lib/bootHydrationGate';
 import { isPeerConnectionSource } from '../../lib/peerAccess';
 import {
   mapExecutorCapabilities,
@@ -277,13 +278,14 @@ export function ExecutionSelect({
   const showSetupNotice = !supportsModelOverride || currentExecutorNeedsSetup;
 
   // External client connections
+  const deferSecondaryBoot = useDeferSecondaryBootQueries();
   const extFacade = useMemo(() => externalClientsFacade(optConnection?.client?.klient), [optConnection?.client]);
   const extClientsQuery = useQuery({
     queryKey: ['external-clients'],
     queryFn: () => extFacade!.list(),
     staleTime: 15_000,
     retry: false,
-    enabled: extFacade !== undefined && !isPeerConnectionSource(optConnection?.connectionSource),
+    enabled: !deferSecondaryBoot && extFacade !== undefined && !isPeerConnectionSource(optConnection?.connectionSource),
   });
   const externalConnections = extClientsQuery.data?.connections ?? [];
 

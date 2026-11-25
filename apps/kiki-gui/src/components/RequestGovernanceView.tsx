@@ -37,7 +37,7 @@ import { useRequestGovernance } from '../lib/useRequestGovernance';
 import { sanitizeDisplayTitle, useSessionNames } from '../lib/threadTitles';
 import { ROOM_ITEMS_QUERY_KEY } from '../lib/useConversationList';
 import { useConnection } from '../state/connection';
-import { useSessionSeen } from './ActivityPage';
+import { useSessionSeen } from '../lib/sessionSeen';
 import { DisclosureChevron, Icon } from './icons';
 import { ConcurrencyRulesEditor, type GovernanceRule } from './usage/ConcurrencyRulesEditor';
 import {

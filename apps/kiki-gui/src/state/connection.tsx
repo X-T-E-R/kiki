@@ -43,7 +43,7 @@ import {
   settingsSnapshot,
   subscribeSettings,
 } from '@kiki/session-core/settings';
-import { isVscodeWebview } from '../host/vscode';
+import { isVscodeWebview } from '../host/detect';
 import { useI18n } from '../i18n';
 import {
   clearAppShellCredentialState,
@@ -87,6 +87,7 @@ import {
   webEntryProblemFor,
   type WebAccessBootstrap,
 } from '../lib/webAccess';
+import { takePrefetchedMeta } from '../lib/bootMetaPrefetch';
 
 export type { ConnectionConfig } from './connectionConfig';
 
@@ -593,32 +594,34 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       clearAppShellCredentialState(window);
       return { config: { url: '', token: '' }, persist: false, source: 'web-cookie' };
     }
-    // No code in this page load. A browser that redeemed a link earlier still
-    // holds the cookie, and must be recognized on a refresh or a later visit
-    // rather than being asked for a token it does not have. The answer comes
-    // from the server, not from anything stored here, and until it arrives the
-    // ordinary connect screen stands — so nothing claims a session it cannot
-    // prove.
-    void askForWebCookie((claimed) => {
-      if (!claimed) return;
-      const current = selectionRef.current;
-      if (
-        current !== null &&
-        current.source !== 'app-shell' &&
-        (current.source !== 'stored' || current.persist)
-      ) {
-        return;
-      }
-      clearAppShellCredentialState(window);
-      connectionEpochRef.current += 1;
-      setMeta(null);
-      setConnectError(null);
-      setSelection({ config: { url: '', token: '' }, persist: false, source: 'web-cookie' });
-    });
     const initialSelection = selectInitialConnection({
       deepLink: readDeepLinkConfig(),
       stored: readStoredConfig(),
     });
+    if (
+      initialSelection === null ||
+      (initialSelection.source === 'stored' && !initialSelection.persist)
+    ) {
+      // No code in this page load. A browser that redeemed a link earlier still
+      // holds the cookie, and must be recognized on a refresh or a later visit
+      // rather than being asked for a token it does not have.
+      void askForWebCookie((claimed) => {
+        if (!claimed) return;
+        const current = selectionRef.current;
+        if (
+          current !== null &&
+          current.source !== 'app-shell' &&
+          (current.source !== 'stored' || current.persist)
+        ) {
+          return;
+        }
+        clearAppShellCredentialState(window);
+        connectionEpochRef.current += 1;
+        setMeta(null);
+        setConnectError(null);
+        setSelection({ config: { url: '', token: '' }, persist: false, source: 'web-cookie' });
+      });
+    }
     if (initialSelection !== null) return initialSelection;
     const adoptedShellToken = readAdoptedShellCredential(window);
     if (adoptedShellToken !== null) {
@@ -1307,7 +1310,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     setConnectError(null);
     const restored = staged?.client === client ? staged : restoredMetaRef.current?.client === client ? restoredMetaRef.current : null;
     if (restored !== null) restoredMetaRef.current = null;
-    (restored !== null ? Promise.resolve(restored.meta) : client.meta()).then(
+    const prefetched = restored === null && endpoint !== null && token !== null ? takePrefetchedMeta(endpoint, token) : null;
+    const metaPromise = restored !== null
+      ? Promise.resolve(restored.meta)
+      : prefetched !== null
+        ? prefetched.then((cached) => cached ?? client.meta())
+        : client.meta();
+    metaPromise.then(
       (value) => {
         if (cancelled || connectionEpoch !== connectionEpochRef.current) return;
         metaFailureCountRef.current = 0;
@@ -1671,11 +1680,25 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     return watchPageLifecycle();
   }, [socket]);
 
-  const nudgeConnection = useCallback(() => {
+  const lastWakeSessionsRefreshRef = useRef(0);
+
+  const nudgeConnection = useCallback((options?: { readonly routineWake?: boolean }) => {
     socket?.nudge();
     for (const controller of controllersRef.current) controller.nudge();
-    void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-  }, [socket, queryClient]);
+    if (options?.routineWake === true) {
+      const now = Date.now();
+      if (wsStatus === 'open' && now - lastWakeSessionsRefreshRef.current < 10_000) return;
+      lastWakeSessionsRefreshRef.current = now;
+      void queryClient.invalidateQueries({
+        queryKey: ['sessions'],
+        refetchType: 'active',
+        predicate: (query) => query.queryKey[1] !== 'pinned',
+      });
+      return;
+    }
+    lastWakeSessionsRefreshRef.current = Date.now();
+    void queryClient.invalidateQueries({ queryKey: ['sessions'], refetchType: 'active' });
+  }, [socket, queryClient, wsStatus]);
 
   // Browser recovery events coalesce rapid handoff bursts (~150ms) and skip
   // wake work while the browser explicitly reports offline.
@@ -1688,7 +1711,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       wakeTimer = setTimeout(() => {
         wakeTimer = undefined;
         if (!forceOnline && typeof navigator !== 'undefined' && navigator.onLine === false) return;
-        nudgeConnection();
+        nudgeConnection({ routineWake: !forceOnline });
       }, 150);
     };
     const onOnline = () => { scheduleWake(true); };

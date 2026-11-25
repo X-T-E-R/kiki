@@ -88,7 +88,7 @@ export function PersonaConversationsSection({
   ], [t, workspaceOptions]);
 
   const conversationsQuery = useInfiniteQuery({
-    queryKey: ['sessions', 'persona', persona.id, workspaceFilter],
+    queryKey: ['persona-conversations', persona.id, workspaceFilter],
     initialPageParam: undefined as string | undefined,
     queryFn: async ({ pageParam }): Promise<PersonaConversations & { readonly nextBefore?: string }> => {
       const items: Session[] = [];
@@ -113,6 +113,7 @@ export function PersonaConversationsSection({
     },
     getNextPageParam: (lastPage) => lastPage.nextBefore,
     staleTime: 15_000,
+    refetchOnWindowFocus: false,
   });
 
   const allItems = useMemo(() => {

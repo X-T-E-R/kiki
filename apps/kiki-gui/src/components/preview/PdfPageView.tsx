@@ -290,22 +290,41 @@ export function PdfPageView({ client, assetUrl, sourceKey, page, name, documentD
   useEffect(() => {
     const element = frame.current;
     if (element === null) return;
-    const measure = (reported?: number) => {
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+    const applyWidth = (reported?: number) => {
       const measured = reported && reported > 0
         ? reported
         : element.getBoundingClientRect().width || element.clientWidth || canvas.current?.clientWidth || element.parentElement?.clientWidth || 640;
       const next = Math.max(1, Math.round(measured));
-      setContentWidth((current) => current === next ? current : next);
+      setContentWidth((current) => {
+        if (current === next) return current;
+        // Ignore tiny scrollbar-induced width jitters once already measured.
+        if (current !== undefined && current > 0 && Math.abs(current - next) <= 12) return current;
+        return next;
+      });
     };
-    measure();
+    const scheduleMeasure = (reported?: number) => {
+      if (timerId !== null) clearTimeout(timerId);
+      timerId = setTimeout(() => {
+        timerId = null;
+        applyWidth(reported);
+      }, 60);
+    };
+    applyWidth();
     if (typeof ResizeObserver === 'undefined') {
-      const onResize = () => { measure(); };
+      const onResize = () => { scheduleMeasure(); };
       globalThis.addEventListener('resize', onResize);
-      return () => { globalThis.removeEventListener('resize', onResize); };
+      return () => {
+        if (timerId !== null) clearTimeout(timerId);
+        globalThis.removeEventListener('resize', onResize);
+      };
     }
-    const observer = new ResizeObserver((entries) => { measure(entries[0]?.contentRect.width); });
+    const observer = new ResizeObserver((entries) => { scheduleMeasure(entries[0]?.contentRect.width); });
     observer.observe(element);
-    return () => { observer.disconnect(); };
+    return () => {
+      if (timerId !== null) clearTimeout(timerId);
+      observer.disconnect();
+    };
   }, []);
 
   useEffect(() => {
@@ -573,9 +592,11 @@ export function PdfPageView({ client, assetUrl, sourceKey, page, name, documentD
             ) : null}
           </div>
           {state === 'loading' ? (
-            <div className="mt-2 flex items-center justify-center gap-2 text-[11.5px] text-ink-faint" role="status">
-              <span className="h-1 w-1 animate-pulse rounded-full bg-ink-faint" aria-hidden />
-              {t('preview.rendering')}
+            <div className="pointer-events-none sticky bottom-2 mt-2 flex h-0 items-center justify-center overflow-visible text-[11.5px] text-ink-faint" role="status">
+              <span className="inline-flex items-center gap-2 rounded-full bg-paper/90 px-2.5 py-0.5 shadow-xs">
+                <span className="h-1 w-1 animate-pulse rounded-full bg-ink-faint" aria-hidden />
+                {t('preview.rendering')}
+              </span>
             </div>
           ) : null}
         </>

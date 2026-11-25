@@ -1,6 +1,10 @@
 import { type TransactionSpec, Transaction } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { composerInputOf, registerComposerInput, type ComposerInputHandle } from '../lib/composerInput';
+import { ComposerCodeMirror } from './ComposerCodeMirror';
+import { registerComposerCodeMirror } from './ComposerInput';
+
+registerComposerCodeMirror(ComposerCodeMirror);
 
 export type ComposerSelectionDirection = 'forward' | 'backward' | 'none';
 

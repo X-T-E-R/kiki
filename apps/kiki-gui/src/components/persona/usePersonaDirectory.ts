@@ -115,14 +115,17 @@ export function usePersonaDirectory(options: {
   readonly includeArchived?: boolean;
   readonly sessions?: readonly Session[];
   readonly seen?: SessionSeenMap;
+  readonly enabled?: boolean;
 } = {}) {
+  const enabled = options.enabled !== false;
   const queryClient = useQueryClient();
-  const personasQuery = usePersonaList({ includeArchived: options.includeArchived });
+  const personasQuery = usePersonaList({ includeArchived: options.includeArchived, enabled });
   const botRoomApi = useBotRoomApi();
   const botsQuery = useQuery({
     queryKey: BOTS_QUERY_KEY,
     queryFn: () => botRoomApi.listBots(),
     staleTime: 15_000,
+    enabled,
     retry: false,
   });
   const directory = useMemo(() => buildPersonaDirectory(

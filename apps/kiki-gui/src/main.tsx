@@ -8,7 +8,8 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 
-import { HostProvider, hostAdapter } from './host';
+import { HostProvider } from './host';
+import { resolveHostAdapter } from './host/resolveHost';
 import { installAppShellCredentialListener } from './lib/appShell';
 import { installDocumentVisibilityMotionGuard } from './lib/motion';
 import { initializeSpaceStorage, activeSpace } from './lib/spaceStorage';
@@ -16,8 +17,10 @@ import { placeHrefForSpaceKey } from './lib/placeRoutes';
 import { restoreSpaceViewAtBoot } from './lib/spaceViewState';
 import { adoptWindowModeFromHost } from './lib/workModeStartup';
 import { applyColdNavigationIntent, beginNavWindow, consumeScopeReload, pendingScopeReloadScope } from './lib/navScope';
-import { writeLayoutPreferences } from '@kiki/session-core/settings';
+import { writeLayoutPreferences } from '@kiki/session-core/settings/layoutPrefs';
 import { setWebAccessBootstrap, takeAccessCode } from './lib/webAccess';
+import { prefetchDeepLinkMeta } from './lib/bootMetaPrefetch';
+import { shouldUseMobileShell } from './mobile/mobileShellRoute';
 import './index.css';
 import './styles/motion.css';
 import './styles/new-session.css';
@@ -64,6 +67,32 @@ async function redeemWebAccessLink(): Promise<void> {
 }
 
 async function start(): Promise<void> {
+  // Start `/api/meta`, `/api/sessions/:id`, and the klient WS session-view
+  // bootstrap immediately in parallel with JS bundle loading on deep links.
+  prefetchDeepLinkMeta();
+  // On plain browser hosts (no Tauri multi-space WebView switch and no pending
+  // `#access=` exchange), kick off the shell, connection, and locale chunks
+  // immediately so network download overlaps host/storage setup.
+  const isPlainWebBoot = typeof window !== 'undefined'
+    && !('__TAURI_INTERNALS__' in window)
+    && !('__KIKI_VSCODE__' in window)
+    && !window.location.hash.includes('access=');
+  if (isPlainWebBoot) {
+    const earlyMobileShell = shouldUseMobileShell();
+    let earlyLocale: string | null = null;
+    try {
+      earlyLocale = localStorage.getItem('kiki.locale');
+    } catch {
+      earlyLocale = null;
+    }
+    const earlyZh = earlyLocale === 'zh'
+      || (earlyLocale !== 'en' && typeof navigator !== 'undefined' && /^zh\b/i.test(navigator.language ?? ''));
+    void import('./ShellEntry').catch(() => undefined);
+    void import('./state/connection').catch(() => undefined);
+    void import('./i18n').catch(() => undefined);
+    void (earlyMobileShell ? import('./mobile/MobileAppShell') : import('./App')).catch(() => undefined);
+    void (earlyZh ? import('@kiki/session-core/i18n/zh') : import('@kiki/session-core/i18n/en')).catch(() => undefined);
+  }
   // A `#access=<one-time code>` link is taken out of the address bar before
   // anything else runs, and redeemed before the app graph loads. Nothing else
   // in boot can observe the code: it is cleared first, held in module memory
@@ -77,6 +106,7 @@ async function start(): Promise<void> {
     const { startTokenPreview } = await import('./dev/tokenPreview');
     startTokenPreview();
   }
+  const hostAdapter = await resolveHostAdapter();
   await initializeSpaceStorage(hostAdapter);
   const intent = await hostAdapter.takeNavigationIntent?.().catch(() => null);
   const pendingScope = pendingScopeReloadScope();
@@ -113,6 +143,17 @@ async function start(): Promise<void> {
   const explicit = remoteBoot || (intent !== undefined && intent !== null && 'route' in intent && applyColdNavigationIntent(intent, homeId));
   const connectionDeepLink = new URLSearchParams(window.location.search).has('server') || new URLSearchParams(window.location.search).has('url');
   if (!controlled && !explicit && !connectionDeepLink) restoreSpaceViewAtBoot(hostAdapter);
+  // Preload the active shell and active locale dictionary in the same parallel
+  // wave as ShellEntry/i18n to eliminate serial RTT hops on mobile cold open.
+  const mobileShell = shouldUseMobileShell();
+  let preferredLocale: string | null = null;
+  try {
+    preferredLocale = localStorage.getItem('kiki.locale');
+  } catch {
+    preferredLocale = null;
+  }
+  const bootZh = preferredLocale === 'zh'
+    || (preferredLocale !== 'en' && typeof navigator !== 'undefined' && /^zh\b/i.test(navigator.language ?? ''));
   const [
     { ShellEntry },
     { AppErrorBoundary },
@@ -128,12 +169,17 @@ async function start(): Promise<void> {
       return mod;
     }),
     import('./components/AppErrorBoundary'),
-    import('./i18n'),
+    import('./i18n').then(async (mod) => {
+      await mod.ensureInitialLocaleLoaded();
+      return mod;
+    }),
     import('./state/connection'),
     import('./lib/theme'),
     import('./lib/skins'),
     import('./lib/uiZoom'),
     import('./components/NavScopeBoundary'),
+    (mobileShell ? import('./mobile/MobileAppShell') : import('./App')).catch(() => undefined),
+    (bootZh ? import('@kiki/session-core/i18n/zh') : import('@kiki/session-core/i18n/en')).catch(() => undefined),
   ]);
 
   // Before the first render: the palette must be right on the first frame, or a
@@ -158,7 +204,7 @@ async function start(): Promise<void> {
   }
   createRoot(document.querySelector('#root')!).render(
     <StrictMode>
-      <HostProvider>
+      <HostProvider host={hostAdapter}>
         <I18nProvider>
           <ConnectionProvider>
             <ConnectedRouter />

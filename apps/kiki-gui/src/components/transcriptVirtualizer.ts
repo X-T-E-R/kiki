@@ -19,6 +19,7 @@
  */
 
 import type { VirtualItem, Virtualizer } from '@tanstack/react-virtual';
+import { markTranscriptMounted } from '../lib/bootHydrationGate';
 import { cssZoomFactor } from '../lib/uiZoom';
 
 export type TranscriptVirtualizer = Virtualizer<HTMLDivElement, HTMLDivElement>;
@@ -42,12 +43,42 @@ const READER_SCROLL_KEYS: ReadonlySet<string> = new Set([
   'ArrowUp', 'PageUp', 'Home',
 ]);
 
+const activeScrollUntil = new WeakMap<HTMLElement, number>();
+const pendingPostScrollReconcile = new WeakMap<TranscriptVirtualizer, ReturnType<typeof setTimeout>>();
+const provisionalRowKeys = new WeakMap<TranscriptVirtualizer, Set<VirtualItem['key']>>();
+const batchedDistanceFromEnd = new WeakMap<TranscriptVirtualizer, number>();
+
+function markTranscriptScrolling(scroll: HTMLElement | null): void {
+  if (scroll !== null) activeScrollUntil.set(scroll, performance.now() + 160);
+}
+
+function isActivelyScrolling(scroll: HTMLElement | null): boolean {
+  return scroll !== null && (activeScrollUntil.get(scroll) ?? 0) > performance.now();
+}
+
+function hasLiveResizeObserver(instance: TranscriptVirtualizer, element?: Element | null): boolean {
+  const win = instance.targetWindow
+    ?? instance.scrollElement?.ownerDocument?.defaultView
+    ?? element?.ownerDocument?.defaultView
+    ?? (typeof window !== 'undefined' ? window : null);
+  return win !== null && typeof win.ResizeObserver === 'function' && !/jsdom/i.test(win.navigator?.userAgent ?? '');
+}
+
+function getProvisionalSet(instance: TranscriptVirtualizer): Set<VirtualItem['key']> {
+  let set = provisionalRowKeys.get(instance);
+  if (set === undefined) {
+    set = new Set();
+    provisionalRowKeys.set(instance, set);
+  }
+  return set;
+}
+
 function readRowHeight(element: HTMLElement, entry?: ResizeObserverEntry): number {
   const boxSize = entry?.borderBoxSize?.[0]?.blockSize;
-  if (boxSize !== undefined && boxSize > 0) return Math.ceil(boxSize);
+  if (boxSize !== undefined && boxSize > 0) return boxSize;
   const rectHeight = element.getBoundingClientRect().height;
-  if (rectHeight > 0) return Math.ceil(rectHeight / cssZoomFactor());
-  return Math.ceil(element.offsetHeight);
+  if (rectHeight > 0) return rectHeight / cssZoomFactor();
+  return element.offsetHeight;
 }
 
 /**
@@ -64,10 +95,24 @@ export function measureTranscriptRow(
 ): number {
   const index = instance.indexFromElement(element);
   if (index >= 0 && index < instance.options.count) {
-    const modelKey = String(instance.options.getItemKey(index));
+    markTranscriptMounted();
+    const rawKey = instance.options.getItemKey(index);
+    const modelKey = String(rawKey);
     const domKey = element.dataset['rowKey'];
     if (domKey !== undefined && domKey !== modelKey) {
-      return instance.itemSizeCache.get(modelKey) ?? instance.options.estimateSize(index);
+      return instance.itemSizeCache.get(rawKey) ?? instance.options.estimateSize(index);
+    }
+    if (entry === undefined) {
+      const cached = instance.itemSizeCache.get(rawKey);
+      if (cached !== undefined && cached > 0) return cached;
+      if (hasLiveResizeObserver(instance, element)) {
+        // Defer initial row measurement to TanStack's native ResizeObserver so
+        // React's ref-mount loop avoids N interleaved synchronous layout passes.
+        getProvisionalSet(instance).add(rawKey);
+        return instance.options.estimateSize(index);
+      }
+    } else {
+      provisionalRowKeys.get(instance)?.delete(rawKey);
     }
   }
   const size = readRowHeight(element, entry);
@@ -116,7 +161,7 @@ export function installTranscriptAnchoring(
 ): () => void {
   const scroll = instance.scrollElement;
   let anchor: { key: VirtualItem['key']; row: HTMLElement; prose: HTMLElement; inset: number; scrollTop: number } | undefined;
-  let frame: number | undefined;
+  let anchorTimer: ReturnType<typeof setTimeout> | undefined;
 
   const captureProseAnchor = () => {
     anchor = undefined;
@@ -149,14 +194,26 @@ export function installTranscriptAnchoring(
 
   // Shrinking viewport (mobile soft keyboard, growing composer): keep the
   // bottom pinned ONLY when the reader was genuinely following the end.
-  let viewportHeight = scroll?.clientHeight ?? 0;
-  let viewportOffset = scroll?.scrollTop ?? 0;
+  // In real browsers avoid forcing synchronous layout on initial commit; the
+  // ResizeObserver's initial delivery seeds `viewportHeight` without reflow.
+  const liveRo = hasLiveResizeObserver(instance, scroll);
+  const isJsdom = typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent);
+  let viewportHeight = liveRo && !isJsdom ? 0 : (scroll?.clientHeight ?? 0);
+  let viewportOffset = liveRo && !isJsdom ? 0 : (scroll?.scrollTop ?? 0);
   const viewportObserver = scroll === null || typeof ResizeObserver === 'undefined'
     ? undefined
-    : new ResizeObserver(() => {
-      if (!scroll.isConnected || scroll.clientHeight === 0 || scroll.clientHeight === viewportHeight) return;
+    : new ResizeObserver((entries) => {
+      if (!scroll.isConnected) return;
+      const nextHeight = (Array.isArray(entries) ? entries[0]?.contentRect?.height : undefined) || scroll.clientHeight;
+      if (nextHeight === 0) return;
+      if (viewportHeight === 0) {
+        viewportHeight = nextHeight;
+        viewportOffset = scroll.scrollTop;
+        return;
+      }
+      if (nextHeight === viewportHeight) return;
       const previousHeight = viewportHeight;
-      viewportHeight = scroll.clientHeight;
+      viewportHeight = nextHeight;
       const movedManually =
         Math.abs(scroll.scrollTop - viewportOffset) > 0.5 ||
         scroll.scrollHeight - previousHeight - scroll.scrollTop > TRANSCRIPT_END_THRESHOLD;
@@ -164,8 +221,8 @@ export function installTranscriptAnchoring(
         stick.stop();
       } else if (
         stick.isFollowing() &&
-        scroll.clientHeight < previousHeight &&
-        scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop > TRANSCRIPT_END_THRESHOLD
+        nextHeight < previousHeight &&
+        scroll.scrollHeight - nextHeight - scroll.scrollTop > TRANSCRIPT_END_THRESHOLD
       ) {
         stick.landAtEnd();
       }
@@ -184,21 +241,26 @@ export function installTranscriptAnchoring(
   };
 
   const onScroll = () => {
-    if (scroll !== null && scroll.isConnected && scroll.clientHeight > 0) {
+    anchor = undefined;
+    markTranscriptScrolling(scroll);
+    if (scroll !== null && scroll.isConnected) {
       viewportOffset = scroll.scrollTop;
-      viewportHeight = scroll.clientHeight;
     }
-    if (frame === undefined) {
-      frame = requestAnimationFrame(() => { frame = undefined; captureProseAnchor(); });
-    }
+    if (anchorTimer !== undefined) clearTimeout(anchorTimer);
+    anchorTimer = setTimeout(() => {
+      anchorTimer = undefined;
+      captureProseAnchor();
+    }, 120);
   };
   const onWheel = (event: WheelEvent) => {
+    markTranscriptScrolling(scroll);
     if (event.deltaY < 0) disengage();
   };
   const onTouchStart = (event: TouchEvent) => {
     lastTouchY = event.touches[0]?.clientY;
   };
   const onTouchMove = (event: TouchEvent) => {
+    markTranscriptScrolling(scroll);
     const nextY = event.touches[0]?.clientY;
     if (lastTouchY !== undefined && nextY !== undefined && nextY > lastTouchY) disengage();
     lastTouchY = nextY;
@@ -229,18 +291,27 @@ export function installTranscriptAnchoring(
   scroll?.addEventListener('pointermove', onPointerMove);
   scroll?.addEventListener('pointerup', onPointerUp);
   scroll?.addEventListener('keydown', onKeyDown);
-  captureProseAnchor();
+  let initialAnchorRaf: number | undefined;
+  if (hasLiveResizeObserver(instance) && typeof requestAnimationFrame === 'function') {
+    initialAnchorRaf = requestAnimationFrame(() => {
+      initialAnchorRaf = undefined;
+      captureProseAnchor();
+    });
+  } else {
+    captureProseAnchor();
+  }
 
   instance.shouldAdjustScrollPositionOnItemSizeChange = (item: VirtualItem) => {
     const element = instance.scrollElement;
     const scrollOffset = (instance.scrollOffset ?? 0) + instance.scrollAdjustments;
+    const cachedDist = batchedDistanceFromEnd.get(instance);
     const distanceFromEnd = stick.isFollowing() && element instanceof HTMLElement
-      ? element.scrollHeight - element.clientHeight - element.scrollTop
+      ? (cachedDist ?? (element.scrollHeight - element.clientHeight - element.scrollTop))
       : Number.POSITIVE_INFINITY;
     if (shouldCompensateRowResize({
       itemStart: item.start,
       itemSize: item.size,
-      firstMeasure: !instance.itemSizeCache.has(item.key),
+      firstMeasure: !instance.itemSizeCache.has(item.key) || (provisionalRowKeys.get(instance)?.has(item.key) ?? false),
       scrollOffset,
       distanceFromEnd,
       endThreshold: TRANSCRIPT_END_THRESHOLD,
@@ -282,7 +353,13 @@ export function installTranscriptAnchoring(
     scroll?.removeEventListener('pointerup', onPointerUp);
     scroll?.removeEventListener('keydown', onKeyDown);
     viewportObserver?.disconnect();
-    if (frame !== undefined) cancelAnimationFrame(frame);
+    if (initialAnchorRaf !== undefined && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(initialAnchorRaf);
+    if (anchorTimer !== undefined) clearTimeout(anchorTimer);
+    const postScroll = pendingPostScrollReconcile.get(instance);
+    if (postScroll !== undefined) {
+      clearTimeout(postScroll);
+      pendingPostScrollReconcile.delete(instance);
+    }
     anchor = undefined;
   };
 }
@@ -296,55 +373,68 @@ export function observeRowMutations(
   instance: TranscriptVirtualizer,
 ): () => void {
   if (scroll === null) return () => undefined;
+  // In real browsers TanStack's native ResizeObserver observes every mounted
+  // row and delivers borderBoxSize before paint on any DOM height change;
+  // watching the entire transcript subtree with MutationObserver + forced
+  // getBoundingClientRect() causes redundant full-transcript reflows.
+  if (hasLiveResizeObserver(instance, scroll)) return () => undefined;
   let queued = false;
   let active = true;
-  let fullScan = false;
   let lastReconcileMs = 0;
+  let scrollingUntil = 0;
   let rafId: number | undefined;
+  let timerId: ReturnType<typeof setTimeout> | undefined;
   const dirtyRows = new Set<HTMLDivElement>();
   const flush = () => {
     queued = false;
     rafId = undefined;
+    timerId = undefined;
     if (!active || !scroll.isConnected) {
       dirtyRows.clear();
-      fullScan = false;
       return;
     }
-    const startedAt = performance.now();
-    if (fullScan) {
-      fullScan = false;
-      dirtyRows.clear();
-      reconcileMountedRows(instance);
-      lastReconcileMs = performance.now() - startedAt;
+    const now = performance.now();
+    if (now < scrollingUntil) {
+      if (hasLiveResizeObserver(instance)) {
+        dirtyRows.clear();
+        return;
+      }
+      queued = true;
+      timerId = setTimeout(flush, Math.max(16, Math.ceil(scrollingUntil - now)));
       return;
     }
     if (dirtyRows.size === 0) return;
+    const startedAt = performance.now();
     const rows = [...dirtyRows];
     dirtyRows.clear();
     reconcileMountedRows(instance, rows);
     lastReconcileMs = performance.now() - startedAt;
   };
+  const markScrolling = () => {
+    scrollingUntil = performance.now() + 140;
+    markTranscriptScrolling(scroll);
+  };
+  scroll.addEventListener('scroll', markScrolling, { passive: true });
+  scroll.addEventListener('touchmove', markScrolling, { passive: true });
   const observer = new MutationObserver((records) => {
     for (const record of records) {
       const target = record.target instanceof HTMLElement ? record.target : record.target.parentElement;
       const row = target?.closest<HTMLDivElement>('[data-row-key], [data-index]') ?? null;
       if (row instanceof HTMLDivElement && scroll.contains(row)) {
         dirtyRows.add(row);
-      } else if (record.type === 'childList') {
-        for (const node of record.addedNodes) {
-          if (
-            node instanceof HTMLElement
-            && (node.matches('[data-row-key], [data-index]') || node.querySelector('[data-row-key], [data-index]') !== null)
-          ) {
-            fullScan = true;
-            break;
-          }
-        }
       }
     }
-    if (queued || (!fullScan && dirtyRows.size === 0)) return;
+    if (queued || dirtyRows.size === 0) return;
     queued = true;
-    if (lastReconcileMs >= 4 && typeof requestAnimationFrame === 'function') {
+    const now = performance.now();
+    if (now < scrollingUntil) {
+      if (hasLiveResizeObserver(instance)) {
+        queued = false;
+        dirtyRows.clear();
+        return;
+      }
+      timerId = setTimeout(flush, Math.max(16, Math.ceil(scrollingUntil - now)));
+    } else if ((hasLiveResizeObserver(instance) || lastReconcileMs >= 4) && typeof requestAnimationFrame === 'function') {
       rafId = requestAnimationFrame(flush);
     } else {
       queueMicrotask(flush);
@@ -359,7 +449,10 @@ export function observeRowMutations(
   });
   return () => {
     active = false;
+    scroll.removeEventListener('scroll', markScrolling);
+    scroll.removeEventListener('touchmove', markScrolling);
     if (rafId !== undefined && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
+    if (timerId !== undefined) clearTimeout(timerId);
     dirtyRows.clear();
     observer.disconnect();
   };
@@ -375,7 +468,15 @@ export function reconcileMountedRows(
   subset?: readonly HTMLDivElement[],
 ): boolean {
   const scroll = instance.scrollElement;
-  if (scroll instanceof HTMLElement && (!scroll.isConnected || scroll.clientHeight === 0)) return false;
+  if (scroll instanceof HTMLElement && !scroll.isConnected) return false;
+  const liveRo = hasLiveResizeObserver(instance, scroll);
+  const provisional = provisionalRowKeys.get(instance);
+  // In real browsers TanStack's native ResizeObserver observes every mounted
+  // row from attach and delivers exact borderBoxSize before first paint, so a
+  // synchronous full-cache getBoundingClientRect() sweep inside useLayoutEffect
+  // only forces a blocking Blink layout inside React's commit microtask.
+  if (subset === undefined && liveRo) return false;
+  if (scroll instanceof HTMLElement && scroll.clientHeight === 0) return false;
   const updates: { index: number; size: number }[] = [];
   if (subset !== undefined) {
     for (const element of subset) {
@@ -386,8 +487,9 @@ export function reconcileMountedRows(
       const domKey = element.dataset['rowKey'];
       if (domKey !== undefined && domKey !== String(key)) continue;
       const size = readRowHeight(element);
+      provisional?.delete(key);
       const cached = instance.itemSizeCache.get(key);
-      if (size > 0 && (cached === undefined || Math.abs(cached - size) > 0.01)) updates.push({ index, size });
+      if (size > 0 && (cached === undefined || Math.abs(cached - size) > 0.5)) updates.push({ index, size });
     }
   } else {
     for (const [key, element] of instance.elementsCache) {
@@ -396,13 +498,48 @@ export function reconcileMountedRows(
       if (index < 0 || index >= instance.options.count || instance.options.getItemKey(index) !== key) continue;
       const domKey = element.dataset['rowKey'];
       if (domKey !== undefined && domKey !== String(key)) continue;
-      const size = readRowHeight(element);
       const cached = instance.itemSizeCache.get(key);
-      if (size > 0 && (cached === undefined || Math.abs(cached - size) > 0.01)) updates.push({ index, size });
+      // In real browsers TanStack's native ResizeObserver already watches every
+      // measured row; re-reading already-measured rows on every rangeKey commit
+      // forces redundant full-transcript layouts during scrolling and cold open.
+      if (liveRo && cached !== undefined && !(provisional?.has(key) ?? false)) continue;
+      const size = readRowHeight(element);
+      provisional?.delete(key);
+      if (size > 0 && (cached === undefined || Math.abs(cached - size) > 0.5)) updates.push({ index, size });
     }
   }
-  for (const { index, size } of updates) {
-    instance.resizeItem(index, size);
+  if (updates.length > 0) {
+    if (scroll instanceof HTMLElement) {
+      batchedDistanceFromEnd.set(instance, scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop);
+    }
+    try {
+      if (updates.length > 1) {
+        // Suppress intermediate `onChange` notifications so `Transcript`'s
+        // `onChange` (which writes `list.style.height` and reads `scrollHeight`)
+        // runs once for the entire reconciled batch instead of N interleaved layouts.
+        const savedOnChange = instance.options.onChange;
+        instance.options.onChange = () => {};
+        try {
+          for (let i = 0; i < updates.length - 1; i += 1) {
+            const update = updates[i]!;
+            instance.resizeItem(update.index, update.size);
+          }
+        } finally {
+          if (savedOnChange !== undefined) {
+            instance.options.onChange = savedOnChange;
+          } else {
+            delete (instance.options as { onChange?: unknown }).onChange;
+          }
+        }
+        const last = updates[updates.length - 1]!;
+        instance.resizeItem(last.index, last.size);
+      } else {
+        const only = updates[0]!;
+        instance.resizeItem(only.index, only.size);
+      }
+    } finally {
+      batchedDistanceFromEnd.delete(instance);
+    }
   }
   return updates.length > 0;
 }

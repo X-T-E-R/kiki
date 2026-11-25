@@ -606,9 +606,13 @@ export function PortableSpacesCard({
             <span>{timeLabel}</span>
           </p>
           {source.lastSyncError ? (
-            <p className="truncate text-[12px] leading-4 text-danger-ink" data-portable-sync-error={source.id}>
-              {t('st.portable.syncError', { error: source.lastSyncError })}
-            </p>
+            <PortableSyncErrorLine
+              sourceId={source.id}
+              error={source.lastSyncError}
+              label={t('st.portable.syncError', { error: source.lastSyncError })}
+              copyLabel={t('cb.copy')}
+              copiedLabel={t('cb.copied')}
+            />
           ) : null}
         </div>
 
@@ -1027,5 +1031,54 @@ export function PortableSpacesCard({
         />
       ) : null}
     </SectionCard>
+  );
+}
+
+function PortableSyncErrorLine({
+  sourceId,
+  error,
+  label,
+  copyLabel,
+  copiedLabel,
+}: {
+  readonly sourceId: string;
+  readonly error: string;
+  readonly label: string;
+  readonly copyLabel: string;
+  readonly copiedLabel: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    void copyTextToClipboard(error).then(() => {
+      setCopied(true);
+      setTimeout(() => { setCopied(false); }, 1500);
+    }).catch(() => undefined);
+  };
+
+  return (
+    <div className="mt-0.5 flex items-start gap-1.5" data-portable-sync-error={sourceId}>
+      <button
+        type="button"
+        onClick={() => { setExpanded((value) => !value); }}
+        aria-expanded={expanded}
+        title={label}
+        className={`min-w-0 flex-1 text-left text-[12px] leading-4 text-danger-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink ${
+          expanded ? 'whitespace-pre-wrap break-words' : 'truncate'
+        }`}
+      >
+        {label}
+      </button>
+      <button
+        type="button"
+        onClick={handleCopy}
+        aria-label={copied ? copiedLabel : copyLabel}
+        title={copied ? copiedLabel : copyLabel}
+        className="shrink-0 rounded px-1 text-[11px] leading-4 text-ink-soft hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+      >
+        {copied ? copiedLabel : copyLabel}
+      </button>
+    </div>
   );
 }

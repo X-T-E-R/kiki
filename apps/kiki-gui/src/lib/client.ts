@@ -4,13 +4,14 @@
  * `@kiki/klient`; this module only preserves GUI-facing wire shapes.
  */
 
-import { nbSearchCapabilitiesSchema, nbSearchKeyUsageViewSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, requestIdentityCatalogSchema, requestIdentityPreviewSchema, revealedSecretSchema, documentPreviewResponseSchema, workPresetMutationResponseSchema, workPresetsResponseSchema, storageMigrationViewSchema, type DeferredAppendTiming, type DocumentPreviewRequest, type DocumentPreviewResponse, type NbSearchKeyUsageView, type NbSearchManagedCredentialView, type PromptSkillActivation, type WorkPresetMutationResponse, type WorkPresetPreference, type WorkPresetsResponse, type StorageMigrationAction, type StorageMigrationView } from '@kiki/protocol';
-import { createConnectionTransport, createKlient, createRebindableKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
+import type { DeferredAppendTiming, DocumentPreviewRequest, DocumentPreviewResponse, NbSearchKeyUsageView, NbSearchManagedCredentialView, PromptSkillActivation, WorkPresetMutationResponse, WorkPresetPreference, WorkPresetsResponse, StorageMigrationAction, StorageMigrationView } from '@kiki/protocol';
+import { createConnectionTransport, createKlient, createRebindableKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http-lite';
 import { openPluginPanelStream, type PluginPanelStream, type PluginPanelStreamOptions } from './pluginPanelStream';
 import { translate } from '@kiki/session-core/i18n';
 import type { PromptConfig } from '@kiki/agent-profiles/promptConfig';
 import { contentOriginalFileId, type ContentRef } from '@kiki/transcript';
 import { createSessionTransport } from '@kiki/session-core/session/klientTransport';
+import { takePrefetchedSession } from './bootMetaPrefetch';
 import { documentPreviewAssetPath } from './previewAssets';
 import type {
   ActivateSkillRequest,
@@ -1032,7 +1033,12 @@ export class KikiClient {
     return this.run(() => this.rest.usagePricing.set(update));
   }
 
-  getSession(sessionId: string, options?: { readonly signal?: AbortSignal }): Promise<Session> {
+  async getSession(sessionId: string, options?: { readonly signal?: AbortSignal }): Promise<Session> {
+    const prefetched = takePrefetchedSession(this.baseUrl, sessionId);
+    if (prefetched !== null) {
+      const hit = await prefetched;
+      if (hit !== null) return hit;
+    }
     return this.run(() => this.klient.session(sessionId).commands.read(options));
   }
 
@@ -1469,13 +1475,13 @@ export class KikiClient {
   }
 
   /** `GET /api/nb-search/capabilities` — secret-free provider/lane/pipeline descriptors. */
-  async getNbSearchCapabilities(): Promise<NbSearchCapabilities> {
-    return nbSearchCapabilitiesSchema.parse(await this.run(this.rest.nbSearch.capabilities()));
+  getNbSearchCapabilities(): Promise<NbSearchCapabilities> {
+    return this.run(this.rest.nbSearch.capabilities()) as Promise<NbSearchCapabilities>;
   }
 
   /** `GET /api/nb-search/test` — on-demand readiness check; callers pass a signal so the panel can cancel. */
-  async testNbSearch(signal?: AbortSignal): Promise<NbSearchTestStatus> {
-    return nbSearchTestStatusSchema.parse(await this.run(this.rest.nbSearch.test({ signal })));
+  testNbSearch(signal?: AbortSignal): Promise<NbSearchTestStatus> {
+    return this.run(this.rest.nbSearch.test({ signal })) as Promise<NbSearchTestStatus>;
   }
 
   /**
@@ -1484,31 +1490,31 @@ export class KikiClient {
    * provider even with `refresh: false`, so the panel passes that flag only
    * from an explicit refresh.
    */
-  async readNbSearchKeyUsage(instanceId: string, refresh = false, signal?: AbortSignal): Promise<NbSearchKeyUsageView> {
-    return nbSearchKeyUsageViewSchema.parse(await this.run(this.rest.nbSearch.keyUsage(instanceId, refresh, { signal })));
+  readNbSearchKeyUsage(instanceId: string, refresh = false, signal?: AbortSignal): Promise<NbSearchKeyUsageView> {
+    return this.run(this.rest.nbSearch.keyUsage(instanceId, refresh, { signal })) as Promise<NbSearchKeyUsageView>;
   }
 
-  async readNbSearchCredential(instanceId: string, reveal = false): Promise<NbSearchManagedCredentialView> {
-    return nbSearchManagedCredentialViewSchema.parse(await this.run(this.rest.nbSearch.readCredential(instanceId, reveal)));
+  readNbSearchCredential(instanceId: string, reveal = false): Promise<NbSearchManagedCredentialView> {
+    return this.run(this.rest.nbSearch.readCredential(instanceId, reveal)) as Promise<NbSearchManagedCredentialView>;
   }
 
   /** `POST /api/secrets:reveal` — one secret value with its source, fetched only on explicit request. */
-  async revealSecret(ref: import('@kiki/protocol').SecretRef): Promise<import('@kiki/protocol').RevealedSecret> {
-    return revealedSecretSchema.parse(await this.run(this.rest.secrets.reveal(ref)));
+  revealSecret(ref: import('@kiki/protocol').SecretRef): Promise<import('@kiki/protocol').RevealedSecret> {
+    return this.run(this.rest.secrets.reveal(ref)) as Promise<import('@kiki/protocol').RevealedSecret>;
   }
 
-  async writeNbSearchCredential(instanceId: string, value: string | null, expectedVersion: string, expectedBinding: string): Promise<NbSearchManagedCredentialView> {
-    return nbSearchManagedCredentialViewSchema.parse(await this.run(this.rest.nbSearch.writeCredential(instanceId, value, expectedVersion, expectedBinding)));
+  writeNbSearchCredential(instanceId: string, value: string | null, expectedVersion: string, expectedBinding: string): Promise<NbSearchManagedCredentialView> {
+    return this.run(this.rest.nbSearch.writeCredential(instanceId, value, expectedVersion, expectedBinding)) as Promise<NbSearchManagedCredentialView>;
   }
 
-  /** `/api/request-identity/*`, parsed against the protocol schemas with errors mapped like every other call. */
+  /** `/api/request-identity/*`, with errors mapped like every other call. */
   get requestIdentity() {
     const api = this.rest.requestIdentity;
-    const catalog = async (call: Promise<unknown>) => requestIdentityCatalogSchema.parse(await this.run(call));
+    const catalog = (call: Promise<unknown>) => this.run(call) as Promise<import('@kiki/protocol').RequestIdentityCatalog>;
     return {
       get: () => catalog(api.get()),
-      preview: async (body: import('@kiki/protocol').RequestIdentityPreviewRequest) =>
-        requestIdentityPreviewSchema.parse(await this.run(api.preview(body))),
+      preview: (body: import('@kiki/protocol').RequestIdentityPreviewRequest) =>
+        this.run(api.preview(body)) as Promise<import('@kiki/protocol').RequestIdentityPreview>,
       duplicateProfile: (from: string, label?: string) => catalog(api.duplicateProfile(from, label)),
       updateProfile: (id: string, draft: import('@kiki/protocol').RequestIdentityProfileDraft) => catalog(api.updateProfile(id, draft)),
       deleteProfile: (id: string) => catalog(api.deleteProfile(id)),
@@ -3138,23 +3144,23 @@ export class KikiClient {
    * the only call that installs or turns anything on; a list, a mode switch or
    * a route restore never revives what the user removed.
    */
-  async listWorkPresets(): Promise<WorkPresetsResponse> {
-    return workPresetsResponseSchema.parse(await this.memoryRequest<unknown>('GET', '/work-presets'));
+  listWorkPresets(): Promise<WorkPresetsResponse> {
+    return this.memoryRequest<WorkPresetsResponse>('GET', '/work-presets');
   }
 
-  async enableWorkPreset(id: string, installPrerequisites: boolean): Promise<WorkPresetMutationResponse> {
-    return workPresetMutationResponseSchema.parse(await this.memoryRequest<unknown>('POST', `/work-presets/${encodeURIComponent(id)}/enable`, {
+  enableWorkPreset(id: string, installPrerequisites: boolean): Promise<WorkPresetMutationResponse> {
+    return this.memoryRequest<WorkPresetMutationResponse>('POST', `/work-presets/${encodeURIComponent(id)}/enable`, {
       body: { consent: true, install_prerequisites: installPrerequisites },
-    }));
+    });
   }
 
-  async updateWorkPreset(id: string, patch: { enabled?: boolean; preferences?: WorkPresetPreference }): Promise<WorkPresetMutationResponse> {
-    return workPresetMutationResponseSchema.parse(await this.memoryRequest<unknown>('PATCH', `/work-presets/${encodeURIComponent(id)}`, { body: patch }));
+  updateWorkPreset(id: string, patch: { enabled?: boolean; preferences?: WorkPresetPreference }): Promise<WorkPresetMutationResponse> {
+    return this.memoryRequest<WorkPresetMutationResponse>('PATCH', `/work-presets/${encodeURIComponent(id)}`, { body: patch });
   }
 
   /** Removes the mode only. Plugins, sessions and documents stay in this home. */
-  async removeWorkPreset(id: string): Promise<WorkPresetMutationResponse> {
-    return workPresetMutationResponseSchema.parse(await this.memoryRequest<unknown>('DELETE', `/work-presets/${encodeURIComponent(id)}`));
+  removeWorkPreset(id: string): Promise<WorkPresetMutationResponse> {
+    return this.memoryRequest<WorkPresetMutationResponse>('DELETE', `/work-presets/${encodeURIComponent(id)}`);
   }
 
   /**
@@ -3165,16 +3171,16 @@ export class KikiClient {
    * `missing_dependency` names the one thing to install. Nothing is fetched
    * from the network and no path is handed to an external viewer.
    */
-  async documentPreview(
+  documentPreview(
     sessionId: string,
     request: DocumentPreviewRequest,
     signal?: AbortSignal,
   ): Promise<DocumentPreviewResponse> {
-    return documentPreviewResponseSchema.parse(await this.memoryRequest<unknown>(
+    return this.memoryRequest<DocumentPreviewResponse>(
       'POST',
       `/sessions/${encodeURIComponent(sessionId)}/document-preview`,
       { body: request, signal, ...this.readingOptions() },
-    ));
+    );
   }
 
   /**
@@ -3395,12 +3401,12 @@ export class KikiClient {
    * Mailbox SQLite storage migration (`/api/storage`).
    * Available in maintenance mode and normal mode to inspect status and execute permitted lifecycle actions.
    */
-  async getStorageMigration(): Promise<StorageMigrationView> {
-    return storageMigrationViewSchema.parse(await this.memoryRequest<unknown>('GET', '/storage'));
+  getStorageMigration(): Promise<StorageMigrationView> {
+    return this.memoryRequest<StorageMigrationView>('GET', '/storage');
   }
 
-  async postStorageMigrationAction(action: StorageMigrationAction['action']): Promise<StorageMigrationView> {
-    return storageMigrationViewSchema.parse(await this.memoryRequest<unknown>('POST', '/storage', { body: { action } }));
+  postStorageMigrationAction(action: StorageMigrationAction['action']): Promise<StorageMigrationView> {
+    return this.memoryRequest<StorageMigrationView>('POST', '/storage', { body: { action } });
   }
 }
 

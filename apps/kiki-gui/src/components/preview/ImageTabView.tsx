@@ -117,14 +117,18 @@ export function ImageTabView({
     };
   }, [attempt, client, localKikiComputer, path, sessionId, workspaceRoot]);
 
-  const checkDiskChange = useCallback(async () => {
+  const lastProbeAtRef = useRef(0);
+  const checkDiskChange = useCallback(async (force = false) => {
     if (client === undefined || state.status !== 'ready' || state.etag === undefined) return;
+    const now = Date.now();
+    if (!force && now - lastProbeAtRef.current < 3_000) return;
+    lastProbeAtRef.current = now;
     try {
       const probe = await readPreviewFileBytes(
         client,
         path,
         { sessionId, workspaceRoot, localKikiComputer },
-        { ifNoneMatch: state.etag },
+        { ifNoneMatch: state.etag, probeOnly: true },
       );
       if (probe.notModified === true || probe.etag === state.etag) return;
       if (probe.etag !== undefined && probe.etag !== state.etag) {
@@ -139,20 +143,20 @@ export function ImageTabView({
   useEffect(() => {
     const becameVisible = visible && !prevVisibleRef.current;
     prevVisibleRef.current = visible;
-    if (becameVisible) void checkDiskChange();
+    if (becameVisible) void checkDiskChange(true);
   }, [visible, checkDiskChange]);
 
   const prevWriteEpochRef = useRef(fileWriteEpoch);
   useEffect(() => {
     if (fileWriteEpoch !== prevWriteEpochRef.current) {
       prevWriteEpochRef.current = fileWriteEpoch;
-      void checkDiskChange();
+      void checkDiskChange(true);
     }
   }, [fileWriteEpoch, checkDiskChange]);
 
   useEffect(() => {
     if (!visible) return undefined;
-    const onFocus = () => { void checkDiskChange(); };
+    const onFocus = () => { void checkDiskChange(false); };
     window.addEventListener('focus', onFocus);
     return () => { window.removeEventListener('focus', onFocus); };
   }, [visible, checkDiskChange]);

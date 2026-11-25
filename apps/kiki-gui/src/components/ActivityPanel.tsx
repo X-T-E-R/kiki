@@ -22,10 +22,13 @@ import { useConnection, useOptionalControllerRegistry } from '../state/connectio
 
 const noopSubscribe = () => () => {};
 
+const MAX_POLLED_BUSY_SESSIONS = 12;
+
 export function activityPollInterval(busyCount: number): number {
   if (busyCount <= 2) return 5_000;
   if (busyCount <= 5) return 10_000;
-  return 15_000;
+  if (busyCount <= 10) return 15_000;
+  return 30_000;
 }
 
 /**
@@ -111,9 +114,17 @@ export function useSessionActivity(sessions: readonly Session[], polling = true)
   );
 
   const busyIds = useMemo(
-    () => sessions.filter((session) => session.busy).map((session) => session.id),
+    () => sessions.filter((session) => session.busy).slice(0, MAX_POLLED_BUSY_SESSIONS).map((session) => session.id),
     [sessions],
   );
+  const mountedSessionIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (registry !== null) {
+      for (const controller of registry) ids.add(controller.sessionId);
+    }
+    return ids;
+    // Recompute when liveSnapshot reflects controller attach/detach.
+  }, [registry, liveSnapshot]);
   // Keep the single-session cadence; spread requests when many turns are busy.
   const pollInterval = activityPollInterval(busyIds.length);
   const promptQueries = useQueries({
@@ -123,7 +134,8 @@ export function useSessionActivity(sessions: readonly Session[], polling = true)
       refetchInterval: pollInterval,
       refetchOnWindowFocus: false,
       staleTime: pollInterval - 1_000,
-      enabled: polling,
+      // Open sessions get live queue depth from the controller registry.
+      enabled: polling && !mountedSessionIds.has(sessionId),
     })),
   });
   const taskQueries = useQueries({

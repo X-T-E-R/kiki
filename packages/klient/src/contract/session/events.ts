@@ -16,6 +16,7 @@ import type {
 import type { SessionMetadataChangedEvent } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 
 import type { EventRegistration } from '../types.js';
+import { sessionEventDescriptors } from '../eventDescriptors.js';
 import {
   interactionResolutionSchema,
   interactionSchema,
@@ -52,30 +53,24 @@ export type SessionEventName = keyof SessionEventPayloads;
 /** Public event name → source binding + payload schema. */
 export const sessionEvents = {
   'execution.changed': {
-    kind: 'emitter', service: 'sessionExecutionControl', event: 'onDidChange', schema: executionControlStateSchema,
+    ...sessionEventDescriptors['execution.changed'], schema: executionControlStateSchema,
   },
   'metadata.changed': {
-    kind: 'emitter',
-    service: 'sessionMetadata',
-    event: 'onDidChangeMetadata',
+    ...sessionEventDescriptors['metadata.changed'],
     schema: sessionMetadataChangedEventSchema,
   },
   'skills.changed': /* @__PURE__ */ lazyContract(() => ({
-    kind: 'emitter',
-    service: 'sessionSkillCatalog',
-    event: 'onDidChange',
+    ...sessionEventDescriptors['skills.changed'],
     schema: /* @__PURE__ */ z.string(),
   }), 'kind', 'service', 'event', 'schema'),
   // Passthrough stream (no `type` filter): the source pushes the full
   // pending interaction set on every change.
   'interactions.changed': /* @__PURE__ */ lazyContract(() => ({
-    kind: 'stream',
-    name: 'interactions',
+    ...sessionEventDescriptors['interactions.changed'],
     schema: /* @__PURE__ */ z.array(interactionSchema),
   }), 'kind', 'name', 'schema'),
   'interactions.resolved': {
-    kind: 'stream',
-    name: 'interactions:resolved',
+    ...sessionEventDescriptors['interactions.resolved'],
     schema: interactionResolutionSchema,
   },
 } satisfies Record<SessionEventName, SessionEventRegistration>;

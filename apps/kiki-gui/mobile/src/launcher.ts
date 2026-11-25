@@ -1167,9 +1167,10 @@ function bootstrapLauncherUi(): void {
       if (!scanLoopActive || !activeStream) return;
       try {
         const now = Date.now();
-        if (scannerVideo.readyState >= 2 && (detector !== null || now - lastFallbackDecodeAt >= 140)) {
-          lastFallbackDecodeAt = now;
-          const decoded = await decodeQrFromVideo(scannerVideo, detector);
+        const allowFallback = now - lastFallbackDecodeAt >= 140;
+        if (scannerVideo.readyState >= 2 && (detector !== null || allowFallback)) {
+          if (allowFallback) lastFallbackDecodeAt = now;
+          const decoded = await decodeQrFromVideo(scannerVideo, detector, { allowFallback });
           if (decoded) {
             await handleScannedPayload(decoded);
             return;

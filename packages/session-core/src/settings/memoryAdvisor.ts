@@ -50,7 +50,7 @@ interface NumberCheck { readonly minValue: number | null; readonly maxValue: num
 interface Wrapped { unwrap?: () => unknown }
 
 /** The schema's own defaults, as the engine would read an empty `[memory.advisor]`. */
-export const MEMORY_ADVISOR_DEFAULTS: MemoryAdvisorConfig = memoryAdvisorConfigSchema.parse({});
+export const MEMORY_ADVISOR_DEFAULTS: MemoryAdvisorConfig = /* @__PURE__ */ memoryAdvisorConfigSchema.parse({});
 
 function rangeOf(field: MemoryAdvisorNumberField): MemoryAdvisorRange {
   let node = memoryAdvisorConfigSchema.shape[field] as unknown as Wrapped & Partial<NumberCheck>;
@@ -62,7 +62,7 @@ function rangeOf(field: MemoryAdvisorNumberField): MemoryAdvisorRange {
   };
 }
 
-export const MEMORY_ADVISOR_RANGES: Readonly<Record<MemoryAdvisorNumberField, MemoryAdvisorRange>> = Object.fromEntries(
+export const MEMORY_ADVISOR_RANGES: Readonly<Record<MemoryAdvisorNumberField, MemoryAdvisorRange>> = /* @__PURE__ */ Object.fromEntries(
   MEMORY_ADVISOR_NUMBER_FIELDS.map((field) => [field, rangeOf(field)]),
 ) as Record<MemoryAdvisorNumberField, MemoryAdvisorRange>;
 

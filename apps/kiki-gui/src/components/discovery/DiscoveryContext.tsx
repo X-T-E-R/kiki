@@ -70,6 +70,11 @@ export const ALL_DISCOVERY_ANCHORS: readonly DiscoveryAnchor[] = [
   'usage-filter',
 ];
 
+const ANCHOR_SET = new Set<string>(ALL_DISCOVERY_ANCHORS);
+const COMBINED_ANCHOR_SELECTOR = ALL_DISCOVERY_ANCHORS.map(
+  (id) => `[data-anchor="${id}"],[data-discovery-anchor="${id}"],[data-${id}],#${id}`,
+).join(',');
+
 export function resolveAnchorElement(id: string): HTMLElement | null {
   if (typeof document === 'undefined') return null;
   const el = document.querySelector(`[data-anchor="${id}"]`)
@@ -81,7 +86,20 @@ export function resolveAnchorElement(id: string): HTMLElement | null {
 
 export function detectActiveAnchors(): readonly DiscoveryAnchor[] {
   if (typeof document === 'undefined') return [];
-  return ALL_DISCOVERY_ANCHORS.filter((anchor) => resolveAnchorElement(anchor) !== null);
+  const found = new Set<DiscoveryAnchor>();
+  const matches = document.querySelectorAll(COMBINED_ANCHOR_SELECTOR);
+  for (const node of matches) {
+    if (!(node instanceof HTMLElement)) continue;
+    const dataAnchor = node.getAttribute('data-anchor');
+    if (dataAnchor !== null && ANCHOR_SET.has(dataAnchor)) found.add(dataAnchor as DiscoveryAnchor);
+    const discoveryAnchor = node.getAttribute('data-discovery-anchor');
+    if (discoveryAnchor !== null && ANCHOR_SET.has(discoveryAnchor)) found.add(discoveryAnchor as DiscoveryAnchor);
+    if (node.id !== '' && ANCHOR_SET.has(node.id)) found.add(node.id as DiscoveryAnchor);
+    for (const anchor of ALL_DISCOVERY_ANCHORS) {
+      if (!found.has(anchor) && node.hasAttribute(`data-${anchor}`)) found.add(anchor);
+    }
+  }
+  return ALL_DISCOVERY_ANCHORS.filter((anchor) => found.has(anchor));
 }
 
 /**
@@ -218,14 +236,24 @@ export function DiscoveryProvider({
   const currentDraft = readDraft(draftKey);
   const draftEmpty = currentDraft.trim() === '';
 
+  const needsDomProbe = (anchorsProp === undefined || dataProp === undefined)
+    && (state.lifecycle === 'active' || location.pathname.startsWith('/discover'));
+
   // Reactive capabilities producer:
-  // Dynamically tracks mounted DOM anchors and async data updates on actual production pages,
-  // including child DOM commit after initial render and async data loading without changing href.
+  // Dynamically tracks mounted DOM anchors and async data updates only while
+  // discovery is active or the user is on /discover, so ordinary transcript
+  // scrolling never runs full-document MutationObserver scans.
   const [producedAnchors, setProducedAnchors] = useState<readonly DiscoveryAnchor[]>(() => {
-    return anchorsProp !== undefined ? anchorsProp : detectActiveAnchors();
+    if (anchorsProp !== undefined) return anchorsProp;
+    return state.lifecycle === 'active' || location.pathname.startsWith('/discover')
+      ? detectActiveAnchors()
+      : [];
   });
   const [producedData, setProducedData] = useState<DiscoveryDataState | undefined>(() => {
-    return dataProp !== undefined ? dataProp : detectActiveData();
+    if (dataProp !== undefined) return dataProp;
+    return state.lifecycle === 'active' || location.pathname.startsWith('/discover')
+      ? detectActiveData()
+      : undefined;
   });
 
   const updateCapabilities = useCallback(() => {
@@ -262,25 +290,31 @@ export function DiscoveryProvider({
   }, [dataProp]);
 
   // Reactive DOM observation:
-  // Re-probe capabilities on route transitions, child DOM commit, and DOM mutations (async data loaded).
+  // Re-probe capabilities only while discovery is active or on /discover,
+  // coalescing mutations to one animation frame instead of every microtask.
   useEffect(() => {
-    if (typeof document === 'undefined') return;
+    if (typeof document === 'undefined' || !needsDomProbe) return;
 
     updateCapabilities();
 
     if (typeof MutationObserver === 'undefined') return;
 
-    let scheduled = false;
+    let rafId: number | null = null;
+    let timerId: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
+    const flush = () => {
+      rafId = null;
+      timerId = null;
+      if (!cancelled && typeof window !== 'undefined' && typeof document !== 'undefined') {
+        updateCapabilities();
+      }
+    };
     const observer = new MutationObserver(() => {
-      if (!scheduled) {
-        scheduled = true;
-        queueMicrotask(() => {
-          scheduled = false;
-          if (!cancelled && typeof window !== 'undefined' && typeof document !== 'undefined') {
-            updateCapabilities();
-          }
-        });
+      if (rafId !== null || timerId !== null) return;
+      if (typeof requestAnimationFrame === 'function') {
+        rafId = requestAnimationFrame(flush);
+      } else {
+        timerId = setTimeout(flush, 16);
       }
     });
 
@@ -306,9 +340,11 @@ export function DiscoveryProvider({
 
     return () => {
       cancelled = true;
+      if (rafId !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
+      if (timerId !== null) clearTimeout(timerId);
       observer.disconnect();
     };
-  }, [currentHref, updateCapabilities]);
+  }, [currentHref, needsDomProbe, updateCapabilities]);
 
   const activeAnchors = anchorsProp !== undefined ? anchorsProp : producedAnchors;
   const activeData = dataProp !== undefined ? dataProp : producedData;

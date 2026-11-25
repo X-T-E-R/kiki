@@ -14,9 +14,16 @@ import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from './bounded-body.js'
 import type { TerminalFacade } from '../../core/facade/terminal.js';
 import type { HttpRestFacade } from '../../core/facade/http-rest.js';
 import { createHttpRestFacade, type HttpRestJsonOptions } from './rest.js';
-import { listTerminalsResponseSchema, getTerminalResponseSchema, closeTerminalResponseSchema, createTerminalRequestSchema, promptSubmitReceiptSchema, type PromptSubmission } from '@kiki/protocol';
+import type { HttpChannelValidator } from './validator.js';
+import type {
+  CloseTerminalResponse,
+  GetTerminalResponse,
+  ListTerminalsResponse,
+  PromptSubmission,
+  PromptSubmitReceipt,
+} from '@kiki/protocol';
 import { confirmsTranscriptCoverage, TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
-import { sessionCommandContract, type SessionCommandChannel } from '../../contract/session/commands.js';
+import { sessionCommandRoutes, type SessionCommandChannel } from '../../contract/session/commandRoutes.js';
 import { RPCError } from '../../core/errors.js';
 import { isValid, ulid } from 'ulid';
 import { trimTrailingUndefined } from '../args.js';
@@ -73,6 +80,10 @@ export interface HttpChannelOptions {
   readonly maxBatchSize?: number;
   /** Coalescing window in milliseconds; `0` (default) flushes via `queueMicrotask`. */
   readonly batchWindowMs?: number;
+  /** Optional runtime schema validator. Omitted by `@kiki/klient/http-lite` to avoid loading Zod on hot UI boots. */
+  readonly validator?: HttpChannelValidator;
+  /** Explicitly disable validation even when a validator is provided. */
+  readonly validate?: boolean;
 }
 
 /**
@@ -148,14 +159,28 @@ export class HttpChannel implements KlientChannel {
   private readonly batchQueue: QueuedBatchCall[] = [];
   private batchFlushScheduled = false;
   private batchFlushTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly validator: HttpChannelValidator | undefined;
   readonly rest: HttpRestFacade;
   private closed = false;
 
   readonly terminal: TerminalFacade = {
-    listTerminals: async (sessionId) => listTerminalsResponseSchema.parse(await this.viewRequest(this.terminalPath(sessionId), {})),
-    createTerminal: async (sessionId, body = {}) => getTerminalResponseSchema.parse(await this.viewRequest(this.terminalPath(sessionId), {}, { method: 'POST', body: createTerminalRequestSchema.parse(body), okCodes: [0] })),
-    getTerminal: async (sessionId, terminalId) => getTerminalResponseSchema.parse(await this.viewRequest(this.terminalPath(sessionId, terminalId), {})),
-    closeTerminal: async (sessionId, terminalId) => closeTerminalResponseSchema.parse(await this.viewRequest(`${this.terminalPath(sessionId, terminalId)}:close`, {}, { method: 'POST', body: {}, okCodes: [0] })),
+    listTerminals: async (sessionId) => {
+      const raw = await this.viewRequest(this.terminalPath(sessionId), {});
+      return this.validator !== undefined ? this.validator.listTerminals(raw) : raw as ListTerminalsResponse;
+    },
+    createTerminal: async (sessionId, body = {}) => {
+      const validatedBody = this.validator !== undefined ? this.validator.createTerminalInput(body) : body;
+      const raw = await this.viewRequest(this.terminalPath(sessionId), {}, { method: 'POST', body: validatedBody, okCodes: [0] });
+      return this.validator !== undefined ? this.validator.getTerminal(raw) : raw as GetTerminalResponse;
+    },
+    getTerminal: async (sessionId, terminalId) => {
+      const raw = await this.viewRequest(this.terminalPath(sessionId, terminalId), {});
+      return this.validator !== undefined ? this.validator.getTerminal(raw) : raw as GetTerminalResponse;
+    },
+    closeTerminal: async (sessionId, terminalId) => {
+      const raw = await this.viewRequest(`${this.terminalPath(sessionId, terminalId)}:close`, {}, { method: 'POST', body: {}, okCodes: [0] });
+      return this.validator !== undefined ? this.validator.closeTerminal(raw) : raw as CloseTerminalResponse;
+    },
     terminalAttach: (sessionId, terminalId) => this.socket.terminals.terminalAttach(sessionId, terminalId),
     terminalDetach: (sessionId, terminalId) => this.socket.terminals.terminalDetach(sessionId, terminalId),
     terminalInput: (sessionId, terminalId, data) => this.socket.terminals.terminalInput(sessionId, terminalId, data),
@@ -214,7 +239,7 @@ export class HttpChannel implements KlientChannel {
 
   readonly sessionCommands: SessionCommandChannel = {
     execute: async (sessionId, command, input, options) => {
-      const spec = sessionCommandContract[command];
+      const spec = sessionCommandRoutes[command];
       const value = input as {
         target?: string;
         body?: unknown;
@@ -233,7 +258,8 @@ export class HttpChannel implements KlientChannel {
         },
       );
       if (command === 'submit' && result !== null && typeof result === 'object' && !('content' in result)) {
-        const { resolved_media, resolved_parts, ...receipt } = promptSubmitReceiptSchema.parse(result);
+        const parsed = this.validator !== undefined ? this.validator.promptSubmitReceipt(result) : result as PromptSubmitReceipt;
+        const { resolved_media, resolved_parts, ...receipt } = parsed;
         const submitted = (value.body as PromptSubmission).content;
         const replacements = new Map<number, PromptSubmission['content']>();
         const projections = resolved_parts ?? resolved_media?.map(({ index, content }) => ({ index, content: [content] })) ?? [];
@@ -510,10 +536,11 @@ export class HttpChannel implements KlientChannel {
       WebSocket: options.WebSocket,
       onDiagnostic: options.onSocketDiagnostic,
     });
+    this.validator = options.validate === false ? undefined : options.validator;
     this.rest = createHttpRestFacade({
       json: (path, restOptions) => this.requestJson(path, restOptions),
       raw: (path, restOptions, consume) => this.requestRaw(path, restOptions, consume),
-    });
+    }, this.validator);
   }
 
   call(

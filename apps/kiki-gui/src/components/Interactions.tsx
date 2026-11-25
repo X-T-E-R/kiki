@@ -351,10 +351,17 @@ type ApprovalChange =
  * by a `…` line, so each shows as its own run), a `diff` display, or a
  * write's `content`. Undefined when the display carries no text to show.
  */
+const MAX_APPROVAL_DIFF_CHARS = 200_000;
+
 function approvalChange(display: unknown): ApprovalChange | undefined {
   if (typeof display !== 'object' || display === null) return undefined;
   const d = display as { kind?: unknown; operation?: unknown; before?: unknown; after?: unknown; content?: unknown };
   const diff = (before: string, after: string): ApprovalChange | undefined => {
+    if (before.length + after.length > MAX_APPROVAL_DIFF_CHARS) {
+      const preview = after.slice(0, 8_192).split('\n');
+      if (preview.at(-1) === '') preview.pop();
+      return preview.length === 0 ? undefined : { kind: 'content', lines: preview };
+    }
     const hunks = buildHunks(before, after);
     return hunks.length === 0 ? undefined : { kind: 'diff', hunks };
   };

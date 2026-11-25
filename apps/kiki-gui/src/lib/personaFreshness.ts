@@ -4,6 +4,7 @@ import type { QueryClient } from '@tanstack/react-query';
 const PERSONA_SESSION_LIST_ROOTS = [
   ['persona-session-heads'],
   ['persona-switcher-sessions'],
+  ['persona-conversations'],
 ] as const;
 
 const PERSONA_QUERY_ROOTS = [
