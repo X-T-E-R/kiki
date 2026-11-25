@@ -554,7 +554,7 @@ export function PluginComposerSlots({
             ) : slotIconName !== null ? (
               <Icon name={slotIconName} size={12} className="shrink-0 text-ink-faint" />
             ) : null}
-            <span className="truncate font-medium">{label}</span>
+            <span className="truncate font-normal">{label}</span>
             {slot.badgeText !== undefined && slot.badgeText !== '' ? (
               <span
                 data-plugin-slot-badge

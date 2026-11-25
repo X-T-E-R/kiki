@@ -63,7 +63,7 @@ export const AgentUsageSection = memo(function AgentUsageSection({
       className="space-y-2 rounded-xl border border-hairline bg-panel p-3 shadow-xs"
     >
       <div className="flex items-center justify-between">
-        <span className="font-mono text-[10.5px] font-semibold tracking-wider text-ink-faint uppercase">
+        <span className="font-mono text-[10.5px] font-normal text-ink-faint uppercase">
           {t('agentPanel.usageTitle')}
         </span>
         {onOpenUsageDetail ? (
@@ -83,7 +83,7 @@ export const AgentUsageSection = memo(function AgentUsageSection({
           <div>
             <div className="flex items-baseline justify-between text-[11px]">
               <span className="text-ink-soft">{t('agentPanel.contextWindow')}</span>
-              <span className="font-mono font-medium text-ink">
+              <span className="font-mono font-normal text-ink">
                 {contextUsed !== null && contextLimit !== null
                   ? `${formatTokens(contextUsed)} / ${formatTokens(contextLimit)} (${contextPct}%)`
                   : unknownLabel}
@@ -102,13 +102,13 @@ export const AgentUsageSection = memo(function AgentUsageSection({
             {/* 1. Agent Cost */}
             <div className="rounded-lg border border-hairline bg-paper/50 p-2">
               <span className="block text-[10px] text-ink-faint uppercase">{t('agentPanel.agentCost')}</span>
-              <span className="font-medium text-ink">{formatCost(usage.totalCostUsd)}</span>
+              <span className="font-normal text-ink">{formatCost(usage.totalCostUsd)}</span>
             </div>
 
             {/* 2. Cumulative Tokens */}
             <div className="rounded-lg border border-hairline bg-paper/50 p-2">
               <span className="block text-[10px] text-ink-faint uppercase">{t('agentPanel.totalTokens')}</span>
-              <span className="font-medium text-ink">
+              <span className="font-normal text-ink">
                 {usage.totalTokens !== null ? formatTokens(usage.totalTokens) : formatTokens(usage.inputTokens !== null && usage.outputTokens !== null ? usage.inputTokens + usage.outputTokens : null)}
               </span>
               <span className="block text-[9.5px] text-ink-faint">
@@ -122,7 +122,7 @@ export const AgentUsageSection = memo(function AgentUsageSection({
             {/* 3. Compaction Count */}
             <div className="rounded-lg border border-hairline bg-paper/50 p-2">
               <span className="block text-[10px] text-ink-faint uppercase">{t('agentPanel.compactionLabel')}</span>
-              <span className="font-medium text-ink">
+              <span className="font-normal text-ink">
                 {usage.compactionCount !== null
                   ? tp('agentPanel.compactionCount', usage.compactionCount)
                   : unknownLabel}
@@ -135,7 +135,7 @@ export const AgentUsageSection = memo(function AgentUsageSection({
               title={cacheTooltip}
             >
               <span className="block text-[10px] text-ink-faint uppercase">{t('agentPanel.cacheRate')}</span>
-              <span className="font-medium text-ink">
+              <span className="font-normal text-ink">
                 {cacheRate !== null ? `${cacheRate}%` : unknownLabel}
               </span>
             </div>
@@ -149,7 +149,7 @@ export const AgentUsageSection = memo(function AgentUsageSection({
           data-tree-metrics
           className="mt-2 rounded-lg border border-amber-rule/30 bg-amber-card/40 p-2 font-mono text-[11px]"
         >
-          <div className="flex items-center justify-between text-amber-ink font-semibold text-[10.5px] uppercase">
+          <div className="flex items-center justify-between text-amber-ink font-normal text-[10.5px] uppercase">
             <span>{t('agentPanel.treeSummary')}</span>
             <span>
               {t('agentPanel.treeActiveCounts', {
@@ -160,17 +160,17 @@ export const AgentUsageSection = memo(function AgentUsageSection({
           </div>
           <div className="mt-1 flex items-baseline justify-between pt-1 border-t border-amber-rule/20">
             <span className="text-ink-soft">{t('agentPanel.treeTokens')}</span>
-            <span className="font-medium text-ink">{formatTokens(treeMetrics.totalTokens)}</span>
+            <span className="font-normal text-ink">{formatTokens(treeMetrics.totalTokens)}</span>
           </div>
           <div className="flex items-baseline justify-between">
             <span className="text-ink-soft">{t('agentPanel.treeCost')}</span>
-            <span className="font-medium text-ink">{formatCost(treeMetrics.totalCostUsd)}</span>
+            <span className="font-normal text-ink">{formatCost(treeMetrics.totalCostUsd)}</span>
           </div>
           {treeMetrics.cacheHitRate !== null && treeMetrics.cacheHitRate !== undefined ? (
             <div className="flex items-baseline justify-between">
               <span className="text-ink-soft">{t('agentPanel.treeCacheRate')}</span>
               <span
-                className="font-medium text-ink"
+                className="font-normal text-ink"
                 title={
                   treeMetrics.cacheReadTokens !== undefined || treeMetrics.cacheWriteTokens !== undefined
                     ? t('agentPanel.cacheRawTooltip', {

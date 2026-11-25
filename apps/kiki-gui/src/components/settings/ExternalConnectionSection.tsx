@@ -419,7 +419,7 @@ function AvailableTunnelContent({
       {depMissing ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-ink/20 bg-amber-ink/[0.04] px-3 py-2 text-[12.5px]">
           <div>
-            <p className="font-medium text-amber-ink">{t('st.conn.ext.depMissing')}</p>
+            <p className="font-normal text-amber-ink">{t('st.conn.ext.depMissing')}</p>
             <p className="text-[12px] text-ink-soft">{t('st.conn.ext.depMissingHint')}</p>
           </div>
           <button
@@ -444,7 +444,7 @@ function AvailableTunnelContent({
                   serviceRunning ? 'bg-success' : status.service.state === 'starting' ? 'bg-amber-ink' : 'bg-ink-faint'
                 }`}
               />
-              <span className={serviceRunning ? 'font-medium text-success' : 'text-ink'} data-conn-ext-service-state>
+              <span className={serviceRunning ? 'font-normal text-success' : 'text-ink'} data-conn-ext-service-state>
                 {t(`st.conn.ext.state.${status.service.state}` as any) || status.service.state}
               </span>
             </span>
@@ -488,7 +488,7 @@ function AvailableTunnelContent({
           {status.login.state === 'pending' ? (
             <SettingField label={t('st.conn.ext.loginTitle')} layout="stack">
               <div className="space-y-2" data-conn-ext-login-pending>
-                <p className="text-[12px] font-medium text-amber-ink">{t('st.conn.ext.loginPending')}</p>
+                <p className="text-[12px] font-normal text-amber-ink">{t('st.conn.ext.loginPending')}</p>
                 {status.login.url ? (
                   <a
                     href={status.login.url}
@@ -564,7 +564,7 @@ function AvailableTunnelContent({
               {tunnelsList.map((tun) => (
                 <div key={tun.id} className="flex items-center justify-between gap-2 py-1.5 text-[12px]">
                   <div className="min-w-0 pr-2">
-                    <p className="truncate font-medium text-ink">{tun.name}</p>
+                    <p className="truncate font-normal text-ink">{tun.name}</p>
                     <p className="truncate font-mono text-[11px] text-ink-faint">{tun.id}</p>
                   </div>
                   <button

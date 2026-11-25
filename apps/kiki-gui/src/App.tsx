@@ -1770,7 +1770,7 @@ function NormalApp() {
               writeDesktopOverride(false);
               void navigate(activeSessionId !== undefined ? mobileChatPath('local', activeSessionId) : MOBILE_ASSISTANT_PATH);
             }}
-            className="kiki-mobile-glass-pill fixed right-4 bottom-[calc(16px+var(--kiki-safe-bottom-inset))] z-40 inline-flex h-9 items-center gap-1.5 rounded-full px-3.5 text-[12.5px] font-medium text-ink transition-colors hover:bg-panel"
+            className="kiki-mobile-glass-pill fixed right-4 bottom-[calc(16px+var(--kiki-safe-bottom-inset))] z-40 inline-flex h-9 items-center gap-1.5 rounded-full px-3.5 text-[12.5px] font-normal text-ink transition-colors hover:bg-panel"
           >
             <span>{t('mobile.desktop.returnMobile')}</span>
           </button>

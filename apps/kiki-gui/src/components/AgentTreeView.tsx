@@ -171,7 +171,7 @@ const AgentTreeRow = memo(function AgentTreeRow({
                   }`}
                 />
                 <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-1.5 truncate text-[12px] font-medium text-ink">
+                  <span className="flex items-center gap-1.5 truncate text-[12px] font-normal text-ink">
                     <span className="truncate">{label}</span>
                     {node.executorId !== undefined && node.executorId !== '' && node.executorId !== 'native' ? (
                       <span

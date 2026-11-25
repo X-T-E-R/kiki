@@ -131,7 +131,7 @@ export function ProviderQuotaPanel() {
           title={refreshAllTitle}
           onClick={() => void state.handleHeaderRefresh()}
           disabled={state.loading || state.isRefetching || state.refreshingAll}
-          className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-hairline bg-paper px-2.5 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
+          className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-hairline bg-paper px-2.5 py-1 text-[12px] font-normal text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
         >
           <Icon name="refresh" size={14} className={state.isRefetching || state.refreshingAll ? 'animate-spin' : undefined} />
           {t(state.isRefetching || state.refreshingAll ? 'usage.quota.refreshing' : 'usage.quota.refreshAll')}
@@ -144,7 +144,7 @@ export function ProviderQuotaPanel() {
         </div>
       ) : state.isError ? (
         <div className="flex flex-wrap items-center justify-between gap-3 border-l-2 border-[var(--kiki-chart-danger)] bg-danger/[0.05] pl-4 pr-3 py-3 text-[12.5px] text-[var(--kiki-chart-danger-text)]" data-quota-snapshot-error>
-          <p className="font-medium">{t('usage.quota.status.error')}</p>
+          <p className="font-normal">{t('usage.quota.status.error')}</p>
           <button type="button" data-quota-snapshot-retry className={QUOTA_SMALL_BUTTON} onClick={() => { void state.refetch(); }}>
             {t('st.im.retry')}
           </button>
@@ -154,7 +154,7 @@ export function ProviderQuotaPanel() {
           {state.arranged.live.length === 0 && !state.showEngineSection ? (
             <div className="flex flex-wrap items-center justify-between gap-3 border-y border-hairline py-6 text-[13px] text-ink-faint" data-quota-empty>
               <div>
-                <p className="font-medium text-ink-soft">{t('usage.quota.emptyTitle')}</p>
+                <p className="font-normal text-ink-soft">{t('usage.quota.emptyTitle')}</p>
                 <p className="mt-0.5 text-[12px] text-ink-faint">{t('usage.quota.emptyBody')}</p>
               </div>
               <Link to="/settings/ai?tab=providers" data-quota-manage-connections className={ROW_LINK}>

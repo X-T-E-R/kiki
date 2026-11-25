@@ -58,7 +58,7 @@ export function MemoryAdvisorRuntime({ workspaceId, config }: {
 
   return (
     <div data-memory-advisor-runtime className="space-y-1 pt-3">
-      <p className="text-[13px] font-medium text-ink">{t('memory.advisor.runtime')}</p>
+      <p className="text-[13px] font-normal text-ink">{t('memory.advisor.runtime')}</p>
       <Hint>{t('memory.advisor.runtimeHint')}</Hint>
       {sessionsQuery.isError && sessions.length === 0 ? (
         <p data-memory-advisor-runtime-sessions-error className="flex flex-wrap items-center gap-x-2 py-1 text-[12px] text-danger">

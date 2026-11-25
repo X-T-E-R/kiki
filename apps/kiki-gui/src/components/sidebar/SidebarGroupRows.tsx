@@ -183,7 +183,7 @@ export const SidebarLoadMoreRow = memo(function SidebarLoadMoreRow({
           type="button"
           data-session-load-more-retry
           onClick={onRetry}
-          className="shrink-0 font-medium text-ink underline underline-offset-2 hover:text-selected-ink"
+          className="shrink-0 font-normal text-ink underline underline-offset-2 hover:text-selected-ink"
         >
           {t('sidebar.loadMoreRetry')}
         </button>

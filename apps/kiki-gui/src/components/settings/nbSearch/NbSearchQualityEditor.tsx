@@ -61,7 +61,7 @@ export function NbSearchQualityEditor({
 
   return (
     <div className="space-y-3">
-      <label className="block text-[12px] font-medium text-ink-soft">
+      <label className="block text-[12px] font-normal text-ink-soft">
         {t('st.nbSearch.quality.minContentChars')}
         <input
           className={`${INPUT} mt-1 font-mono`}
@@ -88,7 +88,7 @@ export function NbSearchQualityEditor({
 
       <div className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-[12px] font-medium text-ink-soft">{t('st.nbSearch.quality.markers')}</span>
+          <span className="text-[12px] font-normal text-ink-soft">{t('st.nbSearch.quality.markers')}</span>
           <SettingsSegmented
             value={mode}
             ariaLabel={t('st.nbSearch.quality.markers')}

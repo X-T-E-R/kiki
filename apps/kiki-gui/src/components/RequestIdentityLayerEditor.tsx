@@ -86,7 +86,7 @@ export function RequestIdentityLayerEditor({
     <div className="space-y-3">
       {overridesOnly ? null : (
       <div>
-        <div className="space-y-1 text-[11px] font-medium text-ink-soft">
+        <div className="space-y-1 text-[11px] font-normal text-ink-soft">
           <span className="block">{label}</span>
           <SettingsSelect<RequestIdentityChoice>
             variant="form"
@@ -112,7 +112,7 @@ export function RequestIdentityLayerEditor({
       )}
       {authored ? (
         <div>
-          <label className="block text-[11px] font-medium text-ink-soft">{t('st.requestIdentity.overrides')}
+          <label className="block text-[11px] font-normal text-ink-soft">{t('st.requestIdentity.overrides')}
             <textarea
               className={`${INPUT} mt-1 min-h-24 font-mono ${issue !== null ? 'border-danger' : ''}`}
               aria-invalid={issue !== null}

@@ -89,7 +89,7 @@ function MatchChips<T extends string>({ values, options, onChange, ariaLabel }: 
             aria-pressed={on}
             onClick={() => onChange(on ? values.filter((entry) => entry !== value) : [...values, value])}
             className={`h-7 rounded-[5px] px-3 text-[13px] transition-colors ${
-              on ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
+              on ? 'bg-panel text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
             }`}
           >
             {label}
@@ -435,7 +435,7 @@ export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove, onConv
           onClick={() => setMatchOpen(!matchOpen)}
           className="flex min-h-7 w-full items-center justify-between gap-3 text-left focus-visible:outline-2 focus-visible:outline-selected-ink"
         >
-          <span className="text-[13px] font-medium text-ink">{t('st.hooks.matchTitle')}</span>
+          <span className="text-[13px] font-normal text-ink">{t('st.hooks.matchTitle')}</span>
           <span className="min-w-0 truncate text-[12px] text-ink-faint">
             {activeConditions.length === 0 ? t('st.hooks.matchEmpty') : activeConditions.join(' · ')}
           </span>

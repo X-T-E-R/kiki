@@ -86,7 +86,7 @@ export function ConnectionMethodPicker({
                 {selected ? <Icon name="check" size={12} /> : null}
               </span>
               <span className="min-w-0">
-                <span className={`block text-[13px] ${selected ? 'font-medium text-ink' : 'text-ink-soft'}`}>{choice.title}</span>
+                <span className={`block text-[13px] ${selected ? 'text-ink' : 'text-ink-soft'}`}>{choice.title}</span>
                 <span className="mt-0.5 block text-[12px] leading-4 text-ink-faint">{choice.body}</span>
               </span>
             </button>
@@ -111,7 +111,7 @@ export function ConnectionMethodPicker({
                   onClick={() => { setSource(candidate.id); }}
                   className={`-mb-px min-h-8 border-b-2 px-3 py-1.5 text-[12px] transition-colors ${
                     source === candidate.id
-                      ? 'border-ink font-medium text-ink'
+                      ? 'border-ink text-ink'
                       : 'border-transparent text-ink-soft hover:text-ink'}`}
                 >
                   {candidate.label}

@@ -141,7 +141,7 @@ export function PersonaImportDialog({ takenIds, onClose, onImported }: {
           <div className="flex min-w-0 items-start gap-4">
             <PersonaAvatar persona={avatar ?? { id: definition.id, name: definition.name }} size={56} decorative />
             <div className="min-w-0 flex-1">
-              <p className="truncate font-display text-[18px] leading-7 font-semibold text-ink">{definition.name}</p>
+              <p className="truncate font-display text-[18px] leading-7 font-bold text-ink">{definition.name}</p>
               <p className="truncate text-[13px] text-ink-soft">{[definition.title, definition.job].filter(Boolean).join(' · ') || file?.name}</p>
               <p className="mt-1 text-[12px] text-ink-faint">
                 {preview.memoryEntries.length > 0 ? t('persona.importMemories', { count: preview.memoryEntries.length }) : t('persona.importMemoryNone')}
@@ -213,7 +213,7 @@ function DropZone({ busy, error, fileName, onPick, onDrop }: {
           over ? 'border-selected-ink bg-selected/40' : 'border-hairline-strong bg-paper hover:border-ink-faint'
         }`}
       >
-        <span className="text-[14px] font-medium text-ink">{busy ? t('persona.importReading') : t('persona.importPick')}</span>
+        <span className="text-[14px] font-normal text-ink">{busy ? t('persona.importReading') : t('persona.importPick')}</span>
         <span className="text-[12px] text-ink-faint">{busy && fileName !== undefined ? fileName : t('persona.importFormats')}</span>
       </button>
       {error !== null ? <p role="alert" className="text-[12.5px] leading-relaxed text-danger">{error}</p> : null}

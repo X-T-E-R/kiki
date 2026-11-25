@@ -180,7 +180,7 @@ describe('external engine enable proof', () => {
         );
         await page.addStyleTag({ path: join(assets, cssName) });
         // The raw id no longer rides beside the name (#14); the label box is the row's anchor.
-        const labelBox = await page.locator('[data-engine-row="codex-app-server"] [data-engine-open] .font-medium').boundingBox();
+        const labelBox = await page.locator('[data-engine-row="codex-app-server"] [data-engine-open] [data-engine-label]').boundingBox();
         expect(labelBox).not.toBeNull();
         expect(await page.locator('[data-engine-row="missing-acp"] [data-engine-status]').getAttribute('data-engine-status')).toBe('missing');
         const overflow = await page.evaluate(() => ({

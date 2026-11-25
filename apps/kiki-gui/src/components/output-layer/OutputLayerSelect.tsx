@@ -155,12 +155,12 @@ export function OutputLayerSelect({
             {/* View Mode Switcher Header */}
             {isEnabled ? (
               <div className="mb-2 flex shrink-0 items-center justify-between rounded-md bg-paper p-1 border border-hairline">
-                <span className="px-2 text-[11px] font-medium text-ink-soft">显示版本</span>
+                <span className="px-2 text-[11px] font-normal text-ink-soft">显示版本</span>
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
                     onClick={() => setViewMode('processed')}
-                    className={`rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                    className={`rounded px-2 py-0.5 text-[11px] font-normal transition-colors ${
                       viewMode === 'processed'
                         ? 'bg-accent/15 text-accent'
                         : 'text-ink-faint hover:text-ink'
@@ -171,7 +171,7 @@ export function OutputLayerSelect({
                   <button
                     type="button"
                     onClick={() => setViewMode('original')}
-                    className={`rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                    className={`rounded px-2 py-0.5 text-[11px] font-normal transition-colors ${
                       viewMode === 'original'
                         ? 'bg-accent/15 text-accent'
                         : 'text-ink-faint hover:text-ink'
@@ -200,7 +200,7 @@ export function OutputLayerSelect({
               >
                 <CheckMark on={activePresetId === null} />
                 <span className="min-w-0 flex-1">
-                  <span className="block font-medium text-ink">关闭输出层</span>
+                  <span className="block font-normal text-ink">关闭输出层</span>
                   <span className="mt-0.5 block text-[11px] leading-snug text-ink-faint">
                     显示主模型原始回复
                   </span>
@@ -231,7 +231,7 @@ export function OutputLayerSelect({
                     >
                       <CheckMark on={isSelected} />
                       <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-1.5 font-medium">
+                        <span className="flex items-center gap-1.5 font-normal">
                           <span>{preset.label}</span>
                           {!isConfigured ? (
                             <span className="rounded bg-ink/[0.06] px-1 py-0.2 text-[10px] font-normal text-ink-faint">
@@ -280,7 +280,7 @@ export function OutputLayerSelect({
                   setModalOpen(true);
                   close(false);
                 }}
-                className={`${MENU_ROW_CLASS} text-accent hover:text-accent font-medium`}
+                className={`${MENU_ROW_CLASS} text-accent hover:text-accent font-normal`}
               >
                 <Icon name="plus" size={12} className="shrink-0 text-accent" />
                 <span>新增预设...</span>

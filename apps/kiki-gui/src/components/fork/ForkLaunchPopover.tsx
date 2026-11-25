@@ -145,7 +145,7 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
         {badgeCount > 0 ? (
           <span
             data-header-fork-count
-            className="text-[11px] leading-none font-medium text-ink-soft tabular-nums"
+            className="text-[11px] leading-none font-normal text-ink-soft tabular-nums"
           >
             {badgeCount}
           </span>
@@ -202,7 +202,7 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
               >
           {hasLineage ? (
             <div className="mb-2 border-b border-hairline pb-2">
-              <div className="px-2 pb-1 text-[11px] font-medium tracking-wide text-ink-faint">
+              <div className="px-2 pb-1 text-[11px] font-normal text-ink-faint">
                 {t('fork.popover.lineageHeading')}
               </div>
               <div className="flex max-h-40 flex-col gap-0.5 overflow-y-auto">
@@ -254,7 +254,7 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
 
           {canFork || canBranch ? (
             <div className="mb-2 px-1">
-              <div className="mb-1 px-1 text-[11px] font-medium text-ink-faint">
+              <div className="mb-1 px-1 text-[11px] font-normal text-ink-faint">
                 {t('transcript.branch.seedLabel')}
               </div>
               <div className="grid grid-cols-3 gap-0.5 rounded-lg bg-canvas/70 p-0.5">
@@ -269,7 +269,7 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
                       onClick={() => {
                         setSeed(mode);
                       }}
-                      className={`rounded-md px-1.5 py-1 text-[11px] leading-4 font-medium transition-colors ${
+                      className={`rounded-md px-1.5 py-1 text-[11px] leading-4 font-normal transition-colors ${
                         selected
                           ? 'bg-paper text-ink shadow-xs'
                           : 'text-ink-faint hover:text-ink-soft'
@@ -327,7 +327,7 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
                     onClick={() => {
                       submitBranch('route');
                     }}
-                    className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.06] disabled:opacity-45"
+                    className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[12px] font-normal text-ink transition-colors hover:bg-ink/[0.06] disabled:opacity-45"
                   >
                     <Icon name="arrowUpRight" size={12} className="shrink-0 text-ink-soft" />
                     <span className="truncate">{t('fork.popover.startBranch')}</span>
@@ -382,7 +382,7 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
         >
           {hasLineage ? (
             <div className="border-b border-hairline pb-1.5 mb-1.5">
-              <div className="px-3 py-1 text-[11px] font-medium text-ink-faint">
+              <div className="px-3 py-1 text-[11px] font-normal text-ink-faint">
                 {t('fork.popover.lineageHeading')}
               </div>
               {origin !== undefined ? (
@@ -426,7 +426,7 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
           ) : null}
           {canFork || canBranch ? (
             <div className="border-b border-hairline pb-1.5 mb-1.5">
-              <div className="px-3 py-1 text-[11px] font-medium text-ink-faint">
+              <div className="px-3 py-1 text-[11px] font-normal text-ink-faint">
                 {t('transcript.branch.seedLabel')}
               </div>
               {SEED_MODES.map((mode) => (

@@ -344,7 +344,7 @@ export function PlaceClientProvider({
         data-place-error={connectionId}
         className="m-6 flex max-w-md flex-col gap-3 rounded-xl border border-hairline bg-panel p-5 text-[13px] text-ink"
       >
-        <p className="font-medium text-ink">{targetName}</p>
+        <p className="font-normal text-ink">{targetName}</p>
         <p className="text-[12.5px] text-ink-soft">{resolvedError}</p>
         <div className="flex items-center gap-2">
           <button
@@ -354,7 +354,7 @@ export function PlaceClientProvider({
               if (entry !== null) entry.meta = null;
               setAttempt((n) => n + 1);
             }}
-            className="rounded-lg border border-hairline-strong px-3 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:bg-paper"
+            className="rounded-lg border border-hairline-strong px-3 py-1.5 text-[12.5px] font-normal text-ink transition-colors hover:bg-paper"
           >
             {t('common.retry')}
           </button>

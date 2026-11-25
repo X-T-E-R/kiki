@@ -81,7 +81,7 @@ function Figure({ value, label, title, tone = 'text-ink', ...data }: {
 } & { [key: `data-${string}`]: string }) {
   return (
     <div className="min-w-0" title={title} {...data}>
-      <div className={`truncate text-[15px] leading-5 font-medium tabular-nums ${tone}`}>{value}</div>
+      <div className={`truncate text-[15px] leading-5 font-normal tabular-nums ${tone}`}>{value}</div>
       <div className="truncate text-[11.5px] leading-4 text-ink-faint">{label}</div>
     </div>
   );
@@ -210,7 +210,7 @@ export const InspectorOverview = memo(function InspectorOverview({
           <div className="flex items-baseline gap-2 text-[12.5px]">
             <span className="text-ink-soft">{t('inspector.context')}</span>
             {/* Stable hook for the rail's context figure styling. */}
-            <span data-overview-context-figures className="ml-auto text-[13px] font-medium text-ink tabular-nums">
+            <span data-overview-context-figures className="ml-auto text-[13px] font-normal text-ink tabular-nums">
               {compactTokens(contextUsed)}
               {contextLimit !== undefined ? <span className="font-normal text-ink-faint"> / {compactTokens(contextLimit)}</span> : null}
             </span>

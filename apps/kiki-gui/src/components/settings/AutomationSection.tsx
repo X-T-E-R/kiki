@@ -111,7 +111,7 @@ export function ToolPolicyCard() {
       <div key={name} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-hairline py-2">
         <div className="min-w-0" data-tool-row={name}>
           <div className="flex min-w-0 items-center gap-1.5">
-            <p className="break-all text-[13px] font-medium text-ink">{name}</p>
+            <p className="break-all text-[13px] font-normal text-ink">{name}</p>
             {descriptor !== undefined && descriptor.description.trim() !== '' ? (
               <SettingHelp>{descriptor.description}</SettingHelp>
             ) : null}
@@ -181,7 +181,7 @@ export function ToolPolicyCard() {
                 {availableTools.map(renderToolRow)}
                 {unavailableTools.length > 0 ? (
                   <div className={availableTools.length > 0 ? 'pt-3' : undefined}>
-                    <p data-tools-unavailable-heading className="border-b border-hairline pb-1.5 text-[12px] font-medium text-ink-soft">
+                    <p data-tools-unavailable-heading className="border-b border-hairline pb-1.5 text-[12px] font-normal text-ink-soft">
                       {t('st.permissions.tools.unavailable', { count: unavailableTools.length })}
                     </p>
                     {unavailableTools.map(renderToolRow)}

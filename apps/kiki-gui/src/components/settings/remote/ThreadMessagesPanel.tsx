@@ -279,7 +279,7 @@ export function ThreadMessagesPanel({
                     className="space-y-2.5 rounded-lg border border-hairline bg-ink/[0.02] px-3.5 py-3"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <h3 className="text-[13.5px] font-medium text-ink" data-thread-message-heading>
+                      <h3 className="text-[13.5px] font-bold text-ink" data-thread-message-heading>
                         {directionText(entry)}
                       </h3>
                       <span className={`inline-flex items-center gap-1.5 text-[11.5px] ${statusChip.text}`} data-thread-message-state>
@@ -292,14 +292,14 @@ export function ThreadMessagesPanel({
                       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
                         <dt className="text-ink-faint">{t('st.remote.threadMessages.scopeLocalLabel')}</dt>
                         <dd className="text-ink-soft" data-thread-message-local-scope>
-                          <span className="font-medium text-ink">{localWsName}</span>
+                          <span className="font-normal text-ink">{localWsName}</span>
                           <span className="text-ink-faint">{` · ${localThreadScope}`}</span>
                         </dd>
                       </div>
                       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
                         <dt className="text-ink-faint">{t('st.remote.threadMessages.scopeRemoteLabel', { space: peerName })}</dt>
                         <dd className="text-ink-soft" data-thread-message-remote-scope>
-                          <span className="font-medium text-ink">{remoteWsName}</span>
+                          <span className="font-normal text-ink">{remoteWsName}</span>
                           <span className="text-ink-faint">{` · ${remoteThreadScope}`}</span>
                         </dd>
                       </div>
@@ -320,7 +320,7 @@ export function ThreadMessagesPanel({
                                   onClick={() => { runToggleOperation(entry, op); }}
                                   className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                                     active
-                                      ? 'border-selected-ink/40 bg-selected font-medium text-selected-ink'
+                                      ? 'border-selected-ink/40 bg-selected text-selected-ink'
                                       : 'border-hairline bg-paper text-ink-faint hover:border-hairline-strong hover:text-ink-soft'
                                   }`}
                                 >

@@ -200,7 +200,7 @@ export function MediaSourceDetail({
 
           {defaultKinds.length > 0 ? (
           <div className="mt-5" data-media-source-defaults>
-            <p className="text-[13px] font-medium text-ink">{t('cap.media.detail.defaults')}</p>
+            <p className="text-[13px] font-normal text-ink">{t('cap.media.detail.defaults')}</p>
             <p className="mt-0.5 max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('cap.media.detail.defaultsHint')}</p>
             <div className="mt-2 flex flex-wrap gap-2">
               {defaultKinds.map((kind) => {
@@ -216,7 +216,7 @@ export function MediaSourceDetail({
                     data-media-default-on={isDefault ? 'true' : 'false'}
                     onClick={() => { void setDefault(kind, !isDefault); }}
                     className={`inline-flex min-h-9 items-center gap-2 rounded-[10px] px-3 text-[13px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 ${
-                      isDefault ? 'bg-ink/[0.08] font-medium text-ink' : 'bg-ink/[0.04] text-ink-soft hover:bg-ink/[0.07] hover:text-ink'
+                      isDefault ? 'bg-ink/[0.08] text-ink' : 'bg-ink/[0.04] text-ink-soft hover:bg-ink/[0.07] hover:text-ink'
                     }`}
                   >
                     <MediaKindGlyph kind={kind} className="h-4 w-4" />
@@ -248,7 +248,7 @@ export function MediaSourceDetail({
               </p>
             ) : (
               <div data-media-source-settings-section>
-                <h2 className="mb-3 text-[13px] font-medium text-ink">{t('cap.media.detail.settings')}</h2>
+                <h2 className="mb-3 text-[13px] font-bold text-ink">{t('cap.media.detail.settings')}</h2>
                 <MediaSourceForm
                   provider={entry.provider}
                   settings={formSettingsOf(settings.data)}

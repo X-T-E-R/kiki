@@ -248,7 +248,7 @@ export function ModelSwitchCard() {
         </SettingsBox>
         <div className="pt-1">
           <div className="flex items-center justify-between gap-2">
-            <p className="text-[12px] font-medium text-ink-soft">{t('st.modelSwitch.rulesTitle')}</p>
+            <p className="text-[12px] font-normal text-ink-soft">{t('st.modelSwitch.rulesTitle')}</p>
             <button type="button" data-model-switch-rule-add className={`${SECONDARY_BUTTON} h-7 px-2 text-[12px]`} onClick={addRule}>
               <span className="inline-flex items-center gap-1"><Icon name="plus" size={12} />{t('st.modelSwitch.ruleAdd')}</span>
             </button>

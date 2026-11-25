@@ -115,7 +115,7 @@ export const TaskCard = memo(function TaskCard({
       <div className="flex min-w-0 items-center justify-between gap-2 text-[11.5px] text-ink-faint">
         <span className="flex min-w-0 items-center gap-1.5" title={t(PRIORITY_LABEL_KEYS[priority])}>
           <PriorityGlyph priority={priority} />
-          <span aria-hidden className={`font-mono text-[11px] tabular-nums ${priority === 'urgent' ? 'font-semibold text-danger' : ''}`}>
+          <span aria-hidden className={`font-mono text-[11px] tabular-nums ${priority === 'urgent' ? 'font-normal text-danger' : ''}`}>
             {PRIORITY_CODE[priority]}
           </span>
           <span className="sr-only">{t(PRIORITY_LABEL_KEYS[priority])}</span>
@@ -131,7 +131,7 @@ export const TaskCard = memo(function TaskCard({
           <StatusGlyph status={task.status} />
           <span className="sr-only">{t(STATUS_LABEL_KEYS[task.status])}</span>
         </span>
-        <h4 className={`min-w-0 flex-1 text-[13.5px] leading-[1.4] font-medium break-words line-clamp-3 ${closed ? 'text-ink-soft' : 'text-ink'}`}>
+        <h4 className={`min-w-0 flex-1 text-[13.5px] leading-[1.4] font-normal break-words line-clamp-3 ${closed ? 'text-ink-soft' : 'text-ink'}`}>
           {task.title}
         </h4>
       </div>

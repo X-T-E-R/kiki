@@ -27,7 +27,7 @@ export type ContextChipVariant = 'compact' | 'shelf';
 
 const TILE = 'context-chip anim-enter relative flex h-8 min-w-0 items-center gap-1.5 rounded-[10px] text-[12px]';
 const SHELF_CAPSULE =
-  'context-chip anim-enter relative flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-full bg-ink/[0.05] text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.08] hover:text-ink pointer-coarse:h-9';
+  'context-chip anim-enter relative flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-full bg-ink/[0.05] text-[12px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.08] hover:text-ink pointer-coarse:h-9';
 const SHELF_CARD =
   'context-chip anim-enter relative flex h-11 min-w-0 max-w-[180px] shrink-0 items-center gap-2 rounded-[10px] border border-hairline bg-canvas/65 py-1 pl-2.5 pr-1.5 text-left';
 
@@ -207,7 +207,7 @@ export function SkillChip({
         <Icon name="skill" size={12} />
       </span>
       <span className="text-ink-faint">{t('composer.skillChip')}</span>
-      <span className="min-w-0 truncate font-medium text-ink">{name}</span>
+      <span className="min-w-0 truncate font-normal text-ink">{name}</span>
       {onRemove !== undefined ? (
         <RemoveButton label={t('composer.removeSkill', { name })} onRemove={onRemove} />
       ) : null}
@@ -254,7 +254,7 @@ export function TextTile({
       >
         {leading !== undefined ? <span className="flex shrink-0 items-center text-ink-faint">{leading}</span> : null}
         <span className="min-w-0 flex-1">
-          <span className="flex min-w-0 items-center gap-1 truncate text-[12px] leading-4 font-medium text-ink">
+          <span className="flex min-w-0 items-center gap-1 truncate text-[12px] leading-4 font-normal text-ink">
             {children}
           </span>
           {subtitle !== undefined && subtitle !== '' ? (

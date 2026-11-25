@@ -154,7 +154,7 @@ export function HandoffSection({ api, destination, view, handoff, onHandoff, onS
   if (!fresh && view === null) {
     return (
       <section data-usage-export-handoff-section className="space-y-2">
-        <h5 className="text-[12.5px] font-medium text-ink">{t('usage.export.handoff.title')}</h5>
+        <h5 className="text-[12.5px] font-normal text-ink">{t('usage.export.handoff.title')}</h5>
         <p data-usage-export-handoff-inapplicable className={NOTE_SOFT}>{t('usage.export.handoff.freshOnly')}</p>
       </section>
     );
@@ -162,12 +162,12 @@ export function HandoffSection({ api, destination, view, handoff, onHandoff, onS
 
   return (
     <section data-usage-export-handoff-section className="space-y-3">
-      <h5 className="text-[12.5px] font-medium text-ink">{t('usage.export.handoff.title')}</h5>
+      <h5 className="text-[12.5px] font-normal text-ink">{t('usage.export.handoff.title')}</h5>
       <p className={`${HINT} max-w-[76ch]`}>{t('usage.export.handoff.intro')}</p>
 
       {view !== null ? (
         <div data-usage-export-handoff-phase={view.phase} className={view.phase === 'completed' ? NOTE_SOFT : NOTE_AMBER}>
-          <p className="font-medium">{t(PHASE_TITLE[view.phase])}</p>
+          <p className="font-normal">{t(PHASE_TITLE[view.phase])}</p>
           <p className="mt-0.5">{t(PHASE_BODY[view.phase])}</p>
         </div>
       ) : null}

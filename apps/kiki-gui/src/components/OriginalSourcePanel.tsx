@@ -101,7 +101,7 @@ export function OriginalSourcePanel({
     // A continuation of the account row it sits in, not a second card inside it (#14).
     <div data-original-source={method.id} className="space-y-3 pt-1">
       <div className="space-y-1">
-        <p className="text-[12.5px] font-medium text-ink">
+        <p className="text-[12.5px] font-normal text-ink">
           {t('st.source.localOriginal', { app })}
         </p>
         {/* What reuse is, not what this credential is doing. Beside a credential
@@ -208,7 +208,7 @@ function ProbeBlock({
         <div className="space-y-1.5">
           <label
             htmlFor="original-source-home-dir"
-            className="block text-[12px] font-medium text-ink"
+            className="block text-[12px] font-normal text-ink"
           >
             {t('st.source.homeDirLabel', { app })}
           </label>

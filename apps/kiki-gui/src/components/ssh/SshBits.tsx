@@ -11,7 +11,7 @@ import type { SshVisibleState } from '../../lib/ssh';
 export function ComingSoonTag() {
   const { t } = useI18n();
   return (
-    <span data-coming-soon className="shrink-0 pt-0.5 text-[11px] font-medium text-ink-faint">
+    <span data-coming-soon className="shrink-0 pt-0.5 text-[11px] font-normal text-ink-faint">
       {t('st.ssh.comingSoon')}
     </span>
   );

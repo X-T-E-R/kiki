@@ -336,7 +336,7 @@ export function projectUserText(text: string): ReactNode {
       <span
         key={tokenStart}
         data-ref-chip="subagent"
-        className="rounded-md bg-ink/[0.05] px-1 py-px font-mono text-[12px] font-medium text-ink"
+        className="rounded-md bg-ink/[0.05] px-1 py-px font-mono text-[12px] font-normal text-ink"
       >
         {label}
       </span>,
@@ -957,7 +957,7 @@ const UserMessage = memo(function UserMessage({
           onClick={toggle}
           aria-expanded={expanded}
           aria-controls={contentId}
-          className="mt-1 mr-1 inline-flex items-center gap-1 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink cursor-pointer"
+          className="mt-1 mr-1 inline-flex items-center gap-1 text-[12px] font-normal text-ink-faint transition-colors hover:text-ink cursor-pointer"
         >
           {t('transcript.showLess')}
           <Icon name="chevron" size={12} className="-rotate-90" />
@@ -1658,7 +1658,7 @@ export const ShellMessage = memo(function ShellMessage({ block }: { block: Shell
             {/* A failure says the word: a red glyph alone makes the reader
                 decode a symbol, and the aria-label is not on screen. */}
             {block.done && block.isError === true ? (
-              <span className="font-medium"> — {t('transcript.failed')}</span>
+              <span className="font-normal"> — {t('transcript.failed')}</span>
             ) : null}
             {/* The latest output line is the reason not to expand: a green
                 suite or an exit code answers the question in place. */}
@@ -1841,7 +1841,7 @@ function ShellOutputDetail({ block }: { block: ShellBlock }) {
         onClick={detail.request}
         disabled={status === 'loading'}
         aria-busy={status === 'loading'}
-        className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-shell-hairline px-2 font-medium text-shell-ink-strong transition-colors hover:bg-shell-hover focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-80 motion-reduce:transition-none"
+        className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-shell-hairline px-2 font-normal text-shell-ink-strong transition-colors hover:bg-shell-hover focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-80 motion-reduce:transition-none"
       >
         {status === 'loading' ? (
           <>
@@ -2029,7 +2029,7 @@ function SubagentCardBody({
         ) : (
           <span className={`h-2 w-2 shrink-0 rounded-full ${subagentStatusTone(status)} ${busy ? 'status-dot-busy' : ''}`} />
         )}
-        <span className={`min-w-0 truncate text-[13px] leading-[20px] ${depth > 0 ? 'font-normal' : 'font-bold'} text-ink`}>{name}</span>
+        <span className="min-w-0 truncate text-[13px] leading-[20px] font-normal text-ink">{name}</span>
         {model !== undefined ? (
           <span
             data-subagent-model={model}
@@ -2528,7 +2528,7 @@ const SubagentCard = memo(function SubagentCard({
                   aria-expanded={fullErrorOpen}
                   aria-controls={fullErrorDetailsId}
                   onClick={() => { setFullErrorOpen((value) => !value); }}
-                  className="inline-flex min-h-6 cursor-pointer items-center gap-0.5 rounded-sm px-1 text-[12px] font-medium text-ink-soft underline-offset-2 transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+                  className="inline-flex min-h-6 cursor-pointer items-center gap-0.5 rounded-sm px-1 text-[12px] font-normal text-ink-soft underline-offset-2 transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
                 >
                   {t('transcript.promptOutcome.details')}
                   <DisclosureChevron open={fullErrorOpen} />
@@ -3956,7 +3956,7 @@ const MessageViewRow = memo(function MessageViewRow({
             <ThinkingMessage block={member} />
           ) : member.kind === 'assistant' ? (
             <p className="line-clamp-3 text-[12.5px] leading-snug text-ink-faint">
-              <span className="mr-1.5 text-[11px] font-medium">{t('message.internal')}</span>
+              <span className="mr-1.5 text-[11px] font-normal">{t('message.internal')}</span>
               {member.text}
             </p>
           ) : member.kind === 'subagent' ? (
@@ -4035,7 +4035,7 @@ function SubagentEventLine({ block, onOpen }: { block: SubagentBlock; onOpen?: (
       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
       <Icon name="agent" size={12} className="shrink-0 text-ink-faint" />
       <span
-        className={`min-w-0 truncate font-medium text-ink ${detail !== undefined ? 'max-sm:flex-1 sm:max-w-[16rem] sm:shrink' : 'flex-1'}`}
+        className={`min-w-0 truncate font-normal text-ink ${detail !== undefined ? 'max-sm:flex-1 sm:max-w-[16rem] sm:shrink' : 'flex-1'}`}
       >
         {block.name}
       </span>
@@ -4043,7 +4043,7 @@ function SubagentEventLine({ block, onOpen }: { block: SubagentBlock; onOpen?: (
         <span className={`min-w-0 flex-1 truncate max-sm:hidden ${failed ? 'text-danger' : 'text-ink-faint'}`}>{detail}</span>
       ) : null}
       {statusLabel !== undefined ? (
-        <span className={`shrink-0 text-[11.5px] ${failed ? 'font-medium text-danger' : 'text-ink-faint'}`}>{statusLabel}</span>
+        <span className={`shrink-0 text-[11.5px] ${failed ? 'text-danger' : 'text-ink-faint'}`}>{statusLabel}</span>
       ) : null}
       {at !== undefined ? (
         <RelativeTime at={at} className="shrink-0 text-[11.5px] text-ink-faint tabular-nums" />
@@ -5214,7 +5214,7 @@ function JumpToBottom({
       aria-label={hasNew ? t('transcript.jumpToLatestNew') : undefined}
       onClick={onJump}
       style={{ transform: 'translate(-50%, calc(-1 * max(20px, var(--kiki-seat-height, 148px) + 12px)))' }}
-      className="absolute bottom-0 left-1/2 z-10 flex min-h-8 items-center gap-1.5 rounded-full bg-panel px-3 text-[12px] font-medium text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
+      className="absolute bottom-0 left-1/2 z-10 flex min-h-8 items-center gap-1.5 rounded-full bg-panel px-3 text-[12px] font-normal text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
     >
       {showFailedCue ? (
         <>
@@ -5283,7 +5283,7 @@ function OlderLoadingStatus({ onCancel }: { onCancel?: () => void }) {
           type="button"
           data-older-load-cancel
           onClick={onCancel}
-          className="min-h-7 shrink-0 whitespace-nowrap rounded-full border border-hairline px-2.5 font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+          className="min-h-7 shrink-0 whitespace-nowrap rounded-full border border-hairline px-2.5 font-normal text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
         >
           {t('common.cancel')}
         </button>
@@ -5302,7 +5302,7 @@ function TopEdge({ state, onLoadOlder, onCancel, reserveFeedback = false }: {
   const { t } = useI18n();
   if (reserveFeedback && (state.loadingOlder || state.olderError !== undefined)) return (
     <button type="button" disabled aria-hidden="true" data-history-edge-placeholder
-      className="invisible mx-auto block rounded-full border border-hairline px-3 py-1 text-[12px] font-medium">
+      className="invisible mx-auto block rounded-full border border-hairline px-3 py-1 text-[12px] font-normal">
       {t('transcript.loadEarlier')}
     </button>
   );
@@ -5326,7 +5326,7 @@ function TopEdge({ state, onLoadOlder, onCancel, reserveFeedback = false }: {
         <button
           type="button"
           onClick={() => { void onLoadOlder(); }}
-          className="rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+          className="rounded-full border border-hairline px-2 py-0.5 text-[11px] font-normal text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
         >
           {t('transcript.retryEarlier')}
         </button>
@@ -5351,7 +5351,7 @@ function TopEdge({ state, onLoadOlder, onCancel, reserveFeedback = false }: {
       <button
         type="button"
         onClick={() => { void onLoadOlder(); }}
-        className="mx-auto block rounded-full border border-hairline px-3 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+        className="mx-auto block rounded-full border border-hairline px-3 py-1 text-[12px] font-normal text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
       >
         {t('transcript.loadEarlier')}
       </button>
@@ -8347,13 +8347,13 @@ export const Transcript = memo(function Transcript({
     return (
       <div ref={surfaceRef} role="alert" className="flex flex-1 flex-col items-center justify-center gap-4 px-6">
         <div className="max-w-[360px] rounded-xl border border-danger/30 bg-danger/5 p-4 text-center">
-          <p className="text-[13px] font-medium text-danger">{t('transcript.couldNotOpen')}</p>
+          <p className="text-[13px] font-normal text-danger">{t('transcript.couldNotOpen')}</p>
           <p className="mt-1 font-mono text-[11px] text-danger/80">{loadError}</p>
           {onRetryLoad !== undefined ? (
             <button
               type="button"
               onClick={onRetryLoad}
-              className="mt-3 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-deep"
+              className="mt-3 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-normal text-on-accent transition-colors hover:bg-accent-deep"
             >
               {t('common.retry')}
             </button>
@@ -8406,8 +8406,8 @@ export const Transcript = memo(function Transcript({
     <FindRevealContext.Provider value={findReveal}>
     <div ref={surfaceRef} className="flex min-h-0 flex-1 flex-col" onKeyDown={handleFindKeyDown}>
       {loadError !== undefined ? <div role="alert" className="mx-4 mt-2 flex shrink-0 items-center gap-3 rounded-lg border border-danger/30 bg-paper p-3 text-[12px] text-danger shadow-sm">
-        <div className="min-w-0 flex-1"><p className="font-medium">{t('transcript.couldNotOpen')}</p><p className="break-words font-mono text-[11px]">{loadError}</p></div>
-        {onRetryLoad !== undefined ? <button type="button" className="shrink-0 rounded-lg border border-danger/30 px-3 py-1.5 font-semibold" onClick={onRetryLoad}>{t('common.retry')}</button> : null}
+        <div className="min-w-0 flex-1"><p className="font-normal">{t('transcript.couldNotOpen')}</p><p className="break-words font-mono text-[11px]">{loadError}</p></div>
+        {onRetryLoad !== undefined ? <button type="button" className="shrink-0 rounded-lg border border-danger/30 px-3 py-1.5 font-normal" onClick={onRetryLoad}>{t('common.retry')}</button> : null}
       </div> : null}
       <div className="relative min-h-0 flex-1">
       {!showEmptyWordmark && (topEdgeState.loadingOlder || topEdgeState.olderError !== undefined) ? (

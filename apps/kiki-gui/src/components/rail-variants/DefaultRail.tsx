@@ -142,7 +142,7 @@ export function RailTodos({ sessionId, agentId, state }: RailTodosProps) {
                   type="button"
                   data-rail-todos-retry=""
                   onClick={() => { void controller.refreshSession?.(); }}
-                  className={`ml-1.5 rounded font-medium text-ink-soft transition-colors hover:text-ink ${FOCUS_RING}`}
+                  className={`ml-1.5 rounded font-normal text-ink-soft transition-colors hover:text-ink ${FOCUS_RING}`}
                 >
                   {t('common.retry')}
                 </button>
@@ -215,7 +215,7 @@ export function RailTodos({ sessionId, agentId, state }: RailTodosProps) {
               <span
                 title={todo.title}
                 className={`line-clamp-2 text-[13px] leading-snug break-words ${
-                  todo.status === 'done' ? 'text-ink-faint line-through' : todo.status === 'in_progress' ? 'font-medium text-ink' : 'text-ink-soft'
+                  todo.status === 'done' ? 'text-ink-faint line-through' : todo.status === 'in_progress' ? 'text-ink' : 'text-ink-soft'
                 }`}
               >
                 <span className="sr-only">{t(todo.status === 'done' ? 'rail.todo.srDone' : todo.status === 'in_progress' ? 'rail.todo.srInProgress' : 'rail.todo.srPending')}</span>

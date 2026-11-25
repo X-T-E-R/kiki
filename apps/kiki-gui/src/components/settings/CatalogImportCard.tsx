@@ -166,7 +166,7 @@ function CatalogRow({
       <div className="flex min-h-12 items-center gap-3 px-3 py-2">
         <div className={`min-w-0 flex-1 ${item.rejected ? 'opacity-60' : ''}`}>
           <p className="flex min-w-0 items-baseline gap-2">
-            <span className="truncate text-[13px] font-medium text-ink">{item.name}</span>
+            <span className="truncate text-[13px] font-normal text-ink">{item.name}</span>
             <span className="truncate font-mono text-[11px] text-ink-faint">{item.id}</span>
             {exists ? <Tag tone="accent">{t('st.catalog.configured')}</Tag> : null}
           </p>

@@ -236,7 +236,7 @@ function OutboundPairSheet({
   const modeTabs = showModeTabs ? (
     <div className="space-y-1.5">
       {!allowInboundTab ? (
-        <span className="block text-[12px] font-medium text-ink-soft">{t('st.remote.way.label')}</span>
+        <span className="block text-[12px] font-normal text-ink-soft">{t('st.remote.way.label')}</span>
       ) : null}
       <div role="tablist" aria-label={t('st.remote.way.label')} data-remote-add-ways className="flex flex-wrap gap-1.5">
         <button
@@ -348,7 +348,7 @@ function OutboundPairSheet({
               type="button"
               data-remote-ssh-open-hosts
               onClick={() => { onClose(); void navigate('/settings/ssh'); }}
-              className="font-medium text-accent-ink underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+              className="font-normal text-accent-ink underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
             >
               {t('st.remote.way.sshOpenHosts')}
             </button>
@@ -480,7 +480,7 @@ function OutboundPairSheet({
                 className="mt-0.5 h-4 w-4 shrink-0 rounded border-hairline-strong accent-selected-ink"
               />
               <span className="min-w-0 flex-1">
-                <span className="block font-medium text-ink">{t('st.remote.requestBridge')}</span>
+                <span className="block font-normal text-ink">{t('st.remote.requestBridge')}</span>
                 <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t('st.remote.requestBridgeHint')}</span>
               </span>
             </label>
@@ -498,7 +498,7 @@ function OutboundPairSheet({
                 onChange={(event) => { setBorrowTools(event.target.checked); }}
                 className="mt-0.5 h-4 w-4 shrink-0 rounded border-hairline-strong accent-selected-ink"
               />
-              <span className="font-medium">{t('st.remote.borrowTools')}</span>
+              <span className="font-normal">{t('st.remote.borrowTools')}</span>
             </label>
           </div>
 
@@ -512,7 +512,7 @@ function OutboundPairSheet({
               className="mt-0.5 h-4 w-4 shrink-0 rounded border-hairline-strong accent-selected-ink"
             />
             <span className="min-w-0 flex-1">
-              <span className="block font-medium text-ink">{t('st.remote.pairBackground')}</span>
+              <span className="block font-normal text-ink">{t('st.remote.pairBackground')}</span>
               <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t('st.remote.pairBackgroundHint')}</span>
             </span>
           </label>
@@ -686,7 +686,7 @@ function InboundPairSheet({
                 data-inbound-consent-open
                 className="mt-0.5 h-4 w-4 shrink-0 rounded border-hairline-strong accent-selected-ink"
               />
-              <span className="font-medium text-ink">{t('st.inbound.consentOpen')}</span>
+              <span className="font-normal text-ink">{t('st.inbound.consentOpen')}</span>
             </label>
 
             <div className="space-y-2">
@@ -699,7 +699,7 @@ function InboundPairSheet({
                   onChange={(event) => { setAllowBridge(event.target.checked); }}
                   className="mt-0.5 h-4 w-4 shrink-0 rounded border-hairline-strong accent-selected-ink"
                 />
-                <span className="font-medium text-ink">{t('st.inbound.consentBridge')}</span>
+                <span className="font-normal text-ink">{t('st.inbound.consentBridge')}</span>
               </label>
 
               <label
@@ -778,7 +778,7 @@ function InboundPairSheet({
       <div className="space-y-5">
         {headerSlot}
         {newlyPairedGrant !== undefined ? (
-          <div className="rounded-lg border border-success/40 bg-success/[0.06] px-3.5 py-3 text-[13px] font-medium text-success" data-inbound-paired-notice>
+          <div className="rounded-lg border border-success/40 bg-success/[0.06] px-3.5 py-3 text-[13px] font-normal text-success" data-inbound-paired-notice>
             {t('st.inbound.pairedNotice', { name: newlyPairedGrant.label })}
           </div>
         ) : null}
@@ -819,7 +819,7 @@ function InboundPairSheet({
                   <span className="text-amber-ink">{t('st.inbound.codeExpired')}</span>
                   <button
                     type="button"
-                    className="font-medium text-ink underline decoration-hairline-strong underline-offset-2 hover:text-accent"
+                    className="font-normal text-ink underline decoration-hairline-strong underline-offset-2 hover:text-accent"
                     disabled={saving}
                     onClick={() => { void generateCode(); }}
                   >
@@ -862,13 +862,13 @@ function InboundPairSheet({
                     onClick={() => { setSelectedEndpoint(address); }}
                     className={`inline-flex max-w-full items-center gap-1.5 rounded-md border px-2.5 py-1 text-left text-[12px] transition-colors ${
                       active
-                        ? 'border-selected-ink/40 bg-selected font-medium text-selected-ink'
+                        ? 'border-selected-ink/40 bg-selected text-selected-ink'
                         : 'border-hairline bg-ink/[0.02] text-ink-soft hover:border-hairline-strong hover:text-ink'
                     }`}
                   >
                     {active ? <Icon name="check" size={12} className="shrink-0" /> : null}
                     {networkKey !== null ? (
-                      <span className="shrink-0 text-[11px] font-medium opacity-80" data-inbound-endpoint-kind={endpointNetworkKind(address)}>
+                      <span className="shrink-0 text-[11px] font-normal opacity-80" data-inbound-endpoint-kind={endpointNetworkKind(address)}>
                         {t(networkKey)}
                       </span>
                     ) : null}

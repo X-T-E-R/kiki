@@ -121,7 +121,7 @@ export function WorktreeRemoveDialog({
             {phase.kind === 'ready' && phase.stale === true ? (
               <p className="mb-1.5 text-[12.5px] text-ink">{t('st.worktrees.removeStale')}</p>
             ) : null}
-            <p className="text-[12.5px] font-semibold text-danger">{t('st.worktrees.lossTitle')}</p>
+            <p className="text-[12.5px] font-normal text-danger">{t('st.worktrees.lossTitle')}</p>
             <ul className="mt-1 list-disc space-y-0.5 pl-5 text-[12.5px] leading-relaxed text-ink">
               {inspection.dirtyFiles > 0 ? <li>{tp('st.worktrees.dirty', inspection.dirtyFiles)}</li> : null}
               {inspection.unpushedCommits > 0 ? <li>{tp('st.worktrees.unpushed', inspection.unpushedCommits)}</li> : null}

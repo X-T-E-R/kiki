@@ -487,7 +487,7 @@ export function ModelDetailSplit({ list, models, providers, ready, providerLabel
               }}
             >
               {entry.kind === 'group' ? (
-                <p className="flex items-baseline justify-between gap-2 px-2 pt-2 pb-1 text-[11px] font-medium text-ink-faint">
+                <p className="flex items-baseline justify-between gap-2 px-2 pt-2 pb-1 text-[11px] font-normal text-ink-faint">
                   <span className="truncate">{entry.label}</span>
                   <span className="shrink-0 tabular-nums">{entry.count}</span>
                 </p>
@@ -1127,7 +1127,7 @@ export function ModelGenerationMigrationCard() {
           <>
             {preview.changes.length === 0 ? <Hint>{t('st.modelMigration.noChanges')}</Hint> : (
               <div>
-                <p className="text-xs font-medium text-ink">{t('st.modelMigration.changesTitle')}</p>
+                <p className="text-xs font-normal text-ink">{t('st.modelMigration.changesTitle')}</p>
                 <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-ink-soft">
                   {preview.changes.slice(0, 60).map(({ model_id: model, fields }) => (
                     <li key={model}>{t('st.modelMigration.changeRow', { model, fields: fields.join(', ') })}</li>
@@ -1143,7 +1143,7 @@ export function ModelGenerationMigrationCard() {
             )}
             {preview.needs_review.length > 0 ? (
               <div>
-                <p className="text-xs font-medium text-ink">{t('st.modelMigration.needsReviewTitle')}</p>
+                <p className="text-xs font-normal text-ink">{t('st.modelMigration.needsReviewTitle')}</p>
                 <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-ink-soft">
                   {preview.needs_review.slice(0, 60).map(({ model_id: model, code, field }, index) => (
                     <li key={`${model}-${code}-${index}`}>{t('st.modelMigration.needsReviewRow', {
@@ -1158,7 +1158,7 @@ export function ModelGenerationMigrationCard() {
             ) : null}
             {preview.backups.length > 0 ? (
               <div>
-                <p className="text-xs font-medium text-ink">{t('st.modelMigration.backupListTitle')}</p>
+                <p className="text-xs font-normal text-ink">{t('st.modelMigration.backupListTitle')}</p>
                 <ul className="mt-1 space-y-2">
                   {preview.backups.map((backup) => (
                     <li key={backup} className="flex flex-wrap items-center gap-2 text-xs text-ink-soft">
@@ -1207,7 +1207,7 @@ export function ModelMaintenance() {
   return (
     <details className="group pt-4" data-models-maintenance open={open}
       onToggle={(event) => { setOpen(event.currentTarget.open); }}>
-      <summary className="flex min-h-8 w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-1 text-[12px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink [&::-webkit-details-marker]:hidden">
+      <summary className="flex min-h-8 w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-1 text-[12px] font-normal text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink [&::-webkit-details-marker]:hidden">
         <DisclosureChevron open={false} className="text-ink-soft transition-transform group-open:rotate-90" />
         {t('st.models.maintenance')}
       </summary>
@@ -1338,11 +1338,11 @@ function ModelRow({
       >
         <span className={`min-w-0 flex-1 ${compact ? 'flex items-baseline gap-2' : ''}`}>
           <span className={`flex min-w-0 items-center gap-2 ${compact ? 'shrink' : ''}`}>
-            <span className="truncate text-[13px] font-medium text-ink">{item.display_name ?? item.id}</span>
+            <span className="truncate text-[13px] font-normal text-ink">{item.display_name ?? item.id}</span>
             {isDefault ? (
               <span
                 data-default-badge
-                className="inline-flex shrink-0 items-center rounded bg-selected-ink/10 px-1.5 py-0.5 text-[11px] font-medium text-selected-ink"
+                className="inline-flex shrink-0 items-center rounded bg-selected-ink/10 px-1.5 py-0.5 text-[11px] font-normal text-selected-ink"
               >
                 {t('st.models.default')}
               </span>
@@ -2142,13 +2142,13 @@ function ModelCatalogRowEditor({
                 data-model-editor-tab={tab.id}
                 onClick={() => { setActiveEditorTab(tab.id); }}
                 className={`inline-flex h-9 shrink-0 items-center gap-1.5 border-b-2 px-0.5 text-[13px] outline-none transition-colors focus-visible:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 ${
-                  selected ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
+                  selected ? 'border-ink text-ink' : 'border-transparent text-ink-soft hover:text-ink'
                 }`}
               >
                 {tab.label}
                 {tab.badge === undefined ? null : (
                   <span data-model-editor-tab-badge={tab.id}
-                    className="rounded bg-selected-ink/10 px-1.5 py-px text-[10.5px] font-medium text-selected-ink">{tab.badge}</span>
+                    className="rounded bg-selected-ink/10 px-1.5 py-px text-[10.5px] font-normal text-selected-ink">{tab.badge}</span>
                 )}
               </button>
             );
@@ -2173,7 +2173,7 @@ function ModelCatalogRowEditor({
           aside={(
             <div data-model-default-control={item.id} data-is-default={isDefault ? 'true' : 'false'} className="flex items-center">
               {isDefault ? (
-                <span data-default-badge className="inline-flex items-center gap-1 rounded bg-selected-ink/10 px-1.5 py-0.5 text-[11.5px] font-medium text-selected-ink">
+                <span data-default-badge className="inline-flex items-center gap-1 rounded bg-selected-ink/10 px-1.5 py-0.5 text-[11.5px] font-normal text-selected-ink">
                   <Icon name="starFilled" size={12} />
                   {t('st.models.currentDefault')}
                 </span>
@@ -2287,7 +2287,7 @@ function ModelCatalogRowEditor({
             />
           ) : null}
           <div className="space-y-1.5" data-model-context-strategy={entity.id}>
-            <label htmlFor={`model-context-strategy-${entity.id}`} className="text-[12px] font-medium text-ink-soft">
+            <label htmlFor={`model-context-strategy-${entity.id}`} className="text-[12px] font-normal text-ink-soft">
               {t('context.strategy.title')}
             </label>
             <SettingsSelect<'inherit' | 'auto' | 'summarize' | 'fresh'>
@@ -2433,7 +2433,7 @@ function EditorSection({ id, title, aside, children }: {
   return (
     <section id={id} aria-labelledby={headingId} className="min-w-0 space-y-4" data-model-editor-section={id}>
       <header className="flex min-h-7 flex-wrap items-center justify-between gap-x-3 gap-y-1">
-        <h3 id={headingId} className="text-[13px] font-semibold text-ink">{title}</h3>
+        <h3 id={headingId} className="text-[13px] font-bold text-ink">{title}</h3>
         {aside}
       </header>
       {children}

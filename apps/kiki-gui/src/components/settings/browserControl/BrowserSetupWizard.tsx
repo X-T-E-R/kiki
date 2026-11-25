@@ -585,7 +585,7 @@ export function BrowserRoute({ preset, open, onOpenChange, bare = false, childre
           {preset.cliPaths !== undefined && preset.cliPaths.length > 0 ? (
             <div className="mt-2.5 space-y-1.5" data-browser-cli-paths>
               <div className="flex flex-wrap items-center gap-2">
-                <label htmlFor="ego-cli-select" className="text-[12px] font-medium text-ink-soft shrink-0">
+                <label htmlFor="ego-cli-select" className="text-[12px] font-normal text-ink-soft shrink-0">
                   {t('st.browser.fieldCliPath')}
                 </label>
                 <div className="min-w-0 max-w-full flex-1 sm:min-w-[240px] sm:flex-none">

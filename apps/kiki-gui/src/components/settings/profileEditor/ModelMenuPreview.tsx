@@ -28,11 +28,11 @@ export function ModelMenuPreview({ value, pending = false, error = false, onRetr
   return <div data-model-menu-preview className="space-y-2 border-y border-hairline py-3 text-[12px] leading-relaxed" aria-live="polite" aria-busy={pending}>
     {value !== undefined ? <dl className="space-y-3">
       <div data-menu-declared>
-        <dt className="mb-1 font-medium text-ink-soft">{t('st.profiles.declaredMenu')}</dt>
+        <dt className="mb-1 font-normal text-ink-soft">{t('st.profiles.declaredMenu')}</dt>
         <dd>{list(value.declared, true)}</dd>
       </div>
       <div data-menu-effective>
-        <dt className="mb-1 font-medium text-ink-soft">{t('st.profiles.effectiveModels')}</dt>
+        <dt className="mb-1 font-normal text-ink-soft">{t('st.profiles.effectiveModels')}</dt>
         <dd>{pending ? <span className="text-ink-soft">{t('st.profiles.menuPreviewPending')}</span>
           : error ? <span className="text-danger">{t('st.profiles.menuPreviewError')}</span>
             : value.effective === undefined ? <span className="text-ink-soft">{t('st.profiles.menuPreviewUnavailable')}</span>
@@ -43,7 +43,7 @@ export function ModelMenuPreview({ value, pending = false, error = false, onRetr
       className="min-h-9 px-1 text-ink underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-selected-ink">{t('common.retry')}</button> : null}
     {!pending && !error && value?.effective?.length === 0 ? <p data-menu-empty role="alert" className="text-danger">{t('st.profiles.menuNoCandidates')}</p> : null}
     {!pending && !error && (value?.added?.length ?? 0) > 0 ? <p data-menu-added className="break-words text-ink">{t('st.profiles.menuAdded', { models: value!.added!.join(', ') })}</p> : null}
-    {!pending && !error && (value?.removed?.length ?? 0) > 0 ? <p data-menu-removed className="break-words font-medium text-amber-ink">{t('st.profiles.menuRemoved', { models: value!.removed!.join(', ') })}</p> : null}
+    {!pending && !error && (value?.removed?.length ?? 0) > 0 ? <p data-menu-removed className="break-words font-normal text-amber-ink">{t('st.profiles.menuRemoved', { models: value!.removed!.join(', ') })}</p> : null}
     {!pending && !error ? value?.diagnostics?.map((message, index) => <p key={index} className="break-words text-ink-soft">{message}</p>) : null}
   </div>;
 }

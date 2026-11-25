@@ -205,7 +205,7 @@ function SshHostsSettings({ client }: { readonly client: NonNullable<ReturnType<
 
           {empty ? (
             <div data-ssh-empty className="space-y-2">
-              <p className="text-[13px] font-medium text-ink">{t('st.ssh.emptyTitle')}</p>
+              <p className="text-[13px] font-normal text-ink">{t('st.ssh.emptyTitle')}</p>
               <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.ssh.emptyBody')}</p>
               <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
                 onClick={() => { setForm({ kind: 'create' }); }}>
@@ -356,7 +356,7 @@ function HostRow({
       <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-baseline gap-2">
-            <span className="truncate text-[13px] font-medium text-ink">{host.name}</span>
+            <span className="truncate text-[13px] font-normal text-ink">{host.name}</span>
             {host.name !== host.id ? <span className="hidden truncate font-mono text-[12px] text-ink-faint sm:inline">{host.id}</span> : null}
           </span>
           <span className={`block truncate text-[12px] leading-4 text-ink-faint ${target !== undefined ? 'font-mono' : ''}`}>

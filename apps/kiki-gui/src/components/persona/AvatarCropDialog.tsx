@@ -145,7 +145,7 @@ export function AvatarCropDialog({ file, name, initialShape = 'square', busy = f
       overlayData={{ 'data-persona-avatar-crop': image === null ? (failed ? 'error' : 'loading') : 'ready' }}
     >
       <div className="flex items-center gap-3 border-b border-hairline px-5 py-3">
-        <h2 className="min-w-0 flex-1 truncate font-display text-[18px] font-semibold text-ink">{t('persona.avatarEditTitle', { name })}</h2>
+        <h2 className="min-w-0 flex-1 truncate font-display text-[18px] font-bold text-ink">{t('persona.avatarEditTitle', { name })}</h2>
         <button type="button" onClick={onCancel} disabled={busy} aria-label={t('common.close')} className="flex h-8 w-8 items-center justify-center rounded-md text-ink-soft hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11">
           <Icon name="close" size={14} />
         </button>
@@ -225,7 +225,7 @@ export function AvatarCropDialog({ file, name, initialShape = 'square', busy = f
                   data-persona-avatar-shape={value}
                   onClick={() => { setShape(value); }}
                   className={`flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-11 ${
-                    shape === value ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
+                    shape === value ? 'bg-panel text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
                   }`}
                 >
                   <span aria-hidden className={`inline-block h-3 w-3 border-[1.5px] border-current ${value === 'circle' ? 'rounded-full' : 'rounded-[3px]'}`} />

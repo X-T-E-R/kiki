@@ -193,9 +193,9 @@ const BranchRow = memo(function BranchRow({
           : 'border border-ink-faint/60';
 
   const statusClass = isWaiting
-    ? 'font-medium text-amber-ink'
+    ? 'text-amber-ink'
     : isRunning
-      ? 'font-medium text-accent'
+      ? 'text-accent'
       : state === 'open'
         ? 'text-ink-soft'
         : 'text-ink-faint';
@@ -253,7 +253,7 @@ const BranchRow = memo(function BranchRow({
       <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
       <span
         className={`min-w-0 flex-1 truncate text-[12.5px] leading-5 ${
-          focused ? 'font-medium text-ink' : isMerged ? 'text-ink-soft group-hover:text-ink' : 'text-ink'
+          focused ? 'font-normal text-ink' : isMerged ? 'text-ink-soft group-hover:text-ink' : 'text-ink'
         }`}
       >
         {node.label}

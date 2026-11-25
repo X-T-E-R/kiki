@@ -106,7 +106,7 @@ export function RestartBanner() {
   return (
     <div
       role="status"
-      className="flex shrink-0 flex-wrap items-center justify-center gap-x-3 gap-y-1 border-b border-amber-rule/40 bg-amber-card px-4 py-1.5 text-[12px] font-medium text-amber-ink"
+      className="flex shrink-0 flex-wrap items-center justify-center gap-x-3 gap-y-1 border-b border-amber-rule/40 bg-amber-card px-4 py-1.5 text-[12px] font-normal text-amber-ink"
     >
       <span>{t('st.restart.banner')}</span>
       {restart.fields.length > 0 ? (

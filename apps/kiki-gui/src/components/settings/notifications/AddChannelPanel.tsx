@@ -121,7 +121,7 @@ function BrandGrid({ brands, setupFailed, onRetrySetup, onPick }: {
                 className="flex h-full min-h-[92px] w-full flex-col items-start gap-2.5 rounded-lg border border-hairline bg-panel p-3 text-left transition-[border-color,box-shadow] hover:border-hairline-strong hover:shadow-[var(--kiki-sheet-shadow)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:bg-transparent disabled:hover:border-hairline disabled:hover:shadow-none">
                 <span className="flex w-full items-center gap-2.5">
                   <span className={available ? '' : 'opacity-45'}><PlatformMark brand={brand.id} twoWay={twoWay} /></span>
-                  <span className={`min-w-0 truncate text-[13px] font-medium ${available ? 'text-ink' : 'text-ink-faint'}`}>{t(BRAND_KEY[brand.id])}</span>
+                  <span className={`min-w-0 truncate text-[13px] font-normal ${available ? 'text-ink' : 'text-ink-faint'}`}>{t(BRAND_KEY[brand.id])}</span>
                 </span>
                 <span className="flex flex-wrap gap-1">
                   {available ? <>
@@ -167,7 +167,7 @@ function RoutePicker({ brand, value, onChange }: { brand: BrandEntry; value: str
               <span aria-hidden className={`flex h-3.5 w-3.5 items-center justify-center rounded-full border ${selected ? 'border-selected-ink' : 'border-hairline-strong'}`}>
                 {selected ? <span className="h-1.5 w-1.5 rounded-full bg-selected-ink" /> : null}
               </span>
-              <span className="text-[13px] font-medium text-ink">{t(routeTitleKey(option.route))}</span>
+              <span className="text-[13px] font-normal text-ink">{t(routeTitleKey(option.route))}</span>
             </span>
             <span className="pl-[22px] text-[12px] leading-4 text-ink-faint">
               {option.unavailable === 'setupCatalog' ? t('st.channels.unavailable.setup')

@@ -3023,7 +3023,7 @@ export function Sidebar({
           type="button"
           data-new-session
           onClick={onNewSession}
-          className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.045] pointer-coarse:h-10"
+          className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] font-normal text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.045] pointer-coarse:h-10"
         >
           <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/12 text-accent-ink"><Icon name="plus" size={12} /></span>
           <span className="min-w-0 flex-1 truncate">{t('sidebar.newSession')}</span>
@@ -3331,7 +3331,7 @@ export function Sidebar({
             <button
               type="button"
               onClick={() => void queryClient.invalidateQueries({ queryKey: ['sessions'] })}
-              className="font-medium text-ink underline underline-offset-2"
+              className="font-normal text-ink underline underline-offset-2"
             >
               {t('common.retry')}
             </button>
@@ -3344,7 +3344,7 @@ export function Sidebar({
             <button
               type="button"
               onClick={() => void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY })}
-              className="font-medium text-ink underline underline-offset-2"
+              className="font-normal text-ink underline underline-offset-2"
             >
               {t('common.retry')}
             </button>
@@ -3359,7 +3359,7 @@ export function Sidebar({
               <button
                 type="button"
                 onClick={() => { onFiltersChange({ status: [], workspaces: [], archived: 'hide' }); }}
-                className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
+                className="mt-1 text-[12px] font-normal text-ink underline underline-offset-2"
               >
                 {t('sidebar.clearAllFilters')}
               </button>
@@ -3367,7 +3367,7 @@ export function Sidebar({
               <button
                 type="button"
                 onClick={() => { setFilters({ archived: 'include' }); }}
-                className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
+                className="mt-1 text-[12px] font-normal text-ink underline underline-offset-2"
               >
                 {t('sidebar.emptyShowArchived')}
               </button>
@@ -3387,12 +3387,12 @@ export function Sidebar({
         {selected.size > 0 ? (
           <div data-session-selection role="status"
             className="sticky top-0 z-[2] mb-1 flex min-h-9 items-center gap-1.5 rounded-lg bg-panel px-2 text-[12.5px] text-ink shadow-[var(--kiki-sheet-shadow)]">
-            <span className="min-w-0 flex-1 truncate font-medium tabular-nums">{t('room.selectionCount', { count: selected.size })}</span>
+            <span className="min-w-0 flex-1 truncate font-normal tabular-nums">{t('room.selectionCount', { count: selected.size })}</span>
             <button type="button" data-session-selection-room
               disabled={threadCommsEnabled === false || selected.size < 2}
               title={threadCommsEnabled === false ? t('room.commsOff') : selected.size < 2 ? t('room.threadsNeeded') : undefined}
               onClick={() => { setRoomDraft(sessions.filter((item) => selected.has(item.id))); }}
-              className="h-7 shrink-0 rounded-md px-2 font-medium transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-55">
+              className="h-7 shrink-0 rounded-md px-2 font-normal transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-55">
               {t('room.fromThreads')}
             </button>
             <button type="button" data-session-selection-clear aria-label={t('room.clearSelection')} title={t('room.clearSelection')}
@@ -3409,7 +3409,7 @@ export function Sidebar({
             role="group"
             aria-label={t('ephemeral.group')}
           >
-            <p data-session-group="ephemeral" className="flex min-h-7 w-full shrink-0 items-center gap-2 px-2 py-1.5 text-left text-[12px] leading-4 font-medium text-section-ink">
+            <p data-session-group="ephemeral" className="flex min-h-7 w-full shrink-0 items-center gap-2 px-2 py-1.5 text-left text-[12px] leading-4 font-normal text-section-ink">
               <span className="min-w-0 truncate">{t('ephemeral.group')}</span>
             </p>
             {ephemeralSessions.map((session) => (
@@ -3536,7 +3536,7 @@ export function Sidebar({
                     data-session-group-block={entry.group.key}
                     className={entry.isFirst ? '' : 'pt-3'}
                   >
-                    <p data-session-group={entry.group.key} className="flex min-h-7 w-full shrink-0 items-center gap-2 px-2 py-1.5 text-left text-[12px] leading-4 font-medium text-section-ink">
+                    <p data-session-group={entry.group.key} className="flex min-h-7 w-full shrink-0 items-center gap-2 px-2 py-1.5 text-left text-[12px] leading-4 font-normal text-section-ink">
                       <span className="min-w-0 truncate">{entry.group.label}</span>
                     </p>
                   </div>
@@ -3598,7 +3598,7 @@ export function Sidebar({
                       data-sidebar-cold-fold={entry.expanded ? 'expanded' : 'collapsed'}
                       aria-expanded={entry.expanded}
                       onClick={() => { setColdFoldExpanded((v) => !v); }}
-                      className="row-interactive flex h-7 w-full items-center gap-1.5 px-2 text-left text-[12px] font-medium text-ink-faint hover:text-ink"
+                      className="row-interactive flex h-7 w-full items-center gap-1.5 px-2 text-left text-[12px] font-normal text-ink-faint hover:text-ink"
                     >
                       <DisclosureChevron open={entry.expanded} size={12} className="shrink-0" />
                       <span className="truncate">
@@ -3734,7 +3734,7 @@ export function Sidebar({
           aria-current={location.pathname.startsWith('/settings') ? 'page' : undefined}
           onClick={() => { void navigate('/settings'); }}
           className={`row-interactive flex h-9 min-w-0 flex-1 items-center gap-2 px-2 text-left text-[13px] pointer-coarse:h-11 ${
-            location.pathname.startsWith('/settings') ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
+            location.pathname.startsWith('/settings') ? 'text-ink' : 'text-ink-soft hover:text-ink'
           }`}
         >
           <span className={`flex h-5 w-5 shrink-0 items-center justify-center ${location.pathname.startsWith('/settings') ? 'text-ink' : 'text-ink-faint'}`}><Icon name="settings" size={16} className={ICON} /></span>
@@ -4298,7 +4298,7 @@ const SessionRow = memo(function SessionRow({
               )}
               {location === undefined || fact === undefined ? null : <span aria-hidden className="shrink-0">·</span>}
               {fact === undefined ? null : fact.kind === 'needs-you' ? (
-                <span data-session-needs-you className="shrink-0 whitespace-nowrap font-medium text-attention">{fact.text}</span>
+                <span data-session-needs-you className="shrink-0 whitespace-nowrap font-normal text-attention">{fact.text}</span>
               ) : fact.kind === 'cleanup-pending' ? (
                 <span data-session-cleanup-pending className="shrink-0 whitespace-nowrap text-ink-soft">{fact.text}</span>
               ) : fact.kind === 'failed' ? (
@@ -4547,7 +4547,7 @@ const RoomConversationRow = memo(function RoomConversationRow({
             )}
             {visibleLocation === undefined || fact === undefined ? null : <span aria-hidden>·</span>}
             {fact === undefined ? null : fact.kind === 'needs-you' ? (
-              <span data-room-needs-you className="min-w-0 truncate font-medium text-attention">{fact.text}</span>
+              <span data-room-needs-you className="min-w-0 truncate font-normal text-attention">{fact.text}</span>
             ) : fact.kind === 'failed' ? (
               <span data-room-failed className="min-w-0 truncate text-ink-soft">{fact.text}</span>
             ) : fact.kind === 'running' ? (
@@ -5083,7 +5083,7 @@ const RESULT_ROW =
   'flex w-full min-w-0 items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-100';
 
 function ResultHeading({ children }: { children: React.ReactNode }) {
-  return <p className="px-2 pt-2 pb-1 text-[12px] font-medium text-ink-faint">{children}</p>;
+  return <p className="px-2 pt-2 pb-1 text-[12px] font-normal text-ink-faint">{children}</p>;
 }
 
 /**
@@ -5226,9 +5226,9 @@ function SearchResults({
       ) : null}
       {search.contentInitialError !== null ? (
         <div className="mx-2 mt-1 border-l-2 border-danger py-0.5 pl-3" data-search-error>
-          <p className="text-[12.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
+          <p className="text-[12.5px] font-normal text-danger">{t('sidebar.searchFailed')}</p>
           <p className="text-[12px] text-ink-soft">{search.contentInitialError.message || t('common.unknownError')}</p>
-          <button type="button" data-search-initial-retry onClick={search.retry} className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2">
+          <button type="button" data-search-initial-retry onClick={search.retry} className="mt-1 text-[12px] font-normal text-ink underline underline-offset-2">
             {t('common.retry')}
           </button>
         </div>
@@ -5238,7 +5238,7 @@ function SearchResults({
           {t(`sidebar.results.unavailable.${search.unavailable.reason ?? 'generic'}`)}
           {search.unavailable.reason !== 'disabled' && search.unavailable.reason !== 'runtime_disabled' ? (
             <button type="button" data-search-unavailable-retry onClick={() => { void search.retryUnavailable().catch(() => search.retry()); }}
-              className="ml-2 font-medium text-ink underline underline-offset-2">{t('common.retry')}</button>
+              className="ml-2 font-normal text-ink underline underline-offset-2">{t('common.retry')}</button>
           ) : null}
         </div>
       ) : search.building !== undefined ? (
@@ -5262,13 +5262,13 @@ function SearchResults({
       ) : null}
       {search.contentAppendError ? (
         <div className="mx-2 mt-1 border-l-2 border-danger py-0.5 pl-3">
-          <p className="text-[12.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
+          <p className="text-[12.5px] font-normal text-danger">{t('sidebar.searchFailed')}</p>
           <button
             type="button"
             data-search-retry
             disabled={search.isFetchingNextPage}
             onClick={search.fetchNextPage}
-            className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
+            className="mt-1 text-[12px] font-normal text-ink underline underline-offset-2"
           >
             {t('common.retry')}
           </button>
@@ -5506,7 +5506,7 @@ function searchQueryDisplay(search: SessionSearchState): string {
 /** Rows beyond this are reachable through "manage workspaces"; the menu is a
  * shortcut list, not a workspace browser. */
 const MENU_WORKSPACE_ROWS = 8;
-const MENU_HEADING = 'px-3 pt-1.5 pb-0.5 text-[11px] font-medium text-ink-faint phone:px-4 phone:pt-2 phone:pb-1 phone:text-[13px]';
+const MENU_HEADING = 'px-3 pt-1.5 pb-0.5 text-[11px] font-normal text-ink-faint phone:px-4 phone:pt-2 phone:pb-1 phone:text-[13px]';
 const MENU_ITEM =
   'flex h-7 min-w-0 flex-1 items-center gap-2 rounded-md px-3 text-left text-[12.5px] text-ink transition-colors hover:bg-paper phone:h-9 phone:text-[14px] pointer-coarse:min-h-10';
 
@@ -6104,7 +6104,7 @@ function SidebarRenameEditor({
           placeholder={placeholder}
           disabled={busy}
           style={{ outline: 'none' }}
-          className="h-7 min-w-0 flex-1 bg-transparent px-1.5 text-[13px] font-medium text-ink placeholder:font-normal placeholder:text-ink-faint disabled:opacity-65"
+          className="h-7 min-w-0 flex-1 bg-transparent px-1.5 text-[13px] font-normal text-ink placeholder:font-normal placeholder:text-ink-faint disabled:opacity-65"
           value={title}
           maxLength={200}
           onCompositionStart={() => { composingRef.current = true; }}

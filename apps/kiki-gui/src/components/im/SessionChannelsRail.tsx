@@ -474,7 +474,7 @@ function SessionChannelsRailBody({
                 <span className="rounded bg-ink/[0.06] px-1 py-0.5 font-mono text-[10px] text-ink-soft shrink-0">
                   {t('st.im.toolBadge')}
                 </span>
-                <span className="text-[12px] font-medium text-ink truncate">
+                <span className="text-[12px] font-normal text-ink truncate">
                   {t('st.im.sendMessageTitle')}
                 </span>
               </div>
@@ -507,7 +507,7 @@ function SessionChannelsRailBody({
 
           {/* Group 1: External IM channels */}
           <div className="space-y-1">
-            <div className="flex items-center justify-between text-[11px] font-medium text-ink-faint">
+            <div className="flex items-center justify-between text-[11px] font-normal text-ink-faint">
               <span>{t('st.im.group.im')}</span>
               <span>{t('st.im.dir.inOut')}</span>
             </div>
@@ -559,7 +559,7 @@ function SessionChannelsRailBody({
                             onClick={() => toggleBindingInput(b)}
                             data-io-pill-in={b.id}
                             title={isBlocked || isRestricted ? t('st.im.channelDisabledHint') : undefined}
-                            className={`inline-flex h-5 items-center gap-1 rounded border px-1.5 text-[11px] font-medium transition-colors ${
+                            className={`inline-flex h-5 items-center gap-1 rounded border px-1.5 text-[11px] font-normal transition-colors ${
                               inOn
                                 ? 'border-selected-ink/40 bg-selected text-selected-ink'
                                 : 'border-hairline-strong bg-paper text-ink-faint hover:text-ink hover:border-ink-soft'
@@ -580,7 +580,7 @@ function SessionChannelsRailBody({
                             onClick={() => toggleBindingOutput(b)}
                             data-io-pill-out={b.id}
                             title={isBlocked || isRestricted ? t('st.im.channelDisabledHint') : undefined}
-                            className={`inline-flex h-5 items-center gap-1 rounded border px-1.5 text-[11px] font-medium transition-colors ${
+                            className={`inline-flex h-5 items-center gap-1 rounded border px-1.5 text-[11px] font-normal transition-colors ${
                               outOn
                                 ? 'border-selected-ink/40 bg-selected text-selected-ink'
                                 : 'border-hairline-strong bg-paper text-ink-faint hover:text-ink hover:border-ink-soft'
@@ -614,7 +614,7 @@ function SessionChannelsRailBody({
                               type="button"
                               onClick={() => removeBinding(b.id)}
                               disabled={busy}
-                              className="font-medium text-danger hover:underline"
+                              className="font-normal text-danger hover:underline"
                             >
                               {t('st.im.unbind')}
                             </button>
@@ -647,7 +647,7 @@ function SessionChannelsRailBody({
 
           {/* Group 2: Outbound Only (Bound Notification channels) */}
           <div className="space-y-1">
-            <div className="flex items-center justify-between text-[11px] font-medium text-ink-faint">
+            <div className="flex items-center justify-between text-[11px] font-normal text-ink-faint">
               <span>{t('st.im.group.notify')}</span>
               <span>{t('st.im.dir.out')}</span>
             </div>
@@ -676,7 +676,7 @@ function SessionChannelsRailBody({
                           type="button"
                           disabled={busy}
                           onClick={() => { void toggleNotifyEnabled(c); }}
-                          className={`inline-flex h-5 items-center gap-1 rounded border px-1.5 text-[11px] font-medium transition-colors ${
+                          className={`inline-flex h-5 items-center gap-1 rounded border px-1.5 text-[11px] font-normal transition-colors ${
                             c.enabled
                               ? 'border-selected-ink/40 bg-selected text-selected-ink'
                               : 'border-hairline-strong bg-paper text-ink-faint hover:text-ink'
@@ -694,7 +694,7 @@ function SessionChannelsRailBody({
                                 setConfirmRemoveNotifyId(null);
                                 void toggleNotifyBinding(c.id, false);
                               }}
-                              className="font-medium text-danger hover:underline"
+                              className="font-normal text-danger hover:underline"
                             >
                               {t('st.im.removeNotify')}
                             </button>
@@ -748,7 +748,7 @@ function SessionChannelsRailBody({
               className="mt-2 rounded-lg border border-dashed border-hairline-strong bg-ink/[0.02] p-2 space-y-2"
               data-rail-channel-picker=""
             >
-              <div className="flex items-center justify-between text-[11.5px] font-medium text-ink-soft pb-1 border-b border-hairline">
+              <div className="flex items-center justify-between text-[11.5px] font-normal text-ink-soft pb-1 border-b border-hairline">
                 <span>{t('st.im.picker.title')}</span>
                 <button
                   type="button"
@@ -779,7 +779,7 @@ function SessionChannelsRailBody({
                         className="flex items-center justify-between gap-2 p-1.5 rounded hover:bg-ink/[0.04]"
                       >
                         <div className="min-w-0 flex-1">
-                          <p className="text-[12px] font-medium text-ink truncate" title={identityDisplay.fullTitle}>
+                          <p className="text-[12px] font-normal text-ink truncate" title={identityDisplay.fullTitle}>
                             {c.pendingReanchor ? (
                               <span className="text-amber-ink mr-1">
                                 [{t('st.im.pendingReanchor')}]
@@ -811,7 +811,7 @@ function SessionChannelsRailBody({
                           disabled={busy}
                           data-candidate-action={c.isOccupied ? 'rebind' : 'bind'}
                           onClick={() => onConfirmCandidate(c)}
-                          className={`shrink-0 rounded px-2 py-0.5 text-[11.5px] font-medium border ${
+                          className={`shrink-0 rounded px-2 py-0.5 text-[11.5px] font-normal border ${
                             c.isOccupied
                               ? 'border-amber-rule/50 bg-amber-card text-amber-ink hover:bg-amber-rule/20'
                               : 'border-hairline-strong bg-paper text-ink hover:bg-ink/[0.04]'
@@ -838,7 +838,7 @@ function SessionChannelsRailBody({
                         className="flex items-center justify-between gap-2 p-1.5 rounded hover:bg-ink/[0.04]"
                       >
                         <div className="min-w-0 flex-1">
-                          <p className="text-[12px] font-medium text-ink truncate">
+                          <p className="text-[12px] font-normal text-ink truncate">
                             {displayName}
                           </p>
                           <p className="text-[11px] text-ink-faint truncate">
@@ -850,7 +850,7 @@ function SessionChannelsRailBody({
                           type="button"
                           disabled={busy}
                           onClick={() => { void toggleNotifyBinding(nc.id, true); }}
-                          className={`shrink-0 rounded px-2 py-0.5 text-[11.5px] font-medium border border-hairline-strong bg-paper text-ink hover:bg-ink/[0.04] ${FOCUS_RING}`}
+                          className={`shrink-0 rounded px-2 py-0.5 text-[11.5px] font-normal border border-hairline-strong bg-paper text-ink hover:bg-ink/[0.04] ${FOCUS_RING}`}
                         >
                           {busy ? t('st.im.railBusy') : t('st.im.bindNotify')}
                         </button>

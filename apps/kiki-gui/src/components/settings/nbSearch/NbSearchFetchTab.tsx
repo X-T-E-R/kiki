@@ -221,7 +221,7 @@ function OtherPairs({
     <AdvancedDetails summary={t('st.nbSearch.fetch.otherPairs')} data-nb-search-fetch-other-pairs>
       <div className="space-y-3">
         <div className="grid gap-3 sm:grid-cols-2" data-nb-search-fetch-combo>
-          <label className="block text-[12px] font-medium text-ink-soft">
+          <label className="block text-[12px] font-normal text-ink-soft">
             {t('st.nbSearch.fetch.inputKind')}
             <span className="mt-1 block font-normal">
               <SettingsSelect
@@ -241,7 +241,7 @@ function OtherPairs({
               />
             </span>
           </label>
-          <label className="block text-[12px] font-medium text-ink-soft">
+          <label className="block text-[12px] font-normal text-ink-soft">
             {t('st.nbSearch.fetch.representation')}
             <span className="mt-1 block font-normal">
               <SettingsSelect
@@ -268,7 +268,7 @@ function OtherPairs({
           <ol className="space-y-2" data-nb-search-fetch-other-chain>
             {chain.pipelines.map((pipelineId, index) => (
               <li key={`${index}:${pipelineId}`} className="flex items-center gap-2 rounded-lg border border-hairline px-3 py-2">
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-hairline/50 font-mono text-[11px] font-semibold text-ink">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-hairline/50 font-mono text-[11px] font-normal text-ink">
                   {index + 1}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-[13px] text-ink">

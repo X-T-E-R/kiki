@@ -51,7 +51,7 @@ export function RecipeOptionsField({ recipe, sourceFile, values, options, disabl
     return diagnostics.length === 0 ? null : <div data-recipe-options-diagnostics>{diagnosticLines}</div>;
   }
   return <fieldset className="min-w-0" disabled={disabled || saving} data-recipe-options>
-    <legend className="text-[13px] font-medium text-ink">{t('st.recipe.options')}</legend>
+    <legend className="text-[13px] font-normal text-ink">{t('st.recipe.options')}</legend>
     <SettingsBox>
       {definitions.map((option) => <div key={option.id} data-recipe-option={option.id}>
         <SettingField label={option.name} htmlFor={`${id}-${option.id}`} help={option.description}>

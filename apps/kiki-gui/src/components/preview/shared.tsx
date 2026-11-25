@@ -597,7 +597,7 @@ export const BODY_ACTION_CLASS =
 
 // Neutral ink primary button (used for unsupported/damaged download instead of vermilion accent).
 export const INK_BUTTON_CLASS =
-  'rounded-lg border border-ink bg-ink px-3 py-1.5 text-[12px] font-medium text-paper transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
+  'rounded-lg border border-ink bg-ink px-3 py-1.5 text-[12px] font-normal text-paper transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 
 export function TabPathCaption({ path }: { readonly path: string }) {
   return (
@@ -775,7 +775,7 @@ export function ChangedOnDiskStrip({ onReload }: { readonly onReload: () => void
         type="button"
         data-changed-reload
         onClick={onReload}
-        className="rounded-full border border-amber-rule/60 px-2.5 py-0.5 font-medium transition-colors hover:bg-amber-rule/20"
+        className="rounded-full border border-amber-rule/60 px-2.5 py-0.5 font-normal transition-colors hover:bg-amber-rule/20"
       >
         {t('preview.reloadFile')}
       </button>

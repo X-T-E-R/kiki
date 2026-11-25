@@ -74,7 +74,7 @@ function RuleRow({ rule }: { readonly rule: AgentHooksInspect['rules'][number] }
   return (
     <li data-agent-hooks-rule={rule.id} className="min-w-0">
       <div className="flex min-w-0 items-baseline gap-1.5">
-        <span className="min-w-0 truncate text-[12.5px] font-medium text-ink-soft">{rule.id}</span>
+        <span className="min-w-0 truncate text-[12.5px] font-normal text-ink-soft">{rule.id}</span>
         <span className="shrink-0 font-mono text-[11px] text-ink-faint">{rule.event}</span>
         {!rule.active ? (
           <span data-agent-hooks-inactive className="shrink-0 rounded-sm bg-ink/[0.06] px-1 text-[10.5px] leading-4 text-ink-faint">
@@ -161,7 +161,7 @@ export const AgentHooksSection = memo(function AgentHooksSection({ sessionId, ag
             type="button"
             data-agent-hooks-retry
             onClick={() => { explicitRead.current = target; void inspect.refetch(); }}
-            className="text-[12px] font-medium text-ink-soft transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+            className="text-[12px] font-normal text-ink-soft transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
           >
             {locale === 'zh' ? '读取' : 'Load'}
           </button>
@@ -176,7 +176,7 @@ export const AgentHooksSection = memo(function AgentHooksSection({ sessionId, ag
           type="button"
           data-agent-hooks-retry
           onClick={() => { explicitRead.current = target; void inspect.refetch(); }}
-          className="font-medium text-selected-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+          className="font-normal text-selected-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
         >
           {t('common.retry')}
         </button>

@@ -199,7 +199,7 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
           onClick={copy}
           title={t('cb.copyTitle')}
           aria-label={t('cb.copyTitle')}
-          className={`kiki-cb-copy inline-flex min-h-7 items-center gap-1 rounded-md px-2 font-sans text-[12px] font-medium transition-colors ${
+          className={`kiki-cb-copy inline-flex min-h-7 items-center gap-1 rounded-md px-2 font-sans text-[12px] font-normal transition-colors ${
             copied ? 'text-success' : 'text-ink-soft hover:bg-paper hover:text-ink'
           }`}
         >

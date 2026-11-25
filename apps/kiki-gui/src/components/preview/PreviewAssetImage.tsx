@@ -58,7 +58,7 @@ export function PreviewAssetImage({ client, url, alt, width, height }: PreviewAs
         <button
           type="button"
           onClick={() => { setAttempt((value) => value + 1); }}
-          className="mt-1.5 text-[12px] font-medium text-danger underline underline-offset-2"
+          className="mt-1.5 text-[12px] font-normal text-danger underline underline-offset-2"
         >
           {t('preview.tryAgain')}
         </button>

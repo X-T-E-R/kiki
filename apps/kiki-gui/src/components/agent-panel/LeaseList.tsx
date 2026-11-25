@@ -68,9 +68,9 @@ export const SubagentLeaseList = memo(function SubagentLeaseList({
           const diagnostic = diagnosticText(item, summary.diagnostic);
           const cardContent = (
             <>
-              <div className="font-medium text-ink flex items-center gap-1.5">
+              <div className="font-normal text-ink flex items-center gap-1.5">
                 {summary.scoped ? (
-                  <span className="rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-medium text-ink-soft">
+                  <span className="rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-normal text-ink-soft">
                     {t('st.namedAgents.scopedBadge')}
                   </span>
                 ) : null}
@@ -120,7 +120,7 @@ export const SubagentLeaseList = memo(function SubagentLeaseList({
 
     return (
       <div className="mt-1.5 space-y-1">
-        <p className="text-[10.5px] font-medium text-ink-soft">{t('st.namedAgents.availableSubagents')}</p>
+        <p className="text-[10.5px] font-normal text-ink-soft">{t('st.namedAgents.availableSubagents')}</p>
         {stringSubagents.length > 0 ? (
           <p className="flex flex-wrap gap-1.5">
             {stringSubagents.map((name) => (
@@ -140,7 +140,7 @@ export const SubagentLeaseList = memo(function SubagentLeaseList({
             >
               <span>{leaseSummary.headline}</span>
               {leaseSummary.scoped ? (
-                <span className="rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-medium text-ink-soft">
+                <span className="rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-normal text-ink-soft">
                   {t('st.namedAgents.scopedBadge')}
                 </span>
               ) : null}
@@ -181,7 +181,7 @@ export const SubagentLeaseList = memo(function SubagentLeaseList({
             <p>
               {t('st.namedAgents.subagentLease')}:
               {leaseSummary.scoped ? (
-                <span className="mx-1 align-middle rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-medium text-ink-soft">
+                <span className="mx-1 align-middle rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-normal text-ink-soft">
                   {t('st.namedAgents.scopedBadge')}
                 </span>
               ) : null}{' '}

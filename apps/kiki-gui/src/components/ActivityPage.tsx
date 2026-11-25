@@ -260,19 +260,19 @@ function InboxRow({
                 {personaLabel !== undefined && personaLabel !== '' ? (
                   <span
                     data-activity-persona={item.personaId}
-                    className="max-w-28 shrink-0 truncate rounded bg-ink/[0.055] px-1.5 py-px text-[11px] leading-4 font-medium text-ink-soft"
+                    className="max-w-28 shrink-0 truncate rounded bg-ink/[0.055] px-1.5 py-px text-[11px] leading-4 font-normal text-ink-soft"
                   >
                     {personaLabel}
                   </span>
                 ) : null}
-                <span className="min-w-0 flex-1 truncate text-[13px] leading-[19px] font-medium text-ink">
+                <span className="min-w-0 flex-1 truncate text-[13px] leading-[19px] font-normal text-ink">
                   <ThreadTitle text={item.title.trim() === '' ? t('sidebar.untitled') : item.title} />
                 </span>
               </span>
               <RelativeTime
                 at={item.at}
                 className={`shrink-0 text-right text-[12px] leading-4 tabular-nums ${
-                  urgentWait ? 'font-medium text-accent-deep' : 'text-ink-faint'
+                  urgentWait ? 'text-accent-deep' : 'text-ink-faint'
                 }`}
               />
             </span>
@@ -280,11 +280,11 @@ function InboxRow({
               <span
                 className={`shrink-0 ${
                   waiting
-                    ? 'font-medium text-accent-deep'
+                    ? 'text-accent-deep'
                     : failed
-                      ? 'font-medium text-danger'
+                      ? 'text-danger'
                       : item.reason === 'running'
-                        ? 'font-medium text-ink-soft'
+                        ? 'text-ink-soft'
                         : ''
                 }`}
               >
@@ -418,18 +418,18 @@ function ActivityDetailPane({
             <span
               className={
                 waiting
-                  ? 'font-medium text-accent-deep'
+                  ? 'text-accent-deep'
                   : failed
-                    ? 'font-medium text-danger'
+                    ? 'text-danger'
                     : item.reason === 'running'
-                      ? 'font-medium text-ink-soft'
+                      ? 'text-ink-soft'
                       : 'text-ink-soft'
               }
             >
               {t(REASON_LABEL[item.reason] as 'activity.reason.approval')}
             </span>
             {personaLabel !== undefined && personaLabel !== '' ? (
-              <span className="rounded bg-ink/[0.055] px-1.5 py-px text-[11px] font-medium text-ink-soft">
+              <span className="rounded bg-ink/[0.055] px-1.5 py-px text-[11px] font-normal text-ink-soft">
                 {personaLabel}
               </span>
             ) : null}
@@ -447,7 +447,7 @@ function ActivityDetailPane({
             <RelativeTime at={item.at} className="ml-auto tabular-nums text-ink-faint" />
           </div>
 
-          <h2 className="font-display text-[20px] font-semibold leading-7 tracking-tight text-ink">
+          <h2 className="font-display text-[20px] font-bold leading-7 text-ink">
             <ThreadTitle text={item.title.trim() === '' ? t('sidebar.untitled') : item.title} />
           </h2>
 
@@ -458,7 +458,7 @@ function ActivityDetailPane({
                   type="button"
                   data-activity-detail-open={item.sessionId}
                   onClick={() => { onOpen(itemHref(item, cachedInteractionTarget(queryClient, item))); }}
-                  className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-hairline px-3 text-[12.5px] font-medium text-ink transition-colors hover:border-hairline-strong hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink"
+                  className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-hairline px-3 text-[12.5px] font-normal text-ink transition-colors hover:border-hairline-strong hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink"
                 >
                   <span>{t('activity.reviewInThread')}</span>
                   <Icon name="arrowRight" size={12} />
@@ -469,7 +469,7 @@ function ActivityDetailPane({
                   type="button"
                   data-activity-detail-dismiss={item.sessionId}
                   onClick={onDismiss}
-                  className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+                  className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
                 >
                   <Icon name="check" size={14} />
                   <span>{t('activity.markReadShortcut')}</span>
@@ -540,7 +540,7 @@ function InboxGroup({
   return (
     <section {...hook} aria-label={title} className="flex flex-col gap-0.5">
       <div className="flex h-7 items-center gap-1.5 px-3 text-[12px] leading-4">
-        <h2 className="shrink-0 font-medium text-ink-soft">{title}</h2>
+        <h2 className="shrink-0 font-normal text-ink-soft">{title}</h2>
         <span className="shrink-0 text-ink-faint tabular-nums">{items.length}</span>
         <span aria-hidden className="hidden text-ink-faint sm:inline">·</span>
         <span className="hidden min-w-0 flex-1 truncate text-ink-faint sm:inline">{hint}</span>
@@ -882,7 +882,7 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
       type="button"
       data-activity-mark-all-read
       onClick={markAllRead}
-      className="-my-1 shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2"
+      className="-my-1 shrink-0 rounded-md px-2 py-1 text-[12px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2"
     >
       {t('activity.markAllRead')}
     </button>
@@ -993,7 +993,7 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
                 style={{ top: virtualRow.start }}
               >
                 <div className="flex h-7 items-center gap-1.5 px-3 text-[12px] leading-4">
-                  <h2 className="shrink-0 font-medium text-ink-soft">{row.title}</h2>
+                  <h2 className="shrink-0 font-normal text-ink-soft">{row.title}</h2>
                   <span className="shrink-0 text-ink-faint tabular-nums">{row.count}</span>
                   <span aria-hidden className="hidden text-ink-faint sm:inline">·</span>
                   <span className="hidden min-w-0 flex-1 truncate text-ink-faint sm:inline">{row.hint}</span>
@@ -1145,7 +1145,7 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
                 onClick={() => { chooseView(candidate); }}
                 className={`inline-flex min-h-10 items-center border-b-[1.5px] px-0.5 text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
                   view === candidate
-                    ? 'border-ink font-medium text-ink'
+                    ? 'border-ink text-ink'
                     : 'border-transparent text-ink-soft hover:text-ink'
                 }`}
               >
@@ -1172,7 +1172,7 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
                     onClick={() => { chooseFilter(opt.key); }}
                     className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
                       active
-                        ? 'bg-ink/[0.065] font-medium text-ink'
+                        ? 'bg-ink/[0.065] text-ink'
                         : 'text-ink-soft hover:bg-ink/[0.035] hover:text-ink'
                     }`}
                   >

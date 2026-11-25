@@ -17,7 +17,7 @@ export interface NewTaskModalProps {
 }
 
 const FIELD_LABEL =
-  'block font-mono text-[11px] font-semibold text-ink-faint uppercase tracking-wider';
+  'block font-mono text-[11px] font-normal text-ink-faint uppercase';
 const TEXT_INPUT =
   'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[14px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-hidden';
 const SELECT_INPUT =
@@ -82,7 +82,7 @@ export const NewTaskModal = memo(function NewTaskModal({
             type="submit"
             form="task-board-new-form"
             disabled={pending}
-            className="rounded-lg bg-accent px-4 py-2 text-[12.5px] font-medium text-panel shadow-xs transition-colors hover:bg-accent-deep"
+            className="rounded-lg bg-accent px-4 py-2 text-[12.5px] font-normal text-panel shadow-xs transition-colors hover:bg-accent-deep"
           >
             {t('taskBoard.new.create')}
           </button>
@@ -90,7 +90,7 @@ export const NewTaskModal = memo(function NewTaskModal({
             type="button"
             onClick={close}
             disabled={pending}
-            className="ml-auto rounded-lg border border-hairline px-3 py-2 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-paper"
+            className="ml-auto rounded-lg border border-hairline px-3 py-2 text-[12.5px] font-normal text-ink-soft transition-colors hover:bg-paper"
           >
             {t('taskBoard.new.cancel')}
           </button>

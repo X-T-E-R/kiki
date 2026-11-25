@@ -82,10 +82,10 @@ export const STATUS_SEGMENT_ICON_CLASS =
   'text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] group-hover/segment:text-current group-aria-expanded/segment:text-current';
 
 /** Selected row in a composer popover: the raised paper sheet, never a tint. */
-export const MENU_ROW_SELECTED_CLASS = 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)] hover:bg-paper';
+export const MENU_ROW_SELECTED_CLASS = 'bg-paper font-normal text-ink shadow-[var(--kiki-sheet-shadow)] hover:bg-paper';
 
 /** Popover section label: sentence-case 12px, no caps tracking. */
-export const POPOVER_LABEL_CLASS = 'px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint';
+export const POPOVER_LABEL_CLASS = 'px-3 pt-1.5 pb-1 text-[12px] font-normal text-ink-faint';
 
 export const MENU_ROW_CLASS =
   'flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none pointer-coarse:min-h-10 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-50';
@@ -460,7 +460,7 @@ function RunModePanel({ controls }: { controls: RunModeControls }) {
               >
                 <Check on={on} />
                 <span className="min-w-0 flex-1">
-                  <span className="block font-medium text-ink">{t(mode.labelKey)}</span>
+                  <span className="block font-normal text-ink">{t(mode.labelKey)}</span>
                   <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t(mode.hintKey)}</span>
                 </span>
               </button>
@@ -490,7 +490,7 @@ function RunModePanel({ controls }: { controls: RunModeControls }) {
               ) : null}
               {on && mode.id === 'goal' && showObjective ? (
                 <div className="pt-1.5 pr-3 pb-2 pl-8" data-goal-open>
-                  <label htmlFor="composer-goal-objective" className="text-[12px] font-medium text-ink-faint">
+                  <label htmlFor="composer-goal-objective" className="text-[12px] font-normal text-ink-faint">
                     {t('composer.goalObjective')}
                   </label>
                   <input
@@ -770,7 +770,7 @@ function SkillRow({ item, onInsert, result = false }: { item: SlashItem; onInser
       <Icon name="skill" size={14} className="mt-[3px] shrink-0 text-ink-soft" />
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-baseline gap-1.5">
-          <span className="truncate font-medium text-ink">/{item.name}</span>
+          <span className="truncate font-normal text-ink">/{item.name}</span>
           {hint !== undefined && hint !== '' ? <span className="truncate text-[12px] text-ink-faint">{hint}</span> : null}
         </span>
         {item.description !== '' ? (
@@ -1066,7 +1066,7 @@ export function SendTimingRows({
           className={`${MENU_ROW_CLASS} items-start`}
         >
           <span className="min-w-0 flex-1">
-            <span className="block font-medium text-ink">{t('composer.sendTiming.send')}</span>
+            <span className="block font-normal text-ink">{t('composer.sendTiming.send')}</span>
             <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">
               {defaultHint}
             </span>
@@ -1083,7 +1083,7 @@ export function SendTimingRows({
           className={`${MENU_ROW_CLASS} items-start`}
         >
           <span className="min-w-0 flex-1">
-            <span className="block font-medium text-ink">{t('composer.sendTiming.now')}</span>
+            <span className="block font-normal text-ink">{t('composer.sendTiming.now')}</span>
             <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t('composer.sendTiming.nowHint')}</span>
           </span>
         </button>
@@ -1099,7 +1099,7 @@ export function SendTimingRows({
           className={`${MENU_ROW_CLASS} items-start`}
         >
           <span className="min-w-0 flex-1">
-            <span className="block font-medium text-ink">
+            <span className="block font-normal text-ink">
               {t('composer.sendTiming.timed', { timing: t(TIMING_SHORT_KEY[timing]) })}
             </span>
             <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t(TIMING_HINT_KEY[timing])}</span>
@@ -1516,7 +1516,7 @@ export function AddMenu({
     drilledRef.current ? (
       <button type="button" role="menuitem" data-menu-row data-add-back onClick={back} className={`${MENU_ROW_CLASS} text-ink-soft`}>
         <Icon name="chevron" size={12} className="shrink-0 rotate-180 text-ink-faint" />
-        <span className="flex-1 font-medium">{label}</span>
+        <span className="flex-1 font-normal">{label}</span>
       </button>
     ) : null;
 
@@ -2080,7 +2080,7 @@ export function RunModeChip({
   return (
     <span
       data-run-mode-chip={runMode}
-      className="anim-enter flex h-7 shrink-0 items-center rounded-md bg-paper text-[13px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)] pointer-coarse:h-10"
+      className="anim-enter flex h-7 shrink-0 items-center rounded-md bg-paper text-[13px] font-normal text-ink shadow-[var(--kiki-sheet-shadow)] pointer-coarse:h-10"
     >
       <button
         type="button"
@@ -2171,7 +2171,7 @@ export function PermissionSelect({
             : '@max-[360px]/composer-shell:w-7 @max-[360px]/composer-shell:justify-center @max-[360px]/composer-shell:px-0'
         } ${
           danger
-            ? 'bg-danger/10 font-medium text-danger hover:bg-danger/15 hover:text-danger aria-expanded:bg-danger/15 aria-expanded:text-danger'
+            ? 'bg-danger/10 text-danger hover:bg-danger/15 hover:text-danger aria-expanded:bg-danger/15 aria-expanded:text-danger'
             : value !== RECOMMENDED_PERMISSION_MODE ? STATUS_SEGMENT_SET : ''
         }`}
       >
@@ -2235,7 +2235,7 @@ export function PermissionSelect({
                       >
                         <Check on={isCurrent} />
                         <span className="min-w-0 flex-1">
-                          <span className={`block font-medium ${mode.tone === 'danger' ? 'text-danger' : 'text-ink'}`}>
+                          <span className={`block font-normal ${mode.tone === 'danger' ? 'text-danger' : 'text-ink'}`}>
                             {t(mode.labelKey)}
                           </span>
                           <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">

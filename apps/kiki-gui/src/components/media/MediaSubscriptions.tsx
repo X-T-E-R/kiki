@@ -126,7 +126,7 @@ export function MediaSubscriptions({
             >
               <div className="grid gap-2 min-[560px]:grid-cols-[minmax(0,10rem)_minmax(0,1fr)]">
                 <label className="block space-y-1">
-                  <span className="block text-[12px] font-medium text-ink">{t('cap.media.subscriptions.name')}</span>
+                  <span className="block text-[12px] font-normal text-ink">{t('cap.media.subscriptions.name')}</span>
                   <input
                     className={`${INPUT} font-mono`}
                     value={id}
@@ -137,7 +137,7 @@ export function MediaSubscriptions({
                   />
                 </label>
                 <label className="block space-y-1">
-                  <span className="block text-[12px] font-medium text-ink">{t('cap.media.subscriptions.url')}</span>
+                  <span className="block text-[12px] font-normal text-ink">{t('cap.media.subscriptions.url')}</span>
                   <input
                     className={`${INPUT} font-mono`}
                     value={url}

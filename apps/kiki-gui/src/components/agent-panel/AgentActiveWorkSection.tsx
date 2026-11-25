@@ -22,7 +22,7 @@ export const AgentActiveWorkSection = memo(function AgentActiveWorkSection({
       className="space-y-2 rounded-xl border border-hairline bg-panel p-3 shadow-xs text-[11.5px]"
     >
       <div className="flex items-center justify-between">
-        <span className="font-mono text-[10.5px] font-semibold tracking-wider text-ink-faint uppercase">
+        <span className="font-mono text-[10.5px] font-normal text-ink-faint uppercase">
           {t('agentPanel.activeExecution')}
         </span>
         <span className="font-mono text-[10px] text-ink-faint">
@@ -37,7 +37,7 @@ export const AgentActiveWorkSection = memo(function AgentActiveWorkSection({
           {/* Running Subagents */}
           {runningSubagents.length > 0 ? (
             <div>
-              <span className="text-[12px] leading-4 font-medium text-ink-soft">
+              <span className="text-[12px] leading-4 font-normal text-ink-soft">
                 {t('agentPanel.runningChildren', { count: runningSubagents.length })}
               </span>
               <ul className="mt-1 space-y-1">
@@ -48,7 +48,7 @@ export const AgentActiveWorkSection = memo(function AgentActiveWorkSection({
                     className="flex items-center justify-between gap-2 rounded-lg bg-ink/[0.03] p-2 cursor-pointer hover:bg-ink/[0.06] transition-colors"
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 font-medium text-ink truncate">
+                      <div className="flex items-center gap-1.5 font-normal text-ink truncate">
                         <span className="h-1.5 w-1.5 rounded-full bg-accent animate-ping motion-reduce:animate-none" />
                         <span>{item.label}</span>
                       </div>
@@ -72,7 +72,7 @@ export const AgentActiveWorkSection = memo(function AgentActiveWorkSection({
           {/* Active Todos */}
           {activeTodos.length > 0 ? (
             <div>
-              <span className="text-[10px] font-mono font-medium text-ink-soft uppercase">
+              <span className="text-[10px] font-mono font-normal text-ink-soft uppercase">
                 {t('agentPanel.activeStep')}
               </span>
               <ul className="mt-1 space-y-1">
@@ -83,7 +83,7 @@ export const AgentActiveWorkSection = memo(function AgentActiveWorkSection({
                     className="flex items-center justify-between gap-2 rounded-lg border border-hairline bg-paper/60 p-2 cursor-pointer hover:border-hairline-strong transition-colors"
                   >
                     <div className="min-w-0 flex-1">
-                      <p className="font-medium text-ink truncate">{item.label}</p>
+                      <p className="font-normal text-ink truncate">{item.label}</p>
                       {item.detail ? (
                         <p className="text-[10.5px] text-ink-soft truncate">{item.detail}</p>
                       ) : null}
@@ -120,7 +120,7 @@ export const AgentPinnedBoardFooter = memo(function AgentPinnedBoardFooter({
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <span className="text-[12px] leading-4 font-medium text-ink-soft">
+            <span className="text-[12px] leading-4 font-normal text-ink-soft">
               {t('agentPanel.workboard')}
             </span>
             {summary ? (
@@ -134,7 +134,7 @@ export const AgentPinnedBoardFooter = memo(function AgentPinnedBoardFooter({
           </div>
 
           {summary?.activeTaskTitle ? (
-            <p className="mt-1 truncate text-[11.5px] font-medium text-ink" title={summary.activeTaskTitle}>
+            <p className="mt-1 truncate text-[11.5px] font-normal text-ink" title={summary.activeTaskTitle}>
               <Icon name="pin" size={12} className="mr-1 inline-block align-[-1px] text-ink-faint" />
               {summary.activeTaskTitle}
             </p>
@@ -160,7 +160,7 @@ export const AgentPinnedBoardFooter = memo(function AgentPinnedBoardFooter({
           <button
             type="button"
             onClick={onOpenBoard}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1 text-[12px] font-medium text-on-accent hover:bg-accent-deep transition-colors shadow-xs"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1 text-[12px] font-normal text-on-accent hover:bg-accent-deep transition-colors shadow-xs"
           >
             {/* The board opens in-app (/board), so it wears the board mark, not `external`. */}
             <Icon name="board" size={12} />

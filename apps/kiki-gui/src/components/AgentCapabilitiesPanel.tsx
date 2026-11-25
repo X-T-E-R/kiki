@@ -68,7 +68,7 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
         <DisclosureChevron open={open} className="text-current" />{t('diagnostics.title')}
       </button>
       {open ? <div className="mt-1 max-h-60 space-y-2 overflow-y-auto rounded-lg border border-hairline bg-paper p-2 sm:max-h-80" data-capability-context={live ? 'live' : 'draft'}>
-        <p className="font-medium text-ink">{t(live ? 'diagnostics.live' : 'diagnostics.draft')}</p>
+        <p className="font-normal text-ink">{t(live ? 'diagnostics.live' : 'diagnostics.draft')}</p>
         <p className="break-all font-mono text-[11px] text-ink-faint">{scope}</p>
         {capabilities.isPending ? <p role="status" className="text-ink-soft">{t('diagnostics.loading')}</p> : null}
         {capabilities.isError ? <div role="alert" className="text-danger">
@@ -79,7 +79,7 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
           {data.owner.profile !== undefined ? <p className="break-all text-ink-soft">{t('agentPanel.profileDetail')} · {data.owner.profile}</p> : null}
           <ExecutorAuthStatus observation={data.executor_auth} />
           {data.profile !== undefined ? <details data-profile-details className="rounded border border-hairline bg-panel p-2">
-            <summary className="cursor-pointer font-medium text-ink hover:text-ink-soft">{t('agentPanel.profileDetail')} · {t('diagnostics.source')}</summary>
+            <summary className="cursor-pointer font-normal text-ink hover:text-ink-soft">{t('agentPanel.profileDetail')} · {t('diagnostics.source')}</summary>
             <div className="mt-2">
               <ProfileDetailSections
                 profile={data.profile}
@@ -133,7 +133,7 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
             const unavailableReason = reasonText(target.unavailable_reason_code, target.unavailable_reason);
             const launchUnavailableReason = reasonText(target.launch_unavailable_reason_code, target.launch_unavailable_reason);
             return <article key={`${target.profile}:${target.route ?? ''}:${index}`} className="space-y-1 rounded-md border border-hairline bg-panel p-2" data-capability-target={target.profile}>
-              <p className="break-all font-mono font-medium text-ink">{target.profile}{target.route === undefined ? '' : ` / ${target.route}`}</p>
+              <p className="break-all font-mono font-normal text-ink">{target.profile}{target.route === undefined ? '' : ` / ${target.route}`}</p>
               {recommendationBadge(target.recommendation_status)}
               {target.description !== undefined ? <p className="break-words text-ink-soft">{target.description}</p> : null}
               <p className="break-all text-ink-soft">{t('diagnostics.executor')} · {target.executor}</p>

@@ -341,7 +341,7 @@ export function ContextStepper({
               data-context-unit-choice={candidate.id}
               onClick={() => { setUnit(candidate.id); }}
               className={`h-6 min-w-7 rounded-[5px] px-1.5 font-mono text-[11px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:h-9 ${
-                selected ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
+                selected ? 'bg-panel text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
               }`}
             >
               {candidate.label}
@@ -435,11 +435,11 @@ export function ImagePolicyEditor({
   const acceptedMode = value.imageAcceptedTypes === null ? 'inherit' : 'custom';
   return (
     <div className="space-y-2 rounded-lg border border-hairline bg-panel/50 p-3">
-      <p className="text-[12px] font-medium text-ink-soft">
+      <p className="text-[12px] font-normal text-ink-soft">
         {t('st.images.title')}
       </p>
       <div className="grid gap-2 sm:grid-cols-[9rem_minmax(0,1fr)] sm:items-center">
-        <span className="text-[11px] font-medium text-ink-soft">
+        <span className="text-[11px] font-normal text-ink-soft">
           {t('st.images.acceptedTypes')}
         </span>
         <SettingsSelect<'inherit' | 'custom'>
@@ -470,7 +470,7 @@ export function ImagePolicyEditor({
         />
       )}
       <div className="grid gap-2 sm:grid-cols-[9rem_minmax(0,1fr)] sm:items-center">
-        <span className="text-[11px] font-medium text-ink-soft">
+        <span className="text-[11px] font-normal text-ink-soft">
           {t('st.images.convertUnsupported')}
         </span>
         <SettingsSelect
@@ -529,7 +529,7 @@ export function AdvancedDisclosure({
         className="-ml-1 flex min-h-7 w-full items-center gap-1.5 rounded-md px-1 text-left outline-none transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40"
       >
         <DisclosureChevron open={open} className="text-ink-soft" />
-        <span className="text-[12px] font-medium text-ink-soft">{label ?? t('st.advanced.disclosure')}</span>
+        <span className="text-[12px] font-normal text-ink-soft">{label ?? t('st.advanced.disclosure')}</span>
         {summary !== undefined && !open ? (
           <span className="min-w-0 truncate text-[12px] text-ink-faint">{summary}</span>
         ) : null}
@@ -560,7 +560,7 @@ export function CapabilityMarks({ capabilities }: { capabilities: readonly strin
     || (mark.capability === 'thinking' && capabilities?.includes('always_thinking') === true));
   if (present.length === 0) return null;
   return (
-    <span data-capability-marks className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-ink-faint">
+    <span data-capability-marks className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-normal text-ink-faint">
       {present.map((mark, index) => (
         <span key={mark.capability} data-capability={mark.capability}>
           {index > 0 ? <span aria-hidden className="mr-1.5">·</span> : null}
@@ -660,7 +660,7 @@ function ModelDraftRow({
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
         >
           {/* Name in the reading font; the wire id stays mono but quiet. */}
-          <span className={`truncate text-[13px] ${model.remoteId === '' ? 'text-ink-faint' : 'font-medium text-ink'}`}>
+          <span className={`truncate text-[13px] ${model.remoteId === '' ? 'text-ink-faint' : 'font-normal text-ink'}`}>
             {model.remoteId === '' ? 'model-id' : model.displayName || model.remoteId}
           </span>
           {model.remoteId !== '' ? (() => {
@@ -714,7 +714,7 @@ function ModelDraftRow({
                 panelClassName="w-[min(30rem,calc(100vw-48px))] max-h-[min(var(--available-height,360px),360px)]"
               />
               {selectedIsSuggestion ? (
-                <p data-model-suggestion className="text-[11px] font-medium text-accent-ink">
+                <p data-model-suggestion className="text-[11px] font-normal text-accent-ink">
                   {t('st.providers.catalogSuggestionNote')}
                 </p>
               ) : null}
@@ -1534,7 +1534,7 @@ export function ProviderEditor({
     return (
       <div data-connection-row={provider.id} className="space-y-2 rounded-xl border border-hairline bg-paper p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-[13px] font-semibold text-ink">{accountLabel ?? provider.id}</p>
+          <p className="text-[13px] font-normal text-ink">{accountLabel ?? provider.id}</p>
           <button
             type="button"
             data-provider-remove={provider.id}
@@ -1754,7 +1754,7 @@ export function ProviderEditor({
         <span className="min-w-0 flex-1">
           <span className={`flex min-w-0 items-baseline ${phone ? 'justify-between gap-2' : 'gap-2'}`}>
             <span className="flex min-w-0 items-baseline gap-2">
-              <span className="truncate text-[13px] font-medium text-ink">{accountLabel ?? vendor ?? provider.id}</span>
+              <span className="truncate text-[13px] font-normal text-ink">{accountLabel ?? vendor ?? provider.id}</span>
               {accountLabel !== undefined || vendor !== undefined ? (
                 <span className="hidden truncate font-mono text-[11px] text-ink-faint sm:inline">{provider.id}</span>
               ) : null}
@@ -1772,7 +1772,7 @@ export function ProviderEditor({
             </span>
           )}
         </span>
-        {dirty ? <span className="shrink-0 text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
+        {dirty ? <span className="shrink-0 text-[11px] font-normal text-amber-ink">{t('st.dirty.badge')}</span> : null}
         {phone ? null : statusBadge}
         <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/provider:rotate-90" />
       </summary>
@@ -1780,7 +1780,7 @@ export function ProviderEditor({
       <div className="space-y-4 px-3 pb-4 pt-1 sm:pl-[3.25rem]">
         {health === 'error' ? (
           <div role="alert" data-connection-error className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
-            <p className="text-[12px] font-medium text-danger">
+            <p className="text-[12px] font-normal text-danger">
               {lastTest !== undefined ? t('st.connections.testFailedTitle') : t('st.connections.errorTitle')}
             </p>
             <p className="mt-0.5 break-words text-[12px] leading-4 text-ink-soft">
@@ -2001,7 +2001,7 @@ export function SavedGenerationParametersEditor({
   if (entity === undefined || revision === '') return <Hint>{zh ? '正在读取参数…' : 'Loading parameters…'}</Hint>;
   return (
     <div className="space-y-3 rounded-lg border border-hairline bg-panel/50 p-3" data-generation-editor={`${scope}:${id}`}>
-      <p className="text-[11px] font-semibold text-ink-soft">
+      <p className="text-[11px] font-normal text-ink-soft">
         {scope === 'provider' ? (zh ? '供应商默认请求参数' : 'Provider request defaults') : (zh ? '此模型的请求参数' : 'Model request parameters')}
       </p>
       {ownedKeys.map((key) => {
@@ -2011,7 +2011,7 @@ export function SavedGenerationParametersEditor({
         const canOmit = key === 'temperature' || key === 'top_p' || key === 'service_tier';
         return (
           <div key={key} className="grid gap-1 sm:grid-cols-[9rem_8rem_minmax(0,1fr)] sm:items-center">
-            <label className="text-[11px] font-medium text-ink-soft" htmlFor={`${scope}-${id}-${key}`}>{label}</label>
+            <label className="text-[11px] font-normal text-ink-soft" htmlFor={`${scope}-${id}-${key}`}>{label}</label>
             <SettingsSelect<'inherit' | 'custom' | 'api_default'>
               variant="form"
               dataAttr="data-param-mode"
@@ -2192,7 +2192,7 @@ export function NewProviderWizard({
               setFeedback(null);
               setStep('template');
             }}
-            className="-ml-1 inline-flex h-7 items-center gap-1 rounded-md px-1 text-[12px] font-medium text-ink-soft transition-colors hover:text-ink"
+            className="-ml-1 inline-flex h-7 items-center gap-1 rounded-md px-1 text-[12px] font-normal text-ink-soft transition-colors hover:text-ink"
           >
             <Icon name="arrowLeft" size={12} />
             {t('st.wizard.back')}
@@ -2221,7 +2221,7 @@ export function NewProviderWizard({
             setFieldIssue(null);
             setStep('template');
           }}
-          className="-ml-1 inline-flex h-7 items-center gap-1 rounded-md px-1 text-[12px] font-medium text-ink-soft transition-colors hover:text-ink"
+          className="-ml-1 inline-flex h-7 items-center gap-1 rounded-md px-1 text-[12px] font-normal text-ink-soft transition-colors hover:text-ink"
         >
           <Icon name="arrowLeft" size={12} />
           {t('st.wizard.back')}

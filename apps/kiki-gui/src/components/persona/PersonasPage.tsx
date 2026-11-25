@@ -293,10 +293,10 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                           data-persona-view="settings"
                           aria-selected={viewMode === 'settings'}
                           onClick={() => select(selected.id, { view: 'settings' })}
-                          className={`relative -mb-px pb-2.5 text-[13px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
+                          className={`relative -mb-px pb-2.5 text-[13px] font-normal transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
                             viewMode === 'settings'
-                              ? 'font-normal text-ink after:absolute after:inset-x-0 after:bottom-0 after:h-[1.5px] after:bg-ink'
-                              : 'font-normal text-ink-soft hover:text-ink'
+                              ? 'text-ink after:absolute after:inset-x-0 after:bottom-0 after:h-[1.5px] after:bg-ink'
+                              : 'text-ink-soft hover:text-ink'
                           }`}
                         >
                           {t('persona.tabSettings')}
@@ -307,10 +307,10 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                           data-persona-view="conversations"
                           aria-selected={viewMode === 'conversations'}
                           onClick={() => select(selected.id, { view: 'conversations' })}
-                          className={`relative -mb-px pb-2.5 text-[13px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
+                          className={`relative -mb-px pb-2.5 text-[13px] font-normal transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
                             viewMode === 'conversations'
-                              ? 'font-normal text-ink after:absolute after:inset-x-0 after:bottom-0 after:h-[1.5px] after:bg-ink'
-                              : 'font-normal text-ink-soft hover:text-ink'
+                              ? 'text-ink after:absolute after:inset-x-0 after:bottom-0 after:h-[1.5px] after:bg-ink'
+                              : 'text-ink-soft hover:text-ink'
                           }`}
                         >
                           {t('persona.tabConversations')}

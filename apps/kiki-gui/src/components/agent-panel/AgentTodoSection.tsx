@@ -44,7 +44,7 @@ export const AgentTodoSection = memo(function AgentTodoSection({
           onClick={() => setCollapsed(!collapsed)}
           className="group -ml-1.5 flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md pr-1 pl-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
         >
-          <span className="text-[12px] font-medium text-ink-soft transition-colors group-hover:text-ink">
+          <span className="text-[12px] font-normal text-ink-soft transition-colors group-hover:text-ink">
             {t('inspector.todos')}
           </span>
           {!incomplete ? <span className="text-[12px] text-ink-faint tabular-nums">
@@ -95,7 +95,7 @@ export const AgentTodoSection = memo(function AgentTodoSection({
                         todo.status === 'done'
                           ? 'text-ink-faint line-through'
                           : todo.status === 'in_progress'
-                            ? 'font-medium text-ink'
+                            ? 'text-ink'
                             : 'text-ink-soft'
                       }`}
                     >

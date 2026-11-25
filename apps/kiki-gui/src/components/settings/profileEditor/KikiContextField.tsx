@@ -85,7 +85,7 @@ export function KikiContextField({ draft, baseline, engine, disabled, onChange }
           checked={hooksOn} disabled={disabled || (support.level === 'unsupported' && !hooksOn)} onChange={(value) => flip('hooks', value)}>
           <p data-hook-support={support.level} className="flex flex-wrap items-baseline gap-x-1.5 text-[11.5px] leading-snug">
             <span className="text-ink-soft">{engine}</span>
-            <span className={support.level === 'supported' ? 'font-medium text-ink' : support.level === 'untested' ? 'font-medium text-amber-ink' : 'text-ink-faint'}>
+            <span className={support.level === 'supported' ? 'font-normal text-ink' : support.level === 'untested' ? 'font-normal text-amber-ink' : 'text-ink-faint'}>
               {t(`st.kikiContext.support.${support.level}` as I18nKey)}
             </span>
             {support.level !== 'supported' ? <span className="text-ink-faint">·&nbsp;{t(`st.kikiContext.supportHint.${support.level}` as I18nKey)}</span> : null}

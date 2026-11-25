@@ -153,7 +153,7 @@ export function ModelConnectCard({
     >
       {inSettings ? null : (
         <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 pt-4 pb-3">
-          <h2 id="first-run-card-title" className="min-w-0 font-display text-[16px] font-semibold tracking-tight text-ink">
+          <h2 id="first-run-card-title" className="min-w-0 font-display text-[16px] font-bold text-ink">
             {t('firstRun.card.title')}
           </h2>
           <SettingsSegmented<Locale>
@@ -226,7 +226,7 @@ export function ModelConnectCard({
 function LaneLabel({ title, line }: { readonly title: string; readonly line: string | undefined }) {
   return (
     <span className="block min-w-0 flex-1">
-      <span className="block text-[14px] font-medium text-ink">{title}</span>
+      <span className="block text-[14px] font-normal text-ink">{title}</span>
       {line === undefined ? null : <span className="mt-0.5 block text-[12.5px] leading-snug text-ink-soft">{line}</span>}
     </span>
   );
@@ -397,7 +397,7 @@ function KeyLane({ onConnected, onHold, onOpenCustomForm }: {
       >
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="min-w-0 space-y-1.5">
-            <span id="first-run-key-service" className="block text-[13px] font-medium text-ink">{t('firstRun.key.service')}</span>
+            <span id="first-run-key-service" className="block text-[13px] font-normal text-ink">{t('firstRun.key.service')}</span>
             <SearchableSelect
               id="first-run-key-service-select"
               ariaLabel={t('firstRun.key.service')}

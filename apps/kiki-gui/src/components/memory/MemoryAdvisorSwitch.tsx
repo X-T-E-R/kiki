@@ -67,7 +67,7 @@ export function MemoryAdvisorSwitch({
             type="button"
             data-memory-advisor-retry
             onClick={() => { void advisor.query.refetch(); }}
-            className="shrink-0 rounded font-medium text-ink-soft underline underline-offset-2 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+            className="shrink-0 rounded font-normal text-ink-soft underline underline-offset-2 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
           >
             {t('common.retry')}
           </button>
@@ -77,7 +77,7 @@ export function MemoryAdvisorSwitch({
           type="button"
           data-memory-advisor-setup
           onClick={() => { onNavigate(DECISION_JUDGES_ROUTE); }}
-          className="min-h-7 truncate rounded px-1 text-[12px] font-medium text-amber-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+          className="min-h-7 truncate rounded px-1 text-[12px] font-normal text-amber-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
         >
           {t('memory.advisor.chooseModel')}
         </button>

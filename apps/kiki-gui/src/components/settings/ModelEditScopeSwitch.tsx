@@ -19,7 +19,7 @@ export function ModelEditScopeSwitch({ scope, customized, onScopeChange }: {
   const { t } = useI18n();
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2" data-model-edit-scope={scope} data-model-edit-scope-switch>
-      <span id="model-scope-label" className="text-[12px] font-medium text-ink-soft">{t('st.modelScope.appliesTo')}</span>
+      <span id="model-scope-label" className="text-[12px] font-normal text-ink-soft">{t('st.modelScope.appliesTo')}</span>
       <div role="radiogroup" aria-labelledby="model-scope-label"
         className="inline-flex max-w-full flex-wrap items-center gap-0.5 rounded-md bg-ink/[0.04] p-0.5">
         {EDIT_SCOPES.map((value) => {
@@ -36,7 +36,7 @@ export function ModelEditScopeSwitch({ scope, customized, onScopeChange }: {
               onClick={() => { if (!selected) onScopeChange(value); }}
               className={`inline-flex h-7 items-center gap-1.5 rounded-[5px] px-3 text-[12.5px] transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:h-9 ${
                 selected
-                  ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                  ? 'bg-panel text-ink shadow-[var(--kiki-sheet-shadow)]'
                   : 'text-ink-soft hover:text-ink'
               }`}
             >

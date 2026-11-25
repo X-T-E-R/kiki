@@ -32,7 +32,7 @@ import { FORM_LABEL } from './SettingsPrimitives';
 import { RecipeHookConsentBody, RecipeHookScripts } from './RecipeHookScripts';
 import { SMALL_INPUT } from '../ui';
 
-const PRIMARY = 'rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint';
+const PRIMARY = 'rounded-md bg-accent px-3 py-1.5 text-[12px] font-normal text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint';
 const SECONDARY = 'rounded-md border border-hairline bg-paper px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50';
 
 export function RecipeImportForm({ onInstalled, onApply, onFeedback }: {

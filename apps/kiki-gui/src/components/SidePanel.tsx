@@ -80,7 +80,7 @@ export function SidePanel({
           </button>
         ) : null}
         <div className="min-w-0 flex-1">
-          <h2 className="font-display text-[18px] leading-7 font-semibold tracking-tight text-ink">{title}</h2>
+          <h2 className="font-display text-[18px] leading-7 font-bold text-ink">{title}</h2>
           {description !== undefined ? <p className="mt-0.5 text-[12.5px] leading-5 text-ink-faint">{description}</p> : null}
         </div>
         <button

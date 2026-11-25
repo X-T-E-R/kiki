@@ -193,7 +193,7 @@ export function LiftTheHoodSheet({
     >
       <div className="kiki-mobile-sheet-grabber" aria-hidden="true" />
       <div className="flex items-center justify-between gap-2 pb-1 pl-4 pr-2">
-        <h2 className="min-w-0 truncate text-[16px] font-semibold text-ink">{t('mobile.chat.hoodTitle')}</h2>
+        <h2 className="min-w-0 truncate text-[16px] font-bold text-ink">{t('mobile.chat.hoodTitle')}</h2>
         <button
           type="button"
           aria-label={t('mobile.voice.cancel')}
@@ -212,7 +212,7 @@ export function LiftTheHoodSheet({
             data-mobile-hood-tab={entry.id}
             onClick={() => { setTab(entry.id); }}
             aria-pressed={tab === entry.id}
-            className={`h-11 rounded-full px-4 text-[13.5px] font-medium transition-colors ${
+            className={`h-11 rounded-full px-4 text-[13.5px] font-normal transition-colors ${
               tab === entry.id ? 'bg-ink text-paper' : 'bg-canvas text-ink-soft'
             }`}
           >
@@ -227,12 +227,12 @@ export function LiftTheHoodSheet({
             <div className="divide-y divide-hairline/70 rounded-2xl border border-hairline/80 bg-paper">
               <div className="flex items-center justify-between gap-3 px-3.5 py-3">
                 <span className="text-[13px] text-ink-faint">{t('mobile.space.label')}</span>
-                <span className="min-w-0 truncate text-[14px] font-medium text-ink">{spaceName}</span>
+                <span className="min-w-0 truncate text-[14px] font-normal text-ink">{spaceName}</span>
               </div>
               {personaName !== undefined ? (
                 <div className="flex items-center justify-between gap-3 px-3.5 py-3">
                   <span className="text-[13px] text-ink-faint">{t('mobile.chat.personaLabel')}</span>
-                  <span className="min-w-0 truncate text-[14px] font-medium text-ink">{personaName}</span>
+                  <span className="min-w-0 truncate text-[14px] font-normal text-ink">{personaName}</span>
                 </div>
               ) : null}
               <button
@@ -241,7 +241,7 @@ export function LiftTheHoodSheet({
                 className="flex min-h-12 w-full items-center justify-between gap-3 px-3.5 py-3 text-left"
               >
                 <span className="text-[13px] text-ink-faint">{t('mobile.chat.modelLabel')}</span>
-                <span className="inline-flex min-w-0 items-center gap-1.5 text-[14px] font-medium text-ink">
+                <span className="inline-flex min-w-0 items-center gap-1.5 text-[14px] font-normal text-ink">
                   <span className="truncate">{selectedModel ?? currentModel ?? t('mobile.chat.defaultModel')}</span>
                   <Icon name="chevron" size={12} className={`shrink-0 text-ink-faint ${modelPickerOpen ? 'rotate-90' : ''}`} />
                 </span>
@@ -293,7 +293,7 @@ export function LiftTheHoodSheet({
                   onClose();
                   onOpenWorkbench();
                 }}
-                className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-ink text-[14px] font-medium text-paper"
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-ink text-[14px] font-normal text-paper"
               >
                 <Icon name="external" size={14} />
                 <span>{t('mobile.chat.openWorkbench')}</span>
@@ -323,7 +323,7 @@ export function LiftTheHoodSheet({
                         className={tool.status === 'error' ? 'text-danger' : 'text-ink-faint'}
                       />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[14px] font-medium text-ink">{tool.name}</span>
+                        <span className="block truncate text-[14px] font-normal text-ink">{tool.name}</span>
                         {tool.description !== undefined ? (
                           <span className="block truncate text-[12px] text-ink-faint">{tool.description}</span>
                         ) : null}

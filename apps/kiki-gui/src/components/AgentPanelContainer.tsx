@@ -791,7 +791,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     /> : null}
     {todoStatus !== undefined ? <p role="status" data-agent-todos-status={todoStatus} className="text-[12px] leading-relaxed text-ink-faint">
       {t(todoStatus === 'error' ? 'agentPanel.todos.loadFailed' : todoStatus === 'loading' ? 'agentPanel.todos.loading' : 'agentPanel.todos.unknown')}
-      {todoStatus === 'error' && loaded ? <button type="button" className="ml-1.5 font-medium text-ink-soft transition-colors hover:text-ink" onClick={retryTodos}>{t('common.retry')}</button> : null}
+      {todoStatus === 'error' && loaded ? <button type="button" className="ml-1.5 font-normal text-ink-soft transition-colors hover:text-ink" onClick={retryTodos}>{t('common.retry')}</button> : null}
     </p> : null}
   </>;
   const planSection = agentState !== undefined ? <AgentPlanSection
@@ -899,7 +899,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
       <span className="min-w-0 flex-1">{t(SETTLED_METRICS_KEY)}</span>
       <button
         type="button"
-        className="min-h-7 shrink-0 rounded-md px-2 text-[11.5px] font-medium text-ink transition-colors hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-3"
+        className="min-h-7 shrink-0 rounded-md px-2 text-[11.5px] font-normal text-ink transition-colors hover:bg-ink/[0.06] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-3"
         onClick={() => { setSettleBlock(undefined); void metricsSettle.refetch(); }}
       >
         {t('common.retry')}
@@ -968,7 +968,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     ) : capabilities.isError ? (
       <p role="status" data-capabilities-error className="text-[12px] leading-relaxed text-ink-faint">
         {t('inspector.cap.loadFailed')}
-        <button type="button" className="ml-1.5 font-medium text-ink-soft transition-colors hover:text-ink" onClick={() => { void capabilities.refetch(); }}>{t('common.retry')}</button>
+        <button type="button" className="ml-1.5 font-normal text-ink-soft transition-colors hover:text-ink" onClick={() => { void capabilities.refetch(); }}>{t('common.retry')}</button>
       </p>
     ) : unavailableReason !== undefined ? (
       <p role="status" className="text-[12px] leading-relaxed text-ink-faint">{unavailableReason}</p>
@@ -1021,7 +1021,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     ) : null}
     {capabilities.isError && !isCapabilityUnsupportedError(capabilities.error) ? <div role="alert" className="border-l-2 border-danger pl-3 text-[12.5px] text-danger">
       {t('diagnostics.error')} · {agentCapabilitiesErrorText(capabilities.error, t)}
-      <button type="button" className="ml-2 font-medium text-ink underline underline-offset-2" onClick={() => { void capabilities.refetch(); }}>{t('common.retry')}</button>
+      <button type="button" className="ml-2 font-normal text-ink underline underline-offset-2" onClick={() => { void capabilities.refetch(); }}>{t('common.retry')}</button>
     </div> : settleError}
     {todoSection}
     {notesSection}

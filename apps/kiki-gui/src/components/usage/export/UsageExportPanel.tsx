@@ -203,7 +203,7 @@ export function UsageExportPanel() {
 
       {!writable && !statusQuery.isPending && !statusQuery.isError ? (
         <div data-usage-export-readonly className={NOTICE_AMBER}>
-          <p className="font-medium">{t('usage.export.readonly.title')}</p>
+          <p className="font-normal">{t('usage.export.readonly.title')}</p>
           <p className="mt-0.5">{t('usage.export.readonly.body')}</p>
         </div>
       ) : null}
@@ -215,7 +215,7 @@ export function UsageExportPanel() {
         </div>
       ) : statusQuery.isError ? (
         <div data-usage-export-load-error className="rounded-xl border border-danger/30 bg-danger/5 p-5">
-          <p className="text-[13px] font-medium text-danger">{t('usage.export.loadFailed')}</p>
+          <p className="text-[13px] font-normal text-danger">{t('usage.export.loadFailed')}</p>
           <div className="mt-1"><InlineError error={statusQuery.error} /></div>
           <button type="button" className={`mt-3 ${SECONDARY_BUTTON}`} onClick={() => void statusQuery.refetch()}>{t('common.retry')}</button>
         </div>
@@ -276,7 +276,7 @@ export function UsageExportPanel() {
 
           {entries.length === 0 ? (
             <div data-usage-export-empty className="rounded-xl border border-hairline bg-panel px-4 py-8">
-              <p className="text-[13px] font-medium text-ink">{t('usage.export.empty.title')}</p>
+              <p className="text-[13px] font-normal text-ink">{t('usage.export.empty.title')}</p>
               <p className="mt-1 max-w-[76ch] text-[12.5px] leading-relaxed text-ink-soft">{t('usage.export.empty.body')}</p>
               <button type="button" data-usage-export-empty-add disabled={!writable} onClick={() => { setForm({ entry: undefined }); }} className={`mt-3 ${PRIMARY_BUTTON}`}>
                 {t('usage.export.empty.add')}

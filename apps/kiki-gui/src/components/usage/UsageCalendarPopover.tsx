@@ -238,7 +238,7 @@ export function UsageCalendarPopover({
         }}
         className={`inline-flex h-7 items-center rounded-md px-2.5 text-[12px] transition-colors pointer-coarse:min-h-10 ${
           active
-            ? 'bg-selected font-medium text-selected-ink'
+            ? 'bg-selected text-selected-ink'
             : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
         }`}
       >
@@ -251,13 +251,13 @@ export function UsageCalendarPopover({
     <div className="space-y-3 p-1" data-usage-custom-range>
       <div className="space-y-1.5 border-b border-hairline pb-2.5">
         <div className="flex flex-wrap items-center gap-1">
-          <span className="mr-1 min-w-14 font-sans tracking-normal text-[11px] font-medium text-[var(--kiki-chart-muted)]">
+          <span className="mr-1 min-w-14 font-sans tracking-normal text-[11px] font-normal text-[var(--kiki-chart-muted)]">
             {t('usage.range.rollingGroup')}
           </span>
           {rollingPresets.map(renderPresetButton)}
         </div>
         <div className="flex flex-wrap items-center gap-1">
-          <span className="mr-1 min-w-14 font-sans tracking-normal text-[11px] font-medium text-[var(--kiki-chart-muted)]">
+          <span className="mr-1 min-w-14 font-sans tracking-normal text-[11px] font-normal text-[var(--kiki-chart-muted)]">
             {t('usage.range.calendarGroup')}
           </span>
           {calendarPresets.map(renderPresetButton)}
@@ -287,7 +287,7 @@ export function UsageCalendarPopover({
                   </button>
                 ) : <span className="h-7 w-7" />}
 
-                <span className="font-sans tracking-normal text-[12.5px] font-semibold text-ink">
+                <span className="font-sans tracking-normal text-[12.5px] font-normal text-ink">
                   {formatMonthTitle(year, monthIndex)}
                 </span>
 
@@ -305,7 +305,7 @@ export function UsageCalendarPopover({
                 ) : <span className="h-7 w-7" />}
               </div>
 
-              <div className="grid grid-cols-7 text-center font-sans tracking-normal text-[10.5px] font-medium text-[var(--kiki-chart-muted)]">
+              <div className="grid grid-cols-7 text-center font-sans tracking-normal text-[10.5px] font-normal text-[var(--kiki-chart-muted)]">
                 {weekdays.map((wd) => (
                   <span key={wd} className="py-1">{wd}</span>
                 ))}
@@ -338,11 +338,11 @@ export function UsageCalendarPopover({
                       onClick={() => { handleDayClick(dayMs); }}
                       className={`relative flex h-8 w-full items-center justify-center transition-colors focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:text-ink-faint/35 ${
                         isStart && isEnd
-                          ? 'rounded-md bg-ink font-semibold text-paper'
+                          ? 'rounded-md bg-ink text-paper'
                           : isStart
-                            ? 'rounded-l-md bg-ink font-semibold text-paper'
+                            ? 'rounded-l-md bg-ink text-paper'
                             : isEnd
-                              ? 'rounded-r-md bg-ink font-semibold text-paper'
+                              ? 'rounded-r-md bg-ink text-paper'
                               : inSpan
                                 ? 'bg-selected text-ink'
                                 : 'rounded-md text-ink hover:bg-ink/[0.06]'

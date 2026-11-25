@@ -679,7 +679,7 @@ ${engineError}`;
   ) : summary !== '' ? (
     <span className="font-mono">{summary}</span>
   ) : undefined;
-  const label = 'mb-1 text-[12px] font-medium text-ink-faint';
+  const label = 'mb-1 text-[12px] font-normal text-ink-faint';
 
   // Tone comes from the outcome, not the tool: a failure lights the whole
   // line, a stop washes it amber, success stays as quiet as a Read.

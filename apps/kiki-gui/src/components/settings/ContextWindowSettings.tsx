@@ -257,7 +257,7 @@ export function ModelContextFields({
   return (
     <div data-model-context-fields className="space-y-3 pt-3">
       <div className="space-y-1">
-        <p className="text-[12px] font-medium text-ink-soft">{t('st.compact.windowLabel')}</p>
+        <p className="text-[12px] font-normal text-ink-soft">{t('st.compact.windowLabel')}</p>
         <ContextStepper value={windowTokens} onChange={onWindowChange} ariaLabel={t('st.models.contextAria', { model: modelId })} />
         <div className="-ml-2">
           <TokenPresetRow

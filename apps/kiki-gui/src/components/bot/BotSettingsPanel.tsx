@@ -107,7 +107,7 @@ export function BotSettingsPanel({
       >
         <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6">
           <div className="flex h-12 items-center gap-2">
-            <h2 className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">{t('bot.settings')}</h2>
+            <h2 className="min-w-0 flex-1 truncate text-[13px] font-bold text-ink">{t('bot.settings')}</h2>
             <button type="button" onClick={onClose} data-rail-close
               title={t('sv.hidePanel')} aria-label={t('sv.hidePanel')}
               className="-mr-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7">
@@ -119,7 +119,7 @@ export function BotSettingsPanel({
               <div className="flex items-start gap-3 py-1">
                 <PersonaAvatar persona={face} size={40} decorative />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[14px] font-medium text-ink">{name}</p>
+                  <p className="truncate text-[14px] font-normal text-ink">{name}</p>
                   {definition?.title !== undefined ? <p className="truncate text-[12.5px] text-ink-soft">{definition.title}</p> : null}
                   {definition?.job !== undefined ? <p className="mt-0.5 line-clamp-2 text-[12.5px] text-ink-faint">{definition.job}</p> : null}
                 </div>

@@ -55,7 +55,7 @@ export const TurnExecutionBadge = memo(function TurnExecutionBadge({ execution }
     <div data-turn-execution data-profile-delivery={execution.profileDelivery}
       className="anim-enter flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-ink-faint">
       <span title={execution.resumeMode === undefined ? undefined : t('transcript.exec.resumeMode', { mode: execution.resumeMode })}
-        className="inline-flex items-center gap-1 font-medium text-ink-soft">
+        className="inline-flex items-center gap-1 font-normal text-ink-soft">
         <Icon name="external" size={12} className="text-ink-faint" />
         {t('transcript.exec.badge', { executor, protocol })}
       </span>

@@ -62,7 +62,7 @@ export function TourLine({ onDone }: {
         <button
           type="button"
           data-first-run-tour-start
-          className="motion-press inline-flex min-h-7 items-center gap-1 rounded-md px-1.5 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-11 pointer-coarse:px-2"
+          className="motion-press inline-flex min-h-7 items-center gap-1 rounded-md px-1.5 text-[12.5px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-11 pointer-coarse:px-2"
           onClick={() => {
             done();
             void discovery.startRoute('overview');

@@ -318,7 +318,7 @@ function TodoItems({ todos }: { readonly todos: SessionViewState['todos'] }) {
                   aria-label={t('agentPanel.markTodo', { title: todo.title })}
                   className="sr-only"
                 />
-                <span className={todo.status === 'done' ? 'text-ink-faint line-through' : todo.status === 'in_progress' ? 'font-medium text-ink' : 'text-ink-soft'}>
+                <span className={todo.status === 'done' ? 'text-ink-faint line-through' : todo.status === 'in_progress' ? 'font-normal text-ink' : 'text-ink-soft'}>
                   {todo.title}
                 </span>
               </li>
@@ -413,14 +413,14 @@ export const BoardAssociatedTodos = memo(function BoardAssociatedTodos({
             const agentIds = ['main', ...Object.keys(snapshot.agents)];
             return (
               <section key={snapshot.sessionId} data-board-associated-todos-session={snapshot.sessionId} className="space-y-2 border-t border-hairline/70 pt-2 first:border-t-0 first:pt-0">
-                <div className="font-mono text-[10.5px] font-semibold text-ink-soft">{sessionLabels[snapshot.sessionId] ?? snapshot.sessionId}</div>
+                <div className="font-mono text-[10.5px] font-normal text-ink-soft">{sessionLabels[snapshot.sessionId] ?? snapshot.sessionId}</div>
                 {snapshot.error ? <p role="alert" className="text-[11.5px] text-danger">{t('agentPanel.todosError')} · {errorText(locale, new LocalizedError(snapshot.error))}</p> : null}
                 {agentIds.map((agentId) => {
                   const state = agentId === 'main' ? snapshot.main : snapshot.agents[agentId];
                   if (state === undefined) return null;
                   return (
                     <div key={agentId} data-board-associated-todos-agent={agentId} className="space-y-1.5 border-t border-hairline/60 pt-1.5">
-                      <div className="mb-1 font-mono text-[10.5px] font-semibold text-ink-faint">{agentLabel(agentId, snapshot.forest, t('agentPanel.mainBadge'))}</div>
+                      <div className="mb-1 font-mono text-[10.5px] font-normal text-ink-faint">{agentLabel(agentId, snapshot.forest, t('agentPanel.mainBadge'))}</div>
                       {state.loaded ? <TodoItems todos={state.todos} /> : <p role="status" className="text-[11.5px] text-ink-faint">{t('agentPanel.todosLoading')}</p>}
                     </div>
                   );

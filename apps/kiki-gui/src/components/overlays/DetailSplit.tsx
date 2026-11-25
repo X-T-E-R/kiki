@@ -123,7 +123,7 @@ export function DetailBack({ label, onClick, data }: {
 /** A quiet group label inside the rail (主智能体 / 助手). */
 export function DetailRailGroup({ label, count, children }: { label: string; count?: number; children: ReactNode }) {
   return <div className="mb-3 last:mb-0" data-detail-rail-group={label}>
-    <p className="flex items-baseline gap-1.5 px-2 pb-1 pt-1 text-[11.5px] font-medium text-ink-faint">
+    <p className="flex items-baseline gap-1.5 px-2 pb-1 pt-1 text-[11.5px] font-normal text-ink-faint">
       <span className="min-w-0 truncate">{label}</span>
       {count !== undefined ? <span className="tabular-nums">{count}</span> : null}
     </p>
@@ -145,7 +145,7 @@ export function DetailRailItem({ itemKey, label, hint, current, muted = false, t
   return <li>
     <button type="button" data-detail-rail-item={itemKey} aria-current={current ? 'page' : undefined} onClick={onSelect}
       className={`flex min-h-8 w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-[13px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
-        current ? 'bg-ink/[0.06] font-medium text-ink' : muted ? 'text-ink-faint hover:bg-ink/[0.03]' : 'text-ink-soft hover:bg-ink/[0.03] hover:text-ink'}`}>
+        current ? 'bg-ink/[0.06] font-normal text-ink' : muted ? 'text-ink-faint hover:bg-ink/[0.03]' : 'text-ink-soft hover:bg-ink/[0.03] hover:text-ink'}`}>
       <span className="min-w-0 flex-1">
         <span className="block truncate">{label}</span>
         {hint !== undefined ? <span className="block truncate font-mono text-[11px] font-normal text-ink-faint">{hint}</span> : null}

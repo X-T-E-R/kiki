@@ -157,7 +157,7 @@ export function StorageMigrationViewComponent({
           <Wordmark size="md" />
           <span
             data-testid="storage-authority-badge"
-            className="rounded-full bg-hairline/60 px-2.5 py-0.5 text-[11px] font-medium text-ink-soft"
+            className="rounded-full bg-hairline/60 px-2.5 py-0.5 text-[11px] font-normal text-ink-soft"
           >
             {status?.authority === 'sqlite'
               ? t('storage.migration.authority.sqlite')
@@ -165,7 +165,7 @@ export function StorageMigrationViewComponent({
           </span>
         </div>
 
-        <h1 className="font-display text-xl font-semibold tracking-tight text-ink sm:text-2xl">
+        <h1 className="font-display text-xl font-bold text-ink sm:text-2xl">
           {t('storage.migration.title')}
         </h1>
         <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">
@@ -181,12 +181,12 @@ export function StorageMigrationViewComponent({
             {/* Status card */}
             <div className="rounded-xl border border-hairline/80 bg-canvas/40 p-4">
               <div className="flex items-center justify-between">
-                <span className="text-[12px] font-medium text-ink-soft">
+                <span className="text-[12px] font-normal text-ink-soft">
                   {status ? t(`storage.migration.phase.${status.phase}`) : ''}
                 </span>
                 <span
                   data-testid="migration-state-tag"
-                  className="text-[12px] font-semibold text-ink"
+                  className="text-[12px] font-normal text-ink"
                 >
                   {stateLabel}
                 </span>
@@ -202,7 +202,7 @@ export function StorageMigrationViewComponent({
               {transition?.state === 'starting' && (
                 <div
                   data-testid="transition-starting"
-                  className="mt-3 flex items-center text-[12px] font-medium text-accent"
+                  className="mt-3 flex items-center text-[12px] font-normal text-accent"
                 >
                   <span className="mr-2 inline-block h-2 w-2 motion-safe:animate-ping rounded-full bg-accent" />
                   {t('storage.migration.starting')}
@@ -236,7 +236,7 @@ export function StorageMigrationViewComponent({
                 data-testid="operation-failure-banner"
                 className="rounded-lg border border-danger/20 bg-danger/5 p-3 text-[12px] text-danger"
               >
-                <div className="font-semibold break-words">{view.operationFailure.code}</div>
+                <div className="font-bold break-words">{view.operationFailure.code}</div>
                 <div className="mt-0.5 text-ink-soft break-words">{view.operationFailure.message}</div>
               </div>
             )}
@@ -259,7 +259,7 @@ export function StorageMigrationViewComponent({
                 data-testid="migration-failure-banner"
                 className="rounded-lg border border-danger/20 bg-danger/5 p-3 text-[12px] text-danger"
               >
-                <div className="font-semibold break-words">{status.failure.code}</div>
+                <div className="font-bold break-words">{status.failure.code}</div>
                 <div className="mt-0.5 text-ink-soft break-words">{status.failure.message}</div>
                 {(status.failure.source || status.failure.key) && (
                   <div className="mt-1 text-[11px] text-ink-faint font-mono break-all">
@@ -277,7 +277,7 @@ export function StorageMigrationViewComponent({
                 data-testid="startup-failure-banner"
                 className="rounded-lg border border-danger/20 bg-danger/5 p-3 text-[12px] text-danger"
               >
-                <div className="font-semibold break-words">{t('storage.migration.startupFailureTitle')}</div>
+                <div className="font-bold break-words">{t('storage.migration.startupFailureTitle')}</div>
                 <div className="mt-0.5 text-ink-soft break-words">{transition.failure.message}</div>
               </div>
             )}
@@ -287,7 +287,7 @@ export function StorageMigrationViewComponent({
                 data-testid="cleanup-failure-banner"
                 className="rounded-lg border border-danger/20 bg-danger/5 p-3 text-[12px] text-danger"
               >
-                <div className="font-semibold break-words">{t('storage.migration.cleanupFailureTitle')}</div>
+                <div className="font-bold break-words">{t('storage.migration.cleanupFailureTitle')}</div>
                 <div className="mt-0.5 text-ink-soft break-words">{transition.cleanupFailure.message}</div>
               </div>
             )}

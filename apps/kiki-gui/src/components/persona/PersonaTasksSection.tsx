@@ -165,7 +165,7 @@ export function PersonaTasksSection({ persona }: PersonaTasksSectionProps) {
       <section data-persona-cron>
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 pb-2">
           <div className="flex items-center gap-1.5">
-            <h4 className="text-[13px] font-medium text-ink">{t('cron.panel.title')}</h4>
+            <h4 className="text-[13px] font-normal text-ink">{t('cron.panel.title')}</h4>
             {conversationsQuery.data?.truncated === true ? (
               <span
                 data-persona-cron-truncated
@@ -226,7 +226,7 @@ export function PersonaTasksSection({ persona }: PersonaTasksSectionProps) {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                      <span data-persona-cron-schedule className="text-[13px] font-medium text-ink">
+                      <span data-persona-cron-schedule className="text-[13px] font-normal text-ink">
                         {cronScheduleLabel(locale, task.cron, task.human_schedule, t)}
                       </span>
                       <span data-cron-status={task.paused ? 'paused' : 'running'} className={`text-[12px] ${task.paused ? 'text-ink-faint' : 'text-ink-soft'}`}>
@@ -287,7 +287,7 @@ export function PersonaTasksSection({ persona }: PersonaTasksSectionProps) {
       {/* 房间 */}
       <section data-persona-rooms>
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 pb-2">
-          <h4 className="text-[13px] font-medium text-ink">{t('persona.rooms.title')}</h4>
+          <h4 className="text-[13px] font-normal text-ink">{t('persona.rooms.title')}</h4>
           <button
             type="button"
             data-persona-rooms-new

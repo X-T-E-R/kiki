@@ -38,9 +38,9 @@ export interface WorkModeMenuProps {
 function ModeStateTag({ mode, labels }: { mode: WorkPresetItem; labels: { ready: string; setup: string } }) {
   if (mode.removed) return null;
   if (mode.enabled) {
-    return <span className="mt-1.5 block text-[10.5px] font-medium uppercase tracking-[0.04em] text-ink-faint">{labels.ready}</span>;
+    return <span className="mt-1.5 block text-[10.5px] font-normal uppercase text-ink-faint">{labels.ready}</span>;
   }
-  return <span className="mt-1.5 block text-[10.5px] font-medium uppercase tracking-[0.04em] text-attention">{labels.setup}</span>;
+  return <span className="mt-1.5 block text-[10.5px] font-normal uppercase text-attention">{labels.setup}</span>;
 }
 
 export function WorkModeMenu({ catalog, onSetup, onOpenInNewWindow, className }: WorkModeMenuProps) {
@@ -107,7 +107,7 @@ export function WorkModeMenu({ catalog, onSetup, onOpenInNewWindow, className }:
         >
           <span aria-hidden className={`mt-1.5 h-2 w-2 shrink-0 rounded-[2px] ${active ? 'bg-selected-ink' : 'bg-hairline-strong'}`} />
           <span className="min-w-0 flex-1">
-            <span className="block text-[13px] font-medium text-ink">{mode.name}</span>
+            <span className="block text-[13px] font-normal text-ink">{mode.name}</span>
             <span className="mt-0.5 block text-[11.5px] leading-[1.45] text-ink-faint">{mode.description}</span>
             <ModeStateTag mode={mode} labels={labels} />
           </span>
@@ -133,7 +133,7 @@ export function WorkModeMenu({ catalog, onSetup, onOpenInNewWindow, className }:
         aria-haspopup="menu"
         aria-label={t('workMode.menu')}
         data-work-mode-trigger
-        className={`flex h-8 items-center gap-1.5 rounded-lg border border-hairline bg-paper px-2.5 text-[12.5px] font-medium text-ink transition-colors hover:border-hairline-strong ${FOCUS_RING}`}
+        className={`flex h-8 items-center gap-1.5 rounded-lg border border-hairline bg-paper px-2.5 text-[12.5px] font-normal text-ink transition-colors hover:border-hairline-strong ${FOCUS_RING}`}
       >
         <span
           aria-hidden
@@ -166,7 +166,7 @@ export function WorkModeMenu({ catalog, onSetup, onOpenInNewWindow, className }:
         }}
       >
         <div className="border-b border-hairline px-2.5 pb-2 pt-1.5">
-          <p className="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-section-ink">{t('workMode.aria')}</p>
+          <p className="text-[10.5px] font-normal uppercase text-section-ink">{t('workMode.aria')}</p>
           <p className="mt-1 text-[11.5px] leading-[1.45] text-ink-faint">{t('workMode.appliesToWindow')}</p>
         </div>
 

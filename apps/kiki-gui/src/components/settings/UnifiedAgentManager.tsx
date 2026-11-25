@@ -472,7 +472,7 @@ export function UnifiedAgentManager() {
               }}
             >
               {entry.kind === 'group' ? (
-                <p className="flex items-baseline justify-between gap-2 px-2 pt-2 pb-1 text-[11px] font-medium text-ink-faint">
+                <p className="flex items-baseline justify-between gap-2 px-2 pt-2 pb-1 text-[11px] font-normal text-ink-faint">
                   <span className="truncate">{entry.label}</span>
                   <span className="shrink-0 tabular-nums">{entry.count}</span>
                 </p>

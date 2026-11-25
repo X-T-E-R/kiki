@@ -109,7 +109,7 @@ export function AwayNotificationsCard() {
           </div>
           {enabled ? (
             <fieldset data-notify-away-kinds className="min-w-0 space-y-1">
-              <legend className="px-0 pb-1 text-[13px] font-medium text-ink">{t('st.away.kindsLabel')}</legend>
+              <legend className="px-0 pb-1 text-[13px] font-normal text-ink">{t('st.away.kindsLabel')}</legend>
               <SettingsBox>
                 {KINDS.map(({ kind, labelKey }) => (
                   <div key={kind} data-notify-away-kind={kind}>

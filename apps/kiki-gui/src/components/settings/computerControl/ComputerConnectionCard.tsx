@@ -397,7 +397,7 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
             {draft.original !== undefined && pluginLink(draft.original) !== undefined ? (
               <Link
                 to={pluginLink(draft.original)!}
-                className="inline-block text-[12px] font-medium text-selected-ink hover:underline"
+                className="inline-block text-[12px] font-normal text-selected-ink hover:underline"
                 data-computer-plugin-link
               >
                 {t('st.plugins.manageLink')}

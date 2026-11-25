@@ -93,7 +93,7 @@ export function MemoryAdvisorTuning({ workspaceId, advisor }: {
             ) : null}
             {followsSource && shown.explicit && config !== undefined ? (
               <button type="button" data-memory-advisor-wait-reset disabled={busy}
-                className="text-[12px] font-medium text-ink-soft underline-offset-2 hover:text-ink hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                className="text-[12px] font-normal text-ink-soft underline-offset-2 hover:text-ink hover:underline disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={() => { write(field, { advisor: { first_step_wait_ms: null } }); }}>
                 {t('composer.modelResetDefault')}
               </button>

@@ -433,7 +433,7 @@ export function HooksSection() {
     <nav aria-label={t('st.hooks.title')} className="space-y-3">
       {groups.map((group) => (
         <section key={group.key} aria-label={groupByEvent ? group.key : t('st.hooks.title')}>
-          {groupByEvent ? <p className="flex h-8 items-center px-1 text-[12px] font-medium text-section-ink">{group.key}</p> : null}
+          {groupByEvent ? <p className="flex h-8 items-center px-1 text-[12px] font-normal text-section-ink">{group.key}</p> : null}
           <ul className="space-y-0.5">
             {group.items.map((entry) => row(
               entry,
@@ -555,7 +555,7 @@ export function HooksSection() {
                 // already set there.
                 <details data-hooks-sources open={draft !== null && draft.shape === 'v2' && (draft.config.files.length > 0 || draft.config.disabled.length > 0) ? true : undefined}
                   className="group pt-3">
-                  <summary className="inline-flex min-h-7 cursor-pointer select-none items-center gap-1 text-[12px] font-medium text-ink-soft hover:text-ink pointer-coarse:min-h-11">
+                  <summary className="inline-flex min-h-7 cursor-pointer select-none items-center gap-1 text-[12px] font-normal text-ink-soft hover:text-ink pointer-coarse:min-h-11">
                     <Icon name="chevron" size={12} className="text-ink-faint transition-transform group-open:rotate-90 motion-reduce:transition-none" />
                     {t('st.advanced.disclosure')}
                   </summary>
@@ -591,7 +591,7 @@ export function HooksSection() {
                         </SettingsGroup>
                         {canFlattenToLegacy(draft) && draft.config.legacy.length > 0 ? (
                           <button type="button" data-hooks-flatten-legacy onClick={() => edit(flattenToLegacy(draft))}
-                            className="inline-flex min-h-7 items-center text-[12px] font-medium text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11">
+                            className="inline-flex min-h-7 items-center text-[12px] font-normal text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11">
                             {t('st.hooks.flatten')}
                           </button>
                         ) : null}
@@ -599,7 +599,7 @@ export function HooksSection() {
                     ) : null}
                     <div>
                       <button type="button" data-hooks-json-toggle onClick={switchMode}
-                        className="inline-flex min-h-7 items-center text-[12px] font-medium text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11">
+                        className="inline-flex min-h-7 items-center text-[12px] font-normal text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11">
                         {t('st.hooks.advanced')}
                       </button>
                     </div>
@@ -623,7 +623,7 @@ export function HooksSection() {
                 {t('st.hooks.resetJson')}
               </button>
               <button type="button" data-hooks-json-toggle onClick={switchMode}
-                className="ml-auto inline-flex min-h-7 items-center text-[12px] font-medium text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11">
+                className="ml-auto inline-flex min-h-7 items-center text-[12px] font-normal text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11">
                 {t('st.hooks.form')}
               </button>
             </div>

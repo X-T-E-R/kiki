@@ -33,7 +33,7 @@ function EndpointLink({ endpoint, onOpen }: { readonly endpoint: ThreadEndpoint;
       type="button"
       data-comms-endpoint={endpoint.ref.session_id}
       onClick={(event) => { event.stopPropagation(); onOpen(href); }}
-      className="min-w-0 truncate rounded-sm text-left font-medium text-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+      className="min-w-0 truncate rounded-sm text-left font-normal text-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
     >
       {name(endpoint)}
     </button>
@@ -46,7 +46,7 @@ function RoomSource({ roomId, onOpen }: { readonly roomId: string; readonly onOp
   return (
     <button type="button" data-comms-room={roomId}
       onClick={(event) => { event.stopPropagation(); onOpen(roomHref(roomId)); }}
-      className="min-w-0 truncate rounded-sm text-left font-medium text-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink">
+      className="min-w-0 truncate rounded-sm text-left font-normal text-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink">
       <span aria-hidden className="font-mono font-normal text-ink-faint"># </span>{room.name}
     </button>
   );
@@ -127,7 +127,7 @@ export function ActivityComms({
   return (
     <section data-activity-group="comms" aria-label={t('comms.title')} className="flex flex-col gap-0.5">
       <div className="flex h-7 items-center gap-1.5 px-3 text-[12px] leading-4">
-        <h2 className="shrink-0 font-medium text-ink-soft">{t('comms.title')}</h2>
+        <h2 className="shrink-0 font-normal text-ink-soft">{t('comms.title')}</h2>
         {messages.length > 0 ? <span className="shrink-0 text-ink-faint tabular-nums">{messages.length}{query.hasNextPage ? '+' : ''}</span> : null}
         <span aria-hidden className="text-ink-faint">·</span>
         <span className="min-w-0 flex-1 truncate text-ink-faint">{t('activity.unreadOrder')}</span>

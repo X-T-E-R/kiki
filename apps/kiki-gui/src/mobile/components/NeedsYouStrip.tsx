@@ -16,7 +16,7 @@ export function NeedsYouStrip({ count, onOpen }: { readonly count: number; reado
         type="button"
         data-mobile-needs-you-strip={count}
         onClick={onOpen}
-        className="mx-auto flex h-11 w-full max-w-[640px] items-center gap-2.5 rounded-2xl bg-accent-soft px-3.5 text-left text-[13.5px] font-medium text-accent-ink transition-opacity active:opacity-80"
+        className="mx-auto flex h-11 w-full max-w-[640px] items-center gap-2.5 rounded-2xl bg-accent-soft px-3.5 text-left text-[13.5px] font-normal text-accent-ink transition-opacity active:opacity-80"
       >
         <span className="h-[7px] w-[7px] shrink-0 rounded-full bg-accent" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate">{t('mobile.needsYou.strip', { count })}</span>
@@ -48,7 +48,7 @@ export function NeedsYouSheet({ items, resolveClient, onClose, onOpenItem, onRes
     >
       <div className="kiki-mobile-sheet-grabber" aria-hidden="true" />
       <div className="flex h-11 items-center justify-between pl-4 pr-2">
-        <h2 className="text-[16px] font-semibold text-ink">{t('mobile.needsYou.title')}</h2>
+        <h2 className="text-[16px] font-bold text-ink">{t('mobile.needsYou.title')}</h2>
         <button
           type="button"
           aria-label={t('mobile.voice.cancel')}

@@ -25,12 +25,12 @@ export function ToolDetailBody({ tool }: { readonly tool: AgentToolCapability })
       {/* Title & Badges */}
       <div className="border-b border-hairline pb-3">
         <div className="flex items-center justify-between gap-2">
-          <h3 className="font-mono text-[15px] font-semibold text-ink">
+          <h3 className="font-mono text-[15px] font-bold text-ink">
             {tool.name}
           </h3>
           <div className="flex items-center gap-1.5 shrink-0">
             {tool.readOnly ? (
-              <span className="px-0.5 text-[11px] font-mono font-medium text-accent-ink">
+              <span className="px-0.5 text-[11px] font-mono font-normal text-accent-ink">
                 {t('agentPanel.readOnly')}
               </span>
             ) : null}
@@ -62,7 +62,7 @@ export function ToolDetailBody({ tool }: { readonly tool: AgentToolCapability })
       {/* Description */}
       {tool.description ? (
         <div className="space-y-1">
-          <div className="font-mono text-[11px] font-semibold uppercase text-ink-faint">
+          <div className="font-mono text-[11px] font-normal uppercase text-ink-faint">
             {t('agentPanel.profileDescription')}
           </div>
           <p className="text-ink leading-relaxed">{tool.description}</p>
@@ -71,7 +71,7 @@ export function ToolDetailBody({ tool }: { readonly tool: AgentToolCapability })
 
       {/* Parameters Schema */}
       <details open className="space-y-1">
-        <summary className="font-mono text-[11px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
+        <summary className="font-mono text-[11px] font-normal uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.parametersSchema')}
         </summary>
         <pre className="mt-1 max-h-64 overflow-y-auto rounded-lg border border-hairline bg-paper/60 p-2 font-mono text-[11px] leading-snug text-ink-soft whitespace-pre-wrap">

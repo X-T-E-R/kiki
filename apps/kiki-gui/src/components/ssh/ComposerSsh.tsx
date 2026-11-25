@@ -252,7 +252,7 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
 
   const renderPanel = (close: (refocus?: boolean) => void) => (
     <div data-composer-ssh-panel>
-      <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('composer.ssh.heading')}</p>
+      <p className="px-3 pt-1.5 pb-1 text-[12px] font-normal text-ink-faint">{t('composer.ssh.heading')}</p>
       {hostsQuery.isLoading ? (
         <p className="px-3 py-1.5 text-[12px] text-ink-faint">{t('composer.ssh.loading')}</p>
       ) : hostsQuery.isError ? (
@@ -291,7 +291,7 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
                   className="min-w-0 flex-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 rounded"
                 >
                   <div className="flex items-center gap-1.5">
-                    <span className={`truncate ${on ? 'font-medium text-ink' : 'text-ink-soft'}`}>{host.name}</span>
+                    <span className={`truncate ${on ? 'text-ink' : 'text-ink-soft'}`}>{host.name}</span>
                     {on && state !== undefined ? (
                       <SshStateMark state={state} compact />
                     ) : null}
@@ -305,7 +305,7 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
                   </div>
                 </button>
                 <div className="flex shrink-0 items-center gap-2">
-                  <span className={`text-[11px] font-medium transition-colors select-none ${on ? 'text-ink' : 'text-ink-faint'}`}>
+                  <span className={`text-[11px] font-normal transition-colors select-none ${on ? 'text-ink' : 'text-ink-faint'}`}>
                     {statusText}
                   </span>
                   <span data-composer-ssh-switch={host.id}>

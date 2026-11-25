@@ -33,7 +33,7 @@ export function RemoteImageGate({ source, alt, children }: { source?: string; al
       className="inline-flex max-w-full items-center gap-2 rounded-lg border border-hairline bg-panel px-2.5 py-1 align-middle font-sans text-[12px] text-ink-faint transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
     >
       <span className="min-w-0 truncate">{description ? `${description} · ` : ''}{url.host}</span>
-      <span className="shrink-0 font-medium text-ink">{t('media.showImage')}</span>
+      <span className="shrink-0 font-normal text-ink">{t('media.showImage')}</span>
     </button>
   );
 }

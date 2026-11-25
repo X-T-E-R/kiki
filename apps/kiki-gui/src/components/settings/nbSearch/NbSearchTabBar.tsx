@@ -82,14 +82,14 @@ export function NbSearchTabBar({
             onKeyDown={(event) => { handleKeyDown(event, index); }}
             className={`relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 rounded-t-md ${
               active
-                ? 'border-ink font-medium text-ink'
+                ? 'border-ink text-ink'
                 : 'border-transparent text-ink-soft hover:border-hairline hover:text-ink'
             }`}
           >
             <span>{t(tabLabelKey(tab))}</span>
             {tab === 'search' && attentionCount > 0 ? (
               <span
-                className="text-[11px] font-medium tabular-nums text-amber-ink"
+                className="text-[11px] font-normal tabular-nums text-amber-ink"
                 title={tp('st.nbSearch.tabBar.attention', attentionCount)}
               >
                 {attentionCount}

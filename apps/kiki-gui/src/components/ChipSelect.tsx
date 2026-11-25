@@ -62,7 +62,7 @@ export function ChipSelect({
             // quiet text with a dashed hairline so it still reads as a choice.
             className={`inline-flex h-6 items-center gap-1 rounded-full px-3 text-[12px] transition-colors duration-[var(--kiki-motion-quick)] disabled:cursor-not-allowed disabled:opacity-50 ${
               selected
-                ? 'bg-paper pl-2 font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                ? 'bg-paper pl-2 text-ink shadow-[var(--kiki-sheet-shadow)]'
                 : 'border border-dashed border-hairline-strong text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
             }`}
           >
@@ -74,7 +74,7 @@ export function ChipSelect({
       {customValues.map((value) => (
         <span
           key={value}
-          className="inline-flex h-6 items-center gap-1 rounded-full bg-paper pr-1 pl-3 text-[12px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)]"
+          className="inline-flex h-6 items-center gap-1 rounded-full bg-paper pr-1 pl-3 text-[12px] font-normal text-ink shadow-[var(--kiki-sheet-shadow)]"
         >
           {value}
           <button

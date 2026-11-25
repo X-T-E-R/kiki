@@ -117,7 +117,7 @@ export function AddConnectionBySshDialog({ client, profiles, defaultHome, initia
             onChange={(event) => { setBorrowTools(event.target.checked); }}
             className="mt-0.5 h-4 w-4 shrink-0 rounded border-hairline-strong accent-selected-ink"
           />
-          <span className="font-medium text-ink">{t('st.remote.borrowTools')}</span>
+          <span className="font-normal text-ink">{t('st.remote.borrowTools')}</span>
         </label>
 
         <FeedbackLine feedback={failure} />

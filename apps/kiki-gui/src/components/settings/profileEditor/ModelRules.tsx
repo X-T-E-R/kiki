@@ -34,18 +34,18 @@ export function RuleMatrix({ title, rows, action, dataRules }: {
   const grid = GRID;
   return <section data-model-rules={dataRules} aria-label={title} className="min-w-0 space-y-2">
     <div className="flex min-h-7 items-center justify-between gap-2">
-      <h4 className="text-[13px] font-semibold text-ink">{title}</h4>
+      <h4 className="text-[13px] font-bold text-ink">{title}</h4>
       {action}
     </div>
     <div className="min-w-0 rounded-lg border border-hairline">
       <div className={`hidden gap-x-4 border-b border-hairline px-3 py-1.5 text-[11.5px] text-ink-faint sm:grid ${grid}`} aria-hidden>
         <span />
         {columns.map((column) => <span key={column} data-rule-column={column}
-          className={column === 'block' || column === 'allow' ? 'font-medium text-ink-soft' : 'text-ink-faint'}>{t(COLUMN_KEY[column])}</span>)}
+          className={column === 'block' || column === 'allow' ? 'font-normal text-ink-soft' : 'text-ink-faint'}>{t(COLUMN_KEY[column])}</span>)}
       </div>
       {rows.map((row, index) => <div key={row.id} data-rule-row={row.id}
         className={`grid min-w-0 grid-cols-1 gap-x-4 gap-y-2 px-3 py-2.5 ${grid} ${index > 0 ? 'border-t border-hairline' : ''}`}>
-        <span className="pt-1 text-[12px] font-medium text-ink-soft">{row.label}</span>
+        <span className="pt-1 text-[12px] font-normal text-ink-soft">{row.label}</span>
         {columns.map((column) => {
           const cell = row.cells[column];
           if (cell === null || cell === undefined) return <span key={column} aria-hidden className="hidden h-7 items-center text-[12px] text-ink-faint/60 sm:inline-flex">—</span>;
@@ -89,7 +89,7 @@ export function EffortCell({ values, onChange, disabled, dataAttr, any = false, 
       return <button key={level} type="button" aria-pressed={on} disabled={disabled} {...{ [dataAttr]: level }}
         onClick={() => onChange(on ? values.filter((value) => value !== level) : add(level))}
         className={`h-7 rounded-md border px-1.5 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 ${on
-          ? 'border-hairline-strong bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+          ? 'border-hairline-strong bg-panel text-ink shadow-[var(--kiki-sheet-shadow)]'
           : 'border-transparent text-ink-soft hover:bg-ink/[0.04] hover:text-ink'}`}>{effortLabel(level, t)}</button>;
     })}
     {any && values.length === 0 ? <span className="pl-1 text-[11.5px] text-ink-faint">{t('st.profiles.ruleAny')}</span> : null}

@@ -111,7 +111,7 @@ export interface CronTaskEditorProps {
   readonly onClose: () => void;
 }
 
-const LABEL = 'block text-[12px] font-medium text-ink-soft';
+const LABEL = 'block text-[12px] font-normal text-ink-soft';
 const SECTION = 'space-y-2.5';
 
 function pad(value: number): string {
@@ -558,7 +558,7 @@ export function CronTaskEditor({
                           onClick={() => { toggleWeekday(day); }}
                           className={`h-8 min-w-11 rounded-md border px-2.5 text-[12px] transition-colors ${
                             on
-                              ? 'border-hairline bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                              ? 'border-hairline bg-panel text-ink shadow-[var(--kiki-sheet-shadow)]'
                               : 'border-dashed border-hairline-strong text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
                           }`}
                         >
@@ -750,7 +750,7 @@ export function CronTaskEditor({
                   type="button"
                   data-cron-prompt-retry
                   onClick={() => { void detail.refetch(); }}
-                  className="mt-0.5 font-medium underline underline-offset-2"
+                  className="mt-0.5 font-normal underline underline-offset-2"
                 >
                   {t('common.retry')}
                 </button>
@@ -810,7 +810,7 @@ function Choice({
       onClick={onSelect}
       className={`h-8 rounded-md border px-3 text-[12px] transition-colors ${
         active
-          ? 'border-hairline bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+          ? 'border-hairline bg-panel text-ink shadow-[var(--kiki-sheet-shadow)]'
           : 'border-dashed border-hairline-strong text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
       }`}
     >

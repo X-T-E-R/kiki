@@ -200,7 +200,7 @@ function SpaceChangeDialogContext({ target, spaceName, canPush, request, onClose
     <Dialog onClose={() => { if (!busy) onClose(); }} ariaLabel={t(TITLE[action])} overlayId="space-change-dialog"
       panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} max-h-[calc(100dvh-2rem)] overflow-y-auto`}>
       <div data-space-change-dialog={action}>
-        <h2 className="font-display text-[17px] font-semibold text-ink">{t(TITLE[action])}</h2>
+        <h2 className="font-display text-[17px] font-bold text-ink">{t(TITLE[action])}</h2>
         <p className="mt-1.5 text-[13px] leading-relaxed text-ink-soft">{t(BODY[action])}</p>
         <p className="mt-1 text-[12px] text-ink-faint">{spaceName}</p>
 
@@ -279,4 +279,4 @@ function SpaceChangeDialogContext({ target, spaceName, canPush, request, onClose
   );
 }
 
-const LINK_BUTTON = 'rounded px-1 py-0.5 text-left text-[12px] font-medium text-ink-soft underline decoration-hairline-strong underline-offset-2 outline-none transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink';
+const LINK_BUTTON = 'rounded px-1 py-0.5 text-left text-[12px] font-normal text-ink-soft underline decoration-hairline-strong underline-offset-2 outline-none transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink';

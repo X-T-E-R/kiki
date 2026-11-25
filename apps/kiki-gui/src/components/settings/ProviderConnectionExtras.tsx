@@ -201,7 +201,7 @@ export function ProviderConnectionExtras({ providerId, onSaved }: { providerId: 
 
   return (
     <div className="space-y-4 rounded-lg border border-hairline bg-panel/50 p-3" data-provider-extras={providerId}>
-      <p className="text-[11px] font-semibold text-ink-soft">{t('st.providerExtras.title')}</p>
+      <p className="text-[11px] font-normal text-ink-soft">{t('st.providerExtras.title')}</p>
       <div className="max-w-sm">
         <span className={FORM_LABEL}>{t('st.providerExtras.modelSource')}</span>
         <div className="mt-1">

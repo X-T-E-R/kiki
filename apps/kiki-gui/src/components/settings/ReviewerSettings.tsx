@@ -123,7 +123,7 @@ export function ReviewerSettings() {
         <AdvancedDetails summary={t('st.advanced.disclosure')} data-reviewer-advanced className="space-y-4 text-[13px] text-ink">
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
           <label className="block space-y-1.5">
-            <span className="block text-[13px] font-medium text-ink">{t('st.reviewer.timeoutS')}</span>
+            <span className="block text-[13px] font-normal text-ink">{t('st.reviewer.timeoutS')}</span>
             <span className="flex items-center gap-1.5">
               <input type="number" className={`${INPUT} w-full text-[13px] tabular-nums`} value={draft.timeoutS}
                 min={0.1} max={30} step={0.1}
@@ -133,13 +133,13 @@ export function ReviewerSettings() {
             </span>
           </label>
           {(['allowThreshold', 'denyThreshold'] as const).map((key) => <label key={key} className="block space-y-1.5">
-            <span className="block text-[13px] font-medium text-ink">{t(`st.reviewer.${key}` as I18nKey)}</span>
+            <span className="block text-[13px] font-normal text-ink">{t(`st.reviewer.${key}` as I18nKey)}</span>
             <input type="number" className={`${INPUT} text-[13px] tabular-nums`} value={draft[key]}
               min={0.5} max={1} step={0.01}
               onChange={(event) => update({ [key]: event.target.value })} /></label>)}
         </div>
         <Hint>{t('st.reviewer.thresholdHint')}</Hint>
-        <fieldset className="space-y-1"><legend className="mb-1.5 text-[13px] font-medium text-ink">{t('st.reviewer.categories')}</legend>
+        <fieldset className="space-y-1"><legend className="mb-1.5 text-[13px] font-normal text-ink">{t('st.reviewer.categories')}</legend>
           {CATEGORIES.map((category) => <label key={category} className="flex min-h-7 cursor-pointer items-center gap-2 text-[13px] text-ink">
             <input type="checkbox" className="h-4 w-4 accent-[var(--color-selected-ink)]" checked={draft.categories.includes(category)} onChange={(event) => update({
               categories: event.target.checked ? [...draft.categories, category] : draft.categories.filter((item) => item !== category),

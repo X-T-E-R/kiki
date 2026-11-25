@@ -63,7 +63,7 @@ export function LabsSection() {
                 to={`/settings/${section}${query}#${card}`}
                 data-labs-link={section}
                 aria-label={t('st.labs.openIn', { page })}
-                className="inline-flex min-h-8 shrink-0 items-center rounded-md px-1 text-[13px] font-medium text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                className="inline-flex min-h-8 shrink-0 items-center rounded-md px-1 text-[13px] font-normal text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
               >
                 {page}
               </Link>

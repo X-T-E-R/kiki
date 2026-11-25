@@ -116,7 +116,7 @@ export function NbSearchLaneComposer({
     <div className="space-y-4" data-nb-search-composer>
       <div className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-[12px] font-medium text-ink-soft">{t('st.nbSearch.composer.methodsTitle')}</p>
+          <p className="text-[12px] font-normal text-ink-soft">{t('st.nbSearch.composer.methodsTitle')}</p>
           <span className="flex shrink-0 flex-wrap items-center gap-2">
             <button
               type="button"
@@ -197,7 +197,7 @@ export function NbSearchLaneComposer({
                             : t(nbSearchUsageWord(lane.availability, execution))}
                         </span>
                         {isDefault ? (
-                          <span className="shrink-0 rounded-full bg-panel px-1.5 py-px text-[11px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)]" data-nb-search-lane-default>
+                          <span className="shrink-0 rounded-full bg-panel px-1.5 py-px text-[11px] font-normal text-ink shadow-[var(--kiki-sheet-shadow)]" data-nb-search-lane-default>
                             {inheritedDefault ? t('st.nbSearch.services.inheritBadge') : t('st.nbSearch.services.defaultBadge')}
                           </span>
                         ) : null}
@@ -251,7 +251,7 @@ export function NbSearchLaneComposer({
       <div className="space-y-2" data-nb-search-presets>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="min-w-0">
-            <p className="text-[13px] font-medium text-ink">{t('st.nbSearch.custom.preset.group')}</p>
+            <p className="text-[13px] font-normal text-ink">{t('st.nbSearch.custom.preset.group')}</p>
             <Hint>{t('st.nbSearch.custom.preset.groupHint')}</Hint>
           </div>
           <button

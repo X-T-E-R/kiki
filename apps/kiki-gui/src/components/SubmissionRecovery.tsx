@@ -13,7 +13,7 @@ import { useI18n } from '../i18n';
 import { ConversationDockColumn } from './ConversationDockColumn';
 import { Icon } from './icons';
 
-const ACTION = 'h-7 shrink-0 rounded-md text-[12px] font-medium transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none';
+const ACTION = 'h-7 shrink-0 rounded-md text-[12px] font-normal transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none';
 const PRIMARY = `${ACTION} bg-accent px-3 text-on-accent hover:bg-accent-deep`;
 const QUIET = `${ACTION} px-2 text-ink-soft hover:bg-ink/[0.05] hover:text-ink`;
 

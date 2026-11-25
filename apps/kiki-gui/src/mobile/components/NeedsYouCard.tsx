@@ -85,7 +85,7 @@ export function NeedsYouCard({ item, client, onOpenThread, onResolved }: NeedsYo
       >
         <div className="mb-1.5 flex items-center gap-2 text-[12px] text-ink-faint">
           <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-accent" aria-hidden="true" />
-          <span className="min-w-0 truncate font-medium text-ink-soft">{item.spaceName}</span>
+          <span className="min-w-0 truncate font-normal text-ink-soft">{item.spaceName}</span>
           <span aria-hidden="true">·</span>
           <RelativeTime at={item.at} className="shrink-0 tabular-nums" />
         </div>
@@ -93,7 +93,7 @@ export function NeedsYouCard({ item, client, onOpenThread, onResolved }: NeedsYo
         {approvalSummary !== undefined ? (
           <ApprovalHeadline summary={approvalSummary} />
         ) : (
-          <h3 className="line-clamp-2 text-[15px] font-medium leading-[1.4] text-ink">{headline}</h3>
+          <h3 className="line-clamp-2 text-[15px] font-bold leading-[1.4] text-ink">{headline}</h3>
         )}
 
         <div className="mt-3 flex items-center gap-2">
@@ -104,7 +104,7 @@ export function NeedsYouCard({ item, client, onOpenThread, onResolved }: NeedsYo
                 data-mobile-approve-btn={firstApproval.approval_id}
                 disabled={submitting}
                 onClick={() => { void submitApproval('approved'); }}
-                className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full bg-accent px-4 text-[13.5px] font-medium text-primary-foreground transition-colors hover:bg-accent-deep disabled:opacity-55"
+                className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full bg-accent px-4 text-[13.5px] font-normal text-primary-foreground transition-colors hover:bg-accent-deep disabled:opacity-55"
               >
                 <Icon name="check" size={14} />
                 <span>{t('mobile.approval.approve')}</span>
@@ -114,7 +114,7 @@ export function NeedsYouCard({ item, client, onOpenThread, onResolved }: NeedsYo
                 data-mobile-reject-btn={firstApproval.approval_id}
                 disabled={submitting}
                 onClick={() => { setRejectSheetOpen(true); }}
-                className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full border border-hairline bg-paper px-4 text-[13.5px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-55"
+                className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full border border-hairline bg-paper px-4 text-[13.5px] font-normal text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-55"
               >
                 <Icon name="cross" size={14} />
                 <span>{t('mobile.approval.reject')}</span>
@@ -128,7 +128,7 @@ export function NeedsYouCard({ item, client, onOpenThread, onResolved }: NeedsYo
               title={detailQuery.error instanceof Error ? detailQuery.error.message : String(detailQuery.error)}
               aria-label={t('mobile.space.retry')}
               onClick={() => { void detailQuery.refetch(); }}
-              className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full border border-hairline bg-paper px-4 text-[13px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-55"
+              className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full border border-hairline bg-paper px-4 text-[13px] font-normal text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-55"
             >
               <Icon name="refresh" size={12} />
               <span>{t('mobile.space.retry')}</span>
@@ -138,7 +138,7 @@ export function NeedsYouCard({ item, client, onOpenThread, onResolved }: NeedsYo
           <button
             type="button"
             onClick={onOpenThread}
-            className="ml-auto inline-flex h-11 shrink-0 items-center gap-1 rounded-full px-3 text-[13px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
+            className="ml-auto inline-flex h-11 shrink-0 items-center gap-1 rounded-full px-3 text-[13px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
           >
             <span>{t('mobile.approval.details')}</span>
             <Icon name="chevron" size={12} />

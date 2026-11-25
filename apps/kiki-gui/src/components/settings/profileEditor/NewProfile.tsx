@@ -93,7 +93,7 @@ export function NewProfile({ workspaceId, workspaceOptions: providedWorkspaceOpt
     data-new-start={value} onClick={() => setStart(value)}
     className={`flex min-h-[4.5rem] flex-1 basis-[11rem] flex-col items-start gap-1 rounded-lg border px-3 py-2 text-left transition-colors ${start === value
       ? 'border-hairline-strong bg-panel shadow-[var(--kiki-sheet-shadow)]' : 'border-hairline hover:border-hairline-strong'}`}>
-    <span className="flex items-center gap-1.5 text-[13px] font-medium text-ink"><Icon name={icon} size={12} />{t(`st.profiles.start.${value}` as I18nKey)}</span>
+    <span className="flex items-center gap-1.5 text-[13px] font-normal text-ink"><Icon name={icon} size={12} />{t(`st.profiles.start.${value}` as I18nKey)}</span>
     <span className="text-[12px] leading-snug text-ink-faint">{t(`st.profiles.start.${value}Hint` as I18nKey)}</span>
   </button>;
 
@@ -103,7 +103,7 @@ export function NewProfile({ workspaceId, workspaceOptions: providedWorkspaceOpt
       {startCard('copy', 'agent')}{startCard('template', 'notes')}{startCard('blank', 'edit')}
     </div>
     {start === 'copy' ? <div className="space-y-1.5">
-      <label htmlFor="new-profile-source" className="text-[12px] font-medium text-ink-soft">{t('st.profiles.copyFrom')}</label>
+      <label htmlFor="new-profile-source" className="text-[12px] font-normal text-ink-soft">{t('st.profiles.copyFrom')}</label>
       <SearchableSelect id="new-profile-source" value={source} ariaLabel={t('st.profiles.copyFrom')} buttonClassName={FORM_SELECT_TRIGGER}
         options={sources.map((profile) => ({
           value: profile.name, label: profile.name, description: profile.description, hint: profile.pinned_model_alias,
@@ -113,20 +113,20 @@ export function NewProfile({ workspaceId, workspaceOptions: providedWorkspaceOpt
       <Hint>{t('st.profiles.copyHint')}</Hint>
     </div> : null}
     {start === 'template' ? <div className="space-y-1.5">
-      <span id="new-profile-template" className="text-[12px] font-medium text-ink-soft">{t('st.agentManager.template')}</span>
+      <span id="new-profile-template" className="text-[12px] font-normal text-ink-soft">{t('st.agentManager.template')}</span>
       <div><SettingsSegmented<Template> ariaLabelledBy="new-profile-template" value={template} onChange={setTemplate}
         choices={[{ value: 'implementer', label: t('st.agentManager.implementer') }, { value: 'reviewer', label: t('st.agentManager.reviewer') }]} /></div>
     </div> : null}
     <div className="grid gap-4 sm:grid-cols-2">
       <div className="space-y-1.5">
-        <label htmlFor="new-profile-name" className="text-[12px] font-medium text-ink-soft">{t('st.agentManager.name')}</label>
+        <label htmlFor="new-profile-name" className="text-[12px] font-normal text-ink-soft">{t('st.agentManager.name')}</label>
         <input id="new-profile-name" className={`${INPUT} font-mono text-[13px]`} value={name} spellCheck={false}
           aria-invalid={name !== '' && !validName} aria-describedby="new-profile-name-issue" onChange={(event) => setName(event.target.value)} />
         {name !== '' && !validName ? <p id="new-profile-name-issue" role="alert" className="text-[12px] text-danger">
           {t(taken ? 'st.profiles.nameTaken' : 'st.agentManager.nameRequired', { name })}</p> : null}
       </div>
       <div className="space-y-1.5">
-        <span id="new-profile-scope" className="text-[12px] font-medium text-ink-soft">{t('st.agentManager.scope')}</span>
+        <span id="new-profile-scope" className="text-[12px] font-normal text-ink-soft">{t('st.agentManager.scope')}</span>
         <div><SettingsSegmented<'user' | 'project'> ariaLabelledBy="new-profile-scope" value={scope} onChange={setScope}
           choices={[{ value: 'user', label: t('st.agentManager.userScope') }, { value: 'project', label: t('st.agentManager.projectScope') }]} /></div>
       </div>
@@ -136,20 +136,20 @@ export function NewProfile({ workspaceId, workspaceOptions: providedWorkspaceOpt
       <p className="text-[11.5px] text-ink-faint">{t(effectiveMain ? 'st.profiles.mainOnHint' : 'st.profiles.mainOffHint')}</p>
     </div>
     <div className="space-y-1.5">
-      <label htmlFor="new-profile-description" className="text-[12px] font-medium text-ink-soft">
+      <label htmlFor="new-profile-description" className="text-[12px] font-normal text-ink-soft">
         {t('st.namedAgents.description')}{start !== 'blank' ? <span className="font-normal text-ink-faint"> · {t('st.profiles.optionalKeep')}</span> : null}
       </label>
       <textarea id="new-profile-description" rows={2} className={`${INPUT} text-[13px]`} value={description}
         placeholder={start === 'copy' ? sourceProfile?.description : undefined} onChange={(event) => setDescription(event.target.value)} />
     </div>
     {start === 'blank' ? <div className="space-y-1.5">
-      <label htmlFor="new-profile-prompt" className="text-[12px] font-medium text-ink-soft">{t('st.profiles.prompt')}</label>
+      <label htmlFor="new-profile-prompt" className="text-[12px] font-normal text-ink-soft">{t('st.profiles.prompt')}</label>
       <textarea id="new-profile-prompt" className={`${INPUT} min-h-40 font-mono text-[12.5px] leading-relaxed`} value={prompt}
         placeholder={t('st.profiles.promptPlaceholder')} onChange={(event) => setPrompt(event.target.value)} />
     </div> : null}
     {workspaceId === undefined ? (
       <div className="space-y-1.5" data-new-profile-workspace-picker>
-        <label htmlFor="new-profile-workspace" className="text-[12px] font-medium text-ink-soft">
+        <label htmlFor="new-profile-workspace" className="text-[12px] font-normal text-ink-soft">
           {t('new.workspace')}
         </label>
         {availableWorkspaceOptions.length > 0 ? (

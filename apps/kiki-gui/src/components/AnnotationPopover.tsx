@@ -127,7 +127,7 @@ export function AnnotationPopover({
             type="button"
             data-annotation-panel-remove
             {...(annotation.comment === null ? { 'data-autofocus': '' } : {})}
-            className="min-h-10 rounded-md px-2 text-[11px] font-medium text-ink-faint transition-colors hover:bg-danger/10 hover:text-danger sm:min-h-8"
+            className="min-h-10 rounded-md px-2 text-[11px] font-normal text-ink-faint transition-colors hover:bg-danger/10 hover:text-danger sm:min-h-8"
             onClick={() => { onRemove(annotation.id); }}
           >
             {t('transcript.annotation.remove')}
@@ -137,7 +137,7 @@ export function AnnotationPopover({
               type="button"
               data-annotation-panel-save
               disabled={!dirty}
-              className="min-h-10 rounded-md bg-ink/[0.06] px-3 text-[11px] font-semibold text-ink transition-colors hover:bg-ink/[0.1] disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-8"
+              className="min-h-10 rounded-md bg-ink/[0.06] px-3 text-[11px] font-normal text-ink transition-colors hover:bg-ink/[0.1] disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-8"
               onClick={save}
             >
               {t('transcript.annotation.save')}

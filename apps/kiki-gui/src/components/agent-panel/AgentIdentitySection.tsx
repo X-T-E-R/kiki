@@ -323,7 +323,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
             size={12}
           />
         </span>
-        <span data-profile-name className="min-w-0 shrink truncate font-display text-[14.5px] leading-5 font-semibold tracking-tight text-ink">{profileLabel}</span>
+        <span data-profile-name className="min-w-0 shrink truncate font-display text-[14.5px] leading-5 font-bold text-ink">{profileLabel}</span>
         {source !== undefined ? (
           <span data-profile-source-badge={identity.source} title={source.title} className={`shrink-0 rounded px-1.5 py-px text-[11px] leading-4 ${SOURCE_TONE_CLASS[source.tone]}`}>
             {source.text}
@@ -426,7 +426,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
           <button
             type="button"
             onClick={() => setDrawerTarget({ kind: 'profile', identity })}
-            className="min-w-0 truncate text-left font-display text-[18px] leading-tight font-semibold tracking-tight text-ink transition-colors hover:text-ink-soft"
+            className="min-w-0 truncate text-left font-display text-[18px] leading-tight font-bold text-ink transition-colors hover:text-ink-soft"
             title={t('inspector.details')}
           >
             {identity.label}
@@ -504,7 +504,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
       ) : null}
       {treeRows.length > 0 ? (
         <dl data-tree-metrics className="space-y-1 text-[13px]">
-          <p className="text-[12px] font-medium text-ink-faint">
+          <p className="text-[12px] font-normal text-ink-faint">
             {t('inspector.treeTotal')}
             {' · '}
             {t('inspector.treeCounts', { active: treeMetrics?.activeSubagentsCount ?? 0, total: treeMetrics?.totalSubagentsCount ?? 0 })}

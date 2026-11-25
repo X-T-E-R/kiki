@@ -217,7 +217,7 @@ export function WorkspacePanelsControl({
             aria-label={panelsLabel}
             className={`anim-enter flex w-60 max-h-[min(22rem,var(--available-height,60vh))] flex-col p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
           >
-            <p className="px-2.5 py-1 text-[11px] font-medium text-ink-faint">{panelsLabel}</p>
+            <p className="px-2.5 py-1 text-[11px] font-normal text-ink-faint">{panelsLabel}</p>
             <label className="relative mx-1.5 mb-1 block">
               <span className="sr-only">{t('preview.panels.search')}</span>
               <Icon name="search" size={12} className="pointer-events-none absolute top-1/2 left-2 -translate-y-1/2 text-ink-faint" />
@@ -274,7 +274,7 @@ export function WorkspacePanelsControl({
                     data-plugin-composer-slot={key}
                     onClick={() => { activatePanelSlot(slot, key, label, isPanelActive); }}
                     className={`flex h-8 w-full cursor-pointer items-center gap-2 rounded-md px-2.5 text-left text-[13px] transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-10 ${
-                      isPanelActive ? 'bg-canvas font-medium text-ink' : 'text-ink'
+                      isPanelActive ? 'bg-canvas text-ink' : 'text-ink'
                     }`}
                   >
                     {isBusy ? (

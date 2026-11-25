@@ -21,7 +21,7 @@ import { SkillPreviewButton } from './SkillPreviewButton';
 import { SECONDARY_BUTTON } from '../ui';
 
 const BADGE_CLASS =
-  'shrink-0 rounded-full border border-hairline bg-panel px-1.5 py-px text-[9px] font-medium tracking-wide text-ink-faint uppercase';
+  'shrink-0 rounded-full border border-hairline bg-panel px-1.5 py-px text-[9px] font-normal text-ink-faint uppercase';
 
 export function SkillCard({ skill, sourceLabel }: { skill: SkillDescriptor; sourceLabel: string }) {
   const { t } = useI18n();
@@ -29,7 +29,7 @@ export function SkillCard({ skill, sourceLabel }: { skill: SkillDescriptor; sour
   return (
     <div className="rounded-lg border border-hairline bg-paper px-3 py-2">
       <div className="flex items-center gap-2 flex-wrap">
-        <p className="min-w-0 truncate text-[13px] font-medium text-ink">{skill.name}</p>
+        <p className="min-w-0 truncate text-[13px] font-normal text-ink">{skill.name}</p>
         <span className={BADGE_CLASS}>{sourceLabel}</span>
         {skill.type ? (
           <span className="shrink-0 rounded bg-paper border border-hairline px-1.5 py-0.5 font-mono text-[9px] text-ink-soft">
@@ -42,14 +42,14 @@ export function SkillCard({ skill, sourceLabel }: { skill: SkillDescriptor; sour
           </span>
         ) : null}
         {skill.prompt_command ? (
-          <span className="shrink-0 rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-medium text-ink-soft">
+          <span className="shrink-0 rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-normal text-ink-soft">
             {t('agentPanel.promptCommandBadge')}
           </span>
         ) : null}
         {skillGroupId(skill.source) === 'plugin' ? (
           <Link
             to={{ pathname: '/settings/plugins', search: location.search }}
-            className="shrink-0 text-[11px] font-medium text-selected-ink hover:underline"
+            className="shrink-0 text-[11px] font-normal text-selected-ink hover:underline"
           >
             {t('st.plugins.manageLink')}
           </Link>
@@ -116,7 +116,7 @@ export function McpServerRow({ server }: { server: McpServer }) {
             className={`h-2 w-2 shrink-0 rounded-full ${statusDotClass(server.status)}`}
           />
           <div className="min-w-0">
-            <p className="truncate text-[13px] font-medium text-ink">{server.name}</p>
+            <p className="truncate text-[13px] font-normal text-ink">{server.name}</p>
             <p className="truncate font-mono text-[10.5px] text-ink-faint">
               {server.transport} · {t(`st.mcp.status.${server.status}`)} · {t('st.mcp.toolsCount', { count: server.tool_count })}
             </p>

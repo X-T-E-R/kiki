@@ -107,7 +107,7 @@ export function AddBrowserPanel({ onClose, manualForm, onManual }: {
                       onClick={() => { setStep({ kind: 'route', preset: preset.preset }); }}
                       className="group flex w-full items-center gap-3 px-1 py-3.5 text-left transition-colors hover:bg-ink/[0.025] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
                       <span className="min-w-0 flex-1">
-                        <span className="block text-[13.5px] font-medium text-ink">{routeName(t, preset)}</span>
+                        <span className="block text-[13.5px] font-normal text-ink">{routeName(t, preset)}</span>
                         {hint === undefined ? null : <span className="mt-0.5 block text-[12.5px] leading-5 text-ink-soft">{t(hint)}</span>}
                       </span>
                       <span className="inline-flex shrink-0 items-center gap-1.5 text-[12px] text-ink-faint" data-browser-pick-state={enabled ? readiness : 'disabled'}>
@@ -124,7 +124,7 @@ export function AddBrowserPanel({ onClose, manualForm, onManual }: {
                   onClick={() => { onManual(); setStep({ kind: 'manual' }); }}
                   className="group flex w-full items-center gap-3 px-1 py-3.5 text-left transition-colors hover:bg-ink/[0.025] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
                   <span className="min-w-0 flex-1">
-                    <span className="block text-[13.5px] font-medium text-ink">{t('st.browser.addManual')}</span>
+                    <span className="block text-[13.5px] font-normal text-ink">{t('st.browser.addManual')}</span>
                     <span className="mt-0.5 block text-[12.5px] leading-5 text-ink-soft">{t('st.browser.addManualHint')}</span>
                   </span>
                   <Icon name="chevron" size={14} className="shrink-0 text-ink-faint transition-colors group-hover:text-ink-soft" />

@@ -148,7 +148,7 @@ function ChunkRenderer({
           <button
             type="button"
             onClick={retry}
-            className="flex items-center gap-1 rounded bg-danger/10 px-2 py-0.5 font-medium hover:bg-danger/20"
+            className="flex items-center gap-1 rounded bg-danger/10 px-2 py-0.5 font-normal hover:bg-danger/20"
           >
             <Icon name="refresh" size={12} />
             重试
@@ -349,7 +349,7 @@ export function AssistantOutputContent({
             <span className="flex h-3.5 w-3.5 items-center justify-center text-accent">
               <Icon name="sliders" size={12} />
             </span>
-            <span className="font-medium text-ink-soft">{activePreset.label}</span>
+            <span className="font-normal text-ink-soft">{activePreset.label}</span>
             <span className="text-ink-faint/60">·</span>
             <span>未配置处理模型（显示原文）</span>
           </div>
@@ -358,14 +358,14 @@ export function AssistantOutputContent({
             <button
               type="button"
               onClick={() => setModalOpen(true)}
-              className="rounded px-1.5 py-0.5 text-[11px] font-medium text-accent hover:bg-accent/10"
+              className="rounded px-1.5 py-0.5 text-[11px] font-normal text-accent hover:bg-accent/10"
             >
               配置模型
             </button>
             <button
               type="button"
               onClick={() => { void handleCopyOriginal(); }}
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink"
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-normal text-ink-soft hover:bg-ink/[0.04] hover:text-ink"
               title="复制主模型原始文字"
             >
               <Icon
@@ -402,7 +402,7 @@ export function AssistantOutputContent({
           <span className="flex h-3.5 w-3.5 items-center justify-center text-accent">
             <Icon name="sliders" size={12} />
           </span>
-          <span className="font-medium text-ink-soft">{activePreset.label}</span>
+          <span className="font-normal text-ink-soft">{activePreset.label}</span>
           <span className="text-ink-faint/60">·</span>
           <span>{viewMode === 'processed' ? '处理版' : '原文'}</span>
         </div>
@@ -412,7 +412,7 @@ export function AssistantOutputContent({
           <button
             type="button"
             onClick={() => setViewMode(viewMode === 'processed' ? 'original' : 'processed')}
-            className="rounded px-1.5 py-0.5 text-[11px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink"
+            className="rounded px-1.5 py-0.5 text-[11px] font-normal text-ink-soft hover:bg-ink/[0.04] hover:text-ink"
           >
             {viewMode === 'processed' ? '查看原文' : '查看处理版'}
           </button>
@@ -421,7 +421,7 @@ export function AssistantOutputContent({
           <button
             type="button"
             onClick={() => { void handleCopyOriginal(); }}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink"
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-normal text-ink-soft hover:bg-ink/[0.04] hover:text-ink"
             title="复制主模型原始文字"
           >
             <Icon

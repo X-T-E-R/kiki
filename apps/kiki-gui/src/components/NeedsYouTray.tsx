@@ -193,7 +193,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
   const questions = items.length - approvals;
   const currentId = itemId(current);
   const headAction =
-    'inline-flex min-h-6 shrink-0 items-center rounded-md px-1.5 py-0.5 text-[12px] pointer-coarse:min-h-11 font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none';
+    'inline-flex min-h-6 shrink-0 items-center rounded-md px-1.5 py-0.5 text-[12px] pointer-coarse:min-h-11 font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none';
   const askEveryStep = onChangePermissionMode === undefined ? undefined : () => { onChangePermissionMode('manual'); };
   const currentCard = current.kind === 'approval' ? (
     <ApprovalCard
@@ -241,7 +241,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
       <section ref={rootRef} data-needs-you-tray data-needs-you-card aria-label={t('tray.aria')} className="anim-enter">
         <header className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 border-b border-hairline/60 px-3 py-1.5">
           <LifeMark markId="composer-needs-you" life="waiting" tone="bg-attention" />
-          <h2 className="shrink-0 text-[13px] font-medium text-attention">{t('composer.needsYou.title')}</h2>
+          <h2 className="shrink-0 text-[13px] font-bold text-attention">{t('composer.needsYou.title')}</h2>
           {ordered.length > 1 ? (
             <span data-tray-stepper className="flex items-center text-[12px] text-ink-faint tabular-nums">
               <button type="button" aria-label={t('composer.needsYou.previous')} title={t('composer.needsYou.previous')} onClick={() => { step(-1); }} className={stepButton}>
@@ -290,7 +290,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
           {/* The one moving accent mark on the screen: the tray is where the
               session waits, so it alone beckons. */}
           <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
-          <h2 className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">
+          <h2 className="min-w-0 flex-1 truncate text-[13px] font-bold text-ink">
             <span className="whitespace-nowrap">{t('tray.title')}</span>
             <span className="ml-1.5 hidden font-normal text-ink-faint sm:inline">
               {[
@@ -364,7 +364,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
                     onClick={() => { setPinned(id); }}
                     className="flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-11"
                   >
-                    <span className="shrink-0 text-[12px] font-medium text-ink-soft">
+                    <span className="shrink-0 text-[12px] font-normal text-ink-soft">
                       {item.kind === 'approval' ? t('pending.kind.approval') : t('pending.kind.question')}
                     </span>
                     <span className="flex min-w-0 flex-1 items-baseline text-ink-faint">

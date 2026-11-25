@@ -452,7 +452,7 @@ function RecipeMarketsCard() {
             </ul>
           )}
           <div className="space-y-2" data-recipe-market-add>
-            <p className="text-[12px] font-medium text-ink-soft">{t('st.recipe.marketAdd')}</p>
+            <p className="text-[12px] font-normal text-ink-soft">{t('st.recipe.marketAdd')}</p>
             <div className="flex flex-wrap gap-2">
               <input className={`${SMALL_INPUT} min-w-0 flex-1`} value={name}
                 placeholder={t('st.recipe.marketName')} data-recipe-market-add-name

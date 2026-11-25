@@ -68,11 +68,11 @@ const FAILURE_COPY: Record<ScopeRestoreFailure, { readonly title: I18nKey; reado
 // get the 44px target without changing the desktop density. The transparent
 // border keeps the primary the same height as the outlined one beside it.
 const PRIMARY_BUTTON =
-  'rounded-lg border border-transparent bg-accent px-4 py-2 text-[13px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint pointer-coarse:min-h-11';
+  'rounded-lg border border-transparent bg-accent px-4 py-2 text-[13px] font-normal text-on-accent transition-colors hover:bg-accent-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint pointer-coarse:min-h-11';
 const QUIET_BUTTON =
-  'rounded-lg border border-hairline-strong bg-paper px-4 py-2 text-[13px] font-medium text-ink transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11';
+  'rounded-lg border border-hairline-strong bg-paper px-4 py-2 text-[13px] font-normal text-ink transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11';
 const DANGER_BUTTON =
-  'rounded-lg border border-transparent bg-danger px-4 py-2 text-[13px] font-medium text-on-danger transition-colors hover:bg-danger/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11';
+  'rounded-lg border border-transparent bg-danger px-4 py-2 text-[13px] font-normal text-on-danger transition-colors hover:bg-danger/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11';
 const TOKEN_INPUT =
   'min-w-0 flex-1 rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent';
 
@@ -184,7 +184,7 @@ export function NavScopeRecovery({ state, retry, cancel, remote, exitSpaceName }
       {needsToken ? (
         <div className="mt-5">
           <div className="mb-1 flex items-baseline justify-between gap-2">
-            <label htmlFor={tokenId} className="text-[12px] font-medium text-ink-soft">
+            <label htmlFor={tokenId} className="text-[12px] font-normal text-ink-soft">
               {t('connect.accessToken')}
             </label>
             <span

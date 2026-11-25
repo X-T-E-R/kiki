@@ -486,7 +486,7 @@ export function ProfileSelect({
           />
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-center justify-between gap-1.5">
-              <span className="min-w-0 truncate font-medium text-ink">{p.name}</span>
+              <span className="min-w-0 truncate font-normal text-ink">{p.name}</span>
               {sourceLabel ? (
                 <span className="shrink-0 text-[11px] text-ink-faint">{sourceLabel}</span>
               ) : null}
@@ -546,8 +546,8 @@ export function ProfileSelect({
           }
         }}
         className={showPersona === true
-          ? 'flex h-7 min-w-0 max-w-[min(11rem,100%)] items-center gap-1.5 overflow-hidden rounded-full pr-1.5 pl-1.5 text-[13px] font-medium text-ink outline-none transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:opacity-60 pointer-coarse:h-10'
-          : `${STATUS_SEGMENT_CLASS} max-w-[min(13rem,100%)] overflow-hidden ${pending ? 'pr-5 font-medium text-accent-ink hover:text-accent-ink' : choice.profile !== undefined || choice.profile_file !== undefined ? STATUS_SEGMENT_SET : ''} disabled:cursor-not-allowed disabled:opacity-60`}
+          ? 'flex h-7 min-w-0 max-w-[min(11rem,100%)] items-center gap-1.5 overflow-hidden rounded-full pr-1.5 pl-1.5 text-[13px] text-ink outline-none transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:opacity-60 pointer-coarse:h-10'
+          : `${STATUS_SEGMENT_CLASS} max-w-[min(13rem,100%)] overflow-hidden ${pending ? 'pr-5 font-normal text-accent-ink hover:text-accent-ink' : choice.profile !== undefined || choice.profile_file !== undefined ? STATUS_SEGMENT_SET : ''} disabled:cursor-not-allowed disabled:opacity-60`}
       >
         {showPersona === true ? (
           <>
@@ -657,7 +657,7 @@ export function ProfileSelect({
                 >
                   <Icon name="arrowLeft" size={12} />
                 </button>
-                <span className="min-w-0 truncate text-[12px] font-medium text-ink">{t('composer.execution.fileGroupAria')}</span>
+                <span className="min-w-0 truncate text-[12px] font-normal text-ink">{t('composer.execution.fileGroupAria')}</span>
               </div>
               <form
                 className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain p-2.5"
@@ -713,7 +713,7 @@ export function ProfileSelect({
                         size={14}
                         className={STATUS_SEGMENT_ICON_CLASS}
                       />
-                      <span className="min-w-0 truncate text-[12.5px] font-medium text-ink">{checkedProfile.name}</span>
+                      <span className="min-w-0 truncate text-[12.5px] font-normal text-ink">{checkedProfile.name}</span>
                       <span className="shrink-0 text-[11px] text-ink-faint">
                         {isNativeExecutor(checkedProfile.executor)
                           ? nativeLabel
@@ -729,7 +729,7 @@ export function ProfileSelect({
                       data-execution-file-use
                       data-execution-file-apply
                       onClick={() => { applyFile(checkedProfile, checkedPath); }}
-                      className="mt-2 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] font-medium text-ink transition-colors hover:border-hairline-strong hover:text-ink focus-visible:border-selected-ink"
+                      className="mt-2 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] font-normal text-ink transition-colors hover:border-hairline-strong hover:text-ink focus-visible:border-selected-ink"
                     >
                       {t('composer.execution.fileUse')}
                     </button>
@@ -767,7 +767,7 @@ export function ProfileSelect({
                       to="/settings/ai?tab=providers#st-card-engines"
                       data-execution-configure
                       onClick={() => { close(); }}
-                      className="text-[11.5px] font-medium text-ink underline decoration-dotted underline-offset-2"
+                      className="text-[11.5px] font-normal text-ink underline decoration-dotted underline-offset-2"
                     >
                       {t('composer.execution.configure')}
                     </Link>
@@ -776,7 +776,7 @@ export function ProfileSelect({
 
                 {/* Group 1: 内置直通（默认） */}
                 <div>
-                  <div className="px-3 pt-1 pb-1 text-[11px] font-medium uppercase tracking-wider text-ink-faint">
+                  <div className="px-3 pt-1 pb-1 text-[11px] font-normal uppercase text-ink-faint">
                     {t('composer.profileGroupPassthrough')}
                   </div>
                   <ul className="space-y-0.5">
@@ -799,7 +799,7 @@ export function ProfileSelect({
                           <Icon name="profileMain" size={14} className="mt-[3px] shrink-0 text-ink-soft" />
                           <span className="min-w-0 flex-1">
                             <span className="flex min-w-0 items-center justify-between gap-1.5">
-                              <span className="block min-w-0 truncate font-medium text-ink">{nativeLabel}</span>
+                              <span className="block min-w-0 truncate font-normal text-ink">{nativeLabel}</span>
                               <span className="shrink-0 text-[11px] text-ink-faint">{t('composer.profilePassthroughBadge')}</span>
                             </span>
                             <span className="mt-0.5 block text-[11.5px] leading-snug text-ink-faint">
@@ -850,7 +850,7 @@ export function ProfileSelect({
                             <Icon name="terminal" size={14} className="mt-[3px] shrink-0 text-ink-soft" />
                             <span className="min-w-0 flex-1">
                               <span className="flex min-w-0 items-center justify-between gap-1.5">
-                                <span className="block min-w-0 truncate font-medium text-ink">{item.label}</span>
+                                <span className="block min-w-0 truncate font-normal text-ink">{item.label}</span>
                                 <span className="shrink-0 text-[11px] text-ink-faint">{t('composer.profilePassthroughBadge')}</span>
                               </span>
                               {item.status === 'unavailable' ? (
@@ -876,7 +876,7 @@ export function ProfileSelect({
                   </ul>
                   {!isNativeExecutor(choice.executor) && (choice.profile === undefined || choice.profile === '') && !hasFile ? (
                     <div className="px-3 py-2" data-execution-schedule>
-                      <label htmlFor="execution-schedule" className="mb-1 block text-[11px] font-medium text-ink-faint">{t('st.engines.schedule.label')}</label>
+                      <label htmlFor="execution-schedule" className="mb-1 block text-[11px] font-normal text-ink-faint">{t('st.engines.schedule.label')}</label>
                       <ExecutorScheduleControl id="execution-schedule" executorId={choice.executor} catalog={catalog}
                         value={choice.overrides?.executor_instance ?? (choice.executor.startsWith('instance-') ? choice.executor : undefined)}
                         onChange={(next) => {
@@ -895,7 +895,7 @@ export function ProfileSelect({
 
                 {/* Group 2: 自定义 Profile */}
                 <div className="border-t border-hairline pt-1">
-                  <div className="px-3 pt-1 pb-1 text-[11px] font-medium uppercase tracking-wider text-ink-faint">
+                  <div className="px-3 pt-1 pb-1 text-[11px] font-normal uppercase text-ink-faint">
                     {t('composer.profileGroupCustom')}
                   </div>
                   <ul className="space-y-0.5">
@@ -923,7 +923,7 @@ export function ProfileSelect({
                             className="mt-[3px] shrink-0 text-ink-soft"
                           />
                           <span className="min-w-0 flex-1">
-                            <span className="block min-w-0 truncate font-medium text-ink">
+                            <span className="block min-w-0 truncate font-normal text-ink">
                               {resolvedFile.path === choice.profile_file && resolvedFile.name !== undefined
                                 ? resolvedFile.name
                                 : profileFileLabel(choice.profile_file)}
@@ -984,7 +984,7 @@ export function ProfileSelect({
                               className="mt-[3px] shrink-0 text-ink-soft"
                             />
                             <span className="min-w-0 flex-1">
-                              <span className="block min-w-0 truncate font-medium text-ink">
+                              <span className="block min-w-0 truncate font-normal text-ink">
                                 {retainedProfile === 'agent' && isNativeExecutor(boundExecution?.executor ?? choice.executor) ? nativeLabel : retainedProfile}
                               </span>
                               <span className="mt-0.5 block text-[11px] text-ink-faint">
@@ -1021,7 +1021,7 @@ export function ProfileSelect({
                         <span aria-hidden className="flex h-[19px] w-3 shrink-0 items-center text-ink-soft">
                           <Icon name="file" size={12} />
                         </span>
-                        <span className="min-w-0 truncate font-medium">{t('composer.execution.fileOpen')}</span>
+                        <span className="min-w-0 truncate font-normal">{t('composer.execution.fileOpen')}</span>
                       </button>
                     </li>
                   </ul>
@@ -1030,7 +1030,7 @@ export function ProfileSelect({
                 {/* Group 3: 角色 (Personas) */}
                 {onSelectPersona !== undefined ? (
                   <div className="border-t border-hairline pt-1">
-                    <div className="px-3 pt-1 pb-1 text-[11px] font-medium uppercase tracking-wider text-ink-faint">
+                    <div className="px-3 pt-1 pb-1 text-[11px] font-normal uppercase text-ink-faint">
                       {t('persona.title')}
                     </div>
                     {personasQuery.isPending && personasQuery.data === undefined ? (
@@ -1043,7 +1043,7 @@ export function ProfileSelect({
                         <button
                           type="button"
                           onClick={() => { void personasQuery.refetch(); }}
-                          className="text-[11.5px] font-medium text-ink underline decoration-dotted underline-offset-2"
+                          className="text-[11.5px] font-normal text-ink underline decoration-dotted underline-offset-2"
                         >
                           {t('common.retry')}
                         </button>
@@ -1080,7 +1080,7 @@ export function ProfileSelect({
                                   className="!rounded-full shrink-0 mt-0.5"
                                 />
                                 <span className="min-w-0 flex-1">
-                                  <span className="block min-w-0 truncate font-medium text-ink">
+                                  <span className="block min-w-0 truncate font-normal text-ink">
                                     {item.name}
                                   </span>
                                   {subline ? (

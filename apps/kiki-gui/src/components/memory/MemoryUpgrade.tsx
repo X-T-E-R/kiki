@@ -73,7 +73,7 @@ export function MemoryUpgradeStatus() {
   if (migration === undefined) {
     return (
       <div data-memory-upgrade="starting" role="status" className="space-y-1">
-        <p className="flex items-center gap-2 text-[13px] font-medium text-ink"><span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />{t('memory.upgrade.title.running')}</p>
+        <p className="flex items-center gap-2 text-[13px] font-normal text-ink"><span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />{t('memory.upgrade.title.running')}</p>
         <p className="text-[13px] leading-relaxed text-ink-soft">{t('memory.upgrade.runningLead')}</p>
       </div>
     );
@@ -92,7 +92,7 @@ export function MemoryUpgradeStatus() {
   return (
     <div data-memory-upgrade={step} data-memory-upgrade-operation={migration.id} role="status" className="space-y-3">
       <div className="space-y-1">
-        <p className={`text-[13px] font-medium ${step === 'failed' ? 'text-amber-ink' : 'text-ink'}`}>{t(`memory.upgrade.title.${step === 'failed' ? 'failed' : 'running'}`)}</p>
+        <p className={`text-[13px] font-normal ${step === 'failed' ? 'text-amber-ink' : 'text-ink'}`}>{t(`memory.upgrade.title.${step === 'failed' ? 'failed' : 'running'}`)}</p>
         <p className="text-[13px] leading-relaxed text-ink-soft">{t(step === 'failed' ? 'memory.upgrade.failedLead' : 'memory.upgrade.runningLead')}</p>
       </div>
 
@@ -173,7 +173,7 @@ export function MemoryMigrationIssues({ issues }: { readonly issues: readonly Me
   return (
     <section data-memory-migration-issues={issues.length} role="status" aria-label={t('memory.migrationIssues.title')} className="mb-4 space-y-2 border-l-2 border-amber-rule pl-3">
       <div className="space-y-1">
-        <h2 className="text-[13px] font-medium text-ink">{t('memory.migrationIssues.title')}</h2>
+        <h2 className="text-[13px] font-bold text-ink">{t('memory.migrationIssues.title')}</h2>
         <p className="text-[12px] leading-relaxed text-ink-soft">{t('memory.migrationIssues.lead')}</p>
       </div>
       <ul className="divide-y divide-hairline border-y border-hairline">

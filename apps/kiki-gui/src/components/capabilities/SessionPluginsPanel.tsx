@@ -601,7 +601,7 @@ function UsageStatus({ read }: { readonly read: UsageRead }) {
     return (
       <p role="status" data-rail-plugins-unavailable className="text-[12px] leading-relaxed text-ink-faint">
         {t('rail.plugins.unavailable')}
-        <button type="button" onClick={() => { void read.refetch(); }} className={`ml-1.5 rounded font-medium text-ink-soft transition-colors hover:text-ink ${FOCUS_RING}`}>
+        <button type="button" onClick={() => { void read.refetch(); }} className={`ml-1.5 rounded font-normal text-ink-soft transition-colors hover:text-ink ${FOCUS_RING}`}>
           {t('common.retry')}
         </button>
       </p>

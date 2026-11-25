@@ -39,7 +39,7 @@ export function SettingsGroup({
   return (
     <div className="space-y-2 pt-5 first:pt-0" data-settings-group>
       <div>
-        <p className="text-[13px] font-medium text-ink">{title}</p>
+        <p className="text-[13px] font-normal text-ink">{title}</p>
         {help !== undefined ? <Hint>{help}</Hint> : null}
       </div>
       <SettingsBox>{children}</SettingsBox>
@@ -182,7 +182,7 @@ export function AdvancedDetails({
     // browser's ▶ marker at 11px: a collapsed tail should read as one quiet,
     // familiar control wherever it sits.
     <details className="text-[12px] text-ink-soft" {...rest}>
-      <summary className="-ml-1 inline-flex min-h-7 cursor-pointer list-none select-none items-center gap-1 rounded px-1 font-medium text-ink-soft outline-none transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
+      <summary className="-ml-1 inline-flex min-h-7 cursor-pointer list-none select-none items-center gap-1 rounded px-1 font-normal text-ink-soft outline-none transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
         <Icon name="chevron" size={12} className="shrink-0 text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] ease-out [details[open]>summary>&]:rotate-90 motion-reduce:transition-none" />
         {summary}
       </summary>

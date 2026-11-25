@@ -241,7 +241,7 @@ export const TaskBoard = memo(function TaskBoard({
               type="button"
               onClick={onCloseBoard}
               aria-label={t('taskBoard.backToSession')}
-              className="flex items-center gap-1 rounded-lg border border-hairline px-3 py-1.5 text-[13px] font-medium text-ink-soft hover:border-hairline-strong hover:text-ink transition-colors"
+              className="flex items-center gap-1 rounded-lg border border-hairline px-3 py-1.5 text-[13px] font-normal text-ink-soft hover:border-hairline-strong hover:text-ink transition-colors"
             >
               <Icon name="chevron" size={12} className="rotate-180" />
               <span>{t('taskBoard.backToSession')}</span>
@@ -250,7 +250,7 @@ export const TaskBoard = memo(function TaskBoard({
 
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h2 className="font-display text-[15px] font-semibold text-ink leading-none">
+              <h2 className="font-display text-[15px] font-bold text-ink leading-none">
                 {t('taskBoard.title')}
               </h2>
               {loading ? (
@@ -281,7 +281,7 @@ export const TaskBoard = memo(function TaskBoard({
               type="button"
               data-board-new-task
               onClick={() => setShowNewTaskModal(true)}
-              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-[13px] font-medium text-on-accent transition-colors hover:bg-accent-deep"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-[13px] font-normal text-on-accent transition-colors hover:bg-accent-deep"
             >
               <Icon name="plus" size={14} />
               {t('taskBoard.newTask')}
@@ -336,7 +336,7 @@ export const TaskBoard = memo(function TaskBoard({
           data-task-board-unavailable
           className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 overflow-y-auto px-6 py-12 text-center"
         >
-          <h3 className="font-display text-[18px] font-semibold text-ink">
+          <h3 className="font-display text-[18px] font-bold text-ink">
             {t('taskBoard.unavailable.title')}
           </h3>
           <p className="max-w-xl text-[13px] leading-relaxed text-ink-soft">
@@ -350,7 +350,7 @@ export const TaskBoard = memo(function TaskBoard({
                   className="flex items-baseline gap-2 text-[12px]"
                   title={renderIssue(locale, issue.issue)}
                 >
-                  <span className="min-w-0 flex-1 truncate font-medium text-ink-soft">
+                  <span className="min-w-0 flex-1 truncate font-normal text-ink-soft">
                     {workspaceTitle(issue.workspaceId)}
                   </span>
                   <span className="shrink-0 text-ink-faint">
@@ -370,7 +370,7 @@ export const TaskBoard = memo(function TaskBoard({
                 data-task-board-unavailable-retry
                 disabled={refreshDisabled}
                 onClick={() => { void onRefresh(); }}
-                className="rounded-lg border border-hairline px-3 py-2 text-[13px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-lg border border-hairline px-3 py-2 text-[13px] font-normal text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {t('common.retry')}
               </button>
@@ -379,7 +379,7 @@ export const TaskBoard = memo(function TaskBoard({
               <button
                 type="button"
                 onClick={onOpenSettings}
-                className="rounded-lg border border-hairline px-3 py-2 text-[13px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+                className="rounded-lg border border-hairline px-3 py-2 text-[13px] font-normal text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
               >
                 {t('sidebar.manageWorkspaces')}
               </button>
@@ -432,7 +432,7 @@ export const TaskBoard = memo(function TaskBoard({
                 {/* Lane header: status mark, sentence-case label, count. */}
                 <div className="flex shrink-0 items-center gap-2 px-3 pt-3 pb-2">
                   <StatusGlyph status={col.status} />
-                  <h3 className="min-w-0 truncate text-[13px] font-medium text-ink">
+                  <h3 className="min-w-0 truncate text-[13px] font-bold text-ink">
                     {col.label}
                   </h3>
                   <span data-board-column-count className="text-[12px] text-ink-faint tabular-nums">

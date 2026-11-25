@@ -112,9 +112,9 @@ export function MobileQuestionCard({ block, onAnswer, onDismiss, onOpenWorkbench
           const otherLabel = question.other_label ?? t('ia.other');
           return (
             <fieldset key={question.id} className="min-w-0">
-              <legend className="mb-2.5 text-[15px] font-medium leading-snug text-ink">
+              <legend className="mb-2.5 text-[15px] font-normal leading-snug text-ink">
                 {question.header?.trim() ? (
-                  <span className="mb-0.5 block text-[12px] font-medium uppercase tracking-[0.04em] text-ink-faint">{question.header}</span>
+                  <span className="mb-0.5 block text-[12px] font-normal uppercase text-ink-faint">{question.header}</span>
                 ) : null}
                 {question.question}
               </legend>
@@ -133,7 +133,7 @@ export function MobileQuestionCard({ block, onAnswer, onDismiss, onOpenWorkbench
                         selected ? 'border-ink bg-ink/[0.04]' : 'border-hairline bg-paper hover:border-hairline-strong'
                       }`}
                     >
-                      <span className="text-[14px] font-medium text-ink">{option.label}</span>
+                      <span className="text-[14px] font-normal text-ink">{option.label}</span>
                       {option.description?.trim() ? (
                         <span className="text-[12.5px] leading-snug text-ink-faint">{option.description}</span>
                       ) : null}
@@ -142,7 +142,7 @@ export function MobileQuestionCard({ block, onAnswer, onDismiss, onOpenWorkbench
                 })}
                 {questionAllowsOther(question) ? (
                   <label className="flex flex-col gap-1 pt-0.5">
-                    <span className="text-[12.5px] font-medium text-ink-soft">{otherLabel}</span>
+                    <span className="text-[12.5px] font-normal text-ink-soft">{otherLabel}</span>
                     <input
                       type="text"
                       aria-label={otherLabel}
@@ -170,7 +170,7 @@ export function MobileQuestionCard({ block, onAnswer, onDismiss, onOpenWorkbench
             data-mobile-question-submit
             disabled={sending || ready === undefined}
             onClick={() => { if (ready !== undefined) void run(() => onAnswer(questionId, ready)); }}
-            className="inline-flex h-11 items-center gap-1.5 rounded-full bg-accent px-4 text-[14px] font-medium text-primary-foreground transition-colors hover:bg-accent-deep disabled:opacity-50"
+            className="inline-flex h-11 items-center gap-1.5 rounded-full bg-accent px-4 text-[14px] font-normal text-primary-foreground transition-colors hover:bg-accent-deep disabled:opacity-50"
           >
             <Icon name="check" size={14} />
             <span>{t('mobile.question.submit')}</span>
@@ -181,7 +181,7 @@ export function MobileQuestionCard({ block, onAnswer, onDismiss, onOpenWorkbench
           data-mobile-question-skip
           disabled={sending}
           onClick={() => { void run(() => onDismiss(questionId)); }}
-          className="inline-flex h-11 items-center rounded-full border border-hairline bg-paper px-4 text-[14px] font-medium text-ink-soft transition-colors hover:text-ink disabled:opacity-60"
+          className="inline-flex h-11 items-center rounded-full border border-hairline bg-paper px-4 text-[14px] font-normal text-ink-soft transition-colors hover:text-ink disabled:opacity-60"
         >
           {t('mobile.question.skip')}
         </button>
@@ -190,7 +190,7 @@ export function MobileQuestionCard({ block, onAnswer, onDismiss, onOpenWorkbench
             type="button"
             data-mobile-question-workbench
             onClick={onOpenWorkbench}
-            className="ml-auto inline-flex h-11 items-center gap-1 rounded-full px-2 text-[13.5px] font-medium text-ink-soft transition-colors hover:text-ink"
+            className="ml-auto inline-flex h-11 items-center gap-1 rounded-full px-2 text-[13.5px] font-normal text-ink-soft transition-colors hover:text-ink"
           >
             <span>{t('mobile.question.ownAnswer')}</span>
             <Icon name="chevron" size={12} />

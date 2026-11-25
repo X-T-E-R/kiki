@@ -101,7 +101,7 @@ function ToolList({ id, label, field, onChange, disabled, deny, applicability, e
 function Block({ title, children, dataBlock, action }: { title: string; children: ReactNode; dataBlock: string; action?: ReactNode }) {
   return <section data-profile-block={dataBlock} className="min-w-0 space-y-3">
     <div className="flex min-h-7 items-center justify-between gap-2">
-      <h4 className="text-[13px] font-semibold text-ink">{title}</h4>
+      <h4 className="text-[13px] font-bold text-ink">{title}</h4>
       {action}
     </div>
     {children}
@@ -254,7 +254,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
   const identityPanel = <div className="grid min-w-0 gap-8 @3xl:grid-cols-[minmax(0,1fr)_20rem]">
     <div className="flex min-w-0 flex-col gap-1.5" data-profile-prompt>
       <div className="flex items-baseline justify-between gap-2">
-        <label htmlFor="profile-prompt" className="text-[12px] font-medium text-ink-soft">{t('st.profiles.prompt')}</label>
+        <label htmlFor="profile-prompt" className="text-[12px] font-normal text-ink-soft">{t('st.profiles.prompt')}</label>
         <span className="text-[11.5px] tabular-nums text-ink-faint">{t('st.profiles.promptSize', { lines: draft.prompt === '' ? 0 : draft.prompt.split('\n').length, chars: draft.prompt.length })}</span>
       </div>
       {writable ? <textarea id="profile-prompt" value={draft.prompt} disabled={saving} spellCheck={false}
@@ -339,7 +339,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
         <ul className="mt-2 space-y-2 pl-3">
           {ignoredFields.map(([key, field]) => <li key={key} data-ignored-field={key} className="min-w-0">
             <p className="flex min-w-0 items-baseline gap-2 text-[12.5px] text-ink-soft">
-              <span className="font-medium">{t(`st.profiles.fieldName.${key}` as I18nKey)}</span>
+              <span className="font-normal">{t(`st.profiles.fieldName.${key}` as I18nKey)}</span>
               {profileSets(profile, key) ? <span className="text-[11px] text-ink-faint">· {t('st.profiles.fieldValueSet')}</span> : null}
             </p>
             <p className="text-[11.5px] leading-snug text-ink-faint">{field.reason ?? t('st.profiles.fieldIgnored', { engine })}</p>
@@ -430,7 +430,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
       </Field>)}
     </div>
     <div className="min-w-0 space-y-2" data-profile-section="prompt-overrides">
-      <h4 className="text-[13px] font-semibold text-ink">{t('st.promptIdentity.fieldsTitle')}</h4>
+      <h4 className="text-[13px] font-bold text-ink">{t('st.promptIdentity.fieldsTitle')}</h4>
       <PromptIdentityEditor value={draft.promptOverrides} disabled={disabled} onChange={(next) => set('promptOverrides', next)}>
         {(content, onChange, label) => <PromptOverridesContentEditor value={content} onChange={onChange} label={label} />}
       </PromptIdentityEditor>
@@ -515,7 +515,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
           data-profile-tab={item} data-profile-mode={item === 'raw' ? 'raw' : item === 'identity' ? 'form' : undefined}
           onClick={() => setTab(item)} onKeyDown={onTabKey}
           className={`-mb-px inline-flex min-h-10 shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 px-3 text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:text-ink-faint/70 ${item === 'raw' ? 'ml-auto' : ''} ${
-            active ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'}`}>
+            active ? 'border-ink font-normal text-ink' : 'border-transparent text-ink-soft hover:text-ink'}`}>
           {t(TAB_LABEL[item])}
           {item !== 'raw' && dirtyTabs.has(item) ? <span data-profile-tab-dirty aria-label={t('st.profiles.tabUnsaved')} className="h-1.5 w-1.5 rounded-full bg-accent" /> : null}
         </button>;
@@ -532,7 +532,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
       <SettingsDraftFooter saved={justSaved} id={`agent-detail:${profile.source}:${profile.source_file ?? ''}:${profile.name}`} dirty={dirty} saving={saving}
         saveDisabled={problems.length > 0} onSave={() => void save()} onDiscard={() => { setDraft(baseline); setFeedback(null); }}
         extra={problemText !== null && dirty ? <span role="alert" className="text-[12px] text-danger">{problemText}</span>
-          : dirty && (menuPreview.value?.removed?.length ?? 0) > 0 ? <span data-menu-save-warning role="status" className="max-w-[36rem] break-words text-[12px] font-medium text-amber-ink">{t('st.profiles.menuRemoved', { models: menuPreview.value!.removed!.join(', ') })}</span>
+          : dirty && (menuPreview.value?.removed?.length ?? 0) > 0 ? <span data-menu-save-warning role="status" className="max-w-[36rem] break-words text-[12px] font-normal text-amber-ink">{t('st.profiles.menuRemoved', { models: menuPreview.value!.removed!.join(', ') })}</span>
             : dirty ? <span className="text-[12px] text-ink-faint">{tp('st.profiles.changedCount', changed.length)}</span> : undefined} />
     </div> : null}
     <FeedbackLine feedback={feedback} />

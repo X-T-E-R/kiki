@@ -44,7 +44,7 @@ function WebLinkProblemCard({ problem, onRetry }: { problem: WebLinkProblem; onR
   return (
     <div className="px-7 pt-6 pb-7" data-web-link-problem={problem}>
       <Wordmark size="lg" />
-      <p className="mt-3 text-[14px] font-medium text-ink">
+      <p className="mt-3 text-[14px] font-normal text-ink">
         {t(problem === 'retargeted' ? 'connect.webLinkRetargeted' : 'connect.webLinkRefused')}
       </p>
       <p className="mt-1.5 max-w-[46ch] text-[13px] leading-relaxed text-ink-soft">
@@ -52,12 +52,12 @@ function WebLinkProblemCard({ problem, onRetry }: { problem: WebLinkProblem; onR
       </p>
       {shellConnect !== null ? (
         <a href={shellConnect} data-web-link-app-connect
-          className="mt-5 block w-full rounded-md bg-accent px-3 py-2 text-center text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none">
+          className="mt-5 block w-full rounded-md bg-accent px-3 py-2 text-center text-[14px] font-normal text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none">
           {t('connect.webLinkEnterNew')}
         </a>
       ) : onRetry !== undefined ? (
         <button type="button" data-web-link-retry onClick={onRetry}
-          className="mt-5 w-full rounded-md bg-accent px-3 py-2 text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none">
+          className="mt-5 w-full rounded-md bg-accent px-3 py-2 text-[14px] font-normal text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none">
           {t('connect.webLinkRetry')}
         </button>
       ) : null}
@@ -184,7 +184,7 @@ function SshCheckingCard({ onSwitchLocal }: { onSwitchLocal: () => void }) {
       <Wordmark size="lg" />
       <p className="mt-2 text-[13px] text-ink-soft">{t('connect.sshChecking')}</p>
       <button type="button" onClick={onSwitchLocal}
-        className="mt-5 w-full rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-accent hover:text-ink">
+        className="mt-5 w-full rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-normal text-ink transition-colors hover:border-accent hover:text-ink">
         {t('connect.switchLocal')}
       </button>
     </div>
@@ -208,7 +208,7 @@ function DesktopBootCard({ boot, onCancel }: { boot: DesktopBootStatus; onCancel
       <button
         type="button"
         onClick={onCancel}
-        className="mt-5 w-full rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-accent hover:text-ink"
+        className="mt-5 w-full rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-normal text-ink transition-colors hover:border-accent hover:text-ink"
       >
         {t('connect.desktopCancel')}
       </button>
@@ -246,7 +246,7 @@ function DesktopFailureCard({
   return (
     <div className="px-7 pt-6 pb-7">
       <Wordmark size="lg" />
-      <p className="mt-2 text-[13px] font-semibold text-danger">
+      <p className="mt-2 text-[13px] font-normal text-danger">
         {t(onSwitchLocal === undefined ? 'connect.desktopFailedTitle' : 'connect.sshFailedTitle')}
       </p>
       <pre className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 font-mono text-[12px] leading-relaxed text-danger">
@@ -262,14 +262,14 @@ function DesktopFailureCard({
         <button
           type="button"
           onClick={onSwitchLocal ?? onRetry}
-          className="flex-1 rounded-lg bg-accent px-3 py-2 text-[13px] font-medium text-on-accent transition-colors hover:bg-accent-deep"
+          className="flex-1 rounded-lg bg-accent px-3 py-2 text-[13px] font-normal text-on-accent transition-colors hover:bg-accent-deep"
         >
           {t(onSwitchLocal === undefined ? 'connect.desktopRetry' : 'connect.switchLocal')}
         </button>
         <button
           type="button"
           onClick={() => { void copyDiagnostics(); }}
-          className="flex-1 rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-accent hover:text-ink"
+          className="flex-1 rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-normal text-ink transition-colors hover:border-accent hover:text-ink"
         >
           {copied ? t('connect.desktopCopied') : t('connect.desktopCopyDiagnostics')}
         </button>
@@ -403,7 +403,7 @@ function BrowserConnectForm({
                 data-app-shell-retry
                 onClick={onRetryPaired}
                 disabled={connecting}
-                className="w-full rounded-md bg-accent px-3 py-2 text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none disabled:opacity-60"
+                className="w-full rounded-md bg-accent px-3 py-2 text-[14px] font-normal text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none disabled:opacity-60"
               >
                 {connecting ? t('connect.connecting') : t('app.reconnectNow')}
               </button>
@@ -411,7 +411,7 @@ function BrowserConnectForm({
             <a
               href={shellConnect}
               data-app-shell-connect
-              className="block w-full rounded-md border border-hairline-strong bg-paper px-3 py-2 text-center text-[13px] font-medium text-ink no-underline transition-colors hover:border-ink-faint focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+              className="block w-full rounded-md border border-hairline-strong bg-paper px-3 py-2 text-center text-[13px] font-normal text-ink no-underline transition-colors hover:border-ink-faint focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
             >
               {t('connect.switchComputer')}
             </a>
@@ -422,7 +422,7 @@ function BrowserConnectForm({
             data-connect-detect
             onClick={() => { void detect(); }}
             disabled={detecting || connecting}
-            className="w-full rounded-md bg-accent px-3 py-2 text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none disabled:opacity-60"
+            className="w-full rounded-md bg-accent px-3 py-2 text-[14px] font-normal text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none disabled:opacity-60"
           >
             {detecting ? t('connect.detecting') : t('connect.detect')}
           </button>
@@ -445,7 +445,7 @@ function BrowserConnectForm({
             </button>
             <div id="connect-manual" hidden={!manualOpen} className="mt-3">
 
-            <label htmlFor="connect-server-url" className="mb-1 block text-[12px] font-medium text-ink-soft">
+            <label htmlFor="connect-server-url" className="mb-1 block text-[12px] font-normal text-ink-soft">
               {t('connect.serverUrl')}
             </label>
             <input
@@ -457,7 +457,7 @@ function BrowserConnectForm({
               spellCheck={false}
             />
 
-            <label htmlFor="connect-token" className="mb-1 flex items-baseline justify-between gap-2 text-[12px] font-medium text-ink-soft">
+            <label htmlFor="connect-token" className="mb-1 flex items-baseline justify-between gap-2 text-[12px] font-normal text-ink-soft">
               {t('connect.accessToken')}
               <span title={t('connect.accessTokenHelp')} className="cursor-help text-[12px] font-normal text-ink-faint underline decoration-dotted underline-offset-2">
                 {t('connect.accessTokenWhere')}
@@ -489,7 +489,7 @@ function BrowserConnectForm({
             <button
               type="submit"
               disabled={connecting}
-              className="w-full rounded-md border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-ink-faint focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-60"
+              className="w-full rounded-md border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-normal text-ink transition-colors hover:border-ink-faint focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-60"
             >
               {connecting ? t('connect.connecting') : t('connect.connect')}
             </button>

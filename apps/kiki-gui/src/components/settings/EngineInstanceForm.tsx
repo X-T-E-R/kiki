@@ -146,18 +146,18 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
     <form data-engine-instance-form={item === undefined ? 'create' : 'edit'} onSubmit={(event) => { event.preventDefault(); void save(); }}
       className="space-y-4 rounded-lg border border-hairline bg-panel p-3 sm:p-4">
       <div className="space-y-0.5">
-        <h4 className="text-[13px] font-semibold text-ink">{t(item === undefined ? 'st.engines.instance.add' : 'st.engines.instance.edit')}</h4>
+        <h4 className="text-[13px] font-bold text-ink">{t(item === undefined ? 'st.engines.instance.add' : 'st.engines.instance.edit')}</h4>
         <p className="break-words text-[12px] text-ink-soft">{t('st.engines.instance.source', { engine: sourceLabel })}</p>
       </div>
       {issue !== undefined ? <p role="alert" data-instance-issue={issue} className="text-[12px] leading-4 text-danger">{t(`st.engines.instance.issue.${issue}`)}</p> : null}
       <div className="space-y-1">
-        <label htmlFor={`${id}-name`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.name')}</label>
+        <label htmlFor={`${id}-name`} className="text-[12px] font-normal text-ink-soft">{t('st.engines.instance.name')}</label>
         <input id={`${id}-name`} data-instance-name className={INPUT} value={label} required maxLength={80} disabled={saving}
           placeholder={t('st.engines.instance.namePlaceholder')} onChange={(event) => setLabel(event.target.value)} />
       </div>
       <div className="grid min-w-0 gap-3 lg:grid-cols-2">
         <div className="min-w-0 space-y-1.5">
-          <label htmlFor={`${id}-configuration`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.configuration')}</label>
+          <label htmlFor={`${id}-configuration`} className="text-[12px] font-normal text-ink-soft">{t('st.engines.instance.configuration')}</label>
           <SettingsSelect id={`${id}-configuration`} variant="form" ariaLabel={t('st.engines.instance.configuration')}
             triggerData={{ 'data-instance-configuration': '' }} value={configuration.kind} disabled={saving}
             onChange={(next) => selectConfiguration(next)}
@@ -177,7 +177,7 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
               onChange={(event) => setConfiguration({ kind: configuration.kind, name: event.target.value })} />
             <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.instance.config.envHint')}</p>
           </> : account !== undefined ? <>
-            <label htmlFor={`${id}-account-source`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.account.source')}</label>
+            <label htmlFor={`${id}-account-source`} className="text-[12px] font-normal text-ink-soft">{t('st.engines.instance.account.source')}</label>
             <SettingsSelect id={`${id}-account-source`} variant="form" ariaLabel={t('st.engines.instance.account.source')}
               triggerData={{ 'data-instance-account-source': '' }} value={account.source} disabled={saving || unsupported}
               onChange={(next) => setConfiguration({ kind: 'plugin_account', source: next, account_id: '' })}
@@ -185,7 +185,7 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
                 ...(!knownSource && account.source ? [{ value: account.source, label: compactIdentifier(account.source), disabled: true }] : []),
                 ...accountSources.map((entry) => ({ value: entry.id, label: entry.label })),
               ]} />
-            <label htmlFor={`${id}-account`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.account.label')}</label>
+            <label htmlFor={`${id}-account`} className="text-[12px] font-normal text-ink-soft">{t('st.engines.instance.account.label')}</label>
             <SettingsSelect id={`${id}-account`} variant="form" ariaLabel={t('st.engines.instance.account.label')}
               triggerData={{ 'data-instance-account': '' }} value={account.account_id}
               disabled={saving || !knownSource || accountsQuery.isPending || accountsQuery.isError}
@@ -209,7 +209,7 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
           </> : configOptions.length === 1 ? <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.instance.config.unsupported')}</p> : null}
         </div>
         <div className="min-w-0 space-y-1.5">
-          <label htmlFor={`${id}-proxy`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.proxy')}</label>
+          <label htmlFor={`${id}-proxy`} className="text-[12px] font-normal text-ink-soft">{t('st.engines.instance.proxy')}</label>
           <SettingsSelect id={`${id}-proxy`} variant="form" ariaLabel={t('st.engines.instance.proxy')}
             triggerData={{ 'data-instance-proxy': '' }} value={proxy.kind} disabled={saving}
             onChange={(next) => selectProxy(next)}
@@ -224,13 +224,13 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
           {proxy.kind === 'url' ? <div className="space-y-2 pt-1" data-instance-authorization={authorization.mode}>
             {authorization.mode === 'set' ? <>
               <div className="space-y-1">
-                <label htmlFor={`${id}-proxy-user`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.proxy.username')}</label>
+                <label htmlFor={`${id}-proxy-user`} className="text-[12px] font-normal text-ink-soft">{t('st.engines.instance.proxy.username')}</label>
                 <input id={`${id}-proxy-user`} data-instance-proxy-username className={INPUT} autoComplete="off"
                   required spellCheck={false} disabled={saving} value={authorization.username}
                   onChange={(event) => setAuthorization({ ...authorization, username: event.target.value })} />
               </div>
               <div className="space-y-1">
-                <label htmlFor={`${id}-proxy-password`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.proxy.password')}</label>
+                <label htmlFor={`${id}-proxy-password`} className="text-[12px] font-normal text-ink-soft">{t('st.engines.instance.proxy.password')}</label>
                 <input id={`${id}-proxy-password`} data-instance-proxy-password className={INPUT} type="password" autoComplete="new-password"
                   required disabled={saving} value={authorization.password}
                   onChange={(event) => setAuthorization({ ...authorization, password: event.target.value })} />
@@ -258,27 +258,27 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
       </div>
       <div className="grid min-w-0 gap-3 lg:grid-cols-2" data-instance-launch>
         <div className="min-w-0 space-y-1.5">
-          <label htmlFor={`${id}-quota-account`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.quotaAccount')}</label>
+          <label htmlFor={`${id}-quota-account`} className="text-[12px] font-normal text-ink-soft">{t('st.engines.instance.quotaAccount')}</label>
           <input id={`${id}-quota-account`} data-instance-quota-account className={INPUT} value={quotaAccountId} disabled={saving} spellCheck={false}
             placeholder={t('st.engines.instance.quotaAccountPlaceholder')} onChange={(event) => setQuotaAccountId(event.target.value)} />
           <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.instance.quotaAccountHint')}</p>
         </div>
         <div className="min-w-0 space-y-1.5">
-          <label htmlFor={`${id}-home`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.launch.home')}</label>
+          <label htmlFor={`${id}-home`} className="text-[12px] font-normal text-ink-soft">{t('st.engines.instance.launch.home')}</label>
           <input id={`${id}-home`} data-instance-home className={`${INPUT} font-mono`} value={homeDir} disabled={saving} spellCheck={false}
             onChange={(event) => setHomeDir(event.target.value)} />
-          <label htmlFor={`${id}-bin`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.launch.bin')}</label>
+          <label htmlFor={`${id}-bin`} className="text-[12px] font-normal text-ink-soft">{t('st.engines.instance.launch.bin')}</label>
           <input id={`${id}-bin`} data-instance-bin className={`${INPUT} font-mono`} value={binPath} disabled={saving} spellCheck={false}
             onChange={(event) => setBinPath(event.target.value)} />
         </div>
         <div className="min-w-0 space-y-1.5">
-          <label htmlFor={`${id}-args`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.launch.args')}</label>
+          <label htmlFor={`${id}-args`} className="text-[12px] font-normal text-ink-soft">{t('st.engines.instance.launch.args')}</label>
           <textarea id={`${id}-args`} data-instance-args rows={3} className={`${INPUT} min-h-16 font-mono text-[12px]`} value={argsText} disabled={saving} spellCheck={false}
             onChange={(event) => setArgsText(event.target.value)} />
           <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.instance.launch.argsHint')}</p>
         </div>
         <div className="min-w-0 space-y-1.5">
-          <label htmlFor={`${id}-env`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.launch.env')}</label>
+          <label htmlFor={`${id}-env`} className="text-[12px] font-normal text-ink-soft">{t('st.engines.instance.launch.env')}</label>
           {savedEnvKeys.length > 0 ? <p data-instance-env-keys className="break-words font-mono text-[11.5px] text-ink-faint">{savedEnvKeys.join(', ')}</p> : null}
           <textarea id={`${id}-env`} data-instance-env rows={3} className={`${INPUT} min-h-16 font-mono text-[12px]`} value={envText} disabled={saving || clearEnv} spellCheck={false}
             placeholder="EXAMPLE_FLAG=1" onChange={(event) => setEnvText(event.target.value)} />

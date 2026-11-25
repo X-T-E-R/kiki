@@ -105,7 +105,7 @@ export function RecipeHookScripts({ hooks, headingLevel = 'h4' }: {
   return (
     <section className="space-y-2.5" data-recipe-hooks>
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-        <Heading className="text-[13px] font-medium text-ink">{t('st.recipeHook.title')}</Heading>
+        <Heading className="text-[13px] font-normal text-ink">{t('st.recipeHook.title')}</Heading>
         <span className="font-mono text-[11px] text-ink-faint" data-recipe-hook-count>
           {t('st.recipeHook.scriptCount', { count: String(hooks.scripts.length) })}
         </span>
@@ -114,7 +114,7 @@ export function RecipeHookScripts({ hooks, headingLevel = 'h4' }: {
         <div key={group.event} className="space-y-2" data-recipe-hook-event={group.event}>
           {/* An event this build has no wording for is shown as the package
               spelled it, rather than as a dictionary key. */}
-          <p className="text-[12px] font-medium text-ink-soft">
+          <p className="text-[12px] font-normal text-ink-soft">
             {recipeHookEventKey(group.event) === undefined ? group.event : t(recipeHookEventKey(group.event)!)}
           </p>
           <ul className="space-y-2.5">

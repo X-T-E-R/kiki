@@ -565,7 +565,7 @@ function BrowserList({ state, onRevoke, onRevokeAll, busy }: {
   return (
     <div className="pt-1" data-web-access-browsers>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <p className="text-[12.5px] font-medium text-ink">{t('st.web.signedIn')}</p>
+        <p className="text-[12.5px] font-normal text-ink">{t('st.web.signedIn')}</p>
         {sessions.length > 0 ? (
           <button type="button" data-web-access-revoke-all className="text-[12px] text-ink-soft underline decoration-dotted underline-offset-2 transition-colors hover:text-ink"
             disabled={busy !== null} onClick={onRevokeAll}>
@@ -620,7 +620,7 @@ function SharedConnectionsList({ records, selectedIds, savedIds, busy, saving, o
     <div className="space-y-2 pt-1" data-web-access-shared-connections>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
-          <p className="text-[12.5px] font-medium text-ink">{t('st.web.sharedTitle')}</p>
+          <p className="text-[12.5px] font-normal text-ink">{t('st.web.sharedTitle')}</p>
           <p className="mt-0.5 max-w-[62ch] text-[12px] leading-snug text-ink-faint">{t('st.web.sharedHint')}</p>
         </div>
         {records.length > 0 || savedIds.length > 0 ? (
@@ -649,7 +649,7 @@ function SharedConnectionsList({ records, selectedIds, savedIds, busy, saving, o
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                    <span className="min-w-0 truncate text-[12.5px] font-medium text-ink" title={record.label}>{record.label}</span>
+                    <span className="min-w-0 truncate text-[12.5px] font-normal text-ink" title={record.label}>{record.label}</span>
                     <RemoteStateChip state={record.state} className="text-[11px]" />
                   </div>
                   <p className="truncate font-mono text-[11px] text-ink-faint" title={record.endpoint}>
@@ -678,7 +678,7 @@ function WebLinkDialog({ link, onClose }: { link: WebAccessLink; onClose: () => 
       panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} max-h-[calc(100dvh-2rem)] overflow-y-auto`}>
       <div className="space-y-4" data-web-access-link>
         <div>
-          <h2 className="text-[14px] font-medium text-ink">{t('st.web.linkTitle')}</h2>
+          <h2 className="text-[14px] font-bold text-ink">{t('st.web.linkTitle')}</h2>
           <p className="mt-1 max-w-[62ch] text-[12.5px] leading-snug text-ink-soft">{t('st.web.linkBody')}</p>
         </div>
         <CopyField id="web-access-link-value" dataAttr="web-access-link"

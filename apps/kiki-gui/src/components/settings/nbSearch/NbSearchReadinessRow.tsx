@@ -24,7 +24,7 @@ export function NbSearchStateBadge({ state }: { state: ReadinessState }) {
           : 'st.nbSearch.stateUnavailable';
   return (
     <span
-      className={`rounded-full border px-1.5 py-px text-[11px] font-medium ${STATE_BADGE[state]}`}
+      className={`rounded-full border px-1.5 py-px text-[11px] font-normal ${STATE_BADGE[state]}`}
     >
       {t(labelKey)}
     </span>
@@ -61,7 +61,7 @@ export function NbSearchReadinessRow({
   return (
     <div className="rounded-lg border border-hairline bg-paper px-3 py-2">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[12.5px] font-semibold text-ink">{label}</span>
+        <span className="text-[12.5px] font-normal text-ink">{label}</span>
         <NbSearchStateBadge state={state} />
         {action !== undefined && action !== null ? <span className="ml-auto shrink-0">{action}</span> : null}
       </div>

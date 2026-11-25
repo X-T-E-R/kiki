@@ -37,7 +37,7 @@ import { memoryOperationId, shortRevision } from './MemoryGovernance';
 import { useMemoryAuthority } from './memoryAuthority';
 import { parseMemoryEntry, type MemoryEntryView } from './memoryReceipt';
 
-const LABEL = 'text-[12px] font-medium text-ink-soft';
+const LABEL = 'text-[12px] font-normal text-ink-soft';
 const QUIET = 'rounded-sm text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-60';
 const MARKDOWN_LIMIT = 65_536;
 const LOCATOR_LIMIT = 2_000;
@@ -435,7 +435,7 @@ function ImportPreview({ target, preview, reason, onOpenEntry }: {
   return (
     <section data-memory-import-preview-result={preview.action} data-memory-import-can-apply={preview.canApply ? 'true' : 'false'} className="space-y-4 pt-4">
       <div className="space-y-1">
-        <p className={`text-[14px] font-medium ${tone}`}>{t(ACTION_TEXT[preview.action])}</p>
+        <p className={`text-[14px] font-normal ${tone}`}>{t(ACTION_TEXT[preview.action])}</p>
         {issue !== undefined ? <p data-memory-import-issue={preview.issue!.code} className="text-[12px] leading-relaxed text-amber-ink">{t(issue)}</p> : null}
         {preview.canApply && preview.expiresAt !== undefined ? (
           <p className="text-[12px] text-ink-faint">{t('memory.markdown.expires', { time: new Date(preview.expiresAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) })}</p>
@@ -457,7 +457,7 @@ function ImportPreview({ target, preview, reason, onOpenEntry }: {
         <div data-memory-import-current className="min-w-0">
           {currentEntry === null ? (
             <section className="space-y-2">
-              <h4 className="text-[12px] font-medium text-ink-soft">{t('memory.markdown.current')}</h4>
+              <h4 className="text-[12px] font-normal text-ink-soft">{t('memory.markdown.current')}</h4>
               <p className="text-[13px] text-ink-faint">{t('memory.markdown.noCurrent')}</p>
             </section>
           ) : (
@@ -513,7 +513,7 @@ function EntryMeta({ scope, id, revision, pinned, basedOn = false, pinnedChanged
       <dd data-memory-import-meta-revision={revision ?? ''} className="min-w-0 truncate font-mono text-[11px] text-ink-soft" title={revision ?? undefined}>{revision === null ? '—' : shortRevision(revision)}</dd>
       <dt className="text-ink-faint">{t('memory.markdown.meta.pinned')}</dt>
       <dd data-memory-import-meta-pinned={pinned ? 'true' : 'false'} data-memory-import-meta-changed={pinnedChanged ? 'pinned' : undefined}
-        className={pinnedChanged ? 'font-medium text-accent-ink' : 'text-ink-soft'}>
+        className={pinnedChanged ? 'font-normal text-accent-ink' : 'text-ink-soft'}>
         {t(pinned ? 'memory.markdown.meta.pinnedYes' : 'memory.markdown.meta.pinnedNo')}{pinnedChanged ? ` · ${t('memory.markdown.meta.changed')}` : ''}
       </dd>
     </dl>

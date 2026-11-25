@@ -114,7 +114,7 @@ export function SkinPicker({ theme, labelledBy }: { theme: ResolvedTheme; labell
                 <SkinSwatch skin={skin} theme={theme} />
                 <span className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-baseline gap-x-1.5">
-                    <span className={`text-[13px] text-ink ${selected ? 'font-medium' : ''}`}>{nameKey !== undefined ? t(nameKey) : skin.name}</span>
+                    <span className={`text-[13px] text-ink`}>{nameKey !== undefined ? t(nameKey) : skin.name}</span>
                     <span className="text-[12px] text-ink-faint">
                       {originLabel(source, skin.id)}
                       {only !== null ? ` · ${only}` : ''}
@@ -168,7 +168,7 @@ export function SkinFiles() {
     <div className="space-y-5" data-skin-files>
       <div className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-[13px] font-medium text-ink">{t('st.skin.folder')}</span>
+          <span className="text-[13px] font-normal text-ink">{t('st.skin.folder')}</span>
           <button type="button" className={SECONDARY_BUTTON} onClick={userSkins.refetch}>{t('st.skin.reload')}</button>
         </div>
         {userSkins.data.unsupported ? <Hint>{t('st.skin.unsupported')}</Hint> : (
@@ -192,7 +192,7 @@ export function SkinFiles() {
         )}
       </div>
       <div className="space-y-2">
-        <label htmlFor="skin-export-name" className="block text-[13px] font-medium text-ink">{t('st.skin.export')}</label>
+        <label htmlFor="skin-export-name" className="block text-[13px] font-normal text-ink">{t('st.skin.export')}</label>
         <div className="flex flex-wrap items-center gap-2">
           <input
             id="skin-export-name"

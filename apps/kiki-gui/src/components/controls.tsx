@@ -133,7 +133,7 @@ export function SavedTick({ show }: { show: boolean }) {
   const { t } = useI18n();
   if (!show) return null;
   return (
-    <span role="status" data-saved-tick className="anim-enter inline-flex items-center gap-1 text-[12px] font-medium text-success">
+    <span role="status" data-saved-tick className="anim-enter inline-flex items-center gap-1 text-[12px] font-normal text-success">
       <Icon name="check" size={12} />
       {t('st.savedTick')}
     </span>

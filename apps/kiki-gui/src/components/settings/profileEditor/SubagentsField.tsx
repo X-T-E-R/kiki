@@ -69,7 +69,7 @@ function CanSpawnSwitch({ policy, disabled, onChange }: {
   // the segments carry the whole value and there is no separate toggle.
   return <div data-dispatch-can-spawn data-profile-field="canSpawnSubagents" data-declared={declared === undefined ? 'false' : 'true'} className="space-y-1.5">
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
-      <span className="min-w-0 text-[13px] font-semibold text-ink">{t('st.profiles.dispatchCanSpawn')}</span>
+      <span className="min-w-0 text-[13px] font-normal text-ink">{t('st.profiles.dispatchCanSpawn')}</span>
       <SettingsSegmented<'inherit' | 'on' | 'off'> ariaLabel={t('st.profiles.dispatchCanSpawn')}
         value={declared === undefined ? 'inherit' : declared ? 'on' : 'off'}
         disabled={disabled} dataAttr="data-dispatch-can-spawn-mode"
@@ -127,7 +127,7 @@ function PresetListField({ policy, onChange, profiles, models, disabled, self }:
   const last = rowEntries.length - 1;
   return <div className="space-y-2.5" data-dispatch-allowed data-declared={declared ? 'true' : 'false'}>
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-      <span className="min-w-0 text-[13px] font-semibold text-ink">{t('st.profiles.dispatchAllowed')}</span>
+      <span className="min-w-0 text-[13px] font-normal text-ink">{t('st.profiles.dispatchAllowed')}</span>
       <span className="flex-1" />
       {open ? <button type="button" data-dispatch-allowed-narrow disabled={disabled}
         onClick={() => onChange({ subagentPolicy: { ...policy, allowedSubagents: rowEntries } })}
@@ -237,7 +237,7 @@ function NameListField({ id, list, policy, known, onChange, disabled, titleKey, 
   });
   return <div className="min-w-0 space-y-2" data-dispatch-names={id} data-declared={list === undefined ? 'false' : 'true'}>
     <div className="flex h-7 items-center gap-2">
-      <span className="min-w-0 text-[13px] font-semibold text-ink">{t(titleKey)}</span>
+      <span className="min-w-0 text-[13px] font-normal text-ink">{t(titleKey)}</span>
       {list !== undefined && list.length > 0 ? <button type="button" data-dispatch-clear={id} disabled={disabled}
         onClick={() => setList([])}
         className="h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-faint hover:bg-ink/[0.04] hover:text-ink disabled:opacity-50">

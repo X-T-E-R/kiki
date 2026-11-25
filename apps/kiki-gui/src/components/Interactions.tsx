@@ -78,12 +78,12 @@ const STRIP_CLASS =
 const DETAIL_WELL =
   'mt-2 max-h-64 overflow-auto rounded-md bg-ink/[0.04] px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink';
 const PRIMARY_BUTTON =
-  'inline-flex min-h-8 pointer-coarse:min-h-11 items-center rounded-md bg-accent px-3 text-[13px] font-medium text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-60';
+  'inline-flex min-h-8 pointer-coarse:min-h-11 items-center rounded-md bg-accent px-3 text-[13px] font-normal text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-60';
 const SECONDARY_BUTTON =
-  'inline-flex min-h-8 pointer-coarse:min-h-11 items-center rounded-md px-3 text-[13px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-60';
+  'inline-flex min-h-8 pointer-coarse:min-h-11 items-center rounded-md px-3 text-[13px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-60';
 /** An action inside running text: ink, not accent (accent is "needs you"). */
 const TEXT_ACTION =
-  'inline-flex min-h-6 items-center rounded-sm font-medium text-ink underline underline-offset-2 decoration-ink-faint hover:decoration-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-10';
+  'inline-flex min-h-6 items-center rounded-sm font-normal text-ink underline underline-offset-2 decoration-ink-faint hover:decoration-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-10';
 
 /* ── External permission display (ACP harness, design §9) ──────────────── */
 
@@ -406,7 +406,7 @@ function ApprovalChangePreview({ change }: { change: ApprovalChange }) {
         <DiffCard hunks={folded ? firstDiffRows(change.hunks, limit) : change.hunks} numbered={false} surface="bg-ink/[0.04]" />
       ) : (
         <>
-          <p data-approval-new-file className="text-[12px] font-medium text-ink-faint">{t('ia.write.newFile', { count: total })}</p>
+          <p data-approval-new-file className="text-[12px] font-normal text-ink-faint">{t('ia.write.newFile', { count: total })}</p>
           <pre className="mt-1 max-h-64 overflow-auto rounded-md bg-ink/[0.04] px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink">
             {(folded ? change.lines.slice(0, limit) : change.lines).join('\n')}
           </pre>
@@ -417,7 +417,7 @@ function ApprovalChangePreview({ change }: { change: ApprovalChange }) {
           type="button"
           data-approval-change-expand
           onClick={() => { setExpanded(true); }}
-          className="mt-1 inline-flex min-h-7 items-center rounded-md px-1.5 -mx-1.5 text-[12px] font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-10"
+          className="mt-1 inline-flex min-h-7 items-center rounded-md px-1.5 -mx-1.5 text-[12px] font-normal text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-10"
         >
           {t('ia.diff.expand', { count: total })}
         </button>
@@ -629,7 +629,7 @@ export function ApprovalCard({
         className={`anim-enter flex min-h-7 items-center gap-2 text-[13px] ${tone}`}
       >
         {decision === 'approved' || decision === 'resolved_elsewhere' ? null : <Icon name="cross" />}
-        <span className="font-medium" title={reviewer === undefined ? undefined : reviewerTooltip(reviewer, t)}>
+        <span className="font-normal" title={reviewer === undefined ? undefined : reviewerTooltip(reviewer, t)}>
           {reviewer === undefined ? label : reviewerLabel(decision, reviewer, t, label)}
         </span>
         <span className="truncate font-mono text-[12px] text-ink-faint">
@@ -767,7 +767,7 @@ export function ApprovalCard({
     >
       {/* Provenance line: what kind of decision, who asked, time left. */}
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px]">
-        <span className="font-medium text-accent-ink">
+        <span className="font-normal text-accent-ink">
           {external === undefined
             ? planEnter
               ? t('ia.planEnter.title')
@@ -827,17 +827,17 @@ export function ApprovalCard({
         // reason Kiki is asking, so the card never cuts it. The file name
         // reads stronger than its directory.
         <p className="mt-1 min-w-0 text-[14px] leading-snug text-ink">
-          <span className={file.operation === undefined ? 'font-mono text-[13px] font-semibold' : 'font-medium'}>
+          <span className={file.operation === undefined ? 'font-mono text-[13px] font-normal' : 'font-normal'}>
             {approvalVerb(file, block.request.tool_name, t)}
           </span>{' '}
           <span data-approval-path className="font-mono text-[13px] break-all">
             <span className="text-ink-soft">{filePath?.dir}</span>
-            <span className="font-medium">{filePath?.name}</span>
+            <span className="font-normal">{filePath?.name}</span>
           </span>
         </p>
       ) : (
         <p className="mt-1 min-w-0 text-[14px] leading-snug text-ink">
-          <span className="font-mono text-[13px] font-semibold">{block.request.tool_name}</span>
+          <span className="font-mono text-[13px] font-normal">{block.request.tool_name}</span>
           <span className="text-ink-soft"> · {block.request.action}</span>
         </p>
       )}
@@ -890,7 +890,7 @@ export function ApprovalCard({
                   ? t('ia.approving')
                   : t('ia.approve')}{' '}
                 {showShortcutHints ? (
-                  <kbd className="ml-1 rounded-[4px] bg-primary-foreground/20 px-1 font-mono text-[11px] font-medium pointer-coarse:hidden">y</kbd>
+                  <kbd className="ml-1 rounded-[4px] bg-primary-foreground/20 px-1 font-mono text-[11px] font-normal pointer-coarse:hidden">y</kbd>
                 ) : null}
               </button>
               {approvalRule !== undefined ? (
@@ -1016,7 +1016,7 @@ export function ApprovalCard({
       ) : (
         <p
           role="status"
-          className={`mt-2 flex items-center gap-1.5 text-[13px] font-medium ${stickyDecisions ? 'pb-2 ' : ''}${
+          className={`mt-2 flex items-center gap-1.5 text-[13px] font-normal ${stickyDecisions ? 'pb-2 ' : ''}${
             answered === 'approved' || answered === 'cancelled' ? 'text-ink-soft' : 'text-danger'
           }`}
         >
@@ -1078,7 +1078,7 @@ function PlanReviewCard({
   return (
     <div data-approval-id={block.request.approval_id} data-plan-review className={STRIP_CLASS}>
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px]">
-        <span className="font-medium text-accent-ink">{t('ia.plan.title')}</span>
+        <span className="font-normal text-accent-ink">{t('ia.plan.title')}</span>
         {originAgentName !== undefined ? <span className="text-ink-faint">· {t('ia.fromSubagent', { name: originAgentName })}</span> : null}
         {plan.path !== undefined ? <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-faint" title={plan.path}>· {plan.path}</span> : null}
         {deadlineIsNear(block.request.expires_at) ? (
@@ -1093,28 +1093,28 @@ function PlanReviewCard({
         <>
           {options !== undefined ? (
             <fieldset className="mt-2 space-y-1" disabled={sending !== null}>
-              <legend className="mb-1 text-[12px] font-medium text-ink-soft">{t('ia.plan.choose')}</legend>
+              <legend className="mb-1 text-[12px] font-normal text-ink-soft">{t('ia.plan.choose')}</legend>
               {options.map((option) => (
                 <label key={option.label} data-plan-option={option.label}
                   className={`flex min-h-9 cursor-pointer items-start gap-2 rounded-md px-3 py-1.5 transition-colors ${choice === option.label ? 'bg-selected-ink/[0.07]' : 'hover:bg-ink/[0.04]'}`}>
                   <input type="radio" name={`plan-choice-${block.request.approval_id}`} checked={choice === option.label}
                     onChange={() => { setChoice(option.label); }} className="mt-1 h-3.5 w-3.5 accent-[var(--color-selected-ink)]" />
                   <span className="min-w-0">
-                    <span className="block text-[13px] font-medium text-ink">{option.label}</span>
+                    <span className="block text-[13px] font-normal text-ink">{option.label}</span>
                     {option.description !== '' ? <span className="block text-[12px] leading-snug text-ink-soft">{option.description}</span> : null}
                   </span>
                 </label>
               ))}
             </fieldset>
           ) : null}
-          <label htmlFor={noteId} className="mt-2 block text-[12px] font-medium text-ink-soft">{t('ia.plan.note')}</label>
+          <label htmlFor={noteId} className="mt-2 block text-[12px] font-normal text-ink-soft">{t('ia.plan.note')}</label>
           <textarea id={noteId} data-plan-note rows={2} value={note} disabled={sending !== null}
             onChange={(event) => { setNote(event.target.value); }} placeholder={t('ia.plan.notePlaceholder')}
             className="mt-1 w-full resize-y rounded-md border border-hairline bg-paper px-3 py-1.5 text-[13px] leading-snug text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink disabled:opacity-60" />
           <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-2" aria-busy={sending !== null}>
             <button type="button" data-plan-approve disabled={sending !== null} onClick={() => { send('approve'); }} className={PRIMARY_BUTTON}>
               {sending === 'approve' ? t('ia.approving') : options !== undefined && choice !== undefined ? t('ia.plan.approveChoice', { option: choice }) : t('ia.plan.approve')}
-              {showShortcutHints ? <kbd className="ml-1.5 rounded-[4px] bg-primary-foreground/20 px-1 font-mono text-[11px] font-medium pointer-coarse:hidden">y</kbd> : null}
+              {showShortcutHints ? <kbd className="ml-1.5 rounded-[4px] bg-primary-foreground/20 px-1 font-mono text-[11px] font-normal pointer-coarse:hidden">y</kbd> : null}
             </button>
             <button type="button" data-plan-revise disabled={sending !== null || trimmed === ''} title={trimmed === '' ? t('ia.plan.reviseNeedsNote') : undefined}
               onClick={() => { send('revise'); }} className={SECONDARY_BUTTON}>
@@ -1129,7 +1129,7 @@ function PlanReviewCard({
         </>
       ) : (
         <p role="status" data-plan-answered={answered}
-          className={`mt-2 flex items-center gap-1.5 text-[13px] font-medium ${answered === 'exit' ? 'text-danger' : 'text-ink-soft'}`}>
+          className={`mt-2 flex items-center gap-1.5 text-[13px] font-normal ${answered === 'exit' ? 'text-danger' : 'text-ink-soft'}`}>
           {answered === 'exit' ? <Icon name="cross" /> : null}
           {t(answered === 'approve' ? 'ia.plan.sentApproved' : answered === 'revise' ? 'ia.plan.sentRevise' : 'ia.plan.sentExit')}
         </p>
@@ -1198,7 +1198,7 @@ function ExternalOptionButton({
       >
         <Icon name={tone.icon} className={`h-3.5 w-3.5 ${tone.marker}`} />
         <span className="min-w-0 flex-1">
-          <span className="block text-[13px] font-medium text-ink">
+          <span className="block text-[13px] font-normal text-ink">
             {submitting ? t('ia.sending') : option.label}
           </span>
         </span>
@@ -1227,7 +1227,7 @@ function ExternalOptionButton({
             type="button"
             aria-expanded={expanded}
             onClick={() => { setExpanded((prev) => !prev); }}
-            className="inline-flex min-h-6 items-center gap-1 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink"
+            className="inline-flex min-h-6 items-center gap-1 text-[12px] font-normal text-ink-faint transition-colors hover:text-ink"
           >
             {tp('ia.external.changes', changes.length)}
             <DisclosureChevron open={expanded} />
@@ -1310,9 +1310,9 @@ function QuestionItemView({
   return (
     <div>
       {item.header !== undefined ? (
-        <p className="text-[12px] font-medium text-ink-faint">{item.header}</p>
+        <p className="text-[12px] font-normal text-ink-faint">{item.header}</p>
       ) : null}
-      <p className="mt-0.5 text-[14px] font-medium text-ink">{item.question}</p>
+      <p className="mt-0.5 text-[14px] font-normal text-ink">{item.question}</p>
       {item.body !== undefined ? (
         <div className="mt-1 text-[13px] text-ink-soft">
           <Markdown text={item.body} />
@@ -1340,7 +1340,7 @@ function QuestionItemView({
                 {selected ? <Icon name="check" size={12} /> : null}
               </span>
               <span className="min-w-0">
-                <span className="block text-[13px] font-medium text-ink">{option.label}</span>
+                <span className="block text-[13px] font-normal text-ink">{option.label}</span>
                 {option.description !== undefined ? (
                   <span className="block text-[12px] text-ink-soft">{option.description}</span>
                 ) : null}
@@ -1350,7 +1350,7 @@ function QuestionItemView({
         })}
         {questionAllowsOther(item) ? (
           <label className="flex items-center gap-2 rounded-md px-3 pt-1.5">
-            <span className="shrink-0 text-[13px] font-medium text-ink-soft">{otherLabel}</span>
+            <span className="shrink-0 text-[13px] font-normal text-ink-soft">{otherLabel}</span>
             <input
               aria-label={otherLabel}
               className="min-h-8 w-full min-w-0 rounded-md border border-hairline bg-panel px-3 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
@@ -1450,7 +1450,7 @@ function QuestionCardContent({ block, onAnswer, onDismiss, originAgentName }: Qu
       <div className="space-y-4">
         <div>
           <div className="flex flex-wrap items-baseline gap-x-2 text-[12px]">
-            <span className="font-medium text-accent-ink">{t('ia.kikiAsks')}</span>
+            <span className="font-normal text-accent-ink">{t('ia.kikiAsks')}</span>
             {originAgentName !== undefined ? (
               <span className="text-ink-faint">· {t('ia.fromSubagent', { name: originAgentName })}</span>
             ) : null}
@@ -1499,7 +1499,7 @@ function QuestionCardContent({ block, onAnswer, onDismiss, originAgentName }: Qu
               ) : null}
             </div>
           ) : (
-            <p role="status" className="pt-1 text-[13px] font-medium text-ink-soft">
+            <p role="status" className="pt-1 text-[13px] font-normal text-ink-soft">
               {sent === 'answered' ? t('ia.sentToKiki') : t('ia.dismissed')}
             </p>
           )}
@@ -1570,7 +1570,7 @@ export function InteractionRecord({
       <span aria-hidden className="flex w-[18px] shrink-0 justify-center">
         <span className="h-1.5 w-1.5 rounded-full bg-accent" />
       </span>
-      <span className="shrink-0 font-medium text-ink">
+      <span className="shrink-0 font-normal text-ink">
         {t(block.kind === 'approval' ? 'ia.record.awaitingApproval' : 'ia.record.awaitingAnswer')}
       </span>
       <span className="flex min-w-0 items-baseline text-ink-faint">
@@ -1582,7 +1582,7 @@ export function InteractionRecord({
           type="button"
           onClick={onReview}
           aria-label={t('ia.record.reviewAria')}
-          className="ml-auto inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink pointer-coarse:min-h-10"
+          className="ml-auto inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink pointer-coarse:min-h-10"
         >
           {t('ia.record.review')}
           <Icon name="arrowDown" size={12} />
@@ -1616,7 +1616,7 @@ export function MergedInteractionRecord({
       <span aria-hidden className="flex w-[18px] shrink-0 justify-center">
         <span className="h-1.5 w-1.5 rounded-full bg-accent" />
       </span>
-      <span className="min-w-0 flex-1 truncate font-medium text-ink">
+      <span className="min-w-0 flex-1 truncate font-normal text-ink">
         {tp('transcript.needsYouCount', count)}
       </span>
       {onReview !== undefined ? (
@@ -1624,7 +1624,7 @@ export function MergedInteractionRecord({
           type="button"
           onClick={onReview}
           aria-label={t('ia.record.reviewAria')}
-          className="ml-auto inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink pointer-coarse:min-h-10"
+          className="ml-auto inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink pointer-coarse:min-h-10"
         >
           {t('ia.record.review')}
           <Icon name="arrowDown" size={12} />

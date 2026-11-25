@@ -231,7 +231,7 @@ export function ToolGroupDetail({
     return (
       <div data-tool-group-detail={groupKey} data-tool-group-view="gone" className="text-[12.5px]" onKeyDown={onKeyDown}>
         {back}
-        <h3 className="mt-2 text-[14px] leading-5 font-medium text-ink">{title}</h3>
+        <h3 className="mt-2 text-[14px] leading-5 font-bold text-ink">{title}</h3>
         <p data-tool-group-gone role="status" className="mt-1 text-[12px] leading-relaxed text-ink-faint">
           {t('inspector.cap.groupGone')}
         </p>
@@ -250,7 +250,7 @@ export function ToolGroupDetail({
     <div data-tool-group-detail={groupKey} data-tool-group-view="list" className="text-[12.5px]" onKeyDown={onKeyDown}>
       <header className="border-b border-hairline pb-2.5">
         {back}
-        <h3 data-tool-group-title className="mt-2 text-[14px] leading-5 font-medium break-words text-ink">{title}</h3>
+        <h3 data-tool-group-title className="mt-2 text-[14px] leading-5 font-bold break-words text-ink">{title}</h3>
         <p data-tool-group-meta className="mt-1 flex flex-wrap items-baseline gap-x-1.5 text-[11.5px] leading-4 text-ink-faint">
           <span className="tabular-nums">{meta[0]}</span>
           {meta.slice(1).map((part) => (
@@ -289,7 +289,7 @@ export function ToolGroupDetail({
           if (members.length === 0) return null;
           return (
             <section key={bucket.id} data-tool-group-section={bucket.id} className="pt-2 first:pt-0">
-              <h4 className="flex items-baseline gap-1.5 px-2 pb-1 text-[11px] font-medium text-ink-faint">
+              <h4 className="flex items-baseline gap-1.5 px-2 pb-1 text-[11px] font-normal text-ink-faint">
                 {t(bucket.labelKey)}
                 <span className="font-normal tabular-nums">{members.length}</span>
               </h4>

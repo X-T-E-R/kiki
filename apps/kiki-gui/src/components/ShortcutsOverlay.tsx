@@ -120,7 +120,7 @@ export function shortcutsGroups(
 
 function Kbd({ label }: { label: string }) {
   return (
-    <kbd className="rounded-md border border-hairline bg-paper px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-ink-soft shadow-[0_1px_0_rgba(28,25,23,0.08)]">
+    <kbd className="rounded-md border border-hairline bg-paper px-1.5 py-0.5 font-mono text-[10.5px] font-normal text-ink-soft shadow-[0_1px_0_rgba(28,25,23,0.08)]">
       {label}
     </kbd>
   );
@@ -144,11 +144,11 @@ export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
       overlayId="shortcuts-overlay"
       panelClassName="anim-enter w-full max-w-[440px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
     >
-      <h2 className="font-display text-[18px] font-semibold text-ink">{t('shortcuts.title')}</h2>
+      <h2 className="font-display text-[18px] font-bold text-ink">{t('shortcuts.title')}</h2>
       <div className="mt-3 max-h-[60vh] space-y-4 overflow-y-auto pr-1">
         {shortcutsGroups(sendShortcut, desktop, current).map((group) => (
           <section key={group.titleKey}>
-            <h3 className="mb-1.5 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+            <h3 className="mb-1.5 text-[10.5px] font-normal text-ink-faint uppercase">
               {t(group.titleKey)}
             </h3>
             <ul className="space-y-1">
@@ -160,7 +160,7 @@ export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
                   <span className="flex items-center gap-1.5 text-[12.5px] text-ink">
                     {t(row.labelKey)}
                     {row.desktopOnly === true && !desktop ? (
-                      <span className="rounded-sm border border-hairline bg-paper px-1 py-px text-[9.5px] font-medium tracking-wide text-ink-faint uppercase">
+                      <span className="rounded-sm border border-hairline bg-paper px-1 py-px text-[9.5px] font-normal text-ink-faint uppercase">
                         {t('shortcuts.desktopOnly')}
                       </span>
                     ) : null}
@@ -184,7 +184,7 @@ export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
           type="button"
           data-shortcuts-customize
           onClick={() => { onClose(); void navigate('/settings/general#st-card-shortcuts'); }}
-          className="shrink-0 rounded-md px-1.5 py-1 text-[11.5px] font-medium text-selected-ink transition-colors hover:bg-selected"
+          className="shrink-0 rounded-md px-1.5 py-1 text-[11.5px] font-normal text-selected-ink transition-colors hover:bg-selected"
         >
           {t('shortcuts.customize')}
         </button>

@@ -70,7 +70,7 @@ export function KikiHookRow({ block, hook }: { block: SystemBlock; hook: KikiHoo
           {hook.prepared ? <p className="text-ink-soft">{t('transcript.kikiHook.preparedBody', { engine })}</p> : null}
           {parts.map((part, index) => (
             <section key={`${part.origin}-${index}`} data-kiki-hook-part={part.origin || 'other'} className="min-w-0">
-              <h4 className="text-[11.5px] font-medium text-ink-soft">{partLabel(t, part.origin)}</h4>
+              <h4 className="text-[11.5px] font-normal text-ink-soft">{partLabel(t, part.origin)}</h4>
               <p className="whitespace-pre-wrap break-words text-ink-faint">{part.text}</p>
             </section>
           ))}

@@ -92,21 +92,21 @@ export const ToolChipList = memo(function ToolChipList({
                 <button
                   type="button"
                   onClick={item.onOpen}
-                  className="font-mono text-[11.5px] font-medium text-ink hover:text-ink truncate text-left cursor-pointer flex-1 min-w-0"
+                  className="font-mono text-[11.5px] font-normal text-ink hover:text-ink truncate text-left cursor-pointer flex-1 min-w-0"
                   title={t('agentPanel.viewDetails')}
                 >
                   {item.icon ? <span className="mr-1">{item.icon}</span> : null}
                   {item.name}
                 </button>
               ) : (
-                <span className="font-mono text-[11.5px] font-medium text-ink truncate flex-1 min-w-0">
+                <span className="font-mono text-[11.5px] font-normal text-ink truncate flex-1 min-w-0">
                   {item.icon ? <span className="mr-1">{item.icon}</span> : null}
                   {item.name}
                 </span>
               )}
               <div className="flex items-center gap-1 shrink-0">
                 {item.readOnly ? (
-                  <span className="rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-medium text-ink-soft">
+                  <span className="rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-normal text-ink-soft">
                     {t('agentPanel.readOnly')}
                   </span>
                 ) : null}
@@ -136,7 +136,7 @@ export const ToolChipList = memo(function ToolChipList({
           </>
         );
         const baseClass =
-          'rounded bg-paper border border-hairline px-1.5 py-0.5 text-[9.5px] text-ink font-medium inline-flex items-center';
+          'rounded bg-paper border border-hairline px-1.5 py-0.5 text-[9.5px] text-ink font-normal inline-flex items-center';
 
         return item.onOpen ? (
           <button

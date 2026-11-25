@@ -56,7 +56,7 @@ export function Group({ title, hint, children }: { title: string; hint?: string;
   return (
     <section className="space-y-3 pt-3 first:pt-0">
       <div>
-        <h3 className="text-[12px] font-semibold text-ink">{title}</h3>
+        <h3 className="text-[12px] font-bold text-ink">{title}</h3>
         {hint !== undefined ? <p className="mt-0.5 text-[12px] leading-snug text-ink-faint">{hint}</p> : null}
       </div>
       {children}

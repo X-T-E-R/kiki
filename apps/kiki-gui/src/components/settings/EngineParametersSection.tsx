@@ -27,14 +27,14 @@ export function EngineParametersSection() {
     <div className="space-y-6" data-engine-parameters>
       <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.dev.engineParams.intro')}</p>
       <section className="space-y-6" data-engine-group="sessions" aria-label={t('st.section.sessions')}>
-        <h2 className="text-[12px] font-medium text-ink-faint">{t('st.section.sessions')}</h2>
+        <h2 className="text-[12px] font-normal text-ink-faint">{t('st.section.sessions')}</h2>
         <TaskPolicyCard />
         <SessionResidencyCard />
         <ResourceLimitsCard />
         <SessionTitleEngineCard />
       </section>
       <section className="space-y-6" data-engine-group="agents" aria-label={t('st.section.agents')}>
-        <h2 className="text-[12px] font-medium text-ink-faint">{t('st.section.agents')}</h2>
+        <h2 className="text-[12px] font-normal text-ink-faint">{t('st.section.agents')}</h2>
         <HandoffNoticesCard />
         <SubagentAgentListFieldsCard />
         <AgentRuntimeCard />

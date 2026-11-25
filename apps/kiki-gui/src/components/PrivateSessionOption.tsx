@@ -54,7 +54,7 @@ export function PrivateMark({ className = '' }: { readonly className?: string })
   return (
     <span
       data-private-mark
-      className={`inline-flex h-[18px] shrink-0 items-center gap-1 rounded-[5px] border border-hairline px-1.5 text-[11px] leading-none font-medium text-ink-soft ${className}`}
+      className={`inline-flex h-[18px] shrink-0 items-center gap-1 rounded-[5px] border border-hairline px-1.5 text-[11px] leading-none font-normal text-ink-soft ${className}`}
     >
       <Icon name="lock" size={12} className="text-ink-faint" />
       <span>{t('private.badge')}</span>

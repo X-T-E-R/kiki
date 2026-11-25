@@ -76,7 +76,7 @@ export const RebindModal = memo(function RebindModal({
         <div className="rounded-lg border border-hairline bg-panel p-2.5 space-y-1.5 text-[12px]">
           <div className="flex items-start justify-between gap-2">
             <span className="text-ink-faint shrink-0">{t('st.im.rebind.variant')}</span>
-            <span className="font-medium text-ink truncate text-right" title={conflict?.variant_label ?? (candidate ? formatImIdentityDisplay(candidate.identity).fullTitle : undefined)}>{variantLabel}</span>
+            <span className="font-normal text-ink truncate text-right" title={conflict?.variant_label ?? (candidate ? formatImIdentityDisplay(candidate.identity).fullTitle : undefined)}>{variantLabel}</span>
           </div>
           <div className="flex items-start justify-between gap-2">
             <span className="text-ink-faint shrink-0">{t('st.im.rebind.identity')}</span>
@@ -88,7 +88,7 @@ export const RebindModal = memo(function RebindModal({
           </div>
           <div className="flex items-start justify-between gap-2">
             <span className="text-ink-faint shrink-0">{t('st.im.rebind.targetOwner')}</span>
-            <span className="font-medium text-selected-ink truncate text-right" title={targetSessionId}>{targetSession}</span>
+            <span className="font-normal text-selected-ink truncate text-right" title={targetSessionId}>{targetSession}</span>
           </div>
         </div>
       </div>

@@ -362,7 +362,7 @@ export function NbSearchLanesTab({
                       className="row-interactive flex w-full min-w-0 items-center gap-2 py-1.5 pl-3 pr-2 text-left"
                     >
                       <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{card.title}</span>
-                      <span className="shrink-0 text-[12px] font-medium text-ink-soft">
+                      <span className="shrink-0 text-[12px] font-normal text-ink-soft">
                         {t('st.nbSearch.services.addOne')}
                       </span>
                     </button>

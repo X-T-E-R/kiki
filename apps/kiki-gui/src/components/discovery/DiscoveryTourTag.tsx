@@ -142,13 +142,13 @@ export function DiscoveryTourTag() {
         data-discovery-resume-tag
         className="fixed top-3 right-4 z-40 flex max-w-[calc(100vw_-_1.5rem)] items-center gap-2 rounded-lg border border-hairline bg-paper/95 px-3 py-1.5 shadow-[var(--kiki-sheet-shadow)] backdrop-blur-sm transition-all"
       >
-        <span className="min-w-0 truncate text-[12px] font-medium text-ink-soft">
+        <span className="min-w-0 truncate text-[12px] font-normal text-ink-soft">
           {t('discovery.title')} · {view.route ? t(view.route.titleKey) : ''}
         </span>
         <button
           type="button"
           onClick={() => { void resumeDiscovery(); }}
-          className="shrink-0 rounded-md bg-accent-soft px-2 py-0.5 text-[12px] font-medium text-accent-ink hover:bg-accent-soft/80"
+          className="shrink-0 rounded-md bg-accent-soft px-2 py-0.5 text-[12px] font-normal text-accent-ink hover:bg-accent-soft/80"
         >
           {t('discovery.continue')}
         </button>
@@ -171,7 +171,7 @@ export function DiscoveryTourTag() {
         className="fixed top-2.5 right-4 z-40 flex max-w-[calc(100vw_-_1.5rem)] items-center gap-2 rounded-lg border border-hairline bg-paper/95 px-2.5 py-1 text-ink shadow-[var(--kiki-sheet-shadow)] backdrop-blur-sm transition-transform"
       >
         <Icon name="compass" size={14} className="shrink-0 text-accent" />
-        <span className="min-w-0 truncate text-[12px] font-medium text-ink">
+        <span className="min-w-0 truncate text-[12px] font-normal text-ink">
           {t(view.route.titleKey)}
         </span>
         <span className="shrink-0 font-mono text-[11px] text-ink-faint">
@@ -253,11 +253,11 @@ export function DiscoveryTourTag() {
           <div className="flex min-w-0 items-center gap-1.5">
             <span
               data-discovery-step-badge
-              className="inline-flex items-center rounded-full bg-accent/15 px-2 py-0.5 font-mono text-[11px] font-medium text-accent"
+              className="inline-flex items-center rounded-full bg-accent/15 px-2 py-0.5 font-mono text-[11px] font-normal text-accent"
             >
               {view.position} / {view.total}
             </span>
-            <span className="truncate text-[12px] font-semibold tracking-tight text-ink">
+            <span className="truncate text-[12px] font-normal text-ink">
               {t(view.route.titleKey)}
             </span>
           </div>
@@ -288,7 +288,7 @@ export function DiscoveryTourTag() {
 
         {/* Station Main Content */}
         <div className="mt-2.5">
-          <h4 className="font-display text-[14px] font-semibold text-ink">
+          <h4 className="font-display text-[14px] font-bold text-ink">
             {t(view.station.titleKey)}
           </h4>
           <p className="mt-1 text-[12px] leading-relaxed text-ink-soft">
@@ -305,7 +305,7 @@ export function DiscoveryTourTag() {
                 type="button"
                 data-discovery-action={action.id}
                 onClick={() => { runAction(action.id); }}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-hairline-strong bg-paper px-2.5 text-[12px] font-medium text-ink transition-colors hover:border-selected-ink/50 hover:bg-ink/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40"
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-hairline-strong bg-paper px-2.5 text-[12px] font-normal text-ink transition-colors hover:border-selected-ink/50 hover:bg-ink/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40"
               >
                 <span>{t(action.labelKey)}</span>
                 {view.progress?.tried ? (

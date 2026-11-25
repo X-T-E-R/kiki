@@ -78,7 +78,7 @@ export function AdvancedSection() {
           {/* The raw editor is an escape hatch: closed until asked for, and it
               stays open while it holds an unsaved edit. */}
           <details data-advanced-json open={dirty ? true : undefined} className="group">
-            <summary className="inline-flex min-h-7 cursor-pointer select-none items-center gap-1 text-[12px] font-medium text-ink-soft hover:text-ink pointer-coarse:min-h-11">
+            <summary className="inline-flex min-h-7 cursor-pointer select-none items-center gap-1 text-[12px] font-normal text-ink-soft hover:text-ink pointer-coarse:min-h-11">
               <Icon name="chevron" size={12} className="text-ink-faint transition-transform group-open:rotate-90 motion-reduce:transition-none" />
               {t('st.advanced.disclosure')}
             </summary>

@@ -36,7 +36,7 @@ export function CapabilityGroup({
         onClick={onToggle}
         className="flex w-full items-center gap-1.5 rounded-2xl px-4 py-3 text-left transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/30"
       >
-        <span className="min-w-0 truncate text-[13px] font-medium text-ink">
+        <span className="min-w-0 truncate text-[13px] font-normal text-ink">
           {title}
         </span>
         <span className="mr-auto shrink-0 text-[12px] text-ink-faint tabular-nums">

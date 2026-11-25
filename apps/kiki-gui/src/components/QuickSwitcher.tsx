@@ -471,7 +471,7 @@ export function QuickSwitcher({
     return (
       <>
         {headerText !== null ? (
-          <p className={`px-2 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-2'}`}>
+          <p className={`px-2 pb-0.5 text-[12px] font-normal text-ink-faint ${index === 0 ? 'pt-1' : 'pt-2'}`}>
             {headerText}
           </p>
         ) : null}
@@ -485,7 +485,7 @@ export function QuickSwitcher({
           {item.kind === 'action' ? (
             <span className="flex items-center gap-2">
               <Icon name="arrowUpRight" size={14} className="text-ink-faint" />
-              <span className="truncate text-[13px] font-medium text-ink">
+              <span className="truncate text-[13px] font-normal text-ink">
                 {item.title}
               </span>
             </span>
@@ -495,7 +495,7 @@ export function QuickSwitcher({
                 {item.sectionLabel}
               </span>
               <Icon name="chevron" size={12} className="text-ink-faint" />
-              <span className="truncate text-[13px] font-medium text-ink">
+              <span className="truncate text-[13px] font-normal text-ink">
                 {item.title}
               </span>
             </span>
@@ -644,13 +644,13 @@ export function QuickSwitcher({
             <div data-switcher-search-status className="border-t border-hairline px-2 pt-1.5 pb-0.5 text-[12px] leading-snug text-ink-faint">
               {contentProblem ? (
                 <div data-search-error className="mx-1 border-l-2 border-danger py-0.5 pl-3">
-                  <p className="text-[12.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
+                  <p className="text-[12.5px] font-normal text-danger">{t('sidebar.searchFailed')}</p>
                   <p className="text-[12px] text-ink-soft">{search.contentInitialError?.message || t('common.unknownError')}</p>
                   <button
                     type="button"
                     data-search-initial-retry
                     onClick={search.retry}
-                    className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
+                    className="mt-1 text-[12px] font-normal text-ink underline underline-offset-2"
                   >
                     {t('common.retry')}
                   </button>
@@ -664,7 +664,7 @@ export function QuickSwitcher({
                       type="button"
                       data-search-unavailable-retry
                       onClick={() => { void search.retryUnavailable().catch(() => search.retry()); }}
-                      className="ml-2 font-medium text-ink underline underline-offset-2"
+                      className="ml-2 font-normal text-ink underline underline-offset-2"
                     >
                       {t('common.retry')}
                     </button>

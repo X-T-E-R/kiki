@@ -508,7 +508,7 @@ export function PdfPageView({ client, assetUrl, sourceKey, page, name, documentD
           <button
             type="button"
             onClick={() => { reload(); onRetry?.(); }}
-            className="text-[12px] font-medium text-danger underline underline-offset-2"
+            className="text-[12px] font-normal text-danger underline underline-offset-2"
             data-retry-pdf
           >
             {t('preview.tryAgain')}

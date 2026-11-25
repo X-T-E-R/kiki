@@ -20,7 +20,7 @@ export function PromptIdentityEditor<T>({ value, onChange, children, disabled = 
   const { t } = useI18n();
   return <fieldset disabled={disabled} className="min-w-0 space-y-5 disabled:opacity-60" data-prompt-identity-editor>
     {showCommon ? <div className="space-y-2" data-prompt-common>
-      <p className="text-[12px] font-medium text-ink-soft">{t('st.promptIdentity.common')}</p>
+      <p className="text-[12px] font-normal text-ink-soft">{t('st.promptIdentity.common')}</p>
       {children(value.common, (common) => onChange({ ...value, common }), t('st.promptIdentity.common'))}
     </div> : null}
     {(['main', 'independent'] as const).map((position) => {
@@ -28,7 +28,7 @@ export function PromptIdentityEditor<T>({ value, onChange, children, disabled = 
       const label = t(`st.promptIdentity.${position}`);
       return <details key={position} data-prompt-position={position} className="group min-w-0">
         <summary className="flex cursor-pointer list-none items-baseline justify-between gap-3 rounded py-1 text-[12px] outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
-          <span className="font-medium text-ink-soft">{label}</span>
+          <span className="font-normal text-ink-soft">{label}</span>
           <span className="flex min-w-0 items-center gap-1 text-right text-ink-faint">{t(`st.promptIdentity.mode.${branch.mode}`)}<Icon name="chevron" size={12} /></span>
         </summary>
         <div className="space-y-3 pt-2">

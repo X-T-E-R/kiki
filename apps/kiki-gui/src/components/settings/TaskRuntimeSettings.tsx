@@ -110,7 +110,7 @@ function PrintModePicker({ value, onChange }: {
             />
             <span className="min-w-0">
               <span className="flex flex-wrap items-baseline gap-1">
-                <span className="text-[13px] font-medium text-ink">{t(PRINT_MODE_LABEL_KEY[mode])}</span>
+                <span className="text-[13px] font-normal text-ink">{t(PRINT_MODE_LABEL_KEY[mode])}</span>
                 <span aria-hidden className="text-[11px] text-ink-faint">·</span>
                 <span className="font-mono text-[11px] text-ink-faint">{mode}</span>
               </span>

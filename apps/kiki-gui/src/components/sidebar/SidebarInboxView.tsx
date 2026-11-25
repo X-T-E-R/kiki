@@ -172,7 +172,7 @@ export function SidebarInboxView({
             data-recover-all-interrupted
             disabled={recoveringInterrupted}
             onClick={() => { void onRecoverAllInterrupted(interruptedItems); }}
-            className="flex h-7 w-full items-center justify-between gap-2 rounded-md border border-amber-rule/45 bg-amber-rule/[0.08] px-2 text-left text-[12px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/[0.14] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-60"
+            className="flex h-7 w-full items-center justify-between gap-2 rounded-md border border-amber-rule/45 bg-amber-rule/[0.08] px-2 text-left text-[12px] font-normal text-amber-ink transition-colors hover:bg-amber-rule/[0.14] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-60"
           >
             <span className="flex min-w-0 items-center gap-1.5 truncate">
               <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-rule" />
@@ -217,7 +217,7 @@ export function SidebarInboxView({
           >
             <Icon name="check" size={14} />
           </span>
-          <p className="text-[12.5px] font-medium text-ink-faint">{t('sidebar.inbox.allClear')}</p>
+          <p className="text-[12.5px] font-normal text-ink-faint">{t('sidebar.inbox.allClear')}</p>
         </div>
       )}
 
@@ -233,7 +233,7 @@ export function SidebarInboxView({
                 aria-expanded={workingOpen}
                 data-inbox-drawer-toggle="working"
                 onClick={() => { setWorkingOpen((v) => !v); }}
-                className="row-interactive flex h-7 w-full items-center gap-1.5 px-2 text-left text-[12px] font-medium text-ink-faint hover:text-ink"
+                className="row-interactive flex h-7 w-full items-center gap-1.5 px-2 text-left text-[12px] font-normal text-ink-faint hover:text-ink"
               >
                 <DisclosureChevron open={workingOpen} size={12} className="shrink-0" />
                 <span className="min-w-0 flex-1 truncate">{t('sidebar.inbox.working')}</span>
@@ -268,7 +268,7 @@ export function SidebarInboxView({
                 aria-expanded={snoozedOpen}
                 data-inbox-drawer-toggle="snoozed"
                 onClick={() => { setSnoozedOpen((v) => !v); }}
-                className="row-interactive flex h-7 w-full items-center gap-1.5 px-2 text-left text-[12px] font-medium text-ink-faint hover:text-ink"
+                className="row-interactive flex h-7 w-full items-center gap-1.5 px-2 text-left text-[12px] font-normal text-ink-faint hover:text-ink"
               >
                 <DisclosureChevron open={snoozedOpen} size={12} className="shrink-0" />
                 <span className="min-w-0 flex-1 truncate">{t('sidebar.inbox.snoozed')}</span>
@@ -303,7 +303,7 @@ export function SidebarInboxView({
                 aria-expanded={archivedOpen}
                 data-inbox-drawer-toggle="archived"
                 onClick={() => { setArchivedOpen((v) => !v); }}
-                className="row-interactive flex h-7 w-full items-center gap-1.5 px-2 text-left text-[12px] font-medium text-ink-faint hover:text-ink"
+                className="row-interactive flex h-7 w-full items-center gap-1.5 px-2 text-left text-[12px] font-normal text-ink-faint hover:text-ink"
               >
                 <DisclosureChevron open={archivedOpen} size={12} className="shrink-0" />
                 <span className="min-w-0 flex-1 truncate">{t('sidebar.inbox.archived')}</span>

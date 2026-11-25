@@ -286,7 +286,7 @@ export function SidebarTriageRow({
                 event.stopPropagation();
                 onRestore();
               }}
-              className="h-6 rounded-md px-1.5 text-[11.5px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.08] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+              className="h-6 rounded-md px-1.5 text-[11.5px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.08] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
             >
               {t('sidebar.inbox.wakeNow')}
             </button>

@@ -433,7 +433,7 @@ export function SpaceScopeControl({ healthBySpace }: SpaceScopeControlProps = {}
               <span
                 data-space-identity
                 title={barSpaceName}
-                className="inline-flex max-w-[6.5rem] shrink-0 items-center gap-1 truncate text-[12px] font-medium text-ink-soft"
+                className="inline-flex max-w-[6.5rem] shrink-0 items-center gap-1 truncate text-[12px] font-normal text-ink-soft"
               >
                 <SpaceDot color={location.spaceColor} />
                 <span className="truncate">{barSpaceName}</span>
@@ -442,7 +442,7 @@ export function SpaceScopeControl({ healthBySpace }: SpaceScopeControlProps = {}
             {showFocusedPill ? (
               <span
                 data-space-scope-pill={spaceScope}
-                className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full bg-ink/[0.055] py-0.5 pr-1 pl-1.5 text-[11.5px] font-medium leading-[16px] text-ink"
+                className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full bg-ink/[0.055] py-0.5 pr-1 pl-1.5 text-[11.5px] font-normal leading-[16px] text-ink"
               >
                 <span
                   aria-hidden
@@ -460,7 +460,7 @@ export function SpaceScopeControl({ healthBySpace }: SpaceScopeControlProps = {}
             ) : showAllComputersCapsule ? (
               <span
                 data-space-scope-pill="all"
-                className="inline-flex min-w-0 items-center gap-1 rounded-full bg-ink/[0.045] py-0.5 pr-1 pl-1.5 text-[11.5px] font-medium leading-[16px] text-ink-soft transition-colors group-hover:text-ink"
+                className="inline-flex min-w-0 items-center gap-1 rounded-full bg-ink/[0.045] py-0.5 pr-1 pl-1.5 text-[11.5px] font-normal leading-[16px] text-ink-soft transition-colors group-hover:text-ink"
               >
                 <span className="truncate">{t('sidebar.space.allSpaces')}</span>
                 {degradedRemoteTitle !== undefined ? (
@@ -472,7 +472,7 @@ export function SpaceScopeControl({ healthBySpace }: SpaceScopeControlProps = {}
                   />
                 ) : null}
                 {pending > 0 ? (
-                  <span data-space-switcher-pending className="shrink-0 rounded-full bg-attention px-1 text-[10px] font-semibold tabular-nums leading-[14px] text-on-accent">{pending}</span>
+                  <span data-space-switcher-pending className="shrink-0 rounded-full bg-attention px-1 text-[10px] font-normal tabular-nums leading-[14px] text-on-accent">{pending}</span>
                 ) : null}
                 <Icon
                   name="chevron"
@@ -483,7 +483,7 @@ export function SpaceScopeControl({ healthBySpace }: SpaceScopeControlProps = {}
             ) : !isDefaultMain ? (
               <>
                 <SpaceDot color={location.spaceColor ?? (inSshScope || here === null ? 'var(--color-ink-faint)' : undefined)} className="ml-0.5" />
-                <span data-space-switcher-name title={barSpaceName} className="min-w-0 flex-1 truncate text-[13px] font-medium leading-[18px]">{barSpaceName}</span>
+                <span data-space-switcher-name title={barSpaceName} className="min-w-0 flex-1 truncate text-[13px] font-normal leading-[18px]">{barSpaceName}</span>
                 <Icon
                   name="chevron"
                   size={12}
@@ -493,7 +493,7 @@ export function SpaceScopeControl({ healthBySpace }: SpaceScopeControlProps = {}
             ) : (
               <>
                 {pending > 0 && barSubtitle === '' ? (
-                  <span data-space-switcher-pending className="shrink-0 rounded-full bg-attention px-1.5 text-[10.5px] font-semibold tabular-nums leading-[16px] text-on-accent">{pending}</span>
+                  <span data-space-switcher-pending className="shrink-0 rounded-full bg-attention px-1.5 text-[10.5px] font-normal tabular-nums leading-[16px] text-on-accent">{pending}</span>
                 ) : null}
                 <Icon
                   name="chevron"
@@ -509,7 +509,7 @@ export function SpaceScopeControl({ healthBySpace }: SpaceScopeControlProps = {}
                 {barSubtitle}
               </span>
               {pending > 0 ? (
-                <span data-space-switcher-pending className="shrink-0 rounded-full bg-attention px-1.5 text-[10.5px] font-semibold tabular-nums leading-[16px] text-on-accent">{pending}</span>
+                <span data-space-switcher-pending className="shrink-0 rounded-full bg-attention px-1.5 text-[10.5px] font-normal tabular-nums leading-[16px] text-on-accent">{pending}</span>
               ) : null}
             </span>
           ) : null}

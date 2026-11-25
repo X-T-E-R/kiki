@@ -48,7 +48,7 @@ export const AgentPlanSection = memo(function AgentPlanSection({
       <div data-agent-plan-error role="alert" className="flex min-h-8 flex-wrap items-center gap-x-1.5 text-[12px] text-ink-soft">
         <span>{t('agentPanel.planLoadFailed')}</span>
         <span className="text-ink-faint">· {errorToText(query.error, t('common.unknownError'))}</span>
-        <button type="button" onClick={() => { void query.refetch(); }} className="font-medium text-ink transition-colors hover:text-ink">
+        <button type="button" onClick={() => { void query.refetch(); }} className="font-normal text-ink transition-colors hover:text-ink">
           {t('common.retry')}
         </button>
       </div>
@@ -64,7 +64,7 @@ export const AgentPlanSection = memo(function AgentPlanSection({
         onClick={toggle}
         className="group -ml-1.5 flex h-8 w-[calc(100%+0.375rem)] items-center gap-1.5 rounded-md pr-1 pl-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
       >
-        <span className="text-[12px] font-medium text-ink-soft transition-colors group-hover:text-ink">{t('inspector.plan')}</span>
+        <span className="text-[12px] font-normal text-ink-soft transition-colors group-hover:text-ink">{t('inspector.plan')}</span>
         <InspectorChevron open={!collapsed} />
       </button>
       {!collapsed ? (

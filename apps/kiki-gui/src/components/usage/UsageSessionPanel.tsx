@@ -181,7 +181,7 @@ export function UsageSessionPanel({
           </p>
         ) : query.isError ? (
           <div className="rounded-lg border border-danger/30 bg-danger/5 p-3">
-            <p className="text-[13px] font-medium text-danger">{t('usage.sessions.loadFailed')}</p>
+            <p className="text-[13px] font-normal text-danger">{t('usage.sessions.loadFailed')}</p>
             <button
               type="button"
               onClick={() => { void query.refetch(); }}
@@ -269,7 +269,7 @@ function SessionTraceRow({
         >
           <ThreadTitle text={item.title ?? t('sidebar.untitled')} />
         </button>
-        <span className="shrink-0 text-[13px] font-semibold text-ink tabular-nums">
+        <span className="shrink-0 text-[13px] font-normal text-ink tabular-nums">
           {unknownTotal ? '—' : formatCostUsd(item.usage.cost_usd_estimated)}
         </span>
       </div>

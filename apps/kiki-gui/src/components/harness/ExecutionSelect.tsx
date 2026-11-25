@@ -74,7 +74,7 @@ function advertisedThinkingLevels(
 }
 
 /** Selected effort capsule from the model-chip row: a paper sheet on the paper track, not an ink fill. */
-const EFFORT_SELECTED_CLASS = 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]';
+const EFFORT_SELECTED_CLASS = 'bg-panel font-normal text-ink shadow-[var(--kiki-sheet-shadow)]';
 const EFFORT_IDLE_CLASS = 'text-ink-soft hover:text-ink';
 
 export interface ExecutionSelectProps {
@@ -479,7 +479,7 @@ export function ExecutionSelect({
     <div>
       {onRefreshExecutorModels !== undefined ? (
         <div className="flex shrink-0 items-center justify-between border-b border-hairline px-3 py-1.5">
-          <span className="truncate text-[12px] font-medium text-ink-soft">{engineLabel}</span>
+          <span className="truncate text-[12px] font-normal text-ink-soft">{engineLabel}</span>
           <button
             type="button"
             data-external-model-refresh
@@ -518,7 +518,7 @@ export function ExecutionSelect({
             to="/settings/ai?tab=providers#st-card-engines"
             data-execution-configure
             onClick={requestClose}
-            className="text-[12px] font-medium text-ink underline decoration-dotted underline-offset-2"
+            className="text-[12px] font-normal text-ink underline decoration-dotted underline-offset-2"
           >
             {t('composer.execution.configure')}
           </Link>
@@ -526,7 +526,7 @@ export function ExecutionSelect({
       ) : null}
       {externalConnections.length > 0 ? (
         <div data-execution-external-clients className="border-t border-hairline p-1">
-          <div className="px-2 pt-1 pb-0.5 text-[10.5px] font-medium uppercase tracking-wider text-ink-faint">
+          <div className="px-2 pt-1 pb-0.5 text-[10.5px] font-normal uppercase text-ink-faint">
             {t('st.section.connectionServices')}
           </div>
           {externalConnections.map((conn) => {
@@ -554,7 +554,7 @@ export function ExecutionSelect({
                 className={`${MENU_ROW_CLASS} items-start ${selected ? MENU_ROW_SELECTED_CLASS : ''}`}
               >
                 <SelectRowCheck on={selected} />
-                <span className="min-w-0 flex-1 truncate font-medium text-ink">{conn.name}</span>
+                <span className="min-w-0 flex-1 truncate font-normal text-ink">{conn.name}</span>
               </button>
             );
           })}
@@ -562,7 +562,7 @@ export function ExecutionSelect({
       ) : null}
       {supportsEffort && displayEfforts.length > 0 ? (
         <div className="shrink-0 border-t border-hairline bg-canvas/50 px-3 py-2.5">
-          <p className="mb-1 text-[11.5px] font-medium text-ink-faint">
+          <p className="mb-1 text-[11.5px] font-normal text-ink-faint">
             {t('composer.execution.effortHeading')}
           </p>
           <div role="radiogroup" aria-label={t('composer.execution.effortHeading')} className="flex flex-wrap gap-0.5 rounded-md bg-paper p-0.5">
@@ -645,7 +645,7 @@ export function ExecutionSelect({
             <span className="sr-only">{domainNote}</span>
           </span>
         ) : undefined}
-        buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-[min(16rem,100%)] overflow-hidden ${pending ? 'pr-5 font-medium text-accent-ink hover:text-accent-ink' : choice.executor !== 'native' || isExternalClient ? STATUS_SEGMENT_SET : ''} disabled:cursor-not-allowed disabled:opacity-60`}
+        buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-[min(16rem,100%)] overflow-hidden ${pending ? 'pr-5 font-normal text-accent-ink hover:text-accent-ink' : choice.executor !== 'native' || isExternalClient ? STATUS_SEGMENT_SET : ''} disabled:cursor-not-allowed disabled:opacity-60`}
         panelClassName="composer-floating-panel max-h-[min(var(--available-height,28rem),28rem,calc(100dvh-120px))] w-[min(340px,calc(100vw-2rem))] [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:flex-1 [&>[role=listbox]]:shrink"
         panelHeader={panelHeader}
         panelFooter={panelFooter}

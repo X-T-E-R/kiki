@@ -55,7 +55,7 @@ export function NbSearchOverviewTab({
     <button
       type="button"
       onClick={onNavigateToSearch}
-      className="text-[11px] font-medium text-selected-ink hover:underline"
+      className="text-[11px] font-normal text-selected-ink hover:underline"
       data-nb-search-goto-search
     >
       {t('st.nbSearch.gotoServices')}
@@ -65,7 +65,7 @@ export function NbSearchOverviewTab({
     <button
       type="button"
       onClick={onNavigateToFetch}
-      className="text-[11px] font-medium text-selected-ink hover:underline"
+      className="text-[11px] font-normal text-selected-ink hover:underline"
       data-nb-search-goto-fetch
     >
       {t('st.nbSearch.gotoFetch')}
@@ -101,7 +101,7 @@ export function NbSearchOverviewTab({
             <button
               type="button"
               onClick={onNavigateToSearch}
-              className={`${SECONDARY_BUTTON} text-[11px] font-medium shrink-0`}
+              className={`${SECONDARY_BUTTON} text-[11px] font-normal shrink-0`}
               data-nb-search-goto-search-unconfigured
             >
               {t('st.nbSearch.gotoServices')}

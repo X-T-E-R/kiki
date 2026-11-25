@@ -207,7 +207,7 @@ export function SpaceCreateForm({
 
   const fields = (
     <>
-      {title !== undefined ? <h2 className="font-display text-[18px] font-semibold text-ink">{title}</h2> : null}
+      {title !== undefined ? <h2 className="font-display text-[18px] font-bold text-ink">{title}</h2> : null}
       <fieldset disabled={existingSpace} className={`${title !== undefined ? 'mt-4 ' : ''}grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] ${existingSpace ? 'opacity-50' : ''}`}>
           <div className="min-w-0">
             <label htmlFor={nameId} className={FORM_LABEL}>{t('st.spaces.name')}</label>
@@ -253,7 +253,7 @@ export function SpaceCreateForm({
 
         <fieldset disabled={existingSpace} className={`mt-5 pt-4 ${existingSpace ? 'opacity-50' : ''}`} data-space-inherit>
           <legend className="sr-only">{t('st.spaces.inheritHeading')}</legend>
-          <p aria-hidden className="text-[13px] font-medium text-ink">{t('st.spaces.inheritHeading')}</p>
+          <p aria-hidden className="text-[13px] font-normal text-ink">{t('st.spaces.inheritHeading')}</p>
           <div className="mt-2 divide-y divide-hairline">
             {FIRST_SCREEN_ROWS.map((row) => {
               const labelId = `${pathId}-inh-${row.key}`;

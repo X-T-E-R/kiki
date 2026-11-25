@@ -99,7 +99,7 @@ export function UsageRescanControl() {
         title={t('usage.rescan.hint')}
         disabled={running || start.isPending}
         onClick={() => { start.mutate(); }}
-        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50"
+        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-normal text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50"
       >
         <Icon name="refresh" size={12} className={running || start.isPending ? 'animate-spin' : undefined} />
         <span>{t(start.isPending ? 'usage.rescan.starting' : running ? 'usage.rescan.running' : 'usage.rescan.action')}</span>

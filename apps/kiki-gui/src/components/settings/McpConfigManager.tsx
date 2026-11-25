@@ -446,12 +446,12 @@ export function McpConfigManager({
   const editor = draft === null ? null : (
         <fieldset className="space-y-3" disabled={saving || resetting} data-mcp-editor>
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="space-y-1 text-[11px] font-medium text-ink-soft">
+            <label className="space-y-1 text-[11px] font-normal text-ink-soft">
               {t('st.mcp.name')}
               <input className={INPUT} value={draft.name} placeholder={t('st.mcp.namePlaceholder')} onChange={(event) => { setDraft({ ...draft, name: event.target.value }); }} />
               <Hint>{t('st.mcp.nameHint')}</Hint>
             </label>
-            <div className="space-y-1 text-[11px] font-medium text-ink-soft">
+            <div className="space-y-1 text-[11px] font-normal text-ink-soft">
               <span>{t('st.mcp.transport')}</span>
               <SettingsSelect<McpTransport>
                 variant="form"
@@ -473,12 +473,12 @@ export function McpConfigManager({
           </div>
           {draft.transport === 'stdio' ? (
             <div className="space-y-3">
-              <label className="block space-y-1 text-[11px] font-medium text-ink-soft">
+              <label className="block space-y-1 text-[11px] font-normal text-ink-soft">
                 {t('st.mcp.command')}
                 <input className={`${INPUT} font-mono`} value={draft.command} onChange={(event) => { setDraft({ ...draft, command: event.target.value }); }} />
                 <Hint>{t('st.mcp.commandExample')}</Hint>
               </label>
-              <label className="block space-y-1 text-[11px] font-medium text-ink-soft">
+              <label className="block space-y-1 text-[11px] font-normal text-ink-soft">
                 {t('st.mcp.args')}
                 <textarea className={`${INPUT} min-h-20 font-mono`} value={draft.args} onChange={(event) => { setDraft({ ...draft, args: event.target.value }); }} placeholder={t('st.mcp.argsPlaceholder')} />
               </label>
@@ -487,7 +487,7 @@ export function McpConfigManager({
             </div>
           ) : (
             <div className="space-y-3">
-              <label className="block space-y-1 text-[11px] font-medium text-ink-soft">
+              <label className="block space-y-1 text-[11px] font-normal text-ink-soft">
                 {t('st.mcp.url')}
                 <input className={`${INPUT} font-mono`} value={draft.url} onChange={(event) => {
                   if (event.target.value !== draft.url) {
@@ -497,7 +497,7 @@ export function McpConfigManager({
                 <Hint>{t('st.mcp.urlExample')}</Hint>
               </label>
               <div className="space-y-2">
-                <label className="block space-y-1 text-[11px] font-medium text-ink-soft">
+                <label className="block space-y-1 text-[11px] font-normal text-ink-soft">
                   {t('st.mcp.bearerEnv')}
                   <input data-mcp-bearer-env className={`${INPUT} font-mono`} value={draft.bearerTokenEnvVar} onChange={(event) => { setDraft({ ...draft, bearerTokenEnvVar: event.target.value }); }} spellCheck={false} autoComplete="off" />
                 </label>
@@ -687,7 +687,7 @@ export function McpConfigManager({
   return (
     <div className="space-y-3" data-mcp-manager>
       <div className="flex min-h-8 flex-wrap items-center gap-x-3 gap-y-1 border-b border-hairline pb-1.5">
-        <h2 className="text-[13px] font-medium text-ink">{t('st.mcp.configTitle')}</h2>
+        <h2 className="text-[13px] font-bold text-ink">{t('st.mcp.configTitle')}</h2>
         {entries.length > 0 && runtime !== undefined ? (
           <p className="text-[12px] text-ink-faint tabular-nums" data-mcp-summary>
             {tp('cap.mcp.summary', entries.length, { connected: liveCount })}
@@ -749,7 +749,7 @@ export function McpConfigManager({
                   <CapabilityIcon kind="mcp" />
                   <span className="min-w-0 flex-1">
                     <span className="flex min-w-0 items-center gap-1.5">
-                      <span className="truncate text-[13px] font-medium text-ink">{entry.name}</span>
+                      <span className="truncate text-[13px] font-normal text-ink">{entry.name}</span>
                       {live !== undefined ? <StatusDot state={runtimeDotState(live.status)} label={statusLabel} /> : null}
                       {entry.mutable ? null : <Tag>{entry.plugin !== undefined ? t('st.mcp.fromPlugin', { name: entry.plugin.name }) : t('st.mcp.readOnly')}</Tag>}
                     </span>
@@ -790,7 +790,7 @@ export function McpConfigManager({
                   <div className="space-y-4 pb-4 pl-14 pr-2 pt-1" data-mcp-server-detail={entry.name}>
                     {live?.status === 'error' && live.last_error !== undefined ? (
                       <div className="space-y-1.5" data-mcp-error={entry.name}>
-                        <p className="text-[12.5px] font-medium text-danger">{humanizeMcpError(live.last_error, locale)}</p>
+                        <p className="text-[12.5px] font-normal text-danger">{humanizeMcpError(live.last_error, locale)}</p>
                         <details className="text-[12px] text-ink-faint">
                           <summary className="cursor-pointer select-none hover:text-ink">
                             {locale.startsWith('zh') ? '查看原始详情' : 'Technical details'}
@@ -801,7 +801,7 @@ export function McpConfigManager({
                       </div>
                     ) : null}
                     <div>
-                      <p className="text-[12px] font-medium text-ink-soft">{t('st.mcp.toolsTitle')}</p>
+                      <p className="text-[12px] font-normal text-ink-soft">{t('st.mcp.toolsTitle')}</p>
                       {tools.length > 0 ? (
                         <ul className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[12px] text-ink-soft">
                           {tools.map((tool) => <li key={tool}>{tool}</li>)}
@@ -825,7 +825,7 @@ export function McpConfigManager({
                     <div className="flex flex-wrap gap-2">
                       {entry.plugin !== undefined ? (
                         <Link to={{ pathname: '/capabilities', search: `?tab=plugins&plugin=${encodeURIComponent(entry.plugin.id)}` }}
-                          className="inline-flex min-h-8 items-center text-[13px] font-medium text-selected-ink hover:underline">
+                          className="inline-flex min-h-8 items-center text-[13px] font-normal text-selected-ink hover:underline">
                           {t('st.plugins.manageLink')}
                         </Link>
                       ) : null}
@@ -900,7 +900,7 @@ export function McpConfigManager({
           return (
             <div key={credential.credentialId} className="flex min-w-0 flex-col items-stretch gap-3 rounded-lg border border-hairline bg-paper px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium text-ink">{credential.serverName}</p>
+                <p className="text-[13px] font-normal text-ink">{credential.serverName}</p>
                 <p className="break-all font-mono text-[11px] text-ink-faint">{credential.displayUrl}</p>
                 {revealed?.url !== null && revealed?.url !== undefined ? (
                   <p className="break-all font-mono text-[11px] text-ink">{breakableOAuthUrl(revealed.url)}</p>

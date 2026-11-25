@@ -10,7 +10,7 @@ export function ApprovalHeadline({ summary, className }: { readonly summary: App
   const title = summary.verb !== undefined ? t(`mobile.approval.verb.${summary.verb}`) : summary.headline;
   return (
     <div className={className}>
-      <p className="line-clamp-2 text-[15px] font-medium leading-[1.4] text-ink">{title}</p>
+      <p className="line-clamp-2 text-[15px] font-normal leading-[1.4] text-ink">{title}</p>
       {summary.snippet !== undefined ? (
         <pre
           data-mobile-approval-snippet
@@ -45,7 +45,7 @@ export function RejectReasonSheet({ overlayId, headline, submitting, onCancel, o
     >
       <div className="kiki-mobile-sheet-grabber" aria-hidden="true" />
       <div className="space-y-3 px-4 pb-4 pt-1">
-        <h3 className="text-[16px] font-semibold text-ink">{t('mobile.approval.rejectTitle')}</h3>
+        <h3 className="text-[16px] font-bold text-ink">{t('mobile.approval.rejectTitle')}</h3>
         <p className="line-clamp-3 break-all font-mono text-[12.5px] text-ink-soft">{headline}</p>
         <textarea
           rows={3}
@@ -58,7 +58,7 @@ export function RejectReasonSheet({ overlayId, headline, submitting, onCancel, o
           <button
             type="button"
             onClick={onCancel}
-            className="flex h-11 flex-1 items-center justify-center rounded-full border border-hairline bg-paper text-[14px] font-medium text-ink-soft"
+            className="flex h-11 flex-1 items-center justify-center rounded-full border border-hairline bg-paper text-[14px] font-normal text-ink-soft"
           >
             {t('mobile.voice.cancel')}
           </button>
@@ -67,7 +67,7 @@ export function RejectReasonSheet({ overlayId, headline, submitting, onCancel, o
             data-mobile-reject-submit
             disabled={submitting}
             onClick={() => { onSubmit(reason); }}
-            className="flex h-11 flex-1 items-center justify-center rounded-full bg-danger text-[14px] font-medium text-primary-foreground disabled:opacity-55"
+            className="flex h-11 flex-1 items-center justify-center rounded-full bg-danger text-[14px] font-normal text-primary-foreground disabled:opacity-55"
           >
             {t('mobile.approval.rejectSubmit')}
           </button>

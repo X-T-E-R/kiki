@@ -40,7 +40,7 @@ export function visibleBots(bots: readonly BotSummary[]): BotSummary[] {
 }
 
 const GROUP_HEAD = 'flex h-7 items-center gap-1 pr-1 pl-2';
-const GROUP_LABEL = 'min-w-0 flex-1 truncate text-[12px] leading-4 font-medium text-section-ink';
+const GROUP_LABEL = 'min-w-0 flex-1 truncate text-[12px] leading-4 font-normal text-section-ink';
 const HEAD_BUTTON =
   'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 
@@ -148,7 +148,7 @@ export function SidebarBotRoomGroups({
                       tone={life === 'waiting' ? 'bg-attention' : undefined} />
                   </span>
                   <PersonaAvatar persona={face} size={20} decorative />
-                  <span className={`min-w-0 shrink truncate text-[13px] ${active || life === 'waiting' || life === 'done' ? 'font-medium text-ink' : 'text-ink-soft'}`}>
+                  <span className={`min-w-0 shrink truncate text-[13px] ${active || life === 'waiting' || life === 'done' ? 'text-ink' : 'text-ink-soft'}`}>
                     {bot.name}
                   </span>
                   {bot.title !== undefined ? (
@@ -235,7 +235,7 @@ function EnableBotMenu({
         return true;
       }}
     >
-      <p className="px-3 pt-2 pb-1 text-[12px] font-medium text-ink-faint">{t('bot.enable')}</p>
+      <p className="px-3 pt-2 pb-1 text-[12px] font-normal text-ink-faint">{t('bot.enable')}</p>
       {personas.map((persona) => (
         <button key={persona.id} type="button" role="menuitem" data-enable-bot={persona.id}
           disabled={busyId !== undefined}

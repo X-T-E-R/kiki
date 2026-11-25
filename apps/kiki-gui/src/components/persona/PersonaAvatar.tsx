@@ -181,7 +181,7 @@ export function PersonaAvatar({
       title={decorative ? undefined : persona.name}
       style={style}
       {...a11y}
-      className={`relative inline-flex shrink-0 select-none items-center justify-center overflow-hidden font-display leading-none font-semibold ring-1 ring-inset ring-ink/[0.07] ${
+      className={`relative inline-flex shrink-0 select-none items-center justify-center overflow-hidden font-display leading-none font-normal ring-1 ring-inset ring-ink/[0.07] ${
         src === null ? TINTS[personaTintIndex(persona.id)] : 'bg-panel'
       } ${className}`}
     >

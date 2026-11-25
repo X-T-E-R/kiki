@@ -31,14 +31,14 @@ export interface TaskDetailModalProps {
   readonly onDelete?: (taskId: string) => void | Promise<void>;
 }
 
-const FIELD_LABEL = 'block text-[12px] font-medium text-ink-soft';
+const FIELD_LABEL = 'block text-[12px] font-normal text-ink-soft';
 const TEXT_INPUT =
   'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[14px] text-ink focus:border-accent focus:outline-hidden';
 const SELECT_INPUT =
   'mt-1.5 flex w-full items-center justify-between gap-2 rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-hidden transition-colors hover:border-hairline-strong focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint pointer-coarse:min-h-11';
 const AREA_INPUT =
   'mt-1.5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] leading-relaxed text-ink focus:border-accent focus:outline-hidden';
-const SECTION_TITLE = 'text-[12px] font-medium text-ink-soft';
+const SECTION_TITLE = 'text-[12px] font-normal text-ink-soft';
 
 const RESULT_LABEL_KEYS: Record<NonNullable<BoardTask['executions'][number]['result']> | 'running', I18nKey> = {
   succeeded: 'taskBoard.result.succeeded',
@@ -340,7 +340,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                   </span>
                   {task.category && showPrompt ? <span className="text-ink-faint">{task.category}</span> : null}
                 </div>
-                <h3 className="mt-3 font-display text-[22px] leading-snug font-semibold break-words text-ink">
+                <h3 className="mt-3 font-display text-[22px] leading-snug font-bold break-words text-ink">
                   {task.title}
                 </h3>
 
@@ -441,7 +441,7 @@ export const TaskDetailModal = memo(function TaskDetailModal({
                         {task.executions.map((exec) => (
                           <li key={exec.id} className="rounded-lg border border-hairline bg-panel px-3 py-2 text-[12px]">
                             <div className="flex items-center justify-between gap-2">
-                              <span className={`shrink-0 font-medium ${exec.result === 'succeeded' ? 'text-success' : exec.result === 'failed' ? 'text-danger' : exec.result === 'cancelled' ? 'text-ink-faint' : 'text-accent'}`}>
+                              <span className={`shrink-0 font-normal ${exec.result === 'succeeded' ? 'text-success' : exec.result === 'failed' ? 'text-danger' : exec.result === 'cancelled' ? 'text-ink-faint' : 'text-accent'}`}>
                                 {t(RESULT_LABEL_KEYS[exec.result ?? 'running'])}
                               </span>
                               {exec.sessionId && onOpenSession ? (

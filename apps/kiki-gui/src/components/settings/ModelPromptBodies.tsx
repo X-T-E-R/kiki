@@ -128,7 +128,7 @@ function PromptBodyField({ slot, label, view, text, onChange, disabled }: {
   if (view?.error !== undefined) {
     return (
       <div className="space-y-1.5" data-prompt-body={slot} data-prompt-body-source="error">
-        <p className="text-[12px] font-medium text-ink-soft">{label}</p>
+        <p className="text-[12px] font-normal text-ink-soft">{label}</p>
         <p role="alert" className="text-[12px] leading-5 text-danger">{view.error}</p>
         {view.files.length === 0 ? null : (
           <p className="break-all font-mono text-[11px] text-ink-faint">{view.files.map((file) => file.path).join('\n')}</p>
@@ -142,7 +142,7 @@ function PromptBodyField({ slot, label, view, text, onChange, disabled }: {
   return (
     <div className="space-y-1.5" data-prompt-body={slot} data-prompt-body-source={view?.source ?? 'unset'}>
       <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-        <p className="text-[12px] font-medium text-ink-soft">{label}</p>
+        <p className="text-[12px] font-normal text-ink-soft">{label}</p>
         {view === undefined || view.source !== 'files' ? null : (
           <span className="font-mono text-[11px] text-ink-faint" data-prompt-body-origin={slot}>
             {view.files.map((file) => file.path).join(', ')}

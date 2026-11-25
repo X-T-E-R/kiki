@@ -169,7 +169,7 @@ export function WorkSetupSheet({ mode, client, onClose, onEnabled, onPickFile }:
       stepKey={phase.kind}
       description={(
         <>
-          <p className="text-[10.5px] font-semibold uppercase tracking-[0.11em] text-accent-ink">
+          <p className="text-[10.5px] font-normal uppercase text-accent-ink">
             {t('workSetup.eyebrow', { name: mode.name })}
           </p>
           {phase.kind === 'review' || phase.kind === 'working' ? (
@@ -220,16 +220,16 @@ export function WorkSetupSheet({ mode, client, onClose, onEnabled, onPickFile }:
         <>
           {ready.length > 0 ? (
             <>
-              <p className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.1em] text-section-ink">{t('workSetup.haveHeading')}</p>
+              <p className="mb-2 text-[10.5px] font-normal uppercase text-section-ink">{t('workSetup.haveHeading')}</p>
               <SetupPluginRows
                 items={ready}
                 renderRow={(plugin) => (
                   <div className="flex items-start gap-2.5 border-b border-hairline py-2.5 last:border-b-0">
                     <ItemMark state="have" />
                     <div className="min-w-0 flex-1">
-                      <p className="block text-[13px] font-medium text-ink">{plugin.name}</p>
+                      <p className="block text-[13px] font-normal text-ink">{plugin.name}</p>
                       <p className="mt-0.5 block text-[11.5px] leading-[1.5] text-ink-faint">{plugin.purpose}</p>
-                      <span className="mt-1 block text-[10.5px] font-medium uppercase tracking-[0.03em] text-ink-faint">{t('workSetup.itemInstalledOn')}</span>
+                      <span className="mt-1 block text-[10.5px] font-normal uppercase text-ink-faint">{t('workSetup.itemInstalledOn')}</span>
                     </div>
                   </div>
                 )}
@@ -239,16 +239,16 @@ export function WorkSetupSheet({ mode, client, onClose, onEnabled, onPickFile }:
 
           {missing.length > 0 ? (
             <>
-              <p className="mb-2 mt-3 text-[10.5px] font-semibold uppercase tracking-[0.1em] text-section-ink">{t('workSetup.addHeading')}</p>
+              <p className="mb-2 mt-3 text-[10.5px] font-normal uppercase text-section-ink">{t('workSetup.addHeading')}</p>
               <SetupPluginRows
                 items={missing}
                 renderRow={(plugin) => (
                   <div className="flex items-start gap-2.5 border-b border-hairline py-2.5 last:border-b-0">
                     <ItemMark state="missing" />
                     <div className="min-w-0 flex-1">
-                      <p className="block text-[13px] font-medium text-ink">{plugin.name}</p>
+                      <p className="block text-[13px] font-normal text-ink">{plugin.name}</p>
                       <p className="mt-0.5 block text-[11.5px] leading-[1.5] text-ink-faint">{plugin.purpose}</p>
-                      <span className="mt-1 block text-[10.5px] font-medium uppercase tracking-[0.03em] text-ink-faint">
+                      <span className="mt-1 block text-[10.5px] font-normal uppercase text-ink-faint">
                         {plugin.required ? t('workSetup.itemMissing') : t('workSetup.itemOptional')}
                       </span>
                     </div>
@@ -262,7 +262,7 @@ export function WorkSetupSheet({ mode, client, onClose, onEnabled, onPickFile }:
             <div className="mt-4 flex items-start gap-2.5 rounded-lg border border-amber-rule bg-amber-card p-3" data-work-prerequisite>
               <ItemMark state="missing" />
               <div className="min-w-0 flex-1">
-                <p className="block text-[12.5px] font-medium text-ink">
+                <p className="block text-[12.5px] font-normal text-ink">
                   {t('workSetup.prereqTitle', { name: 'OfficeCLI', size: PrerequisiteSize() })}
                 </p>
                 <p className="mt-1 text-[11.5px] leading-[1.5] text-amber-ink">
@@ -290,12 +290,12 @@ export function WorkSetupSheet({ mode, client, onClose, onEnabled, onPickFile }:
         <div className="mt-1">
           {added.length > 0 ? (
             <>
-              <p className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.1em] text-section-ink">{t('workSetup.itemReady')}</p>
+              <p className="mb-2 text-[10.5px] font-normal uppercase text-section-ink">{t('workSetup.itemReady')}</p>
               {added.map((plugin) => (
                 <div key={plugin.id} className="flex items-start gap-2.5 border-b border-hairline py-2.5">
                   <ItemMark state="have" />
                   <div className="min-w-0 flex-1">
-                    <p className="block text-[13px] font-medium text-ink">{plugin.name}</p>
+                    <p className="block text-[13px] font-normal text-ink">{plugin.name}</p>
                     <p className="mt-0.5 block text-[11.5px] leading-[1.5] text-ink-faint">{plugin.purpose}</p>
                   </div>
                 </div>
@@ -307,7 +307,7 @@ export function WorkSetupSheet({ mode, client, onClose, onEnabled, onPickFile }:
             return (
               <div key={`${failure.plugin_id}-${failure.message}`} className="mt-3 rounded-lg border border-danger bg-[#fbeceb] p-3" data-work-setup-failure>
                 <p className="text-[12px] leading-[1.5] text-danger">
-                  <b className="font-semibold">{t('workSetup.failedItem', { name: plugin?.name ?? failure.plugin_id, reason: failure.message })}</b>
+                  <b className="font-bold">{t('workSetup.failedItem', { name: plugin?.name ?? failure.plugin_id, reason: failure.message })}</b>
                 </p>
               </div>
             );
