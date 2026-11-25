@@ -246,9 +246,15 @@ class ReplayFold {
       case 'context.apply_compaction':
         this.applyCompaction(record);
         return;
-      case 'full_compaction.begin':
+      case 'full_compaction.begin': {
+        const open = this.findOpenCompaction();
+        if (open !== undefined) {
+          if (record.instruction !== undefined) open.instruction = record.instruction;
+          return;
+        }
         this.push({ type: 'compaction', instruction: record.instruction });
         return;
+      }
       case 'full_compaction.cancel':
         this.patchLastCompaction({ result: 'cancelled' });
         return;
@@ -294,9 +300,19 @@ class ReplayFold {
     this.push({ type: 'message', message });
   }
 
+  private findOpenCompaction(): (MutableReplayRecord & { type: 'compaction'; instruction?: string; result?: unknown }) | undefined {
+    for (let i = this.replay.length - 1; i >= 0; i -= 1) {
+      const candidate = this.replay[i];
+      if (candidate?.type === 'compaction' && candidate.result === undefined) {
+        return candidate as MutableReplayRecord & { type: 'compaction'; instruction?: string; result?: unknown };
+      }
+    }
+    return undefined;
+  }
+
   private patchLastCompaction(patch: { result: NonNullable<unknown> }): void {
-    const last = this.replay.at(-1);
-    if (last?.type === 'compaction') Object.assign(last, patch);
+    const open = this.findOpenCompaction();
+    if (open !== undefined) Object.assign(open, patch);
   }
 
   private undo(count: number): void {

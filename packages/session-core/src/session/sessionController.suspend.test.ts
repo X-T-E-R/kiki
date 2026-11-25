@@ -323,4 +323,30 @@ describe('SessionController suspend / resume', () => {
     reader.release();
     controller.close();
   });
+
+  it('aborts in-flight tool detail reads on suspend() so switched-away idle sessions do not clog HistoryReadLane', async () => {
+    const { controller } = harness();
+    await controller.open();
+    const view = (controller as unknown as { view: SessionViewFacade }).view;
+    let toolAborts = 0;
+    let toolCalls = 0;
+    (view.transcript as { detail?: ReturnType<typeof vi.fn> }).detail = vi.fn(
+      (_params: unknown, opts?: { signal?: AbortSignal }) => {
+        toolCalls += 1;
+        return new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener('abort', () => {
+            toolAborts += 1;
+            reject(new DOMException('Aborted', 'AbortError'));
+          });
+        });
+      },
+    );
+    const pendingTool = controller.lookupToolCall('main', 'tc_suspend');
+    await vi.waitFor(() => expect(toolCalls).toBe(1));
+
+    controller.suspend();
+    expect(toolAborts).toBe(1);
+    await expect(pendingTool).rejects.toMatchObject({ name: 'AbortError' });
+    controller.close();
+  });
 });

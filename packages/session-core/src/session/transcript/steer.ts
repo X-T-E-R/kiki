@@ -27,8 +27,10 @@ export function newSteerPromptId(): string {
   return `msg_now_${randomUuid().replaceAll('-', '')}`;
 }
 
-function matchesPrompt(block: UserBlock, promptId: string): boolean {
-  return block.promptId === promptId || block.userMessageId === promptId;
+function matchesSteerIdentity(block: UserBlock, steer: Pick<PendingSteer, 'promptId' | 'userMessageId'>): boolean {
+  if (block.promptId === steer.promptId || block.userMessageId === steer.promptId) return true;
+  if (steer.userMessageId !== undefined && (block.promptId === steer.userMessageId || block.userMessageId === steer.userMessageId)) return true;
+  return false;
 }
 
 /**
@@ -45,11 +47,13 @@ export function isSteerSettled(blocks: readonly Block[], steer: PendingSteer): b
   const since = Date.parse(steer.createdAt);
   return blocks.some((block) => {
     if (block.kind !== 'user' || block.steerStatus !== undefined) return false;
-    if (matchesPrompt(block, steer.promptId)) {
+    if (matchesSteerIdentity(block, steer)) {
       return block.turnId !== undefined || block.promptStatus === 'running' || block.promptStatus === 'blocked' || block.promptOutcome !== undefined;
     }
-    return steer.phase === 'waiting' && block.turnId !== undefined && block.text === steer.text &&
-      block.promptId === undefined && Date.parse(block.createdAt) >= since;
+    if (steer.phase !== 'waiting' || block.turnId === undefined || block.promptId !== undefined) return false;
+    if (Date.parse(block.createdAt) < since) return false;
+    if (steer.text.trim() !== '') return block.text === steer.text;
+    return block.text.trim() === '' && (steer.media?.length ?? 0) > 0 && (block.media?.length ?? 0) >= (steer.media?.length ?? 0);
   });
 }
 
@@ -121,9 +125,13 @@ export function steerBlock(steer: PendingSteer): UserBlock {
 export function withPendingSteers(state: SessionViewState, steers: readonly PendingSteer[]): SessionViewState {
   const live = steers.filter((steer) => !isSteerSettled(state.blocks, steer));
   if (live.length === 0) return state;
-  const ids = new Set(live.map((steer) => steer.promptId));
+  const ids = new Set<string>();
+  for (const steer of live) {
+    ids.add(steer.promptId);
+    if (steer.userMessageId !== undefined) ids.add(steer.userMessageId);
+  }
   const blocks = state.blocks.filter((block) =>
-    block.kind !== 'user' || ![...ids].some((id) => matchesPrompt(block, id)));
+    block.kind !== 'user' || !live.some((steer) => matchesSteerIdentity(block, steer)));
   const queuedPromptIds = state.queuedPromptIds.some((id) => ids.has(id))
     ? state.queuedPromptIds.filter((id) => !ids.has(id))
     : state.queuedPromptIds;

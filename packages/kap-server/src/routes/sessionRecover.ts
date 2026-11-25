@@ -252,6 +252,7 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
           for (const task of taskService.list(false)) {
             if (task.status !== 'lost' || seenTaskIds.has(task.taskId)) continue;
             if (acknowledgedLostTaskIds.has(task.taskId)) continue;
+            if ((task.endedAt ?? task.startedAt) < recoveryWatermark) continue;
             seenTaskIds.add(task.taskId);
             lostTasks.push(task);
             lostByOwner.set(handle.id, (lostByOwner.get(handle.id) ?? 0) + 1);

@@ -496,6 +496,46 @@ it('isolates main SubmissionRecovery from subagent unconfirmed sends and restore
   expect(container.querySelector('[data-submission-recovery-item]')?.textContent).toContain('live unconfirmed');
 });
 
+it('hides in-flight preserved submissions and retires backups matched by durableIngress or userMessageId', async () => {
+  const inFlight = preserveSubmission(
+    {
+      sessionId: 'session-example',
+      agentId: 'main',
+      promptId: 'main-in-flight',
+      content: [{ type: 'text', text: 'normal in-flight prompt' }],
+      createdAt: '2026-01-01T00:00:01Z',
+    },
+    { inFlight: true },
+  );
+  const state = createViewState('session-example');
+  root = createRoot(container);
+  await act(async () => root!.render(
+    <I18nProvider><SubmissionRecovery sessionId="session-example" agentId="main" draftKey="session-example" state={state} /></I18nProvider>,
+  ));
+  expect(container.querySelector('[data-submission-recovery]')).toBeNull();
+
+  await act(async () => { inFlight.releaseFlight(); });
+  expect(container.querySelector('[data-submission-recovery-item]')?.textContent).toContain('normal in-flight prompt');
+
+  const withDurableIngress = {
+    ...state,
+    durableIngress: [{
+      prompt_id: 'main-in-flight',
+      user_message_id: 'um-in-flight',
+      agent_id: 'main',
+      status: 'queued' as const,
+      admission: 'held' as const,
+      content: [{ type: 'text' as const, text: 'normal in-flight prompt' }],
+      created_at: '2026-01-01T00:00:01Z',
+    }],
+  };
+  await act(async () => root!.render(
+    <I18nProvider><SubmissionRecovery sessionId="session-example" agentId="main" draftKey="session-example" state={withDurableIngress} /></I18nProvider>,
+  ));
+  expect(container.querySelector('[data-submission-recovery]')).toBeNull();
+  inFlight.acknowledge();
+});
+
 
 it('hides idle partial prompt records from the composer footer and ordinary 1-item queue, and surfaces inline header continuation during held ingress', async () => {
   fixture.queued = false;

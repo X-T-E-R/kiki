@@ -66,6 +66,8 @@ interface AgentTreeRowProps {
   controlledExpanded?: boolean;
   onToggle?: () => void;
   flatStyle?: CSSProperties;
+  measureRef?: (node: HTMLLIElement | null) => void;
+  dataIndex?: number;
 }
 
 const AgentTreeRow = memo(function AgentTreeRow({
@@ -77,6 +79,8 @@ const AgentTreeRow = memo(function AgentTreeRow({
   controlledExpanded,
   onToggle,
   flatStyle,
+  measureRef,
+  dataIndex,
 }: AgentTreeRowProps) {
   const { t, tp } = useI18n();
   const engineName = useExecutorInstanceLabel(node.executorId);
@@ -110,7 +114,7 @@ const AgentTreeRow = memo(function AgentTreeRow({
   const indent = Math.min(depth, 6) * 12;
 
   return (
-    <li data-rail-item style={flatStyle}>
+    <li ref={measureRef} data-index={dataIndex} data-rail-item style={flatStyle}>
       <div className="flex items-stretch">
         {depth > 0 ? (
           <span
@@ -380,10 +384,24 @@ function BoundedVirtualTree({
       return next;
     });
   }, []);
-  const virtualizer = useVirtualizer({
+  const virtualizer = useVirtualizer<HTMLDivElement, HTMLLIElement>({
     count: rows.length,
     getScrollElement: () => activeScrollRef.current,
-    estimateSize: (index) => (rows[index]?.kind === 'hint' ? 28 : 52),
+    estimateSize: (index) => {
+      const row = rows[index];
+      if (row?.kind === 'hint') return 28;
+      if (row === undefined) return 52;
+      const hasThirdLine =
+        row.node.turnOutcome !== undefined ||
+        (row.node.error !== undefined && (row.node.status === 'failed' || row.node.status === 'cancelled'));
+      return hasThirdLine ? 72 : 52;
+    },
+    measureElement: (element, _entry, instance) => {
+      const rectHeight = Math.ceil(element.getBoundingClientRect().height);
+      if (rectHeight > 0) return rectHeight;
+      const index = Number(element.getAttribute('data-index'));
+      return Number.isFinite(index) ? instance.options.estimateSize(index) : 52;
+    },
     getItemKey: (index) => {
       const row = rows[index];
       if (row === undefined) return index;
@@ -425,14 +443,15 @@ function BoundedVirtualTree({
           return (
             <li
               key={row.key}
+              ref={virtualizer.measureElement}
+              data-index={item.index}
               data-agent-tree-window-hint=""
-              className="flex items-center px-2 text-[11px] text-ink-faint"
+              className="flex min-h-7 items-center px-2 text-[11px] text-ink-faint"
               style={{
                 position: 'absolute',
                 top: 0,
                 left: 0,
                 width: '100%',
-                height: item.size,
                 paddingLeft: `${8 + Math.min(row.depth, 4) * 12}px`,
                 transform: `translateY(${item.start}px)`,
               }}
@@ -453,12 +472,13 @@ function BoundedVirtualTree({
             onOpen={onOpen}
             controlledExpanded={!collapsed.has(row.node.agentId)}
             onToggle={() => { handleToggle(row.node.agentId); }}
+            measureRef={virtualizer.measureElement}
+            dataIndex={item.index}
             flatStyle={{
               position: 'absolute',
               top: 0,
               left: 0,
               width: '100%',
-              height: item.size,
               transform: `translateY(${item.start}px)`,
             }}
           />

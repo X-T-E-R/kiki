@@ -1443,13 +1443,30 @@ function ChildAgentWorkspace({
     }
     revealOwnSend(true);
     try {
+      const afterModelSwitch = modelSwitches.dependency?.input.operationId;
       const result = await controller.sendPromptNow({
         agentId,
         text: carry.quotedText,
         content,
-        skills: externalExecutor ? undefined : skills,
+        ...(afterModelSwitch !== undefined ? { afterModelSwitch } : {}),
+        ...(externalExecutor || skills === undefined ? {} : { skills }),
       });
       settlePendingSubmission(draftKey, echoId, carry.sentIds);
+      if (result.outcome === 'failed' || result.outcome === 'cancelled') {
+        recoverSubmittedDraft(draftKey, submittedDraft, composerAttachments);
+        if (carry.sentAnnotations.length > 0) {
+          if (composerOwnerActive.current) {
+            setAnnotations((current) => restoreSentAnnotations(current, carry.sentAnnotations));
+          } else {
+            updateStoredAnnotations(draftKey, (current) => restoreSentAnnotations(current, carry.sentAnnotations));
+          }
+        }
+        pushToast({
+          tone: 'info',
+          text: t(result.outcome === 'cancelled' ? 'sv.submissionRecovery.cancelled' : 'sv.submissionRecovery.failed'),
+        });
+        return;
+      }
       const notice = sendNowNotice(result.outcome, result.reason);
       if (notice !== undefined) pushToast({ tone: notice.tone, text: t(notice.key) });
       // A queued acknowledgement already carries its final reason; only
@@ -1700,7 +1717,10 @@ function ChildAgentWorkspace({
   );
   const scopedEcho = sendEcho?.scope === sendScope ? sendEcho : undefined;
   const echoOwned = scopedEcho !== undefined && (
-    agentBlocks.some((block) => block.kind === 'user' && block.promptId === scopedEcho.id) ||
+    agentBlocks.some((block) =>
+      block.kind === 'user' &&
+      (block.promptId === scopedEcho.id || block.userMessageId === scopedEcho.id || block.id === `user-${scopedEcho.id}`),
+    ) ||
     agentLiveState.queuedPromptIds.includes(scopedEcho.id)
   );
   useEffect(() => {
@@ -1843,11 +1863,12 @@ function ChildAgentWorkspace({
         onRetryFailedTurn: composerDisabled ? undefined : handleRetryFailedTurn,
         onRecoverInterruption: composerDisabled ? undefined : handleRecoverInterruption,
         recoveringInterruption,
+        models: modelsQuery.data?.items,
         visible: transcriptVisible,
       }}
       annotations={annotationSurface}
       dock={<div className="space-y-2 pt-2">
-        <SubmissionRecovery sessionId={sessionId} agentId={agentId} draftKey={draftKey} state={agentState} />
+        <SubmissionRecovery sessionId={sessionId} agentId={agentId} draftKey={draftKey} state={timelineState} />
         <ResyncStatusBanner
           resyncing={sessionState.resyncing} resyncFailed={sessionState.resyncFailed}
           error={sessionState.resyncError}

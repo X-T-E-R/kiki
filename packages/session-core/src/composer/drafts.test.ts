@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PermissionMode } from '@kiki/protocol';
 
 import type { ComposerAttachment } from './attachments';
-import { preserveSubmission, readUnconfirmedSubmissions, forgetUnconfirmedSubmission } from './submissionRecovery';
+import { preserveSubmission, isSubmissionInFlight, readUnconfirmedSubmissions, forgetUnconfirmedSubmission } from './submissionRecovery';
 import { configureSpaceStorage } from '../storage/spaceStorage';
 import { addAnnotation, removeAnnotation } from './selectionQuote';
 import {
@@ -880,5 +880,28 @@ describe('unacknowledged submissions', () => {
       },
     ]);
     clearComposerState('sess-audio');
+  });
+
+  it('tracks in-flight submission preservation until releaseFlight or acknowledge', () => {
+    const p1 = preserveSubmission(
+      { sessionId: 'sess-flight', agentId: 'main', promptId: 'p-flight-1', content: [{ type: 'text', text: 'hello' }], createdAt: '2026-01-01T00:00:00Z' },
+      { inFlight: true },
+    );
+    expect(isSubmissionInFlight('sess-flight', 'p-flight-1', 'main')).toBe(true);
+    expect(readUnconfirmedSubmissions('sess-flight', 'main')).toHaveLength(1);
+    p1.releaseFlight();
+    expect(isSubmissionInFlight('sess-flight', 'p-flight-1', 'main')).toBe(false);
+    expect(readUnconfirmedSubmissions('sess-flight', 'main')).toHaveLength(1);
+    p1.acknowledge();
+    expect(readUnconfirmedSubmissions('sess-flight', 'main')).toHaveLength(0);
+
+    const p2 = preserveSubmission(
+      { sessionId: 'sess-flight', agentId: 'main', promptId: 'p-flight-2', content: [{ type: 'text', text: 'hello 2' }], createdAt: '2026-01-01T00:00:01Z' },
+      { inFlight: true },
+    );
+    expect(isSubmissionInFlight('sess-flight', 'p-flight-2', 'main')).toBe(true);
+    p2.acknowledge();
+    expect(isSubmissionInFlight('sess-flight', 'p-flight-2', 'main')).toBe(false);
+    expect(readUnconfirmedSubmissions('sess-flight', 'main')).toHaveLength(0);
   });
 });

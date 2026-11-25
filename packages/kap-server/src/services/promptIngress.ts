@@ -47,6 +47,7 @@ interface Entry {
   readonly stage: 'restoring' | 'submitting';
   readonly steerTarget?: { readonly turnId?: number; readonly promptId?: string };
   readonly cancelRequested?: boolean;
+  readonly cancelQueuedOnly?: boolean;
   readonly error?: PromptItem['admission_error'];
   readonly result?: PromptIngressResult;
   readonly restoreProgress?: PromptItem['restore_progress'];
@@ -66,7 +67,7 @@ export interface PromptIngressExecution {
 }
 interface Consumer {
   submit(sessionId: string, execution: PromptIngressExecution): Promise<PromptIngressResult>;
-  cancel(sessionId: string, agentId: string, promptId: string, signal: AbortSignal): Promise<void>;
+  cancel(sessionId: string, agentId: string, promptId: string, signal: AbortSignal, queuedOnly?: boolean): Promise<void>;
   projectDelivery?(sessionId: string, agentId: string, result: PromptItem): PromptItem;
 }
 
@@ -495,7 +496,7 @@ export class PromptIngress {
     return this.item(target, resumed);
   }
 
-  async abort(sessionId: string, agentId: string, promptId: string): Promise<boolean | undefined> {
+  async abort(sessionId: string, agentId: string, promptId: string, queuedOnly = false): Promise<boolean | undefined> {
     const live = this.core.accessor.get(ISessionManager).get(sessionId);
     if (live !== undefined && live.accessor.get(ISessionContext).ephemeral) return undefined;
     if (live === undefined && await this.core.accessor.get(ISessionIndex).get(sessionId) === undefined) return undefined;
@@ -504,7 +505,8 @@ export class PromptIngress {
     const entry = await this.lockedKey(target, key, async () => {
       const current = await this.read(target, key);
       if (current === undefined || current.admission === 'admitted' || current.admission === 'cancelled') return current;
-      const next: Entry = { ...current, owner: this.owner, cancelRequested: true, admission: current.stage === 'restoring' ? 'cancelled' : 'held',
+      const cancelQueuedOnly = current.cancelRequested === true && current.cancelQueuedOnly === false ? false : queuedOnly;
+      const next: Entry = { ...current, owner: this.owner, cancelRequested: true, cancelQueuedOnly, admission: current.stage === 'restoring' ? 'cancelled' : 'held',
         error: current.stage === 'restoring' ? undefined : { code: 40903, message: 'Cancellation is waiting for the saved request to be reconciled with the agent.' } };
       await this.publish(target, next);
       return next;
@@ -676,7 +678,7 @@ export class PromptIngress {
     }
   }
 
-  private async runCancelReconciliation(sessionId: string, agentId: string, promptId: string): Promise<void> {
+  private async runCancelReconciliation(sessionId: string, agentId: string, promptId: string, queuedOnly?: boolean): Promise<void> {
     if (this.closed) throw new Error('Server stopped during prompt admission');
     const cancelController = new AbortController();
     this.cancelControllers.add(cancelController);
@@ -685,7 +687,7 @@ export class PromptIngress {
     }, 30_000);
     timer.unref?.();
     try {
-      await withRestorePriority('interactive', () => this.consumer.cancel(sessionId, agentId, promptId, cancelController.signal));
+      await withRestorePriority('interactive', () => this.consumer.cancel(sessionId, agentId, promptId, cancelController.signal, queuedOnly));
     } finally {
       clearTimeout(timer);
       this.cancelControllers.delete(cancelController);
@@ -738,7 +740,7 @@ export class PromptIngress {
               settledResult = outcome.result;
             }
           }
-          await this.runCancelReconciliation(target.sessionId, entry.agentId, entry.body.prompt_id!);
+          await this.runCancelReconciliation(target.sessionId, entry.agentId, entry.body.prompt_id!, entry.cancelQueuedOnly);
           await this.lockedKey(target, key, async () => {
             const current = (await this.read(target, key))!;
             workerEntry.cancelHandled = true;
@@ -810,7 +812,7 @@ export class PromptIngress {
           await this.publish(target, entry);
         });
         if (entry.cancelRequested) {
-          await this.runCancelReconciliation(target.sessionId, entry.agentId, entry.body.prompt_id!);
+          await this.runCancelReconciliation(target.sessionId, entry.agentId, entry.body.prompt_id!, entry.cancelQueuedOnly);
           await this.lockedKey(target, key, async () => {
             const current = (await this.read(target, key))!;
             workerEntry.cancelHandled = true;
@@ -861,7 +863,7 @@ export class PromptIngress {
             }
           }
           try {
-            await this.runCancelReconciliation(target.sessionId, entry.agentId, entry.body.prompt_id!);
+            await this.runCancelReconciliation(target.sessionId, entry.agentId, entry.body.prompt_id!, entry.cancelQueuedOnly);
             await this.lockedKey(target, key, async () => {
               const current = (await this.read(target, key))!;
               workerEntry.cancelHandled = true;

@@ -547,7 +547,11 @@ export class AgentTranscriptLiveAdapter {
     const endedAt = event.time === undefined ? nowIso() : epochMsToIso(event.time);
     const closedFrames = new Set<string>();
     const closeFrame = (hit: ToolFrameRecord): void => {
-      const current = this.lookups?.toolFrame?.(hit.frame.toolCallId) ?? hit;
+      const looked = this.lookups?.toolFrame?.(hit.frame.toolCallId);
+      const current =
+        looked !== undefined && looked.stepId === hit.stepId && looked.frame.frameId === hit.frame.frameId
+          ? looked
+          : hit;
       const key = `${current.stepId}\0${current.frame.frameId}`;
       if (current.frame.state !== 'running' || closedFrames.has(key)) return;
       closedFrames.add(key);
@@ -1000,6 +1004,19 @@ export class AgentTranscriptLiveAdapter {
     }
     const ordinal =
       ordinalHint ?? this.lookups?.stepOrdinal?.(turnId) ?? this.stepOrdinals.get(turnId) ?? 1;
+    if (stepIdHint === undefined) {
+      const details = this.lookups?.turnDetails?.(turnId);
+      const persisted =
+        details?.steps.findLast((step) => step.state === 'running') ??
+        details?.steps.findLast((step) => step.ordinal === ordinal);
+      if (persisted !== undefined) {
+        const { frames: _frames, ...header } = persisted;
+        void _frames;
+        this.currentStep = header;
+        this.stepOrdinals.set(turnId, Math.max(this.stepOrdinals.get(turnId) ?? 0, header.ordinal));
+        return this.currentStep;
+      }
+    }
     this.currentStep = {
       kind: 'step',
       stepId: stepIdHint ?? `${turnId}.${ordinal}`,
@@ -1095,31 +1112,35 @@ export class AgentTranscriptLiveAdapter {
   }): TranscriptOperation[] {
     const ops: TranscriptOperation[] = [];
     const turnId = `t${event.turnId}`;
-    const step = this.ensureStep(turnId, ops);
-    const frameId = `${step.stepId}.${event.toolCallId}`;
+    const existing = this.adoptToolFrame(event.toolCallId) ?? this.toolFrames.get(event.toolCallId);
+    const targetTurnId = existing?.turnId ?? turnId;
+    const stepId = existing?.stepId ?? this.ensureStep(turnId, ops).stepId;
+    const frameId = existing?.frame.frameId ?? `${stepId}.${event.toolCallId}`;
     const input = parseToolArgs(event.args);
-    const previous = (this.adoptToolFrame(event.toolCallId) ?? this.toolFrames.get(event.toolCallId))?.frame;
+    const previous = existing?.frame;
+    const terminal = previous !== undefined && previous.state !== 'running';
     const frame: ToolCallFrame = {
+      ...(previous ?? {}),
       kind: 'tool',
       frameId,
       part:
         previous?.part ?? {
           partId: event.toolCallId,
-          messageId: step.stepId,
+          messageId: stepId,
           revision: 0,
           provenance: { source: 'engine' },
         },
       toolCallId: event.toolCallId,
-      name: event.name,
-      state: 'running',
-      input,
+      name: event.name || previous?.name || '',
+      state: terminal ? previous.state : 'running',
+      input: input ?? previous?.input,
       inputText: previous?.inputText,
-      display: event.display,
-      startedAt: event.time === undefined ? nowIso() : epochMsToIso(event.time),
-      todoId: !event.toolCallId.startsWith('external:') && event.name === TODO_LIST_TOOL_NAME && todoWriteItems(input) !== undefined ? TODO_ENTITY_ID : undefined,
+      display: event.display ?? previous?.display,
+      startedAt: previous?.startedAt ?? (event.time === undefined ? nowIso() : epochMsToIso(event.time)),
+      todoId: previous?.todoId ?? (!event.toolCallId.startsWith('external:') && event.name === TODO_LIST_TOOL_NAME && todoWriteItems(input) !== undefined ? TODO_ENTITY_ID : undefined),
     };
-    this.toolFrames.set(event.toolCallId, { turnId, stepId: step.stepId, frame });
-    ops.push({ op: 'frame.upsert', turnId, stepId: step.stepId, frame });
+    this.toolFrames.set(event.toolCallId, { turnId: targetTurnId, stepId, frame });
+    ops.push({ op: 'frame.upsert', turnId: targetTurnId, stepId, frame });
     return ops;
   }
 

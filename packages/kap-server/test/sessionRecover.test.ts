@@ -95,6 +95,7 @@ describe('POST /sessions/:session_id/recover', () => {
     readonly executionState?: 'idle' | 'running';
     readonly unfinishedTurn?: boolean;
     readonly lostTask?: boolean;
+    readonly lastRecoveredAt?: number;
     readonly enqueueDelayMs?: number;
     readonly branchUnfinishedTurn?: boolean;
   }) {
@@ -122,6 +123,7 @@ describe('POST /sessions/:session_id/recover', () => {
           : {}),
       },
       ...(options.branchUnfinishedTurn ? { activeRunBootId: 'previous-boot', activeRunAgentIds: ['branch-1'] } : {}),
+      ...(options.lastRecoveredAt !== undefined ? { lastRecoveredAt: options.lastRecoveredAt } : {}),
     };
 
     const agentServices = new Map<unknown, unknown>([
@@ -339,6 +341,13 @@ describe('POST /sessions/:session_id/recover', () => {
     const second = await harness.invoke({});
     expect(second.data).toMatchObject({ status: 'nothing_to_recover', recovered_targets: [] });
     expect(harness.enqueued).toHaveLength(1);
+  });
+
+  it('ignores historical lost tasks predating lastRecoveredAt watermark', async () => {
+    const harness = setupRoute({ unfinishedTurn: false, lostTask: true, lastRecoveredAt: 500 });
+    const res = await harness.invoke({});
+    expect(res.data).toMatchObject({ status: 'nothing_to_recover', recovered_targets: [] });
+    expect(harness.enqueued).toHaveLength(0);
   });
 
   it('wakes an interrupted unsealed branch directly when main is idle with no lost tasks', async () => {

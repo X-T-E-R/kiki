@@ -3062,7 +3062,10 @@ export function SessionView({
     const pending = pendingSubmissionRef.current;
     if (pending === undefined) return;
     const ingress = mainDurableIngress?.find((item) => item.prompt_id === pending.id);
-    const row = state.blocks.find((block): block is UserBlock => block.kind === 'user' && block.promptId === pending.id);
+    const row = state.blocks.find((block): block is UserBlock =>
+      block.kind === 'user' &&
+      (block.promptId === pending.id || block.userMessageId === pending.id || block.id === `user-${pending.id}`),
+    );
     const admission = ingress?.admission;
     if (admission === 'failed') {
       // The server kept this message: its bubble carries "not sent" with a
@@ -3740,14 +3743,9 @@ export function SessionView({
         const content = options?.firstMessage?.submission?.content ?? buildPromptContent(carry.quotedText, composerAttachments, carry.presentation);
         if (content === null || pendingSendRef.current) return;
         const textPart = content.find((part) => part.type === 'text');
-        // Local echo shows the mention-folded text; a media-only message
-        // echoes the same placeholder the transcript uses for those parts.
-        const echoText =
-          textPart !== undefined && textPart.type === 'text'
-            ? textPart.text
-            : composerAttachments.some((item) => item.kind === 'upload')
-              ? t('sv.fileEcho')
-              : t('sv.imageEcho');
+        // Local echo carries only real user text; media-only prompts render
+        // their attachment thumbnails directly without a synthetic placeholder bubble.
+        const echoText = textPart !== undefined && textPart.type === 'text' ? textPart.text : '';
         const modelControlTouched = modelTouched && composerSelection.modelChoice === modelChoice;
         const profileSwitch = resolveProfileSwitchSubmission({
           pendingProfile,
@@ -4057,18 +4055,18 @@ export function SessionView({
             completeControls();
           })
           .catch((error: unknown) => {
-            restoreCapturedSubmission();
             const isApi = error instanceof ApiError;
-            const transportUnconfirmed = !isApi || isUnconfirmedTransportError(error) || error.code === API_CODES.TIMEOUT;
+            const transportUnconfirmed = isUnconfirmedTransportError(error) || (isApi && error.code === API_CODES.TIMEOUT);
             if (transportUnconfirmed) {
-              // Keep the captured identity visible and retryable. A timeout or
-              // fetch failure has unknown delivery; any retry must reuse the
-              // same promptId so the server can deduplicate an accepted request.
+              // Keep the captured identity visible and retryable without auto-refilling
+              // the composer: a timeout or fetch failure has unknown delivery, so
+              // refilling here risks duplicate submission if WS later confirms it.
               setPendingSubmission((current) => current?.id === submissionId
                 ? { ...current, slow: true, retryable: true, status: 'offline' }
                 : current);
               return;
             }
+            restoreCapturedSubmission();
             if (resume) {
               setPendingSubmission((current) => current?.id === submissionId
                 ? { ...current, slow: true, retryable: true, status: 'server' }
@@ -5433,8 +5431,11 @@ boundExecution,
     setRecoveringInterruption(true);
     void client
       .recoverSession(sessionId)
-      .then(() => {
+      .then((result) => {
         void queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined);
+        if (result.status === 'nothing_to_recover') {
+          void controller?.resync();
+        }
       })
       .catch((error: unknown) => {
         pushToast({
@@ -5445,7 +5446,7 @@ boundExecution,
       .finally(() => {
         setRecoveringInterruption(false);
       });
-  }, [client, locale, queryClient, recoveringInterruption, sessionId, state.busy]);
+  }, [client, controller, locale, queryClient, recoveringInterruption, sessionId, state.busy]);
 
   const handleContinueFailedTurn = useCallback(() => {
     if (state.busy || actions === null) return;
@@ -6126,6 +6127,7 @@ boundExecution,
     interruptedWork: state.session?.interrupted_work,
     onRecoverInterruption: handleRecoverInterruption,
     recoveringInterruption,
+    models: modelsQuery.data?.items,
   }), [
     timelineView, timelineState, wsStatus,
     mainTimelineActions.loadOlder, mainTimelineActions.resolveApproval,
@@ -6134,7 +6136,7 @@ boundExecution,
     forest, openAgent, transcriptRowActionsWithBranch, forkLineage.byBlockId,
     openForkSession, openAgentRoute, handleContinueFailedTurn, handleRetryFailedTurn,
     handleRetryCompaction, state.session?.interrupted_work, handleRecoverInterruption,
-    recoveringInterruption,
+    recoveringInterruption, modelsQuery.data?.items,
   ]);
   const mainDockNode = useMemo(() => (
     <>
@@ -6149,10 +6151,11 @@ boundExecution,
           onClose={handleCloseBtw}
         />
       ) : null}
-      <SubmissionRecovery sessionId={sessionId} agentId={MAIN_AGENT_ID} draftKey={sessionId} state={state} />
+      <SubmissionRecovery sessionId={sessionId} agentId={MAIN_AGENT_ID} draftKey={sessionId} state={timelineState} />
       <ResyncStatusBanner
         resyncing={state.resyncing} resyncFailed={state.resyncFailed}
         error={state.resyncError}
+        sendPaused={!sessionSendReady}
         onRetry={handleResyncRetry}
       />
       {recoveryHold ? (
@@ -6185,7 +6188,7 @@ boundExecution,
     </>
   ), [
     shownBtw, sessionId, controller, handleSendBtwQuestion, handleExpandBtw, handleCloseBtw,
-    state, handleResyncRetry, recoveryHold, recoveryHoldCount, recoveryPending,
+    state, timelineState, sessionSendReady, handleResyncRetry, recoveryHold, recoveryHoldCount, recoveryPending,
     handleRecoveryConfirm, locale, handleRestoreArchivedSession, t, handleRefreshSessionSaved,
   ]);
   const mainRailNode = useMemo(() => (

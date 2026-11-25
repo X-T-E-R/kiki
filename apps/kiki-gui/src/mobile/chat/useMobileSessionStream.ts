@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
 import type { ApprovalDecision, DeferredAppendTiming, QuestionAnswer } from '@kiki/protocol';
-import { SessionController, type SessionViewState } from '@kiki/session-core/session';
+import { SessionController, createViewState, type SessionViewState } from '@kiki/session-core/session';
 import { sessionAttentionCursor } from '@kiki/session-core/sessions';
 
 import type { KikiClient } from '../../lib/client';
 import { commitPendingConversationOpen } from '../../lib/conversationOpen';
 import { pushToast } from '../../lib/toasts';
 import { useControllerRegistry } from '../../state/connection';
+
+const NOOP_UNSUBSCRIBE = () => {};
 
 export interface MobileSessionStreamResult {
   readonly state: SessionViewState;
@@ -39,7 +41,8 @@ export function useMobileSessionStream(
     () => new SessionController(client.sessions, client.sessionView(sessionId), sessionId),
     [client, sessionId],
   );
-  const [controller, setController] = useState<SessionController>(createController);
+  const [controller, setController] = useState<SessionController | null>(null);
+  const emptyState = useMemo(() => createViewState(sessionId), [sessionId]);
 
   useLayoutEffect(() => {
     const lease = registry.acquire(sessionId, client, createController, 'main');
@@ -50,10 +53,10 @@ export function useMobileSessionStream(
   }, [client, createController, registry, sessionId]);
 
   const subscribe = useCallback(
-    (listener: () => void) => controller.subscribe(listener),
+    (listener: () => void) => (controller === null ? NOOP_UNSUBSCRIBE : controller.subscribe(listener)),
     [controller],
   );
-  const getSnapshot = useCallback(() => controller.getState(), [controller]);
+  const getSnapshot = useCallback(() => controller?.getState() ?? emptyState, [controller, emptyState]);
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   useEffect(() => {
@@ -66,7 +69,7 @@ export function useMobileSessionStream(
   }, [sessionId, spaceKey, state.loaded, state.session]);
 
   const loadOlder = useCallback(async () => {
-    if (loadingOlder || !state.hasMoreHistory) return;
+    if (controller === null || loadingOlder || !state.hasMoreHistory) return;
     setLoadingOlder(true);
     try {
       await controller.loadOlderHistory();
@@ -83,6 +86,7 @@ export function useMobileSessionStream(
       readonly timing?: DeferredAppendTiming;
       readonly personaGreetingReply?: boolean;
     }): Promise<boolean> => {
+      if (controller === null) return false;
       const trimmed = input.text.trim();
       if (trimmed === '') return false;
       try {
@@ -103,6 +107,7 @@ export function useMobileSessionStream(
   );
 
   const abort = useCallback(async () => {
+    if (controller === null) return;
     try {
       await controller.abortActive();
     } catch (error) {
@@ -112,6 +117,7 @@ export function useMobileSessionStream(
 
   const resolveApproval = useCallback(
     async (approvalId: string, decision: ApprovalDecision, reason?: string) => {
+      if (controller === null) return;
       const feedback = reason?.trim();
       try {
         await controller.resolveApproval(
@@ -130,6 +136,7 @@ export function useMobileSessionStream(
 
   const answerQuestion = useCallback(
     async (questionId: string, answers: Readonly<Record<string, QuestionAnswer>>) => {
+      if (controller === null) return;
       try {
         await controller.answerQuestion(questionId, { ...answers });
       } catch (error) {
@@ -141,6 +148,7 @@ export function useMobileSessionStream(
 
   const dismissQuestion = useCallback(
     async (questionId: string) => {
+      if (controller === null) return;
       try {
         await controller.dismissQuestion(questionId);
       } catch (error) {
@@ -151,6 +159,7 @@ export function useMobileSessionStream(
   );
 
   const retryLoad = useCallback(async () => {
+    if (controller === null) return;
     try {
       if (state.loadError !== undefined) {
         await controller.retryOpen();

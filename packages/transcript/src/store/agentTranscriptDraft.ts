@@ -8,7 +8,7 @@ import type { TranscriptPrompt } from '../model/prompt';
 import type { TranscriptTask } from '../model/task';
 import type { TranscriptTodo } from '../model/todo';
 import type { TranscriptStep, TranscriptTurn } from '../model/turn';
-import { appendAtOffset, applyOperation, type AgentState } from '../ops/apply';
+import { appendAtOffset, applyOperation, mergeToolCallFrame, type AgentState } from '../ops/apply';
 import { safetyBoundaryIndex } from '../ops/framePlace';
 import { transcriptValueEquals } from '../ops/equality';
 import type {
@@ -349,28 +349,65 @@ export class AgentTranscriptDraft {
     const step = this.#steps.get(stepMapKey) ?? skeletonStep(stepId, turnId);
     const frameMapKey = frameKey(turnId, stepId, frame.frameId);
     const current = this.#frames.get(frameMapKey);
-    if (current !== undefined && transcriptValueEquals(current, frame)) {
+    const existingTool = frame.kind === 'tool' ? this.#tools.get(frame.toolCallId) : undefined;
+    const dupTool =
+      existingTool !== undefined &&
+      existingTool.turnId === turnId &&
+      (existingTool.stepId !== stepId || existingTool.frame.frameId !== frame.frameId)
+        ? existingTool
+        : undefined;
+    const effectiveFrame =
+      frame.kind === 'tool'
+        ? current?.kind === 'tool'
+          ? mergeToolCallFrame(current, frame)
+          : dupTool !== undefined
+            ? mergeToolCallFrame(dupTool.frame, frame)
+            : frame
+        : frame;
+    if (dupTool === undefined && current !== undefined && transcriptValueEquals(current, effectiveFrame)) {
       return { changed: false, toolCallCountDelta: 0 };
     }
     let toolCallCountDelta = 0;
-    if (current !== undefined && (current.kind === 'tool') !== (frame.kind === 'tool')) {
-      toolCallCountDelta = frame.kind === 'tool' ? 1 : -1;
+    if (current !== undefined && (current.kind === 'tool') !== (effectiveFrame.kind === 'tool')) {
+      toolCallCountDelta = effectiveFrame.kind === 'tool' ? 1 : -1;
       this.#toolCallCount = adjustToolCallCount(this.#toolCallCount, toolCallCountDelta);
-    } else if (current === undefined && frame.kind === 'tool') {
+    } else if (current === undefined && effectiveFrame.kind === 'tool' && dupTool === undefined) {
       toolCallCountDelta = 1;
       this.#toolCallCount = adjustToolCallCount(this.#toolCallCount, 1);
+    } else if (current !== undefined && dupTool !== undefined) {
+      toolCallCountDelta = -1;
+      this.#toolCallCount = adjustToolCallCount(this.#toolCallCount, -1);
     }
-    if (current?.kind === 'tool' && (frame.kind !== 'tool' || frame.toolCallId !== current.toolCallId)) {
+    if (current?.kind === 'tool' && (effectiveFrame.kind !== 'tool' || effectiveFrame.toolCallId !== current.toolCallId)) {
       this.#tools.delete(current.toolCallId);
     }
-    const frameIndex = step.frames.findIndex((entry) => entry.frameId === frame.frameId);
-    const frames = [...step.frames];
-    if (frameIndex >= 0) frames[frameIndex] = frame;
-    else if (place === 'safety_boundary') frames.splice(safetyBoundaryIndex(frames), 0, frame);
-    else frames.push(frame);
-    const nextStep: TranscriptStep = { ...step, frames };
-    const stepIndex = turn.steps.findIndex((entry) => entry.stepId === stepId);
     const steps = [...turn.steps];
+    let baseStep = step;
+    if (dupTool !== undefined) {
+      this.#frames.delete(frameKey(dupTool.turnId, dupTool.stepId, dupTool.frame.frameId));
+      if (dupTool.stepId === stepId) {
+        baseStep = { ...step, frames: step.frames.filter((entry) => entry.frameId !== dupTool.frame.frameId) };
+      } else {
+        const dupStepKey = stepKey(dupTool.turnId, dupTool.stepId);
+        const dupStep = this.#steps.get(dupStepKey);
+        if (dupStep !== undefined) {
+          const cleanedDupStep: TranscriptStep = {
+            ...dupStep,
+            frames: dupStep.frames.filter((entry) => entry.frameId !== dupTool.frame.frameId),
+          };
+          this.#steps.set(dupStepKey, cleanedDupStep);
+          const dupStepIndex = steps.findIndex((entry) => entry.stepId === dupTool.stepId);
+          if (dupStepIndex >= 0) steps[dupStepIndex] = cleanedDupStep;
+        }
+      }
+    }
+    const frameIndex = baseStep.frames.findIndex((entry) => entry.frameId === effectiveFrame.frameId);
+    const frames = [...baseStep.frames];
+    if (frameIndex >= 0) frames[frameIndex] = effectiveFrame;
+    else if (place === 'safety_boundary') frames.splice(safetyBoundaryIndex(frames), 0, effectiveFrame);
+    else frames.push(effectiveFrame);
+    const nextStep: TranscriptStep = { ...baseStep, frames };
+    const stepIndex = steps.findIndex((entry) => entry.stepId === stepId);
     if (stepIndex >= 0) steps[stepIndex] = nextStep;
     else {
       steps.push(nextStep);
@@ -378,8 +415,8 @@ export class AgentTranscriptDraft {
     }
     this.replaceOrInsertTurn({ ...turn, steps });
     this.#steps.set(stepMapKey, nextStep);
-    this.#frames.set(frameMapKey, frame);
-    if (frame.kind === 'tool') this.#tools.set(frame.toolCallId, { turnId, stepId, frame });
+    this.#frames.set(frameMapKey, effectiveFrame);
+    if (effectiveFrame.kind === 'tool') this.#tools.set(effectiveFrame.toolCallId, { turnId, stepId, frame: effectiveFrame });
     return { changed: true, toolCallCountDelta };
   }
 

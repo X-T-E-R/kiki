@@ -2872,3 +2872,69 @@ it('normalizes empty parentToolCallId on subagent.spawned and preserves descript
     state: 'completed',
   });
 });
+
+it('adopts persisted step and existing toolFrame on mid-turn tool.call.started without duplicating or regressing settled tools', () => {
+  const tx = new AgentTranscript('main');
+  tx.apply([
+    {
+      op: 'turn.upsert',
+      turn: { kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin: { kind: 'user' }, startedAt: '2026-01-01T00:00:00.000Z' },
+    },
+    {
+      op: 'step.upsert',
+      turnId: 't1',
+      step: { kind: 'step', stepId: 'step-uuid-1', turnId: 't1', ordinal: 1, state: 'running', startedAt: '2026-01-01T00:00:01.000Z' },
+    },
+    {
+      op: 'frame.upsert',
+      turnId: 't1',
+      stepId: 'step-uuid-1',
+      frame: {
+        kind: 'tool',
+        frameId: 'step-uuid-1.call-1',
+        toolCallId: 'call-1',
+        name: 'Read',
+        state: 'done',
+        input: { path: 'active-release.json' },
+        output: 'ok',
+      },
+    },
+  ]);
+  const live = new AgentTranscriptLiveAdapter('main', {
+    turn: (turnId: string) => tx.getTurn(turnId),
+    turnDetails: (turnId: string) => {
+      const item = tx.getItems().find((entry) => entry.kind === 'turn' && entry.turnId === turnId);
+      return item?.kind === 'turn' ? item : undefined;
+    },
+    toolFrame: (toolCallId: string) => {
+      for (const item of tx.getItems()) {
+        if (item.kind !== 'turn') continue;
+        for (const step of item.steps) {
+          for (const frame of step.frames) {
+            if (frame.kind === 'tool' && frame.toolCallId === toolCallId) {
+              return { turnId: item.turnId, stepId: step.stepId, frame };
+            }
+          }
+        }
+      }
+      return undefined;
+    },
+  });
+  const ops = live.map(ev({
+    type: 'tool.call.started',
+    turnId: 1,
+    toolCallId: 'call-1',
+    name: 'Read',
+    args: { path: 'active-release.json' },
+    time: 2000,
+  }));
+  tx.apply(ops);
+  const turn = tx.getItems().find((entry) => entry.kind === 'turn' && entry.turnId === 't1');
+  expect(turn?.kind).toBe('turn');
+  expect(turn?.kind === 'turn' ? turn.steps.map((s) => s.stepId) : []).toEqual(['step-uuid-1']);
+  const toolFrames = turn?.kind === 'turn'
+    ? turn.steps.flatMap((s) => s.frames.filter((f) => f.kind === 'tool'))
+    : [];
+  expect(toolFrames).toHaveLength(1);
+  expect(toolFrames[0]).toMatchObject({ frameId: 'step-uuid-1.call-1', state: 'done', output: 'ok' });
+});

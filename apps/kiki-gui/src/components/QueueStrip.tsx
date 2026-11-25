@@ -186,7 +186,7 @@ export function QueueHeaderSummary({
       ? first.cronDeliveryMode
       : undefined;
   return (
-    <span className="flex min-w-0 flex-1 items-center gap-2">
+    <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
       {count > 0 ? (
         <span data-queue-count className="shrink-0 font-medium text-section-ink tabular-nums">
           {tp('composer.queueStack.count', count)}
@@ -200,11 +200,11 @@ export function QueueHeaderSummary({
       {first !== undefined ? (
         <>
           {previewText !== '' ? (
-            <span data-queue-first-preview className="min-w-0 truncate text-ink-faint">
+            <span data-queue-first-preview className="min-w-0 flex-1 truncate text-ink-faint">
               {replaceAgentRefs(previewText)}
             </span>
           ) : hasMedia ? (
-            <span data-queue-first-preview className="min-w-0 truncate text-ink-faint">
+            <span data-queue-first-preview className="min-w-0 flex-1 truncate text-ink-faint">
               {t('sv.queueNoText')}
             </span>
           ) : null}
@@ -215,7 +215,7 @@ export function QueueHeaderSummary({
           </span>
         </>
       ) : null}
-      <Icon name="chevron" size={12} className="ml-auto -rotate-90 text-ink-faint" />
+      <Icon name="chevron" size={12} className="ml-auto shrink-0 -rotate-90 text-ink-faint" />
     </span>
   );
 }

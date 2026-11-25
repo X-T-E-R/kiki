@@ -1016,4 +1016,14 @@ describe('wire record continuations', () => {
       expect(Buffer.from(seen[0]!.raw!)).toEqual(Buffer.from(raw));
     });
   });
+
+  it('rejects corrupted non-compaction wire lines even when they end with source or phase fields', async () => {
+    const corrupted = '{"type":"tool.result","broken":[\n' +
+      '{"type":"assistant.delta","bad":,"source":"auto","time":12345}\n';
+    await withWireFile(corrupted, async (wirePath) => {
+      await expect(
+        streamWireRecordsAwaited(wirePath, { onRecord: async () => undefined }),
+      ).rejects.toThrow(/corrupted line/);
+    });
+  });
 });

@@ -4183,6 +4183,7 @@ export function agentTranscriptToBlocks(
     const identity = identityFromTurnOrigin(origin);
     const turnPresentation = readTextPresentation((item as { presentation?: unknown }).presentation);
     const turnUserMessageId = turnMessageId(item) ?? identity.userMessageId;
+    const turnPromptId = (item as { readonly promptId?: string }).promptId ?? identity.promptId;
     const turnMedia = mediaWithPresentation(mediaFromAttachmentIds(
       (item as { attachmentIds?: readonly string[] }).attachmentIds, attachmentsById, response.agent_id,
     ), turnPresentation);
@@ -4191,9 +4192,14 @@ export function agentTranscriptToBlocks(
     let openingPromptIndex: number | undefined;
     let openingVia: UserBlock['via'];
     const hasNonEmptyTurnPrompt = Boolean(item.prompt?.trim());
-    const needsFrameOwnershipCheck = !hasNonEmptyTurnPrompt && turnUserMessageId !== undefined && ((turnMedia?.length ?? 0) > 0 || promptPending);
-    const frameOwnsMessage = needsFrameOwnershipCheck && item.steps.some((step) => step.frames.some((frame) =>
-      frame.kind === 'text' && frame.role === 'user' && frameMessageId(frame) === turnUserMessageId));
+    const needsFrameOwnershipCheck = !hasNonEmptyTurnPrompt && (turnUserMessageId !== undefined || turnPromptId !== undefined) && ((turnMedia?.length ?? 0) > 0 || promptPending);
+    const frameOwnsMessage = needsFrameOwnershipCheck && item.steps.some((step) => step.frames.some((frame) => {
+      if (frame.kind !== 'text' || frame.role !== 'user') return false;
+      const msgId = frameMessageId(frame);
+      const framePromptId = (frame as { readonly promptId?: string }).promptId;
+      return (msgId !== undefined && ((turnUserMessageId !== undefined && msgId === turnUserMessageId) || (turnPromptId !== undefined && msgId === turnPromptId)))
+        || (framePromptId !== undefined && turnPromptId !== undefined && framePromptId === turnPromptId);
+    }));
     if (hasNonEmptyTurnPrompt || (!frameOwnsMessage && ((turnMedia?.length ?? 0) > 0 || promptPending))) {
       const promptBlocks = classifiedTextToBlocks({
         id: turnUserMessageId ?? `agent-turn-${item.turnId}-prompt`,
@@ -4208,7 +4214,7 @@ export function agentTranscriptToBlocks(
         turnId: item.turnId,
         contentSource: { kind: 'turn', id: item.turnId },
         contentPending: promptPending,
-        promptId: (item as { readonly promptId?: string }).promptId ?? identity.promptId,
+        promptId: turnPromptId,
         userMessageId: turnUserMessageId,
         media: turnMedia,
       });
@@ -4224,7 +4230,7 @@ export function agentTranscriptToBlocks(
           .findLast((frame) => assistantTextIsDisplay(frame))?.frameId
       : undefined;
     const stepCacheContextKey = !terminal
-      ? `${response.agent_id}\0${item.turnId}\0${projectedTurnPrompt ? (turnUserMessageId ?? '') : ''}\0${turnMessageId(item) ?? ''}\0${item.startedAt ?? ''}\0${item.endedAt ?? ''}\0${item.durationMs ?? ''}`
+      ? `${response.agent_id}\0${item.turnId}\0${projectedTurnPrompt ? `${turnUserMessageId ?? ''}\0${turnPromptId ?? ''}` : ''}\0${turnMessageId(item) ?? ''}\0${item.startedAt ?? ''}\0${item.endedAt ?? ''}\0${item.durationMs ?? ''}`
       : undefined;
     for (const step of item.steps) {
       if (stepCacheContextKey !== undefined && (!('state' in step) || step.state !== 'running')) {
@@ -4283,11 +4289,13 @@ export function agentTranscriptToBlocks(
               const origin = frameOrigin ?? taskOrigin ?? (isUserVisibleOrigin(turnOrigin) ? turnOrigin : undefined);
               const framePresentation = readTextPresentation((frame as { presentation?: unknown }).presentation);
               const userMessageId = frameMessageId(frame);
+              const framePromptId = (frame as { readonly promptId?: string }).promptId;
               if (
                 projectedTurnPrompt &&
-                userMessageId !== undefined &&
-                turnUserMessageId !== undefined &&
-                userMessageId === turnUserMessageId
+                ((userMessageId !== undefined &&
+                  ((turnUserMessageId !== undefined && userMessageId === turnUserMessageId) ||
+                    (turnPromptId !== undefined && userMessageId === turnPromptId))) ||
+                  (framePromptId !== undefined && turnPromptId !== undefined && framePromptId === turnPromptId))
               ) {
                 stepOpeningVia ??= userVia(frameOrigin);
                 break;
@@ -4473,6 +4481,7 @@ export function agentTranscriptToBlocks(
         });
       }
     }
+    deduplicateTurnToolBlocks(blocks, blockStart);
     if (openingPromptIndex !== undefined && openingVia !== undefined) {
       const prompt = blocks[openingPromptIndex];
       if (prompt?.kind === 'user' && prompt.via === undefined) blocks[openingPromptIndex] = { ...prompt, via: openingVia };
@@ -5234,6 +5243,63 @@ export function settledFinalAssistantBlockIds(
   return result;
 }
 
+function toolBlockCallId(block: Block): string | undefined {
+  if (block.kind === 'tool') return block.toolCallId;
+  if (block.kind === 'shell') return block.commandId;
+  return undefined;
+}
+
+function isSettledToolBlock(block: Block): boolean {
+  if (block.kind === 'tool') return block.status !== 'running';
+  if (block.kind === 'shell') return block.done;
+  return false;
+}
+
+function toolBlockPayloadScore(block: Block): number {
+  if (block.kind === 'tool') {
+    return (block.output !== undefined ? 4 : 0) + (block.args !== undefined ? 2 : 0) + (block.progressText !== undefined ? 1 : 0);
+  }
+  if (block.kind === 'shell') {
+    return (block.output !== '' ? 4 : 0) + (block.command !== undefined ? 2 : 0);
+  }
+  return 0;
+}
+
+function deduplicateTurnToolBlocks(blocks: Block[], blockStart: number): void {
+  let seen: Map<string, number> | undefined;
+  let duplicateIndices: Set<number> | undefined;
+  for (let i = blockStart; i < blocks.length; i += 1) {
+    const block = blocks[i]!;
+    const callId = toolBlockCallId(block);
+    if (callId === undefined) continue;
+    if (seen === undefined) seen = new Map();
+    const firstIndex = seen.get(callId);
+    if (firstIndex === undefined) {
+      seen.set(callId, i);
+      continue;
+    }
+    if (duplicateIndices === undefined) duplicateIndices = new Set();
+    const existing = blocks[firstIndex]!;
+    const existingSettled = isSettledToolBlock(existing);
+    const candidateSettled = isSettledToolBlock(block);
+    const candidateWins =
+      (candidateSettled && !existingSettled) ||
+      (candidateSettled === existingSettled && toolBlockPayloadScore(block) >= toolBlockPayloadScore(existing));
+    if (candidateWins) {
+      blocks[firstIndex] = block;
+    }
+    duplicateIndices.add(i);
+  }
+  if (duplicateIndices === undefined) return;
+  let write = blockStart;
+  for (let i = blockStart; i < blocks.length; i += 1) {
+    if (duplicateIndices.has(i)) continue;
+    if (write !== i) blocks[write] = blocks[i]!;
+    write += 1;
+  }
+  blocks.length = write;
+}
+
 export function assistantMessageIdFromBlockId(blockId: string): string | undefined {
   if (blockId.startsWith('assistant-live-') || blockId.startsWith('agent-frame-')) return undefined;
   const match = /^assistant-(.+)-(?:\d+|media)$/.exec(blockId);
@@ -5267,7 +5333,10 @@ export function appendLocalUserMessage(
   // turn owns this message, a late queued/running echo must not put it back in
   // the composer queue or replace its settled text with an old preview.
   if (state.blocks.some((block) => block.kind === 'user' && block.turnId !== undefined &&
-    (block.userMessageId === input.userMessageId || block.promptId === input.promptId))) {
+    (block.userMessageId === input.userMessageId ||
+      block.promptId === input.promptId ||
+      block.userMessageId === input.promptId ||
+      block.promptId === input.userMessageId))) {
     return state;
   }
   const item: PromptItem = {
@@ -5433,6 +5502,42 @@ function transcriptTaskToSessionTask(task: TranscriptTask | AgentTranscriptTask)
     exit_code: task.exitCode,
     stop_reason: task.error ?? task.stateReason ?? (task.state === 'timed_out' ? 'timeout' : undefined),
   };
+}
+
+function countUnresolvedLostTasks(
+  tasks: readonly TranscriptTask[],
+  lastTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined,
+): number {
+  const latestCompleted = lastTurn !== undefined && lastTurn.state === 'completed' ? lastTurn : undefined;
+  const latestStartedMs =
+    latestCompleted?.startedAt === undefined ? Number.NaN : Date.parse(latestCompleted.startedAt);
+  const latestOrdinal = latestCompleted?.ordinal;
+  let count = 0;
+  for (const task of tasks) {
+    if (task.state !== 'lost') continue;
+    if (latestCompleted !== undefined) {
+      const endedMs = task.endedAt === undefined ? Number.NaN : Date.parse(task.endedAt);
+      if (Number.isFinite(latestStartedMs) && Number.isFinite(endedMs) && endedMs <= latestStartedMs) {
+        continue;
+      }
+      if (!Number.isFinite(endedMs)) {
+        if (task.ownerTurnId !== undefined && latestOrdinal !== undefined && task.ownerTurnId < latestOrdinal) {
+          continue;
+        }
+        const startedMs = task.startedAt === undefined ? Number.NaN : Date.parse(task.startedAt);
+        if (
+          task.ownerTurnId === undefined &&
+          Number.isFinite(latestStartedMs) &&
+          Number.isFinite(startedMs) &&
+          startedMs < latestStartedMs
+        ) {
+          continue;
+        }
+      }
+    }
+    count += 1;
+  }
+  return count;
 }
 
 export function projectAgentTranscriptView(
@@ -5652,7 +5757,7 @@ export function projectAgentTranscriptView(
     // a reply the reader received, whatever the prompt window still holds.
     failedTurnIds: keepEqual(previous.failedTurnIds, snapshot.items.flatMap((item) => (item.kind === 'turn' && item.state === 'failed' ? [item.turnId] : []))),
     deliveredAgentMessages: keepEqual(previous.deliveredAgentMessages ?? {}, deliveredAgentMessages),
-    lostTaskCount: (Array.isArray(snapshot.tasks) ? snapshot.tasks : [...snapshot.tasks.values()]).filter((task) => task.state === 'lost').length,
+    lostTaskCount: countUnresolvedLostTasks(tasks, lastTurn),
     nonUserTurnIds: keepEqual(previous.nonUserTurnIds ?? [], snapshot.items.flatMap((item) => (item.kind === 'turn' && item.origin !== undefined && item.origin.kind !== 'user' ? [item.turnId] : []))),
     turnRetry: turnRetryFromItem(lastTurn),
   };

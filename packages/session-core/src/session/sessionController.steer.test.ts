@@ -8,7 +8,8 @@ import type { PromptSteerResult, SessionSnapshotResponse } from '@kiki/protocol'
 import type { TranscriptOperation } from '@kiki/transcript';
 import type { SessionViewFacade } from '@kiki/klient/session-view';
 
-import { ApiError, type AgentTranscriptResponse, type SessionTransport } from '../transport';
+import { API_CODES, ApiError, type AgentTranscriptResponse, type SessionTransport } from '../transport';
+import { preserveSubmission, readUnconfirmedSubmissions } from '../composer/submissionRecovery';
 import { SendNowError, SessionController } from './sessionController';
 import type { SessionViewState, UserBlock } from './transcript';
 import { withPendingSteers } from './transcript/steer';
@@ -1243,6 +1244,177 @@ describe('queued submit acknowledgement before transcript recovery', () => {
     ], 6));
     expect(controller.getState().busy).toBe(false);
     expect(steerRows(controller.getState())).toEqual([]);
+    controller.close();
+  });
+
+  it('settles media-only steers without placeholder text and retires orphaned waiting steers when a turn finishes idle', async () => {
+    const { controller, client } = await open();
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ prompt: 'working', streaming: true }), 1));
+    const image = { type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/shot.png' } };
+    client.submitPrompt.mockImplementationOnce(async (_sid: string, body: { prompt_id: string }) => ({
+      prompt_id: body.prompt_id,
+      user_message_id: body.prompt_id,
+      status: 'queued' as const,
+      content: [image],
+      created_at: '2026-01-01T00:00:03.000Z',
+      admission: 'admitted' as const,
+      delivery_state: 'steered' as const,
+    }));
+    const sent = await controller.sendPromptNow({ text: '', content: [image] });
+    expect(visibleUsers(controller.getState()).filter((block) => block.promptId === sent.promptId)).toMatchObject([
+      { promptId: sent.promptId, text: '', steerStatus: 'waiting' },
+    ]);
+    // When the turn settles idle without a prompt record in store, the waiting steer must not stick forever.
+    await deliver(controller, opsEvent('main', [
+      {
+        op: 'turn.upsert',
+        turn: {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'completed',
+          origin: { kind: 'user' },
+          prompt: 'working',
+          startedAt: '2026-01-01T00:00:01.000Z',
+          endedAt: new Date(Date.now() + 1000).toISOString(),
+        },
+      },
+      {
+        op: 'meta.merge',
+        meta: { agent: { phase: { kind: 'ended', turnId: 1, reason: 'completed', at: Date.now() + 1000 } } },
+      },
+    ], 2));
+    expect(controller.getState().busy).toBe(false);
+    expect(visibleUsers(controller.getState()).filter((block) => block.promptId === sent.promptId)).toEqual([]);
+    controller.close();
+  });
+
+  it('handles queue edit, cancel, promote, abort backup cleanup, and WS reconnect auto-resync after retryable failure', async () => {
+    let signalHandler: ((signal: import('@kiki/klient/session-view').SessionViewSignal) => void) | undefined;
+    let snapshotCount = 0;
+    const client = {
+      submitPrompt: vi.fn(),
+      steerPrompt: vi.fn(async (_sid: string, promptId: string): Promise<PromptSteerResult> => ({ steered: true, prompt_ids: [promptId] })),
+      abortPrompt: vi.fn(async () => ({ aborted: true, at_seq: 1 })),
+      replacePrompt: vi.fn(async (_sid: string, promptId: string) => ({
+        prompt_id: promptId,
+        user_message_id: promptId,
+        status: 'queued' as const,
+        content: [{ type: 'text' as const, text: 'edited queued item' }],
+        created_at: '2026-01-01T00:00:03.000Z',
+        revision: 2,
+      })),
+      getAgentTranscript: vi.fn(async (): Promise<AgentTranscriptResponse> => ({
+        agent_id: 'main', items: [], has_more: false, tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {},
+      })),
+      getTranscriptOps: vi.fn(async () => ({
+        session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', batches: [], through_seq: 0, complete: true,
+      })),
+    };
+    let failNextSnapshot = false;
+    const view: SessionViewFacade = {
+      snapshot: async () => {
+        snapshotCount += 1;
+        if (failNextSnapshot) {
+          failNextSnapshot = false;
+          throw new ApiError({ code: API_CODES.SESSION_BUSY, msg: 'SESSION_BUSY', data: null });
+        }
+        return {
+          session: { id: 'session_test', last_seq: snapshotCount, agent_config: { model: 'example/model' } },
+          in_flight_turn: null,
+          as_of_seq: snapshotCount,
+          epoch: 'epoch-1',
+          transcript: undefined,
+        } as unknown as SessionSnapshotResponse;
+      },
+      transcript: {
+        page: () => client.getAgentTranscript() as unknown as ReturnType<SessionViewFacade['transcript']['page']>,
+        catchUp: () => client.getTranscriptOps() as unknown as ReturnType<SessionViewFacade['transcript']['catchUp']>,
+      },
+      subscribe: (_opts, handler) => {
+        signalHandler = handler;
+        return {
+          updateSessionCursor: () => {}, setTranscriptGrades: () => {}, updateTranscriptCursor: () => {},
+          restart: () => {}, nudge: () => {}, close: () => {},
+        };
+      },
+    };
+    const controller = new SessionController(client as unknown as SessionTransport, view, 'session_test', {
+      scheduler: { schedule: (callback: () => void) => { queueMicrotask(callback); return 1; }, cancel: () => {} },
+    });
+    await controller.open();
+    await deliver(controller, resetEvent('main', {
+      ...userTurnSnapshot({ prompt: 'working', streaming: true }),
+      prompts: [
+        {
+          promptId: 'q-1', status: 'queued', userMessageId: 'q-1',
+          content: [{ type: 'text', text: 'first queued' }], createdAt: '2026-01-01T00:00:02.000Z', revision: 1,
+        },
+      ],
+    }, 1));
+    await controller.replaceQueued('q-1', 'edited queued item');
+    expect(client.replacePrompt).toHaveBeenCalledTimes(1);
+
+    await controller.steerQueued('q-1');
+    expect(client.steerPrompt).toHaveBeenCalledWith('session_test', 'q-1');
+
+    const storageMap = new Map<string, string>();
+    const prevStorage = globalThis.localStorage;
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: (k: string) => storageMap.get(k) ?? null,
+        setItem: (k: string, v: string) => { storageMap.set(k, v); },
+        removeItem: (k: string) => { storageMap.delete(k); },
+        clear: () => { storageMap.clear(); },
+        key: (i: number) => [...storageMap.keys()][i] ?? null,
+        get length() { return storageMap.size; },
+      },
+    });
+    try {
+      preserveSubmission({
+        sessionId: 'session_test',
+        agentId: 'main',
+        promptId: 'p-abort-check',
+        content: [{ type: 'text', text: 'stale backup' }],
+        createdAt: '2026-01-01T00:00:04.000Z',
+      });
+      expect(readUnconfirmedSubmissions('session_test', 'main').map((item) => item.promptId)).toContain('p-abort-check');
+      await controller.abortPrompt('p-abort-check');
+      expect(readUnconfirmedSubmissions('session_test', 'main').map((item) => item.promptId)).not.toContain('p-abort-check');
+    } finally {
+      Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: prevStorage });
+    }
+
+    failNextSnapshot = true;
+    await controller.resync();
+    expect(controller.getState().resyncFailed).toBe(true);
+    const beforeReconnectSnapshots = snapshotCount;
+    signalHandler?.({ type: 'ready', generation: 1, currentSessionCursor: { seq: 1, epoch: 'epoch-1' }, reconnected: true });
+    await vi.waitFor(() => {
+      expect(snapshotCount).toBeGreaterThan(beforeReconnectSnapshots);
+      expect(controller.getState().resyncFailed).toBe(false);
+    });
+
+    // Server returning queued + steer_rejected clears pending steer cleanly without throwing 40001.
+    client.submitPrompt.mockResolvedValueOnce({
+      prompt_id: 'p-steer-rej',
+      user_message_id: 'p-steer-rej',
+      status: 'queued' as const,
+      content: [{ type: 'text' as const, text: 'deferred steer' }],
+      created_at: '2026-01-01T00:00:05.000Z',
+      delivery_state: 'queued' as const,
+      delivery_reason: 'steer_rejected' as const,
+    });
+    const deferredResult = await controller.sendPromptNow({ promptId: 'p-steer-rej', text: 'deferred steer' });
+    expect(deferredResult).toEqual({ promptId: 'p-steer-rej', outcome: 'queued', reason: 'steer_rejected' });
+    expect(visibleUsers(controller.getState()).filter((block) => block.promptId === 'p-steer-rej')).toEqual([]);
+
+    // Clicking Stop right as a turn finishes settles cleanly when the server reports PROMPT_ALREADY_COMPLETED.
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ prompt: 'almost done', streaming: true }), 2));
+    (client as { listPrompts?: ReturnType<typeof vi.fn> }).listPrompts = vi.fn(async () => ({ items: [] }));
+    client.abortPrompt.mockRejectedValueOnce(new ApiError({ code: 40903, msg: 'already completed', data: null }));
+    await expect(controller.abortActive()).resolves.toBeUndefined();
     controller.close();
   });
 });

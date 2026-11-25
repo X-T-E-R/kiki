@@ -1648,18 +1648,21 @@ export function Composer({
     const row = mentionRows[index];
     return row !== undefined && row.kind === 'agent' && !row.candidate.available;
   };
-  useEffect(() => {
-    let firstEnabled = 0;
+  const firstEnabledMenuIndex = useMemo(() => {
     if (menu?.kind === 'slash') {
       const idx = filteredSlashItems.findIndex((item) => item.disabled !== true);
-      if (idx >= 0) firstEnabled = idx;
-    } else if (menu?.kind === 'mention') {
-      const idx = mentionRows.findIndex((row) => row.kind === 'file' || row.candidate.available);
-      if (idx >= 0) firstEnabled = idx;
+      return idx >= 0 ? idx : 0;
     }
-    setActiveIndex(firstEnabled);
+    if (menu?.kind === 'mention') {
+      const idx = mentionRows.findIndex((row) => row.kind === 'file' || row.candidate.available);
+      return idx >= 0 ? idx : 0;
+    }
+    return 0;
+  }, [menu?.kind, filteredSlashItems, mentionRows]);
+  useEffect(() => {
+    setActiveIndex(firstEnabledMenuIndex);
     setSlashHoverIndex(null);
-  }, [menuQuery, menu?.kind]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [menuQuery, menu?.kind, firstEnabledMenuIndex]);
 
   // C-2: the preview card follows the hovered row, else the keyboard-active
   // row; actions already show their whole one-liner inline, and a skill/plugin
@@ -3678,7 +3681,7 @@ export function Composer({
 
   return (
     <ComposerCardContext.Provider value={cardRef}>
-    <div className="@container/composer-shell">
+    <div className="@container/composer-shell w-full min-w-0">
     <div className="group/composer px-3 pb-3 @[560px]/composer-shell:px-6 @[560px]/composer-shell:pb-5" data-composer-variant={variant}>
       {composerContextMenu}
       {ssh.dialog}
@@ -3696,7 +3699,7 @@ export function Composer({
       />
       {/* One width axis with the transcript: the conversation shell declares
           --kiki-chat-content-width; the 760px fallback is defensive. */}
-      <div className="@container/composer mx-auto max-w-[var(--kiki-chat-content-width,760px)]">
+      <div className="@container/composer mx-auto w-full min-w-0 max-w-[var(--kiki-chat-content-width,760px)]">
         {variant === 'subagent' && replyingTo !== undefined ? (
           <p data-composer-replying-to className="mb-1.5 truncate px-1 text-[12px] text-ink-faint">
             {t('composer.replyingTo', { agent: replyingTo })}
@@ -4353,7 +4356,7 @@ export function Composer({
             />
             <div
               data-composer-status
-              className="flex min-w-0 flex-1 items-center gap-0.5"
+              className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden"
             >
               {/* One row at every width. No separator glyphs: each segment is
                   its own hover target led by a kind icon, so the gaps and the
