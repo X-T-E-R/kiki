@@ -26,6 +26,8 @@ export const ErrorCode = {
 
   /** 客户端握手携带的 daemon 令牌缺失或不匹配（klient IPC hello） */
   AUTH_INVALID_TOKEN: 40101,
+  /** 便携空间或订阅归档已加密，需要提供口令或密钥以解锁 */
+  PORTABLE_UNLOCK_REQUIRED: 40109,
 
   /** daemon 没有任何 provider 配置 */
   AUTH_PROVISIONING_REQUIRED: 40110,
@@ -88,6 +90,8 @@ export const ErrorCode = {
   REQUEST_IDENTITY_NOT_FOUND: 40426,
   /** requested space preset is not bundled with this server */
   SPACE_PRESET_NOT_FOUND: 40427,
+  /** portable space endpoint or subscription source does not exist */
+  PORTABLE_NOT_FOUND: 40428,
 
   /** session 有正在进行的 prompt，拒绝新请求 */
   SESSION_BUSY: 40901,
@@ -186,6 +190,8 @@ export const ErrorCode = {
   SESSION_CREATE_IDEMPOTENCY_CONFLICT: 40948,
   IM_IDENTITY_ALREADY_BOUND: 40949,
   WORK_ADMISSION_FENCED: 40950,
+  /** portable space preview or source revision is stale relative to current state */
+  PORTABLE_PREVIEW_STALE: 40951,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,
@@ -193,6 +199,8 @@ export const ErrorCode = {
   QUESTION_EXPIRED: 41002,
   /** 临时文件已过期 */
   FILE_EXPIRED: 41003,
+  /** portable space preview snapshot expired or was already consumed */
+  PORTABLE_PREVIEW_EXPIRED: 41004,
 
   /** 文件过大（如 session 导出超限；/files 上传不设上限） */
   FILE_TOO_LARGE: 41301,
@@ -253,6 +261,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.REGISTRY_IMPORT_INVALID]: 'registry.import_invalid',
 
   [ErrorCode.AUTH_INVALID_TOKEN]: 'auth.invalid_token',
+  [ErrorCode.PORTABLE_UNLOCK_REQUIRED]: 'portable.unlock_required',
   [ErrorCode.AUTH_PROVISIONING_REQUIRED]: 'auth.provisioning_required',
   [ErrorCode.AUTH_TOKEN_MISSING]: 'auth.token_missing',
   [ErrorCode.AUTH_TOKEN_UNAUTHORIZED]: 'auth.token_unauthorized',
@@ -285,6 +294,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.PERSONA_NOT_FOUND]: 'persona.not_found',
   [ErrorCode.REQUEST_IDENTITY_NOT_FOUND]: 'request_identity.not_found',
   [ErrorCode.SPACE_PRESET_NOT_FOUND]: 'space.preset_not_found',
+  [ErrorCode.PORTABLE_NOT_FOUND]: 'portable.not_found',
 
   [ErrorCode.SESSION_BUSY]: 'session.busy',
   [ErrorCode.APPROVAL_ALREADY_RESOLVED]: 'approval.already_resolved',
@@ -337,10 +347,12 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT]: 'session.create_idempotency_conflict',
   [ErrorCode.IM_IDENTITY_ALREADY_BOUND]: 'im.identity_already_bound',
   [ErrorCode.WORK_ADMISSION_FENCED]: 'work.admission_fenced',
+  [ErrorCode.PORTABLE_PREVIEW_STALE]: 'portable.preview_stale',
 
   [ErrorCode.APPROVAL_EXPIRED]: 'approval.expired',
   [ErrorCode.QUESTION_EXPIRED]: 'question.expired',
   [ErrorCode.FILE_EXPIRED]: 'file.expired',
+  [ErrorCode.PORTABLE_PREVIEW_EXPIRED]: 'portable.preview_expired',
 
   [ErrorCode.FILE_TOO_LARGE]: 'file.too_large',
   [ErrorCode.FS_TOO_LARGE]: 'fs.too_large',

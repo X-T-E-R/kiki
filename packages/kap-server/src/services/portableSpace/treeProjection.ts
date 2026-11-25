@@ -233,7 +233,7 @@ export function sections(units: Units, domain: PortableSpaceDomain): Data {
   for (const unit of units.values()) {
     if (unit.domain !== domain || Buffer.isBuffer(unit.value)) continue;
     const [section, id] = unit.key;
-    if (section === undefined || section.startsWith('config.')) continue;
+    if (section === undefined || (domain === 'config' && section.startsWith('config.'))) continue;
     if (id === undefined) Object.defineProperty(data, section, { value: unit.value, writable: true, enumerable: true, configurable: true });
     else data[section] = { ...object(data[section]), [id]: unit.value };
   }

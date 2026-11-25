@@ -78,6 +78,7 @@ export function isGlobalEventType(type: string): boolean {
     type.startsWith('event.persona.') ||
     type.startsWith('event.capability.') ||
     type.startsWith('event.model_catalog.') ||
+    type.startsWith('event.portable_spaces.') ||
     type.startsWith('event.remote_connections.')
   );
 }

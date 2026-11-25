@@ -144,6 +144,22 @@ export class SyncService {
     return this.cachedKeypair?.recipient;
   }
 
+  async readExistingDeviceKeypair(): Promise<AgeX25519Keypair | undefined> {
+    if (this.cachedKeypair !== undefined) return this.cachedKeypair;
+    try {
+      const raw = (await readPrivateFile(this.keyPath)).toString('utf8').trim();
+      if (raw.startsWith('AGE-SECRET-KEY-1')) {
+        const recipient = this.cipher.recipientFromIdentity(raw);
+        this.cachedKeypair = { identity: raw, recipient };
+        return this.cachedKeypair;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    }
+    return undefined;
+  }
+
   async ensureDeviceKeypair(): Promise<AgeX25519Keypair> {
     if (this.cachedKeypair !== undefined) return this.cachedKeypair;
     if (this.keyLoadFlight !== undefined) return this.keyLoadFlight;

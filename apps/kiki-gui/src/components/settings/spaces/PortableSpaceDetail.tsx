@@ -81,7 +81,7 @@ export function PortableSpaceDetail({
   const inspectQuery = usePortableInspect(
     client,
     { endpoint: source.endpoint, unlock },
-    { token, unlockNonce },
+    { unlockNonce, enabled: tab === 'contents' || tab === 'colab' },
   );
   const data = inspectQuery.data;
 
@@ -104,7 +104,7 @@ export function PortableSpaceDetail({
     });
   };
 
-  const isReadOnly = source.endpoint.kind === 'git';
+  const isReadOnly = source.endpoint.kind === 'git' || source.endpoint.kind === 'url';
 
   const updateInspectCache = (
     next: PortableSpaceInspectResult,
@@ -126,7 +126,7 @@ export function PortableSpaceDetail({
     setMutatingId(item.id);
     setFeedback(null);
     try {
-      const receipt = await portableSpacesApi(client, { token }).mutate({
+      const receipt = await portableSpacesApi(client).mutate({
         target: source.endpoint,
         unlock,
         actions: [{ op: 'set', key: item.path, value: parseScalarValue(editDraft, item.scalarValue) }],
@@ -153,7 +153,7 @@ export function PortableSpaceDetail({
       const action = item.bytes === undefined
         ? { op: 'unset' as const, key: item.id, recordOverlayUnset: data?.spaceMode === 'overlay' }
         : { op: 'rm' as const, paths: [item.path] };
-      const receipt = await portableSpacesApi(client, { token }).mutate({
+      const receipt = await portableSpacesApi(client).mutate({
         target: source.endpoint,
         unlock,
         actions: [action],
@@ -189,7 +189,7 @@ export function PortableSpaceDetail({
             className="flex min-w-0 items-center gap-2 font-display text-[18px] font-semibold text-ink outline-none"
           >
             <Icon
-              name={source.endpoint.kind === 'git' ? 'branch' : source.format === 'age' ? 'lock' : 'folder'}
+              name={source.endpoint.kind === 'url' ? 'web' : source.endpoint.kind === 'git' ? 'branch' : source.format === 'age' ? 'lock' : 'folder'}
               size={16}
               className="text-ink-soft"
             />
@@ -437,13 +437,13 @@ export function PortableSpaceDetail({
 
       {tab === 'compare' ? (
         <PortableCompareTab
-          key={`${source.id}:${compareMode ?? 'sync'}:${compareRightEndpoint === undefined ? 'main' : endpointKey(compareRightEndpoint)}`}
+          key={`${source.id}:${compareMode ?? (source.endpoint.kind === 'url' ? 'merge' : 'sync')}:${compareRightEndpoint === undefined ? 'main' : endpointKey(compareRightEndpoint)}`}
           client={client}
           token={token}
           source={source}
           spaces={spaces}
           portableSources={portableSources}
-          initialMode={compareMode}
+          initialMode={source.endpoint.kind === 'url' ? 'merge' : compareMode}
           initialRightEndpoint={compareRightEndpoint}
           sourceUnlock={unlock}
           onApplied={() => {

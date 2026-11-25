@@ -68,6 +68,7 @@ import {
 import { useOptionalInstalledPlugins } from './capabilities/usePlugins';
 import { SkillsSection } from './settings/SkillsSection';
 import { SpacesSection } from './settings/SpacesSection';
+import { SubscriptionsSection } from './settings/SubscriptionsSection';
 import { SpaceDot } from './settings/spaces/SpaceDot';
 import { currentSpace, useSpaces } from '../lib/spaces';
 import { connectionIdOfSpaceKey, useRemoteConnections } from '../lib/remoteConnections';
@@ -515,6 +516,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'browser-control' || active === 'computer-control' ? <BrowserControlSection />
     : active === 'search' ? <NbSearchSection />
     : active === 'hooks' ? <HooksSection />
+    : active === 'subscriptions' ? <SubscriptionsSection />
     : active === 'spaces' ? <SpacesSection />
     : active === 'workspaces' ? <WorkspacesSection key={activeWorkspaceId ?? 'catalog'} workspaceId={activeWorkspaceId} />
     : active === 'ssh' ? <SshSection />

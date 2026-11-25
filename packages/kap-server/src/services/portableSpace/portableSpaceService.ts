@@ -1,17 +1,67 @@
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { realpath, rm } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
-import { portableSpaceSourceRecordSchema, type PortableSpaceApplyInput, type PortableSpaceApplyReceipt, type PortableSpaceDeltaInput, type PortableSpaceEndpoint, type PortableSpaceExportInput, type PortableSpaceExportReceipt, type PortableSpaceForkInput, type PortableSpaceInspectInput, type PortableSpaceMutateInput, type PortableSpacePackUnpackInput, type PortableSpacePreviewInput, type PortableSpacePreviewResult, type PortableSpaceRegisterSourceInput, type PortableSpaceRekeyInput, type PortableSpaceSourceRecord, type PortableSpaceSourcesListResponse } from '@kiki/protocol';
+import type { IAtomicDocumentStore } from '@kiki/agent-core-v2';
+import {
+  portableSpaceSourceRecordSchema,
+  type PortableSpaceApplyInput,
+  type PortableSpaceApplyReceipt,
+  type PortableSpaceCenterCommit,
+  type PortableSpaceCenterDirectSyncInput,
+  type PortableSpaceCenterSourcesListResponse,
+  type PortableSpaceCenterSubscribeInput,
+  type PortableSpaceCenterTokenSyncInput,
+  type PortableSpaceDeltaInput,
+  type PortableSpaceEndpoint,
+  type PortableSpaceExportInput,
+  type PortableSpaceExportReceipt,
+  type PortableSpaceForkInput,
+  type PortableSpaceInspectInput,
+  type PortableSpaceMutateInput,
+  type PortableSpacePackUnpackInput,
+  type PortableSpacePatchSourceInput,
+  type PortableSpacePatchSourceResult,
+  type PortableSpacePreviewInput,
+  type PortableSpacePreviewResult,
+  type PortableSpaceRegisterSourceInput,
+  type PortableSpaceRekeyInput,
+  type PortableSpaceRemovePreviewResult,
+  type PortableSpaceRemoveReviewedInput,
+  type PortableSpaceRemoveReviewedResponse,
+  type PortableSpaceReorderSourcesInput,
+  type PortableSpaceReorderSourcesResult,
+  type PortableSpaceSourcePreviewInput,
+  type PortableSpaceSourceRecord,
+  type PortableSpaceSourcesListResponse,
+  type PortableSpaceSubscribeInput,
+  type PortableSpaceSubscribePreviewInput,
+  type PortableSpaceSubscribePreviewManifest,
+  type PortableSpaceSubscriptionSyncInput,
+  type PortableSpaceSubscriptionSyncResult,
+} from '@kiki/protocol';
 import { z } from 'zod';
 import { formatRecipients, parseRecipients } from './ageCodec';
 import { endpointForPath, endpointKey, inspectTree, resealOptions, SpaceEndpoints, type LoadedSpaceTree } from './endpoints';
-import { writeLive } from './liveSpace';
+import { reconcileOfficialPlugins, writeLive, type OfficialPluginReconcileError } from './liveSpace';
 import { applyUnset, assignPath, isUnitId, modelDependencies, planChanges, reconcile, sameUnit, unitHashes, type Change, type VerifiedBase } from './mergeEngine';
 import { missing, pathFormat, readBounded, writeFileAtomic } from './spaceFiles';
+import { SubscriptionCenterCoordinator } from './subscriptionCenter';
+import { portableNotFound, portableValidationError } from './subscriptionErrors';
+import { SubscriptionPreviewStore } from './subscriptionPreviewStore';
 import { packTarGz, safePortablePath, unpackTarGz } from './tarArchive';
 import { commonUnits, domainForFile, encodeToml, filesFromUnits, object, parseToml, platformUnits, PLAIN, putUnit, RECIPIENTS, SEALED, selectedUnits, toUnits, type ForkBase, type PortableSpaceTree, type Units } from './treeProjection';
+import { assertNoRemoteExecutableMcp, assertSafeRemoteCredentialBindings, reconcileSubscriptionUnits, sanitizeEtag } from './urlSubscription';
+
+/** Optional runtime collaborators for Subscription Center persistence and change notifications. */
+export interface PortableSpaceServiceOptions {
+  readonly documents?: IAtomicDocumentStore;
+  readonly onChanged?: (event: {
+    readonly spaceId: string;
+    readonly reason: 'subscribed' | 'synced' | 'updated' | 'reordered' | 'removed' | 'imported';
+  }) => void;
+}
 
 interface Plan {
   input: PortableSpacePreviewInput;
@@ -27,6 +77,11 @@ interface Plan {
 interface StoredFork extends ForkBase { source: string; destination: string; shared?: boolean }
 interface Preview { at: number; plan: Plan }
 const TTL = 5 * 60_000;
+const DEFAULT_AUTO_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_AUTO_SYNC_JITTER_MS = 30 * 60 * 1000;
+const DEFAULT_STARTUP_SYNC_MIN_DELAY_MS = 60_000;
+const DEFAULT_STARTUP_SYNC_MAX_DELAY_MS = 180_000;
+const DEFAULT_STARTUP_FRESHNESS_WINDOW_MS = 12 * 60 * 60 * 1000;
 const sourceListSchema = z.array(portableSpaceSourceRecordSchema);
 
 function agreedBase(left: Units, right: Units, key: string, prior: VerifiedBase | undefined): VerifiedBase {
@@ -73,8 +128,127 @@ function sameTree(a: PortableSpaceTree, b: PortableSpaceTree) {
 export class PortableSpaceService {
   private tail: Promise<unknown> = Promise.resolve();
   private previews = new Map<string, Preview>();
+  private readonly previewStore = new SubscriptionPreviewStore();
+  private readonly center: SubscriptionCenterCoordinator;
+  private readonly pendingAutoReconcileTimers = new Set<ReturnType<typeof setTimeout>>();
+  private startupSyncTimer: ReturnType<typeof setTimeout> | undefined;
+  private periodicSyncTimer: ReturnType<typeof setInterval> | undefined;
+  private autoSyncAbort: AbortController | undefined;
+  private activeAutoSync: Promise<void> | undefined;
+  private stopped = false;
 
-  constructor(private readonly endpoints: SpaceEndpoints) {}
+  constructor(private readonly endpoints: SpaceEndpoints, options: PortableSpaceServiceOptions = {}) {
+    this.center = new SubscriptionCenterCoordinator({
+      endpoints: this.endpoints,
+      previewStore: this.previewStore,
+      documents: options.documents,
+      sources: () => this.sources(),
+      saveSources: (items) => this.saveSources(items),
+      loadBase: (id) => this.loadBase(id),
+      saveBase: (id, units, key, hashes) => this.saveBase(id, units, key, hashes),
+      hashKey: () => this.hashKey(),
+      notifyChanged: (spaceId, reason) => options.onChanged?.({ spaceId, reason }),
+      scheduleAutoReconcile: (sourceId) => {
+        if (this.stopped) return;
+        const timer = setTimeout(() => {
+          this.pendingAutoReconcileTimers.delete(timer);
+          if (this.stopped) return;
+          void this.syncSubscriptionCenter(sourceId, { force: true, createBackup: true }).catch(() => undefined);
+        }, 0);
+        timer.unref?.();
+        this.pendingAutoReconcileTimers.add(timer);
+      },
+    });
+  }
+
+  startAutoSync(options: {
+    readonly intervalMs?: number;
+    readonly startupDelayMs?: number;
+    readonly startupFreshnessMs?: number;
+  } = {}): void {
+    void this.stopAutoSync();
+    this.stopped = false;
+    const controller = new AbortController();
+    this.autoSyncAbort = controller;
+    const startupDelayMs = options.startupDelayMs ?? randomInt(DEFAULT_STARTUP_SYNC_MIN_DELAY_MS, DEFAULT_STARTUP_SYNC_MAX_DELAY_MS + 1);
+    const intervalMs = options.intervalMs ?? (DEFAULT_AUTO_SYNC_INTERVAL_MS + randomInt(0, DEFAULT_AUTO_SYNC_JITTER_MS + 1));
+    const startupFreshnessMs = options.startupFreshnessMs ?? DEFAULT_STARTUP_FRESHNESS_WINDOW_MS;
+    const run = (skipIfFreshMs?: number) => {
+      if (this.stopped || controller.signal.aborted || this.activeAutoSync !== undefined) return;
+      const pass = this.syncAllAutoSubscriptions(controller.signal, skipIfFreshMs).then(() => undefined, () => undefined).finally(() => {
+        if (this.activeAutoSync === pass) this.activeAutoSync = undefined;
+      });
+      this.activeAutoSync = pass;
+    };
+    this.startupSyncTimer = setTimeout(() => {
+      this.startupSyncTimer = undefined;
+      run(startupFreshnessMs);
+    }, startupDelayMs);
+    this.startupSyncTimer.unref?.();
+    this.periodicSyncTimer = setInterval(() => run(undefined), intervalMs);
+    this.periodicSyncTimer.unref?.();
+  }
+
+  async stopAutoSync(timeoutMs = 5000): Promise<void> {
+    this.stopped = true;
+    this.previewStore.dispose();
+    for (const timer of this.pendingAutoReconcileTimers) {
+      clearTimeout(timer);
+    }
+    this.pendingAutoReconcileTimers.clear();
+    if (this.startupSyncTimer !== undefined) {
+      clearTimeout(this.startupSyncTimer);
+      this.startupSyncTimer = undefined;
+    }
+    if (this.periodicSyncTimer !== undefined) {
+      clearInterval(this.periodicSyncTimer);
+      this.periodicSyncTimer = undefined;
+    }
+    if (this.autoSyncAbort !== undefined) {
+      this.autoSyncAbort.abort(new Error('Auto-sync stopped'));
+      this.autoSyncAbort = undefined;
+    }
+    const inflight = this.activeAutoSync;
+    if (inflight !== undefined) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          inflight,
+          new Promise<void>((resolveWait) => {
+            timer = setTimeout(resolveWait, timeoutMs);
+            timer.unref?.();
+          }),
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    }
+  }
+
+  async syncAllAutoSubscriptions(
+    signal?: AbortSignal,
+    skipIfFreshMs?: number,
+  ): Promise<PortableSpaceSubscriptionSyncResult[]> {
+    const items = await this.sources();
+    const results: PortableSpaceSubscriptionSyncResult[] = [];
+    const now = Date.now();
+    for (const item of items) {
+      if (this.stopped || signal?.aborted) break;
+      if (item.endpoint.kind !== 'url' || item.autoSync === false) continue;
+      if (!(await this.center.isSourceAutoPollEligible(item))) continue;
+      if (skipIfFreshMs !== undefined && skipIfFreshMs > 0 && !item.lastSyncError && item.lastCheckedAt !== undefined) {
+        const checkedMs = Date.parse(item.lastCheckedAt);
+        if (Number.isFinite(checkedMs) && now - checkedMs >= 0 && now - checkedMs < skipIfFreshMs) {
+          continue;
+        }
+      }
+      try {
+        results.push(await this.syncSubscription(item.id, { force: false, createBackup: true }, signal));
+      } catch {
+      }
+    }
+    return results;
+  }
 
   private exclusive<T>(work: () => Promise<T>): Promise<T> {
     const run = this.tail.then(work, work);
@@ -94,6 +268,55 @@ export class PortableSpaceService {
   async list(): Promise<PortableSpaceSourcesListResponse> {
     const [key, knownRecipients, items] = await Promise.all([this.endpoints.sync.ensureDeviceKeypair(), this.endpoints.knownRecipients(), this.sources()]);
     return { deviceRecipient: key.recipient, knownRecipients, items };
+  }
+
+  /** Returns the Subscription Center v1 view (`?view=center-v1`) with order revisions and per-source policies/selections. */
+  listCenter(): Promise<PortableSpaceCenterSourcesListResponse> {
+    return this.center.listCenterSources();
+  }
+
+  /** Previews a URL or local archive without mutating live state or creating a device keypair. */
+  previewSubscribe(input: PortableSpaceSubscribePreviewInput): Promise<PortableSpaceSubscribePreviewManifest> {
+    return this.center.previewSubscribe(input);
+  }
+
+  /** Commits a previewed Center subscription (`auto | manual`) or one-shot import (`once`). */
+  subscribeCenter(input: PortableSpaceCenterSubscribeInput): Promise<PortableSpaceCenterCommit> {
+    return this.exclusive(() => this.center.subscribeCenter(input));
+  }
+
+  /** Previews an existing URL source for update/edit or computes reviewed cleanup impact without network I/O. */
+  previewSource(id: string, input: PortableSpaceSourcePreviewInput = {}): Promise<PortableSpaceSubscribePreviewManifest> {
+    return this.center.previewSource(id, input);
+  }
+
+  /** Commits a reviewed token sync or Center v1 direct sync for an existing URL subscription. */
+  syncSubscriptionCenter(
+    id: string,
+    input: PortableSpaceCenterTokenSyncInput | PortableSpaceCenterDirectSyncInput,
+    signal?: AbortSignal,
+  ): Promise<PortableSpaceCenterCommit> {
+    return this.exclusive(() => this.center.syncSubscriptionCenter(id, input, signal));
+  }
+
+  /** Patches source metadata or updates selective scope/bindings under the single-home serialization lock. */
+  patchSource(id: string, input: PortableSpacePatchSourceInput): Promise<PortableSpacePatchSourceResult> {
+    return this.exclusive(() => this.center.patchSource(id, input));
+  }
+
+  /** Atomically reorders URL subscriptions for a space after verifying expectedOrderRevision. */
+  reorderSources(input: PortableSpaceReorderSourcesInput): Promise<PortableSpaceReorderSourcesResult> {
+    return this.exclusive(() => this.center.reorderSources(input));
+  }
+
+  /** Computes local zero-network removal impact for a registered source. */
+  previewRemoveSource(id: string): Promise<PortableSpaceRemovePreviewResult> {
+    return this.center.previewRemoveSource(id);
+  }
+
+  /** Executes reviewed source detach or guarded purge with peer handoff and backup. */
+  removeReviewedSource(id: string, input: PortableSpaceRemoveReviewedInput): Promise<PortableSpaceRemoveReviewedResponse> {
+    return this.exclusive(() => this.center.removeReviewedSource(id, input));
   }
 
   addRecipient(recipient: string, label?: string) {
@@ -137,10 +360,16 @@ export class PortableSpaceService {
       const items = await this.sources();
       const existing = items.find((entry) => endpointKey(entry.endpoint) === endpointKey(input.endpoint));
       const record: PortableSpaceSourceRecord = {
-        id: existing?.id ?? randomUUID(), endpoint: input.endpoint, label: input.label ?? tree.label, linkedSpaceId: input.linkToSpaceId ?? existing?.linkedSpaceId,
+        id: existing?.id ?? randomUUID(), endpoint: input.endpoint, label: input.label ?? tree.label,
+        linkedSpaceId: input.linkToSpaceId ?? existing?.linkedSpaceId ?? (input.endpoint.kind === 'url' ? 'main' : undefined),
         format: tree.format, spaceMode: tree.overlay ? 'overlay' : 'full', secretMode: tree.secretMode,
         encryptionMode: tree.encryptionMode, gitBranch: input.endpoint.kind === 'git' ? input.endpoint.ref : undefined,
         updatedAt: new Date().toISOString(), lastSyncedAt: existing?.lastSyncedAt,
+        autoSync: input.autoSync ?? existing?.autoSync ?? (input.endpoint.kind === 'url' ? true : undefined),
+        etag: existing?.lastSyncedAt !== undefined ? sanitizeEtag(existing.etag) : undefined,
+        lastCheckedAt: input.endpoint.kind === 'url' ? new Date().toISOString() : existing?.lastCheckedAt,
+        lastSyncError: undefined,
+        managedIds: existing?.managedIds,
       };
       if (input.linkToSpaceId && !existing?.linkedSpaceId) {
         const live = await this.endpoints.load({ kind: 'live', spaceId: input.linkToSpaceId });
@@ -152,12 +381,308 @@ export class PortableSpaceService {
     });
   }
 
+  subscribe(input: PortableSpaceSubscribeInput): Promise<PortableSpaceSubscriptionSyncResult> {
+    return this.exclusive(async () => {
+      const endpoint: Extract<PortableSpaceEndpoint, { kind: 'url' }> = { kind: 'url', url: input.url };
+      const items = await this.sources();
+      const existing = items.find((entry) => endpointKey(entry.endpoint) === endpointKey(endpoint));
+      if (existing !== undefined) {
+        const ledgerEntry = await this.center.readSourceLedgerEntry(existing.id, existing);
+        const hasSelectiveState =
+          ledgerEntry.selection !== undefined
+          || Object.keys(ledgerEntry.bindingChoices.modelBindings ?? {}).length > 0
+          || Object.keys(ledgerEntry.bindingChoices.unitModelBindings ?? {}).length > 0
+          || (ledgerEntry.bindingChoices.deferredSlotIds?.length ?? 0) > 0;
+        if (hasSelectiveState) {
+          const commit = await this.center.syncSubscriptionCenter(existing.id, {
+            force: true,
+            createBackup: input.createBackup !== false,
+            unlock: input.unlock,
+          });
+          const refreshed = (await this.sources()).find((entry) => entry.id === existing.id) ?? existing;
+          return {
+            source: refreshed,
+            status: commit.status === 'imported' ? 'updated' : commit.status,
+            appliedIds: commit.appliedIds,
+            deletedIds: commit.deletedIds,
+            skippedIds: commit.skippedIds,
+            ...(commit.backupPath !== undefined ? { backupPath: commit.backupPath } : {}),
+            ...(commit.kind === 'subscription' && commit.error !== undefined ? { error: commit.error } : {}),
+          };
+        }
+      }
+      const loaded = await this.endpoints.loadUrl(endpoint, { unlock: input.unlock });
+      if (loaded.status !== 'ok') throw new Error('Unexpected 304 response during initial subscription');
+      const now = new Date().toISOString();
+      const recordId = existing?.id ?? randomUUID();
+      const spaceId = input.linkToSpaceId ?? existing?.linkedSpaceId ?? 'main';
+      const isFirstSubscribe = existing?.lastSyncedAt === undefined && existing?.managedIds === undefined;
+      const applied = await this.applySubscriptionTree(recordId, spaceId, loaded.tree, existing?.managedIds ?? [], isFirstSubscribe, input.createBackup !== false);
+      const pendingPlugins = applied.pluginErrors.map((entry) => entry.id);
+      const pluginErrorMsg = applied.pluginErrors.length > 0
+        ? `Official plugin reconciliation pending (${applied.pluginErrors.map((entry) => `${entry.id}: ${entry.message}`).join('; ')})`.slice(0, 1024)
+        : undefined;
+      const record: PortableSpaceSourceRecord = {
+        id: recordId,
+        endpoint,
+        label: input.label ?? existing?.label ?? loaded.tree.label,
+        linkedSpaceId: spaceId,
+        format: loaded.tree.format,
+        spaceMode: loaded.tree.overlay ? 'overlay' : 'full',
+        secretMode: loaded.tree.secretMode,
+        encryptionMode: loaded.tree.encryptionMode,
+        updatedAt: now,
+        lastSyncedAt: now,
+        lastCheckedAt: now,
+        autoSync: input.autoSync ?? existing?.autoSync ?? true,
+        etag: sanitizeEtag(loaded.etag),
+        etagOrigin: loaded.finalOrigin,
+        lastSyncError: pluginErrorMsg,
+        managedIds: applied.nextManagedIds,
+        ...(pendingPlugins.length > 0 ? { pendingOfficialPlugins: pendingPlugins } : {}),
+      };
+      const nextRecords = [...items.filter((item) => item.id !== record.id), record];
+      await this.saveSources(nextRecords);
+      await this.center.syncLedgerAfterLegacyApply({
+        record,
+        spaceId,
+        rawBaseUnits: applied.rawBaseUnits,
+        nextUnits: applied.nextUnits,
+        nextManagedIds: applied.nextManagedIds,
+        hashKey: applied.hashKey,
+        records: nextRecords,
+      });
+      return {
+        source: record,
+        status: 'updated',
+        appliedIds: applied.appliedIds,
+        deletedIds: applied.deletedIds,
+        skippedIds: applied.skippedIds,
+        backupPath: applied.backupPath,
+      };
+    });
+  }
+
+  syncSubscription(
+    id: string,
+    input: Partial<PortableSpaceSubscriptionSyncInput> = {},
+    signal?: AbortSignal,
+  ): Promise<PortableSpaceSubscriptionSyncResult> {
+    return this.exclusive(async () => {
+      const items = await this.sources();
+      const existing = items.find((entry) => entry.id === id);
+      if (existing === undefined) throw portableNotFound('Portable Space source not found');
+      if (existing.endpoint.kind !== 'url') throw new Error('Only URL subscriptions support subscription sync');
+      const spaceId = existing.linkedSpaceId ?? 'main';
+      const ledgerEntry = await this.center.readSourceLedgerEntry(existing.id, existing);
+      const multiUrlSpace = items.filter((entry) => entry.endpoint.kind === 'url' && (entry.linkedSpaceId ?? 'main') === spaceId).length > 1;
+      const shouldUseCenterEngine =
+        multiUrlSpace
+        || ledgerEntry.selection !== undefined
+        || ledgerEntry.pendingTransfers.length > 0
+        || Object.keys(ledgerEntry.bindingChoices.modelBindings ?? {}).length > 0
+        || Object.keys(ledgerEntry.bindingChoices.unitModelBindings ?? {}).length > 0
+        || (ledgerEntry.bindingChoices.deferredSlotIds?.length ?? 0) > 0;
+      if (shouldUseCenterEngine) {
+        const commit = await this.center.syncSubscriptionCenter(id, {
+          force: input.force ?? false,
+          createBackup: input.createBackup !== false,
+        }, signal);
+        const refreshed = (await this.sources()).find((entry) => entry.id === id) ?? existing;
+        return {
+          source: refreshed,
+          status: commit.status === 'imported' ? 'updated' : commit.status,
+          appliedIds: commit.appliedIds,
+          deletedIds: commit.deletedIds,
+          skippedIds: commit.skippedIds,
+          ...(commit.backupPath !== undefined ? { backupPath: commit.backupPath } : {}),
+          ...(commit.kind === 'subscription' && commit.error !== undefined ? { error: commit.error } : {}),
+        };
+      }
+      const now = new Date().toISOString();
+      try {
+        const canRevalidate = input.force !== true && existing.lastSyncedAt !== undefined && existing.etag !== undefined;
+        const loaded = await this.endpoints.loadUrl(existing.endpoint, {
+          ifNoneMatch: canRevalidate ? sanitizeEtag(existing.etag) : undefined,
+          ifNoneMatchOrigin: canRevalidate ? existing.etagOrigin : undefined,
+          signal,
+        });
+        if (loaded.status === 'not_modified') {
+          if (!canRevalidate) throw new Error('Unexpected 304 response without an applied baseline');
+          let nextPendingPlugins: string[] | undefined;
+          let nextPluginError: string | undefined;
+          if ((existing.pendingOfficialPlugins?.length ?? 0) > 0) {
+            const priorBase = await this.loadBase(existing.id);
+            const desiredRetry = new Map<string, boolean>();
+            for (const pluginId of existing.pendingOfficialPlugins ?? []) {
+              const unitId = `plugins:plugins.${pluginId.replaceAll('%', '%25').replaceAll('.', '%2E')}`;
+              const unit = priorBase?.units.get(unitId);
+              desiredRetry.set(pluginId, unit === undefined ? true : object(unit.value)['enabled'] !== false);
+            }
+            const retryResult = await reconcileOfficialPlugins(this.endpoints.live, desiredRetry);
+            if (retryResult.errors.length > 0) {
+              nextPendingPlugins = retryResult.errors.map((entry) => entry.id);
+              nextPluginError = `Official plugin reconciliation pending (${retryResult.errors.map((entry) => `${entry.id}: ${entry.message}`).join('; ')})`.slice(0, 1024);
+            }
+          }
+          const updated: PortableSpaceSourceRecord = {
+            ...existing,
+            etag: sanitizeEtag(loaded.etag) ?? sanitizeEtag(existing.etag),
+            etagOrigin: loaded.finalOrigin,
+            lastCheckedAt: now,
+            lastSyncError: nextPluginError,
+            pendingOfficialPlugins: nextPendingPlugins,
+          };
+          await this.saveSources(items.map((item) => item.id === existing.id ? updated : item));
+          return {
+            source: updated,
+            status: 'not_modified',
+            appliedIds: [],
+            deletedIds: [],
+            skippedIds: [],
+          };
+        }
+        if (signal?.aborted) throw new Error('Subscription sync cancelled');
+        const isFirstSubscribe = existing.lastSyncedAt === undefined && existing.managedIds === undefined;
+        const applied = await this.applySubscriptionTree(existing.id, spaceId, loaded.tree, existing.managedIds ?? [], isFirstSubscribe, input.createBackup !== false, signal);
+        const pendingPlugins = applied.pluginErrors.map((entry) => entry.id);
+        const pluginErrorMsg = applied.pluginErrors.length > 0
+          ? `Official plugin reconciliation pending (${applied.pluginErrors.map((entry) => `${entry.id}: ${entry.message}`).join('; ')})`.slice(0, 1024)
+          : undefined;
+        const updated: PortableSpaceSourceRecord = {
+          ...existing,
+          format: loaded.tree.format,
+          spaceMode: loaded.tree.overlay ? 'overlay' : 'full',
+          secretMode: loaded.tree.secretMode,
+          encryptionMode: loaded.tree.encryptionMode,
+          updatedAt: now,
+          lastCheckedAt: now,
+          lastSyncedAt: now,
+          etag: sanitizeEtag(loaded.etag),
+          etagOrigin: loaded.finalOrigin,
+          lastSyncError: pluginErrorMsg,
+          managedIds: applied.nextManagedIds,
+          pendingOfficialPlugins: pendingPlugins.length > 0 ? pendingPlugins : undefined,
+        };
+        const nextRecords = items.map((item) => item.id === existing.id ? updated : item);
+        await this.saveSources(nextRecords);
+        await this.center.syncLedgerAfterLegacyApply({
+          record: updated,
+          spaceId,
+          rawBaseUnits: applied.rawBaseUnits,
+          nextUnits: applied.nextUnits,
+          nextManagedIds: applied.nextManagedIds,
+          hashKey: applied.hashKey,
+          records: nextRecords,
+        });
+        return {
+          source: updated,
+          status: 'updated',
+          appliedIds: applied.appliedIds,
+          deletedIds: applied.deletedIds,
+          skippedIds: applied.skippedIds,
+          backupPath: applied.backupPath,
+        };
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        const message = (error instanceof Error ? error.message : String(error)).split('\n', 1)[0]!.slice(0, 1024);
+        const failed: PortableSpaceSourceRecord = {
+          ...existing,
+          lastCheckedAt: now,
+          lastSyncError: message,
+        };
+        await this.saveSources(items.map((item) => item.id === existing.id ? failed : item));
+        return {
+          source: failed,
+          status: 'error',
+          appliedIds: [],
+          deletedIds: [],
+          skippedIds: [],
+          error: message,
+        };
+      }
+    });
+  }
+
+  private async applySubscriptionTree(
+    recordId: string,
+    spaceId: 'main' | string,
+    upstreamTree: LoadedSpaceTree,
+    previousManagedIds: readonly string[],
+    isFirstSubscribe: boolean,
+    createBackup: boolean,
+    signal?: AbortSignal,
+  ): Promise<{
+    nextManagedIds: string[];
+    appliedIds: string[];
+    deletedIds: string[];
+    skippedIds: string[];
+    pluginErrors: OfficialPluginReconcileError[];
+    backupPath?: string;
+    rawBaseUnits: Units;
+    nextUnits: Units;
+    hashKey: string;
+  }> {
+    if (signal?.aborted) throw new Error('Subscription sync cancelled');
+    const liveEndpoint: PortableSpaceEndpoint = { kind: 'live', spaceId };
+    await this.endpoints.assertWritable(liveEndpoint);
+    const upstreamUnits = platformUnits(upstreamTree.units, process.platform);
+    const liveTree = await this.endpoints.load(liveEndpoint, { includeMemories: false, includeCredentials: true });
+    if (signal?.aborted) throw new Error('Subscription sync cancelled');
+    const targetUnits = commonUnits(liveTree.units);
+    const priorBase = await this.loadBase(recordId);
+    const merged = reconcileSubscriptionUnits(upstreamUnits, targetUnits, previousManagedIds, priorBase, isFirstSubscribe);
+    assertNoRemoteExecutableMcp(merged.nextUnits, targetUnits, [...merged.appliedIds, ...merged.deletedIds]);
+    assertSafeRemoteCredentialBindings(merged.nextUnits, targetUnits, upstreamUnits, previousManagedIds);
+    const errors = modelDependencies(merged.nextUnits);
+    if (errors.length) throw new Error(errors.join('; '));
+    if (signal?.aborted) throw new Error('Subscription sync cancelled');
+    let backupPath: string | undefined;
+    const pluginErrors: OfficialPluginReconcileError[] = [];
+    const wroteLive = !equalUnits(merged.nextUnits, targetUnits);
+    if (wroteLive) {
+      if (createBackup) {
+        backupPath = join(this.endpoints.home, 'backups', 'portable-spaces', `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}.kiki.tgz`);
+        const { recipient } = await this.endpoints.sync.ensureDeviceKeypair();
+        await this.endpoints.write(backupPath, liveTree, { format: 'tgz', secretMode: 'sealed', encryption: { mode: 'x25519', recipients: [recipient] } });
+      }
+      await writeLive(this.endpoints.live, merged.nextUnits, targetUnits, 'override', pluginErrors);
+    }
+    const pendingUpstreamPlugins = new Map<string, boolean>();
+    const appliedSet = new Set(merged.appliedIds);
+    for (const [unitId, unit] of upstreamUnits) {
+      if (unit.domain !== 'plugins' || unit.key[0] !== 'plugins' || unit.key[1] === undefined) continue;
+      if (wroteLive && appliedSet.has(unitId)) continue;
+      pendingUpstreamPlugins.set(unit.key[1], object(unit.value)['enabled'] !== false);
+    }
+    if (pendingUpstreamPlugins.size > 0) {
+      const result = await reconcileOfficialPlugins(this.endpoints.live, pendingUpstreamPlugins);
+      if (result.errors.length > 0) pluginErrors.push(...result.errors);
+    }
+    const key = await this.hashKey();
+    await this.saveBase(recordId, merged.nextBaseUnits, key);
+    return {
+      nextManagedIds: merged.nextManagedIds,
+      appliedIds: merged.appliedIds,
+      deletedIds: merged.deletedIds,
+      skippedIds: merged.skippedIds,
+      pluginErrors,
+      backupPath,
+      rawBaseUnits: merged.nextBaseUnits,
+      nextUnits: merged.nextUnits,
+      hashKey: key,
+    };
+  }
+
   remove(id: string): Promise<{ removed: true }> {
     return this.exclusive(async () => {
       const current = await this.sources();
-      if (!current.some((item) => item.id === id)) throw new Error('Portable Space source not found');
-      await this.saveSources(current.filter((item) => item.id !== id));
+      const target = current.find((item) => item.id === id);
+      if (target === undefined) throw portableNotFound('Portable Space source not found');
+      const remaining = current.filter((item) => item.id !== id);
+      await this.saveSources(remaining);
       await rm(join(this.baseRoot, safePortablePath(id)), { recursive: true, force: true });
+      await this.center.removeLedgerEntry(id, remaining, target.linkedSpaceId ?? 'main');
       return { removed: true };
     });
   }
@@ -281,6 +806,10 @@ export class PortableSpaceService {
   }
 
   private async plan(input: PortableSpacePreviewInput, includeDiffPreview = true): Promise<Plan> {
+    if (input.target.kind === 'url') throw portableValidationError('URL subscription endpoints are read-only');
+    if (input.target.kind === 'live' && input.sources.some((source) => source.kind === 'url')) {
+      throw portableValidationError('Use the reviewed Subscription Center subscribe/sync flow for URL subscriptions into a live space');
+    }
     if (input.mode === 'sync' && input.sources.length !== 1) throw new Error('Sync requires one source and one target');
     const targetKey = endpointKey(input.target);
     if (input.sources.some((source) => endpointKey(source) === targetKey)) throw new Error('Source and target must differ');
@@ -390,6 +919,7 @@ export class PortableSpaceService {
           }
           const tree = { ...write.original, units, unset, fork: hasEmbeddedBase(write.endpoint) && fork ? { forkId: fork.forkId, createdAt: fork.createdAt, unitHashes: fork.unitHashes } : write.original.fork };
           if (write.endpoint.kind === 'git') await this.endpoints.publish(write.endpoint, tree, write.original, publishOptions[index]!, write.unlock);
+          else if (write.endpoint.kind === 'url') throw new Error('URL subscription endpoints are read-only');
           else await this.endpoints.write(write.endpoint.path, tree, publishOptions[index]);
         }
       }
@@ -411,7 +941,7 @@ export class PortableSpaceService {
 
   mutate(input: PortableSpaceMutateInput) {
     return this.exclusive(async () => {
-      if (input.target.kind === 'git') throw new Error('Mutate the local Git checkout rather than its remote URL');
+      if (input.target.kind === 'git' || input.target.kind === 'url') throw new Error('Mutate a local Portable Space rather than a remote URL');
       const original = await this.endpoints.load(input.target, { unlock: input.unlock });
       const files = filesFromUnits(original.units);
       const unset = new Set(original.unset);

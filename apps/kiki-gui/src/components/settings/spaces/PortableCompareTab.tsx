@@ -153,8 +153,13 @@ export function PortableCompareTab({
     rightOption.endpoint.kind !== 'live' &&
     ((rightRecord?.encryptionMode === 'passphrase' && effectiveRightUnlock === undefined) || error !== null);
 
+  const isLeftUrl = leftOption.endpoint.kind === 'url';
+  const isRightUrl = rightOption.endpoint.kind === 'url';
+  const effectiveMode: CompareMode = (isLeftUrl || isRightUrl) && mode === 'sync' ? 'merge' : mode;
+  const urlReadOnlyBlocked = isRightUrl || isLeftUrl;
+
   const loadPreview = useCallback(() => {
-    if (sameEndpoint) {
+    if (sameEndpoint || isRightUrl) {
       setPreview(null);
       setError(null);
       setLoading(false);
@@ -165,16 +170,16 @@ export function PortableCompareTab({
     setLoading(true);
     setError(null);
     setFeedback(null);
-    void portableSpacesApi(client, { token })
+    void portableSpacesApi(client)
       .preview(
         {
-          mode,
+          mode: effectiveMode,
           sources: [leftOption.endpoint],
           target: rightOption.endpoint,
           sourceUnlocks: effectiveLeftUnlock !== undefined ? [effectiveLeftUnlock] : undefined,
           targetUnlock: effectiveRightUnlock,
         },
-        controller.signal,
+        { signal: controller.signal },
       )
       .then((result) => {
         if (seq !== loadSeq.current) return;
@@ -202,7 +207,7 @@ export function PortableCompareTab({
         if (seq === loadSeq.current) setLoading(false);
       });
     return () => { controller.abort(); };
-  }, [client, token, mode, leftOption.endpoint, rightOption.endpoint, sameEndpoint, effectiveLeftUnlock, effectiveRightUnlock]);
+  }, [client, effectiveMode, isRightUrl, leftOption.endpoint, rightOption.endpoint, sameEndpoint, effectiveLeftUnlock, effectiveRightUnlock]);
 
   useEffect(() => {
     const cancel = loadPreview();
@@ -243,7 +248,7 @@ export function PortableCompareTab({
   };
 
   const applyChanges = async () => {
-    if (preview === null || applying || selected.size === 0) return;
+    if (preview === null || applying || selected.size === 0 || urlReadOnlyBlocked) return;
     setApplying(true);
     setFeedback(null);
     const conflictResolutions: Record<string, 'left' | 'right' | 'skip'> = {};
@@ -252,7 +257,7 @@ export function PortableCompareTab({
       conflictResolutions[row.id] = selected.has(row.id) ? (resolutions[row.id] ?? 'left') : 'skip';
     }
     try {
-      const receipt = await portableSpacesApi(client, { token }).apply({
+      const receipt = await portableSpacesApi(client).apply({
         previewToken: preview.previewToken,
         selectedIds: [...selected],
         resolutions: Object.keys(conflictResolutions).length > 0 ? conflictResolutions : undefined,
@@ -448,10 +453,10 @@ export function PortableCompareTab({
         <SettingsSegmented<CompareMode>
           ariaLabel={t('st.portable.compareMode')}
           dataAttr="data-portable-op-mode"
-          value={mode}
+          value={effectiveMode}
           onChange={setMode}
           choices={[
-            { value: 'sync', label: t('st.portable.compareModeSync') },
+            { value: 'sync', label: t('st.portable.compareModeSync'), disabled: isLeftUrl || isRightUrl },
             { value: 'merge', label: t('st.portable.compareModeMerge') },
             { value: 'override', label: t('st.portable.compareModeOverride') },
           ]}
@@ -460,7 +465,7 @@ export function PortableCompareTab({
           type="button"
           data-portable-compare-refresh
           className={SECONDARY_BUTTON}
-          disabled={loading || applying || sameEndpoint}
+          disabled={loading || applying || sameEndpoint || isRightUrl}
           onClick={() => { setNonce((value) => value + 1); }}
         >
           <span className="inline-flex items-center gap-1.5">
@@ -469,6 +474,12 @@ export function PortableCompareTab({
           </span>
         </button>
       </div>
+
+      {urlReadOnlyBlocked ? (
+        <p className="text-[12.5px] text-amber-ink" data-portable-url-compare-notice>
+          {t('st.portable.center.urlReadOnlyCompareNotice')}
+        </p>
+      ) : null}
 
       {sameEndpoint ? (
         <p className="text-[13px] text-ink-faint">{t('st.portable.compareSameEndpoint')}</p>
@@ -573,7 +584,7 @@ export function PortableCompareTab({
             </ul>
           ) : null}
 
-          {changedRows.length > 0 ? (
+          {changedRows.length > 0 && !urlReadOnlyBlocked ? (
             <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
               {selected.size === 0 ? (
                 <span className="text-[12px] text-ink-faint">{t('st.portable.applyEmpty')}</span>

@@ -50,6 +50,7 @@
     },
     "linux": {
       "deb": {
+        "desktopTemplate": "./linux/kiki-desktop.desktop",
         "postInstallScript": "./linux/postinst.sh",
         "postRemoveScript": "./linux/postrm.sh"
       }

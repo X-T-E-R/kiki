@@ -22,6 +22,8 @@ macro_rules! app_commands {
             take_scope_connection,
             take_navigation_intent,
             ack_navigation_intent,
+            peek_subscribe_intent,
+            ack_subscribe_intent,
             read_plugin_focus,
             ack_plugin_focus,
             remember_plugin_focus,

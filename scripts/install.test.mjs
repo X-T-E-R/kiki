@@ -616,3 +616,79 @@ void test('stable fast path avoids GitHub API and supports piped sh -s -- and --
   ]);
   assert.match(pinned.stdout, /Installed kiki 0\.5\.8 -> /);
 });
+
+test('installer forwards HTTPS --apply and --subscribe URLs to kiki space commands', async (t) => {
+  const scratch = await mkdtemp(join(root, '.tmp-install-sub-'));
+  const binary = Buffer.from(
+    `#!/bin/sh
+if [ "\${1:-}" = "--version" ]; then
+  printf 'kiki 0.6.0-test\\n'
+  exit 0
+fi
+if [ -n "\${MOCK_KIKI_LOG:-}" ]; then
+  for arg in "$@"; do
+    printf '%s\\n' "$arg" >> "$MOCK_KIKI_LOG"
+  done
+  printf -- '---\\n' >> "$MOCK_KIKI_LOG"
+fi
+exit 0
+`,
+    'utf8',
+  );
+  const server = createServer((req, res) => {
+    if (req.url === '/X-T-E-R/kiki/releases/latest/download/kiki-linux-x64') {
+      res.setHeader('content-type', 'application/octet-stream');
+      res.end(binary);
+      return;
+    }
+    if (req.url === '/X-T-E-R/kiki/releases/latest/download/kiki-linux-x64.sha256') {
+      res.setHeader('content-type', 'text/plain');
+      res.end(`${sha256Hex(binary)}  kiki-linux-x64\n`);
+      return;
+    }
+    res.statusCode = 404;
+    res.end('not found');
+  });
+
+  t.after(async () => {
+    await closeServer(server);
+    await rm(scratch, { recursive: true, force: true });
+  });
+
+  await listen(server);
+  const { port } = server.address();
+  const origin = `http://127.0.0.1:${port}`;
+  const installDir = join(scratch, 'bin');
+  const logFile = join(scratch, 'kiki-calls.log');
+
+  const result = await runInstaller({
+    scratch,
+    osName: 'Linux',
+    archName: 'x86_64',
+    installDir,
+    args: [
+      '--apply', 'https://api.example.test/packs/base.tgz',
+      '--subscribe', 'https://api.example.test/api/sub/token1234567890abcdef.tgz',
+      '--yes',
+    ],
+    extraEnv: {
+      KIKI_GITHUB_API_URL: origin,
+      KIKI_GITHUB_WEB_URL: origin,
+      MOCK_KIKI_LOG: logFile,
+    },
+  });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const recorded = (await readFile(logFile, 'utf8')).trim().split('\n');
+  assert.deepEqual(recorded, [
+    'space',
+    'apply',
+    'https://api.example.test/packs/base.tgz',
+    '--yes',
+    '---',
+    'space',
+    'subscribe',
+    'https://api.example.test/api/sub/token1234567890abcdef.tgz',
+    '--yes',
+    '---',
+  ]);
+});

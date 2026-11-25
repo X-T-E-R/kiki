@@ -244,6 +244,6 @@ export const stGovernanceEn = {
   'st.permissions.tools.allFollow': 'Every tool follows each agent\'s settings.',
   'st.permissions.tools.unavailable': 'Tools not available on this Kiki ({count})',
   'st.settingsTransfer.description': 'Export, compare, sync, or import spaces as plain folders, Git repos, or encrypted .kiki.age bundles.',
-  'st.settingsTransfer.openSpaces': 'Open space transfer',
+  'st.settingsTransfer.openSpaces': 'Open subscriptions',
   'st.settingsTransfer.title': 'Settings transfer',
 } as const;

@@ -4,6 +4,8 @@ import { gunzipSync, gzipSync } from 'node:zlib';
 const BLOCK_SIZE = 512;
 const MAX_PATH_BYTES = 4096;
 const MAX_PAX_BYTES = 1024 * 1024;
+const DEFAULT_MAX_EXPANDED_BYTES = 256 * 1024 * 1024;
+const DEFAULT_MAX_FILES = 16384;
 const USTAR_MAGIC = 'ustar\0';
 const USTAR_VERSION = '00';
 const GNU_MAGIC = 'ustar  \0';
@@ -109,13 +111,18 @@ export function packTarGz(files: ReadonlyMap<string, Buffer>): Buffer {
 }
 
 /** Unpacks deterministic or standard gzip-compressed POSIX ustar bytes into portable files. */
-export function unpackTarGz(bytes: Buffer): Map<string, Buffer> {
+export function unpackTarGz(
+  bytes: Buffer,
+  options?: { readonly maxExpandedBytes?: number; readonly maxFiles?: number },
+): Map<string, Buffer> {
   if (!Buffer.isBuffer(bytes)) {
     throw invalidArchiveInput();
   }
+  const maxExpandedBytes = options?.maxExpandedBytes ?? DEFAULT_MAX_EXPANDED_BYTES;
+  const maxFiles = options?.maxFiles ?? DEFAULT_MAX_FILES;
   let tar: Buffer;
   try {
-    tar = gunzipSync(bytes);
+    tar = gunzipSync(bytes, { maxOutputLength: maxExpandedBytes });
   } catch {
     throw invalidArchiveInput();
   }
@@ -188,8 +195,11 @@ export function unpackTarGz(bytes: Buffer): Map<string, Buffer> {
     const alias = path.toLowerCase();
     if (seen.has(alias)) throw invalidArchiveInput();
     seen.add(alias);
+    if (files.size >= maxFiles) {
+      throw invalidArchiveInput();
+    }
     contentBytes += size;
-    if (!Number.isSafeInteger(contentBytes) || contentBytes > bufferConstants.MAX_LENGTH) {
+    if (!Number.isSafeInteger(contentBytes) || contentBytes > maxExpandedBytes || contentBytes > bufferConstants.MAX_LENGTH) {
       throw invalidArchiveInput();
     }
     files.set(path, Buffer.from(body));

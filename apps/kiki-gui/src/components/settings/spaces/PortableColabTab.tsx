@@ -115,7 +115,7 @@ export function PortableColabTab({
     setBusy(true);
     setFeedback(null);
     try {
-      const updated = await portableSpacesApi(client, { token }).rekey({
+      const updated = await portableSpacesApi(client).rekey({
         target: targetPath,
         unlock,
         encryption,

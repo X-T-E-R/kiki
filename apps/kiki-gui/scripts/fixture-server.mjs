@@ -3090,8 +3090,8 @@ class FixtureServer {
     if (handleWebAccess(this, res, path, method, body, req)) return;
     // Antigravity ACP binary cache + sign-in (scripts/fixture-antigravity.mjs).
     if (path.startsWith('/executors/antigravity-acp/') && handleAntigravity(this, res, path, method, body, query)) return;
-    // Spaces (scripts/fixture-spaces.mjs): homes.json management and per-key config origins.
-    if ((path.startsWith('/homes') || path === '/config/overrides:remove') && handleSpaces(this, res, path, method, body)) return;
+    // Spaces (scripts/fixture-spaces.mjs): homes.json management, per-key config origins, and portable subscription center.
+    if ((path.startsWith('/homes') || path === '/config/overrides:remove' || path.startsWith('/spaces/portable/')) && handleSpaces(this, res, path, method, body, query)) return;
     // GUI entry contracts (scripts/fixture-gui-entries.mjs): shortcuts, models.dev directory, account quota.
     if (handleGuiEntries(this, res, path, query, body, method)) return;
     const sessions = [...this.sessions.values()];
@@ -5930,6 +5930,7 @@ class FixtureServer {
       }
       case 'space':
       case 'space_state':
+      case 'portable_seed':
         return this.envelope(res, spacesControl(this, body));
       case 'ssh-submissions':
         // Redacted shapes only (secret lengths, never values).

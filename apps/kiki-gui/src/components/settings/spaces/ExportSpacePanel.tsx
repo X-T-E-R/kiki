@@ -233,7 +233,7 @@ export function ExportSpacePanel({
     setBusy(true);
     setFeedback(null);
     try {
-      const api = portableSpacesApi(client, { token });
+      const api = portableSpacesApi(client);
       const receipt = intent === 'fork'
         ? await api.fork({
           source: selectedSource.endpoint,

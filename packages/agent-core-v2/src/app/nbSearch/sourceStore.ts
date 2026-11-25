@@ -11,11 +11,13 @@ import { applyLocalCredentials, LocalCredentialError, localSecretSchema } from '
 import { copyNbSearchEnvironment, nbSearchEnvironmentName } from './environment';
 import { NbSearchManagedCredentials, ManagedCredentialError, managedBinding, managedBindingVersion, managedEntryMatches } from './managedCredentials';
 
-import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import { createDecorator, ref, type LiveRef, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
+import { IConfigService } from '#/app/config/config';
 import { LifecycleScope } from '#/app/scopes';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { nbSearchOriginOf, resolveInheritedNbSearchKey } from './providerInheritance';
 
 export interface NbSearchSource {
   readonly env: NodeJS.ProcessEnv;
@@ -24,6 +26,7 @@ export interface NbSearchSource {
   readonly resolved?: ResolvedConfiguration;
   readonly expectedRevision?: string;
   readonly managedSlots?: readonly string[];
+  readonly inheritedSlots?: readonly string[];
 }
 
 export interface ManagedCredentialView {
@@ -76,6 +79,7 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
   constructor(
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IHostFileSystem private readonly fs: IHostFileSystem,
+    @ref(IConfigService) private readonly kikiConfigRef?: LiveRef<IConfigService>,
   ) {
     this.#credentialFiles = new NbSearchCredentialFileStore(fs);
     this.#managed = new NbSearchManagedCredentials(storage);
@@ -94,19 +98,25 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
     const normalized = nbSearchEnvironmentName(source.env, name);
     const fromProcess = Object.keys(process.env).some((key) => nbSearchEnvironmentName(source.env, key) === normalized);
     const fromManaged = source.managedSlots?.includes(slotId) ?? false;
+    const fromInherited = source.inheritedSlots?.includes(slotId) ?? false;
     const managedAlias = source.managedSlots?.some((id) => {
       const other = config.credential_slots[id];
       return other !== undefined && nbSearchEnvironmentName(source.env, other.env) === normalized;
     }) ?? false;
-    const sourceName = fromManaged || managedAlias ? 'managed'
+    const inheritedAlias = source.inheritedSlots?.some((id) => {
+      const other = config.credential_slots[id];
+      return other !== undefined && nbSearchEnvironmentName(source.env, other.env) === normalized;
+    }) ?? false;
+    const sourceName = fromManaged || managedAlias || fromInherited || inheritedAlias ? 'managed'
       : fromProcess ? 'environment'
         : Object.keys(source.env).some((key) => nbSearchEnvironmentName(source.env, key) === normalized) ? 'local' : 'none';
     const effective = sourceName === 'none' ? undefined : source.env[name];
+    const inheritedOnly = (fromInherited || inheritedAlias) && !fromManaged && !managedAlias;
     return {
-      instance_id: instanceId, slot_id: slotId, stored: entry !== undefined, active: matches && fromManaged && sourceName === 'managed',
+      instance_id: instanceId, slot_id: slotId, stored: entry !== undefined, active: ((matches && fromManaged) || fromInherited || inheritedAlias) && sourceName === 'managed',
       source: sourceName, version, binding_version: managedBindingVersion(config, slotId, source.env),
       ...(sourceName === 'environment' || sourceName === 'local' ? { env_name: name } : {}),
-      value: !reveal ? undefined : effective ?? (matches ? entry!.value : undefined),
+      value: !reveal || inheritedOnly ? undefined : effective ?? (matches ? entry!.value : undefined),
     };
   }
 
@@ -290,16 +300,17 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
     const records = await this.#managed.all().catch(() => undefined);
     if (records === undefined) {
       status.issues = [...new Set([...status.issues, 'MANAGED_CREDENTIALS_UNAVAILABLE'])];
-      return { env, status, managedSlots: [] };
     }
     const copy = copyNbSearchEnvironment(env);
     const injected: string[] = [];
     const managedSlots: string[] = [];
-    for (const [slotId, entry] of Object.entries(records)) {
+    const inheritedSlots: string[] = [];
+    const mismatchedSlots = new Set<string>();
+    for (const [slotId, entry] of Object.entries(records ?? {})) {
       const slot = config.credential_slots[slotId];
       if (slot === undefined) continue;
       if (!managedEntryMatches(entry, config, slotId, env)) {
-        status.issues = [...new Set([...status.issues, `MANAGED_CREDENTIALS_MISMATCH:${slotId}`])];
+        mismatchedSlots.add(slotId);
         continue;
       }
       const name = nbSearchEnvironmentName(env, slot.env);
@@ -311,17 +322,53 @@ export class NbSearchSourceStore implements INbSearchSourceStore {
       injected.push(slot.env);
       managedSlots.push(slotId);
     }
+    const kikiConfig = this.kikiConfigRef?.current;
+    if (kikiConfig !== undefined) {
+      for (const [instanceId, instance] of Object.entries(config.provider_instances)) {
+        const slotId = instance.credential_slot_id;
+        if (slotId === undefined || managedSlots.includes(slotId) || inheritedSlots.includes(slotId)) continue;
+        const slot = config.credential_slots[slotId];
+        if (slot === undefined) continue;
+        const name = nbSearchEnvironmentName(env, slot.env);
+        if (['NB_SEARCH_CONFIG', 'NB_SEARCH_HOME', 'NB_SEARCH_JOBS_ROOT', 'NB_SEARCH_RETENTION_HOURS', 'NB_SEARCH_LOG_LEVEL'].includes(name.toUpperCase())) continue;
+        const existingVal = nonempty(copy[slot.env]);
+        if (existingVal !== undefined) continue;
+        const targetOrigin = nbSearchOriginOf(instance.base_url);
+        if (targetOrigin === undefined) continue;
+        const allSharingSameOrigin = Object.values(config.provider_instances).every((other) => {
+          const otherSlotId = other.credential_slot_id;
+          if (otherSlotId === undefined) return true;
+          const otherSlot = config.credential_slots[otherSlotId];
+          if (otherSlot === undefined) return true;
+          if (nbSearchEnvironmentName(env, otherSlot.env) !== name) return true;
+          return nbSearchOriginOf(other.base_url) === targetOrigin;
+        });
+        if (!allSharingSameOrigin) continue;
+        const inherited = resolveInheritedNbSearchKey(instanceId, instance, kikiConfig);
+        if (inherited === undefined) continue;
+        for (const key of Object.keys(copy)) {
+          if (key !== slot.env && nbSearchEnvironmentName(copy, key) === name) delete copy[key];
+        }
+        Object.defineProperty(copy, slot.env, { value: inherited, enumerable: true, configurable: true, writable: true });
+        injected.push(slot.env);
+        inheritedSlots.push(slotId);
+        mismatchedSlots.delete(slotId);
+      }
+    }
+    if (mismatchedSlots.size > 0) {
+      status.issues = [...new Set([...status.issues, ...[...mismatchedSlots].map((slotId) => `MANAGED_CREDENTIALS_MISMATCH:${slotId}`)])];
+    }
     if (injected.length > 0 && (nbSearchPaths(copy).canonical !== nbSearchPaths(env).canonical
       || nbSearchConfigRevision(resolveNbSearchConfig(copy, pinnedNbSearchConfig(config), undefined)) !== nbSearchConfigRevision(config))) {
       status.issues = [...new Set([...status.issues, 'MANAGED_CREDENTIALS_UNAVAILABLE'])];
-      return { env, status, managedSlots: [] };
+      return { env, status, managedSlots: [], inheritedSlots: [] };
     }
-    if (managedSlots.length > 0) {
+    if (managedSlots.length > 0 || inheritedSlots.length > 0) {
       status.credential_source = status.credential_source === 'environment+local'
         ? 'environment+local+managed'
         : 'environment+managed';
     }
-    return { env: copy, status, managedSlots };
+    return { env: copy, status, managedSlots, inheritedSlots };
   }
 
   private unavailable(env: NodeJS.ProcessEnv, status: NbSearchConfigSourceStatus, issue: string | readonly string[]): NbSearchSource {

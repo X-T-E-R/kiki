@@ -75,7 +75,7 @@ async function click(element: Element): Promise<void> {
 const noop = () => {};
 
 describe('SettingsNav grouped tree', () => {
-  it('ignores stored prototype mode, renders no picker, keeps the 7 groups, and uses real names for renamed leaves', async () => {
+  it('ignores stored prototype mode, renders no picker, keeps the 8 groups, and uses real names for renamed leaves', async () => {
     writeIaPrototypeMode('objects');
     try {
       const container = await render(
@@ -84,13 +84,14 @@ describe('SettingsNav grouped tree', () => {
       // No experimental picker rendered
       expect(container.querySelector('[data-settings-ia-picker]')).toBeNull();
 
-      // Groups stay the 7 purpose groups
+      // Groups stay the 8 purpose groups
       const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
       expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
-        .toEqual(['device', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced']);
+        .toEqual(['device', 'subscriptions', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced']);
 
-      // Assert leaf labels for connection, connection-services, extensions, browser-control, and developer
+      // Assert leaf labels for subscriptions, connection, connection-services, extensions, browser-control, and developer
       const leafText = (id: string) => container.querySelector(`[data-settings-nav-leaf="${id}"]`)?.textContent?.trim();
+      expect(leafText('subscriptions')).toBe('Subscriptions');
       expect(leafText('spaces')).toBe('Spaces');
       expect(leafText('connection-services')).toBe('Access');
       expect(leafText('connection')).toBe('This device’s connection');
@@ -115,21 +116,22 @@ describe('SettingsNav grouped tree', () => {
     expect(container.textContent).not.toMatch(/All sessions|127\.0\.0\.1/);
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
     expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
-      .toEqual(['device', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced']);
+      .toEqual(['device', 'subscriptions', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced']);
     expect(groups.map((group) => group.querySelector('p')?.textContent))
-      .toEqual(['App', 'Models & agents', 'Sessions & work', 'Capabilities', 'Permissions & security', 'Spaces & devices', 'Advanced']);
+      .toEqual(['App', 'Setup & Subscriptions', 'Models & agents', 'Sessions & work', 'Capabilities', 'Permissions & security', 'Spaces & devices', 'Advanced']);
     for (const group of groups) expect(group.querySelector(':scope > button')).toBeNull();
     const leaves = (index: number) => [...groups[index]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
     expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts', 'notifications']);
-    expect(leaves(1)).toEqual(['ai', 'agents']);
-    expect(leaves(2)).toEqual(['sessions', 'workspaces', 'memory']);
+    expect(leaves(1)).toEqual(['subscriptions']);
+    expect(leaves(2)).toEqual(['ai', 'agents']);
+    expect(leaves(3)).toEqual(['sessions', 'workspaces', 'memory']);
     // Hooks are automation: they sit with the agent's capabilities, not rules.
-    expect(leaves(3)).toEqual(['extensions', 'search', 'browser-control', 'hooks']);
-    expect(leaves(4)).toEqual(['permissions']);
+    expect(leaves(4)).toEqual(['extensions', 'search', 'browser-control', 'hooks']);
+    expect(leaves(5)).toEqual(['permissions']);
     // Spaces and external services sit with the ways of reaching a server;
     // workspaces with the sessions that run in them.
-    expect(leaves(5)).toEqual(['spaces', 'connection-services', 'connection', 'ssh']);
-    expect(leaves(6)).toEqual(['about', 'developer']);
+    expect(leaves(6)).toEqual(['spaces', 'connection-services', 'connection', 'ssh']);
+    expect(leaves(7)).toEqual(['about', 'developer']);
   });
 
   it('highlights only the active leaf and navigates on click', async () => {

@@ -11,6 +11,13 @@ export interface NotificationNavigationIntent {
   readonly navigationId?: string;
 }
 
+export interface HostSubscribeIntent {
+  readonly id: string;
+  readonly url: string;
+  readonly name?: string;
+  readonly mode?: 'auto' | 'manual' | 'once';
+}
+
 export type DesktopUpdateMutation =
   | { readonly kind: 'checked'; readonly at: number }
   | { readonly kind: 'snooze'; readonly until: number }
@@ -237,6 +244,10 @@ interface HostCapabilities {
   checkDesktopUpdate?: (channel?: UpdateChannel) => Promise<DesktopUpdate | null>;
   mutateDesktopUpdateState?: (mutation: DesktopUpdateMutation) => Promise<DesktopUpdateState>;
   onTrayNewSession?: (callback: () => void) => () => void;
+  peekSubscribeIntent?: () => Promise<HostSubscribeIntent | null>;
+  ackSubscribeIntent?: (id: string) => Promise<boolean>;
+  onSubscribeIntent?: (callback: (intent: HostSubscribeIntent) => void) => () => void;
+  onSubscribeUrl?: (callback: (url: string) => void) => () => void;
   setTheme?: (resolved: ResolvedTheme) => Promise<void>;
   /** Apply native webview zoom (`1` is 100%); returns `true` when applied natively. */
   setZoom?: (factor: number) => Promise<boolean>;

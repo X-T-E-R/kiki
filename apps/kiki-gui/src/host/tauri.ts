@@ -16,6 +16,7 @@ import type {
   TauriHostAdapter,
   HostFileDrop,
   HostSelectedFile,
+  HostSubscribeIntent,
   LocalConnection,
 } from './host';
 import { readSettings, type DesktopNativePrefs } from '@kiki/session-core/settings';
@@ -111,6 +112,130 @@ function onTrayNewSession(callback: () => void): () => void {
   return () => {
     unsubscribed = true;
     unlisten?.();
+  };
+}
+
+function parseSubscribeIntentPayload(value: unknown): HostSubscribeIntent | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record['id'] !== 'string' || record['id'].trim() === '') return null;
+  if (typeof record['url'] !== 'string' || record['url'].trim() === '') return null;
+  const mode = record['mode'];
+  const parsedMode = mode === 'auto' || mode === 'manual' || mode === 'once' ? mode : undefined;
+  const name = typeof record['name'] === 'string' && record['name'].trim() !== '' ? record['name'].trim() : undefined;
+  return {
+    id: record['id'],
+    url: record['url'].trim(),
+    ...(name !== undefined ? { name } : {}),
+    ...(parsedMode !== undefined ? { mode: parsedMode } : {}),
+  };
+}
+
+const subscribeIntentPumps = new Set<() => void>();
+
+async function peekSubscribeIntent(): Promise<HostSubscribeIntent | null> {
+  try {
+    return parseSubscribeIntentPayload(await invoke<unknown>('peek_subscribe_intent'));
+  } catch {
+    return null;
+  }
+}
+
+async function ackSubscribeIntent(id: string): Promise<boolean> {
+  try {
+    const acked = await invoke<boolean>('ack_subscribe_intent', { id });
+    if (acked) {
+      for (const pump of subscribeIntentPumps) pump();
+    }
+    return acked;
+  } catch {
+    return false;
+  }
+}
+
+/** Subscribes to native wake hints first, then peeks the authoritative FIFO queue without auto-acking. */
+function onSubscribeIntent(callback: (intent: HostSubscribeIntent) => void): () => void {
+  let unsubscribed = false;
+  let unlisten: (() => void) | undefined;
+  let pumping = false;
+  let dirty = false;
+  let lastDeliveredId: string | undefined;
+
+  const pump = async () => {
+    if (unsubscribed) return;
+    if (pumping) {
+      dirty = true;
+      return;
+    }
+    pumping = true;
+    try {
+      do {
+        dirty = false;
+        const head = await peekSubscribeIntent();
+        if (unsubscribed || head === null) break;
+        if (head.id !== lastDeliveredId) {
+          lastDeliveredId = head.id;
+          callback(head);
+        }
+      } while (dirty && !unsubscribed);
+    } finally {
+      pumping = false;
+    }
+  };
+
+  const triggerPump = () => {
+    void pump();
+  };
+  subscribeIntentPumps.add(triggerPump);
+
+  void listen<unknown>('kiki://subscribe-intent', () => {
+    triggerPump();
+  }).then((fn) => {
+    if (unsubscribed) {
+      fn();
+      return;
+    }
+    unlisten = fn;
+    triggerPump();
+  }, () => undefined);
+
+  return () => {
+    unsubscribed = true;
+    subscribeIntentPumps.delete(triggerPump);
+    unlisten?.();
+  };
+}
+
+function onSubscribeUrl(callback: (url: string) => void): () => void {
+  let unsubscribed = false;
+  let legacyUnlisten: (() => void) | undefined;
+  const unsubscribeIntent = onSubscribeIntent((intent) => {
+    if (unsubscribed) return;
+    callback(intent.url);
+    void ackSubscribeIntent(intent.id);
+  });
+  const pending = (globalThis as { __KIKI_SUBSCRIBE_URL__?: unknown }).__KIKI_SUBSCRIBE_URL__;
+  if (typeof pending === 'string' && pending.trim() !== '') {
+    queueMicrotask(() => {
+      if (unsubscribed) return;
+      const current = (globalThis as { __KIKI_SUBSCRIBE_URL__?: unknown }).__KIKI_SUBSCRIBE_URL__;
+      if (typeof current !== 'string' || current.trim() === '') return;
+      delete (globalThis as { __KIKI_SUBSCRIBE_URL__?: unknown }).__KIKI_SUBSCRIBE_URL__;
+      callback(current.trim());
+    });
+  }
+  void listen<unknown>('kiki://subscribe-url', (event) => {
+    if (!unsubscribed && typeof event.payload === 'string' && event.payload.trim() !== '') {
+      callback(event.payload.trim());
+    }
+  }).then((fn) => {
+    if (unsubscribed) fn();
+    else legacyUnlisten = fn;
+  }, () => undefined);
+  return () => {
+    unsubscribed = true;
+    unsubscribeIntent();
+    legacyUnlisten?.();
   };
 }
 
@@ -409,6 +534,10 @@ export const tauriHost: TauriHostAdapter = {
     };
   },
   onTrayNewSession,
+  peekSubscribeIntent,
+  ackSubscribeIntent,
+  onSubscribeIntent,
+  onSubscribeUrl,
   onFileDrop,
   /**
    * The desktop space this window belongs to. Older desktop builds have no

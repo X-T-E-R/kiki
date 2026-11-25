@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Kiki
+Comment=Kiki AI Agent Desktop
+Exec=kiki-desktop %u
+Icon=kiki-desktop
+Categories=Development;Utility;
+Terminal=false
+StartupWMClass=kiki-desktop
+MimeType=x-scheme-handler/kiki;

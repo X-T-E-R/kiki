@@ -108,6 +108,17 @@
   Pop $0
 !macroend
 
+!macro KIKI_REGISTER_URL_PROTOCOL
+  WriteRegStr HKCU "Software\Classes\kiki" "" "URL:Kiki Protocol"
+  WriteRegStr HKCU "Software\Classes\kiki" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\kiki\DefaultIcon" "" "$\"$INSTDIR\kiki-desktop.exe$\",0"
+  WriteRegStr HKCU "Software\Classes\kiki\shell\open\command" "" "$\"$INSTDIR\kiki-desktop.exe$\" $\"%1$\""
+!macroend
+
+!macro KIKI_UNREGISTER_URL_PROTOCOL
+  DeleteRegKey HKCU "Software\Classes\kiki"
+!macroend
+
 !macro NSIS_HOOK_POSTINSTALL
   ClearErrors
   CreateDirectory "$INSTDIR\cli"
@@ -115,8 +126,10 @@
   IfErrors 0 +2
     Abort "Could not install the Kiki CLI executable."
   !insertmacro KIKI_UPDATE_USER_PATH "add"
+  !insertmacro KIKI_REGISTER_URL_PROTOCOL
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
+  !insertmacro KIKI_UNREGISTER_URL_PROTOCOL
   !insertmacro KIKI_UPDATE_USER_PATH "remove"
 !macroend

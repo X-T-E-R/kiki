@@ -1,6 +1,6 @@
 import { useId, useState } from 'react';
 
-import type { PortableSpaceEndpoint, PortableSpaceSourceRecord } from '@kiki/protocol';
+import type { PortableSpaceEndpoint, PortableSpaceSourceRecord, PortableSpaceSubscriptionSyncResult } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useHost } from '../../../host';
@@ -12,16 +12,18 @@ import { SidePanel } from '../../SidePanel';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { FieldIssue, FORM_LABEL, SettingsSegmented } from '../SettingsPrimitives';
 
-type LinkKind = 'dir' | 'archive' | 'git';
+type LinkKind = 'url' | 'dir' | 'archive' | 'git';
 
 export interface LinkSourcePanelProps {
   readonly client: KikiClient;
   readonly token?: string;
+  readonly initialKind?: LinkKind;
+  readonly initialTarget?: string;
   readonly onClose: () => void;
-  readonly onDone: (record: PortableSpaceSourceRecord) => void;
+  readonly onDone: (record: PortableSpaceSourceRecord, syncResult?: PortableSpaceSubscriptionSyncResult) => void;
 }
 
-export function LinkSourcePanel({ client, token, onClose, onDone }: LinkSourcePanelProps) {
+export function LinkSourcePanel({ client, token, initialKind, initialTarget, onClose, onDone }: LinkSourcePanelProps) {
   const host = useHost();
   const { t, locale } = useI18n();
   const formId = useId();
@@ -32,8 +34,8 @@ export function LinkSourcePanel({ client, token, onClose, onDone }: LinkSourcePa
   const subpathId = useId();
   const passphraseId = useId();
 
-  const [kind, setKind] = useState<LinkKind>('dir');
-  const [target, setTarget] = useState('');
+  const [kind, setKind] = useState<LinkKind>(initialKind ?? 'dir');
+  const [target, setTarget] = useState(initialTarget ?? '');
   const [label, setLabel] = useState('');
   const [gitRef, setGitRef] = useState('');
   const [subpath, setSubpath] = useState('');
@@ -64,21 +66,32 @@ export function LinkSourcePanel({ client, token, onClose, onDone }: LinkSourcePa
       return;
     }
 
-    const endpoint: PortableSpaceEndpoint = kind === 'git'
-      ? {
-        kind: 'git',
-        repo: trimmed,
-        ref: gitRef.trim() || undefined,
-        subpath: subpath.trim() || undefined,
-      }
-      : kind === 'archive'
-        ? { kind: 'archive', path: trimmed }
-        : { kind: 'dir', path: trimmed };
-
     setBusy(true);
     setFeedback(null);
     try {
-      const record = await portableSpacesApi(client, { token }).registerSource({
+      if (kind === 'url') {
+        const result = await portableSpacesApi(client).subscribe({
+          url: trimmed,
+          label: label.trim() || undefined,
+          linkToSpaceId: 'main',
+          autoSync: true,
+          unlock: passphrase.trim() !== '' ? { passphrase: passphrase.trim() } : undefined,
+          createBackup: true,
+        });
+        onDone(result.source, result);
+        return;
+      }
+      const endpoint: PortableSpaceEndpoint = kind === 'git'
+        ? {
+          kind: 'git',
+          repo: trimmed,
+          ref: gitRef.trim() || undefined,
+          subpath: subpath.trim() || undefined,
+        }
+        : kind === 'archive'
+          ? { kind: 'archive', path: trimmed }
+          : { kind: 'dir', path: trimmed };
+      const record = await portableSpacesApi(client).registerSource({
         endpoint,
         label: label.trim() || undefined,
         unlock: passphrase.trim() !== '' ? { passphrase: passphrase.trim() } : undefined,
@@ -104,7 +117,7 @@ export function LinkSourcePanel({ client, token, onClose, onDone }: LinkSourcePa
           </button>
           <span className="ml-auto" />
           <button type="submit" form={formId} data-portable-link-submit className={PRIMARY_BUTTON} disabled={busy}>
-            {busy ? t('common.saving') : t('st.portable.linkSubmit')}
+            {busy ? t('common.saving') : t(kind === 'url' ? 'st.portable.subscribeSubmit' : 'st.portable.linkSubmit')}
           </button>
         </>
       )}
@@ -129,6 +142,7 @@ export function LinkSourcePanel({ client, token, onClose, onDone }: LinkSourcePa
                 setIssue(null);
               }}
               choices={[
+                { value: 'url', label: t('st.portable.linkKindUrl') },
                 { value: 'dir', label: t('st.portable.linkKindDir') },
                 { value: 'archive', label: t('st.portable.linkKindArchive') },
                 { value: 'git', label: t('st.portable.linkKindGit') },
@@ -139,7 +153,7 @@ export function LinkSourcePanel({ client, token, onClose, onDone }: LinkSourcePa
 
         <div>
           <label htmlFor={targetId} className={FORM_LABEL}>
-            {t(kind === 'git' ? 'st.portable.linkRepo' : 'st.portable.linkPath')}
+            {t(kind === 'url' ? 'st.portable.linkUrl' : kind === 'git' ? 'st.portable.linkRepo' : 'st.portable.linkPath')}
           </label>
           <div className="mt-1.5 flex gap-2">
             <input
@@ -149,7 +163,15 @@ export function LinkSourcePanel({ client, token, onClose, onDone }: LinkSourcePa
               value={target}
               spellCheck={false}
               autoComplete="off"
-              placeholder={kind === 'git' ? 'https://github.com/org/kiki-space.git' : kind === 'archive' ? '/path/to/space.kiki.age' : '/path/to/space-dir'}
+              placeholder={
+                kind === 'url'
+                  ? t('st.portable.linkUrlPlaceholder')
+                  : kind === 'git'
+                    ? 'https://github.com/org/kiki-space.git'
+                    : kind === 'archive'
+                      ? '/path/to/space.kiki.age'
+                      : '/path/to/space-dir'
+              }
               aria-invalid={issue !== null}
               aria-describedby={issue !== null ? targetIssueId : undefined}
               onChange={(event) => {

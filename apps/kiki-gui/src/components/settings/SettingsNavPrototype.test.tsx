@@ -132,7 +132,7 @@ describe('candidate nav trees', () => {
     for (const node of SETTINGS_NAV_TREE) {
       if (node.kind !== 'group') continue;
       for (const leaf of node.sections) {
-        if (leaf === 'identity') continue;
+        if (leaf === 'identity' || leaf === 'subscriptions') continue;
         if (leaf === 'extensions') {
           for (const sub of ['plugins', 'skills', 'mcp']) {
             expect(navTreeCoverage(TASKFLOW_NAV_TREE).placed).toContain(sub);
@@ -226,7 +226,7 @@ describe('search breadcrumbs under a candidate tree', () => {
   it('the shipped spec leaves every candidate destination intact', () => {
     const sections = new Set(SETTINGS_SEARCH_SPEC.map((entry) => entry.section));
     for (const section of sections) {
-      if (section === 'identity') continue;
+      if (section === 'identity' || section === 'subscriptions') continue;
       if (section === 'extensions') {
         expect(navTreeCoverage(TASKFLOW_NAV_TREE).placed).toEqual(expect.arrayContaining(['plugins', 'skills', 'mcp']));
         expect(navTreeCoverage(OBJECTS_NAV_TREE).placed).toEqual(expect.arrayContaining(['plugins', 'skills', 'mcp']));
@@ -246,7 +246,7 @@ describe('SettingsNav under the experiment', () => {
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')]
       .map((group) => group.getAttribute('data-settings-nav-group'));
     expect(groups).toEqual([
-      'device', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced',
+      'device', 'subscriptions', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced',
     ]);
     expect(container.querySelector('[data-settings-ia-picker]')).toBeNull();
   });

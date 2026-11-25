@@ -18,7 +18,7 @@ export function SettingsTransferCard() {
             type="button"
             className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
             data-settings-transfer-open
-            onClick={() => { void navigate('/settings/spaces#st-card-portable-spaces'); }}
+            onClick={() => { void navigate('/settings/subscriptions#st-card-portable-spaces'); }}
           >
             <span>{t('st.settingsTransfer.openSpaces')}</span>
             <Icon name="arrowRight" size={12} />

@@ -37,7 +37,7 @@ import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { Icon } from '../icons';
 import { DetailBack, DetailSplit, DetailRailGroup, DetailRailItem, useDetailParam } from '../overlays';
-import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingField, SettingsBox } from './fields';
 import { SettingsSegmented } from './SettingsPrimitives';
@@ -48,7 +48,6 @@ import { SpaceDot } from './spaces/SpaceDot';
 import { SpaceRowMenu, type SpaceMenuItem } from './spaces/SpaceRowMenu';
 import { SpaceCredentialsCard } from './spaces/SubspaceCards';
 import { SpaceSettingsDetail } from './spaces/SpaceSettingsDetail';
-import { PortableSpacesCard, type PortableExportRequest } from './spaces/PortableSpacesCard';
 import { RemoteConnectionsSection } from './RemoteConnectionsSection';
 
 /**
@@ -57,7 +56,7 @@ import { RemoteConnectionsSection } from './RemoteConnectionsSection';
  * rename is not offered: the contract has no rename yet.
  */
 export function SpacesSection() {
-  const { client, localClient, meta, connectionId, sshLabel, config } = useConnection();
+  const { client, localClient, meta, connectionId, sshLabel } = useConnection();
   const host = useHost();
   const { t } = useI18n();
   const inRemotePair = typeof connectionId === 'string' && connectionId !== '';
@@ -74,9 +73,10 @@ export function SpacesSection() {
   const localSpaceName = localHomeId === MAIN_SPACE_ID
     ? t('st.spaces.main')
     : (localHere?.name ?? controlSpaces.data?.find((item) => item.id === localHomeId)?.name ?? t('sidebar.space.unnamed'));
-  const mainSpacePath = controlSpaces.data?.find((item) => item.id === MAIN_SPACE_ID)?.path ?? '';
-  const [portableExportRequest, setPortableExportRequest] = useState<PortableExportRequest | null>(null);
-  const clearPortableExport = useCallback(() => { setPortableExportRequest(null); }, []);
+  const navigate = useNavigate();
+  const handleExportSpace = useCallback((spaceId: string) => {
+    void navigate(`/settings/subscriptions?exportSpace=${encodeURIComponent(spaceId)}`);
+  }, [navigate]);
   return (
     <>
       {inRemoteScope ? (
@@ -90,15 +90,7 @@ export function SpacesSection() {
           client={controlClient}
           target={controlTarget}
           openLocalSpace={openLocalSpace}
-          onExportSpace={(spaceId) => { setPortableExportRequest({ intent: 'export', source: { kind: 'live', spaceId } }); }}
-        />
-        <PortableSpacesCard
-          client={controlClient}
-          token={controlClient === client ? config?.token : undefined}
-          spaces={controlSpaces.data ?? []}
-          mainPath={mainSpacePath}
-          externalExportRequest={portableExportRequest}
-          onClearExternalExport={clearPortableExport}
+          onExportSpace={handleExportSpace}
         />
         <RemoteConnectionsSection />
         {sub ? <SpaceCredentialsCard client={controlClient} onEnterMain={() => openLocalSpace(MAIN_SPACE_ID, mode)} /> : null}
@@ -556,7 +548,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace, onExportSpace }: {
     <SectionCard id="st-card-spaces" title={t('st.spaces.listTitle')} scope="server"
       actions={desktop && !sub ? (
         <div className="flex items-center gap-2">
-          <button type="button" data-space-new className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`} onClick={() => { setPanel({ kind: 'create' }); }}>
+          <button type="button" data-space-new className={`${SECONDARY_BUTTON} inline-flex items-center gap-1`} onClick={() => { setPanel({ kind: 'create' }); }}>
             <Icon name="plus" size={12} />{t('st.spaces.new')}
           </button>
           <button type="button" data-space-attach-open className={SECONDARY_BUTTON} onClick={() => { setPanel({ kind: 'attach' }); }}>{t('st.spaces.attach')}</button>

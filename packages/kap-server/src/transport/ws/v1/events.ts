@@ -10,6 +10,7 @@ import {
   type SessionPendingInteraction,
   type Workspace,
   type PluginWsTopicEvent,
+  type PortableSpacesChangedEvent,
   type RemoteConnectionsChangedEvent,
   type RoomChangedEvent,
 } from '@kiki/protocol';
@@ -18,7 +19,7 @@ import type { UsageStatus } from '@kiki/agent-core-v2/agent/usage/usage';
 import type { AgentPhase } from '../../../services/legacyStatus/legacyStatus';
 import type { ConfigResponse } from '../../../protocol/rest-config';
 
-export type { PluginWsTopicEvent, RemoteConnectionsChangedEvent };
+export type { PluginWsTopicEvent, PortableSpacesChangedEvent, RemoteConnectionsChangedEvent };
 
 export interface AgentStatusUpdatedEvent {
   readonly type: 'agent.status.updated';
@@ -285,6 +286,7 @@ export type AgentEvent =
   | PersonaChangedEvent
   | PluginWsTopicEvent
   | ModelCatalogChangedEvent
+  | PortableSpacesChangedEvent
   | RemoteConnectionsChangedEvent
   | CapabilityChangedEvent
   | PromptSubmittedEvent
@@ -310,6 +312,7 @@ export const VOLATILE_EVENT_TYPES = [
   'shell.completed',
   'agent.status.updated',
   'event.capability.changed',
+  'event.portable_spaces.changed',
   'event.remote_connections.changed',
   'event.plugin.topic',
   'session.meta.updated',

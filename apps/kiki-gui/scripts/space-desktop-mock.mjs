@@ -78,6 +78,8 @@ export function spaceDesktopMock({ fixtureUrl, token, spaces, windowMode }) {
     open_space: ({ homeId }) => enter(homeId),
     take_scope_connection: () => null,
     take_navigation_intent: () => null,
+    peek_subscribe_intent: () => null,
+    ack_subscribe_intent: () => true,
     read_desktop_prefs: () => readPrefs(),
     write_desktop_prefs: ({ prefs }) => {
       const next = { ...readPrefs(), ...prefs };

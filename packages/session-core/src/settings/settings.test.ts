@@ -1531,26 +1531,28 @@ describe('settings search index', () => {
 });
 
 describe('settings nav groups (IA purpose)', () => {
-  it('lists seven purpose groups with dedicated pages and knows which pages stay on this device', () => {
+  it('lists eight purpose groups with dedicated pages and knows which pages stay on this device', () => {
     const groups = SETTINGS_NAV_TREE.filter((node) => node.kind === 'group');
     expect(groups.map((group) => group.id))
-      .toEqual(['device', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced']);
+      .toEqual(['device', 'subscriptions', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced']);
     expect(groups.every((group) => group.sections.length > 0)).toBe(true);
     expect(SETTINGS_NAV_TREE.every((node) => node.kind === 'group')).toBe(true);
     expect(settingsSectionIsDeviceOnly('appearance')).toBe(true);
     expect(settingsSectionSupportsSpace('appearance')).toBe(true);
     expect(settingsSectionSupportsSpace('general')).toBe(true);
     expect(settingsSectionIsDeviceOnly('permissions')).toBe(false);
+    expect(settingsSectionIsDeviceOnly('subscriptions')).toBe(false);
     expect(settingsSectionIsDeviceOnly('nope')).toBe(false);
   });
 
-  it('places each of the 20 dedicated leaves once across the seven groups', () => {
+  it('places each of the 21 dedicated leaves once across the eight groups', () => {
     const placed = SETTINGS_NAV_TREE.flatMap((node) => node.kind === 'group' ? node.sections : [node.section]);
-    expect(placed).toHaveLength(20);
-    expect(new Set(placed).size).toBe(20);
+    expect(placed).toHaveLength(21);
+    expect(new Set(placed).size).toBe(21);
     expect(new Set(placed)).toEqual(new Set(SETTINGS_SECTIONS.map((section) => section.id)));
     const sectionsOf = (id: string) => (SETTINGS_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as { sections: readonly string[] }).sections;
     expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts', 'notifications']);
+    expect(sectionsOf('subscriptions')).toEqual(['subscriptions']);
     expect(sectionsOf('models-agents')).toEqual(['ai', 'agents']);
     expect(sectionsOf('sessions-work')).toEqual(['sessions', 'workspaces', 'memory']);
     expect(sectionsOf('capabilities')).toEqual(['extensions', 'search', 'browser-control', 'hooks']);
@@ -1558,6 +1560,10 @@ describe('settings nav groups (IA purpose)', () => {
     expect(sectionsOf('connection')).toEqual(['spaces', 'connection-services', 'connection', 'ssh']);
     expect(sectionsOf('advanced')).toEqual(['about', 'developer']);
     expect(resolveSettingsRoute('external-clients', '')).toMatchObject({ section: 'connection-services' });
+    expect(resolveSettingsRoute('portable-spaces', '')).toMatchObject({ section: 'subscriptions' });
+    expect(resolveSettingsRoute('portable', '')).toMatchObject({ section: 'subscriptions' });
+    expect(resolveSettingsRoute('subscribe', '')).toMatchObject({ section: 'subscriptions' });
+    expect(resolveSettingsRoute('spaces', '#st-card-portable-spaces')).toMatchObject({ section: 'subscriptions', cardId: 'st-card-portable-spaces' });
     // Legacy routes resolve to their canonical merged leaf instead of landing on "unknown setting".
     expect(resolveSettingsRoute('extensions', '')).toMatchObject({ section: 'extensions' });
     expect(resolveSettingsRoute('skills', '')).toMatchObject({ section: 'extensions', tab: 'skills' });
@@ -1575,6 +1581,7 @@ describe('settings nav groups (IA purpose)', () => {
     expect(settingsGroupForSection('external-clients')).toBeUndefined();
     expect(settingsGroupForSection('workspaces')?.id).toBe('sessions-work');
     expect(settingsGroupForSection('spaces')?.id).toBe('connection');
+    expect(settingsGroupForSection('subscriptions')?.id).toBe('subscriptions');
     expect(placed.at(-1)).toBe('developer');
     for (const retired of ['runtime', 'experimental', 'capabilities', 'advanced', 'automation', 'communication', 'identity', 'recipes', 'subagents', 'tasks', 'skills', 'mcp', 'plugins', 'computer-control', 'labs']) {
       expect(settingsGroupForSection(retired), retired).toBeUndefined();

@@ -25,7 +25,9 @@ import {
   BUILTIN_AGENT_EXECUTORS,
   kikiMcpDefaultView,
   IConfigService,
+  IAtomicDocumentStore,
   IInstantiationService,
+  clearUnboundModelHoldsForTarget,
   ISessionAgentProfileCatalog,
   ISessionContext,
   ISessionManager,
@@ -897,6 +899,18 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
           prompt: req.body.prompt,
           rawText: req.body.raw_text,
         });
+        if (
+          req.body.pinned_model_alias !== undefined
+          || req.body.raw_text !== undefined
+          || req.body.routes !== undefined
+        ) {
+          await clearUnboundModelHoldsForTarget(
+            core.accessor.get(IAtomicDocumentStore),
+            core.accessor.get(IBootstrapService),
+            'profile',
+            req.params.name,
+          );
+        }
         reply.send(okEnvelope(toNamedAgentProfile(
           core,
           {

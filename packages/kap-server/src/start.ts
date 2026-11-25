@@ -13,8 +13,10 @@ import {
   IAgentLoopService,
   IAgentPermissionModeService,
   IAppendLogStore,
+  IAtomicDocumentStore,
   IConfigRegistry,
   IConfigService,
+  IErrorTelemetryService,
   IEventService,
   IFileSystemStorageService,
   IHostProcessService,
@@ -329,6 +331,7 @@ export interface ServerStartOptions {
   readonly serverVersion?: string;
   readonly buildId?: string;
   readonly buildChannel?: string;
+  readonly allowLoopbackSubscriptions?: boolean;
 }
 
 export interface ServerExitReceipt {
@@ -1695,7 +1698,8 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   meshServiceRef = meshService;
   registerMeshRoutes(app, meshService);
   registerSyncRoutes(app, syncService);
-  registerPortableSpaceRoutes(app, new PortableSpaceService(new SpaceEndpoints({
+  let portableSpacesRevision = 0;
+  const portableSpaces = new PortableSpaceService(new SpaceEndpoints({
     bootstrap: bootstrapInfo,
     config: core.accessor.get(IConfigService),
     registry: core.accessor.get(IConfigRegistry),
@@ -1711,8 +1715,23 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     onSessionsMutated: (sessionIds) => {
       for (const sessionId of sessionIds) broadcaster.invalidateWatermark(sessionId, 'import');
     },
-  }, syncService)), localOwnerToken);
-  app.addHook('preClose', async () => { await meshService.close(); });
+    log: core.accessor.get(ILogService),
+  }, syncService, opts.allowLoopbackSubscriptions ? { allowLoopback: true } : undefined), {
+    documents: core.accessor.get(IAtomicDocumentStore),
+    onChanged: (change) => broadcaster.publishPortableSpacesChanged({
+      spaceId: change.spaceId,
+      revision: ++portableSpacesRevision,
+      at: Date.now(),
+      reason: change.reason,
+    }),
+  });
+  registerPortableSpaceRoutes(app, portableSpaces, localOwnerToken);
+  portableSpaces.startAutoSync();
+  app.addHook('preClose', async () => {
+    await portableSpaces.stopAutoSync();
+    await core.accessor.get(IErrorTelemetryService).shutdown();
+    await meshService.close();
+  });
   const pairingHooks: { current?: PairingHooks } = {};
   const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote, pairingHooks, web, () => (peerListeners?.urls().length || peerListeners?.loopbackUrl() !== undefined) ? peerTls?.tlsFingerprint : undefined, mintPanelDocument, () => syncService.peekDeviceRecipient());
   threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal, peerBridgeRegistry);

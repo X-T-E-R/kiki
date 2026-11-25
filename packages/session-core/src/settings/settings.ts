@@ -2448,6 +2448,7 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'appearance', labelKey: 'st.section.appearance' },
   { id: 'shortcuts', labelKey: 'st.section.shortcuts' },
   { id: 'notifications', labelKey: 'st.section.notifications' },
+  { id: 'subscriptions', labelKey: 'st.section.subscriptions' },
   { id: 'ai', labelKey: 'st.section.ai' },
   { id: 'agents', labelKey: 'st.section.agents' },
   { id: 'sessions', labelKey: 'st.section.sessions' },
@@ -2489,6 +2490,7 @@ export type SettingsNavNode = SettingsNavGroupSpec | SettingsNavLeafSpec;
  */
 export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts', 'notifications'] },
+  { kind: 'group', id: 'subscriptions', labelKey: 'st.group.subscriptions', sections: ['subscriptions'] },
   // Recipes are a tab of Models (the packages a model can use), not a leaf.
   { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'agents'] },
   { kind: 'group', id: 'sessions-work', labelKey: 'st.group.sessionsWork', sections: ['sessions', 'workspaces', 'memory'] },
@@ -2526,6 +2528,9 @@ export const SETTINGS_NAV_SECTION_MAP: Readonly<Record<string, string>> = {
   automation: 'permissions',
   theme: 'appearance',
   skins: 'appearance',
+  'portable-spaces': 'subscriptions',
+  portable: 'subscriptions',
+  subscribe: 'subscriptions',
 };
 
 export function canonicalNavSection(sectionId: string, _tab?: string | null): string {
@@ -2602,6 +2607,7 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   labs: { scopes: ['server'], purposeKey: 'st.purpose.labs' },
   about: { scopes: ['server', 'app'], purposeKey: 'st.purpose.about' },
   spaces: { scopes: ['server', 'app'], purposeKey: 'st.purpose.spaces' },
+  subscriptions: { scopes: ['server'], purposeKey: 'st.purpose.subscriptions' },
 };
 
 // ---- experimental flags, homed with the feature they change ----
@@ -2822,7 +2828,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'about', cardId: 'st-card-about', titleKey: 'st.about.title', keywordKeys: ['st.about.serverVersion', 'st.about.serverId'] },
   { section: 'spaces', cardId: 'st-card-space-window', titleKey: 'st.spaces.windowTitle', keywordKeys: ['st.spaces.windowSwitch', 'st.spaces.windowWindows', 'st.spaces.windowNextLaunch'], synonyms: ['window mode', '窗口模式', 'multi window', '多窗口'] },
   { section: 'spaces', cardId: 'st-card-spaces', titleKey: 'st.spaces.listTitle', keywordKeys: ['st.spaces.new', 'st.spaces.attach', 'st.spaces.removeFromList', 'st.spaces.delete', 'st.spaces.credentials'], synonyms: ['space', 'spaces', '空间', 'home', 'kiki home', 'profile', '多开', '独立空间', 'isolated'] },
-  { section: 'spaces', cardId: 'st-card-portable-spaces', titleKey: 'st.portable.title', keywordKeys: ['st.portable.export', 'st.portable.link', 'st.portable.compare', 'st.portable.colabTitle'], synonyms: ['portable', 'portable space', 'clone', 'sync', 'export', 'import', 'backup', 'age', 'colab', 'git', 'overlay', '便携空间', '同步源', '空间迁移', '导出空间', '备份', '加密包', '覆盖层'] },
+  { section: 'subscriptions', cardId: 'st-card-portable-spaces', titleKey: 'st.portable.title', keywordKeys: ['st.portable.addOrImport', 'st.portable.export', 'st.portable.link', 'st.portable.compare', 'st.portable.colabTitle'], synonyms: ['subscription', 'subscriptions', 'subscribe', 'pack', 'portable', 'portable space', 'clone', 'sync', 'export', 'import', 'backup', 'age', 'colab', 'git', 'overlay', '订阅', '配置订阅', '配置包', '便携空间', '同步源', '空间迁移', '导出空间', '导出配置包', '备份', '加密包', '覆盖层'] },
   { section: 'spaces', cardId: 'st-card-remote-connections', titleKey: 'st.remote.outboundTitle', keywordKeys: ['st.remote.addTitle', 'st.remote.way.ssh', 'st.remote.removeTitle'], synonyms: ['remote kiki', 'remote space', 'other kiki', 'connection', 'connection & remote', '远端 kiki', '其他 kiki', '远端空间', '连接与远程', '连接', 'broker', 'over ssh', 'owner (ssh)', '所有者（ssh）'] },
   { section: 'connection-services', cardId: 'st-card-inbound-connections', tab: 'kiki', titleKey: 'st.inbound.title', keywordKeys: ['st.inbound.gate', 'st.inbound.invitationLabel'], synonyms: ['inbound', 'allow', 'invitation', 'access from elsewhere', 'other kiki', 'connection & remote', '入站', '准入', '允许', '邀请', '被连接', '外部接入', '其他 kiki', '连接与远程'] },
   { section: 'spaces', cardId: 'st-card-space-credentials', titleKey: 'st.spaces.credTitle', keywordKeys: ['st.spaces.credShared', 'st.spaces.credIsolated', 'st.spaces.copySsh'], synonyms: ['credentials', '凭据', '账号与密钥', 'ssh password', 'oauth'] },
@@ -2930,6 +2936,9 @@ export const LEGACY_SETTINGS_SECTION_ALIASES: Readonly<Record<string, string>> =
   automation: 'permissions',
   theme: 'appearance',
   skins: 'appearance',
+  'portable-spaces': 'subscriptions',
+  portable: 'subscriptions',
+  subscribe: 'subscriptions',
 };
 
 /** Dissolved cards keep a bookmark to their nearest active control. */

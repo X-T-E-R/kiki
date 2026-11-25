@@ -8,10 +8,12 @@
 
 import { z } from 'zod';
 import {
+  portableSpacesChangedPayloadSchema,
   remoteConnectionsChangedPayloadSchema,
   roomChangeEventSchema,
   sessionAttentionCursorSchema,
   threadMessageDeliveryPayloadSchema,
+  type PortableSpacesChangedEvent,
   type RemoteConnectionsChangedEvent,
   type RoomChangeEvent,
   type SessionWorkChangedEvent,
@@ -63,11 +65,15 @@ export type CatalogChangedPayload = Awaited<
 /** Payload of `event.remote_connections.changed` on the global bus. */
 export type RemoteConnectionsChangedPayload = Omit<RemoteConnectionsChangedEvent, 'type'>;
 
+/** Payload of `event.portable_spaces.changed` on the global bus. */
+export type PortableSpacesChangedPayload = Omit<PortableSpacesChangedEvent, 'type'>;
+
 /** Public event name → payload type. Keys must stay in sync with `globalEvents`. */
 export interface KlientEventPayloads {
   'room.changed': RoomChangeEvent;
   'thread.messageDelivery': ThreadMessageDeliveryPayload;
   'remoteConnections.changed': RemoteConnectionsChangedPayload;
+  'portableSpaces.changed': PortableSpacesChangedPayload;
   'config.changed': ConfigChangedEvent;
   'config.sectionChanged': ConfigChangedEvent;
   'kosong.providers.changed': ProvidersChangedEvent;
@@ -180,6 +186,10 @@ export const globalEvents = {
   'remoteConnections.changed': {
     kind: 'bus', type: 'event.remote_connections.changed',
     schema: remoteConnectionsChangedPayloadSchema,
+  },
+  'portableSpaces.changed': {
+    kind: 'bus', type: 'event.portable_spaces.changed',
+    schema: portableSpacesChangedPayloadSchema,
   },
   'search.indexStateChanged': {
     kind: 'bus', type: 'event.search.index_state_changed',

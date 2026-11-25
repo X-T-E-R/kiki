@@ -166,6 +166,7 @@ beforeEach(() => {
     deviceRecipient: 'age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq2x4v2p',
     knownRecipients: [],
     items: [],
+    orderRevision: '1',
   });
   connections.list.mockResolvedValue([]);
   threadBridges.status.mockResolvedValue({
@@ -938,7 +939,7 @@ describe('Spaces & Access IA (#16)', () => {
 
     // Window mode card sits at the bottom after local, portable, and remote lists.
     const cardIds = [...document.querySelectorAll('section[id^="st-card-"]')].map((el) => el.id);
-    expect(cardIds).toEqual(['st-card-spaces', 'st-card-portable-spaces', 'st-card-remote-connections', 'st-card-space-window']);
+    expect(cardIds).toEqual(['st-card-spaces', 'st-card-remote-connections', 'st-card-space-window']);
   });
 
   it('lists local spaces read-only in a browser host without New space or Add existing space buttons', async () => {

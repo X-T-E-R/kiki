@@ -1720,3 +1720,295 @@ describe('NbSearch local CLI credential lane safety', () => {
     expect(passed.env['NB_SEARCH_EXA_API_KEY']).toBeUndefined();
   });
 });
+
+describe('NbSearchSourceStore single-key provider inheritance', () => {
+  let disposables: DisposableStore;
+  let fixture: string;
+
+  beforeEach(async () => {
+    await mkdir(resolve('.tmp'), { recursive: true });
+    fixture = await mkdtemp(join(resolve('.tmp'), 'nb-inherit-'));
+    for (const key of Object.keys(process.env)) if (key.toUpperCase().startsWith('NB_SEARCH_')) vi.stubEnv(key, undefined);
+    disposables = new DisposableStore();
+  });
+
+  afterEach(async () => {
+    await disposables.dispose();
+    vi.unstubAllEnvs();
+    await rm(fixture, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it('inherits same-origin provider/credential key for exa.axon and tavily.axon without leaking to third-party origins', async () => {
+    const kikiConfigData: Record<string, unknown> = {
+      providers: {
+        axon: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', credentialId: 'axon' },
+      },
+      credentials: {
+        axon: { kind: 'api_key', apiKey: 'sk-axon-shared-key-123' },
+      },
+    };
+    const nbPatch = {
+      credential_slots: {
+        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY' },
+        'tavily.axon': { provider_id: 'tavily', env: 'NB_SEARCH_TAVILY_AXON_API_KEY' },
+      },
+      provider_instances: {
+        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.axon', options: {} },
+        'tavily.axon': { provider_id: 'tavily', enabled: true, base_url: 'https://api.example.test/raw/69', credential_slot_id: 'tavily.axon', options: {} },
+      },
+    } as never;
+
+    const ix = createServices(disposables, {
+      additionalServices: (reg) => {
+        reg.definePartialInstance(IHostFileSystem, new HostFileSystem());
+        reg.definePartialInstance(IFileSystemStorageService, {
+          pathFor: (_scope, key) => join(fixture, 'cache', key),
+          write: async () => undefined,
+          size: async () => undefined,
+          read: async () => undefined,
+        });
+        reg.definePartialInstance(IConfigService, {
+          ready: Promise.resolve(),
+          onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
+          get: ((domain: string) => kikiConfigData[domain]) as IConfigService['get'],
+        });
+        reg.define(INbSearchSourceStore, NbSearchSourceStore);
+      },
+    });
+
+    const store = ix.get(INbSearchSourceStore);
+    const source = await store.withSource(false, nbPatch, (value) => value);
+
+    expect(source.env['NB_SEARCH_EXA_AXON_API_KEY']).toBe('sk-axon-shared-key-123');
+    expect(source.env['NB_SEARCH_TAVILY_AXON_API_KEY']).toBe('sk-axon-shared-key-123');
+    expect(source.env['NB_SEARCH_EXA_API_KEY']).toBeUndefined();
+    expect(source.status.credential_source).toBe('environment+managed');
+
+    const exaView = await store.readManaged(source, 'exa.axon', true);
+    expect(exaView.active).toBe(true);
+    expect(exaView.source).toBe('managed');
+    expect(exaView.value).toBeUndefined();
+
+    const tavilyView = await store.readManaged(source, 'tavily.axon', false);
+    expect(tavilyView.active).toBe(true);
+    expect(tavilyView.source).toBe('managed');
+    expect(tavilyView.value).toBeUndefined();
+
+    const defaultExaView = await store.readManaged(source, 'exa.default', true);
+    expect(defaultExaView.active).toBe(false);
+    expect(defaultExaView.source).toBe('none');
+  });
+
+  it('prefers explicit nb_search env or managed override over inherited provider key', async () => {
+    vi.stubEnv('NB_SEARCH_EXA_AXON_API_KEY', 'explicit-env-exa-key');
+    const ix = createServices(disposables, {
+      additionalServices: (reg) => {
+        reg.definePartialInstance(IHostFileSystem, new HostFileSystem());
+        reg.definePartialInstance(IFileSystemStorageService, {
+          pathFor: (_scope, key) => join(fixture, 'cache', key),
+          write: async () => undefined,
+          size: async () => undefined,
+          read: async () => undefined,
+        });
+        reg.definePartialInstance(IConfigService, {
+          ready: Promise.resolve(),
+          onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
+          get: ((domain: string) => domain === 'providers'
+            ? { axon: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', apiKey: 'sk-axon-shared-key-123' } }
+            : undefined) as IConfigService['get'],
+        });
+        reg.define(INbSearchSourceStore, NbSearchSourceStore);
+      },
+    });
+    const nbPatch = {
+      credential_slots: {
+        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY' },
+      },
+      provider_instances: {
+        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.axon', options: {} },
+      },
+    } as never;
+    const store = ix.get(INbSearchSourceStore);
+    const source = await store.withSource(false, nbPatch, (value) => value);
+    expect(source.env['NB_SEARCH_EXA_AXON_API_KEY']).toBe('explicit-env-exa-key');
+    const view = await store.readManaged(source, 'exa.axon', true);
+    expect(view.source).toBe('environment');
+    expect(view.value).toBe('explicit-env-exa-key');
+  });
+
+  it('fails closed when another instance shares the same env variable with a different or missing origin', async () => {
+    const ix = createServices(disposables, {
+      additionalServices: (reg) => {
+        reg.definePartialInstance(IHostFileSystem, new HostFileSystem());
+        reg.definePartialInstance(IFileSystemStorageService, {
+          pathFor: (_scope, key) => join(fixture, 'cache', key),
+          write: async () => undefined,
+          size: async () => undefined,
+          read: async () => undefined,
+        });
+        reg.definePartialInstance(IConfigService, {
+          ready: Promise.resolve(),
+          onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
+          get: ((domain: string) => domain === 'providers'
+            ? { axon: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', apiKey: 'sk-axon-shared-key-123' } }
+            : undefined) as IConfigService['get'],
+        });
+        reg.define(INbSearchSourceStore, NbSearchSourceStore);
+      },
+    });
+    const nbPatch = {
+      credential_slots: {
+        'exa.shared': { provider_id: 'exa', env: 'NB_SEARCH_SHARED_KEY' },
+        'exa.no_origin': { provider_id: 'exa', env: 'NB_SEARCH_NO_ORIGIN_KEY' },
+      },
+      provider_instances: {
+        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.shared', options: {} },
+        'exa.other': { provider_id: 'exa', enabled: true, base_url: 'https://api.other.test/v1', credential_slot_id: 'exa.shared', options: {} },
+        'exa.unknown': { provider_id: 'exa', enabled: true, credential_slot_id: 'exa.no_origin', options: {} },
+      },
+    } as never;
+    const store = ix.get(INbSearchSourceStore);
+    const source = await store.withSource(false, nbPatch, (value) => value);
+    expect(source.env['NB_SEARCH_SHARED_KEY']).toBeUndefined();
+    expect(source.env['NB_SEARCH_NO_ORIGIN_KEY']).toBeUndefined();
+  });
+
+  it('never reveals inherited key through a second same-origin slot sharing the same env variable', async () => {
+    const ix = createServices(disposables, {
+      additionalServices: (reg) => {
+        reg.definePartialInstance(IHostFileSystem, new HostFileSystem());
+        reg.definePartialInstance(IFileSystemStorageService, {
+          pathFor: (_scope, key) => join(fixture, 'cache', key),
+          write: async () => undefined,
+          size: async () => undefined,
+          read: async () => undefined,
+        });
+        reg.definePartialInstance(IConfigService, {
+          ready: Promise.resolve(),
+          onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
+          get: ((domain: string) => domain === 'providers'
+            ? { axon: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', apiKey: 'sk-axon-alias-secret' } }
+            : undefined) as IConfigService['get'],
+        });
+        reg.define(INbSearchSourceStore, NbSearchSourceStore);
+      },
+    });
+    const nbPatch = {
+      credential_slots: {
+        'exa.slotA': { provider_id: 'exa', env: 'NB_SEARCH_AXON_ALIAS_KEY' },
+        'tavily.slotB': { provider_id: 'tavily', env: 'NB_SEARCH_AXON_ALIAS_KEY' },
+      },
+      provider_instances: {
+        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.slotA', options: {} },
+        'tavily.axon': { provider_id: 'tavily', enabled: true, base_url: 'https://api.example.test/raw/69', credential_slot_id: 'tavily.slotB', options: {} },
+      },
+    } as never;
+    const store = ix.get(INbSearchSourceStore);
+    const source = await store.withSource(false, nbPatch, (value) => value);
+    expect(source.env['NB_SEARCH_AXON_ALIAS_KEY']).toBe('sk-axon-alias-secret');
+    const aliasView = await store.readManaged(source, 'tavily.axon', true);
+    expect(aliasView.active).toBe(true);
+    expect(aliasView.source).toBe('managed');
+    expect(aliasView.value).toBeUndefined();
+  });
+
+  it('fails closed on a named provider suffix without falling through to a sibling same-origin provider', async () => {
+    const ix = createServices(disposables, {
+      additionalServices: (reg) => {
+        reg.definePartialInstance(IHostFileSystem, new HostFileSystem());
+        reg.definePartialInstance(IFileSystemStorageService, {
+          pathFor: (_scope, key) => join(fixture, 'cache', key),
+          write: async () => undefined,
+          size: async () => undefined,
+          read: async () => undefined,
+        });
+        reg.definePartialInstance(IConfigService, {
+          ready: Promise.resolve(),
+          onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
+          get: ((domain: string) => domain === 'providers'
+            ? {
+                axon: { type: 'anthropic', baseUrl: 'https://api.example.test/v1' },
+                sibling: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', apiKey: 'sk-sibling-secret-do-not-steal' },
+              }
+            : undefined) as IConfigService['get'],
+        });
+        reg.define(INbSearchSourceStore, NbSearchSourceStore);
+      },
+    });
+    const nbPatch = {
+      credential_slots: {
+        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY' },
+        'exa.missing': { provider_id: 'exa', env: 'NB_SEARCH_EXA_MISSING_API_KEY' },
+      },
+      provider_instances: {
+        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.axon', options: {} },
+        'exa.missing': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.missing', options: {} },
+      },
+    } as never;
+    const store = ix.get(INbSearchSourceStore);
+    const source = await store.withSource(false, nbPatch, (value) => value);
+    expect(source.env['NB_SEARCH_EXA_AXON_API_KEY']).toBeUndefined();
+    expect(source.env['NB_SEARCH_EXA_MISSING_API_KEY']).toBeUndefined();
+  });
+
+  it('inherits same-origin provider key cleanly without stale mismatch warning when gui-credentials base_url fingerprint drifts, and surfaces zero-secret mismatch hints otherwise', async () => {
+    const storedSecret = 'sk-old-gui-secret-never-leak';
+    const staleDoc = Buffer.from(JSON.stringify({
+      schema_version: '1',
+      slots: {
+        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY', binding: 'stale-old-base-url-fingerprint', value: storedSecret },
+        'exa.standalone': { provider_id: 'exa', env: 'NB_SEARCH_EXA_STANDALONE_API_KEY', binding: 'stale-standalone-fingerprint', value: storedSecret },
+      },
+    }), 'utf8');
+    const ix = createServices(disposables, {
+      additionalServices: (reg) => {
+        reg.definePartialInstance(IHostFileSystem, new HostFileSystem());
+        reg.definePartialInstance(IFileSystemStorageService, {
+          pathFor: (_scope, key) => join(fixture, 'cache', key),
+          write: async () => undefined,
+          size: async (_scope, key) => key === 'gui-credentials.json' ? staleDoc.byteLength : undefined,
+          read: async (_scope, key) => key === 'gui-credentials.json' ? staleDoc : undefined,
+        });
+        reg.definePartialInstance(IConfigService, {
+          ready: Promise.resolve(),
+          onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
+          get: ((domain: string) => domain === 'providers'
+            ? { axon: { type: 'anthropic', baseUrl: 'https://direct.example.test/v1', apiKey: 'sk-live-axon-key' } }
+            : undefined) as IConfigService['get'],
+        });
+        reg.define(INbSearchSourceStore, NbSearchSourceStore);
+      },
+    });
+    const nbPatch = {
+      credential_slots: {
+        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY' },
+        'exa.standalone': { provider_id: 'exa', env: 'NB_SEARCH_EXA_STANDALONE_API_KEY' },
+      },
+      provider_instances: {
+        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://direct.example.test/raw/68', credential_slot_id: 'exa.axon', options: {} },
+        'exa.standalone': { provider_id: 'exa', enabled: true, base_url: 'https://other.example.test/raw/99', credential_slot_id: 'exa.standalone', options: {} },
+      },
+    } as never;
+    const store = ix.get(INbSearchSourceStore);
+    const source = await store.withSource(false, nbPatch, (value) => value);
+    expect(source.env['NB_SEARCH_EXA_AXON_API_KEY']).toBe('sk-live-axon-key');
+    expect(source.env['NB_SEARCH_EXA_STANDALONE_API_KEY']).toBeUndefined();
+    expect(source.status.issues).not.toContain('MANAGED_CREDENTIALS_MISMATCH:exa.axon');
+    expect(source.status.issues).toContain('MANAGED_CREDENTIALS_MISMATCH:exa.standalone');
+
+    const { describeCapabilities } = await import('#/app/nbSearch/toolDescriptions');
+    const described = describeCapabilities({
+      schema_version: '3.0',
+      revision: 'rev-1',
+      config_source: source.status,
+      providers: { descriptors: [], instances: [] },
+      search: { lanes: [], presets: [], limits: { max_queries: 1, max_results: 1, max_timeout_ms: 1000, max_inline_bytes: 1024 } },
+      fetch: { default_representation: 'markdown', inputs: [], chains: [], pipelines: [], limits: { max_source_bytes: 1024, max_response_bytes: 1024, max_content_chars: 1024, max_redirects: 1, max_timeout_ms: 1000, max_inline_bytes: 1024 } },
+      jobs: { result_ttl_seconds: 60, cancel_supported: true },
+    });
+    expect(described.search).toContain('exa.standalone');
+    expect(described.search).not.toContain('exa.axon');
+    expect(described.search).not.toContain(storedSecret);
+    expect(described.search).not.toContain('sk-live-axon-key');
+  });
+});
