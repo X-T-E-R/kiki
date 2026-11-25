@@ -237,10 +237,22 @@ export function eventFrame(
 
 export function deliverFrame(controller: SessionController, frame: SessionEventFrame): void {
   if (frame.session_id !== controller.sessionId) return;
+  if (frame.volatile === true) return;
   const cursor = { seq: frame.seq, epoch: frame.epoch };
-  if (frame.payload.type === 'event.session.history_rewritten') {
-    controller.handleSignal({ type: 'historyRewritten', cursor, generation: 0, reason: 'regenerate', targetMessageId: 'message-test' });
-  } else if (frame.volatile !== true) {
+  const payload = frame.payload as { type?: unknown; reason?: unknown; target_message_id?: unknown };
+  if (
+    payload.type === 'event.session.history_rewritten' &&
+    (payload.reason === 'edit_resend' || payload.reason === 'regenerate') &&
+    typeof payload.target_message_id === 'string'
+  ) {
+    controller.handleSignal({
+      type: 'historyRewritten',
+      cursor,
+      generation: 0,
+      reason: payload.reason,
+      targetMessageId: payload.target_message_id,
+    });
+  } else {
     controller.handleSignal({ type: 'sessionCursorAdvanced', cursor, generation: 0 });
   }
 }

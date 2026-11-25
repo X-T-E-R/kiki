@@ -47,16 +47,25 @@ try {
   await sidebar.locator(`[data-session-row="${parent}"] > button`).click({ modifiers: ['Control'] });
   assert.equal(await sidebar.locator(`[data-session-row="${parent}"]`).getAttribute('data-session-selected'), 'true');
   const at = new Date(Date.now() - 60_000).toISOString();
-  fixture.sessions.get(child).record.updated_at = at;
-  fixture.sessions.get(parent).record.updated_at = at;
-  for (const sessionId of [child, parent]) fixture.emit(sessionId, { type: 'session.meta.updated', payload: { sessionId, agentId: 'main', patch: {} } });
+  const parentOwnBefore = fixture.sessions.get(parent).record.own_updated_at;
+  assert.ok(typeof parentOwnBefore === 'string' && parentOwnBefore.length > 0, 'parent record must carry own_updated_at');
+  const activityRes = await fetch(`${fixtureUrl}/__control`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'child_activity', session_id: child, at }),
+  });
+  assert.equal(activityRes.status, 200);
+  assert.equal(fixture.sessions.get(parent).record.updated_at, at);
+  assert.equal(fixture.sessions.get(parent).record.own_updated_at, parentOwnBefore);
   await page.waitForFunction(({ expected }) => JSON.stringify([...document.querySelectorAll('[data-session-sidebar] [data-session-row]')].map((node) => node.dataset.sessionRow)) === JSON.stringify(expected), { expected: expectedAfter });
   report.after = await ids();
   assert.equal(await sidebar.locator(`[data-session-row="${parent}"]`).getAttribute('data-session-selected'), 'true');
   assert.equal(await sidebar.locator(`[data-session-row="${parent}"] > button`).getAttribute('aria-current'), 'page');
   await page.mouse.move(600, 100);
   await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
-  assert.match(await sidebar.locator(`[data-session-row="${parent}"] [data-session-time]`).innerText(), /1.*分钟前/);
+  const parentLabel = await sidebar.locator(`[data-session-row="${parent}"] [data-session-time]`).innerText();
+  assert.match(parentLabel, /4.*天前/);
+  assert.doesNotMatch(parentLabel, /1.*分钟前/);
   await sidebar.screenshot({ path: join(out, 'after.png') });
   await page.reload();
   await page.waitForFunction(({ expected }) => JSON.stringify([...document.querySelectorAll('[data-session-sidebar] [data-session-row]')].map((node) => node.dataset.sessionRow)) === JSON.stringify(expected), { expected: expectedAfter });

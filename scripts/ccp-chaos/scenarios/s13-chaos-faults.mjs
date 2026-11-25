@@ -111,6 +111,56 @@ function readWireRecords(wirePath) {
   return out;
 }
 
+function isTerminalTaskStatus(status) {
+  return status === 'completed' || status === 'failed' || status === 'killed' || status === 'cancelled' || status === 'timed_out';
+}
+
+function findProcessTaskRow(tasks) {
+  return (
+    (tasks ?? []).find(
+      (t) =>
+        t?.kind === 'bash' ||
+        t?.kind === 'shell' ||
+        t?.kind === 'process' ||
+        t?.status === 'killed' ||
+        t?.status === 'cancelled',
+    ) ??
+    tasks?.[0] ??
+    null
+  );
+}
+
+export function resolveDirectCancelStatus({ taskRow, wireRecords, dead, prematureObservedWhileAlive = false }) {
+  const termRec = (wireRecords ?? []).find(
+    (r) =>
+      (r?.type === 'task.terminated' || r?.type === 'background.task.terminated') &&
+      (!taskRow?.id || !r.info?.taskId || r.info.taskId === taskRow.id),
+  ) ?? null;
+  const wireTerminalStatus = termRec?.info?.status ?? termRec?.status ?? termRec?.payload?.status ?? null;
+  const turnEnded = (wireRecords ?? []).find((r) => r?.type === 'turn.ended') ?? null;
+  const turnReason = turnEnded?.reason ?? turnEnded?.payload?.reason ?? null;
+  const taskStatus = taskRow?.status ?? null;
+  const observedStatus =
+    taskStatus === 'killed' || taskStatus === 'cancelled'
+      ? 'killed'
+      : wireTerminalStatus === 'killed' || wireTerminalStatus === 'cancelled'
+        ? 'killed'
+        : taskStatus !== null
+          ? taskStatus
+          : wireTerminalStatus !== null
+            ? wireTerminalStatus
+            : turnEnded && (turnReason === 'aborted' || turnReason === 'cancelled' || turnReason === 'interrupted') && dead
+              ? 'killed'
+              : (dead ? 'unknown_dead' : 'running');
+  const terminalReported = isTerminalTaskStatus(taskStatus) || isTerminalTaskStatus(wireTerminalStatus);
+  const premature = Boolean(prematureObservedWhileAlive || (!dead && terminalReported));
+  return {
+    observedStatus,
+    premature,
+    wireTerminalStatus,
+  };
+}
+
 export function resolveTerminatingTimeoutStatus({ taskRow, wireRecords, dead }) {
   const termRec = (wireRecords ?? []).find(
     (r) =>
@@ -515,7 +565,13 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
       const grandchildPid = Number(fs.readFileSync(scripts.pidFile, 'utf8').trim());
       cleanupPids.push(grandchildPid);
       await sleep(100);
+      let prematureObservedWhileAlive = false;
+      const tasksBeforeCancel = await readSessionTaskStatus(sess.sessionId);
+      const taskRowBeforeCancel = findProcessTaskRow(tasksBeforeCancel);
       const grandchildActiveAtTrigger = isPidAlive(grandchildPid);
+      if (isTerminalTaskStatus(taskRowBeforeCancel?.status) && grandchildActiveAtTrigger) {
+        prematureObservedWhileAlive = true;
+      }
       const cancelIngressAt = performance.now();
       const triggerReceivedMs = roundMs(cancelIngressAt - t0);
 
@@ -527,34 +583,41 @@ export async function runScenarioS13ChaosFaults({ server, corpus, WebSocket, wor
         undefined,
         10_000,
       );
-      const dead = await waitForPidDeath(grandchildPid, 3_000);
+      const cancelDeadline = performance.now() + 3_000;
+      while (performance.now() < cancelDeadline && isPidAlive(grandchildPid)) {
+        const tasksDuringCancel = await readSessionTaskStatus(sess.sessionId);
+        const rowDuringCancel = findProcessTaskRow(tasksDuringCancel);
+        if (isTerminalTaskStatus(rowDuringCancel?.status) && isPidAlive(grandchildPid)) {
+          prematureObservedWhileAlive = true;
+        }
+        if (!isPidAlive(grandchildPid)) break;
+        await sleep(25);
+      }
+      const dead = !isPidAlive(grandchildPid);
       const grandchildExitMs = roundMs(performance.now() - t0);
       const cleanupMsFromCancelIngress = roundMs(performance.now() - cancelIngressAt);
       await waitForSessionIdle(server.endpoint, server.token, sess.sessionId, 10_000);
 
       const tasksAfter3 = await readSessionTaskStatus(sess.sessionId);
-      const taskRow3 =
-        tasksAfter3.find(
-          (t) => t?.kind === 'bash' || t?.kind === 'shell' || t?.kind === 'process' || t?.status === 'killed' || t?.status === 'cancelled',
-        ) ??
-        tasksAfter3[0] ??
-        null;
+      const taskRow3 = findProcessTaskRow(tasksAfter3);
       const wirePath3 = path.join(corpus.homeDir, 'sessions', sess.workspaceId, sess.sessionId, 'agents', 'main', 'wire.jsonl');
-      const turnEnded3 = readWireRecords(wirePath3).find((r) => r.type === 'turn.ended');
-      const observedCancelStatus =
-        taskRow3?.status === 'killed' || taskRow3?.status === 'cancelled'
-          ? 'killed'
-          : turnEnded3 && (turnEnded3.reason === 'aborted' || turnEnded3.reason === 'cancelled' || turnEnded3.reason === 'interrupted') && dead
-            ? 'killed'
-            : (taskRow3?.status ?? (dead ? 'killed' : 'running'));
+      const wireRecords3 = readWireRecords(wirePath3);
+      const { observedStatus: observedCancelStatus, premature: prematureCancel, wireTerminalStatus: wireTerminalStatus3 } =
+        resolveDirectCancelStatus({
+          taskRow: taskRow3,
+          wireRecords: wireRecords3,
+          dead,
+          prematureObservedWhileAlive,
+        });
       cells.push({
         kind: 'direct_cancel',
         earlyExitVariant: true,
         grandchildActiveAtTrigger,
-        prematureTaskCompletionWhileGrandchildAlive: false,
+        prematureTaskCompletionWhileGrandchildAlive: prematureCancel,
         timeline: { rootExitMs, triggerReceivedMs, grandchildExitMs },
         terminalStatus: observedCancelStatus,
         taskApiStatus: taskRow3?.status ?? null,
+        wireTerminalStatus: wireTerminalStatus3,
         cleanupMsFromCancelIngress,
         survivingDescendants: isPidAlive(grandchildPid) ? 1 : 0,
       });

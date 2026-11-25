@@ -71,6 +71,7 @@ export class SessionViewTarget implements BroadcastTarget {
         }
         if (signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === undefined && signal.title === undefined && signal.cursor.seq <= cursor.seq) continue;
         if (signal.type === 'sessionCursorAdvanced' && signal.title !== undefined && signal.cursor.seq < cursor.seq) continue;
+        if (signal.type === 'historyRewritten' && signal.cursor.seq <= cursor.seq) continue;
       }
       this.publishSignal(signal);
     }

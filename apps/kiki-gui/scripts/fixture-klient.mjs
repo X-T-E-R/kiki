@@ -60,6 +60,22 @@ const bounded = await tsImport('../../../packages/kap-server/src/transport/klien
 // kap-server answers with, so a long history opens in bounded pages and its
 // older items arrive through `next_cursor`, never as one oversized body.
 const boundedTranscript = await tsImport('../../../packages/kap-server/src/transport/klient/boundedTranscript.ts', import.meta.url);
+const { SessionViewTarget } = await tsImport('../../../packages/kap-server/src/transport/klient/sessionViewTarget.ts', import.meta.url);
+
+function toViewEnvelope(sessionId, frame) {
+  const payload = frame.payload !== null && typeof frame.payload === 'object'
+    ? { type: frame.type, ...frame.payload }
+    : frame.payload;
+  return {
+    type: frame.type,
+    session_id: frame.session_id ?? sessionId,
+    seq: frame.seq ?? 0,
+    epoch: frame.epoch ?? '',
+    timestamp: frame.timestamp ?? now(),
+    volatile: frame.volatile,
+    payload,
+  };
+}
 /** kap-server `readSessionViewTranscriptPage` window (sessionViewReads.ts). */
 const TRANSCRIPT_PAGE_WINDOW_BYTES = 64 * 1024;
 const transcriptModel = await tsImport('../../../packages/transcript/src/index.ts', import.meta.url);
@@ -579,9 +595,21 @@ export function boundScenarioEntities(session, snapshot) {
  * same content route. A scenario opts in with `bounded_content.root`.
  */
 export function boundScenarioSnapshot(session, snapshot) {
-  if (session.boundedContent?.root !== true) return snapshot;
+  const normalized = Array.isArray(snapshot.subagents)
+    ? {
+        ...snapshot,
+        subagents: snapshot.subagents.map((entry, index) => ({
+          id: entry.id ?? `task-${entry.agent_id ?? index}`,
+          session_id: entry.session_id ?? session.record.id,
+          kind: entry.kind ?? 'subagent',
+          created_at: entry.created_at ?? entry.started_at ?? now(),
+          ...entry,
+        })),
+      }
+    : snapshot;
+  if (session.boundedContent?.root !== true) return normalized;
   return bounded.boundedEntity(
-    canonicalEntity(session, 'snapshot:root', snapshot),
+    canonicalEntity(session, 'snapshot:root', normalized),
     { kind: 'snapshot', id: '' },
     24 * 1024,
   );
@@ -2227,41 +2255,51 @@ export class FixtureKlient {
         const session = this.server.sessions.get(frame.sessionId);
         if (session === undefined) throw invalid('session not found', 40401);
         const previous = state.views.get(frame.id);
-        const active = { id: frame.id, sessionId: frame.sessionId, input, generation, coverageVersion };
+        const active = { id: frame.id, sessionId: frame.sessionId, input, generation, coverageVersion, target: null };
+        const target = new SessionViewTarget(frame.sessionId, (signal) => this.signal(socket, active, signal));
+        active.target = target;
         state.views.set(frame.id, active);
         const currentSessionCursor = { seq: session.seq, epoch: session.epoch };
         const cursor = input.sessionCursor;
-        const reason = cursor.epoch !== undefined && cursor.epoch !== session.epoch ? 'epoch_changed'
-          : cursor.seq > session.seq ? 'session_recreated'
-          : cursor.seq < (session.journal[0]?.seq ?? session.seq + 1) - 1 ? 'buffer_overflow' : undefined;
-        if (input.bootstrap !== true) {
-          if (reason !== undefined) this.signal(socket, active, { type: 'resyncRequired', reason, currentSessionCursor });
-          else for (const entry of session.journal) if (entry.seq > cursor.seq) this.deliver(socket, active, entry.frame);
-        }
-        for (const agentId of session.transcript.agents.keys()) {
-          const grade = gradeFor(input.transcriptGrades, agentId);
-          if (grade === 'off') continue;
-          const since = input.transcriptSince?.[agentId];
-          const ranks = { off: 0, turn: 1, block: 2, delta: 3 };
-          const upgraded = previous?.sessionId === frame.sessionId && ranks[grade] > ranks[gradeFor(previous.input.transcriptGrades, agentId)];
-          const catchup = since === undefined || upgraded ? undefined : catchUp(session, agentId, since);
-          if (catchup?.complete) {
-            for (const batch of catchup.batches) this.signal(socket, active, { type: 'transcript', event: session.transcript.opsEvent(agentId, { seq: batch.seq, ops: filterOpsForGrade(grade, batch.ops) }) });
-          } else {
-            const event = session.transcript.resetEvent(agentId, grade);
-            // Same two steps as a REST answer: the grade's redaction, then the
-            // scenario's bounded entities.
-            this.signal(socket, active, { type: 'transcript', event: { ...event, snapshot: boundScenarioEntities(session, redactSnapshotForGrade(grade, event.snapshot)) } });
+        const bootstrap = input.bootstrap === true;
+        target.begin(generation, bootstrap);
+        if (bootstrap) {
+          for (const entry of session.journal) {
+            if (entry.seq > cursor.seq) target.replay(toViewEnvelope(frame.sessionId, entry.frame));
           }
+          void target.drain();
+          this.seedTranscript(session, active, previous);
+          const snapshot = boundScenarioSnapshot(session, {
+            as_of_seq: session.seq,
+            epoch: session.epoch,
+            session: session.record,
+            messages: { items: [], has_more: false },
+            in_flight_turn: session.inFlightTurn,
+            subagents: session.subagents,
+            contentRefs: session.contentRefs.length > 0 ? session.contentRefs : undefined,
+            pending_approvals: session.pendingApprovals,
+            pending_questions: session.pendingQuestions,
+          });
+          target.seedSnapshot(snapshot);
+          target.finish({ seq: snapshot.as_of_seq, epoch: snapshot.epoch }, frame.data?.reconnected === true);
+        } else {
+          const reason = cursor.epoch !== undefined && cursor.epoch !== session.epoch ? 'epoch_changed'
+            : cursor.seq > session.seq ? 'session_recreated'
+            : cursor.seq < (session.journal[0]?.seq ?? session.seq + 1) - 1 ? 'buffer_overflow' : undefined;
+          if (reason !== undefined) {
+            target.sendControl({
+              type: 'resync_required',
+              payload: { reason, current_seq: currentSessionCursor.seq, epoch: currentSessionCursor.epoch },
+            });
+          } else {
+            for (const entry of session.journal) {
+              if (entry.seq > cursor.seq) target.replay(toViewEnvelope(frame.sessionId, entry.frame));
+            }
+          }
+          void target.drain();
+          this.seedTranscript(session, active, previous);
+          target.finish(currentSessionCursor, frame.data?.reconnected === true);
         }
-        if (input.bootstrap === true) {
-          const snapshot = boundScenarioSnapshot(session, { as_of_seq: session.seq, epoch: session.epoch,
-            session: session.record, messages: { items: [], has_more: false }, in_flight_turn: session.inFlightTurn,
-            subagents: session.subagents, contentRefs: session.contentRefs.length > 0 ? session.contentRefs : undefined,
-            pending_approvals: session.pendingApprovals, pending_questions: session.pendingQuestions });
-          this.signal(socket, active, { type: 'snapshot', snapshot });
-        }
-        this.signal(socket, active, { type: 'ready', currentSessionCursor, reconnected: frame.data?.reconnected === true });
       } catch (error) {
         if (frame.type === 'view_attach') state.views.delete(frame.id);
         send({ type: frame.type === 'view_attach' ? 'view_error' : frame.type === 'stream' ? 'stream_error' : frame.type.startsWith('terminal_') ? 'terminal_ack' : 'error', id: frame.id, code: error.code ?? 50001, msg: error.message });
@@ -2308,6 +2346,28 @@ export class FixtureKlient {
     ack({ replayed, earliest_seq: earliestSeq, truncated: earliestSeq !== null && sinceSeq + 1 < earliestSeq });
   }
 
+  seedTranscript(session, active, previous) {
+    const { input } = active;
+    for (const agentId of session.transcript.agents.keys()) {
+      const grade = gradeFor(input.transcriptGrades, agentId);
+      if (grade === 'off') continue;
+      const since = input.transcriptSince?.[agentId];
+      const ranks = { off: 0, turn: 1, block: 2, delta: 3 };
+      const upgraded = previous?.sessionId === active.sessionId && ranks[grade] > ranks[gradeFor(previous.input.transcriptGrades, agentId)];
+      const catchup = since === undefined || upgraded ? undefined : catchUp(session, agentId, since);
+      if (catchup?.complete) {
+        for (const batch of catchup.batches) {
+          const event = session.transcript.opsEvent(agentId, { seq: batch.seq, ops: filterOpsForGrade(grade, batch.ops) });
+          active.target.send({ type: 'transcript.ops', session_id: session.record.id, seq: 0, epoch: session.epoch, timestamp: now(), payload: event });
+        }
+      } else {
+        const rawEvent = session.transcript.resetEvent(agentId, grade);
+        const event = { ...rawEvent, snapshot: boundScenarioEntities(session, redactSnapshotForGrade(grade, rawEvent.snapshot)) };
+        active.target.send({ type: 'transcript.reset', session_id: session.record.id, seq: 0, epoch: session.epoch, timestamp: now(), payload: event });
+      }
+    }
+  }
+
   signal(socket, active, signal) {
     const data = parse(view.sessionViewSignalSchema, { ...signal, generation: active.generation });
     this.server.sendFrame(socket, { type: 'view_signal', id: active.id,
@@ -2315,20 +2375,7 @@ export class FixtureKlient {
   }
 
   deliver(socket, active, frame) {
-    if (frame.volatile) {
-      if (frame.type === 'session.meta.updated') {
-        const title = frame.payload?.patch?.title ?? frame.payload?.title;
-        if (typeof title === 'string') {
-          this.signal(socket, active, { type: 'sessionCursorAdvanced', cursor: { seq: frame.seq, epoch: frame.epoch }, title });
-        }
-      }
-      return;
-    }
-    const cursor = { seq: frame.seq, epoch: frame.epoch };
-    const payload = frame.payload;
-    if (frame.type === 'event.session.history_rewritten') {
-      this.signal(socket, active, { type: 'historyRewritten', reason: payload.reason, targetMessageId: payload.target_message_id, cursor });
-    } else this.signal(socket, active, { type: 'sessionCursorAdvanced', cursor });
+    active.target.send(toViewEnvelope(active.sessionId, frame));
   }
 
   emit(sessionId, frame) {
@@ -2401,24 +2448,35 @@ export class FixtureKlient {
     }
   }
 
-  resync(session) {
-    for (const [socket, state] of this.connections) for (const active of state.views.values()) {
-      if (active.sessionId === session.record.id) this.signal(socket, active, { type: 'resyncRequired', reason: 'epoch_changed', currentSessionCursor: { seq: session.seq, epoch: session.epoch } });
+  resync(session, reason = 'epoch_changed') {
+    for (const [, state] of this.connections) for (const active of state.views.values()) {
+      if (active.sessionId === session.record.id) {
+        active.target.sendControl({
+          type: 'resync_required',
+          payload: { reason, current_seq: session.seq, epoch: session.epoch },
+        });
+      }
     }
   }
 
   transcript(session, agentId, batch) {
-    for (const [socket, state] of this.connections) for (const active of state.views.values()) {
+    for (const [, state] of this.connections) for (const active of state.views.values()) {
       if (active.sessionId !== session.record.id) continue;
       const grade = gradeFor(active.input.transcriptGrades, agentId);
       if (grade === 'off') continue;
-      const event = batch === undefined ? session.transcript.resetEvent(agentId, grade)
+      const rawEvent = batch === undefined ? session.transcript.resetEvent(agentId, grade)
         : session.transcript.opsEvent(agentId, { seq: batch.seq, ops: filterOpsForGrade(grade, batch.ops) });
-      // A snapshot pushed to a view gets the same two steps as one served over
-      // REST: the grade's redaction, then the scenario's bounded entities.
-      this.signal(socket, active, { type: 'transcript', event: batch === undefined
-        ? { ...event, snapshot: boundScenarioEntities(session, redactSnapshotForGrade(grade, event.snapshot)) }
-        : event });
+      const event = batch === undefined
+        ? { ...rawEvent, snapshot: boundScenarioEntities(session, redactSnapshotForGrade(grade, rawEvent.snapshot)) }
+        : rawEvent;
+      active.target.send({
+        type: batch === undefined ? 'transcript.reset' : 'transcript.ops',
+        session_id: session.record.id,
+        seq: 0,
+        epoch: session.epoch,
+        timestamp: now(),
+        payload: event,
+      });
     }
   }
 }

@@ -390,8 +390,26 @@ export function createPluginImportWalker({ page, shot, resizeViewport, webUrl, f
     await noBleed('imported session');
     await shot(name('native-session-open'));
 
+    // Verify the imported session actually stores the imported turns on the
+    // server before continuing it; fixture-server.mjs only streams the imported
+    // decision reply when those stored turns are present in session.messages.
+    const storedBefore = await (await fetch(`${fixtureUrl()}/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
+      headers: { authorization: `Bearer ${fixtureToken}` },
+    })).json();
+    const storedItems = storedBefore.data?.items ?? [];
+    const storedText = storedItems
+      .flatMap((msg) => (Array.isArray(msg.content) ? msg.content : []))
+      .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+      .map((part) => part.text)
+      .join('\n');
+    expect(
+      storedItems.length > 0 && storedText.includes('Migrate the search index'),
+      `imported session ${sessionId} did not persist imported turns before continuation (count=${storedItems.length})`,
+    );
+
     // And the reader can continue it: the composer is live, and a further
-    // message is accepted and answered against the imported history.
+    // message is accepted and answered only if the imported history is stored
+    // in the session (otherwise the fixture replies that imported history is missing).
     const before = await page.locator('[data-turn-id]').count();
     await page.fill('textarea[data-composer]', 'What did we decide about the batch size?');
     // The same key the rest of the proof suite uses to submit, so this is the
@@ -403,13 +421,6 @@ export function createPluginImportWalker({ page, shot, resizeViewport, webUrl, f
     await page.press('textarea[data-composer]', 'Control+Enter');
     expect(await posted !== null, 'sending into the imported session issued no prompt request');
 
-    // The session accepts the message and clears the composer, in the same
-    // session the import created. The fixture's scripted reply arrives on its
-    // own live stream, so this step asserts the round trip *into* Kiki.
-    // The reply is what proves this is a live conversation rather than a
-    // transcript: Kiki answers from the history the import put in context. The
-    // fixture's scripted answer quotes a decision that exists only in the
-    // imported turns, so seeing it is seeing the migrated context in use.
     // A first chance on the live stream, then a reload: a reply that is only
     // durable in the session snapshot is still a reply the reader gets, and the
     // reload is the honest way to tell "never arrived" from "arrived before the

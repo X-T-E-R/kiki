@@ -282,8 +282,8 @@ export function NavScopeRecovery({ state, retry, cancel, remote, exitSpaceName }
  */
 function Surface({ children }: { children: ReactNode }) {
   return (
-    <main className="flex h-full min-h-screen items-center justify-center bg-paper px-4 py-10 text-ink">
-      <div className="anim-enter w-full max-w-[380px]">{children}</div>
+    <main className="flex h-full min-h-dvh overflow-y-auto justify-center bg-paper px-4 py-10 text-ink pointer-coarse:min-h-[var(--kiki-visual-height,100dvh)]">
+      <div className="anim-enter my-auto w-full max-w-[380px]">{children}</div>
     </main>
   );
 }

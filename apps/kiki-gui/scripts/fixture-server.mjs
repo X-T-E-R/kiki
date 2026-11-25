@@ -167,7 +167,8 @@ function replayUsageResponse(capture, query) {
  * a snapshot entry's `terminals: [{shell?, cwd?, cols?, rows?, banner?}]`.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { createServer } from 'node:http';
 import { readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -239,14 +240,23 @@ const readMemoryPageState = (raw) => {
 
 /** Five cron fields, the same shape the engine's parser accepts. */
 const FIXTURE_CRON_PATTERN = /^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/;
-const FIXTURE_CRON_PROMPT_PREVIEW = 120;
+const FIXTURE_CRON_PROMPT_PREVIEW_BYTES = 200;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
-/**
- * A cron row in kap-server's wire shape, so the fixture answers detail,
- * create and update with the same row the list route would serve. The
- * engine's own `human_schedule` is reproduced here only so the list has a
- * plausible fallback; the GUI prefers its localized reading of `cron`.
- */
+function normalizeFixtureUuid(raw) {
+  if (typeof raw === 'string' && UUID_PATTERN.test(raw)) return raw;
+  const hex = createHash('sha256').update(String(raw ?? '')).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+function formatFixtureCronPreview(prompt) {
+  const bytes = Buffer.from(prompt, 'utf8');
+  if (bytes.byteLength <= FIXTURE_CRON_PROMPT_PREVIEW_BYTES) return prompt;
+  let end = FIXTURE_CRON_PROMPT_PREVIEW_BYTES;
+  while (end > 0 && (bytes[end] & 0b1100_0000) === 0b1000_0000) end -= 1;
+  return `${bytes.subarray(0, end).toString('utf8')}…(truncated)`;
+}
+
 function fixtureCronTask({ id, session_id: sessionId, cron, prompt, recurring, paused, workspace_id: workspaceId, delivery_mode: deliveryMode }) {
   const now = Date.now();
   return {
@@ -256,9 +266,7 @@ function fixtureCronTask({ id, session_id: sessionId, cron, prompt, recurring, p
     cron,
     human_schedule: fixtureHumanSchedule(cron),
     prompt,
-    prompt_preview: prompt.length > FIXTURE_CRON_PROMPT_PREVIEW
-      ? `${prompt.slice(0, FIXTURE_CRON_PROMPT_PREVIEW)}…(truncated)`
-      : prompt,
+    prompt_preview: formatFixtureCronPreview(prompt),
     next_fire_at: paused === true ? null : new Date(now + 42 * 60_000).toISOString(),
     recurring,
     // kap-server always emits the effective mode, and a create without one is
@@ -585,6 +593,9 @@ function defaultSkillSteps(name, args, sessionId) {
 
 class FixtureSession {
   constructor(record, scenarioData) {
+    if (record.own_updated_at === undefined && record.updated_at !== undefined) {
+      record.own_updated_at = record.updated_at;
+    }
     this.record = record; // Session wire record
     this.messages = [...(scenarioData.messages ?? [])];
     this.hasMore = scenarioData.has_more === true;
@@ -636,7 +647,11 @@ class FixtureSession {
     // clears the queue row; the message becomes durable context at the running
     // turn's next step boundary (see deliverPendingSteers).
     this.pendingSteers = []; // [{promptId, userMessageId, content, origin, turnId}]
+    this.promptReceipts = new Map(); // promptId -> { agentId, steerAccepted, steered, turnId, terminal }
+    this.compactionState = null; // null | 'queued' | 'running'
+    this.queuedCompaction = null; // null | { strategy }
     this.activeTurnId = undefined; // turn the running script currently owns
+    this.nextTurnOrdinal = 1;
     // Prompt queue mirroring kap-server's {active, queued} scheduler surface.
     // Scenarios may seed a running/queued backlog for list-prompts consumers:
     // snapshot entries `active_prompt` / `queued_prompts` carry the PromptItem
@@ -975,9 +990,13 @@ class FixtureServer {
       Object.entries(structuredClone(data.memoryEntries ?? {})).map(([scope, entries]) => [scope, entries]),
     );
     this.memoryJournal = new Map(
-      Object.entries(structuredClone(data.memoryJournal ?? {})).map(([scope, records]) => [scope, records]),
+      Object.entries(structuredClone(data.memoryJournal ?? {})).map(([scope, records]) => [
+        scope,
+        records.map((record) => ({ ...record, operationId: normalizeFixtureUuid(record.operationId) })),
+      ]),
     );
     this.memoryOpCounter = 0;
+    this.threadWorkspaceOverrides = { ...(data.threadWorkspaceOverrides ?? {}) };
     resetMemoryGovernance(this, data);
     resetPersonas(this, data);
     resetRequestIdentity(this, data);
@@ -1262,26 +1281,25 @@ class FixtureServer {
       return true;
     }
     if (tail === 'undo' && method === 'POST') {
-      const records = (this.memoryJournal.get(key) ?? []).filter((record) => record.operationId === body?.operation_id);
+      if (typeof body?.operation_id !== 'string' || !UUID_PATTERN.test(body.operation_id)) {
+        this.envelope(res, null, 40001, 'validation.failed');
+        return true;
+      }
+      const records = (this.memoryJournal.get(key) ?? []).filter((record) => record.operationId === body.operation_id);
       if (records.length === 0) {
         this.envelope(res, null, 40423, 'memory.not_found');
         return true;
       }
       let restored = null;
-      // Newest first, and a record whose content moved on since is refused: an
-      // undo must not replace a newer version with an older before-image.
       for (const record of [...records].reverse()) {
         const index = entries.findIndex((entry) => entry.id === record.id);
         if (index >= 0 && record.afterRevision !== null && this.memoryRevision(entries[index]) !== record.afterRevision) {
-          this.envelope(res, { entry: null, reason: 'changed_since', revision: this.memoryRevision(entries[index]) }, 40944, 'memory.revision_conflict');
+          this.envelope(res, null, 40944, 'memory.revision_conflict');
           return true;
         }
         if (record.before === null) {
           if (index >= 0) entries.splice(index, 1);
         } else {
-          // A journal before-image is the stored document (JSON frontmatter
-          // plus body), not a JSON blob, so it is read the way the page reads
-          // a version rather than parsed as a bare object.
           const before = this.memoryBeforeImage(record.before);
           if (before === undefined) continue;
           if (index >= 0) entries[index] = before;
@@ -1289,7 +1307,7 @@ class FixtureServer {
           restored ??= before;
         }
       }
-      this.memoryLog(key, { operationId: `op_undo_${++this.memoryOpCounter}`, action: 'undo', id: records[0].id, at: now(), writer: 'user', before: null, beforeRevision: null, afterRevision: null });
+      this.memoryLog(key, { operationId: randomUUID(), action: 'undo', id: records[0].id, at: now(), writer: 'user', before: null, beforeRevision: null, afterRevision: null });
       this.envelope(res, { entry: restored === null ? null : withRevision(restored) });
       return true;
     }
@@ -1306,7 +1324,8 @@ class FixtureServer {
     }
     if (method === 'PUT') {
       if (id === 'new') {
-        const operationId = `op_fixture_${++this.memoryOpCounter}`;
+        const operationId = randomUUID();
+        ++this.memoryOpCounter;
         const entry = {
           id: `m_20260928_${String(this.memoryOpCounter).padStart(6, '0')}`,
           type: body?.type ?? 'project',
@@ -1367,7 +1386,8 @@ class FixtureServer {
         this.envelope(res, { entry: withRevision(current), operationId: null, outcome: 'unchanged' });
         return true;
       }
-      const operationId = `op_fixture_${++this.memoryOpCounter}`;
+      const operationId = randomUUID();
+      ++this.memoryOpCounter;
       const before = this.memoryEntrySnapshot(current);
       entries[index] = next;
       this.memoryLog(key, { operationId, action: body?.action ?? 'update', id: next.id, at: now(), writer: 'user', before, beforeRevision: this.memoryRevision(current), afterRevision: this.memoryRevision(next) });
@@ -1384,7 +1404,8 @@ class FixtureServer {
         this.envelope(res, null, 40944, 'memory.revision_conflict');
         return true;
       }
-      const operationId = `op_fixture_${++this.memoryOpCounter}`;
+      const operationId = randomUUID();
+      ++this.memoryOpCounter;
       this.memoryLog(key, { operationId, action: 'delete', id: current.id, at: now(), writer: 'user', before: this.memoryEntrySnapshot(current), beforeRevision: this.memoryRevision(current), afterRevision: null });
       entries.splice(index, 1);
       this.envelope(res, { operation_id: operationId });
@@ -1917,13 +1938,48 @@ class FixtureServer {
    * fixture emits the canonical `context.append_message` delivery here, as a
    * transcript fact rather than a session event.
    */
+  ensurePromptReceipt(session, promptId, agentId = 'main') {
+    let receipt = session.promptReceipts.get(promptId);
+    if (receipt === undefined) {
+      receipt = { agentId, steerAccepted: false, steered: false, turnId: undefined, terminal: undefined };
+      session.promptReceipts.set(promptId, receipt);
+    }
+    return receipt;
+  }
+
+  fixtureSteerReceipt(session, promptId) {
+    const receipt = session.promptReceipts.get(promptId);
+    if (receipt === undefined) return undefined;
+    if (!receipt.steerAccepted) {
+      return { steered: false, prompt_ids: [promptId], delivery_reason: 'prompt_no_longer_pending' };
+    }
+    if (receipt.steered) return { steered: true, prompt_ids: [promptId], delivery_state: 'steered' };
+    if (receipt.turnId !== undefined) return { steered: false, prompt_ids: [promptId], delivery_state: 'started' };
+    if (receipt.terminal?.state === 'cancelled') return { steered: false, prompt_ids: [promptId], delivery_state: 'cancelled' };
+    if (receipt.terminal?.state === 'failed' || receipt.terminal?.state === 'blocked') {
+      return { steered: false, prompt_ids: [promptId], delivery_state: 'failed' };
+    }
+    return { steered: false, prompt_ids: [promptId], delivery_state: 'accepted' };
+  }
+
   acceptFixtureSteer(session, agentId, item) {
-    if (session.pendingSteers.some(steer => steer.promptId === item.prompt_id && (steer.agentId ?? 'main') === agentId)) return;
+    const receipt = this.ensurePromptReceipt(session, item.prompt_id, agentId);
+    if (receipt.steerAccepted) return;
+    receipt.steerAccepted = true;
+    item.steerAccepted = true;
     const accepted = { type: 'prompt.steer_accepted', payload: { promptIds: [item.prompt_id] } };
     if (agentId === 'main') this.emitTranscriptFromFrame(session, accepted);
     else this.emitSideFrame(session, agentId, accepted);
+    const activeTurnId = agentId === 'main' ? session.activeTurnId : session.childTurns?.[agentId];
+    const isRunning = agentId === 'main'
+      ? (session.scriptRunning || session.activePrompt !== null || activeTurnId !== undefined)
+      : activeTurnId !== undefined;
+    if (!isRunning && agentId === 'main') {
+      this.promoteNext(session);
+      return;
+    }
     session.pendingSteers.push({ agentId, promptId: item.prompt_id, userMessageId: item.user_message_id,
-      content: item.content, origin: { kind: 'user' }, turnId: agentId === 'main' ? session.activeTurnId : session.childTurns?.[agentId] });
+      content: item.content, origin: { kind: 'user' }, turnId: activeTurnId });
     this.resolveWaiters(session, 'advance');
   }
 
@@ -1935,7 +1991,6 @@ class FixtureServer {
     const step = boundary.payload?.step ?? 1;
     const boundaryAgent = boundary.payload?.agentId ?? 'main';
     for (const steer of pending) {
-      // Another agent's or another turn's boundary is not this steer's delivery point.
       if ((steer.agentId ?? 'main') !== boundaryAgent
         || (steer.turnId !== undefined && turnId !== undefined && steer.turnId !== turnId)) {
         session.pendingSteers.push(steer);
@@ -1948,6 +2003,8 @@ class FixtureServer {
       const index = queue.findIndex(item => item.prompt_id === steer.promptId);
       if (index < 0) continue;
       queue.splice(index, 1);
+      const receipt = this.ensurePromptReceipt(session, steer.promptId, boundaryAgent);
+      receipt.steered = true;
       deliver({ type: 'prompt.steered', payload: { activePromptId: boundaryAgent === 'main' ? session.activePrompt?.prompt_id : steer.promptId,
         promptIds: [steer.promptId], content: steer.content, steeredAt: now() } });
       deliver({
@@ -2088,6 +2145,30 @@ class FixtureServer {
   /** Steps for a prompt: `onPrompt` may be a plain step list or a function of
    * the prompt text (queued prompts get their own script on promotion). */
   scriptFor(session, text) {
+    if (this.scenario?.name === 'plugin-import') {
+      const priorMessages = [...session.older, ...session.messages.slice(0, -1)];
+      const priorText = priorMessages
+        .flatMap((msg) => (Array.isArray(msg.content) ? msg.content : []))
+        .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+        .map((part) => part.text)
+        .join('\n');
+      const hasImportedContext = priorMessages.length > 0 && priorText.includes('Migrate the search index');
+      if (!hasImportedContext) {
+        const turnId = 9001;
+        const missingReply = 'No imported history is present in this session context.';
+        return [
+          { frame: { type: 'turn.started', payload: { turnId } } },
+          { frame: { type: 'event.session.work_changed', payload: { busy: true, pending_interaction: 'none' } } },
+          { frame: { type: 'turn.step.started', payload: { turnId, step: 1 } } },
+          { delay: 80 },
+          { frame: { type: 'assistant.delta', offset: 0, payload: { turnId, delta: missingReply } } },
+          { commit: { id: 'placeholder', session_id: session.record.id, role: 'assistant', content: [{ type: 'text', text: missingReply }], created_at: now() } },
+          { frame: { type: 'turn.ended', payload: { turnId, reason: 'completed', durationMs: 120 } } },
+          { frame: { type: 'prompt.completed', payload: { promptId: '$PROMPT', finishedAt: now(), reason: 'completed' } } },
+          { frame: { type: 'event.session.work_changed', payload: { busy: false, pending_interaction: 'none' } } },
+        ];
+      }
+    }
     const onPrompt = this.scenario?.data.onPrompt;
     if (typeof onPrompt === 'function') {
       return onPrompt.length >= 3
@@ -2102,6 +2183,8 @@ class FixtureServer {
     this.debug(`promote/start ${item.prompt_id} ("${item.text}")`);
     session.activePrompt = item;
     session.record.busy = true;
+    const receipt = this.ensurePromptReceipt(session, item.prompt_id, 'main');
+    if (receipt.turnId === undefined) receipt.turnId = session.nextTurnOrdinal++;
     this.emitTranscriptFromFrame(session, {
       type: 'prompt.submitted',
       payload: {
@@ -2118,6 +2201,108 @@ class FixtureServer {
     }
   }
 
+  isThreadWorkspaceEnabled(workspaceId) {
+    if (this.config?.thread_communication?.enabled === false) return false;
+    if (typeof workspaceId === 'string' && this.threadWorkspaceOverrides?.[workspaceId] === false) return false;
+    return true;
+  }
+
+  async handleThreadWorkspacePolicy(req, res, path, query) {
+    if (!path.startsWith('/rooms')) return false;
+    const overrides = this.threadWorkspaceOverrides ?? {};
+    const hasDisabledWorkspace = Object.values(overrides).some((enabled) => enabled === false);
+    if (!hasDisabledWorkspace) return false;
+    const method = req.method ?? 'GET';
+    if (path === '/rooms/threads' && method === 'GET') {
+      if (this.config?.thread_communication?.enabled === false) {
+        this.envelope(res, { threads: [] });
+        return true;
+      }
+      const needle = (query.get('query') ?? '').toLocaleLowerCase();
+      const limit = Number(query.get('limit') ?? 50);
+      const threads = [...this.sessions.values()]
+        .map((entry) => entry.record)
+        .filter((session) => {
+          const metadata = session.metadata ?? {};
+          return session.archived !== true
+            && metadata.room_member_of === undefined
+            && metadata.bot_persona_id === undefined
+            && metadata.child_session_kind !== 'child'
+            && typeof metadata.parent_session_id !== 'string'
+            && this.isThreadWorkspaceEnabled(session.workspace_id);
+        })
+        .filter((session) => `${session.id} ${session.title ?? ''}`.toLocaleLowerCase().includes(needle))
+        .slice(0, limit)
+        .map((session) => ({
+          ref: { hostId: 'fixture-host', workspaceId: session.workspace_id, sessionId: session.id },
+          title: session.title,
+          updatedAt: Date.parse(session.updated_at),
+          createdAt: Date.parse(session.created_at),
+          state: session.busy === true ? 'running' : 'idle',
+        }));
+      this.envelope(res, { threads });
+      return true;
+    }
+    const isFromThreads = path === '/rooms/from-threads' && method === 'POST';
+    const isAddMember = /^\/rooms\/([^/]+)\/members$/u.test(path) && method === 'POST';
+    if (isFromThreads || isAddMember) {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const raw = Buffer.concat(chunks);
+      const parsed = raw.length === 0 ? {} : JSON.parse(raw.toString('utf8'));
+      const candidateIds = isFromThreads
+        ? (Array.isArray(parsed.sessionIds) ? parsed.sessionIds : [])
+        : (parsed.kind === 'thread' && typeof parsed.sessionId === 'string' ? [parsed.sessionId] : []);
+      for (const sid of candidateIds) {
+        const workspaceId = this.sessions.get(sid)?.record.workspace_id;
+        if (!this.isThreadWorkspaceEnabled(workspaceId)) {
+          this.envelope(res, null, 40928, 'Thread communication is disabled for this thread.');
+          return true;
+        }
+      }
+      const replayReq = Readable.from([raw]);
+      replayReq.method = req.method;
+      replayReq.headers = req.headers;
+      replayReq.url = req.url;
+      return await handleBotRooms(this, replayReq, res, path, query);
+    }
+    return false;
+  }
+
+  recordChildActivity(sessionId, at = now()) {
+    const visited = new Set();
+    let currentId = sessionId;
+    while (typeof currentId === 'string' && currentId !== '' && !visited.has(currentId)) {
+      visited.add(currentId);
+      const entry = this.sessions.get(currentId);
+      if (entry === undefined) break;
+      const currentMs = Date.parse(entry.record.updated_at ?? '');
+      const nextMs = Date.parse(at);
+      if (Number.isNaN(currentMs) || nextMs > currentMs) {
+        entry.record.updated_at = at;
+      }
+      this.emit(currentId, { type: 'session.meta.updated', payload: { sessionId: currentId, agentId: 'main', patch: {} } });
+      currentId = entry.record.metadata?.parent_session_id;
+    }
+  }
+
+  listActiveCompletions() {
+    const store = this.notifications;
+    if (store === undefined) return [];
+    const windowMs = typeof store.completionWindowMs === 'number' ? store.completionWindowMs : 600_000;
+    const currentMs = Date.now();
+    return store.completions.filter((entry) => {
+      if (typeof entry?.completed_at !== 'number') return false;
+      if (currentMs - entry.completed_at >= windowMs) return false;
+      const session = this.sessions.get(entry.session_id);
+      if (session === undefined) return true;
+      if (session.record.metadata?.silent === true || session.record.ephemeral === true) return false;
+      if (session.record.busy === true) return false;
+      if (session.record.pending_interaction !== undefined && session.record.pending_interaction !== 'none') return false;
+      return true;
+    });
+  }
+
   /** Run an admitted durable prompt through the ordinary submit path. */
   admitDurablePrompt(session, body) {
     const sink = { writeHead() {}, end() {} };
@@ -2130,10 +2315,35 @@ class FixtureServer {
 
   /** A finished turn promotes the oldest queued prompt, like the real
    * scheduler: queued → running, and the new turn's frames start flowing. */
+  finishFixtureCompaction(session, strategy) {
+    if (strategy === 'relay' || strategy === 'summarize') {
+      const batch = session.transcript.commit('main', [{
+        op: 'marker.upsert',
+        item: { kind: 'marker', markerId: `fixture-compaction-${Date.now()}`, marker: 'compaction', at: now(), payload: { strategy, shapeVersion: 1 } },
+      }]);
+      if (batch !== undefined) this.fanoutTranscriptOps(session, 'main', batch);
+    }
+    session.compactionState = null;
+    session.queuedCompaction = null;
+  }
+
   promoteNext(session) {
     session.activePrompt = null;
-    // Edit hold (mirrors the engine): the prompt being edited and everything
-    // queued behind it wait; with the hold at the head, nothing promotes.
+    if (session.queuedCompaction !== null) {
+      const queuedCompaction = session.queuedCompaction;
+      session.queuedCompaction = null;
+      session.compactionState = 'running';
+      setTimeout(() => { this.finishFixtureCompaction(session, queuedCompaction.strategy); }, 30);
+    }
+    const acceptedIndex = session.queuedPrompts.findIndex(
+      (candidate) => candidate.steerAccepted === true || session.promptReceipts.get(candidate.prompt_id)?.steerAccepted === true,
+    );
+    if (acceptedIndex >= 0) {
+      const [next] = session.queuedPrompts.splice(acceptedIndex, 1);
+      session.pendingSteers = session.pendingSteers.filter((steer) => steer.promptId !== next.prompt_id);
+      this.startPrompt(session, next);
+      return;
+    }
     const heldAtHead = session.editHoldPromptId !== undefined &&
       session.queuedPrompts[0]?.prompt_id === session.editHoldPromptId;
     if (session.queuedPrompts.length === 0 || heldAtHead) {
@@ -2242,16 +2452,19 @@ class FixtureServer {
       case 'turn.ended':
         if ((frame.agentId ?? payload.agentId ?? 'main') !== 'main') {
           const agentId = frame.agentId ?? payload.agentId;
+          const endedTurnId = session.childTurns?.[agentId];
           delete session.childTurns?.[agentId];
-          session.pendingSteers = session.pendingSteers.filter((steer) => steer.agentId !== agentId);
+          session.pendingSteers = session.pendingSteers.filter(
+            (steer) => steer.agentId !== agentId || (endedTurnId !== undefined && steer.turnId !== endedTurnId),
+          );
         }
         if ((frame.agentId ?? payload.agentId ?? 'main') === 'main') {
           session.record.busy = false;
           session.record.pending_interaction = 'none';
-          // A turn that ends before its next step never accepts its steers: the
-          // engine drops unlaunched steer requests, so a stale prompt must not
-          // land in an unrelated later turn.
-          session.pendingSteers = session.pendingSteers.filter((steer) => (steer.agentId ?? 'main') !== 'main');
+          const endedTurnId = session.activeTurnId;
+          session.pendingSteers = session.pendingSteers.filter(
+            (steer) => (steer.agentId ?? 'main') !== 'main' || (endedTurnId !== undefined && steer.turnId !== endedTurnId),
+          );
           session.activeTurnId = undefined;
         }
         break;
@@ -2530,6 +2743,7 @@ class FixtureServer {
     if (handleAppearance(this, req, res, path)) return;
     if (await handlePersonas(this, req, res, path, url.searchParams)) return;
     if (await handleRequestIdentity(this, req, res, path)) return;
+    if (await this.handleThreadWorkspacePolicy(req, res, path, url.searchParams)) return;
     if (await handleBotRooms(this, req, res, path, url.searchParams)) return;
     const body = (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE')
       ? await this.readBody(req)
@@ -3440,19 +3654,32 @@ class FixtureServer {
     // real-failure path is exercisable against a mock, not a guess.
     if (path === '/cron' && method === 'POST') {
       const rows = this.scenario?.data.cronTasks;
-      if (rows === undefined || typeof body?.cron !== 'string' || body.cron.trim() === '') {
+      if (rows === undefined || typeof body?.cron !== 'string' || !FIXTURE_CRON_PATTERN.test(body.cron.trim())) {
         return this.envelope(res, null, 40001, 'cron expression is invalid');
       }
       if (typeof body.prompt !== 'string' || body.prompt.trim() === '') {
         return this.envelope(res, null, 40001, 'prompt must not be blank');
       }
-      if (this.consumeScenarioFlag('cronFailNextWrite')) {
-        return this.envelope(res, null, 40001, 'cron tasks can only be rebound within the same workspace');
+      const targetSession = typeof body.session_id === 'string' ? this.sessions.get(body.session_id) : undefined;
+      if (targetSession === undefined) {
+        return this.envelope(res, null, 40401, 'target session does not exist');
+      }
+      if (targetSession.record.ephemeral === true || targetSession.record.metadata?.ephemeral === true) {
+        return this.envelope(res, null, 40001, 'temporary sessions cannot schedule cron tasks');
+      }
+      const armedFailure = this.consumeScenarioFlag('cronFailNextWrite');
+      if (armedFailure) {
+        const code = typeof armedFailure === 'object' && typeof armedFailure.code === 'number' ? armedFailure.code : 40001;
+        const msg = typeof armedFailure === 'object' && typeof armedFailure.msg === 'string'
+          ? armedFailure.msg
+          : 'cron expression is invalid';
+        return this.envelope(res, null, code, msg);
       }
       const id = `cron_fixture_created_${rows.length + 1}`;
       rows.push(fixtureCronTask({
         id,
         session_id: body.session_id,
+        workspace_id: targetSession.record.workspace_id,
         cron: body.cron,
         prompt: body.prompt,
         recurring: body.recurring !== false,
@@ -3475,15 +3702,21 @@ class FixtureServer {
       // Edit: `session_id` in the body is the target binding, and a target in
       // another workspace is refused exactly as the real route refuses it.
       if (action === undefined && method === 'PATCH') {
-        if (this.consumeScenarioFlag('cronFailNextWrite')) {
-          return this.envelope(res, null, 40001, 'cron tasks can only be rebound within the same workspace');
+        const armedFailure = this.consumeScenarioFlag('cronFailNextWrite');
+        if (armedFailure) {
+          const code = typeof armedFailure === 'object' && typeof armedFailure.code === 'number' ? armedFailure.code : 40406;
+          const msg = typeof armedFailure === 'object' && typeof armedFailure.msg === 'string'
+            ? armedFailure.msg
+            : `cron task ${task.id} does not exist`;
+          return this.envelope(res, null, code, msg);
         }
         if (typeof body.cron === 'string' && !FIXTURE_CRON_PATTERN.test(body.cron.trim())) {
           return this.envelope(res, null, 40001, 'cron expression is invalid');
         }
         if (body.session_id !== undefined) {
-          const target = (this.scenario?.data.sessions ?? []).find((entry) => entry.id === body.session_id);
-          if (target === undefined) return this.envelope(res, null, 40408, 'target session does not exist');
+          const target = this.sessions.get(body.session_id)?.record
+            ?? (this.scenario?.data.sessions ?? []).find((entry) => entry.id === body.session_id);
+          if (target === undefined) return this.envelope(res, null, 40401, 'target session does not exist');
           if (target.workspace_id !== undefined && task.workspace_id !== undefined
             && target.workspace_id !== task.workspace_id) {
             return this.envelope(res, null, 40001, 'cron tasks can only be rebound within the same workspace');
@@ -3496,7 +3729,7 @@ class FixtureServer {
         }
         if (typeof body.prompt === 'string') {
           task.prompt = body.prompt;
-          task.prompt_preview = body.prompt.length > 120 ? `${body.prompt.slice(0, 120)}…(truncated)` : body.prompt;
+          task.prompt_preview = formatFixtureCronPreview(body.prompt);
         }
         if (typeof body.recurring === 'boolean') task.recurring = body.recurring;
         // Absent means "keep what the task has", the same as the real route's
@@ -3515,6 +3748,12 @@ class FixtureServer {
         return this.envelope(res, { task: structuredClone(task) });
       }
       if (action === 'run') {
+        if (typeof task.session_id !== 'string' || task.session_id === '') {
+          return this.envelope(res, null, 40401, `cron task ${task.id} is not associated with a session`);
+        }
+        if (!this.sessions.has(task.session_id)) {
+          return this.envelope(res, null, 40401, `session ${task.session_id} does not exist`);
+        }
         const nextRunResult = this.cronNextRunResult;
         this.cronNextRunResult = undefined;
         return this.envelope(res, nextRunResult ?? { triggered: true });
@@ -3526,6 +3765,9 @@ class FixtureServer {
     }
     const memoryHandled = this.routeMemory(res, path, query, body, method);
     if (memoryHandled) return undefined;
+    if (path === '/notifications/completions' && method === 'GET') {
+      return this.envelope(res, this.listActiveCompletions());
+    }
     // nb-IM notifications (scripts/fixture-notifications.mjs).
     if (handleNotifications(this, res, path, query, method, body)) return undefined;
     // Two-way IM sessions (scripts/fixture-im-sessions.mjs).
@@ -5069,16 +5311,21 @@ class FixtureServer {
       session.older = [];
       session.messages = keep;
       session.record.message_count = keep.length;
-      // Mirror the real undo path (context.undo → items.remove fanout): the
-      // transcript store must lose the truncated turns, then a reset pushes
-      // the rebased snapshot so open views converge without waiting on the
-      // client's follow-up resync.
-      session.transcript.ingestFrame(
-        { type: 'event.session.history_rewritten', payload: { reason: 'edit_resend', target_message_id: all[lastUserIndex].id } },
-        {},
-      );
-      seedMessages(session.transcript, session.messages, { older: session.older, hasMore: session.hasMore });
-      this.fanoutTranscriptReset(session, 'main');
+      const liveItems = session.transcript.snapshot('main').items;
+      const targetUserId = all[lastUserIndex].id;
+      let removeFrom = liveItems.findIndex((item) => item.kind === 'turn' && item.userMessageId === targetUserId);
+      if (removeFrom < 0) {
+        for (let i = liveItems.length - 1; i >= 0; i -= 1) {
+          if (liveItems[i].kind === 'turn') { removeFrom = i; break; }
+        }
+      }
+      if (removeFrom >= 0) {
+        const removedIds = liveItems.slice(removeFrom).map((item) => (
+          item.kind === 'turn' ? item.turnId : item.kind === 'marker' ? item.markerId : item.refId
+        ));
+        const batch = session.transcript.commit('main', [{ op: 'items.remove', ids: removedIds }]);
+        if (batch !== undefined) this.fanoutTranscriptOps(session, 'main', batch);
+      }
       return this.envelope(res, {
         messages: { items: keep.slice(-50), has_more: keep.length > 50 },
         status: {
@@ -5095,23 +5342,21 @@ class FixtureServer {
     if (handleContextStrategy(this, res, session, tail, body, method)) return;
     if (handleAgentHooks(this, res, session, tail)) return;
     if (tail === ':compact') {
+      if (session.compactionState !== null) {
+        return this.envelope(res, { accepted: false, status: session.compactionState, source: 'manual' });
+      }
       if (session.record.busy || session.activePrompt !== null || session.scriptRunning) {
-        return this.envelope(res, null, 40901, 'session.busy');
+        session.compactionState = 'queued';
+        session.queuedCompaction = { strategy: body?.strategy };
+        return this.envelope(res, { accepted: true, status: 'queued', source: 'manual' });
       }
       const seeded = session.transcript.snapshot('main').items.length > 0;
       if (session.messages.length + session.older.length === 0 && !seeded) {
         return this.envelope(res, null, 40910, 'compaction.unable');
       }
-      // A strategy-bearing request lands its compaction marker on the
-      // timeline the way the engine's context.apply_compaction does.
-      if (body?.strategy === 'relay' || body?.strategy === 'summarize') {
-        const batch = session.transcript.commit('main', [{
-          op: 'marker.upsert',
-          item: { kind: 'marker', markerId: `fixture-compaction-${Date.now()}`, marker: 'compaction', at: now(), payload: { strategy: body.strategy, shapeVersion: 1 } },
-        }]);
-        if (batch !== undefined) this.fanoutTranscriptOps(session, 'main', batch);
-      }
-      return this.envelope(res, {});
+      session.compactionState = 'running';
+      setTimeout(() => { this.finishFixtureCompaction(session, body?.strategy); }, 30);
+      return this.envelope(res, { accepted: true, status: 'running', source: 'manual' });
     }
     // Raw binary (no envelope), mirroring kap-server's zip stream.
     if (tail === '/export' && method === 'POST') {
@@ -5248,10 +5493,6 @@ class FixtureServer {
           prompt_id: promptId,
         });
         session.record.message_count = session.older.length + session.messages.length;
-        this.emit(session.record.id, {
-          type: 'event.session.history_rewritten',
-          payload: { reason: 'edit_resend', target_message_id: messageId },
-        });
         const item = {
           prompt_id: promptId,
           user_message_id: promptId,
@@ -5265,8 +5506,13 @@ class FixtureServer {
           { promptId, userMessageId: promptId },
         );
         seedMessages(session.transcript, session.messages, { older: session.older, hasMore: session.hasMore });
-        this.startPrompt(session, item);
         this.fanoutTranscriptReset(session, 'main');
+        this.emit(session.record.id, {
+          type: 'event.session.history_rewritten',
+          payload: { reason: 'edit_resend', target_message_id: messageId },
+        });
+        this.klient.resync(session, 'history_rewritten');
+        this.startPrompt(session, item);
         return this.envelope(res, {
           prompt_id: promptId,
           user_message_id: promptId,
@@ -5288,10 +5534,6 @@ class FixtureServer {
       session.transcript.epoch = `ep_fixture_tx_${Date.now().toString(36)}`;
       session.record.message_count = session.older.length + session.messages.length;
       session.lastMessageAction = { action: actionName, message_id: messageId, body };
-      this.emit(session.record.id, {
-        type: 'event.session.history_rewritten',
-        payload: { reason: 'regenerate', target_message_id: messageId },
-      });
       const regenPromptId = nextId('msg');
       const regenAt = now();
       const regenItem = {
@@ -5307,8 +5549,13 @@ class FixtureServer {
         { promptId: regenPromptId, userMessageId: anchor.id },
       );
       seedMessages(session.transcript, session.messages, { older: session.older, hasMore: session.hasMore });
-      this.startPrompt(session, regenItem);
       this.fanoutTranscriptReset(session, 'main');
+      this.emit(session.record.id, {
+        type: 'event.session.history_rewritten',
+        payload: { reason: 'regenerate', target_message_id: messageId },
+      });
+      this.klient.resync(session, 'history_rewritten');
+      this.startPrompt(session, regenItem);
       return this.envelope(res, {
         prompt_id: regenPromptId,
         user_message_id: anchor.id,
@@ -5395,6 +5642,7 @@ class FixtureServer {
       const promptId = typeof body.prompt_id === 'string' && body.prompt_id !== '' ? body.prompt_id : nextId('msg');
       const createdAt = now();
       const item = { prompt_id: promptId, user_message_id: promptId, content: body.content, created_at: createdAt };
+      this.ensurePromptReceipt(session, promptId, agentId);
       ((session.childQueues ??= {})[agentId] ??= []).push(item);
       this.emitSideFrame(session, agentId, {
         type: 'prompt.queued',
@@ -5402,8 +5650,15 @@ class FixtureServer {
       }, { promptId, userMessageId: promptId, content: body.content });
       if (body.delivery_mode === 'steer') {
         setTimeout(() => {
-          this.acceptFixtureSteer(session, agentId, item);
-          this.envelope(res, { ...item, status: 'queued', delivery_state: 'accepted' });
+          const stillQueued = (session.childQueues?.[agentId] ?? []).find((candidate) => candidate.prompt_id === promptId);
+          if (stillQueued !== undefined) this.acceptFixtureSteer(session, agentId, stillQueued);
+          const receipt = this.fixtureSteerReceipt(session, promptId);
+          this.envelope(res, {
+            ...item,
+            status: 'queued',
+            ...(receipt?.delivery_state !== undefined ? { delivery_state: receipt.delivery_state } : {}),
+            ...(receipt?.delivery_reason !== undefined ? { delivery_reason: receipt.delivery_reason } : {}),
+          });
         }, this.scenario?.data.steerReplyDelayMs ?? 0);
         return undefined;
       }
@@ -5454,6 +5709,7 @@ class FixtureServer {
         session.record.updated_at = now();
       }
       const item = { prompt_id: promptId, user_message_id: userMessageId, status: 'running', content: body.content, created_at: createdAt, text };
+      this.ensurePromptReceipt(session, promptId, 'main');
       // A parked turn owns the session — park behind it like the real server.
       if (session.scriptRunning || session.activePrompt !== null) {
         // kap-server stamps the requested defer timing onto the parked item;
@@ -5487,8 +5743,14 @@ class FixtureServer {
         };
         if (body.delivery_mode === 'steer') {
           setTimeout(() => {
-            this.acceptFixtureSteer(session, 'main', item);
-            this.envelope(res, { ...queued, delivery_state: 'accepted' });
+            const stillQueued = session.queuedPrompts.find((candidate) => candidate.prompt_id === promptId);
+            if (stillQueued !== undefined) this.acceptFixtureSteer(session, 'main', stillQueued);
+            const receipt = this.fixtureSteerReceipt(session, promptId);
+            this.envelope(res, {
+              ...queued,
+              ...(receipt?.delivery_state !== undefined ? { delivery_state: receipt.delivery_state } : {}),
+              ...(receipt?.delivery_reason !== undefined ? { delivery_reason: receipt.delivery_reason } : {}),
+            });
           }, this.scenario?.data.steerReplyDelayMs ?? 0);
           return undefined;
         }
@@ -5527,6 +5789,9 @@ class FixtureServer {
       const queuedIndex = session.queuedPrompts.findIndex((item) => item.prompt_id === promptId);
       if (queuedIndex >= 0) {
         const [aborted] = session.queuedPrompts.splice(queuedIndex, 1);
+        session.pendingSteers = session.pendingSteers.filter((steer) => steer.promptId !== promptId);
+        const receipt = this.ensurePromptReceipt(session, promptId, 'main');
+        receipt.terminal = { state: 'cancelled' };
         // Mirror the engine's PromptAborted for a pending prompt: the session
         // event and the transcript fact both carry beforeStart.
         const frame = {
@@ -5561,15 +5826,6 @@ class FixtureServer {
     }
     const steerMatch = /^\/prompts\/([^/]+):steer$/.exec(tail);
     if (steerMatch !== null) {
-      // Mirrors kap-server: the queued prompt leaves the queue and its content
-      // merges into the RUNNING turn (prompt.steered). The receipt is queue
-      // bookkeeping only — the content is not context yet; the running turn's
-      // next step boundary delivers it (deliverPendingSteers), so the transcript
-      // gains its user frame there and not one frame earlier. The turn keeps
-      // running and the steered prompt settles with it. Without an active
-      // prompt the real route answers PROMPT_NOT_FOUND (40402).
-      // A scenario can hold the receipt so the walker sees the in-flight
-      // phase of "send now" (the request is on the wire, not yet accepted).
       const replyDelay = this.scenario?.data.steerReplyDelayMs ?? 0;
       if (replyDelay > 0 && body?.__held !== true) {
         setTimeout(() => { this.route(res, path, query, { ...(body ?? {}), __held: true }, method, req); }, replyDelay);
@@ -5579,9 +5835,13 @@ class FixtureServer {
       const agentId = query.get('agent_id') ?? 'main';
       const queue = agentId === 'main' ? session.queuedPrompts : session.childQueues?.[agentId] ?? [];
       const item = queue.find(candidate => candidate.prompt_id === promptId);
-      if (item === undefined) return this.envelope(res, null, 40402, 'prompt.not_found');
+      if (item === undefined) {
+        const existing = this.fixtureSteerReceipt(session, promptId);
+        if (existing !== undefined) return this.envelope(res, existing);
+        return this.envelope(res, null, 40402, 'prompt.not_found');
+      }
       this.acceptFixtureSteer(session, agentId, item);
-      return this.envelope(res, { steered: false, prompt_ids: [promptId], delivery_state: 'accepted' });
+      return this.envelope(res, this.fixtureSteerReceipt(session, promptId) ?? { steered: false, prompt_ids: [promptId], delivery_state: 'accepted' });
     }
     const replaceMatch = /^\/prompts\/([^/]+):replace$/.exec(tail);
     if (replaceMatch !== null) {
@@ -5798,33 +6058,53 @@ class FixtureServer {
   async handleControl(body, res) {
     switch (body.action) {
       case 'notification_completions': {
+        if (this.notifications === undefined) resetNotifications(this);
         const previous = new Map((this.notifications?.completions ?? []).map((item) => [item.session_id, item.episode_id]));
-        this.notifications.completions = structuredClone(body.completions);
-        for (const completion of this.notifications.completions) {
-          if (previous.get(completion.session_id) === completion.episode_id) continue;
-          const session = this.sessions.get(completion.session_id);
-          if (session !== undefined) {
-            session.record.updated_at = new Date(completion.completed_at).toISOString();
-            this.emit(completion.session_id, {
-              type: 'event.session.work_changed',
-              payload: {
-                busy: false,
-                executing: false,
-                main_turn_active: false,
-                pending_interaction: 'none',
-                last_turn_reason: 'completed',
-              },
-            });
-            this.emit(completion.session_id, {
-              type: 'session.meta.updated',
-              payload: {
-                title: session.record.title,
-                patch: { title: session.record.title },
-              },
-            });
+        if (typeof body.window_ms === 'number') this.notifications.completionWindowMs = body.window_ms;
+        if (Array.isArray(body.completions)) {
+          this.notifications.completions = structuredClone(body.completions);
+          for (const completion of this.notifications.completions) {
+            if (previous.get(completion.session_id) === completion.episode_id) continue;
+            const session = this.sessions.get(completion.session_id);
+            if (session !== undefined) {
+              session.record.updated_at = new Date(completion.completed_at).toISOString();
+              this.emit(completion.session_id, {
+                type: 'event.session.work_changed',
+                payload: {
+                  busy: false,
+                  executing: false,
+                  main_turn_active: false,
+                  pending_interaction: 'none',
+                  last_turn_reason: 'completed',
+                },
+              });
+              this.emit(completion.session_id, {
+                type: 'session.meta.updated',
+                payload: {
+                  title: session.record.title,
+                  patch: { title: session.record.title },
+                },
+              });
+            }
           }
         }
-        return this.envelope(res, this.notifications.completions);
+        return this.envelope(res, this.listActiveCompletions());
+      }
+      case 'child_activity': {
+        const session = this.sessions.get(body.session_id);
+        if (session === undefined) return this.envelope(res, null, 40401, 'session.not_found');
+        const at = typeof body.at === 'string' ? body.at : now();
+        this.recordChildActivity(body.session_id, at);
+        return this.envelope(res, { session_id: body.session_id, updated_at: at });
+      }
+      case 'thread_workspace_override': {
+        this.threadWorkspaceOverrides ??= {};
+        if (body.enabled === null || body.enabled === undefined) {
+          delete this.threadWorkspaceOverrides[body.workspace_id];
+        } else {
+          this.threadWorkspaceOverrides[body.workspace_id] = body.enabled === true;
+        }
+        return this.envelope(res, { workspace_id: body.workspace_id, enabled: this.threadWorkspaceOverrides[body.workspace_id] ?? null });
       }
       case 'recipe_read_fail_next':
         // Refuses the next Recipe reads, so a page's load failure and its retry
@@ -5854,10 +6134,9 @@ class FixtureServer {
         else this.harnessQuotaFailSources.add(String(body.source ?? ''));
         return this.envelope(res, { failing: [...this.harnessQuotaFailSources] });
       case 'cron_fail_next_write':
-        // Arms a one-shot refusal of the next cron create/update, so the
-        // panel's real-failure path (draft kept, panel open) is walkable
-        // against the mock rather than asserted in the abstract.
-        this.cronFailNextWrite = true;
+        this.cronFailNextWrite = typeof body.code === 'number' || typeof body.msg === 'string'
+          ? { code: body.code, msg: body.msg }
+          : true;
         return this.envelope(res, { armed: true });
       case 'cron_next_run_result':
         this.cronNextRunResult = body.result;
@@ -6012,6 +6291,7 @@ class FixtureServer {
         if (session === undefined) return this.envelope(res, null, 40401, 'session.not_found');
         session.epoch = `ep_fixture_${Date.now().toString(36)}`;
         session.transcript.epoch = session.epoch;
+        session.journal = [];
         this.klient.resync(session);
         for (const connection of this.sockets) {
           if (connection.subscriptions?.has(session.record.id)) {
