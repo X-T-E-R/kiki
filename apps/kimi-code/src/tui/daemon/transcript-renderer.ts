@@ -41,6 +41,7 @@ import type {
   SystemBlock,
   ThinkingBlock,
   ToolBlock,
+  TurnTailInfo,
   UserBlock,
 } from '@kiki/session-core/session/transcript/types';
 
@@ -200,6 +201,7 @@ export class DaemonTranscriptRenderer {
       blocks === this.lastSourceBlocks &&
       ingress === this.lastIngress &&
       context.liveTurnId === this.context.liveTurnId &&
+      context.turnTail === this.context.turnTail &&
       context.tasks === this.context.tasks &&
       context.forest === this.context.forest &&
       context.toolMetaRevision === this.context.toolMetaRevision
@@ -209,6 +211,24 @@ export class DaemonTranscriptRenderer {
     this.lastSourceBlocks = blocks;
     this.lastIngress = ingress;
     this.context = context;
+    const tail = context.turnTail;
+    const promptlessTailFailure: NoticeBlock | undefined =
+      tail?.state === 'failed' &&
+      !blocks.some(
+        (block) =>
+          (block.kind === 'user' && block.turnId === tail.turnId && block.promptOutcome !== undefined) ||
+          (block.kind === 'notice' && block.tone === 'danger' && block.turnId === tail.turnId),
+      )
+        ? {
+            kind: 'notice',
+            id: `turn-tail-${tail.turnId}`,
+            turnId: tail.turnId,
+            tone: 'danger',
+            text: tail.error ?? 'Turn failed',
+            errorDetails: tail.errorDetails,
+            createdAt: tail.endedAt,
+          }
+        : undefined;
     const receipts: UserBlock[] = ingress.filter((item) =>
       (item.admission === 'failed' || item.admission === 'cancelled' || item.admission === 'held') &&
       !blocks.some((block) => block.kind === 'user' && block.promptId === item.prompt_id),
@@ -229,7 +249,14 @@ export class DaemonTranscriptRenderer {
       };
       return receipt;
     });
-    this.lastBlocks = receipts.length === 0 ? blocks : [...blocks, ...receipts];
+    this.lastBlocks =
+      promptlessTailFailure === undefined && receipts.length === 0
+        ? blocks
+        : [
+            ...blocks,
+            ...(promptlessTailFailure === undefined ? [] : [promptlessTailFailure]),
+            ...receipts,
+          ];
     this.mountChildren();
     this.ui?.requestRender();
   }
@@ -915,6 +942,7 @@ export function createBlockComponent(
 
 export interface TranscriptContext {
   readonly liveTurnId?: string;
+  readonly turnTail?: TurnTailInfo;
   readonly forest?: AgentForest;
   readonly tasks?: readonly EndingTask[];
   readonly ingress?: readonly import('@kiki/protocol').PromptItem[];

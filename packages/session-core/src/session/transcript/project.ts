@@ -4650,7 +4650,6 @@ export function agentTranscriptToBlocks(
       });
     }
   }
-  if (!subagentPromptAsUser) dropTailTurnFailureNotices(blocks, response.items.findLast((item) => item.kind === 'turn'));
   for (const { item, task } of pendingShellTaskRefs) {
     if (shellFrameTaskIds.has(task.taskId)) continue;
     deferredTaskBlocks.push({
@@ -5718,6 +5717,9 @@ export function projectAgentTranscriptView(
     return runtimeControls === block.runtimeControls ? block : { ...block, runtimeControls };
   });
   const withSnapshotFields = overlaySnapshotSubagentFields(blocks, previous.snapshotSubagents);
+  if (agentId === MAIN_AGENT_ID) {
+    dropTailTurnFailureNotices(withSnapshotFields, snapshot.items.findLast((item) => item.kind === 'turn'));
+  }
   const stableBlocks = stabilizeProjectedBlocks(previous.blocks, withSnapshotFields);
   let firstTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;
   let lastTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;

@@ -5387,6 +5387,7 @@ export class DaemonTUI {
     this.contentContinuations.syncBlocks(view.blocks, view.detailLoads);
     this.renderer.sync(view.blocks, {
       liveTurnId: view.busy ? latestTurnId(view.blocks) : undefined,
+      turnTail: view.busy ? undefined : view.turnTail,
       forest: this.controller?.getForest(),
       tasks: view.tasks,
       ingress: this.focusedAgentId === 'main' ? view.durableIngress : undefined,

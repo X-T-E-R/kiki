@@ -174,7 +174,7 @@ test('memory provenance fixture exposes a real pending create and preserves its 
     const restored = await memoryRequest(server, 'GET', `global/${candidate.id}`);
     assert.equal(restored.data.status, 'pending');
     assert.deepEqual(restored.data.basis, candidate.basis);
-    const withdrawn = await memoryRequest(server, 'POST', 'global/undo', { operation_id: 'op_fixture_provenance_pending' });
+    const withdrawn = await memoryRequest(server, 'POST', 'global/undo', { operation_id: '00000000-0000-4000-8000-000000000999' });
     assert.equal(withdrawn.code, 0);
     assert.equal((await memoryRequest(server, 'GET', `global/${candidate.id}`)).code, 40423);
   } finally { await server.stop(); }
@@ -190,13 +190,13 @@ test('memory provenance REST loop reads automatic metadata, undoes its real jour
     assert.equal(same.data.outcome, 'unchanged');
     assert.equal(same.data.operationId, null);
     assert.equal(same.data.entry.revision, stored.data.revision);
-    const undone = await memoryRequest(server, 'POST', 'global/undo', { operation_id: 'op_fixture_provenance_applied' });
+    const undone = await memoryRequest(server, 'POST', 'global/undo', { operation_id: '00000000-0000-4000-8000-000000000111' });
     assert.equal(undone.code, 0);
     const before = (await memoryRequest(server, 'GET', `global/${id}`)).data;
     assert.equal(before.basis, undefined);
     const edited = await memoryRequest(server, 'PUT', `global/${id}`, { action: 'update', type: before.type, title: before.title, body: 'A newer rule from another window.', reason: 'Current human correction.', expected_revision: before.revision, basis: { kind: 'human', note: 'Explicit current correction.' } });
     assert.equal(edited.data.outcome, 'applied');
-    const conflict = await memoryRequest(server, 'POST', 'global/undo', { operation_id: 'op_fixture_provenance_applied' });
+    const conflict = await memoryRequest(server, 'POST', 'global/undo', { operation_id: '00000000-0000-4000-8000-000000000111' });
     assert.equal(conflict.code, 40944);
     assert.equal((await memoryRequest(server, 'GET', `global/${id}`)).data.body, 'A newer rule from another window.');
   } finally { await server.stop(); }
