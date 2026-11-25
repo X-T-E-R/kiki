@@ -23,6 +23,7 @@ type ResolvePlanResult =
 export class ExitPlanModeTool implements IExitPlanModeTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'ExitPlanMode' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description: string = DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(ExitPlanModeInputSchema);
 

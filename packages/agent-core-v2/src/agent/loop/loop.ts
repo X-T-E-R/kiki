@@ -171,6 +171,11 @@ export interface StepBoundary {
   readonly turnId: number;
 }
 
+export interface StepBoundaryOptions {
+  /** Whether requesting this boundary should preempt active foreground tools via steerSignal. Defaults to true. */
+  readonly preemptForeground?: boolean;
+}
+
 export interface IAgentLoopService {
   readonly _serviceBrand: undefined;
 
@@ -201,7 +206,10 @@ export interface IAgentLoopService {
   tryAcquireQuiescence(options?: { readonly pendingSteps?: 'preserve'; readonly boundary?: StepBoundary }): IDisposable | undefined;
 
   /** Runs a control operation after the active request and its tool results, before another request. */
-  atStepBoundary(run: (boundary: StepBoundary | undefined) => Promise<void>): Promise<void>;
+  atStepBoundary(
+    run: (boundary: StepBoundary | undefined) => Promise<void>,
+    options?: StepBoundaryOptions,
+  ): Promise<void>;
 
   /** Failure-sensitive waiters reject when finalization is blocked; ordinary waiters remain held until the loop is idle. */
   settled(options?: { readonly rejectOnPersistenceFailure?: boolean }): Promise<void>;

@@ -276,6 +276,7 @@ const READ_DESCRIPTION = renderPrompt(readDescriptionTemplate, {
 export class ReadTool implements IReadTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Read' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = READ_DESCRIPTION;
   get parameters(): Record<string, unknown> {
     return hostToolParameters(ReadInputSchema, this.runtime.nativeSshEnabled?.() === true);

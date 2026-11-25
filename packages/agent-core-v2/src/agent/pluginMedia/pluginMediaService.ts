@@ -7,6 +7,7 @@ import { IPluginMediaService } from '#/app/pluginMedia/pluginMedia';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentTaskService } from '#/agent/task/task';
+import { MAIN_FOREGROUND_AUTO_DETACH_MS } from '#/agent/task/foregroundPolicy';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IAgentPluginMediaService } from './pluginMedia';
@@ -33,9 +34,10 @@ export class AgentPluginMediaService extends Service implements IAgentPluginMedi
     if (recovery !== undefined) this._register(recovery);
   }
 
-  api(requestId: string, admittedRequest?: MediaRequest): PluginMediaApi {
+  api(requestId: string, admittedRequest?: MediaRequest, steerSignal?: AbortSignal, signal?: AbortSignal, startedAt?: number): PluginMediaApi {
     return {
       generate: async (raw) => {
+        const callStartedAt = startedAt ?? Date.now();
         const input = mediaGenerateInputSchema.parse(raw);
         const admitted = admittedRequest === undefined ? input.request.kind === 'tts' : JSON.stringify(input.request) === JSON.stringify(admittedRequest);
         if (!admitted) throw new Error('Media input changed after tool/path admission. Retry with the current request.');
@@ -46,8 +48,18 @@ export class AgentPluginMediaService extends Service implements IAgentPluginMedi
           sessionId: this.session.sessionId, agentId: this.agent.agentId, mediaScope: this.session.scope('media'), identity, parentAgentId: this.agent.parentAgentId,
         });
         if (!['running', 'pending'].includes(job.state)) return job;
-        const taskId = await this.attach(job, input.execution === 'background');
-        if (input.execution === 'auto') {
+        const remainingFgMs = MAIN_FOREGROUND_AUTO_DETACH_MS - Math.max(0, Date.now() - callStartedAt);
+        const startDetached =
+          input.execution === 'background' ||
+          (input.execution === 'auto' && ((!signal?.aborted && steerSignal?.aborted === true) || remainingFgMs <= 0));
+        const taskId = await this.attach(
+          job,
+          startDetached,
+          startDetached ? undefined : steerSignal,
+          startDetached ? undefined : signal,
+          startDetached ? undefined : Math.max(1, remainingFgMs),
+        );
+        if (input.execution === 'auto' && !startDetached) {
           await this.tasks.waitForForegroundRelease(taskId);
           const result = await this.media.job(job.job_id);
           if (!['running', 'pending'].includes(result.state)) await this.tasks.suppressTerminalNotification(taskId);
@@ -125,10 +137,15 @@ export class AgentPluginMediaService extends Service implements IAgentPluginMedi
     return record;
   }
 
-  private async attach(job: MediaJob, detached: boolean): Promise<string> {
+  private async attach(job: MediaJob, detached: boolean, steerSignal?: AbortSignal, signal?: AbortSignal, foregroundTimeoutMs = MAIN_FOREGROUND_AUTO_DETACH_MS): Promise<string> {
     if (job.task_id !== undefined && this.tasks.getTask(job.task_id)?.status === 'running') return job.task_id;
     const id = this.tasks.registerTask(mediaTask(this.media, job.job_id), {
-      detached, detachTimeoutMs: detached ? undefined : 15_000, autoBackgroundOnTimeout: true,
+      detached,
+      timeoutMs: detached ? undefined : foregroundTimeoutMs,
+      detachTimeoutMs: detached ? undefined : 0,
+      autoBackgroundOnTimeout: true,
+      signal: detached ? undefined : signal,
+      steerSignal: detached ? undefined : steerSignal,
     });
     await this.media.bindTask(job.job_id, id);
     return id;

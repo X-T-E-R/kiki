@@ -221,6 +221,7 @@ const SMALL_MEDIA_READ_BYTES = 256 * 1024;
 export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'ReadMediaFile' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description: string;
   get parameters(): Record<string, unknown> {
     return hostToolParameters(ReadMediaFileInputSchema, this.runtime.nativeSshEnabled?.() === true);

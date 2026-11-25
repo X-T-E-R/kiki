@@ -1,6 +1,7 @@
 import type { PublicError, SearchInput, SearchRunSyncEnvelope } from '@nb-corp/nb-search';
 import { parseNativeSearchInput, nativeSearchParameters } from '#/app/nbSearch/nativeInput';
 import { renderNativeEnvelope } from '#/app/nbSearch/nativeOutput';
+import { isAbortError } from '#/_base/utils/abort';
 import { sliceUtf16 } from '#/_base/text/utf16';
 
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
@@ -21,6 +22,7 @@ import DESCRIPTION from './web-search.md?raw';
 export class WebSearchTool implements IWebSearchTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'WebSearch' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   get description(): string {
     return `${DESCRIPTION}\n\n${this.nbSearch.toolDescription('WebSearch')}`;
   }
@@ -47,15 +49,29 @@ export class WebSearchTool implements IWebSearchTool {
 
   private async execution(
     args: SearchInput,
-    { toolCallId, signal }: ExecutableToolContext,
+    { toolCallId, signal, steerSignal }: ExecutableToolContext,
   ): Promise<ExecutableToolResult> {
+    const steer = args.action === 'run' && args.execution !== 'async' ? steerSignal : undefined;
+    if (!signal.aborted && steer?.aborted === true) {
+      return {
+        isError: false,
+        output: 'New input arrived before this search started; it was not started. Read the new input before deciding whether to run it.',
+      };
+    }
+    const requestSignal = steer === undefined ? signal : AbortSignal.any([signal, steer]);
     try {
-      const result = await this.nbSearch.search(args, { requestId: toolCallId, signal });
+      const result = await this.nbSearch.search(args, { requestId: toolCallId, signal: requestSignal });
       signal.throwIfAborted();
       const compact = args.action === 'run' && typeof args.query === 'string';
       return compact && result.action === 'run' && result.execution === 'sync' ? renderSearchResult(result) : renderNativeEnvelope(result);
     } catch (error) {
       signal.throwIfAborted();
+      if (steer?.aborted === true && (error === steer.reason || isAbortError(error))) {
+        return {
+          isError: false,
+          output: 'New input ended this search early. Read the new input before deciding whether to retry it.',
+        };
+      }
       return { isError: true, output: classifyThrownSearchError(error) };
     }
   }

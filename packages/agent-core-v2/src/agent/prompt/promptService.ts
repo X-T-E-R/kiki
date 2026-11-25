@@ -830,6 +830,8 @@ export class AgentPromptService implements IAgentPromptService {
   private active: (Record & { turn: Turn }) | undefined;
   private readonly pending: Record[] = [];
   private readonly immediatePromptIds = new Set<string>();
+  private readonly pendingLaunchSteerIds = new Set<string>();
+  private readonly pendingAbortCommits = new Set<Promise<void>>();
   private readonly appliedThinkingClears = new Set<string>();
   private readonly queuedExternalSteerIds = new Set<string>();
   private readonly steered = new Map<string, Record[]>();
@@ -1108,7 +1110,7 @@ export class AgentPromptService implements IAgentPromptService {
         else await this.runModelSwitch(target, boundary);
         if (target === live.operationId) return;
       } while (live.setting && this.switchFlight === undefined && this.getModelSwitch(live.operationId)?.state === 'pending');
-    }).catch(onUnexpectedError).finally(() => {
+    }, { preemptForeground: false }).catch(onUnexpectedError).finally(() => {
       this.liveSwitchBoundaries.delete(live.operationId);
       for (const item of live.prompts) this.boundaryPromptIds.delete(item.id);
     });
@@ -2275,7 +2277,7 @@ export class AgentPromptService implements IAgentPromptService {
       live.prompts.push(...fresh);
       return live.promise;
     }
-    return this.loop.atStepBoundary(boundary => this.runSwitchBoundary(fresh, boundary)).catch(error => {
+    return this.loop.atStepBoundary(boundary => this.runSwitchBoundary(fresh, boundary), { preemptForeground: false }).catch(error => {
       for (const item of fresh) this.boundaryPromptIds.delete(item.id);
       onUnexpectedError(error);
     });
@@ -2427,11 +2429,20 @@ export class AgentPromptService implements IAgentPromptService {
   private async deliverAcceptedSteer(item: Record, targetTurnId?: number): Promise<void> {
     try {
       if (this.closing !== undefined || !this.pending.includes(item)) return;
-      if (targetTurnId === undefined || this.loop.status().activeTurnId !== targetTurnId) return;
+      if (this.launching && targetTurnId === undefined) {
+        this.pendingLaunchSteerIds.add(item.id);
+        return;
+      }
+      const activeTurnId = this.active?.turn.id ?? this.loop.status().activeTurnId;
+      if (targetTurnId !== undefined && activeTurnId !== targetTurnId) return;
+      if (activeTurnId === undefined) return;
+      this.pendingLaunchSteerIds.delete(item.id);
       await this.steer([item.id]);
     } catch (error) {
       if (this.closing !== undefined || !this.pending.includes(item)) return;
-      if (this.loop.status().activeTurnId !== targetTurnId || (isError2(error) && error.code === ErrorCodes.PROMPT_NOT_FOUND)) return;
+      const currentTurnId = this.active?.turn.id ?? this.loop.status().activeTurnId;
+      if ((targetTurnId !== undefined && currentTurnId !== targetTurnId) || (isError2(error) && error.code === ErrorCodes.PROMPT_NOT_FOUND)) return;
+      this.pendingLaunchSteerIds.delete(item.id);
       this.pending.splice(this.pending.indexOf(item), 1);
       item.state = 'failed'; item.error = toErrorPayload(error);
       item.launchedDeferred.resolve(undefined);
@@ -2558,6 +2569,7 @@ export class AgentPromptService implements IAgentPromptService {
       if (blocked) {
         const blockError = extractHookBlockError(hookMessages);
         for (const item of selected) {
+          this.pendingLaunchSteerIds.delete(item.id);
           this.pending.splice(this.pending.indexOf(item), 1);
           item.state = 'blocked';
           item.error = blockError;
@@ -2622,6 +2634,7 @@ export class AgentPromptService implements IAgentPromptService {
       }
       for (const item of selected) {
         this.immediatePromptIds.delete(item.id);
+        this.pendingLaunchSteerIds.delete(item.id);
         item.state = 'steered';
         item.launchedDeferred.resolve(turn);
         this.steeredTurnIds.set(item.id, turn.id);
@@ -2761,18 +2774,49 @@ export class AgentPromptService implements IAgentPromptService {
     }
   }
 
+  private persistRestoredPendingAbort(promptId: string): Promise<void> {
+    const aborted = this.dispatcher.dispatch(new PromptAborted({ promptId, abortedAt: new Date().toISOString(), beforeStart: true }));
+    const outcome = this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal: { promptId, state: 'cancelled' } }));
+    this.syncRecoveryHold();
+    const commit = (async () => {
+      await aborted;
+      await outcome;
+      await this.dispatcher.flush();
+    })();
+    this.pendingAbortCommits.add(commit);
+    const cleanup = (): void => {
+      this.pendingAbortCommits.delete(commit);
+    };
+    void commit.then(cleanup, cleanup);
+    return commit;
+  }
+
   abort(promptId: string, reason: Error = userCancellationReason()): boolean {
     const cancelled = this.cancelLivePrompt(promptId, reason);
     if (cancelled === undefined) {
       const known = this.lookup(promptId);
       if (known?.phase === 'pending') {
-        void this.dispatcher.dispatch(new PromptAborted({ promptId, abortedAt: new Date().toISOString(), beforeStart: true }));
-        void this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal: { promptId, state: 'cancelled' } }));
+        void this.persistRestoredPendingAbort(promptId).catch(onUnexpectedError);
         return true;
       }
       if (known !== undefined) return false;
       throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, `prompt ${promptId} not found`);
     }
+    return cancelled;
+  }
+
+  async abortDurably(promptId: string, reason: Error = userCancellationReason()): Promise<boolean> {
+    const cancelled = this.cancelLivePrompt(promptId, reason);
+    if (cancelled === undefined) {
+      const known = this.lookup(promptId);
+      if (known?.phase === 'pending') {
+        await this.persistRestoredPendingAbort(promptId);
+        return true;
+      }
+      if (known !== undefined) return false;
+      throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, `prompt ${promptId} not found`);
+    }
+    if (cancelled) await this.wire.flush();
     return cancelled;
   }
 
@@ -2785,13 +2829,14 @@ export class AgentPromptService implements IAgentPromptService {
       if (secondary.state === 'cancelled') return false;
       this.cancelUnlaunched(secondary, true);
       this.syncRecoveryHold();
+      await this.wire.flush();
       return true;
     }
     if (this.launchingPrompt?.record.id === promptId && this.launchingCommitStarted) return false;
-    if (this.pending.some((item) => item.id === promptId) || this.launchingPrompt?.record.id === promptId) return this.abort(promptId);
-    await this.dispatcher.dispatch(new PromptAborted({ promptId, abortedAt: new Date().toISOString(), beforeStart: true }));
-    await this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal: { promptId, state: 'cancelled' } }));
-    this.syncRecoveryHold();
+    if (this.pending.some((item) => item.id === promptId) || this.launchingPrompt?.record.id === promptId) {
+      return this.abortDurably(promptId);
+    }
+    await this.persistRestoredPendingAbort(promptId);
     return true;
   }
 
@@ -2836,6 +2881,7 @@ export class AgentPromptService implements IAgentPromptService {
   private cancelUnlaunched(item: Record, beforeStart: boolean): void {
     this.releaseRecordWorkAdmission(item);
     this.immediatePromptIds.delete(item.id);
+    this.pendingLaunchSteerIds.delete(item.id);
     this.recoveryPendingIds.delete(item.id);
     if (this.queuedExternalSteerIds.delete(item.id)) void this.dispatcher.dispatch(new ExecutorHintDelivery({
       executorId: this.profile.data().executorId, promptId: item.id, origin: item.message.origin?.kind ?? 'user', method: 'undelivered', status: 'undelivered',
@@ -2872,6 +2918,7 @@ export class AgentPromptService implements IAgentPromptService {
     item.detachedForClose = true;
     item.state = 'cancelled';
     this.immediatePromptIds.delete(item.id);
+    this.pendingLaunchSteerIds.delete(item.id);
     this.recoveryPendingIds.delete(item.id);
     item.launchedDeferred.resolve(undefined);
     item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'cancelled' });
@@ -2916,6 +2963,7 @@ export class AgentPromptService implements IAgentPromptService {
       await active.turn.result;
     }
     await this.recoveryFlight;
+    await Promise.allSettled([...this.pendingAbortCommits]);
   }
 
   inject(message: ContextMessage, options?: PromptInjectOptions): Promise<Turn | undefined> {
@@ -3269,11 +3317,22 @@ export class AgentPromptService implements IAgentPromptService {
       for (const candidate of deliverable) {
         candidate.state = 'running'; candidate.launchedDeferred.resolve(turn);
         this.immediatePromptIds.delete(candidate.id);
+        this.pendingLaunchSteerIds.delete(candidate.id);
         this.recoveryPendingIds.delete(candidate.id);
         if (candidate !== item) this.steeredTurnIds.set(candidate.id, turn.id);
         if (!controller.signal.aborted) this.publishStarted(candidate);
       }
       if (controller.signal.aborted) turn.cancel(controller.signal.reason);
+      else if (this.pendingLaunchSteerIds.size > 0 && (this.profile.data().executorId ?? 'native') === 'native') {
+        const queuedSteers = [...this.pendingLaunchSteerIds];
+        this.pendingLaunchSteerIds.clear();
+        for (const queuedId of queuedSteers) {
+          const pending = this.pending.find((candidate) => candidate.id === queuedId);
+          if (pending === undefined || this.steeringPromptIds.has(pending.id)) continue;
+          this.steeringPromptIds.add(pending.id);
+          void this.deliverAcceptedSteer(pending, turn.id);
+        }
+      }
       this.whenTurnDurable(turn, (result) => this.settle(item, result));
     } catch (error) {
       if (this.queuedExternalSteerIds.delete(item.id)) await this.dispatcher.dispatch(new ExecutorHintDelivery({
@@ -3306,7 +3365,10 @@ export class AgentPromptService implements IAgentPromptService {
         this.launchingPrompt = undefined;
         this.launching = false;
         launchSettled.resolve();
-        if (this.active === undefined) this.scheduleNext();
+        if (this.active === undefined) {
+          this.pendingLaunchSteerIds.clear();
+          this.scheduleNext();
+        }
       }
     }
   }

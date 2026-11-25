@@ -25,6 +25,7 @@ export class CronListTool implements ICronListTool {
   declare readonly _serviceBrand: undefined;
 
   readonly name = 'CronList' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = CRON_LIST_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(
     CronListInputSchema,

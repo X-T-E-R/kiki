@@ -487,6 +487,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     if (this.registrations.has(name)) return;
     if (this.registry.resolve(name) !== undefined) throw new BrowserError('browser.invalid', `Browser tool name collision: ${name}`);
     const registration = this.registry.register({ name,
+      foregroundPolicy: 'bounded_io',
       description: `${tool.description}\nIn Kiki, browser and browserTab use this agent's explicit connection and tab selection.${tool.name === 'codex_browser_js' ? ' With a selected tab, kikiTab is bound through the official cua.getTab API. Use that binding and the official documentation; this is not a JavaScript sandbox or an agent-browser command.' : ''} A timeout does not confirm the action; check the execution state before continuing.`,
       parameters: projectBrowserToolSchema(tool),
       resolveExecution: async (raw: unknown): Promise<ToolExecution> => {
@@ -668,6 +669,7 @@ export const IBrowserConnectionsTool = createDecorator<IBrowserConnectionsTool>(
 export class BrowserConnectionsTool implements IBrowserConnectionsTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'BrowserConnections';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = 'Discover saved browser connections and an installed Ego Lite CLI. Check, select, or connect one explicitly, inspect its real execution state, or disconnect it. A check does not replay a timed-out command or stop the browser. Connecting after that check reattaches when the browser is still running: the command is not replayed and a replacement browser is not opened. A selected tab that is no longer listed is cleared and is not replaced by another tab. Loading groups or tools registers those typed operations. When SelectTools is available, the next step announces them, SelectTools loads an exact registered name, and the schema arrives on the following step; until that selection they stay off the top-level tool list. When SelectTools is unavailable, a registered name joins the top-level tool list the next time that list is built for a user turn. Omitted browser uses only this agent\'s selected connection or the new-session default; never a guessed ready browser.';
   readonly parameters = toInputJsonSchema(BrowserConnectionsInputSchema);
   constructor(@IAgentBrowserService private readonly browser: IAgentBrowserService) {}
@@ -681,6 +683,7 @@ export const IBrowserTabsTool = createDecorator<IBrowserTabsTool>('browserTabsTo
 export class BrowserTabsTool implements IBrowserTabsTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'BrowserTabs';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = 'List, open, explicitly select or close tabs in a selected browser connection. Targets are exact identities returned by this provider (CDP targetIds or official extension tab ids), not tab indexes. Window and frame operations require provider support. It never follows the user\'s foreground tab. Read a fresh snapshot after changing tab/frame or reconnecting.';
   readonly parameters = toInputJsonSchema(BrowserTabsInputSchema);
   constructor(@IAgentBrowserService private readonly browser: IAgentBrowserService) {}
@@ -694,6 +697,7 @@ export const IBrowserEgoRunTool = createDecorator<IBrowserEgoRunTool>('browserEg
 export class BrowserEgoRunTool implements IBrowserEgoRunTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'browser__ego_run';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = 'Run one script in this agent\'s Ego Lite space. `task` is already bound to that space. `shotDir` is an absolute directory for this call; write a file such as `page.screenshot({ path: shotDir + \'/shot.png\' })`. A screenshot counts only when the script writes a png or jpeg there. Omitting `path` leaves the file in the system temp directory, and that file is not attached. Print `page.snapshot()` when the next step needs refs. Kiki does not install Ego Lite and does not import Chrome data.';
   readonly parameters = toInputJsonSchema(BrowserEgoRunInputSchema);
   constructor(@IAgentBrowserService private readonly browser: IAgentBrowserService) {}

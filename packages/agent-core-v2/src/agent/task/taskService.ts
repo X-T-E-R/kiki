@@ -16,6 +16,7 @@ import { timeRestorePhase, withoutRestoreAttempt } from '#/session/agentLifecycl
 import { defineState } from '#/state/state';
 import {
   abortable,
+  isUserCancellation,
   userCancellationReason,
 } from '#/_base/utils/abort';
 import { setClampedTimeout } from '#/_base/utils/timer';
@@ -621,8 +622,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       lifetime: options.lifetime,
       timeoutMs,
       detachTimeoutMs: options.detachTimeoutMs,
+      detachTimeoutMode: options.detachTimeoutMode,
       autoBackgroundOnTimeout: options.autoBackgroundOnTimeout,
       signal: detached ? undefined : options.signal,
+      steerSignal: detached ? undefined : options.steerSignal,
     };
     const prior = options.taskId === undefined ? undefined : this.ghosts.get(options.taskId);
     const restored = prior?.status === 'running' && prior.kind === task.kind ? prior : undefined;
@@ -701,12 +704,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
           stopReason: status === 'failed' ? errorMessage(error) : undefined,
         });
       });
-    this.installForegroundSignal(entry);
-
-    if (this.isDetached(entry) && options.deferVisibility !== true) {
+    if (detached && options.deferVisibility !== true) {
       void this.persistLive(entry);
       this.recordTaskStarted(this.toInfo(entry));
     }
+    this.installForegroundSignal(entry);
     return entry.taskId;
   }
 
@@ -806,7 +808,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         lifetime: options.lifetime,
         timeoutMs,
         detachTimeoutMs: options.detachTimeoutMs,
+        detachTimeoutMode: options.detachTimeoutMode,
+        autoBackgroundOnTimeout: options.autoBackgroundOnTimeout,
         signal: detached ? undefined : options.signal,
+        steerSignal: detached ? undefined : options.steerSignal,
         description: options.description,
       },
       startedAt: Date.now(),
@@ -1414,13 +1419,26 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private applyDetachTimeout(entry: ManagedTask): void {
     const timeoutMs = entry.options.detachTimeoutMs;
     if (timeoutMs === undefined) return;
-    entry.options = { ...entry.options, timeoutMs };
+    const effectiveTimeoutMs =
+      timeoutMs > 0 && entry.options.detachTimeoutMode === 'total_budget'
+        ? timeoutMs - Math.max(0, Date.now() - entry.startedAt)
+        : timeoutMs;
+    entry.options = { ...entry.options, timeoutMs: effectiveTimeoutMs > 0 ? effectiveTimeoutMs : 0 };
     if (entry.timeoutHandle !== undefined) {
       clearTimeout(entry.timeoutHandle);
       entry.timeoutHandle = undefined;
     }
     if (timeoutMs > 0) {
-      this.armManagerTimeout(entry, timeoutMs);
+      if (effectiveTimeoutMs <= 0) {
+        void this.terminateWithGrace(entry, {
+          abortReason: 'Timed out',
+          finalStatus: 'timed_out',
+        }).catch((error) => {
+          this.log.error('task timeout could not confirm cleanup; task remains recoverable', { taskId: entry.taskId, error });
+        });
+      } else {
+        this.armManagerTimeout(entry, effectiveTimeoutMs);
+      }
     }
   }
 
@@ -1442,7 +1460,17 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   private canAutoBackgroundOnTimeout(entry: ManagedTask): boolean {
-    return entry.options.autoBackgroundOnTimeout === true && !this.isDetached(entry);
+    if (entry.options.autoBackgroundOnTimeout !== true || this.isDetached(entry)) return false;
+    const detachTimeoutMs = entry.options.detachTimeoutMs;
+    if (detachTimeoutMs !== undefined && detachTimeoutMs > 0 && entry.options.detachTimeoutMode === 'total_budget') {
+      if (entry.options.timeoutMs !== undefined && detachTimeoutMs <= entry.options.timeoutMs) {
+        return false;
+      }
+      if (detachTimeoutMs - Math.max(0, Date.now() - entry.startedAt) <= 0) {
+        return false;
+      }
+    }
+    return true;
   }
 
   async stop(taskId: string, reason?: string): Promise<AgentTaskInfo | undefined> {
@@ -2661,27 +2689,64 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   private installForegroundSignal(entry: ManagedTask): void {
     const signal = entry.options.signal;
-    if (signal === undefined) return;
+    const steerSignal = entry.options.steerSignal;
+    if (signal === undefined && steerSignal === undefined) return;
+    const cleanups: Array<() => void> = [];
 
-    const abortFromSignal = (): void => {
-      if (this.isDetached(entry)) return;
-      const userReason = userCancellationReason();
-      void this.terminateWithGrace(entry, {
-        stopReason: userReason.message,
-        abortReason: signal.reason,
-        finalStatus: 'killed',
-      }).catch((error) => {
-        this.log.error('task cancellation could not confirm cleanup; task remains recoverable', { taskId: entry.taskId, error });
+    if (signal !== undefined) {
+      const abortFromSignal = (): void => {
+        if (this.isDetached(entry)) return;
+        const reason = signal.reason;
+        const isDefaultAbort =
+          reason === undefined ||
+          (reason instanceof Error && reason.name === 'AbortError' && reason.message === 'This operation was aborted');
+        const stopReason =
+          isUserCancellation(reason) || isDefaultAbort
+            ? userCancellationReason().message
+            : reason instanceof Error && reason.message.trim().length > 0
+              ? reason.message
+              : typeof reason === 'string' && reason.trim().length > 0
+                ? reason
+                : undefined;
+        void this.terminateWithGrace(entry, {
+          stopReason,
+          abortReason: signal.reason,
+          finalStatus: 'killed',
+        }).catch((error) => {
+          this.log.error('task cancellation could not confirm cleanup; task remains recoverable', { taskId: entry.taskId, error });
+        });
+      };
+      if (signal.aborted) {
+        abortFromSignal();
+        return;
+      }
+      signal.addEventListener('abort', abortFromSignal, { once: true });
+      cleanups.push(() => {
+        signal.removeEventListener('abort', abortFromSignal);
       });
-    };
-    if (signal.aborted) {
-      abortFromSignal();
-      return;
     }
-    signal.addEventListener('abort', abortFromSignal, { once: true });
-    entry.foregroundSignalCleanup = () => {
-      signal.removeEventListener('abort', abortFromSignal);
-    };
+
+    if (steerSignal !== undefined) {
+      const detachFromSteer = (): void => {
+        if (this.isDetached(entry) || signal?.aborted === true) return;
+        this.detachEntry(entry, false);
+      };
+      if (steerSignal.aborted) {
+        detachFromSteer();
+        for (const cleanup of cleanups) cleanup();
+        return;
+      }
+      steerSignal.addEventListener('abort', detachFromSteer, { once: true });
+      cleanups.push(() => {
+        steerSignal.removeEventListener('abort', detachFromSteer);
+      });
+    }
+
+    if (cleanups.length > 0) {
+      entry.foregroundSignalCleanup = () => {
+        for (const cleanup of cleanups) cleanup();
+      };
+    }
   }
 
   private toInfo(entry: ManagedTask): AgentTaskInfo {

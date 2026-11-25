@@ -40,6 +40,7 @@ const PARENT_NOTIFY_DISABLED_MESSAGE =
 export class AgentNotifyTool implements IAgentNotifyTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'AgentNotify' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = AGENT_NOTIFY_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(AgentNotifyInputSchema);
 

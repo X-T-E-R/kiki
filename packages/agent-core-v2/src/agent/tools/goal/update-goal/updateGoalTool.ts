@@ -19,6 +19,7 @@ import {
 export class UpdateGoalTool implements IUpdateGoalTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'UpdateGoal' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description: string = DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(UpdateGoalToolInputSchema);
 

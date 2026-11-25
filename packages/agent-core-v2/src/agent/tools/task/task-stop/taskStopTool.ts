@@ -13,6 +13,7 @@ import TASK_STOP_DESCRIPTION from './task-stop.md?raw';
 export class TaskStopTool implements ITaskStopTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'TaskStop' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = TASK_STOP_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(TaskStopInputSchema);
 

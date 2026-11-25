@@ -24,6 +24,7 @@ import WRITE_DESCRIPTION from './write.md?raw';
 export class WriteTool implements IWriteTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Write' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = WRITE_DESCRIPTION;
   get parameters(): Record<string, unknown> {
     return hostToolParameters(WriteInputSchema, this.runtime.nativeSshEnabled?.() === true);

@@ -24,6 +24,7 @@ export interface TurnModelState {
   readonly authorizedInputTurnId?: number;
   readonly anchorTurnIds: readonly number[];
   readonly activeTurnIds?: readonly number[];
+  readonly openTurnIds?: readonly number[];
   readonly lastEnded?: {
     readonly turnId: number;
     readonly reason: 'completed' | 'cancelled' | 'failed' | 'blocked';
@@ -34,7 +35,9 @@ export interface TurnModelState {
 
 /** True when the latest observed turn opened without a matching `TurnEnded` fact (crash/restart interruption). */
 export function hasUnfinishedTurn(state: TurnModelState | undefined): boolean {
-  if (state === undefined || state.activeTurnIds === undefined || state.activeTurnIds.length === 0) return false;
+  if (state === undefined) return false;
+  if (state.openTurnIds !== undefined) return state.openTurnIds.length > 0;
+  if (state.activeTurnIds === undefined || state.activeTurnIds.length === 0) return false;
   const maxActive = Math.max(...state.activeTurnIds);
   return state.lastEnded === undefined || maxActive > state.lastEnded.turnId;
 }
@@ -132,10 +135,19 @@ function appendActiveTurnId(current: readonly number[] | undefined, turnId: numb
 
 export const turnKey = defineState(
   'turn',
-  (): TurnModelState => ({ nextTurnId: 0, cancelledTurnIds: [], heldCancelledTurns: {}, anchorTurnIds: [], activeTurnIds: [] }),
+  (): TurnModelState => ({
+    nextTurnId: 0,
+    cancelledTurnIds: [],
+    heldCancelledTurns: {},
+    anchorTurnIds: [],
+    activeTurnIds: [],
+    openTurnIds: [],
+  }),
 ).replayable({
   schema: z.custom<TurnModelState>().refine(
     (state) => Object.hasOwn(state, 'heldCancelledTurns') &&
+      Object.hasOwn(state, 'openTurnIds') &&
+      Array.isArray(state.openTurnIds) &&
       (state.lastEnded?.reason !== 'failed' || Object.hasOwn(state.lastEnded, 'error')),
   ),
 })
@@ -148,6 +160,10 @@ export const turnKey = defineState(
     if (turnId >= next.nextTurnId) next = advanceTurnClock(next, turnId + 1);
     const activeTurnIds = appendActiveTurnId(next.activeTurnIds, turnId);
     if (activeTurnIds !== next.activeTurnIds) next = { ...next, activeTurnIds };
+    if (next.lastEnded === undefined || turnId > next.lastEnded.turnId) {
+      const openTurnIds = appendActiveTurnId(next.openTurnIds, turnId);
+      if (openTurnIds !== next.openTurnIds) next = { ...next, openTurnIds };
+    }
     if (next.lastEnded !== undefined && turnId > next.lastEnded.turnId) {
       next = { ...next, lastEnded: undefined };
     }
@@ -158,6 +174,7 @@ export const turnKey = defineState(
     const next = {
       ...advanceTurnClock(s, Math.max(s.nextTurnId, turnId + 1)),
       activeTurnIds: appendActiveTurnId(s.activeTurnIds, turnId),
+      openTurnIds: appendActiveTurnId(s.openTurnIds, turnId),
     };
     if (!isUndoAnchorOrigin(e.origin)) return next;
     return { ...next, authorizedInputTurnId: turnId, anchorTurnIds: [...s.anchorTurnIds, turnId] };
@@ -165,6 +182,7 @@ export const turnKey = defineState(
   .on(ExternalActivity, (s, e) => ({
     ...advanceTurnClock(s, Math.max(s.nextTurnId, e.turnId + 1)),
     activeTurnIds: appendActiveTurnId(s.activeTurnIds, e.turnId),
+    openTurnIds: appendActiveTurnId(s.openTurnIds, e.turnId),
   }))
   .on(ExternalText, () => {})
   .on(TurnSteer, (s, e) => {
@@ -179,6 +197,9 @@ export const turnKey = defineState(
       activeTurnIds: firstRemoved === undefined
         ? []
         : (s.activeTurnIds ?? []).filter((id) => id < firstRemoved),
+      openTurnIds: firstRemoved === undefined
+        ? []
+        : (s.openTurnIds ?? []).filter((id) => id < firstRemoved),
       lastEnded:
         lastEnded !== undefined &&
         (firstRemoved === undefined || lastEnded.turnId >= firstRemoved)
@@ -186,8 +207,8 @@ export const turnKey = defineState(
           : lastEnded,
     };
   })
-  .on(ContextApplyCompaction, (s) => ({ ...s, anchorTurnIds: [], activeTurnIds: [] }))
-  .on(ContextClear, (s) => ({ ...s, anchorTurnIds: [], activeTurnIds: [] }))
+  .on(ContextApplyCompaction, (s) => ({ ...s, anchorTurnIds: [], activeTurnIds: [], openTurnIds: [] }))
+  .on(ContextClear, (s) => ({ ...s, anchorTurnIds: [], activeTurnIds: [], openTurnIds: [] }))
   .on(TurnCancel, (s, e) => {
     if (e.target === undefined || e.turnId === undefined) return;
     if (e.turnId < s.nextTurnId) return;
@@ -198,6 +219,7 @@ export const turnKey = defineState(
     const authorized = e.turnId === s.authorizedInputTurnId;
     return {
       ...clock,
+      openTurnIds: (s.openTurnIds ?? []).filter((id) => id !== e.turnId),
       authorizedInputTurnId: authorized ? undefined : s.authorizedInputTurnId,
       heldCancelledTurns: e.reason === 'cancelled'
         ? { ...s.heldCancelledTurns, [e.turnId]: true }

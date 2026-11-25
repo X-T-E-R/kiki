@@ -14,6 +14,7 @@ export class CronDeleteTool implements ICronDeleteTool {
   declare readonly _serviceBrand: undefined;
 
   readonly name = 'CronDelete' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = CRON_DELETE_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(
     CronDeleteInputSchema,

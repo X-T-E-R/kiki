@@ -19,6 +19,7 @@ import {
   SEND_PEER_THREAD_MESSAGE,
   peerSendCapability,
 } from '#/app/threadCommunication/peerThreadCapability';
+import { isAbortError } from '#/_base/utils/abort';
 import { Error2, ErrorCodes } from '#/errors';
 import { IRoomService, roomMemberId, type RoomDocument } from '#/app/room/room';
 
@@ -189,6 +190,7 @@ abstract class ThreadToolBase {
 export class ListThreadsTool extends ThreadToolBase implements IListThreadsTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'ThreadList';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description =
     'List unarchived Kiki sessions (threads) in the executing home by default, or within an approved space using bridge_id/connection_id, that allow thread communication, newest first, with the thread reference (host_id, workspace_id, session_id) the other thread tools need and each thread\'s state (cold, idle, running). Use it to find an existing session; to delegate new work, use AgentRun. `limit` is 1-100 (default 50). Pass `cursor` from the previous result to get the next page, with the same `workspace_id` filter; a cursor from a different filter is rejected.';
   readonly parameters = toInputJsonSchema(ListThreadsToolInputSchema);
@@ -226,6 +228,7 @@ export class ListThreadsTool extends ThreadToolBase implements IListThreadsTool 
 export class ReadThreadTool extends ThreadToolBase implements IReadThreadTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'ThreadRead';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description =
     'Read a thread without resuming it. This home returns finished main-agent turns. Small local turns keep complete input and output; long values may be returned as previews with stable contentRefs. Pass content_ref to retrieve a bounded view.segment of up to 16,384 UTF-16 units and follow segment.next. An approved space returns bounded view.transcript with coverage and stable contentRefs; pass content_ref to retrieve its next segment in view.segment. Reading is a separate bridge permission, never implied by send or GUI access. Each turn has its input, output, and a `reason` of completed, cancelled, failed, or blocked; a turn still running is not included. Returns the newest `limit` turns (1-100, default 20) in chronological order. While the local history projection is preparing, it may return `turns: []`, `incomplete: "history_preparing"`, and an opaque `nextCursor`; this is not an empty thread. Continue with that `nextCursor` using the same thread and bridge scope; the original older-turn boundary is retained. After preparation completes, normal ended-turn pages use the same limit and order. Existing read cursors remain accepted, but a history rewrite or generation change can invalidate a cursor; restart from the first page when that happens.';
   readonly parameters = toInputJsonSchema(ReadThreadToolInputSchema);
@@ -265,6 +268,7 @@ export class SendMessageToThreadTool
 {
   declare readonly _serviceBrand: undefined;
   readonly name = 'ThreadSend';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = THREAD_SEND_DESCRIPTION_SOURCE.replace(/\r?\n$/, '');
   readonly parameters = toInputJsonSchema(SendMessageToThreadToolInputSchema);
 
@@ -324,6 +328,7 @@ export class SendMessageToThreadTool
 export class WaitThreadsTool extends ThreadToolBase implements IWaitThreadsTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'ThreadWait';
+  readonly foregroundPolicy = 'steerable_wait' as const;
   readonly description =
     'Wait for new activity on 1-8 distinct threads in the executing home or approved space bridges (requires wait authority): a turn ending (terminal), the thread waiting on an approval or question (attention), a lifecycle change such as close or archive, or an undeliverable message. Returns as soon as any listed thread has activity after its cursor, or with `timedOut: true` after `timeout_ms` (0-60000, default 30000; 0 checks once). Without a cursor, only activity after the call starts counts. Pass each thread\'s returned `cursor` into the next call so nothing is missed or repeated; if a cursor has expired, retry without it. Use ThreadRead to read the turn content.';
   readonly parameters = toInputJsonSchema(WaitThreadsToolInputSchema);
@@ -343,16 +348,40 @@ export class WaitThreadsTool extends ThreadToolBase implements IWaitThreadsTool 
       description: 'Waiting for thread activity',
       execute: async (ctx) => {
         await this.requireCallerEnabled();
-        const result = await this.threads.waitThreads({
-          signal: ctx.signal,
-          caller: this.admissionCaller(),
-          threads: input.threads.map((item) => ({
-            thread: fromToolRef(item.thread),
-            cursor: item.cursor,
-          })),
-          timeoutMs: input.timeout_ms,
-        });
-        return { output: JSON.stringify(result, null, 2) };
+        if (!ctx.signal.aborted && ctx.steerSignal?.aborted === true) {
+          return {
+            output: JSON.stringify({
+              interrupted: true,
+              reason: 'steer',
+              note: 'New input arrived before this wait started. Read the new input before deciding whether to wait.',
+            }, null, 2),
+          };
+        }
+        const waitSignal = ctx.steerSignal === undefined ? ctx.signal : AbortSignal.any([ctx.signal, ctx.steerSignal]);
+        try {
+          const result = await this.threads.waitThreads({
+            signal: waitSignal,
+            caller: this.admissionCaller(),
+            threads: input.threads.map((item) => ({
+              thread: fromToolRef(item.thread),
+              cursor: item.cursor,
+            })),
+            timeoutMs: input.timeout_ms,
+          });
+          return { output: JSON.stringify(result, null, 2) };
+        } catch (error) {
+          ctx.signal.throwIfAborted();
+          if (ctx.steerSignal?.aborted === true && (error === ctx.steerSignal.reason || isAbortError(error))) {
+            return {
+              output: JSON.stringify({
+                interrupted: true,
+                reason: 'steer',
+                note: 'New input ended this wait early. Read the new input before deciding whether to continue waiting.',
+              }, null, 2),
+            };
+          }
+          throw error;
+        }
       },
     };
   }
@@ -387,6 +416,7 @@ abstract class RoomToolBase extends ThreadToolBase {
 export class RoomReadTool extends RoomToolBase implements IRoomReadTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'RoomRead';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = 'Read the roster, host and saved messages of a room this main thread belongs to, without waking members. Member ids are the exact ids ThreadSend mentions. Returns at most 100 log entries (default 50); pass nextCursor as after_id to read the next page. Empty entries mean no new saved messages, not that members have exited. Does not mark notifications read or change room membership.';
   readonly parameters = toInputJsonSchema(RoomReadToolInputSchema);
 
@@ -411,6 +441,7 @@ export class RoomReadTool extends RoomToolBase implements IRoomReadTool {
 export class RoomAddTool extends RoomToolBase implements IRoomAddTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'RoomAdd';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = 'Add an existing unarchived top-level thread to a room this main thread already belongs to, only when the user asks. Use ThreadList for the existing session_id. Keeps the host, existing member settings, workspace permissions and the room limit of six members. An already joined thread is returned unchanged. Does not create a room, persona or session, and does not send a message.';
   readonly parameters = toInputJsonSchema(RoomAddToolInputSchema);
 

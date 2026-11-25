@@ -60,6 +60,7 @@ export function createMcpTool(
   };
   return {
     name: qualifiedName,
+    foregroundPolicy: 'bounded_io',
     get description() {
       return options.computerControl === true
         ? computerToolDescription(tool.name, tool.description, options.computerUsagePreference?.())

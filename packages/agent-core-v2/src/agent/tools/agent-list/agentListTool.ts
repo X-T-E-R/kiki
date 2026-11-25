@@ -49,6 +49,7 @@ const FINISHED_STATUSES = new Set<AgentListStatus>(['completed', 'interrupted', 
 export class AgentListTool implements IAgentListTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'AgentList' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = AGENT_LIST_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(AgentListInputSchema);
 

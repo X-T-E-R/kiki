@@ -34,6 +34,7 @@ function fullOutputHint(output: AgentTaskOutputSnapshot): string | undefined {
 export class TaskOutputTool implements ITaskOutputTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'TaskOutput' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description: string = TASK_OUTPUT_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(TaskOutputInputSchema);
 

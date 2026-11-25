@@ -116,6 +116,7 @@ export class AgentUserToolService extends Service implements IAgentUserToolServi
     this.applyUnregister(name);
     const tool: ExecutableTool = {
       name,
+      foregroundPolicy: 'steerable_wait',
       description,
       parameters,
       resolveExecution: (args) => ({
@@ -162,14 +163,29 @@ export class AgentUserToolService extends Service implements IAgentUserToolServi
         turnId: context.turnId,
       },
     });
+    const waitSignal = context.steerSignal === undefined
+      ? context.signal
+      : AbortSignal.any([context.signal, context.steerSignal]);
     try {
-      return await abortable(request, context.signal);
+      return await abortable(request, waitSignal);
     } catch (error) {
       if (context.signal.aborted) {
         this.interaction.respond(id, {
           output: `User tool "${name}" was aborted.`,
           isError: true,
         });
+        throw error;
+      }
+      if (context.steerSignal?.aborted === true) {
+        const message = `New input arrived while waiting for user tool "${name}" to respond. Read the new input before deciding whether to continue.`;
+        this.interaction.respond(id, {
+          output: message,
+          isError: false,
+        });
+        return {
+          output: message,
+          isError: false,
+        };
       }
       throw error;
     }

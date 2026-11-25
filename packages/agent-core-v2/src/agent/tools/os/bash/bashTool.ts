@@ -1,5 +1,13 @@
 import { availableParallelism } from 'node:os';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { IAgentGoalService } from '#/agent/goal/goal';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentTaskService } from '#/agent/task/task';
+import {
+  attachForegroundSteerDetach,
+  resolveForegroundAutoDetachTimeoutMs,
+  resolveForegroundCallerPolicy,
+} from '#/agent/task/foregroundPolicy';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { resolveAgentTaskConfig } from '#/agent/task/configSection';
 import { IConfigService } from '#/app/config/config';
@@ -140,6 +148,7 @@ async function acquireLocalForegroundBashSlot(signal: AbortSignal): Promise<(() 
 export class BashTool implements IBashTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Bash' as const;
+  readonly foregroundPolicy = 'detachable_task' as const;
   get parameters(): Record<string, unknown> {
     return hostToolParameters(BashInputSchema, this.runtime.nativeSshEnabled?.() === true);
   }
@@ -153,14 +162,16 @@ export class BashTool implements IBashTool {
     @IConfigService private readonly config: IConfigService,
     @IFlagService private readonly flags: IFlagService,
     @IAgentPermissionModeService private readonly permissionMode: IAgentPermissionModeService,
+    @ref(IAgentScopeContext) private readonly scope?: LiveRef<IAgentScopeContext>,
+    @ref(IAgentGoalService) private readonly goals?: LiveRef<IAgentGoalService>,
   ) {}
 
   private allowBackground(): boolean {
-    return (
-      this.toolPolicy.isToolActive('TaskList') &&
-      this.toolPolicy.isToolActive('TaskOutput') &&
-      this.toolPolicy.isToolActive('TaskStop')
-    );
+    return resolveForegroundCallerPolicy({
+      scope: this.scope?.current,
+      goals: this.goals?.current,
+      toolPolicy: this.toolPolicy,
+    }).canRunInBackground;
   }
 
   private autoBackgroundOnTimeout(): boolean {
@@ -217,8 +228,8 @@ export class BashTool implements IBashTool {
       sessionApprovalRule: JSON.stringify(['Bash', shellContext.runtimeId, cwd, args.command]),
       shellContext,
       matchesRule: (ruleArgs, mode = 'all') => matchesBashRuleSubject(ruleArgs, args.command, mode),
-      execute: async ({ signal, steerSignal, onUpdate, onForegroundTaskStart }) => {
-        const result = await this.execution(input, signal, steerSignal, onUpdate, onForegroundTaskStart);
+      execute: async ({ signal, steerSignal, onUpdate, onForegroundTaskStart, callerKind, foregroundStartedAt }) => {
+        const result = await this.execution(input, signal, steerSignal, onUpdate, onForegroundTaskStart, callerKind, foregroundStartedAt);
         const enabled = resolveAgentTaskConfig(this.config)?.bashFileToolHints === true;
         const hint = target.host === undefined && !this.runtime.inspect().identity.runtimeId.startsWith('ssh:')
           ? bashFileToolHint(args.command, this.ctx, enabled) : undefined;
@@ -265,20 +276,41 @@ export class BashTool implements IBashTool {
     signal: AbortSignal,
     steerSignal?: AbortSignal,
     onUpdate?: (update: ToolUpdate) => void,
-    onForegroundTaskStart?: (taskId: string) => void,
+    onForegroundTaskStart?: (taskId: string, options?: { readonly steerDetachable?: boolean }) => void,
+    callerKind?: 'model' | 'user_shell',
+    foregroundStartedAt?: number,
   ): Promise<ExecutableToolResult> {
+    const callStartedAt = foregroundStartedAt ?? Date.now();
     const validationError = this.validateRunRequest(args, signal);
     if (validationError !== undefined) return validationError;
 
     const startsInBackground = args.run_in_background === true;
     const steer = !startsInBackground && this.allowBackground() ? steerSignal : undefined;
+    if (!startsInBackground && !signal.aborted && steer?.aborted === true) {
+      return {
+        isError: false,
+        output: 'New input arrived before this command started; it was not started. Read the new input before deciding whether to run it.',
+      };
+    }
     const foregroundTimeoutMs = normalizeTimeoutMs(args.timeout, false);
+    const callerPolicy = resolveForegroundCallerPolicy({
+      scope: this.scope?.current,
+      goals: this.goals?.current,
+      toolPolicy: this.toolPolicy,
+      callerKind,
+    });
+    const autoBackgroundEnabled = callerPolicy.canRunInBackground && this.autoBackgroundOnTimeout();
+    const effectiveForegroundTimeoutMs =
+      resolveForegroundAutoDetachTimeoutMs(
+        foregroundTimeoutMs,
+        !startsInBackground && callerPolicy.autoBackgroundMainWait && autoBackgroundEnabled,
+      ) ?? foregroundTimeoutMs;
     const description = taskDescription(args);
     const timeoutMs = startsInBackground
       ? args.disable_timeout
         ? undefined
         : normalizeTimeoutMs(args.timeout, true)
-      : foregroundTimeoutMs;
+      : effectiveForegroundTimeoutMs;
 
     const builder = new ToolOutputAccumulator();
     await prepareToolRuntime(this.runtime, args.host);
@@ -359,6 +391,33 @@ export class BashTool implements IBashTool {
           }
         };
 
+    if (!startsInBackground && signal.aborted) {
+      collectForegroundOutput = false;
+      releaseBashSlot();
+      await killSpawnedProcess(proc);
+      lease.dispose();
+      return {
+        isError: true,
+        output: 'Aborted before command started',
+      };
+    }
+
+    const preRegisterElapsedMs = Math.max(0, Date.now() - callStartedAt);
+    const steeredAfterSpawn = !startsInBackground && !signal.aborted && steer?.aborted === true;
+    const remainingFgTimeoutMs = effectiveForegroundTimeoutMs - preRegisterElapsedMs;
+    const autoDetachedBeforeRegister =
+      !startsInBackground &&
+      !signal.aborted &&
+      autoBackgroundEnabled &&
+      callerPolicy.autoBackgroundMainWait &&
+      remainingFgTimeoutMs <= 0;
+    const startDetached = startsInBackground || steeredAfterSpawn || autoDetachedBeforeRegister;
+    const registeredTimeoutMs = startDetached
+      ? (startsInBackground ? timeoutMs : this.detachTimeoutMs())
+      : (!startsInBackground && autoBackgroundEnabled && callerPolicy.autoBackgroundMainWait
+          ? Math.max(1, remainingFgTimeoutMs)
+          : timeoutMs);
+
     let taskId: string;
     try {
       taskId = this.tasks.registerTask(
@@ -368,15 +427,15 @@ export class BashTool implements IBashTool {
           lease.dispose();
         }),
         {
-          detached: startsInBackground,
+          detached: startDetached,
           lifetime: startsInBackground ? (args.lifetime ?? 'finite') : undefined,
-          timeoutMs,
+          timeoutMs: registeredTimeoutMs,
           detachTimeoutMs: this.detachTimeoutMs(),
-          autoBackgroundOnTimeout: this.allowBackground() && this.autoBackgroundOnTimeout(),
-          signal: startsInBackground ? undefined : signal,
+          autoBackgroundOnTimeout: autoBackgroundEnabled,
+          signal: startDetached ? undefined : signal,
         },
       );
-      foregroundTaskId = startsInBackground ? undefined : taskId;
+      foregroundTaskId = startDetached ? undefined : taskId;
     } catch (error) {
       collectForegroundOutput = false;
       releaseBashSlot();
@@ -388,21 +447,35 @@ export class BashTool implements IBashTool {
       };
     }
 
-    if (!startsInBackground) onForegroundTaskStart?.(taskId);
-
-    if (startsInBackground) {
-      return this.backgroundStartedResult(taskId, proc, description, {
-        title: 'Background task started',
-        brief: `Started ${taskId}`,
-      });
+    if (!startDetached) {
+      if (callerPolicy.canRunInBackground) onForegroundTaskStart?.(taskId);
+      else onForegroundTaskStart?.(taskId, { steerDetachable: false });
     }
 
-    const detachOnSteer = (): void => {
-      if (!signal.aborted) this.tasks.detach(taskId);
-    };
-    steer?.addEventListener('abort', detachOnSteer, { once: true });
+    if (startDetached) {
+      collectForegroundOutput = false;
+      const labels = startsInBackground
+        ? {
+            title: 'Background task started',
+            brief: `Started ${taskId}`,
+          }
+        : autoDetachedBeforeRegister
+          ? {
+              title: 'Command timed out and moved to background',
+              brief: `Backgrounded ${taskId} after timeout`,
+            }
+          : {
+              title: 'New input moved task to background',
+              brief: `Backgrounded ${taskId} on new input`,
+            };
+      return this.backgroundStartedResult(taskId, proc, description, labels, startsInBackground ? undefined : builder);
+    }
+
+    const disposeSteerDetach = attachForegroundSteerDetach(this.tasks, taskId, {
+      signal,
+      steerSignal: steer,
+    });
     try {
-      if (steer?.aborted === true) detachOnSteer();
       const release = await this.tasks.waitForForegroundRelease(taskId);
       if (release === 'detached' || release === 'timeout_detached') {
         collectForegroundOutput = false;
@@ -434,7 +507,7 @@ export class BashTool implements IBashTool {
 
       return await this.foregroundCompletionResult(taskId, proc, builder, foregroundTimeoutMs);
     } finally {
-      steer?.removeEventListener('abort', detachOnSteer);
+      disposeSteerDetach();
       collectForegroundOutput = false;
       releaseBashSlot();
     }

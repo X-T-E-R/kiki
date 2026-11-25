@@ -29,6 +29,7 @@ import AGENT_SEND_DESCRIPTION from './agent-send.md?raw';
 export class AgentSendTool implements IAgentSendTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'AgentSend' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = AGENT_SEND_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(AgentSendInputSchema);
 

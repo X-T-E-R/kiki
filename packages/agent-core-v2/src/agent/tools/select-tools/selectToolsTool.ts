@@ -21,6 +21,7 @@ const DESCRIPTION =
 export class SelectToolsTool implements ISelectToolsTool {
   declare readonly _serviceBrand: undefined;
   readonly name = SELECT_TOOLS_TOOL_NAME;
+  readonly foregroundPolicy = 'instant' as const;
   readonly description: string = DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(SelectToolsInputSchema);
 

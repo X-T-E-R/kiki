@@ -24,6 +24,7 @@ export class CronCreateTool implements ICronCreateTool {
   declare readonly _serviceBrand: undefined;
 
   readonly name = 'CronCreate' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = CRON_CREATE_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(
     CronCreateInputSchema,

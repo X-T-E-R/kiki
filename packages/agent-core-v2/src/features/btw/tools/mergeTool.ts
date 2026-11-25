@@ -28,6 +28,7 @@ const MERGE_DESCRIPTION = [
 export class MergeTool implements AgentTool<MergeInput> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Merge' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description: string = MERGE_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(MergeInputSchema, (schema) => {
     schema['anyOf'] = [{ required: ['summary'] }, { required: ['context'] }];

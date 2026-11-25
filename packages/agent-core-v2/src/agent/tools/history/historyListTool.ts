@@ -209,6 +209,7 @@ function cursorInputMismatch(input: HistoryListInput, cursor: HistoryDirectoryCu
 export class HistoryListTool implements IHistoryListTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistoryList' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = 'Browse a compact transcript directory when you do not know a turn number or useful search words. Defaults to this session and this agent, newest first. Pass agent_id="<branchId>" (or a branch name/alias) to inspect an active or merged side-branch transcript, or use kind=agents to discover session branches and archived agents. Use before_turn or after_turn for a known range and at for a timestamp. Entries omit tool bodies and include coverage plus a ref when available. Pass only cursor to continue, including partial navigation preparation; an empty partial page is not an empty directory. A known session_id can omit workspace_id. An unknown session is omitted from the recovery call. For currently owned child executions, use AgentList.';
   readonly parameters = toInputJsonSchema(HistoryListInputSchema, (schema) => {
     schema['allOf'] = [

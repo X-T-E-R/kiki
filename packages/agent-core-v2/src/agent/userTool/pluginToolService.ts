@@ -136,6 +136,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
       if (this.registry.resolve(name) !== undefined) continue;
       const tool: ExecutableTool = {
         name,
+        foregroundPolicy: 'bounded_io',
         description: definition.description,
         parameters: definition.parameters ?? { type: 'object', properties: {} },
         resolveExecution: (args) => this.resolveExecution(name, pluginId, definition, args),
@@ -391,7 +392,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
             approvedPaths,
             imageIn: this.profile.getModelCapabilities().image_in,
             workspaceId: this.session?.workspaceId,
-            media: this.media?.api(context.toolCallId, admittedRequest),
+            media: this.media?.api(context.toolCallId, admittedRequest, context.steerSignal, context.signal, context.foregroundStartedAt),
             attachmentStore: this.attachmentStore,
             messages: this.messagesApi(pluginId, context),
             models: this.models?.api(pluginId, context.signal),

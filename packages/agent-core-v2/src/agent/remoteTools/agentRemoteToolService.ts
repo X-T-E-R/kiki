@@ -185,6 +185,7 @@ export class AgentRemoteToolService extends Service implements IAgentRemoteToolS
     const { catalog, tool, qualifiedName, description } = target;
     return {
       name: qualifiedName,
+      foregroundPolicy: 'bounded_io',
       description,
       parameters: tool.parameters ?? { type: 'object', properties: {} },
       resolveExecution: (args) => ({

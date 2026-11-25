@@ -19,6 +19,7 @@ import {
 export class CreateGoalTool implements ICreateGoalTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'CreateGoal' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description: string = DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(CreateGoalToolInputSchema);
 

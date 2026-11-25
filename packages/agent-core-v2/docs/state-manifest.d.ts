@@ -4407,6 +4407,7 @@ export interface AgentStateSnapshot {
     readonly authorizedInputTurnId?: number;
     readonly anchorTurnIds: readonly number[];
     readonly activeTurnIds?: readonly number[];
+    readonly openTurnIds?: readonly number[];
     readonly lastEnded?: {
       readonly turnId: number;
       readonly reason: 'cancelled' | 'completed' | 'failed' | 'blocked';
