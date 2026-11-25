@@ -489,10 +489,9 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     const foregroundStartedAt = Date.now();
 
     if (options.executionWaits?.[call.toolCall.id] !== undefined) {
-      const resume = call.tool.resumeExecutionWait;
-      if (resume === undefined) return settleError(call.args, 'The saved observer is unavailable; its original task was not restarted.', 'preflight-rejected');
+      if (call.tool.resumeExecutionWait === undefined) return settleError(call.args, 'The saved observer is unavailable; its original task was not restarted.', 'preflight-rejected');
       return { task: { accesses: ToolAccesses.none(), execute: signal => this.runSingleExecution(call, {
-        approvalRule: call.toolName, execute: ctx => resume.call(call.tool, call.args, ctx),
+        approvalRule: call.toolName, execute: ctx => call.tool.resumeExecutionWait!(call.args, ctx),
       }, undefined, options, signal, call.tool.foregroundPolicy, foregroundStartedAt) } };
     }
 

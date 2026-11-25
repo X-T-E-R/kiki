@@ -283,7 +283,7 @@ function computeRuleActiveCount(
   }
 
   // agent_execution (global)
-  if (agentSnapshot == null) return undefined;
+  if (agentSnapshot === null || agentSnapshot === undefined) return undefined;
   if (agentSnapshot.agents !== undefined && agentSnapshot.agents.length > 0) {
     const execSet = rule.executors?.length ? new Set(rule.executors.map((e) => e.toLowerCase())) : null;
     const profSet = rule.profiles?.length ? new Set(rule.profiles) : null;

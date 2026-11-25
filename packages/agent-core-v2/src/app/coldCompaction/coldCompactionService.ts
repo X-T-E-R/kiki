@@ -159,7 +159,7 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
     if (releases.length > 0) {
       await Promise.all(releases);
     }
-    super.dispose();
+    await super.dispose();
   }
 
   private noteForegroundAccess(sessionId: string): void {
