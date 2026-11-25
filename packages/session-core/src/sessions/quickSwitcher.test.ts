@@ -238,4 +238,29 @@ describe('buildSwitcherItems — settings entries', () => {
     // the builder must not leak them into the idle recents either way.
     expect(items.every((item) => item.kind === 'session')).toBe(true);
   });
+
+  it('sanitizes machine tool/XML envelopes in session titles with last_prompt -> untitled fallback while keeping legitimate titles', () => {
+    const toolEnvelope = session('s_env', '2026-01-03T00:00:00.000Z', {
+      title: '<tool_call name="ReadMediaFile" path="case2.png" />',
+      last_prompt: '请帮我核查 case2 录音',
+    });
+    const bothEnvelope = session('s_env2', '2026-01-02T00:00:00.000Z', {
+      title: '<function_call name="Bash">',
+      last_prompt: '<system-reminder>internal</system-reminder>',
+    });
+    const legit = session('s_ok', '2026-01-01T00:00:00.000Z', {
+      title: '1 < 2 与 ReadMediaFile 核验',
+    });
+    const items = buildSwitcherItems({
+      query: '',
+      sessions: [toolEnvelope, bothEnvelope, legit],
+      hits: [],
+      untitled: 'Untitled',
+    });
+    expect(items.filter((item) => item.kind === 'session').map((item) => item.title)).toEqual([
+      '请帮我核查 case2 录音',
+      'Untitled',
+      '1 < 2 与 ReadMediaFile 核验',
+    ]);
+  });
 });

@@ -80,7 +80,7 @@ export interface AppearanceSnapshot {
 export const DEFAULT_APPEARANCE: AppearanceSnapshot = {
   theme: 'system',
   motion: 'system',
-  proseFont: 'serif',
+  proseFont: 'sans',
   uiZoom: DEFAULT_UI_ZOOM,
   proseFontSize: DEFAULT_PROSE_FONT_SIZE,
   codeFontSize: DEFAULT_CODE_FONT_SIZE,

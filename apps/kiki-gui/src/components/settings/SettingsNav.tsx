@@ -199,7 +199,7 @@ export function SettingsSearch({
             setQuery('');
           }
         }}
-        className={`h-7 w-full rounded-md bg-ink/[0.04] ${floatingResults ? 'px-3' : 'pl-8 pr-2.5'} text-[12.5px] text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.06] focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)] pointer-coarse:h-11 pointer-coarse:text-[15px]`}
+        className={`h-7 w-full rounded-md bg-ink/[0.04] ${floatingResults ? 'px-3' : 'pl-8 pr-2.5'} text-[13px] leading-5 text-ink outline-none transition-colors placeholder:text-ink-faint hover:bg-ink/[0.06] focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)] pointer-coarse:h-11 pointer-coarse:text-[15px]`}
       />
       {searching ? (
         <div role="listbox" aria-label={t('st.search.aria')} data-settings-search-results
@@ -215,7 +215,7 @@ export function SettingsSearch({
               onClick={() => { onSearchHit(entry); setQuery(''); }}
               className="w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-ink/[0.04] pointer-coarse:min-h-11"
             >
-              <span className="block truncate text-[13px] text-ink">{entry.title}</span>
+              <span className="block truncate text-[13px] leading-5 text-ink">{entry.title}</span>
               <span className="block truncate text-[12px] leading-4 text-ink-faint">
                 {entry.groupLabel !== '' ? <>{entry.groupLabel}<Icon name="chevron" size={12} className="mx-0.5 inline-block align-[-2px]" /></> : null}
                 {entry.sectionLabel}
@@ -223,7 +223,7 @@ export function SettingsSearch({
             </button>
           ))}
           {results.length === 0 ? (
-            <p className="px-2 py-1.5 text-[12px] text-ink-faint">{t('st.search.empty', { query: query.trim() })}</p>
+            <p className="px-2 py-1.5 text-[12px] leading-4 text-ink-faint">{t('st.search.empty', { query: query.trim() })}</p>
           ) : null}
         </div>
       ) : (idle ?? null)}
@@ -284,14 +284,14 @@ export function SettingsNavTree({
         data-settings-nav-leaf={id}
         aria-current={isCurrent ? 'page' : undefined}
         onClick={() => { onNavigate(id as SectionId); onAfterNavigate?.(); }}
-        className={`row-interactive flex h-7 items-center gap-2 px-2.5 text-left text-[13px] pointer-coarse:h-11 pointer-coarse:px-3 pointer-coarse:text-[15px] ${
-          isCurrent ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
+        className={`row-interactive flex h-7 items-center gap-2 px-2.5 text-left text-[13px] leading-5 font-normal pointer-coarse:h-11 pointer-coarse:px-3 pointer-coarse:text-[15px] ${
+          isCurrent ? 'text-ink' : 'text-ink-soft hover:text-ink'
         }`}
       >
         <span className="min-w-0 flex-1 truncate">{t(labelKey)}</span>
         {/* A word, not a dot: the state reads without colour (rule 4). */}
         {attentionLeaves.has(id) ? (
-          <span data-settings-nav-attention={id} className="shrink-0 text-[11.5px] font-normal text-attention pointer-coarse:text-[12px]">
+          <span data-settings-nav-attention={id} className="shrink-0 text-[12px] leading-4 font-normal text-attention">
             {t('st.nav.leafAttention')}
           </span>
         ) : null}
@@ -309,7 +309,7 @@ export function SettingsNavTree({
     <div className="mt-2.5 flex flex-col gap-2.5 pointer-coarse:mt-4 pointer-coarse:gap-4" data-settings-nav-tree>
       {showAttention && attention.length > 0 ? (
         <div data-settings-attention>
-          <p className="flex h-[22px] items-center px-2.5 text-[11px] font-medium text-attention pointer-coarse:h-7 pointer-coarse:text-[12px]">
+          <p className="flex h-[22px] items-center px-2.5 text-[12px] leading-4 font-normal text-attention pointer-coarse:h-7">
             {t('st.nav.needsAttention')}
           </p>
           <div className="flex flex-col gap-0 pointer-coarse:gap-0.5">
@@ -321,7 +321,7 @@ export function SettingsNavTree({
                   type="button"
                   data-settings-attention-row={item.key}
                   onClick={() => { onNavigate(item.target); onAfterNavigate?.(); }}
-                  className="row-interactive flex h-7 items-center gap-2 px-2.5 text-left text-[13px] text-ink pointer-coarse:h-11 pointer-coarse:px-3 pointer-coarse:text-[15px]"
+                  className="row-interactive flex h-7 items-center gap-2 px-2.5 text-left text-[13px] leading-5 font-normal text-ink pointer-coarse:h-11 pointer-coarse:px-3 pointer-coarse:text-[15px]"
                 >
                   <span className="min-w-0 flex-1 truncate">
                     {t('st.nav.attentionRow', {
@@ -339,7 +339,7 @@ export function SettingsNavTree({
       ) : null}
       {groups.map((node) => (
         <div key={node.id} data-settings-nav-group={node.id}>
-          <p className="flex h-[22px] items-center px-2.5 text-[11px] font-medium text-ink-faint pointer-coarse:h-7 pointer-coarse:text-[12px]">
+          <p className="flex h-[22px] items-center px-2.5 text-[12px] leading-4 font-normal text-ink-faint pointer-coarse:h-7">
             {t(node.labelKey)}
           </p>
           <div className="flex flex-col gap-0 pointer-coarse:gap-0.5">
@@ -348,7 +348,7 @@ export function SettingsNavTree({
         </div>
       ))}
       {remoteNotice !== undefined ? (
-        <p data-settings-remote-nav-note className="border-t border-hairline px-2 pt-3 text-[12px] leading-[1.45] text-ink-faint">
+        <p data-settings-remote-nav-note className="border-t border-hairline px-2 pt-3 text-[12px] leading-4 text-ink-faint">
           {remoteNotice}
         </p>
       ) : null}

@@ -1691,7 +1691,7 @@ describe('UsagePage (V2)', () => {
 describe('UsagePage manual full rescan', () => {
   it('places view tabs under the page header, granularity in TrendChart, and tucks rescan inside the reliability popover', async () => {
     const { container, root } = await renderPage();
-    const header = container.querySelector('[data-page-header-inner="dashboard"]')!;
+    const header = container.querySelector('[data-page-header-inner="split"]')!;
     expect(header).not.toBeNull();
     expect(header.querySelector('[data-usage-panel]')).toBeNull();
     expect(header.querySelector('[data-usage-more]')).not.toBeNull();

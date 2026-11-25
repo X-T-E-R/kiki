@@ -77,10 +77,10 @@ export function SidebarModeSwitch({
             tabIndex={mode === 'inbox' ? 0 : -1}
             data-sidebar-mode="inbox"
             onClick={() => { onChange('inbox'); }}
-            className={`relative flex h-full shrink-0 items-center gap-1 whitespace-nowrap text-[12.5px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+            className={`relative flex h-full shrink-0 items-center gap-1 whitespace-nowrap text-[13px] leading-5 font-normal transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
               mode === 'inbox'
-                ? 'font-medium text-ink after:pointer-events-none after:absolute after:inset-x-0 after:-bottom-px after:h-[1.5px] after:rounded-full after:bg-ink'
-                : 'font-normal text-ink-faint hover:text-ink-soft'
+                ? 'text-ink after:pointer-events-none after:absolute after:inset-x-0 after:-bottom-px after:h-[1.5px] after:rounded-full after:bg-ink'
+                : 'text-ink-faint hover:text-ink-soft'
             }`}
           >
             <span>{t('sidebar.mode.inbox')}</span>
@@ -90,7 +90,7 @@ export function SidebarModeSwitch({
                   data-activity-badge={total}
                   data-activity-badge-tone="needs-you"
                   aria-hidden
-                  className="inline-flex h-[15px] min-w-[15px] shrink-0 items-center justify-center rounded-full bg-attention/14 px-1 text-[10.5px] leading-none font-medium tabular-nums text-attention"
+                  className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-attention/14 px-1 text-[12px] leading-none font-normal tabular-nums text-attention"
                 >
                   {needsYouCount > 99 ? '99+' : needsYouCount}
                 </span>
@@ -99,7 +99,7 @@ export function SidebarModeSwitch({
                   data-activity-badge={total}
                   data-activity-badge-tone="unread"
                   aria-hidden
-                  className="h-[6px] w-[6px] shrink-0 rounded-full bg-ink-soft/65"
+                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-ink"
                 />
               ) : null
             ) : null}
@@ -112,10 +112,10 @@ export function SidebarModeSwitch({
             tabIndex={mode === 'sessions' ? 0 : -1}
             data-sidebar-mode="sessions"
             onClick={() => { onChange('sessions'); }}
-            className={`relative flex h-full shrink-0 items-center whitespace-nowrap text-[12.5px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+            className={`relative flex h-full shrink-0 items-center whitespace-nowrap text-[13px] leading-5 font-normal transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
               mode === 'sessions'
-                ? 'font-medium text-ink after:pointer-events-none after:absolute after:inset-x-0 after:-bottom-px after:h-[1.5px] after:rounded-full after:bg-ink'
-                : 'font-normal text-ink-faint hover:text-ink-soft'
+                ? 'text-ink after:pointer-events-none after:absolute after:inset-x-0 after:-bottom-px after:h-[1.5px] after:rounded-full after:bg-ink'
+                : 'text-ink-faint hover:text-ink-soft'
             }`}
           >
             <span>{t('sidebar.mode.sessions')}</span>

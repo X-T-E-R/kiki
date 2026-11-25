@@ -115,7 +115,7 @@ import { lifeOf, type LifeState } from '../lib/motion';
 import { nestConversationItems, sessionRelationOf, type ConversationTreeNode, type SessionRelation } from '../lib/sessionThreads';
 import { readTopLevelThreads, writeTopLevelThreads } from '../lib/threadDisplayMemory';
 import { pushToast, runToastAction } from '../lib/toasts';
-import { useThreadTitleResolver } from '../lib/threadTitles';
+import { sanitizeDisplayTitle, useThreadTitleResolver } from '../lib/threadTitles';
 import { readWorkspaceGroupMemory, writeWorkspaceGroupMemory } from '../lib/sidebarGroupMemory';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
 import { isEditableTarget, isImeKeyEvent } from '../lib/shortcuts';
@@ -129,10 +129,12 @@ import { useGuardedNavigate } from './dirtyGuard';
 import { ActionSheet } from './overlays/ActionSheet';
 import { AnchoredPopover } from './overlays/AnchoredPopover';
 import { LifeMark } from './LifeMark';
+import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { DisclosureChevron, Icon, resolvePluginSlotIconName, Spinner } from './icons';
 import { SpaceScopeControl } from './sidebar/SpaceScopeControl';
 import { SidebarModeSwitch } from './sidebar/SidebarModeSwitch';
 import { SidebarInboxView } from './sidebar/SidebarInboxView';
+import { SidebarRowDot } from './sidebar/SidebarRowSignal';
 import { partitionColdFold, partitionUnitColdFold } from './sidebar/coldFold';
 import { SessionGroupHeaderRow, SessionGroupMoreRow, SidebarLoadMoreRow } from './sidebar/SidebarGroupRows';
 import { useSidebarInfiniteDemand, type SidebarDemandTarget } from './sidebar/useSidebarInfiniteDemand';
@@ -196,16 +198,16 @@ function sessionLabel(
   untitled: string,
   nestedForkParentTitle?: string,
 ): string {
-  const title = session.title.trim();
-  const prompt = session.last_prompt?.trim() ?? '';
+  const title = sanitizeDisplayTitle(session.title) ?? '';
+  const prompt = sanitizeDisplayTitle(session.last_prompt) ?? '';
   if (nestedForkParentTitle !== undefined && title.startsWith('Fork: ')) {
-    const rest = title.slice(6).trim();
+    const rest = sanitizeDisplayTitle(title.slice(6)) ?? '';
     if (rest !== '' && rest !== nestedForkParentTitle) return rest;
     if (prompt !== '' && prompt !== nestedForkParentTitle) return prompt;
     if (rest !== '') return rest;
   }
-  if (title !== '') return session.title;
-  if (prompt !== '') return session.last_prompt!;
+  if (title !== '') return title;
+  if (prompt !== '') return prompt;
   return untitled;
 }
 
@@ -365,6 +367,7 @@ function failedLabel(session: Session, t: ReturnType<typeof useI18n>['t']): stri
 function StatusMark({ session, state }: { session: Session; state: SessionRowState }) {
   const { t } = useI18n();
   const life = rowLife(session, state);
+  const signal = state === 'running' || state === 'needs-me' || state === 'unread';
   const title =
     state === 'needs-me'
       ? (session.pending_interaction === 'question' ? t('sidebar.status.question') : t('sidebar.status.approval'))
@@ -378,18 +381,11 @@ function StatusMark({ session, state }: { session: Session; state: SessionRowSta
             ? t('sidebar.rowState.unread')
             : undefined;
   return (
-    <span data-session-status={state === 'read' ? 'idle' : state} className="flex h-[7px] w-[7px]">
-      <LifeMark
-        markId={`row:${session.id}`}
-        life={life}
-        still
-        title={title}
-        // A run that did not complete is a fact, not an alarm: a neutral
-        // square (the shape still says "failed"), same as the inspector. Only
-        // what needs the user carries a color of its own.
-        tone={life === 'failed' ? 'bg-ink-faint' : life === 'waiting' ? 'bg-attention' : undefined}
-      />
-    </span>
+    <SidebarRowDot
+      signal={signal}
+      label={title}
+      dataAttr={{ 'data-session-status': state === 'read' ? 'idle' : state }}
+    />
   );
 }
 
@@ -539,8 +535,8 @@ function PrimaryNav({
           {...item.hook}
           aria-current={current ? 'page' : undefined}
           onClick={() => { void navigate(scopedRoute(item.route, activeWorkspaceId)); }}
-          className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[13px] pointer-coarse:h-10 ${
-            current ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
+          className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[13px] leading-5 font-normal pointer-coarse:h-11 ${
+            current ? 'text-ink' : 'text-ink-soft hover:text-ink'
           }`}
         >
           <span className={`flex h-5 w-5 shrink-0 items-center justify-center ${current ? 'text-ink' : 'text-ink-faint'}`}><Icon /></span>
@@ -553,7 +549,7 @@ function PrimaryNav({
               data-nav-badge={item.key}
               title={badge.label}
               aria-label={badge.label}
-              className="shrink-0 px-0.5 text-[12px] leading-4 font-medium text-accent-ink tabular-nums"
+              className="shrink-0 px-0.5 text-[12px] leading-4 font-normal text-accent-ink tabular-nums"
             >
               {badge.count}
             </span>
@@ -596,8 +592,8 @@ function PrimaryNav({
                     onCloseSidebar,
                   });
                 }}
-                className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[13px] pointer-coarse:h-10 ${
-                  current ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
+                className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[13px] leading-5 font-normal pointer-coarse:h-11 ${
+                  current ? 'text-ink' : 'text-ink-soft hover:text-ink'
                 }`}
               >
                 <span className={`flex h-5 w-5 shrink-0 items-center justify-center ${current ? 'text-ink' : 'text-ink-faint'}`}>
@@ -624,7 +620,7 @@ function PrimaryNav({
                 aria-expanded={false}
                 aria-label={t('sidebar.expandMoreTools')}
                 onClick={() => { writeLayoutPreferences({ sidebarNavSectionCollapsed: false }); }}
-                className="row-interactive flex h-7 w-full items-center gap-2 px-2 text-left text-[12px] font-medium text-ink-faint hover:text-ink transition-colors duration-[var(--kiki-motion-quick)]"
+                className="row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[12px] leading-4 font-normal text-ink-faint hover:text-ink transition-colors duration-[var(--kiki-motion-quick)] pointer-coarse:h-11"
               >
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center text-ink-faint">
                   <DisclosureChevron open={false} size={12} className="shrink-0" />
@@ -633,7 +629,7 @@ function PrimaryNav({
                 {foldedBadgeCount > 0 ? (
                   <span
                     data-secondary-badges-count
-                    className="shrink-0 px-0.5 text-[11px] font-medium text-accent-ink tabular-nums"
+                    className="shrink-0 px-0.5 text-[12px] leading-4 font-normal text-accent-ink tabular-nums"
                   >
                     {foldedBadgeCount}
                   </span>
@@ -648,7 +644,7 @@ function PrimaryNav({
                 aria-expanded={true}
                 aria-label={t('sidebar.collapseMoreTools')}
                 onClick={() => { writeLayoutPreferences({ sidebarNavSectionCollapsed: true }); }}
-                className="row-interactive flex h-7 w-full items-center gap-2 px-2 text-left text-[12px] font-medium text-ink-faint hover:text-ink transition-colors duration-[var(--kiki-motion-quick)]"
+                className="row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[12px] leading-4 font-normal text-ink-faint hover:text-ink transition-colors duration-[var(--kiki-motion-quick)] pointer-coarse:h-11"
               >
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center text-ink-faint">
                   <DisclosureChevron open={true} size={12} className="shrink-0" />
@@ -707,10 +703,33 @@ function CollapsedSidebarRail({
     (activeSessionId === undefined || sessionPluginPanel.sessionId === activeSessionId)
       ? sessionPluginPanel.activePluginPanelKey
       : undefined;
+  const [moreMenuAnchor, setMoreMenuAnchor] = useState<{ x: number; y: number } | null>(null);
+  const isRailItemActive = useCallback(
+    (item: (typeof NAV_ITEMS)[number]) =>
+      location.pathname === item.route
+      || (item.key === 'capabilities' && location.pathname.startsWith('/capabilities')),
+    [location.pathname],
+  );
+  const railLabelOf = useCallback(
+    (item: (typeof NAV_ITEMS)[number]) =>
+      item.key === 'personas' ? t('persona.nav') : item.key === 'discover' ? t('discovery.title') : t(`nav.${item.key}`),
+    [t],
+  );
+  const activeSecondaryRailItems = useMemo(
+    () => secondaryRailItems.filter(isRailItemActive),
+    [secondaryRailItems, isRailItemActive],
+  );
+  const moreMenuEntries = useMemo<readonly MiniMenuEntry[]>(
+    () => secondaryRailItems.map((item) => ({
+      key: item.key,
+      label: railLabelOf(item),
+      run: () => { void navigate(scopedRoute(item.route, activeWorkspaceId)); },
+    })),
+    [secondaryRailItems, railLabelOf, navigate, activeWorkspaceId],
+  );
   const renderRailNavItem = (item: (typeof NAV_ITEMS)[number]) => {
-    const current = location.pathname === item.route
-      || (item.key === 'capabilities' && location.pathname.startsWith('/capabilities'));
-    const label = item.key === 'personas' ? t('persona.nav') : item.key === 'discover' ? t('discovery.title') : t(`nav.${item.key}`);
+    const current = isRailItemActive(item);
+    const label = railLabelOf(item);
     const ItemIcon = item.icon;
     return (
       <button
@@ -777,8 +796,40 @@ function CollapsedSidebarRail({
             </button>
           );
         })}
-        {secondaryRailItems.map(renderRailNavItem)}
+        {activeSecondaryRailItems.map(renderRailNavItem)}
+        {secondaryRailItems.length > 0 ? (
+          <button
+            type="button"
+            data-sidebar-rail-more
+            aria-haspopup="menu"
+            aria-expanded={moreMenuAnchor !== null}
+            aria-label={t('sidebar.moreTools')}
+            title={t('sidebar.moreTools')}
+            onClick={(event) => {
+              if (moreMenuAnchor !== null) {
+                setMoreMenuAnchor(null);
+                return;
+              }
+              const rect = event.currentTarget.getBoundingClientRect();
+              setMoreMenuAnchor({ x: rect.right + 6, y: rect.top });
+            }}
+            className={RAIL_ICON}
+          >
+            <Icon name="more" size={16} />
+          </button>
+        ) : null}
       </nav>
+      {moreMenuAnchor !== null ? (
+        <MiniContextMenu
+          x={moreMenuAnchor.x}
+          y={moreMenuAnchor.y}
+          entries={moreMenuEntries}
+          onClose={() => { setMoreMenuAnchor(null); }}
+          ariaLabel={t('sidebar.moreTools')}
+          overlayId="sidebar-rail-more-menu"
+          dataAttribute="data-sidebar-rail-more-menu"
+        />
+      ) : null}
       <div className="mt-auto flex flex-col items-center gap-1 px-2 pb-3">
         <button
           type="button"
@@ -827,6 +878,7 @@ export function Sidebar({
   id,
   inert,
   dockedInPanelGroup = false,
+  temporaryOpen = false,
   onClose,
   nowMs,
   multiSpaceSources,
@@ -899,6 +951,8 @@ export function Sidebar({
   inert?: boolean;
   /** True when `App` hosts this sidebar inside a `react-resizable-panels` `<Panel>`. */
   dockedInPanelGroup?: boolean;
+  /** True when summoned temporarily as an overlay (e.g. 768-1359px preview); forces full list without persisting. */
+  temporaryOpen?: boolean;
   /** Phone-drawer exit (a ✕ in the wordmark row); absent where the sidebar is docked. */
   onClose?: () => void;
   /** Current time reference for time grouping and the recency projection;
@@ -1369,7 +1423,7 @@ export function Sidebar({
   // persisted override wins over the breakpoint.
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const isNarrowDesktop = useMediaQuery('(max-width: 1279px)');
-  const isCollapsed = isDesktop && (layoutPrefs.sidebarCollapsed ?? isNarrowDesktop);
+  const isCollapsed = isDesktop && !temporaryOpen && (layoutPrefs.sidebarCollapsed ?? isNarrowDesktop);
 
   const refreshSessions = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ['sessions'] });
@@ -2532,46 +2586,29 @@ export function Sidebar({
 
         for (const item of shown) {
           if (item.kind === 'session-group') {
-            const groupExpanded = expandedSessionGroups.has(item.groupId);
-            const hasActiveMember = item.members.some(
-              (member) =>
-                member.session.id === activeSessionId
-                && (member.spaceKey ?? currentSpaceKey) === activeRouteSpaceKey,
-            );
-            const collapsedLife = groupExpanded ? 'idle' : collapsedSessionGroupLife(item, seen, seenV2);
-            entries.push({
-              kind: 'session-group-header',
-              key: `${bucket.key}:${item.key}`,
-              groupKey: bucket.key,
-              unitGroup: item,
-              expanded: groupExpanded,
-              collapsedLife,
-              hasActiveMember,
-            });
-            if (groupExpanded) {
-              for (const member of item.members) {
-                entries.push({
-                  kind: 'row',
-                  key: `${bucket.key}:${item.key}:${member.key}`,
-                  groupKey: bucket.key,
-                  item: member,
-                  relation: sessionRelationOf(member.session),
-                  nested: true,
-                  unitGroupId: item.groupId,
-                  groupNamesWorkspace,
-                });
-              }
-              if (item.membersNextCursor !== undefined) {
-                entries.push({
-                  kind: 'session-group-more',
-                  key: `${bucket.key}:${item.key}:more`,
-                  groupKey: bucket.key,
-                  groupId: item.groupId,
-                  spaceKey: item.spaceKey,
-                  cursor: item.membersNextCursor,
-                  remaining: Math.max(0, item.memberCount - item.members.length),
-                });
-              }
+            // Automatic session groups flatten transparently into independent
+            // top-level rows so no conversation is hidden behind a closed folder.
+            for (const member of item.members) {
+              entries.push({
+                kind: 'row',
+                key: `${bucket.key}:${item.key}:${member.key}`,
+                groupKey: bucket.key,
+                item: member,
+                relation: sessionRelationOf(member.session),
+                nested: false,
+                groupNamesWorkspace,
+              });
+            }
+            if (item.membersNextCursor !== undefined) {
+              entries.push({
+                kind: 'session-group-more',
+                key: `${bucket.key}:${item.key}:more`,
+                groupKey: bucket.key,
+                groupId: item.groupId,
+                spaceKey: item.spaceKey,
+                cursor: item.membersNextCursor,
+                remaining: Math.max(0, item.memberCount - item.members.length),
+              });
             }
           } else {
             entries.push({
@@ -4137,7 +4174,7 @@ const SessionRow = memo(function SessionRow({
         },
       )
     : undefined;
-  const emphasis = active || rowState === 'needs-me' || rowState === 'unread';
+  const hasSignal = rowState === 'running' || rowState === 'needs-me' || rowState === 'unread';
   const archiveState = archiveError !== undefined ? 'failed' : archiving ? 'archiving' : undefined;
   const hasFacts = location !== undefined || fact !== undefined || archived || session.worktree !== undefined || externalSource !== undefined || remoteSpaceName !== undefined;
   // Root rows with a ⋯ only: a temporary row keeps its time on the first line
@@ -4170,24 +4207,20 @@ const SessionRow = memo(function SessionRow({
         aria-pressed={onToggleSelect !== undefined && selected ? true : undefined}
         aria-label={nestedName}
         title={nestedName}
-        className={`row-interactive flex w-full gap-2 py-1.5 pr-2 text-left ${selected ? 'bg-ink/[0.05] shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]' : ''} ${
-          nested ? 'min-h-8 items-center pl-6' : 'items-start pl-2'
+        className={`row-interactive flex min-h-8 w-full gap-2 py-1.5 pr-2 text-left pointer-coarse:min-h-11 ${selected ? 'bg-ink/[0.05] shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]' : ''} ${
+          nested ? 'items-center pl-6' : 'items-start pl-2'
         }`}
       >
-        <span className="flex h-[19px] w-[7px] shrink-0 items-center">
-          <StatusMark session={session} state={rowState} />
-        </span>
+        <StatusMark session={session} state={rowState} />
         <span className="min-w-0 flex-1">
           <span
             data-session-title
-            className={`flex items-center gap-1 text-[13px] leading-[19px] ${
-              emphasis
-                ? 'font-medium text-ink'
+            className={`flex items-center gap-1 text-[13px] leading-5 font-normal ${
+              hasSignal
+                ? 'text-ink'
                 : archived
                   ? 'text-ink-faint'
-                  : rowState === 'running'
-                    ? 'text-ink'
-                    : 'text-ink-soft'
+                  : 'text-ink-soft'
             }`}
           >
             {/* Pinned is said by the Pinned group; only a list with no groups
@@ -4445,7 +4478,7 @@ const RoomConversationRow = memo(function RoomConversationRow({
         : state === 'unread'
           ? (item.failed ? t('sidebar.rowState.failed') : t('sidebar.rowState.unread'))
           : undefined;
-  const emphasis = active || state === 'needs-me' || state === 'unread';
+  const hasSignal = state === 'running' || state === 'needs-me' || state === 'unread';
   const archiveState = archiveError !== undefined ? 'failed' : archiving ? 'archiving' : undefined;
   return (
     <div
@@ -4463,30 +4496,22 @@ const RoomConversationRow = memo(function RoomConversationRow({
         type="button"
         onClick={onOpen}
         aria-current={active ? 'page' : undefined}
-        className="row-interactive flex w-full items-start gap-2 py-1.5 pr-2 pl-2 text-left"
+        className="row-interactive flex min-h-8 w-full items-start gap-2 py-1.5 pr-2 pl-2 text-left pointer-coarse:min-h-11"
       >
-        <span className="flex h-[19px] w-[7px] shrink-0 items-center">
-          <span data-room-status={state === 'read' ? 'idle' : state} className="flex h-[7px] w-[7px]">
-            <LifeMark
-              markId={`row:${item.key}`}
-              life={life}
-              still
-              title={markTitle}
-              tone={life === 'failed' ? 'bg-ink-faint' : life === 'waiting' ? 'bg-attention' : undefined}
-            />
-          </span>
-        </span>
+        <SidebarRowDot
+          signal={hasSignal}
+          label={markTitle}
+          dataAttr={{ 'data-room-status': state === 'read' ? 'idle' : state }}
+        />
         <span className="min-w-0 flex-1">
           <span
             data-room-title
-            className={`flex items-center gap-1 text-[13px] leading-[19px] ${
-              emphasis
-                ? 'font-medium text-ink'
+            className={`flex items-center gap-1 text-[13px] leading-5 font-normal ${
+              hasSignal
+                ? 'text-ink'
                 : archived
                   ? 'text-ink-faint'
-                  : state === 'running'
-                    ? 'text-ink'
-                    : 'text-ink-soft'
+                  : 'text-ink-soft'
             }`}
           >
             {/* Pinned is said by the Pinned group; only a list with no groups
@@ -4942,12 +4967,12 @@ const WorkspaceGroupHeader = memo(function WorkspaceGroupHeader({
         <span className="min-w-0 truncate">{label}</span>
         <span data-session-group-count className="shrink-0 font-normal text-ink-faint tabular-nums">{countText}</span>
         {current ? (
-          <span data-session-group-current className="shrink-0 text-[11px] font-normal text-selected-ink">{t('sidebar.currentWorkspace')}</span>
+          <span data-session-group-current className="shrink-0 text-[12px] leading-4 font-normal text-selected-ink">{t('sidebar.currentWorkspace')}</span>
         ) : null}
       </span>
       {foldedLife !== 'idle' ? (
         <span data-session-group-life={foldedLife} className="flex shrink-0 items-center">
-          <LifeMark markId={`group:${groupKey}`} life={foldedLife} still />
+          <SidebarRowDot signal />
         </span>
       ) : null}
       {onNewInWorkspace !== undefined ? <span aria-hidden className="w-7 shrink-0" /> : null}
@@ -4962,7 +4987,7 @@ const WorkspaceGroupHeader = memo(function WorkspaceGroupHeader({
       </span>
     </>
   );
-  const rowClass = 'flex h-7 w-full items-center gap-2 pr-1 pl-2 text-left text-[12px] leading-4 font-medium text-ink-soft';
+  const rowClass = 'flex h-7 w-full items-center gap-2 pr-1 pl-2 text-left text-[12px] leading-4 font-normal text-ink-soft';
   return (
     <div className="group/ws sticky top-0 z-[1] bg-canvas" data-session-group-header={groupKey}>
       {foldable ? (
@@ -5346,7 +5371,7 @@ function SearchResults({
                         <Highlighted text={hit.snippet} ranges={highlightTerms(hit.snippet, search.contentQuery)} />
                       </span>
                       <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[12px] text-ink-faint">
-                        <span className="min-w-0 truncate text-ink-soft"><ThreadTitle text={hit.session_title.trim() !== '' ? hit.session_title : t('sidebar.untitled')} /></span>
+                        <span className="min-w-0 truncate text-ink-soft"><ThreadTitle text={sanitizeDisplayTitle(hit.session_title) ?? t('sidebar.untitled')} /></span>
                         <span className="shrink-0">· {t(hit.role === 'tool' ? 'search.toolOutput' : `sidebar.results.role.${hit.role}`)}</span>
                         <span className="shrink-0">· <RelativeTime at={new Date(hit.time).toISOString()} /></span>
                       </span>
@@ -5451,7 +5476,7 @@ function SearchResults({
                     <Highlighted text={hit.snippet} ranges={highlightTerms(hit.snippet, search.contentQuery)} />
                   </span>
                   <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[12px] text-ink-faint">
-                    <span className="min-w-0 truncate text-ink-soft"><ThreadTitle text={hit.session_title.trim() !== '' ? hit.session_title : t('sidebar.untitled')} /></span>
+                    <span className="min-w-0 truncate text-ink-soft"><ThreadTitle text={sanitizeDisplayTitle(hit.session_title) ?? t('sidebar.untitled')} /></span>
                     <span className="shrink-0">· {t(hit.role === 'tool' ? 'search.toolOutput' : `sidebar.results.role.${hit.role}`)}</span>
                     <span className="shrink-0">· <RelativeTime at={new Date(hit.time).toISOString()} /></span>
                   </span>

@@ -44,11 +44,26 @@ function isSession(value: unknown): value is Session {
     && typeof (value as Session).updated_at === 'string';
 }
 
-/** Session records inside one cached list payload (infinite pages or `{ items }`). */
+/** Session records inside one cached list payload (infinite pages, `{ items }`, or `{ units }`). */
 function sessionsIn(data: unknown): Session[] {
   if (typeof data !== 'object' || data === null) return [];
   const pages = (data as { pages?: unknown }).pages;
   if (Array.isArray(pages)) return pages.flatMap((page) => sessionsIn(page));
+  const units = (data as { units?: unknown }).units;
+  if (Array.isArray(units)) {
+    const out: Session[] = [];
+    for (const unit of units) {
+      if (typeof unit !== 'object' || unit === null) continue;
+      const rec = unit as { kind?: unknown; row?: unknown; members?: unknown };
+      if (rec.kind === 'session' && isSession(rec.row)) out.push(rec.row);
+      else if (rec.kind === 'group' && Array.isArray(rec.members)) {
+        for (const m of rec.members) {
+          if (isSession(m)) out.push(m);
+        }
+      }
+    }
+    return out;
+  }
   const items = (data as { items?: unknown }).items;
   return Array.isArray(items) ? items.filter(isSession) : [];
 }

@@ -34,8 +34,8 @@ import { PersonaAvatar } from '../persona/PersonaAvatar';
 import { age, decidable, pendingId, pendingSubject, useNow, type PendingItem } from './model';
 import { FOCUS_RING, StateMark, useDecide } from './shell';
 
-const SECTION_HEAD = 'text-[11.5px] font-medium tracking-[0.02em]';
-const APPROVE = 'h-7 shrink-0 rounded-md px-2 text-[12px] font-medium text-attention ring-1 ring-attention/45 ring-inset transition-colors hover:bg-attention-soft';
+const SECTION_HEAD = 'text-[12px] leading-4 font-normal';
+const APPROVE = 'h-7 shrink-0 rounded-md px-2 text-[12px] leading-4 font-normal text-attention ring-1 ring-attention/45 ring-inset transition-colors hover:bg-attention-soft';
 const REJECT = 'h-7 shrink-0 rounded-md px-1.5 text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink';
 
 const SECTION_BUTTON = `group -ml-1.5 flex h-8 w-[calc(100%+0.375rem)] min-w-0 items-center gap-1.5 rounded-md pr-1 pl-1.5 text-left transition-colors hover:bg-ink/[0.04] ${FOCUS_RING}`;
@@ -110,7 +110,7 @@ export const NeedsYouList = memo(function NeedsYouList({
     <section data-inspector-needs-you="" aria-label={t('inspector.needsYou')}>
       <h3 className="flex h-7 items-center gap-1.5">
         <span className={`${SECTION_HEAD} text-attention`}>{t('inspector.needsYou')}</span>
-        <span className="text-[12px] font-medium text-attention tabular-nums">{ordered.length}</span>
+        <span className="text-[12px] leading-4 font-normal text-attention tabular-nums">{ordered.length}</span>
       </h3>
       <ul className="border-l-2 border-attention pl-3">
         {shown.map((item) => {
@@ -127,14 +127,14 @@ export const NeedsYouList = memo(function NeedsYouList({
                   {node !== undefined ? (
                     <button type="button" data-needs-you-from={node.agentId} title={trail} onClick={() => { onInspect(node.agentId); }} className={`min-w-0 truncate rounded text-[13px] text-ink hover:underline ${FOCUS_RING}`}>{node.label}</button>
                   ) : <span className="text-[13px] text-ink">{t('rail.ownerMain')}</span>}
-                  <span className="shrink-0 text-[11.5px] text-ink-faint tabular-nums">{age(now - Date.parse(item.request.created_at), locale)}</span>
+                  <span className="shrink-0 text-[12px] leading-4 text-ink-faint tabular-nums">{age(now - Date.parse(item.request.created_at), locale)}</span>
                 </span>
                 {item.kind === 'approval' ? (
-                  <span data-needs-you-subject className="flex min-w-0 font-mono text-[11.5px] leading-[18px] text-ink-faint" title={pendingSubject(item)}>
+                  <span data-needs-you-subject className="flex min-w-0 font-mono text-[12px] leading-4 text-ink-faint" title={pendingSubject(item)}>
                     <ApprovalSubject request={item.request} />
                   </span>
                 ) : (
-                  <span data-needs-you-subject className="block truncate font-mono text-[11.5px] leading-[18px] text-ink-faint" title={pendingSubject(item)}>
+                  <span data-needs-you-subject className="block truncate font-mono text-[12px] leading-4 text-ink-faint" title={pendingSubject(item)}>
                     {t('rail.questionTag')} {pendingSubject(item)}
                   </span>
                 )}
@@ -152,7 +152,7 @@ export const NeedsYouList = memo(function NeedsYouList({
         })}
       </ul>
       {hidden > 0 ? (
-        <button type="button" onClick={() => { setShowAll(true); }} className={`mt-0.5 h-7 rounded-md px-1.5 text-[12.5px] text-ink-faint hover:text-ink ${FOCUS_RING}`}>{t('rail.needsYou.more', { count: hidden })}</button>
+        <button type="button" onClick={() => { setShowAll(true); }} className={`mt-0.5 h-7 rounded-md px-1.5 text-[13px] leading-5 text-ink-faint hover:text-ink ${FOCUS_RING}`}>{t('rail.needsYou.more', { count: hidden })}</button>
       ) : null}
     </section>
   );
@@ -279,17 +279,17 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
           data-rail-profile-name
           title={profile?.description ?? t('inspector.details')}
           onClick={() => { setDrawer({ kind: 'profile', identity }); }}
-          className={`-mx-0.5 min-w-0 truncate rounded px-0.5 text-left font-display text-[15px] leading-6 font-semibold tracking-tight text-ink transition-colors hover:text-ink-soft ${FOCUS_RING}`}
+          className={`-mx-0.5 min-w-0 truncate rounded px-0.5 text-left font-sans text-[16px] leading-6 font-normal text-ink transition-colors hover:text-ink-soft ${FOCUS_RING}`}
         >
           {displayProfileName}
         </button>
         {source !== undefined ? (
-          <span title={source.title} className={`shrink-0 rounded px-1.5 py-px text-[11px] leading-4 ${SOURCE_TONE_CLASS[source.tone]}`}>{source.text}</span>
+          <span title={source.title} className={`shrink-0 rounded px-1.5 py-px text-[12px] leading-4 ${SOURCE_TONE_CLASS[source.tone]}`}>{source.text}</span>
         ) : null}
       </div>
       {modelLine !== '' ? (
         <p data-rail-profile-model data-rail-driver={externalDriver === undefined ? undefined : 'external'}
-          className="truncate text-[12.5px] leading-5 text-ink-faint" title={modelLine}>{modelLine}</p>
+          className="truncate text-[13px] leading-5 text-ink-faint" title={modelLine}>{modelLine}</p>
       ) : null}
       {boundPersona !== undefined && boundPersonaId !== undefined && boundPersonaMemoryRoute !== undefined ? (
         <div
@@ -297,20 +297,20 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
           className="mt-1.5 flex min-w-0 items-center gap-2 text-[12px] text-ink-soft"
         >
           <PersonaAvatar persona={boundPersona} size={18} />
-          <span className="min-w-0 flex-1 truncate font-medium text-ink" title={boundPersona.name}>
+          <span className="min-w-0 flex-1 truncate font-normal text-ink" title={boundPersona.name}>
             {boundPersona.name}
           </span>
           <Link
             to={`/personas?persona=${encodeURIComponent(boundPersonaId)}&view=settings`}
             data-rail-persona-edit
-            className={`shrink-0 rounded px-1 py-0.5 text-[11.5px] text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`}
+            className={`shrink-0 rounded px-1 py-0.5 text-[12px] leading-4 text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`}
           >
             {t('rail.persona.edit')}
           </Link>
           <Link
             to={boundPersonaMemoryRoute}
             data-rail-persona-memory
-            className={`shrink-0 rounded px-1 py-0.5 text-[11.5px] text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`}
+            className={`shrink-0 rounded px-1 py-0.5 text-[12px] leading-4 text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`}
           >
             {t('rail.persona.memory')}
           </Link>
@@ -320,7 +320,7 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
           labelled here so a driven session's figures are never read as the
           external client's, which Kiki cannot see and does not report. */}
       {externalDriver !== undefined && agentId === MAIN_AGENT_ID ? (
-        <p data-rail-usage-scope className="mt-0.5 text-[11.5px] leading-4 text-ink-faint">
+        <p data-rail-usage-scope className="mt-0.5 text-[12px] leading-4 text-ink-faint">
           {t('rail.external.usageScope')}
         </p>
       ) : null}
@@ -483,20 +483,20 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
       case 'file': {
         const name = entry.path.split(/[\\/]/).filter(Boolean).pop() ?? entry.path;
         return {
-          mark: <span className={`font-mono text-[11px] ${entry.error ? 'text-danger' : entry.op === 'read' ? 'text-ink-faint' : 'text-amber-ink'}`}>{FILE_MARK[entry.op]}</span>,
+          mark: <span className={`font-mono text-[12px] leading-4 ${entry.error ? 'text-danger' : entry.op === 'read' ? 'text-ink-faint' : 'text-amber-ink'}`}>{FILE_MARK[entry.op]}</span>,
           body: <span className="truncate text-ink">{name}</span>,
           title: entry.path,
           onClick: onOpenFile === undefined ? undefined : () => { onOpenFile(entry.path); },
         };
       }
       case 'command':
-        return { mark: <span className="font-mono text-[11px] text-ink-faint">$</span>, body: <span className="truncate font-mono text-[11.5px] text-ink-soft">{entry.command}</span>, title: entry.command };
+        return { mark: <span className="font-mono text-[12px] leading-4 text-ink-faint">$</span>, body: <span className="truncate font-mono text-[12px] leading-4 text-ink-soft">{entry.command}</span>, title: entry.command };
       case 'dispatch':
-        return { mark: <Icon name="arrowRight" size={12} className="text-ink-faint" />, body: <span className="truncate"><span className="text-ink-faint">{t('rail.feed.dispatched')} </span><span className="font-mono text-[11.5px] text-ink">{entry.label}</span></span>, title: entry.label, onClick: () => { onOpenAgent(entry.agentId); } };
+        return { mark: <Icon name="arrowRight" size={12} className="text-ink-faint" />, body: <span className="truncate"><span className="text-ink-faint">{t('rail.feed.dispatched')} </span><span className="font-mono text-[12px] leading-4 text-ink">{entry.label}</span></span>, title: entry.label, onClick: () => { onOpenAgent(entry.agentId); } };
       case 'report':
         return {
           mark: <StateMark state={entry.failed ? 'failed' : 'done'} className="h-1.5 w-1.5" />,
-          body: <span className="truncate"><span className="font-mono text-[11.5px] text-ink">{entry.label}</span><span className="text-ink-faint"> {t(entry.failed ? 'rail.feed.failed' : 'rail.feed.reported')} · {entry.summary ?? ''}</span></span>,
+          body: <span className="truncate"><span className="font-mono text-[12px] leading-4 text-ink">{entry.label}</span><span className="text-ink-faint"> {t(entry.failed ? 'rail.feed.failed' : 'rail.feed.reported')} · {entry.summary ?? ''}</span></span>,
           title: `${entry.label}\n${entry.summary ?? ''}`,
           onClick: () => { onOpenAgent(entry.agentId); },
         };
@@ -520,8 +520,8 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
             const content = (
               <>
                 <span className="flex w-3 shrink-0 justify-center">{item.mark}</span>
-                <span className="flex min-w-0 flex-1 text-[12.5px]">{item.body}</span>
-                <span className="w-9 shrink-0 text-right text-[11px] text-ink-faint tabular-nums">{age(now - entry.at, locale)}</span>
+                <span className="flex min-w-0 flex-1 text-[13px] leading-5">{item.body}</span>
+                <span className="w-9 shrink-0 text-right text-[12px] leading-4 text-ink-faint tabular-nums">{age(now - entry.at, locale)}</span>
               </>
             );
             return (
@@ -656,7 +656,7 @@ export function EnvironmentBlock({ sessionId }: { sessionId: string }) {
             hideWhenEmpty
             renderWrapper={(content) => (
               <div className="-mx-2" data-rail-control-group="plugins">
-                <h4 className="flex items-baseline gap-1.5 px-2 pb-0.5 text-[11px] font-medium text-ink-faint">
+                <h4 className="flex items-baseline gap-1.5 px-2 pb-0.5 text-[12px] leading-4 font-normal text-ink-faint">
                   {t('inspector.cap.plugins')}
                 </h4>
                 {content}
@@ -664,7 +664,7 @@ export function EnvironmentBlock({ sessionId }: { sessionId: string }) {
             )}
           />
           <div data-rail-control-group="system">
-            <h4 className="pb-0.5 text-[11px] font-medium text-ink-faint">{t('rail.capabilities.systemTitle')}</h4>
+            <h4 className="pb-0.5 text-[12px] leading-4 font-normal text-ink-faint">{t('rail.capabilities.systemTitle')}</h4>
             <OptionalCapabilityRows sessionId={sessionId} />
           </div>
           <SessionMcpRail sessionId={sessionId} />

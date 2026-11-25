@@ -311,10 +311,9 @@ function PoolWindowLine({
   const { pool, remainingPercent, pace } = evaluated;
   const resetFull = formatQuotaResetDuration(pool.tightestResetAt, locale);
   const displayPct = formatQuotaPercentNumber(remainingPercent);
-  const isUrgent = pool.allExhausted || remainingPercent <= 5 || pace?.state === 'depleting';
 
   return (
-    <div className="space-y-0.5 text-[12px]" data-quota-dial-window={pool.key} data-quota-dial-ring={ringRole}>
+    <div className="space-y-0.5 text-[12px] leading-4" data-quota-dial-window={pool.key} data-quota-dial-ring={ringRole}>
       <div className="flex items-baseline justify-between gap-2">
         <span className="flex min-w-0 items-center gap-1.5 font-sans tracking-normal">
           <span
@@ -329,10 +328,10 @@ function PoolWindowLine({
         </span>
 
         <span className="flex shrink-0 items-baseline gap-1.5 tabular-nums">
-          <span className={isUrgent ? 'font-semibold text-ink' : 'font-medium text-ink'}>{displayPct}%</span>
+          <span className="font-normal text-ink">{displayPct}%</span>
           {pool.tightestResetShort !== undefined ? (
             <span
-              className="text-[11px] text-[var(--kiki-chart-muted)]"
+              className="text-[12px] leading-4 text-[var(--kiki-chart-muted)]"
               title={resetFull ? t('usage.quota.stripReset', { time: resetFull }) : pool.tightestResetAt}
             >
               {pool.tightestResetShort}
@@ -411,13 +410,13 @@ function ProviderDialCard({
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-baseline gap-2">
-            <h3 className="truncate font-sans tracking-normal text-[13px] font-[560] text-ink">
+            <h3 className="truncate font-sans tracking-normal text-[13px] leading-5 font-normal text-ink">
               {source.label}
             </h3>
             <KindTag kind={source.kind} />
             {status !== 'ready' ? (
               <span
-                className="shrink-0 text-[11px] font-medium text-[var(--kiki-chart-warn-text)]"
+                className="shrink-0 text-[12px] leading-4 font-normal text-[var(--kiki-chart-warn-text)]"
                 data-quota-status={status}
                 title={[t(badge.labelKey as I18nKey), source.message, source.reason].filter(Boolean).join(' · ')}
               >
@@ -448,7 +447,7 @@ function ProviderDialCard({
               className={QUOTA_ICON_BUTTON}
             >
               <Icon name="refresh" size={14} className={isRefreshing ? 'animate-spin' : undefined} />
-              {isLocked ? <span className="font-mono text-[10.5px]">{secondsLeft}s</span> : null}
+              {isLocked ? <span className="font-mono text-[12px] leading-4">{secondsLeft}s</span> : null}
             </button>
           ) : null}
           <RowActionsMenu
@@ -478,10 +477,10 @@ function ProviderDialCard({
               const headline = cur === 'USD' ? `$${amt}` : cur ? `${amt} ${cur}` : amt;
               return (
                 <>
-                  <span className="max-w-[96px] truncate font-display text-[19px] leading-tight font-semibold tracking-tight tabular-nums text-ink">
+                  <span className="max-w-[96px] truncate font-sans text-[18px] leading-[26px] font-bold tabular-nums text-ink">
                     {headline}
                   </span>
-                  <span className="mt-0.5 max-w-[92px] truncate font-sans tracking-normal text-[10.5px] text-[var(--kiki-chart-label)] tabular-nums">
+                  <span className="mt-0.5 max-w-[92px] truncate font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)] tabular-nums">
                     {outerDisplayPct}% · {normalizedOuter.display}
                   </span>
                 </>
@@ -489,10 +488,10 @@ function ProviderDialCard({
             }
             return (
               <>
-                <span className="font-display text-[20px] leading-tight font-semibold tracking-tight tabular-nums text-ink">
+                <span className="font-sans text-[20px] leading-7 font-bold tabular-nums text-ink">
                   {`${outerDisplayPct}%`}
                 </span>
-                <span className="mt-0.5 max-w-[92px] truncate font-sans tracking-normal text-[10.5px] text-[var(--kiki-chart-label)]">
+                <span className="mt-0.5 max-w-[92px] truncate font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)]">
                   {normalizedOuter.display}
                 </span>
               </>
@@ -516,7 +515,7 @@ function ProviderDialCard({
             />
           );
         })}
-        {status !== 'stale' && source.message ? <p className="font-sans tracking-normal text-[11.5px] text-[var(--kiki-chart-label)]">{source.message}</p> : null}
+        {status !== 'stale' && source.message ? <p className="font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)]">{source.message}</p> : null}
         <FeedbackLine feedback={feedback} />
       </div>
     </section>
@@ -557,7 +556,7 @@ function EnginePluginDialCard({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
-            <h3 className="truncate font-sans tracking-normal text-[13px] font-[560] text-ink">
+            <h3 className="truncate font-sans tracking-normal text-[13px] leading-5 font-normal text-ink">
               {source.label}
             </h3>
           </div>
@@ -569,7 +568,7 @@ function EnginePluginDialCard({
             data-quota-dial-expand={engineId}
             aria-expanded={expanded}
             onClick={onToggleExpand}
-            className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-sans tracking-normal text-[11.5px] text-[var(--kiki-chart-label)] transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+            className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)] transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
           >
             <DisclosureChevron open={expanded} />
             <span className="tabular-nums">
@@ -588,19 +587,19 @@ function EnginePluginDialCard({
           ariaLabel={`${source.label}: ${outerWindow.pool.label} ${formatQuotaPercentNumber(outerWindow.remainingPercent)}%`}
           centerContent={isMultiSeat ? (
             <>
-              <span className="font-display text-[22px] leading-tight font-semibold tracking-tight tabular-nums text-ink">
+              <span className="font-sans text-[20px] leading-7 font-bold tabular-nums text-ink">
                 {readySeats}/{totalSeats}
               </span>
-              <span className="mt-0.5 font-sans tracking-normal text-[10.5px] text-[var(--kiki-chart-label)]">
+              <span className="mt-0.5 font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)]">
                 {t('usage.quota.fleetSeatsLabel')}
               </span>
             </>
           ) : (
             <>
-              <span className="font-display text-[20px] leading-tight font-semibold tracking-tight tabular-nums text-ink">
+              <span className="font-sans text-[20px] leading-7 font-bold tabular-nums text-ink">
                 {formatQuotaPercentNumber(outerWindow.remainingPercent)}%
               </span>
-              <span className="mt-0.5 max-w-[92px] truncate font-sans tracking-normal text-[10.5px] text-[var(--kiki-chart-label)]">
+              <span className="mt-0.5 max-w-[92px] truncate font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)]">
                 {outerWindow.pool.label}
               </span>
             </>
@@ -617,7 +616,7 @@ function EnginePluginDialCard({
           <PoolWindowLine key={sib.pool.key} evaluated={sib} swatchColor="var(--kiki-chart-muted)" ringRole="sibling" />
         ))}
         {unmeasuredPools.map((pool) => (
-          <div key={pool.key} className="flex items-baseline justify-between gap-2 text-[11.5px]">
+          <div key={pool.key} className="flex items-baseline justify-between gap-2 text-[12px] leading-4">
             <span className="truncate font-sans tracking-normal text-[var(--kiki-chart-label)]">
               {pool.label}
               {pool.window ? <span className="text-[var(--kiki-chart-muted)]"> · {pool.window}</span> : null}
@@ -665,7 +664,7 @@ function EngineNativeDialCard({
     >
       <div className="flex items-center gap-2">
         <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
-        <h3 className="truncate font-sans tracking-normal text-[13px] font-[560] text-ink">
+        <h3 className="truncate font-sans tracking-normal text-[13px] leading-5 font-normal text-ink">
           {source.label}
         </h3>
       </div>
@@ -680,10 +679,10 @@ function EngineNativeDialCard({
           ariaLabel={`${source.label}: ${formatQuotaPercentNumber(outerMeter.remainingPercent)}%`}
           centerContent={(
             <>
-              <span className="font-display text-[20px] leading-tight font-semibold tracking-tight tabular-nums text-ink">
+              <span className="font-sans text-[20px] leading-7 font-bold tabular-nums text-ink">
                 {formatQuotaPercentNumber(outerMeter.remainingPercent)}%
               </span>
-              <span className="mt-0.5 max-w-[92px] truncate font-sans tracking-normal text-[10.5px] text-[var(--kiki-chart-label)]">
+              <span className="mt-0.5 max-w-[92px] truncate font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)]">
                 {normalizedOuter.display}
               </span>
             </>
@@ -856,17 +855,17 @@ export function QuotaOverviewDials({
                   <QuotaFuelMicroBar remainingPercent={pct} pace={pace} width={56} />
                   <div className="min-w-0">
                     <div className="flex items-baseline gap-2">
-                      <span className="truncate font-sans tracking-normal text-[12.5px] font-[550] text-ink">
+                      <span className="truncate font-sans tracking-normal text-[13px] leading-5 font-normal text-ink">
                         {item.source.label}
                       </span>
-                      <span className="truncate font-sans tracking-normal text-[11.5px] text-[var(--kiki-chart-muted)]">
+                      <span className="truncate font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-muted)]">
                         {windowLabel}
                       </span>
                     </div>
                     <QuotaPaceCaption pace={pace} />
                   </div>
                 </div>
-                <span className="shrink-0 font-display text-[13px] font-medium tabular-nums text-ink">
+                <span className="shrink-0 font-sans text-[13px] leading-5 font-normal tabular-nums text-ink">
                   {formatQuotaPercentNumber(pct)}%
                 </span>
               </button>

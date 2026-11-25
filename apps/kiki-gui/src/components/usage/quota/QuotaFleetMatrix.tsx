@@ -104,7 +104,7 @@ export function SingleAccountPluginRow({
                 data-quota-plugin-source={pluginSourceId}
                 disabled={isPending}
                 onClick={() => { void onPerformPluginAction(pluginSourceId, action.id, account.accountId); }}
-                className="inline-flex h-6 shrink-0 items-center rounded border border-hairline bg-paper px-2 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:h-auto pointer-coarse:min-h-11 pointer-coarse:px-2.5"
+                className="inline-flex h-6 shrink-0 items-center rounded border border-hairline bg-paper px-2 text-[12px] leading-4 font-normal text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:h-auto pointer-coarse:min-h-11 pointer-coarse:px-2.5"
               >
                 {action.label}
               </button>
@@ -194,7 +194,7 @@ export function PluginAccountsMatrix({
             isLongFleet ? 'sticky top-0 z-10 bg-paper/95 py-2 backdrop-blur-[4px]' : 'pb-2'
           }`}
         >
-          <span className="font-sans tracking-normal text-[11px] text-[var(--kiki-chart-muted)]">
+          <span className="font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-muted)]">
             {t('usage.quota.summary.seats', { count: accountGroups.length })}
           </span>
           <div className={cellsGridClass}>
@@ -220,14 +220,14 @@ export function PluginAccountsMatrix({
               className="grid grid-cols-1 gap-x-6 gap-y-2 py-2.5 last:pb-0.5 md:grid-cols-[minmax(176px,216px)_minmax(0,1fr)] md:items-center"
             >
               <div className="min-w-0">
-                <div className="flex items-center gap-2 text-[12px]">
+                <div className="flex items-center gap-2 text-[12px] leading-4">
                   <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${seatDot}`} />
-                  <span className="min-w-0 truncate font-medium text-ink" title={group.accountLabel}>
+                  <span className="min-w-0 truncate font-normal text-ink" title={group.accountLabel}>
                     {compactIdentifier(seatIdentity.primary)}
                   </span>
                 </div>
                 {seatIdentity.secondary !== undefined ? (
-                  <p className="mt-0.5 truncate pl-3.5 font-sans tracking-normal text-[11px] text-[var(--kiki-chart-muted)]" title={seatIdentity.secondary}>
+                  <p className="mt-0.5 truncate pl-3.5 font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-muted)]" title={seatIdentity.secondary}>
                     {compactIdentifier(seatIdentity.secondary)}
                   </p>
                 ) : null}
@@ -245,7 +245,7 @@ export function PluginAccountsMatrix({
                           data-quota-plugin-source={pluginSourceId}
                           disabled={isPending}
                           onClick={() => { void onPerformPluginAction(pluginSourceId, action.id, group.accountId); }}
-                          className="inline-flex h-6 shrink-0 items-center rounded border border-hairline bg-paper px-1.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:h-auto pointer-coarse:min-h-11 pointer-coarse:px-2"
+                          className="inline-flex h-6 shrink-0 items-center rounded border border-hairline bg-paper px-1.5 text-[12px] leading-4 font-normal text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:h-auto pointer-coarse:min-h-11 pointer-coarse:px-2"
                         >
                           {action.label}
                         </button>
@@ -300,9 +300,9 @@ function MatrixColumnHeader({
   const foldModels = showModelDisclosure && models.length > 2;
 
   return (
-    <div className="relative min-w-0 text-[11.5px]">
+    <div className="relative min-w-0 text-[12px] leading-4">
       <div className="flex items-center justify-between gap-1.5">
-        <span className="min-w-0 truncate font-sans tracking-normal font-medium text-[var(--kiki-chart-label)]" title={poolLabel}>
+        <span className="min-w-0 truncate font-sans tracking-normal font-normal text-[var(--kiki-chart-label)]" title={poolLabel}>
           {poolLabel}
           {reading.window ? <span className="font-normal text-[var(--kiki-chart-muted)]"> · {reading.window}</span> : null}
         </span>
@@ -311,7 +311,7 @@ function MatrixColumnHeader({
             type="button"
             data-reading-models-toggle
             {...modelsPopover.triggerProps}
-            className="inline-flex shrink-0 items-center gap-0.5 rounded bg-ink/[0.04] px-1.5 py-px font-mono text-[10px] text-ink-faint transition-colors hover:bg-ink/[0.08] hover:text-ink"
+            className="inline-flex shrink-0 items-center gap-0.5 rounded bg-ink/[0.04] px-1.5 py-px font-mono text-[12px] leading-4 text-ink-faint transition-colors hover:bg-ink/[0.08] hover:text-ink"
           >
             <DisclosureChevron open={modelsPopover.open} />
             <span>{t('usage.quota.engines.modelsCount', { count: models.length })}</span>
@@ -332,7 +332,7 @@ function MatrixColumnHeader({
               <span
                 key={modelId}
                 title={modelId}
-                className="block max-w-full truncate rounded border border-hairline bg-paper px-1.5 py-0.5 font-mono text-[10px] text-ink-soft"
+                className="block max-w-full truncate rounded border border-hairline bg-paper px-1.5 py-0.5 font-mono text-[12px] leading-4 text-ink-soft"
               >
                 {modelId}
               </span>
@@ -396,19 +396,19 @@ export function PluginQuotaBucketCell({
       : mutedSkipped
         ? 'text-[var(--kiki-chart-muted)]'
         : val.exhausted || (remainingPct !== undefined && remainingPct <= 5) || pace?.state === 'depleting'
-          ? 'font-semibold text-ink'
-          : 'font-medium text-ink';
+          ? 'font-normal text-ink'
+          : 'font-normal text-ink';
 
   return (
     <div
-      className="min-w-0 space-y-1 text-[12px]"
+      className="min-w-0 space-y-1 text-[12px] leading-4"
       data-quota-bucket={reading.pool ?? 'default'}
       data-quota-window={reading.window ?? ''}
       data-quota-low={tier === 'critical' && !mutedSkipped ? 'true' : undefined}
       data-reading-read-at={distinctReadAt}
       title={mutedSkipped ? t('usage.quota.seatExhaustedSkipped') : undefined}
     >
-      <div className={`font-sans tracking-normal text-[11px] text-[var(--kiki-chart-label)] ${showPoolLabel === 'mobileOnly' ? 'md:hidden' : ''}`}>
+      <div className={`font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)] ${showPoolLabel === 'mobileOnly' ? 'md:hidden' : ''}`}>
         <span className="truncate" title={poolLabel}>{poolLabel}</span>
         {reading.window ? <span className="text-[var(--kiki-chart-muted)]" data-bucket-window> · {reading.window}</span> : null}
       </div>
@@ -428,12 +428,12 @@ export function PluginQuotaBucketCell({
 
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 tabular-nums">
           {val.kind === 'unknown' ? (
-            <span className="font-sans tracking-normal text-[12px] text-[var(--kiki-chart-muted)]" data-reading-state="unknown">
+            <span className="font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-muted)]" data-reading-state="unknown">
               {t('usage.quota.status.unknown')}
             </span>
           ) : (
             <span
-              className={`text-[13px] ${valueTone}`}
+              className={`text-[13px] leading-5 ${valueTone}`}
               data-reading-state={val.exhausted ? 'exhausted' : 'available'}
             >
               {val.value}
@@ -441,7 +441,7 @@ export function PluginQuotaBucketCell({
           )}
           {resetShort !== undefined && reading.resetAt ? (
             <span
-              className="text-[11px] text-[var(--kiki-chart-muted)]"
+              className="text-[12px] leading-4 text-[var(--kiki-chart-muted)]"
               title={resetFull ? t('usage.quota.stripReset', { time: resetFull }) : reading.resetAt}
             >
               {resetShort}
@@ -453,9 +453,9 @@ export function PluginQuotaBucketCell({
       <QuotaPaceCaption pace={pace} />
 
       {inlineModels || foldModels ? (
-        <div className={`flex flex-wrap items-center justify-between gap-2 pt-0.5 text-[10.5px] text-ink-faint ${disclosureVisibilityClass ?? ''}`}>
+        <div className={`flex flex-wrap items-center justify-between gap-2 pt-0.5 text-[12px] leading-4 text-ink-faint ${disclosureVisibilityClass ?? ''}`}>
           {inlineModels ? (
-            <span className="min-w-0 truncate font-mono text-[10px]" data-reading-models-inline title={models.join(' · ')}>
+            <span className="min-w-0 truncate font-mono text-[12px] leading-4" data-reading-models-inline title={models.join(' · ')}>
               {models.join(' · ')}
             </span>
           ) : <span />}
@@ -465,7 +465,7 @@ export function PluginQuotaBucketCell({
               data-reading-models-toggle={disclosureMode === 'mobileOnly' ? 'mobile' : 'inline'}
               aria-expanded={modelsOpen}
               onClick={() => { setModelsOpen((prev) => !prev); }}
-              className="inline-flex shrink-0 items-center gap-0.5 rounded bg-ink/[0.04] px-1.5 py-px font-mono text-[10px] text-ink-soft transition-colors hover:bg-ink/[0.08] hover:text-ink"
+              className="inline-flex shrink-0 items-center gap-0.5 rounded bg-ink/[0.04] px-1.5 py-px font-mono text-[12px] leading-4 text-ink-soft transition-colors hover:bg-ink/[0.08] hover:text-ink"
             >
               <DisclosureChevron open={modelsOpen} />
               <span>{t('usage.quota.engines.modelsCount', { count: models.length })}</span>
@@ -483,7 +483,7 @@ export function PluginQuotaBucketCell({
             <span
               key={modelId}
               title={modelId}
-              className="inline-block max-w-full truncate rounded border border-hairline bg-paper px-1.5 py-0.5 font-mono text-[10px] text-ink-soft"
+              className="inline-block max-w-full truncate rounded border border-hairline bg-paper px-1.5 py-0.5 font-mono text-[12px] leading-4 text-ink-soft"
             >
               {modelId}
             </span>

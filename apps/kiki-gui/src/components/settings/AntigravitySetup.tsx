@@ -292,14 +292,14 @@ export function AntigravitySetup({ login, ideDetected = false, ready = false, in
 
   return (
     <div data-antigravity data-antigravity-instance={instanceId ?? 'main'} className="space-y-4 border-b border-hairline/70 pb-5">
-      <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.setup')}</p>
+      <p className="text-[13px] leading-5 font-normal text-ink-soft">{t('st.engines.setup')}</p>
       <ol className="space-y-4">
         <li data-antigravity-step="program" data-step-state={programDone ? 'done' : 'current'} className="flex min-w-0 gap-2.5">
           <StepDot done={programDone} index={1} />
           <div className="min-w-0 flex-1 space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-              <p className="min-w-0 text-[12.5px] leading-5 text-ink">
-                <span className="font-medium">{t('st.antigravity.program')}</span>
+              <p className="min-w-0 text-[13px] leading-5 text-ink">
+                <span className="font-normal">{t('st.antigravity.program')}</span>
                 <span className="text-ink-faint">
                   {' · '}
                   {programDone ? (
@@ -309,7 +309,7 @@ export function AntigravitySetup({ login, ideDetected = false, ready = false, in
                   ) : t('st.engines.stepMissing')}
                 </span>
                 {programDone && layoutLabel !== undefined ? (
-                  <span data-antigravity-layout={status?.release.layout} className="ml-2 inline-flex items-center rounded bg-ink/[0.05] px-1.5 py-0.5 text-[11px] font-normal text-ink-soft">
+                  <span data-antigravity-layout={status?.release.layout} className="ml-2 inline-flex items-center rounded bg-ink/[0.05] px-1.5 py-0.5 text-[12px] leading-4 font-normal text-ink-soft">
                     {layoutLabel}
                   </span>
                 ) : null}
@@ -320,7 +320,7 @@ export function AntigravitySetup({ login, ideDetected = false, ready = false, in
                   data-antigravity-check-updates
                   disabled={checkingUpdates || busy}
                   onClick={() => void checkUpdates()}
-                  className="text-[12px] text-ink-faint transition-colors hover:text-ink disabled:opacity-50"
+                  className="text-[12px] leading-4 text-ink-faint transition-colors hover:text-ink disabled:opacity-50"
                 >
                   {checkingUpdates ? t('st.antigravity.checkingUpdates') : t('st.antigravity.checkUpdates')}
                 </button>
@@ -331,7 +331,7 @@ export function AntigravitySetup({ login, ideDetected = false, ready = false, in
 
             {latestUpdate !== undefined && installing !== latestUpdate.version ? (
               <div data-antigravity-update-bar className="flex flex-wrap items-center justify-between gap-2 border-y border-hairline py-2">
-                <span className="inline-flex items-center gap-1.5 text-[12px] text-ink-soft">
+                <span className="inline-flex items-center gap-1.5 text-[12px] leading-4 text-ink-soft">
                   <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-accent" />
                   <span>{t('st.antigravity.updateAvailable', { version: latestUpdate.version })}</span>
                 </span>
@@ -376,7 +376,7 @@ export function AntigravitySetup({ login, ideDetected = false, ready = false, in
 
             {status !== undefined ? (
               <details data-antigravity-other className="group/other [&[open]]:space-y-2">
-                <summary className="inline-flex min-h-7 cursor-pointer list-none items-center gap-1 text-[12px] font-medium text-ink-soft hover:text-ink [&::-webkit-details-marker]:hidden">
+                <summary className="inline-flex min-h-7 cursor-pointer list-none items-center gap-1 text-[12px] leading-4 font-normal text-ink-soft hover:text-ink [&::-webkit-details-marker]:hidden">
                   <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/other:rotate-90" />
                   <span>{t('st.antigravity.otherVersion')}</span>
                   {installed.length > 1 ? <span className="font-normal tabular-nums text-ink-faint">({installed.length})</span> : null}
@@ -388,11 +388,11 @@ export function AntigravitySetup({ login, ideDetected = false, ready = false, in
                         key={version}
                         data-antigravity-version-row={version}
                         data-active={version === active}
-                        className="flex min-h-9 items-center gap-3 px-1 text-[12.5px]"
+                        className="flex min-h-9 items-center gap-3 px-1 text-[13px] leading-5"
                       >
-                        <span className="font-mono text-[12px] text-ink">{version}</span>
+                        <span className="font-mono text-[12px] leading-4 text-ink">{version}</span>
                         {version === active ? (
-                          <span className="inline-flex items-center gap-1 text-[12px] font-medium text-selected-ink">
+                          <span className="inline-flex items-center gap-1 text-[12px] leading-4 font-normal text-selected-ink">
                             <Icon name="check" size={12} />{t('st.antigravity.inUse')}
                           </span>
                         ) : null}
@@ -423,7 +423,7 @@ export function AntigravitySetup({ login, ideDetected = false, ready = false, in
                     disabled={busy}
                     aria-invalid={customInvalid}
                     onChange={(event) => { setCustomVersion(event.target.value); }}
-                    className={`${INPUT} !w-28 h-8 py-1 font-mono text-[12px] ${customInvalid ? 'border-danger' : ''}`}
+                    className={`${INPUT} !w-28 h-8 py-1 font-mono text-[12px] leading-4 ${customInvalid ? 'border-danger' : ''}`}
                   />
                   <button
                     type="button"
@@ -436,8 +436,8 @@ export function AntigravitySetup({ login, ideDetected = false, ready = false, in
                     {installing === custom ? t('st.antigravity.installing') : t('st.antigravity.installThis')}
                   </button>
                 </div>
-                {customInvalid ? <p role="alert" className="text-[12px] text-danger">{t('st.antigravity.versionInvalid')}</p> : null}
-                <p className="break-all font-mono text-[11px] leading-4 text-ink-faint" title={status.release.url}>
+                {customInvalid ? <p role="alert" className="text-[12px] leading-4 text-danger">{t('st.antigravity.versionInvalid')}</p> : null}
+                <p className="break-all font-mono text-[12px] leading-4 text-ink-faint" title={status.release.url}>
                   {status.release.platform} · {status.release.entry}{siblingPart}
                 </p>
               </details>
@@ -609,8 +609,8 @@ function AntigravitySignIn({
   const pasteValid = flowKind !== undefined && isAntigravityPasteValid(pasteValue, flowKind);
   const statusDisplay = loginStatusDisplay(loginStatus, ready);
   const title = (
-    <p className="text-[12.5px] leading-5 text-ink">
-      <span className="font-medium">{t('st.antigravity.signIn')}</span>
+    <p className="text-[13px] leading-5 text-ink">
+      <span className="font-normal">{t('st.antigravity.signIn')}</span>
       <span className="text-ink-faint"> · </span>
       <span className={statusDisplay.className || undefined}>{t(statusDisplay.key)}</span>
     </p>
@@ -625,23 +625,23 @@ function AntigravitySignIn({
     return (
       <div data-antigravity-signed-in className="space-y-3">
         {title}
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px]">
-          <span data-antigravity-account-label className="font-medium text-ink">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] leading-5">
+          <span data-antigravity-account-label className="font-normal text-ink">
             {profile?.account_label ?? t('st.antigravity.signedInBody')}
           </span>
           {authBadgeKey !== undefined ? (
-            <span data-antigravity-auth-badge={profile?.auth_method} className="rounded bg-ink/[0.05] px-1.5 py-0.5 text-[11px] text-ink-soft">
+            <span data-antigravity-auth-badge={profile?.auth_method} className="rounded bg-ink/[0.05] px-1.5 py-0.5 text-[12px] leading-4 text-ink-soft">
               {t(authBadgeKey)}
             </span>
           ) : null}
           {profile?.auto_mode_supported === true ? (
-            <span data-antigravity-auto-mode className="inline-flex items-center gap-1 rounded bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success">
+            <span data-antigravity-auto-mode className="inline-flex items-center gap-1 rounded bg-success/10 px-1.5 py-0.5 text-[12px] leading-4 font-normal text-success">
               <Icon name="check" size={12} />
               {t('st.antigravity.autoModeAvailable')}
             </span>
           ) : null}
           {gcpDetail !== '' ? (
-            <span className="font-mono text-[11.5px] text-ink-faint">{gcpDetail}</span>
+            <span className="font-mono text-[12px] leading-4 text-ink-faint">{gcpDetail}</span>
           ) : null}
         </div>
 
@@ -665,7 +665,7 @@ function AntigravitySignIn({
 
         {models.length > 0 ? (
           <div data-antigravity-models className="space-y-1.5">
-            <p className="text-[11.5px] font-medium text-ink-faint">{t('st.antigravity.models')}</p>
+            <p className="text-[12px] leading-4 font-normal text-ink-faint">{t('st.antigravity.models')}</p>
             <div className="flex flex-wrap gap-1.5">
               {models.map((entry) => {
                 const levels = entry.thinking_levels?.filter(Boolean) ?? [];
@@ -675,7 +675,7 @@ function AntigravitySignIn({
                     key={entry.id}
                     data-antigravity-model={entry.id}
                     title={tip}
-                    className="inline-flex items-center gap-1 rounded-md bg-ink/[0.04] px-2 py-0.5 text-[12px] text-ink"
+                    className="inline-flex items-center gap-1 rounded-md bg-ink/[0.04] px-2 py-0.5 text-[12px] leading-4 text-ink"
                   >
                     <span>{formatAntigravityModelLabel(entry)}</span>
                   </span>
@@ -707,7 +707,7 @@ function AntigravitySignIn({
             {working === 'logout' ? t('st.antigravity.signingOut') : t('st.antigravity.signOut')}
           </button>
         </div>
-        {error !== null ? <p role="alert" className="text-[12px] text-danger">{error}</p> : null}
+        {error !== null ? <p role="alert" className="text-[12px] leading-4 text-danger">{error}</p> : null}
       </div>
     );
   }
@@ -737,7 +737,7 @@ function AntigravitySignIn({
         {needsGcp ? (
           <div className="grid max-w-[30rem] gap-2 sm:grid-cols-2">
             <div className="space-y-1">
-              <label htmlFor={`${fieldPrefix}-gcp-project`} className="block text-[11.5px] font-medium text-ink-soft">
+              <label htmlFor={`${fieldPrefix}-gcp-project`} className="block text-[13px] leading-5 font-normal text-ink-soft">
                 {t('st.antigravity.gcpProject')}
               </label>
               <input
@@ -748,11 +748,11 @@ function AntigravitySignIn({
                 placeholder="my-gcp-project"
                 disabled={working !== null}
                 onChange={(event) => { setGcpProject(event.target.value); setError(null); }}
-                className={`${INPUT} h-8 py-1 font-mono text-[12px]`}
+                className={`${INPUT} h-8 py-1 font-mono text-[12px] leading-4`}
               />
             </div>
             <div className="space-y-1">
-              <label htmlFor={`${fieldPrefix}-gcp-location`} className="block text-[11.5px] font-medium text-ink-soft">
+              <label htmlFor={`${fieldPrefix}-gcp-location`} className="block text-[13px] leading-5 font-normal text-ink-soft">
                 {t('st.antigravity.gcpLocation')}
               </label>
               <input
@@ -763,7 +763,7 @@ function AntigravitySignIn({
                 placeholder="us-central1"
                 disabled={working !== null}
                 onChange={(event) => { setGcpLocation(event.target.value); setError(null); }}
-                className={`${INPUT} h-8 py-1 font-mono text-[12px]`}
+                className={`${INPUT} h-8 py-1 font-mono text-[12px] leading-4`}
               />
             </div>
           </div>
@@ -771,7 +771,7 @@ function AntigravitySignIn({
 
         {needsApiKey ? (
           <div className="max-w-[30rem] space-y-1">
-            <label htmlFor={`${fieldPrefix}-api-key`} className="block text-[11.5px] font-medium text-ink-soft">
+            <label htmlFor={`${fieldPrefix}-api-key`} className="block text-[13px] leading-5 font-normal text-ink-soft">
               {t('st.antigravity.apiKeyLabel')}
             </label>
             <input
@@ -784,7 +784,7 @@ function AntigravitySignIn({
               placeholder={t('st.antigravity.apiKeyPlaceholder')}
               disabled={working !== null}
               onChange={(event) => { setApiKey(event.target.value); setError(null); }}
-              className={`${INPUT} h-8 py-1 font-mono text-[12px]`}
+              className={`${INPUT} h-8 py-1 font-mono text-[12px] leading-4`}
             />
           </div>
         ) : null}
@@ -806,13 +806,13 @@ function AntigravitySignIn({
         </div>
 
         {profile?.eligibility === 'subscription_required' ? (
-          <p role="alert" data-antigravity-eligibility="subscription_required" title={profile.eligibility_message} className="text-[12px] text-amber-ink">
+          <p role="alert" data-antigravity-eligibility="subscription_required" title={profile.eligibility_message} className="text-[12px] leading-4 text-amber-ink">
             {t('st.antigravity.subscriptionRequired')}
           </p>
         ) : null}
 
         {error !== null ? (
-          <p role="alert" data-antigravity-login-error title={errorDetail} className="text-[12px] text-danger">
+          <p role="alert" data-antigravity-login-error title={errorDetail} className="text-[12px] leading-4 text-danger">
             {error}
           </p>
         ) : null}
@@ -835,7 +835,7 @@ function AntigravitySignIn({
           <button
             type="button"
             data-antigravity-open
-            className="font-medium text-selected-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+            className="font-normal text-selected-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
             onClick={() => void openPage(pending.auth_url)}
           >
             {t('st.antigravity.openAgain')}
@@ -847,8 +847,8 @@ function AntigravitySignIn({
             : t('st.antigravity.stepPaste', { address: pending.redirect_uri })}
         </li>
       </ol>
-      {openFailed ? <p role="alert" className="text-[12px] text-danger">{t('st.antigravity.openFailed')}</p> : null}
-      <label htmlFor={inputId} className="block text-[12px] font-medium text-ink-soft">
+      {openFailed ? <p role="alert" className="text-[12px] leading-4 text-danger">{t('st.antigravity.openFailed')}</p> : null}
+      <label htmlFor={inputId} className="block text-[13px] leading-5 font-normal text-ink-soft">
         {t(isCodePaste ? 'st.antigravity.pasteCodeLabel' : 'st.antigravity.pasteLabel')}
       </label>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -864,7 +864,7 @@ function AntigravitySignIn({
           aria-describedby={statusId}
           onChange={(event) => { setPasteValue(event.target.value); setError(null); }}
           onKeyDown={(event) => { if (event.key === 'Enter' && !isImeKeyEvent(event) && pasteValid && !expired) void complete(); }}
-          className={`${INPUT} h-8 min-w-0 flex-1 basis-[20rem] py-1 font-mono text-[11.5px] ${error !== null ? 'border-danger' : ''}`}
+          className={`${INPUT} h-8 min-w-0 flex-1 basis-[20rem] py-1 font-mono text-[12px] leading-4 ${error !== null ? 'border-danger' : ''}`}
         />
         <button
           type="button"
@@ -957,7 +957,7 @@ function StepDot({ done, index, muted = false }: { done: boolean; index: number;
   return (
     <span
       aria-hidden
-      className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium tabular-nums ${
+      className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[12px] leading-4 font-normal tabular-nums ${
         muted ? 'border-hairline-strong text-ink-faint' : 'border-amber-rule bg-amber-rule/10 text-amber-ink'}`}
     >
       {index}

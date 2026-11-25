@@ -208,12 +208,13 @@
   box-sizing: border-box;
   overflow: hidden;
   max-height: 15rem;
-  border-radius: 14px 14px 6px 14px;
+  border-radius: 12px 12px 6px 12px;
   background: var(--color-bubble-user);
   padding: 0.625rem 1rem;
   color: var(--color-ink);
-  font-size: 14px;
-  line-height: 1.6;
+  font-family: var(--font-sans);
+  font-size: var(--kiki-prose-font-size, 16px);
+  line-height: 1.75;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   pointer-events: none;

@@ -101,7 +101,7 @@ async function settle(render: () => void, ms = 10) {
 }
 
 describe('live request governance', () => {
-  it('shows existing concurrency rules directly inline under the live summary and edits them without leaving /usage', async () => {
+  it('keeps concurrency rules closed by default on Live and opens them inline on Manage click without leaving /usage', async () => {
     expect(CONCURRENCY_RULES_SETTINGS_HREF).toBe('/settings/ai?tab=defaults#st-card-concurrency');
     vi.useFakeTimers();
     localStorage.setItem('kiki.locale', 'en');
@@ -114,9 +114,11 @@ describe('live request governance', () => {
     const summary = container.querySelector<HTMLElement>('[data-governance-rules-summary]')!;
     expect(live.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
-    expect(live.querySelector('[data-governance-dimensions]')?.textContent).toContain('provider-example');
-    expect(summary.textContent).toContain('Limited by 1 concurrency rule');
+    expect(summary.textContent).toContain('Manage concurrency rules (1 active)');
     const manage = container.querySelector<HTMLButtonElement>('[data-governance-manage]')!;
+    expect(manage.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[data-governance-rules]')).toBeNull();
+    await act(async () => { manage.click(); });
     expect(manage.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelector('[data-governance-rules]')?.textContent).toContain('Concurrency limits');
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-rule="provider-cap"] button')!.click(); });
@@ -166,22 +168,25 @@ describe('live request governance', () => {
     });
     const { container, render } = mount('realtime');
     await settle(render);
+    // Breakdown starts closed by default; open the disclosure to inspect dimensions.
+    expect(container.querySelector('[data-governance-dimensions]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-breakdown-toggle]')!.click(); });
     const panel = () => container.querySelector<HTMLElement>('[data-governance-dimensions]')!;
     expect(container.querySelector('[data-axis="governance-dimension"]')).not.toBeNull();
     // Only the model cut is on screen; provider and role do not ride along.
     expect(panel().getAttribute('data-governance-dimension')).toBe('model');
-    expect(panel().textContent).toContain('kimi-k3');
+    expect(panel().textContent).toContain('Kimi K3');
     expect(panel().textContent).not.toContain('provider-example');
     expect(panel().textContent).not.toContain('Subagents');
     // Switching replaces the list rather than adding to it.
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-axis-value="provider"]')!.click(); });
     expect(panel().getAttribute('data-governance-dimension')).toBe('provider');
     expect(panel().textContent).toContain('provider-example');
-    expect(panel().textContent).not.toContain('kimi-k3');
+    expect(panel().textContent).not.toContain('Kimi K3');
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-axis-value="role"]')!.click(); });
     expect(panel().getAttribute('data-governance-dimension')).toBe('role');
     expect(panel().textContent).toContain('Subagents');
-    expect(panel().textContent).not.toContain('kimi-k3');
+    expect(panel().textContent).not.toContain('Kimi K3');
     // The headline totals are the server's and do not change with the switch.
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
     expect(container.querySelector('[data-governance-queued]')?.textContent).toBe('2');
@@ -197,6 +202,7 @@ describe('live request governance', () => {
     });
     const { container, render } = mount('realtime');
     await settle(render);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-breakdown-toggle]')!.click(); });
     // One dimension means no switcher to offer, and the idle copy is not shown
     // when that dimension does have rows.
     expect(container.querySelector('[data-axis="governance-dimension"]')).toBeNull();
@@ -247,6 +253,7 @@ describe('live request governance', () => {
     });
     const { container, render } = mount('realtime');
     await settle(render);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-breakdown-toggle]')!.click(); });
     expect(container.textContent).not.toContain('session_3f9e1ab7');
     expect(container.querySelector('[data-governance-dimensions]')?.textContent).toContain('Subagents');
   });
@@ -421,11 +428,10 @@ describe('limit rules editor', () => {
     const { container, render } = mount('realtime');
     await settle(render);
 
-    // Both live sections sit on the page at once, always shown.
+    // Both live counts sit in the summary strip; opening the breakdown reveals single-dimension cuts.
     const requestPanel = container.querySelector<HTMLElement>('[data-governance-live]')!;
     const agentPanel = container.querySelector<HTMLElement>('[data-governance-live-agents]')!;
     expect(requestPanel).not.toBeNull();
-    expect(requestPanel.querySelector('[data-governance-dimensions]')).not.toBeNull();
     expect(agentPanel).not.toBeNull();
 
     // Headline counts for agents: main, sub, independent, total
@@ -434,7 +440,9 @@ describe('limit rules editor', () => {
     expect(container.querySelector('[data-governance-independent-agents]')?.textContent).toBe('1');
     expect(container.querySelector('[data-governance-total-agents]')?.textContent).toBe('4');
 
-    // Single dimension breakdown (default: executor)
+    // Open breakdown disclosure to verify single-dimension tables (no full-width bars)
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-breakdown-toggle]')!.click(); });
+    expect(container.querySelector('[data-governance-dimensions]')).not.toBeNull();
     const dimTable = container.querySelector('[data-governance-agent-dimensions]')!;
     expect(dimTable.getAttribute('data-governance-agent-dimension')).toBe('executor');
     // Executor display: builtin kiki mapped to Kiki (Built-in), external harness displayed truthfully
@@ -714,6 +722,7 @@ describe('limit rules editor', () => {
 
     const { container, render } = mount('realtime');
     await settle(render);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-breakdown-toggle]')!.click(); });
 
     const dimTable = container.querySelector('[data-governance-agent-dimensions]')!;
     expect(dimTable).not.toBeNull();
@@ -948,7 +957,7 @@ describe('execution pause/resume', () => {
     expect(container.querySelector('[data-execution-paused]')).toBeNull();
   });
 
-  it('names sessions from the cached lists, folds several behind one disclosure, and opens a session by name', async () => {
+  it('names sessions from the cached lists, renders them directly without folding, and opens a session by name', async () => {
     vi.useFakeTimers();
     const TITLED = 'session_3f9e1ab7-0c2d-4e5f-8a9b-1c2d3e4f5a6b';
     const UNTITLED = 'session_8c1d2e3f-4a5b-4c6d-9e8f-0a1b2c3d4e5f';
@@ -970,14 +979,12 @@ describe('execution pause/resume', () => {
     });
     await settle(render, 1100);
 
-    // Folded by default: one disclosure line, no row and no bare id in view.
+    // Directly visible on first paint: no disclosure gate hiding active sessions.
     const list = container.querySelector<HTMLElement>('[data-execution-sessions]')!;
-    const toggle = list.querySelector<HTMLButtonElement>('[data-execution-sessions-toggle]')!;
-    expect(list.getAttribute('data-collapsed')).toBe('true');
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(toggle.textContent).toContain('Sessions · 3');
+    expect(list.getAttribute('data-collapsed')).toBeNull();
     const rows = () => [...list.querySelectorAll<HTMLElement>('[data-execution-session]')];
-    expect(rows().every((row) => row.hidden)).toBe(true);
+    expect(rows()).toHaveLength(3);
+    expect(rows().every((row) => !row.hidden)).toBe(true);
     for (const id of [TITLED, UNTITLED, UNKNOWN]) expect(container.textContent).not.toContain(id);
 
     // Names: the cached title, the untitled fallback, the unknown fallback —
@@ -992,10 +999,6 @@ describe('execution pause/resume', () => {
     expect(connection.client.getSession.mock.calls.filter(([id]) => id === UNKNOWN)).toHaveLength(1);
     expect(connection.client.getSession.mock.calls.filter(([id]) => id === TITLED)).toHaveLength(0);
 
-    await act(async () => { toggle.click(); });
-    expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    expect(rows().some((row) => row.hidden)).toBe(false);
-
     // A row's pause asks first; cancelling sends nothing.
     await act(async () => { container.querySelector<HTMLButtonElement>(`[data-execution-session="${TITLED}"] [data-execution-action="pause"]`)!.click(); });
     const dialog = document.querySelector<HTMLElement>('[role="alertdialog"]')!;
@@ -1008,7 +1011,7 @@ describe('execution pause/resume', () => {
     expect(container.querySelector<HTMLElement>('[data-location]')?.getAttribute('data-location')).toBe(`/s/${TITLED}`);
   });
 
-  it('keeps paused and failed sessions in view while the list is folded, and pause-all still covers the inventory', async () => {
+  it('keeps running, paused, and failed sessions all directly visible and pause-all covers the inventory', async () => {
     vi.useFakeTimers();
     liveAgentsWith(['session-alpha', 'session-beta', 'session-gamma']);
     const alpha = stubExecution('session-alpha', executionState('running'));
@@ -1017,8 +1020,7 @@ describe('execution pause/resume', () => {
     const { container, render } = mount('realtime');
     await settle(render, 1100);
     const row = (id: string) => container.querySelector<HTMLElement>(`[data-execution-session="${id}"]`)!;
-    expect(container.querySelector<HTMLElement>('[data-execution-sessions]')?.getAttribute('data-collapsed')).toBe('true');
-    expect(row('session-alpha').hidden).toBe(true);
+    expect(row('session-alpha').hidden).toBe(false);
     expect(row('session-beta').hidden).toBe(false);
     expect(row('session-beta').textContent).toContain('Execution paused');
     expect(row('session-gamma').hidden).toBe(false);
@@ -1032,13 +1034,12 @@ describe('execution pause/resume', () => {
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
     await settle(render);
     expect(alpha.facade.pause).toHaveBeenCalledTimes(1);
-    // The folded running row surfaces once it is held.
     await settle(render, 1100);
     expect(row('session-alpha').hidden).toBe(false);
-    expect(row('session-alpha').textContent).toContain('Paused');
+    expect(row('session-alpha').textContent).toContain('Execution paused');
   });
 
-  it('drops the no-op disclosure and states the paused hint once when every session is paused', async () => {
+  it('shows all paused sessions directly with individual resume controls when every session is paused', async () => {
     vi.useFakeTimers();
     liveAgentsWith(['session-alpha', 'session-beta', 'session-gamma']);
     for (const id of ['session-alpha', 'session-beta', 'session-gamma']) {
@@ -1050,8 +1051,6 @@ describe('execution pause/resume', () => {
     expect(list.querySelector('[data-execution-sessions-toggle]')).toBeNull();
     expect(list.getAttribute('data-collapsed')).toBeNull();
     expect(list.querySelectorAll('[data-execution-session]:not([hidden])')).toHaveLength(3);
-    expect(list.querySelector('[data-execution-shared-hint="paused"]')?.textContent).toContain('Execution paused');
-    expect(list.textContent!.split('Execution paused')).toHaveLength(2);
     expect(list.querySelectorAll('[data-execution-action="resume"]')).toHaveLength(3);
   });
 
@@ -1074,6 +1073,7 @@ describe('execution pause/resume', () => {
       queryClient.setQueryData(['sessions'], { items: [{ id: TITLED, title: 'Fixture: protocol audit', workspace_id: 'wd_example', updated_at: '2026-01-01T12:00:00Z' }] });
     });
     await settle(render, 1100);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-breakdown-toggle]')!.click(); });
     const table = container.querySelector<HTMLElement>('[data-governance-agent-dimension="session"]')!;
     expect(table.querySelector(`[data-governance-agent-row="${TITLED}"]`)?.textContent).toContain('Fixture: protocol audit');
     expect(table.querySelector(`[data-governance-agent-row="${UNKNOWN}"]`)?.textContent).toContain('Session d4c3b2a1');
@@ -1167,10 +1167,10 @@ describe('execution pause/resume', () => {
     await act(async () => { container.querySelector<HTMLElement>('[data-execution-control="session-alpha"] button')!.click(); });
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
     await settle(render);
-    // A failed pause keeps the session running: no paused row, no phase chip,
+    // A failed pause keeps the session running: no paused row, honest running phase,
     // and the action is still the pause offer (the error surfaces via toast).
     expect(container.querySelector('[data-execution-paused]')).toBeNull();
-    expect(container.querySelector('[data-execution-phase]')).toBeNull();
+    expect(container.querySelector('[data-execution-phase]')?.getAttribute('data-execution-phase')).toBe('running');
     expect(container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')?.textContent).toContain('Pause execution');
   });
 
@@ -1355,7 +1355,8 @@ describe('execution pause/resume', () => {
     await settle(render, 1100);
     // The event wins: the row reports paused, not the stale running read.
     expect(container.querySelector('[data-execution-paused="session-alpha"]')).not.toBeNull();
-    expect(container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')?.textContent).toContain('Paused');
+    expect(container.querySelector<HTMLElement>('[data-execution-session="session-alpha"] [data-execution-phase="paused"]')).not.toBeNull();
+    expect(container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')?.textContent).toContain('Resume');
   });
 
   it('keeps a newer event state when a read later fails', async () => {
@@ -1384,7 +1385,8 @@ describe('execution pause/resume', () => {
     await settle(render);
     // The failed read keeps the event's paused state instead of clearing it.
     expect(container.querySelector('[data-execution-paused="session-alpha"]')).not.toBeNull();
-    expect(container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')?.textContent).toContain('Paused');
+    expect(container.querySelector<HTMLElement>('[data-execution-session="session-alpha"] [data-execution-phase="paused"]')).not.toBeNull();
+    expect(container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')?.textContent).toContain('Resume');
   });
 
   it('shows a visible retry when the cold discovery read fails, and recovers on retry', async () => {
@@ -1527,6 +1529,7 @@ describe('live agent snapshot availability', () => {
     await settle(render);
     expect(container.querySelector('[data-governance-main-agents]')?.textContent).toBe('1');
     expect(container.querySelector('[data-governance-total-agents]')?.textContent).toBe('1');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-breakdown-toggle]')!.click(); });
     expect(container.querySelector('[data-governance-agent-row="kiki"]')).not.toBeNull();
     const stale = container.querySelector<HTMLButtonElement>('[data-governance-agents-stale]');
     expect(stale?.querySelector('[data-icon="refresh"]')).not.toBeNull();
@@ -1572,13 +1575,16 @@ describe('live agent snapshot availability', () => {
     });
     await settle(render, 1100);
 
-    expect(container.querySelector('[data-governance-count-band="model"]')).not.toBeNull();
     expect(container.querySelector('[data-governance-waiting-showing]')?.textContent).toBe('Showing 100 of 101');
     const firstWaiter = container.querySelector('[data-governance-waiter="att-0"]')!;
-    expect(firstWaiter.textContent).toContain('fixture_model');
+    expect(firstWaiter.textContent).toContain('Fixture Model');
+    expect(firstWaiter.querySelector('[title="fixture_model"]')).not.toBeNull();
     expect(firstWaiter.textContent).toContain('Production rollout');
-    expect(firstWaiter.querySelector('[title="session_cached_waiter"]')).not.toBeNull();
+    expect(firstWaiter.querySelector('[title*="session_cached_waiter"]')).not.toBeNull();
     // Waiter session ids must not trigger per-waiter metadata fetches.
     expect(connection.client.getSession).not.toHaveBeenCalled();
+    // Breakdown opens on demand with one dimension at a time (no full-width count bands).
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-breakdown-toggle]')!.click(); });
+    expect(container.querySelector('[data-governance-dimensions]')?.getAttribute('data-governance-dimension')).toBe('model');
   });
 });

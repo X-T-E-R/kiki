@@ -118,10 +118,10 @@ export function ConfirmDialog({
 
   const content = (
     <>
-      <h3 className="font-display text-[18px] font-semibold text-ink">{title}</h3>
-      {body !== undefined ? <p className="mt-3 text-[13px] leading-relaxed text-ink-soft">{body}</p> : null}
+      <h3 className="font-sans text-[18px] leading-[26px] font-bold text-ink">{title}</h3>
+      {body !== undefined ? <p className="mt-3 text-[14px] leading-[21px] text-ink-soft">{body}</p> : null}
       {consequences !== undefined && consequences.length > 0 ? (
-        <ul className="mt-2 list-disc space-y-1.5 pl-5 text-[12.5px] leading-relaxed text-ink-soft">
+        <ul className="mt-2 list-disc space-y-1.5 pl-5 text-[14px] leading-[21px] text-ink-soft">
           {consequences.map((item) => <li key={item}>{item}</li>)}
         </ul>
       ) : null}

@@ -1084,7 +1084,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
-      <PageHeader title={t('usage.title')} onToggleSidebar={onToggleSidebar} width="dashboard">
+      <PageHeader title={t('usage.title')} onToggleSidebar={onToggleSidebar} width="split">
         <PageMoreMenu
           menuId="usage-more"
           entries={[
@@ -1101,7 +1101,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
         <PricingPanel models={reliability?.unknown_price_models ?? []} onClose={() => { setPricingOpen(false); }} />
       ) : null}
       <main ref={scrollRef} onScroll={handleScroll} data-usage-scroll style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-3 pb-10 lg:px-6">
-        <div className={`mx-auto ${PAGE_WIDTH.dashboard} space-y-3.5 sm:space-y-5`} data-usage-page>
+        <div className={`mx-auto ${PAGE_WIDTH.split} space-y-4 sm:space-y-6`} data-usage-page>
           <UsageNavigation panel={panel} onChange={selectPanel} quotaAttentionCount={quotaAttentionCount} />
           {panel === 'export' ? (
             <UsageExportPanel />

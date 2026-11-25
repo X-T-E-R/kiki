@@ -421,7 +421,7 @@ export function TextTabView({
                 setReloadKey((k) => k + 1);
               }}
             >
-              <label className="flex min-w-0 flex-[1_1_14rem] flex-col items-start gap-1 text-left text-[11px] text-ink-faint">
+              <label className="flex min-w-0 flex-[1_1_14rem] flex-col items-start gap-1 text-left text-[12px] leading-4 text-ink-faint">
                 <span>{t('preview.htmlResourceRootLabel')}</span>
                 <input
                   type="text"
@@ -437,7 +437,7 @@ export function TextTabView({
                 type="submit"
                 data-html-root-retry
                 disabled={htmlRootInput.trim().length === 0}
-                className="rounded-full bg-accent px-3 py-1.5 text-[12px] font-medium text-white shadow-sm transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-40"
+                className="rounded-full bg-accent px-3 py-1.5 text-[12px] leading-4 font-normal text-white shadow-sm transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-40"
               >
                 {t('preview.htmlResourceRootRetry')}
               </button>
@@ -448,7 +448,7 @@ export function TextTabView({
               type="button"
               data-html-reload
               onClick={() => { setReloadKey((k) => k + 1); }}
-              className="rounded-full bg-accent px-3 py-1 text-[12px] font-medium text-white shadow-sm transition-opacity hover:opacity-90"
+              className="rounded-full bg-accent px-3 py-1 text-[12px] leading-4 font-normal text-white shadow-sm transition-opacity hover:opacity-90"
             >
               {t('preview.htmlReload')}
             </button>
@@ -481,7 +481,7 @@ export function TextTabView({
   const toolbarControls = (
     <>
       {!compact && hasRenderedMode && !textReadFailed ? (
-        <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
+        <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[12px] leading-4">
           {(['rendered', 'source'] as const).map((option) => (
             <button
               key={option}
@@ -493,7 +493,7 @@ export function TextTabView({
               onClick={() => { setMode(option); }}
               className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
                 mode === option
-                  ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                  ? 'bg-paper font-normal text-ink shadow-[var(--kiki-sheet-shadow)]'
                   : 'text-ink-faint hover:text-ink-soft'
               }`}
             >
@@ -503,7 +503,7 @@ export function TextTabView({
         </span>
       ) : null}
       {!compact && snap.status === 'ready' && (wide || snap.saving || snap.dirty) ? (
-        <span className="shrink-0 text-[11px] text-ink-faint" data-save-status>
+        <span className="shrink-0 text-[12px] leading-4 text-ink-faint" data-save-status>
           {snap.saving
             ? t('preview.saving')
             : snap.dirty
@@ -519,7 +519,7 @@ export function TextTabView({
           data-save-button
           disabled={snap.saving}
           onClick={() => { void controller?.saveNow(); }}
-          className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink transition-colors hover:border-hairline-strong disabled:cursor-default disabled:opacity-40"
+          className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[12px] leading-4 font-normal text-ink transition-colors hover:border-hairline-strong disabled:cursor-default disabled:opacity-40"
         >
           {t('preview.save')}
         </button>
@@ -530,7 +530,7 @@ export function TextTabView({
             data-save-button
             disabled={!snap.dirty || snap.saving}
             onClick={() => { void controller?.saveNow(); }}
-            className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-ink-soft"
+            className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[12px] leading-4 font-normal text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-ink-soft"
           >
             {t('preview.save')}
           </button>
@@ -539,7 +539,7 @@ export function TextTabView({
             type="button"
             data-edit-button
             onClick={startEdit}
-            className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+            className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[12px] leading-4 font-normal text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
           >
             {t('preview.edit')}
           </button>
@@ -548,7 +548,7 @@ export function TextTabView({
         <span
           data-readonly-reason
           title={readOnlyReason}
-          className="max-w-[180px] shrink-0 truncate text-[11px] text-ink-faint"
+          className="max-w-[180px] shrink-0 truncate text-[12px] leading-4 text-ink-faint"
         >
           {readOnlyReason}
         </span>
@@ -591,7 +591,7 @@ export function TextTabView({
         </PreviewHeaderActionsPortal>
       ) : (
         <div data-preview-secondary-bar className="flex h-9 shrink-0 items-center gap-2 border-b border-hairline px-3">
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
+          <span className="min-w-0 flex-1 truncate font-mono text-[12px] leading-4 text-ink-faint" title={path}>
             {compact ? name : path}
           </span>
           {toolbarControls}
@@ -600,14 +600,14 @@ export function TextTabView({
       {snap.conflict ? (
         <div
           data-conflict-banner
-          className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-rule/40 bg-amber-card px-3 py-1.5 text-[11px] text-amber-ink"
+          className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-rule/40 bg-amber-card px-3 py-1.5 text-[12px] leading-4 text-amber-ink"
         >
           <span className="min-w-0 flex-1">{t('preview.conflictBody')}</span>
           <button
             type="button"
             data-conflict-overwrite
             onClick={() => { void controller?.resolveConflict('overwrite'); }}
-            className="rounded-full border border-amber-rule/60 px-2 py-0.5 font-medium transition-colors hover:bg-amber-rule/20"
+            className="rounded-full border border-amber-rule/60 px-2 py-0.5 font-normal transition-colors hover:bg-amber-rule/20"
           >
             {t('preview.overwrite')}
           </button>
@@ -615,14 +615,14 @@ export function TextTabView({
             type="button"
             data-conflict-reload
             onClick={() => { void controller?.resolveConflict('reload'); }}
-            className="rounded-full border border-amber-rule/60 px-2 py-0.5 font-medium transition-colors hover:bg-amber-rule/20"
+            className="rounded-full border border-amber-rule/60 px-2 py-0.5 font-normal transition-colors hover:bg-amber-rule/20"
           >
             {t('preview.reloadFile')}
           </button>
           <button
             type="button"
             onClick={() => { void controller?.resolveConflict('cancel'); }}
-            className="rounded-full px-2 py-0.5 text-amber-ink/70 transition-colors hover:text-amber-ink"
+            className="rounded-full px-2 py-0.5 text-amber-ink transition-colors hover:text-amber-ink"
           >
             {t('preview.keepEditing')}
           </button>
@@ -631,7 +631,7 @@ export function TextTabView({
         <ChangedOnDiskStrip onReload={reloadTab} />
       ) : null}
       {snap.error !== undefined && snap.status !== 'error' ? (
-        <div className="flex shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/5 px-3 py-1.5 text-[11px] text-danger">
+        <div className="flex shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/5 px-3 py-1.5 text-[12px] leading-4 text-danger">
           <span className="min-w-0 flex-1 truncate">{snap.error}</span>
           <button
             type="button"
@@ -645,7 +645,7 @@ export function TextTabView({
       ) : null}
       {showOversizedNotice ? (
         <div
-          className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-rule/40 bg-amber-card px-3 py-1.5 text-[11px] text-amber-ink"
+          className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-rule/40 bg-amber-card px-3 py-1.5 text-[12px] leading-4 text-amber-ink"
           data-preview-size-notice
         >
           <span>{t('preview.readTooLarge')}</span>
@@ -655,7 +655,7 @@ export function TextTabView({
               data-load-full-markdown
               disabled={loadingFull}
               onClick={() => { void loadFullMarkdown(); }}
-              className="rounded-full border border-amber-rule/60 px-2 py-0.5 font-medium disabled:opacity-50"
+              className="rounded-full border border-amber-rule/60 px-2 py-0.5 font-normal disabled:opacity-50"
             >
               {loadingFull ? t('preview.reading') : t('preview.loadFullFile')}
             </button>

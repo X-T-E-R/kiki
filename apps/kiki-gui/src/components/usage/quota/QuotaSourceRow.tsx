@@ -21,14 +21,14 @@ import { QuotaWindowMeter } from './QuotaWindowMeter';
 export const QUOTA_ROW_GRID =
   'grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-6 gap-y-2 md:grid-cols-[minmax(176px,216px)_minmax(0,1fr)_auto]';
 export const QUOTA_SMALL_BUTTON =
-  'inline-flex h-7 items-center gap-1 rounded-md border border-hairline bg-paper px-2.5 text-[11.5px] font-medium text-ink transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-3';
+  'inline-flex h-7 items-center gap-1 rounded-md border border-hairline bg-paper px-2.5 text-[12px] leading-4 font-normal text-ink transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-3';
 export const QUOTA_ICON_BUTTON =
-  'inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:min-w-11';
+  'inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-md px-1.5 text-[12px] leading-4 font-normal text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:min-w-11';
 
 export function KindTag({ kind }: { readonly kind: ProviderQuotaSource['kind'] }) {
   const { t } = useI18n();
   if (kind === 'provider' || kind === 'executor') return null;
-  return <span className="shrink-0 text-[11px] text-ink-faint">{t(`usage.quota.kind.${kind}` as I18nKey)}</span>;
+  return <span className="shrink-0 text-[12px] leading-4 text-ink-faint">{t(`usage.quota.kind.${kind}` as I18nKey)}</span>;
 }
 
 export function SourceAccountSubtitle({
@@ -45,7 +45,7 @@ export function SourceAccountSubtitle({
   const rawTitle = [source.account_label, source.source.label].filter(Boolean).join(' · ');
   if (accountDisplay === undefined && !showSettingsLink) return null;
   return (
-    <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-sans tracking-normal text-[11.5px] text-[var(--kiki-chart-muted)]">
+    <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-muted)]">
       {accountDisplay !== undefined ? (
         <span className="min-w-0 truncate" title={rawTitle}>{accountDisplay}</span>
       ) : null}
@@ -239,9 +239,9 @@ export function AttentionQuotaRow({
                 status === 'auth_required' ? 'bg-[var(--kiki-chart-3)]' : 'bg-[var(--kiki-chart-danger)]'
               }`}
             />
-            <h3 className="truncate font-sans text-[13px] font-[510] text-ink">{source.label}</h3>
+            <h3 className="truncate font-sans text-[13px] leading-5 font-normal text-ink">{source.label}</h3>
             <KindTag kind={source.kind} />
-            <span className={`shrink-0 text-[11.5px] font-medium ${statusTextTone}`} data-quota-status={status}>
+            <span className={`shrink-0 text-[12px] leading-4 font-normal ${statusTextTone}`} data-quota-status={status}>
               {t(badge.labelKey as I18nKey)}
             </span>
           </div>
@@ -280,7 +280,7 @@ export function AttentionQuotaRow({
           />
         </div>
       </div>
-      {message ? <p className="truncate text-[12px] text-ink-soft" title={message}>{message}</p> : null}
+      {message ? <p className="truncate text-[12px] leading-4 text-ink-soft" title={message}>{message}</p> : null}
       {source.meters.length > 0 ? (
         <div className="space-y-2 border-t border-hairline/70 pt-2 opacity-85">
           {source.meters.map((meter) => <QuotaWindowMeter key={meter.id} meter={meter} sourceStatus={status} />)}
@@ -351,11 +351,11 @@ export function LedgerQuotaRow({
       <div className={QUOTA_ROW_GRID}>
         <div className="min-w-0">
           <div className="flex items-baseline gap-2">
-            <h3 className="truncate font-sans text-[13px] font-[510] text-ink">{source.label}</h3>
+            <h3 className="truncate font-sans text-[13px] leading-5 font-normal text-ink">{source.label}</h3>
             <KindTag kind={source.kind} />
             {status !== 'ready' && !unqueried ? (
               <span
-                className="shrink-0 text-[11px] font-medium text-amber-ink"
+                className="shrink-0 text-[12px] leading-4 font-normal text-amber-ink"
                 data-quota-status={status}
                 title={[t(badge.labelKey as I18nKey), source.message, source.reason].filter(Boolean).join(' · ')}
               >
@@ -374,7 +374,7 @@ export function LedgerQuotaRow({
               {source.meters.map((meter) => <QuotaWindowMeter key={meter.id} meter={meter} sourceStatus={status} />)}
             </div>
           ) : unqueried ? (
-            <div className="flex flex-wrap items-center gap-2 py-0.5 text-[12px] text-ink-soft" data-quota-not-queried={source.id}>
+            <div className="flex flex-wrap items-center gap-2 py-0.5 text-[12px] leading-4 text-ink-soft" data-quota-not-queried={source.id}>
               <span>{t('usage.quota.notQueried')}</span>
               {canRefresh ? (
                 <>
@@ -384,7 +384,7 @@ export function LedgerQuotaRow({
                     data-quota-query-now={source.id}
                     disabled={isRefreshing || isLocked}
                     onClick={() => { void runAction(onRefresh); }}
-                    className="font-medium text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-2"
+                    className="font-normal text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-2"
                   >
                     {t('usage.quota.queryNow')}
                   </button>
@@ -392,12 +392,12 @@ export function LedgerQuotaRow({
               ) : null}
             </div>
           ) : (
-            <p className="py-0.5 text-[12px] text-ink-soft" data-quota-no-meters={source.id}>
+            <p className="py-0.5 text-[12px] leading-4 text-ink-soft" data-quota-no-meters={source.id}>
               {emptyStatusMessage ?? t(status === 'ready' || status === 'stale' ? 'st.quota.none' : 'usage.quota.status.unknown')}
             </p>
           )}
-          {status !== 'stale' && source.message && source.meters.length > 0 ? <p className="mt-1 text-[11.5px] text-ink-soft">{source.message}</p> : null}
-          {status !== 'stale' && source.reason && !source.message && source.meters.length > 0 ? <p className="mt-1 text-[11px] text-ink-faint">{source.reason}</p> : null}
+          {status !== 'stale' && source.message && source.meters.length > 0 ? <p className="mt-1 text-[12px] leading-4 text-ink-soft">{source.message}</p> : null}
+          {status !== 'stale' && source.reason && !source.message && source.meters.length > 0 ? <p className="mt-1 text-[12px] leading-4 text-ink-faint">{source.reason}</p> : null}
         </div>
 
         <div
@@ -418,7 +418,7 @@ export function LedgerQuotaRow({
               className={QUOTA_ICON_BUTTON}
             >
               <Icon name="refresh" size={14} className={isRefreshing ? 'animate-spin' : undefined} />
-              {isLocked ? <span className="font-mono text-[10.5px]">{secondsLeft}s</span> : null}
+              {isLocked ? <span className="font-mono text-[12px] leading-4">{secondsLeft}s</span> : null}
             </button>
           ) : null}
           <RowActionsMenu

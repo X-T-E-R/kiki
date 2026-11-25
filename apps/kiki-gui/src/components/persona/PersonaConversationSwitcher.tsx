@@ -24,9 +24,10 @@ import { sessionRowState } from '@kiki/session-core/sessions';
 import type { SessionSeenMap } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
+import { sanitizeDisplayTitle } from '../../lib/threadTitles';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
-import { LifeMark } from '../LifeMark';
+import { SidebarRowDot } from '../sidebar/SidebarRowSignal';
 import { AnchoredPopover } from '../overlays';
 import { RelativeTime } from '../RelativeTime';
 import { useSessionContextMenu } from '../sessionContextMenu';
@@ -92,8 +93,10 @@ function lifeOf(state: ReturnType<typeof sessionRowState>): ItemEntry['life'] {
 }
 
 function sessionTitle(session: Session, untitled: string): string {
-  if (session.title !== undefined && session.title.trim() !== '') return session.title;
-  if (session.last_prompt !== undefined && session.last_prompt.trim() !== '') return session.last_prompt;
+  const title = sanitizeDisplayTitle(session.title);
+  if (title !== undefined) return title;
+  const prompt = sanitizeDisplayTitle(session.last_prompt);
+  if (prompt !== undefined) return prompt;
   return untitled;
 }
 
@@ -237,7 +240,7 @@ export function PersonaConversationSwitcher({
       {/* Who this list belongs to; settings is the persona's, not the session's. */}
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-hairline px-3">
         <PersonaAvatar persona={avatarData} size={20} decorative />
-        <span className="min-w-0 shrink truncate text-[13px] font-medium text-ink">{persona.name}</span>
+        <span className="min-w-0 shrink truncate text-[13px] leading-5 font-normal text-ink">{persona.name}</span>
         {persona.title !== undefined && persona.title.trim() !== '' ? (
           <span className="min-w-0 flex-1 truncate text-[12px] text-ink-faint">{persona.title}</span>
         ) : <span className="flex-1" />}
@@ -309,32 +312,23 @@ export function PersonaConversationSwitcher({
                 }}
                 className="row-interactive flex w-full items-start gap-2 py-1.5 pr-1 pl-2 text-left"
               >
-                <span className="flex h-[19px] w-[7px] shrink-0 items-center">
-                  <LifeMark
-                    markId={`switcher:${item.id}`}
-                    life={item.life}
-                    still
-                    tone={item.needsYou ? 'bg-attention' : undefined}
-                  />
-                </span>
+                <SidebarRowDot signal={item.needsYou || item.life === 'working' || item.life === 'done'} />
                 <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="flex items-center gap-1 text-[13px] leading-[19px]">
-                    {item.kind === 'daily' ? (
-                      <span aria-hidden className="shrink-0 text-ink-faint"><Icon name="pin" size={12} /></span>
-                    ) : item.kind === 'room' ? (
+                  <span className="flex items-center gap-1 text-[13px] leading-5">
+                    {item.kind === 'room' ? (
                       <span aria-hidden className="shrink-0 font-mono text-ink-faint">#</span>
                     ) : null}
-                    <span className={`min-w-0 truncate ${
-                      item.isCurrent || item.needsYou || item.life === 'done' ? 'font-medium text-ink' : 'text-ink-soft'
+                    <span className={`min-w-0 truncate font-normal ${
+                      item.needsYou || item.life === 'working' || item.life === 'done' ? 'text-ink' : 'text-ink-soft'
                     }`}>
                       {item.title}
                     </span>
                     {item.kind === 'daily' && item.title !== t('persona.dailyTitle') ? (
-                      <span className="shrink-0 text-[10.5px] text-ink-faint">{t('persona.dailyBadge')}</span>
+                      <span className="shrink-0 text-[12px] leading-4 text-ink-faint">{t('persona.dailyBadge')}</span>
                     ) : null}
                   </span>
                   {item.workspaceName !== undefined || (item.kind === 'daily' && persona.homeSessionId === undefined) ? (
-                    <span className="mt-px min-w-0 truncate text-[11px] leading-4 text-ink-faint">
+                    <span className="mt-px min-w-0 truncate text-[12px] leading-4 text-ink-faint">
                       {item.kind === 'daily' && persona.homeSessionId === undefined
                         ? t('persona.dailyStartFirst')
                         : item.workspaceName}
@@ -342,7 +336,7 @@ export function PersonaConversationSwitcher({
                   ) : null}
                 </span>
                 {item.updatedAt !== undefined ? (
-                  <RelativeTime at={item.updatedAt} className="mt-0.5 shrink-0 text-[11px] leading-4 text-ink-faint tabular-nums" />
+                  <RelativeTime at={item.updatedAt} className="mt-0.5 shrink-0 text-[12px] leading-4 text-ink-faint tabular-nums" />
                 ) : null}
               </button>
             </li>

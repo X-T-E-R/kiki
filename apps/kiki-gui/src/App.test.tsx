@@ -946,11 +946,12 @@ describe('App sidebar Escape wiring', () => {
     try {
       await mountApp();
       await vi.waitFor(() => {
-        expect(container.querySelector('[data-session-group-key="pinned"] [data-sidebar-unit-group="grp_old_pin"]')).not.toBeNull();
+        expect(container.querySelector('[data-session-group-key="pinned"] [data-session-row="s_pin_open"]')).not.toBeNull();
+        expect(container.querySelector('[data-session-group-key="pinned"] [data-session-row="s_pin_child"]')).not.toBeNull();
         expect(container.querySelector('[data-session-row="p_topic"]')).not.toBeNull();
       }, { timeout: 2_000 });
       expect(listSessionsSpy).not.toHaveBeenCalled();
-      expect(container.querySelectorAll('[data-sidebar-unit-group="grp_old_pin"]')).toHaveLength(1);
+      expect(container.querySelectorAll('[data-sidebar-unit-group]')).toHaveLength(0);
       // Persona current home is suppressed from session groups; its lone remaining topic unwraps as a standalone row.
       expect(container.querySelector('[data-session-row="p_home"]')).toBeNull();
       expect(container.querySelector('[data-sidebar-unit-group="grp_persona"]')).toBeNull();

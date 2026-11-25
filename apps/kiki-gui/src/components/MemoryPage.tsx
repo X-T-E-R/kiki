@@ -325,10 +325,10 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
             <span>{t('st.memory.disabled')}</span>
           )}
           {globalEnabled && scope !== undefined && workspaceOverride === false ? (
-            <span data-memory-workspace-disabled className="font-medium text-amber-ink">{t('st.memory.workspaceDisabled')}</span>
+            <span data-memory-workspace-disabled className="font-normal text-amber-ink">{t('st.memory.workspaceDisabled')}</span>
           ) : null}
           {settings !== undefined ? <MemoryStoreStatus /> : null}
-          <button type="button" data-memory-open-settings onClick={() => { onNavigate(`/settings/memory${scope === undefined ? '' : `?workspace=${encodeURIComponent(scope)}`}`); }} className="rounded-sm font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink sm:ml-auto">
+          <button type="button" data-memory-open-settings onClick={() => { onNavigate(`/settings/memory${scope === undefined ? '' : `?workspace=${encodeURIComponent(scope)}`}`); }} className="rounded-sm font-normal text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink sm:ml-auto">
             {t('st.memory.settingsLink')}
           </button>
         </div>
@@ -340,7 +340,7 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
         </p>
       ) : settings === undefined && settingsQuery.isError ? (
         <div data-memory-settings-error role="alert" className={`mx-auto w-full ${PAGE_WIDTH.split} px-4 py-8 lg:px-6`}>
-          <p className="text-[13px] font-medium text-danger">{t('memory.loadFailed')}</p>
+          <p className="text-[13px] leading-5 font-normal text-danger">{t('memory.loadFailed')}</p>
           <div className="mt-1"><InlineError error={settingsQuery.error} /></div>
           <button type="button" onClick={() => { void settingsQuery.refetch(); }} className={`mt-3 ${SECONDARY_BUTTON}`}>
             {t('common.retry')}
@@ -362,9 +362,9 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
                   data-memory-kind="global"
                   aria-pressed={mode === 'global'}
                   onClick={() => { patchParams(undefined, undefined); }}
-                  className={`-mb-px inline-flex min-h-9 shrink-0 items-center border-b-2 px-3 py-1.5 text-[13.5px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+                  className={`-mb-px inline-flex min-h-9 shrink-0 items-center border-b-2 px-3 py-1.5 text-[13px] leading-5 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
                     mode === 'global'
-                      ? 'border-ink font-medium text-ink'
+                      ? 'border-ink font-normal text-ink'
                       : 'border-transparent text-ink-soft hover:border-hairline-strong hover:text-ink'
                   }`}
                 >
@@ -375,9 +375,9 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
                   data-memory-kind="workspace"
                   aria-pressed={mode === 'workspace'}
                   onClick={() => { if (mode !== 'workspace') patchParams(workspaceOptions.find((workspace) => workspace.id === scope)?.id ?? workspaceOptions[0]?.id, undefined, 'workspace'); }}
-                  className={`-mb-px inline-flex min-h-9 shrink-0 items-center border-b-2 px-3 py-1.5 text-[13.5px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-60 pointer-coarse:min-h-11 ${
+                  className={`-mb-px inline-flex min-h-9 shrink-0 items-center border-b-2 px-3 py-1.5 text-[13px] leading-5 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-60 pointer-coarse:min-h-11 ${
                     mode === 'workspace'
-                      ? 'border-ink font-medium text-ink'
+                      ? 'border-ink font-normal text-ink'
                       : 'border-transparent text-ink-soft hover:border-hairline-strong hover:text-ink'
                   }`}
                 >
@@ -388,9 +388,9 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
                   data-memory-kind="persona"
                   aria-pressed={mode === 'persona'}
                   onClick={() => { if (mode !== 'persona') patchParams(undefined, persona?.id ?? personas[0]?.id, 'persona'); }}
-                  className={`-mb-px inline-flex min-h-9 shrink-0 items-center border-b-2 px-3 py-1.5 text-[13.5px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+                  className={`-mb-px inline-flex min-h-9 shrink-0 items-center border-b-2 px-3 py-1.5 text-[13px] leading-5 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
                     mode === 'persona'
-                      ? 'border-ink font-medium text-ink'
+                      ? 'border-ink font-normal text-ink'
                       : 'border-transparent text-ink-soft hover:border-hairline-strong hover:text-ink'
                   }`}
                 >
@@ -477,7 +477,7 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
           </div>
           {scopeError !== null ? (
             <div role="alert" className={`mx-auto w-full ${PAGE_WIDTH.split} px-4 py-6 text-[13px] text-danger lg:px-6`}>
-              <p className="font-medium text-danger">{t('memory.loadFailed')}</p>
+              <p className="font-normal text-danger">{t('memory.loadFailed')}</p>
               <div className="mt-1"><InlineError error={scopeError} /></div>
               <button
                 type="button"
@@ -543,7 +543,7 @@ function MemoryOnSentence({ workspaceId }: { readonly workspaceId?: string }) {
           role="status"
           aria-label={`${t('memory.advisor.headerLabel')} · ${t(view.stateKey)}`}
           title={`${t('memory.advisor.headerLabel')} · ${t(view.stateKey)}`}
-          className={`inline-flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11.5px] font-medium ${
+          className={`inline-flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[12px] leading-4 font-normal ${
             view.tone === 'danger' ? 'bg-danger/10 text-danger' : 'bg-amber-card text-amber-ink'
           }`}
         >
@@ -576,7 +576,7 @@ function MemoryIntro({
         <span className="flex h-11 w-11 items-center justify-center rounded-full border border-hairline bg-panel text-ink-faint">
           <LeafGlyph className="h-5 w-5" />
         </span>
-        <h2 className="mt-4 font-display text-[22px] leading-snug text-ink">{t('memory.off.title')}</h2>
+        <h2 className="mt-4 font-sans text-[18px] leading-[26px] font-bold text-ink">{t('memory.off.title')}</h2>
         <p className="mt-2 max-w-[52ch] text-[13px] leading-relaxed text-ink-soft">{t('memory.off.body')}</p>
         <p className="mt-2 text-[12px] leading-relaxed text-ink-faint">
           {t('memory.off.storage', { path: storagePath({ scope: 'global' }) })}
@@ -998,12 +998,12 @@ function MemoryScopeView({
               leaveEditor(() => { setTab(candidate); });
             }}
             className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-[13px] transition-colors ${
-              active ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
+              active ? 'border-ink font-normal text-ink' : 'border-transparent text-ink-soft hover:text-ink'
             }`}
           >
             {t(candidate === 'entries' ? 'memory.tab.entries' : 'memory.tab.inbox')}
             {candidate === 'inbox' && inbox.length > 0 ? (
-              <span data-memory-inbox-count className="text-[12px] font-medium text-accent-ink tabular-nums">
+              <span data-memory-inbox-count className="text-[12px] leading-4 font-normal text-accent-ink tabular-nums">
                 {inbox.length}
               </span>
             ) : null}
@@ -1112,7 +1112,7 @@ function MemoryScopeView({
                               data-memory-type-filter={candidate}
                               aria-pressed={active}
                               onClick={() => { setTypeFilter(candidate as MemoryType | 'all'); }}
-                              className={`h-7 rounded-md px-1.5 text-[12px] focus-visible:outline-2 focus-visible:outline-selected-ink ${active ? 'bg-ink/[0.06] font-medium text-ink' : 'text-ink-soft hover:text-ink'}`}
+                              className={`h-7 rounded-md px-1.5 text-[12px] leading-4 focus-visible:outline-2 focus-visible:outline-selected-ink ${active ? 'bg-ink/[0.06] font-normal text-ink' : 'text-ink-soft hover:text-ink'}`}
                             >
                               {t(`memory.type.${candidate}`)}
                             </button>
@@ -1155,14 +1155,14 @@ function MemoryScopeView({
                         <button
                           type="button"
                           onClick={() => { setSearch(''); setDebouncedSearch(''); setTypeFilter('all'); setShowInactive(false); }}
-                          className="mt-1 text-[13px] font-medium text-ink underline underline-offset-2"
+                          className="mt-1 text-[13px] leading-5 font-normal text-ink underline underline-offset-2"
                         >
                           {t('memory.empty.clear')}
                         </button>
                       </>
                     ) : (
                       <>
-                        <p className="font-display text-[18px] text-ink">{t('memory.empty.title')}</p>
+                        <p className="font-sans text-[18px] leading-[26px] font-normal text-ink">{t('memory.empty.title')}</p>
                         <p className="mt-1 max-w-[46ch] text-[13px] leading-relaxed text-ink-soft">{t('memory.empty.body')}</p>
                       </>
                     )}
@@ -1187,10 +1187,10 @@ function MemoryScopeView({
                           {row.kind === 'heading' ? (
                             <h2
                               data-memory-source={row.sourceKey}
-                              className={`flex items-center gap-2 text-[13px] font-[550] text-section-ink ${row.isFirst ? 'pb-2' : 'pt-4 pb-2'}`}
+                              className={`flex items-center gap-2 text-[13px] leading-5 font-normal text-section-ink ${row.isFirst ? 'pb-2' : 'pt-4 pb-2'}`}
                             >
                               {row.label}
-                              <span className="text-[11.5px] font-normal text-ink-faint tabular-nums">{row.count}</span>
+                              <span className="text-[12px] leading-4 font-normal text-ink-faint tabular-nums">{row.count}</span>
                             </h2>
                           ) : (
                             <div className="pb-1">
@@ -1216,8 +1216,8 @@ function MemoryScopeView({
                   <div className="space-y-6 pt-1">
                     {groups.filter((group) => group.entries.length > 0).map((group) => (
                       <section key={targetKey(group.target)} data-memory-source={targetKey(group.target)} aria-label={group.label}>
-                        <h2 className="mb-2 flex items-center gap-2 text-[13px] font-[550] text-section-ink">
-                          {group.label}<span className="text-[11.5px] font-normal text-ink-faint tabular-nums">{group.entries.length}</span>
+                        <h2 className="mb-2 flex items-center gap-2 text-[13px] leading-5 font-normal text-section-ink">
+                          {group.label}<span className="text-[12px] leading-4 font-normal text-ink-faint tabular-nums">{group.entries.length}</span>
                         </h2>
                         <ul className="space-y-1">
                           {group.entries.map((entry) => {
@@ -1253,7 +1253,7 @@ function MemoryScopeView({
                     data-memory-show-inactive
                     aria-pressed={showInactive}
                     onClick={() => { setShowInactive(!showInactive); }}
-                    className="mt-3 inline-flex min-h-8 items-center gap-1 rounded-sm text-[12.5px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                    className="mt-3 inline-flex min-h-8 items-center gap-1 rounded-sm text-[13px] leading-5 text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
                   >
                     {showInactive && inactiveCount > 0 ? tp('memory.archivedRow', inactiveCount) : t('memory.showInactive')}
                     <DisclosureChevron open={showInactive} className="text-ink-faint" />
@@ -1329,7 +1329,7 @@ function MemoryListRow({
     >
       <span className="flex min-w-0 items-center gap-1.5">
         {entry.pinned ? <span role="img" aria-label={t('memory.pinned')} className="flex shrink-0 text-ink-faint"><Icon name="pin" size={12} /></span> : null}
-        <span className={`min-w-0 truncate text-[13px] ${active ? 'font-medium text-ink' : inactive ? 'text-ink-soft' : 'text-ink'}`}>{entry.title}</span>
+        <span className={`min-w-0 truncate text-[13px] leading-5 font-normal ${inactive && !active ? 'text-ink-soft' : 'text-ink'}`}>{entry.title}</span>
       </span>
       <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px] text-ink-faint">
         <TypeTag type={entry.type} />
@@ -1342,7 +1342,7 @@ function MemoryListRow({
             the reader has to triage, so only the two actionable states show. */}
         {applicability === 'recheck' || applicability === 'expired' ? (
           <span data-memory-row-validity={applicability}
-            className={`shrink-0 rounded-sm px-1.5 py-px text-[11px] font-medium ${applicability === 'expired' ? 'bg-amber-card text-amber-ink' : 'bg-ink/[0.05] text-ink-soft'}`}>
+            className={`shrink-0 rounded-sm px-1.5 py-px text-[12px] leading-4 font-normal ${applicability === 'expired' ? 'bg-amber-card text-amber-ink' : 'bg-ink/[0.05] text-ink-soft'}`}>
             {t(applicability === 'expired' ? 'memory.validity.expiredShort' : 'memory.validity.recheckShort')}
           </span>
         ) : null}
@@ -1354,7 +1354,7 @@ function MemoryListRow({
   );
 }
 
-const FIELD_LABEL = 'text-[12px] font-medium text-ink-soft';
+const FIELD_LABEL = 'text-[12px] leading-4 font-normal text-ink-soft';
 /** Secondary detail actions: readable, clickable text without a button frame. */
 const QUIET_ACTION = 'rounded-sm text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-60';
 
@@ -1499,12 +1499,12 @@ function MemoryDetail({
         {!editing && writable ? (
           <span className="ml-auto flex items-center gap-4">
             <button type="button" data-memory-delete disabled={deleteMutation.isPending} onClick={() => { deleteMutation.mutate(); }}
-              className="rounded-sm text-[12px] text-danger/80 transition-colors hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-60">
+              className="rounded-sm text-[12px] leading-4 text-danger transition-colors hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-60">
               {t('memory.delete')}
             </button>
             {governed ? (
               <button type="button" data-memory-forget-open onClick={() => { setConfirmForget(true); }}
-                className="rounded-sm text-[12px] font-medium text-danger transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
+                className="rounded-sm text-[12px] leading-4 font-normal text-danger transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
                 {t('memory.forget')}
               </button>
             ) : null}
@@ -1520,7 +1520,7 @@ function MemoryDetail({
           {journalQuery.isPending ? <p role="status" className="mt-2 text-[12px] text-ink-faint">{t('memory.loading')}</p>
             : journalQuery.isError ? (
               <div role="alert" className="mt-2 space-y-1">
-                <p className="text-[12px] font-medium text-danger">{t('memory.loadFailed')}</p>
+                <p className="text-[12px] leading-4 font-normal text-danger">{t('memory.loadFailed')}</p>
                 <InlineError error={journalQuery.error} />
                 <button type="button" onClick={() => { void journalQuery.refetch(); }} className={`mt-2 ${SECONDARY_BUTTON}`}>
                   {t('common.retry')}
@@ -1549,13 +1549,13 @@ function MemoryDetail({
                       onClick={() => { setOpenHistory(record.operationId); }}
                       className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-1.5 gap-y-0.5 rounded-sm text-left transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
                     >
-                      <span className="font-medium text-ink-soft">{historyLabel(record.action, t)}</span>
+                      <span className="font-normal text-ink-soft">{historyLabel(record.action, t)}</span>
                       <span aria-hidden>·</span>
                       <span>{t(`memory.writer.${record.writer}`)}</span>
                       <span aria-hidden>·</span>
                       <RelativeTime at={record.at} className="tabular-nums" />
                       {revTransition !== null ? (
-                        <span className="font-mono text-[11px] text-ink-faint/80">{revTransition}</span>
+                        <span className="font-mono text-[12px] leading-4 text-ink-faint">{revTransition}</span>
                       ) : null}
                     </button>
                     {writable ? (
@@ -1769,7 +1769,7 @@ function MemoryEditor({
         <p role="alert" data-memory-conflict className="rounded-md border border-amber-rule/40 bg-amber-card px-3 py-2 text-[12px] leading-relaxed text-amber-ink">
           {t('memory.conflict')}
           {' '}
-          <button type="button" onClick={() => { onDone(); }} className="font-semibold underline underline-offset-2">
+          <button type="button" onClick={() => { onDone(); }} className="font-normal underline underline-offset-2">
             {t('memory.reload')}
           </button>
         </p>

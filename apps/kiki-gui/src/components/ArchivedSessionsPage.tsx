@@ -487,7 +487,7 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
                     if (selecting) clearSelection();
                     else setSelecting(true);
                   }}
-                  className="inline-flex h-8 shrink-0 items-center rounded-md px-2 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
+                  className="inline-flex h-8 shrink-0 items-center rounded-md px-2 text-[13px] leading-5 font-normal text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
                 >
                   {selecting ? t('common.cancel') : t('st.workspaces.select')}
                 </button>
@@ -525,16 +525,16 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
               ) : null}
               {outcome.failed.length > 0 ? (
                 <>
-                  <p data-archive-failed-title className="text-[13px] font-medium text-danger">
+                  <p data-archive-failed-title className="text-[13px] leading-5 font-normal text-danger">
                     {t('archive.keptTitle')} · {outcome.failed.length}
                   </p>
                   <ul data-archive-failed className="flex flex-col gap-1">
                     {outcome.failed.map((entry) => (
-                      <li key={entry.id} data-archive-failed-item={entry.id} className="text-[12.5px] leading-snug text-ink-soft">
-                        <span className="font-medium text-ink">{entry.name}</span>
+                      <li key={entry.id} data-archive-failed-item={entry.id} className="text-[13px] leading-5 text-ink-soft">
+                        <span className="font-normal text-ink">{entry.name}</span>
                         <span aria-hidden> · </span>
                         <span>{entry.reason}</span>
-                        <span className="ml-1 font-mono text-[11px] text-ink-faint">{entry.id}</span>
+                        <span className="ml-1 font-mono text-[12px] leading-4 text-ink-faint">{entry.id}</span>
                       </li>
                     ))}
                   </ul>
@@ -563,8 +563,8 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
 
           {firstReadFailed ? (
             <div data-archive-load-failed className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-2">
-              <p className="text-[13px] font-medium text-danger">{t('archive.loadFailed')}</p>
-              <p className="mt-0.5 font-mono text-[11px] text-danger">{errorText(locale, listQuery.error)}</p>
+              <p className="text-[13px] leading-5 font-normal text-danger">{t('archive.loadFailed')}</p>
+              <p className="mt-0.5 font-mono text-[12px] leading-4 text-danger">{errorText(locale, listQuery.error)}</p>
               <button
                 type="button"
                 onClick={() => { void listQuery.refetch(); }}
@@ -580,7 +580,7 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
             </p>
           ) : loaded === 0 ? (
             <div data-archive-empty className="flex flex-col gap-1 py-8">
-              <p className="font-display text-[18px] text-ink">
+              <p className="font-sans text-[18px] leading-[26px] font-normal text-ink">
                 {searching ? t('archive.emptySearch', { query: term }) : t('archive.empty')}
               </p>
               <p className="max-w-[52ch] text-[13px] leading-relaxed text-ink-soft">
@@ -673,8 +673,8 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
 
           {!archiveEmpty ? (
             <section data-archive-danger className="mt-2 flex flex-col gap-1 border-t border-hairline pt-5">
-              <h2 className="font-display text-[15px] text-ink">{t('archive.deleteAll')}</h2>
-              <p className="max-w-[62ch] text-[12.5px] leading-relaxed text-ink-faint">{t('archive.deleteAllBody')}</p>
+              <h2 className="font-sans text-[16px] leading-6 font-bold text-ink">{t('archive.deleteAll')}</h2>
+              <p className="max-w-[62ch] text-[13px] leading-5 text-ink-faint">{t('archive.deleteAllBody')}</p>
               <div className="pt-1">
                 <button
                   type="button"
@@ -834,7 +834,7 @@ function ArchivedRow({
           title={t('archive.openHint')}
           className="flex min-h-11 min-w-0 flex-col items-start justify-center gap-0.5 rounded-md px-2 py-1.5 text-left focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
         >
-          <span className="min-w-0 max-w-full truncate text-[13.5px] leading-[19px] font-medium text-ink">
+          <span className="min-w-0 max-w-full truncate text-[13px] leading-5 font-normal text-ink">
             <ThreadTitle text={title} />
           </span>
           {resolvedWorkspace !== undefined ? (
@@ -852,7 +852,7 @@ function ArchivedRow({
               data-archive-quick-restore={session.id}
               disabled={busy}
               onClick={onRestore}
-              className={`hidden h-8 shrink-0 items-center justify-center rounded-md px-2 text-[12px] font-medium text-ink-soft transition-all hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-40 sm:inline-flex ${
+              className={`hidden h-8 shrink-0 items-center justify-center rounded-md px-2 text-[12px] leading-4 font-normal text-ink-soft transition-all hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-40 sm:inline-flex ${
                 menu !== null || rowPending ? 'opacity-100' : ROW_ACTION_QUIET
               }`}
             >

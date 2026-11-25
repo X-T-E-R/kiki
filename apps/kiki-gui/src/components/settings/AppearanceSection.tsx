@@ -59,16 +59,16 @@ const RADIUS_DEFAULT = 12;
 
 const FONT_CHOICES: readonly { value: string; label: string | null }[] = [
   { value: '', label: null },
-  { value: "'Instrument Sans Variable', 'Instrument Sans', ui-sans-serif, system-ui, 'PingFang SC', 'Noto Sans SC', sans-serif", label: 'Instrument Sans' },
-  { value: "'Newsreader Variable', 'Newsreader', Georgia, 'Songti SC', 'Noto Serif SC', serif", label: 'Newsreader' },
-  { value: "'Space Grotesk', ui-sans-serif, system-ui, 'PingFang SC', 'Noto Sans SC', sans-serif", label: 'Space Grotesk' },
-  { value: "ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Noto Sans SC', sans-serif", label: 'System sans' },
+  { value: "'Instrument Sans Variable', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', 'Hiragino Sans GB', sans-serif", label: 'Instrument Sans' },
+  { value: "'Newsreader Variable', Georgia, 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif", label: 'Newsreader' },
+  { value: "'Space Grotesk', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif", label: 'Space Grotesk' },
+  { value: "'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif", label: 'System sans' },
 ];
 
 /** What a typed family falls back to, per role, so missing glyphs land on a deliberate face. */
-const SANS_FALLBACK = "ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif";
-const MONO_FALLBACK = "ui-monospace, 'Cascadia Mono', Consolas, 'PingFang SC', 'Microsoft YaHei', monospace";
-const PROSE_FALLBACK = "Georgia, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', serif";
+const SANS_FALLBACK = "'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', 'Hiragino Sans GB', sans-serif";
+const MONO_FALLBACK = "'Cascadia Mono', Consolas, Menlo, 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', monospace";
+const PROSE_FALLBACK = "'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif";
 
 /** A stored stack is a preset when it is one of the listed values; anything else was typed. */
 function splitStack(stack: string | undefined, presets: readonly { value: string }[]): { preset: string; custom: string | undefined } {
@@ -162,7 +162,7 @@ function ScaleStepper({
         <span
           {...{ [`data-${prefix}-value`]: '' }}
           aria-live="polite"
-          className="min-w-[3.75rem] px-2 text-center text-[13px] font-medium tabular-nums text-ink select-none"
+          className="min-w-[3.75rem] px-2 text-center text-[13px] leading-5 font-normal tabular-nums text-ink select-none"
         >
           {valueText}
         </span>
@@ -467,8 +467,8 @@ export function AppearanceSection() {
               help={t('st.appearance.proseHint')}
               note={<SpacePrefOrigin item="proseFont" label={t('st.appearance.prose')} />}
               presets={[
-                { value: 'serif', label: t('st.appearance.prose.serif') },
                 { value: 'sans', label: t('st.appearance.prose.sans') },
+                { value: 'serif', label: t('st.appearance.prose.serif') },
               ]}
               presetValue={settings.proseFont}
               custom={tweaks.fontProse}

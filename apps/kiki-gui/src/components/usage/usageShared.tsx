@@ -39,12 +39,12 @@ export function UsageSectionHeading({ title, help, actions, ...rest }: {
   return (
     <div {...rest} className="mb-3 space-y-0.5">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h2 className="mr-auto font-display text-[18px] leading-6 text-ink">{title}</h2>
+        <h2 className="mr-auto font-sans text-[18px] leading-[26px] font-bold text-ink">{title}</h2>
         {actions !== undefined && actions !== null ? (
           <div className="flex shrink-0 items-center gap-2 self-center">{actions}</div>
         ) : null}
       </div>
-      {help !== undefined ? <p className="text-[12px] text-ink-faint">{help}</p> : null}
+      {help !== undefined ? <p className="text-[12px] leading-4 text-ink-faint">{help}</p> : null}
     </div>
   );
 }
@@ -71,7 +71,7 @@ export function AxisGroup<T extends string>({
 }) {
   return (
     <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
-      <span className="shrink-0 text-[13px] text-ink">{label}</span>
+      <span className="shrink-0 text-[13px] leading-5 text-ink">{label}</span>
       <div
         role="group"
         aria-label={label}
@@ -87,9 +87,9 @@ export function AxisGroup<T extends string>({
               data-axis-value={option}
               onClick={() => { onChange(option); }}
               aria-pressed={selected}
-              className={`h-7 rounded-[5px] px-3 text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
+              className={`h-7 rounded-[5px] px-3 text-[13px] leading-5 font-normal transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
                 selected
-                  ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                  ? 'bg-panel text-ink shadow-[var(--kiki-sheet-shadow)]'
                   : 'text-ink-soft hover:text-ink'
               }`}
             >
@@ -225,10 +225,10 @@ export function CompareCell({ outcome, points = false }: {
 }) {
   const { t } = useI18n();
   if (outcome.kind === 'unavailable') {
-    return <span data-usage-compare="unavailable" className="text-[12px] text-ink-faint">{t('usage.compare.rowUnavailable')}</span>;
+    return <span data-usage-compare="unavailable" className="text-[12px] leading-4 text-ink-faint">{t('usage.compare.rowUnavailable')}</span>;
   }
   if (outcome.kind === 'priorZero') {
-    return <span data-usage-compare="prior-zero" className="text-[12px] text-ink-faint">{t('usage.compare.priorZero')}</span>;
+    return <span data-usage-compare="prior-zero" className="text-[12px] leading-4 text-ink-faint">{t('usage.compare.priorZero')}</span>;
   }
   // A point outcome arrives already in percentage points, so scaling it by 100
   // again would turn a 10 pp move into a 1000 pp claim. A ratio outcome is a
@@ -245,7 +245,7 @@ export function CompareCell({ outcome, points = false }: {
     ? 'text-ink-soft'
     : rounded > 0 ? 'text-amber-ink' : 'text-success';
   return (
-    <span data-usage-compare="delta" className={`text-[12px] tabular-nums ${tone}`}>
+    <span data-usage-compare="delta" className={`text-[12px] leading-4 tabular-nums ${tone}`}>
       {flat ? '' : rounded > 0 ? '+' : '−'}{magnitude}
     </span>
   );

@@ -1,19 +1,24 @@
 /**
- * The Live tab: what is running and queued right now — model requests one
- * dimension at a time, then the running agents. The concurrency rules that
- * hold the queue are reported in one line ("limited by 2 rules"); the rule
- * editor itself (`usage/ConcurrencyRulesEditor`) opens under it on request,
- * and a legacy `panel=limits` link opens it straight away and focuses it.
+ * The Live tab (`运行 → 实时`): answers "which conversation needs me, and what
+ * is it doing?" on first paint without clicking a disclosure or reading a
+ * rules editor.
  *
- * On a phone the live tables turn into two-line rows (name; the counts as
- * words) instead of a grid whose last columns would be cut off.
+ * Reading order:
+ *   1. Single-line summary strip (requests, queued, active agents + freshness)
+ *   2. Needs you (approvals / questions / budget pauses — only when real items exist)
+ *   3. Current sessions (all active, queued-waiting, and held/recovery sessions directly visible)
+ *   4. Footer disclosures (both CLOSED by default):
+ *      - By dimension (text & counts, one dimension at a time, no full-width bars)
+ *      - Manage concurrency rules (opens ConcurrencyRulesEditor inline on click or ?panel=limits)
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { RequestGovernanceSnapshot } from '@kiki/protocol';
+import type { ModelCatalogItem, RequestGovernanceSnapshot, RoomListItem, Session } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
+import { buildConversationInbox, formatElapsedClock, type InboxReason } from '@kiki/session-core/sessions';
 
 import { useI18n } from '../i18n';
 import {
@@ -21,22 +26,50 @@ import {
   usePausedSessionDiscovery,
   useSessionExecutions,
 } from '../lib/executionControls';
-import { useLiveAgentGovernance, type LiveAgentDimensionKind } from '../lib/liveAgentGovernance';
+import { useLiveAgentGovernance, type LiveAgentDimensionKind, type LiveAgentSnapshot } from '../lib/liveAgentGovernance';
 import { useRequestGovernance } from '../lib/useRequestGovernance';
-import { useSessionNames } from '../lib/threadTitles';
+import { sanitizeDisplayTitle, useSessionNames } from '../lib/threadTitles';
+import { ROOM_ITEMS_QUERY_KEY } from '../lib/useConversationList';
+import { useConnection } from '../state/connection';
+import { useSessionSeen } from './ActivityPage';
 import { DisclosureChevron, Icon } from './icons';
-import { ConcurrencyRulesEditor } from './usage/ConcurrencyRulesEditor';
-import { ExecutionSessionList, PauseAllExecutions, sessionLabelOf, sessionLabelText } from './usage/ExecutionControls';
-import { AxisGroup, UsageSectionHeading } from './usage/usageShared';
+import { ConcurrencyRulesEditor, type GovernanceRule } from './usage/ConcurrencyRulesEditor';
+import {
+  PauseAllExecutions,
+  SessionExecutionActions,
+  sessionLabelOf,
+  sessionLabelText,
+  type SessionLabel,
+} from './usage/ExecutionControls';
+import {
+  formatRuntimeModelLabel,
+  projectLiveRuntime,
+  type LivePendingRow,
+  type LiveSessionRow,
+} from './usage/liveRuntimeProjection';
+import { AxisGroup } from './usage/usageShared';
 
 export const CONCURRENCY_RULES_SETTINGS_HREF = '/settings/ai?tab=defaults#st-card-concurrency';
+
+const EMPTY_MODELS: readonly ModelCatalogItem[] = [];
+const EMPTY_ROOMS: readonly RoomListItem[] = [];
+
+const REASON_LABEL_KEY: Record<InboxReason, I18nKey> = {
+  approval: 'activity.reason.approval',
+  question: 'activity.reason.question',
+  budget: 'activity.reason.budget',
+  interrupted: 'activity.reason.interrupted',
+  completed: 'activity.reason.completed',
+  failed: 'activity.reason.failed',
+  cancelled: 'activity.reason.cancelled',
+  running: 'activity.reason.running',
+};
 
 /**
  * The sidebar's Activity badge: live active and queued model request counts in
  * quiet tabular figures (`3`, `3 · +1`, `+1` in the expanded sidebar; `3`,
  * `3+1`, `+1` in the collapsed rail) while work is running or waiting, and
- * silent when idle. A stale read keeps the last non-idle counts and exposes a
- * concise refresh hint in its title.
+ * silent when idle.
  */
 export function RequestGovernanceBadge({ compact = false }: { compact?: boolean }) {
   const { snapshot, stale } = useRequestGovernance({ background: true });
@@ -55,147 +88,131 @@ export function RequestGovernanceBadge({ compact = false }: { compact?: boolean 
       title={title}
       aria-label={title}
       className={compact
-        ? 'absolute -right-2 -bottom-1 whitespace-nowrap rounded bg-paper px-0.5 font-mono text-[9px] leading-3 text-[var(--kiki-chart-muted)] tabular-nums'
-        : 'ml-auto shrink-0 font-mono text-[11px] text-[var(--kiki-chart-muted)] tabular-nums'}
+        ? 'absolute -right-2 -bottom-1 whitespace-nowrap rounded bg-paper px-0.5 font-mono text-[10px] leading-3 text-[var(--kiki-chart-muted)] tabular-nums'
+        : 'ml-auto shrink-0 font-mono text-[12px] leading-4 text-[var(--kiki-chart-muted)] tabular-nums'}
     >
       {label}
     </span>
   );
 }
 
-export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime' | 'limits' } = {}) {
-  const { snapshot, stale, loading } = useRequestGovernance();
-  const { t, tp } = useI18n();
-  const queryClient = useQueryClient();
-  const limitsRef = useRef<HTMLDivElement>(null);
-  const ready = snapshot !== undefined;
-  const [userOpen, setUserOpen] = useState<boolean | null>(view === 'limits' ? true : null);
-  const rulesOpen = userOpen ?? (view === 'limits' || (snapshot?.rules.length ?? 0) > 0);
+function useSharedClockMs(active: boolean, frozenAtMs?: number): number {
+  const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
-    if (view !== 'limits' || !ready) return;
-    setUserOpen(true);
-    limitsRef.current?.scrollIntoView?.({ block: 'start' });
-    limitsRef.current?.focus({ preventScroll: true });
-  }, [view, ready]);
-  if (snapshot === undefined) {
-    return (
-      <p role="status" className="py-12 text-center text-[13px] text-ink-faint">
-        {t(loading ? 'usage.governance.loading' : 'usage.governance.unavailable')}
-        {loading ? null : (
-          <button
-            type="button"
-            data-governance-retry
-            onClick={() => { void queryClient.invalidateQueries({ queryKey: ['request-governance'] }); }}
-            className="ml-2 font-medium text-ink underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
-          >
-            {t('usage.execution.retryRefresh')}
-          </button>
-        )}
-      </p>
-    );
-  }
-  const enabledRules = snapshot.rules.filter((rule) => rule.enabled).length;
-  return (
-    <div className="space-y-6" data-request-governance>
-      <RealtimePanel
-        snapshot={snapshot}
-        stale={stale}
-        onRefresh={() => { void queryClient.invalidateQueries({ queryKey: ['request-governance'] }); }}
-        onJumpToRule={() => {
-          setUserOpen(true);
-          requestAnimationFrame(() => {
-            limitsRef.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
-          });
-        }}
-      />
-      <div
-        ref={limitsRef}
-        id="usage-limits"
-        role="region"
-        aria-label={t('usage.governance.limitsTitle')}
-        tabIndex={-1}
-        className="scroll-mt-4 outline-none"
-      >
-        <p data-governance-rules-summary className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-hairline pt-3 text-[12.5px] text-ink-soft">
-          <span>{enabledRules > 0 ? tp('usage.live.rules', enabledRules) : t('usage.governance.emptyTitle')}</span>
-          <button
-            type="button"
-            data-governance-manage
-            aria-expanded={rulesOpen}
-            aria-controls="usage-limits-editor"
-            onClick={() => { setUserOpen(!rulesOpen); }}
-            className="inline-flex min-h-8 items-center gap-1 rounded-sm font-medium text-ink underline-offset-2 transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-          >
-            {t('usage.live.manageRules')}
-            <DisclosureChevron open={rulesOpen} className="text-ink-faint" />
-          </button>
-        </p>
-        {rulesOpen ? (
-          <div id="usage-limits-editor" className="pt-4">
-            <ConcurrencyRulesEditor rules={snapshot.rules} />
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
+    if (!active) return;
+    setNowMs(Date.now());
+    const timer = setInterval(() => { setNowMs(Date.now()); }, 1000);
+    return () => { clearInterval(timer); };
+  }, [active]);
+  return active ? nowMs : (frozenAtMs ?? nowMs);
 }
 
-// ---------------------------------------------------------------------------
-// Live — running and queued right now
-// ---------------------------------------------------------------------------
+function formatLiveElapsed(
+  startedAtMs: number | undefined,
+  waitedMs: number | undefined,
+  nowMs: number,
+  formatDuration: (ms: number) => string,
+): string | undefined {
+  const elapsed = startedAtMs !== undefined
+    ? Math.max(0, nowMs - startedAtMs)
+    : waitedMs !== undefined
+      ? Math.max(0, waitedMs)
+      : undefined;
+  if (elapsed === undefined) return undefined;
+  if (elapsed < 3_600_000) return formatElapsedClock(elapsed);
+  return formatDuration(elapsed);
+}
 
-function RealtimePanel({ snapshot, stale, onRefresh, onJumpToRule }: {
-  readonly snapshot: RequestGovernanceSnapshot;
-  readonly stale: boolean;
-  readonly onRefresh: () => void;
-  readonly onJumpToRule?: (ruleId: string) => void;
-}) {
-  const { t, time } = useI18n();
+export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime' | 'limits' } = {}) {
+  const { snapshot: requestSnapshot, stale: requestStale, loading: requestLoading } = useRequestGovernance();
   const liveAgent = useLiveAgentGovernance();
+  const { client } = useConnection();
+  const { t, locale, time } = useI18n();
+  const queryClient = useQueryClient();
+  const limitsRef = useRef<HTMLDivElement>(null);
+  const manageBtnRef = useRef<HTMLButtonElement>(null);
 
-  // Request dimensions
-  const dimensions = snapshot.dimensions.filter((row) => row.dimension !== 'session');
-  const [chosen, setChosen] = useState<'model' | 'provider' | 'role' | null>(null);
-  const present = (['model', 'provider', 'role'] as const).filter((option) =>
-    dimensions.some((row) => row.dimension === option));
-  const dimension = chosen !== null && present.includes(chosen) ? chosen : present[0];
-  const options = dimension === undefined ? [] : present;
-  const shown = dimension === undefined ? [] : dimensions.filter((row) => row.dimension === dimension);
-  const dimensionLabel = (row: (typeof dimensions)[number]): string => {
-    if (row.dimension === 'role') {
-      return row.id === 'subagent' ? t('usage.governance.roleSubagent') : t('usage.governance.roleRoot');
-    }
-    return row.id;
-  };
+  const [rulesOpen, setRulesOpen] = useState<boolean>(view === 'limits');
+  const [focusRuleRequest, setFocusRuleRequest] = useState<{ readonly id: string; readonly seq: number } | null>(null);
+  const [breakdownOpen, setBreakdownOpen] = useState<boolean>(false);
 
-  // Live agent dimensions
-  const AGENT_DIMENSION_KEYS = ['executor', 'profile', 'model', 'role', 'session'] as const;
-  const [chosenAgentDim, setChosenAgentDim] = useState<LiveAgentDimensionKind | null>(null);
   const agentSnapshot = liveAgent.snapshot ?? undefined;
-  const agentDimensions = agentSnapshot?.dimensions ?? [];
-  const presentAgentDims = AGENT_DIMENSION_KEYS.filter((opt) =>
-    agentDimensions.some((row) => row.dimension === opt));
-  const agentDimension: LiveAgentDimensionKind = chosenAgentDim !== null && presentAgentDims.includes(chosenAgentDim)
-    ? chosenAgentDim
-    : (presentAgentDims[0] ?? 'executor');
-  const agentOptions = presentAgentDims.length > 0 ? presentAgentDims : AGENT_DIMENSION_KEYS;
-  const shownAgentRows = agentDimensions.filter((row) => row.dimension === agentDimension);
+  const rules: readonly GovernanceRule[] = useMemo(() => {
+    if (requestSnapshot !== undefined) return requestSnapshot.rules;
+    return (agentSnapshot?.rules ?? []).map((rule): GovernanceRule => ({
+      ...rule,
+      executors: rule.executors ? [...rule.executors] : undefined,
+      profiles: rule.profiles ? [...rule.profiles] : undefined,
+      models: rule.models ? [...rule.models] : undefined,
+      providers: rule.providers ? [...rule.providers] : undefined,
+      roles: rule.roles ? [...rule.roles] : undefined,
+      subagentsOnly: rule.subagentsOnly ?? false,
+      maxConcurrent: rule.maxConcurrent ?? 1,
+    }));
+  }, [requestSnapshot, agentSnapshot]);
+  const enabledRules = rules.filter((rule) => rule.enabled).length;
 
-  const executorDisplay = (id: string | null): string => {
-    if (id === null || id === undefined || id === '') {
-      return t('usage.governance.unknownExecutor');
-    }
-    const lower = id.toLowerCase();
-    if (lower === 'kiki' || lower === 'builtin' || lower === 'native' || lower === 'local') {
-      return t('usage.governance.executorKiki');
-    }
-    return id;
-  };
+  useEffect(() => {
+    if (view !== 'limits') return;
+    setRulesOpen(true);
+    requestAnimationFrame(() => {
+      limitsRef.current?.scrollIntoView?.({ block: 'start' });
+      limitsRef.current?.focus({ preventScroll: true });
+    });
+  }, [view]);
 
-  // Execution pause/resume: one state read per session in the live inventory
-  // (deduplicated — the full inventory, not the visible page), merged with the
-  // cold-summary discovery so a session paused before a restart still reports
-  // its real phase even though its agents left the live inventory.
+  // Read already-cached model catalog without issuing a network fetch while the
+  // rule editor is closed; formatRuntimeModelLabel cleanly formats known IDs
+  // even when the cache is cold.
+  const catalogModels = queryClient.getQueryData<{ readonly items?: readonly ModelCatalogItem[] }>(['models'])?.items ?? EMPTY_MODELS;
+
+  // Read pending approvals/questions from cached sessions & rooms (plus a bounded fallback if direct deep-link).
+  const seen = useSessionSeen();
+  const cachedSessions = useMemo(() => {
+    const byId = new Map<string, Session>();
+    const addSession = (item: Session | undefined) => {
+      if (item !== undefined && typeof item.id === 'string' && !byId.has(item.id)) byId.set(item.id, item);
+    };
+    for (const [, data] of queryClient.getQueriesData({ queryKey: ['sessions'] })) {
+      const pages = (data as {
+        pages?: readonly {
+          items?: readonly Session[];
+          units?: readonly ({ kind?: string; row?: Session; members?: readonly Session[] })[];
+        }[];
+        items?: readonly Session[];
+      } | undefined);
+      for (const item of pages?.items ?? []) addSession(item);
+      for (const page of pages?.pages ?? []) {
+        for (const item of page.items ?? []) addSession(item);
+        for (const unit of page.units ?? []) {
+          if (unit.kind === 'session') addSession(unit.row);
+          else if (unit.kind === 'group') {
+            for (const member of unit.members ?? []) addSession(member);
+          }
+        }
+      }
+    }
+    return [...byId.values()];
+  }, [queryClient, requestSnapshot?.asOf, agentSnapshot?.asOf]);
+
+  const fallbackSessionsQuery = useQuery({
+    queryKey: ['live-pending-sessions-head'],
+    queryFn: () => client.listSessions({ page_size: 50 }),
+    enabled: cachedSessions.length === 0 && typeof client?.listSessions === 'function',
+    staleTime: 15_000,
+    retry: false,
+  });
+
+  const inboxSessions = cachedSessions.length > 0
+    ? cachedSessions
+    : (fallbackSessionsQuery.data?.items ?? []);
+  const cachedRooms = queryClient.getQueryData<readonly RoomListItem[]>(ROOM_ITEMS_QUERY_KEY) ?? EMPTY_ROOMS;
+  const inbox = useMemo(
+    () => buildConversationInbox(inboxSessions, cachedRooms, seen),
+    [inboxSessions, cachedRooms, seen],
+  );
+
+  // Live agent inventory + cold paused discovery + bounded execution control reads.
   const liveSessionIds = liveInventorySessionIds(agentSnapshot?.agents);
   const pausedDiscovery = usePausedSessionDiscovery();
   const executionSessionIds = useMemo(
@@ -204,387 +221,771 @@ function RealtimePanel({ snapshot, stale, onRefresh, onJumpToRule }: {
   );
   const { states: executionStates, readError: executionReadError, refetch: refetchExecutions } = useSessionExecutions(executionSessionIds);
 
-  // Sessions read by name wherever this panel shows one — the session list and
-  // the session cut of the breakdown — from the cached lists plus one
-  // metadata read per unknown id; actions keep the real id.
-  const sessionDimensionIds = agentDimensions
-    .filter((row) => row.dimension === 'session' && row.id !== null && row.id !== '' && row.id !== 'unknown')
-    .map((row) => row.id!);
-  const nameOf = useSessionNames([...new Set([...executionSessionIds, ...sessionDimensionIds])]);
-  const labelOf = (sessionId: string) => sessionLabelOf(sessionId, nameOf(sessionId), t);
-
-  const agentRowDisplay = (id: string | null): string => {
-    if (agentDimension === 'executor') return executorDisplay(id);
-    if (id === null || id === undefined || id === '' || id === 'unknown') {
-      if (agentDimension === 'model') return t('usage.governance.unknownModelByExecutor');
-      if (agentDimension === 'session') return t('usage.governance.session');
-      return t('usage.governance.unknownExecutor');
+  const sessionDimensionIds = useMemo(
+    () => (agentSnapshot?.dimensions ?? [])
+      .filter((row) => row.dimension === 'session' && row.id !== null && row.id !== '' && row.id !== 'unknown')
+      .map((row) => row.id!),
+    [agentSnapshot?.dimensions],
+  );
+  // Waiter session ids never trigger per-waiter getSession fetches; reuse cached
+  // session titles directly and reserve useSessionNames for live/paused/dimension rows.
+  const fetchedSessionIds = useMemo(
+    () => [...new Set([...executionSessionIds, ...sessionDimensionIds])],
+    [executionSessionIds, sessionDimensionIds],
+  );
+  const nameOf = useSessionNames(fetchedSessionIds);
+  const cachedTitleById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of cachedSessions) {
+      map.set(s.id, s.title ?? '');
     }
-    if (agentDimension === 'session') return sessionLabelText(labelOf(id));
-    return id;
+    return map;
+  }, [cachedSessions]);
+  const labelOf = (sessionId: string) => {
+    const entry = nameOf(sessionId);
+    if (entry.known) return sessionLabelOf(sessionId, entry, t);
+    const cached = cachedTitleById.get(sessionId);
+    if (cached !== undefined) {
+      return sessionLabelOf(sessionId, { title: sanitizeDisplayTitle(cached), known: true }, t);
+    }
+    return sessionLabelOf(sessionId, entry, t);
   };
-  // One visible recovery line for either read path that failed: the per-session
-  // execution read, or the cold paused-session discovery. 40401 (an older
-  // server) stays silent on both.
-  const executionVisibleError = executionReadError ?? pausedDiscovery.error;
-  const retryExecutionReads = () => {
+
+  const projection = useMemo(
+    () => projectLiveRuntime({
+      requestSnapshot,
+      agentSnapshot,
+      executionStates,
+      inboxNeedsYou: inbox.needsYou,
+      models: catalogModels,
+      locale,
+      unknownModelLabel: locale === 'zh' ? '模型未提供' : 'Model unavailable',
+      queuedLabel: t('usage.governance.queued'),
+      pausedLabel: t('usage.execution.phase.paused'),
+      pausingLabel: t('usage.execution.phase.pausing'),
+      failedLabel: t('usage.execution.phase.failed'),
+      resolveSessionLabel: labelOf,
+      untitledLabel: t('sidebar.untitled'),
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [requestSnapshot, agentSnapshot, executionStates, inbox.needsYou, catalogModels, locale, nameOf, t],
+  );
+
+  const anyStale = (requestSnapshot !== undefined && requestStale) || (agentSnapshot !== undefined && liveAgent.stale);
+  const latestAsOf = requestSnapshot?.asOf ?? agentSnapshot?.asOf;
+  const frozenAtMs = latestAsOf !== undefined ? Date.parse(latestAsOf) : undefined;
+  const hasTimedRows = projection.sessionRows.some((row) => row.startedAtMs !== undefined);
+  const nowMs = useSharedClockMs(hasTimedRows && !anyStale, Number.isFinite(frozenAtMs) ? frozenAtMs : undefined);
+
+  const refreshAll = () => {
+    void queryClient.invalidateQueries({ queryKey: ['request-governance'] });
+    void liveAgent.refetch?.();
     if (executionReadError !== undefined) refetchExecutions();
-    else void pausedDiscovery.refresh();
+    else if (pausedDiscovery.error !== undefined) void pausedDiscovery.refresh();
   };
 
-  const requestSummary = [
-    `${t('usage.governance.running')} ${snapshot.active}`,
-    `${t('usage.governance.queued')} ${snapshot.queued}`,
-  ].join(' · ');
-  const agentSummary = agentSnapshot === undefined ? undefined : [
-    `${t('usage.governance.mainAgents')} ${agentSnapshot?.mainActive ?? agentSnapshot?.main ?? 0}`,
-    `${t('usage.governance.subagents')} ${agentSnapshot?.subActive ?? agentSnapshot?.subagent ?? 0}`,
-    ...(agentSnapshot !== null && agentSnapshot !== undefined && (agentSnapshot.independentActive ?? agentSnapshot.independent ?? 0) > 0
-      ? [`${t('usage.governance.independentAgents')} ${agentSnapshot.independentActive ?? agentSnapshot.independent ?? 0}`]
-      : []),
-    ...(agentSnapshot !== null && agentSnapshot !== undefined && agentSnapshot.queued > 0 ? [`${t('usage.governance.queued')} ${agentSnapshot.queued}`] : []),
-  ].join(' · ');
+  const openRulesEditor = (ruleId?: string) => {
+    if (ruleId !== undefined) {
+      setFocusRuleRequest((prev) => ({ id: ruleId, seq: (prev?.seq ?? 0) + 1 }));
+    }
+    setRulesOpen(true);
+    requestAnimationFrame(() => {
+      limitsRef.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+      limitsRef.current?.focus({ preventScroll: true });
+    });
+  };
 
-  const requestMaxCount = useMemo(
-    () => Math.max(1, ...shown.map((row) => row.active + row.queued)),
-    [shown],
-  );
-  const waitingMaxMs = useMemo(
-    () => Math.max(1, ...snapshot.waiting.map((row) => row.waitedMs)),
-    [snapshot.waiting],
-  );
-  const agentMaxCount = useMemo(
-    () => Math.max(1, ...shownAgentRows.map((row) => row.totalActive ?? row.active ?? 0)),
-    [shownAgentRows],
-  );
-  const showWaitingLedger = snapshot.waiting.length > 0 || snapshot.queued > 0;
-  const staleTimeLabel = time.absoluteTime(snapshot.asOf) ?? snapshot.asOf;
-  const agentStaleTimeLabel = agentSnapshot === undefined
-    ? ''
-    : (time.absoluteTime(agentSnapshot.asOf) ?? agentSnapshot.asOf);
-  const requestBandTotal = shown.reduce((sum, row) => sum + row.active + row.queued, 0);
-  const requestBandActive = shown.reduce((sum, row) => sum + row.active, 0);
-  const requestBandQueued = shown.reduce((sum, row) => sum + row.queued, 0);
+  const toggleRulesEditor = () => {
+    setRulesOpen((open) => {
+      const next = !open;
+      if (!next) {
+        setFocusRuleRequest(null);
+        requestAnimationFrame(() => { manageBtnRef.current?.focus(); });
+      }
+      return next;
+    });
+  };
+
+  // Both sources completely absent -> single quiet status line on paper.
+  const bothMissing = requestSnapshot === undefined && agentSnapshot === undefined && projection.pendingRows.length === 0 && projection.sessionRows.length === 0;
+  if (bothMissing) {
+    const stillLoading = requestLoading || liveAgent.loading;
+    return (
+      <p role="status" className="py-12 text-center text-[13px] leading-5 text-ink-faint">
+        {t(stillLoading ? 'usage.governance.loading' : 'usage.governance.unavailable')}
+        {stillLoading ? null : (
+          <button
+            type="button"
+            data-governance-retry
+            onClick={refreshAll}
+            className="ml-2 font-normal text-ink underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+          >
+            {t('usage.execution.retryRefresh')}
+          </button>
+        )}
+      </p>
+    );
+  }
+
+  const totalActiveAgents = agentSnapshot?.totalActive ?? agentSnapshot?.active;
+  const mainAgents = agentSnapshot?.mainActive ?? agentSnapshot?.main ?? 0;
+  const subAgents = agentSnapshot?.subActive ?? agentSnapshot?.subagent ?? 0;
+  const independentAgents = agentSnapshot?.independentActive ?? agentSnapshot?.independent ?? 0;
+  const agentsQueued = agentSnapshot?.queued ?? 0;
+  const asOfLabel = latestAsOf !== undefined ? (time.absoluteTime(latestAsOf) ?? latestAsOf) : undefined;
+  const executionVisibleError = executionReadError ?? pausedDiscovery.error;
+  const needsRefreshHint = anyStale || requestSnapshot === undefined || agentSnapshot === undefined || executionVisibleError !== undefined;
+  const refreshHintTitle = [
+    anyStale && asOfLabel ? t('usage.governance.stale', { time: asOfLabel }) : undefined,
+    requestSnapshot === undefined ? t('usage.governance.unavailable') : undefined,
+    agentSnapshot === undefined ? t('usage.governance.agentsUnavailable') : undefined,
+    executionVisibleError !== undefined ? t('usage.execution.staleState') : undefined,
+    t('usage.execution.retryRefresh'),
+  ].filter(Boolean).join(' · ');
+
+  const isIdle = projection.pendingRows.length === 0
+    && projection.sessionRows.length === 0
+    && projection.unattributedWaiters.length === 0
+    && (requestSnapshot?.active ?? 0) === 0
+    && (requestSnapshot?.queued ?? 0) === 0
+    && (totalActiveAgents ?? 0) === 0;
+
+  const manageRulesLabel = enabledRules > 0
+    ? (locale === 'zh' ? `管理并发规则（${enabledRules} 条启用）` : `Manage concurrency rules (${enabledRules} active)`)
+    : (locale === 'zh' ? '管理并发规则' : 'Manage concurrency rules');
 
   return (
-    <div className="space-y-8">
-      {/* Model requests: a section on the page, not a card — the heading and
-          the muted count line carry the group, the count band shows the
-          selected dimension's observed running vs queued counts, and the
-          tables divide by hairlines. */}
-      <section data-governance-live>
-        <UsageSectionHeading
-          title={t('usage.governance.viewRequests')}
-          help={requestSummary}
-          actions={(
-            <>
-              {stale ? (
-                <span className="inline-flex items-center gap-1.5">
-                  <span data-governance-stale-time className="text-[11.5px] text-amber-ink tabular-nums">
-                    {t('usage.governance.stale', { time: staleTimeLabel })}
-                  </span>
-                  <button
-                    type="button"
-                    data-governance-stale
-                    aria-label={`${t('usage.governance.stale', { time: staleTimeLabel })} · ${t('usage.execution.retryRefresh')}`}
-                    title={`${t('usage.governance.stale', { time: staleTimeLabel })} · ${t('usage.execution.retryRefresh')}`}
-                    onClick={onRefresh}
-                    className="inline-flex min-h-7 min-w-7 items-center justify-center text-amber-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11"
-                  >
-                    <Icon name="refresh" size={12} className="h-[13px] w-[13px]" />
-                  </button>
+    <div className="space-y-6" data-request-governance>
+      {/* 1. Single-line compact summary strip */}
+      <div
+        data-governance-live
+        className="flex min-h-8 flex-wrap items-center gap-x-6 gap-y-1.5 border-b border-hairline pb-3"
+      >
+        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+          <span className="inline-flex items-baseline gap-1.5">
+            <span className="text-[13px] leading-5 text-ink-soft">
+              {locale === 'zh' ? '请求' : 'Requests'}
+            </span>
+            <span data-governance-active className="text-[14px] leading-5 font-normal text-ink tabular-nums">
+              {requestSnapshot === undefined ? '—' : requestSnapshot.active}
+            </span>
+          </span>
+          <span className="inline-flex items-baseline gap-1.5">
+            <span className="text-[13px] leading-5 text-ink-soft">
+              {locale === 'zh' ? '排队' : 'Queued'}
+            </span>
+            <span data-governance-queued className="text-[14px] leading-5 font-normal text-ink tabular-nums">
+              {requestSnapshot === undefined ? '—' : requestSnapshot.queued}
+            </span>
+          </span>
+          <span className="inline-flex items-baseline gap-1.5" data-governance-live-agents>
+            <span className="text-[13px] leading-5 text-ink-soft">
+              {locale === 'zh' ? '运行中智能体' : 'Active agents'}
+            </span>
+            {agentSnapshot !== undefined ? (
+              <>
+                <span
+                  data-governance-total-agents
+                  title={`${t('usage.governance.mainAgents')} ${mainAgents} · ${t('usage.governance.subagents')} ${subAgents}${independentAgents > 0 ? ` · ${t('usage.governance.independentAgents')} ${independentAgents}` : ''}`}
+                  className="text-[14px] leading-5 font-normal text-ink tabular-nums"
+                >
+                  {totalActiveAgents}
                 </span>
-              ) : null}
-              <span className="sr-only" data-governance-active>{snapshot.active}</span>
-              <span className="sr-only" data-governance-queued>{snapshot.queued}</span>
-            </>
-          )}
-        />
-        {shown.length > 0 && dimension !== undefined && requestBandTotal > 0 ? (
-          <div
-            data-governance-count-band={dimension}
-            aria-label={t('usage.governance.countBandAria', { dimension: t(`usage.governance.${dimension}` as I18nKey) })}
-            className="mb-4 space-y-1.5"
-          >
-            <div className="flex h-2 w-full overflow-hidden rounded-full bg-ink/[0.06]">
-              {requestBandActive > 0 ? (
-                <span
-                  data-governance-band-active
-                  className="block h-full bg-selected-ink transition-[width] duration-200"
-                  style={{ width: `${(requestBandActive / requestBandTotal) * 100}%` }}
-                />
-              ) : null}
-              {requestBandQueued > 0 ? (
-                <span
-                  data-governance-band-queued
-                  className={`block h-full bg-amber-rule transition-[width] duration-200 ${requestBandActive > 0 ? 'border-l border-paper' : ''}`}
-                  style={{ width: `${(requestBandQueued / requestBandTotal) * 100}%` }}
-                />
-              ) : null}
-            </div>
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-ink-faint tabular-nums">
-              <span className="inline-flex items-center gap-1.5">
-                <span aria-hidden className="h-2 w-2 rounded-full bg-selected-ink" />
-                <span>{t('usage.governance.running')}</span>
-                <span className="font-medium text-ink">{requestBandActive}</span>
-              </span>
-              <span className="inline-flex items-center gap-1.5">
-                <span aria-hidden className="h-2 w-2 rounded-full bg-amber-rule" />
-                <span>{t('usage.governance.queued')}</span>
-                <span className="font-medium text-ink">{requestBandQueued}</span>
-              </span>
-            </div>
-          </div>
-        ) : null}
-        <div className={`grid gap-x-8 gap-y-6 ${showWaitingLedger ? 'lg:grid-cols-2' : ''}`}>
-          <section className="min-w-0">
-            <div className="mb-3 flex flex-wrap items-center gap-3">
-              {options.length > 1 && dimension !== undefined ? (
-                <AxisGroup
-                  label={t('usage.governance.byDimension')}
-                  dataAxis="governance-dimension"
-                  options={options}
-                  value={dimension}
-                  onChange={(next) => { setChosen(next); }}
-                  labelFor={(option) => t(`usage.governance.${option}` as I18nKey)}
-                />
-              ) : <h2 className="text-[11.5px] font-medium text-ink-faint">{t('usage.governance.byDimension')}</h2>}
-            </div>
-            {shown.length === 0 ? (
-              <p data-governance-dimensions-empty className="text-[12.5px] text-ink-faint">{t('usage.governance.idleNow')}</p>
+                <span className="sr-only" data-governance-main-agents>{mainAgents}</span>
+                <span className="sr-only" data-governance-sub-agents>{subAgents}</span>
+                <span className="sr-only" data-governance-independent-agents>{independentAgents}</span>
+                <span className="sr-only" data-governance-agents-queued>{agentsQueued}</span>
+              </>
             ) : (
-              <div data-governance-dimensions data-governance-dimension={dimension}>
-                <div aria-hidden className="hidden grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] pb-2 text-[11px] text-ink-faint sm:grid">
-                  <span>{t('usage.governance.target')}</span>
-                  <span className="text-right">{t('usage.governance.running')}</span>
-                  <span className="text-right">{t('usage.governance.queued')}</span>
-                </div>
-                <ol className="divide-y divide-hairline border-t border-hairline">
-                  {shown.map((row) => {
-                    const activePct = (row.active / requestMaxCount) * 100;
-                    const queuedPct = (row.queued / requestMaxCount) * 100;
-                    return (
-                      <li key={`${row.dimension}:${row.id}`} data-governance-row={row.id} className="py-2">
-                        <div className="flex flex-col gap-0.5 sm:grid sm:grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] sm:items-baseline">
-                          <span className="min-w-0 truncate text-[13px] text-ink" title={row.id}>{dimensionLabel(row)}</span>
-                          <span className="text-[12px] text-ink-soft tabular-nums sm:hidden">
-                            {`${t('usage.governance.running')} ${row.active} · ${t('usage.governance.queued')} ${row.queued}`}
-                          </span>
-                          <span className="hidden text-right text-[12.5px] text-ink tabular-nums sm:inline">{row.active}</span>
-                          <span className="hidden text-right text-[12.5px] text-ink-soft tabular-nums sm:inline">{row.queued}</span>
-                        </div>
-                        {row.active + row.queued > 0 ? (
-                          <div aria-hidden className="mt-1.5 flex h-1 w-full overflow-hidden rounded-full bg-ink/[0.05]">
-                            {row.active > 0 ? (
-                              <span className="block h-full bg-selected-ink/80" style={{ width: `${Math.max(2, activePct)}%` }} />
-                            ) : null}
-                            {row.queued > 0 ? (
-                              <span className={`block h-full bg-amber-rule ${row.active > 0 ? 'border-l border-paper' : ''}`} style={{ width: `${Math.max(2, queuedPct)}%` }} />
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </li>
-                    );
-                  })}
-                </ol>
-              </div>
-            )}
-          </section>
-          {showWaitingLedger ? (
-            <section className="min-w-0" data-governance-waiting>
-              <div className="mb-3 flex min-h-8 flex-wrap items-center justify-between gap-2">
-                <h2 className="text-[12px] font-medium text-ink-faint">{t('usage.governance.waitingTitle')}</h2>
-                {snapshot.queued > snapshot.waiting.length ? (
-                  <span data-governance-waiting-showing className="text-[11.5px] text-ink-faint tabular-nums">
-                    {t('usage.governance.waitingShowing', { shown: snapshot.waiting.length, total: snapshot.queued })}
-                  </span>
-                ) : null}
-              </div>
-              {snapshot.waiting.length > 0 ? (
-                <ol className={`divide-y divide-hairline border-t border-hairline ${snapshot.waiting.length > 8 ? 'max-h-[360px] overflow-y-auto pr-1' : ''}`}>
-                  {snapshot.waiting.map((row) => {
-                    const longWait = row.waitedMs >= 10_000;
-                    const cachedSession = row.sessionId === undefined ? undefined : nameOf(row.sessionId);
-                    const sessionHint = cachedSession?.title;
-                    const waitWidth = Math.max(4, Math.min(100, (row.waitedMs / waitingMaxMs) * 100));
-                    return (
-                      <li key={row.attemptId} data-governance-waiter={row.attemptId} className="py-2 text-[12.5px]">
-                        <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
-                          <span className="min-w-0 truncate font-medium text-ink" title={row.modelId}>{row.modelId}</span>
-                          {sessionHint !== undefined ? (
-                            <span className="min-w-0 truncate text-[12px] text-ink-soft" title={row.sessionId}>
-                              {sessionHint}
-                            </span>
-                          ) : null}
-                          {row.blockingRules.length > 0 ? (
-                            onJumpToRule !== undefined ? (
-                              <button
-                                type="button"
-                                onClick={() => { onJumpToRule(row.blockingRules[0]!); }}
-                                className="min-w-0 truncate rounded font-mono text-[11.5px] text-ink-faint underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
-                              >
-                                {t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}
-                              </button>
-                            ) : (
-                              <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-faint">{t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}</span>
-                            )
-                          ) : null}
-                          <span
-                            data-governance-wait-long={longWait ? 'true' : undefined}
-                            className={`ml-auto shrink-0 tabular-nums ${longWait ? 'font-mono font-medium text-amber-ink' : 'text-ink-soft'}`}
-                          >
-                            {time.formatDuration(row.waitedMs)}
-                          </span>
-                        </div>
-                        <div aria-hidden className="mt-1.5 flex h-0.5 w-full overflow-hidden rounded-full bg-ink/[0.05]">
-                          <span className={`block h-full ${longWait ? 'bg-amber-rule' : 'bg-ink-faint/45'}`} style={{ width: `${waitWidth}%` }} />
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ol>
-              ) : null}
-            </section>
-          ) : null}
-        </div>
-      </section>
-
-      <section data-governance-live-agents>
-        <UsageSectionHeading
-          title={t('usage.governance.viewAgents')}
-          help={agentSummary}
-          actions={agentSnapshot === undefined ? undefined : (
-            <>
-              {liveAgent.stale ? (
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="text-[11.5px] text-amber-ink tabular-nums">
-                    {t('usage.governance.stale', { time: agentStaleTimeLabel })}
-                  </span>
+              <span className="inline-flex items-center gap-1 text-[12px] leading-4 text-ink-faint" data-governance-agents-status>
+                <span>{t(liveAgent.loading ? 'usage.governance.agentsLoading' : 'usage.governance.agentsUnavailable')}</span>
+                {liveAgent.loading ? null : (
                   <button
                     type="button"
-                    data-governance-agents-stale
                     data-governance-agents-retry
-                    aria-label={`${t('usage.governance.stale', { time: agentStaleTimeLabel })} · ${t('usage.execution.retryRefresh')}`}
-                    title={`${t('usage.governance.stale', { time: agentStaleTimeLabel })} · ${t('usage.execution.retryRefresh')}`}
+                    aria-label={t('usage.execution.retryRefresh')}
+                    title={t('usage.execution.retryRefresh')}
                     onClick={() => { void liveAgent.refetch(); }}
-                    className="inline-flex min-h-7 min-w-7 items-center justify-center text-amber-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11"
-                  >
-                    <Icon name="refresh" size={12} className="h-[13px] w-[13px]" />
-                  </button>
-                </span>
-              ) : null}
-              {executionVisibleError !== undefined ? (
-                <span role="status" data-execution-stale className="inline-flex items-center">
-                  <button
-                    type="button"
-                    data-execution-stale-retry
-                    aria-label={`${t('usage.execution.staleState')} · ${t('usage.execution.retryRefresh')}`}
-                    title={`${t('usage.execution.staleState')} · ${t('usage.execution.retryRefresh')}`}
-                    onClick={retryExecutionReads}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded text-amber-ink transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11"
+                    className="inline-flex h-6 w-6 items-center justify-center rounded text-amber-ink transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
                   >
                     <Icon name="refresh" size={12} />
                   </button>
-                </span>
-              ) : null}
-              <PauseAllExecutions snapshot={agentSnapshot} states={executionStates} labelOf={labelOf} />
-              <span className="sr-only" data-governance-main-agents>{agentSnapshot?.mainActive ?? agentSnapshot?.main ?? 0}</span>
-              <span className="sr-only" data-governance-sub-agents>{agentSnapshot?.subActive ?? agentSnapshot?.subagent ?? 0}</span>
-              <span className="sr-only" data-governance-independent-agents>{agentSnapshot?.independentActive ?? agentSnapshot?.independent ?? 0}</span>
-              <span className="sr-only" data-governance-total-agents>{agentSnapshot?.totalActive ?? agentSnapshot?.active ?? 0}</span>
-              <span className="sr-only" data-governance-agents-queued>{agentSnapshot?.queued ?? 0}</span>
-            </>
-          )}
-        />
-        {agentSnapshot === undefined ? (
-          <p role="status" data-governance-agents-status className="text-[12.5px] text-ink-faint">
-            {t(liveAgent.isError || !liveAgent.loading ? 'usage.governance.agentsUnavailable' : 'usage.governance.agentsLoading')}
-            {liveAgent.isError || !liveAgent.loading ? (
-              <button type="button" data-governance-agents-retry className="ml-2 font-medium text-ink underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink" onClick={() => { void liveAgent.refetch(); }}>
-                {t('usage.execution.retryRefresh')}
+                )}
+              </span>
+            )}
+          </span>
+        </div>
+
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          {asOfLabel !== undefined ? (
+            <span
+              data-governance-stale-time={anyStale ? '' : undefined}
+              className="text-[12px] leading-4 text-ink-faint tabular-nums"
+            >
+              {locale === 'zh' ? `更新于 ${asOfLabel}` : `Updated ${asOfLabel}`}
+            </span>
+          ) : null}
+          {needsRefreshHint ? (
+            <span data-execution-stale={executionVisibleError !== undefined ? '' : undefined}>
+              <button
+                type="button"
+                data-governance-stale={requestStale || undefined}
+                data-governance-agents-stale={liveAgent.stale && agentSnapshot !== undefined ? '' : undefined}
+                data-governance-agents-retry={liveAgent.stale && agentSnapshot !== undefined ? '' : undefined}
+                data-execution-stale-retry={executionVisibleError !== undefined ? '' : undefined}
+                aria-label={refreshHintTitle}
+                title={refreshHintTitle}
+                onClick={refreshAll}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-amber-ink transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11"
+              >
+                <Icon name="refresh" size={12} />
               </button>
+            </span>
+          ) : null}
+        </div>
+      </div>
+
+      {/* 2. Needs you (only when real pending approvals/questions/budget pauses exist) */}
+      {projection.pendingRows.length > 0 ? (
+        <section data-governance-needs-you aria-labelledby="live-needs-you-heading" className="space-y-2">
+          <div className="flex items-baseline gap-2">
+            <h2 id="live-needs-you-heading" className="font-sans text-[16px] leading-6 font-bold text-ink">
+              {locale === 'zh' ? '需要处理' : 'Needs you'}
+            </h2>
+            <span className="text-[13px] leading-5 text-ink-faint tabular-nums">
+              {projection.pendingRows.length}
+            </span>
+          </div>
+          <ul className="divide-y divide-hairline border-t border-hairline">
+            {projection.pendingRows.map((row) => (
+              <PendingRuntimeRow key={row.key} row={row} />
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {/* 3. Current sessions (all active/waiting/paused rows directly visible — NEVER folded) */}
+      {projection.sessionRows.length > 0 ? (
+        <section
+          data-governance-sessions
+          data-execution-sessions
+          aria-labelledby="live-sessions-heading"
+          className="space-y-2"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-baseline gap-2">
+              <h2 id="live-sessions-heading" className="font-sans text-[16px] leading-6 font-bold text-ink">
+                {locale === 'zh' ? '当前会话' : 'Current sessions'}
+              </h2>
+              <span data-governance-sessions-count className="text-[13px] leading-5 text-ink-faint tabular-nums">
+                {projection.sessionRows.length}
+              </span>
+            </div>
+            {agentSnapshot !== undefined ? (
+              <PauseAllExecutions snapshot={agentSnapshot} states={executionStates} labelOf={labelOf} />
             ) : null}
-          </p>
-        ) : (
-          <>
-            <div className="mb-3 flex flex-wrap items-center gap-3">
+          </div>
+          <ul className="divide-y divide-hairline border-t border-hairline">
+            {projection.sessionRows.map((row) => (
+              <ActiveRuntimeSessionRow
+                key={row.sessionId}
+                row={row}
+                nowMs={nowMs}
+                onRetryRead={refetchExecutions}
+                onJumpToRule={openRulesEditor}
+              />
+            ))}
+          </ul>
+          {requestSnapshot !== undefined && requestSnapshot.queued > requestSnapshot.waiting.length ? (
+            <p data-governance-waiting-showing className="text-[12px] leading-4 text-ink-faint tabular-nums">
+              {t('usage.governance.waitingShowing', { shown: requestSnapshot.waiting.length, total: requestSnapshot.queued })}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* Unattributed queued waiters (never invented as a session link) */}
+      {projection.unattributedWaiters.length > 0 ? (
+        <section data-governance-unattributed-waiters className="space-y-2">
+          <h2 className="font-sans text-[16px] leading-6 font-bold text-ink">
+            {locale === 'zh' ? '未关联会话的请求' : 'Unattributed queued requests'}
+          </h2>
+          <ul className="divide-y divide-hairline border-t border-hairline">
+            {projection.unattributedWaiters.map((waiter) => {
+              const model = formatRuntimeModelLabel(waiter.modelId, catalogModels, locale === 'zh' ? '模型未提供' : 'Model unavailable');
+              return (
+                <li
+                  key={waiter.attemptId}
+                  data-governance-waiter={waiter.attemptId}
+                  className="flex min-h-12 flex-wrap items-center gap-x-3 gap-y-1 py-2 text-[13px] leading-5"
+                >
+                  <span className="text-ink">{locale === 'zh' ? '未关联会话的请求' : 'Unattributed request'}</span>
+                  <span className="text-ink-soft" title={model.technical}>{model.display}</span>
+                  {waiter.blockingRules.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => { openRulesEditor(waiter.blockingRules[0]); }}
+                      className="text-[12px] leading-4 text-ink-faint underline-offset-2 hover:text-ink hover:underline"
+                    >
+                      {t('usage.governance.blockedBy', { rules: waiter.blockingRules.join(', ') })}
+                    </button>
+                  ) : null}
+                  <span className="ml-auto text-[12px] leading-4 text-ink-faint tabular-nums">
+                    {time.formatDuration(waiter.waitedMs)}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
+
+      {isIdle ? (
+        <p data-governance-idle className="py-8 text-[13px] leading-5 text-ink-faint">
+          {t('usage.governance.idleNow')}
+        </p>
+      ) : null}
+
+      {/* 4. Footer disclosures: Breakdown + Manage concurrency rules (BOTH closed by default) */}
+      <div className="space-y-4 border-t border-hairline pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <button
+            type="button"
+            data-governance-breakdown-toggle
+            aria-expanded={breakdownOpen}
+            aria-controls="usage-live-breakdown"
+            onClick={() => { setBreakdownOpen((open) => !open); }}
+            className="inline-flex min-h-8 items-center gap-1 rounded-md px-1 text-[13px] leading-5 font-normal text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+          >
+            <span>{locale === 'zh' ? '按维度查看' : 'View by dimension'}</span>
+            <DisclosureChevron open={breakdownOpen} size={12} className="text-ink-faint" />
+          </button>
+
+          <span data-governance-rules-summary>
+            <button
+              ref={manageBtnRef}
+              type="button"
+              data-governance-manage
+              aria-expanded={rulesOpen}
+              aria-controls="usage-limits-editor"
+              onClick={toggleRulesEditor}
+              className="inline-flex min-h-8 items-center gap-1 rounded-md px-1 text-[13px] leading-5 font-normal text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+            >
+              <span>{manageRulesLabel}</span>
+              <DisclosureChevron open={rulesOpen} size={12} className="text-ink-faint" />
+            </button>
+          </span>
+        </div>
+
+        {breakdownOpen ? (
+          <div id="usage-live-breakdown" data-governance-breakdown className="border-t border-hairline pt-4">
+            <DimensionBreakdown
+              requestSnapshot={requestSnapshot}
+              agentSnapshot={agentSnapshot}
+              models={catalogModels}
+              labelOf={labelOf}
+            />
+          </div>
+        ) : null}
+
+        <div
+          ref={limitsRef}
+          id="usage-limits"
+          role="region"
+          aria-label={t('usage.governance.limitsTitle')}
+          tabIndex={-1}
+          className="scroll-mt-4 outline-none"
+        >
+          {rulesOpen ? (
+            <div id="usage-limits-editor" className="border-t border-hairline pt-4">
+              <ConcurrencyRulesEditor rules={rules} focusRuleRequest={focusRuleRequest} />
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PendingRuntimeRow({ row }: { readonly row: LivePendingRow }) {
+  const { t, locale } = useI18n();
+  const navigate = useNavigate();
+  const reasonText = t(REASON_LABEL_KEY[row.reason]);
+  return (
+    <li
+      data-governance-pending-row={row.sessionId}
+      className="flex min-h-12 flex-wrap items-center gap-x-3 gap-y-1 py-2.5 min-[720px]:grid min-[720px]:grid-cols-[minmax(12rem,1.15fr)_minmax(10rem,1fr)_auto] min-[720px]:items-center"
+    >
+      <button
+        type="button"
+        onClick={() => { void navigate(row.href); }}
+        title={row.title}
+        className="min-w-0 truncate text-left text-[13px] leading-5 font-normal text-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+      >
+        {row.title}
+      </button>
+      <span className="flex min-w-0 items-center gap-1.5 text-[13px] leading-5 text-ink-soft">
+        <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-attention" />
+        <span className="truncate">{reasonText}</span>
+        {row.runningAgentCount > 0 ? (
+          <span className="shrink-0 text-[12px] leading-4 text-ink-faint tabular-nums">
+            · {locale === 'zh' ? `${row.runningAgentCount} 个运行中智能体` : `${row.runningAgentCount} running`}
+          </span>
+        ) : null}
+      </span>
+      <button
+        type="button"
+        data-governance-pending-action={row.sessionId}
+        onClick={() => { void navigate(row.href); }}
+        className="ml-auto inline-flex min-h-8 shrink-0 items-center gap-0.5 rounded-md px-2 text-[13px] leading-5 font-normal text-accent-ink transition-colors hover:bg-attention-soft/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+      >
+        <span>{locale === 'zh' ? '处理' : 'Handle'}</span>
+        <span aria-hidden>›</span>
+      </button>
+    </li>
+  );
+}
+
+function ActiveRuntimeSessionRow({
+  row,
+  nowMs,
+  onRetryRead,
+  onJumpToRule,
+}: {
+  readonly row: LiveSessionRow;
+  readonly nowMs: number;
+  readonly onRetryRead: () => void;
+  readonly onJumpToRule: (ruleId: string) => void;
+}) {
+  const { t, locale, time } = useI18n();
+  const navigate = useNavigate();
+  const [agentsExpanded, setAgentsExpanded] = useState(false);
+
+  const elapsed = formatLiveElapsed(row.startedAtMs, row.waitedMs, nowMs, time.formatDuration);
+  const name = sessionLabelText(row.label);
+  const phaseTone = row.phaseKind === 'failed'
+    ? 'text-danger'
+    : row.phaseKind === 'paused'
+      ? 'text-selected-ink'
+      : row.phaseKind === 'queued' || row.phaseKind === 'pausing'
+        ? 'text-amber-ink'
+        : 'text-ink-soft';
+
+  return (
+    <li
+      data-execution-session={row.sessionId}
+      data-execution-paused={row.phaseKind === 'paused' || row.phaseKind === 'failed' ? row.sessionId : undefined}
+      data-governance-waiter={row.waiterAttemptIds[0]}
+      className="py-2.5"
+    >
+      <div className="flex flex-col gap-1 min-[720px]:grid min-[720px]:min-h-8 min-[720px]:grid-cols-[minmax(12rem,1.15fr)_minmax(10rem,1fr)_max-content_auto] min-[720px]:items-center min-[720px]:gap-x-3">
+        {/* Line 1 on narrow / Col 1 on desktop: session title (+ elapsed on narrow) */}
+        <div className="flex min-w-0 items-center justify-between gap-2">
+          <button
+            type="button"
+            data-execution-session-open
+            title={`${name}\n${row.sessionId}`}
+            onClick={() => { void navigate(row.href); }}
+            className="group flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+          >
+            <span className={`min-w-0 truncate text-[13px] leading-5 font-normal underline-offset-2 group-hover:underline ${row.label.titled ? 'text-ink' : 'text-ink-soft'}`}>
+              {row.label.text}
+            </span>
+            {row.label.titled ? null : (
+              <span className="shrink-0 font-mono text-[12px] leading-4 text-ink-faint tabular-nums">
+                {row.label.shortId}
+              </span>
+            )}
+          </button>
+          <span
+            aria-label={elapsed === undefined ? (locale === 'zh' ? '时长未知' : 'Duration unknown') : undefined}
+            className="shrink-0 text-[12px] leading-4 text-ink-faint tabular-nums min-[720px]:hidden"
+          >
+            {elapsed ?? '—'}
+          </span>
+        </div>
+
+        {/* Col 2: honest phase · catalog model display name + optional extra agents / blocking rules */}
+        <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[13px] leading-5">
+          <span data-execution-phase={row.executionState?.phase ?? row.phaseKind} className={`shrink-0 ${phaseTone}`}>
+            {row.phaseKind === 'paused' ? t('usage.execution.pausedHint') : row.phaseLabel}
+          </span>
+          {row.modelDisplay !== undefined ? (
+            <>
+              <span aria-hidden className="text-ink-faint">·</span>
+              <span className="min-w-0 truncate text-ink-soft" title={row.modelTechnical ?? row.modelDisplay}>
+                {row.modelDisplay}
+              </span>
+            </>
+          ) : null}
+          {row.extraAgentCount > 0 ? (
+            <>
+              <span aria-hidden className="text-ink-faint">·</span>
+              <button
+                type="button"
+                data-governance-extra-agents={row.sessionId}
+                aria-expanded={agentsExpanded}
+                onClick={() => { setAgentsExpanded((open) => !open); }}
+                className="shrink-0 rounded text-[12px] leading-4 text-ink-faint underline-offset-2 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+              >
+                {locale === 'zh' ? `另有 ${row.extraAgentCount} 个智能体` : `+${row.extraAgentCount} more agents`}
+              </button>
+            </>
+          ) : null}
+          {row.blockingRules.length > 0 ? (
+            <>
+              <span aria-hidden className="text-ink-faint">·</span>
+              <button
+                type="button"
+                onClick={() => { onJumpToRule(row.blockingRules[0]!); }}
+                className="min-w-0 truncate rounded font-mono text-[12px] leading-4 text-ink-faint underline-offset-2 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+              >
+                {t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}
+              </button>
+            </>
+          ) : null}
+        </div>
+
+        {/* Col 3 (desktop): tabular elapsed */}
+        <span
+          aria-label={elapsed === undefined ? (locale === 'zh' ? '时长未知' : 'Duration unknown') : undefined}
+          className="hidden shrink-0 text-right text-[12px] leading-4 text-ink-faint tabular-nums min-[720px]:inline"
+        >
+          {elapsed ?? '—'}
+        </span>
+
+        {/* Col 4: per-session execution controls + desktop open arrow */}
+        <div className={`shrink-0 items-center justify-end gap-1 ${row.executionState !== undefined ? 'flex' : 'hidden min-[720px]:flex'}`}>
+          {row.executionState !== undefined ? (
+            <SessionExecutionActions
+              sessionId={row.sessionId}
+              state={row.executionState}
+              onRetryRead={onRetryRead}
+            />
+          ) : null}
+          <button
+            type="button"
+            aria-label={locale === 'zh' ? `打开 ${name}` : `Open ${name}`}
+            onClick={() => { void navigate(row.href); }}
+            className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink min-[720px]:inline-flex pointer-coarse:h-11 pointer-coarse:w-11"
+          >
+            <span aria-hidden>›</span>
+          </button>
+        </div>
+      </div>
+
+      {agentsExpanded && row.agents.length > 1 ? (
+        <ul
+          data-governance-session-agents={row.sessionId}
+          className="mt-2 ml-3 space-y-1 border-l border-hairline pl-3"
+        >
+          {row.agents.map((agent) => (
+            <li key={agent.agentId} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 py-0.5 text-[12px] leading-4">
+              <button
+                type="button"
+                onClick={() => { void navigate(agent.href); }}
+                className="font-mono text-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+              >
+                {agent.profileId ?? agent.agentId}
+              </button>
+              <span className="text-ink-faint">
+                {agent.role === 'main'
+                  ? t('usage.governance.mainAgents')
+                  : agent.role === 'subagent'
+                    ? t('usage.governance.subagents')
+                    : t('usage.governance.independentAgents')}
+              </span>
+              {agent.modelDisplay !== undefined ? (
+                <span className="text-ink-soft" title={agent.modelTechnical}>{agent.modelDisplay}</span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+/**
+ * Text-and-counts breakdown under the optional `按维度查看` disclosure.
+ * Single dimension at a time for model requests and running agents — no
+ * full-width percentage bars and no raw wire model IDs as primary labels.
+ */
+function DimensionBreakdown({
+  requestSnapshot,
+  agentSnapshot,
+  models,
+  labelOf,
+}: {
+  readonly requestSnapshot: RequestGovernanceSnapshot | undefined;
+  readonly agentSnapshot: LiveAgentSnapshot | undefined;
+  readonly models: readonly ModelCatalogItem[];
+  readonly labelOf: (sessionId: string) => SessionLabel;
+}) {
+  const { t, locale } = useI18n();
+  const unknownModel = locale === 'zh' ? '模型未提供' : 'Model unavailable';
+
+  // Model request dimensions
+  const dimensions = (requestSnapshot?.dimensions ?? []).filter((row) => row.dimension !== 'session');
+  const [chosenReqDim, setChosenReqDim] = useState<'model' | 'provider' | 'role' | null>(null);
+  const presentReqDims = (['model', 'provider', 'role'] as const).filter((option) =>
+    dimensions.some((row) => row.dimension === option));
+  const reqDim = chosenReqDim !== null && presentReqDims.includes(chosenReqDim) ? chosenReqDim : presentReqDims[0];
+  const shownReqRows = reqDim === undefined ? [] : dimensions.filter((row) => row.dimension === reqDim);
+
+  // Agent dimensions
+  const AGENT_DIM_KEYS = ['executor', 'profile', 'model', 'role', 'session'] as const;
+  const [chosenAgentDim, setChosenAgentDim] = useState<LiveAgentDimensionKind | null>(null);
+  const agentDimensions = agentSnapshot?.dimensions ?? [];
+  const presentAgentDims = AGENT_DIM_KEYS.filter((opt) =>
+    agentDimensions.some((row) => row.dimension === opt));
+  const agentDim: LiveAgentDimensionKind = chosenAgentDim !== null && presentAgentDims.includes(chosenAgentDim)
+    ? chosenAgentDim
+    : (presentAgentDims[0] ?? 'executor');
+  const shownAgentRows = agentDimensions.filter((row) => row.dimension === agentDim);
+
+  const reqRowLabel = (row: (typeof dimensions)[number]): { display: string; title: string } => {
+    if (row.dimension === 'role') {
+      const text = row.id === 'subagent' ? t('usage.governance.roleSubagent') : t('usage.governance.roleRoot');
+      return { display: text, title: text };
+    }
+    if (row.dimension === 'model') {
+      const m = formatRuntimeModelLabel(row.id, models, unknownModel);
+      return { display: m.display, title: m.technical ?? m.display };
+    }
+    return { display: row.id, title: row.id };
+  };
+
+  const agentRowLabel = (id: string | null): { display: string; title: string } => {
+    if (agentDim === 'executor') {
+      if (id === null || id === '') return { display: t('usage.governance.unknownExecutor'), title: '' };
+      const lower = id.toLowerCase();
+      if (lower === 'kiki' || lower === 'builtin' || lower === 'native' || lower === 'local') {
+        const text = t('usage.governance.executorKiki');
+        return { display: text, title: id };
+      }
+      return { display: id, title: id };
+    }
+    if (id === null || id === '' || id === 'unknown') {
+      const text = agentDim === 'model'
+        ? t('usage.governance.unknownModelByExecutor')
+        : agentDim === 'session'
+          ? t('usage.governance.session')
+          : t('usage.governance.unknownExecutor');
+      return { display: text, title: text };
+    }
+    if (agentDim === 'session') {
+      const text = sessionLabelText(labelOf(id));
+      return { display: text, title: `${text}\n${id}` };
+    }
+    if (agentDim === 'model') {
+      const m = formatRuntimeModelLabel(id, models, unknownModel);
+      return { display: m.display, title: m.technical ?? m.display };
+    }
+    return { display: id, title: id };
+  };
+
+  return (
+    <div className="grid gap-8 lg:grid-cols-2">
+      {requestSnapshot !== undefined ? (
+        <section className="min-w-0 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="font-sans text-[14px] leading-5 font-bold text-ink">{t('usage.governance.viewRequests')}</h3>
+            {presentReqDims.length > 1 && reqDim !== undefined ? (
               <AxisGroup
                 label={t('usage.governance.byDimension')}
-                dataAxis="governance-agent-dimension"
-                options={agentOptions}
-                value={agentDimension}
-                onChange={(next) => { setChosenAgentDim(next); }}
-                labelFor={(option) => {
-                  if (option === 'executor') return t('usage.governance.executor');
-                  if (option === 'profile') return t('usage.governance.profile');
-                  if (option === 'model') return t('usage.governance.model');
-                  return t(`usage.governance.${option}` as I18nKey);
-                }}
+                dataAxis="governance-dimension"
+                options={presentReqDims}
+                value={reqDim}
+                onChange={(next) => { setChosenReqDim(next); }}
+                labelFor={(option) => t(`usage.governance.${option}` as I18nKey)}
               />
-            </div>
-            {shownAgentRows.length === 0 ? (
-              <p data-governance-agents-empty className="text-[12.5px] text-ink-faint">{t('usage.governance.idleAgents')}</p>
-            ) : (
-              <div
-                data-governance-agent-dimensions
-                data-governance-agent-dimension={agentDimension}
-                aria-label={t('usage.governance.agentBandAria', { dimension: t(`usage.governance.${agentDimension}` as I18nKey) })}
-              >
-                <div aria-hidden className="hidden grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_4.5rem] gap-x-2 pb-2 text-[11px] text-ink-faint sm:grid">
-                  <span>{t('usage.governance.target')}</span>
-                  <span className="text-right">{t('usage.governance.mainAgents')}</span>
-                  <span className="text-right">{t('usage.governance.subagents')}</span>
-                  <span className="text-right">{t('usage.governance.independentAgents')}</span>
-                  <span className="text-right">{t('usage.governance.totalAgents')}</span>
-                </div>
-                <ol className="divide-y divide-hairline border-t border-hairline">
-                  {shownAgentRows.map((row) => {
-                    const mainCount = row.mainActive ?? row.main ?? 0;
-                    const subCount = row.subActive ?? row.subagent ?? 0;
-                    const indCount = row.independentActive ?? row.independent ?? 0;
-                    const totalCount = row.totalActive ?? row.active ?? 0;
-                    return (
-                      <li key={`${row.dimension}:${row.id ?? 'unknown'}`} data-governance-agent-row={row.id ?? 'unknown'} className="py-2">
-                        <div className="flex flex-col gap-0.5 sm:grid sm:grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_4.5rem] sm:items-baseline sm:gap-x-2">
-                          <span className="min-w-0 truncate text-[13px] text-ink" title={row.id ?? ''}>
-                            {agentRowDisplay(row.id)}
-                          </span>
-                          <span className="text-[12px] text-ink-soft tabular-nums sm:hidden">
-                            {[
-                              `${t('usage.governance.mainAgents')} ${mainCount}`,
-                              `${t('usage.governance.subagents')} ${subCount}`,
-                              `${t('usage.governance.independentAgents')} ${indCount}`,
-                              `${t('usage.governance.totalAgents')} ${totalCount}`,
-                            ].join(' · ')}
-                          </span>
-                          <span className="hidden text-right text-[12.5px] text-ink tabular-nums sm:inline">{mainCount}</span>
-                          <span className="hidden text-right text-[12.5px] text-ink-soft tabular-nums sm:inline">{subCount}</span>
-                          <span className="hidden text-right text-[12.5px] text-ink-faint tabular-nums sm:inline">{indCount}</span>
-                          <span className="hidden text-right text-[12.5px] text-ink tabular-nums sm:inline">{totalCount}</span>
-                        </div>
-                        {totalCount > 0 ? (
-                          <div aria-hidden className="mt-1.5 flex h-1 w-full overflow-hidden rounded-full bg-ink/[0.05]">
-                            {mainCount > 0 ? (
-                              <span className="block h-full bg-ink/70" style={{ width: `${Math.max(2, (mainCount / agentMaxCount) * 100)}%` }} />
-                            ) : null}
-                            {subCount > 0 ? (
-                              <span className={`block h-full bg-selected-ink/80 ${mainCount > 0 ? 'border-l border-paper' : ''}`} style={{ width: `${Math.max(2, (subCount / agentMaxCount) * 100)}%` }} />
-                            ) : null}
-                            {indCount > 0 ? (
-                              <span className={`block h-full bg-ink-faint/55 ${(mainCount > 0 || subCount > 0) ? 'border-l border-paper' : ''}`} style={{ width: `${Math.max(2, (indCount / agentMaxCount) * 100)}%` }} />
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </li>
-                    );
-                  })}
-                </ol>
+            ) : null}
+          </div>
+          {shownReqRows.length === 0 ? (
+            <p data-governance-dimensions-empty className="text-[13px] leading-5 text-ink-faint">{t('usage.governance.idleNow')}</p>
+          ) : (
+            <div data-governance-dimensions data-governance-dimension={reqDim}>
+              <div aria-hidden className="hidden grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] pb-1.5 text-[12px] leading-4 text-ink-faint sm:grid">
+                <span>{t('usage.governance.target')}</span>
+                <span className="text-right">{t('usage.governance.running')}</span>
+                <span className="text-right">{t('usage.governance.queued')}</span>
               </div>
-            )}
-          </>
-        )}
-        <ExecutionSessionList liveSessionIds={liveSessionIds} states={executionStates} onRetryRead={refetchExecutions} labelOf={labelOf} />
-      </section>
+              <ol className="divide-y divide-hairline border-t border-hairline">
+                {shownReqRows.map((row) => {
+                  const label = reqRowLabel(row);
+                  return (
+                    <li key={`${row.dimension}:${row.id}`} data-governance-row={row.id} className="py-2">
+                      <div className="flex flex-col gap-0.5 sm:grid sm:grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] sm:items-baseline">
+                        <span className="min-w-0 truncate text-[13px] leading-5 text-ink" title={label.title}>{label.display}</span>
+                        <span className="text-[12px] leading-4 text-ink-soft tabular-nums sm:hidden">
+                          {`${t('usage.governance.running')} ${row.active} · ${t('usage.governance.queued')} ${row.queued}`}
+                        </span>
+                        <span className="hidden text-right text-[13px] leading-5 text-ink tabular-nums sm:inline">{row.active}</span>
+                        <span className="hidden text-right text-[13px] leading-5 text-ink-soft tabular-nums sm:inline">{row.queued}</span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          )}
+        </section>
+      ) : null}
+
+      {agentSnapshot !== undefined ? (
+        <section className="min-w-0 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="font-sans text-[14px] leading-5 font-bold text-ink">{t('usage.governance.viewAgents')}</h3>
+            <AxisGroup
+              label={t('usage.governance.byDimension')}
+              dataAxis="governance-agent-dimension"
+              options={presentAgentDims.length > 0 ? presentAgentDims : AGENT_DIM_KEYS}
+              value={agentDim}
+              onChange={(next) => { setChosenAgentDim(next); }}
+              labelFor={(option) => {
+                if (option === 'executor') return t('usage.governance.executor');
+                if (option === 'profile') return t('usage.governance.profile');
+                if (option === 'model') return t('usage.governance.model');
+                return t(`usage.governance.${option}` as I18nKey);
+              }}
+            />
+          </div>
+          {shownAgentRows.length === 0 ? (
+            <p data-governance-agents-empty className="text-[13px] leading-5 text-ink-faint">{t('usage.governance.idleAgents')}</p>
+          ) : (
+            <div data-governance-agent-dimensions data-governance-agent-dimension={agentDim}>
+              <div aria-hidden className="hidden grid-cols-[minmax(0,1fr)_3.75rem_3.75rem_3.75rem] gap-x-2 pb-1.5 text-[12px] leading-4 text-ink-faint sm:grid">
+                <span>{t('usage.governance.target')}</span>
+                <span className="text-right">{t('usage.governance.mainAgents')}</span>
+                <span className="text-right">{t('usage.governance.subagents')}</span>
+                <span className="text-right">{t('usage.governance.totalAgents')}</span>
+              </div>
+              <ol className="divide-y divide-hairline border-t border-hairline">
+                {shownAgentRows.map((row) => {
+                  const mainCount = row.mainActive ?? row.main ?? 0;
+                  const subCount = row.subActive ?? row.subagent ?? 0;
+                  const totalCount = row.totalActive ?? row.active ?? 0;
+                  const label = agentRowLabel(row.id);
+                  return (
+                    <li key={`${row.dimension}:${row.id ?? 'unknown'}`} data-governance-agent-row={row.id ?? 'unknown'} className="py-2">
+                      <div className="flex flex-col gap-0.5 sm:grid sm:grid-cols-[minmax(0,1fr)_3.75rem_3.75rem_3.75rem] sm:items-baseline sm:gap-x-2">
+                        <span className="min-w-0 truncate text-[13px] leading-5 text-ink" title={label.title}>{label.display}</span>
+                        <span className="text-[12px] leading-4 text-ink-soft tabular-nums sm:hidden">
+                          {`${t('usage.governance.mainAgents')} ${mainCount} · ${t('usage.governance.subagents')} ${subCount} · ${t('usage.governance.totalAgents')} ${totalCount}`}
+                        </span>
+                        <span className="hidden text-right text-[13px] leading-5 text-ink tabular-nums sm:inline">{mainCount}</span>
+                        <span className="hidden text-right text-[13px] leading-5 text-ink-soft tabular-nums sm:inline">{subCount}</span>
+                        <span className="hidden text-right text-[13px] leading-5 text-ink tabular-nums sm:inline">{totalCount}</span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          )}
+        </section>
+      ) : null}
     </div>
   );
 }

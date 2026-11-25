@@ -176,7 +176,7 @@ export function McpView({
                 type="button"
                 disabled={trustQuery.isRefetching}
                 onClick={() => { void trustQuery.refetch(); }}
-                className="inline-flex min-h-7 shrink-0 items-center rounded px-1 font-medium text-ink underline-offset-2 hover:text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
+                className="inline-flex min-h-7 shrink-0 items-center rounded px-1 font-normal text-ink underline-offset-2 hover:text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
               >
                 {t('common.retry')}
               </button>
@@ -200,7 +200,7 @@ export function McpView({
                 type="button"
                 disabled={trustBusy || trustQuery.isLoading || trustQuery.isError}
                 onClick={() => { void toggleTrust(); }}
-                className="inline-flex min-h-7 shrink-0 items-center rounded px-1 font-medium text-ink underline-offset-2 hover:text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
+                className="inline-flex min-h-7 shrink-0 items-center rounded px-1 font-normal text-ink underline-offset-2 hover:text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
               >
                 {isTrusted
                   ? t('st.mcp.revokeTrustAction')

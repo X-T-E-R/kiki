@@ -211,13 +211,13 @@ export function UsageCompositionRing({
                 type="button"
                 data-usage-clear-bucket
                 onClick={scopedBucket.onClear}
-                className="pointer-events-auto inline-flex min-h-5 max-w-[78px] items-center gap-1 rounded-full bg-ink/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-ink transition-colors hover:bg-ink/[0.12] focus-visible:outline-2 focus-visible:outline-selected-ink sm:min-h-6 sm:max-w-[110px] sm:px-2 sm:text-[10.5px] pointer-coarse:-my-2 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+                className="pointer-events-auto inline-flex min-h-5 max-w-[78px] items-center gap-1 rounded-full bg-ink/[0.06] px-1.5 py-0.5 text-[12px] leading-4 font-normal text-ink transition-colors hover:bg-ink/[0.12] focus-visible:outline-2 focus-visible:outline-selected-ink sm:min-h-6 sm:max-w-[110px] sm:px-2 pointer-coarse:-my-2 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
               >
                 <span data-usage-source-scope className="truncate">{scopedBucket.scopeLabel}</span>
                 <Icon name="close" size={12} className="shrink-0 text-[var(--kiki-chart-label)]" />
               </button>
               <div className="mt-0.5 flex max-w-full items-center justify-center gap-0.5">
-                <div className="max-w-full truncate font-display text-[16.5px] leading-tight text-ink tabular-nums sm:text-[21px]">
+                <div className="max-w-full truncate font-sans text-[18px] leading-[26px] font-bold text-ink tabular-nums sm:text-[24px] sm:leading-8">
                   {scopedBucket.primaryFigure}
                 </div>
                 {metric === 'cost' && scopedBucket.costUnknown ? (
@@ -228,7 +228,7 @@ export function UsageCompositionRing({
               </div>
               <span
                 data-usage-source-subtotal
-                className="mt-0.5 inline-flex max-w-full items-center gap-0.5 truncate text-[10.5px] font-medium text-ink tabular-nums sm:text-[11.5px]"
+                className="mt-0.5 inline-flex max-w-full items-center gap-0.5 truncate text-[12px] leading-4 font-normal text-ink tabular-nums"
               >
                 <span className="truncate">{scopedBucket.subtotalCostText}</span>
                 {metric !== 'cost' && scopedBucket.costUnknown ? (
@@ -244,13 +244,13 @@ export function UsageCompositionRing({
               title={periodHero.title}
               className="flex max-w-full flex-col items-center justify-center"
             >
-              <span className="max-w-full truncate font-sans text-[10px] font-medium tracking-normal text-[var(--kiki-chart-label)] sm:text-[11px]">
+              <span className="max-w-full truncate font-sans text-[12px] leading-4 font-normal tracking-normal text-[var(--kiki-chart-label)]">
                 {periodHero.label}
               </span>
               <div className="mt-0.5 flex max-w-full items-center justify-center gap-0.5">
                 <div
                   {...summaryAttrProps}
-                  className="max-w-full truncate font-display text-[17.5px] leading-tight text-ink tabular-nums sm:text-[24px]"
+                  className="max-w-full truncate font-sans text-[18px] leading-[26px] font-bold text-ink tabular-nums sm:text-[24px] sm:leading-8"
                 >
                   {periodHero.value}
                 </div>
@@ -270,7 +270,7 @@ export function UsageCompositionRing({
           type="button"
           data-usage-drilldown-day
           onClick={scopedBucket.onDrilldownDay}
-          className="mt-1.5 inline-flex min-h-7 items-center gap-1 rounded-full border border-hairline-strong bg-paper px-2.5 py-0.5 font-sans tracking-normal text-[11.5px] font-medium text-ink transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-3.5"
+          className="mt-1.5 inline-flex min-h-7 items-center gap-1 rounded-full border border-hairline-strong bg-paper px-2.5 py-0.5 font-sans tracking-normal text-[12px] leading-4 font-normal text-ink transition-colors hover:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-3.5"
         >
           <span>{t('usage.trend.drilldownHourAction')}</span>
           <Icon name="arrowRight" size={12} className="shrink-0 text-[var(--kiki-chart-label)]" />
@@ -279,7 +279,7 @@ export function UsageCompositionRing({
 
       {/* Wrap-safe Period KPI Subtitle */}
       {subtitleContent !== undefined ? (
-        <div className="mt-1 flex w-full flex-wrap items-center justify-center gap-x-2.5 gap-y-0.5 text-center text-[11.5px] leading-snug sm:mt-2.5 sm:gap-x-3 sm:text-[12px]">
+        <div className="mt-1 flex w-full flex-wrap items-center justify-center gap-x-2.5 gap-y-0.5 text-center text-[12px] leading-4 sm:mt-2.5 sm:gap-x-3">
           {subtitleContent}
         </div>
       ) : null}
@@ -314,9 +314,9 @@ export function UsageCompositionRing({
                 onBlur={() => { onHoverKey(null); }}
                 onClick={() => { onTogglePinKey(slice.key); }}
                 title={`${label} · ${formatPercent(slice.ratio)}`}
-                className={`inline-flex max-w-[10.5rem] min-w-0 items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-2 sm:max-w-[11rem] sm:px-2 sm:text-[11.5px] ${
+                className={`inline-flex max-w-[10.5rem] min-w-0 items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[12px] leading-4 transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-2 sm:max-w-[11rem] sm:px-2 ${
                   isPinned
-                    ? 'bg-selected/75 font-medium text-ink'
+                    ? 'bg-selected/75 font-normal text-ink'
                     : isHi
                       ? 'bg-ink/[0.06] text-ink'
                       : isDim
@@ -330,7 +330,7 @@ export function UsageCompositionRing({
                   style={{ backgroundColor: slice.color }}
                 />
                 <span className="min-w-0 truncate font-sans tracking-normal">{label}</span>
-                <span className="shrink-0 font-medium text-ink tabular-nums">{formatPercent(slice.ratio)}</span>
+                <span className="shrink-0 font-normal text-ink tabular-nums">{formatPercent(slice.ratio)}</span>
               </button>
             );
           })}

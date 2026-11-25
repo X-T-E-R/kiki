@@ -120,25 +120,27 @@ export function useSessionExecutions(
 
   const query = useQuery({
     queryKey: batchKey,
-    queryFn: async (): Promise<Record<string, ExecutionControlState | null>> => {
+    queryFn: async ({ signal }): Promise<Record<string, ExecutionControlState | null>> => {
       const started = new Map(ids.map((sessionId) => [sessionId, generations.current.get(sessionId) ?? 0]));
       let readFailure: unknown;
-      await Promise.all(ids.map(async (sessionId) => {
-        const execution = executionOf(client, sessionId);
-        const readGeneration = started.get(sessionId) ?? 0;
-        if (execution === undefined) { commit(sessionId, null, readGeneration); return; }
-        try {
-          const state = await execution.read();
-          commit(sessionId, state, readGeneration);
-        } catch (error) {
-          readFailure = error;
-          // On a read failure keep whatever the cache currently holds for this
-          // session — including a newer event — instead of writing anything.
+      const concurrency = 4;
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < ids.length && !signal.aborted) {
+          const sessionId = ids[cursor++]!;
+          const execution = executionOf(client, sessionId);
+          const readGeneration = started.get(sessionId) ?? 0;
+          if (execution === undefined) { commit(sessionId, null, readGeneration); continue; }
+          try {
+            const state = await execution.read();
+            if (!signal.aborted) commit(sessionId, state, readGeneration);
+          } catch (error) {
+            if (!signal.aborted) readFailure = error;
+          }
         }
-      }));
+      };
+      await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, () => worker()));
       lastReadError.current = readFailure;
-      // The batch cache is the source of truth; this return only satisfies the
-      // query contract. Commits above already merged per session.
       return queryClient.getQueryData<Record<string, ExecutionControlState | null>>(batchKey) ?? {};
     },
     refetchInterval: EXECUTION_POLL_MS,

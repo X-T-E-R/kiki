@@ -231,7 +231,7 @@ export function PluginLoadFailure({
           onToggle={() => { setOpen((value) => !value); }}
           dataAttrs={{ 'data-plugins-error-diagnostics': '' }}
         >
-          <pre className="max-h-32 overflow-auto rounded-md bg-ink/[0.04] px-3 py-2 font-mono text-[11.5px] leading-5 whitespace-pre-wrap text-ink-soft">
+          <pre className="max-h-32 overflow-auto rounded-md bg-ink/[0.04] px-3 py-2 font-mono text-[12px] leading-4 whitespace-pre-wrap text-ink-soft">
             {diagnostic}
           </pre>
         </Disclosure>
@@ -443,7 +443,7 @@ export function InstalledList({
         kind="none"
         title={t('cap.plugins.noneInstalled')}
         body={t('cap.plugins.noneInstalledBody')}
-        action={<button type="button" className="text-[13px] font-medium text-selected-ink hover:underline" onClick={onAdd}>{t('cap.plugins.addFromSource')}</button>}
+        action={<button type="button" className="text-[13px] leading-5 font-normal text-selected-ink hover:underline" onClick={onAdd}>{t('cap.plugins.addFromSource')}</button>}
       />
     );
   }
@@ -619,7 +619,7 @@ function InstalledRow({
                   className="h-1.5 w-1.5 shrink-0 rounded-full bg-danger"
                 />
               ) : null}
-              <span className={`min-w-0 truncate text-[13px] font-medium ${plugin.enabled ? 'text-ink' : 'text-ink-soft'}`}>
+              <span className={`min-w-0 truncate text-[13px] leading-5 font-normal ${plugin.enabled ? 'text-ink' : 'text-ink-soft'}`}>
                 {plugin.displayName}
               </span>
             </span>
@@ -628,12 +628,12 @@ function InstalledRow({
               {broken ? <Tag tone="danger">{t('cap.state.error')}</Tag> : null}
             </span>
             {density === 'compact' && fact !== '' ? (
-              <span className="min-w-0 truncate font-mono text-[11px] leading-4 text-ink-faint" title={source}>{fact}</span>
+              <span className="min-w-0 truncate font-mono text-[12px] leading-4 text-ink-faint" title={source}>{fact}</span>
             ) : null}
           </span>
           {density === 'compact' ? null : (
             <span className={`mt-0.5 flex min-w-0 items-center gap-2 ${broken ? 'sm:pl-3.5' : ''}`}>
-              <span className="min-w-0 truncate font-mono text-[11px] leading-4 text-ink-faint" title={source}>{fact}</span>
+              <span className="min-w-0 truncate font-mono text-[12px] leading-4 text-ink-faint" title={source}>{fact}</span>
             </span>
           )}
         </span>
@@ -644,7 +644,7 @@ function InstalledRow({
           type="button"
           onClick={() => { onUpdate(update); }}
           data-plugin-update={plugin.id}
-          className="hidden min-h-8 shrink-0 items-center rounded-md px-2.5 text-[12px] font-medium text-selected-ink transition-colors hover:bg-selected focus-visible:outline-2 focus-visible:outline-selected-ink min-[480px]:inline-flex"
+          className="hidden min-h-8 shrink-0 items-center rounded-md px-2.5 text-[12px] leading-4 font-normal text-selected-ink transition-colors hover:bg-selected focus-visible:outline-2 focus-visible:outline-selected-ink min-[480px]:inline-flex"
         >
           {update.version !== undefined ? t('cap.plugins.updateTo', { version: update.version }) : t('cap.action.update')}
         </button>

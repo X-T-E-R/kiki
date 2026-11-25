@@ -11,7 +11,7 @@ export const RETIRED_BUILTIN_SKIN_IDS: ReadonlySet<string> = new Set([
 ]);
 
 const FONT_SANS_NEUTRAL =
-  "'Instrument Sans Variable', 'Instrument Sans', ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Noto Sans SC', sans-serif";
+  "'Instrument Sans Variable', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', 'Hiragino Sans GB', sans-serif";
 const FONT_DISPLAY_NEUTRAL = FONT_SANS_NEUTRAL;
 
 export const BUILTIN_SKINS: readonly SkinFile[] = [

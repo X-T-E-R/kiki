@@ -103,8 +103,8 @@ export function DiscoveryRouteRow({
       }`}
     >
       <span className="min-w-0 flex-1">
-        <span className="block text-[13.5px] font-medium leading-5 text-ink">{t(route.titleKey)}</span>
-        <span className="mt-0.5 block text-[12.5px] leading-relaxed text-ink-soft">{t(route.summaryKey)}</span>
+        <span className="block text-[13px] font-normal leading-5 text-ink">{t(route.titleKey)}</span>
+        <span className="mt-0.5 block text-[12px] leading-4 text-ink-soft">{t(route.summaryKey)}</span>
       </span>
       <span className="flex shrink-0 items-center gap-3">
         <span aria-hidden className="hidden items-center gap-1.5 sm:inline-flex" data-discovery-route-pips>
@@ -114,7 +114,7 @@ export function DiscoveryRouteRow({
         </span>
         <span
           data-discovery-route-status
-          className={`text-[12px] tabular-nums ${current ? 'font-medium text-selected-ink' : finished || progress.viewed ? 'text-ink-soft' : 'text-ink-faint'}`}
+          className={`text-[12px] leading-4 tabular-nums ${current ? 'font-normal text-selected-ink' : finished || progress.viewed ? 'text-ink-soft' : 'text-ink-faint'}`}
         >
           {status}
         </span>

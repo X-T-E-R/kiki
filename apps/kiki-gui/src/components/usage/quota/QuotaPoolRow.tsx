@@ -35,7 +35,7 @@ const ENGINE_HEALTH: Record<EngineHealth, { readonly key: I18nKey; readonly dot:
 };
 
 const ROW_LINK =
-  'inline-flex h-7 shrink-0 items-center rounded px-1.5 text-[11.5px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-2.5';
+  'inline-flex h-7 shrink-0 items-center rounded px-1.5 text-[12px] leading-4 text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-2.5';
 
 export function EngineQuotaSection({
   engines,
@@ -252,13 +252,13 @@ function EngineQuotaRow({
         data-engine-health={health}
         className="flex min-h-10 items-center justify-between gap-3 py-2.5"
       >
-        <span className="flex min-w-0 items-center gap-2 text-[13px] font-[510] text-ink" title={engineId}>
+        <span className="flex min-w-0 items-center gap-2 text-[13px] leading-5 font-normal text-ink" title={engineId}>
           <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${view.dot}`} title={t(view.key)} />
           <span className="truncate">{source.label}</span>
         </span>
         <div className="flex shrink-0 items-center gap-2">
           {health !== 'ready' ? (
-            <span className="text-[11.5px] text-ink-soft">{t(view.key)}</span>
+            <span className="text-[12px] leading-4 text-ink-soft">{t(view.key)}</span>
           ) : null}
           {health === 'warning' || health === 'missing' ? (
             <Link to={quotaSettingsHref(source)} data-quota-engine-settings={engineId} className={ROW_LINK}>
@@ -336,11 +336,11 @@ function EngineQuotaRow({
               className={`h-1.5 w-1.5 shrink-0 rounded-full ${!isPluginMode && source.status === 'auth_required' ? 'bg-amber-rule' : view.dot}`}
               title={!isPluginMode && source.status === 'auth_required' ? t('usage.quota.status.auth_required') : t(view.key)}
             />
-            <h3 className="truncate font-sans text-[13px] font-[510] text-ink" title={engineId}>
+            <h3 className="truncate font-sans text-[13px] leading-5 font-normal text-ink" title={engineId}>
               {source.label}
             </h3>
             {health !== 'ready' && health !== 'unknown' ? (
-              <span className="shrink-0 text-[11px] text-ink-soft">{t(view.key)}</span>
+              <span className="shrink-0 text-[12px] leading-4 text-ink-soft">{t(view.key)}</span>
             ) : null}
           </div>
 
@@ -350,7 +350,7 @@ function EngineQuotaRow({
               data-quota-fleet-toggle={engineId}
               aria-expanded={fleetOpen}
               onClick={toggleFleetOpen}
-              className="mt-1 -ml-1 inline-flex items-center gap-1 rounded px-1 py-0.5 font-sans tracking-normal text-[11.5px] text-[var(--kiki-chart-label)] transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-2"
+              className="mt-1 -ml-1 inline-flex items-center gap-1 rounded px-1 py-0.5 font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)] transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-2"
             >
               <DisclosureChevron open={fleetOpen} />
               <span className="tabular-nums">
@@ -358,11 +358,11 @@ function EngineQuotaRow({
               </span>
             </button>
           ) : singleSeat !== undefined ? (
-            <p className="mt-0.5 truncate text-[11.5px] text-ink-faint" title={singleSeat.accountLabel}>
+            <p className="mt-0.5 truncate text-[12px] leading-4 text-ink-faint" title={singleSeat.accountLabel}>
               {compactIdentifier(singleSeat.accountLabel)}
             </p>
           ) : !isPluginMode && (source.account_label !== undefined || health === 'warning' || health === 'missing') ? (
-            <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11.5px] text-ink-faint">
+            <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px] leading-4 text-ink-faint">
               {source.account_label !== undefined ? (
                 <span className="min-w-0 truncate" title={source.account_label}>
                   {compactIdentifier(source.account_label)}
@@ -394,7 +394,7 @@ function EngineQuotaRow({
                     ))}
                   </div>
                 ) : nativeUnqueried ? (
-                  <div className="flex flex-wrap items-center gap-2 py-0.5 text-[12px] text-ink-soft" data-engine-quota-unqueried={engineId}>
+                  <div className="flex flex-wrap items-center gap-2 py-0.5 text-[12px] leading-4 text-ink-soft" data-engine-quota-unqueried={engineId}>
                     <span>{t('usage.quota.notQueried')}</span>
                     {canRefreshNative ? (
                       <>
@@ -404,7 +404,7 @@ function EngineQuotaRow({
                           data-engine-quota-query={engineId}
                           disabled={isRefreshingNative || isNativeLocked}
                           onClick={() => { void runNativeRefresh(); }}
-                          className="font-medium text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-2"
+                          className="font-normal text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-2"
                         >
                           {t('usage.quota.queryNow')}
                         </button>
@@ -412,7 +412,7 @@ function EngineQuotaRow({
                     ) : null}
                   </div>
                 ) : (
-                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-0.5 text-[12px]">
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-0.5 text-[12px] leading-4">
                     <p className={source.status === 'error' ? 'text-danger' : source.status === 'auth_required' ? 'text-amber-ink' : 'text-ink-soft'}>
                       {source.message ?? source.reason ?? t(source.status === 'ready' || source.status === 'stale' ? 'st.quota.none' : 'usage.quota.status.unknown')}
                     </p>
@@ -420,7 +420,7 @@ function EngineQuotaRow({
                       <Link
                         to={quotaSettingsHref(source)}
                         data-quota-engine-auth-settings={engineId}
-                        className="shrink-0 font-medium text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink"
+                        className="shrink-0 font-normal text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink"
                       >
                         {t('usage.quota.action.settings')}
                       </Link>
@@ -428,14 +428,14 @@ function EngineQuotaRow({
                   </div>
                 )}
                 {source.message && source.meters.length > 0 ? (
-                  <p className={`text-[11.5px] ${source.status === 'auth_required' || source.status === 'stale' ? 'text-amber-ink' : 'text-ink-soft'}`}>
+                  <p className={`text-[12px] leading-4 ${source.status === 'auth_required' || source.status === 'stale' ? 'text-amber-ink' : 'text-ink-soft'}`}>
                     {source.message}
                   </p>
                 ) : null}
               </div>
             ) : (
               <div className="py-0.5" data-engine-quota-status="unsupported">
-                <p className="text-[11.5px] text-ink-faint">
+                <p className="text-[12px] leading-4 text-ink-faint">
                   {t(matchingPluginSources.length > 0 ? 'usage.quota.engines.nativeUnsupportedWithPlugin' : 'usage.quota.engines.nativeUnsupported')}
                 </p>
               </div>
@@ -443,15 +443,15 @@ function EngineQuotaRow({
           ) : (
             <div className="space-y-2" data-engine-plugin-quota={engineId} data-engine-quota-status={pStatus}>
               {pStatus === 'missing' ? (
-                <p className="py-0.5 text-[12px] text-danger" data-engine-quota-error={engineId}>
+                <p className="py-0.5 text-[12px] leading-4 text-danger" data-engine-quota-error={engineId}>
                   {t('usage.quota.engines.pluginMissing', { source: selectedSourceId })}
                 </p>
               ) : pStatus === 'error' ? (
-                <p className="py-0.5 text-[12px] text-danger" data-engine-quota-error={engineId}>
+                <p className="py-0.5 text-[12px] leading-4 text-danger" data-engine-quota-error={engineId}>
                   {pluginError ?? selectedPluginSnapshot?.error ?? pluginCatalogError}
                 </p>
               ) : pStatus === 'unqueried' ? (
-                <div className="flex flex-wrap items-center gap-2 py-0.5 text-[12px] text-ink-soft" data-engine-quota-unqueried={engineId}>
+                <div className="flex flex-wrap items-center gap-2 py-0.5 text-[12px] leading-4 text-ink-soft" data-engine-quota-unqueried={engineId}>
                   <span>{t('usage.quota.notQueried')}</span>
                   <span aria-hidden className="text-ink-faint">·</span>
                   <button
@@ -459,13 +459,13 @@ function EngineQuotaRow({
                     data-engine-quota-query={engineId}
                     disabled={isRefreshingPlugin}
                     onClick={() => { void runPluginRefresh(); }}
-                    className="font-medium text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-2"
+                    className="font-normal text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-2"
                   >
                     {t('usage.quota.queryNow')}
                   </button>
                 </div>
               ) : pStatus === 'expired' ? null : accountGroups.length === 0 ? (
-                <p className="py-0.5 text-[12px] text-ink-soft" data-engine-quota-empty={engineId}>
+                <p className="py-0.5 text-[12px] leading-4 text-ink-soft" data-engine-quota-empty={engineId}>
                   {t('usage.quota.engines.pluginEmpty')}
                 </p>
               ) : isMultiSeat ? (
@@ -508,7 +508,7 @@ function EngineQuotaRow({
                   onClearFeedback();
                   void onPerformPluginAction(selectedPluginSnapshot.id, action.id);
                 }}
-                className="inline-flex h-7 shrink-0 items-center rounded-md border border-hairline bg-paper px-2 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:h-auto pointer-coarse:min-h-11 pointer-coarse:px-2.5"
+                className="inline-flex h-7 shrink-0 items-center rounded-md border border-hairline bg-paper px-2 text-[12px] leading-4 font-normal text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:h-auto pointer-coarse:min-h-11 pointer-coarse:px-2.5"
               >
                 {action.label}
               </button>
@@ -537,7 +537,7 @@ function EngineQuotaRow({
                   : []),
                 ...matchingPluginSources.map((entry) => ({ value: entry.id, label: entry.label })),
               ]}
-              buttonClassName="flex h-7 max-w-[172px] items-center gap-1 rounded-md border-0 bg-transparent px-2 text-[11.5px] text-[var(--kiki-chart-muted)] transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
+              buttonClassName="flex h-7 max-w-[172px] items-center gap-1 rounded-md border-0 bg-transparent px-2 text-[12px] leading-4 text-[var(--kiki-chart-muted)] transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
             />
           ) : null}
           {canRefreshPlugin ? (
@@ -577,7 +577,7 @@ function EngineQuotaRow({
               }`}
             >
               <Icon name="refresh" size={14} className={isRefreshingNative ? 'animate-spin' : undefined} />
-              {isNativeLocked ? <span className="font-mono text-[10.5px]">{nativeSecondsLeft}s</span> : null}
+              {isNativeLocked ? <span className="font-mono text-[12px] leading-4">{nativeSecondsLeft}s</span> : null}
             </button>
           ) : null}
         </div>
@@ -651,10 +651,10 @@ function FleetPoolSummaryRow({
         const tone = pct === undefined
           ? 'text-[var(--kiki-chart-muted)]'
           : isCritical
-            ? 'font-semibold text-[var(--kiki-chart-danger-text)]'
+            ? 'font-normal text-[var(--kiki-chart-danger-text)]'
             : isWarn
-              ? 'font-semibold text-[var(--kiki-chart-warn-text)]'
-              : 'font-semibold text-ink';
+              ? 'font-normal text-[var(--kiki-chart-warn-text)]'
+              : 'font-normal text-ink';
         const dotColor = isCritical
           ? 'var(--kiki-chart-danger)'
           : isWarn
@@ -665,9 +665,9 @@ function FleetPoolSummaryRow({
           <div
             key={pool.key}
             data-bucket-progress={pct !== undefined ? true : undefined}
-            className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px]"
+            className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px] leading-4"
           >
-            <span className="inline-flex min-w-0 items-center gap-1.5 font-sans tracking-normal text-[11.5px] text-[var(--kiki-chart-label)]">
+            <span className="inline-flex min-w-0 items-center gap-1.5 font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)]">
               {dotColor !== undefined ? (
                 <span
                   aria-hidden
@@ -679,12 +679,12 @@ function FleetPoolSummaryRow({
               {pool.window ? <span className="shrink-0 text-[var(--kiki-chart-muted)]">· {pool.window}</span> : null}
             </span>
             <span className="inline-flex shrink-0 items-baseline gap-1.5 tabular-nums">
-              <span className={`text-[12.5px] ${tone}`}>
+              <span className={`text-[13px] leading-5 ${tone}`}>
                 {pct !== undefined ? `${formatQuotaPercentNumber(pct)}%` : (pool.fallbackValue ?? t('usage.quota.status.unknown'))}
               </span>
               {pool.tightestResetShort !== undefined ? (
                 <span
-                  className="text-[11px] text-[var(--kiki-chart-muted)]"
+                  className="text-[12px] leading-4 text-[var(--kiki-chart-muted)]"
                   title={resetFull ? t('usage.quota.stripReset', { time: resetFull }) : pool.tightestResetAt}
                 >
                   {pool.tightestResetShort}

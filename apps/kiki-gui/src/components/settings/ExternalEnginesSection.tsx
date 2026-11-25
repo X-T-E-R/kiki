@@ -280,7 +280,7 @@ export function ExternalEnginesVisibilitySwitch() {
 
   return (
     <div data-external-visibility data-visible={prefs.externalsVisible ? 'true' : 'false'} className="flex items-center gap-2">
-      {error !== undefined ? <span role="alert" className="max-w-[16rem] truncate text-[12px] text-danger" title={error}>{error}</span> : null}
+      {error !== undefined ? <span role="alert" className="max-w-[16rem] truncate text-[12px] leading-4 text-danger" title={error}>{error}</span> : null}
       <Toggle
         label={t('st.engines.showAllInList')}
         checked={prefs.externalsVisible}
@@ -419,7 +419,7 @@ export function ExternalEnginesList() {
       ) : null}
       {foldMissing ? (
         <details data-engine-missing-fold className="pt-1">
-          <summary className="flex cursor-pointer list-none items-center gap-1.5 py-1.5 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink pointer-coarse:min-h-11 [&::-webkit-details-marker]:hidden">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 py-1.5 text-[12px] leading-4 font-normal text-ink-faint transition-colors hover:text-ink pointer-coarse:min-h-11 [&::-webkit-details-marker]:hidden">
             <DisclosureChevron open={false} className="text-ink-faint" />
             <span>{t('st.engines.discovery.missing')}</span>
             <span className="font-normal tabular-nums">{missingEngines.length}</span>
@@ -469,7 +469,7 @@ export function ExternalEnginesList() {
       {query.isSuccess && engines.length === 0 ? (
         // One quiet line, not a dashed box: an empty list is a state, not an
         // explanation (#12).
-        <p className="text-[13px] text-ink-soft" data-engines-empty>{t('st.engines.emptyLine')}</p>
+        <p className="text-[13px] leading-5 text-ink-soft" data-engines-empty>{t('st.engines.emptyLine')}</p>
       ) : null}
       {query.isLoading ? <Hint>{t('st.engines.loading')}</Hint> : null}
       {query.isError ? <InlineError error={query.error} /> : null}
@@ -502,10 +502,10 @@ function CopyCommand({ command, wrap = false }: { command: string; wrap?: boolea
   const [copied, setCopied] = useState(false);
   return (
     <span className="inline-flex max-w-full min-w-0 items-center gap-1 rounded-md border border-hairline bg-paper pl-2">
-      <code className={`min-w-0 font-mono text-[11.5px] text-ink ${wrap ? 'break-all py-1 leading-4' : 'truncate'}`} title={command}>{command}</code>
+      <code className={`min-w-0 font-mono text-[12px] leading-4 text-ink ${wrap ? 'break-all py-1' : 'truncate'}`} title={command}>{command}</code>
       <button type="button" data-engine-copy aria-label={t('st.engines.copyCommand', { command })}
         onClick={() => { void copyTextToClipboard(command).then(() => { setCopied(true); setTimeout(() => { setCopied(false); }, 1500); }); }}
-        className="inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-r-md px-1.5 text-[11.5px] text-ink-faint hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink">
+        className="inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-r-md px-1.5 text-[12px] leading-4 text-ink-faint hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink">
         {copied ? t('st.engines.copied') : <Icon name="notes" size={12} />}
       </button>
     </span>
@@ -516,8 +516,8 @@ function CopyCommand({ command, wrap = false }: { command: string; wrap?: boolea
 function Fact({ label, children, dataFact }: { label: string; children: React.ReactNode; dataFact?: string }) {
   return (
     <div data-engine-fact={dataFact} className="grid min-w-0 gap-x-4 gap-y-0.5 sm:grid-cols-[9rem_minmax(0,1fr)]">
-      <dt className="text-[12px] text-ink-faint">{label}</dt>
-      <dd className="min-w-0 text-[12.5px] leading-5 text-ink">{children}</dd>
+      <dt className="text-[12px] leading-4 text-ink-faint">{label}</dt>
+      <dd className="min-w-0 text-[13px] leading-5 text-ink">{children}</dd>
     </div>
   );
 }
@@ -543,7 +543,7 @@ function StepMarker({ state, index }: { state: StepState; index: number }) {
     return <span aria-hidden className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-success/15 text-success"><Icon name="check" size={12} /></span>;
   }
   return (
-    <span aria-hidden className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium tabular-nums ${
+    <span aria-hidden className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[12px] leading-4 font-normal tabular-nums ${
       state === 'current' ? 'border-amber-rule bg-amber-rule/10 text-amber-ink' : 'border-hairline-strong text-ink-faint'}`}>
       {index}
     </span>
@@ -574,7 +574,7 @@ function EngineSetup({ check, loginCommand, apiKeyEnv, accountSource }: {
   const needsCredential = signInState === 'current' || signInState === 'unknown';
   return (
     <div data-engine-setup={stage.kind} className="space-y-2">
-      <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.setup')}</p>
+      <p className="text-[13px] leading-5 font-normal text-ink-soft">{t('st.engines.setup')}</p>
       <ol className="space-y-2">
         {requirements.map((requirement, index) => {
           const state = stateOf(index);
@@ -583,14 +583,14 @@ function EngineSetup({ check, loginCommand, apiKeyEnv, accountSource }: {
               data-step-state={state} className="flex min-w-0 gap-2">
               <StepMarker state={state} index={index + 1} />
               <div className="min-w-0 flex-1 space-y-1">
-                <p className="text-[12.5px] leading-5 text-ink">
-                  <span className="font-medium">{requirement.label}</span>
+                <p className="text-[13px] leading-5 text-ink">
+                  <span className="font-normal">{requirement.label}</span>
                   <span className="text-ink-faint"> · {state === 'done' ? requirement.version ?? t('st.engines.stepFound')
                     : state === 'pending' ? t('st.engines.stepWaiting')
                       : requirement.status === 'failed' ? t('st.engines.stepFailed') : t('st.engines.stepMissing')}</span>
                 </p>
                 {requirement.path !== undefined ? (
-                  <p className="break-all font-mono text-[11px] leading-4 text-ink-faint" data-step-path>{requirement.path}</p>
+                  <p className="break-all font-mono text-[12px] leading-4 text-ink-faint" data-step-path>{requirement.path}</p>
                 ) : null}
                 {state === 'current' ? (
                   <div className="space-y-1">
@@ -607,8 +607,8 @@ function EngineSetup({ check, loginCommand, apiKeyEnv, accountSource }: {
         <li data-engine-step="signin" data-step-state={signInState} className="flex min-w-0 gap-2">
           <StepMarker state={signInState} index={requirements.length + 1} />
           <div className="min-w-0 flex-1 space-y-1">
-            <p className="text-[12.5px] leading-5 text-ink">
-              <span className="font-medium">{t('st.engines.login')}</span>
+            <p className="text-[13px] leading-5 text-ink">
+              <span className="font-normal">{t('st.engines.login')}</span>
               <span className="text-ink-faint"> · {signInState === 'pending' ? t('st.engines.stepWaiting')
                 : accountSource === undefined && credentialKey !== undefined ? t(credentialKey) : t(`st.engines.login.${check.login_status}`)}</span>
             </p>
@@ -625,13 +625,13 @@ function EngineSetup({ check, loginCommand, apiKeyEnv, accountSource }: {
                 </p>
                 {loginCommand !== undefined ? (
                   <div data-engine-route="login" className="flex flex-wrap items-center gap-2">
-                    <span className="text-[12px] text-ink-faint">{t('st.engines.loginCommand')}</span>
+                    <span className="text-[12px] leading-4 text-ink-faint">{t('st.engines.loginCommand')}</span>
                     <CopyCommand command={loginCommand} />
                   </div>
                 ) : null}
                 {apiKeyEnv !== undefined ? (
                   <div data-engine-route="api-key" className="flex flex-wrap items-center gap-2">
-                    <span className="text-[12px] text-ink-faint">{t('st.engines.apiKeyCommand')}</span>
+                    <span className="text-[12px] leading-4 text-ink-faint">{t('st.engines.apiKeyCommand')}</span>
                     <CopyCommand command={`export ${apiKeyEnv}=YOUR_API_KEY`} />
                   </div>
                 ) : null}
@@ -798,12 +798,12 @@ function EngineRunMode({ item, savedDefaults, onSaved }: {
 
   const restore = following ? null : (
     <button type="button" data-mcp-restore disabled={saving} onClick={() => void write(null)}
-      className="rounded px-1 text-[12px] text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink hover:decoration-ink disabled:cursor-not-allowed disabled:text-ink-faint">
+      className="rounded px-1 text-[12px] leading-4 text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink hover:decoration-ink disabled:cursor-not-allowed disabled:text-ink-faint">
       {copy.restore}
     </button>
   );
   const control = isUnsupported ? (
-    <span data-mcp-unsupported-badge title={unsupportedFact} className="text-[12px] text-ink-faint">{copy.plainOnly}</span>
+    <span data-mcp-unsupported-badge title={unsupportedFact} className="text-[12px] leading-4 text-ink-faint">{copy.plainOnly}</span>
   ) : (
     <SettingsSegmented
       ariaLabel={`${copy.title} · ${item.label}`}
@@ -825,7 +825,7 @@ function EngineRunMode({ item, savedDefaults, onSaved }: {
     <div {...data} className="space-y-1.5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         {control}
-        {isUnsupported ? null : following ? <span className="text-[12px] text-ink-faint">{copy.following}</span> : restore}
+        {isUnsupported ? null : following ? <span className="text-[12px] leading-4 text-ink-faint">{copy.following}</span> : restore}
       </div>
       <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{isUnsupported ? unsupportedFact : t('st.engines.mcpInject.hint')}</p>
       {error !== undefined ? <p role="alert" className="text-[12px] leading-4 text-danger">{error}</p> : null}
@@ -906,15 +906,15 @@ function EngineOverrides({ item, program, onCheck, children }: { item: ExecutorC
 
   return (
     <details data-engine-advanced className="pt-3 [&[open]]:space-y-3">
-      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] font-medium text-ink-soft [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] leading-4 font-normal text-ink-soft [&::-webkit-details-marker]:hidden">
         <DisclosureChevron open={false} className="text-ink-faint" />
         {t('st.engines.advanced')}
       </summary>
       {item.instance !== undefined ? null : <>
       <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.override.hint')}</p>
       <div className="space-y-1">
-        <label className="text-[12px] text-ink-soft" htmlFor={`${item.id}-bin`}>{t('st.engines.override.binPath')}</label>
-        <input id={`${item.id}-bin`} data-engine-override="bin-path" className={`${INPUT} min-w-0 font-mono text-[11.5px]`}
+        <label className="text-[13px] leading-5 font-normal text-ink-soft" htmlFor={`${item.id}-bin`}>{t('st.engines.override.binPath')}</label>
+        <input id={`${item.id}-bin`} data-engine-override="bin-path" className={`${INPUT} min-w-0 font-mono text-[12px] leading-4`}
           value={form.binPath} spellCheck={false} disabled={saving}
           placeholder={program === undefined ? t('st.engines.override.binPathPlaceholder') : t('st.engines.override.autoDetected', { value: program })}
           onChange={(event) => { setForm({ ...form, binPath: event.target.value }); }} />
@@ -922,24 +922,24 @@ function EngineOverrides({ item, program, onCheck, children }: { item: ExecutorC
       </div>
       {homeEnv === undefined ? null : (
         <div className="space-y-1">
-          <label className="text-[12px] text-ink-soft" htmlFor={`${item.id}-home`}>{t('st.engines.override.homeDir', { env: homeEnv })}</label>
-          <input id={`${item.id}-home`} data-engine-override="home-dir" className={`${INPUT} min-w-0 font-mono text-[11.5px]`}
+          <label className="text-[13px] leading-5 font-normal text-ink-soft" htmlFor={`${item.id}-home`}>{t('st.engines.override.homeDir', { env: homeEnv })}</label>
+          <input id={`${item.id}-home`} data-engine-override="home-dir" className={`${INPUT} min-w-0 font-mono text-[12px] leading-4`}
             value={form.homeDir} spellCheck={false} disabled={saving} placeholder={t('st.engines.override.homeDirPlaceholder', { env: homeEnv })}
             onChange={(event) => { setForm({ ...form, homeDir: event.target.value }); }} />
           <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.override.homeDirHint', { env: homeEnv })}</p>
         </div>
       )}
       <div className="space-y-1">
-        <label className="text-[12px] text-ink-soft" htmlFor={`${item.id}-args`}>{t('st.engines.override.args')}</label>
-        <input id={`${item.id}-args`} data-engine-override="args" className={`${INPUT} min-w-0 font-mono text-[11.5px]`}
+        <label className="text-[13px] leading-5 font-normal text-ink-soft" htmlFor={`${item.id}-args`}>{t('st.engines.override.args')}</label>
+        <input id={`${item.id}-args`} data-engine-override="args" className={`${INPUT} min-w-0 font-mono text-[12px] leading-4`}
           value={form.extraArgs} spellCheck={false} disabled={saving}
           onChange={(event) => { setForm({ ...form, extraArgs: event.target.value }); }} />
         <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.override.argsHint')}</p>
       </div>
       <div className="space-y-1">
-        <label className="text-[12px] text-ink-soft" htmlFor={`${item.id}-env`}>{t('st.engines.override.env')}</label>
+        <label className="text-[13px] leading-5 font-normal text-ink-soft" htmlFor={`${item.id}-env`}>{t('st.engines.override.env')}</label>
         <textarea id={`${item.id}-env`} data-engine-override="env" rows={3} spellCheck={false} disabled={saving}
-          className={`${INPUT} min-w-0 font-mono text-[11.5px]`} placeholder={'KEY=VALUE'}
+          className={`${INPUT} min-w-0 font-mono text-[12px] leading-4`} placeholder={'KEY=VALUE'}
           value={form.envText} onChange={(event) => { setForm({ ...form, envText: event.target.value }); }} />
         <p className="text-[12px] leading-4 text-ink-faint">
           {t('st.engines.override.envHint', { keys: envKeys.length === 0 ? t('st.engines.override.envNone') : envKeys.join(', ') })}
@@ -954,7 +954,7 @@ function EngineOverrides({ item, program, onCheck, children }: { item: ExecutorC
           onClick={() => void save()}>
           {saving ? t('st.engines.override.saving') : t('st.engines.override.save')}
         </button>
-        <span className="text-[12px] text-ink-faint">{t('st.engines.override.recheck')}</span>
+        <span className="text-[12px] leading-4 text-ink-faint">{t('st.engines.override.recheck')}</span>
       </div>
       </>}
       {children}
@@ -1084,12 +1084,12 @@ function EngineRow({ item, overrides: _overrides, display: _display, fault, disc
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-baseline gap-2">
-            <span className="truncate text-[13px] font-medium text-ink">{item.label}</span>
+            <span className="truncate text-[13px] leading-5 font-normal text-ink">{item.label}</span>
           </span>
-          <span data-engine-summary className="block truncate text-[12px] text-ink-faint">{summaryFacts.join(' · ')}</span>
+          <span data-engine-summary className="block truncate text-[12px] leading-4 text-ink-faint">{summaryFacts.join(' · ')}</span>
         </span>
         <span data-engine-status={health}
-          className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] ${
+          className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] leading-4 ${
             health === 'warning' ? 'text-amber-ink' : 'text-ink-faint'}`}>
           <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
             health === 'missing' ? 'bg-ink/25' : health === 'warning' ? 'bg-amber-rule' : health === 'unknown' ? 'bg-ink-faint' : 'bg-success'}`} />
@@ -1230,8 +1230,8 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
       </div>
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 data-detail-heading tabIndex={-1} className="font-display text-[18px] font-semibold text-ink outline-none">{item.label}</h3>
-          <p className="mt-0.5 truncate text-[12px] text-ink-faint">{summaryFacts.join(' · ')}</p>
+          <h3 data-detail-heading tabIndex={-1} className="font-sans text-[18px] leading-[26px] font-bold text-ink outline-none">{item.label}</h3>
+          <p className="mt-0.5 truncate text-[12px] leading-4 text-ink-faint">{summaryFacts.join(' · ')}</p>
         </div>
         <button type="button" onClick={onClose} aria-label={t('common.close')} title={t('common.close')} data-detail-close
           className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink md:flex">
@@ -1253,18 +1253,18 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
                 <div data-engine-discovery-banner={discovery.status}
                   className={`rounded-md border px-3 py-2 ${
                     discovery.status === 'installed' ? 'border-success/30 bg-success/5' : 'border-amber-rule/40 bg-amber-rule/5'}`}>
-                  <div className="flex min-w-0 items-center gap-2 text-[12.5px] leading-5">
+                  <div className="flex min-w-0 items-center gap-2 text-[13px] leading-5">
                     <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${
                       discovery.status === 'installed' ? 'bg-success' : discovery.status === 'error' ? 'bg-amber-rule' : 'bg-danger'}`} />
                     {(() => {
                       const conclusion = discoveryConclusion(discovery, t);
                       return (
-                        <span className="min-w-0 font-medium text-ink" data-engine-discovery-conclusion>
+                        <span className="min-w-0 font-normal text-ink" data-engine-discovery-conclusion>
                           {conclusion ?? t(DISCOVERY_STATUS_KEY[discovery.status])}
                         </span>
                       );
                     })()}
-                    <span className="shrink-0 text-[12px] text-ink-faint" data-engine-discovery-checked>
+                    <span className="shrink-0 text-[12px] leading-4 text-ink-faint" data-engine-discovery-checked>
                       {t('st.engines.discovery.lastChecked', { time: time.relativeTime(discovery.checked_at) })}
                     </span>
                   </div>
@@ -1276,7 +1276,7 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
                       {discovery.components.map((component) => (
                         <li key={component.id} data-engine-discovery-component={component.id} data-component-installed={component.installed ? 'true' : 'false'}
                           className="flex min-w-0 items-baseline gap-1.5 text-[12px] leading-4 text-ink-soft">
-                          <span className="shrink-0 font-medium text-ink">{component.label}</span>
+                          <span className="shrink-0 font-normal text-ink">{component.label}</span>
                           <span className="shrink-0 text-ink-faint">·</span>
                           <span className={component.installed ? 'shrink-0' : 'shrink-0 text-danger'}>
                             {component.installed ? (component.version ?? t('st.engines.discovery.componentStatus.installed')) : t('st.engines.discovery.componentStatus.missing')}
@@ -1296,7 +1296,7 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
                     </ul>
                   ) : null}
                   {discovery.path !== undefined ? (
-                    <p className="mt-1 break-all font-mono text-[11.5px] leading-4 text-ink-faint" data-engine-discovery-path>
+                    <p className="mt-1 break-all font-mono text-[12px] leading-4 text-ink-faint" data-engine-discovery-path>
                       {discovery.path}
                       {discovery.source !== undefined ? <span> · {t('st.engines.discovery.pathSource', { source: discovery.source })}</span> : null}
                     </p>
@@ -1341,7 +1341,7 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
                   <p className="text-[12px] leading-4 text-ink-soft">{t('st.engines.notFoundBody', { program: program ?? item.label })}</p>
                   {connection?.install_hint !== undefined ? (
                     <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                      <span className="text-[12px] text-ink-faint">{t('st.engines.install')}</span>
+                      <span className="text-[12px] leading-4 text-ink-faint">{t('st.engines.install')}</span>
                       <CopyCommand command={connection.install_hint} />
                     </div>
                   ) : null}
@@ -1377,7 +1377,7 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
                     <Fact label={t('st.engines.program')} dataFact="program">
                       {source === 'kiki-managed'
                         ? <span>{t('st.engines.managedByKiki')}</span>
-                        : program !== undefined ? <span className="break-all text-[12.5px]">{program}</span> : <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
+                        : program !== undefined ? <span className="break-all text-[13px] leading-5">{program}</span> : <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
                     </Fact>
                     <Fact label={t('st.engines.version')} dataFact="version">
                       {version ?? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
@@ -1387,26 +1387,26 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
                 ) : null}
                 {health === 'missing' || setup || antigravity ? null : <Fact label={t('st.engines.login')} dataFact="login">
                   <span className={login === 'logged_out' ? 'text-amber-ink' : login === 'unknown' ? 'text-ink-soft' : ''}>{t(`st.engines.login.${login}`)}</span>
-                  {pluginAccount !== undefined ? <span data-engine-credential="external_backend" className="block break-words text-[12px] text-ink-faint">
+                  {pluginAccount !== undefined ? <span data-engine-credential="external_backend" className="block break-words text-[12px] leading-4 text-ink-faint">
                     {t('st.engines.instance.account.source')}: {credentialDetail ?? pluginAccount.source}
-                  </span> : credentialKey !== undefined ? <span data-engine-credential={credential} className="block text-[12px] text-ink-faint">
+                  </span> : credentialKey !== undefined ? <span data-engine-credential={credential} className="block text-[12px] leading-4 text-ink-faint">
                     {t(credentialKey)}
-                    {credentialDetail !== undefined ? <span className="font-mono text-[11.5px]"> · {credentialDetail}</span> : null}
+                    {credentialDetail !== undefined ? <span className="font-mono text-[12px] leading-4"> · {credentialDetail}</span> : null}
                   </span> : null}
-                  {login === 'unknown' && shown === undefined ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginStale')}</span> : null}
-                  {login === 'logged_out' ? <span className="block text-[12px] text-ink-faint">
+                  {login === 'unknown' && shown === undefined ? <span className="block text-[12px] leading-4 text-ink-faint">{t('st.engines.loginStale')}</span> : null}
+                  {login === 'logged_out' ? <span className="block text-[12px] leading-4 text-ink-faint">
                     {t(pluginAccount !== undefined ? 'st.engines.instance.account.reconnect'
                       : loginCommand !== undefined && apiKeyEnv !== undefined ? 'st.engines.loginOrKey' : 'st.engines.loginOneRoute')}
                   </span> : null}
                   {loginCommand !== undefined && login !== 'logged_in' ? (
                     <span className="mt-1 flex flex-wrap items-center gap-2">
-                      <span className="text-[12px] text-ink-faint">{t('st.engines.loginCommand')}</span>
+                      <span className="text-[12px] leading-4 text-ink-faint">{t('st.engines.loginCommand')}</span>
                       <CopyCommand command={loginCommand} />
                     </span>
                   ) : null}
                   {apiKeyEnv !== undefined && login !== 'logged_in' ? (
                     <span className="mt-1 flex flex-wrap items-center gap-2">
-                      <span className="text-[12px] text-ink-faint">{t('st.engines.apiKeyCommand')}</span>
+                      <span className="text-[12px] leading-4 text-ink-faint">{t('st.engines.apiKeyCommand')}</span>
                       <CopyCommand command={`export ${apiKeyEnv}=YOUR_API_KEY`} />
                     </span>
                   ) : null}
@@ -1415,7 +1415,7 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
             </div>
 
             <section data-engine-section="run" className="space-y-3 pt-5">
-              <h3 className="text-[13px] font-medium text-ink">{runModeCopy(locale).title}</h3>
+              <h3 className="text-[13px] leading-5 font-normal text-ink">{runModeCopy(locale).title}</h3>
               <EngineRunMode item={item} savedDefaults={savedDefaults} onSaved={refetchConfig} />
               <EngineDefaults item={item} saved={savedDefaults} quotaSource={engineQuotaSourceOf(config?.raw, item.id)} onSaved={refetchConfig} />
             </section>
@@ -1426,7 +1426,7 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
               {localSessionEngine(item.id) !== undefined ? (
                 <div data-engine-local-sessions className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-3">
                   <div className="min-w-0 flex-1">
-                    <p className="text-[12px] font-medium text-ink-soft">{t('localSessions.settingsTitle')}</p>
+                    <p className="text-[13px] leading-5 font-normal text-ink-soft">{t('localSessions.settingsTitle')}</p>
                     <p className="text-[12px] leading-4 text-ink-faint">{t('localSessions.settingsHint', { engine: item.label })}</p>
                   </div>
                   <LocalSessionsEntry executorId={item.id} variant="button" />
@@ -1437,7 +1437,7 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
             <section data-engine-section="details" className="space-y-4 pt-5">
               {shown !== undefined && shown.diagnostics.length > 0 ? (
                 <div data-engine-diagnostics className="space-y-1">
-                  <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.diagnostics')}</p>
+                  <p className="text-[12px] leading-4 font-normal text-ink-soft">{t('st.engines.diagnostics')}</p>
                   <ul className="space-y-1">
                     {shown.diagnostics.map((diagnostic, index) => (
                       <li key={index} data-engine-diagnostic={diagnostic.severity} className="flex min-w-0 gap-2 text-[12px] leading-4">
@@ -1488,12 +1488,12 @@ function EngineDetailPane({ item, overrides, display, discovery, source: instanc
                   </Fact>
                   <Fact label={t('st.engines.args')} dataFact="args">
                     {args.length === 0 ? <span className="text-ink-faint">{t('st.engines.argsNone')}</span>
-                      : <code className="break-all font-mono text-[12px] text-ink-soft">{args.join(' ')}</code>}
+                      : <code className="break-all font-mono text-[12px] leading-4 text-ink-soft">{args.join(' ')}</code>}
                   </Fact>
                   {caps?.negotiated !== undefined ? (
                     <Fact label={t('st.engines.cap.handshake')} dataFact="cap-handshake">
-                      {caps.negotiated.agent_version !== undefined ? <span className="font-mono text-[12px]">{caps.negotiated.agent_version}</span> : null}
-                      <span className="block text-[12px] text-ink-soft">
+                      {caps.negotiated.agent_version !== undefined ? <span className="font-mono text-[12px] leading-4">{caps.negotiated.agent_version}</span> : null}
+                      <span className="block text-[12px] leading-4 text-ink-soft">
                         {HARNESS_CAPABILITIES.filter(({ key }) => caps.negotiated?.[key] === true).map(({ label }) => t(label)).join(' · ')
                           || t('st.engines.cap.handshakeNone')}
                       </span>

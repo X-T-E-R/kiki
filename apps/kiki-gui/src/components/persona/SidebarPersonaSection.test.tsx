@@ -268,10 +268,14 @@ describe('the sidebar persona group', () => {
     await act(async () => { primary.click(); });
     expect(navigate).toHaveBeenCalledWith('/s/topic_1');
 
-    // Extra threads remain reachable through the count/chevron disclosure.
+    // Extra threads remain reachable through the plain chevron switcher popover (no inline tree expansion).
     const toggle = container.querySelector<HTMLElement>('[data-persona-switcher-toggle="dou-dou"][data-persona-thread-count="2"]')!;
     await act(async () => { toggle.click(); });
-    expect(subthreadIds(container, 'dou-dou')).toEqual(['topic_1', 'room_member_1']);
+    await flush();
+    const switcher = document.body.querySelector('[data-persona-conversation-switcher]')!;
+    expect(switcher).not.toBeNull();
+    expect(switcher.querySelector('[data-conversation-item="topic_1"]')).not.toBeNull();
+    expect(switcher.querySelector('[data-conversation-item="room_member_1"]')).not.toBeNull();
   });
 
   it('sends the name to the stable daily address instead of a fixed session', async () => {
@@ -291,13 +295,14 @@ describe('the sidebar persona group', () => {
     expect(navigate).toHaveBeenCalledWith('/new?persona=xiao-you&workspace=ws_main');
   });
 
-  it('takes one unread conversation straight there and expands all inline subthreads when there are several', async () => {
+  it('signals unread personas with the 2-state neutral dot (no red numeral) and navigates directly or opens switcher', async () => {
     directory.entries = [persona({ unreadCount: 1, unreadSessionIds: ['topic_9'], life: 'done' })];
     const single = await render([hers({ id: 'topic_9', last_seq: 5 })]);
-    const count = single.querySelector<HTMLElement>('[data-persona-unread-count="1"]')!;
-    await act(async () => { count.click(); });
+    expect(single.querySelector('[data-persona-unread-count]')).toBeNull();
+    expect(single.querySelector('[data-sidebar-persona-row="xiao-you"] [data-sidebar-signal="active"]')).not.toBeNull();
+    await act(async () => { single.querySelector<HTMLElement>('[data-persona-primary="xiao-you"]')!.click(); });
     expect(navigate).toHaveBeenCalledWith('/s/topic_9');
-    expect(single.querySelector('[data-persona-switcher]')).toBeNull();
+    expect(single.querySelector('[data-persona-conversation-switcher]')).toBeNull();
 
     directory.entries = [persona({ unreadCount: 3, unreadSessionIds: ['topic_9', 'topic_8', 'topic_7'], life: 'done' })];
     const several = await render([
@@ -305,9 +310,15 @@ describe('the sidebar persona group', () => {
       hers({ id: 'topic_8', last_seq: 5 }),
       hers({ id: 'topic_7', last_seq: 5 }),
     ]);
-    await act(async () => { several.querySelector<HTMLElement>('[data-persona-unread-count="3"]')!.click(); });
-    expect(subthreadIds(several)).toEqual(['topic_9', 'topic_8', 'topic_7']);
-    expect(several.querySelector('[data-persona-switcher]')).toBeNull();
+    expect(several.querySelector('[data-persona-unread-count]')).toBeNull();
+    expect(several.querySelector('[data-persona-subthreads="xiao-you"]')).toBeNull();
+    await act(async () => { several.querySelector<HTMLElement>('[data-persona-switcher-toggle="xiao-you"]')!.click(); });
+    await flush();
+    const switcher = document.body.querySelector('[data-persona-conversation-switcher]')!;
+    expect(switcher).not.toBeNull();
+    expect(switcher.querySelector('[data-conversation-item="topic_9"]')).not.toBeNull();
+    expect(switcher.querySelector('[data-conversation-item="topic_8"]')).not.toBeNull();
+    expect(switcher.querySelector('[data-conversation-item="topic_7"]')).not.toBeNull();
   });
 });
 
@@ -365,33 +376,26 @@ describe('reliable persona conversation discovery and unified inline expansion',
     expect(listPersonaSessionHeads).toHaveBeenCalledTimes(1);
     expect(listSessions).not.toHaveBeenCalled();
 
-    // Total conversations = home_you (1) + 4 non-home topics = 5; inline preview shows up to 3 before +N.
+    // Total conversations = home_you (1) + 4 non-home topics = 5; clicking plain chevron opens switcher popover.
     expect(SIDEBAR_PERSONA_INLINE_THREAD_LIMIT).toBe(3);
     const toggle = container.querySelector<HTMLButtonElement>('[data-persona-switcher-toggle="xiao-you"]')!;
     expect(toggle.getAttribute('data-persona-thread-count')).toBe('5');
+    // Plain chevron has no visible count badge pill — count stays in aria-label.
+    expect(toggle.textContent?.trim()).toBe('');
 
-    // Idle persona starts collapsed; clicking the count chevron unfolds inline without any floating popover.
     expect(container.querySelector('[data-persona-subthreads="xiao-you"]')).toBeNull();
     await act(async () => { toggle.click(); });
+    await flush();
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    expect(document.body.querySelector('[data-persona-switcher]')).toBeNull();
-    expect(subthreadIds(container)).toEqual(['home_you', 'topic_loaded', 'topic_cold_1']);
-
-    // Clicking "+2 · All conversations" expands the remaining cold conversations inline in place without needing listSessions when total <= head items.
-    const moreBtn = container.querySelector<HTMLButtonElement>('[data-persona-subthreads-more="xiao-you"]')!;
-    expect(moreBtn.textContent).toContain('+2');
-    await act(async () => { moreBtn.click(); });
-    expect(subthreadIds(container)).toEqual(['home_you', 'topic_loaded', 'topic_cold_1', 'topic_cold_2', 'topic_cold_3']);
-    expect(listSessions).not.toHaveBeenCalled();
-
-    // Clicking Show less returns to the compact 3-thread preview, and clicking the chevron collapses completely.
-    const lessBtn = container.querySelector<HTMLButtonElement>('[data-persona-subthreads-less="xiao-you"]')!;
-    await act(async () => { lessBtn.click(); });
-    expect(subthreadIds(container)).toEqual(['home_you', 'topic_loaded', 'topic_cold_1']);
+    const switcher = document.body.querySelector('[data-persona-conversation-switcher]')!;
+    expect(switcher).not.toBeNull();
+    expect(switcher.querySelector('[data-conversation-kind="daily"]')).not.toBeNull();
+    expect(switcher.querySelector('[data-conversation-item="topic_loaded"]')).not.toBeNull();
+    expect(switcher.querySelector('[data-conversation-item="topic_cold_1"]')).not.toBeNull();
 
     await act(async () => { toggle.click(); });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(container.querySelector('[data-persona-subthreads="xiao-you"]')).toBeNull();
+    expect(document.body.querySelector('[data-persona-conversation-switcher]')).toBeNull();
   });
 
   it('strictly obeys filters.private ("hide" by default, "include", and "only") so private sessions never leak into counts, unread badges, or running expansion when hidden', async () => {
@@ -482,11 +486,10 @@ describe('reliable persona conversation discovery and unified inline expansion',
       { per_persona_limit: 10, include_private: true, private_only: undefined },
       expect.any(Object),
     );
-    expect(includedContainer.querySelector('[data-persona-unread-count="2"]')).not.toBeNull();
-    expect(subthreadIds(includedContainer)).toEqual(['topic_private_unread', 'topic_cold_unread']);
-    const lifeMarks = [...includedContainer.querySelectorAll('[data-persona-subthreads="xiao-you"] [data-life]')].map((el) => el.getAttribute('data-life'));
-    expect(lifeMarks).toEqual(['done', 'done']);
-    expect(includedContainer.querySelector('[data-persona-subthreads-more="xiao-you"]')?.textContent).toContain('+4');
+    expect(includedContainer.querySelector('[data-persona-unread-count]')).toBeNull();
+    expect(includedContainer.querySelector('[data-sidebar-persona-row="xiao-you"] [data-sidebar-signal="active"]')).not.toBeNull();
+    expect(includedContainer.querySelector('[data-persona-subthreads="xiao-you"]')).toBeNull();
+    expect(includedContainer.querySelector('[data-persona-switcher-toggle="xiao-you"]')?.getAttribute('data-persona-thread-count')).toBe('6');
 
     // 3. `filters.private: 'only'`: requests private_only: true, excludes public conversations,
     // and keeps the singleton filtered target one-click without [1 ▾] or a duplicate inline child.
@@ -503,7 +506,8 @@ describe('reliable persona conversation discovery and unified inline expansion',
       { per_persona_limit: 10, include_private: true, private_only: true },
       expect.any(Object),
     );
-    expect(onlyPrivateContainer.querySelector('[data-persona-unread-count="1"]')).not.toBeNull();
+    expect(onlyPrivateContainer.querySelector('[data-persona-unread-count]')).toBeNull();
+    expect(onlyPrivateContainer.querySelector('[data-sidebar-persona-row="xiao-you"] [data-sidebar-signal="active"]')).not.toBeNull();
     expect(onlyPrivateContainer.querySelector('[data-persona-switcher-toggle="xiao-you"]')).toBeNull();
     expect(onlyPrivateContainer.querySelector('[data-persona-subthreads="xiao-you"]')).toBeNull();
 
@@ -527,7 +531,8 @@ describe('reliable persona conversation discovery and unified inline expansion',
     await flush();
 
     expect(container.querySelector('[data-persona-thread-count="2"]')).not.toBeNull();
-    expect(subthreadIds(container)).toEqual(['home_you', 'topic_loaded']);
+    // Only the active non-daily subthread is shown inline (home_you stays represented by the persona row).
+    expect(subthreadIds(container)).toEqual(['topic_loaded']);
   });
 });
 
@@ -650,30 +655,28 @@ describe('collapsible and count-bounded persona group', () => {
 
     expect(container.querySelectorAll('[data-persona-thread-count="3"]')).toHaveLength(3);
 
+    // Only the currently selected non-daily subthread renders inline under its persona;
+    // inactive/unread/idle personas never auto-expand inline children.
     const activeSubthreads = [...container.querySelectorAll<HTMLButtonElement>('[data-persona-subthreads="contest-coach"] [data-persona-subthread]')];
     expect(activeSubthreads.map((item) => item.getAttribute('data-persona-subthread'))).toEqual([
-      'session_home',
       'session_radar',
-      'session_review',
     ]);
-    expect(activeSubthreads[0]?.getAttribute('data-persona-subthread-kind')).toBe('daily');
-    expect(activeSubthreads[1]?.textContent).toContain('全域赛程梳理');
-    expect(activeSubthreads[1]?.getAttribute('aria-current')).toBe('page');
+    expect(activeSubthreads[0]?.textContent).toContain('全域赛程梳理');
+    expect(activeSubthreads[0]?.getAttribute('aria-current')).toBe('page');
 
-    const unreadSubthreads = [...container.querySelectorAll<HTMLButtonElement>('[data-persona-subthreads="fact-check"] [data-persona-subthread]')];
-    expect(unreadSubthreads.map((item) => item.getAttribute('data-persona-subthread'))).toEqual([
-      'session_fact_unread',
-    ]);
-    expect(container.querySelector('[data-persona-subthreads-more="fact-check"]')?.textContent).toContain('+2');
+    expect(container.querySelector('[data-persona-subthreads="fact-check"]')).toBeNull();
+    expect(container.querySelector('[data-sidebar-persona-row="fact-check"] [data-sidebar-signal="active"]')).not.toBeNull();
 
-    // Idle persona starts collapsed, and clicking its count toggle expands inline instead of opening a popover.
+    // Idle persona stays collapsed; clicking its plain chevron opens the switcher popover.
     expect(container.querySelector('[data-persona-subthreads="archive-scribe"]')).toBeNull();
     const idleToggle = container.querySelector<HTMLButtonElement>('[data-persona-switcher-toggle="archive-scribe"][data-persona-thread-count="3"]')!;
     await act(async () => { idleToggle.click(); });
-    expect(subthreadIds(container, 'archive-scribe')).toEqual(['session_idle_home', 'session_idle_1', 'session_idle_2']);
-
-    await act(async () => { activeSubthreads[2]!.click(); });
-    expect(navigate).toHaveBeenCalledWith('/s/session_review');
+    await flush();
+    const switcher = document.body.querySelector('[data-persona-conversation-switcher]')!;
+    expect(switcher).not.toBeNull();
+    expect(switcher.querySelector('[data-conversation-kind="daily"]')).not.toBeNull();
+    expect(switcher.querySelector('[data-conversation-item="session_idle_1"]')).not.toBeNull();
+    expect(switcher.querySelector('[data-conversation-item="session_idle_2"]')).not.toBeNull();
   });
 
   it('opens a single-thread persona directly without [1 ▾] or an indented child while keeping pin, rename, and archive reachable for the sole session', async () => {
@@ -738,13 +741,10 @@ describe('collapsible and count-bounded persona group', () => {
     ];
     const homeSession = hers({ id: 'home_only', title: '小柚 · 每日复盘', updated_at: '2026-11-17T09:00:00Z', last_seq: 0 });
     const topicSession = hers({ id: 'topic_two', title: '小柚 · 发布核对', updated_at: '2026-11-17T10:00:00Z', last_seq: 0 });
-    const container = await render([homeSession, topicSession], undefined, '/');
+    const container = await render([homeSession, topicSession], 'topic_two', '/s/topic_two');
     await flush();
 
-    const toggle = container.querySelector<HTMLButtonElement>('[data-persona-switcher-toggle="xiao-you"][data-persona-thread-count="2"]')!;
-    expect(toggle).not.toBeNull();
-    await act(async () => { toggle.click(); });
-    expect(subthreadIds(container, 'xiao-you')).toEqual(['home_only', 'topic_two']);
+    expect(subthreadIds(container, 'xiao-you')).toEqual(['topic_two']);
 
     const subthread = container.querySelector<HTMLButtonElement>('[data-persona-subthread="topic_two"]')!;
     await act(async () => {

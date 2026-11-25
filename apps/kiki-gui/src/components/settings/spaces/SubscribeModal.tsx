@@ -140,13 +140,13 @@ function formatStatusLabel(
 function statusToneClass(status: PortableSpaceSubscribePreviewItem['status']): string {
   switch (status) {
     case 'will_write':
-      return 'text-selected-ink font-medium';
+      return 'text-selected-ink font-normal';
     case 'blocked':
-      return 'text-danger-ink font-medium';
+      return 'text-danger-ink font-normal';
     case 'owned_by_other':
     case 'pending':
     case 'new_scope':
-      return 'text-amber-ink font-medium';
+      return 'text-amber-ink font-normal';
     case 'removed_impact':
       return 'text-danger-ink';
     case 'kept_local':
@@ -643,11 +643,11 @@ export function SubscribeModal({
       {/* Header */}
       <div className="flex shrink-0 items-start justify-between gap-4 border-b border-hairline px-6 py-4">
         <div className="min-w-0">
-          <h2 className="font-display text-[18px] font-semibold leading-snug text-ink" data-portable-modal-title>
+          <h2 className="font-sans text-[18px] leading-[26px] font-bold text-ink" data-portable-modal-title>
             {modalTitle}
           </h2>
           {stage === 'preview' && manifest !== null ? (
-            <p className="mt-0.5 truncate text-[12px] text-ink-faint" data-portable-modal-subtitle>
+            <p className="mt-0.5 truncate text-[12px] leading-4 text-ink-faint" data-portable-modal-subtitle>
               <span className="font-mono">{manifest.displayOrigin}</span>
               {' · '}
               {manifest.format === 'age' ? '.kiki.age' : manifest.format === 'tgz' ? '.kiki.tgz' : manifest.format}
@@ -655,7 +655,7 @@ export function SubscribeModal({
               {t('st.portable.center.targetSpace')}: {targetSpaceLabel}
             </p>
           ) : queuedCount > 0 ? (
-            <p className="mt-0.5 text-[12px] text-ink-soft" data-portable-queued-notice>
+            <p className="mt-0.5 text-[12px] leading-4 text-ink-soft" data-portable-queued-notice>
               {t('st.portable.center.queuedIntentsNotice', { count: queuedCount })}
             </p>
           ) : null}
@@ -678,13 +678,13 @@ export function SubscribeModal({
           <div className="space-y-5" data-portable-stage-input>
             {isDeepLinkOrigin ? (
               <div className="space-y-4" data-portable-deeplink-origin>
-                <p className="text-[13px] text-ink-soft">
+                <p className="text-[14px] leading-[21px] text-ink-soft">
                   {t('st.portable.center.deepLinkOriginHint')}
                 </p>
-                <dl className="divide-y divide-hairline border-t border-b border-hairline text-[13px]">
+                <dl className="divide-y divide-hairline border-t border-b border-hairline text-[13px] leading-5">
                   <div className="flex flex-wrap items-baseline justify-between gap-2 py-2.5">
                     <dt className="text-ink-soft">{t('st.portable.linkUrl')}</dt>
-                    <dd className="min-w-0 break-all font-mono text-[12px] text-ink" data-portable-deeplink-url>
+                    <dd className="min-w-0 break-all font-mono text-[12px] leading-4 text-ink" data-portable-deeplink-url>
                       {maskSubscriptionUrl(initialIntent.url)}
                     </dd>
                   </div>
@@ -755,7 +755,7 @@ export function SubscribeModal({
                               handleStartPreview();
                             }
                           }}
-                          className={`${INPUT} min-w-0 flex-1 font-mono text-[12px]`}
+                          className={`${INPUT} min-w-0 flex-1 font-mono text-[12px] leading-4`}
                         />
                         {typeof navigator !== 'undefined' && navigator.clipboard?.readText !== undefined ? (
                           <button
@@ -819,7 +819,7 @@ export function SubscribeModal({
                       data-portable-archive-dropzone
                       className="space-y-3 border-t border-b border-hairline py-4"
                     >
-                      <p className="text-[12.5px] text-ink-soft">{t('st.portable.center.archiveDropHint')}</p>
+                      <p className="text-[13px] leading-5 text-ink-soft">{t('st.portable.center.archiveDropHint')}</p>
                       <div className="flex flex-wrap gap-2">
                         <input
                           id={urlInputId}
@@ -836,7 +836,7 @@ export function SubscribeModal({
                             setInputIssue(null);
                             setDropFeedback(null);
                           }}
-                          className={`${INPUT} min-w-0 flex-1 font-mono text-[12px]`}
+                          className={`${INPUT} min-w-0 flex-1 font-mono text-[12px] leading-4`}
                         />
                         {host.pickFilePath !== undefined ? (
                           <button
@@ -884,7 +884,7 @@ export function SubscribeModal({
                       </div>
                     ) : null}
 
-                    <p className="text-[12px] text-ink-faint">{t('st.portable.center.archiveOnceOnly')}</p>
+                    <p className="text-[12px] leading-4 text-ink-faint">{t('st.portable.center.archiveOnceOnly')}</p>
                   </div>
                 ) : null}
 
@@ -921,7 +921,7 @@ export function SubscribeModal({
                             setLegacyTarget(event.target.value);
                             setInputIssue(null);
                           }}
-                          className={`${INPUT} min-w-0 flex-1 font-mono text-[12px]`}
+                          className={`${INPUT} min-w-0 flex-1 font-mono text-[12px] leading-4`}
                         />
                         {legacyKind === 'dir' && host.pickDirectory !== undefined ? (
                           <button
@@ -958,7 +958,7 @@ export function SubscribeModal({
                             spellCheck={false}
                             placeholder="main"
                             onChange={(event) => { setGitRef(event.target.value); }}
-                            className={`${INPUT} mt-1.5 font-mono text-[12px]`}
+                            className={`${INPUT} mt-1.5 font-mono text-[12px] leading-4`}
                           />
                         </div>
                         <div>
@@ -969,7 +969,7 @@ export function SubscribeModal({
                             spellCheck={false}
                             placeholder="spaces/work"
                             onChange={(event) => { setGitSubpath(event.target.value); }}
-                            className={`${INPUT} mt-1.5 font-mono text-[12px]`}
+                            className={`${INPUT} mt-1.5 font-mono text-[12px] leading-4`}
                           />
                         </div>
                       </div>
@@ -1021,7 +1021,7 @@ export function SubscribeModal({
               void fetchPreview(passphrase);
             }}
           >
-            <p className="text-[13px] text-ink-soft">{t('st.portable.center.unlockPrompt')}</p>
+            <p className="text-[14px] leading-[21px] text-ink-soft">{t('st.portable.center.unlockPrompt')}</p>
             <div>
               <label htmlFor={passphraseInputId} className={FORM_LABEL}>{t('st.portable.passphraseLabel')}</label>
               <input
@@ -1043,7 +1043,7 @@ export function SubscribeModal({
         {stage === 'preview' ? (
           <div className="space-y-5" data-portable-stage-preview>
             {loadingPreview && manifest === null ? (
-              <p className="py-6 text-[13px] text-ink-soft" data-portable-preview-loading>
+              <p className="py-6 text-[14px] leading-[21px] text-ink-soft" data-portable-preview-loading>
                 {t('st.portable.center.fetchingPreview')}
               </p>
             ) : null}
@@ -1092,7 +1092,7 @@ export function SubscribeModal({
                         },
                       ]}
                     />
-                    <p className="text-[12px] text-ink-soft">
+                    <p className="text-[12px] leading-4 text-ink-soft">
                       {!manifest.allowedPolicies.includes('auto') && manifest.allowedPolicies.length === 1
                         ? t('st.portable.center.archiveOnceOnly')
                         : !manifest.allowedPolicies.includes('auto') && manifest.encryptionMode === 'passphrase'
@@ -1110,7 +1110,7 @@ export function SubscribeModal({
                       aria-expanded={excludedOpen}
                       data-portable-excluded-toggle
                       onClick={() => { setExcludedOpen((open) => !open); }}
-                      className="flex min-h-[28px] w-full items-center justify-between gap-2 text-left text-[12.5px] font-medium text-amber-ink pointer-coarse:min-h-11"
+                      className="flex min-h-[28px] w-full items-center justify-between gap-2 text-left text-[13px] leading-5 font-normal text-amber-ink pointer-coarse:min-h-11"
                     >
                       <span className="inline-flex items-center gap-1.5">
                         <DisclosureChevron open={excludedOpen} />
@@ -1118,7 +1118,7 @@ export function SubscribeModal({
                       </span>
                     </button>
                     {excludedOpen ? (
-                      <ul className="mt-2 space-y-1 pl-5 text-[12px] text-ink-soft" data-portable-excluded-items>
+                      <ul className="mt-2 space-y-1 pl-5 text-[12px] leading-4 text-ink-soft" data-portable-excluded-items>
                         {manifest.excluded.map((entry) => (
                           <li key={entry.id} className="flex flex-wrap gap-x-2">
                             <span className="font-mono text-ink">{entry.path}</span>
@@ -1133,10 +1133,10 @@ export function SubscribeModal({
                 {/* 6-Scope Selective Tree */}
                 <div className="space-y-2.5" data-portable-selection-tree>
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <h3 className="text-[13.5px] font-medium text-ink">
+                    <h3 className="text-[13px] leading-5 font-normal text-ink">
                       {t('st.portable.center.selectItemsHeading')}
                     </h3>
-                    <span className="text-[12px] tabular-nums text-ink-soft" data-portable-selected-counter>
+                    <span className="text-[12px] leading-4 tabular-nums text-ink-soft" data-portable-selected-counter>
                       {t('st.portable.center.selectedTotal', {
                         selected: evaluation.selectedItemIds.size,
                         total: totalSelectableCount,
@@ -1145,7 +1145,7 @@ export function SubscribeModal({
                   </div>
 
                   {manifest.manifestTruncated ? (
-                    <p className="text-[12px] text-ink-faint">{t('st.portable.center.manifestTruncated')}</p>
+                    <p className="text-[12px] leading-4 text-ink-faint">{t('st.portable.center.manifestTruncated')}</p>
                   ) : null}
 
                   <div className="divide-y divide-hairline border-t border-b border-hairline">
@@ -1181,11 +1181,11 @@ export function SubscribeModal({
                               onClick={() => { toggleScopeExpanded(summary.scope); }}
                               className="flex min-h-[28px] min-w-0 flex-1 items-center justify-between gap-3 text-left outline-none focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
                             >
-                              <span className="inline-flex min-w-0 items-center gap-1.5 text-[13px] font-medium text-ink">
+                              <span className="inline-flex min-w-0 items-center gap-1.5 text-[13px] leading-5 font-normal text-ink">
                                 <DisclosureChevron open={expanded} className="shrink-0 text-ink-faint" />
                                 <span className="truncate">{scopeTitle}</span>
                               </span>
-                              <span className="shrink-0 text-[12px] tabular-nums text-ink-soft" data-portable-scope-count={summary.scope}>
+                              <span className="shrink-0 text-[12px] leading-4 tabular-nums text-ink-soft" data-portable-scope-count={summary.scope}>
                                 {t('st.portable.center.scopeCount', {
                                   selected: summary.selectedCount,
                                   total: summary.selectableCount,
@@ -1238,23 +1238,23 @@ export function SubscribeModal({
                                       <div className="min-w-0 flex-1 space-y-0.5">
                                         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
                                           <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-                                            <span className={`text-[13px] ${item.selectable ? 'text-ink' : 'text-ink-faint'}`}>
+                                            <span className={`text-[13px] leading-5 ${item.selectable ? 'text-ink' : 'text-ink-faint'}`}>
                                               {item.label}
                                             </span>
-                                            <span className="truncate font-mono text-[11px] text-ink-faint">{item.path}</span>
+                                            <span className="truncate font-mono text-[12px] leading-4 text-ink-faint">{item.path}</span>
                                             {modelReqPrompt ? (
-                                              <span className="text-[11px] font-medium text-selected-ink" data-portable-model-required-tag={item.id}>
+                                              <span className="text-[12px] leading-4 font-normal text-selected-ink" data-portable-model-required-tag={item.id}>
                                                 {t('st.portable.center.modelRequiredTag')}
                                               </span>
                                             ) : null}
                                           </div>
-                                          <span className={`shrink-0 text-[11.5px] ${statusToneClass(item.status)}`}>
+                                          <span className={`shrink-0 text-[12px] leading-4 ${statusToneClass(item.status)}`}>
                                             {formatStatusLabel(item, t)}
                                           </span>
                                         </div>
 
                                         {item.referencedByIds.length > 0 ? (
-                                          <p className="text-[11.5px] text-ink-faint" data-portable-referenced-by={item.id}>
+                                          <p className="text-[12px] leading-4 text-ink-faint" data-portable-referenced-by={item.id}>
                                             {item.referencedByIds.length === 1
                                               ? t('st.portable.center.referencedByOne', { name: refNames[0] ?? '' })
                                               : t('st.portable.center.referencedBy', {
@@ -1265,11 +1265,11 @@ export function SubscribeModal({
                                         ) : null}
 
                                         {item.reason !== undefined ? (
-                                          <p className="text-[11.5px] text-ink-soft">{item.reason}</p>
+                                          <p className="text-[12px] leading-4 text-ink-soft">{item.reason}</p>
                                         ) : null}
 
                                         {blockedDeps !== undefined && blockedDeps.length > 0 ? (
-                                          <p className="text-[12px] text-danger-ink" data-portable-item-blocker={item.id}>
+                                          <p className="text-[12px] leading-4 text-danger-ink" data-portable-item-blocker={item.id}>
                                             {t('st.portable.center.blockedByDeps', {
                                               deps: blockedDeps
                                                 .map((depId) => manifestIndex.itemById.get(depId)?.label ?? depId)
@@ -1285,18 +1285,18 @@ export function SubscribeModal({
                                               data-portable-diff-toggle={item.id}
                                               aria-expanded={diffOpen}
                                               onClick={() => { toggleDiffExpanded(item.id); }}
-                                              className="inline-flex items-center gap-1 text-[11.5px] text-ink-soft hover:text-ink pointer-coarse:min-h-11"
+                                              className="inline-flex items-center gap-1 text-[12px] leading-4 text-ink-soft hover:text-ink pointer-coarse:min-h-11"
                                             >
                                               <DisclosureChevron open={diffOpen} />
                                               <span>{t(diffOpen ? 'st.portable.center.diffHide' : 'st.portable.center.diffShow')}</span>
                                             </button>
                                             {diffOpen ? (
                                               <div className="mt-1.5 border-l-2 border-hairline pl-3" data-portable-diff-content={item.id}>
-                                                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-ink-soft">
+                                                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-[12px] leading-4 text-ink-soft">
                                                   {item.safeDiff}
                                                 </pre>
                                                 {item.safeDiffTruncated ? (
-                                                  <p className="mt-1 text-[11px] text-ink-faint">
+                                                  <p className="mt-1 text-[12px] leading-4 text-ink-faint">
                                                     {t('st.portable.center.diffTruncated')}
                                                   </p>
                                                 ) : null}
@@ -1318,7 +1318,7 @@ export function SubscribeModal({
 
                   {/* Coupled Credentials opt-in */}
                   {hasAnyCredentials && mode.kind !== 'update-review' ? (
-                    <label className="inline-flex min-h-[32px] cursor-pointer items-center gap-2 pt-1 text-[12.5px] text-ink pointer-coarse:min-h-11">
+                    <label className="inline-flex min-h-[32px] cursor-pointer items-center gap-2 pt-1 text-[13px] leading-5 text-ink pointer-coarse:min-h-11">
                       <input
                         type="checkbox"
                         data-portable-include-credentials
@@ -1368,10 +1368,10 @@ export function SubscribeModal({
                         className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-selected-ink)]"
                       />
                       <span className="min-w-0 flex-1">
-                        <span className="block text-[13px] font-medium text-ink">
+                        <span className="block text-[13px] leading-5 font-normal text-ink">
                           {t('st.portable.center.cleanupKeepLocal')}
                         </span>
-                        <span className="block text-[12px] text-ink-soft">
+                        <span className="block text-[12px] leading-4 text-ink-soft">
                           {t('st.portable.center.cleanupKeepLocalDesc', { count: deselectedManagedCount })}
                         </span>
                       </span>
@@ -1390,10 +1390,10 @@ export function SubscribeModal({
                         className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-danger)]"
                       />
                       <span className="min-w-0 flex-1 space-y-1.5">
-                        <span className="block text-[13px] font-medium text-ink">
+                        <span className="block text-[13px] leading-5 font-normal text-ink">
                           {t('st.portable.center.cleanupPurge')}
                         </span>
-                        <span className="block text-[12px] text-ink-soft">
+                        <span className="block text-[12px] leading-4 text-ink-soft">
                           {t('st.portable.center.cleanupPurgeDesc')}
                         </span>
                         {cleanupDeselected && reviewedImpact === null ? (
@@ -1410,8 +1410,8 @@ export function SubscribeModal({
                           </button>
                         ) : null}
                         {cleanupDeselected && reviewedImpact !== null ? (
-                          <ul className="space-y-0.5 pt-1 text-[12px] text-ink-soft" data-portable-cleanup-impact>
-                            <li className="font-medium text-ink">
+                          <ul className="space-y-0.5 pt-1 text-[12px] leading-4 text-ink-soft" data-portable-cleanup-impact>
+                            <li className="font-normal text-ink">
                               {t('st.portable.center.impactDeleted', { count: reviewedImpact.impact.deletedIds.length })}
                             </li>
                             {reviewedImpact.impact.preservedLocalIds.length > 0 ? (
@@ -1514,7 +1514,7 @@ export function SubscribeModal({
 
         <div className="flex flex-wrap items-center gap-3">
           {stage === 'preview' && confirmGateMessage !== null ? (
-            <span className="text-[12px] text-amber-ink" data-portable-confirm-gate>
+            <span className="text-[12px] leading-4 text-amber-ink" data-portable-confirm-gate>
               {confirmGateMessage}
             </span>
           ) : null}

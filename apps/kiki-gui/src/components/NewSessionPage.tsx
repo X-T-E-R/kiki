@@ -630,7 +630,7 @@ function NewSessionPageContent({
                 <Icon name="menu" size={16} />
               </button>
               <div className="min-w-0 flex-1">
-                <h1 className="min-w-0 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
+                <h1 className="min-w-0 truncate font-sans text-[16px] leading-6 font-bold text-ink">
                   {t('new.title')}
                 </h1>
                 <PhoneRemoteSpaceLine />
@@ -659,11 +659,10 @@ function NewSessionPageContent({
               <div data-hero-daily-identity={state.persona?.definition.id} className="flex min-w-0 items-center gap-4">
                 <PersonaAvatar persona={personaChip} size={heroAvatarSize} decorative />
                 <div className="flex min-w-0 flex-col gap-0.5">
-                  <span data-hero-persona-name className="min-w-0 truncate text-[13px] leading-[18px] font-medium text-ink-soft">{dailyPersonaName}</span>
+                  <span data-hero-persona-name className="min-w-0 truncate text-[13px] leading-5 font-normal text-ink-soft">{dailyPersonaName}</span>
                   <h1
                     data-hero-headline
-                    className="min-w-0 font-display text-[26px] leading-8 tracking-tight text-ink"
-                    style={{ fontVariationSettings: '"opsz" 32' }}
+                    className="min-w-0 font-sans text-[24px] leading-8 font-normal text-ink"
                   >
                     {t('persona.dailyTitle')}
                   </h1>
@@ -680,8 +679,7 @@ function NewSessionPageContent({
               dailyIdentity ? null : (
                 <h1
                   data-hero-headline
-                  className="mt-2 min-w-0 font-display text-[22px] leading-7 tracking-tight text-ink"
-                  style={{ fontVariationSettings: '"opsz" 32' }}
+                  className="mt-2 min-w-0 font-sans text-[24px] leading-8 font-normal text-ink"
                 >
                   {t('persona.dailyTitle')}
                 </h1>
@@ -693,8 +691,8 @@ function NewSessionPageContent({
               <figure data-hero-persona-greeting={state.persona.definition.id} className="mt-3 flex min-w-0 items-start gap-3">
                 <PersonaAvatar persona={personaChip} size={36} decorative />
                 <div className="min-w-0">
-                  <figcaption className="text-[12px] text-ink-faint">{t('persona.greetingFrom', { name: state.persona.definition.name })}</figcaption>
-                  <blockquote className="mt-0.5 font-display text-[20px] leading-7 tracking-tight whitespace-pre-wrap text-ink" style={{ fontVariationSettings: '"opsz" 32' }}>
+                  <figcaption className="text-[12px] leading-4 text-ink-faint">{t('persona.greetingFrom', { name: state.persona.definition.name })}</figcaption>
+                  <blockquote className="mt-0.5 font-sans text-[18px] leading-[26px] font-normal whitespace-pre-wrap text-ink">
                     {state.persona.definition.greeting}
                   </blockquote>
                 </div>
@@ -702,8 +700,7 @@ function NewSessionPageContent({
             ) : connectFirst ? null : (
               <p
                 data-hero-headline
-                className="mt-2 min-w-0 font-display text-[22px] leading-7 tracking-tight text-ink-soft"
-                style={{ fontVariationSettings: '"opsz" 32' }}
+                className="mt-2 min-w-0 font-sans text-[24px] leading-8 font-normal text-ink-soft"
               >
                 {t('new.headline')}
               </p>
@@ -714,8 +711,7 @@ function NewSessionPageContent({
             {isDailyDraft && state.persona?.definition.greeting?.trim() ? (
               <blockquote
                 data-hero-daily-greeting={state.persona.definition.id}
-                className={`mt-3 min-w-0 font-display text-[19px] leading-7 tracking-tight whitespace-pre-wrap text-ink-soft ${dailyIdentity ? (narrow ? 'pl-16' : 'pl-[72px]') : ''}`}
-                style={{ fontVariationSettings: '"opsz" 32' }}
+                className={`mt-3 min-w-0 font-sans text-[18px] leading-[26px] font-normal whitespace-pre-wrap text-ink-soft ${dailyIdentity ? (narrow ? 'pl-16' : 'pl-[72px]') : ''}`}
               >
                 {state.persona.definition.greeting}
               </blockquote>
@@ -806,7 +802,7 @@ function NewSessionPageContent({
                         type="button"
                         data-hero-import
                         onClick={() => { void navigate(importHistoryPath()); }}
-                        className="motion-press inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-full bg-ink/[0.035] px-3 py-1 text-left text-[12.5px] leading-5 text-ink-soft transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-11 pointer-coarse:py-2"
+                        className="motion-press inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-md bg-transparent px-2.5 py-1 text-left text-[13px] leading-5 font-normal text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-11 pointer-coarse:py-2"
                       >
                         <Icon name="read" size={12} className="shrink-0 text-ink-faint" />
                         <span className="min-w-0 break-words">{t('cap.import.entry')}</span>
@@ -822,7 +818,7 @@ function NewSessionPageContent({
                           state.updateDraft(t(starter.draftKey));
                           focusComposer();
                         }}
-                        className="motion-press inline-flex min-h-7 max-w-full items-center rounded-full bg-ink/[0.035] px-3 py-1 text-left text-[12.5px] leading-5 text-ink-soft transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-11 pointer-coarse:py-2"
+                        className="motion-press inline-flex min-h-8 max-w-full items-center rounded-md bg-transparent px-2.5 py-1 text-left text-[13px] leading-5 font-normal text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-11 pointer-coarse:py-2"
                       >
                         <span className="min-w-0 break-words">
                           {starter.named === true

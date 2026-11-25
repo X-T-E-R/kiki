@@ -1364,6 +1364,7 @@ function NormalApp() {
       id="app-sidebar"
       inert={drawerClosed}
       dockedInPanelGroup={dockedSidebarSplit}
+      temporaryOpen={sidebarOpen && !wideDockedDesktop}
       className={dockedSidebarSplit ? 'app-sidebar !w-full' : `app-sidebar ${sidebarOpen ? 'open' : ''}`}
       activeSessionId={activeSessionId}
       sessions={sessions}

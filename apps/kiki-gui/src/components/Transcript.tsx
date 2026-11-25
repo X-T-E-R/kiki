@@ -783,7 +783,7 @@ const UserMessage = memo(function UserMessage({
               <div
                 key={segment.key}
                 data-steer-status={block.steerStatus}
-                className={`max-w-[80%] rounded-[14px] rounded-br-[6px] px-4 py-2 text-[length:calc(var(--kiki-prose-font-size,15.5px)-1.5px)] leading-[1.6] whitespace-pre-wrap text-ink steer-bubble ${
+                className={`kiki-user-text max-w-[80%] rounded-[12px] rounded-br-[6px] px-4 py-2 whitespace-pre-wrap text-ink steer-bubble ${
                   block.steerStatus === undefined ? 'bg-bubble-user' : 'steer-bubble-pending'
                 }`}
               >
@@ -809,7 +809,7 @@ const UserMessage = memo(function UserMessage({
       ) : textRange || promptTextRange || (bodyText.trim() === '' && !serverRemaining) ? null : (
         <div
           data-steer-status={block.steerStatus}
-          className={`max-w-[80%] rounded-[14px] rounded-br-[6px] px-4 py-2 text-[length:calc(var(--kiki-prose-font-size,15.5px)-1.5px)] leading-[1.6] whitespace-pre-wrap text-ink steer-bubble ${
+          className={`kiki-user-text max-w-[80%] rounded-[12px] rounded-br-[6px] px-4 py-2 whitespace-pre-wrap text-ink steer-bubble ${
             block.steerStatus === undefined ? 'bg-bubble-user' : 'steer-bubble-pending'
           }`}
         >
@@ -1152,7 +1152,7 @@ const AssistantMessage = memo(function AssistantMessage({
       {/* Bot mode: plain prose never reaches the user; the process view marks
           it once, in the margin, without restyling the text itself. */}
       {internalProse ? (
-        <span data-assistant-internal className="mb-0.5 block text-[11px] leading-4 font-medium tracking-wide text-ink-faint">
+        <span data-assistant-internal className="mb-0.5 block text-[12px] leading-4 font-normal text-ink-faint">
           {t('message.internal')}
         </span>
       ) : null}
@@ -1197,7 +1197,7 @@ const AssistantMessage = memo(function AssistantMessage({
         {/* The turn tail's "Stopped by you" divider already states the stop
             of the latest turn; the inline mark stays for older stopped turns. */}
         {block.stopped === true && !stopShownByTail ? (
-          <span className="mt-1.5 inline-flex items-center gap-1.5 font-sans text-[12px] font-medium text-ink-faint">
+          <span className="mt-1.5 inline-flex items-center gap-1.5 font-sans text-[12px] leading-4 font-normal text-ink-faint">
             <span aria-hidden className="h-2 w-2 rounded-[2px] bg-ink-faint/70" />
             {t('transcript.stopped')}
           </span>
@@ -1320,7 +1320,7 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
       attrs={{ 'data-reminder-kind': category?.kind }}
       glyph={<Icon name="system" />}
       label={<span className="font-normal text-ink-faint">{labelText}</span>}
-      detail={<span className="text-ink-faint/80">{injectionSummary(block.text)}</span>}
+      detail={<span className="text-ink-faint">{injectionSummary(block.text)}</span>}
       title={time.absoluteTime(block.createdAt)}
       expanded={open}
       onToggle={() => { setOpen((value) => !value); }}
@@ -1330,7 +1330,7 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
           <div className="flex max-w-full items-start gap-2 border-l border-hairline pl-3">
             <div className="min-w-0 flex-1 max-h-[28rem] overflow-auto pr-2 text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink-faint">
               {facts.length > 0 ? (
-                <p data-reminder-facts className="mb-1 font-mono text-[11px] whitespace-normal text-ink-faint/80">{facts.join('  ·  ')}</p>
+                <p data-reminder-facts className="mb-1 font-mono text-[12px] leading-4 whitespace-normal text-ink-faint">{facts.join('  ·  ')}</p>
               ) : null}
               {block.text}
             </div>

@@ -245,7 +245,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
         aria-expanded={addMenu}
         data-capabilities-add
         onClick={() => { setAddMenu((open) => !open); }}
-        className="inline-flex min-h-8 items-center gap-1.5 rounded-md bg-ink/[0.06] px-3 text-[13px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.1] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+        className="inline-flex min-h-8 items-center gap-1.5 rounded-md bg-ink/[0.06] px-3 text-[13px] leading-5 font-normal text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.1] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
       >
         {t('cap.page.add')}
         <Icon name="chevron" size={12} className="rotate-90" />
@@ -318,8 +318,8 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
                     data-segment={value}
                     onFocus={(event) => { revealTab(event.currentTarget); }}
                     onClick={() => { setTab(value); }}
-                    className={`-mb-px shrink-0 border-b-2 pb-2 text-[14px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
-                      value === tab ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
+                    className={`-mb-px shrink-0 border-b-2 pb-2 text-[14px] leading-5 font-normal transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
+                      value === tab ? 'border-ink text-ink' : 'border-transparent text-ink-soft hover:text-ink'
                     }`}
                   >
                     {t(`cap.tab.${value}`)}

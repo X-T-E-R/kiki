@@ -349,7 +349,7 @@ export function PluginsView({
                           className="inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
                         >
                           <span>{heading}</span>
-                          <span className="text-[11.5px] text-ink-faint tabular-nums">{shelf.entries.length}</span>
+                          <span className="text-[12px] leading-4 text-ink-faint tabular-nums">{shelf.entries.length}</span>
                         </button>
                       );
                     })}

@@ -381,7 +381,7 @@ function SkillsViewInner({
       <Icon name="folder" size={14} className="text-ink-soft" />
       <span className="hidden sm:inline">{t('st.caps.sourcesButton')}</span>
       {extraDirCount > 0 ? (
-        <span className="rounded bg-ink/[0.06] px-1 text-[11px] text-ink-soft tabular-nums">{extraDirCount}</span>
+        <span className="rounded bg-ink/[0.06] px-1 text-[12px] leading-4 text-ink-soft tabular-nums">{extraDirCount}</span>
       ) : null}
     </button>
   ) : null;
@@ -436,7 +436,7 @@ function SkillsViewInner({
                   className="inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
                 >
                   <span>{label}</span>
-                  <span className="text-[11.5px] text-ink-faint tabular-nums">
+                  <span className="text-[12px] leading-4 text-ink-faint tabular-nums">
                     {view.narrowed ? `${group.items.length}/${group.total}` : group.items.length}
                   </span>
                 </button>
@@ -663,7 +663,7 @@ function SkillsSourcesPanel() {
         <div className="flex flex-wrap items-center justify-between gap-2">
           <label
             htmlFor="settings-extra-skill-dirs"
-            className="inline-flex items-center gap-1.5 text-[12px] font-medium text-ink-soft"
+            className="inline-flex items-center gap-1.5 text-[12px] leading-4 font-normal text-ink-soft"
           >
             <span>{t('st.caps.extraDirs')}</span>
             <span
@@ -692,7 +692,7 @@ function SkillsSourcesPanel() {
               <span
                 key={`${dir}:${index}`}
                 data-extra-skill-dir-chip={dir}
-                className="inline-flex max-w-full items-center gap-1 rounded-md border border-hairline bg-paper px-2 py-0.5 font-mono text-[11.5px] text-ink-soft"
+                className="inline-flex max-w-full items-center gap-1 rounded-md border border-hairline bg-paper px-2 py-0.5 font-mono text-[12px] leading-4 text-ink-soft"
               >
                 <span className="truncate">{dir}</span>
                 <button
@@ -803,7 +803,7 @@ function SkillRow({
   };
 
   const nameNode = (
-    <span className={`truncate font-mono text-[13px] font-medium ${
+    <span className={`truncate font-mono text-[13px] leading-5 font-normal ${
       compact ? 'shrink-0 max-w-[48%]' : 'min-w-0'
     } ${
       enabled ? 'text-ink' : 'text-ink-faint'
@@ -899,7 +899,7 @@ function SkillRow({
               type="button"
               aria-label={t('cap.skills.openPlugin', { name: pluginId })}
               title={t('cap.skills.openPlugin', { name: pluginId })}
-              className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-ink-faint transition hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+              className="shrink-0 rounded px-1.5 py-0.5 text-[12px] leading-4 text-ink-faint transition hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
               onClick={() => { onOpenPlugin(pluginId); }}
               data-skill-plugin={pluginId}
             >

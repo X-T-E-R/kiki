@@ -113,10 +113,10 @@ export function SectionCard({
       className={`scroll-mt-4 border-t border-hairline pt-6 first:border-t-0 first:pt-0 ${flashId !== null && flashId === id ? 'settings-card-flash' : ''}`}
     >
       <div className={`flex flex-wrap items-baseline gap-x-3 gap-y-1 ${hasBody ? 'mb-3' : ''}`}>
-        <h2 className="mr-auto font-display text-[18px] leading-6 text-ink">{title}</h2>
+        <h2 className="mr-auto font-sans text-[18px] leading-[26px] font-bold text-ink">{title}</h2>
         <ScopeTag scope={target} hidden={pageScope === target} />
         {note !== undefined ? (
-          <span data-settings-effect={note} className={`text-[12px] ${note === 'restart' ? 'font-medium text-amber-ink' : 'text-ink-faint'}`}>
+          <span data-settings-effect={note} className={`text-[12px] leading-4 ${note === 'restart' ? 'text-amber-ink' : 'text-ink-faint'}`}>
             {t(EFFECT_KEY[note])}
           </span>
         ) : null}

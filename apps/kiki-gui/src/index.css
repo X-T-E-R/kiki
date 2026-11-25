@@ -99,17 +99,35 @@
   --color-primary-foreground: #FFFFFF;
   --color-sidebar: #fbfaf6;
 
-  /* Fraunces/Space Grotesk/JetBrains Mono carry no CJK glyphs — the fallback
-   * stacks keep the Latin identity and land Chinese on deliberate Song-style
-   * serif (display) and system sans (body/mono) faces. */
-  --font-display: 'Newsreader Variable', 'Newsreader', Georgia, 'Songti SC', 'Noto Serif SC', 'SimSun', serif;
-  --font-sans: 'Instrument Sans Variable', 'Instrument Sans', 'PingFang SC', 'Noto Sans SC', 'Hiragino Sans GB', ui-sans-serif, system-ui, 'Segoe UI', 'Microsoft YaHei', sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', monospace;
+  /* Unified Paper-and-Ink type stacks: Instrument Sans / system sans with
+   * clean CJK sans fallbacks for chrome, prompts and default prose; Newsreader
+   * for the brand wordmark and opt-in Latin editorial serif. */
+  --font-sans: 'Instrument Sans Variable', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', 'Hiragino Sans GB', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, Menlo, 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', monospace;
+  --font-serif: 'Newsreader Variable', Georgia, 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --font-display: var(--font-sans);
+  --font-weight-normal: 400;
+  --font-weight-bold: 700;
   /* Mono text is copied and typed back: JetBrains Mono's contextual
    * alternates fuse `--`, `->`, `!=` into one glyph (`--short` read as
    * `—short`), so mono shows every character as typed. Tailwind feeds this to
    * the `font-mono` utility and to preflight's code/kbd/samp/pre. */
   --font-mono--font-feature-settings: 'liga' 0, 'calt' 0;
+  --text-caption: 12px;
+  --text-caption--line-height: 16px;
+  --text-row: 13px;
+  --text-row--line-height: 20px;
+  --text-ui: 14px;
+  --text-ui--line-height: 20px;
+  --text-title: 16px;
+  --text-title--line-height: 24px;
+  --text-section: 18px;
+  --text-section--line-height: 26px;
+  --text-hero: 24px;
+  --text-hero--line-height: 32px;
+  --radius-inline: 4px;
+  --radius-control: 6px;
+  --radius-sheet: 12px;
 }
 
 /* Tailwind's `dark:` variant follows kiki's own attribute rather than the OS
@@ -225,18 +243,15 @@ body {
   font-synthesis: none;
 }
 
-h1,
-h2,
-h3,
-.kiki-prose {
-  font-feature-settings: 'halt' 1, 'chws' 1;
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-ui);
+  line-height: 1.5;
 }
 
-/* CJK ideographs are square-em glyphs: negative letter-spacing crowds strokes.
- * Reset negative tracking on headings and chrome labels under Chinese locales. */
-:root[lang^='zh'] :is(h1, h2, h3, h4),
-:root[lang^='zh'] :is(h1, h2, h3, h4) span {
-  letter-spacing: 0 !important;
+.kiki-prose,
+.kiki-user-text {
+  font-feature-settings: 'halt' 1, 'chws' 1;
 }
 
 /* Phone keyboard + dynamic toolbars: `interactive-widget=resizes-content`
@@ -314,8 +329,8 @@ body {
 }
 
 .font-display {
-  font-optical-sizing: auto;
-  letter-spacing: -0.012em;
+  font-family: var(--font-display);
+  letter-spacing: normal;
 }
 
 /* ---- embedded terminal (xterm.js) ---- */
@@ -924,6 +939,11 @@ body[data-pane-resizing='true'] [data-terminal-panel] {
 .row-interactive[aria-current] {
   background-color: var(--color-paper);
   box-shadow: var(--kiki-sheet-shadow);
+}
+.app-sidebar .row-interactive[aria-current],
+.app-sidebar .row-interactive:has(> [aria-current='page']) {
+  background-color: color-mix(in srgb, var(--color-ink) 4%, transparent);
+  box-shadow: none;
 }
 .row-interactive:focus-visible {
   outline: var(--focus-ring-width) solid var(--color-selected-ink);
@@ -1910,43 +1930,48 @@ input[data-add-search]:focus-visible {
   border-color: var(--color-hairline);
 }
 
-/* ---- assistant markdown typography ---- */
+/* ---- assistant markdown & conversation typography ---- */
 .kiki-md {
-  font-size: calc(var(--kiki-prose-font-size, 15.5px) - 1.5px);
-  line-height: 1.65;
+  font-size: var(--kiki-prose-font-size, 16px);
+  line-height: 1.75;
   overflow-wrap: break-word;
 }
-/* Assistant answers read as set prose: Newsreader for Latin at a reading
- * size, with Chinese falling through to the UI sans faces (a Song face at
- * this size reads thin and spotty on Windows) rather than the display
- * stack's Song fallbacks. Code, tables and chrome inside keep their own
- * families. Prose takes the full transcript column like every other row:
- * the column (--kiki-chat-content-width) is the one measure, so answers,
- * bubbles, activity rows and cards all end on the same right edge. */
+/* Default prose uses the same sans CJK family as prompts and chrome; opt-in
+ * serif (`data-kiki-prose='serif'`) brings in Newsreader for Latin editorial
+ * reading while keeping Chinese on the clean sans fallback. */
 .kiki-prose,
 .thinking-row {
-  /* YaHei before Noto Sans SC: on Windows the system Noto SC is a variable
-   * font whose fallback instance renders visibly heavier than regular. */
-  --kiki-prose-font: var(--kiki-prose-user, 'Newsreader Variable', 'Newsreader', Georgia, 'PingFang SC',
-    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', serif);
+  --kiki-prose-font: var(--kiki-prose-user, var(--font-sans));
+}
+:root[data-kiki-prose='serif'] :is(.kiki-prose, .thinking-row) {
+  --kiki-prose-font: var(--kiki-prose-user, var(--font-serif));
+}
+.kiki-prose,
+.kiki-user-text {
+  font-size: var(--kiki-prose-font-size, 16px);
+  line-height: 1.75;
+  letter-spacing: normal;
 }
 .kiki-prose {
   font-family: var(--kiki-prose-font);
-  font-optical-sizing: auto;
-  font-size: var(--kiki-prose-font-size, 15.5px);
-  line-height: 1.65;
   color: var(--color-ink);
 }
-.kiki-prose .kiki-md {
-  font-size: inherit;
-  line-height: inherit;
+:root[data-kiki-prose='serif'] .kiki-prose {
+  font-optical-sizing: auto;
 }
+.kiki-user-text {
+  font-family: var(--font-sans);
+}
+.kiki-prose .kiki-md,
 .kiki-prose-tail {
   font-size: inherit;
   line-height: inherit;
 }
 .kiki-prose :is(button, input, kbd, [data-row-actions]) {
   font-family: var(--font-sans);
+}
+:root:not([data-kiki-chat-width='wide']):not([data-kiki-chat-width='full']) .kiki-prose :is(.kiki-md > :is(p, ul, ol, blockquote), .kiki-md > div > :is(p, ul, ol, blockquote), .kiki-prose-tail) {
+  max-width: min(100%, 38ic);
 }
 .kiki-md:not(.kiki-md--edges) > *:first-child {
   margin-top: 0;
@@ -1966,26 +1991,23 @@ input[data-add-search]:focus-visible {
 .kiki-md p {
   margin: 0.55em 0;
 }
-.kiki-md h1,
-.kiki-md h2,
-.kiki-md h3,
-.kiki-md h4 {
-  font-family: var(--font-display);
-  font-weight: 600;
-  letter-spacing: -0.01em;
+.kiki-md :is(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  letter-spacing: normal;
   margin: 0.9em 0 0.35em;
-  line-height: 1.3;
+  line-height: 1.35;
 }
 .kiki-md h1 {
-  font-size: 1.3em;
+  font-size: 1.375em;
 }
 .kiki-md h2 {
-  font-size: 1.18em;
+  font-size: 1.25em;
 }
 .kiki-md h3 {
-  font-size: 1.06em;
+  font-size: 1.125em;
 }
-.kiki-md h4 {
+.kiki-md :is(h4, h5, h6) {
   font-size: 1em;
 }
 .kiki-md ul,
@@ -1999,15 +2021,15 @@ input[data-add-search]:focus-visible {
 .kiki-md li::marker {
   color: var(--color-ink-faint);
 }
-.kiki-md code {
+.kiki-md :not(pre) > code {
   font-family: var(--font-mono);
-  font-size: 0.84em;
+  font-weight: 400;
+  font-size: 0.9375em;
+  line-height: 1.4;
+  font-feature-settings: 'liga' 0, 'calt' 0;
   background: color-mix(in srgb, var(--color-ink) 6%, transparent);
   border-radius: 4px;
   padding: 0.1em 0.32em;
-}
-.kiki-prose .kiki-md :not(pre) > code {
-  font-size: 0.8em;
 }
 .kiki-md pre {
   background: var(--color-panel);
@@ -2021,8 +2043,11 @@ input[data-add-search]:focus-visible {
   background: transparent;
   border: none;
   padding: 0;
-  font-size: var(--kiki-code-font-size, 12.5px);
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: var(--kiki-code-font-size, 13px);
   line-height: 1.55;
+  font-feature-settings: 'liga' 0, 'calt' 0;
 }
 .kiki-md a {
   color: inherit;
@@ -2101,7 +2126,7 @@ input[data-add-search]:focus-visible {
   background: transparent;
   border-bottom-color: var(--color-hairline-strong);
   color: var(--color-ink-soft);
-  font-weight: 600;
+  font-weight: 700;
   white-space: nowrap;
 }
 .kiki-md tr {
@@ -2110,8 +2135,14 @@ input[data-add-search]:focus-visible {
 .kiki-md tr:last-child td {
   border-bottom: none;
 }
-.kiki-md strong {
-  font-weight: 650;
+.kiki-md :is(b, strong) {
+  font-weight: 700;
+}
+.kiki-md :is(h1, h2, h3, h4, h5, h6) :is(b, strong) {
+  font-weight: 700;
+}
+.kiki-md :is(b, strong) > code {
+  font-weight: 400;
 }
 
 /* ---- code fence chrome (KikiCodeBlock wraps Streamdown's CodeBlock) ----
@@ -2158,8 +2189,10 @@ input[data-add-search]:focus-visible {
   margin: 0;
   padding: 0;
   font-family: var(--font-mono);
-  font-size: var(--kiki-code-font-size, 12.5px);
+  font-weight: 400;
+  font-size: var(--kiki-code-font-size, 13px);
   line-height: 1.55;
+  font-feature-settings: 'liga' 0, 'calt' 0;
 }
 /* Streamdown's highlighted body draws its own frame — kiki's chrome owns it. */
 .kiki-cb [data-streamdown='code-block-body'] {

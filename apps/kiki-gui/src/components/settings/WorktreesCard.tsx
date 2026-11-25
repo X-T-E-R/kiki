@@ -43,10 +43,10 @@ type GcPlan = { readonly removable: number; readonly kept: number };
 const WORKTREE_SESSION_FETCH_CONCURRENCY = 2;
 
 const ROW_ACTION =
-  'inline-flex h-8 shrink-0 items-center rounded-md px-2.5 text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-ink-soft pointer-coarse:h-11 pointer-coarse:px-3';
+  'inline-flex h-8 shrink-0 items-center rounded-md px-2.5 text-[13px] leading-5 text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-ink-soft pointer-coarse:h-11 pointer-coarse:px-3';
 
 const ROW_REMOVE_ACTION =
-  'inline-flex h-8 shrink-0 items-center rounded-md px-2.5 text-[12.5px] text-ink-soft transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-ink-soft pointer-coarse:h-11 pointer-coarse:px-3';
+  'inline-flex h-8 shrink-0 items-center rounded-md px-2.5 text-[13px] leading-5 text-ink-soft transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-ink-soft pointer-coarse:h-11 pointer-coarse:px-3';
 
 function createConcurrencyLimiter(maxConcurrent: number) {
   let active = 0;
@@ -160,7 +160,7 @@ export function WorktreesCard() {
         {list.isLoading ? <Hint>{t('st.worktrees.loading')}</Hint> : null}
         {list.isError ? <InlineError error={list.error} /> : null}
         {list.isSuccess && records.length === 0 ? (
-          <p data-worktrees-empty className="py-1 text-[12.5px] leading-relaxed text-ink-faint">
+          <p data-worktrees-empty className="py-1 text-[13px] leading-5 text-ink-faint">
             {t('st.worktrees.empty')}
           </p>
         ) : null}
@@ -188,7 +188,7 @@ export function WorktreesCard() {
                 data-worktrees-cleanup
                 disabled={gcBusy || !list.isSuccess}
                 onClick={planCleanup}
-                className="inline-flex h-8 shrink-0 items-center rounded-md bg-ink/[0.05] px-3 text-[12.5px] font-medium text-ink transition-colors hover:bg-ink/[0.09] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-11"
+                className="inline-flex h-8 shrink-0 items-center rounded-md bg-ink/[0.05] px-3 text-[13px] leading-5 font-normal text-ink transition-colors hover:bg-ink/[0.09] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-11"
               >
                 {gcBusy ? t('st.worktrees.cleanupChecking') : t('st.worktrees.cleanup')}
               </button>
@@ -198,7 +198,7 @@ export function WorktreesCard() {
                 aria-expanded={helpOpen}
                 aria-controls="worktrees-help-panel"
                 onClick={() => { setHelpOpen((open) => !open); }}
-                className="inline-flex h-8 items-center gap-1 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:h-11"
+                className="inline-flex h-8 items-center gap-1 rounded-md px-1.5 text-[12px] leading-4 font-normal text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:h-11"
               >
                 <Icon
                   name="chevron"
@@ -212,7 +212,7 @@ export function WorktreesCard() {
               <div
                 id="worktrees-help-panel"
                 data-worktrees-help-body
-                className="max-w-[60ch] space-y-1.5 border-l-2 border-hairline pl-3 text-[12px] leading-relaxed text-ink-soft"
+                className="max-w-[60ch] space-y-1.5 border-l-2 border-hairline pl-3 text-[12px] leading-4 text-ink-soft"
               >
                 <p>{t('st.worktrees.cleanupRule', { days: afterDays })}</p>
                 <p className="text-ink-faint">{t('st.worktrees.hint')}</p>
@@ -261,11 +261,11 @@ function WorktreeNotice({ notice }: { notice: NonNullable<Notice> }) {
     <div
       data-worktree-notice={notice.tone}
       role={notice.tone === 'error' ? 'alert' : 'status'}
-      className={`rounded-r-md border-l-2 px-3 py-2 text-[12px] leading-snug ${tone}`}
+      className={`rounded-r-md border-l-2 px-3 py-2 text-[12px] leading-4 ${tone}`}
     >
       <p>{notice.text}</p>
       {notice.tone === 'error' && notice.path !== undefined ? (
-        <p data-worktree-kept-path className="mt-1 font-mono text-[11px] break-all text-ink-soft">
+        <p data-worktree-kept-path className="mt-1 font-mono text-[12px] leading-4 break-all text-ink-soft">
           {t('st.worktrees.keptAt', { path: notice.path })}
         </p>
       ) : null}
@@ -309,7 +309,7 @@ function ChangesLine({ inspection }: { inspection: WorktreeInspection | undefine
   const full = [...parts, ...(ignored.length > 0 ? [t('st.worktrees.ignored', { names: ignored.slice(0, 5).join(', ') })] : [])];
   const short = [...parts, ...(ignored.length > 0 ? [t('st.worktrees.ignoredShort', { names: ignored.slice(0, 2).join(', ') })] : [])];
   return (
-    <span data-worktree-changes="dirty" title={full.join('\n')} className="font-medium text-amber-ink">
+    <span data-worktree-changes="dirty" title={full.join('\n')} className="font-normal text-amber-ink">
       {short.join(', ')}
     </span>
   );
@@ -341,10 +341,10 @@ function WorktreeRow({
   const title = session === undefined ? undefined : shownTitle;
   const removeDisabled = inUse || ownerPending || busy;
   const stateClass = state.tone === 'danger'
-    ? 'rounded-full bg-danger/10 px-2 py-0.5 text-[11px] font-medium leading-4 text-danger'
+    ? 'rounded-full bg-danger/10 px-2 py-0.5 text-[12px] font-normal leading-4 text-danger'
     : state.tone === 'active'
-      ? 'rounded-full bg-selected-ink/[0.09] px-2 py-0.5 text-[11px] font-medium leading-4 text-selected-ink'
-      : 'text-[11.5px] tabular-nums text-ink-faint';
+      ? 'rounded-full bg-selected-ink/[0.09] px-2 py-0.5 text-[12px] font-normal leading-4 text-selected-ink'
+      : 'text-[12px] leading-4 tabular-nums text-ink-faint';
   const inUseId = `worktree-in-use-${record.id}`;
   return (
     <li
@@ -354,9 +354,9 @@ function WorktreeRow({
     >
       <div className="min-w-0 flex-1 basis-56">
         <p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1" title={`${record.branch}\n${record.repo.sourceRoot} @ ${record.base.ref}`}>
-          <span className="flex min-w-0 items-center gap-1.5 text-[13px] text-ink">
+          <span className="flex min-w-0 items-center gap-1.5 text-[13px] leading-5 text-ink">
             <Icon name="branch" size={12} className="shrink-0 text-ink-faint" />
-            <span className="min-w-0 truncate font-mono text-[12.5px]">{record.branch}</span>
+            <span className="min-w-0 truncate font-mono text-[13px] leading-5">{record.branch}</span>
           </span>
           <span data-worktree-state-label className={`shrink-0 ${stateClass}`}>{state.text}</span>
         </p>
@@ -391,7 +391,7 @@ function WorktreeRow({
             {record.removal !== undefined ? (
               <p className="text-[12px] leading-5 text-danger">{t(outcomeReasonKey(record.removal.outcome))}</p>
             ) : null}
-            <p className="font-mono text-[11px] leading-4 break-all text-ink-soft">{t('st.worktrees.keptAt', { path: record.path })}</p>
+            <p className="font-mono text-[12px] leading-4 break-all text-ink-soft">{t('st.worktrees.keptAt', { path: record.path })}</p>
           </div>
         ) : null}
       </div>

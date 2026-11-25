@@ -544,7 +544,7 @@ export function PortableSpacesCard({
           {showRank ? (
             <span
               data-portable-priority-rank={source.id}
-              className="w-5 text-right font-mono text-[11px] tabular-nums text-ink-faint"
+              className="w-5 text-right font-mono text-[12px] leading-4 tabular-nums text-ink-faint"
               title={t('st.portable.center.moveUp')}
             >
               #{rankIndex + 1}
@@ -568,45 +568,45 @@ export function PortableSpacesCard({
               data-detail-trigger={source.id}
               onClick={() => { openDetail(source, 'contents'); }}
               title={source.label}
-              className={`min-w-0 shrink truncate rounded text-left text-[13px] font-medium transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:inline-flex pointer-coarse:min-h-11 pointer-coarse:items-center ${
+              className={`min-w-0 shrink truncate rounded text-left text-[13px] leading-5 font-normal transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:inline-flex pointer-coarse:min-h-11 pointer-coarse:items-center ${
                 source.enabled ? 'text-ink' : 'text-ink-faint'
               }`}
             >
               {source.label}
             </button>
-            <span className="shrink-0 text-[11.5px] text-ink-soft" data-portable-policy-label={source.id}>
+            <span className="shrink-0 text-[12px] leading-4 text-ink-soft" data-portable-policy-label={source.id}>
               {!source.enabled
                 ? t('st.portable.center.paused')
                 : policy === 'auto'
                   ? t('st.portable.center.policyAuto')
                   : t('st.portable.center.policyManual')}
             </span>
-            <span className="shrink-0 text-[11.5px] text-ink-faint" data-portable-scope-summary={source.id}>
+            <span className="shrink-0 text-[12px] leading-4 text-ink-faint" data-portable-scope-summary={source.id}>
               · {scopeSummaryText(source)}
             </span>
             {spaces.length > 1 ? (
-              <span className="shrink-0 text-[11.5px] text-ink-faint">
+              <span className="shrink-0 text-[12px] leading-4 text-ink-faint">
                 · {spaceNameOf(source.linkedSpaceId)}
               </span>
             ) : null}
             {source.availableNewScopes.length > 0 ? (
-              <span className="shrink-0 text-[11.5px] font-medium text-amber-ink" data-portable-new-scopes={source.id}>
+              <span className="shrink-0 text-[12px] leading-4 font-normal text-amber-ink" data-portable-new-scopes={source.id}>
                 · {t('st.portable.center.newScopesBadge', { count: source.availableNewScopes.length })}
               </span>
             ) : null}
             {source.needsReconcile ? (
-              <span className="shrink-0 text-[11.5px] font-medium text-amber-ink" data-portable-needs-reconcile={source.id}>
+              <span className="shrink-0 text-[12px] leading-4 font-normal text-amber-ink" data-portable-needs-reconcile={source.id}>
                 · {t('st.portable.center.needsReconcile')}
               </span>
             ) : null}
           </div>
-          <p className="truncate text-[11.5px] text-ink-faint">
+          <p className="truncate text-[12px] leading-4 text-ink-faint">
             <span className="font-mono" title={subtitle}>{subtitle}</span>
             {' · '}
             <span>{timeLabel}</span>
           </p>
           {source.lastSyncError ? (
-            <p className="truncate text-[11.5px] text-danger-ink" data-portable-sync-error={source.id}>
+            <p className="truncate text-[12px] leading-4 text-danger-ink" data-portable-sync-error={source.id}>
               {t('st.portable.syncError', { error: source.lastSyncError })}
             </p>
           ) : null}
@@ -679,21 +679,21 @@ export function PortableSpacesCard({
               data-detail-trigger={source.id}
               onClick={() => { openDetail(source, 'contents'); }}
               title={source.label}
-              className="min-w-0 shrink truncate rounded text-left text-[13px] font-medium text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+              className="min-w-0 shrink truncate rounded text-left text-[13px] leading-5 font-normal text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
             >
               {source.label}
             </button>
-            <span data-portable-kind-badge={source.id} className="shrink-0 text-[11.5px] text-ink-soft">
+            <span data-portable-kind-badge={source.id} className="shrink-0 text-[12px] leading-4 text-ink-soft">
               {kindBadgeText(source)}
             </span>
             <span
               data-portable-secret-badge={source.id}
-              className={`shrink-0 text-[11.5px] ${isPlainSecret ? 'font-medium text-amber-ink' : 'text-ink-faint'}`}
+              className={`shrink-0 text-[12px] leading-4 ${isPlainSecret ? 'font-normal text-amber-ink' : 'text-ink-faint'}`}
             >
               · {secretBadgeText(source)}
             </span>
           </div>
-          <p className="truncate font-mono text-[11.5px] text-ink-faint" title={subtitle}>{subtitle}</p>
+          <p className="truncate font-mono text-[12px] leading-4 text-ink-faint" title={subtitle}>{subtitle}</p>
         </div>
 
         <div className="flex w-full shrink-0 items-center justify-end gap-1.5 sm:ml-auto sm:w-auto">
@@ -775,7 +775,7 @@ export function PortableSpacesCard({
       {sourcesQuery.isError ? (
         <div className="space-y-2" data-portable-sources-error>
           {isPortableHostUnsupportedError(sourcesQuery.error) ? (
-            <p className="text-[13px] text-ink-soft" data-portable-unsupported-host>
+            <p className="text-[13px] leading-5 text-ink-soft" data-portable-unsupported-host>
               {t('st.portable.center.unsupportedHost')}
             </p>
           ) : (
@@ -801,7 +801,7 @@ export function PortableSpacesCard({
           renderRow={(source) => (source.endpoint.kind === 'url' ? renderUrlRow(source) : renderNonUrlRow(source))}
         />
       ) : sourcesQuery.isSuccess ? (
-        <p className="text-[13px] text-ink-soft" data-portable-empty>
+        <p className="text-[13px] leading-5 text-ink-soft" data-portable-empty>
           {t('st.portable.center.emptyHint')}
         </p>
       ) : null}
@@ -976,7 +976,7 @@ export function PortableSpacesCard({
                 });
             }}
           >
-            <h3 className="font-display text-[18px] font-semibold text-ink">
+            <h3 className="font-sans text-[18px] leading-[26px] font-bold text-ink">
               {t('st.portable.center.renameTitle')}
             </h3>
             <input
