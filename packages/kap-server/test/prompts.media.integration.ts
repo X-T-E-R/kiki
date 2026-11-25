@@ -106,9 +106,14 @@ describe('server-v2 /api prompts', () => {
     expect(submitted.body.code).toBe(0);
 
     const content = submitted.body.data.content as Array<Record<string, unknown>>;
-    expect(content).toHaveLength(2);
+    expect(content).toHaveLength(3);
     expect(content[0]).toEqual({ type: 'text', text: 'what happens in this video?' });
-    expect(content[1]).toEqual({
+    expect(content[1]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('Attached video "clip.mp4"'),
+      presentation: { spans: [expect.objectContaining({ kind: 'attachment' })] },
+    });
+    expect(content[2]).toEqual({
       type: 'video',
       source: { kind: 'session_media', file_id: uploaded.data.id },
       name: 'clip.mp4',
@@ -130,17 +135,22 @@ describe('server-v2 /api prompts', () => {
     expect(submitted.body.code).toBe(0);
 
     const content = submitted.body.data.content as Array<Record<string, unknown>>;
-    expect(content).toHaveLength(2);
-    const caption = content[0] as { type: string; text: string };
+    expect(content).toHaveLength(3);
+    expect(content[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('Attached image "big.png"'),
+      presentation: { spans: [expect.objectContaining({ kind: 'attachment' })] },
+    });
+    const caption = content[1] as { type: string; text: string };
     expect(caption.type).toBe('text');
     expect(caption.text).toContain('Image compressed');
     expect(caption.text).toContain('3600x1800');
     const pathMatch = /saved at "([^"]+)"/.exec(caption.text);
     expect(pathMatch).not.toBeNull();
-    expect(pathMatch![1]!.replaceAll('\\', '/')).toContain('/media-originals/');
+    expect(pathMatch![1]!.replaceAll('\\', '/')).toContain('/attachments/');
     expect(await readFile(pathMatch![1]!)).toEqual(bigPng);
 
-    const image = content[1] as { type: string; source: { kind: string; file_id: string } };
+    const image = content[2] as { type: string; source: { kind: string; file_id: string } };
     expect(image.type).toBe('image');
     expect(image.source.kind).toBe('session_media');
     const finalFileId = image.source.file_id;
@@ -177,20 +187,28 @@ describe('server-v2 /api prompts', () => {
     const first = await uploadFile(solidPng(3600, 1800), 'image/png', 'big.png');
     const second = await uploadFile(solidPng(10, 10), 'image/png', 'small.png');
     const files = fixture.server!.core.accessor.get(IFileService);
+    const media = getLiveSessionById(fixture.server!.core.accessor, id)!.accessor.get(ISessionMediaStore);
     const originalGet = files.get.bind(files);
     const originalSave = files.save.bind(files);
+    const originalMaterialize = media.materialize.bind(media);
     let compressedFileId: string | undefined;
     let lateFailureInjected = false;
-    const getSpy = vi.spyOn(files, 'get').mockImplementation(async (fileId) => {
-      if (fileId === second.id && compressedFileId !== undefined) {
+    let resolveCompressedSaved!: () => void;
+    const compressedSaved = new Promise<void>((resolve) => {
+      resolveCompressedSaved = resolve;
+    });
+    const materializeSpy = vi.spyOn(media, 'materialize').mockImplementation(async (input) => {
+      if (input.fileId === second.id) {
+        await compressedSaved;
         lateFailureInjected = true;
         throw new Error('injected second-part failure');
       }
-      return originalGet(fileId);
+      return originalMaterialize(input);
     });
     const saveSpy = vi.spyOn(files, 'save').mockImplementation(async (...args) => {
       const saved = await originalSave(...args);
       compressedFileId = saved.id;
+      resolveCompressedSaved();
       return saved;
     });
 
@@ -212,7 +230,7 @@ describe('server-v2 /api prompts', () => {
       expect((await originalGet(first.id)).meta.id).toBe(first.id);
       expect((await originalGet(second.id)).meta.id).toBe(second.id);
     } finally {
-      getSpy.mockRestore();
+      materializeSpy.mockRestore();
       saveSpy.mockRestore();
     }
   });
@@ -230,6 +248,11 @@ describe('server-v2 /api prompts', () => {
 
     const content = submitted.body.data.content as Array<Record<string, unknown>>;
     expect(content).toEqual([
+      expect.objectContaining({
+        type: 'text',
+        text: expect.stringContaining('Attached image "small.png"'),
+        presentation: { spans: [expect.objectContaining({ kind: 'attachment' })] },
+      }),
       { type: 'image', source: { kind: 'session_media', file_id: uploaded.id }, name: 'small.png' },
     ]);
 
@@ -316,7 +339,13 @@ describe('server-v2 /api prompts', () => {
       const queued = await client.session(id).commands.submit({
         prompt_id: 'queued-image', content: [{ type: 'image', source: { kind: 'file', file_id: uploaded.id } }],
       });
-      expect(queued).toMatchObject({ status: 'queued', content: [{ type: 'image', source: { kind: 'session_media', file_id: uploaded.id } }] });
+      expect(queued).toMatchObject({
+        status: 'queued',
+        content: [
+          expect.objectContaining({ type: 'text', text: expect.stringContaining('Attached image "queued.png"') }),
+          { type: 'image', source: { kind: 'session_media', file_id: uploaded.id } },
+        ],
+      });
       await expectSessionMedia(fixture.server!, id, `${uploaded.id}.png`, image);
       await fixture.server!.core.accessor.get(IFileService).delete(uploaded.id);
 
@@ -330,6 +359,7 @@ describe('server-v2 /api prompts', () => {
           });
           expect(replaced.content).toEqual([
             { type: 'text', text: `edited via ${source.kind}` },
+            expect.objectContaining({ type: 'text', text: expect.stringContaining('Attached image "queued.png"') }),
             { type: 'image', source: { kind: 'session_media', file_id: uploaded.id }, name: 'queued.png' },
           ]);
         }
@@ -373,6 +403,11 @@ describe('server-v2 /api prompts', () => {
     expect(replayed.body.code).toBe(0);
     expect(replayed.body.data.content).toEqual([
       { type: 'text', text: 'replay the stored image' },
+      expect.objectContaining({
+        type: 'text',
+        text: expect.stringContaining('Attached image "small.png"'),
+        presentation: { spans: [expect.objectContaining({ kind: 'attachment' })] },
+      }),
       { type: 'image', source: { kind: 'session_media', file_id: uploaded.id }, name: 'small.png' },
     ]);
 
@@ -461,7 +496,10 @@ describe('server-v2 /api prompts', () => {
       const retried = await client.session(id).commands.submit(request);
       expect(retried).toMatchObject({
         prompt_id: request.prompt_id, status: 'queued',
-        content: [{ type: 'image', source: { kind: 'session_media', file_id: uploaded.id }, name: 'retry.png' }],
+        content: [
+          expect.objectContaining({ type: 'text', text: expect.stringContaining('Attached image') }),
+          { type: 'image', source: { kind: 'session_media', file_id: uploaded.id }, name: 'retry.png' },
+        ],
       });
       expect((await media.read(uploaded.id))?.data).toEqual(image);
     } finally {
@@ -660,8 +698,12 @@ describe('server-v2 /api prompts', () => {
     expect(submitted.body.code).toBe(0);
 
     const content = submitted.body.data.content as PromptContentPart[];
-    expect(content).toHaveLength(1);
+    expect(content).toHaveLength(2);
     expect(content[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('Attached image "photo.avif"'),
+    });
+    expect(content[1]).toMatchObject({
       type: 'image',
       source: { kind: 'session_media' },
       name: 'photo.avif',
@@ -726,8 +768,12 @@ describe('server-v2 /api prompts', () => {
     expect(submitted.body.code).toBe(0);
 
     const content = submitted.body.data.content as PromptContentPart[];
-    expect(content).toHaveLength(1);
+    expect(content).toHaveLength(2);
     expect(content[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('Attached image "vector.svg"'),
+    });
+    expect(content[1]).toMatchObject({
       type: 'image',
       source: { kind: 'session_media' },
       name: 'vector.svg',

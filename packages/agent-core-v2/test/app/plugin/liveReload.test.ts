@@ -246,7 +246,7 @@ describe('plugin changes in an existing live agent', () => {
     const tool3d = registry.resolve('plugin__media_tool__echo')!;
     const execution3d = await tool3d.resolveExecution({ request_id: 'mesh-request', request: request3d }) as RunnableToolExecution;
     expect(execution3d.accesses).toEqual([{ kind: 'all' }, { kind: 'file', operation: 'read', path: refPath, implicitExternal: false }]);
-    const result3d = await execution3d.execute({ turnId: 1, toolCallId: 'continuing-call', signal: new AbortController().signal, cwd: root });
+    const result3d = await execution3d.execute({ turnId: 1, toolCallId: 'continuing-call', signal: new AbortController().signal });
     expect(JSON.parse(textOutput(result3d.output))).toMatchObject({ request: request3d });
     expect(snapshotInput).toHaveBeenCalledTimes(3);
     expect(snapshotInput).toHaveBeenNthCalledWith(1, request3d.images[0], 'mesh-request/0', expect.anything(), expect.any(AbortSignal));
