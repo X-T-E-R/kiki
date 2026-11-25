@@ -553,7 +553,7 @@ describe('thread communication tools', () => {
         [CREATED_BY_SESSION_ID_KEY]: 'ambient-a',
         [CREATED_BY_AGENT_ID_KEY]: 'main',
       },
-    }, { touchUpdatedAt: false, allowReservedGroupWrite: true });
+    }, { touchUpdatedAt: false });
     expect((await metadata.read()).custom).not.toHaveProperty('parent_session_id');
     expect((await metadata.read()).custom).not.toHaveProperty('child_session_kind');
     expect(lifecycle.create).toHaveBeenCalledExactlyOnceWith({ agentId: 'main' });
@@ -574,22 +574,22 @@ describe('thread communication tools', () => {
     expect(lifecycle.broadcastPermissionMode).toHaveBeenCalledExactlyOnceWith('auto');
   });
 
-  it('stamps ensured group_id into initialCustom before create when ensureSessionGroup is available', async () => {
+  it('does not auto-stamp group_id into initialCustom even when ensureSessionGroup is available', async () => {
     const ensureSessionGroup = vi.fn(async () => ({ groupId: 'grp-ensured-1', originKey: 'home:local' }));
     const { tool, create } = createThreadFixture({ ensureSessionGroup });
-    const result = await executeThreadCreate(tool, { title: 'Grouped child' });
+    const result = await executeThreadCreate(tool, { title: 'Independent peer thread' });
     expect(result.isError).not.toBe(true);
-    expect(ensureSessionGroup).toHaveBeenCalledExactlyOnceWith('ambient-a');
+    expect(ensureSessionGroup).not.toHaveBeenCalled();
     expect(create).toHaveBeenCalledExactlyOnceWith({
       workDir: '/ambient/workspace',
-      title: 'Grouped child',
+      title: 'Independent peer thread',
       initialCustom: {
         [CREATED_BY_SESSION_ID_KEY]: 'ambient-a',
         [CREATED_BY_AGENT_ID_KEY]: 'main',
-        [SESSION_GROUP_ID_KEY]: 'grp-ensured-1',
       },
       mainAgentBinding: undefined,
     });
+    expect(create.mock.calls[0]?.[0]?.initialCustom).not.toHaveProperty(SESSION_GROUP_ID_KEY);
   });
 
   it('binds an enabled main profile to the new session', async () => {
