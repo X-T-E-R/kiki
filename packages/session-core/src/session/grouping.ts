@@ -16,6 +16,7 @@
 import { extractToolOutputMedia, toolResultMedia } from '../composer/media';
 import type { AgentForest, AgentStatus } from './agentTree';
 import { mergeTaskNotifications } from './transcript/project';
+import { buildNoticePlacementContext, classifyNoticePlacement, type NoticePlacementContext } from './transcript/timelinePlacement';
 import type { Block, ShellBlock, SubagentBlock, SystemBlock, ThinkingBlock, ToolBlock } from './transcript';
 
 export interface ToolGroup {
@@ -247,11 +248,10 @@ function foldable(
   node: Row,
   forest?: AgentForest,
   latestCardIdByAgent?: ReadonlyMap<string, string>,
+  noticePlacementContext?: NoticePlacementContext,
 ): boolean {
   switch (node.kind) {
     case 'subagent-ended':
-      // A cross-turn or separated subagent ending stays in view at its first
-      // recorded result position as a named, independently expandable summary.
       return false;
     case 'subagent-event':
       return (
@@ -279,11 +279,7 @@ function foldable(
       if ((node.variant === 'task' || node.variant === 'thread_watch') && isFailedTaskSystemBlock(node)) return false;
       return true;
     case 'notice':
-      // Text an external client saved stays in view: its body is the reason
-      // the row exists, and folding it away would hide a record the session
-      // was asked to keep.
-      if (node.externalText !== undefined) return false;
-      return node.tone === 'neutral' && node.executor !== undefined && node.executor.kind !== 'compaction';
+      return classifyNoticePlacement(node, noticePlacementContext) === 'foldable';
     case 'approval':
       return node.resolution !== undefined;
     case 'question':
@@ -453,11 +449,14 @@ export function readSubagentEndings(
   let lastDefinedIdx = -1;
   let lastDefinedTurn: string | undefined;
   let turnChanges = 0;
+  const noticeContext = buildNoticePlacementContext(
+    merged.filter((node): node is Block => node.kind !== 'tool-group' && node.kind !== 'history-fold' && node.kind !== 'subagent-group' && node.kind !== 'media-run' && node.kind !== 'subagent-ended'),
+  );
   for (let i = 0; i < mergedLength; i += 1) {
     const mid = merged[i]!;
     const isBreaker =
       mid.kind === 'user' || mid.kind === 'assistant' || mid.kind === 'message' || mid.kind === 'question' || mid.kind === 'approval' ||
-      (mid.kind === 'notice' && (mid.externalText !== undefined || mid.tone !== 'neutral' || mid.executor === undefined || mid.executor.kind === 'compaction'));
+      (mid.kind === 'notice' && classifyNoticePlacement(mid, noticeContext) !== 'foldable');
     breakerPrefix[i + 1] = breakerPrefix[i]! + (isBreaker ? 1 : 0);
     const midTurn = mid.kind === 'history-fold' ? normTurn(mid.turnId) : normTurn(foldTurnId(mid));
     definedTurnAt[i] = midTurn;
@@ -778,6 +777,9 @@ export function foldHistory(
       ? options.protectedBlockIds
       : undefined;
   const latestCardIdByAgent = forest === undefined ? new Map<string, string>() : latestSubagentCardIds(nodes);
+  const noticePlacementContext = buildNoticePlacementContext(
+    nodes.filter((node): node is Block => node.kind !== 'tool-group' && node.kind !== 'history-fold' && node.kind !== 'subagent-group' && node.kind !== 'media-run' && node.kind !== 'subagent-ended'),
+  );
   const rows = gatherRows(nodes, live, forest, latestCardIdByAgent, protectedBlockIds);
   // The newest row of the live turn, when it is process (the one the reader
   // is watching arrive); a message at the end already closes the stretch.
@@ -825,7 +827,7 @@ export function foldHistory(
     const heldByNewest =
       node.id === newest && !(foldSingleProcess && node.kind === 'thinking' && !node.streaming);
     const held = turn === live && (heldByNewest || keepOpen?.has(node.id) === true);
-    const eligible = turn !== undefined && !held && foldable(node, forest, latestCardIdByAgent);
+    const eligible = turn !== undefined && !held && foldable(node, forest, latestCardIdByAgent, noticePlacementContext);
     if (!eligible || (run.length > 0 && turn !== runTurn)) flush();
     if (eligible) {
       run.push(node);

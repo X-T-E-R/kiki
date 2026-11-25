@@ -27,6 +27,8 @@ export interface MobileSessionStreamResult {
   readonly resolveApproval: (approvalId: string, decision: ApprovalDecision, reason?: string) => Promise<void>;
   readonly answerQuestion: (questionId: string, answers: Readonly<Record<string, QuestionAnswer>>) => Promise<void>;
   readonly dismissQuestion: (questionId: string) => Promise<void>;
+  readonly regenerateMessage: (userMessageId: string) => Promise<void>;
+  readonly resync: () => Promise<void>;
 }
 
 export function useMobileSessionStream(
@@ -171,5 +173,38 @@ export function useMobileSessionStream(
     }
   }, [controller, state.loadError, state.resyncError?.retryable, state.resyncFailed]);
 
-  return { state, loadingOlder, loadOlder, retryLoad, sendPrompt, abort, resolveApproval, answerQuestion, dismissQuestion };
+  const regenerateMessage = useCallback(
+    async (userMessageId: string) => {
+      if (controller === null) return;
+      try {
+        await controller.regenerateMessage(userMessageId);
+      } catch (error) {
+        pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      }
+    },
+    [controller],
+  );
+
+  const resync = useCallback(async () => {
+    if (controller === null) return;
+    try {
+      await controller.resync();
+    } catch (error) {
+      pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+    }
+  }, [controller]);
+
+  return {
+    state,
+    loadingOlder,
+    loadOlder,
+    retryLoad,
+    sendPrompt,
+    abort,
+    resolveApproval,
+    answerQuestion,
+    dismissQuestion,
+    regenerateMessage,
+    resync,
+  };
 }

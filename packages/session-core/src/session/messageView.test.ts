@@ -512,7 +512,8 @@ describe('message view', () => {
       [mediaTool, failedMediaTask, oldCompactionFail, laterCompactionOk, t2Reply, strayLegacyTaskRef],
       { completedTurnIds: ['t1', 't2'] },
     );
-    expect(view.some((node) => node.kind === 'notice')).toBe(false);
+    const visibleNotices = view.filter((node) => node.kind === 'notice');
+    expect(visibleNotices.map((node) => node.id)).toEqual(['agent-marker-c2']);
     const t1Summary = view.find((node) => node.kind === 'activity-summary' && node.turnId === 't1');
     expect(t1Summary?.kind === 'activity-summary' && t1Summary.failed).toBe(2);
     expect(view.some((node) => node.kind === 'message' && node.text === '已经整理好了。')).toBe(true);

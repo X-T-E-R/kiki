@@ -1,4 +1,10 @@
 import { partialArrayItems, streamingMessageText } from './partialJson';
+import {
+  buildNoticePlacementContext,
+  classifyNoticePlacement,
+  latestUnresolvedCompactionId,
+  type NoticePlacementContext,
+} from './transcript/timelinePlacement';
 import type {
   ActivitySummary, AssistantBlock, Block, MessageAttachment, MessageBlock, MessageChannelDelivery, MessageReach,
   NoticeBlock, ToolBlock,
@@ -383,44 +389,16 @@ function isBackgroundTaskNotice(block: NoticeBlock): boolean {
   return block.taskRef !== undefined || block.id.startsWith('agent-taskref-');
 }
 
-/**
- * Only the latest unresolved compaction failure remains surfaced in message
- * view so the user can trigger compaction recovery; historical or recovered
- * compaction notices stay folded inside process activity.
- */
-function latestUnresolvedCompactionFailureId(blocks: readonly Block[]): string | undefined {
-  for (let index = blocks.length - 1; index >= 0; index -= 1) {
-    const block = blocks[index];
-    if (block?.kind !== 'notice') continue;
-    if (
-      block.compactionPhase === 'completed' ||
-      block.i18n?.key === 'transcript.marker.compaction' ||
-      block.i18n?.key === 'transcript.marker.compactionSummarize' ||
-      block.i18n?.key === 'transcript.marker.compactionFresh'
-    ) {
-      return undefined;
-    }
-    if (
-      block.compactionPhase === 'failed' ||
-      block.compactionFailure !== undefined ||
-      block.i18n?.key === 'transcript.marker.compactionFailed'
-    ) {
-      return block.id;
-    }
-  }
-  return undefined;
-}
-
 function isVisibleNoticeInMessageView(
   block: NoticeBlock,
   unresolvedCompactionFailureId: string | undefined,
+  placementContext: NoticePlacementContext,
 ): boolean {
   if (isBackgroundTaskNotice(block)) return false;
-  if (block.compactionPhase !== undefined) {
+  if (block.compactionPhase === 'failed' || block.compactionPhase === 'interrupted') {
     return block.id === unresolvedCompactionFailureId;
   }
-  return block.tone === 'danger'
-    || block.reasonCodes?.some((reason) => /cancel|stop|fail|delivery/.test(reason)) === true;
+  return classifyNoticePlacement(block, placementContext) !== 'foldable';
 }
 
 /**
@@ -439,7 +417,8 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
   const failed = new Set<string>(options.failedTurnIds ?? []);
   const failureShown = new Set<string>();
   const replies = new Map<string, AssistantBlock>();
-  const unresolvedCompactionFailureId = latestUnresolvedCompactionFailureId(blocks);
+  const unresolvedCompactionFailureId = latestUnresolvedCompactionId(blocks);
+  const placementContext = buildNoticePlacementContext(blocks);
   for (const block of blocks) {
     const turn = turnId(block);
     const failedHere = failedTurn(block);
@@ -530,7 +509,7 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
     if (speechIds.has(block.id)) continue;
     const visible = block.kind === 'user' || block.kind === 'message' || block.kind === 'question'
       || block.kind === 'approval'
-      || (block.kind === 'notice' && isVisibleNoticeInMessageView(block, unresolvedCompactionFailureId));
+      || (block.kind === 'notice' && isVisibleNoticeInMessageView(block, unresolvedCompactionFailureId, placementContext));
     if (visible) {
       flush();
       nodes.push(block);

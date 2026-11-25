@@ -42,6 +42,7 @@ import { SubmissionRecovery } from './SubmissionRecovery';
 import { AdmissionScope, filterIngressForAgent, useAdmissionScope, withAdmissionUserBlocks, withOptimisticUserBlock } from './timeline/AdmissionLine';
 import { RightRail } from './RightRail';
 import { ModelSwitchDialog } from './model-switch/ModelSwitchDialog';
+import { canFaithfullyRetryUserBlock } from './timeline/TurnTailSurface';
 import { ModelSwitchActionsContext } from './model-switch/ModelSwitchNotice';
 import { PromptEffectiveDrawer } from './agent-panel/PromptEffectiveDrawer';
 import { useInspectorFocusTracking } from './inspectorFocus';
@@ -66,7 +67,13 @@ import { PromotedFromMark } from './PromotedFromMark';
 import { BtwFloatingCard } from './fork/BtwFloatingCard';
 import { ForkLaunchPopover } from './fork/ForkLaunchPopover';
 import { ForkProvenanceMark } from './fork/ForkProvenanceMark';
-import { buildSessionForkLineage, type ForkOriginSummary, type SessionForkLineage } from './fork/forkLineageModel';
+import {
+  buildSessionForkItems,
+  buildSessionForkLineage,
+  hasActiveOrMergedBranches,
+  type ForkOriginSummary,
+  type SessionForkLineage,
+} from './fork/forkLineageModel';
 import { waitingAgentIds as collectWaitingAgentIds } from './rail-variants/model';
 import {
   contentSegmentKey,
@@ -4893,6 +4900,7 @@ boundExecution,
       openAgent,
       openAgentRoute,
       openSession,
+      openProviderSettings: () => { void navigate('/settings/providers'); },
       sharedRail: {
         open: railOpen,
         toggle: toggleRail,
@@ -4903,6 +4911,7 @@ boundExecution,
       },
     }),
     [
+      navigate,
       openAgent,
       openAgentRoute,
       openSession,
@@ -5431,9 +5440,9 @@ boundExecution,
     setRecoveringInterruption(true);
     void client
       .recoverSession(sessionId)
-      .then((result) => {
+      .then((receipt) => {
         void queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined);
-        if (result.status === 'nothing_to_recover') {
+        if (receipt?.status === 'nothing_to_recover') {
           void controller?.resync();
         }
       })
@@ -5454,8 +5463,8 @@ boundExecution,
     void actions.send(locale === 'zh' ? '继续' : 'Continue', []);
   }, [actions, locale, revealOwnSend, state.busy]);
   const handleRetryFailedTurn = useCallback((failedUserBlock: UserBlock | undefined) => {
-    if (state.busy || actions === null) return;
-    if (failedUserBlock?.userMessageId !== undefined && controller !== null) {
+    if (state.busy || actions === null || failedUserBlock === undefined) return;
+    if (failedUserBlock.userMessageId !== undefined && controller !== null) {
       void controller.regenerateMessage(failedUserBlock.userMessageId).catch((error: unknown) => {
         pushToast({
           tone: 'error',
@@ -5464,10 +5473,26 @@ boundExecution,
       });
       return;
     }
-    const text = failedUserBlock?.text.trim() || (locale === 'zh' ? '继续' : 'Continue');
+    if (!canFaithfullyRetryUserBlock(failedUserBlock, false)) {
+      const text = failedUserBlock.text.trim();
+      if (text !== '') setDraft(text);
+      return;
+    }
+    const text = failedUserBlock.text.trim();
     revealOwnSend(false);
     void actions.send(text, []);
-  }, [actions, controller, locale, revealOwnSend, state.busy, t]);
+  }, [actions, controller, locale, revealOwnSend, setDraft, state.busy, t]);
+  const handleOpenModelPicker = useCallback(() => {
+    const trigger = document.querySelector<HTMLButtonElement>('[data-execution-trigger], [data-compact-model-trigger]');
+    trigger?.focus();
+    trigger?.click();
+  }, []);
+  const handleOpenProviderSettings = useCallback(() => {
+    void navigate('/settings/providers');
+  }, [navigate]);
+  const handleCompactFromError = useCallback(() => {
+    handleRetryCompaction('summarize');
+  }, [handleRetryCompaction]);
   const handleComposerSend = useCallback(
     (
       text: string,
@@ -5690,19 +5715,56 @@ boundExecution,
     [state.blocks],
   );
   const waitingBranchAgentIds = useMemo(() => collectWaitingAgentIds(trayItems), [trayItems]);
-  const forkLineage = useMemo(
+  const sessionForks = useMemo(
     () =>
-      buildSessionForkLineage({
+      buildSessionForkItems({
         currentSessionId: sessionId,
         currentSession: state.session,
         sessions,
-        forest,
-        waitingAgentIds: waitingBranchAgentIds,
-        blocks: timelineState.blocks,
-        hasOlder: timelineState.hasMoreHistory,
         untitledLabel: t('sidebar.untitled'),
       }),
-    [sessionId, state.session, sessions, forest, waitingBranchAgentIds, timelineState.blocks, timelineState.hasMoreHistory, t],
+    [sessionId, state.session, sessions, t],
+  );
+  const hasTimelineBranches = useMemo(
+    () => hasActiveOrMergedBranches(forest, waitingBranchAgentIds),
+    [forest, waitingBranchAgentIds],
+  );
+  const emptyForkLineage = useMemo<SessionForkLineage>(
+    () => ({
+      origin: sessionForks.origin,
+      allOffshoots: [],
+      byBlockId: new Map(),
+    }),
+    [sessionForks.origin],
+  );
+  const hasAnyOffshoots = sessionForks.forkItems.length > 0 || hasTimelineBranches;
+  const offshootBlocks = hasAnyOffshoots ? timelineState.blocks : undefined;
+  const forkLineage = useMemo(
+    () =>
+      offshootBlocks === undefined
+        ? emptyForkLineage
+        : buildSessionForkLineage({
+            currentSessionId: sessionId,
+            currentSession: state.session,
+            sessions: [],
+            sessionForks,
+            forest,
+            waitingAgentIds: waitingBranchAgentIds,
+            blocks: offshootBlocks,
+            hasOlder: timelineState.hasMoreHistory,
+            untitledLabel: t('sidebar.untitled'),
+          }),
+    [
+      offshootBlocks,
+      emptyForkLineage,
+      sessionId,
+      state.session,
+      sessionForks,
+      forest,
+      waitingBranchAgentIds,
+      timelineState.hasMoreHistory,
+      t,
+    ],
   );
   const handleBranchHead = useCallback(
     (seed?: SessionSeedMode) => {
@@ -6127,7 +6189,11 @@ boundExecution,
     interruptedWork: state.session?.interrupted_work,
     onRecoverInterruption: handleRecoverInterruption,
     recoveringInterruption,
-    models: modelsQuery.data?.items,
+    modelCatalog: modelsQuery.data?.items,
+    modelCatalogScope: connectionId ?? 'local',
+    onOpenModelPicker: handleOpenModelPicker,
+    onOpenProviderSettings: handleOpenProviderSettings,
+    onCompactContext: handleCompactFromError,
   }), [
     timelineView, timelineState, wsStatus,
     mainTimelineActions.loadOlder, mainTimelineActions.resolveApproval,
@@ -6136,7 +6202,8 @@ boundExecution,
     forest, openAgent, transcriptRowActionsWithBranch, forkLineage.byBlockId,
     openForkSession, openAgentRoute, handleContinueFailedTurn, handleRetryFailedTurn,
     handleRetryCompaction, state.session?.interrupted_work, handleRecoverInterruption,
-    recoveringInterruption, modelsQuery.data?.items,
+    recoveringInterruption, modelsQuery.data?.items, connectionId,
+    handleOpenModelPicker, handleOpenProviderSettings, handleCompactFromError,
   ]);
   const mainDockNode = useMemo(() => (
     <>

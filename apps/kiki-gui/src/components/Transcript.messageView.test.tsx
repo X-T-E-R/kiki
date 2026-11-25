@@ -269,7 +269,11 @@ describe('message view (Bot mode)', () => {
     expect(container.querySelector('[data-message-origin="ordinary_final"]')).toBeNull();
     expect(container.querySelector('[data-message-outcome="no-reply"]')).toBeNull();
     const outcome = [...container.querySelectorAll('[data-message-outcome="danger"]')];
-    expect(outcome.map((row) => row.textContent)).toEqual(['轮次失败 · 查看过程']);
+    expect(outcome).toHaveLength(1);
+    expect(outcome[0]?.querySelector('[data-timeline-error-callout]')).not.toBeNull();
+    expect(outcome[0]?.querySelector('[data-copy-state]')).not.toBeNull();
+    expect(outcome[0]?.querySelector('[data-message-outcome-action]')?.textContent).toBe('查看过程');
+    expect(outcome[0]?.textContent).toContain('轮次失败');
   });
 
   it('keeps an older failed turn readable as failed after a later turn answers, from the production projection', async () => {
@@ -304,9 +308,13 @@ describe('message view (Bot mode)', () => {
     expect(spoken.map((row) => row.textContent)).toEqual([expect.stringContaining('发布清单在这里。')]);
     expect(message.container.querySelector('[data-message-outcome="no-reply"]')).toBeNull();
     expect(message.container.querySelector('[data-prompt-outcome]')).toBeNull();
-    // Exactly one line for the failed turn, and it is a failure, not a cancel.
-    expect([...message.container.querySelectorAll('[data-message-outcome="danger"]')].map((row) => row.textContent))
-      .toEqual(['轮次失败 · 查看过程']);
+    // Exactly one callout for the failed turn, with Copy and View process still reachable.
+    const outcomes = [...message.container.querySelectorAll('[data-message-outcome="danger"]')];
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]?.querySelector('[data-timeline-error-callout]')).not.toBeNull();
+    expect(outcomes[0]?.querySelector('[data-copy-state]')).not.toBeNull();
+    expect(outcomes[0]?.querySelector('[data-message-outcome-action]')?.textContent).toBe('查看过程');
+    expect(outcomes[0]?.textContent).toContain('轮次失败');
 
     // The cut-off text is readable where it belongs, still marked as not the reply.
     const process = await render(timeline(blocks, 'process', { failedTurnIds: projected.failedTurnIds }));
@@ -722,7 +730,7 @@ describe('message view (Bot mode)', () => {
     outputLayerStore.setConfiguration(null);
   });
 
-  it('keeps OutcomeLine action untruncated alongside long danger text and cleans duplicate Error: prefixes', async () => {
+  it('keeps OutcomeLine full danger text unwrapped with visible Copy and cleans duplicate Error: prefixes', async () => {
     const longNotice: Block = {
       kind: 'notice',
       id: 'notice-long-err',
@@ -733,13 +741,14 @@ describe('message view (Bot mode)', () => {
     const { container } = await render(timeline([user('u1', '试试', 't1'), longNotice], 'message'));
     const outcome = container.querySelector<HTMLElement>('[data-message-outcome="danger"]');
     expect(outcome).not.toBeNull();
-    const textEl = outcome?.querySelector<HTMLElement>('[data-message-outcome-text]');
+    const messageEl = outcome?.querySelector<HTMLElement>('[data-error-message]');
     const actionEl = outcome?.querySelector<HTMLElement>('[data-message-outcome-action]');
-    expect(textEl?.className).toContain('truncate');
-    expect(textEl?.textContent).not.toContain('Error: Error:');
-    expect(actionEl?.className).toContain('shrink-0');
-    expect(actionEl?.className).toContain('whitespace-nowrap');
-    expect(actionEl?.textContent).toBe(' · 查看过程');
+    expect(messageEl?.className).not.toContain('truncate');
+    expect(messageEl?.className).toContain('select-text');
+    expect(messageEl?.textContent).not.toContain('Error: Error:');
+    expect(messageEl?.textContent).toContain('overflow a single line');
+    expect(outcome?.querySelector('[data-copy-state]')).not.toBeNull();
+    expect(actionEl?.textContent).toBe('查看过程');
   });
 
   it('renders no leading orphan dot on ActivitySummary and deduplicates 3 spawned subagents into 3 rows instead of 9', async () => {

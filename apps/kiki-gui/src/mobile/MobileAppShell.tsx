@@ -65,12 +65,14 @@ function ChatRouteBridge({
   resolveSpaceName,
   onBack,
   onOpenWorkbench,
+  onOpenProviderSettings,
   onOpenVoiceForChat,
 }: {
   readonly resolveClient: ReturnType<typeof useMobileClientResolver>;
   readonly resolveSpaceName: (spaceKey: string) => string;
   readonly onBack: () => void;
   readonly onOpenWorkbench: (spaceKey: string, sessionId: string) => void;
+  readonly onOpenProviderSettings: (spaceKey: string) => void;
   readonly onOpenVoiceForChat: (onResult: (text: string) => void) => void;
 }) {
   const params = useParams<{ readonly spaceKey: string; readonly sessionId: string }>();
@@ -90,6 +92,7 @@ function ChatRouteBridge({
       client={targetClient}
       onBack={onBack}
       onOpenWorkbench={() => { onOpenWorkbench(spaceKey, sessionId); }}
+      onOpenProviderSettings={() => { onOpenProviderSettings(spaceKey); }}
       onOpenVoiceForChat={onOpenVoiceForChat}
     />
   );
@@ -416,6 +419,23 @@ export function MobileAppShell() {
     [navigate],
   );
 
+  const openProviderSettings = useCallback(
+    (spaceKey?: string) => {
+      writeDesktopOverride(true);
+      const route = '/settings/providers';
+      if (spaceKey !== undefined && spaceKey.startsWith('remote:')) {
+        void requestScopeNavigation({
+          ...remoteSpaceScope(spaceKey.slice('remote:'.length)),
+          route,
+          inPlace: true,
+        }).catch(() => { void navigate(route); });
+        return;
+      }
+      void navigate(route);
+    },
+    [navigate],
+  );
+
   const assistantComputers = useMemo<readonly AssistantComputer[]>(() => {
     const computers: AssistantComputer[] = [{ spaceKey: multiSpace.localSpaceKey, name: resolveSpaceName(multiSpace.localSpaceKey) }];
     for (const record of multiSpace.remoteConnections) {
@@ -476,6 +496,7 @@ export function MobileAppShell() {
               }}
               onPairComputer={() => { void navigate(MOBILE_SPACES_PATH); }}
               onOpenWorkbench={openDesktopWorkbench}
+              onOpenProviderSettings={openProviderSettings}
               onOpenVoiceForChat={(onResult) => {
                 voiceCallbackRef.current = onResult;
                 setVoiceOpen(true);
@@ -534,6 +555,7 @@ export function MobileAppShell() {
                 else void navigate(MOBILE_CHATS_PATH);
               }}
               onOpenWorkbench={openDesktopWorkbench}
+              onOpenProviderSettings={openProviderSettings}
               onOpenVoiceForChat={(onResult) => {
                 voiceCallbackRef.current = onResult;
                 setVoiceOpen(true);

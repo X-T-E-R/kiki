@@ -24,39 +24,62 @@ const FILE_EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'ApplyPatch', 'ed
 
 function countLines(value: string | undefined): number {
   if (value === undefined || value === '') return 0;
-  return value.split('\n').length;
+  let lines = 1;
+  let idx = 0;
+  while ((idx = value.indexOf('\n', idx)) !== -1) {
+    lines += 1;
+    idx += 1;
+  }
+  return lines;
+}
+
+const settledFileChangeCache = new WeakMap<ToolBlock, MobileFileChange | null>();
+
+function extractSingleToolFileChange(block: ToolBlock): MobileFileChange | null {
+  if (!FILE_EDIT_TOOLS.has(block.name)) return null;
+  const args = (block.args && typeof block.args === 'object' ? block.args : {}) as Record<string, unknown>;
+  const rawPath =
+    typeof args['path'] === 'string'
+      ? args['path']
+      : typeof args['file_path'] === 'string'
+        ? args['file_path']
+        : typeof args['target'] === 'string'
+          ? args['target']
+          : block.description;
+  if (rawPath === undefined || rawPath.trim() === '') return null;
+  const oldText = typeof args['old_string'] === 'string' ? args['old_string'] : undefined;
+  const newText =
+    typeof args['new_string'] === 'string'
+      ? args['new_string']
+      : typeof args['content'] === 'string'
+        ? args['content']
+        : undefined;
+  return {
+    id: block.id,
+    path: rawPath.trim(),
+    toolName: block.name,
+    added: countLines(newText),
+    removed: countLines(oldText),
+    oldText,
+    newText,
+  };
 }
 
 export function extractFileChanges(blocks: readonly Block[]): readonly MobileFileChange[] {
   const changes: MobileFileChange[] = [];
   for (const block of blocks) {
-    if (block.kind !== 'tool' || !FILE_EDIT_TOOLS.has(block.name)) continue;
-    const args = (block.args && typeof block.args === 'object' ? block.args : {}) as Record<string, unknown>;
-    const rawPath =
-      typeof args['path'] === 'string'
-        ? args['path']
-        : typeof args['file_path'] === 'string'
-          ? args['file_path']
-          : typeof args['target'] === 'string'
-            ? args['target']
-            : block.description;
-    if (rawPath === undefined || rawPath.trim() === '') continue;
-    const oldText = typeof args['old_string'] === 'string' ? args['old_string'] : undefined;
-    const newText =
-      typeof args['new_string'] === 'string'
-        ? args['new_string']
-        : typeof args['content'] === 'string'
-          ? args['content']
-          : undefined;
-    changes.push({
-      id: block.id,
-      path: rawPath.trim(),
-      toolName: block.name,
-      added: countLines(newText),
-      removed: countLines(oldText),
-      oldText,
-      newText,
-    });
+    if (block.kind !== 'tool') continue;
+    let parsed: MobileFileChange | null | undefined =
+      block.status !== 'running' ? settledFileChangeCache.get(block) : undefined;
+    if (parsed === undefined) {
+      parsed = extractSingleToolFileChange(block);
+      if (block.status !== 'running') {
+        settledFileChangeCache.set(block, parsed);
+      }
+    }
+    if (parsed !== null) {
+      changes.push(parsed);
+    }
   }
   return changes;
 }

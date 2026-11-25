@@ -188,6 +188,9 @@ export interface SystemBlock {
   readonly createdAt: string | undefined;
   readonly turnId?: string;
   readonly source?: string;
+  readonly originVariant?: string;
+  readonly disclosure?: unknown;
+  readonly category?: ReminderCategory;
   readonly ownerPromptId?: string;
   /** Task notifications: the background task the note is about. */
   readonly taskId?: string;
@@ -518,8 +521,24 @@ export interface CompactionHistoryEntry {
   readonly summaryPending?: boolean;
 }
 
+export interface CompactionMetrics {
+  readonly beforeTokens?: number;
+  readonly afterTokens?: number;
+  readonly beforeMessages?: number;
+  readonly afterMessages?: number;
+}
+
 export interface NoticeBlock {
+  readonly markerKind?: string;
   readonly goalChange?: import('@kiki/transcript').GoalMarkerChange;
+  readonly planRevision?: {
+    readonly version?: number;
+    readonly path?: string;
+    readonly id?: string;
+  };
+  readonly modelSwitchFrom?: string;
+  readonly modelSwitchTo?: string;
+  readonly compactionMetrics?: CompactionMetrics;
   readonly markerId?: string;
   readonly summary?: string;
   readonly summaryPending?: boolean;
@@ -816,6 +835,7 @@ export interface SessionViewState {
   readonly turnStartedAt: number | undefined;
   readonly turnFirstTokenAt: number | undefined;
   readonly turnTail: TurnTailInfo | undefined;
+  readonly turnTerminals?: Readonly<Record<string, TurnTailInfo>>;
   /**
    * Turn ids the loaded transcript reports as failed. A failed turn wrote
    * whatever it wrote before stopping, so a view that speaks "the reply" must

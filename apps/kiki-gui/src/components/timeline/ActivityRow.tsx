@@ -156,12 +156,12 @@ export function ActivityRow({
   const heading = (
     <span
       data-activity-label
-      className={`${shrinkLabel ? 'min-w-0 shrink truncate' : 'shrink-0'} font-sans text-[13px] leading-5 font-normal ${LABEL_TONE[tone]}`}
+      className={`${shrinkLabel ? 'min-w-0 shrink truncate' : 'shrink-0'} font-sans text-[13px] leading-[20px] font-normal ${LABEL_TONE[tone]}`}
     >
       {label}
     </span>
   );
-  const excerpt = <span data-activity-detail className={`min-w-0 flex-1 truncate font-sans text-[13px] leading-5 font-normal ${DETAIL_TONE[tone]}`}>{detail}</span>;
+  const excerpt = <span data-activity-detail className={`min-w-0 flex-1 truncate font-sans text-[13px] leading-[20px] font-normal ${DETAIL_TONE[tone]}`}>{detail}</span>;
   const inner = (
     <>
       {/* The glyph column is a fixed 18px box so drawn icons, status dots and
@@ -204,7 +204,7 @@ export function ActivityRow({
   const bleed = shrinkLabel && aside !== undefined
     ? `${nested ? '-ml-[17px] pl-[17px]' : '-ml-[34px] pl-[34px]'} flex-1`
     : `${nested ? '-ml-[17px] w-[calc(100%+25px)] pl-[17px]' : '-ml-[34px] w-[calc(100%+42px)] pl-[34px]'}${aside === undefined ? ' -mr-2' : ''}`;
-  const shell = `group/act flex min-h-[26px] pointer-coarse:min-h-10 min-w-0 items-center gap-2 rounded-md py-0.5 text-left transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${ROW_TONE[tone]} ${bleed} pr-2`;
+  const shell = `group/act flex min-h-[26px] pointer-coarse:min-h-11 min-w-0 items-center gap-2 rounded-md py-0.5 text-left transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${ROW_TONE[tone]} ${bleed} pr-2`;
   return (
     <div data-activity-row data-activity-layout={layout} title={title} className={`anim-enter ${className}`} {...attrs}>
       <div className="flex items-center gap-1">
@@ -260,9 +260,9 @@ export function TimelineDivider({
   const text = tone === 'warn' ? 'text-amber-ink' : 'text-ink-faint';
   return (
     <div data-timeline-divider className="anim-enter flex min-w-0 items-center gap-3 py-1" title={title} {...attrs}>
-      <span className={`h-px min-w-4 flex-1 ${rule}`} />
-      <span className={`min-w-0 max-w-[min(82%,44rem)] truncate text-[12px] leading-4 ${text}`}>{children}</span>
-      <span className={`h-px min-w-4 flex-1 ${rule}`} />
+      <span aria-hidden className={`h-px min-w-0 flex-1 ${rule}`} />
+      <span className={`min-w-0 max-w-full text-center font-sans text-[12px] leading-[16px] font-normal whitespace-normal [overflow-wrap:anywhere] ${text}`}>{children}</span>
+      <span aria-hidden className={`h-px min-w-0 flex-1 ${rule}`} />
     </div>
   );
 }

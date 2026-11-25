@@ -512,7 +512,7 @@ describe('splitPrefixSegments streaming differential', () => {
 
   it.each([
     { cancellation: 'recovery' as const, includes: ['Interrupted when Kiki restarted', 'Resume'], excludes: ['Stopped by you'] },
-    { cancellation: 'user' as const, includes: ['Stopped by you'], excludes: [] },
+    { cancellation: 'user' as const, includes: ['Stopped'], excludes: ['Interrupted when Kiki restarted'] },
   ])('labels cancelled turn tail ($cancellation)', async ({ cancellation, includes, excludes }) => {
     const probe = makeRoot();
     await renderSettled(probe.root, <TurnTailLine tail={tailBase({ turnId: 't1', state: 'cancelled', cancellation, durationMs: 1000 })} onResume={() => undefined} />);
@@ -780,8 +780,10 @@ describe('media preview wiring', () => {
     });
     // The pane portals to document.body; without a connection the body shows
     // the failure notice, but the header still names the file.
-    expect(document.body.textContent).toContain('app.toml');
-    expect(document.body.textContent).toContain('/work/app/config/app.toml');
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain('app.toml');
+      expect(document.querySelector('[data-preview-tab="/work/app/config/app.toml"]')).not.toBeNull();
+    });
     await act(async () => {
       flushSync(() => {
         probe.root.unmount();
@@ -1887,7 +1889,7 @@ describe('live and event chrome', () => {
     expect(container.querySelector('[data-turn-tail]')).not.toBeNull();
   });
 
-  it('renders turn tail failure state with error message, collapsible details and copy action', async () => {
+  it('renders turn tail failure state with full unwrapped message, category title and visible copy action', async () => {
     const container = await renderTranscript(
       [{ kind: 'assistant', id: 'assistant-1', text: 'response', streaming: false, createdAt: undefined }],
       undefined,
@@ -1896,16 +1898,11 @@ describe('live and event chrome', () => {
     const tail = container.querySelector('[data-turn-tail]');
     expect(tail).not.toBeNull();
     expect(tail?.getAttribute('data-turn-tail-state')).toBe('failed');
-    expect(tail?.textContent).toContain('Turn failed');
-    expect(tail?.textContent).toContain('Provider token quota exceeded');
-    const toggle = tail?.querySelector<HTMLButtonElement>('[data-turn-tail-error-toggle]');
-    expect(toggle?.textContent).toContain('Details');
-    expect(tail?.querySelectorAll('[data-turn-tail-dot]')).toHaveLength(1);
-    expect(tail?.querySelector('.text-danger')).toBeNull();
-    expect(tail?.querySelector('[data-turn-tail-error]')).toBeNull();
-    await act(async () => { toggle?.click(); });
-    expect(tail?.querySelector('[data-turn-tail-error]')?.className).toContain('font-mono');
-    expect(tail?.querySelector('[data-turn-tail-copy]')?.textContent).toBe('copy');
+    expect(tail?.querySelector('[data-timeline-error-callout]')).not.toBeNull();
+    expect(tail?.querySelector('[data-error-title]')?.textContent).toContain('Quota exhausted');
+    expect(tail?.querySelector('[data-error-message]')?.textContent).toContain('Provider token quota exceeded');
+    expect(tail?.querySelector('[data-error-message]')?.className).not.toContain('truncate');
+    expect(tail?.querySelector('[data-copy-state]')?.textContent).toContain('copy');
   });
 
   it('lets the failed tail own the failure instead of repeating it under the bubble', async () => {
@@ -1925,7 +1922,7 @@ describe('live and event chrome', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]!.closest('[data-block-id]')?.getAttribute('data-block-id')).toBe('user-old');
     const retry = container.querySelector<HTMLButtonElement>('[data-turn-tail] [data-turn-tail-retry]');
-    expect(retry?.textContent).toBe('Send again');
+    expect(retry?.textContent).toBe('Restore to draft');
     await act(async () => { retry!.click(); });
     expect(readDraft('session_tail')).toContain('send me again');
   });
@@ -2016,7 +2013,7 @@ describe('live and event chrome', () => {
       label: 'subagent-injected sender with profile and model (en)',
       block: userBlock({ id: 'user-agent-message-2', text: 'Message from agent "readme_kiki_worker" (agent-244):\n\nstart the slice', agentMessage: { senderAgentId: 'agent-244', senderTaskName: 'readme_kiki_worker' } }),
       snapshotSubagents: [{ id: 'agent-244', agent_id: 'agent-244', session_id: 'session_test', kind: 'subagent', description: 'readme_kiki_worker', status: 'completed', created_at: '2026-01-01T00:00:00.000Z', profile: 'worker', model: 'axon/gpt-5.6-luna' }],
-      senderId: 'agent-244', senderText: 'readme_kiki_worker injected', metaText: 'worker · axon/gpt-5.6-luna',
+      senderId: 'agent-244', senderText: 'readme_kiki_worker injected', metaText: 'worker · Unknown model',
       metaTitle: 'Sender Agent: agent-244\nProfile: worker\nModel: axon/gpt-5.6-luna\nTask: readme_kiki_worker',
     },
     {
@@ -2024,14 +2021,14 @@ describe('live and event chrome', () => {
       locale: 'zh',
       block: userBlock({ id: 'user-agent-message-5', text: 'Message from agent "readme_kiki_worker" (agent-244):\n\nstart the slice', agentMessage: { senderAgentId: 'agent-244', senderTaskName: 'readme_kiki_worker' } }),
       snapshotSubagents: [{ id: 'agent-244', agent_id: 'agent-244', session_id: 'session_test', kind: 'subagent', description: 'readme_kiki_worker', status: 'completed', created_at: '2026-01-01T00:00:00.000Z', profile: 'worker', model: 'axon/gpt-5.6-luna' }],
-      senderId: 'agent-244', senderText: 'readme_kiki_worker 注入', metaText: 'worker · axon/gpt-5.6-luna',
+      senderId: 'agent-244', senderText: 'readme_kiki_worker 注入', metaText: 'worker · 模型名称未知',
       metaTitle: '发送方智能体：agent-244\n角色：worker\n模型：axon/gpt-5.6-luna\n任务：readme_kiki_worker',
     },
     {
       label: 'partial roster facts only',
       block: userBlock({ id: 'user-agent-message-3', text: 'Message from agent "worker" (agent-900):\n\nping', agentMessage: { senderAgentId: 'agent-900', senderTaskName: 'probe' } }),
       snapshotSubagents: [{ id: 'agent-900', agent_id: 'agent-900', session_id: 'session_test', kind: 'subagent', description: 'worker', status: 'running', created_at: '2026-01-01T00:00:00.000Z', model: 'axon/gpt-5.6-luna' }],
-      senderId: 'agent-900', senderTitle: 'worker\nSender Agent: agent-900\nProfile: unknown\nModel: axon/gpt-5.6-luna\nTask: probe', metaText: 'axon/gpt-5.6-luna',
+      senderId: 'agent-900', senderTitle: 'worker\nSender Agent: agent-900\nProfile: unknown\nModel: axon/gpt-5.6-luna\nTask: probe', metaText: 'Unknown model',
     },
     {
       label: 'subagent-injected sender without roster row',
@@ -2448,20 +2445,24 @@ describe('live and event chrome', () => {
     expect(container.querySelector('[data-turn-status]')).toBeNull();
   });
 
-  it('renders projected model changes as one timeline divider', async () => {
+  it('renders projected model changes as one timeline divider using resolved display names', async () => {
     const snapshot = replayAgentWire('main', [
       { type: 'profile.bind', modelAlias: 'example/old', time: 1000 },
       { type: 'config.update', modelAlias: 'example/old', thinkingEffort: 'high', time: 2000 },
       { type: 'config.update', modelAlias: 'example/new', time: 3000 },
     ]);
     const state = projectAgentTranscriptView(createViewState('model-switch'), 'main', snapshot);
-    const container = await renderTranscript([...state.blocks]);
+    const catalog = [
+      { id: 'example/old', remote_id: 'old', provider_id: 'example', display_name: 'Old Model' },
+      { id: 'example/new', remote_id: 'new', provider_id: 'example', display_name: 'New Model' },
+    ];
+    const container = await renderTranscript([...state.blocks], undefined, undefined, { modelCatalog: catalog });
     const dividers = container.querySelectorAll('[data-timeline-divider][data-notice-key="transcript.marker.modelSwitch"]');
     expect(dividers).toHaveLength(1);
-    expect(dividers[0]?.textContent).toBe('Model changed from example/old to example/new');
+    expect(dividers[0]?.textContent).toBe('Model changed from Old Model to New Model');
   });
 
-  it('names each real goal change and keeps accounting updates out of the timeline', async () => {
+  it('names each real goal change as visible activity and keeps accounting updates out of the timeline', async () => {
     const snapshot = replayAgentWire('main', [
       { type: 'turn.prompt', turnId: 1, promptId: 'p1', time: 1000, origin: { kind: 'user' }, input: [{ type: 'text', text: 'Take the input area down to what is really waiting' }] },
       { type: 'goal.create', objective: 'Remove the composer noise that never ends', time: 1100 },
@@ -2474,15 +2475,13 @@ describe('live and event chrome', () => {
     ]);
     const state = projectAgentTranscriptView(createViewState('goal-changes'), 'main', snapshot);
     const container = await renderTranscript([...state.blocks]);
-    const dividers = [...container.querySelectorAll('[data-timeline-divider][data-notice-key="transcript.marker.goal"]')];
-    // Accounting-only updates (tokens, turns, wall clock) are not changes and
-    // never grow a divider; each real change keeps its own kind, so a pause and
-    // the resume that follows it are two facts rather than one folded line.
-    expect(dividers.map((divider) => divider.getAttribute('data-goal-change'))).toEqual(['created', 'paused', 'resumed']);
-    expect(dividers.map((divider) => divider.textContent)).toEqual(['Goal set', 'Goal paused', 'Goal resumed']);
-    // The engine's own reason rides on the hover title, not on a wall of text.
-    expect(dividers[1]?.getAttribute('title')).toContain('waiting for the reader');
-    // The conversation itself still reads around the markers.
+    expect(container.querySelectorAll('[data-timeline-divider][data-notice-key="transcript.marker.goal"]')).toHaveLength(0);
+    const rows = [...container.querySelectorAll('[data-activity-row][data-goal-change]')];
+    expect(rows.map((row) => row.getAttribute('data-goal-change'))).toEqual(['created', 'paused', 'resumed']);
+    expect(rows[0]?.textContent).toContain('Goal set');
+    expect(rows[1]?.textContent).toContain('Goal paused');
+    expect(rows[1]?.textContent).toContain('waiting for the reader');
+    expect(rows[2]?.textContent).toContain('Goal resumed');
     expect(container.textContent).toContain('Take the input area down to what is really waiting');
     expect(container.textContent).toContain('Continue with the transcript labels');
   });
@@ -2540,9 +2539,13 @@ describe('live and event chrome', () => {
     const container = await renderTranscript([...state.blocks]);
     const labels = [...container.querySelectorAll('[data-timeline-divider]')].map(node => node.textContent);
     expect(labels).toEqual([
-      translate('en', 'transcript.marker.compactionFresh'), translate('en', 'transcript.marker.compactionSummarize'),
-      translate('en', 'transcript.marker.compaction'), translate('en', 'transcript.marker.compactionFailed'),
+      translate('en', 'transcript.marker.compactionFresh'),
+      translate('en', 'transcript.marker.compactionSummarize'),
+      translate('en', 'transcript.marker.compaction'),
     ]);
+    const failedCallout = container.querySelector('[data-timeline-error-callout][data-notice-key="transcript.marker.compactionFailed"]');
+    expect(failedCallout).not.toBeNull();
+    expect(failedCallout?.textContent).toContain(translate('en', 'transcript.marker.compactionFailed'));
   });
 
   it('keeps fallback compaction labels clean and expands the summary instead of internal reason codes', async () => {
@@ -2597,7 +2600,7 @@ describe('live and event chrome', () => {
     const bubble = container.querySelector('.steer-bubble');
     expect(bubble?.textContent).toBe('Look at this.');
     const reminder = container.querySelector('[data-activity-row]');
-    expect(reminder?.textContent).toContain('System reminder');
+    expect(reminder?.textContent).toContain('Image compression');
     expect(reminder?.textContent).toContain('Image compressed');
     expect(reminder?.closest('.steer-bubble')).toBeNull();
     expect(bubble!.compareDocumentPosition(reminder!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
@@ -2648,7 +2651,7 @@ describe('live and event chrome', () => {
     expect(renew.textContent).not.toContain('System reminder');
     expect(renew.querySelector('[data-reminder-facts]')).toBeNull();
     await act(async () => { click(renew.querySelector<HTMLElement>('[aria-expanded]')!); });
-    expect(renew.querySelector('[data-reminder-facts]')?.textContent).toBe('Triggers T2 · E1  ·  Window 2  ·  For t7');
+    expect(renew.querySelector('[data-reminder-facts]')?.textContent).toBe('Triggers T2 · E1  ·  Window 2  ·  For t7  ·  Source todo_list_reminder');
     const progress = container.querySelector<HTMLElement>('[data-reminder-kind="progress"]')!;
     expect(progress.textContent).toContain('Reminder · update notes');
     await act(async () => { click(progress.querySelector<HTMLElement>('[aria-expanded]')!); });
@@ -4492,22 +4495,20 @@ describe('virtualized transcript scrolling', () => {
     expect(container.textContent).toContain('Load earlier messages');
   });
 
-  it('marks unverified history with only a compact accessible icon once the pages run out', async () => {
+  it('marks unverified history with readable status once the pages run out', async () => {
     const container = await renderTranscript([userBlock({ id: 'known-turn', text: 'known message' })], undefined, {
       historyCoverageKind: 'unknown', hasMoreHistory: false, oldestMessageId: 'known-turn', fetchedOlder: true,
     });
     const line = container.querySelector('[data-top-edge="unverified"]');
     expect(line?.getAttribute('role')).toBe('status');
-    expect(line?.textContent).toBe('');
-    const icon = line?.querySelector('[role="img"]');
-    expect(icon?.getAttribute('title')).toBe('Earlier history unverified');
-    expect(icon?.getAttribute('aria-label')).toBe('Earlier history unverified');
-    expect(icon?.querySelector('[data-icon="partial"]')).not.toBeNull();
+    expect(line?.textContent).toContain('Earlier history unverified');
+    expect(line?.querySelector('[data-icon="partial"]')).not.toBeNull();
     expect(line?.querySelector('button, [data-top-edge-detail]')).toBeNull();
+    expect(container.querySelector('[data-timeline-divider][data-top-edge="beginning"]')).toBeNull();
     expect(container.textContent).not.toContain('beginning of history');
   });
 
-  it('hangs a failed prompt on its bubble as a neutral line with the turn error behind Details', async () => {
+  it('hangs a failed prompt on its bubble as an unwrapped copyable error callout with raw details', async () => {
     const container = await renderTranscript([
       userBlock({
         id: 'user-failed', text: 'please retry me', userMessageId: 'um-failed', turnId: 't1',
@@ -4525,18 +4526,16 @@ describe('virtualized transcript scrolling', () => {
     ]);
     const line = container.querySelector('[data-prompt-outcome="failed"]');
     expect(line?.textContent).toContain('Reply failed');
-    expect(line?.querySelector('[data-prompt-outcome-summary]')?.textContent).toContain(
+    expect(line?.querySelector('[data-error-message]')?.textContent).toContain(
       'Upstream completed without a usable answer.',
     );
-    expect(line?.querySelector('.text-danger')).toBeNull();
-    expect(container.querySelector('[data-notice-tone="danger"]')).toBeNull();
-    const details = [...line!.querySelectorAll('button')].find((button) => button.textContent?.includes('Details'))!;
+    expect(line?.querySelector('[data-copy-state]')).not.toBeNull();
+    const details = line!.querySelector<HTMLButtonElement>('[data-error-raw-toggle]')!;
     expect(details.getAttribute('aria-expanded')).toBe('false');
     await act(async () => { details.click(); });
-    expect(container.querySelector('[data-prompt-outcome-details]')?.textContent).toContain(
+    expect(line?.querySelector('[data-error-raw-details]')?.textContent).toContain(
       'upstreamErrorCode=antigravity_missing_terminal',
     );
-    expect(line?.querySelector('[data-copy-state]')).not.toBeNull();
   });
 
   it('merges earlier settled prompts into one expandable neutral row', async () => {
@@ -4582,16 +4581,10 @@ describe('virtualized transcript scrolling', () => {
     const line = container.querySelector('[data-prompt-outcome="blocked"]');
     expect(line).not.toBeNull();
     expect(line?.textContent).toContain('Blocked');
-    expect(line?.querySelector('[data-prompt-outcome-summary]')?.textContent).toContain(
+    expect(line?.querySelector('[data-error-message]')?.textContent).toContain(
       'Blocked by UserPromptSubmit hook (timed out)',
     );
-    expect(line?.querySelector('.text-danger')).toBeNull();
-    expect(container.querySelector('.text-danger')).toBeNull();
-    const details = [...line!.querySelectorAll('button')].find((button) => button.textContent?.includes('Details'))!;
-    await act(async () => { details.click(); });
-    expect(container.querySelector('[data-prompt-outcome-details]')?.textContent).toContain(
-      'Blocked by UserPromptSubmit hook (timed out)',
-    );
+    expect(line?.querySelector('[data-copy-state]')).not.toBeNull();
     const retry = line!.querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]')!;
     await act(async () => { retry.click(); });
     expect(readDraft('session_blocked_test')).toBe('check the deployment status');
@@ -6364,6 +6357,11 @@ describe('virtualized transcript scrolling', () => {
       retrySummarizeBtn!.click();
       retryFreshBtn!.click();
     });
+    const confirmFreshBtn = container.querySelector<HTMLButtonElement>('[data-error-confirm-accept="relay-compaction"]');
+    expect(confirmFreshBtn).not.toBeNull();
+    await act(async () => {
+      confirmFreshBtn!.click();
+    });
     expect(onContinueFailedTurn).toHaveBeenCalledTimes(1);
     expect(onRetryFailedTurn).toHaveBeenCalledTimes(1);
     expect(onRetryCompaction).toHaveBeenNthCalledWith(1, 'summarize');
@@ -7102,7 +7100,8 @@ describe('subagent timeline dual form (G-4)', () => {
     const snapshot = replayAgentWire(CHILD_AGENT_ID, childCancellationWireRecords, true);
     const state = projectAgentTranscriptView(createViewState('session_reopened'), CHILD_AGENT_ID, snapshot);
     const container = await renderWithAgents([...state.blocks], [], undefined, state);
-    expect(container.textContent).toContain('Turn failed: Connection closed');
+    expect(container.textContent).toContain('Turn failed');
+    expect(container.textContent).toContain('Connection closed');
     expect(container.textContent).toContain('Turn cancelled');
     expect(container.querySelector('[data-turn-status]')).toBeNull();
   });
@@ -8247,8 +8246,9 @@ describe('background task notification folding (TUI-01)', () => {
     expect(endings[0]?.textContent).toContain('1m');
     expect(endings[1]?.textContent).toContain('2m');
     expect(endings.every((row) => !row.textContent?.includes('Latest roster result'))).toBe(true);
-    expect(endings[0]?.textContent).not.toContain('example-model');
-    expect(endings[1]?.textContent).toContain('example-model');
+    expect(endings[0]?.textContent).not.toContain('Example Display');
+    expect(endings[1]?.textContent).toContain('Unknown model');
+    expect(endings[1]?.querySelector('[data-subagent-model="example-model"]')).not.toBeNull();
     expect(endings[0]!.querySelector('[data-subagent-ended-dispatch]')).toBeNull();
     expect(container.querySelectorAll('[data-subagent-ended-dispatch="inspector"]')).toHaveLength(1);
     await act(async () => { click(endings[0]!.querySelector('[data-agent-open]')!); });
@@ -8277,12 +8277,11 @@ describe('background task notification folding (TUI-01)', () => {
     expect(container.textContent).toContain('break the run here');
   });
 
-  it('washes a failed or timed-out notification in danger and leaves successes quiet', async () => {
+  it('renders failed or timed-out task notifications as error callouts and leaves successes quiet', async () => {
     const blocks = agentTranscriptToBlocks({
       agent_id: 'main',
       items: [
         taskNotificationItem('t-f1', 1, 'Background agent failed\nProvider returned 403.'),
-        // Served history carries the stripped-XML shape with header lines.
         taskNotificationItem('t-f2', 2, 'Title: Background agent timed_out\nSeverity: warning\nDeadline exceeded.'),
         taskNotificationItem('t-f3', 3, 'Background agent completed\nDone.'),
       ],
@@ -8290,9 +8289,11 @@ describe('background task notification folding (TUI-01)', () => {
     const container = await renderTranscript(blocks);
     const rows = [...container.querySelectorAll('[data-system="task"]')];
     expect(rows).toHaveLength(3);
-    expect(rows[0]?.querySelector('button')?.className).toContain('bg-danger');
-    expect(rows[1]?.querySelector('button')?.className).toContain('bg-danger');
-    expect(rows[2]?.querySelector('button')?.className).not.toContain('bg-danger');
+    expect(rows[0]?.hasAttribute('data-timeline-error-callout')).toBe(true);
+    expect(rows[0]?.querySelector('[data-copy-state]')).not.toBeNull();
+    expect(rows[1]?.hasAttribute('data-timeline-error-callout')).toBe(true);
+    expect(rows[1]?.querySelector('[data-copy-state]')).not.toBeNull();
+    expect(rows[2]?.hasAttribute('data-timeline-error-callout')).toBe(false);
   });
 
   it('names each notification by its headline so a settled row is never a bare "Task"', async () => {
@@ -8646,15 +8647,43 @@ describe('terminal pile-up folding (timeline tail)', () => {
     expect(container.querySelector('[data-turn-tail-state="failed"]')).not.toBeNull();
   });
 
-  it('downgrades historical superseded failure notices to quiet neutral dividers', async () => {
-    const container = await renderTranscript([
+  it('quiets historical failure callouts ONLY after a strictly later committed completed turn', async () => {
+    const withoutCommit = await renderTranscript([
       userBlock({ id: 'u1', text: 'turn 1', turnId: 't1' }),
       failedNoticeBlock('old-fail', 't1'),
-      userBlock({ id: 'u2', text: 'turn 2', turnId: 't2' }),
-      { ...assistantBlock('a2', 'recovered reply'), turnId: 't2' },
+      userBlock({ id: 'u2', text: '继续', turnId: 't2' }),
     ]);
-    expect(container.querySelectorAll('[data-notice-tone="danger"]')).toHaveLength(0);
-    expect(container.querySelector('[data-notice-superseded="true"]')).not.toBeNull();
+    expect(withoutCommit.querySelectorAll('[data-notice-tone="danger"]')).toHaveLength(1);
+    expect(withoutCommit.querySelector('[data-error-superseded="true"]')).toBeNull();
+    expect(withoutCommit.querySelector('[data-timeline-divider][data-notice-tone]')).toBeNull();
+
+    const withCommit = await renderTranscript(
+      [
+        userBlock({ id: 'u1', text: 'turn 1', turnId: 't1' }),
+        failedNoticeBlock('old-fail', 't1'),
+        userBlock({ id: 'u2', text: 'turn 2', turnId: 't2' }),
+        { ...assistantBlock('a2', 'recovered reply'), turnId: 't2' },
+      ],
+      undefined,
+      {
+        turnTerminals: {
+          t2: {
+            turnId: 't2',
+            state: 'completed',
+            endedAt: '2026-01-01T00:00:05.000Z',
+            durationMs: 1200,
+            ttftMs: 400,
+            usage: undefined,
+            tokensPerSecond: 12,
+          },
+        },
+      },
+    );
+    expect(withCommit.querySelectorAll('[data-notice-tone="danger"]')).toHaveLength(0);
+    expect(withCommit.querySelector('[data-notice-superseded="true"]')).not.toBeNull();
+    expect(withCommit.querySelector('[data-error-superseded="true"]')).not.toBeNull();
+    expect(withCommit.querySelector('[data-error-superseded="true"] [data-copy-state]')).not.toBeNull();
+    expect(withCommit.querySelector('[data-error-expand]')).not.toBeNull();
   });
 
   it('keeps a lone aborted divider as a single line', async () => {
@@ -11240,13 +11269,13 @@ describe('injected context reading [m_20261002_4e0a323584]', () => {
     const container = await renderTranscript([injectedBlock]);
     const row = container.querySelector('[data-system="injection"]')!;
     expect(row).not.toBeNull();
-    expect(row.textContent).toContain('Injected context');
-    // Directly readable without secondary toggle
+    expect(row.textContent).toContain('System reminder');
     expect(row.textContent).toContain('Injected prompt context text for agent run.');
+    expect(row.querySelector('button')?.getAttribute('aria-expanded')).toBe('false');
 
-    // Manual toggle collapses it
     await act(async () => { click(row.querySelector('button')!); });
-    expect(row.textContent).not.toContain('Injected prompt context text for agent run.');
+    expect(row.querySelector('button')?.getAttribute('aria-expanded')).toBe('true');
+    expect(row.textContent).toContain('Injected prompt context text for agent run.');
   });
 });
 
@@ -12288,7 +12317,8 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
     expect(onRecoverInterruption).toHaveBeenCalledTimes(1);
     expect(onResumeStopped).not.toHaveBeenCalled();
 
-    // Case 2: main turn completed, yet 2 background child tasks were lost on restart -> compact single-line recovery strip renders.
+    // Case 2: main turn completed with stale lostTaskCount alone does NOT trigger recovery;
+    // confirmed interruptedWork with 2 lost tasks renders one recovery callout.
     onRecoverInterruption.mockClear();
     await renderSettled(
       root,
@@ -12306,6 +12336,35 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
           },
           lostTaskCount: 2,
         })}
+        onLoadOlder={async () => false}
+        onResolveApproval={noopActions}
+        onAnswerQuestion={noopActions}
+        onDismissQuestion={noopActions}
+        onRecoverInterruption={onRecoverInterruption}
+      />,
+    );
+    expect(container.querySelector('[data-interruption-recovery]')).toBeNull();
+
+    await renderSettled(
+      root,
+      <Transcript
+        state={transcriptState(baseBlocks, {
+          busy: false,
+          turnTail: {
+            state: 'completed',
+            turnId: 't1',
+            endedAt: '2026-01-01T00:00:02.000Z',
+            durationMs: undefined,
+            ttftMs: undefined,
+            usage: undefined,
+            tokensPerSecond: undefined,
+          },
+        })}
+        interruptedWork={{
+          interrupted_at: '2026-01-01T00:00:02.000Z',
+          lost_tasks: 2,
+          targets: [{ agent_id: 'w1', kind: 'subagent', reason: 'lost_task', label: 'worker', lost_tasks: 2 }],
+        }}
         onLoadOlder={async () => false}
         onResolveApproval={noopActions}
         onAnswerQuestion={noopActions}
@@ -12359,13 +12418,12 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
     await renderSettled(
       root,
       <Transcript
-        models={[
+        modelCatalog={[
           {
             id: 'axon-message/gemini-4-neon',
             provider_id: 'axon-message',
             remote_id: 'gemini-4-neon',
             display_name: 'Gemini 4 Neon',
-            max_context_size: 1_000_000,
           },
         ]}
         state={transcriptState([

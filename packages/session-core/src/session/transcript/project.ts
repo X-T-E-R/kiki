@@ -291,6 +291,8 @@ function classifiedTextToBlocks(input: {
     }
     case 'system':
       if (classified.text !== '' || input.contentPending === true) {
+        const injectionOrigin = classified.origin?.kind === 'injection' ? classified.origin : undefined;
+        const originVariant = injectionOrigin?.variant ?? classified.origin?.variant;
         blocks.push({
           kind: 'system',
           id: `system-${input.id}`,
@@ -300,7 +302,10 @@ function classifiedTextToBlocks(input: {
           createdAt: input.createdAt,
           turnId: input.turnId,
           source: producerFromOrigin(classified.origin),
-          ownerPromptId: classified.origin?.kind === 'injection' ? classified.origin.ownerPromptId : undefined,
+          originVariant,
+          disclosure: injectionOrigin?.disclosure ?? classified.origin?.disclosure,
+          category: reminderCategory(injectionOrigin?.disclosure ?? classified.origin?.disclosure),
+          ownerPromptId: injectionOrigin?.ownerPromptId,
           taskId: classified.systemVariant === 'task' ? (classified.origin?.taskId ?? classified.taskNotification?.sourceId) : undefined,
           taskNotification: classified.taskNotification,
           hookEvent: classified.systemVariant === 'hook_result' ? classified.origin?.event : undefined,
@@ -311,7 +316,7 @@ function classifiedTextToBlocks(input: {
       break;
   }
   blocks.push(...reminderBlocks(input.id, input.createdAt, classified.reminders, input.turnId,
-    classified.origin?.kind === 'injection' ? classified.origin : undefined, input.contentSource));
+    classified.origin?.kind === 'injection' || classified.origin?.variant !== undefined ? classified.origin : undefined, input.contentSource));
   return blocks;
 }
 
@@ -678,15 +683,16 @@ export function interactionToBlock(interaction: AgentTranscriptInteraction, agen
 const HIDDEN_MARKERS = new Set(['undo', 'clear', 'cron.fired', 'agent_message.delivered']);
 const MARKER_SUMMARY_KEYS = {
   compaction: 'transcript.marker.compaction',
+  'context.clear': 'transcript.marker.contextClear',
   hook: 'transcript.marker.hook',
   skill: 'transcript.marker.skill',
   notice: 'transcript.marker.notice',
   cron: 'transcript.marker.cron',
   cron_fired: 'transcript.marker.cron',
   goal: 'transcript.marker.goal',
-  'plan.revision': 'transcript.marker.plan',
-  'plan.enter': 'transcript.marker.plan',
-  'plan.exit': 'transcript.marker.plan',
+  'plan.revision': 'transcript.marker.planRevision',
+  'plan.enter': 'transcript.marker.planEnter',
+  'plan.exit': 'transcript.marker.planExit',
   interruption: 'transcript.marker.interruption',
   'model.switch': 'transcript.marker.modelSwitch',
   'branch.base': 'transcript.marker.branchBase',
@@ -828,18 +834,45 @@ function noticeFrameErrorDetails(detail: unknown): string | undefined {
   if (typeof detail === 'string') return detail.trim() === '' ? undefined : detail;
   if (typeof detail === 'object') {
     const record = detail as Record<string, unknown>;
-    if (typeof record['errorDetails'] === 'string' && record['errorDetails'].trim() !== '') {
-      return record['errorDetails'];
+    const rawDetails = typeof record['errorDetails'] === 'string' && record['errorDetails'].trim() !== ''
+      ? record['errorDetails']
+      : undefined;
+    const siblingEntries = Object.entries(record).filter(
+      ([key, value]) => key !== 'errorDetails' && value !== undefined && value !== null && value !== '',
+    );
+    if (rawDetails !== undefined && siblingEntries.length === 0) {
+      return rawDetails;
     }
     try {
       const json = JSON.stringify(detail, null, 2);
-      return json === undefined || json === '{}' || json === '[]' ? undefined : json;
+      return json === undefined || json === '{}' || json === '[]' ? rawDetails : json;
     } catch {
-      return undefined;
+      return rawDetails;
     }
   }
   if (typeof detail === 'number' || typeof detail === 'boolean' || typeof detail === 'bigint') return String(detail);
   return undefined;
+}
+
+function extractCompactionMetrics(record: Record<string, unknown> | undefined): NoticeBlock['compactionMetrics'] {
+  if (record === undefined) return undefined;
+  const num = (key: string): number | undefined => {
+    const value = record[key];
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+  };
+  const beforeTokens = num('beforeTokens') ?? num('tokensBefore');
+  const afterTokens = num('afterTokens') ?? num('tokensAfter');
+  const beforeMessages = num('beforeMessages') ?? num('messagesBefore');
+  const afterMessages = num('afterMessages') ?? num('messagesAfter');
+  const hasTokens = beforeTokens !== undefined && afterTokens !== undefined;
+  const hasMessages = beforeMessages !== undefined && afterMessages !== undefined;
+  if (!hasTokens && !hasMessages) return undefined;
+  return {
+    beforeTokens: hasTokens ? beforeTokens : undefined,
+    afterTokens: hasTokens ? afterTokens : undefined,
+    beforeMessages: hasMessages ? beforeMessages : undefined,
+    afterMessages: hasMessages ? afterMessages : undefined,
+  };
 }
 
 function markerToBlock(item: {
@@ -858,10 +891,39 @@ function markerToBlock(item: {
   const base = {
     kind: 'notice' as const,
     id: `agent-marker-${item.markerId}`,
+    markerKind: item.marker,
     tone: 'neutral' as const,
     createdAt: item.at,
     turnId: normalizeTurnId(payloadRecord?.['turnId']),
   };
+
+  if (item.marker === 'context.clear') {
+    return {
+      ...base,
+      text: item.marker,
+      i18n: { key: 'transcript.marker.contextClear' },
+    };
+  }
+
+  if (item.marker === 'plan.revision') {
+    const version = typeof payloadRecord?.['version'] === 'number' && Number.isFinite(payloadRecord['version'])
+      ? payloadRecord['version']
+      : undefined;
+    const path = typeof payloadRecord?.['path'] === 'string' && payloadRecord['path'] !== ''
+      ? payloadRecord['path']
+      : undefined;
+    const id = typeof payloadRecord?.['id'] === 'string' && payloadRecord['id'] !== ''
+      ? payloadRecord['id']
+      : undefined;
+    return {
+      ...base,
+      text: item.marker,
+      planRevision: version !== undefined || path !== undefined || id !== undefined ? { version, path, id } : undefined,
+      i18n: version !== undefined
+        ? { key: 'transcript.marker.planRevisionVersion', params: { version } }
+        : { key: 'transcript.marker.planRevision' },
+    };
+  }
 
   if (item.marker === 'goal') {
     const change = payloadRecord?.['change'];
@@ -897,21 +959,43 @@ function markerToBlock(item: {
   if (item.marker === 'model.switch') {
     const from = payloadRecord?.['from'];
     const to = payloadRecord?.['to'];
-    if (typeof from !== 'string' || typeof to !== 'string') return undefined;
     const operationId = payloadRecord?.['operationId'];
     const mode = payloadRecord?.['mode'];
     const state = payloadRecord?.['state'];
+    const hasStructuredHint = operationId !== undefined || mode !== undefined || state !== undefined;
+    if (typeof from !== 'string' || typeof to !== 'string') {
+      if (hasStructuredHint) {
+        return {
+          ...base,
+          markerKind: 'model.switch.uncertain',
+          text: item.marker,
+          i18n: { key: 'transcript.marker.modelSwitchUncertain' },
+        };
+      }
+      return undefined;
+    }
     const error = payloadRecord?.['error'];
-    const modelSwitch: NoticeBlock['modelSwitch'] = typeof operationId === 'string' &&
+    const validStructured = typeof operationId === 'string' &&
       (mode === 'direct' || mode === 'compact' || mode === 'fresh') &&
-      (state === 'pending' || state === 'preparing' || state === 'completed' || state === 'failed' || state === 'cancelled')
+      (state === 'pending' || state === 'preparing' || state === 'completed' || state === 'failed' || state === 'cancelled');
+    if (hasStructuredHint && !validStructured) {
+      return {
+        ...base,
+        markerKind: 'model.switch.uncertain',
+        modelSwitchFrom: from,
+        modelSwitchTo: to,
+        text: item.marker,
+        i18n: { key: 'transcript.marker.modelSwitchUncertain' },
+      };
+    }
+    const modelSwitch: NoticeBlock['modelSwitch'] = validStructured
       ? { operationId, mode, state, from, to,
-        change: payloadRecord?.['change'] === 'effort' ? 'effort' : from !== to ? 'model' : mode !== 'direct' ? 'context' : typeof operationId === 'string' && operationId.startsWith('resume:') ? 'resume' : 'binding',
+        change: payloadRecord?.['change'] === 'effort' ? 'effort' : from !== to ? 'model' : mode !== 'direct' ? 'context' : operationId.startsWith('resume:') ? 'resume' : 'binding',
         summaryGenerated: typeof payloadRecord?.['summaryGenerated'] === 'boolean' ? payloadRecord['summaryGenerated'] : undefined,
         windowEpoch: typeof payloadRecord?.['windowEpoch'] === 'number' ? payloadRecord['windowEpoch'] : undefined,
         error: typeof error === 'object' && error !== null && 'code' in error && 'message' in error && typeof error.code === 'string' && typeof error.message === 'string'
           ? { code: error.code, message: error.message } : undefined } : undefined;
-    return { ...base, text: item.marker, modelSwitch,
+    return { ...base, text: item.marker, modelSwitch, modelSwitchFrom: from, modelSwitchTo: to,
       i18n: modelSwitch === undefined || modelSwitch.state === 'completed' ? {
         key: from !== to ? 'transcript.marker.modelSwitch' : modelSwitch?.change === 'effort' ? 'transcript.modelSwitch.done.effort'
           : modelSwitch?.change === 'resume' ? 'transcript.modelSwitch.done.resume' : 'transcript.modelSwitch.done.binding', params: { from, to },
@@ -976,7 +1060,8 @@ function markerToBlock(item: {
       : undefined;
     const rawPhase = payloadRecord?.['phase'];
     const phase: NoticeBlock['compactionPhase'] = rawPhase === 'started' || rawPhase === 'blocked' ? 'running'
-      : rawPhase === 'queued' || rawPhase === 'running' || rawPhase === 'failed' || rawPhase === 'cancelled' || rawPhase === 'interrupted' ? rawPhase : 'completed';
+      : rawPhase === 'queued' || rawPhase === 'running' || rawPhase === 'failed' || rawPhase === 'cancelled' || rawPhase === 'interrupted' ? rawPhase
+      : rawPhase === 'completed' || rawPhase === undefined ? 'completed' : 'interrupted';
     const reason = typeof payloadRecord?.['reason'] === 'string' ? payloadRecord['reason'] : undefined;
     const effectivePhase = phase === 'cancelled' && reason !== undefined ? 'failed' : phase;
     const stateKey: I18nKey = effectivePhase === 'running' ? 'transcript.marker.compactionRunning'
@@ -984,11 +1069,15 @@ function markerToBlock(item: {
       : effectivePhase === 'failed' ? 'transcript.marker.compactionFailed'
       : effectivePhase === 'cancelled' ? 'transcript.marker.compactionCancelled'
       : effectivePhase === 'interrupted' ? 'transcript.marker.compactionInterrupted' : key;
+    const compactionMetrics = effectivePhase === 'completed'
+      ? (extractCompactionMetrics(committed) ?? extractCompactionMetrics(payloadRecord))
+      : undefined;
     return {
       ...base,
       markerId: item.markerId,
       summary,
       summaryPending: summaryPending || undefined,
+      compactionMetrics,
       text: item.marker,
       tone: effectivePhase === 'failed' ? 'danger' : base.tone,
       i18n: { key: stateKey },
@@ -3885,14 +3974,40 @@ function repeatsTurnFailure(turn: { readonly state?: string; readonly error?: st
   return failure === notice || failure.includes(notice);
 }
 
-// The main transcript renders the tail turn's failure in its turn tail; earlier
-// failed turns keep their notice because nothing else carries their error.
+function combineDistinctDiagnostics(base: string | undefined, extra: string | undefined): string | undefined {
+  const left = base?.trim();
+  const right = extra?.trim();
+  if (left === undefined || left === '') return right === '' ? undefined : right;
+  if (right === undefined || right === '') return left;
+  if (left === right || left.includes(right)) return left;
+  if (right.includes(left)) return right;
+  return `${left}\n\n${right}`;
+}
+
+function collectTurnFrameErrorDetails(item: {
+  readonly state?: string;
+  readonly error?: string;
+  readonly steps: readonly { readonly frames?: readonly { readonly kind: string; readonly level?: string; readonly message?: string; readonly detail?: unknown }[] }[];
+}): string | undefined {
+  let merged: string | undefined;
+  for (const step of item.steps) {
+    for (const frame of step.frames ?? []) {
+      if (frame.kind !== 'notice' || frame.level !== 'error') continue;
+      if (typeof frame.message !== 'string' || !repeatsTurnFailure(item, frame.message)) continue;
+      const details = noticeFrameErrorDetails(frame.detail);
+      if (details !== undefined) merged = combineDistinctDiagnostics(merged, details);
+    }
+  }
+  return merged;
+}
+
 function dropTailTurnFailureNotices(
   blocks: Block[],
-  tail: { readonly kind: string; readonly turnId?: string; readonly state?: string; readonly error?: string } | undefined,
+  tail: { readonly kind: string; readonly turnId?: string; readonly state?: string; readonly error?: string; readonly errorDetails?: string } | undefined,
 ): void {
   if (tail?.kind !== 'turn' || tail.turnId === undefined || tail.state !== 'failed') return;
   const lastUserIndex = blocks.findLastIndex((block) => block.kind === 'user');
+  const combinedTail = [tail.error?.trim(), tail.errorDetails?.trim()].filter(Boolean).join('\n');
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
     const block = blocks[index]!;
     if (
@@ -3909,6 +4024,10 @@ function dropTailTurnFailureNotices(
         block.i18n?.key === 'notice.promptFailed'
       )
     ) {
+      const uniqueDetail = block.errorDetails?.trim();
+      if (uniqueDetail !== undefined && uniqueDetail !== '' && !combinedTail.includes(uniqueDetail)) {
+        continue;
+      }
       blocks.splice(index, 1);
     }
   }
@@ -4457,8 +4576,15 @@ export function agentTranscriptToBlocks(
             blocks.push(...(messages.length === 0 ? [tool] : messages));
             break;
           }
-          case 'notice':
-            if (subagentPromptAsUser && frame.level === 'error' &&
+          case 'notice': {
+            const frameDetails = noticeFrameErrorDetails('detail' in frame ? frame.detail : undefined);
+            const itemError = 'error' in item && typeof item.error === 'string' ? item.error : undefined;
+            const itemErrorDetails = 'errorDetails' in item && typeof item.errorDetails === 'string' ? item.errorDetails : undefined;
+            const hasUniqueFrameDetail = frameDetails !== undefined && !(
+              (itemError !== undefined && itemError.includes(frameDetails)) ||
+              (itemErrorDetails !== undefined && itemErrorDetails.includes(frameDetails))
+            );
+            if (subagentPromptAsUser && frame.level === 'error' && !hasUniqueFrameDetail &&
               repeatsTurnFailure(item as { readonly state?: string; readonly error?: string }, frame.message)) break;
             blocks.push({
               kind: 'notice',
@@ -4466,9 +4592,10 @@ export function agentTranscriptToBlocks(
               turnId: item.turnId,
               text: frame.message,
               tone: frame.level === 'error' ? 'danger' : 'neutral',
-              errorDetails: noticeFrameErrorDetails('detail' in frame ? frame.detail : undefined),
+              errorDetails: frameDetails,
             });
             break;
+          }
         }
       }
       openingVia ??= stepOpeningVia;
@@ -4688,7 +4815,14 @@ export function agentTranscriptToBlocks(
       const at = sourceTime(marker)!;
       const promptOwner = marker.kind === 'system-reminder' || marker.kind === 'system' ? marker.ownerPromptId : undefined;
       const ownsLoadedPrompt = promptOwner !== undefined && promptIdentities.has(promptOwner);
-      if (!ownsLoadedPrompt && firstTurn !== undefined && firstTurnOrdinal > 0 && firstAt !== undefined && at < firstAt) continue;
+      const isContextBoundary = marker.kind === 'notice' && (
+        marker.markerKind === 'context.clear' ||
+        marker.markerKind === 'branch.base' ||
+        marker.branchBase !== undefined ||
+        marker.markerKind === 'context.handoff' ||
+        (nextSourceTurns.get(marker.id) === firstTurn?.turnId && marker.markerKind === 'model.switch')
+      );
+      if (!ownsLoadedPrompt && !isContextBoundary && firstTurn !== undefined && firstTurnOrdinal > 0 && firstAt !== undefined && at < firstAt) continue;
       while (globalNextCursor < baseDeliveries.length) {
         const time = baseSourceTimes[globalNextCursor];
         if (time !== undefined && time > at) break;
@@ -5679,13 +5813,26 @@ export function projectAgentTranscriptView(
   const phase = meta?.phase;
   const failedPhase = phase?.kind === 'ended' && phase.reason === 'failed'
     || phase?.kind === 'interrupted' && phase.reason === 'error';
-  const turnTail = lastTurn === undefined ? undefined : turnTailFromItem(lastTurn) ?? (
+  const turnTerminals: Record<string, TurnTailInfo> = {};
+  for (const item of snapshot.items) {
+    if (item.kind !== 'turn') continue;
+    const rawTail = turnTailFromItem(item);
+    if (rawTail === undefined) continue;
+    const frameDetails = rawTail.state === 'failed' ? collectTurnFrameErrorDetails(item) : undefined;
+    const mergedDetails = frameDetails === undefined ? rawTail.errorDetails : combineDistinctDiagnostics(rawTail.errorDetails, frameDetails);
+    turnTerminals[item.turnId] = mergedDetails === rawTail.errorDetails ? rawTail : { ...rawTail, errorDetails: mergedDetails };
+  }
+  const lastTurnTerminal = lastTurn === undefined ? undefined : turnTerminals[lastTurn.turnId];
+  const turnTail = lastTurn === undefined ? undefined : lastTurnTerminal ?? (
     failedPhase && phase.turnId === lastTurn.ordinal
       ? turnTailFromItem({ ...lastTurn, state: 'failed', endedAt: new Date(phase.at).toISOString(),
         error: phase.kind === 'interrupted' ? phase.message : undefined,
         durationMs: phase.kind === 'ended' ? phase.durationMs : undefined })
       : undefined
   );
+  if (turnTail !== undefined && turnTerminals[turnTail.turnId] === undefined) {
+    turnTerminals[turnTail.turnId] = turnTail;
+  }
   const gapOf = options.gapOf ?? ((turn: TranscriptTurn) => turnGapOf(turn, false, undefined));
   const turnGaps: Record<string, TurnGap> = {};
   for (const item of snapshot.items) {
@@ -5753,6 +5900,7 @@ export function projectAgentTranscriptView(
     turnExecutions,
     // Only this turn's terminal header or failed phase supplies its tail.
     turnTail: turnTail ?? (lastTurn !== undefined && lastTurn.state !== 'running' && sameTurnId(previous.turnTail?.turnId, lastTurn.turnId) ? previous.turnTail : undefined),
+    turnTerminals: keepEqual(previous.turnTerminals ?? {}, turnTerminals),
     // Every loaded turn that failed, not just the tail: its partial text is not
     // a reply the reader received, whatever the prompt window still holds.
     failedTurnIds: keepEqual(previous.failedTurnIds, snapshot.items.flatMap((item) => (item.kind === 'turn' && item.state === 'failed' ? [item.turnId] : []))),

@@ -14,6 +14,7 @@ export {
   type MessageReach,
   type Block,
   type CompactionHistoryEntry,
+  type CompactionMetrics,
   type DurableIngressItem,
   type EarlierPromptOutcome,
   type FloorEntry,
@@ -132,3 +133,17 @@ export { countToolBlocks } from '../agentTree';
 export type { AgentForest, AgentTreeNode } from '../agentTree';
 export { collectTranscriptContentRefs, patchTranscriptContent } from './content';
 export { isSteerSettled, newSteerPromptId, steerBlock, withPendingSteers, type PendingSteer } from './steer';
+export { resolveInjectionHeading, type ResolvedInjectionHeading } from './injectionLabels';
+export {
+  buildNoticePlacementContext,
+  classifyNoticePlacement,
+  collectOrderedTurnIds,
+  hasConfirmedSubsequentSuccess,
+  hasSubsequentCompactionResolution,
+  hasSubsequentModelSwitchResolution,
+  latestUnresolvedCompactionId,
+  resolveRecoverableInterruption,
+  type NoticePlacementContext,
+  type RecoverableInterruptionSummary,
+  type TimelinePlacement,
+} from './timelinePlacement';

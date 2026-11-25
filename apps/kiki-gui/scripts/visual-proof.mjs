@@ -1715,7 +1715,7 @@ async function scenarioErrorAbort() {
   const detailsBtn = page.locator('[data-prompt-outcome="failed"] button[aria-expanded]').first();
   if ((await detailsBtn.count()) > 0) {
     await detailsBtn.click();
-    await page.waitForSelector('[data-prompt-outcome-details]', { timeout: 5_000 });
+    await page.waitForSelector('[data-prompt-outcome-details], [data-error-raw-details]', { timeout: 5_000 });
   }
   const blockedOutcome = page.locator('[data-prompt-outcome="blocked"]').first();
   await blockedOutcome.waitFor({ timeout: 5_000 });

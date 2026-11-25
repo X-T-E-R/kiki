@@ -618,7 +618,7 @@ describe('bindSessionTranscript', () => {
       { op: 'marker.upsert', item: { kind: 'marker', markerId: 'keep-compaction', marker: 'compaction', at: new Date(1_200).toISOString() } },
     ]);
     main.bus.emit(ev({ type: 'context.clear', time: 2_000 }) as unknown as Event2<any>);
-    expect(transcript.getItems().map((item) => item.kind === 'turn' ? item.turnId : item.kind === 'marker' ? item.markerId : item.refId)).toEqual(['keep-compaction']);
+    expect(transcript.getItems().map((item) => item.kind === 'turn' ? item.turnId : item.kind === 'marker' ? item.markerId : item.refId)).toEqual(['keep-compaction', 'context.clear']);
     const paged = new AgentTranscript('main');
     paged.apply([{ op: 'reset', agentId: 'main', snapshot: { ...transcript.snapshot(), items: [] } }]);
     for (const item of transcript.getItems()) {
