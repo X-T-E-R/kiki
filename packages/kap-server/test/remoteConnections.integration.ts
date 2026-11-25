@@ -823,4 +823,52 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
       expect(targetEvents.slice(targetCountBeforePair).some((e) => e.reason === 'paired')).toBe(true);
     });
   }, 30_000);
+
+  it('delivers a peer view_attach transcript.reset larger than 256 KiB over the broker without closing 4008', async () => {
+    const source = await boot();
+    const target = await boot();
+    const { record } = await connect(source, target);
+    const owner = createKlient({ endpoint: endpoint(target), token: target.localOwnerToken });
+    try {
+      const session = await owner.global.sessions.create({ workDir: homes[1]!, title: 'Large peer reset' });
+      const agent = owner.session(session.id).agent('main');
+      await agent.getUsage();
+      for (let i = 0; i < 16; i += 1) {
+        await agent.appendContext({
+          role: 'user',
+          content: [{ type: 'text', text: `turn-${i}-${'a'.repeat(22 * 1024)}` }],
+          toolCalls: [],
+        });
+      }
+      const peer = await peerSocket(source, source.localOwnerToken, undefined, `/api/remote-connections/${record.id}/events`);
+      const frames: Array<{ type?: string; data?: { type?: string; event?: { type?: string } } }> = [];
+      let closedCode: number | undefined;
+      peer.on('message', (data) => {
+        frames.push(JSON.parse(rawDataToString(data)) as { type?: string; data?: { type?: string; event?: { type?: string } } });
+      });
+      peer.on('close', (code) => { closedCode = code; });
+      peer.send(JSON.stringify({
+        type: 'view_attach',
+        id: 'large-reset',
+        sessionId: session.id,
+        data: {
+          input: { sessionCursor: { seq: 0 }, bootstrap: true, transcriptGrades: { main: 'delta', '*': 'turn' } },
+          generation: 1,
+          reconnected: false,
+          transcript_coverage_version: 2,
+        },
+      }));
+      await vi.waitFor(() => {
+        expect(frames.some((frame) => frame.type === 'view_signal' && frame.data?.type === 'ready')).toBe(true);
+      }, { timeout: 10_000 });
+      const resetFrame = frames.find((frame) => frame.type === 'view_signal' && frame.data?.type === 'transcript' && frame.data?.event?.type === 'transcript.reset');
+      expect(resetFrame).toBeDefined();
+      expect(Buffer.byteLength(JSON.stringify(resetFrame))).toBeGreaterThan(256 * 1024);
+      expect(closedCode).toBeUndefined();
+      expect(peer.readyState).toBe(WebSocket.OPEN);
+      expect(source.remoteConnections.get(record.id).state).toBe('online');
+    } finally {
+      await owner.close();
+    }
+  }, 30_000);
 });

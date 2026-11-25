@@ -28,7 +28,7 @@ import { PeerBridgeConnection, type PeerBridgeRegistry } from './peerBridgeSocke
 import { peerAudience, isPeerFrameAllowed, isPeerProcedureAllowed, isWebProcedureAllowed, projectPeerBusEvent, type PeerAudience } from '../../services/connections/audience';
 import { webPrincipal } from '../../services/webAccess';
 import { RemoteConnectionsChanged } from '../../services/connections/events';
-import { BROKER_WS_BUFFER_BYTES, BROKER_WS_MESSAGE_BYTES } from '../../services/connections/manager';
+import { BROKER_WS_BUFFER_BYTES, BROKER_WS_MESSAGE_BYTES, BROKER_WS_VIEW_BUFFER_BYTES } from '../../services/connections/manager';
 import { okEnvelope } from '@kiki/protocol';
 import { selectWsBearerProtocol } from '../ws/bearerProtocol';
 import { registerSessionViewHttp, SessionViewHttpConnection, type SessionViewHttpOptions } from './sessionViewHttp';
@@ -472,7 +472,10 @@ class KlientHttpConnection {
       const operation = frame.type === 'bridge_request' ? (frame.data as { operation?: string } | undefined)?.operation : undefined;
       const maxBridgeFrame = operation === 'tools_call' ? 5 * 1024 * 1024 : operation === 'create' || operation === 'send' ? 1024 * 1024 : 0;
       const bufferLimit = maxBridgeFrame > 0 ? BROKER_WS_BUFFER_BYTES + Math.min(size, maxBridgeFrame) : BROKER_WS_BUFFER_BYTES;
-      if (this.peer && this.socket.bufferedAmount + size > bufferLimit) { this.socket.close(4008, 'slow consumer; reload current window'); this.dispose(); return false; }
+      const slowConsumer = frame.type === 'view_signal'
+        ? this.socket.bufferedAmount > BROKER_WS_VIEW_BUFFER_BYTES
+        : this.socket.bufferedAmount + size > bufferLimit;
+      if (this.peer && slowConsumer) { this.socket.close(4008, 'slow consumer; reload current window'); this.dispose(); return false; }
       this.socket.send(encoded);
       return true;
     } catch {

@@ -28,18 +28,17 @@ const channelSchema = z.object({ provider_instance_id: identifier, enabled: z.bo
   label: z.string().min(1).max(120).optional() }).strict();
 
 export function registerNotificationRoutes(app: FastifyInstance, service: NotificationService): void {
-  const respond = async (req: FastifyRequest, reply: FastifyReply, operation: () => Promise<unknown> | object): Promise<void> => {
-    try { reply.send(okEnvelope(await operation(), req.id)); }
+  const respond = async (req: FastifyRequest, _reply: FastifyReply, operation: () => Promise<unknown> | object): Promise<unknown> => {
+    try { return okEnvelope(await operation(), req.id); }
     catch (error) {
       if (error instanceof z.ZodError) {
-        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.issues.map((issue) => `${issue.path.join('.') || 'request'}: ${issue.message}`).join('; '), req.id));
-        return;
+        return errEnvelope(ErrorCode.VALIDATION_FAILED, error.issues.map((issue) => `${issue.path.join('.') || 'request'}: ${issue.message}`).join('; '), req.id);
       }
       const message = error instanceof Error ? error.message : String(error);
       const validation = /^(?:invalid_|unknown_|channel_unavailable|credential_unavailable)/u.test(message);
       const code = error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
-      reply.send(errEnvelope(validation ? ErrorCode.VALIDATION_FAILED : ErrorCode.INTERNAL_ERROR,
-        code === undefined ? message : `${code}: ${message}`, req.id));
+      return errEnvelope(validation ? ErrorCode.VALIDATION_FAILED : ErrorCode.INTERNAL_ERROR,
+        code === undefined ? message : `${code}: ${message}`, req.id);
     }
   };
   app.get('/notifications/completions', (req, reply) => respond(req, reply, () => service.listCompletions()));

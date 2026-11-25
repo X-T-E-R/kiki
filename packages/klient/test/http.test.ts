@@ -253,7 +253,7 @@ describe('http transport', () => {
       await vi.advanceTimersByTimeAsync(0);
       for (let attempt = 0; attempt < 5; attempt += 1) {
         server.push({ type: 'error', data: { fatal: true }, msg: 'incompatible protocol' });
-        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(4_000);
       }
       expect(server.sockets).toHaveLength(5);
       await vi.advanceTimersByTimeAsync(60_000);
@@ -363,6 +363,26 @@ describe('http transport', () => {
       server.push({ type: 'ping', data: { heartbeatMs: 10_000, nonce: 'm' } });
       await vi.advanceTimersByTimeAsync(19_000);
       expect(events).toContainEqual(expect.objectContaining({ kind: 'close', cause: 'stale_heartbeat', heartbeatMs: 10_000, sinceInboundMs: 19_000 }));
+    } finally { await klient.close(); vi.useRealTimers(); }
+  });
+  it('backs off exponentially across rapid post-open closes instead of looping at 500ms', async () => {
+    vi.useFakeTimers();
+    const server = new FakeWebSocketServer();
+    const events: HttpSocketDiagnostic[] = [];
+    const klient = createKlient({ endpoint: 'http://example.test', WebSocket: fakeWebSocket(server), onSocketDiagnostic: (event) => { events.push(event); } });
+    try {
+      klient.terminal.onStatus(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      server.sockets.at(-1)!.serverClose({ code: 4008, reason: 'slow consumer', wasClean: true });
+      await vi.advanceTimersByTimeAsync(500);
+      server.sockets.at(-1)!.serverClose({ code: 4008, reason: 'slow consumer', wasClean: true });
+      await vi.advanceTimersByTimeAsync(1_100);
+      server.sockets.at(-1)!.serverClose({ code: 4008, reason: 'slow consumer', wasClean: true });
+      const retries = events.filter((event): event is Extract<HttpSocketDiagnostic, { kind: 'retry' }> => event.kind === 'retry');
+      expect(retries.map((retry) => retry.attempt)).toEqual([1, 2, 3]);
+      expect(retries[0]!.delayMs).toBe(500);
+      expect(retries[1]!.delayMs).toBeGreaterThanOrEqual(700);
+      expect(retries[2]!.delayMs).toBeGreaterThanOrEqual(1_400);
     } finally { await klient.close(); vi.useRealTimers(); }
   });
   it('retries a transient pre-response GET reset once without retrying POST mutations', async () => {

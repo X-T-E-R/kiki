@@ -506,7 +506,7 @@ async function brokerSocket(local: WebSocket, request: IncomingMessage, manager:
     });
     target.on('close', (code, reason) => {
       if (code === 4001) manager.failed(id, new AdmissionError(401, 'connection_not_approved'), epoch);
-      else if (!localClosed && code !== 1000 && code !== 1001 && code !== 1008) manager.recordTransportStrike(id, new AdmissionError(502, 'event_transport_closed'), epoch);
+      else if (!localClosed && code !== 1000 && code !== 1001 && code !== 1008 && code !== 4008) manager.recordTransportStrike(id, new AdmissionError(502, 'event_transport_closed'), epoch);
       forwardSocketClose(local, code, reason);
       cleanup();
     });

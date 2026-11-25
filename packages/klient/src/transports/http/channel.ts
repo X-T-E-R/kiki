@@ -39,6 +39,7 @@ import type { KlientBatchLine } from '../../host.js';
 
 const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 const DEFAULT_RECONNECT_DELAY_MS = 500;
+const STABLE_OPEN_RESET_MS = 5_000;
 const DEFAULT_MAX_BATCH_SIZE = 24;
 const WS_BEARER_PROTOCOL_PREFIX = 'kimi-code.bearer.';
 export const HTTP_TRANSPORT_TIMEOUT_REASON = 'transport.timeout';
@@ -1066,6 +1067,7 @@ class HttpEventSocket {
   private establishmentTimer: ReturnType<typeof setTimeout> | undefined;
   private watchdogTimer: ReturnType<typeof setTimeout> | undefined;
   private probeTimer: ReturnType<typeof setTimeout> | undefined;
+  private stableOpenTimer: ReturnType<typeof setTimeout> | undefined;
   private probeSentAt = 0;
   private lastInboundAt = 0;
   private openedAt = 0;
@@ -1112,6 +1114,10 @@ class HttpEventSocket {
     if (this.probeTimer !== undefined) {
       clearTimeout(this.probeTimer);
       this.probeTimer = undefined;
+    }
+    if (this.stableOpenTimer !== undefined) {
+      clearTimeout(this.stableOpenTimer);
+      this.stableOpenTimer = undefined;
     }
     this.probeSentAt = 0;
   }
@@ -1450,8 +1456,13 @@ class HttpEventSocket {
       const now = Date.now();
       this.openedAt = now;
       this.lastInboundAt = now;
-      this.reconnectAttempt = 0;
       this.state = 'open';
+      this.stableOpenTimer = setTimeout(() => {
+        this.stableOpenTimer = undefined;
+        if (generation === this.socketGeneration && this.ws === ws && !this.closed && this.state === 'open') {
+          this.reconnectAttempt = 0;
+        }
+      }, STABLE_OPEN_RESET_MS);
       for (const listen of this.listens.values()) this.send(listen.frame);
       for (const stream of this.streams.values()) this.sendStream(stream);
       this.sessionViews.opened();
