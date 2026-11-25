@@ -12,3 +12,8 @@
    - `[data-composer-body]` holds at most 3 rows: optional edit banner or `h-11` `[data-context-tray]` (`pt-2 pb-1`), `<ComposerInput />` (humanized `@Thread · <short>` pills), and `[data-composer-toolbar]` (`Stop` when `busy && !canSend`, `[↑ | ▾]` when `busy && canSend`, `<480px` `CompactModelSheet`). Mode lives solely in `RunModeChip` + `data-run-mode`.
    - Plugin panels live only in top-right `WorkspacePanelsControl` + `/` completion: `<= 4` `open_plugin_panel` slots render as direct 1-click header buttons (container-responsive `@container/center` labels at `>=680/800/880px` + per-plugin status dot, folding into `Popover` `<460px`), overflowing `> 4` into a searchable `Popover` (`data-workspace-panels-trigger` / `data-workspace-panels-search`), alongside `[预览]` (`data-preview-toggle`).
    - Resident SSH (`[data-composer-ssh-strip]`) and `<PluginStatusCapsules />` (`<= 3` inline, overflowing into a compact `+N` upward `Popover`) sit in `[data-composer-status-line]` below the card.
+
+## Desktop Shell Freeze (`src-tauri`)
+
+- `apps/kiki-gui/src-tauri` is **frozen against new business logic, state machines, or RPC protocols** (`0.6.1+`). Only security, crash, or critical OS-regression fixes may touch `src-tauri`.
+- Put new shared capabilities (SSH profiles/tunnels, local space metadata, preferences, sync, preview coordination) in TypeScript (`@kiki/kap-server` / `@kiki/agent-core-v2` / `@kiki/session-core`) behind HTTP/WS or the narrow `src/host/host.ts` `HostAdapter` contract so Web, CLI, and the `0.7.0` TypeScript/Electron desktop shell share a single implementation without Rust translation debt.
