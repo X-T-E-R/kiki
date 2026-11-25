@@ -244,6 +244,6 @@ export const stGovernanceZh = {
   'st.permissions.tools.allFollow': '所有工具都按各智能体的设置。',
   'st.permissions.tools.unavailable': '这台 Kiki 上不可用的工具（{count}）',
   'st.settingsTransfer.description': '在空间页导出、比对、同步或导入明文目录、Git 仓库与 .kiki.age 加密包。',
-  'st.settingsTransfer.openSpaces': '打开空间迁移',
+  'st.settingsTransfer.openSpaces': '打开配置订阅',
   'st.settingsTransfer.title': '设置迁移',
 } satisfies Record<string, string>;

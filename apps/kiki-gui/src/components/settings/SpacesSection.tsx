@@ -48,7 +48,6 @@ import { SpaceDot } from './spaces/SpaceDot';
 import { SpaceRowMenu, type SpaceMenuItem } from './spaces/SpaceRowMenu';
 import { SpaceCredentialsCard } from './spaces/SubspaceCards';
 import { SpaceSettingsDetail } from './spaces/SpaceSettingsDetail';
-import { PortableSpacesCard, type PortableExportRequest } from './spaces/PortableSpacesCard';
 import { RemoteConnectionsSection } from './RemoteConnectionsSection';
 
 /**
@@ -74,9 +73,10 @@ export function SpacesSection() {
   const localSpaceName = localHomeId === MAIN_SPACE_ID
     ? t('st.spaces.main')
     : (localHere?.name ?? controlSpaces.data?.find((item) => item.id === localHomeId)?.name ?? t('sidebar.space.unnamed'));
-  const mainSpacePath = controlSpaces.data?.find((item) => item.id === MAIN_SPACE_ID)?.path ?? '';
-  const [portableExportRequest, setPortableExportRequest] = useState<PortableExportRequest | null>(null);
-  const clearPortableExport = useCallback(() => { setPortableExportRequest(null); }, []);
+  const navigate = useNavigate();
+  const handleExportSpace = useCallback((spaceId: string) => {
+    void navigate(`/settings/subscriptions?exportSpace=${encodeURIComponent(spaceId)}`);
+  }, [navigate]);
   return (
     <>
       {inRemoteScope ? (
@@ -90,14 +90,7 @@ export function SpacesSection() {
           client={controlClient}
           target={controlTarget}
           openLocalSpace={openLocalSpace}
-          onExportSpace={(spaceId) => { setPortableExportRequest({ intent: 'export', source: { kind: 'live', spaceId } }); }}
-        />
-        <PortableSpacesCard
-          client={controlClient}
-          spaces={controlSpaces.data ?? []}
-          mainPath={mainSpacePath}
-          externalExportRequest={portableExportRequest}
-          onClearExternalExport={clearPortableExport}
+          onExportSpace={handleExportSpace}
         />
         <RemoteConnectionsSection />
         {sub ? <SpaceCredentialsCard client={controlClient} onEnterMain={() => openLocalSpace(MAIN_SPACE_ID, mode)} /> : null}

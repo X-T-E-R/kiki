@@ -1578,7 +1578,18 @@ function NormalApp() {
                 const text = result.commit.kind === 'once'
                   ? t('st.portable.center.importOnceDone', { count })
                   : t('st.portable.subscribeDone', { name: result.commit.source.label, count });
-                pushToast({ tone: 'success', text });
+                pushToast({
+                  tone: 'success',
+                  text,
+                  ...(location.pathname.startsWith('/settings/subscriptions')
+                    ? {}
+                    : {
+                      action: {
+                        label: t('st.section.subscriptions'),
+                        run: () => { void navigate('/settings/subscriptions'); },
+                      },
+                    }),
+                });
               }
               void subscribeQueue.settleActiveIntent();
             }}

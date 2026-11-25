@@ -78,6 +78,15 @@ export interface NormalizedManifestIndex {
   readonly packModelUnitIdByAlias: ReadonlyMap<string, string>;
 }
 
+const SCOPE_ORDINAL: Readonly<Record<PortableSubscriptionScope, number>> = {
+  models_providers: 0,
+  extensions_search: 1,
+  agents_recipes: 2,
+  personas: 3,
+  instructions: 4,
+  settings: 5,
+};
+
 /** Encodes a physical config model unit ID matching treeProjection.ts putUnit('config', ['models', alias]). */
 export function encodeConfigModelUnitId(alias: string): string {
   return `config:models.${alias.replaceAll('%', '%25').replaceAll('.', '%2E')}`;
@@ -190,14 +199,6 @@ export function evaluateSubscriptionSelection(
   const included = selection.includedIds.length > 0 ? new Set(selection.includedIds) : undefined;
 
   const selectedCountByScope = new Int32Array(PORTABLE_SUBSCRIPTION_SCOPES.length);
-  const scopeOrdinal: Record<PortableSubscriptionScope, number> = {
-    models_providers: 0,
-    extensions_search: 1,
-    agents_recipes: 2,
-    personas: 3,
-    instructions: 4,
-    settings: 5,
-  };
 
   const selectedItemIds = new Set<string>();
   const items = manifest.items;
@@ -211,7 +212,7 @@ export function evaluateSubscriptionSelection(
         : enabledScopes.has(item.scope);
     if (checked) {
       selectedItemIds.add(item.id);
-      selectedCountByScope[scopeOrdinal[item.scope]]! += 1;
+      selectedCountByScope[SCOPE_ORDINAL[item.scope]]! += 1;
     }
   }
 

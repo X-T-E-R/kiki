@@ -804,10 +804,10 @@ describe('SettingsTransferCard navigation replacement', () => {
     return <output data-location>{location.pathname}{location.hash}</output>;
   }
 
-  it('preserves #st-card-settings-transfer and navigates directly to /settings/spaces#st-card-portable-spaces', async () => {
+  it('preserves #st-card-settings-transfer and navigates directly to /settings/subscriptions#st-card-portable-spaces', async () => {
     await renderNode(<><SettingsTransferCard /><LocationEcho /></>, ['/settings/general']);
     expect(document.querySelector('#st-card-settings-transfer')).not.toBeNull();
     await click('[data-settings-transfer-open]');
-    expect(document.querySelector('[data-location]')?.textContent).toBe('/settings/spaces#st-card-portable-spaces');
+    expect(document.querySelector('[data-location]')?.textContent).toBe('/settings/subscriptions#st-card-portable-spaces');
   });
 });
