@@ -263,7 +263,7 @@ export function createIpcHandlers(services: DesktopServices): IpcHandlerMap {
     [IPC_CHANNELS.desktopSpaceStatuses]: async (payload) => {
       validateIpcPayload(IPC_SCHEMAS[IPC_CHANNELS.desktopSpaceStatuses], payload);
       try {
-        const result = await daemon.listSpacesAndStatuses();
+        const result = await daemon.listSpacesAndStatuses(spaces.getActiveSpace().homeId);
         return result.statuses;
       } catch {
         return [

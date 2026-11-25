@@ -798,7 +798,156 @@ finally {
 '@, (New-Object Text.UTF8Encoding($false)))
     Invoke-Controller @('-ControllerPath', $controller, '-RuntimePath', $legacyRoot, '-ScratchRoot', (Join-Path $testRoot 'auto-unit')) 0 $autostartRunner | Out-Null
 
-    Write-Output 'desktop-release tests passed: initial, repeated, fail-closed, verification, cli-publish, installed-controller, production-default, shortcut, main-runtime-shortcut, receipt, legacy-launch, hot-switch-guard, child-home-inference, and autostart-sync cases.'
+    # 8. Dual-manifest schemaVersion 2 (electron-single-binary) promotion, v1 -> v2 -> v1 lossless rollback, headless ELECTRON_RUN_AS_NODE launch, and hot-switch v2 helpers.
+    $v2Candidate = Join-Path $testRoot 'v2-candidate'
+    [IO.Directory]::CreateDirectory($v2Candidate) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $v2Candidate 'kiki-desktop.exe'), 'electron-single-binary-v2')
+    [IO.File]::WriteAllText((Join-Path $v2Candidate 'server-entry.mjs'), 'export const server = "v2";')
+    [IO.File]::WriteAllText((Join-Path $v2Candidate 'native-addons.json'), '{"addons":["node-pty"]}')
+    $v2DesktopHash = Get-Sha256 (Join-Path $v2Candidate 'kiki-desktop.exe')
+    $v2EntryHash = Get-Sha256 (Join-Path $v2Candidate 'server-entry.mjs')
+    $v2AddonsHash = Get-Sha256 (Join-Path $v2Candidate 'native-addons.json')
+    $v2DesktopBytes = (Get-Item -LiteralPath (Join-Path $v2Candidate 'kiki-desktop.exe')).Length
+    $v2EntryBytes = (Get-Item -LiteralPath (Join-Path $v2Candidate 'server-entry.mjs')).Length
+    $v2AddonsBytes = (Get-Item -LiteralPath (Join-Path $v2Candidate 'native-addons.json')).Length
+    $v2ReleaseId = '{0}-{1}' -f $v2DesktopHash.Substring(0, 24), $v2EntryHash.Substring(0, 24)
+
+    # Reject invalid v2 receipt without runtimeKind='electron-single-binary'.
+    $badV2Receipt = @"
+{
+  "schemaVersion": 2,
+  "sourceCommit": "$expectedCommit",
+  "acceptanceRef": "tasks/task-0027-kiki/prd.md",
+  "checkRef": "fixture://desktop-checks",
+  "files": {
+    "kiki-desktop.exe": { "sha256": "$v2DesktopHash", "bytes": $v2DesktopBytes },
+    "server-entry.mjs": { "sha256": "$v2EntryHash", "bytes": $v2EntryBytes },
+    "native-addons.json": { "sha256": "$v2AddonsHash", "bytes": $v2AddonsBytes }
+  }
+}
+"@
+    [IO.File]::WriteAllText((Join-Path $v2Candidate 'desktop-build-receipt.json'), $badV2Receipt.Trim() + "`n", (New-Object Text.UTF8Encoding($false)))
+    $badV2Out = Invoke-Controller @('-Action', 'Promote', '-RuntimeRoot', $runtimeRoot, '-CandidateRoot', $v2Candidate, '-ExpectedCommit', $expectedCommit) 1
+    Assert-True ($badV2Out -match 'build receipt is invalid') "Invalid v2 receipt missing runtimeKind was not rejected.`n$badV2Out"
+
+    # Valid v2 receipt promotes cleanly onto existing v1 runtimeRoot and cleans stale active\kiki-server.exe.
+    $validV2Receipt = @"
+{
+  "schemaVersion": 2,
+  "runtimeKind": "electron-single-binary",
+  "sourceCommit": "$expectedCommit",
+  "acceptanceRef": "tasks/task-0027-kiki/prd.md",
+  "checkRef": "fixture://desktop-checks",
+  "files": {
+    "kiki-desktop.exe": { "sha256": "$v2DesktopHash", "bytes": $v2DesktopBytes },
+    "server-entry.mjs": { "sha256": "$v2EntryHash", "bytes": $v2EntryBytes },
+    "native-addons.json": { "sha256": "$v2AddonsHash", "bytes": $v2AddonsBytes }
+  }
+}
+"@
+    [IO.File]::WriteAllText((Join-Path $v2Candidate 'desktop-build-receipt.json'), $validV2Receipt.Trim() + "`n", (New-Object Text.UTF8Encoding($false)))
+    $v2PromoteOut = Invoke-Controller @('-Action', 'Promote', '-RuntimeRoot', $runtimeRoot, '-CandidateRoot', $v2Candidate, '-ExpectedCommit', $expectedCommit)
+    Assert-True ($v2PromoteOut -match 'Promoted Kiki release') "v2 promotion did not succeed.`n$v2PromoteOut"
+    $v2Current = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    Assert-Equal 2 ([int]$v2Current.schemaVersion) 'v2 current.json schemaVersion mismatch.'
+    Assert-Equal 'electron-single-binary' ([string]$v2Current.runtimeKind) 'v2 current.json runtimeKind mismatch.'
+    Assert-Equal $v2ReleaseId ([string]$v2Current.releaseId) 'v2 current.json releaseId mismatch.'
+    $v2ActiveManifest = Get-Content -LiteralPath (Join-Path $activeDir 'active-release.json') -Raw | ConvertFrom-Json
+    Assert-Equal 2 ([int]$v2ActiveManifest.schemaVersion) 'v2 active-release.json schemaVersion mismatch.'
+    Assert-Equal 'electron-single-binary' ([string]$v2ActiveManifest.runtimeKind) 'v2 active-release.json runtimeKind mismatch.'
+    Assert-Equal $v2ReleaseId ([string]$v2ActiveManifest.releaseId) 'v2 active-release.json releaseId mismatch.'
+    Assert-True (Test-Path -LiteralPath (Join-Path $activeDir 'kiki-desktop.exe') -PathType Leaf) 'v2 active\kiki-desktop.exe missing.'
+    Assert-True (Test-Path -LiteralPath (Join-Path $activeDir 'server-entry.mjs') -PathType Leaf) 'v2 active\server-entry.mjs missing.'
+    Assert-True (Test-Path -LiteralPath (Join-Path $activeDir 'native-addons.json') -PathType Leaf) 'v2 active\native-addons.json missing.'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $activeDir 'kiki-server.exe'))) 'Stale v1 active\kiki-server.exe was not removed on v2 promotion.'
+
+    # Verify v2 launch target resolution, headless ELECTRON_RUN_AS_NODE launch, and lossless v2 -> v1 -> v2 switching via hot-switch helpers.
+    $v2SwitchRunner = Join-Path $testRoot 'v2-switch-unit.ps1'
+    [IO.File]::WriteAllText($v2SwitchRunner, @'
+param([string]$HotSwitchPath, [string]$ControllerPath, [string]$RuntimePath, [string]$V1ReleaseId, [string]$V2ReleaseId, [string]$Commit)
+$ErrorActionPreference = 'Stop'
+. $ControllerPath -Action Launch
+$runtime = [IO.Path]::GetFullPath($RuntimePath)
+$ast = [Management.Automation.Language.Parser]::ParseFile($HotSwitchPath, [ref]$null, [ref]$null)
+$fnNames = @(
+    'Test-IsElectronServerCommandLine',
+    'Strip-LeadingServerEntryArgument',
+    'Get-RuntimeServerBinaryInfo',
+    'Test-InstalledRelease',
+    'Select-InstalledRelease'
+)
+foreach ($definition in $ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $fnNames }, $false)) {
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
+
+$targetV2 = Resolve-LaunchTarget $runtime
+if ($targetV2.SchemaVersion -ne 2 -or $targetV2.RuntimeKind -cne 'electron-single-binary') { throw 'Resolve-LaunchTarget did not detect v2 runtime.' }
+if ($targetV2.MainPath -ine (Join-Path (Join-Path $runtime 'active') 'kiki-desktop.exe')) { throw "Unexpected v2 MainPath: $($targetV2.MainPath)" }
+if ($targetV2.ServerEntryPath -ine (Join-Path (Join-Path $runtime 'active') 'server-entry.mjs')) { throw "Unexpected v2 ServerEntryPath: $($targetV2.ServerEntryPath)" }
+
+$launchCalls = New-Object System.Collections.Generic.List[object]
+function Start-Process {
+    param([string]$FilePath, [string]$WorkingDirectory, [string]$ArgumentList, [string]$WindowStyle, [switch]$PassThru)
+    $launchCalls.Add([pscustomobject]@{
+        FilePath = $FilePath
+        ArgumentList = $ArgumentList
+        RunAsNode = $env:ELECTRON_RUN_AS_NODE
+    }) | Out-Null
+}
+$env:ELECTRON_RUN_AS_NODE = '1'
+Invoke-Launch $runtime -TrayOnly
+if ($launchCalls[0].RunAsNode -ne $null) { throw "GUI Invoke-Launch leaked ELECTRON_RUN_AS_NODE=$($launchCalls[0].RunAsNode)" }
+Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+Invoke-HeadlessLaunch $runtime (Join-Path $runtime 'dummy-home') 'serve --port 0'
+if ($launchCalls[1].RunAsNode -cne '1') { throw 'v2 Invoke-HeadlessLaunch did not set ELECTRON_RUN_AS_NODE=1.' }
+if ($launchCalls[1].FilePath -ine $targetV2.MainPath) { throw "v2 Invoke-HeadlessLaunch used wrong binary: $($launchCalls[1].FilePath)" }
+if (-not $launchCalls[1].ArgumentList.Contains('server-entry.mjs') -or -not $launchCalls[1].ArgumentList.Contains('serve --port 0')) {
+    throw "v2 Invoke-HeadlessLaunch arguments missing server-entry.mjs or serve args: $($launchCalls[1].ArgumentList)"
+}
+
+if (-not (Test-InstalledRelease $V1ReleaseId)) { throw "v1 release $V1ReleaseId not recognized as installed." }
+if (-not (Test-InstalledRelease $V2ReleaseId)) { throw "v2 release $V2ReleaseId not recognized as installed." }
+if (-not (Test-IsElectronServerCommandLine '"C:\rt\active\kiki-desktop.exe" "C:\rt\active\server-entry.mjs" serve --port 0')) {
+    throw 'Test-IsElectronServerCommandLine failed to match v2 server process.'
+}
+if (Test-IsElectronServerCommandLine '"C:\rt\active\kiki-desktop.exe" --tray-only') {
+    throw 'Test-IsElectronServerCommandLine falsely matched GUI process.'
+}
+$stripped = Strip-LeadingServerEntryArgument '"C:\rt\active\server-entry.mjs" serve --port 19123'
+if ($stripped -cne 'serve --port 19123') { throw "Strip-LeadingServerEntryArgument returned '$stripped'." }
+
+$v2BinInfo = Get-RuntimeServerBinaryInfo (Join-Path (Join-Path $runtime 'active') 'kiki-desktop.exe') '"C:\rt\active\kiki-desktop.exe" "C:\rt\active\server-entry.mjs" serve'
+if ($null -eq $v2BinInfo -or $v2BinInfo.schemaVersion -ne 2 -or $v2BinInfo.releaseId -cne $V2ReleaseId) {
+    throw 'Get-RuntimeServerBinaryInfo did not classify active v2 Electron server binary.'
+}
+
+# Rollback v2 -> v1 cleanly.
+Select-InstalledRelease $V1ReleaseId $Commit 'Original' -RequireActiveSync
+$rolledBackCurrent = Read-CurrentManifest $runtime
+if ($rolledBackCurrent.schemaVersion -ne 1 -or $rolledBackCurrent.releaseId -cne $V1ReleaseId) {
+    throw 'Rollback v2 -> v1 did not restore schemaVersion 1 current.json.'
+}
+$activeDir = Join-Path $runtime 'active'
+if (-not (Test-Path -LiteralPath (Join-Path $activeDir 'kiki-server.exe') -PathType Leaf)) {
+    throw 'Rollback v2 -> v1 did not restore active\kiki-server.exe.'
+}
+if ((Test-Path -LiteralPath (Join-Path $activeDir 'server-entry.mjs')) -or (Test-Path -LiteralPath (Join-Path $activeDir 'native-addons.json'))) {
+    throw 'Rollback v2 -> v1 left stale v2 files in active\.'
+}
+
+# Switch forward v1 -> v2 again cleanly.
+Select-InstalledRelease $V2ReleaseId $Commit 'Target' -RequireActiveSync
+$switchedBackCurrent = Read-CurrentManifest $runtime
+if ($switchedBackCurrent.schemaVersion -ne 2 -or $switchedBackCurrent.runtimeKind -cne 'electron-single-binary' -or $switchedBackCurrent.releaseId -cne $V2ReleaseId) {
+    throw 'Re-upgrade v1 -> v2 did not restore schemaVersion 2 current.json.'
+}
+if (Test-Path -LiteralPath (Join-Path $activeDir 'kiki-server.exe')) {
+    throw 'Re-upgrade v1 -> v2 left stale active\kiki-server.exe.'
+}
+'@, (New-Object Text.UTF8Encoding($false)))
+    Invoke-Controller @('-HotSwitchPath', $hotSwitchPath, '-ControllerPath', $controller, '-RuntimePath', $runtimeRoot, '-V1ReleaseId', $secondReleaseId, '-V2ReleaseId', $v2ReleaseId, '-Commit', $expectedCommit) 0 $v2SwitchRunner | Out-Null
+
+    Write-Output 'desktop-release tests passed: initial, repeated, fail-closed, verification, cli-publish, installed-controller, production-default, shortcut, main-runtime-shortcut, receipt, legacy-launch, hot-switch-guard, child-home-inference, autostart-sync, and v1/v2 dual-manifest rollback cases.'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot) {

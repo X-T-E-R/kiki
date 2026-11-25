@@ -46,6 +46,8 @@ const workspaceAlias = [
   { find: /^@kiki\/protocol\/(.+)$/, replacement: pkg('protocol/src/$1.ts') },
   { find: /^@kiki\/kaos$/, replacement: pkg('kaos/src/index.ts') },
   { find: /^@kiki\/kaos\/(.+)$/, replacement: pkg('kaos/src/$1') },
+  { find: /^@kiki\/node-sdk$/, replacement: pkg('node-sdk/src/index.ts') },
+  { find: /^@kiki\/node-sdk\/(.+)$/, replacement: pkg('node-sdk/src/$1.ts') },
   { find: /^@kiki\/agent-core-v2$/, replacement: pkg('agent-core-v2/src/index.ts') },
   { find: /^@kiki\/agent-core-v2\/(.+)$/, replacement: pkg('agent-core-v2/src/$1') },
   { find: /^@kiki\/agent-profiles$/, replacement: pkg('agent-profiles/src/index.ts') },

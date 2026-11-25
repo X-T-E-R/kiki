@@ -29,7 +29,7 @@ const currentReleaseV2Schema = z.object({
   schemaVersion: z.literal(2),
   runtimeKind: z.literal('electron-single-binary'),
   releaseId: z.string().regex(RELEASE_ID_RE),
-  serverEntry: z.string().min(1).default('resources/app.asar.unpacked/dist/server/server-entry.mjs'),
+  serverEntry: z.string().min(1).optional(),
   files: z.record(z.string(), fileDigestSchema).optional(),
 });
 
@@ -180,8 +180,19 @@ function hasValidRuntimeArtifacts(
   if (!checkFile(desktopExe)) return { ok: false, desktopExe };
 
   if (manifest.schemaVersion === 2) {
-    const entryPath = join(dir, manifest.serverEntry);
-    if (!checkFile(entryPath)) return { ok: false, desktopExe };
+    const candidates =
+      manifest.serverEntry !== undefined
+        ? [manifest.serverEntry]
+        : ['server-entry.mjs', 'resources/app.asar.unpacked/dist/server/server-entry.mjs'];
+    const entryPath = candidates.map((rel) => join(dir, rel)).find((candidate) => checkFile(candidate));
+    if (entryPath === undefined) return { ok: false, desktopExe };
+    if (
+      manifest.files !== undefined &&
+      Object.hasOwn(manifest.files, 'native-addons.json') &&
+      !checkFile(join(dir, 'native-addons.json'))
+    ) {
+      return { ok: false, desktopExe };
+    }
     return { ok: true, desktopExe, serverEntry: entryPath };
   }
 

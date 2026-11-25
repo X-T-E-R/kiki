@@ -99,7 +99,7 @@ const PEER_SCOPED_EMITTER_RULES: readonly (PeerSubscriptionScopeRule & { service
   { service: 'threadCommunicationService', event: 'onDidChangeMessageDelivery', scope: 'core', workspaceId: 'absent', sessionId: 'absent', agentId: 'absent' },
 ];
 const WEB_RUNTIME_SWITCH_PATH = '/api/runtime-switch';
-const WEB_DENIED_PATH_PATTERN = /^\/api\/(?:debug|klient\/(?:delegation|context)|external-delegation|thread-bridge|thread-bridges|usage-export|external-clients|session-access|shutdown|mesh|sync)(?:\/|$)/;
+const WEB_DENIED_PATH_PATTERN = /^\/api\/(?:debug|desktop|klient\/(?:delegation|context)|external-delegation|thread-bridge|thread-bridges|usage-export|external-clients|session-access|shutdown|mesh|sync)(?:\/|$)/;
 export const TERMINAL_CONNECTION_OPERATIONS = new Set(['terminals', 'terminalCreate', 'terminal', 'terminalClose']);
 const PEER_EXECUTE_OPERATIONS = new Set([
   ...TERMINAL_CONNECTION_OPERATIONS,
@@ -304,8 +304,9 @@ export class ConnectionAudience {
       const bearer = this.admission.matchBearer(token);
       if (bearer !== undefined) return this.authorizePeer(bearer, request, reply);
       if (!(await this.validateOwner(token))) throw new AdmissionError(401, 'invalid_owner_credential');
-      const path = request.url.split('?', 1)[0]!;
-      if (/^\/api\/usage-export(?:\/|$)/.test(path)) throw new AdmissionError(403, 'local_owner_required');
+      let path = request.url.split('?', 1)[0]!;
+      try { path = decodeURIComponent(path); } catch { throw new AdmissionError(403, 'local_owner_required'); }
+      if (/^\/api\/(?:usage-export|desktop)(?:\/|$)/.test(path)) throw new AdmissionError(403, 'local_owner_required');
       if (this.admission.unavailableReason === undefined && ((path === '/api/remote-connections/handshake' && request.method === 'GET') || (path === '/api/remote-connections/claim' && request.method === 'POST'))) return true;
       const peer = this.admission.authorize(peerGrant(request.headers));
       if (request.method === 'POST' && path === '/api/remote-connections/pair/cancel') {

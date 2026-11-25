@@ -191,11 +191,11 @@ export const IPC_SCHEMAS = {
   [IPC_CHANNELS.pluginFocusRead]: z.void(),
   [IPC_CHANNELS.pluginFocusAck]: z.object({
     homeId: nonEmptyString,
-    requestId: z.number().int().nonnegative(),
+    requestId: z.number().int().positive(),
   }),
   [IPC_CHANNELS.pluginFocusRemember]: z.object({
     homeId: nonEmptyString,
-    requestId: z.number().int().nonnegative(),
+    requestId: z.number().int().positive(),
   }),
   [IPC_CHANNELS.notificationsSend]: hostNotificationSchema,
   [IPC_CHANNELS.notificationsAcknowledge]: z.object({

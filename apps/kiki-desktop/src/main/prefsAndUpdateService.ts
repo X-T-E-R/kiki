@@ -1,8 +1,8 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join } from 'pathe';
+import { atomicWrite } from '@kiki/kaos/atomic-fs';
 import { parse as parseToml } from 'smol-toml';
-import writeFileAtomic from 'write-file-atomic';
 import { z } from 'zod';
 import { desktopPrefsPatchSchema } from '#/shared/ipcChannels';
 import type {
@@ -129,7 +129,7 @@ function parseDesktopPrefsRecord(raw: unknown): DesktopNativePrefs {
 
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true });
-  await writeFileAtomic(filePath, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8' });
+  await atomicWrite(filePath, `${JSON.stringify(value, null, 2)}\n`, undefined, undefined, undefined, true);
 }
 
 export async function readDesktopSpaceToml(homeDir: string): Promise<DesktopSpace | null> {

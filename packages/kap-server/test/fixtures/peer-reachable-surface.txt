@@ -374,7 +374,7 @@ WEB PATH /api/runtime-switch: GET only
 WEB PATH /api/web-access*: only /api/web-access/session,/api/web-access/logout,/api/web-access/exchange
 WEB PATH all other paths: allowed
 WEB PATH denied exact: /mcp
-WEB PATH denied pattern: ^\/api\/(?:debug|klient\/(?:delegation|context)|external-delegation|thread-bridge|thread-bridges|usage-export|external-clients|session-access|shutdown|mesh|sync)(?:\/|$)
+WEB PATH denied pattern: ^\/api\/(?:debug|desktop|klient\/(?:delegation|context)|external-delegation|thread-bridge|thread-bridges|usage-export|external-clients|session-access|shutdown|mesh|sync)(?:\/|$)
 WEB PROCEDURE all other services: allowed
 WEB PROCEDURE bootstrapService: only platform,arch,cwd,osHomeDir,homeDir,configPath,clientVersion,clientIdentity,sessionsDir,blobsDir,storeDir,cacheDir,logsDir
 WEB PROCEDURE denied services: authTokenService,externalDelegationService,externalDelegationSeatService

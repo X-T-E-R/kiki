@@ -508,7 +508,7 @@ if (!singleInstanceLock) {
     const autostart = prefsAndUpdates.getAutostart();
     let localSpaces: LocalSpaceSummary[] = [];
     try {
-      localSpaces = (await daemon.listSpacesAndStatuses()).spaces;
+      localSpaces = (await daemon.listSpacesAndStatuses(spaces.getActiveSpace().homeId)).spaces;
     } catch {
       localSpaces = [];
     }

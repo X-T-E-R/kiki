@@ -505,8 +505,16 @@ describe('Electron host adapter', () => {
 
     const bridge = createMockBridge();
     vi.mocked(bridge.window.showMainWindow).mockResolvedValueOnce(undefined);
-    const prevTauriInternals = (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    const prevWindow = (globalThis as { window?: unknown }).window;
+    const prevTauriInternals =
+      prevWindow !== undefined && typeof prevWindow === 'object' && prevWindow !== null
+        ? (prevWindow as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+        : undefined;
+    if (prevWindow === undefined) {
+      (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: {} };
+    } else {
+      (prevWindow as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    }
     try {
       expect((await resolveHostAdapter()).kind).toBe('tauri');
 
@@ -516,10 +524,12 @@ describe('Electron host adapter', () => {
       await electronHost.showMainWindow();
       expect(bridge.window.showMainWindow).toHaveBeenCalledOnce();
     } finally {
-      if (prevTauriInternals === undefined) {
-        delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      if (prevWindow === undefined) {
+        delete (globalThis as { window?: unknown }).window;
+      } else if (prevTauriInternals === undefined) {
+        delete (prevWindow as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
       } else {
-        (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = prevTauriInternals;
+        (prevWindow as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = prevTauriInternals;
       }
     }
   });

@@ -7,6 +7,14 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'pathe';
 import { z } from 'zod';
 import { removeInjectedHeapOption } from '@kiki/node-sdk/worker-heap-policy';
+import {
+  desktopPluginFocusResponseSchema,
+  desktopSpacesResponseSchema,
+  desktopSshConnectResponseSchema,
+  desktopSshProfilesResponseSchema,
+  desktopSshResumeResponseSchema,
+  type DesktopSshResolvedConnection,
+} from '@kiki/protocol';
 import { ELECTRON_RUN_AS_NODE_ENV, filterGuiChildEnv } from '#/main/releaseRedirect';
 import { openDetachedBackendLogFd } from '#/main/rotatingLog';
 import type {
@@ -26,13 +34,18 @@ const DEFAULT_POLL_INTERVAL_MS = 200;
 const DEFAULT_HTTP_TIMEOUT_MS = 10_000;
 const HEARTBEAT_FRESHNESS_MS = 60_000;
 
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+
 const instanceRecordSchema = z.object({
   pid: z.number().int().positive(),
   port: z.number().int().min(1).max(65535),
+  host: z.string().optional(),
   serverId: z.string().optional(),
   server_id: z.string().optional(),
   startedAt: z.number().optional(),
+  started_at: z.number().optional(),
   heartbeatAt: z.number().optional(),
+  heartbeat_at: z.number().optional(),
 });
 
 const metaEnvelopeSchema = z.object({
@@ -42,6 +55,8 @@ const metaEnvelopeSchema = z.object({
     .object({
       server_id: z.string().optional(),
       serverId: z.string().optional(),
+      current_space_id: z.string().optional(),
+      server_home_id: z.string().optional(),
       home_id: z.string().optional(),
       homeId: z.string().optional(),
       build_id: z.string().nullable().optional(),
@@ -269,8 +284,10 @@ export class DaemonSupervisor extends EventEmitter {
         const parsed = instanceRecordSchema.safeParse(JSON.parse(raw));
         if (!parsed.success) continue;
         const record = parsed.data;
+        if (record.host !== undefined && !LOOPBACK_HOSTS.has(record.host.toLowerCase())) continue;
         if (!this.isPidAlive(record.pid)) continue;
-        if (record.heartbeatAt !== undefined && nowMs - record.heartbeatAt > HEARTBEAT_FRESHNESS_MS) {
+        const heartbeatAt = record.heartbeat_at ?? record.heartbeatAt;
+        if (heartbeatAt !== undefined && nowMs - heartbeatAt > HEARTBEAT_FRESHNESS_MS) {
           continue;
         }
         records.push(record);
@@ -301,7 +318,7 @@ export class DaemonSupervisor extends EventEmitter {
       if (!parsed.success || parsed.data.code !== 0 || parsed.data.data === undefined) return null;
       const data = parsed.data.data;
       const serverId = data.server_id ?? data.serverId ?? '';
-      const homeId = data.home_id ?? data.homeId ?? 'main';
+      const homeId = data.current_space_id ?? data.home_id ?? data.homeId ?? 'main';
       if (this.descriptor.buildId !== undefined) {
         const reportedBuild = data.build_id ?? data.buildId;
         if (reportedBuild !== null && reportedBuild !== undefined && reportedBuild !== this.descriptor.buildId) {
@@ -636,35 +653,47 @@ export class DaemonSupervisor extends EventEmitter {
     return envelope.data;
   }
 
+  private normalizeSshConnection(connection: DesktopSshResolvedConnection): SshResolvedConnection {
+    return {
+      config: connection.config,
+      tunnelId: connection.tunnelId,
+      serverHomeId: connection.serverHomeId,
+      serverInstanceId: connection.serverInstanceId,
+      serverVersion: connection.serverVersion,
+      buildId: connection.buildId ?? null,
+      buildChannel: connection.buildChannel ?? null,
+    };
+  }
+
   async listSshProfiles(): Promise<SshProfile[]> {
-    const data = await this.requestDesktopApi<{ profiles: SshProfile[] }>('GET', '/api/desktop/ssh/profiles');
-    return data.profiles;
+    const raw = await this.requestDesktopApi<unknown>('GET', '/api/desktop/ssh/profiles');
+    return desktopSshProfilesResponseSchema.parse(raw).profiles;
   }
 
   async saveSshProfile(profile: SshProfile): Promise<SshProfile[]> {
-    const data = await this.requestDesktopApi<{ profiles: SshProfile[] }>(
+    const raw = await this.requestDesktopApi<unknown>(
       'PUT',
       '/api/desktop/ssh/profiles',
       { profile },
     );
-    return data.profiles;
+    return desktopSshProfilesResponseSchema.parse(raw).profiles;
   }
 
   async removeSshProfile(id: string): Promise<SshProfile[]> {
-    const data = await this.requestDesktopApi<{ profiles: SshProfile[] }>(
+    const raw = await this.requestDesktopApi<unknown>(
       'DELETE',
       `/api/desktop/ssh/profiles/${encodeURIComponent(id)}`,
     );
-    return data.profiles;
+    return desktopSshProfilesResponseSchema.parse(raw).profiles;
   }
 
   async connectSshProfile(id: string, token: string, staged = false): Promise<SshResolvedConnection> {
-    const data = await this.requestDesktopApi<{ connection: SshResolvedConnection }>(
+    const raw = await this.requestDesktopApi<unknown>(
       'POST',
       '/api/desktop/ssh/connect',
       { id, token, home_id: this.attached?.homeId, staged },
     );
-    return data.connection;
+    return this.normalizeSshConnection(desktopSshConnectResponseSchema.parse(raw).connection);
   }
 
   async resumeScopeConnection(
@@ -672,11 +701,16 @@ export class DaemonSupervisor extends EventEmitter {
     id: string,
     tunnelId: string,
   ): Promise<{ profile: SshProfile; connection: SshResolvedConnection }> {
-    return this.requestDesktopApi<{ profile: SshProfile; connection: SshResolvedConnection }>(
+    const raw = await this.requestDesktopApi<unknown>(
       'POST',
       '/api/desktop/ssh/resume',
       { home_id: homeId, id, tunnel_id: tunnelId },
     );
+    const parsed = desktopSshResumeResponseSchema.parse(raw);
+    return {
+      profile: parsed.profile,
+      connection: this.normalizeSshConnection(parsed.connection),
+    };
   }
 
   async commitScopeConnection(
@@ -717,24 +751,53 @@ export class DaemonSupervisor extends EventEmitter {
     );
   }
 
-  async listSpacesAndStatuses(): Promise<{
+  async listSpacesAndStatuses(activeHomeId?: string): Promise<{
     readonly spaces: LocalSpaceSummary[];
     readonly statuses: DesktopSpaceStatus[];
   }> {
-    return this.requestDesktopApi<{ spaces: LocalSpaceSummary[]; statuses: DesktopSpaceStatus[] }>(
-      'GET',
-      '/api/desktop/spaces',
-    );
+    const raw = await this.requestDesktopApi<unknown>('GET', '/api/desktop/spaces');
+    const parsed = desktopSpacesResponseSchema.parse(raw);
+    const effectiveActive = activeHomeId ?? this.attached?.homeId;
+    const statusByHome = new Map(parsed.statuses.map((entry) => [entry.home_id, entry]));
+
+    const spaces: LocalSpaceSummary[] = parsed.spaces.map((entry) => {
+      const wireStatus = statusByHome.get(entry.home_id);
+      const active =
+        effectiveActive !== undefined ? entry.home_id === effectiveActive : wireStatus?.state === 'active';
+      const status: LocalSpaceSummary['status'] = !entry.running
+        ? 'stopped'
+        : active
+          ? 'running'
+          : 'background';
+      return {
+        homeId: entry.home_id,
+        name: entry.name,
+        path: entry.path,
+        status,
+        active,
+        ...(entry.desktop_managed !== undefined ? { managed: entry.desktop_managed } : {}),
+      };
+    });
+
+    const statuses: DesktopSpaceStatus[] = parsed.statuses.map((entry) => ({
+      homeId: entry.home_id,
+      active: effectiveActive !== undefined ? entry.home_id === effectiveActive : entry.state === 'active',
+      hot: entry.state !== 'offline',
+      pendingCount: entry.needs_you_sessions,
+      busyCount: entry.busy_sessions,
+    }));
+
+    return { spaces, statuses };
   }
 
   async readPluginFocus(homeId?: string): Promise<PluginFocusIntent | null> {
     const targetHome = homeId ?? this.attached?.homeId;
     const query = targetHome !== undefined ? `?home_id=${encodeURIComponent(targetHome)}` : '';
-    const data = await this.requestDesktopApi<{ focus: PluginFocusIntent | null }>(
+    const raw = await this.requestDesktopApi<unknown>(
       'GET',
       `/api/desktop/plugin-focus${query}`,
     );
-    return data.focus;
+    return desktopPluginFocusResponseSchema.parse(raw).focus;
   }
 
   async ackPluginFocus(homeId: string, requestId: number): Promise<void> {

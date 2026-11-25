@@ -838,9 +838,9 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     }
     if (path.startsWith('/api/web-access')) reply.header('cache-control', 'no-store');
     if (request.headers.authorization === undefined && !peerRequests.has(request.raw) && ((path === '/api/web-access/session' && request.method === 'GET') || (['/api/web-access/exchange', '/api/web-access/logout'].includes(path) && request.method === 'POST'))) return;
-    if (webRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation|mesh|sync)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
-    if (peerRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation|shutdown)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
-    const d24 = /^\/api\/(?:web-access|remote-connections|thread-bridges|thread-bridge|usage-export|external-clients|session-access|storage|mesh|sync)(?:\/|$)/.test(path);
+    if (webRequests.has(request.raw) && (/^\/api\/(?:debug|desktop|klient\/delegation|mesh|sync)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
+    if (peerRequests.has(request.raw) && (/^\/api\/(?:debug|desktop|klient\/delegation|shutdown)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
+    const d24 = /^\/api\/(?:web-access|remote-connections|thread-bridges|thread-bridge|usage-export|external-clients|session-access|storage|mesh|sync|desktop)(?:\/|$)/.test(path);
     if (opts.disableAuth !== true || d24 || peerGrant(request.headers) !== undefined || peerRequests.has(request.raw)) return authHook(request, reply);
   });
   if (opts.disableAuth === true) {

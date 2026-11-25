@@ -343,12 +343,35 @@ function Get-HomeRegisteredServerPids([string]$SpaceHome = $homePath) {
     return @($pids)
 }
 
+function Test-IsElectronServerCommandLine([string]$CommandLine) {
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $false }
+    return ($CommandLine -match '(?i)(?:^|[\s"''\\\/])server-entry\.mjs(?:["''\s]|$)')
+}
+
+function Strip-LeadingServerEntryArgument([string]$LaunchArgs) {
+    if ([string]::IsNullOrWhiteSpace($LaunchArgs)) { return '' }
+    $trimmed = $LaunchArgs.Trim()
+    if ($trimmed -match '^(?i)(?:"[^"]*server-entry\.mjs"|''[^'']*server-entry\.mjs''|\S*server-entry\.mjs)(?:\s+(.*))?$') {
+        if ($Matches.ContainsKey(1) -and $null -ne $Matches[1]) { return ([string]$Matches[1]).Trim() }
+        return ''
+    }
+    return $trimmed
+}
+
 function Get-OtherActiveServerPids([int[]]$OwnedPids = @()) {
     $ownedSet = New-Object 'System.Collections.Generic.HashSet[int]'
     foreach ($pidVal in @($OwnedPids)) {
         if ($pidVal -gt 0) { $null = $ownedSet.Add($pidVal) }
     }
-    $expectedActiveServer = Join-Path (Get-ActivePath $runtime) 'kiki-server.exe'
+    $activePath = Get-ActivePath $runtime
+    $expectedActiveServer = Join-Path $activePath 'kiki-server.exe'
+    $expectedActiveDesktop = Join-Path $activePath 'kiki-desktop.exe'
+    $desktopCmdByPid = @{}
+    try {
+        foreach ($wmiProc in @(Get-CimInstance Win32_Process -Filter "Name='kiki-desktop.exe'" -ErrorAction SilentlyContinue)) {
+            $desktopCmdByPid[[int]$wmiProc.ProcessId] = [string]$wmiProc.CommandLine
+        }
+    } catch {}
     $otherPids = @()
     foreach ($proc in @(Get-Process -Name 'kiki-server' -ErrorAction SilentlyContinue)) {
         try {
@@ -359,22 +382,49 @@ function Get-OtherActiveServerPids([int[]]$OwnedPids = @()) {
             }
         } catch {}
     }
+    foreach ($proc in @(Get-Process -Name 'kiki-desktop' -ErrorAction SilentlyContinue)) {
+        try {
+            if ($proc.HasExited) { continue }
+            $procPath = Get-ProcessPathSafe $proc
+            $cmdLine = if ($desktopCmdByPid.ContainsKey([int]$proc.Id)) { $desktopCmdByPid[[int]$proc.Id] } else { '' }
+            if ($procPath -and ($procPath -ieq $expectedActiveDesktop) -and (Test-IsElectronServerCommandLine $cmdLine) -and (-not $ownedSet.Contains([int]$proc.Id))) {
+                $otherPids += [int]$proc.Id
+            }
+        } catch {}
+    }
     return @($otherPids)
 }
 
-function Get-RuntimeServerBinaryInfo([string]$BinaryPath) {
+function Get-RuntimeServerBinaryInfo([string]$BinaryPath, [string]$CommandLine = '') {
     if ([string]::IsNullOrWhiteSpace($BinaryPath)) { return $null }
-    $expectedActiveServer = Join-Path (Get-ActivePath $runtime) 'kiki-server.exe'
+    $activePath = Get-ActivePath $runtime
+    $expectedActiveServer = Join-Path $activePath 'kiki-server.exe'
+    $expectedActiveDesktop = Join-Path $activePath 'kiki-desktop.exe'
     if ($BinaryPath -ieq $expectedActiveServer) {
         $activeReleaseId = Resolve-ActiveReleaseId $runtime
         if ([string]::IsNullOrWhiteSpace($activeReleaseId)) { return $null }
-        return [pscustomobject]@{ layout = 'active'; releaseId = $activeReleaseId; executablePath = $BinaryPath }
+        return [pscustomobject]@{ layout = 'active'; releaseId = $activeReleaseId; executablePath = $BinaryPath; schemaVersion = 1 }
+    }
+    if ($BinaryPath -ieq $expectedActiveDesktop) {
+        $activeManifest = Read-ActiveManifest $runtime -AllowMissing
+        $activeSchema = if ($null -ne $activeManifest) { Get-ManifestSchemaVersion $activeManifest } else { Get-DirectoryReleaseSchemaVersion $activePath }
+        if ($activeSchema -eq 2 -and ([string]::IsNullOrWhiteSpace($CommandLine) -or (Test-IsElectronServerCommandLine $CommandLine))) {
+            $activeReleaseId = Resolve-ActiveReleaseId $runtime
+            if ([string]::IsNullOrWhiteSpace($activeReleaseId)) { return $null }
+            return [pscustomobject]@{ layout = 'active'; releaseId = $activeReleaseId; executablePath = $BinaryPath; schemaVersion = 2 }
+        }
     }
     $releasesPrefix = (Join-Path $runtime 'releases') + '\'
     if ($BinaryPath.StartsWith($releasesPrefix, [StringComparison]::OrdinalIgnoreCase)) {
         $releaseId = Split-Path -Leaf (Split-Path -Parent $BinaryPath)
-        if ($releaseId -match '^[0-9a-f]{24}-[0-9a-f]{24}$' -and $BinaryPath -ieq (Join-Path (Get-ReleasePath $runtime $releaseId) 'kiki-server.exe')) {
-            return [pscustomobject]@{ layout = 'releases'; releaseId = $releaseId; executablePath = $BinaryPath }
+        if ($releaseId -match '^[0-9a-f]{24}-[0-9a-f]{24}$') {
+            $releaseDir = Get-ReleasePath $runtime $releaseId
+            if ($BinaryPath -ieq (Join-Path $releaseDir 'kiki-server.exe')) {
+                return [pscustomobject]@{ layout = 'releases'; releaseId = $releaseId; executablePath = $BinaryPath; schemaVersion = 1 }
+            }
+            if ($BinaryPath -ieq (Join-Path $releaseDir 'kiki-desktop.exe') -and (Get-DirectoryReleaseSchemaVersion $releaseDir) -eq 2 -and ([string]::IsNullOrWhiteSpace($CommandLine) -or (Test-IsElectronServerCommandLine $CommandLine))) {
+                return [pscustomobject]@{ layout = 'releases'; releaseId = $releaseId; executablePath = $BinaryPath; schemaVersion = 2 }
+            }
         }
     }
     return $null
@@ -540,24 +590,26 @@ function Get-InferredHomeFromChildArgs([string]$LaunchArgs) {
 function Find-RuntimeServerEntries([string[]]$KnownHomes = @()) {
     $wmiByPid = @{}
     try {
-        foreach ($wmiProc in @(Get-CimInstance Win32_Process -Filter "Name='kiki-server.exe'" -ErrorAction SilentlyContinue)) {
+        foreach ($wmiProc in @(Get-CimInstance Win32_Process -Filter "Name='kiki-server.exe' OR Name='kiki-desktop.exe'" -ErrorAction SilentlyContinue)) {
             $wmiByPid[[int]$wmiProc.ProcessId] = $wmiProc
         }
     } catch {}
     $candidates = @()
     $matchedPids = New-Object 'System.Collections.Generic.HashSet[int]'
-    foreach ($proc in @(Get-Process -Name 'kiki-server' -ErrorAction SilentlyContinue)) {
+    foreach ($proc in @(Get-Process -Name 'kiki-server', 'kiki-desktop' -ErrorAction SilentlyContinue)) {
         try {
             if ($proc.HasExited) { continue }
-            $procPath = Get-ProcessPathSafe $proc
-            $binaryInfo = Get-RuntimeServerBinaryInfo $procPath
-            if ($null -eq $binaryInfo) { continue }
             $procPid = [int]$proc.Id
-            $null = $matchedPids.Add($procPid)
+            $procPath = Get-ProcessPathSafe $proc
             $wmi = if ($wmiByPid.ContainsKey($procPid)) { $wmiByPid[$procPid] } else { $null }
             $cmdLine = if ($null -ne $wmi) { [string]$wmi.CommandLine } else { '' }
+            if ($proc.ProcessName -ieq 'kiki-desktop' -and (-not (Test-IsElectronServerCommandLine $cmdLine))) { continue }
+            $binaryInfo = Get-RuntimeServerBinaryInfo $procPath $cmdLine
+            if ($null -eq $binaryInfo) { continue }
+            $null = $matchedPids.Add($procPid)
             $parentPid = if ($null -ne $wmi) { [int]$wmi.ParentProcessId } else { 0 }
-            $launchArgs = Split-ExecutableAndArguments $cmdLine
+            $rawLaunchArgs = Split-ExecutableAndArguments $cmdLine
+            $launchArgs = if ($binaryInfo.schemaVersion -eq 2) { Strip-LeadingServerEntryArgument $rawLaunchArgs } else { $rawLaunchArgs }
             $candidates += [pscustomobject]@{
                 process = $proc
                 pid = $procPid
@@ -646,6 +698,7 @@ function Find-ShellEntries {
         if (-not $procPath) { continue }
         if (($procPath -ine $expectedActiveDesktop) -and (-not $procPath.StartsWith($releasesPrefix, [StringComparison]::OrdinalIgnoreCase))) { continue }
         $cmdLine = if ($cmdByPid.ContainsKey([int]$proc.Id)) { $cmdByPid[[int]$proc.Id] } else { '' }
+        if (Test-IsElectronServerCommandLine $cmdLine) { continue }
         $shellHome = Get-ShellHomeFromCommandLine $cmdLine $homePath
         $entries += [pscustomobject]@{
             process = $proc
@@ -985,9 +1038,12 @@ function New-CanaryOwnerToken {
     return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 }
 
-function Invoke-CanaryCheck([string]$ServerExePath, [string]$ExpectedBuildId = '', [int]$TimeoutSeconds = 0) {
+function Invoke-CanaryCheck([string]$ServerExePath, [string]$ExpectedBuildId = '', [int]$TimeoutSeconds = 0, [string]$ServerEntryPath = '') {
     if (-not (Test-Path -LiteralPath $ServerExePath -PathType Leaf)) {
         throw "Canary server executable is missing: $ServerExePath"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ServerEntryPath) -and (-not (Test-Path -LiteralPath $ServerEntryPath -PathType Leaf))) {
+        throw "Canary server entry is missing: $ServerEntryPath"
     }
     $artifactSha256 = Get-Sha256 $ServerExePath
     $canaryHome = Join-Path ([IO.Path]::GetTempPath()) ('kiki-canary-' + [guid]::NewGuid().ToString('N'))
@@ -1006,12 +1062,21 @@ function Invoke-CanaryCheck([string]$ServerExePath, [string]$ExpectedBuildId = '
 
         $psi = New-Object Diagnostics.ProcessStartInfo
         $psi.FileName = $ServerExePath
-        $psi.Arguments = 'serve --port 0 --idle-exit 2m'
+        $psi.Arguments = if (-not [string]::IsNullOrWhiteSpace($ServerEntryPath)) {
+            ('{0} serve --port 0 --idle-exit 2m' -f (Format-WindowsProcessArgument $ServerEntryPath))
+        } else {
+            'serve --port 0 --idle-exit 2m'
+        }
         $psi.WorkingDirectory = Split-Path -Parent $ServerExePath
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
         $psi.EnvironmentVariables['KIKI_HOME'] = $canaryHome
         $psi.EnvironmentVariables['KIKI_SEARCH_DISABLED'] = '1'
+        if (-not [string]::IsNullOrWhiteSpace($ServerEntryPath)) {
+            $psi.EnvironmentVariables['ELECTRON_RUN_AS_NODE'] = '1'
+        } elseif ($psi.EnvironmentVariables.ContainsKey('ELECTRON_RUN_AS_NODE')) {
+            $psi.EnvironmentVariables.Remove('ELECTRON_RUN_AS_NODE')
+        }
         # Match desktop sidecar heap injection so production SEA serve does not re-exec into a second PID.
         $existingNodeOpts = if ($psi.EnvironmentVariables.ContainsKey('NODE_OPTIONS')) { [string]$psi.EnvironmentVariables['NODE_OPTIONS'] } else { '' }
         if ($existingNodeOpts -notmatch '--max[-_]old[-_]space[-_]size') {
@@ -1379,8 +1444,15 @@ function Await-AllReleases([object[]]$SpaceStates, [string]$ReleaseId, [string]$
     if ([string]::IsNullOrWhiteSpace($ExpectedBuildId)) {
         throw 'Expected build commit is required when awaiting a switched release.'
     }
-    $expectedActiveServer = Join-Path (Get-ActivePath $runtime) 'kiki-server.exe'
+    $targetReleaseDir = if ($ReleaseId -match '^[0-9a-f]{24}-[0-9a-f]{24}$') { Get-ReleasePath $runtime $ReleaseId } else { $null }
+    $targetSchema = if ($null -ne $targetReleaseDir -and (Test-Path -LiteralPath $targetReleaseDir -PathType Container)) {
+        Get-DirectoryReleaseSchemaVersion $targetReleaseDir
+    } else {
+        $activeMan = Read-ActiveManifest $runtime -AllowMissing
+        if ($null -ne $activeMan) { Get-ManifestSchemaVersion $activeMan } else { 1 }
+    }
     $expectedActiveDesktop = Join-Path (Get-ActivePath $runtime) 'kiki-desktop.exe'
+    $expectedActiveServer = if ($targetSchema -eq 2) { $expectedActiveDesktop } else { Join-Path (Get-ActivePath $runtime) 'kiki-server.exe' }
     $deadline = [DateTime]::UtcNow.AddSeconds($StartupSeconds)
     $readyByKey = @{}
     do {
@@ -1446,8 +1518,21 @@ function Test-InstalledRelease([string]$ReleaseId) {
     try {
         $path = Get-ReleasePath $runtime $ReleaseId
         $desktopPath = Join-Path $path 'kiki-desktop.exe'
+        if (-not (Test-Path -LiteralPath $desktopPath -PathType Leaf)) { return $false }
+        $schema = Get-DirectoryReleaseSchemaVersion $path
+        if ($schema -eq 2) {
+            $serverEntryPath = Join-Path $path 'server-entry.mjs'
+            $nativeAddonsPath = Join-Path $path 'native-addons.json'
+            if (-not (Test-Path -LiteralPath $serverEntryPath -PathType Leaf) -or -not (Test-Path -LiteralPath $nativeAddonsPath -PathType Leaf)) {
+                return $false
+            }
+            $desktop = Get-ArtifactInfo $desktopPath 'Installed Kiki GUI'
+            $serverEntry = Get-ArtifactInfo $serverEntryPath 'Installed Kiki server entry'
+            $null = Get-ArtifactInfo $nativeAddonsPath 'Installed Kiki native addon manifest'
+            return (('{0}-{1}' -f $desktop.Hash.Substring(0,24), $serverEntry.Hash.Substring(0,24)) -ceq $ReleaseId)
+        }
         $serverPath = Join-Path $path 'kiki-server.exe'
-        if (-not (Test-Path -LiteralPath $desktopPath -PathType Leaf) -or -not (Test-Path -LiteralPath $serverPath -PathType Leaf)) {
+        if (-not (Test-Path -LiteralPath $serverPath -PathType Leaf)) {
             return $false
         }
         $desktop = Get-ArtifactInfo $desktopPath 'Installed Kiki GUI'
@@ -1460,7 +1545,29 @@ function Test-InstalledRelease([string]$ReleaseId) {
 
 function Select-InstalledRelease([string]$ReleaseId, [string]$BuildId, [string]$Label = 'Selected', [switch]$RequireActiveSync) {
     $path = Get-ReleasePath $runtime $ReleaseId
+    $schema = Get-DirectoryReleaseSchemaVersion $path
     $desktop = Get-ArtifactInfo (Join-Path $path 'kiki-desktop.exe') "$Label Kiki GUI"
+    if ($schema -eq 2) {
+        $serverEntry = Get-ArtifactInfo (Join-Path $path 'server-entry.mjs') "$Label Kiki server entry"
+        $nativeAddons = Get-ArtifactInfo (Join-Path $path 'native-addons.json') "$Label Kiki native addon manifest"
+        if (('{0}-{1}' -f $desktop.Hash.Substring(0,24), $serverEntry.Hash.Substring(0,24)) -cne $ReleaseId) {
+            throw "The $($Label.ToLowerInvariant()) binaries no longer match their installed release. Restore the release files before continuing."
+        }
+        Write-AtomicUtf8Json (Join-Path $runtime 'current.json') ([ordered]@{
+            schemaVersion = 2; runtimeKind = 'electron-single-binary'; releaseId = $ReleaseId; gitSha = $BuildId; promotedAtUtc = [DateTime]::UtcNow.ToString('o')
+            files = [ordered]@{
+                'kiki-desktop.exe' = @{ sha256 = $desktop.Hash; bytes = $desktop.Length }
+                'server-entry.mjs' = @{ sha256 = $serverEntry.Hash; bytes = $serverEntry.Length }
+                'native-addons.json' = @{ sha256 = $nativeAddons.Hash; bytes = $nativeAddons.Length }
+            }
+        })
+        if ($RequireActiveSync) {
+            Sync-ActiveRelease $runtime $ReleaseId $BuildId $desktop $null -SchemaVersion 2 -ExpectedServerEntry $serverEntry -ExpectedNativeAddons $nativeAddons | Out-Null
+        } else {
+            Sync-ActiveRelease $runtime $ReleaseId $BuildId $desktop $null -SkipIfLocked -SchemaVersion 2 -ExpectedServerEntry $serverEntry -ExpectedNativeAddons $nativeAddons | Out-Null
+        }
+        return
+    }
     $server = Get-ArtifactInfo (Join-Path $path 'kiki-server.exe') "$Label Kiki backend"
     if (('{0}-{1}' -f $desktop.Hash.Substring(0,24), $server.Hash.Substring(0,24)) -cne $ReleaseId) {
         throw "The $($Label.ToLowerInvariant()) binaries no longer match their installed release. Restore the release files before continuing."
@@ -1471,9 +1578,9 @@ function Select-InstalledRelease([string]$ReleaseId, [string]$BuildId, [string]$
         files = @{ 'kiki-desktop.exe' = @{ sha256 = $desktop.Hash; bytes = $desktop.Length }; 'kiki-server.exe' = @{ sha256 = $server.Hash; bytes = $server.Length } }
     })
     if ($RequireActiveSync) {
-        Sync-ActiveRelease $runtime $ReleaseId $BuildId $desktop $server | Out-Null
+        Sync-ActiveRelease $runtime $ReleaseId $BuildId $desktop $server -SchemaVersion 1 | Out-Null
     } else {
-        Sync-ActiveRelease $runtime $ReleaseId $BuildId $desktop $server -SkipIfLocked | Out-Null
+        Sync-ActiveRelease $runtime $ReleaseId $BuildId $desktop $server -SkipIfLocked -SchemaVersion 1 | Out-Null
     }
 }
 
@@ -1781,7 +1888,9 @@ if ($InspectOnly) {
             }
             if ($CanaryCheck) {
                 try {
-                    $canaryReport = Invoke-CanaryCheck $verifiedCand.Sidecar.Path $verifiedCand.GitSha $CanaryTimeoutSeconds
+                    $canaryExe = if ($verifiedCand.SchemaVersion -eq 2) { $verifiedCand.Desktop.Path } else { $verifiedCand.Sidecar.Path }
+                    $canaryEntry = if ($verifiedCand.SchemaVersion -eq 2) { $verifiedCand.ServerEntry.Path } else { '' }
+                    $canaryReport = Invoke-CanaryCheck $canaryExe $verifiedCand.GitSha $CanaryTimeoutSeconds $canaryEntry
                 } catch {
                     $inspectFailed = $true
                     $canaryReport = [ordered]@{ passed = $false; error = $_.Exception.Message }
@@ -2193,7 +2302,9 @@ try {
     # 3. Run canary check FIRST BEFORE touching, fencing, pausing, or closing ANY space (0s blackout during canary!).
     if ($CanaryCheck) {
         try {
-            $canaryResult = Invoke-CanaryCheck $verified.Sidecar.Path $expectedBuildId $CanaryTimeoutSeconds
+            $canaryExe = if ($verified.SchemaVersion -eq 2) { $verified.Desktop.Path } else { $verified.Sidecar.Path }
+            $canaryEntry = if ($verified.SchemaVersion -eq 2) { $verified.ServerEntry.Path } else { '' }
+            $canaryResult = Invoke-CanaryCheck $canaryExe $expectedBuildId $CanaryTimeoutSeconds $canaryEntry
             $script:report.canaryPassed = $true
             $script:report.canary = $canaryResult
             Write-Host ("Canary check passed (build={0}, elapsed={1}ms)" -f $canaryResult.build_id, $canaryResult.elapsedMs)
@@ -2475,7 +2586,7 @@ try {
             Invoke-Promotion $runtime $verified | Out-Host
             if ((Read-CurrentManifest $runtime).releaseId -cne $targetRelease) { throw 'Promotion did not select the verified candidate.' }
         }
-        Sync-ActiveRelease $runtime $targetRelease $expectedBuildId $verified.Desktop $verified.Sidecar | Out-Null
+        Sync-ActiveRelease $runtime $targetRelease $expectedBuildId $verified.Desktop $verified.Sidecar -SchemaVersion $verified.SchemaVersion -ExpectedServerEntry $verified.ServerEntry -ExpectedNativeAddons $verified.NativeAddons | Out-Null
         $launchers = Start-AllSpaces $recordedSpaces
         $targetsByHome = Await-AllReleases $recordedSpaces $targetRelease $expectedBuildId $launchers $tokensByHome
     } catch {

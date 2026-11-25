@@ -109,9 +109,15 @@ importers:
 
   apps/kiki-desktop:
     dependencies:
+      '@kiki/kaos':
+        specifier: workspace:^
+        version: link:../../packages/kaos
       '@kiki/node-sdk':
         specifier: workspace:^
         version: link:../../packages/node-sdk
+      '@kiki/protocol':
+        specifier: workspace:^
+        version: link:../../packages/protocol
       '@kiki/session-core':
         specifier: workspace:^
         version: link:../../packages/session-core
@@ -124,9 +130,6 @@ importers:
       smol-toml:
         specifier: ^1.9.0
         version: 1.9.1
-      write-file-atomic:
-        specifier: 8.0.0
-        version: 8.0.0
       zod:
         specifier: 'catalog:'
         version: 4.3.6
@@ -137,9 +140,6 @@ importers:
       '@types/node':
         specifier: ^22.15.3
         version: 22.19.17
-      '@types/write-file-atomic':
-        specifier: 4.0.3
-        version: 4.0.3
       electron:
         specifier: 44.10.1
         version: 44.10.1
@@ -4167,9 +4167,6 @@ packages:
 
   '@types/web-bluetooth@0.0.21':
     resolution: {integrity: sha512-oIQLCGWtcFZy2JW77j9k8nHzAOpqMHLQejDA48XXMWH6tjCQHz5RCFz1bzsmROyL6PUm+LLnUiI4BCn221inxA==}
-
-  '@types/write-file-atomic@4.0.3':
-    resolution: {integrity: sha512-qdo+vZRchyJIHNeuI1nrpsLw+hnkgqP/8mlaN6Wle/NKhydHmUN9l4p3ZE8yP90AJNJW4uB8HQhedb4f1vNayQ==}
 
   '@types/ws@8.18.1':
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
@@ -8872,10 +8869,6 @@ packages:
   wrappy@1.0.2:
     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
 
-  write-file-atomic@8.0.0:
-    resolution: {integrity: sha512-dYwyZredl67GyLLIHJnRM3h2PcOmN5SkcgC7eM5DPDEOEl6dLFqVrMg3F1Ea32usj4VSVZtd2H4MtKTNOf6nPg==}
-    engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
-
   ws@8.22.0:
     resolution: {integrity: sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==}
     engines: {node: '>=10.0.0'}
@@ -12277,10 +12270,6 @@ snapshots:
 
   '@types/web-bluetooth@0.0.21': {}
 
-  '@types/write-file-atomic@4.0.3':
-    dependencies:
-      '@types/node': 22.19.17
-
   '@types/ws@8.18.1':
     dependencies:
       '@types/node': 22.19.17
@@ -12337,7 +12326,7 @@ snapshots:
       obug: 2.1.1
       std-env: 4.0.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.4(@types/node@22.19.17)(@vitest/coverage-v8@4.1.4)(jsdom@25.0.1)(msw@2.15.0(@types/node@22.19.17)(typescript@6.0.2))(vite@6.4.4(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3))
+      vitest: 4.1.4(@types/node@22.19.17)(@vitest/coverage-v8@4.1.4)(jsdom@25.0.1)(msw@2.15.0(@types/node@22.19.17)(typescript@6.0.2))(vite@8.1.6(@types/node@22.19.17)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.3))
 
   '@vitest/expect@4.1.4':
     dependencies:
@@ -17856,10 +17845,6 @@ snapshots:
       strip-ansi: 7.2.0
 
   wrappy@1.0.2: {}
-
-  write-file-atomic@8.0.0:
-    dependencies:
-      signal-exit: 4.1.0
 
   ws@8.22.0: {}
 

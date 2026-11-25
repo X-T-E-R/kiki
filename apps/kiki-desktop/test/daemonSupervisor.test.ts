@@ -368,7 +368,7 @@ describe('DaemonSupervisor', () => {
             return jsonResponse({
               code: 0,
               msg: 'ok',
-              data: { focus: { homeId: 'main', route: '/plugins/brief', requestId: 42 } },
+              data: { focus: { homeId: 'main', route: '/s/session-brief', requestId: 42 } },
             });
           }
           if (url.pathname === '/api/desktop/plugin-focus/ack') {
@@ -386,7 +386,7 @@ describe('DaemonSupervisor', () => {
     expect(await supervisor.listSpacesAndStatuses()).toEqual({ spaces: [], statuses: [] });
     expect(await supervisor.readPluginFocus('main')).toEqual({
       homeId: 'main',
-      route: '/plugins/brief',
+      route: '/s/session-brief',
       requestId: 42,
     });
     await supervisor.ackPluginFocus('main', 42);
