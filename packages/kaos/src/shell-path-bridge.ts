@@ -19,6 +19,7 @@
 import { execFileSync as nodeExecFileSync } from 'node:child_process';
 import { existsSync, readFileSync as nodeReadFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
+import { LRUCache } from 'lru-cache';
 
 import type { Environment } from './environment';
 
@@ -138,8 +139,8 @@ export function createShellPathBridge(
   let cygpathExe: string | null | undefined;
   // Bounded cache of resolved first segments and short-TTL negative cache for
   // failed/timed-out cygpath probes so repeated failures do not stall the event loop.
-  const segmentCache = new Map<string, string>();
-  const failureCache = new Map<string, number>();
+  const segmentCache = new LRUCache<string, string>({ max: MAX_SEGMENT_CACHE_ENTRIES });
+  const failureCache = new LRUCache<string, number>({ max: MAX_SEGMENT_CACHE_ENTRIES });
   const now = deps.now ?? Date.now;
   let mountConfig:
     | { readonly root: string; readonly mounts: ReadonlyMap<string, string> }
@@ -175,15 +176,6 @@ export function createShellPathBridge(
     return mountConfig;
   }
 
-  function setBounded<V>(cache: Map<string, V>, key: string, value: V): void {
-    if (cache.has(key)) cache.delete(key);
-    else if (cache.size >= MAX_SEGMENT_CACHE_ENTRIES) {
-      const oldest = cache.keys().next().value;
-      if (oldest !== undefined) cache.delete(oldest);
-    }
-    cache.set(key, value);
-  }
-
   function locateCygpath(): string | null {
     if (cygpathExe !== undefined) return cygpathExe;
     const shellDir = nodePath.win32.dirname(env.shellPath);
@@ -211,7 +203,7 @@ export function createShellPathBridge(
     if (mounts !== null) {
       const mounted = mounts.mounts.get(firstSegment);
       const resolved = mounted ?? `${mounts.root}/${firstSegment}`;
-      setBounded(segmentCache, firstSegment, resolved);
+      segmentCache.set(firstSegment, resolved);
       return resolved;
     }
 
@@ -230,15 +222,15 @@ export function createShellPathBridge(
       const output = deps.execFileSync(exe, ['-w', '-C', 'UTF8', '--', `/${firstSegment}`]);
       const normalized = normalizeWin32Root(output);
       if (normalized === null) {
-        setBounded(failureCache, firstSegment, currentTime + FAILURE_CACHE_TTL_MS);
+        failureCache.set(firstSegment, currentTime + FAILURE_CACHE_TTL_MS);
         return null;
       }
       resolved = normalized;
     } catch {
-      setBounded(failureCache, firstSegment, currentTime + FAILURE_CACHE_TTL_MS);
+      failureCache.set(firstSegment, currentTime + FAILURE_CACHE_TTL_MS);
       return null;
     }
-    setBounded(segmentCache, firstSegment, resolved);
+    segmentCache.set(firstSegment, resolved);
     return resolved;
   }
 

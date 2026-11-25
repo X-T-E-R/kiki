@@ -47,6 +47,7 @@ Kiki maintains **two UI codebases** across all client surfaces:
 | `packages/plugin-sdk` | `@kiki/plugin-sdk` | Public authoring contracts and media/panel schemas for Kiki plugins. |
 | `packages/protocol` | `@kiki/protocol` | Shared browser-safe Zod wire schemas, REST/WS contracts, pairing helpers, and error envelopes. |
 | `packages/session-core` | `@kiki/session-core` | Framework-free client session controller, settings models (`packages/session-core/src/settings/settings.test.ts`), composer helpers, and i18n; see `packages/session-core/AGENTS.md`. |
+| `packages/shell-quoting` | `@kiki/shell-quoting` | Dependency-free POSIX `shlex.quote` and Windows `cmd` shell argument quoting utilities. |
 | `packages/transcript` | `@kiki/transcript` | Pure-TS isomorphic transcript data layer (L1–L4) and op-batch sequencing contract; see `packages/transcript/AGENTS.md`. |
 | `packages/transcript-live` | `@kiki/transcript-live` | Engine-event bindings producing canonical transcript operations; see `packages/transcript-live/AGENTS.md`. |
 | `packages/tree-sitter-bash` | `@kiki/tree-sitter-bash` | Pure-TS budgeted bash parser (parser only, no safety judgments); see `packages/tree-sitter-bash/README.md`. |

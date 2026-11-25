@@ -9,6 +9,7 @@ import {
   installedMatches,
   localizeEntry,
   pluginOrigin,
+  groupMcpToolsByServer,
   hasAnyPermission,
   planContributionGroups,
   pluginContributions,
@@ -260,6 +261,21 @@ describe('plugin catalog shaping', () => {
     expect(toolDisplayName('plugin__kiki-office__office_view')).toBe('office_view');
     expect(toolDisplayName('mcp__fixture-fs__read_file')).toBe('read_file');
     expect(toolDisplayName('Read')).toBe('Read');
+  });
+
+  it('groups MCP tool display names by mcp_server_id while skipping non-MCP tools', () => {
+    const grouped = groupMcpToolsByServer([
+      { name: 'Read', source: 'builtin' },
+      { name: 'mcp__alpha__list_files', source: 'mcp', mcp_server_id: 'alpha' },
+      { name: 'mcp__orphan__tool', source: 'mcp' },
+      { name: 'mcp__beta__query', source: 'mcp', mcp_server_id: 'beta' },
+      { name: 'mcp__alpha__read_file', source: 'mcp', mcp_server_id: 'alpha' },
+    ]);
+    expect([...grouped.entries()]).toEqual([
+      ['alpha', ['list_files', 'read_file']],
+      ['beta', ['query']],
+    ]);
+    expect(groupMcpToolsByServer(undefined).size).toBe(0);
   });
 
   it('groups a preview plan by contribution kind in display order', () => {

@@ -16,7 +16,7 @@ import { errorText } from '@kiki/session-core/i18n';
 import type { WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
-import { toolDisplayName } from '../../lib/pluginCatalog';
+import { groupMcpToolsByServer } from '../../lib/pluginCatalog';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, InlineError, type Feedback } from '../controls';
 import { McpConfigManager, type McpAddIntent } from '../settings/McpConfigManager';
@@ -132,16 +132,7 @@ export function McpView({
     staleTime: 60_000,
   });
 
-  const toolsByServer = useMemo(() => {
-    const map = new Map<string, string[]>();
-    for (const tool of toolsQuery.data?.tools ?? []) {
-      if (tool.source !== 'mcp' || tool.mcp_server_id === undefined) continue;
-      const bucket = map.get(tool.mcp_server_id) ?? [];
-      bucket.push(toolDisplayName(tool.name));
-      map.set(tool.mcp_server_id, bucket);
-    }
-    return map;
-  }, [toolsQuery.data]);
+  const toolsByServer = useMemo(() => groupMcpToolsByServer(toolsQuery.data?.tools), [toolsQuery.data]);
 
   const restart = useCallback(async (serverId: string) => {
     setFeedback(null);

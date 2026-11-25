@@ -52,6 +52,7 @@
   },
   "dependencies": {
     "@kiki/auth-native": "workspace:*",
+    "lru-cache": "^11.3.3",
     "proper-lockfile": "^4.1.2",
     "smol-toml": "^1.9.0",
     "zod": "catalog:"

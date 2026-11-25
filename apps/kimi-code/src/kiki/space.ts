@@ -37,15 +37,14 @@ import {
   type PortableSpacePreviewInput,
   type PortableSpaceUnlock,
 } from '@kiki/protocol';
+import { quotePosixShellArg, quoteShellArg } from '@kiki/shell-quoting';
 import type { Command } from 'commander';
 
-import { quoteShellArg } from '../utils/shell-quote';
 import { resolveEditorCommand } from '../utils/process/external-editor';
 import { resolveKikiHome } from './home';
 import {
   REMOTE_POSIX_PATH,
   isRemoteTarget,
-  quotePosixShellArg,
   remoteCommand,
   resolveRemoteTarget,
   type RemoteCommandRunner,

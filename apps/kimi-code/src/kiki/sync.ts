@@ -11,12 +11,12 @@ import {
   type SyncMemoryScopeKind,
   type SyncPeerTransferInput,
 } from '@kiki/protocol';
+import { quotePosixShellArg } from '@kiki/shell-quoting';
 import type { Command } from 'commander';
 import { resolveKikiHome } from './home';
 import {
   REMOTE_POSIX_PATH,
   isRemoteTarget,
-  quotePosixShellArg,
   remoteCommand,
   resolveRemoteTarget,
   type RemoteCommandRunner,
