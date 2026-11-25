@@ -10,6 +10,9 @@ import { ulid } from 'ulid';
 /** Default cadence for refreshing `heartbeat_at`. */
 export const HEARTBEAT_INTERVAL_MS = 15_000;
 
+/** Heartbeat age beyond which a registered instance is treated as stale even if its PID is reused. */
+export const HEARTBEAT_STALE_MS = HEARTBEAT_INTERVAL_MS * 3;
+
 export const DEFAULT_SERVER_DIR = join(resolveKikiHome(), 'server');
 export const DEFAULT_SERVER_INSTANCES_DIR = join(DEFAULT_SERVER_DIR, 'instances');
 
@@ -63,6 +66,8 @@ export interface InstanceRegistryOptions {
   readonly now?: () => number;
   /** Override the heartbeat cadence — used in tests to avoid a 15s wait. */
   readonly heartbeatIntervalMs?: number;
+  /** Override the stale-heartbeat cutoff — defaults to `max(heartbeatIntervalMs * 3, HEARTBEAT_STALE_MS)`. */
+  readonly heartbeatStaleMs?: number;
 }
 
 function pidAlive(pid: number): boolean {
@@ -144,7 +149,12 @@ function writeFileAtomic(filePath: string, content: string): Promise<void> {
   return atomicWrite(filePath, content);
 }
 
-async function sweepStale(instancesDir: string): Promise<void> {
+function isInstanceLive(info: ServerInstanceInfo, nowMs: number, staleMs: number): boolean {
+  if (!pidAlive(info.pid)) return false;
+  return nowMs - info.heartbeatAt <= staleMs;
+}
+
+async function sweepStale(instancesDir: string, now: () => number, staleMs: number): Promise<void> {
   let names: string[];
   try {
     names = await readdir(instancesDir);
@@ -152,11 +162,12 @@ async function sweepStale(instancesDir: string): Promise<void> {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw err;
   }
+  const currentNow = now();
   await Promise.all(
     names.filter(isInstanceFile).map(async (name) => {
       const filePath = join(instancesDir, name);
       const info = await readInstanceFile(filePath);
-      if (info === undefined || pidAlive(info.pid)) return;
+      if (info === undefined || isInstanceLive(info, currentNow, staleMs)) return;
       try {
         await unlink(filePath);
       } catch (err) {
@@ -166,7 +177,11 @@ async function sweepStale(instancesDir: string): Promise<void> {
   );
 }
 
-async function listLiveInternal(instancesDir: string): Promise<readonly ServerInstanceInfo[]> {
+async function listLiveInternal(
+  instancesDir: string,
+  now: () => number,
+  staleMs: number,
+): Promise<readonly ServerInstanceInfo[]> {
   let names: string[];
   try {
     names = await readdir(instancesDir);
@@ -174,13 +189,14 @@ async function listLiveInternal(instancesDir: string): Promise<readonly ServerIn
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw err;
   }
+  const currentNow = now();
   const live: ServerInstanceInfo[] = [];
   await Promise.all(
     names.filter(isInstanceFile).map(async (name) => {
       const filePath = join(instancesDir, name);
       const info = await readInstanceFile(filePath);
       if (info === undefined) return;
-      if (!pidAlive(info.pid)) {
+      if (!isInstanceLive(info, currentNow, staleMs)) {
         try {
           await unlink(filePath);
         } catch (err) {
@@ -199,13 +215,14 @@ export function createInstanceRegistry(options: InstanceRegistryOptions = {}): I
   const instancesDir = options.instancesDir ?? DEFAULT_SERVER_INSTANCES_DIR;
   const now = options.now ?? Date.now;
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS;
+  const heartbeatStaleMs = options.heartbeatStaleMs ?? Math.max(heartbeatIntervalMs * 3, HEARTBEAT_STALE_MS);
 
   return {
     async register(info) {
       const serverId = ulid();
       const filePath = join(instancesDir, `${serverId}.json`);
       await mkdir(instancesDir, { recursive: true });
-      await sweepStale(instancesDir);
+      await sweepStale(instancesDir, now, heartbeatStaleMs);
 
       const state = {
         port: info.port,
@@ -289,7 +306,7 @@ export function createInstanceRegistry(options: InstanceRegistryOptions = {}): I
     },
 
     listLive() {
-      return listLiveInternal(instancesDir);
+      return listLiveInternal(instancesDir, now, heartbeatStaleMs);
     },
   };
 }

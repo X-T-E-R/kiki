@@ -9,6 +9,7 @@ import {
 } from '@tauri-apps/plugin-notification';
 
 import type {
+  DesktopAutostartStatus,
   DesktopLogInfo,
   DesktopWindowMode,
   DesktopSpaceStatus,
@@ -511,6 +512,16 @@ export const tauriHost: TauriHostAdapter = {
     } catch {
       return null;
     }
+  },
+  async getDesktopAutostart() {
+    try {
+      return await invoke<DesktopAutostartStatus>('get_desktop_autostart');
+    } catch {
+      return null;
+    }
+  },
+  async setDesktopAutostart(enabled) {
+    return invoke<DesktopAutostartStatus>('set_desktop_autostart', { enabled });
   },
   async restartServer() {
     await invoke('restart_server');

@@ -253,17 +253,19 @@ mod native {
         }
     }
 
+    type PreparedToast = (
+        Entry,
+        TypedEventHandler<ToastNotification, IInspectable>,
+        TypedEventHandler<ToastNotification, ToastFailedEventArgs>,
+    );
+
     fn prepare(
         application_id: &str,
         tag: &str,
         title: &str,
         body: &str,
         activate: impl Fn() + Send + Sync + 'static,
-    ) -> windows::core::Result<(
-        Entry,
-        TypedEventHandler<ToastNotification, IInspectable>,
-        TypedEventHandler<ToastNotification, ToastFailedEventArgs>,
-    )> {
+    ) -> windows::core::Result<PreparedToast> {
         let document = XmlDocument::new()?;
         document.LoadXml(&HSTRING::from(format!("<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual><actions><action content=\"Open Kiki\" arguments=\"open\" activationType=\"foreground\"/></actions></toast>", xml_text(title), xml_text(body))))?;
         let toast = ToastNotification::CreateToastNotification(&document)?;
@@ -316,6 +318,7 @@ mod native {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         application_id: &str,
         path: &Path,

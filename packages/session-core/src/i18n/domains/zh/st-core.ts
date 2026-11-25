@@ -582,6 +582,8 @@ export const stCoreZh = {
   'st.defaults.row.titleUnset': '未设置；不会自己写标题。',
   'st.defaults.tabHint': '这里是新会话的出厂默认值；进行中的会话不受影响。',
   'st.defaults.title': '新会话默认值',
+  'st.desktop.autostart': '开机自动启动（驻留系统托盘）',
+  'st.desktop.autostartDesc': '登录系统后静默驻留托盘并接入后台服务，不弹出主窗口。',
   'st.desktop.closeQuestion': '关闭窗口时',
   'st.desktop.notifications': '显示批准通知',
   'st.desktop.quit': '关闭桌面',

@@ -12,6 +12,9 @@
  */
 mod ssh_remote;
 mod ssh_tunnel;
+mod autostart;
+mod local_spaces;
+mod tray;
 mod desktop_log;
 mod desktop_exit;
 use desktop_exit::{desktop_exit_requested, desktop_quit_dialog, request_desktop_only_exit};
@@ -63,9 +66,9 @@ use serde::{Deserialize, Serialize};
 use tauri::async_runtime::Receiver;
 #[cfg(windows)]
 use tauri::image::Image;
+#[cfg(target_os = "macos")]
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
-    tray::TrayIconBuilder,
     webview::NewWindowResponse,
     AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewWindowBuilder, WindowEvent, Wry,
 };
@@ -652,6 +655,51 @@ impl BackendManager {
         state.attached.clone().or_else(|| state.backend.as_ref().and_then(|backend| backend.connection.clone()))
     }
 
+    /// Non-spawning discovery for `--tray-only`: attaches if a verified server is already
+    /// running for this home, without launching a new sidecar.
+    fn attach_if_running(&self) -> Option<DesktopConnection> {
+        if let Some(conn) = self.hot_connection() {
+            return Some(conn);
+        }
+        let home = self.home.as_ref().cloned().or_else(|| kiki_home_dir().ok())?;
+        let current_workspace = env::current_dir().ok();
+        let connection = discover_running_backend(&home, current_workspace.as_deref()).ok()??;
+        self.remember_server_on_port(&home, connection_port(&connection).ok());
+        if let Ok(mut state) = self.inner.lock() {
+            if !state.stopping && state.attached.is_none() && state.backend.is_none() {
+                state.attached = Some(connection.clone());
+            }
+        }
+        Some(connection)
+    }
+
+    /// Re-verifies an attached-only (`--tray-only`) connection before quit so a hot-switched
+    /// or already-exited server does not leave a stale port cached from hours earlier.
+    fn refresh_attached_if_stale(&self) {
+        let attached = self
+            .inner
+            .lock()
+            .ok()
+            .and_then(|state| if state.backend.is_none() { state.attached.clone() } else { None });
+        let Some(conn) = attached else {
+            return;
+        };
+        let still_alive = connection_port(&conn)
+            .ok()
+            .and_then(|port| authenticated_backend_identity(port, &conn.token).ok())
+            .is_some();
+        if !still_alive {
+            if let Ok(mut state) = self.inner.lock() {
+                if state.backend.is_none()
+                    && state.attached.as_ref().is_some_and(|c| c.url == conn.url)
+                {
+                    state.attached = None;
+                }
+            }
+            let _ = self.attach_if_running();
+        }
+    }
+
     fn connection(&self, app: &AppHandle) -> Result<DesktopConnection, DesktopStartupFailure> {
         if let Ok(mut state) = self.inner.lock() {
             if state.recovery.blocked {
@@ -752,7 +800,13 @@ impl BackendManager {
                 if let Some(lease) = SharedUpdateLock::try_acquire(&runtime.kiki_home)? {
                     // A lease alone cannot authorize a second process while a
                     // registered daemon is booting, draining or unreachable.
-                    if !read_instance_records(&runtime.kiki_home)?.iter().any(|record| pid_alive(record.pid)) {
+                    // Check heartbeat freshness + PID reuse so a crashed server's
+                    // recycled PID cannot block startup forever.
+                    let now_ms = unix_epoch_millis().unwrap_or(0);
+                    if !read_instance_records(&runtime.kiki_home)?
+                        .iter()
+                        .any(|record| local_spaces::is_instance_record_live(record, now_ms, pid_alive))
+                    {
                         match self.explicit_exit_admission(&runtime.kiki_home) {
                             ExplicitExitAdmission::Admit => break Some(lease),
                             ExplicitExitAdmission::Wait => {}
@@ -1193,7 +1247,7 @@ impl BackendManager {
             BackendExitProbe::open(record.pid, record.started_at)?
         };
         let body = serde_json::json!({"action": action, "server_id": identity.server_id, "consent": true, "interrupt_work": true}).to_string();
-        let response = http_json_body(connection_port(&connection)?, "/api/desktop-lifecycle", &connection.token, &body, 64 * 1024)?;
+        let response = http_json_body(connection_port(connection)?, "/api/desktop-lifecycle", &connection.token, &body, 64 * 1024)?;
         let boundary = response.windows(4).position(|part| part == b"\r\n\r\n").ok_or("The lifecycle response is incomplete")?;
         let envelope: serde_json::Value = serde_json::from_slice(&response[boundary + 4..]).map_err(|error| error.to_string())?;
         if envelope.get("code").and_then(serde_json::Value::as_i64) != Some(0) {
@@ -1209,7 +1263,7 @@ impl BackendManager {
                 thread::sleep(Duration::from_millis(100));
             }
         }
-        self.clear_attached(&connection);
+        self.clear_attached(connection);
         Ok(())
     }
 
@@ -1260,8 +1314,20 @@ struct SpaceBackendState {
 impl SpaceBackendManager {
     fn new(startup: &Path, mode: WindowMode) -> Result<Self, String> {
         let main = main_home_for(startup)?;
+        let is_default_home = default_kiki_home_dir().ok().is_none_or(|default| {
+            local_spaces::canonical_home_key(&main) == local_spaces::canonical_home_key(&default)
+        });
+        let main_name = if is_default_home {
+            "Main space".to_string()
+        } else {
+            main.file_name()
+                .and_then(|n| n.to_str())
+                .filter(|n| !n.trim().is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| "Main space".to_string())
+        };
         let main_space = DesktopSpace {
-            home_id: "main".to_string(), name: "Main space".to_string(), color: None, preset: None,
+            home_id: "main".to_string(), name: main_name, color: None, preset: None,
             path: main.to_string_lossy().into_owned(), base_home: None, credentials_shared: true,
         };
         let mut slots = HashMap::new();
@@ -1286,6 +1352,20 @@ impl SpaceBackendManager {
         Ok(state.slots.get(&state.active).ok_or("Active space is unavailable")?.0.clone())
     }
 
+    pub(crate) fn main_home(&self) -> PathBuf {
+        self.inner
+            .lock()
+            .map(|state| state.main.clone())
+            .unwrap_or_else(|_| default_kiki_home_dir().unwrap_or_default())
+    }
+
+    pub(crate) fn window_mode(&self) -> WindowMode {
+        self.inner
+            .lock()
+            .map(|state| state.mode)
+            .unwrap_or(WindowMode::Switch)
+    }
+
     fn space_statuses(&self) -> Result<Vec<DesktopSpaceStatus>, String> {
         let state = self.inner.lock().map_err(|_| "Space manager lock was poisoned")?;
         Ok(state.slots.iter().map(|(id, (_, backend))| DesktopSpaceStatus {
@@ -1295,27 +1375,6 @@ impl SpaceBackendManager {
             pending_count: state.attention.get(id).map(HashSet::len).unwrap_or(0),
             busy_count: *state.busy_counts.get(id).unwrap_or(&0),
         }).collect())
-    }
-
-    fn registered_spaces(&self) -> Result<Vec<DesktopSpace>, String> {
-        let (main, primary) = {
-            let state = self.inner.lock().map_err(|_| "Space manager lock was poisoned")?;
-            (state.main.clone(), state.slots.get("main").ok_or("Main space is unavailable")?.0.clone())
-        };
-        let text = match fs::read_to_string(main.join("homes.json")) {
-            Ok(text) => text,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(vec![primary]),
-            Err(error) => return Err(format!("Cannot read homes.json: {error}")),
-        };
-        let records: Vec<serde_json::Value> = serde_json::from_str(&text)
-            .map_err(|error| format!("Invalid homes.json: {error}"))?;
-        let mut spaces = vec![primary];
-        for record in records {
-            if let Some(id) = record.get("id").and_then(serde_json::Value::as_str) {
-                if let Ok(space) = self.find_space(id) { spaces.push(space); }
-            }
-        }
-        Ok(spaces)
     }
 
     fn active_backend(&self) -> Result<BackendManager, String> {
@@ -1772,6 +1831,7 @@ fn read_desktop_space(home: &Path) -> Result<Option<DesktopSpace>, String> {
 
 struct RuntimePaths {
     kiki_home: PathBuf,
+    #[cfg(test)]
     config_path: PathBuf,
     oauth_home: PathBuf,
 }
@@ -1810,12 +1870,6 @@ fn selected_compatibility_home(
     }
 }
 
-fn resolve_runtime_paths(settings: &DesktopPrefs) -> Result<RuntimePaths, String> {
-    let kimi_home = kimi_home_dir()?;
-    let kiki_home = kiki_home_dir()?;
-    resolve_runtime_paths_with_homes(settings, &kimi_home, &kiki_home)
-}
-
 fn resolve_runtime_paths_with_homes(
     settings: &DesktopPrefs,
     kimi_home: &Path,
@@ -1831,6 +1885,7 @@ fn resolve_runtime_paths_with_homes(
     };
     Ok(RuntimePaths {
         kiki_home: kiki_home.to_path_buf(),
+        #[cfg(test)]
         config_path: kiki_home.join("config.toml"),
         oauth_home,
     })
@@ -1881,6 +1936,9 @@ enum WindowMode {
 struct DesktopPrefs {
     notifications: bool,
     close_to_tray: bool,
+    /// Optional explicit user autostart preference persisted in main desktop.json.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    autostart: Option<bool>,
     /// UI locale mirrored from the frontend ("en"/"zh"); drives tray labels.
     locale: Option<String>,
     update_channel: UpdateChannel,
@@ -1898,6 +1956,7 @@ impl Default for DesktopPrefs {
         Self {
             notifications: true,
             close_to_tray: true,
+            autostart: None,
             locale: None,
             update_channel: UpdateChannel::build_default(option_env!("KIKI_UPDATE_CHANNEL")),
             auto_update: AutoUpdateMode::Notify,
@@ -1927,11 +1986,12 @@ fn desktop_close_action(prefs: &DesktopPrefs, tray_created: bool, platform: &str
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DesktopPrefsPatch {
     notifications: Option<bool>,
     close_to_tray: Option<bool>,
+    autostart: Option<bool>,
     locale: Option<String>,
     update_channel: Option<UpdateChannel>,
     auto_update: Option<AutoUpdateMode>,
@@ -1946,10 +2006,6 @@ struct DesktopPrefsPatch {
 fn main_home_for(home: &Path) -> Result<PathBuf, String> {
     Ok(read_desktop_space(home)?.and_then(|space| space.base_home.map(PathBuf::from))
         .unwrap_or_else(|| home.to_path_buf()))
-}
-
-fn main_home_dir() -> Result<PathBuf, String> {
-    main_home_for(&kiki_home_dir()?)
 }
 
 static ATOMIC_WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -2085,6 +2141,9 @@ fn write_json_file(path: &Path, value: &impl Serialize) -> Result<(), String> {
 fn apply_desktop_prefs_patch(mut prefs: DesktopPrefs, patch: &DesktopPrefsPatch) -> DesktopPrefs {
     prefs.notifications = patch.notifications.unwrap_or(prefs.notifications);
     prefs.close_to_tray = patch.close_to_tray.unwrap_or(prefs.close_to_tray);
+    if let Some(autostart) = patch.autostart {
+        prefs.autostart = Some(autostart);
+    }
     prefs.locale = patch.locale.clone().or(prefs.locale);
     prefs.update_channel = patch.update_channel.unwrap_or(prefs.update_channel);
     prefs.auto_update = patch.auto_update.unwrap_or(prefs.auto_update);
@@ -2093,6 +2152,16 @@ fn apply_desktop_prefs_patch(mut prefs: DesktopPrefs, patch: &DesktopPrefsPatch)
     prefs.compatibility = patch.compatibility.clone().unwrap_or(prefs.compatibility);
     prefs.window_mode = patch.window_mode.unwrap_or(prefs.window_mode);
     prefs
+}
+
+pub(crate) fn write_autostart_pref(home: &Path, enabled: bool) -> Result<(), String> {
+    write_desktop_prefs_file(
+        home,
+        &DesktopPrefsPatch {
+            autostart: Some(enabled),
+            ..Default::default()
+        },
+    )
 }
 
 static DESKTOP_PREFS_WRITE_LOCK: Mutex<()> = Mutex::new(());
@@ -2129,11 +2198,12 @@ fn write_desktop_prefs_file(home: &Path, patch: &DesktopPrefsPatch) -> Result<()
     if patch.notifications.is_some() || patch.close_to_tray.is_some() || patch.locale.is_some() || patch.compatibility.is_some() || patch.log_level.is_some() {
         write_json_file(&path, &child)?;
     }
-    if patch.window_mode.is_some() || patch.update_channel.is_some() || patch.auto_update.is_some() || patch.update_state.is_some() {
+    if patch.window_mode.is_some() || patch.update_channel.is_some() || patch.auto_update.is_some() || patch.update_state.is_some() || patch.autostart.is_some() {
         let mut main_prefs = read_main_desktop_prefs_strict(&main)?;
         main_prefs.window_mode = patch.window_mode.unwrap_or(main_prefs.window_mode);
         main_prefs.update_channel = patch.update_channel.unwrap_or(main_prefs.update_channel);
         main_prefs.auto_update = patch.auto_update.unwrap_or(main_prefs.auto_update);
+        if let Some(autostart) = patch.autostart { main_prefs.autostart = Some(autostart); }
         if let Some(state) = &patch.update_state { main_prefs.update_state = state.clone(); }
         write_json_file(&main.join("desktop.json"), &main_prefs)?;
     }
@@ -2170,8 +2240,8 @@ fn open_mode_window(preset_id: String, home_id: Option<String>, manager: State<'
     let exe = release_redirect::resolve_launch_executable().map_err(|error| error.to_string())?;
     let mut command = std::process::Command::new(&exe);
     release_redirect::prepare_child_command(&mut command, &exe);
-    command.arg("--home").arg(&space.path).arg("--preset").arg(preset_id).spawn()
-        .map_err(|error| format!("Cannot open work mode window: {error}"))?;
+    command.arg("--home").arg(&space.path).arg("--preset").arg(preset_id);
+    spawn_detached_and_reap(command, "Cannot open work mode window")?;
     Ok(())
 }
 
@@ -2230,10 +2300,8 @@ fn set_space_identity(app: &AppHandle, space: &DesktopSpace) {
             }
         }
     }
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_tooltip(Some(&title));
-        let labels = tray_labels(read_desktop_prefs_for(Path::new(&space.path)).locale.as_deref());
-        if let Ok(menu) = build_tray_menu(app, labels) { let _ = tray.set_menu(Some(menu)); }
+    if app.tray_by_id(TRAY_ID).is_some() {
+        tray::schedule_tray_refresh(app, true);
     }
 }
 
@@ -2266,6 +2334,7 @@ fn disable_browser_accelerator_keys(window: &tauri::WebviewWindow<Wry>) -> tauri
     })
 }
 
+#[cfg(any(test, not(windows)))]
 fn notification_response_opens(response: &notify_rust::NotificationResponse) -> bool {
     match response {
         notify_rust::NotificationResponse::Default => true,
@@ -2350,6 +2419,7 @@ fn deliver_notification_click(app: &AppHandle, route: &str, home_id: Option<&str
 }
 
 #[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
 fn show_native_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, home_id: Option<String>, scope: Option<NotificationScope>, session_ids: Vec<String>, delivery_id: Option<String>) -> Result<(), String> {
     let application_id = app.config().identifier.clone();
     let registry = app.path().app_local_data_dir().map_err(|error| error.to_string())?.join("notification-registry.json");
@@ -2361,6 +2431,7 @@ fn show_native_notification(app: AppHandle, title: String, body: Option<String>,
 }
 
 #[cfg(not(windows))]
+#[allow(clippy::too_many_arguments)]
 fn show_native_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, home_id: Option<String>, scope: Option<NotificationScope>, _session_ids: Vec<String>, _delivery_id: Option<String>) -> Result<(), String> {
     let mut notification = notify_rust::Notification::new();
     notification.summary(&title).body(body.as_deref().unwrap_or(""));
@@ -2393,6 +2464,7 @@ fn show_native_notification(app: AppHandle, title: String, body: Option<String>,
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn send_desktop_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, scope: Option<NotificationScope>, session_ids: Option<Vec<String>>, delivery_id: Option<String>, manager: State<'_, SpaceBackendManager>) -> Result<(), String> {
     let home_id = scope.as_ref().map(|value| value.home_id.clone()).or_else(|| manager.active_space().ok().map(|space| space.home_id));
     tauri::async_runtime::spawn_blocking(move || show_native_notification(app, title, body, route, home_id, scope, session_ids.unwrap_or_default(), delivery_id))
@@ -2456,8 +2528,7 @@ async fn open_space(app: AppHandle, manager: State<'_, SpaceBackendManager>, hom
         let exe = release_redirect::resolve_launch_executable().map_err(|error| error.to_string())?;
         let mut command = remote_space::command(&exe, Path::new(&source.path), &id)?;
         release_redirect::prepare_child_command(&mut command, &exe);
-        command.spawn()
-            .map_err(|error| format!("Cannot open remote space window: {error}"))?;
+        spawn_detached_and_reap(command, "Cannot open remote space window")?;
         return Ok(());
     }
     let home_id = home_id.ok_or("A local home or remote connection is required")?;
@@ -2473,8 +2544,8 @@ async fn open_space(app: AppHandle, manager: State<'_, SpaceBackendManager>, hom
     let exe = release_redirect::resolve_launch_executable().map_err(|error| error.to_string())?;
     let mut command = std::process::Command::new(&exe);
     release_redirect::prepare_child_command(&mut command, &exe);
-    command.arg("--home").arg(&space.path).spawn()
-        .map_err(|error| format!("Cannot open space window: {error}"))?;
+    command.arg("--home").arg(&space.path);
+    spawn_detached_and_reap(command, "Cannot open space window")?;
     Ok(())
 }
 
@@ -2592,13 +2663,113 @@ fn cancel_desktop_startup(manager: State<'_, SpaceBackendManager>) {
     if let Ok(backend) = manager.active_backend() { backend.cancel_startup(); }
 }
 
+struct MainWindowTemplate {
+    window_mode_script: String,
+}
+
+/// Spawn a detached child process and reap it on Unix so exited openers/sibling
+/// windows never accumulate as zombie processes (`sfind-d1d6a5c4`).
+pub(crate) fn spawn_detached_and_reap(
+    mut command: std::process::Command,
+    error_prefix: &str,
+) -> Result<(), String> {
+    let child = command
+        .spawn()
+        .map_err(|error| format!("{error_prefix}: {error}"))?;
+    reap_detached_child(child);
+    Ok(())
+}
+
+#[cfg(unix)]
+fn reap_detached_child(child: std::process::Child) {
+    use std::sync::{mpsc, OnceLock};
+    static REAPER: OnceLock<mpsc::Sender<std::process::Child>> = OnceLock::new();
+    let tx = REAPER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<std::process::Child>();
+        let _ = thread::Builder::new()
+            .name("kiki-child-reaper".to_string())
+            .spawn(move || {
+                let mut children: Vec<std::process::Child> = Vec::new();
+                loop {
+                    if children.is_empty() {
+                        match rx.recv() {
+                            Ok(child) => children.push(child),
+                            Err(_) => break,
+                        }
+                    } else {
+                        while let Ok(child) = rx.try_recv() {
+                            children.push(child);
+                        }
+                        children.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+                        if !children.is_empty() {
+                            thread::sleep(Duration::from_millis(250));
+                        }
+                    }
+                }
+            });
+        tx
+    });
+    if let Err(mpsc::SendError(mut child)) = tx.send(child) {
+        let _ = thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn reap_detached_child(_child: std::process::Child) {}
+
+fn ensure_main_window(app: &AppHandle, visible: bool) -> Result<tauri::WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window("main") {
+        return Ok(window);
+    }
+    let main_config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "main")
+        .ok_or_else(|| "main window config is missing".to_string())?;
+    let window_mode_script = app
+        .try_state::<MainWindowTemplate>()
+        .map(|tpl| tpl.window_mode_script.clone())
+        .unwrap_or_default();
+    let mut builder = WebviewWindowBuilder::from_config(app, main_config)
+        .map_err(|error| error.to_string())?
+        .visible(visible)
+        .enable_clipboard_access()
+        .on_new_window(|url, _features| {
+            if is_allowed_external_url(&url) {
+                let target = url.to_string();
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(error) = open_url_in_browser(&target) {
+                        eprintln!("Kiki could not open external URL {target}: {error}");
+                    }
+                });
+            }
+            NewWindowResponse::Deny
+        });
+    if !window_mode_script.is_empty() {
+        builder = builder.initialization_script(&window_mode_script);
+    }
+    let main_window = builder.build().map_err(|error| error.to_string())?;
+    #[cfg(windows)]
+    disable_browser_accelerator_keys(&main_window).map_err(|error| error.to_string())?;
+    if let Some(manager) = app.try_state::<SpaceBackendManager>() {
+        if let Ok(space) = manager.active_space() {
+            set_space_identity(app, &space);
+        }
+    }
+    Ok(main_window)
+}
+
 #[tauri::command]
 fn show_main_window(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    let window = ensure_main_window(&app, true)?;
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+    tray::schedule_tray_refresh(&app, false);
     Ok(())
 }
 
@@ -2715,20 +2886,16 @@ fn open_url_in_browser(url: &str) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn open_url_in_browser(url: &str) -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg(url)
-        .spawn()
-        .map_err(|error| format!("Cannot open {url}: {error}"))?;
-    Ok(())
+    let mut command = std::process::Command::new("open");
+    command.arg(url);
+    spawn_detached_and_reap(command, &format!("Cannot open {url}"))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn open_url_in_browser(url: &str) -> Result<(), String> {
-    std::process::Command::new("xdg-open")
-        .arg(url)
-        .spawn()
-        .map_err(|error| format!("Cannot open {url}: {error}"))?;
-    Ok(())
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(url);
+    spawn_detached_and_reap(command, &format!("Cannot open {url}"))
 }
 
 /// What the caller intends to do with a host path: writes tolerate a missing
@@ -2915,23 +3082,18 @@ fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg("-R")
-        .arg(path)
-        .spawn()
-        .map_err(|error| format!("Cannot reveal host path {}: {error}", path.display()))?;
-    Ok(())
+    let mut command = std::process::Command::new("open");
+    command.arg("-R").arg(path);
+    spawn_detached_and_reap(command, &format!("Cannot reveal host path {}", path.display()))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
     // No portable "select this file" on Linux; open the containing folder.
     let folder = path.parent().unwrap_or(path);
-    std::process::Command::new("xdg-open")
-        .arg(folder)
-        .spawn()
-        .map_err(|error| format!("Cannot reveal host path {}: {error}", path.display()))?;
-    Ok(())
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(folder);
+    spawn_detached_and_reap(command, &format!("Cannot reveal host path {}", path.display()))
 }
 
 /// NUL-terminated UTF-16 view of an OS string — the shape every Win32 W API
@@ -2977,20 +3139,16 @@ fn open_with_default_app(path: &Path) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn open_with_default_app(path: &Path) -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg(path)
-        .spawn()
-        .map_err(|error| format!("Cannot open host path {}: {error}", path.display()))?;
-    Ok(())
+    let mut command = std::process::Command::new("open");
+    command.arg(path);
+    spawn_detached_and_reap(command, &format!("Cannot open host path {}", path.display()))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn open_with_default_app(path: &Path) -> Result<(), String> {
-    std::process::Command::new("xdg-open")
-        .arg(path)
-        .spawn()
-        .map_err(|error| format!("Cannot open host path {}: {error}", path.display()))?;
-    Ok(())
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(path);
+    spawn_detached_and_reap(command, &format!("Cannot open host path {}", path.display()))
 }
 
 #[derive(Serialize)]
@@ -3047,13 +3205,52 @@ fn write_desktop_prefs(app: AppHandle, manager: State<'_, SpaceBackendManager>, 
     }
     write_desktop_prefs_file(&home, &patch)?;
     // The frontend owns the UI locale; mirror it onto the tray menu live.
-    if locale_changed {
-        if let Some(tray) = app.tray_by_id(TRAY_ID) {
-            let menu = build_tray_menu(&app, tray_labels(next.locale.as_deref()))?;
-            tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
-        }
+    if locale_changed && app.tray_by_id(TRAY_ID).is_some() {
+        tray::schedule_tray_refresh(&app, true);
     }
     Ok(())
+}
+
+#[tauri::command]
+fn get_desktop_autostart() -> Result<autostart::AutostartStatus, String> {
+    autostart::get_autostart_status()
+}
+
+#[tauri::command]
+fn set_desktop_autostart(
+    app: AppHandle,
+    manager: State<'_, SpaceBackendManager>,
+    enabled: bool,
+) -> Result<autostart::AutostartStatus, String> {
+    let status = autostart::set_autostart_enabled(enabled)?;
+    let main_home = manager.main_home();
+    write_autostart_pref(&main_home, enabled)?;
+    tray::schedule_tray_refresh(&app, true);
+    Ok(status)
+}
+
+#[tauri::command]
+async fn list_local_spaces(
+    app: AppHandle,
+    manager: State<'_, SpaceBackendManager>,
+) -> Result<Vec<local_spaces::LocalSpaceEntry>, String> {
+    let main_home = manager.main_home();
+    let active_space = manager.active_space().ok();
+    let visible_home = app
+        .get_webview_window("main")
+        .and_then(|w| w.is_visible().ok().filter(|&v| v))
+        .and_then(|_| active_space.as_ref().map(|s| PathBuf::from(&s.path)));
+    let zh = active_space
+        .as_ref()
+        .and_then(|s| read_desktop_prefs_for(Path::new(&s.path)).locale)
+        .or_else(|| read_desktop_prefs_file().locale)
+        .as_deref()
+        == Some("zh");
+    tauri::async_runtime::spawn_blocking(move || {
+        local_spaces::discover_local_spaces(&main_home, visible_home.as_deref(), zh)
+    })
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3097,9 +3294,11 @@ fn desktop_updater(app: &AppHandle, channel: UpdateChannel) -> Result<tauri_plug
         .map_err(|error| error.to_string())
 }
 
+type DesktopUpdateCheckEntry = (UpdateChannel, std::time::Instant, Result<Option<DesktopUpdateInfo>, String>);
+
 #[derive(Default)]
 struct DesktopUpdateChecks {
-    entries: tauri::async_runtime::Mutex<Vec<(UpdateChannel, std::time::Instant, Result<Option<DesktopUpdateInfo>, String>)>>,
+    entries: tauri::async_runtime::Mutex<Vec<DesktopUpdateCheckEntry>>,
 }
 
 impl DesktopUpdateChecks {
@@ -3218,24 +3417,40 @@ fn requested_home(args: &[String]) -> Result<Option<PathBuf>, String> {
     Ok(selected)
 }
 
-const TRAY_LOGON_RETRY_LIMIT: usize = 10;
+const TRAY_LOGON_RETRY_LIMIT: usize = 20;
 const TRAY_LOGON_RETRY_DELAY: Duration = Duration::from_millis(1500);
 
-fn is_background_launch_args<S: AsRef<str>>(args: &[S]) -> bool {
+fn has_launch_flag<S: AsRef<str>>(args: &[S], flags: &[&str]) -> bool {
     let mut index = 1;
     while index < args.len() {
-        match args[index].as_ref() {
+        let arg = args[index].as_ref();
+        match arg {
             "--" => break,
             "--home" | "--preset" | "--remote-connection" => {
                 index += 2;
                 continue;
             }
-            "--background" | "--tray" | "--minimized" => return true,
+            _ if flags.contains(&arg) => return true,
             _ => {}
         }
         index += 1;
     }
     false
+}
+
+fn is_tray_only_launch_args<S: AsRef<str>>(args: &[S]) -> bool {
+    has_launch_flag(args, &["--tray-only"])
+}
+
+fn is_autostart_launch_args<S: AsRef<str>>(args: &[S]) -> bool {
+    has_launch_flag(args, &["--autostart"])
+}
+
+fn is_background_launch_args<S: AsRef<str>>(args: &[S]) -> bool {
+    has_launch_flag(
+        args,
+        &["--background", "--tray", "--minimized", "--autostart", "--tray-only"],
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4022,78 +4237,6 @@ fn force_stop(backend: OwnedBackend) -> bool {
     stopped
 }
 
-struct TrayLabels {
-    show: &'static str,
-    hide: &'static str,
-    new_session: &'static str,
-    quit: &'static str,
-}
-
-/// Tray menu copy follows the frontend's UI locale (mirrored into desktop.json).
-fn tray_labels(locale: Option<&str>) -> TrayLabels {
-    match locale {
-        Some("zh") => TrayLabels {
-            show: "显示",
-            hide: "隐藏",
-            new_session: "新会话",
-            quit: "退出",
-        },
-        _ => TrayLabels {
-            show: "Show",
-            hide: "Hide",
-            new_session: "New Session",
-            quit: "Quit",
-        },
-    }
-}
-
-fn build_tray_menu(app: &AppHandle, labels: TrayLabels) -> Result<Menu<Wry>, String> {
-    let show_i = MenuItem::with_id(app, "show", labels.show, true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    let hide_i = MenuItem::with_id(app, "hide", labels.hide, true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    let new_i = MenuItem::with_id(app, "new", labels.new_session, true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    let quit_i = MenuItem::with_id(app, "quit", labels.quit, true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    let menu = Menu::with_items(app, &[
-        &show_i, &hide_i, &new_i,
-        &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
-    ]).map_err(|e| e.to_string())?;
-    if let Some(manager) = app.try_state::<SpaceBackendManager>() {
-        if let Ok(state) = manager.inner.lock() {
-            if state.mode == WindowMode::Switch {
-                drop(state);
-                if let Ok(spaces) = manager.registered_spaces() {
-                    if spaces.len() > 1 {
-                        let title = if read_desktop_prefs_file().locale.as_deref() == Some("zh") { "空间" } else { "Spaces" };
-                        let submenu = Submenu::new(app, title, true).map_err(|error| error.to_string())?;
-                        let status = manager.space_statuses().unwrap_or_default();
-                        for space in spaces {
-                            let slot = status.iter().find(|slot| slot.home_id == space.home_id);
-                            let suffix = match slot {
-                                Some(slot) if slot.active => " ✓".to_string(),
-                                Some(slot) if slot.pending_count > 0 => format!("  ({})", slot.pending_count),
-                                Some(slot) if slot.hot => "  ●".to_string(),
-                                _ => String::new(),
-                            };
-                            let item = MenuItem::with_id(app, format!("space:{}", space.home_id),
-                                format!("{}{}", space.name, suffix), true, None::<&str>)
-                                .map_err(|error| error.to_string())?;
-                            submenu.append(&item).map_err(|error| error.to_string())?;
-                        }
-                        menu.append(&submenu).map_err(|error| error.to_string())?;
-                        menu.append(&PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?)
-                            .map_err(|error| error.to_string())?;
-                    }
-                }
-            }
-        }
-    }
-    menu.append(&quit_i).map_err(|error| error.to_string())?;
-    Ok(menu)
-}
-
 /// Distinct from every tray menu id: both menus reach the same listeners.
 #[cfg(target_os = "macos")]
 const APP_MENU_QUIT_ID: &str = "app-quit";
@@ -4225,62 +4368,65 @@ fn toggle_main_window(app: &AppHandle) {
         let minimized = window.is_minimized().unwrap_or(false);
         if visible && focused && !minimized {
             let _ = background_main_window(&window);
-        } else {
-            let _ = show_main_window(app.clone());
+            tray::schedule_tray_refresh(app, false);
+            return;
         }
     }
+    let _ = show_main_window(app.clone());
 }
 
-fn build_tray(app: &AppHandle) -> Result<(), String> {
-    let menu = build_tray_menu(
-        app,
-        tray_labels(read_desktop_prefs_file().locale.as_deref()),
-    )?;
+#[allow(clippy::too_many_arguments)]
+fn resolve_space_launch_routing(
+    configured_mode: WindowMode,
+    selected_preset: bool,
+    startup_home: &Path,
+    main_home: &Path,
+    default_home: Option<&Path>,
+    explicit_home_passed: bool,
+    registered_in_main: bool,
+    space_home_id: Option<&str>,
+) -> (WindowMode, Option<String>) {
+    let startup_differs_from_main =
+        local_spaces::canonical_home_key(startup_home) != local_spaces::canonical_home_key(main_home);
+    if startup_differs_from_main {
+        // Registered spaces in Switch mode reuse the main window; multi-window mode OR any
+        // unregistered space (such as an out-of-band headless space absent from homes.json)
+        // must own a dedicated window + distinct single-instance identifier so opening it never
+        // collides with the main Switch-mode shell.
+        if selected_preset || configured_mode == WindowMode::Windows || !registered_in_main {
+            let id = space_home_id
+                .filter(|s| !s.is_empty())
+                .map(|s| format!("ai.easyagent.kiki.{s}"))
+                .unwrap_or_else(|| {
+                    format!(
+                        "ai.easyagent.kiki.home-{}",
+                        local_spaces::short_home_hash(startup_home)
+                    )
+                });
+            return (WindowMode::Windows, Some(id));
+        }
+        return (WindowMode::Switch, None);
+    }
 
-    let icon = app
-        .default_window_icon()
-        .cloned()
-        .ok_or_else(|| "No default window icon".to_string())?;
+    if explicit_home_passed {
+        let is_standalone = default_home.is_none_or(|default| {
+            local_spaces::canonical_home_key(startup_home) != local_spaces::canonical_home_key(default)
+        });
+        if is_standalone {
+            let id = format!(
+                "ai.easyagent.kiki.home-{}",
+                local_spaces::short_home_hash(startup_home)
+            );
+            return (WindowMode::Windows, Some(id));
+        }
+    }
 
-    TrayIconBuilder::with_id(TRAY_ID)
-        .icon(icon)
-        .tooltip("Kiki")
-        .menu(&menu)
-        .show_menu_on_left_click(true)
-        .on_menu_event(move |app, event| match event.id.as_ref() {
-            "show" => {
-                let _ = show_main_window(app.clone());
-            }
-            "hide" => {
-                let _ = app.get_webview_window("main").and_then(|w| background_main_window(&w).ok());
-            }
-            "new" => {
-                let _ = show_main_window(app.clone());
-                let _ = app.emit("kiki://new-session", ());
-            }
-            "quit" => {
-                app.exit(0);
-            }
-            id if id.starts_with("space:") => {
-                if let Some(manager) = app.try_state::<SpaceBackendManager>() {
-                    let manager = manager.inner().clone();
-                    let app = app.clone();
-                    let home_id = id.trim_start_matches("space:").to_string();
-                    tauri::async_runtime::spawn_blocking(move || {
-                        if let Err(error) = manager.switch(&app, &home_id) {
-                            eprintln!("Kiki tray could not switch space: {}", error.message);
-                        } else if let Err(error) = reload_space_window(&app) {
-                            eprintln!("Kiki tray could not reload space: {error}");
-                        }
-                    });
-                }
-            }
-            _ => {}
-        })
-        .build(app)
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
+    let effective_mode = if selected_preset {
+        WindowMode::Windows
+    } else {
+        configured_mode
+    };
+    (effective_mode, None)
 }
 
 fn request_confirmed_exit(
@@ -4291,6 +4437,15 @@ fn request_confirmed_exit(
 ) {
     if prompting.swap(true, Ordering::SeqCst) { return; }
     thread::spawn(move || {
+        // Refresh any attached-only (`--tray-only`) connections so a stale port from an
+        // earlier server generation does not trigger false identity-drift errors on quit.
+        if let Ok(slots) = manager.inner.lock().map(|state| {
+            state.slots.values().map(|(_, backend)| backend.clone()).collect::<Vec<_>>()
+        }) {
+            for backend in slots {
+                backend.refresh_attached_if_stale();
+            }
+        }
         let zh = read_desktop_prefs_file().locale.as_deref() == Some("zh");
         let stopping = desktop_quit_dialog(&app, zh, "Kiki");
         if !stopping { prompting.store(false, Ordering::SeqCst); }
@@ -4302,6 +4457,26 @@ fn request_confirmed_exit(
             if let Some(home) = home {
                 BackendMonitor::open(&home).record_stderr_line(&format!("Kiki desktop phase=quit_shutdown_unconfirmed: {error}"));
             }
+            let (title, body) = if zh {
+                (
+                    "Kiki · 后台服务停止未确认",
+                    format!(
+                        "未能确认本机后台服务已完全停止：{error}\n\nKiki 桌面将按约定继续退出以免困住窗口，请检查是否仍有残留的 kiki-server 进程。"
+                    ),
+                )
+            } else {
+                (
+                    "Kiki · Backend shutdown unconfirmed",
+                    format!(
+                        "Could not confirm local backend shutdown: {error}\n\nKiki desktop will still exit so you are not trapped; check if a local kiki-server process remains running."
+                    ),
+                )
+            };
+            app.dialog()
+                .message(body)
+                .title(title)
+                .kind(tauri_plugin_dialog::MessageDialogKind::Warning)
+                .blocking_show();
         }, || {
             confirmed.store(true, Ordering::SeqCst);
             app.exit(0);
@@ -4313,11 +4488,36 @@ pub fn run() {
     release_redirect::maybe_redirect_to_current_release();
     let launch_args = env::args().collect::<Vec<_>>();
     let start_in_background = is_background_launch_args(&launch_args);
+    let start_tray_only = is_tray_only_launch_args(&launch_args);
+    let start_autostart = is_autostart_launch_args(&launch_args);
+    let start_windowless = start_tray_only || start_autostart;
+    let explicit_home = requested_home(&launch_args)
+        .unwrap_or_else(|error| panic!("Cannot resolve --home argument: {error}"));
     let startup_home = kiki_home_dir().unwrap_or_else(|error| panic!("Cannot resolve Kiki home: {error}"));
     let main_home = main_home_for(&startup_home).unwrap_or_else(|error| panic!("Cannot resolve main space: {error}"));
     let selected_preset = work_mode::requested_preset(&launch_args)
         .unwrap_or_else(|error| panic!("Cannot select work mode: {error}"));
-    let mode = if selected_preset.is_some() { WindowMode::Windows } else { read_main_desktop_prefs(&main_home).window_mode };
+    let configured_mode = read_main_desktop_prefs(&main_home).window_mode;
+    let default_home = default_kiki_home_dir().ok();
+    let is_primary_home = default_home.as_ref().is_none_or(|default| {
+        local_spaces::canonical_home_key(&startup_home) == local_spaces::canonical_home_key(default)
+    });
+    let registered_in_main = local_spaces::is_home_registered(&main_home, &startup_home);
+    let startup_space = if startup_home != main_home {
+        read_desktop_space(&startup_home).unwrap_or_else(|error| panic!("Invalid space: {error}"))
+    } else {
+        None
+    };
+    let (mode, routed_identifier) = resolve_space_launch_routing(
+        configured_mode,
+        selected_preset.is_some(),
+        &startup_home,
+        &main_home,
+        default_home.as_deref(),
+        explicit_home.is_some(),
+        registered_in_main,
+        startup_space.as_ref().map(|space| space.home_id.as_str()),
+    );
     let preset_id = selected_preset.clone().unwrap_or_else(|| "kiki".to_string());
     let window_mode = WindowModeDescriptor { window_id: work_mode::window_identity(&startup_home, &preset_id), preset_id };
     let remote_connection = remote_space::requested_connection(&launch_args)
@@ -4334,6 +4534,7 @@ pub fn run() {
     let close_manager = manager.clone();
     let tray_created = Arc::new(AtomicBool::new(false));
     let close_tray_created = tray_created.clone();
+    let exit_tray_created = tray_created.clone();
     let exit_confirmed = Arc::new(AtomicBool::new(false));
     let exit_prompting = Arc::new(AtomicBool::new(false));
     let close_confirmed = exit_confirmed.clone();
@@ -4341,10 +4542,7 @@ pub fn run() {
     let tunnel_manager = ssh_tunnel::TunnelManager::default();
     let shutdown_tunnels = tunnel_manager.clone();
     let mut context = tauri::generate_context!();
-    if mode == WindowMode::Windows && startup_home != main_home {
-        let space = read_desktop_space(&startup_home).unwrap_or_else(|error| panic!("Invalid space: {error}"))
-            .unwrap_or_else(|| panic!("Multi-window spaces require home.toml"));
-        let identifier = format!("ai.easyagent.kiki.{}", space.home_id);
+    if let Some(identifier) = routed_identifier {
         context.config_mut().identifier = identifier.clone();
         #[cfg(windows)]
         {
@@ -4385,6 +4583,10 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .manage(window_mode)
+        .manage(MainWindowTemplate {
+            window_mode_script: window_mode_script.clone(),
+        })
+        .manage(tray::TrayState::default())
         .manage(subscribe_intent_queue)
         // Register first so a second launch focuses the original window
         // without starting another backend, unless the second launch was
@@ -4403,17 +4605,21 @@ pub fn run() {
                             let target = id.unwrap_or_else(|| "main".to_string());
                             if let Err(error) = manager.switch(&app, &target) {
                                 eprintln!("Kiki could not switch space on second launch: {}", error.message);
-                            } else if let Err(error) = reload_space_window(&app) {
-                                eprintln!("Kiki could not reload the selected space: {error}");
+                            } else {
+                                let ui_app = app.clone();
+                                let _ = app.run_on_main_thread(move || {
+                                    let _ = show_main_window(ui_app.clone());
+                                    if let Err(error) = reload_space_window(&ui_app) {
+                                        eprintln!("Kiki could not reload the selected space: {error}");
+                                    }
+                                });
                             }
                         });
                     }
                 }
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.unminimize();
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                let _ = show_main_window(app.clone());
+            } else {
+                tray::schedule_tray_refresh(app, false);
             }
         }))
         // Window geometry memory: restores on window creation, saves on
@@ -4441,7 +4647,7 @@ pub fn run() {
     // so tauri.conf.json always carries a Config object. The plugin itself
     // is only registered when a signing key was baked in at compile time;
     // local promotes fail closed via desktop_updater() either way.
-    let app = if let Some(public_key) = UPDATER_PUBLIC_KEY.filter(|key| !key.is_empty() && (mode == WindowMode::Switch || startup_home == main_home)) {
+    let app = if let Some(public_key) = UPDATER_PUBLIC_KEY.filter(|key| !key.is_empty() && is_primary_home && (mode == WindowMode::Switch || startup_home == main_home)) {
         app.plugin(
             tauri_plugin_updater::Builder::new()
                 .pubkey(public_key)
@@ -4493,43 +4699,30 @@ pub fn run() {
             }
         })
         .setup(move |app| {
-            // Tauri 2.11.5 exposes clipboard permission on the
-            // WebviewWindowBuilder, not tauri.conf.json. The config window is
-            // created here so the main webview receives that attribute before
-            // WebView2 starts; this removes the native paste permission prompt.
-            let main_config = app
-                .config()
-                .app
-                .windows
-                .iter()
-                .find(|window| window.label == "main")
-                .ok_or_else(|| std::io::Error::other("main window config is missing"))?;
-            let main_window = WebviewWindowBuilder::from_config(app.handle(), main_config)
-                .map_err(std::io::Error::other)?
-                .visible(!start_in_background)
-                .enable_clipboard_access()
-                .initialization_script(&window_mode_script)
-                .on_new_window(|url, _features| {
-                    if is_allowed_external_url(&url) {
-                        let target = url.to_string();
-                        tauri::async_runtime::spawn_blocking(move || {
-                            if let Err(error) = open_url_in_browser(&target) {
-                                eprintln!("Kiki could not open external URL {target}: {error}");
-                            }
-                        });
-                    }
-                    NewWindowResponse::Deny
-                })
-                .build()
-                .map_err(std::io::Error::other)?;
-            #[cfg(windows)]
-            disable_browser_accelerator_keys(&main_window).map_err(std::io::Error::other)?;
+            // When launched with --autostart or --tray-only, stay completely windowless
+            // until the user left-clicks the tray icon or chooses "Open Window".
+            if !start_windowless {
+                let main_window = ensure_main_window(app.handle(), !start_in_background)
+                    .map_err(std::io::Error::other)?;
+                if start_in_background {
+                    let _ = main_window.hide();
+                } else {
+                    main_window.unminimize().map_err(std::io::Error::other)?;
+                    main_window.show().map_err(std::io::Error::other)?;
+                }
+            }
             #[cfg(target_os = "linux")]
             tauri::async_runtime::spawn_blocking(
                 subscribe_intent::ensure_linux_appimage_desktop_registration,
             );
-            match build_tray(app.handle()) {
-                Ok(()) => { tray_created.store(true, Ordering::SeqCst); }
+            if is_primary_home && (mode == WindowMode::Switch || startup_home == main_home) {
+                tauri::async_runtime::spawn_blocking(autostart::refresh_autostart_if_enabled);
+            }
+            match tray::build_tray(app.handle()) {
+                Ok(()) => {
+                    tray_created.store(true, Ordering::SeqCst);
+                    tray::schedule_tray_refresh(app.handle(), true);
+                }
                 Err(error) => {
                     eprintln!("Kiki tray not ready at startup; retrying in the background: {error}");
                     let retry_handle = app.handle().clone();
@@ -4548,7 +4741,7 @@ pub fn run() {
                                 retry_handle
                                     .run_on_main_thread(move || {
                                         let _ = ui_handle.remove_tray_by_id(TRAY_ID);
-                                        let result = build_tray(&ui_handle);
+                                        let result = tray::build_tray(&ui_handle);
                                         if result.is_ok() {
                                             if let Some(manager) = ui_handle.try_state::<SpaceBackendManager>() {
                                                 if let Ok(space) = manager.active_space() {
@@ -4576,16 +4769,9 @@ pub fn run() {
                     });
                 }
             }
-            // Saved window visibility and an unavailable hotkey must not strand startup.
-            if start_in_background {
-                let _ = main_window.hide();
-            } else {
-                main_window.unminimize().map_err(std::io::Error::other)?;
-                main_window.show().map_err(std::io::Error::other)?;
-            }
             if let Ok(space) = setup_manager.active_space() { set_space_identity(app.handle(), &space); }
             // Both manager initialization and shortcut registration are optional.
-            if mode == WindowMode::Switch || startup_home == main_home {
+            if is_primary_home && (mode == WindowMode::Switch || startup_home == main_home) {
                 let plugin = tauri_plugin_global_shortcut::Builder::new()
                     .with_handler(|app, _shortcut, event| {
                         if event.state == ShortcutState::Pressed { toggle_main_window(app); }
@@ -4601,13 +4787,24 @@ pub fn run() {
                     Err(error) => eprintln!("Kiki could not initialize global shortcuts: {error}"),
                 }
             }
-            if mode == WindowMode::Switch || startup_home == main_home {
+            if start_tray_only {
+                // Pure tray residency mode: attach to an existing main backend if alive,
+                // without spawning a fresh server just for tray hosting.
+                if let Ok(main_backend) = setup_manager.main_backend() {
+                    let handle = app.handle().clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        let _ = main_backend.attach_if_running();
+                        tray::refresh_tray_from_worker(&handle, true);
+                    });
+                }
+            } else if mode == WindowMode::Switch || startup_home == main_home {
                 if let Ok(main_backend) = setup_manager.main_backend() {
                     let handle = app.handle().clone();
                     tauri::async_runtime::spawn_blocking(move || {
                         if let Err(error) = main_backend.connection(&handle) {
                             eprintln!("Kiki main-space backend could not start: {}", error.message);
                         }
+                        tray::refresh_tray_from_worker(&handle, true);
                     });
                 }
             } else if start_in_background {
@@ -4617,6 +4814,7 @@ pub fn run() {
                         if let Err(error) = active_backend.connection(&handle) {
                             eprintln!("Kiki active-space backend could not start: {}", error.message);
                         }
+                        tray::refresh_tray_from_worker(&handle, true);
                     });
                 }
             }
@@ -4626,6 +4824,7 @@ pub fn run() {
                 thread::sleep(Duration::from_secs(5));
                 if !poll_manager.poll_attention(&handle) { break; }
                 poll_manager.poll_plugin_focus();
+                tray::refresh_tray_from_worker(&handle, false);
             });
             Ok(())
         })
@@ -4633,10 +4832,15 @@ pub fn run() {
         .unwrap_or_else(|error| panic!("failed to build Kiki desktop: {error}"));
 
     app.run(move |app_handle, event| {
-        if let RunEvent::ExitRequested { api, .. } = &event {
+        if let RunEvent::ExitRequested { api, code, .. } = &event {
             if exit_confirmed.load(Ordering::SeqCst) {
                 shutdown_tunnels.shutdown();
                 shutdown_manager.detach_desktop();
+            } else if code.is_none() && exit_tray_created.load(Ordering::SeqCst) {
+                // Closing/destroying the last window while tray residency is active keeps
+                // the tray icon alive so background servers are never invisible.
+                api.prevent_exit();
+                tray::schedule_tray_refresh(app_handle, false);
             } else {
                 api.prevent_exit();
                 request_confirmed_exit(app_handle.clone(), shutdown_manager.clone(), exit_confirmed.clone(), exit_prompting.clone());
@@ -4668,15 +4872,12 @@ pub fn run() {
                 let _ = show_main_window(app_handle.clone());
             }
         }
-        // A macOS status item opens its menu on mouse-down and reports both
-        // button states, so raising the window there would also fire twice;
-        // the Dock icon (`Reopen`) is the macOS way back to the window. On
-        // Windows the press raises the window before the release opens the
-        // menu, and the release no longer raises it a second time.
+        // On Windows/Linux, left-click raises/opens Kiki immediately while
+        // right-click opens the context menu (`show_menu_on_left_click(false)`).
         #[cfg(not(target_os = "macos"))]
         if let RunEvent::TrayIconEvent(tauri::tray::TrayIconEvent::Click {
             button: tauri::tray::MouseButton::Left,
-            button_state: tauri::tray::MouseButtonState::Down,
+            button_state: tauri::tray::MouseButtonState::Up,
             ..
         }) = &event
         {
@@ -5058,16 +5259,17 @@ mod tests {
     #[test]
     fn tray_labels_follow_the_mirrored_ui_locale() {
         let zh: DesktopPrefs = serde_json::from_str(r#"{"locale":"zh"}"#).unwrap();
-        let zh_labels = tray_labels(zh.locale.as_deref());
-        assert_eq!(zh_labels.show, "显示");
-        assert_eq!(zh_labels.quit, "退出");
+        let zh_copy = tray::tray_copy(zh.locale.as_deref() == Some("zh"));
+        assert_eq!(zh_copy.show, "打开主窗口");
+        assert_eq!(zh_copy.autostart, "开机自启（托盘驻留）");
+        assert_eq!(zh_copy.quit_completely, "完全退出（停止后台服务）");
 
-        let en_labels = tray_labels(DesktopPrefs::default().locale.as_deref());
-        assert_eq!(en_labels.show, "Show");
-        assert_eq!(en_labels.new_session, "New Session");
+        let en_copy = tray::tray_copy(DesktopPrefs::default().locale.as_deref() == Some("zh"));
+        assert_eq!(en_copy.show, "Open Main Window");
+        assert_eq!(en_copy.new_session, "New Session");
 
         // Unknown values fall back to English instead of rendering raw ids.
-        assert_eq!(tray_labels(Some("fr")).show, "Show");
+        assert_eq!(tray::tray_copy(Some("fr") == Some("zh")).show, "Open Main Window");
     }
 
     #[test]
@@ -6183,6 +6385,12 @@ mod tests {
         assert!(is_background_launch_args(&["kiki-desktop", "--background"]));
         assert!(is_background_launch_args(&["kiki-desktop", "--tray"]));
         assert!(is_background_launch_args(&["kiki-desktop", "--minimized"]));
+        assert!(is_background_launch_args(&["kiki-desktop", "--autostart"]));
+        assert!(is_background_launch_args(&["kiki-desktop", "--tray-only"]));
+        assert!(is_autostart_launch_args(&["kiki-desktop", "--autostart"]));
+        assert!(!is_autostart_launch_args(&["kiki-desktop", "--tray-only"]));
+        assert!(is_tray_only_launch_args(&["kiki-desktop", "--tray-only"]));
+        assert!(!is_tray_only_launch_args(&["kiki-desktop", "--autostart"]));
         assert!(is_background_launch_args(&[
             "kiki-desktop",
             "--home",
@@ -6281,5 +6489,255 @@ mod tests {
                 reveal_fallback_window: false,
             }
         );
+    }
+
+    #[test]
+    fn unregistered_space_gets_isolated_single_instance_identifier_even_in_switch_mode() {
+        let main = PathBuf::from(r"C:\Users\tester\.kiki");
+        let ctf = PathBuf::from(r"D:\KikiSpaces\ctf");
+        let standalone = PathBuf::from(r"D:\KikiSpaces\solo");
+
+        // Unregistered space with home.toml in Switch mode must NOT collide with ai.easyagent.kiki.
+        let (mode, id) = resolve_space_launch_routing(
+            WindowMode::Switch,
+            false,
+            &ctf,
+            &main,
+            Some(&main),
+            true,
+            false,
+            Some("h-046f800db33236fa"),
+        );
+        assert_eq!(mode, WindowMode::Windows);
+        assert_eq!(id.as_deref(), Some("ai.easyagent.kiki.h-046f800db33236fa"));
+
+        // Registered space in Switch mode keeps in-window switching (no distinct identifier).
+        let (mode_reg, id_reg) = resolve_space_launch_routing(
+            WindowMode::Switch,
+            false,
+            &ctf,
+            &main,
+            Some(&main),
+            true,
+            true,
+            Some("h-046f800db33236fa"),
+        );
+        assert_eq!(mode_reg, WindowMode::Switch);
+        assert_eq!(id_reg, None);
+
+        // Standalone --home without home.toml base in Switch mode also gets a distinct identifier.
+        let (mode_solo, id_solo) = resolve_space_launch_routing(
+            WindowMode::Switch,
+            false,
+            &standalone,
+            &standalone,
+            Some(&main),
+            true,
+            true,
+            None,
+        );
+        assert_eq!(mode_solo, WindowMode::Windows);
+        assert!(id_solo
+            .as_deref()
+            .is_some_and(|v| v.starts_with("ai.easyagent.kiki.home-")));
+    }
+
+    #[test]
+    fn unregistered_headless_space_attaches_to_live_out_of_band_server_without_spawning() {
+        let dir = env::temp_dir().join(format!(
+            "kiki-unreg-attach-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap_or(0)
+        ));
+        let main_home = dir.join("main");
+        let ctf_home = dir.join("ctf");
+        let instances_dir = ctf_home.join("server").join("instances");
+        fs::create_dir_all(&main_home).unwrap();
+        fs::create_dir_all(&instances_dir).unwrap();
+
+        let main_escaped = main_home.to_string_lossy().replace('\\', "\\\\");
+        fs::write(
+            ctf_home.join("home.toml"),
+            format!(
+                "schema = 1\nid = \"h-046f800db33236fa\"\nname = \"CTF\"\nbase = \"{main_escaped}\"\n"
+            ),
+        )
+        .unwrap();
+        // Deliberately absent from main_home/homes.json (exact unregistered ctf condition).
+        fs::write(main_home.join("homes.json"), "[]").unwrap();
+        let token = "test-ctf-headless-token";
+        fs::write(ctf_home.join("server.local-owner"), format!("{token}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                ctf_home.join("server.local-owner"),
+                fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
+
+        let now_ms = unix_epoch_millis().unwrap_or(1_700_000_000_000);
+        let server_id = "01TESTCTFSERVER00000000001";
+        let body = serde_json::json!({
+            "code": 0,
+            "data": {
+                "server_id": server_id,
+                "server_home_id": "d92a5d0d-7059-4dd4-b16b-1bc1d179f09e",
+                "current_space_id": "h-046f800db33236fa",
+                "desktop_managed": false,
+                "dangerous_bypass_auth": false,
+                "backend": "v2",
+                "capabilities": { "websocket": true, "transcript": true },
+                "server_version": "0.6.1",
+                "build_id": "out-of-band-build",
+                "build_channel": "local",
+                "serverId": server_id,
+                "identity": {
+                    "homeId": "d92a5d0d-7059-4dd4-b16b-1bc1d179f09e",
+                    "hostId": "fixture-host",
+                    "protocol": 1
+                }
+            }
+        })
+        .to_string();
+        let port = spawn_stub_server("200 OK", body, 2);
+        let instance_json = serde_json::json!({
+            "server_id": server_id,
+            "pid": std::process::id(),
+            "host": "127.0.0.1",
+            "port": port,
+            "started_at": now_ms.saturating_sub(1_000),
+            "heartbeat_at": now_ms,
+            "workspaces": []
+        });
+        fs::write(
+            instances_dir.join(format!("{server_id}.json")),
+            instance_json.to_string(),
+        )
+        .unwrap();
+
+        let registered = local_spaces::is_home_registered(&main_home, &ctf_home);
+        assert!(!registered);
+        let space = read_desktop_space(&ctf_home).unwrap().unwrap();
+        let (effective_mode, routed_id) = resolve_space_launch_routing(
+            WindowMode::Switch,
+            false,
+            &ctf_home,
+            &main_home,
+            Some(&main_home),
+            true,
+            registered,
+            Some(&space.home_id),
+        );
+        assert_eq!(effective_mode, WindowMode::Windows);
+        assert_eq!(routed_id.as_deref(), Some("ai.easyagent.kiki.h-046f800db33236fa"));
+
+        let manager = SpaceBackendManager::new(&ctf_home, effective_mode).unwrap();
+        let active = manager.active_space().unwrap();
+        assert_eq!(active.home_id, "h-046f800db33236fa");
+        let attached = manager.active_backend().unwrap().attach_if_running();
+        assert!(attached.is_some(), "must attach to live out-of-band ctf server without spawning");
+        let conn = attached.unwrap();
+        assert_eq!(conn.url, format!("http://127.0.0.1:{port}"));
+        assert_eq!(conn.token, token);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn standalone_explicit_home_without_home_toml_initializes_and_attaches_cleanly() {
+        let dir = env::temp_dir().join(format!(
+            "kiki-standalone-attach-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap_or(0)
+        ));
+        let solo_home = dir.join("solo-lab");
+        let instances_dir = solo_home.join("server").join("instances");
+        fs::create_dir_all(&instances_dir).unwrap();
+        let token = "test-solo-token";
+        fs::write(solo_home.join("server.local-owner"), format!("{token}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                solo_home.join("server.local-owner"),
+                fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
+
+        let now_ms = unix_epoch_millis().unwrap_or(1_700_000_000_000);
+        let server_id = "01TESTSOLOSERVER0000000001";
+        let body = serde_json::json!({
+            "code": 0,
+            "data": {
+                "server_id": server_id,
+                "server_home_id": "d92a5d0d-7059-4dd4-b16b-1bc1d179f09e",
+                "current_space_id": "main",
+                "desktop_managed": false,
+                "dangerous_bypass_auth": false,
+                "backend": "v2",
+                "capabilities": { "websocket": true, "transcript": true },
+                "server_version": "0.6.1",
+                "build_id": "solo-build",
+                "build_channel": "local",
+                "serverId": server_id,
+                "identity": {
+                    "homeId": "d92a5d0d-7059-4dd4-b16b-1bc1d179f09e",
+                    "hostId": "fixture-host",
+                    "protocol": 1
+                }
+            }
+        })
+        .to_string();
+        let port = spawn_stub_server("200 OK", body, 2);
+        fs::write(
+            instances_dir.join(format!("{server_id}.json")),
+            serde_json::json!({
+                "server_id": server_id,
+                "pid": std::process::id(),
+                "host": "127.0.0.1",
+                "port": port,
+                "started_at": now_ms.saturating_sub(1_000),
+                "heartbeat_at": now_ms,
+                "workspaces": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let main_home = main_home_for(&solo_home).unwrap();
+        assert_eq!(main_home, solo_home);
+        let default_home = default_kiki_home_dir().ok();
+        let (effective_mode, routed_id) = resolve_space_launch_routing(
+            WindowMode::Switch,
+            false,
+            &solo_home,
+            &main_home,
+            default_home.as_deref(),
+            true,
+            true,
+            None,
+        );
+        assert_eq!(effective_mode, WindowMode::Windows);
+        assert!(routed_id
+            .as_deref()
+            .is_some_and(|v| v.starts_with("ai.easyagent.kiki.home-")));
+
+        let manager = SpaceBackendManager::new(&solo_home, effective_mode).unwrap();
+        let active = manager.active_space().unwrap();
+        assert_eq!(active.home_id, "main");
+        assert_eq!(active.name, "solo-lab");
+        let attached = manager.active_backend().unwrap().attach_if_running();
+        assert_eq!(
+            attached,
+            Some(DesktopConnection {
+                url: format!("http://127.0.0.1:{port}"),
+                token: token.into(),
+            })
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

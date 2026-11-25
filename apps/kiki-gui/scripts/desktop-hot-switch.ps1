@@ -18,7 +18,8 @@ param(
     [ValidateRange(1, 300)][int]$StopGraceSeconds = 30,
     [bool]$InterruptAfterSettle = $true,
     [switch]$NoInterruptAfterSettle,
-    [switch]$AllowUnfencedHeadless
+    [switch]$AllowUnfencedHeadless,
+    [switch]$SkipTrayHost
 )
 
 if ($Rollback -and -not $Recover) {
@@ -507,6 +508,35 @@ function Resolve-ServerHomeByPid([int]$ServerPid, [object]$Proc, [string[]]$Cand
     return $null
 }
 
+function Get-InferredHomeFromChildArgs([string]$LaunchArgs) {
+    if ([string]::IsNullOrWhiteSpace($LaunchArgs)) { return $null }
+    if ($LaunchArgs -match '(?i)(?:^|\s)__search-indexer\s+(?:"([^"]+)"|''([^'']+)''|(\S+))') {
+        $dbPath = if ($Matches[1]) { $Matches[1] } elseif ($Matches[2]) { $Matches[2] } else { $Matches[3] }
+        if (-not [string]::IsNullOrWhiteSpace($dbPath) -and [IO.Path]::IsPathRooted($dbPath)) {
+            $indexDir = Split-Path -Parent $dbPath
+            $leaf = Split-Path -Leaf $indexDir
+            if ($leaf -ieq 'search-index-v2' -or $leaf -ieq 'search-index') {
+                $candidateHome = Split-Path -Parent $indexDir
+                if (-not [string]::IsNullOrWhiteSpace($candidateHome) -and [IO.Path]::IsPathRooted($candidateHome)) {
+                    return Normalize-HomePath $candidateHome
+                }
+            }
+        }
+    }
+    if ($LaunchArgs -match '(?i)(?:^|\s)__plugin_run_node\s+') {
+        foreach ($m in [regex]::Matches($LaunchArgs, '(?:"([^"]+)"|''([^'']+)''|(\S+))')) {
+            $tok = if ($m.Groups[1].Success) { $m.Groups[1].Value } elseif ($m.Groups[2].Success) { $m.Groups[2].Value } else { $m.Groups[3].Value }
+            if ([string]::IsNullOrWhiteSpace($tok) -or (-not [IO.Path]::IsPathRooted($tok))) { continue }
+            $normTok = $tok.Replace('/', '\')
+            $idx = $normTok.IndexOf('\plugins\', [StringComparison]::OrdinalIgnoreCase)
+            if ($idx -gt 2) {
+                return Normalize-HomePath ($normTok.Substring(0, $idx))
+            }
+        }
+    }
+    return $null
+}
+
 function Find-RuntimeServerEntries([string[]]$KnownHomes = @()) {
     $wmiByPid = @{}
     try {
@@ -543,6 +573,16 @@ function Find-RuntimeServerEntries([string[]]$KnownHomes = @()) {
     foreach ($item in $candidates) {
         $candidateByPid[[int]$item.pid] = $item
     }
+    $inferredHomeByServerPid = @{}
+    foreach ($item in $candidates) {
+        if ($item.launchArgs -notmatch '^__') { continue }
+        $inferred = Get-InferredHomeFromChildArgs $item.launchArgs
+        if (-not [string]::IsNullOrWhiteSpace($inferred) -and $item.parentPid -gt 0) {
+            if (-not $inferredHomeByServerPid.ContainsKey([int]$item.parentPid)) {
+                $inferredHomeByServerPid[[int]$item.parentPid] = $inferred
+            }
+        }
+    }
     $heapLauncherParentPids = New-Object 'System.Collections.Generic.HashSet[int]'
     $heapLauncherByChildPid = @{}
     foreach ($item in $candidates) {
@@ -562,10 +602,17 @@ function Find-RuntimeServerEntries([string[]]$KnownHomes = @()) {
         $launcherItem = if ($heapLauncherByChildPid.ContainsKey([int]$item.pid)) { $heapLauncherByChildPid[[int]$item.pid] } else { $null }
         if ($null -eq $launcherItem -and $item.parentPid -gt 0 -and $matchedPids.Contains($item.parentPid)) { continue }
         $explicitHome = Get-ExplicitHomeFromCommandLine $item.commandLine
+        $candidateHomes = New-Object System.Collections.Generic.List[string]
+        if ($inferredHomeByServerPid.ContainsKey([int]$item.pid)) {
+            $candidateHomes.Add([string]$inferredHomeByServerPid[[int]$item.pid])
+        }
+        foreach ($kh in @($KnownHomes)) {
+            if (-not [string]::IsNullOrWhiteSpace($kh)) { $candidateHomes.Add($kh) }
+        }
         $resolvedHome = if (-not [string]::IsNullOrWhiteSpace($explicitHome)) {
             $explicitHome
         } else {
-            Resolve-ServerHomeByPid $item.pid $item.process $KnownHomes
+            Resolve-ServerHomeByPid $item.pid $item.process ($candidateHomes.ToArray())
         }
         $entries += [pscustomobject]@{
             process = $item.process
@@ -1629,6 +1676,22 @@ function Clear-SwitchControlsForAllSpaces([hashtable]$TargetsByHome, [object[]]$
     }
 }
 
+function Ensure-TrayHostRunning([object[]]$SpaceStates) {
+    if ($SkipTrayHost) { return $false }
+    if (-not [Environment]::UserInteractive) { return $false }
+    if (@(Get-Process -Name 'explorer' -ErrorAction SilentlyContinue).Count -eq 0) { return $false }
+    $hasHeadless = @($SpaceStates | Where-Object { -not [bool]$_.hadDesktop }).Count -gt 0
+    if (-not $hasHeadless) { return $false }
+    if (@(Find-ShellEntries).Count -gt 0) { return $false }
+    try {
+        Invoke-Launch $runtime $homePath -TrayOnly | Out-Null
+        return $true
+    } catch {
+        Write-Warning ("Could not start Kiki tray host for background space(s): {0}" -f $_.Exception.Message)
+        return $false
+    }
+}
+
 function Start-AllSpaces([object[]]$SpaceStates) {
     $fixedHeadlessPorts = @(
         foreach ($sp in @($SpaceStates)) {
@@ -1984,6 +2047,7 @@ try {
             }
         }
         Clear-SwitchControlsForAllSpaces $runningByHome $recordedSpaces $true
+        $null = Ensure-TrayHostRunning $recordedSpaces
         $state.phase = 'complete'; Save-State
         $primaryRecovered = $runningByHome[$homePath.ToLowerInvariant()]
         Write-Host "Recovery complete: $($primaryRecovered.releaseId)"
@@ -2188,6 +2252,7 @@ try {
         )
         if (-not [string]::IsNullOrWhiteSpace($commit)) { $invokeArgs += "-ExpectedCommit $(& $esc $commit)" }
         if ($Background) { $invokeArgs += '-Background' }
+        if ($SkipTrayHost) { $invokeArgs += '-SkipTrayHost' }
         if ($NoInterruptAfterSettle -or (-not $InterruptAfterSettle)) { $invokeArgs += '-NoInterruptAfterSettle' }
         $runnerBody = @(
             "`$ErrorActionPreference = 'Stop'",
@@ -2423,6 +2488,7 @@ try {
             $rollbackLaunchers = Start-AllSpaces $recordedSpaces
             $restoredByHome = Await-AllReleases $recordedSpaces $state.oldReleaseId $state.oldBuildId $rollbackLaunchers $tokensByHome
             Clear-SwitchControlsForAllSpaces $restoredByHome $recordedSpaces $true
+            $null = Ensure-TrayHostRunning $recordedSpaces
             $state.phase = 'complete'; Save-State
             $primaryRestored = $restoredByHome[$homePath.ToLowerInvariant()]
             $script:report.outcome = 'rolled_back'
@@ -2446,6 +2512,7 @@ try {
         if ($targetsByHome.ContainsKey($k)) { $repSpace.postServerMeta = Format-ServerMetaReport $targetsByHome[$k] }
     }
     Release-OurPausesForAllSpaces $targetsByHome $recordedSpaces $interruptedAfterSettle
+    $null = Ensure-TrayHostRunning $recordedSpaces
     $state.phase = 'complete'; Save-State
     $script:report.outcome = 'succeeded'
     $script:report.finishedAtUtc = [DateTime]::UtcNow.ToString('o')

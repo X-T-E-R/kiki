@@ -669,6 +669,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const socketStatusRef = useRef<WsStatus>('closed');
   const socketSettledRef = useRef(false);
   const [metaAttempt, setMetaAttempt] = useState(0);
+  const metaFailureCountRef = useRef(0);
   const [pairedAuthRevoked, setPairedAuthRevoked] = useState(false);
   const verifiedDesktopRef = useRef<{
     selection: ConnectionSelection; client: KikiClient; meta: MetaResponse; homeId: string; scopeId: string;
@@ -1283,6 +1284,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       return;
     }
     if (rebindingClientRef.current === instance) rebindingClientRef.current = null;
+    metaFailureCountRef.current = 0;
     setClients({ endpoint, token, scopeId, client: instance });
     const controllers = controllersRef.current;
     return () => {
@@ -1308,6 +1310,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     (restored !== null ? Promise.resolve(restored.meta) : client.meta()).then(
       (value) => {
         if (cancelled || connectionEpoch !== connectionEpochRef.current) return;
+        metaFailureCountRef.current = 0;
         setPairedAuthRevoked(false);
         scrubUrl();
         if (selection?.source === 'ssh') {
@@ -1373,11 +1376,17 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         if (selection?.source === 'app-shell' || (embeddedAndroid && selection?.source === 'local-detection')) {
           setPairedAuthRevoked(authRejected);
           if (!authRejected) {
-            retryTimer = setTimeout(() => {
-              if (!cancelled && connectionEpoch === connectionEpochRef.current) {
-                setMetaAttempt((attempt) => attempt + 1);
-              }
-            }, 1_500);
+            const pageHidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+            const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+            if (!pageHidden && !browserOffline) {
+              const delayMs = Math.min(1_500 * 2 ** Math.min(metaFailureCountRef.current, 5), 30_000);
+              metaFailureCountRef.current += 1;
+              retryTimer = setTimeout(() => {
+                if (!cancelled && connectionEpoch === connectionEpochRef.current) {
+                  setMetaAttempt((attempt) => attempt + 1);
+                }
+              }, delayMs);
+            }
           }
         } else {
           setPairedAuthRevoked(false);
@@ -1703,6 +1712,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (connected || (selection?.source !== 'app-shell' && !(embeddedAndroid && selection?.source === 'local-detection')) || pairedAuthRevoked) return;
     const retryMeta = () => {
+      metaFailureCountRef.current = 0;
       setConnectError(null);
       setMetaAttempt((attempt) => attempt + 1);
     };

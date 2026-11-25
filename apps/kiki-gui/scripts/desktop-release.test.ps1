@@ -543,9 +543,13 @@ function Start-Process {
 }
 Invoke-Launch $RuntimePath
 Invoke-Launch $RuntimePath -Background
-if ($calls.Count -ne 2) { throw "Expected 2 Start-Process calls, saw $($calls.Count)." }
+Invoke-Launch $RuntimePath -TrayOnly
+Invoke-Launch $RuntimePath -Autostart
+if ($calls.Count -ne 4) { throw "Expected 4 Start-Process calls, saw $($calls.Count)." }
 if ($calls[0].Arguments -ne '') { throw "Foreground launch passed unexpected arguments: $($calls[0].Arguments)" }
 if ($calls[1].Arguments -ne '--background') { throw "Background launch did not pass --background: $($calls[1].Arguments)" }
+if ($calls[2].Arguments -ne '--tray-only') { throw "TrayOnly launch did not pass --tray-only: $($calls[2].Arguments)" }
+if ($calls[3].Arguments -ne '--autostart') { throw "Autostart launch did not pass --autostart: $($calls[3].Arguments)" }
 $expectedActiveDir = Join-Path ([IO.Path]::GetFullPath($RuntimePath)) 'active'
 $expectedActiveExe = Join-Path $expectedActiveDir 'kiki-desktop.exe'
 if ($calls[0].FilePath -ine $expectedActiveExe) { throw "Launch did not sync and run from active\: $($calls[0].FilePath)" }
@@ -725,10 +729,76 @@ $recoverIfAst = $ast.FindAll({
 if ($null -eq $recoverIfAst -or $recoverIfAst.Extent.Text -notmatch 'Close-DesktopShell') {
     throw 'Expected -Recover branch to reuse Close-DesktopShell for lingering tray desktop shells.'
 }
+# 6. Get-InferredHomeFromChildArgs extracts unregistered headless space homes from __search-indexer and __plugin_run_node.
+$helperNames = @('Normalize-HomePath', 'Get-InferredHomeFromChildArgs')
+foreach ($hName in $helperNames) {
+    $fnAst = $ast.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $hName
+    }, $false) | Select-Object -First 1
+    if ($null -eq $fnAst) { throw "Missing expected helper function $hName in desktop-hot-switch.ps1" }
+    Invoke-Expression $fnAst.Extent.Text
+}
+$inferredCtf = Get-InferredHomeFromChildArgs '__search-indexer D:\666\KikiSpaces\ctf\search-index-v2\index.sqlite'
+if ($inferredCtf -ine 'D:\666\KikiSpaces\ctf') {
+    throw "Expected D:\666\KikiSpaces\ctf from __search-indexer, saw '$inferredCtf'."
+}
+$inferredQuoted = Get-InferredHomeFromChildArgs '__search-indexer "D:\My Spaces\ctf\search-index-v2\index.sqlite"'
+if ($inferredQuoted -ine 'D:\My Spaces\ctf') {
+    throw "Expected quoted space home from __search-indexer, saw '$inferredQuoted'."
+}
+$inferredPlugin = Get-InferredHomeFromChildArgs '__plugin_run_node C:\runtime\hostRunner.mjs C:\Users\alice\.kiki\plugins\managed\foo\entry.mjs'
+if ($inferredPlugin -ine 'C:\Users\alice\.kiki') {
+    throw "Expected C:\Users\alice\.kiki from __plugin_run_node, saw '$inferredPlugin'."
+}
 '@, (New-Object Text.UTF8Encoding($false)))
     Invoke-Controller @('-HotSwitchPath', $hotSwitchPath, '-ControllerPath', $controller, '-ScratchRoot', (Join-Path $testRoot 'hs-unit')) 0 $hotSwitchRunner | Out-Null
 
-    Write-Output 'desktop-release tests passed: initial, repeated, fail-closed, verification, cli-publish, installed-controller, production-default, shortcut, main-runtime-shortcut, receipt, legacy-launch, and hot-switch-guard cases.'
+    # 7. Sync-DesktopAutostart (isolated HKCU test key) covers EnsureAutostart, boot-daemon auto-heal, opt-out respect, stale-release upgrade, and DisableAutostart.
+    $autostartRunner = Join-Path $testRoot 'autostart-unit.ps1'
+    [IO.File]::WriteAllText($autostartRunner, @'
+param([string]$ControllerPath, [string]$RuntimePath, [string]$ScratchRoot)
+$ErrorActionPreference = 'Stop'
+. $ControllerPath -Action Launch
+$testReg = "HKCU:\Software\EasyAgent\KikiAutostartPsTest_$([guid]::NewGuid().ToString('N'))"
+$homeDir = Join-Path $ScratchRoot 'home'
+[IO.Directory]::CreateDirectory($homeDir) | Out-Null
+$expectedCmd = '"{0}" --autostart' -f (Join-Path (Join-Path ([IO.Path]::GetFullPath($RuntimePath)) 'active') 'kiki-desktop.exe')
+try {
+    # Without boot-daemon and without existing entry, automatic sync leaves registry untouched.
+    $r0 = Sync-DesktopAutostart $RuntimePath $homeDir $testReg
+    if ($r0.enabled -or $r0.changed) { throw 'Automatic sync unexpectedly enabled autostart without boot daemon.' }
+
+    # With boot-daemon script present and no opt-out, automatic sync registers interactive tray autostart.
+    $bootDir = Join-Path $RuntimePath 'backend-boot'
+    [IO.Directory]::CreateDirectory($bootDir) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $bootDir 'Start-KikiBackend.ps1'), '# boot daemon')
+    $r1 = Sync-DesktopAutostart $RuntimePath $homeDir $testReg
+    if (-not $r1.enabled -or $r1.command -cne $expectedCmd) { throw "Boot-daemon auto-heal failed: $($r1.command)" }
+
+    # Disable removes the key; explicit opt-out in desktop.json prevents re-adding on future promotes.
+    $r2 = Sync-DesktopAutostart $RuntimePath $homeDir $testReg -Disable
+    if ($r2.enabled) { throw 'Disable did not clear autostart.' }
+    [IO.File]::WriteAllText((Join-Path $homeDir 'desktop.json'), '{"autostart":false}')
+    $r3 = Sync-DesktopAutostart $RuntimePath $homeDir $testReg
+    if ($r3.enabled) { throw 'Automatic sync ignored explicit autostart=false opt-out.' }
+
+    # ForceEnable overrides opt-out; stale releases\<oldId> entry upgrades cleanly to active\kiki-desktop.exe --autostart.
+    $r4 = Sync-DesktopAutostart $RuntimePath $homeDir $testReg -ForceEnable
+    if (-not $r4.enabled -or $r4.command -cne $expectedCmd) { throw "ForceEnable failed: $($r4.command)" }
+    Set-ItemProperty -LiteralPath $testReg -Name 'Kiki' -Value ('"{0}" --background' -f (Join-Path $RuntimePath 'releases\old-id\kiki-desktop.exe'))
+    $r5 = Sync-DesktopAutostart $RuntimePath $homeDir $testReg
+    if (-not $r5.changed -or $r5.command -cne $expectedCmd) { throw "Stale release path was not upgraded: $($r5.command)" }
+}
+finally {
+    if (Test-Path -LiteralPath $testReg) { Remove-Item -LiteralPath $testReg -Recurse -Force -ErrorAction SilentlyContinue }
+    $bootDir = Join-Path $RuntimePath 'backend-boot'
+    if (Test-Path -LiteralPath $bootDir) { Remove-Item -LiteralPath $bootDir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+'@, (New-Object Text.UTF8Encoding($false)))
+    Invoke-Controller @('-ControllerPath', $controller, '-RuntimePath', $legacyRoot, '-ScratchRoot', (Join-Path $testRoot 'auto-unit')) 0 $autostartRunner | Out-Null
+
+    Write-Output 'desktop-release tests passed: initial, repeated, fail-closed, verification, cli-publish, installed-controller, production-default, shortcut, main-runtime-shortcut, receipt, legacy-launch, hot-switch-guard, child-home-inference, and autostart-sync cases.'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot) {

@@ -582,6 +582,8 @@ export const stCoreEn = {
   'st.defaults.row.titleUnset': 'Not set; titles are not written automatically.',
   'st.defaults.tabHint': 'Defaults for brand-new sessions; sessions already running keep their own choices.',
   'st.defaults.title': 'New-session defaults',
+  'st.desktop.autostart': 'Launch at login (system tray)',
+  'st.desktop.autostartDesc': 'Start silently in the system tray at login and attach to background services.',
   'st.desktop.closeQuestion': 'When the window closes',
   'st.desktop.notifications': 'Show approval notifications',
   'st.desktop.quit': 'Close desktop',

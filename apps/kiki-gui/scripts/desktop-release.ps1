@@ -1,14 +1,18 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Promote', 'Launch', 'InstallShortcuts')]
+    [ValidateSet('Promote', 'Launch', 'InstallShortcuts', 'EnsureAutostart', 'DisableAutostart')]
     [string]$Action,
 
     [string]$RuntimeRoot,
     [string]$CandidateRoot,
     [string]$ExpectedCommit,
     [string]$DesktopPath,
+    [string]$KikiHome,
+    [string]$AutostartRegistryPath,
     [switch]$Background,
+    [switch]$TrayOnly,
+    [switch]$Autostart,
     [switch]$WaitForUser
 )
 
@@ -639,6 +643,12 @@ function Invoke-Promotion([string]$Root, [object]$Verified) {
         elseif (-not $syncResult.AlreadyCurrent) {
             Write-Output "Synced active runtime: $($syncResult.ActivePath)"
         }
+        if ($env:KIKI_SKIP_AUTOSTART_SYNC -ne '1') {
+            $effectiveHome = if (-not [string]::IsNullOrWhiteSpace($KikiHome)) { $KikiHome } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.kiki' }
+            $regPath = if (-not [string]::IsNullOrWhiteSpace($AutostartRegistryPath)) { $AutostartRegistryPath } else { Get-DefaultAutostartRegistryPath }
+            $autoSync = Sync-DesktopAutostart $rootPath $effectiveHome $regPath
+            if ($autoSync.changed -and $autoSync.enabled) { Write-Output "Synced Kiki login autostart (tray resident): $($autoSync.command)" }
+        }
         Write-Output "Kiki release is already current: $releasePath"
         return
     }
@@ -661,6 +671,12 @@ function Invoke-Promotion([string]$Root, [object]$Verified) {
     }
     else {
         Write-Output "Synced active runtime: $($syncResult.ActivePath)"
+    }
+    if ($env:KIKI_SKIP_AUTOSTART_SYNC -ne '1') {
+        $effectiveHome = if (-not [string]::IsNullOrWhiteSpace($KikiHome)) { $KikiHome } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.kiki' }
+        $regPath = if (-not [string]::IsNullOrWhiteSpace($AutostartRegistryPath)) { $AutostartRegistryPath } else { Get-DefaultAutostartRegistryPath }
+        $autoSync = Sync-DesktopAutostart $rootPath $effectiveHome $regPath
+        if ($autoSync.changed -and $autoSync.enabled) { Write-Output "Synced Kiki login autostart (tray resident): $($autoSync.command)" }
     }
     Write-Output "Promoted Kiki release: $releasePath"
 }
@@ -755,7 +771,92 @@ function Format-WindowsProcessArgument([string]$Value) {
     return $sb.ToString()
 }
 
-function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [switch]$Background, [switch]$PassHomeArg) {
+function Get-DefaultAutostartRegistryPath {
+    return 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+}
+
+function Get-AutostartCommand([string]$Root) {
+    $rootPath = Get-FullPath $Root
+    $activeExe = Join-Path (Get-ActivePath $rootPath) 'kiki-desktop.exe'
+    $exePath = if ((Test-Path -LiteralPath $activeExe -PathType Leaf) -and (Get-Item -LiteralPath $activeExe).Length -gt 0) {
+        $activeExe
+    }
+    else {
+        (Resolve-LaunchTarget $rootPath).MainPath
+    }
+    if ($exePath.Contains('"')) {
+        throw "Autostart executable path cannot contain double quotes: $exePath"
+    }
+    return ('"{0}" --autostart' -f $exePath)
+}
+
+function Read-DesktopAutostartOptOut([string]$HomeDir) {
+    if ([string]::IsNullOrWhiteSpace($HomeDir)) { return $false }
+    $prefsPath = Join-Path $HomeDir 'desktop.json'
+    if (-not (Test-Path -LiteralPath $prefsPath -PathType Leaf)) { return $false }
+    try {
+        $prefs = Get-Content -LiteralPath $prefsPath -Raw | ConvertFrom-Json
+        $val = Get-ObjectProperty $prefs 'autostart'
+        if ($null -ne $val -and ([bool]$val -eq $false)) { return $true }
+    }
+    catch {}
+    return $false
+}
+
+function Sync-DesktopAutostart(
+    [string]$Root,
+    [string]$HomeDir = '',
+    [string]$RegistryPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run',
+    [switch]$ForceEnable,
+    [switch]$Disable
+) {
+    $rootPath = Get-FullPath $Root
+    $valueName = 'Kiki'
+    if ($Disable) {
+        if (Test-Path -LiteralPath $RegistryPath) {
+            $existing = Get-ItemProperty -LiteralPath $RegistryPath -Name $valueName -ErrorAction SilentlyContinue
+            if ($null -ne $existing) {
+                Remove-ItemProperty -LiteralPath $RegistryPath -Name $valueName -Force
+            }
+        }
+        return [pscustomobject]@{ changed = $true; enabled = $false; command = $null }
+    }
+
+    $isDevRoot = (Split-Path -Leaf $rootPath) -eq 'Kiki-Dev'
+    if ($isDevRoot -and (-not $ForceEnable)) {
+        return [pscustomobject]@{ changed = $false; enabled = $false; command = $null }
+    }
+
+    $currentValue = $null
+    if (Test-Path -LiteralPath $RegistryPath) {
+        $item = Get-ItemProperty -LiteralPath $RegistryPath -Name $valueName -ErrorAction SilentlyContinue
+        if ($null -ne $item) {
+            $currentValue = [string](Get-ObjectProperty $item $valueName)
+        }
+    }
+
+    $hasExistingInRoot = (-not [string]::IsNullOrWhiteSpace($currentValue)) -and ($currentValue.IndexOf($rootPath, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+    $bootDaemonScript = Join-Path (Join-Path $rootPath 'backend-boot') 'Start-KikiBackend.ps1'
+    $hasBootDaemon = Test-Path -LiteralPath $bootDaemonScript -PathType Leaf
+    $optedOut = Read-DesktopAutostartOptOut $HomeDir
+
+    $shouldWrite = $ForceEnable -or $hasExistingInRoot -or ($hasBootDaemon -and [string]::IsNullOrWhiteSpace($currentValue) -and (-not $optedOut))
+    if (-not $shouldWrite) {
+        return [pscustomobject]@{ changed = $false; enabled = (-not [string]::IsNullOrWhiteSpace($currentValue)); command = $currentValue }
+    }
+
+    $desiredCommand = Get-AutostartCommand $rootPath
+    if ($currentValue -ceq $desiredCommand) {
+        return [pscustomobject]@{ changed = $false; enabled = $true; command = $desiredCommand }
+    }
+    if (-not (Test-Path -LiteralPath $RegistryPath)) {
+        New-Item -Path $RegistryPath -Force | Out-Null
+    }
+    Set-ItemProperty -LiteralPath $RegistryPath -Name $valueName -Value $desiredCommand -Type String
+    return [pscustomobject]@{ changed = $true; enabled = $true; command = $desiredCommand }
+}
+
+function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [switch]$Background, [switch]$TrayOnly, [switch]$Autostart, [switch]$PassHomeArg) {
     $rootPath = Get-FullPath $Root
     $manifest = Read-CurrentManifest $rootPath
     $releaseId = [string]$manifest.releaseId
@@ -793,7 +894,13 @@ function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [s
             $argList.Add('--home')
             $argList.Add((Format-WindowsProcessArgument $LaunchHome))
         }
-        if ($Background) {
+        if ($TrayOnly) {
+            $argList.Add('--tray-only')
+        }
+        elseif ($Autostart) {
+            $argList.Add('--autostart')
+        }
+        elseif ($Background) {
             $argList.Add('--background')
         }
         if ($argList.Count -gt 0) {
@@ -1065,13 +1172,23 @@ if ($MyInvocation.InvocationName -ne '.') {
                 if ($WaitForUser) { Read-Host 'Promotion succeeded. Press Enter to close' | Out-Null }
             }
             'Launch' {
-                Invoke-Launch $RuntimeRoot -Background:$Background
+                Invoke-Launch $RuntimeRoot -Background:$Background -TrayOnly:$TrayOnly -Autostart:$Autostart
             }
             'InstallShortcuts' {
                 if ([string]::IsNullOrWhiteSpace($DesktopPath)) {
                     $DesktopPath = [Environment]::GetFolderPath('Desktop')
                 }
                 Install-KikiShortcuts $RuntimeRoot (Resolve-CandidateRoot) $DesktopPath $ExpectedCommit
+            }
+            'EnsureAutostart' {
+                $effectiveHome = if (-not [string]::IsNullOrWhiteSpace($KikiHome)) { $KikiHome } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.kiki' }
+                $regPath = if (-not [string]::IsNullOrWhiteSpace($AutostartRegistryPath)) { $AutostartRegistryPath } else { Get-DefaultAutostartRegistryPath }
+                Sync-DesktopAutostart $RuntimeRoot $effectiveHome $regPath -ForceEnable | Out-Null
+            }
+            'DisableAutostart' {
+                $effectiveHome = if (-not [string]::IsNullOrWhiteSpace($KikiHome)) { $KikiHome } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.kiki' }
+                $regPath = if (-not [string]::IsNullOrWhiteSpace($AutostartRegistryPath)) { $AutostartRegistryPath } else { Get-DefaultAutostartRegistryPath }
+                Sync-DesktopAutostart $RuntimeRoot $effectiveHome $regPath -Disable | Out-Null
             }
         }
     }

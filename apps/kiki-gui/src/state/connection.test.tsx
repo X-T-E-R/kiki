@@ -2340,4 +2340,84 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
     expect(badMount.container.querySelector('[data-shell-source]')).toBeNull();
     await badMount.unmount();
   });
+
+  it('backs off transient app-shell /meta retries exponentially and pauses while the page is hidden', async () => {
+    vi.useFakeTimers();
+    const origVisibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+    let visibility: DocumentVisibilityState = 'visible';
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => visibility,
+    });
+    try {
+      mocks.meta.mockRejectedValue(Object.assign(new Error('HTTP 503 transient'), { code: 503 }));
+      expect(applyCommittedShellCredential(window, window.location.origin, 'backoff-token')).toBe(true);
+      const container = document.createElement('div');
+      document.body.append(container);
+      const root = createRoot(container);
+      mounted.push({ container, root });
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <HostProvider host={browserHost}>
+                <ConnectionProvider>
+                  <ShellStatusHarness />
+                </ConnectionProvider>
+              </HostProvider>
+            </I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      expect(mocks.meta).toHaveBeenCalledTimes(1);
+
+      // First retry fires after 1.5s.
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_499); });
+      expect(mocks.meta).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(mocks.meta).toHaveBeenCalledTimes(2);
+
+      // Second retry backs off to 3.0s (not 1.5s).
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+      expect(mocks.meta).toHaveBeenCalledTimes(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+      expect(mocks.meta).toHaveBeenCalledTimes(3);
+
+      // While hidden, no further timer retries are scheduled after a failure.
+      visibility = 'hidden';
+      await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
+      const countWhenHidden = mocks.meta.mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(mocks.meta.mock.calls.length).toBe(countWhenHidden);
+
+      // Returning visible wakes and retries immediately.
+      visibility = 'visible';
+      mocks.meta.mockResolvedValueOnce({
+        server_id: 'srv-woke',
+        server_home_id: 'home-woke',
+        server_version: '0.6.1',
+        current_space_id: 'main',
+        dangerous_bypass_auth: false,
+      });
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mocks.meta.mock.calls.length).toBe(countWhenHidden + 1);
+      expect(container.querySelector('[data-shell-source]')?.textContent).toBe('app-shell');
+
+      await act(async () => { root.unmount(); });
+      container.remove();
+    } finally {
+      if (origVisibility) {
+        Object.defineProperty(document, 'visibilityState', origVisibility);
+      } else {
+        delete (document as unknown as { visibilityState?: DocumentVisibilityState }).visibilityState;
+      }
+      vi.useRealTimers();
+    }
+  });
 });

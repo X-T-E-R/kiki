@@ -11,6 +11,7 @@ import { createServerLogger } from '../src/services/pinoLoggerService';
 import {
   createInstanceRegistry,
   getLiveServerInstance,
+  HEARTBEAT_STALE_MS,
   listLiveServerInstances,
   type ServerInstanceInfo,
 } from '../src/instanceRegistry';
@@ -53,7 +54,7 @@ function writeInstance(serverId: string, fields: Partial<DiskInstance> & { pid: 
     host: fields.host ?? '127.0.0.1',
     port: fields.port ?? 58627,
     started_at: fields.started_at ?? 1000,
-    heartbeat_at: fields.heartbeat_at ?? 1000,
+    heartbeat_at: fields.heartbeat_at ?? Date.now(),
     ...(fields.workspaces !== undefined ? { workspaces: fields.workspaces } : {}),
     ...(fields.host_version !== undefined ? { host_version: fields.host_version } : {}),
     ...(fields.build_id !== undefined ? { build_id: fields.build_id } : {}),
@@ -169,6 +170,26 @@ describe('createInstanceRegistry — stale sweep on register', () => {
     expect(existsSync(join(instancesDir, 'garbage.json'))).toBe(true);
     await reg.release();
   });
+
+  it('prunes a live-pid entry whose heartbeat_at is older than HEARTBEAT_STALE_MS (PID reuse guard)', async () => {
+    const nowMs = 1_000_000;
+    const registry = createInstanceRegistry({ instancesDir, now: () => nowMs });
+    writeInstance('reused-pid-stale', {
+      pid: process.pid,
+      started_at: nowMs - HEARTBEAT_STALE_MS - 10_000,
+      heartbeat_at: nowMs - HEARTBEAT_STALE_MS - 1,
+    });
+    writeInstance('fresh-peer', {
+      pid: process.pid,
+      started_at: nowMs - 5_000,
+      heartbeat_at: nowMs - 5_000,
+    });
+
+    const reg = await registry.register(baseInfo);
+    expect(existsSync(join(instancesDir, 'reused-pid-stale.json'))).toBe(false);
+    expect(existsSync(join(instancesDir, 'fresh-peer.json'))).toBe(true);
+    await reg.release();
+  });
 });
 
 describe('createInstanceRegistry — listLive', () => {
@@ -181,6 +202,25 @@ describe('createInstanceRegistry — listLive', () => {
     const live = await registry.listLive();
     expect(live.map((i) => i.serverId)).toEqual(['older', 'newer']);
     expect(existsSync(join(instancesDir, 'dead.json'))).toBe(false);
+  });
+
+  it('drops and deletes live-pid entries with stale heartbeats', async () => {
+    const nowMs = 1_000_000;
+    const registry = createInstanceRegistry({ instancesDir, now: () => nowMs });
+    writeInstance('stale-reused-pid', {
+      pid: process.pid,
+      started_at: nowMs - HEARTBEAT_STALE_MS - 5_000,
+      heartbeat_at: nowMs - HEARTBEAT_STALE_MS - 1,
+    });
+    writeInstance('active', {
+      pid: process.pid,
+      started_at: nowMs - 1_000,
+      heartbeat_at: nowMs - 1_000,
+    });
+
+    const live = await registry.listLive();
+    expect(live.map((i) => i.serverId)).toEqual(['active']);
+    expect(existsSync(join(instancesDir, 'stale-reused-pid.json'))).toBe(false);
   });
 
   it('returns an empty array when the directory is missing', async () => {

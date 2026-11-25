@@ -94,6 +94,13 @@ export interface DesktopSpaceStatus {
   readonly busyCount: number;
 }
 
+/** `get_desktop_autostart` / `set_desktop_autostart` status payload. */
+export interface DesktopAutostartStatus {
+  readonly enabled: boolean;
+  readonly supported: boolean;
+  readonly command?: string | null;
+}
+
 /** `desktop_log_info`: the home's log folder (`logs`), where the desktop backend log lives, and the level its next launch uses. */
 export interface DesktopLogInfo {
   readonly directory: string;
@@ -203,6 +210,8 @@ interface HostCapabilities {
   writeFileText?: (path: string, text: string) => Promise<void>;
   readDesktopPrefs?: () => Promise<DesktopNativePrefs | null>;
   writeDesktopPrefs?: (prefs: Partial<DesktopNativePrefs>) => Promise<void>;
+  getDesktopAutostart?: () => Promise<DesktopAutostartStatus | null>;
+  setDesktopAutostart?: (enabled: boolean) => Promise<DesktopAutostartStatus>;
   /**
    * The desktop's active space, as the raw `desktop_active_space` payload
    * (`{ homeId, name, color, isPrimary, … }`). The storage boot validates and

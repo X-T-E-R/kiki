@@ -39,6 +39,9 @@ export function GeneralSection() {
   const inPairedSpace = typeof connectionId === 'string' && connectionId !== '';
   const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
   const [desktopPrefs, setDesktopPrefs] = useState(readDesktopPrefs);
+  const [autostartEnabled, setAutostartEnabled] = useState<boolean | null>(null);
+  const [autostartSupported, setAutostartSupported] = useState(false);
+  const [autostartBusy, setAutostartBusy] = useState(false);
   const [confirmClearDrafts, setConfirmClearDrafts] = useState(false);
   const isDesktop = host.kind === 'tauri';
   // Touch: Enter is always the newline key there, so the send-key choice has
@@ -48,12 +51,21 @@ export function GeneralSection() {
 
   useEffect(() => {
     if (host.kind !== 'tauri') return;
+    let active = true;
     void host.readDesktopPrefs().then((prefs) => {
-      if (prefs !== null) {
+      if (active && prefs !== null) {
         setDesktopPrefs(prefs);
         writeDesktopPrefs(prefs);
       }
     });
+    if (host.getDesktopAutostart) {
+      void host.getDesktopAutostart().then((status) => {
+        if (!active || status === null) return;
+        setAutostartSupported(status.supported);
+        setAutostartEnabled(status.enabled);
+      }).catch(() => {});
+    }
+    return () => { active = false; };
   }, [host]);
 
   const updateDesktop = (patch: Partial<typeof desktopPrefs>) => {
@@ -61,6 +73,24 @@ export function GeneralSection() {
     setDesktopPrefs(next);
     writeDesktopPrefs(next);
     if (host.kind === 'tauri') void host.writeDesktopPrefs(next);
+  };
+
+  const toggleAutostart = (checked: boolean) => {
+    if (host.kind !== 'tauri' || !host.setDesktopAutostart || autostartBusy) return;
+    const previous = autostartEnabled;
+    setAutostartEnabled(checked);
+    setAutostartBusy(true);
+    void host.setDesktopAutostart(checked)
+      .then((status) => {
+        setAutostartSupported(status.supported);
+        setAutostartEnabled(status.enabled);
+      })
+      .catch(() => {
+        setAutostartEnabled(previous);
+      })
+      .finally(() => {
+        setAutostartBusy(false);
+      });
   };
 
   return (
@@ -201,6 +231,19 @@ export function GeneralSection() {
                 ]}
               />
             </SettingField>
+            {autostartSupported && autostartEnabled !== null ? (
+              <div data-setting-desktop-autostart>
+                <SettingField label={t('st.desktop.autostart')} help={t('st.desktop.autostartDesc')}>
+                  <Toggle
+                    layout="bare"
+                    label={t('st.desktop.autostart')}
+                    checked={autostartEnabled}
+                    disabled={autostartBusy}
+                    onChange={toggleAutostart}
+                  />
+                </SettingField>
+              </div>
+            ) : null}
           </SettingsBox>
         </SectionCard>
       ) : null}

@@ -275,6 +275,7 @@ pub fn extract_subscribe_intents_from_args<S: AsRef<str>>(args: &[S]) -> Vec<Par
     intents
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn escape_desktop_exec_quoted(path: &str) -> Option<String> {
     if path.is_empty() || path.chars().any(|ch| ch == '\0' || ch == '\r' || ch == '\n') {
         return None;
@@ -293,6 +294,7 @@ fn escape_desktop_exec_quoted(path: &str) -> Option<String> {
     Some(escaped)
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub fn format_linux_appimage_desktop_entry(appimage_path: &str) -> Option<String> {
     let exec_escaped = escape_desktop_exec_quoted(appimage_path)?;
     Some(format!(
