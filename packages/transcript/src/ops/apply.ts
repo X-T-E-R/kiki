@@ -18,11 +18,18 @@ import type {
 } from './operation';
 import { transcriptValueEquals } from './equality';
 import { safetyBoundaryIndex } from './framePlace';
-import { carryContentHydration, mergeContentPreview, noteHiddenStructuralInsert } from '../contract/content';
+import { carryContentHydration, mergeContentPreview, noteHiddenStructuralInsert, type ContentWindow } from '../contract/content';
 
 const EMPTY_REMOVED_ITEM_IDS: ReadonlySet<string> = new Set();
 const REMOVED_ITEM_ID_LIMIT = 2048;
 const removedItemIdsByState = new WeakMap<AgentState, ReadonlySet<string>>();
+const itemIndexByItems = new WeakMap<readonly TranscriptItem[], Map<string, number>>();
+const stepIndexBySteps = new WeakMap<readonly TranscriptStep[], Map<string, number>>();
+
+export interface ApplyBatchScratch {
+  ownedItems?: TranscriptItem[];
+  readonly ownedSteps: WeakSet<readonly TranscriptStep[]>;
+}
 
 /** Mutable-free aggregate state behind one AgentTranscript. */
 export interface AgentState {
@@ -69,34 +76,52 @@ export interface ApplyResult {
 }
 
 export function applyOperation(state: AgentState, op: TranscriptOperation): ApplyResult {
+  return applyOperationInternal(state, op, undefined);
+}
+
+/** Apply one operation inside a single-owner batch where freshly cloned item/step arrays may be reused before publishing. */
+export function applyBatchOperation(
+  state: AgentState,
+  op: TranscriptOperation,
+  scratch: ApplyBatchScratch,
+): ApplyResult {
+  return applyOperationInternal(state, op, scratch);
+}
+
+function applyOperationInternal(
+  state: AgentState,
+  op: TranscriptOperation,
+  scratch: ApplyBatchScratch | undefined,
+): ApplyResult {
   let result: ApplyResult;
   switch (op.op) {
     case 'reset':
+      if (scratch !== undefined) scratch.ownedItems = undefined;
       result = applyReset(state, op);
       break;
     case 'turn.upsert':
-      result = applyTurnUpsert(state, op.turn);
+      result = applyTurnUpsert(state, op.turn, scratch);
       break;
     case 'step.upsert':
-      result = applyStepUpsert(state, op.turnId, op.step);
+      result = applyStepUpsert(state, op.turnId, op.step, scratch);
       break;
     case 'frame.upsert':
-      result = applyFrameUpsert(state, op);
+      result = applyFrameUpsert(state, op, scratch);
       break;
     case 'frame.remove':
-      result = applyFrameRemove(state, op);
+      result = applyFrameRemove(state, op, scratch);
       break;
     case 'tool.count.set':
       result = applyToolCountSet(state, op.count);
       break;
     case 'append':
-      result = applyAppend(state, op);
+      result = applyAppend(state, op, scratch);
       break;
     case 'marker.upsert':
-      result = applyItemUpsert(state, op.item, op.item.markerId, op.beforeTurn);
+      result = applyItemUpsert(state, op.item, op.item.markerId, op.beforeTurn, scratch);
       break;
     case 'taskref.upsert':
-      result = applyItemUpsert(state, op.item, op.item.refId, op.beforeTurn);
+      result = applyItemUpsert(state, op.item, op.item.refId, op.beforeTurn, scratch);
       break;
     case 'task.upsert':
       result = applyTaskUpsert(state, op.task);
@@ -117,6 +142,7 @@ export function applyOperation(state: AgentState, op: TranscriptOperation): Appl
       result = applyMetaMerge(state, op.meta);
       break;
     case 'items.remove':
+      if (scratch !== undefined) scratch.ownedItems = undefined;
       result = applyItemsRemove(state, op.ids);
       break;
   }
@@ -292,11 +318,20 @@ function reconcileItems(
     if (item.kind === 'turn' && existing?.kind === 'turn') {
       const retained = mergeContentPreview(existing, liveWatermark && coverage.kind === 'unknown' && grade === 'turn'
         ? { ...item, steps: existing.steps, stepsPartial: existing.stepsPartial } : item);
+      const existingStepIndex = existing.steps.length > 4 ? getStepIndexMap(existing.steps) : undefined;
       candidate = carryContentHydration(retained, { ...retained, steps: retained.steps.map((step) => {
-        const previous = existing.steps.find((entry) => entry.stepId === step.stepId);
-        return previous === undefined ? step : { ...step, frames: step.frames.map((frame) => {
-          const current = previous.frames.find((entry) => entry.frameId === frame.frameId);
-          return current === undefined ? frame : mergeContentPreview(current, frame);
+        const previous = existingStepIndex !== undefined
+          ? existing.steps[existingStepIndex.get(step.stepId) ?? -1]
+          : existing.steps.find((entry) => entry.stepId === step.stepId);
+        if (previous === undefined) return step;
+        const previousFrames = previous.frames.length > 8
+          ? new Map(previous.frames.map((entry) => [entry.frameId, entry]))
+          : undefined;
+        return { ...step, frames: step.frames.map((frame) => {
+          const prevFrame = previousFrames !== undefined
+            ? previousFrames.get(frame.frameId)
+            : previous.frames.find((entry) => entry.frameId === frame.frameId);
+          return prevFrame === undefined ? frame : mergeContentPreview(prevFrame, frame);
         }) };
       }) });
     }
@@ -306,20 +341,7 @@ function reconcileItems(
     return transcriptValueEquals(current, stableIncoming) ? current : stableIncoming;
   }
   if (coverage.kind === 'unknown') {
-    const next = [...current];
-    for (const item of stableIncoming) {
-      const index = next.findIndex((candidate) => itemIdOf(candidate) === itemIdOf(item));
-      if (index !== -1) {
-        if (liveWatermark) next[index] = item;
-        continue;
-      }
-      if (item.kind === 'turn') {
-        const before = next.findIndex((candidate) => candidate.kind === 'turn' && candidate.ordinal > item.ordinal);
-        next.splice(before === -1 ? next.length : before, 0, item);
-      } else {
-        next.push(item);
-      }
-    }
+    const next = reconcileUnknownCoverageItems(current, stableIncoming, liveWatermark);
     return transcriptValueEquals(current, next) ? current : next;
   }
   if (coverage.fromTurnId === undefined) {
@@ -333,6 +355,87 @@ function reconcileItems(
   }
   const next = [...prefix, ...stableIncoming];
   return transcriptValueEquals(current, next) ? current : next;
+}
+
+function reconcileUnknownCoverageItems(
+  current: readonly TranscriptItem[],
+  stableIncoming: readonly TranscriptItem[],
+  liveWatermark: boolean,
+): TranscriptItem[] {
+  const updated = [...current];
+  const existingIndexById = new Map<string, number>();
+  let maxExistingTurnOrdinal = -Infinity;
+  for (let i = 0; i < updated.length; i += 1) {
+    const entry = updated[i]!;
+    const id = itemIdOf(entry);
+    if (!existingIndexById.has(id)) existingIndexById.set(id, i);
+    if (entry.kind === 'turn' && entry.ordinal > maxExistingTurnOrdinal) {
+      maxExistingTurnOrdinal = entry.ordinal;
+    }
+  }
+  const newBoxById = new Map<string, { item: TranscriptItem }>();
+  const midTurns: Array<{ item: TranscriptTurn }> = [];
+  const tail: Array<{ item: TranscriptItem }> = [];
+  const outOfOrderTailTurns: Array<{ item: TranscriptTurn }> = [];
+  let maxTailTurnOrdinal = -Infinity;
+  for (const item of stableIncoming) {
+    const id = itemIdOf(item);
+    const existingIndex = existingIndexById.get(id);
+    if (existingIndex !== undefined) {
+      if (liveWatermark) updated[existingIndex] = item;
+      continue;
+    }
+    const existingNew = newBoxById.get(id);
+    if (existingNew !== undefined) {
+      if (liveWatermark) existingNew.item = item;
+      continue;
+    }
+    const box = { item };
+    newBoxById.set(id, box);
+    if (item.kind === 'turn' && item.ordinal < maxExistingTurnOrdinal) {
+      midTurns.push(box as { item: TranscriptTurn });
+    } else if (item.kind === 'turn') {
+      if (item.ordinal < maxTailTurnOrdinal) {
+        outOfOrderTailTurns.push(box as { item: TranscriptTurn });
+      } else {
+        maxTailTurnOrdinal = item.ordinal;
+        tail.push(box);
+      }
+    } else {
+      tail.push(box);
+    }
+  }
+  const mergedBase = mergeSortedTurnsIntoItems(updated, midTurns);
+  if (tail.length === 0 && outOfOrderTailTurns.length === 0) return mergedBase;
+  const tailItems = tail.map((box) => box.item);
+  const mergedTail = mergeSortedTurnsIntoItems(tailItems, outOfOrderTailTurns);
+  for (const item of mergedTail) mergedBase.push(item);
+  return mergedBase;
+}
+
+function mergeSortedTurnsIntoItems(
+  base: TranscriptItem[],
+  turnsToInsert: Array<{ item: TranscriptTurn }>,
+): TranscriptItem[] {
+  if (turnsToInsert.length === 0) return base;
+  const sorted = turnsToInsert.map((box) => box.item);
+  sorted.sort((left, right) => left.ordinal - right.ordinal);
+  const merged: TranscriptItem[] = [];
+  let cursor = 0;
+  for (const entry of base) {
+    if (entry.kind === 'turn') {
+      while (cursor < sorted.length && sorted[cursor]!.ordinal < entry.ordinal) {
+        merged.push(sorted[cursor]!);
+        cursor += 1;
+      }
+    }
+    merged.push(entry);
+  }
+  while (cursor < sorted.length) {
+    merged.push(sorted[cursor]!);
+    cursor += 1;
+  }
+  return merged;
 }
 
 function stabilizeMap<K, V>(
@@ -376,28 +479,89 @@ function skeletonStep(stepId: string, turnId: TurnId): TranscriptStep {
   return { kind: 'step', stepId, turnId, ordinal, state: 'running', frames: [] };
 }
 
+function getItemIndexMap(items: readonly TranscriptItem[]): Map<string, number> {
+  let map = itemIndexByItems.get(items);
+  if (map !== undefined) return map;
+  map = new Map<string, number>();
+  for (let i = 0; i < items.length; i += 1) {
+    const id = itemIdOf(items[i]!);
+    if (!map.has(id)) map.set(id, i);
+  }
+  itemIndexByItems.set(items, map);
+  return map;
+}
+
+function getStepIndexMap(steps: readonly TranscriptStep[]): Map<string, number> {
+  let map = stepIndexBySteps.get(steps);
+  if (map !== undefined) return map;
+  map = new Map<string, number>();
+  for (let i = 0; i < steps.length; i += 1) {
+    const id = steps[i]!.stepId;
+    if (!map.has(id)) map.set(id, i);
+  }
+  stepIndexBySteps.set(steps, map);
+  return map;
+}
+
+/** Look up an item's index by id using a cached per-array index map. */
+export function findItemIndex(items: readonly TranscriptItem[], id: string): number {
+  const tail = items.length - 1;
+  if (tail >= 0 && itemIdOf(items[tail]!) === id) return tail;
+  return getItemIndexMap(items).get(id) ?? -1;
+}
+
+function findStepIndex(steps: readonly TranscriptStep[], stepId: string): number {
+  const tail = steps.length - 1;
+  if (tail >= 0 && steps[tail]!.stepId === stepId) return tail;
+  if (steps.length <= 4) {
+    for (let i = tail - 1; i >= 0; i -= 1) {
+      if (steps[i]!.stepId === stepId) return i;
+    }
+    return -1;
+  }
+  return getStepIndexMap(steps).get(stepId) ?? -1;
+}
+
 function findTurn(
   items: readonly TranscriptItem[],
   turnId: TurnId,
 ): { readonly index: number; readonly turn: TranscriptTurn } | undefined {
-  for (let i = items.length - 1; i >= 0; i -= 1) {
-    const item = items[i];
-    if (item?.kind === 'turn' && item.turnId === turnId) return { index: i, turn: item };
-  }
-  return undefined;
+  const index = findItemIndex(items, turnId);
+  if (index < 0) return undefined;
+  const item = items[index];
+  return item?.kind === 'turn' ? { index, turn: item } : undefined;
 }
 
-function insertTurn(items: readonly TranscriptItem[], turn: TranscriptTurn): readonly TranscriptItem[] {
-  const next = [...items];
+function insertTurn(
+  items: readonly TranscriptItem[],
+  turn: TranscriptTurn,
+  scratch?: ApplyBatchScratch,
+): readonly TranscriptItem[] {
+  const reusable = scratch !== undefined && scratch.ownedItems === items;
+  const next = reusable ? (items as TranscriptItem[]) : [...items];
+  const last = next[next.length - 1];
   let at = next.length;
-  for (let i = 0; i < next.length; i += 1) {
-    const entry = next[i];
-    if (entry?.kind === 'turn' && entry.ordinal > turn.ordinal) {
-      at = i;
-      break;
+  if (last === undefined || (last.kind === 'turn' && last.ordinal <= turn.ordinal)) {
+    next.push(turn);
+  } else {
+    for (let i = 0; i < next.length; i += 1) {
+      const entry = next[i];
+      if (entry?.kind === 'turn' && entry.ordinal > turn.ordinal) {
+        at = i;
+        break;
+      }
     }
+    next.splice(at, 0, turn);
   }
-  next.splice(at, 0, turn);
+  if (reusable) {
+    const map = itemIndexByItems.get(next);
+    if (map !== undefined) {
+      if (at === next.length - 1) map.set(turn.turnId, at);
+      else itemIndexByItems.delete(next);
+    }
+  } else if (scratch !== undefined) {
+    scratch.ownedItems = next;
+  }
   return next;
 }
 
@@ -407,28 +571,112 @@ function replaceAt<T>(items: readonly T[], index: number, value: T): T[] {
   return next;
 }
 
-function applyTurnUpsert(state: AgentState, header: TurnHeader): ApplyResult {
+function replaceItemAt(
+  items: readonly TranscriptItem[],
+  index: number,
+  value: TranscriptItem,
+  scratch?: ApplyBatchScratch,
+): readonly TranscriptItem[] {
+  const sameId = itemIdOf(items[index]!) === itemIdOf(value);
+  if (scratch !== undefined && scratch.ownedItems === items) {
+    (items as TranscriptItem[])[index] = value;
+    if (!sameId) itemIndexByItems.delete(items);
+    return items;
+  }
+  const next = [...items];
+  next[index] = value;
+  if (sameId) {
+    const existingMap = itemIndexByItems.get(items);
+    if (existingMap !== undefined) itemIndexByItems.set(next, existingMap);
+  }
+  if (scratch !== undefined) scratch.ownedItems = next;
+  return next;
+}
+
+function replaceStepAt(
+  steps: readonly TranscriptStep[],
+  index: number,
+  value: TranscriptStep,
+  scratch?: ApplyBatchScratch,
+): TranscriptStep[] {
+  const sameId = steps[index]!.stepId === value.stepId;
+  if (scratch !== undefined && scratch.ownedSteps.has(steps)) {
+    const owned = steps as TranscriptStep[];
+    owned[index] = value;
+    if (!sameId) stepIndexBySteps.delete(owned);
+    return owned;
+  }
+  const next = [...steps];
+  next[index] = value;
+  if (sameId) {
+    const existingMap = stepIndexBySteps.get(steps);
+    if (existingMap !== undefined) stepIndexBySteps.set(next, existingMap);
+  }
+  if (scratch !== undefined) scratch.ownedSteps.add(next);
+  return next;
+}
+
+function insertStepOrdered(
+  steps: readonly TranscriptStep[],
+  step: TranscriptStep,
+  scratch?: ApplyBatchScratch,
+): TranscriptStep[] {
+  const reusable = scratch !== undefined && scratch.ownedSteps.has(steps);
+  const next = reusable ? (steps as TranscriptStep[]) : [...steps];
+  const last = next[next.length - 1];
+  let at = next.length;
+  if (last === undefined || last.ordinal <= step.ordinal) {
+    next.push(step);
+  } else {
+    let low = 0;
+    let high = next.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (next[mid]!.ordinal <= step.ordinal) low = mid + 1;
+      else high = mid;
+    }
+    at = low;
+    next.splice(at, 0, step);
+  }
+  if (reusable) {
+    const map = stepIndexBySteps.get(next);
+    if (map !== undefined) {
+      if (at === next.length - 1) map.set(step.stepId, at);
+      else stepIndexBySteps.delete(next);
+    }
+  } else if (scratch !== undefined) {
+    scratch.ownedSteps.add(next);
+  }
+  return next;
+}
+
+function applyTurnUpsert(state: AgentState, header: TurnHeader, scratch?: ApplyBatchScratch): ApplyResult {
   const located = findTurn(state.items, header.turnId);
   if (located !== undefined) {
     const next = header.stepsPartial === undefined && located.turn.stepsPartial !== undefined
       ? { ...header, stepsPartial: located.turn.stepsPartial } : header;
     const incoming = mergeContentPreview(located.turn, turnHeaderToTurn(next, located.turn.steps));
     if (transcriptValueEquals(located.turn, incoming)) return { state, changed: false };
-    return { state: { ...state, items: replaceAt(state.items, located.index, incoming) }, changed: true };
+    return { state: { ...state, items: replaceItemAt(state.items, located.index, incoming, scratch) }, changed: true };
   }
   return {
-    state: { ...state, items: insertTurn(state.items, turnHeaderToTurn(header, [])) },
+    state: { ...state, items: insertTurn(state.items, turnHeaderToTurn(header, []), scratch) },
     changed: true,
   };
 }
 
-function applyStepUpsert(state: AgentState, turnId: TurnId, header: StepHeader): ApplyResult {
+function applyStepUpsert(
+  state: AgentState,
+  turnId: TurnId,
+  header: StepHeader,
+  scratch?: ApplyBatchScratch,
+): ApplyResult {
   const located = findTurn(state.items, turnId);
   const turn = located?.turn ?? skeletonTurn(turnId);
-  const stepIndex = turn.steps.findIndex((step) => step.stepId === header.stepId);
+  const stepIndex = findStepIndex(turn.steps, header.stepId);
   const omitted = turn.contentRefs?.find((ref) => ref.direction === 'backward' && ref.path.length === 1 && ref.path[0] === 'steps');
   if (stepIndex < 0 && omitted !== undefined && header.ordinal < omitted.offset) return { state, changed: false, toolCallCountDelta: 0 };
-  let steps: readonly TranscriptStep[];
+  let steps: TranscriptStep[];
   let changed = true;
   if (stepIndex >= 0) {
     const current = turn.steps[stepIndex];
@@ -436,23 +684,22 @@ function applyStepUpsert(state: AgentState, turnId: TurnId, header: StepHeader):
       changed = false;
       steps = turn.steps;
     } else {
-      steps = replaceAt(
+      steps = replaceStepAt(
         turn.steps,
         stepIndex,
         { ...header, kind: 'step' as const, frames: current?.frames ?? [] },
+        scratch,
       );
     }
   } else {
-    steps = [...turn.steps, { ...header, kind: 'step' as const, frames: [] }].toSorted(
-      (a, b) => a.ordinal - b.ordinal,
-    );
+    steps = insertStepOrdered(turn.steps, { ...header, kind: 'step' as const, frames: [] }, scratch);
   }
   if (!changed) return { state, changed: false };
-  const nextTurn: TranscriptTurn = carryContentHydration(turn, { ...turn, steps: [...steps] });
+  const nextTurn: TranscriptTurn = carryContentHydration(turn, { ...turn, steps });
   const items =
     located !== undefined
-      ? replaceAt(state.items, located.index, nextTurn)
-      : insertTurn(state.items, nextTurn);
+      ? replaceItemAt(state.items, located.index, nextTurn, scratch)
+      : insertTurn(state.items, nextTurn, scratch);
   return { state: { ...state, items }, changed: true };
 }
 
@@ -474,16 +721,20 @@ export function mergeToolCallFrame(existing: ToolCallFrame, incoming: ToolCallFr
       merged[key] = existing[key];
     }
   }
-  return merged as unknown as ToolCallFrame;
+  const result = merged as unknown as ToolCallFrame;
+  carryContentHydration(incoming as ContentWindow, result as ContentWindow);
+  if (regressingToRunning) carryContentHydration(existing as ContentWindow, result as ContentWindow);
+  return result;
 }
 
 function applyFrameUpsert(
   state: AgentState,
   op: Extract<TranscriptOperation, { op: 'frame.upsert' }>,
+  scratch?: ApplyBatchScratch,
 ): ApplyResult {
   const located = findTurn(state.items, op.turnId);
   const turn = located?.turn ?? skeletonTurn(op.turnId);
-  const stepIndex = turn.steps.findIndex((entry) => entry.stepId === op.stepId);
+  const stepIndex = findStepIndex(turn.steps, op.stepId);
   const step = turn.steps[stepIndex] ?? skeletonStep(op.stepId, op.turnId);
   const frameIndex = step.frames.findIndex((frame) => frame.frameId === op.frame.frameId);
   const omittedSteps = turn.contentRefs?.find((ref) => ref.direction === 'backward' && ref.path.length === 1 && ref.path[0] === 'steps');
@@ -504,8 +755,8 @@ function applyFrameUpsert(
       return { state, changed: false, toolCallCountDelta: 0 };
     }
     const items = located !== undefined
-      ? replaceAt(state.items, located.index, bumped)
-      : insertTurn(state.items, bumped);
+      ? replaceItemAt(state.items, located.index, bumped, scratch)
+      : insertTurn(state.items, bumped, scratch);
     return { state: { ...state, items }, changed: true, toolCallCountDelta: 0 };
   }
   let dupStepIndex = -1;
@@ -528,7 +779,7 @@ function applyFrameUpsert(
       }
     }
   }
-  let frames: readonly TranscriptFrame[];
+  let frames: TranscriptFrame[];
   let toolCallCount = state.toolCallCount;
   let toolCallCountDelta = 0;
   if (frameIndex >= 0) {
@@ -579,24 +830,24 @@ function applyFrameUpsert(
       ? [...baseFrames, incoming]
       : [...baseFrames.slice(0, index), incoming, ...baseFrames.slice(index)];
   }
-  const nextStep: TranscriptStep = { ...step, frames: [...frames] };
+  const nextStep: TranscriptStep = { ...step, frames };
   let baseSteps = turn.steps;
   if (dupStepIndex >= 0 && dupStepIndex !== stepIndex && dupFrame !== undefined) {
     const dupStep = turn.steps[dupStepIndex]!;
-    baseSteps = replaceAt(turn.steps, dupStepIndex, {
+    baseSteps = replaceStepAt(turn.steps, dupStepIndex, {
       ...dupStep,
       frames: dupStep.frames.filter((entry) => entry.frameId !== dupFrame.frameId),
-    });
+    }, scratch);
   }
   const steps =
     stepIndex >= 0
-      ? replaceAt(baseSteps, stepIndex, nextStep)
-      : [...baseSteps, nextStep].toSorted((a, b) => a.ordinal - b.ordinal);
+      ? replaceStepAt(baseSteps, stepIndex, nextStep, scratch)
+      : insertStepOrdered(baseSteps, nextStep, scratch);
   const nextTurn: TranscriptTurn = carryContentHydration(turn, { ...turn, steps });
   const items =
     located !== undefined
-      ? replaceAt(state.items, located.index, nextTurn)
-      : insertTurn(state.items, nextTurn);
+      ? replaceItemAt(state.items, located.index, nextTurn, scratch)
+      : insertTurn(state.items, nextTurn, scratch);
   return {
     state: { ...state, items, toolCallCount },
     changed: true,
@@ -607,9 +858,10 @@ function applyFrameUpsert(
 function applyFrameRemove(
   state: AgentState,
   op: Extract<TranscriptOperation, { op: 'frame.remove' }>,
+  scratch?: ApplyBatchScratch,
 ): ApplyResult {
   const located = findTurn(state.items, op.turnId);
-  const stepIndex = located?.turn.steps.findIndex((step) => step.stepId === op.stepId) ?? -1;
+  const stepIndex = located === undefined ? -1 : findStepIndex(located.turn.steps, op.stepId);
   const step = located?.turn.steps[stepIndex];
   const frame = step?.frames.find((entry) => entry.frameId === op.frameId);
   if (located === undefined || step === undefined || frame === undefined) {
@@ -619,12 +871,12 @@ function applyFrameRemove(
   const nextStep = { ...step, frames: step.frames.filter((entry) => entry.frameId !== op.frameId) };
   const nextTurn = carryContentHydration(located.turn, {
     ...located.turn,
-    steps: replaceAt(located.turn.steps, stepIndex, nextStep),
+    steps: replaceStepAt(located.turn.steps, stepIndex, nextStep, scratch),
   });
   return {
     state: {
       ...state,
-      items: replaceAt(state.items, located.index, nextTurn),
+      items: replaceItemAt(state.items, located.index, nextTurn, scratch),
       toolCallCount: adjustToolCallCount(state.toolCallCount, toolCallCountDelta),
     },
     changed: true,
@@ -636,7 +888,7 @@ function frameEquals(a: TranscriptFrame, b: TranscriptFrame): boolean {
   return transcriptValueEquals(a, b);
 }
 
-function applyAppend(state: AgentState, op: AppendOp): ApplyResult {
+function applyAppend(state: AgentState, op: AppendOp, scratch?: ApplyBatchScratch): ApplyResult {
   if (op.target.type === 'task') return applyTaskAppend(state, op);
   const { turnId, stepId, frameId } = op.target;
   const located = findTurn(state.items, turnId);
@@ -644,7 +896,7 @@ function applyAppend(state: AgentState, op: AppendOp): ApplyResult {
     return { state, changed: false, gap: { expected: 0, got: op.offset } };
   }
   const turn = located.turn;
-  const stepIndex = turn.steps.findIndex((entry) => entry.stepId === stepId);
+  const stepIndex = findStepIndex(turn.steps, stepId);
   const step = turn.steps[stepIndex];
   const frameIndex = step?.frames.findIndex((entry) => entry.frameId === frameId) ?? -1;
   const frame = step?.frames[frameIndex];
@@ -667,10 +919,10 @@ function applyAppend(state: AgentState, op: AppendOp): ApplyResult {
   };
   const nextTurn: TranscriptTurn = carryContentHydration(turn, {
     ...turn,
-    steps: replaceAt(turn.steps, stepIndex, nextStep),
+    steps: replaceStepAt(turn.steps, stepIndex, nextStep, scratch),
   });
   return {
-    state: { ...state, items: replaceAt(state.items, located.index, nextTurn) },
+    state: { ...state, items: replaceItemAt(state.items, located.index, nextTurn, scratch) },
     changed: true,
   };
 }
@@ -722,8 +974,9 @@ function applyItemUpsert(
   item: TranscriptItem,
   id: string,
   beforeTurn?: number,
+  scratch?: ApplyBatchScratch,
 ): ApplyResult {
-  const existingIndex = state.items.findIndex((entry) => itemIdOf(entry) === id);
+  const existingIndex = findItemIndex(state.items, id);
   if (existingIndex >= 0) {
     const existing = state.items[existingIndex];
     const resolved = item.kind === 'taskref' && existing?.kind === 'taskref'
@@ -732,10 +985,11 @@ function applyItemUpsert(
     if (existing === resolved || (existing !== undefined && transcriptValueEquals(existing, resolved))) {
       return { state, changed: false };
     }
-    return { state: { ...state, items: replaceAt(state.items, existingIndex, resolved) }, changed: true };
+    return { state: { ...state, items: replaceItemAt(state.items, existingIndex, resolved, scratch) }, changed: true };
   }
+  const reusable = scratch !== undefined && scratch.ownedItems === state.items;
   if (beforeTurn !== undefined) {
-    const items = [...state.items];
+    const items = reusable ? (state.items as TranscriptItem[]) : [...state.items];
     let at = items.length;
     for (let i = 0; i < items.length; i += 1) {
       const entry = items[i];
@@ -745,9 +999,19 @@ function applyItemUpsert(
       }
     }
     items.splice(at, 0, item);
+    if (reusable) itemIndexByItems.delete(items);
+    else if (scratch !== undefined) scratch.ownedItems = items;
     return { state: { ...state, items }, changed: true };
   }
-  return { state: { ...state, items: [...state.items, item] }, changed: true };
+  const items = reusable ? (state.items as TranscriptItem[]) : [...state.items];
+  items.push(item);
+  if (reusable) {
+    const map = itemIndexByItems.get(items);
+    if (map !== undefined) map.set(id, items.length - 1);
+  } else if (scratch !== undefined) {
+    scratch.ownedItems = items;
+  }
+  return { state: { ...state, items }, changed: true };
 }
 
 function earlierIsoAt(left?: string, right?: string): string | undefined {
@@ -779,10 +1043,11 @@ function applyItemsRemove(state: AgentState, ids: readonly string[]): ApplyResul
   const items = state.items.filter((entry) => !drop.has(itemIdOf(entry)));
   const removedToolCallCount = countToolCallFrames(removedTurns);
   const priorRemovedItemIds = removedItemIdsByState.get(state) ?? EMPTY_REMOVED_ITEM_IDS;
+  const existingIds = state.hasMoreOlder ? getItemIndexMap(state.items) : undefined;
   const unseenTurnRemoved =
     state.hasMoreOlder &&
     ids.some(
-      (id) => !state.items.some((entry) => itemIdOf(entry) === id) && !priorRemovedItemIds.has(id),
+      (id) => !existingIds!.has(id) && !priorRemovedItemIds.has(id),
     );
   const toolCallCountDelta =
     unseenTurnRemoved || removedToolCallCount === 0 ? (unseenTurnRemoved ? undefined : 0) : -removedToolCallCount;

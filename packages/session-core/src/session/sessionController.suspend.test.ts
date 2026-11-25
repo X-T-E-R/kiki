@@ -349,4 +349,108 @@ describe('SessionController suspend / resume', () => {
     await expect(pendingTool).rejects.toMatchObject({ name: 'AbortError' });
     controller.close();
   });
+
+  it('defers resync and rolls back pre-gap cursor when suspending during gap recovery after a later clean batch', async () => {
+    const { controller, attachments, deliver, read, catchUp } = harness();
+    type CatchUpResult = Awaited<ReturnType<SessionViewFacade['transcript']['catchUp']>>;
+    let resolveCatchUp: ((value: CatchUpResult) => void) | undefined;
+    vi.mocked(catchUp).mockImplementationOnce(
+      () => new Promise<CatchUpResult>((resolve) => { resolveCatchUp = resolve; }),
+    );
+
+    await controller.open();
+    deliver(resetEvent('main', userTurnSnapshot({ assistantText: 'hello' }), 9));
+    // Seq 10 hits an append gap (offset 10 > 'hello'.length === 5), starting catch-up.
+    deliver(opsEvent('main', appendOps(10, ' end'), 10));
+    await vi.waitFor(() => expect(catchUp).toHaveBeenCalledTimes(1));
+
+    // Seq 11 applies cleanly (meta/marker) while catch-up is in flight, advancing live cursor to 11.
+    deliver(opsEvent('main', [{
+      op: 'marker.upsert',
+      item: { kind: 'marker', markerId: 'm11', marker: 'notice', payload: { text: 'note' } },
+    }], 11));
+
+    const readsBeforeSuspend = read.mock.calls.length;
+    const attachmentsBeforeResume = attachments.length;
+    controller.suspend();
+
+    // Resolving the aborted catch-up after suspend must be a no-op.
+    resolveCatchUp?.({ session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', batches: [], through_seq: 10, complete: true, has_more: false });
+
+    const resumePromise = controller.resume();
+    await vi.waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(readsBeforeSuspend));
+    await vi.waitFor(() => expect(attachments.length).toBeGreaterThan(attachmentsBeforeResume));
+    // Re-attached subscription must not ask from seq 11 past the unrecovered seq 10 gap.
+    const latestSince = attachments.at(-1)?.input.transcriptSince?.['main'];
+    expect(latestSince === undefined || latestSince.seq <= 9).toBe(true);
+    deliver(resetEvent('main', userTurnSnapshot({ assistantText: 'hello mid end' }), 11));
+    await resumePromise;
+    expect(controller.getState().blocks).toContainEqual(expect.objectContaining({ kind: 'assistant', text: 'hello mid end' }));
+    controller.close();
+  });
+
+  it('does not replay an older queued gap batch over newer recovered catch-up pages', async () => {
+    const { controller, deliver, catchUp } = harness();
+    const initial = userTurnSnapshot({ assistantText: 'hello' });
+    const baseTurn = initial.items[0]!;
+    if (baseTurn.kind !== 'turn') throw new Error('expected turn');
+    const stepId = baseTurn.steps[0]!.stepId;
+    const frameId = baseTurn.steps[0]!.frames[0]!.frameId;
+    const reset = resetEvent('main', initial, 9);
+    const epoch = reset.type === 'transcript.reset' ? reset.cursor.epoch : 'epoch-1';
+
+    vi.mocked(catchUp).mockResolvedValueOnce({
+      session_id: 'session_test',
+      agent_id: 'main',
+      epoch,
+      batches: [
+        {
+          seq: 10,
+          ops: [
+            { op: 'step.upsert', turnId: 't1', step: { kind: 'step', stepId, turnId: 't1', ordinal: 1, state: 'running' } },
+            { op: 'append', target: { type: 'frame', turnId: 't1', stepId, frameId }, offset: 5, text: ' world' },
+          ],
+        },
+        {
+          seq: 11,
+          ops: [
+            { op: 'step.upsert', turnId: 't1', step: { kind: 'step', stepId, turnId: 't1', ordinal: 1, state: 'completed' } },
+          ],
+        },
+      ],
+      through_seq: 11,
+      complete: true,
+      has_more: false,
+    });
+
+    await controller.open();
+    const runningInitial = {
+      ...initial,
+      items: initial.items.map((item) => item.kind === 'turn'
+        ? { ...item, state: 'running' as const, steps: item.steps.map((step) => ({ ...step, state: 'running' as const })) }
+        : item),
+    };
+    deliver(resetEvent('main', runningInitial, 9));
+
+    // Gap batch at seq 10 carries stale step.upsert(running) + gapped append.
+    deliver(opsEvent('main', [
+      { op: 'step.upsert', turnId: 't1', step: { kind: 'step', stepId, turnId: 't1', ordinal: 1, state: 'running' } },
+      ...appendOps(20, ' late'),
+    ], 10));
+
+    const readStepState = () => {
+      const store = (controller as unknown as { main: { store?: { getTurn(id: string): { steps: Array<{ state: string }> } | undefined } } }).main.store;
+      return store?.getTurn('t1')?.steps[0]?.state;
+    };
+
+    await vi.waitFor(() => expect(catchUp).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(readStepState()).toBe('completed'));
+
+    // Live duplicate of seq 11 arrives after catch-up finished; step must stay completed.
+    deliver(opsEvent('main', [
+      { op: 'step.upsert', turnId: 't1', step: { kind: 'step', stepId, turnId: 't1', ordinal: 1, state: 'completed' } },
+    ], 11));
+    expect(readStepState()).toBe('completed');
+    controller.close();
+  });
 });

@@ -158,4 +158,58 @@ describe('readClipboardMedia', () => {
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
+
+  it('rejects oversized or non-image copied file paths via magic-header sniff without loading them', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kimi-code-clip-nonimg-'));
+    try {
+      const hugeNonImage = resolve(dir, 'disk.iso');
+      writeFileSync(hugeNonImage, Buffer.from('NOT_AN_IMAGE_HEADER'));
+      truncateSync(hugeNonImage, 150 * 1024 * 1024);
+
+      const smallNonImage = resolve(dir, 'notes.bin');
+      writeFileSync(smallNonImage, Buffer.from('plain binary payload'));
+
+      const clip = fakeClipboard({
+        availableFormats: vi.fn(() => ['public.file-url']),
+        hasText: vi.fn(() => true),
+        getText: vi.fn(async () => `${pathToFileURL(hugeNonImage).toString()}\n${pathToFileURL(smallNonImage).toString()}`),
+      });
+
+      const media = await readClipboardMedia({
+        platform: 'darwin',
+        clipboard: clip,
+        runCommand: noMacOsPaths,
+      });
+      expect(media).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('uses the async runCommand runner for Linux Wayland clipboard probes', async () => {
+    const imageBytes = Buffer.from(png(8, 8));
+    const runCommand = vi.fn(async (cmd: string, args: string[]) => {
+      if (cmd === 'wl-paste' && args.includes('--list-types')) {
+        return { stdout: Buffer.from('image/png\n'), ok: true };
+      }
+      if (cmd === 'wl-paste' && args.includes('image/png')) {
+        return { stdout: imageBytes, ok: true };
+      }
+      return { stdout: Buffer.alloc(0), ok: false };
+    });
+
+    const media = await readClipboardMedia({
+      platform: 'linux',
+      env: { WAYLAND_DISPLAY: 'wayland-0' },
+      clipboard: null,
+      runCommand,
+    });
+
+    expect(media).toEqual({
+      kind: 'image',
+      bytes: imageBytes,
+      mimeType: 'image/png',
+    });
+    expect(runCommand).toHaveBeenCalledWith('wl-paste', ['--list-types'], expect.any(Object));
+  });
 });

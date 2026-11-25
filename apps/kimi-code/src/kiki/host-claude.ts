@@ -1,5 +1,5 @@
-import { mkdir, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { realpath } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { link, mkdir, open, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import { createSeatKlient, type SeatKlient } from '@kiki/klient/procedures';
@@ -56,25 +56,125 @@ export async function readClaudeNotifications(
   return undefined;
 }
 
-async function claimWatcher(directory: string): Promise<(() => Promise<void>) | undefined> {
-  await mkdir(directory, { recursive: true });
-  const path = join(directory, '.watch.lock');
-  for (let attempt = 0; attempt < 2; attempt++) {
+const EMPTY_LOCK_GRACE_MS = 2_000;
+const RECLAIM_STALE_MS = 10_000;
+
+interface WatcherLockRecord {
+  readonly pid: number;
+  readonly token?: string;
+  readonly createdAt?: number;
+}
+
+function parseWatcherLock(raw: string): WatcherLockRecord | undefined {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return undefined;
+  if (trimmed.startsWith('{')) {
     try {
-      const handle = await open(path, 'wx');
-      await handle.writeFile(String(process.pid));
-      return async () => { await handle.close(); await rm(path, { force: true }); };
+      const parsed = JSON.parse(trimmed) as { pid?: unknown; token?: unknown; createdAt?: unknown };
+      if (typeof parsed.pid === 'number' && Number.isSafeInteger(parsed.pid) && parsed.pid > 0) {
+        return {
+          pid: parsed.pid,
+          token: typeof parsed.token === 'string' && parsed.token.length > 0 ? parsed.token : undefined,
+          createdAt: typeof parsed.createdAt === 'number' ? parsed.createdAt : undefined,
+        };
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  const pid = Number(trimmed);
+  if (Number.isSafeInteger(pid) && pid > 0) return { pid };
+  return undefined;
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (probeError) {
+    return (probeError as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+async function publishLockAtomically(directory: string, lockPath: string, payload: string): Promise<boolean> {
+  const tmpPath = join(directory, `.watch.lock.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(tmpPath, payload, { flag: 'wx', encoding: 'utf8' });
+    try {
+      await link(tmpPath, lockPath);
+      return true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const pid = Number(await readFile(path, 'utf8').catch(() => '0'));
-      if (Number.isSafeInteger(pid) && pid > 0) {
-        try { process.kill(pid, 0); return undefined; }
-        catch (probeError) {
-          if ((probeError as NodeJS.ErrnoException).code !== 'ESRCH') return undefined;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') return false;
+      if (code === 'EXDEV' || code === 'EPERM' || code === 'ENOTSUP' || code === 'ENOSYS') {
+        try {
+          await writeFile(lockPath, payload, { flag: 'wx', encoding: 'utf8' });
+          return true;
+        } catch (fallbackError) {
+          if ((fallbackError as NodeJS.ErrnoException).code === 'EEXIST') return false;
+          throw fallbackError;
         }
       }
-      await rm(path, { force: true });
+      throw error;
     }
+  } finally {
+    await rm(tmpPath, { force: true }).catch(() => {});
+  }
+}
+
+async function reclaimDeadWatcherLock(directory: string, lockPath: string, expectedRaw: string): Promise<boolean> {
+  const reclaimPath = join(directory, '.watch.lock.reclaim');
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(reclaimPath, 'wx');
+    await handle.writeFile(String(process.pid), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return false;
+    const info = await stat(reclaimPath).catch(() => undefined);
+    if (info !== undefined && Date.now() - info.mtimeMs > RECLAIM_STALE_MS) {
+      await rm(reclaimPath, { force: true }).catch(() => {});
+    }
+    return false;
+  }
+  try {
+    const currentRaw = await readFile(lockPath, 'utf8').catch(() => undefined);
+    if (currentRaw !== expectedRaw) return false;
+    await rm(lockPath, { force: true });
+    return true;
+  } finally {
+    await handle.close().catch(() => {});
+    await rm(reclaimPath, { force: true }).catch(() => {});
+  }
+}
+
+export async function claimWatcher(directory: string): Promise<(() => Promise<void>) | undefined> {
+  await mkdir(directory, { recursive: true });
+  const lockPath = join(directory, '.watch.lock');
+  const token = randomUUID();
+  const payload = JSON.stringify({ pid: process.pid, token, createdAt: Date.now() });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (await publishLockAtomically(directory, lockPath, payload)) {
+      return async () => {
+        const currentRaw = await readFile(lockPath, 'utf8').catch(() => undefined);
+        if (currentRaw === undefined) return;
+        const parsed = parseWatcherLock(currentRaw);
+        if (parsed?.token === token) {
+          await rm(lockPath, { force: true }).catch(() => {});
+        }
+      };
+    }
+    const existingRaw = await readFile(lockPath, 'utf8').catch(() => undefined);
+    if (existingRaw === undefined) continue;
+    const parsed = parseWatcherLock(existingRaw);
+    if (parsed !== undefined) {
+      if (isPidAlive(parsed.pid)) return undefined;
+    } else {
+      const info = await stat(lockPath).catch(() => undefined);
+      if (info === undefined) continue;
+      if (Date.now() - info.mtimeMs < EMPTY_LOCK_GRACE_MS) return undefined;
+    }
+    await reclaimDeadWatcherLock(directory, lockPath, existingRaw);
   }
   return undefined;
 }

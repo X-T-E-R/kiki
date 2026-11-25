@@ -57,9 +57,10 @@ export function externalPromptHints(history: readonly ContextMessage[], delivere
     )) continue;
     if (message.id !== undefined && delivered.has(message.id)) continue;
     let text = message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n').trim();
-    const space = isRuntime(message) ? /^## Space\n[\s\S]*?(?=\n## |<\/system-reminder>|$)/m.exec(text)?.[0].trim() : undefined;
+    const spaceMatch = isRuntime(message) ? /(?:^|\n)(## Space\n[\s\S]*?)(?=\n## |\n?<\/system-reminder>|$)/.exec(text) : null;
+    const space = spaceMatch?.[1]?.trim();
     if (space !== undefined && !includeSpace) {
-      text = text.replace(space, '').trim();
+      text = text.replace(space, '').replace(/\n{3,}/g, '\n\n').trim();
       if (!/^## /m.test(text)) continue;
     }
     if (space !== undefined && includeSpace && bytes + Buffer.byteLength(text, 'utf8') > 8 * 1024) text = space;

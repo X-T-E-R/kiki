@@ -1,4 +1,5 @@
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { IConfigService, ISessionIndex, ISessionManager, type Scope } from '@kiki/agent-core-v2';
@@ -948,3 +949,39 @@ it('extends cold window backward across an >8 MiB orphan turn with standalone ma
     await f.close();
   }
 }, 60_000);
+
+it('ignores an incomplete trailing wire line at EOF during cold-tail turn lookup', async () => {
+  const { readHistoryColdTailTurn } = await import('../src/services/history/historyColdTailTurn');
+  const dir = await mkdtemp(join(tmpdir(), 'kiki-cold-tail-eof-'));
+  try {
+    const wirePath = join(dir, 'wire.jsonl');
+    const completeLines = turnRecords(1, 'complete-turn-output').map((record) => JSON.stringify(record)).join('\n');
+    const truncatedTail = '{"type":"turn.prompt","turnId":2,"input":[{"type":"text","text":"half-written';
+    await writeFile(wirePath, `${completeLines}\n${truncatedTail}`, 'utf8');
+    const turn = await readHistoryColdTailTurn(wirePath, 'main', 't1');
+    expect(turn).toBeDefined();
+    expect(turn?.turnId).toBe('t1');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+it('rejects oversized transcript content POST bodies with HTTP 413', async () => {
+  const { KLIENT_CALL_BODY_LIMIT_BYTES } = await import('../src/transport/klient/registerKlientHttp');
+  const service = { readCanonicalEntity: vi.fn() } as unknown as TranscriptService;
+  const app = Fastify();
+  registerSessionViewHttp(app, {} as Scope, { sessionViewTranscriptService: service });
+  try {
+    const oversized = JSON.stringify({ agentId: 'main', pad: 'x'.repeat(KLIENT_CALL_BODY_LIMIT_BYTES + 1024) });
+    const reply = await app.inject({
+      method: 'POST',
+      url: '/api/klient/session-view/s/transcript/content',
+      headers: { 'content-type': 'application/json' },
+      payload: oversized,
+    });
+    expect(reply.statusCode).toBe(413);
+    expect(service.readCanonicalEntity).not.toHaveBeenCalled();
+  } finally {
+    await app.close();
+  }
+});

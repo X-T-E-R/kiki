@@ -11,8 +11,10 @@ import type { TranscriptTurn } from '../model/turn';
 import { transcriptResidentValueEquals } from '../ops/equality';
 import {
   EMPTY_AGENT_STATE,
-  applyOperation,
+  applyBatchOperation,
+  findItemIndex,
   type AgentState,
+  type ApplyBatchScratch,
 } from '../ops/apply';
 import type {
   AgentTranscriptSnapshot,
@@ -109,12 +111,13 @@ export class AgentTranscript {
     let toolCallCountDelta = 0;
     let toolCallCountDeltaKnown = true;
     let state = this.#state;
+    const scratch: ApplyBatchScratch = { ownedSteps: new WeakSet() };
     for (let index = 0; index < ops.length;) {
       const first = ops[index];
       if (first === undefined) break;
       const run = coalesceAppendRun(state, ops, index);
       const op = run.op;
-      const result = applyOperation(state, op);
+      const result = applyBatchOperation(state, op, scratch);
       if (result.gap) {
         gap = { target: (op as { target: AppendTarget }).target, ...result.gap };
         index = run.nextIndex;
@@ -168,11 +171,10 @@ export class AgentTranscript {
   }
 
   getTurn(turnId: TurnId): TranscriptTurn | undefined {
-    for (let i = this.#state.items.length - 1; i >= 0; i -= 1) {
-      const item = this.#state.items[i];
-      if (item?.kind === 'turn' && item.turnId === turnId) return item;
-    }
-    return undefined;
+    const index = findItemIndex(this.#state.items, turnId);
+    if (index < 0) return undefined;
+    const item = this.#state.items[index];
+    return item?.kind === 'turn' ? item : undefined;
   }
 
   getToolCall(toolCallId: string): TranscriptToolCallLookup | undefined {
@@ -510,7 +512,8 @@ export class AgentTranscript {
     if (prior !== undefined) {
       this.#toolCallIdByFrame.delete(toolFrameKey(prior.turnId, prior.stepId, prior.frame.frameId));
     }
-    const storedTurn = state.items.find((item) => item.kind === 'turn' && item.turnId === op.turnId);
+    const storedIndex = findItemIndex(state.items, op.turnId);
+    const storedTurn = storedIndex >= 0 ? state.items[storedIndex] : undefined;
     const storedFrame = storedTurn?.kind === 'turn'
       ? storedTurn.steps.find((step) => step.stepId === op.stepId)?.frames.find((frame) => frame.frameId === op.frame.frameId)
       : undefined;

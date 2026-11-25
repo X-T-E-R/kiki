@@ -35,6 +35,14 @@ interface CoalescedRun {
   readonly nextIndex: number;
 }
 
+interface MutableStep extends Omit<TranscriptStep, 'frames'> {
+  frames: TranscriptFrame[];
+}
+
+interface MutableTurn extends Omit<TranscriptTurn, 'steps'> {
+  steps: MutableStep[];
+}
+
 interface TimelineNode {
   item: TranscriptItem;
   previous?: TimelineNode;
@@ -125,9 +133,10 @@ export class AgentTranscriptDraft {
   #head: TimelineNode | undefined;
   #tail: TimelineNode | undefined;
   readonly #itemNodes = new Map<string, TimelineNode>();
-  readonly #turns = new Map<string, TranscriptTurn>();
+  readonly #turns = new Map<string, MutableTurn>();
+  readonly #stepIndexByTurn = new Map<string, Map<string, number>>();
   readonly #turnOrder = new TurnOrderIndex();
-  readonly #steps = new Map<string, TranscriptStep>();
+  readonly #steps = new Map<string, MutableStep>();
   readonly #frames = new Map<string, TranscriptFrame>();
   readonly #tools = new Map<string, TranscriptToolCallLookup>();
   #tasks = new Map<string, TranscriptTask>();
@@ -316,24 +325,64 @@ export class AgentTranscriptDraft {
     return { changed: true, toolCallCountDelta: 0 };
   }
 
+  private ensureTurn(turnId: string): MutableTurn {
+    let turn = this.#turns.get(turnId);
+    if (turn === undefined) {
+      turn = skeletonTurn(turnId);
+      this.insertTurn(turn);
+    }
+    return turn;
+  }
+
+  private upsertStepInTurn(turn: MutableTurn, step: MutableStep): void {
+    let indexMap = this.#stepIndexByTurn.get(turn.turnId);
+    if (indexMap === undefined) {
+      indexMap = new Map<string, number>();
+      this.#stepIndexByTurn.set(turn.turnId, indexMap);
+    }
+    const existingIndex = indexMap.get(step.stepId);
+    if (existingIndex !== undefined) {
+      const previous = turn.steps[existingIndex];
+      if (previous !== undefined && previous.ordinal === step.ordinal) {
+        turn.steps[existingIndex] = step;
+        return;
+      }
+      turn.steps.splice(existingIndex, 1);
+      const insertAt = findStepInsertIndex(turn.steps, step.ordinal);
+      turn.steps.splice(insertAt, 0, step);
+      const from = Math.min(existingIndex, insertAt);
+      for (let i = from; i < turn.steps.length; i += 1) {
+        indexMap.set(turn.steps[i]!.stepId, i);
+      }
+      return;
+    }
+    const last = turn.steps[turn.steps.length - 1];
+    if (last === undefined || last.ordinal <= step.ordinal) {
+      indexMap.set(step.stepId, turn.steps.length);
+      turn.steps.push(step);
+      return;
+    }
+    const insertAt = findStepInsertIndex(turn.steps, step.ordinal);
+    turn.steps.splice(insertAt, 0, step);
+    for (let i = insertAt; i < turn.steps.length; i += 1) {
+      indexMap.set(turn.steps[i]!.stepId, i);
+    }
+  }
+
   private applyStepUpsert(turnId: string, header: StepHeader): DraftOperationResult {
-    const turn = this.#turns.get(turnId) ?? skeletonTurn(turnId);
+    const turn = this.ensureTurn(turnId);
     const key = stepKey(turnId, header.stepId);
     const current = this.#steps.get(key);
     if (current !== undefined) {
       const { frames, ...currentHeader } = current;
       if (transcriptValueEquals(currentHeader, header)) return { changed: false, toolCallCountDelta: 0 };
-      const nextStep: TranscriptStep = { ...header, frames };
-      const stepIndex = turn.steps.findIndex((step) => step.stepId === header.stepId);
-      const steps = [...turn.steps];
-      steps[stepIndex] = nextStep;
-      this.replaceOrInsertTurn({ ...turn, steps });
+      const nextStep: MutableStep = { ...header, frames };
+      this.upsertStepInTurn(turn, nextStep);
       this.#steps.set(key, nextStep);
       return { changed: true, toolCallCountDelta: 0 };
     }
-    const nextStep: TranscriptStep = { ...header, frames: [] };
-    const steps = [...turn.steps, nextStep].toSorted((a, b) => a.ordinal - b.ordinal);
-    this.replaceOrInsertTurn({ ...turn, steps });
+    const nextStep: MutableStep = { ...header, frames: [] };
+    this.upsertStepInTurn(turn, nextStep);
     this.#steps.set(key, nextStep);
     return { changed: true, toolCallCountDelta: 0 };
   }
@@ -344,9 +393,7 @@ export class AgentTranscriptDraft {
     frame: TranscriptFrame,
     place?: 'safety_boundary',
   ): DraftOperationResult {
-    const turn = this.#turns.get(turnId) ?? skeletonTurn(turnId);
     const stepMapKey = stepKey(turnId, stepId);
-    const step = this.#steps.get(stepMapKey) ?? skeletonStep(stepId, turnId);
     const frameMapKey = frameKey(turnId, stepId, frame.frameId);
     const current = this.#frames.get(frameMapKey);
     const existingTool = frame.kind === 'tool' ? this.#tools.get(frame.toolCallId) : undefined;
@@ -381,40 +428,29 @@ export class AgentTranscriptDraft {
     if (current?.kind === 'tool' && (effectiveFrame.kind !== 'tool' || effectiveFrame.toolCallId !== current.toolCallId)) {
       this.#tools.delete(current.toolCallId);
     }
-    const steps = [...turn.steps];
-    let baseStep = step;
+    const turn = this.ensureTurn(turnId);
+    let step = this.#steps.get(stepMapKey);
+    if (step === undefined) {
+      step = skeletonStep(stepId, turnId);
+      this.upsertStepInTurn(turn, step);
+      this.#steps.set(stepMapKey, step);
+    }
     if (dupTool !== undefined) {
       this.#frames.delete(frameKey(dupTool.turnId, dupTool.stepId, dupTool.frame.frameId));
-      if (dupTool.stepId === stepId) {
-        baseStep = { ...step, frames: step.frames.filter((entry) => entry.frameId !== dupTool.frame.frameId) };
-      } else {
-        const dupStepKey = stepKey(dupTool.turnId, dupTool.stepId);
-        const dupStep = this.#steps.get(dupStepKey);
-        if (dupStep !== undefined) {
-          const cleanedDupStep: TranscriptStep = {
-            ...dupStep,
-            frames: dupStep.frames.filter((entry) => entry.frameId !== dupTool.frame.frameId),
-          };
-          this.#steps.set(dupStepKey, cleanedDupStep);
-          const dupStepIndex = steps.findIndex((entry) => entry.stepId === dupTool.stepId);
-          if (dupStepIndex >= 0) steps[dupStepIndex] = cleanedDupStep;
-        }
+      const dupTarget = dupTool.stepId === stepId ? step : this.#steps.get(stepKey(dupTool.turnId, dupTool.stepId));
+      if (dupTarget !== undefined) {
+        const dupIdx = dupTarget.frames.findIndex((entry) => entry.frameId === dupTool.frame.frameId);
+        if (dupIdx >= 0) dupTarget.frames.splice(dupIdx, 1);
       }
     }
-    const frameIndex = baseStep.frames.findIndex((entry) => entry.frameId === effectiveFrame.frameId);
-    const frames = [...baseStep.frames];
+    const frames = step.frames;
+    const tail = frames.length - 1;
+    const frameIndex = tail >= 0 && frames[tail]!.frameId === effectiveFrame.frameId
+      ? tail
+      : frames.findIndex((entry) => entry.frameId === effectiveFrame.frameId);
     if (frameIndex >= 0) frames[frameIndex] = effectiveFrame;
     else if (place === 'safety_boundary') frames.splice(safetyBoundaryIndex(frames), 0, effectiveFrame);
     else frames.push(effectiveFrame);
-    const nextStep: TranscriptStep = { ...baseStep, frames };
-    const stepIndex = steps.findIndex((entry) => entry.stepId === stepId);
-    if (stepIndex >= 0) steps[stepIndex] = nextStep;
-    else {
-      steps.push(nextStep);
-      steps.sort((a, b) => a.ordinal - b.ordinal);
-    }
-    this.replaceOrInsertTurn({ ...turn, steps });
-    this.#steps.set(stepMapKey, nextStep);
     this.#frames.set(frameMapKey, effectiveFrame);
     if (effectiveFrame.kind === 'tool') this.#tools.set(effectiveFrame.toolCallId, { turnId, stepId, frame: effectiveFrame });
     return { changed: true, toolCallCountDelta };
@@ -433,12 +469,8 @@ export class AgentTranscriptDraft {
     this.#toolCallCount = adjustToolCallCount(this.#toolCallCount, toolCallCountDelta);
     if (frame.kind === 'tool') this.#tools.delete(frame.toolCallId);
     this.#frames.delete(frameMapKey);
-    const nextStep = { ...step, frames: step.frames.filter((entry) => entry.frameId !== frameId) };
-    this.#steps.set(stepMapKey, nextStep);
-    this.replaceOrInsertTurn({
-      ...turn,
-      steps: turn.steps.map((entry) => entry.stepId === stepId ? nextStep : entry),
-    });
+    const frameIndex = step.frames.findIndex((entry) => entry.frameId === frameId);
+    if (frameIndex >= 0) step.frames.splice(frameIndex, 1);
     return { changed: true, toolCallCountDelta };
   }
 
@@ -627,14 +659,19 @@ export class AgentTranscriptDraft {
     return frame?.kind === 'text' || frame?.kind === 'thinking' ? frame.text.length : undefined;
   }
 
-  private insertTurn(turn: TranscriptTurn): void {
+  private insertTurn(turn: MutableTurn): void {
     const before = this.#turnOrder.upperBound(turn.ordinal)?.timeline;
     const timeline = this.insertTimelineItem(turn, before);
     this.#turns.set(turn.turnId, turn);
+    const stepIndices = new Map<string, number>();
+    for (let i = 0; i < turn.steps.length; i += 1) {
+      stepIndices.set(turn.steps[i]!.stepId, i);
+    }
+    this.#stepIndexByTurn.set(turn.turnId, stepIndices);
     this.#turnOrder.insert(turn.turnId, turn.ordinal, timeline);
   }
 
-  private replaceTurn(turn: TranscriptTurn): void {
+  private replaceTurn(turn: MutableTurn): void {
     const timeline = this.#itemNodes.get(turn.turnId);
     if (timeline === undefined) {
       this.insertTurn(turn);
@@ -642,11 +679,6 @@ export class AgentTranscriptDraft {
     }
     timeline.item = turn;
     this.#turns.set(turn.turnId, turn);
-  }
-
-  private replaceOrInsertTurn(turn: TranscriptTurn): void {
-    if (this.#turns.has(turn.turnId)) this.replaceTurn(turn);
-    else this.insertTurn(turn);
   }
 
   private insertTimelineItem(item: TranscriptItem, before?: TimelineNode): TimelineNode {
@@ -678,6 +710,7 @@ export class AgentTranscriptDraft {
     if (node.item.kind !== 'turn') return;
     const turn = node.item;
     this.#turns.delete(turn.turnId);
+    this.#stepIndexByTurn.delete(turn.turnId);
     this.#turnOrder.remove(turn.turnId);
     for (const step of turn.steps) {
       this.#steps.delete(stepKey(turn.turnId, step.stepId));
@@ -708,6 +741,7 @@ export class AgentTranscriptDraft {
     this.#tail = undefined;
     this.#itemNodes.clear();
     this.#turns.clear();
+    this.#stepIndexByTurn.clear();
     this.#turnOrder.clear();
     this.#steps.clear();
     this.#frames.clear();
@@ -737,14 +771,19 @@ export class AgentTranscriptDraft {
         : source;
       const timeline = this.insertTimelineItem(item);
       if (item.kind !== 'turn') continue;
-      this.#turns.set(item.turnId, item);
-      this.#turnOrder.insert(item.turnId, item.ordinal, timeline);
-      for (const step of item.steps) {
-        this.#steps.set(stepKey(item.turnId, step.stepId), step);
+      const mutableTurn = item as MutableTurn;
+      this.#turns.set(mutableTurn.turnId, mutableTurn);
+      const stepIndices = new Map<string, number>();
+      this.#stepIndexByTurn.set(mutableTurn.turnId, stepIndices);
+      this.#turnOrder.insert(mutableTurn.turnId, mutableTurn.ordinal, timeline);
+      for (let i = 0; i < mutableTurn.steps.length; i += 1) {
+        const step = mutableTurn.steps[i]!;
+        stepIndices.set(step.stepId, i);
+        this.#steps.set(stepKey(mutableTurn.turnId, step.stepId), step);
         for (const frame of step.frames) {
-          this.#frames.set(frameKey(item.turnId, step.stepId, frame.frameId), frame);
+          this.#frames.set(frameKey(mutableTurn.turnId, step.stepId, frame.frameId), frame);
           if (frame.kind === 'tool') {
-            this.#tools.set(frame.toolCallId, { turnId: item.turnId, stepId: step.stepId, frame });
+            this.#tools.set(frame.toolCallId, { turnId: mutableTurn.turnId, stepId: step.stepId, frame });
           }
         }
       }
@@ -830,7 +869,18 @@ function removeTurnOrderNode(
   return root;
 }
 
-function skeletonTurn(turnId: string): TranscriptTurn {
+function findStepInsertIndex(steps: readonly MutableStep[], ordinal: number): number {
+  let low = 0;
+  let high = steps.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (steps[mid]!.ordinal <= ordinal) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+function skeletonTurn(turnId: string): MutableTurn {
   const ordinal = Number(turnId.slice(1));
   return {
     kind: 'turn',
@@ -842,7 +892,7 @@ function skeletonTurn(turnId: string): TranscriptTurn {
   };
 }
 
-function skeletonStep(stepId: string, turnId: string): TranscriptStep {
+function skeletonStep(stepId: string, turnId: string): MutableStep {
   const ordinal = Number(stepId.slice(turnId.length + 1)) || 0;
   return { kind: 'step', stepId, turnId, ordinal, state: 'running', frames: [] };
 }

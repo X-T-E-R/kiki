@@ -187,6 +187,87 @@ describe('persisted session journal maintenance', () => {
       code: 'storage.corrupted',
     });
   });
+
+  it('preserves context.undo replacementPrompt, agent.model_switch context, external.text, and branch.base undo bounds in resume replay', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kiki-resume-replay-parity-'));
+    cleanup.push(homeDir);
+    const wirePath = join(homeDir, 'wire.jsonl');
+    const records = [
+      { type: 'metadata', protocol_version: '1.6', created_at: 1000 },
+      {
+        type: 'context.append_message',
+        time: 1001,
+        message: { role: 'user', content: [{ type: 'text', text: 'first prompt' }], toolCalls: [], origin: { kind: 'user' } },
+      },
+      {
+        type: 'context.append_message',
+        time: 1002,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'first reply' }], toolCalls: [] },
+      },
+      {
+        type: 'context.undo',
+        time: 1003,
+        count: 1,
+        replacementPrompt: {
+          message: { role: 'user', content: [{ type: 'text', text: 'edited prompt' }], toolCalls: [], origin: { kind: 'user' } },
+        },
+      },
+      {
+        type: 'context.append_message',
+        time: 1004,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'second reply' }], toolCalls: [] },
+      },
+      {
+        type: 'external.text',
+        time: 1005,
+        recordId: 'ext-1',
+        kind: 'note',
+        title: 'External Note',
+        text: 'captured handoff text',
+        source: { connectionId: 'conn-1', clientName: 'ext-cli', sessionRef: 'ref-1', driver: 'external' },
+      },
+      {
+        type: 'branch.base',
+        time: 1006,
+        version: 1,
+        parentAgentId: 'main',
+        seed: 'verbatim',
+        inheritedCount: 3,
+      },
+      {
+        type: 'context.undo',
+        time: 1007,
+        count: 1,
+      },
+      {
+        type: 'agent.model_switch',
+        time: 1008,
+        context: [
+          { role: 'user', content: [{ type: 'text', text: 'rebuilt summary prompt' }], toolCalls: [], origin: { kind: 'user' } },
+        ],
+      },
+      {
+        type: 'context.append_message',
+        time: 1009,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'post-switch reply' }], toolCalls: [] },
+      },
+    ];
+    await writeFile(wirePath, `${records.map((r) => JSON.stringify(r)).join('\n')}\n`, 'utf8');
+
+    const folded = await foldAgentWireReplay(wirePath);
+    const texts = folded.replay
+      .filter((entry) => entry.type === 'message')
+      .map((entry) => entry.message.content.filter((part) => part.type === 'text').map((part) => part.text).join(''));
+    expect(texts).toEqual(['rebuilt summary prompt', 'post-switch reply']);
+
+    const wireUndoOnly = join(homeDir, 'wire-undo.jsonl');
+    await writeFile(wireUndoOnly, `${records.slice(0, 8).map((r) => JSON.stringify(r)).join('\n')}\n`, 'utf8');
+    const foldedBeforeSwitch = await foldAgentWireReplay(wireUndoOnly);
+    const beforeTexts = foldedBeforeSwitch.replay
+      .filter((entry) => entry.type === 'message')
+      .map((entry) => entry.message.content.filter((part) => part.type === 'text').map((part) => part.text).join(''));
+    expect(beforeTexts).toEqual(['edited prompt', 'second reply', 'captured handoff text']);
+  });
 });
 
 async function writeJournal(homeDir: string): Promise<string> {

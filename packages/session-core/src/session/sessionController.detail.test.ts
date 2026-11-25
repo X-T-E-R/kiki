@@ -3690,4 +3690,37 @@ describe('hidden prefix turn preview', () => {
       await openPromise.catch(() => {});
     }
   });
+
+  it('maintains incremental body byte accounting and reader pin indexes without full cache scans', async () => {
+    const taskCount = 200;
+    const tasks = Array.from({ length: taskCount }, (_, index) => {
+      const taskId = `inc-${index}`;
+      const ref = { source: { kind: 'task' as const, id: taskId }, revision: `r${index}`, path: ['outputTail'], kind: 'text' as const, offset: 3, total: 6 };
+      return { ...shellTask('abc', false), taskId, contentRefs: [ref] };
+    });
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>(async ({ ref }) => ({
+      ref,
+      value: 'def',
+      contentRefs: [],
+    }));
+    const { controller, deliver } = harness(undefined, content);
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ tasks }), 2));
+
+    const leases = tasks.slice(0, 20).map((task) => controller.beginContentRead('main', { kind: 'task', id: task.taskId }, ['outputTail']));
+    for (const task of tasks) {
+      await controller.loadContentSegment('main', task.contentRefs![0]!);
+    }
+    const reportLoaded = controller.contentMemoryReport();
+    expect(reportLoaded.bodies).toBe(taskCount);
+    expect(reportLoaded.bodyBytes).toBeGreaterThan(0);
+
+    for (const lease of leases) lease.release();
+    expect(controller.contentMemoryReport().bodyBytes).toBe(reportLoaded.bodyBytes);
+
+    deliver(resetEvent('main', emptySnapshot(), 3));
+    expect(controller.contentMemoryReport().bodies).toBe(0);
+    expect(controller.contentMemoryReport().bodyBytes).toBe(0);
+    controller.close();
+  });
 });

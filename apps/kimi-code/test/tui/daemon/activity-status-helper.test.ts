@@ -337,5 +337,18 @@ describe('activity-status-helper', () => {
         }),
       ).toBe('Working… · Esc to interrupt');
     });
+
+    it('treats held, preparing, and unconfirmed steer user blocks as queued rather than active turn boundaries', () => {
+      const activeUser = { kind: 'user', id: 'u1', text: 'first', createdAt: '2026-01-01T00:00:00.000Z' } as const;
+      const agentReply = { kind: 'assistant', id: 'a1', text: 'working', streaming: true, createdAt: '2026-01-01T00:00:02.000Z' } as const;
+      for (const steerStatus of ['held', 'preparing', 'unconfirmed', 'waiting', 'sending'] as const) {
+        const pendingSteer = { kind: 'user', id: `u-${steerStatus}`, text: 'steer', createdAt: '2026-01-01T00:00:03.000Z', steerStatus } as const;
+        expect(isQueuedUserBlock(pendingSteer)).toBe(true);
+        const current = getCurrentTurnBlocks([activeUser, agentReply, pendingSteer]);
+        expect(current).toEqual([agentReply]);
+      }
+      const blockedUser = { kind: 'user' as const, id: 'u-blocked', text: 'blocked', createdAt: '2026-01-01T00:00:04.000Z', promptStatus: 'blocked' as const };
+      expect(isQueuedUserBlock(blockedUser)).toBe(true);
+    });
   });
 });

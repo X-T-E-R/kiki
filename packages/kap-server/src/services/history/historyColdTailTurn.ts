@@ -22,12 +22,26 @@ async function findTurnOpeningInTail(
   const minStart = Math.max(0, end - SEARCH_TAIL_BYTES);
   try {
     let windowEnd = end;
+    let effectiveEnd = end;
+    let trimmedEof = false;
     let carry = Buffer.alloc(0);
     while (windowEnd > minStart) {
       signal?.throwIfAborted();
       const rawStart = Math.max(minStart, windowEnd - SCAN_CHUNK_BYTES);
       const readPos = rawStart > 0 ? rawStart - 1 : 0;
-      const chunk = Buffer.from(await wire.readAt(readPos, windowEnd - readPos));
+      let chunk = Buffer.from(await wire.readAt(readPos, windowEnd - readPos));
+      if (!trimmedEof) {
+        const lastNl = chunk.lastIndexOf(10);
+        if (lastNl < 0) {
+          if (rawStart === minStart) return undefined;
+          windowEnd = rawStart;
+          effectiveEnd = rawStart;
+          continue;
+        }
+        trimmedEof = true;
+        effectiveEnd = readPos + lastNl + 1;
+        chunk = chunk.subarray(0, lastNl + 1);
+      }
       const combined = carry.length > 0 ? Buffer.concat([chunk, carry]) : chunk;
 
       let firstLineOffset = 0;
@@ -45,24 +59,29 @@ async function findTurnOpeningInTail(
       let cursor = firstLineOffset;
       while (cursor < combined.length) {
         const next = combined.indexOf(10, cursor);
-        const lineEnd = next < 0 ? combined.length : next;
-        const line = combined.subarray(cursor, lineEnd);
+        if (next < 0) break;
+        const line = combined.subarray(cursor, next);
         if (line.length > 0 && historyBoundaryCandidate(line)) {
           boundaryOffsets.push({ absStart: readPos + cursor, line });
         }
-        if (next < 0) break;
         cursor = next + 1;
       }
 
       for (let i = boundaryOffsets.length - 1; i >= 0; i -= 1) {
         const entry = boundaryOffsets[i]!;
-        const record = JSON.parse(entry.line.toString('utf8')) as Record<string, unknown>;
+        let record: Record<string, unknown>;
+        try {
+          record = JSON.parse(entry.line.toString('utf8')) as Record<string, unknown>;
+        } catch (error) {
+          if (error instanceof SyntaxError) return undefined;
+          throw error;
+        }
         const type = record['type'];
         if (type === 'context.undo' || type === 'context.clear' || type === 'branch.base') {
           return undefined;
         }
         if (type === 'turn.prompt' && `t${String(record['turnId'])}` === turnId) {
-          return { start: readPos === 0 && i === 0 && entry.absStart === 0 ? 0 : entry.absStart, end };
+          return { start: readPos === 0 && i === 0 && entry.absStart === 0 ? 0 : entry.absStart, end: effectiveEnd };
         }
       }
 

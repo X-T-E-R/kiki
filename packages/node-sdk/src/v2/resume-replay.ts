@@ -149,7 +149,41 @@ type MutableContextMessage = ContextMessage & {
   content: ContentPart[];
   toolCalls: ToolCall[];
   partial?: boolean;
+  inheritedSeed?: boolean;
 };
+
+const COMPACTION_ELISION_VARIANT = 'compaction_elision';
+const EXTERNAL_TEXT_KINDS = ['note', 'user_excerpt', 'assistant_excerpt', 'handoff'] as const;
+
+function isContextMessageLike(value: unknown): value is ContextMessage {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const message = value as { role?: unknown; content?: unknown };
+  return typeof message.role === 'string' && Array.isArray(message.content);
+}
+
+function cloneMutableMessage(message: ContextMessage): MutableContextMessage {
+  return {
+    ...message,
+    content: [...message.content],
+    toolCalls: [...(message.toolCalls ?? [])],
+  };
+}
+
+function isExternalSource(
+  value: unknown,
+): value is { connectionId: string; clientName: string; sessionRef: string; driver: 'external' } {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const source = value as { connectionId?: unknown; clientName?: unknown; sessionRef?: unknown; driver?: unknown };
+  return (
+    typeof source.connectionId === 'string' &&
+    source.connectionId.length > 0 &&
+    typeof source.clientName === 'string' &&
+    source.clientName.length > 0 &&
+    typeof source.sessionRef === 'string' &&
+    source.sessionRef.length > 0 &&
+    source.driver === 'external'
+  );
+}
 
 class ReplayFold {
   private readonly replay: MutableReplayRecord[] = [];
@@ -240,9 +274,59 @@ class ReplayFold {
         this.openAssistant = undefined;
         this.fold.reset();
         return;
-      case 'context.undo':
+      case 'context.undo': {
         this.undo(record.count);
+        const replacement = record.replacementPrompt?.message;
+        if (isContextMessageLike(replacement)) {
+          this.fold.appendMessage(cloneMutableMessage(replacement), this.now);
+        }
         return;
+      }
+      case 'branch.base':
+        for (const message of this.history) {
+          message.inheritedSeed = true;
+        }
+        this.restoreFold();
+        return;
+      case 'external.text': {
+        const recordKind = EXTERNAL_TEXT_KINDS.find((kind) => kind === record.kind);
+        if (
+          typeof record.recordId !== 'string' ||
+          typeof record.text !== 'string' ||
+          recordKind === undefined ||
+          !isExternalSource(record.source)
+        ) {
+          return;
+        }
+        this.fold.appendMessage(
+          {
+            role: 'user',
+            content: [{ type: 'text', text: record.text }],
+            toolCalls: [],
+            origin: {
+              kind: 'external_record',
+              recordId: record.recordId,
+              recordKind,
+              ...(typeof record.title === 'string' ? { title: record.title } : {}),
+              ...record.source,
+            },
+            source: { ref: `external.text:${record.recordId}` },
+          },
+          this.now,
+        );
+        return;
+      }
+      case 'agent.model_switch': {
+        const context = record.context;
+        if (!Array.isArray(context) || !context.every(isContextMessageLike)) return;
+        this.removeMessages(new Set(this.history));
+        this.history = [];
+        this.restoreFold();
+        for (const message of context) {
+          this.pushHistory(cloneMutableMessage(message));
+        }
+        return;
+      }
       case 'context.apply_compaction':
         this.applyCompaction(record);
         return;
@@ -338,6 +422,7 @@ class ReplayFold {
     const { type: _type, time: _time, ...result } = record;
     this.patchLastCompaction({ result });
     const previous = this.history;
+    const previousSet = new Set<ContextMessage>(previous);
     const wireRecord = record as unknown as WireRecord;
     const compactedCount = readContextCompactedCount(wireRecord);
     const removedTailInjections = new Set(
@@ -345,11 +430,21 @@ class ReplayFold {
         .slice(compactedCount)
         .filter((message) => message.origin?.kind === 'injection'),
     );
-    this.history = applyContextCompactionRecord(
+    const next = applyContextCompactionRecord(
       previous,
       wireRecord,
     ) as MutableContextMessage[];
+    this.history = next;
     this.removeMessages(removedTailInjections);
+    for (const message of next) {
+      if (
+        !previousSet.has(message) &&
+        message.origin?.kind === 'injection' &&
+        message.origin.variant === COMPACTION_ELISION_VARIANT
+      ) {
+        this.push({ type: 'message', message });
+      }
+    }
     this.restoreFold();
   }
 

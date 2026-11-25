@@ -1417,4 +1417,64 @@ describe('DaemonTranscriptRenderer', () => {
     expect(output).toContain('Thread failed (session_c07e)');
     expect(output).not.toContain('<notification');
   });
+
+  it('sanitizes OSC/DCS/CSI terminal escape sequences across shell, system, reminder, and prompt outcome blocks', () => {
+    const container = new Container();
+    const renderer = new DaemonTranscriptRenderer(container);
+    const osc52 = '\u001B]52;c;cHduZWQ=\u0007';
+    const dcs = '\u001BP+q544e\u001B\\';
+    const csi = '\u001B[?1049h\u001B[2J';
+    renderer.sync([
+      {
+        kind: 'user',
+        id: 'u-esc',
+        turnId: 't1',
+        text: 'hello',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        promptOutcome: {
+          status: 'failed',
+          delivered: true,
+          error: `${osc52}upstream ${csi}boom`,
+        },
+      },
+      {
+        kind: 'shell',
+        id: 'sh-esc',
+        commandId: 'cmd-esc',
+        turnId: 't1',
+        command: `echo ${osc52}hi`,
+        output: `line1${dcs}\n${csi}line2`,
+        done: false,
+        isError: false,
+      },
+      {
+        kind: 'system',
+        id: 'sys-esc',
+        turnId: 't1',
+        variant: 'system',
+        text: `notice ${osc52}${dcs}safe`,
+        createdAt: undefined,
+      },
+      {
+        kind: 'system-reminder',
+        id: 'rem-esc',
+        turnId: 't1',
+        variant: 'reminder',
+        text: `rem ${osc52}${csi}body`,
+        createdAt: undefined,
+      },
+    ]);
+    const raw = container.render(120).join('\n');
+    expect(raw).not.toContain('\u001B]52;');
+    expect(raw).not.toContain('cHduZWQ=');
+    expect(raw).not.toContain('\u001BP');
+    expect(raw).not.toContain('\u001B[?1049h');
+    expect(raw).not.toContain('\u001B[2J');
+    const clean = strip(raw);
+    expect(clean).toContain('upstream boom');
+    expect(clean).toContain('echo hi');
+    expect(clean).toContain('line1');
+    expect(clean).toContain('line2');
+    expect(clean).toContain('notice safe');
+  });
 });

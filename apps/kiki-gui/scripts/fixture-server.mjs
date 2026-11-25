@@ -171,7 +171,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { createServer } from 'node:http';
 import { readdir } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { WebSocketServer } from 'ws';
@@ -213,6 +213,23 @@ import {
 export const FIXTURE_TOKEN = 'kiki-fixture-token';
 const DEFAULT_PORT = 58901;
 const fixtureHash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+function isLoopbackOrigin(origin) {
+  try {
+    const parsed = new URL(origin);
+    if (parsed.protocol === 'tauri:' && parsed.hostname === 'localhost') return true;
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    return (
+      parsed.hostname === 'localhost' ||
+      parsed.hostname === '127.0.0.1' ||
+      parsed.hostname === '::1' ||
+      parsed.hostname === '[::1]' ||
+      parsed.hostname === 'tauri.localhost'
+    );
+  } catch {
+    return false;
+  }
+}
 
 /**
  * A memory list cursor names the page it continues. The client resends only
@@ -889,7 +906,15 @@ class FixtureServer {
   }
 
   async loadScenario(name) {
-    const file = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', `${name}.scenario.mjs`);
+    if (typeof name !== 'string' || !/^[a-z0-9][a-z0-9_-]*$/u.test(name)) {
+      throw new Error(`Invalid scenario name: ${String(name)}`);
+    }
+    const fixturesDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
+    const file = resolve(fixturesDir, `${name}.scenario.mjs`);
+    const rel = relative(fixturesDir, file);
+    if (rel.startsWith('..') || isAbsolute(rel) || rel !== `${name}.scenario.mjs`) {
+      throw new Error(`Invalid scenario path: ${name}`);
+    }
     const module = await import(pathToFileURL(file).href);
     const data = module.default;
     this.scenario = { name, data: cloneScenarioData(data) };
@@ -2558,25 +2583,51 @@ class FixtureServer {
 
   async handleHttp(req, res) {
     const url = new URL(req.url ?? '/', 'http://fixture');
-    // CORS: reflect any origin (loopback dev tool, mirrors kap-server's
-    // loopback allowance); preflights short-circuit.
     const origin = req.headers.origin;
+    const loopbackOrigin = typeof origin === 'string' && isLoopbackOrigin(origin);
     if (typeof origin === 'string') {
-      res.setHeader('access-control-allow-origin', origin);
-      res.setHeader('access-control-allow-methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-      res.setHeader('access-control-allow-headers', 'Content-Type, Authorization, x-api-key, anthropic-version, x-request-id');
-      // The export download's filename rides Content-Disposition; browsers
-      // hide it from cross-origin fetch unless it is exposed.
-      res.setHeader('access-control-expose-headers', 'Content-Disposition');
       res.setHeader('vary', 'Origin');
+      if (loopbackOrigin) {
+        res.setHeader('access-control-allow-origin', origin);
+        res.setHeader('access-control-allow-methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+        res.setHeader('access-control-allow-headers', 'Content-Type, Authorization, x-api-key, anthropic-version, x-request-id');
+        // The export download's filename rides Content-Disposition; browsers
+        // hide it from cross-origin fetch unless it is exposed.
+        res.setHeader('access-control-expose-headers', 'Content-Disposition');
+      }
     }
     if (req.method === 'OPTIONS') {
+      if (typeof origin === 'string' && !loopbackOrigin) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ code: 40301, msg: 'forbidden_origin', data: null }));
+        return;
+      }
       res.writeHead(204);
       res.end();
       return;
     }
 
     if (url.pathname === '/__control') {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ code: 40501, msg: 'method_not_allowed', data: null }));
+        return;
+      }
+      if (
+        (typeof origin === 'string' && !loopbackOrigin) ||
+        req.headers['sec-fetch-site'] === 'cross-site'
+      ) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ code: 40301, msg: 'forbidden_origin', data: null }));
+        return;
+      }
+      const hasBearer = req.headers.authorization === `Bearer ${FIXTURE_TOKEN}`;
+      const contentType = String(req.headers['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase();
+      if (!hasBearer && contentType !== 'application/json') {
+        res.writeHead(415, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ code: 41501, msg: 'unsupported_content_type', data: null }));
+        return;
+      }
       const body = await this.readBody(req);
       await this.handleControl(body ?? {}, res);
       return;
@@ -6178,7 +6229,11 @@ class FixtureServer {
         });
       }
       case 'scenario':
-        await this.loadScenario(body.name);
+        try {
+          await this.loadScenario(body.name);
+        } catch (error) {
+          return this.envelope(res, null, 40001, error instanceof Error ? error.message : 'Invalid scenario name.');
+        }
         this.ssh = undefined; // fixture-ssh.mjs reseeds from the scenario
         this.mesh = undefined; // fixture-mesh.mjs reseeds from the scenario
         this.spaces = undefined; // fixture-spaces.mjs reseeds too

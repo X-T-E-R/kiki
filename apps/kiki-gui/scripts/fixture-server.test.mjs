@@ -516,3 +516,53 @@ test('session accounting reads return the seeded canonical snapshot without inve
     assert.equal((await absent.json()).code, 40404);
   } finally { await server.stop(); }
 });
+
+test('fixture server restricts CORS to loopback origins and blocks cross-site /__control and scenario traversal', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'basic-stream' });
+  const origin = `http://127.0.0.1:${server.http.address().port}`;
+  try {
+    const evilPreflight = await fetch(`${origin}/api/meta`, {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://evil.example',
+        'access-control-request-method': 'POST',
+      },
+    });
+    assert.equal(evilPreflight.status, 403);
+    assert.equal(evilPreflight.headers.get('access-control-allow-origin'), null);
+
+    const evilControl = await fetch(`${origin}/__control`, {
+      method: 'POST',
+      headers: { origin: 'https://evil.example', 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'list' }),
+    });
+    assert.equal(evilControl.status, 403);
+
+    const textPlainControl = await fetch(`${origin}/__control`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: JSON.stringify({ action: 'list' }),
+    });
+    assert.equal(textPlainControl.status, 415);
+
+    const traversal = await fetch(`${origin}/__control`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer kiki-fixture-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'scenario', name: '../scripts/fixture-server' }),
+    });
+    const traversalBody = await traversal.json();
+    assert.equal(traversalBody.code, 40001);
+    assert.match(traversalBody.msg, /Invalid scenario name/);
+
+    const legitLoopback = await fetch(`${origin}/__control`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost:5173', 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'list' }),
+    });
+    assert.equal(legitLoopback.status, 200);
+    assert.equal(legitLoopback.headers.get('access-control-allow-origin'), 'http://localhost:5173');
+    assert.equal((await legitLoopback.json()).code, 0);
+  } finally {
+    await server.stop();
+  }
+});

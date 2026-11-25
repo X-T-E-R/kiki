@@ -5340,5 +5340,43 @@ describe('SessionEventBroadcaster', () => {
       expect(evictedSignals).toHaveLength(0);
       detach();
     });
+
+    it('notifies GlobalRawTarget.onGap and records a global journal_gap when a global event has no live copy', async () => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      sessions.set('s1', lc);
+
+      const globalGaps: Array<{ epoch: string; seq: number; sessionId?: string; hidden: boolean; reason: string }> = [];
+      const globalEvents: Array<{ seq: number; type: string }> = [];
+      const target = {
+        send(envelope: { seq: number; type: string }) {
+          globalEvents.push({ seq: envelope.seq, type: envelope.type });
+        },
+        onGap(info: { epoch: string; seq: number; sessionId?: string; hidden: boolean; reason: string }) {
+          globalGaps.push(info);
+        },
+      };
+      bc.addGlobalRawTarget(target);
+      try {
+        await bc.subscribe('s1', collectingTarget().target);
+        const beforeSeq = globalEvents.at(-1)?.seq ?? 0;
+
+        eventBus.emit({
+          type: 'event.session.created',
+          payload: { sessionId: 's1', session: { id: 's1', title: 'G'.repeat(16 * 1024 * 1024) } },
+        });
+        await vi.waitFor(async () => {
+          await bc.flushSessionJournal('s1');
+          expect(globalGaps.length).toBeGreaterThanOrEqual(1);
+        });
+        expect(globalGaps[0]!.reason).toBe('journal_gap');
+        expect(globalGaps[0]!.sessionId).toBe('s1');
+
+        const buffered = bc.getGlobalBufferedSince({ seq: beforeSeq, epoch: globalGaps[0]!.epoch }, 's1');
+        expect(buffered.resyncRequired).toBe('journal_gap');
+      } finally {
+        bc.removeGlobalRawTarget(target);
+      }
+    });
   });
 });

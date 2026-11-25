@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync, unlinkSync } from 'node:fs';
-import { open, readFile, unlink } from 'node:fs/promises';
+import { link, open, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { crc32 } from 'node:zlib';
 
@@ -32,6 +32,10 @@ export function shardDirName(shardId: number, shardCount: number): string {
   return `shard-${String(shardId).padStart(width, '0')}`;
 }
 
+const EMPTY_LOCK_GRACE_MS = 2_000;
+const RECLAIM_STALE_MS = 5_000;
+const PROCESS_START_DRIFT_MS = 5_000;
+
 function pidAlive(pid: unknown): boolean {
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -40,6 +44,77 @@ function pidAlive(pid: unknown): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
+}
+
+function ownerStillAlive(existing: { pid?: unknown; processStartedAt?: unknown }): boolean {
+  if (typeof existing.pid !== 'number' || !Number.isInteger(existing.pid) || existing.pid <= 0) return false;
+  if (existing.pid === process.pid) {
+    if (typeof existing.processStartedAt === 'number' && Math.abs(existing.processStartedAt - PROCESS_STARTED_AT) > PROCESS_START_DRIFT_MS) {
+      return false;
+    }
+    return true;
+  }
+  return pidAlive(existing.pid);
+}
+
+async function publishLockAtomic(lockPath: string, payload: string): Promise<boolean> {
+  const tmpPath = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(tmpPath, payload, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  try {
+    await link(tmpPath, lockPath);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EEXIST') return false;
+    if (code === 'EPERM' || code === 'EXDEV' || code === 'ENOTSUP' || code === 'ENOSYS') {
+      try {
+        const handle = await open(lockPath, 'wx', 0o600);
+        try {
+          await handle.writeFile(payload, 'utf8');
+        } finally {
+          await handle.close();
+        }
+        return true;
+      } catch (openError) {
+        if ((openError as NodeJS.ErrnoException).code === 'EEXIST') return false;
+        throw openError;
+      }
+    }
+    throw error;
+  } finally {
+    await unlink(tmpPath).catch(() => {});
+  }
+}
+
+async function inspectExistingLock(lockPath: string): Promise<
+  | { readonly state: 'missing' }
+  | { readonly state: 'held' }
+  | { readonly state: 'stale'; readonly raw: string }
+> {
+  let raw: string;
+  try {
+    raw = await readFile(lockPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { state: 'missing' };
+    return { state: 'held' };
+  }
+  let existing: { pid?: unknown; processStartedAt?: unknown } | undefined;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed === 'object' && parsed !== null) {
+      existing = parsed as { pid?: unknown; processStartedAt?: unknown };
+    }
+  } catch {
+    existing = undefined;
+  }
+  if (existing === undefined) {
+    const info = await stat(lockPath).catch(() => undefined);
+    if (info === undefined) return { state: 'missing' };
+    if (Date.now() - info.mtimeMs < EMPTY_LOCK_GRACE_MS) return { state: 'held' };
+    return { state: 'stale', raw };
+  }
+  if (ownerStillAlive(existing)) return { state: 'held' };
+  return { state: 'stale', raw };
 }
 
 export class LegacyMinidbLock {
@@ -56,29 +131,52 @@ export class LegacyMinidbLock {
     const token = `${process.pid}:${randomUUID()}`;
     const payload = JSON.stringify({ pid: process.pid, processStartedAt: PROCESS_STARTED_AT, ts: Date.now(), token });
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        const handle = await open(this.path, 'wx', 0o600);
-        try {
-          await handle.writeFile(payload, 'utf8');
-        } finally {
-          await handle.close();
-        }
+      if (await publishLockAtomic(this.path, payload)) {
         this.token = token;
         return true;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        let existing: { pid?: unknown } | undefined;
-        try {
-          existing = JSON.parse(await readFile(this.path, 'utf8')) as { pid?: unknown };
-        } catch {
-          existing = undefined;
-        }
-        if (existing !== undefined && pidAlive(existing.pid)) return false;
-        if (attempt === 1) return false;
-        await unlink(this.path).catch(() => {});
       }
+      const inspection = await inspectExistingLock(this.path);
+      if (inspection.state === 'held') return false;
+      if (inspection.state === 'missing') continue;
+      if (attempt === 1) return false;
+      const reclaimed = await this.reclaimAndAcquire(inspection.raw, payload);
+      if (reclaimed) {
+        this.token = token;
+        return true;
+      }
+      return false;
     }
     return false;
+  }
+
+  private async reclaimAndAcquire(staleRaw: string, payload: string): Promise<boolean> {
+    const reclaimPath = `${this.path}.reclaim`;
+    let reclaimHandle;
+    try {
+      reclaimHandle = await open(reclaimPath, 'wx', 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return false;
+      const info = await stat(reclaimPath).catch(() => undefined);
+      if (info !== undefined && Date.now() - info.mtimeMs > RECLAIM_STALE_MS) {
+        await unlink(reclaimPath).catch(() => {});
+        try {
+          reclaimHandle = await open(reclaimPath, 'wx', 0o600);
+        } catch {
+          return false;
+        }
+      } else {
+        return false;
+      }
+    }
+    try {
+      const currentRaw = await readFile(this.path, 'utf8').catch(() => undefined);
+      if (currentRaw !== undefined && currentRaw !== staleRaw) return false;
+      if (currentRaw === staleRaw) await unlink(this.path).catch(() => {});
+      return await publishLockAtomic(this.path, payload);
+    } finally {
+      await reclaimHandle.close().catch(() => {});
+      await unlink(reclaimPath).catch(() => {});
+    }
   }
 
   async release(): Promise<void> {
