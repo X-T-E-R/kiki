@@ -69,6 +69,6 @@ export function registerSessionAccessHandoffRoutes(app: FastifyInstance, deps: {
     const issued = handoff.exchange(ticket, parsed.data.verifier, parsed.data.client);
     if (issued === undefined) return invalidTicket(request, reply);
     const { token, record: { expires_at, session_id, scopes } } = issued;
-    return reply.send(okEnvelope({ token, expires_at, session_id, scopes, server_id, server_version, session_access: 1 }, request.id));
+    return reply.send(okEnvelope({ token, expires_at, session_id, scopes, server_id, server_version, session_access: 2 }, request.id));
   });
 }

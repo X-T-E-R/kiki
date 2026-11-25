@@ -1226,16 +1226,21 @@ export function registerSessionsRoutes(
           reply.send(okEnvelope(toWireSession({ ...result.meta, workspaceId: result.workspaceId }, cwd, facts, cursor?.seq, false, toAttentionCursor(cursor)), req.id));
           return;
         }
-        await withSessionOperation(core, session_id, async (handle) => {
-          if (handle === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
-          if (delivery !== undefined) await handle.accessor.get(ISessionDeliveryService).set(delivery);
-          const fields = await updateSessionProfile(handle, profileBody);
-          if (agent_config !== undefined) await applySessionAgentConfig(handle, agent_config);
-          publishMetaUpdated(fields);
-          const cursor = await broadcaster?.getCursor(fields.id);
-          const session = toWireSession(fields, fields.root, resolveSessionFacts(core, fields.id), cursor?.seq, core.accessor.get(ISessionManager).isEphemeral(fields.id), toAttentionCursor(cursor));
-          reply.send(okEnvelope(session, req.id));
-        });
+        await withReplyCloseSignal(
+          reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+          (signal) => withSessionOperation(core, session_id, async (handle) => {
+            signal.throwIfAborted();
+            if (handle === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
+            if (delivery !== undefined) await handle.accessor.get(ISessionDeliveryService).set(delivery);
+            const fields = await updateSessionProfile(handle, profileBody);
+            if (agent_config !== undefined) await applySessionAgentConfig(handle, agent_config);
+            publishMetaUpdated(fields);
+            const cursor = await broadcaster?.getCursor(fields.id);
+            const session = toWireSession(fields, fields.root, resolveSessionFacts(core, fields.id), cursor?.seq, core.accessor.get(ISessionManager).isEphemeral(fields.id), toAttentionCursor(cursor));
+            reply.send(okEnvelope(session, req.id));
+          }, signal),
+          req,
+        );
       } catch (error) {
         sendMappedError(reply, req, error);
       }
@@ -1492,31 +1497,41 @@ export function registerSessionsRoutes(
 
         if (parsed.action === 'compact') {
           const body = compactSessionRequestSchema.parse(req.body);
-          await withMainAgent(core, parsed.id, async (agent) => {
-            const compaction = agent.accessor.get(IAgentFullCompactionService);
-            const accepted = compaction.begin({ source: 'manual', instruction: normalizeOptional(body.instruction), strategy: body.strategy });
-            const status = compaction.queuedManualCompaction ? 'queued' : 'running';
-            requestLog(req)?.info({ session_id: parsed.id, action: 'compact', source: 'manual', accepted, status }, 'session compaction requested');
-            reply.send(okEnvelope({ accepted, status, source: 'manual' }, req.id));
-          });
+          await withReplyCloseSignal(
+            reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+            (signal) => withMainAgent(core, parsed.id, async (agent) => {
+              signal.throwIfAborted();
+              const compaction = agent.accessor.get(IAgentFullCompactionService);
+              const accepted = compaction.begin({ source: 'manual', instruction: normalizeOptional(body.instruction), strategy: body.strategy });
+              const status = compaction.queuedManualCompaction ? 'queued' : 'running';
+              requestLog(req)?.info({ session_id: parsed.id, action: 'compact', source: 'manual', accepted, status }, 'session compaction requested');
+              reply.send(okEnvelope({ accepted, status, source: 'manual' }, req.id));
+            }, signal),
+            req,
+          );
           return;
         }
 
         if (parsed.action === 'undo') {
           const body = undoSessionRequestSchema.parse(req.body);
-          await withMainAgent(core, parsed.id, async (agent) => {
-            await agent.accessor.get(IAgentConversationUndoService).undo(body.count);
-            const history = agent.accessor.get(IAgentContextMemoryService).get();
-            requestLog(req)?.info({ session_id: parsed.id, action: 'undo' }, 'session action completed');
-            const [summary, status] = await Promise.all([
-              core.accessor.get(ISessionIndex).get(parsed.id),
-              legacy.status(parsed.id),
-            ]);
-            reply.send(okEnvelope({
-              messages: pageUndoMessages(parsed.id, summary?.createdAt ?? 0, history, body.page_size),
-              status,
-            }, req.id));
-          });
+          await withReplyCloseSignal(
+            reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+            (signal) => withMainAgent(core, parsed.id, async (agent) => {
+              signal.throwIfAborted();
+              await agent.accessor.get(IAgentConversationUndoService).undo(body.count);
+              const history = agent.accessor.get(IAgentContextMemoryService).get();
+              requestLog(req)?.info({ session_id: parsed.id, action: 'undo' }, 'session action completed');
+              const [summary, status] = await Promise.all([
+                core.accessor.get(ISessionIndex).get(parsed.id),
+                legacy.status(parsed.id),
+              ]);
+              reply.send(okEnvelope({
+                messages: pageUndoMessages(parsed.id, summary?.createdAt ?? 0, history, body.page_size),
+                status,
+              }, req.id));
+            }, signal),
+            req,
+          );
           return;
         }
 

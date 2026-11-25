@@ -1264,6 +1264,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const switchOwner = managedOwner ?? unmanagedSwitchOwner;
   if (switchOwner !== undefined) registerRuntimeSwitchRoutes(app, core, switchOwner,
     () => { void close().catch(() => logger.error({ event_type: 'server_close_failed' }, 'server close failed')); }, shutdownController.signal);
+  const providerQuota = createProviderQuotaService(core);
   const mintPanelDocument = await registerApiV1Routes(app, core, {
     serverVersion,
     buildId,
@@ -1280,6 +1281,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     guiStore,
     notifications,
     imSessions,
+    providerQuota,
     externalClients: core.accessor.get(IFlagService).enabled(EXTERNAL_CLIENT_FLAG_ID) ? externalClients : undefined,
     themesDir: join(homeDir, 'themes'),
     pluginBridgeServerToken: () => authTokenService.getToken(),
@@ -1749,7 +1751,6 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     },
   };
   registerUsageExportRoutes(app, usageExport.service);
-  const providerQuota = createProviderQuotaService(core);
   registerProviderQuotaRoutes(app, providerQuota);
   app.addHook('preClose', async () => { providerQuota.close(); });
   const spaceSummary = new SpaceSummaryProjection(core);

@@ -240,7 +240,7 @@ kiki session-access revoke sat_01JZX4A6E7M8V0R3Q0N2K2M5Q9
 kiki session-access revoke --all
 ```
 
-`--session` 指定令牌可访问的单个会话。`--scope` 接受 `read`、`prompt`、`abort` 中一个或多个逗号分隔值，不得重复填写。`--name` 标记接收令牌的客户端，须为 1–64 个可打印 ASCII 字符。`--ttl` 接受整秒时长，范围为 `60s`–`24h`，默认 `1h`。使用 `--home <dir>` 选择其他本机 Kiki home；否则使用 `KIKI_HOME` 或 `~/.kiki`。命令会连接该 home 的共享服务，不存在时先启动。`issue` 的输出含一次性令牌密钥；请妥善保存，不要把密钥放进其他命令的参数。`list` 只显示以 `sat_` 开头的公开 ID 和元数据；撤销时把该 ID 传给 `revoke`。认证、撤销方式和允许的路由见 [服务 API](../server/rest-api.md#会话访问令牌)。
+`--session` 指定令牌可访问的单个会话。`--scope` 接受 `read`、`prompt`、`abort`、`interact`、`control`、`llm` 中一个或多个逗号分隔值，不得重复填写。`--name` 标记接收令牌的客户端，须为 1–64 个可打印 ASCII 字符。`--ttl` 接受整秒时长，范围为 `60s`–`24h`，默认 `1h`。使用 `--home <dir>` 选择其他本机 Kiki home；否则使用 `KIKI_HOME` 或 `~/.kiki`。命令会连接该 home 的共享服务，不存在时先启动。`issue` 的输出含一次性令牌密钥；请妥善保存，不要把密钥放进其他命令的参数。`list` 只显示以 `sat_` 开头的公开 ID 和元数据；撤销时把该 ID 传给 `revoke`。认证、撤销方式和允许的路由见 [服务 API](../server/rest-api.md#会话访问令牌)。
 
 ### `kiki pair` 与 `kiki connections` {#kiki-pair}
 

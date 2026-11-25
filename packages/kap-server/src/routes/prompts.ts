@@ -458,6 +458,49 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
   const switchParams = z.object({ session_id: z.string().min(1), agent_id: z.string().min(1) });
   const operationParams = switchParams.extend({ operation_id: z.string().min(1) });
   const switchPath = '/sessions/{session_id}/agents/{agent_id}/model-switches';
+  const readColdModelSwitches = async (
+    session_id: string,
+    agent_id: string,
+    req: unknown,
+    reply: unknown,
+  ) => {
+    const live = core.accessor.get(ISessionManager).get(session_id);
+    const summary = live === undefined ? await core.accessor.get(ISessionIndex).get(session_id) : undefined;
+    if (live === undefined && summary === undefined) {
+      throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
+    }
+    const workspaceId = live?.accessor.get(ISessionContext).workspaceId ?? summary!.workspaceId;
+    const metadata = live !== undefined
+      ? await live.accessor.get(ISessionMetadata).read()
+      : await readColdSessionMeta(core, workspaceId, session_id);
+    if (!/^[a-zA-Z0-9_-]+$/.test(agent_id) ||
+      (agent_id !== MAIN_AGENT_ID && !Object.hasOwn(metadata?.agents ?? {}, agent_id))) {
+      throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `agent ${agent_id} does not exist`);
+    }
+    let cpuWorkers: ICpuWorkerService | undefined;
+    try { cpuWorkers = core.accessor.get(ICpuWorkerService); } catch { cpuWorkers = undefined; }
+    modelSwitchReader ??= new PersistedModelSwitchReader({
+      docs: core.accessor.get(IAtomicDocumentStore),
+      storage: core.accessor.get(IFileSystemStorageService),
+      files: core.accessor.get(IHostFileSystem),
+      workers: cpuWorkers,
+    });
+    const sessionScope = sessionScopeOf(
+      workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), workspaceId),
+      session_id,
+    );
+    return withReplyCloseSignal(
+      reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+      async (signal) => {
+        if (transcriptService !== undefined && typeof transcriptService.hasColdWireMarker === 'function') {
+          const hasSwitch = await transcriptService.hasColdWireMarker(session_id, agent_id, 'prompt.model_switch', signal);
+          if (hasSwitch === false) return [];
+        }
+        return modelSwitchReader!.readReady(agentScopeOf(sessionScope, agent_id), signal);
+      },
+      req as unknown as Parameters<typeof withReplyCloseSignal>[2],
+    );
+  };
   const switchList = defineRoute({ method: 'GET', path: switchPath, params: switchParams,
     success: { data: z.array(queuedModelSwitchSchema) }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
     description: 'Read model switch queue and operation states', tags: ['prompts'], operationId: 'listModelSwitches' }, async (req, reply) => {
@@ -469,41 +512,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         reply.send(okEnvelope(resident.accessor.get(IAgentPromptService).listModelSwitches(), req.id));
         return;
       }
-      const summary = live === undefined ? await core.accessor.get(ISessionIndex).get(session_id) : undefined;
-      if (live === undefined && summary === undefined) {
-        throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
-      }
-      const workspaceId = live?.accessor.get(ISessionContext).workspaceId ?? summary!.workspaceId;
-      const metadata = live !== undefined
-        ? await live.accessor.get(ISessionMetadata).read()
-        : await readColdSessionMeta(core, workspaceId, session_id);
-      if (!/^[a-zA-Z0-9_-]+$/.test(agent_id) ||
-        (agent_id !== MAIN_AGENT_ID && !Object.hasOwn(metadata?.agents ?? {}, agent_id))) {
-        throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `agent ${agent_id} does not exist`);
-      }
-      let cpuWorkers: ICpuWorkerService | undefined;
-      try { cpuWorkers = core.accessor.get(ICpuWorkerService); } catch { cpuWorkers = undefined; }
-      modelSwitchReader ??= new PersistedModelSwitchReader({
-        docs: core.accessor.get(IAtomicDocumentStore),
-        storage: core.accessor.get(IFileSystemStorageService),
-        files: core.accessor.get(IHostFileSystem),
-        workers: cpuWorkers,
-      });
-      const sessionScope = sessionScopeOf(
-        workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), workspaceId),
-        session_id,
-      );
-      const items = await withReplyCloseSignal(
-        reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
-        async (signal) => {
-          if (transcriptService !== undefined && typeof transcriptService.hasColdWireMarker === 'function') {
-            const hasSwitch = await transcriptService.hasColdWireMarker(session_id, agent_id, 'prompt.model_switch', signal);
-            if (hasSwitch === false) return [];
-          }
-          return modelSwitchReader!.readReady(agentScopeOf(sessionScope, agent_id), signal);
-        },
-        req as unknown as Parameters<typeof withReplyCloseSignal>[2],
-      );
+      const items = await readColdModelSwitches(session_id, agent_id, req, reply);
       reply.send(okEnvelope(items, req.id));
     } catch (error) { sendMappedError(reply, req, error); }
   });
@@ -512,10 +521,24 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
     success: { data: modelSwitchReceiptSchema }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.WORK_ADMISSION_FENCED]: {} },
     description: 'Queue a native model and context switch before the next model request', tags: ['prompts'], operationId: 'switchModel' }, async (req, reply) => {
     try {
-      await withSessionOperation(core, req.params.session_id, async (handle) => {
-        const resolved = await resolvePromptFromSession(core, requireSession(handle, req.params.session_id), req.params.agent_id);
-        reply.send(okEnvelope(await resolved.prompt.switchModel(req.body), req.id));
-      });
+      await withReplyCloseSignal(
+        reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+        (signal) => withSessionOperation(core, req.params.session_id, async (handle) => {
+          signal.throwIfAborted();
+          const session = requireSession(handle, req.params.session_id);
+          const { agent_id } = req.params;
+          if (!/^[a-zA-Z0-9_-]+$/.test(agent_id)) {
+            throw new Error2(ErrorCodes.REQUEST_INVALID, 'Invalid agent_id');
+          }
+          if (sessionAccessToken(req) !== undefined && agent_id !== MAIN_AGENT_ID &&
+              (await session.accessor.get(ISessionMetadata).read()).agents?.[agent_id] === undefined) {
+            throw new Error2(ErrorCodes.REQUEST_INVALID, 'Invalid session access model-switch field: agent_id');
+          }
+          const resolved = await resolvePromptFromSession(core, session, agent_id);
+          reply.send(okEnvelope(await resolved.prompt.switchModel(req.body), req.id));
+        }, signal),
+        req as unknown as Parameters<typeof withReplyCloseSignal>[2],
+      );
     } catch (error) { sendMappedError(reply, req, error); }
   });
   app.post(switchSubmit.path, switchSubmit.options, switchSubmit.handler as Parameters<PromptRouteHost['post']>[2]);
@@ -523,10 +546,16 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
     success: { data: modelSwitchReceiptSchema.nullable() }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
     description: 'Read a model switch by its idempotent operation ID', tags: ['prompts'], operationId: 'getModelSwitch' }, async (req, reply) => {
     try {
-      await withSessionOperation(core, req.params.session_id, async (handle) => {
-        const resolved = await resolvePromptFromSession(core, requireSession(handle, req.params.session_id), req.params.agent_id);
-        reply.send(okEnvelope(resolved.prompt.getModelSwitch(req.params.operation_id) ?? null, req.id));
-      });
+      const { session_id, agent_id, operation_id } = req.params;
+      const live = core.accessor.get(ISessionManager).get(session_id);
+      const resident = live?.accessor.get(IAgentLifecycleService).get(agent_id);
+      if (resident !== undefined) {
+        reply.send(okEnvelope(resident.accessor.get(IAgentPromptService).getModelSwitch(operation_id) ?? null, req.id));
+        return;
+      }
+      const items = await readColdModelSwitches(session_id, agent_id, req, reply);
+      const matched = items.find((item) => item.input.operationId === operation_id);
+      reply.send(okEnvelope(matched?.receipt ?? null, req.id));
     } catch (error) { sendMappedError(reply, req, error); }
   });
   app.get(switchRead.path, switchRead.options, switchRead.handler as Parameters<PromptRouteHost['get']>[2]);

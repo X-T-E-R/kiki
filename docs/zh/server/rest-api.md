@@ -93,12 +93,12 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 
 | 方法与路径 | 请求 | 响应 data |
 | --- | --- | --- |
-| `GET /api/session-access` | — | `{ version: 1, enabled, terminal_handoff, server_id, tokens }`；每条令牌记录只列出 `id`、`session_id`、`scopes`、`client`、`channel`、`issued_at` 和 `expires_at`，不含密钥 |
-| `POST /api/session-access/tokens` | `{ session_id, scopes, client: { name, version? }, ttl_seconds? }` | `{ token, expires_at, session_id, scopes, server_id, server_version, session_access: 1 }`；`owner` 渠道的会话访问令牌密钥只返回一次 |
+| `GET /api/session-access` | — | `{ version: 2, enabled, terminal_handoff, terminal_control, server_id, tokens }`；每条令牌记录只列出 `id`、`session_id`、`scopes`、`client`、`channel`、`issued_at` 和 `expires_at`，不含密钥 |
+| `POST /api/session-access/tokens` | `{ session_id, scopes, client: { name, version? }, ttl_seconds? }` | `{ token, expires_at, session_id, scopes, server_id, server_version, session_access: 2 }`；`owner` 渠道的会话访问令牌密钥只返回一次 |
 | `DELETE /api/session-access/tokens/{token_id}` | — | `{ revoked: n }` |
 | `DELETE /api/session-access/tokens` | — | `{ revoked: n }` |
 
-会话访问令牌密钥以 `ksa_` 开头，公开 ID 以 `sat_` 开头；`GET /api/session-access` 会列出公开 ID，撤销时也使用该 ID。至少指定一个权限范围：`read`、`prompt` 或 `abort`。目标会话必须存在；不存在时返回 HTTP 200、码 `40401`。`client.name` 为 1–64 个可打印 ASCII 字符；`client.version` 最长 32 个字符。`ttl_seconds` 默认 3600，允许 60–86400 个整数秒。CLI 还接受表示这些秒数的裸整数，或带 `s`、`m`、`h` 的时长。字段校验失败时返回 HTTP 200、信封码 `40001`，并指出出错字段。兑换契约保持 `session_access: 1`，不返回 capabilities 数组。`[session_access].enabled` 为 `false` 时，`GET /api/session-access` 仍可查看状态；使用会话访问令牌的请求返回 HTTP 401、码 `40101`，令牌管理以及票据、presence 和 release 路由返回 HTTP 403、码 `40101`、`msg: "session_access_disabled"`。关闭该开关会撤销所有现有令牌。未鉴权的 `POST /api/session-access/exchange` 路由仍统一返回 HTTP 401、信封码 `40101` 和 `msg: "invalid_ticket"`。
+会话访问令牌密钥以 `ksa_` 开头，公开 ID 以 `sat_` 开头；`GET /api/session-access` 会列出公开 ID，撤销时也使用该 ID。至少指定一个权限范围：`read`、`prompt`、`abort`、`interact`、`control` 或 `llm`。目标会话必须存在；不存在时返回 HTTP 200、码 `40401`。`client.name` 为 1–64 个可打印 ASCII 字符；`client.version` 最长 32 个字符。`ttl_seconds` 默认 3600，允许 60–86400 个整数秒。CLI 还接受表示这些秒数的裸整数，或带 `s`、`m`、`h` 的时长。字段校验失败时返回 HTTP 200、信封码 `40001`，并指出出错字段。签发与兑换响应均返回 `session_access: 2` 以及实际授予的 `scopes` 数组。`[session_access].enabled` 为 `false` 时，`GET /api/session-access` 仍可查看状态；使用会话访问令牌的请求返回 HTTP 401、码 `40101`，令牌管理以及票据、presence 和 release 路由返回 HTTP 403、码 `40101`、`msg: "session_access_disabled"`。关闭该开关会撤销所有现有令牌。未鉴权的 `POST /api/session-access/exchange` 路由仍统一返回 HTTP 401、信封码 `40101` 和 `msg: "invalid_ticket"`。
 
 #### 终端交接 {#session-access-terminal-handoff}
 
@@ -109,13 +109,13 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `POST /api/session-access/tickets` | `{ session_id, challenge, holder_id }` | `{ ticket, expires_at }` |
 | `GET /api/session-access/holders/{holder_id}/presence` | — | `text/event-stream`：发送一个 `ready` 事件，之后保持静默 |
 | `POST /api/session-access/release` | `{ holder_id, session_id? }` | `{ revoked: n }`（删除的票据与令牌数） |
-| `POST /api/session-access/exchange` | `{ ticket, verifier, client: { name, version? } }`（无需 Authorization） | `{ token, expires_at, session_id, scopes, server_id, server_version, session_access: 1 }`；令牌密钥只返回一次 |
+| `POST /api/session-access/exchange` | `{ ticket, verifier, client: { name, version? } }`（无需 Authorization） | `{ token, expires_at, session_id, scopes, server_id, server_version, session_access: 2 }`；令牌密钥只返回一次 |
 
 先打开 `presence` 长连接，再请求票据。流返回 `text/event-stream`，先发送一个 `ready` 事件，之后保持静默；必须保持连接。`holder_id` 由 16–64 个 ASCII 字母、数字、`_` 或 `-` 组成，目标会话必须存在。没有该 holder 的打开 presence 流时，签发票据返回 HTTP 409、码 `40901`、`msg: "holder_not_present"`。
 
 生成 43–128 个字符的 base64url `verifier`（私密校验串），并计算 `challenge = base64url(SHA-256(verifier 的 base64url 文本的 ASCII 字节))`。签发请求携带 `challenge`；将 `verifier` 保持私密，不要放进终端输出，只有 `ticket` 会经过终端输出传递。票据由 32 个随机字节的 base64url 编码构成，有效 60 秒且只能兑换一次；服务端只保存摘要。每个 holder 最多保留 8 张未过期票据，超出时丢弃最早的一张。
 
-`exchange` 请求体只能含表中三项。请求一旦带上某张已知 `ticket`，服务端会先消耗它，再校验 `verifier`、请求体、调用方地址、`Origin`、`Sec-Fetch-Site` 和交接开关；失败后不要重试。所有兑换失败都返回相同的 HTTP 401、信封码 `40101` 和 `msg: "invalid_ticket"`。成功后令牌的 `channel` 为 `"terminal"`，固定拥有 `read`、`prompt`、`abort` 权限范围，有效期 1 小时且不能续期；presence 流仍打开时可重新申请票据。`client` 字段沿用上方的名称和版本限制，交接开关见 [`[session_access]`](../configuration/config-files.md#session-access)。
+`exchange` 请求体只能含表中三项。请求一旦带上某张已知 `ticket`，服务端会先消耗它，再校验 `verifier`、请求体、调用方地址、`Origin`、`Sec-Fetch-Site` 和交接开关；失败后不要重试。所有兑换失败都返回相同的 HTTP 401、信封码 `40101` 和 `msg: "invalid_ticket"`。成功后令牌的 `channel` 为 `"terminal"`，当 `[session_access].terminal_control` 为 `true`（默认值）时拥有 `read`、`prompt`、`abort`、`interact`、`control` 权限范围，为 `false` 时缩窄为 `read`、`prompt`、`abort`；有效期 1 小时且不能续期，presence 流仍打开时可重新申请票据。`client` 字段沿用上方的名称和版本限制，交接与终端控制开关见 [`[session_access]`](../configuration/config-files.md#session-access)。
 
 holder 的最后一条 presence 流关闭后，服务端开始 20 秒宽限期。在宽限期结束前用同一 `holder_id` 重新连接，可保留该 holder 的票据和令牌；否则两者都会撤销。`release` 带 `session_id` 时只撤销该 holder 在该会话的票据和令牌；省略时撤销该 holder 的全部票据和令牌。`revoked` 计数包括票据与令牌；被撤销令牌的 WebSocket 连接会关闭。票据、holder 和令牌只保存在内存中，服务重启后失效。
 
@@ -123,13 +123,18 @@ holder 的最后一条 presence 流关闭后，服务端开始 20 秒宽限期�
 
 | 权限范围 | 允许的操作 |
 | --- | --- |
-| `read` | `GET /api/sessions/{session_id}` 及其 `/status`、`/snapshot`、`/messages`、`/messages/{message_id}`、`/transcript`、`/transcript/ops`、`/transcript/detail`、`/transcript/details`、`/transcript/plan`、`/transcript/user-messages`、`/prompts`、`/prompts/{prompt_id}`、`/approvals`、`/questions`、`/children`、`/tasks`、`/tasks/{task_id}`、`/agent-tasks`、`/goal`、`/warnings`、`/profile`、`/runtime`、`/skills`、`/media/{file_id}` 和 `/media/{file_id}/preview` 读取；`GET /api/usage/sessions/{sessionId}/accounting`；`POST /api/klient/session-view/{session_id}/transcript/content`；以及按下文限制使用 WebSocket `/api/ws` |
-| `prompt` | `POST /api/sessions/{session_id}/prompts` 和 `/prompts:steer` 提交新内容；`POST /api/sessions/{session_id}/prompts/{prompt_id}:cancel` 只取消排队项；允许 `?receipt=true`；见 [提示词限制](#session-access-prompts) |
+| `read` | `GET /api/sessions/{session_id}` 及其 `/status`、`/snapshot`、`/events`、`/models`、`/messages`、`/messages/{message_id}`、`/transcript`、`/transcript/ops`、`/transcript/detail`、`/transcript/details`、`/transcript/plan`、`/transcript/user-messages`、`/prompts`、`/prompts/{prompt_id}`、`/approvals`、`/questions`、`/children`、`/tasks`、`/tasks/{task_id}`、`/agent-tasks`、`/goal`、`/warnings`、`/profile`、`/runtime`、`/skills`、`/media/{file_id}` 和 `/media/{file_id}/preview` 读取；`GET /api/sessions/{session_id}/agents/{agent_id}/model-switches` 与 `/model-switches/{operation_id}`；`GET /api/usage/sessions/{sessionId}/accounting`；`GET /api/events`；`POST /api/klient/session-view/{session_id}/transcript/content`；以及按下文限制使用 WebSocket `/api/ws` |
+| `prompt` | `POST /api/sessions/{session_id}/prompts` 和 `/prompts:steer` 提交新内容；`POST /api/sessions/{session_id}/prompts/{prompt_id}:cancel` 只取消排队项；允许 `?receipt=true`；`POST /api/sessions/{session_id}/interactions/{interaction_id}:respond`；`POST /api/llm:complete`；见 [提示词限制](#session-access-prompts) |
 | `abort` | `POST /api/sessions/{session_id}:abort`（可在请求体或查询参数传可选 `agent_id` 指定该会话内的子 Agent 或分支） |
+| `interact` | `POST /api/sessions/{session_id}/approvals/{approval_id}`（仅限非 SSH 审批）；`POST /api/sessions/{session_id}/questions/{question_id}`（作答）与 `/questions/{question_id}:dismiss`（忽略）；`POST /api/sessions/{session_id}/interactions/{interaction_id}:respond` |
+| `control` | `POST /api/sessions/{session_id}/profile`（严格限定请求体仅含 `agent_config`，且其键仅为 `model`、`thinking`、`thinking_effort`、`permission_mode`、`plan_mode` 的非空子集）；`GET` 与 `POST /api/sessions/{session_id}/agents/{agent_id}/model-switches` 以及 `GET …/model-switches/{operation_id}`（仅限绑定会话内的 Agent 且请求体走严格白名单）；`POST /api/sessions/{session_id}:compact`（仅限 `instruction`、`strategy`）与 `POST /api/sessions/{session_id}:undo`（仅限 `count`、`page_size`） |
+| `llm` | `POST /api/llm:complete` |
+
+`GET /api/sessions/{session_id}/models` 支持冷会话安全读取（不会恢复冷会话，也不会创建 `main`），返回 `{ executor_id, current: { model, model_name, thinking, thinking_effort, permission_mode, plan_mode }, models: [{ id, name, provider_id?, capabilities, supports_thinking, thinking_efforts, context_length? }], quota_summary: { provider_id, status, windows: [{ id, label, remaining_percent, reset_at }] } | null }`，绝不返回 API 密钥、OAuth 令牌、请求头、原始账户标签或供应商 `base_url`。
 
 请求路径中的会话 ID 必须与会话访问令牌绑定的会话一致。使用会话访问令牌读取媒体时，只接受规范的 `f_*` 文件 ID 或已校验的 `blobref:<agentId>:<sha256>` ID，路径中的冒号可保留字面形式或单次编码为 `%3A`。它们不会解析本机文件路径，`raw:` 和 `inline-content:` ID 也不在令牌准入范围内。本契约没有 agent-roster GET。大字段转录读取使用 Klient 路由中的 `session_id` 绑定 `contentRef`；该引用不能跨会话读取。在 `/api/ws` 上，令牌只能发送 `client_hello`、`subscribe`、`subscribe_v2`、`unsubscribe`、`unsubscribe_v2` 和 `ping` / `pong` 帧；订阅只覆盖绑定的会话。即时事件仅包括该会话的 `event.session.work_changed`、`event.session.history_rewritten`、`session.meta.updated`、`event.approval.*` 和 `event.question.*`；不会推送 plugin topic 或 room 变更。会话访问令牌连接不能用另一个令牌重新鉴权。
 
-未列出的操作一律拒绝，即使路径看起来属于单个会话。文件系统路由、文档预览、媒体播放授权和终端仍不可用。这也包括批量会话路由、除新内容 `:steer` 和排队专用 `:cancel` 外的提示词动作、消息动作、其他会话动作、审批和提问答复、`/api/klient/call`、`/api/klient/events` 及所有非会话路由。令牌请求也拒绝 `HEAD`、编码后的路径分隔符或空字节（`%2F`、`%5C`、`%00`）、格式错误或双重百分号编码、重复斜线、`.` 或 `..` 路径段，以及末尾带斜线的路径。撤销会关闭该令牌的 WebSocket 连接并中止在途 REST 请求；令牌也会在过期、会话删除、关闭 `[session_access].enabled` 或服务关闭 / 重启时撤销。
+未列出的操作一律拒绝，即使路径看起来属于单个会话。文件系统路由、文档预览、媒体播放授权、SSH 主机信任审批（`POST /api/sessions/{session_id}/ssh/approvals/{approval_id}`）和终端仍不可用。这也包括批量会话路由、除新内容 `:steer` 和排队专用 `:cancel` 外的提示词动作、消息动作、除 `:abort`、`:compact`、`:undo` 外的会话动作（如 `:fork`、`:archive`、`:restore`、`:delete-archived`、`:btw`、`:branch`）、全局 `/api/models`、`/api/providers`、`/api/config`、`/api/klient/call`、`/api/klient/events` 及所有非会话路由。对 `POST …/profile` 传入禁止字段（如 `title`、`private`、`metadata`、`delivery`、`agent_config.profile`、`agent_config.executor` 或 `agent_config.additional_dirs`）会返回 HTTP 200、信封码 `40001` 并点名被拒字段。令牌请求也拒绝 `HEAD`、编码后的路径分隔符或空字节（`%2F`、`%5C`、`%00`）、格式错误或双重百分号编码、重复斜线、`.` 或 `..` 路径段，以及末尾带斜线的路径。撤销会关闭该令牌的 WebSocket 连接并中止在途 REST 请求；令牌也会在过期、会话删除、关闭 `[session_access].enabled`、关闭 `[session_access].terminal_control`（针对持有 `interact` 或 `control` 的终端令牌）或服务关闭 / 重启时撤销。
 
 ### 服务与元信息
 
