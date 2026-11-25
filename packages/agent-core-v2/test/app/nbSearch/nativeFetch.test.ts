@@ -211,8 +211,15 @@ describe('native FetchURL donor boundaries', () => {
     expect(compact.output).not.toContain('jina.reader:');
   });
 
-  it('releases sync FetchURL immediately when steerSignal aborts', async () => {
-    const fetchSpy = vi.spyOn(ix.get(INbSearchService), 'fetch').mockImplementation((_input, options) => new Promise((_resolve, reject) => {
+  it('completes sync FetchURL on steerSignal by default and releases early only when skipUnstartedToolsOnInput is true', async () => {
+    let resolveDefault!: (value: Awaited<ReturnType<INbSearchService['fetch']>>) => void;
+    let defaultSignalAborted = false;
+    const fetchSpy = vi.spyOn(ix.get(INbSearchService), 'fetch').mockImplementationOnce((_input, options) => new Promise((resolve) => {
+      resolveDefault = resolve;
+      options?.signal?.addEventListener('abort', () => {
+        defaultSignalAborted = true;
+      }, { once: true });
+    })).mockImplementationOnce((_input, options) => new Promise((_resolve, reject) => {
       options?.signal?.addEventListener('abort', () => {
         const error = new Error('steered');
         error.name = 'AbortError';
@@ -220,6 +227,40 @@ describe('native FetchURL donor boundaries', () => {
       }, { once: true });
     }));
     try {
+      const defaultSteer = new AbortController();
+      const defaultExec = await ix.get(IFetchURLTool).resolveExecution({ url: 'https://example.test/finish' });
+      if (defaultExec.isError) throw new Error(String(defaultExec.output));
+      const defaultPending = defaultExec.execute({
+        turnId: 0,
+        toolCallId: 'fetch-default-steer',
+        signal: new AbortController().signal,
+        steerSignal: defaultSteer.signal,
+      });
+      defaultSteer.abort(new Error('send now'));
+      await Promise.resolve();
+      expect(defaultSignalAborted).toBe(false);
+      resolveDefault({
+        schema: 'nb-search.fetch-envelope@1',
+        action: 'run',
+        execution: 'sync',
+        status: 'succeeded',
+        documents: [{
+          title: 'Fetched Page',
+          url: 'https://example.test/finish',
+          content: 'full fetched body',
+          content_type: 'text/markdown',
+          representation: 'markdown',
+          truncated: false,
+          warnings: [],
+        }],
+        hints: [],
+        lane_outcomes: [],
+      } as unknown as Awaited<ReturnType<INbSearchService['fetch']>>);
+      expect(await defaultPending).toMatchObject({
+        isError: false,
+        output: expect.stringContaining('full fetched body'),
+      });
+
       const steer = new AbortController();
       const execution = await ix.get(IFetchURLTool).resolveExecution({ url: 'https://example.test/slow' });
       if (execution.isError) throw new Error(String(execution.output));
@@ -228,6 +269,7 @@ describe('native FetchURL donor boundaries', () => {
         toolCallId: 'fetch-steer',
         signal: new AbortController().signal,
         steerSignal: steer.signal,
+        skipUnstartedToolsOnInput: true,
       });
       steer.abort(new Error('send now'));
       expect(await pending).toMatchObject({

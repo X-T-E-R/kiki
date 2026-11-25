@@ -49,9 +49,9 @@ export class WebSearchTool implements IWebSearchTool {
 
   private async execution(
     args: SearchInput,
-    { toolCallId, signal, steerSignal }: ExecutableToolContext,
+    { toolCallId, signal, steerSignal, skipUnstartedToolsOnInput }: ExecutableToolContext,
   ): Promise<ExecutableToolResult> {
-    const steer = args.action === 'run' && args.execution !== 'async' ? steerSignal : undefined;
+    const steer = args.action === 'run' && args.execution !== 'async' && skipUnstartedToolsOnInput === true ? steerSignal : undefined;
     if (!signal.aborted && steer?.aborted === true) {
       return {
         isError: false,

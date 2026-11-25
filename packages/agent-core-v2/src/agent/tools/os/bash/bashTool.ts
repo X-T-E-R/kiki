@@ -9,6 +9,7 @@ import {
   resolveForegroundCallerPolicy,
 } from '#/agent/task/foregroundPolicy';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { LOOP_CONTROL_SECTION, type LoopControl } from '#/agent/loop/configSection';
 import { resolveAgentTaskConfig } from '#/agent/task/configSection';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
@@ -178,6 +179,10 @@ export class BashTool implements IBashTool {
     return resolveAgentTaskConfig(this.config)?.bashAutoBackgroundOnTimeout ?? true;
   }
 
+  private skipUnstartedToolsOnInputEnabled(): boolean {
+    return this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.skipUnstartedToolsOnInput === true;
+  }
+
   private detachTimeoutMs(): number {
     const configuredS = resolveAgentTaskConfig(this.config)?.bashTaskTimeoutS;
     if (configuredS === undefined) return DEFAULT_BACKGROUND_TIMEOUT_S * MS_PER_SECOND;
@@ -228,8 +233,8 @@ export class BashTool implements IBashTool {
       sessionApprovalRule: JSON.stringify(['Bash', shellContext.runtimeId, cwd, args.command]),
       shellContext,
       matchesRule: (ruleArgs, mode = 'all') => matchesBashRuleSubject(ruleArgs, args.command, mode),
-      execute: async ({ signal, steerSignal, onUpdate, onForegroundTaskStart, callerKind, foregroundStartedAt }) => {
-        const result = await this.execution(input, signal, steerSignal, onUpdate, onForegroundTaskStart, callerKind, foregroundStartedAt);
+      execute: async ({ signal, steerSignal, skipUnstartedToolsOnInput, onUpdate, onForegroundTaskStart, callerKind, foregroundStartedAt }) => {
+        const result = await this.execution(input, signal, steerSignal, onUpdate, onForegroundTaskStart, callerKind, foregroundStartedAt, skipUnstartedToolsOnInput);
         const enabled = resolveAgentTaskConfig(this.config)?.bashFileToolHints === true;
         const hint = target.host === undefined && !this.runtime.inspect().identity.runtimeId.startsWith('ssh:')
           ? bashFileToolHint(args.command, this.ctx, enabled) : undefined;
@@ -279,6 +284,7 @@ export class BashTool implements IBashTool {
     onForegroundTaskStart?: (taskId: string, options?: { readonly steerDetachable?: boolean }) => void,
     callerKind?: 'model' | 'user_shell',
     foregroundStartedAt?: number,
+    skipUnstartedToolsOnInput?: boolean,
   ): Promise<ExecutableToolResult> {
     const callStartedAt = foregroundStartedAt ?? Date.now();
     const validationError = this.validateRunRequest(args, signal);
@@ -286,7 +292,8 @@ export class BashTool implements IBashTool {
 
     const startsInBackground = args.run_in_background === true;
     const steer = !startsInBackground && this.allowBackground() ? steerSignal : undefined;
-    if (!startsInBackground && !signal.aborted && steer?.aborted === true) {
+    const skipUnstartedOnInput = skipUnstartedToolsOnInput ?? this.skipUnstartedToolsOnInputEnabled();
+    if (skipUnstartedOnInput && !startsInBackground && !signal.aborted && steer?.aborted === true) {
       return {
         isError: false,
         output: 'New input arrived before this command started; it was not started. Read the new input before deciding whether to run it.',
@@ -322,30 +329,38 @@ export class BashTool implements IBashTool {
       const slotSignal = steer === undefined ? signal : AbortSignal.any([signal, steer]);
       const acquired = await acquireLocalForegroundBashSlot(slotSignal);
       if (acquired === undefined) {
-        lease.dispose();
-        if (!signal.aborted && steer?.aborted === true) {
+        if (signal.aborted) {
+          lease.dispose();
+          return { isError: true, output: 'Aborted before command started' };
+        }
+        if (skipUnstartedOnInput && steer?.aborted === true) {
+          lease.dispose();
           return {
             isError: false,
             output: 'New input arrived before this command started; it was not started. Read the new input before deciding whether to run it.',
           };
         }
-        return { isError: true, output: 'Aborted before command started' };
+      } else {
+        releaseBashSlot = acquired;
+        if (signal.aborted) {
+          releaseBashSlot();
+          lease.dispose();
+          return { isError: true, output: 'Aborted before command started' };
+        }
+        if (skipUnstartedOnInput && steer?.aborted === true) {
+          releaseBashSlot();
+          lease.dispose();
+          return {
+            isError: false,
+            output: 'New input arrived before this command started; it was not started. Read the new input before deciding whether to run it.',
+          };
+        }
+        if (steer?.aborted === true) {
+          releaseBashSlot();
+          releaseBashSlot = () => {};
+        }
       }
-      releaseBashSlot = acquired;
-      if (signal.aborted) {
-        releaseBashSlot();
-        lease.dispose();
-        return { isError: true, output: 'Aborted before command started' };
-      }
-      if (steer?.aborted === true) {
-        releaseBashSlot();
-        lease.dispose();
-        return {
-          isError: false,
-          output: 'New input arrived before this command started; it was not started. Read the new input before deciding whether to run it.',
-        };
-      }
-    } else if (!startsInBackground && !signal.aborted && steer?.aborted === true) {
+    } else if (skipUnstartedOnInput && !startsInBackground && !signal.aborted && steer?.aborted === true) {
       lease.dispose();
       return {
         isError: false,

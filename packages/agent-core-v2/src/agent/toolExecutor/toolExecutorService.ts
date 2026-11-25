@@ -332,6 +332,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         continue;
       }
       if (
+        options.skipUnstartedToolsOnInput === true &&
         !options.signal.aborted &&
         options.steerSignal?.aborted === true &&
         options.executionWaits?.[call.toolCall.id] === undefined
@@ -495,9 +496,10 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       }, undefined, options, signal, call.tool.foregroundPolicy, foregroundStartedAt) } };
     }
 
-    const admissionSignal = options.steerSignal === undefined
-      ? options.signal
-      : AbortSignal.any([options.signal, options.steerSignal]);
+    const skipUnstartedOnInput = options.skipUnstartedToolsOnInput === true;
+    const admissionSignal = skipUnstartedOnInput && options.steerSignal !== undefined
+      ? AbortSignal.any([options.signal, options.steerSignal])
+      : options.signal;
 
     const extensions = this.extensions?.current;
     let validation = validateExecutableToolArgs(call.tool, call.args);
@@ -513,11 +515,11 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         }), admissionSignal);
       } catch (error) {
         if (options.signal.aborted) return settleError(call.args, abortedToolOutput(call.toolName, options.signal), 'aborted');
-        if (options.steerSignal?.aborted === true) return this.prepareSteerSkippedToolCall(call, options);
+        if (skipUnstartedOnInput && options.steerSignal?.aborted === true) return this.prepareSteerSkippedToolCall(call, options);
         throw error;
       }
       if (options.signal.aborted) return settleError(call.args, abortedToolOutput(call.toolName, options.signal), 'aborted');
-      if (options.steerSignal?.aborted === true) return this.prepareSteerSkippedToolCall(call, options);
+      if (skipUnstartedOnInput && options.steerSignal?.aborted === true) return this.prepareSteerSkippedToolCall(call, options);
     }
     if (proposal?.veto !== undefined) return settleSynthetic(call.args, proposal.veto, 'vetoed');
     if (proposal !== undefined) validation = validateExecutableToolArgs(call.tool, proposal.args);
@@ -550,7 +552,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       execution = await awaitToolPreparation(() => call.tool.resolveExecution(call.args), admissionSignal);
     } catch (error) {
       if (options.signal.aborted) return settleError(call.args, abortedToolOutput(call.toolName, options.signal), 'aborted');
-      if (options.steerSignal?.aborted === true) return this.prepareSteerSkippedToolCall(call, options);
+      if (skipUnstartedOnInput && options.steerSignal?.aborted === true) return this.prepareSteerSkippedToolCall(call, options);
       const output =
         error instanceof PathSecurityError
           ? error.message
@@ -571,7 +573,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       );
     }
 
-    if (isSignalAborted(options.steerSignal)) {
+    if (skipUnstartedOnInput && isSignalAborted(options.steerSignal)) {
       return this.prepareSteerSkippedToolCall(call, options);
     }
 
@@ -649,7 +651,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       if (options.signal.aborted) {
         return settleError(call.args, abortedToolOutput(call.toolName, options.signal), 'aborted', displayFields);
       }
-      if (isSignalAborted(options.steerSignal)) {
+      if (skipUnstartedOnInput && isSignalAborted(options.steerSignal)) {
         return this.prepareSteerSkippedToolCall(call, options);
       }
       throw error;
@@ -786,7 +788,9 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       };
     }
 
+    const skipUnstartedOnInput = options.skipUnstartedToolsOnInput === true;
     if (
+      skipUnstartedOnInput &&
       options.steerSignal?.aborted === true &&
       options.executionWaits?.[call.toolCall.id] === undefined
     ) {
@@ -824,7 +828,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       steerSignal.addEventListener('abort', detachRegisteredTaskOnSteer, { once: true });
     }
     const wrapperPreBodyController =
-      steerSignal !== undefined && options.executionWaits?.[call.toolCall.id] === undefined
+      skipUnstartedOnInput && steerSignal !== undefined && options.executionWaits?.[call.toolCall.id] === undefined
         ? new AbortController()
         : undefined;
     const abortWrapperOnSignal = (): void => {
@@ -851,6 +855,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         executionPauseSignal: options.executionPauseSignal,
         executionWait: options.executionWaits?.[call.toolCall.id],
         steerSignal,
+        skipUnstartedToolsOnInput: options.skipUnstartedToolsOnInput,
         foregroundStartedAt,
         onUpdate: (update) => {
           if (signal.aborted) return;
@@ -867,6 +872,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       const terminal = (executionSignal: AbortSignal): Promise<ExecutableToolResult> => {
         executionSignal.throwIfAborted();
         if (
+          skipUnstartedOnInput &&
           steerSignal?.aborted === true &&
           options.executionWaits?.[call.toolCall.id] === undefined
         ) {
@@ -901,6 +907,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       }
     } catch (error) {
       if (
+        skipUnstartedOnInput &&
         !bodyStarted &&
         !signal.aborted &&
         steerSignal?.aborted === true &&

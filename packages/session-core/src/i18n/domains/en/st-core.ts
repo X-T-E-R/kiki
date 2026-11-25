@@ -880,6 +880,8 @@ export const stCoreEn = {
   'st.loopLimits.maxAttemptsHelp': 'Total tries for a failing step, including the first. Edited on the Retry card below.',
   'st.loopLimits.maxSteps': 'Steps per turn',
   'st.loopLimits.maxStepsHelp': 'Stop a turn after this many model steps. Empty means no limit.',
+  'st.loopLimits.skipUnstartedTools': 'Skip unstarted tools on new input',
+  'st.loopLimits.skipUnstartedToolsHelp': 'When off, finish all tool calls in the current step before handling new input.',
   'st.loopLimits.subagentStrategy': 'Subagent context when full',
   'st.loopLimits.subagentStrategyHelp': 'How a subagent continues once its context fills up. Default: summarize.',
   'st.loopLimits.title': 'Turn limits',

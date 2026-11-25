@@ -79,14 +79,14 @@ export class FetchURLTool implements IFetchURLTool {
 
   private async execution(
     args: FetchInput,
-    { toolCallId, signal, steerSignal }: ExecutableToolContext,
+    { toolCallId, signal, steerSignal, skipUnstartedToolsOnInput }: ExecutableToolContext,
     admittedFile?: string,
     identity?: import('#/app/nbSearch/nbSearch').FetchFileIdentity,
   ): Promise<ExecutableToolResult> {
     const isSyncRun = 'action' in args
       ? args.action === 'run' && args.execution !== 'async'
       : args.execution !== 'async';
-    const steer = isSyncRun ? steerSignal : undefined;
+    const steer = isSyncRun && skipUnstartedToolsOnInput === true ? steerSignal : undefined;
     if (!signal.aborted && steer?.aborted === true) {
       return {
         isError: false,

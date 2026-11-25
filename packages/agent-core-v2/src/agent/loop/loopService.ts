@@ -1362,6 +1362,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     return this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.zeroOutputContinuation === true;
   }
 
+  private skipUnstartedToolsOnInputEnabled(): boolean {
+    return this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.skipUnstartedToolsOnInput === true;
+  }
+
   private handleLoopCancellation(
     runtime: LoopRuntime,
     error: unknown,
@@ -1929,7 +1933,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         for await (const toolResult of this.toolExecutor.execute(batch.tools.map(tool => tool.call), {
           signal, taskOwnerSignal: runtime.turnSignal, executionPauseSignal: this.executionControl.pauseSignal(),
           executionWaits: Object.fromEntries(batch.tools.flatMap(tool => tool.wait === undefined ? [] : [[tool.call.id, tool.wait]])),
-          steerSignal, turnId, step: currentStep, trace,
+          steerSignal, skipUnstartedToolsOnInput: this.skipUnstartedToolsOnInputEnabled(), turnId, step: currentStep, trace,
           onToolBodyStart: () => { runtime.deliveryPhase = 'tools_already_executed'; },
           onToolCall: ({ toolCallId, name, args }) => {
             const callUuid = randomUUID();

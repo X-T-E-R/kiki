@@ -2099,7 +2099,74 @@ describe('truncation pipeline', () => {
     expect(result?.truncated).toBeUndefined();
   });
 
-  it('skips queued and unprepared tools in a multi-tool batch once steerSignal aborts', async () => {
+  it('executes the full multi-tool batch on steerSignal by default and only skips unstarted tools when skipUnstartedToolsOnInput is true', async () => {
+    const defaultSteer = new AbortController();
+    const d1Started = deferred();
+    const d1Release = deferred();
+    const d1 = new TestTool('d_first', {
+      accesses: ToolAccesses.all(),
+      execute: async () => {
+        d1Started.resolve();
+        await d1Release.promise;
+        return { output: 'd_first done' };
+      },
+    });
+    const d2 = new TestTool('d_second', { accesses: ToolAccesses.all(), result: { output: 'd_second done' } });
+    const d3 = new TestTool('d_third', { accesses: ToolAccesses.all(), result: { output: 'd_third done' } });
+    registry.register(d1);
+    registry.register(d2);
+    registry.register(d3);
+
+    const defaultResults: ToolResult[] = [];
+    const defaultRunning = (async () => {
+      for await (const item of executor.execute(
+        [toolCall('dc1', 'd_first', {}), toolCall('dc2', 'd_second', {}), toolCall('dc3', 'd_third', {})],
+        { turnId: 0, signal: new AbortController().signal, steerSignal: defaultSteer.signal },
+      )) {
+        defaultResults.push(item.result);
+      }
+    })();
+
+    await d1Started.promise;
+    defaultSteer.abort(new Error('send now'));
+    d1Release.resolve();
+    await defaultRunning;
+
+    expect(d1.calls).toHaveLength(1);
+    expect(d2.calls).toHaveLength(1);
+    expect(d3.calls).toHaveLength(1);
+    expect(defaultResults.map((r) => r.output)).toEqual(['d_first done', 'd_second done', 'd_third done']);
+
+    const hardCancel = new AbortController();
+    const h1Started = deferred();
+    const h1 = new TestTool('h_first', {
+      accesses: ToolAccesses.all(),
+      execute: async (ctx) => {
+        h1Started.resolve();
+        await new Promise<void>((resolve) => {
+          ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        return { isError: true, output: 'aborted' };
+      },
+    });
+    const h2 = new TestTool('h_second', { accesses: ToolAccesses.all() });
+    registry.register(h1);
+    registry.register(h2);
+    const hardResults: ToolResult[] = [];
+    const hardRunning = (async () => {
+      for await (const item of executor.execute(
+        [toolCall('hc1', 'h_first', {}), toolCall('hc2', 'h_second', {})],
+        { turnId: 0, signal: hardCancel.signal, steerSignal: defaultSteer.signal },
+      )) {
+        hardResults.push(item.result);
+      }
+    })();
+    await h1Started.promise;
+    hardCancel.abort(new Error('user stop'));
+    await hardRunning;
+    expect(h2.calls).toHaveLength(0);
+    expect(hardResults.every((r) => r.isError === true)).toBe(true);
+
     const steer = new AbortController();
     const t1Started = deferred();
     const t1Release = deferred();
@@ -2123,7 +2190,7 @@ describe('truncation pipeline', () => {
     const running = (async () => {
       for await (const item of executor.execute(
         [toolCall('c1', 'first', {}), toolCall('c2', 'second', {})],
-        { turnId: 0, signal: new AbortController().signal, steerSignal: steer.signal },
+        { turnId: 0, signal: new AbortController().signal, steerSignal: steer.signal, skipUnstartedToolsOnInput: true },
       )) {
         results.push(item.result);
       }
@@ -2144,7 +2211,7 @@ describe('truncation pipeline', () => {
     const preSkipped: ToolResult[] = [];
     for await (const item of executor.execute(
       [toolCall('c3', 'second', {})],
-      { turnId: 0, signal: new AbortController().signal, steerSignal: steer.signal },
+      { turnId: 0, signal: new AbortController().signal, steerSignal: steer.signal, skipUnstartedToolsOnInput: true },
     )) {
       preSkipped.push(item.result);
     }
@@ -2154,7 +2221,41 @@ describe('truncation pipeline', () => {
     expect(preSkipped[0]?.output).toContain('Tool skipped because new input arrived before it started');
   });
 
-  it('cancels unstarted tool admission waiting in beforeExecute when steerSignal aborts', async () => {
+  it('cancels unstarted tool admission waiting in beforeExecute when steerSignal aborts only if skipUnstartedToolsOnInput is true', async () => {
+    const defaultSteer = new AbortController();
+    const defaultEntered = deferred();
+    const defaultRelease = deferred();
+    let defaultAdmissionAborted = false;
+    const defaultSub = executor.onBeforeExecuteTool(async (event) => {
+      defaultEntered.resolve();
+      event.signal.addEventListener('abort', () => {
+        defaultAdmissionAborted = true;
+      }, { once: true });
+      await defaultRelease.promise;
+    });
+    const defaultGated = new TestTool('gated_default', { accesses: ToolAccesses.all(), result: { output: 'ran gated' } });
+    registry.register(defaultGated);
+
+    const defaultResults: ToolResult[] = [];
+    const defaultRun = (async () => {
+      for await (const item of executor.execute(
+        [toolCall('c_gate_default', 'gated_default', {})],
+        { turnId: 0, signal: new AbortController().signal, steerSignal: defaultSteer.signal },
+      )) {
+        defaultResults.push(item.result);
+      }
+    })();
+
+    await defaultEntered.promise;
+    defaultSteer.abort(new Error('send now during approval'));
+    await Promise.resolve();
+    expect(defaultAdmissionAborted).toBe(false);
+    defaultRelease.resolve();
+    await defaultRun;
+    defaultSub.dispose();
+    expect(defaultGated.calls).toHaveLength(1);
+    expect(defaultResults[0]?.output).toBe('ran gated');
+
     const steer = new AbortController();
     const enteredAdmission = deferred();
     let observedAdmissionAborted = false;
@@ -2174,7 +2275,7 @@ describe('truncation pipeline', () => {
     const running = (async () => {
       for await (const item of executor.execute(
         [toolCall('c_gate', 'gated', {})],
-        { turnId: 0, signal: new AbortController().signal, steerSignal: steer.signal },
+        { turnId: 0, signal: new AbortController().signal, steerSignal: steer.signal, skipUnstartedToolsOnInput: true },
       )) {
         results.push(item.result);
       }
@@ -2251,6 +2352,7 @@ describe('truncation pipeline', () => {
         turnId: 0,
         signal: new AbortController().signal,
         steerSignal: preSteer.signal,
+        skipUnstartedToolsOnInput: true,
       })) {
         preResults.push(item.result);
       }
@@ -2281,6 +2383,7 @@ describe('truncation pipeline', () => {
         turnId: 1,
         signal: new AbortController().signal,
         steerSignal: wrapSteer.signal,
+        skipUnstartedToolsOnInput: true,
         onToolBodyStart: bodyStarted,
       })) {
         wrapResults.push(item.result);

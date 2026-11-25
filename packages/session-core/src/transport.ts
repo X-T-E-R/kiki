@@ -261,6 +261,7 @@ export interface RuntimeConfigProjection {
     readonly maxStepsPerTurn?: number;
     readonly maxAttemptsPerStep?: number;
     readonly subagentContextStrategy?: 'summarize' | 'auto' | 'fresh';
+    readonly skipUnstartedToolsOnInput?: boolean;
   };
   readonly retry?: {
     readonly maxAttempts?: number;

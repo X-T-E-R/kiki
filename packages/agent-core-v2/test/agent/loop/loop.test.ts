@@ -1,4 +1,5 @@
 import { getMaxListeners } from 'node:events';
+import { PassThrough, Readable } from 'node:stream';
 
 import { type ToolCall } from '#/kosong/contract/message';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
@@ -35,6 +36,10 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { TaskNotificationStepRequest } from '#/agent/task/taskService';
 import type { ExecutableTool } from '#/tool/toolContract';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IBashTool } from '#/agent/tools/os/bash/bash';
+import { WebSearchTool } from '#/agent/tools/web-search/webSearchTool';
+import type { INbSearchService } from '#/app/nbSearch/nbSearch';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IEventBus } from '#/app/event/eventBus';
@@ -3017,11 +3022,14 @@ describe('aborted step tool execution', () => {
     }
   });
 
-  it('keeps steerSignal aborted on the next step when a second boundary request remains queued for the active turn', async () => {
+  it.each([false, true])('keeps steerSignal aborted on the next step when a second boundary request remains queued (skipUnstartedToolsOnInput=%s)', async (skipUnstartedToolsOnInput) => {
     const step1Started = deferred();
     const step1Release = deferred();
     const seenSteerAborted: boolean[] = [];
-    const ctx = createTestAgent(permissionModeServices('yolo'));
+    const ctx = createTestAgent(
+      { initialConfig: { loopControl: { skipUnstartedToolsOnInput } } },
+      permissionModeServices('yolo'),
+    );
     try {
       const probe: ExecutableTool = {
         name: 'ProbeSteer',
@@ -3057,9 +3065,247 @@ describe('aborted step tool execution', () => {
       await Promise.all([b1, b2]);
       await expect(turn.result).resolves.toMatchObject({ type: 'completed' });
       expect(order).toEqual(['first', 'second']);
-      expect(seenSteerAborted).toEqual([true]);
       const call2Result = ctx.project().find((msg) => msg.role === 'tool' && msg.toolCallId === 'call-2');
-      expect(JSON.stringify(call2Result?.content ?? '')).toContain('Tool skipped because new input arrived before it started');
+      if (skipUnstartedToolsOnInput) {
+        expect(seenSteerAborted).toEqual([true]);
+        expect(JSON.stringify(call2Result?.content ?? '')).toContain('Tool skipped because new input arrived before it started');
+      } else {
+        expect(seenSteerAborted).toEqual([true, true]);
+        expect(JSON.stringify(call2Result?.content ?? '')).toContain('ok');
+        expect(JSON.stringify(call2Result?.content ?? '')).not.toContain('Tool skipped because new input arrived before it started');
+      }
+    } finally {
+      await ctx.dispose();
+    }
+  });
+
+  it.each([undefined, false, true] as const)('finishes mid-step multi-tool batches before delivering steer unless skipUnstartedToolsOnInput is true (%s)', async (skipUnstartedToolsOnInput) => {
+    const call1Started = deferred();
+    const call1Release = deferred();
+    const executed: string[] = [];
+    const ctx = createTestAgent(
+      skipUnstartedToolsOnInput === undefined
+        ? permissionModeServices('yolo')
+        : { initialConfig: { loopControl: { skipUnstartedToolsOnInput } } },
+      ...(skipUnstartedToolsOnInput === undefined ? [] : [permissionModeServices('yolo')]),
+    );
+    try {
+      const serialTool: ExecutableTool = {
+        name: 'SerialStepTool',
+        foregroundPolicy: 'instant',
+        description: 'Runs serially within a batch.',
+        parameters: { type: 'object', properties: { label: { type: 'string' } }, additionalProperties: false },
+        resolveExecution: (args) => ({
+          approvalRule: 'SerialStepTool',
+          execute: async () => {
+            const label = String((args as { label?: string }).label ?? '');
+            executed.push(label);
+            if (label === 'first') {
+              call1Started.resolve();
+              await call1Release.promise;
+            }
+            return { output: `ran:${label}` };
+          },
+        }),
+      };
+      ctx.get(IAgentProfileService).update({ activeToolNames: ['SerialStepTool'] });
+      ctx.get(IAgentToolRegistryService).register(serialTool);
+      ctx.mockNextResponse(
+        { type: 'function', id: 'batch-1', name: 'SerialStepTool', arguments: '{"label":"first"}' },
+        { type: 'function', id: 'batch-2', name: 'SerialStepTool', arguments: '{"label":"second"}' },
+      );
+      ctx.mockNextResponse({ type: 'text', text: 'handled steer' });
+      const loopService = ctx.get(IAgentLoopService);
+      const { turn } = await loopService.enqueue(nextTurnMessage('start batch')).assigned;
+
+      await call1Started.promise;
+      loopService.enqueue(
+        new MessageStepRequest(
+          {
+            role: 'user',
+            content: [{ type: 'text', text: 'mid-step steer' }],
+            toolCalls: [],
+            origin: { kind: 'user' },
+          },
+          { kind: 'steer', admission: 'activeTurnOnly', mergeable: true },
+        ),
+      );
+      call1Release.resolve();
+
+      await expect(turn.result).resolves.toMatchObject({ type: 'completed' });
+      const messages = ctx.project();
+      const batch2Result = messages.find((msg) => msg.role === 'tool' && msg.toolCallId === 'batch-2');
+      const steerIndex = messages.findIndex(
+        (msg) => msg.role === 'user' && msg.content.some((part) => part.type === 'text' && part.text === 'mid-step steer'),
+      );
+      const batch2Index = messages.findIndex((msg) => msg.role === 'tool' && msg.toolCallId === 'batch-2');
+      expect(steerIndex).toBeGreaterThan(batch2Index);
+      if (skipUnstartedToolsOnInput === true) {
+        expect(executed).toEqual(['first']);
+        expect(JSON.stringify(batch2Result?.content ?? '')).toContain('Tool skipped because new input arrived before it started');
+      } else {
+        expect(executed).toEqual(['first', 'second']);
+        expect(JSON.stringify(batch2Result?.content ?? '')).toContain('ran:second');
+        expect(JSON.stringify(batch2Result?.content ?? '')).not.toContain('Tool skipped because new input arrived before it started');
+      }
+    } finally {
+      await ctx.dispose();
+    }
+  });
+
+  it.each([false, true])('handles [T1, WebSearch] mid-search steer according to skipUnstartedToolsOnInput (%s)', async (skipUnstartedToolsOnInput) => {
+    const searchStarted = deferred();
+    const searchRelease = deferred();
+    let searchAbortedBeforeFinish = false;
+    let searchFinished = false;
+    const nbSearch = {
+      toolDescription: () => '',
+      search: vi.fn((_input, options?: { signal?: AbortSignal }) => new Promise((resolve, reject) => {
+        searchStarted.resolve();
+        const onAbort = () => {
+          if (searchFinished) return;
+          searchAbortedBeforeFinish = true;
+          const err = new Error('steered');
+          err.name = 'AbortError';
+          reject(err);
+        };
+        options?.signal?.addEventListener('abort', onAbort, { once: true });
+        void searchRelease.promise.then(() => {
+          searchFinished = true;
+          options?.signal?.removeEventListener('abort', onAbort);
+          resolve({
+            schema: 'nb-search.search-envelope@1',
+            action: 'run',
+            execution: 'sync',
+            status: 'succeeded',
+            output: {
+              schema: 'nb-search.results@1',
+              channel: 'results',
+              results: [{ title: 'Steer Safe Result', url: 'https://example.test/ok', snippet: 'complete' }],
+              lane_outcomes: [],
+            },
+          });
+        });
+      })),
+    } as unknown as INbSearchService;
+    const ctx = createTestAgent(
+      { initialConfig: { loopControl: { skipUnstartedToolsOnInput } } },
+      permissionModeServices('yolo'),
+    );
+    try {
+      const t1: ExecutableTool = {
+        name: 'QuickFirst',
+        foregroundPolicy: 'instant',
+        description: 'Quick first tool.',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+        resolveExecution: () => ({
+          approvalRule: 'QuickFirst',
+          accesses: [],
+          execute: async () => ({ output: 'first ok' }),
+        }),
+      };
+      ctx.get(IAgentToolRegistryService).register(t1);
+      ctx.get(IAgentToolRegistryService).register(new WebSearchTool(nbSearch));
+      ctx.get(IAgentProfileService).update({ activeToolNames: ['QuickFirst', 'WebSearch'] });
+      ctx.mockNextResponse(
+        { type: 'function', id: 'ws-1', name: 'QuickFirst', arguments: '{}' },
+        { type: 'function', id: 'ws-2', name: 'WebSearch', arguments: '{"query":"mid-search steer"}' },
+      );
+      ctx.mockNextResponse({ type: 'text', text: 'done after search' });
+      const loopService = ctx.get(IAgentLoopService);
+      const { turn } = await loopService.enqueue(nextTurnMessage('search batch')).assigned;
+
+      await searchStarted.promise;
+      loopService.enqueue(
+        new MessageStepRequest(
+          { role: 'user', content: [{ type: 'text', text: 'steer during search' }], toolCalls: [], origin: { kind: 'user' } },
+          { kind: 'steer', admission: 'activeTurnOnly', mergeable: true },
+        ),
+      );
+      await Promise.resolve();
+      if (!skipUnstartedToolsOnInput) expect(searchAbortedBeforeFinish).toBe(false);
+      searchRelease.resolve();
+
+      await expect(turn.result).resolves.toMatchObject({ type: 'completed' });
+      const searchResult = ctx.project().find((msg) => msg.role === 'tool' && msg.toolCallId === 'ws-2');
+      if (skipUnstartedToolsOnInput) {
+        expect(searchAbortedBeforeFinish).toBe(true);
+        expect(JSON.stringify(searchResult?.content ?? '')).toContain('New input ended this search early');
+      } else {
+        expect(searchAbortedBeforeFinish).toBe(false);
+        expect(JSON.stringify(searchResult?.content ?? '')).toContain('Steer Safe Result');
+      }
+    } finally {
+      await ctx.dispose();
+    }
+  });
+
+  it.each([false, true])('handles [T1, Bash] steer before Bash starts according to skipUnstartedToolsOnInput (%s)', async (skipUnstartedToolsOnInput) => {
+    const t1Started = deferred();
+    const t1Release = deferred();
+    const ctx = createTestAgent(
+      { initialConfig: { loopControl: { skipUnstartedToolsOnInput } } },
+      permissionModeServices('yolo'),
+    );
+    try {
+      const t1: ExecutableTool = {
+        name: 'BlockingFirst',
+        foregroundPolicy: 'instant',
+        description: 'Blocks before Bash starts.',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+        resolveExecution: () => ({
+          approvalRule: 'BlockingFirst',
+          execute: async () => {
+            t1Started.resolve();
+            await t1Release.promise;
+            return { output: 'first finished' };
+          },
+        }),
+      };
+      ctx.get(IAgentToolRegistryService).register(t1);
+      ctx.get(IAgentToolRegistryService).register(ctx.get(IBashTool));
+      ctx.get(IAgentProfileService).update({ activeToolNames: ['BlockingFirst', 'Bash'] });
+      const spawnSpy = vi.spyOn(ctx.get(IAgentRuntimeService).inspect().process!, 'spawn').mockImplementation(async () => ({
+        _serviceBrand: undefined,
+        pid: 4242,
+        exitCode: 0,
+        stdin: new PassThrough(),
+        stdout: Readable.from(['bash_ran_ok\n']),
+        stderr: Readable.from([]),
+        wait: async () => 0,
+        kill: async () => {},
+        dispose: () => {},
+      }));
+      ctx.mockNextResponse(
+        { type: 'function', id: 'bash-batch-1', name: 'BlockingFirst', arguments: '{}' },
+        { type: 'function', id: 'bash-batch-2', name: 'Bash', arguments: '{"command":"echo bash_ran_ok"}' },
+      );
+      ctx.mockNextResponse({ type: 'text', text: 'done after bash' });
+      const loopService = ctx.get(IAgentLoopService);
+      const { turn } = await loopService.enqueue(nextTurnMessage('bash batch')).assigned;
+
+      await t1Started.promise;
+      loopService.enqueue(
+        new MessageStepRequest(
+          { role: 'user', content: [{ type: 'text', text: 'steer before bash' }], toolCalls: [], origin: { kind: 'user' } },
+          { kind: 'steer', admission: 'activeTurnOnly', mergeable: true },
+        ),
+      );
+      t1Release.resolve();
+
+      await expect(turn.result).resolves.toMatchObject({ type: 'completed' });
+      const bashResult = ctx.project().find((msg) => msg.role === 'tool' && msg.toolCallId === 'bash-batch-2');
+      const bashContent = JSON.stringify(bashResult?.content ?? '');
+      if (skipUnstartedToolsOnInput) {
+        expect(spawnSpy).not.toHaveBeenCalled();
+        expect(bashContent).toContain('Tool skipped because new input arrived before it started');
+      } else {
+        expect(spawnSpy).toHaveBeenCalledTimes(1);
+        expect(bashContent).not.toContain('Tool skipped because new input arrived before it started');
+        expect(bashContent).not.toContain('New input arrived before this command started');
+        expect(bashContent).not.toContain('Tool execution failed');
+        expect(bashContent).toMatch(/bash_ran_ok|task_id|background/i);
+      }
     } finally {
       await ctx.dispose();
     }

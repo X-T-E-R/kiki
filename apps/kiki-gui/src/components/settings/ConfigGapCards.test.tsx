@@ -109,7 +109,23 @@ describe('config gap cards', () => {
     expect(selectText(strategy)).toContain('Summarize');
     await pickValue(strategy, 'data-loop-subagent-strategy', 'fresh');
     expect(patchConfig).toHaveBeenLastCalledWith({ loop_control: { subagent_context_strategy: 'fresh' } });
+    const skipUnstarted = container.querySelector<HTMLElement>('[data-loop-skip-unstarted-tools]')!;
+    expect(skipUnstarted.getAttribute('aria-checked')).toBe('false');
+    await click(skipUnstarted);
+    expect(patchConfig).toHaveBeenLastCalledWith({ loop_control: { skip_unstarted_tools_on_input: true } });
     for (const [patch] of patchConfig.mock.calls) expect(patch).not.toHaveProperty('replace_domains');
+  });
+
+  it('reads skip_unstarted_tools_on_input from either camelCase or snake_case loop_control echoes', async () => {
+    for (const loopControl of [{ skipUnstartedToolsOnInput: true }, { skip_unstarted_tools_on_input: true }]) {
+      getConfig.mockResolvedValue({ ...CONFIG, loop_control: loopControl });
+      patchConfig.mockResolvedValue({ ...CONFIG, loop_control: { skipUnstartedToolsOnInput: false } });
+      const container = await render(<LoopLimitsCard />);
+      const skipUnstarted = container.querySelector<HTMLElement>('[data-loop-skip-unstarted-tools]')!;
+      expect(skipUnstarted.getAttribute('aria-checked')).toBe('true');
+      await click(skipUnstarted);
+      expect(patchConfig).toHaveBeenLastCalledWith({ loop_control: { skip_unstarted_tools_on_input: false } });
+    }
   });
 
   it('shows the loop attempts value as the retry row’s placeholder until it is overridden', async () => {
