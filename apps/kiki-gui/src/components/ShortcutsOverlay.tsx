@@ -19,6 +19,7 @@ import {
 } from '@kiki/session-core/settings';
 import type { ShortcutAction } from '@kiki/session-core/settings/shortcuts';
 import { useHost } from '../host';
+import { isDesktopHost } from '../host/host';
 import { useI18n } from '../i18n';
 import { browserOwnsChord, chordKeys, chordText, shortcutDefinition, shortcutState, useShortcutState, type ShortcutState } from '../lib/shortcuts';
 import { useGuardedNavigate } from './dirtyGuard';
@@ -130,7 +131,7 @@ export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
   const host = useHost();
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
-  const desktop = host.kind === 'tauri';
+  const desktop = isDesktopHost(host);
   const current = useShortcutState();
   const sendShortcut = useSyncExternalStore(
     subscribeSettings,

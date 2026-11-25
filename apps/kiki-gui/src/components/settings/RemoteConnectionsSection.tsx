@@ -15,6 +15,7 @@ import { errorText } from '@kiki/session-core/i18n';
 import { relativeTime } from '@kiki/session-core/util/time';
 
 import { useHost } from '../../host';
+import { isDesktopHost } from '../../host/host';
 import { useI18n } from '../../i18n';
 import { isLocalOwnerRequiredError, isPeerConnectionSource } from '../../lib/peerAccess';
 import {
@@ -50,7 +51,7 @@ export function RemoteConnectionsSection() {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const inRemoteScope = Boolean(connectionId) || Boolean(sshLabel) || isPeerConnectionSource(connectionSource);
-  const control = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
+  const control = isDesktopHost(host) ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const connections = useRemoteConnections(control);
   const threadBridges = useThreadBridges(control);
   const bridgesAvailable = hasThreadBridgesApi(control);

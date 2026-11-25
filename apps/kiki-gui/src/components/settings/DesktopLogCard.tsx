@@ -4,6 +4,7 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { DESKTOP_LOG_LEVELS, writeDesktopPrefs, type DesktopLogLevel } from '@kiki/session-core/settings';
 import { formatBytes } from '@kiki/session-core/util';
 import { useHost, type DesktopLogInfo } from '../../host';
+import { isDesktopHost } from '../../host/host';
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import { FeedbackLine, SaveStatus, type Feedback } from '../controls';
@@ -31,10 +32,10 @@ export function DesktopLogCard() {
   const [savedLevel, setSavedLevel] = useState<DesktopLogLevel | null>(null);
   const [opening, setOpening] = useState(false);
   const [actionFeedback, setActionFeedback] = useState<Feedback>(null);
-  const desktop = host.kind === 'tauri';
+  const desktop = isDesktopHost(host);
 
   useEffect(() => {
-    if (host.kind !== 'tauri') return;
+    if (!isDesktopHost(host)) return;
     let active = true;
     host.desktopLogInfo().then(
       (next) => {
@@ -51,7 +52,7 @@ export function DesktopLogCard() {
   if (!desktop) return null;
 
   const changeLevel = (next: DesktopLogLevel) => {
-    if (host.kind !== 'tauri') return;
+    if (!isDesktopHost(host)) return;
     setLevel(next);
     void save.run(async () => {
       await host.writeDesktopPrefs({ logLevel: next });
@@ -60,7 +61,7 @@ export function DesktopLogCard() {
   };
 
   const openFolder = () => {
-    if (host.kind !== 'tauri') return;
+    if (!isDesktopHost(host)) return;
     setOpening(true);
     setActionFeedback(null);
     void host.openDesktopLogDirectory()

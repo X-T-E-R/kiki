@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useHost } from '../../host';
+import { isDesktopHost } from '../../host/host';
 import { useI18n } from '../../i18n';
 import { MAIN_SPACE_ID, currentSpace, useSpaces } from '../../lib/spaces';
 import { useSpaceSettingsTarget } from '../../lib/spaceSettings';
@@ -25,7 +26,7 @@ export function SubscriptionsSection() {
 
   const inRemotePair = typeof connectionId === 'string' && connectionId !== '';
   const inRemoteScope = inRemotePair || Boolean(sshLabel);
-  const controlClient = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
+  const controlClient = isDesktopHost(host) ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const controlTarget = useSpaceSettingsTarget(controlClient, controlClient === client ? meta : undefined);
   const here = currentSpace();
   const localHere = here !== null && !here.homeId.startsWith('remote:') ? here : null;

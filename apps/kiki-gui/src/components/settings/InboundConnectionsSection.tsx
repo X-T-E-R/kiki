@@ -18,6 +18,7 @@ import type { ConnectionGrant, ConnectionIdentity } from '@kiki/protocol';
 import { relativeTime } from '@kiki/session-core/util/time';
 
 import { useHost } from '../../host';
+import { isDesktopHost } from '../../host/host';
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import { isPeerConnectionSource } from '../../lib/peerAccess';
@@ -219,7 +220,7 @@ export function InboundConnectionsSection() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const inRemoteScope = Boolean(connectionId) || Boolean(sshLabel) || isPeerConnectionSource(connectionSource);
-  const control = host.kind === 'tauri' ? localClient : (localClient ?? (inRemoteScope ? null : client));
+  const control = isDesktopHost(host) ? localClient : (localClient ?? (inRemoteScope ? null : client));
   const status = useInboundStatus(control);
   const threadBridges = useThreadBridges(control);
   const bridgesAvailable = hasThreadBridgesApi(control);

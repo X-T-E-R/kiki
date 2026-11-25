@@ -30,6 +30,7 @@ import {
 } from '@kiki/session-core/settings/shortcuts';
 import { shortcutConflictSchema, type ShortcutResponse } from '@kiki/protocol';
 import { useHost } from '../../host';
+import { isDesktopHost } from '../../host/host';
 import { useI18n } from '../../i18n';
 import { isLocalOwnerRequiredError, isPeerConnectionSource } from '../../lib/peerAccess';
 import {
@@ -168,7 +169,7 @@ export function ShortcutsSection() {
   const readOnlyPeer = !inPairedSpace && isPeerConnectionSource(connectionSource) && localClient === null;
   const { t, locale } = useI18n();
   const host = useHost();
-  const desktop = host.kind === 'tauri';
+  const desktop = isDesktopHost(host);
   const queryClient = useQueryClient();
   const ownPlatform = useMemo(detectShortcutPlatform, []);
   const [platform, setPlatform] = useState<ShortcutPlatform>(ownPlatform);

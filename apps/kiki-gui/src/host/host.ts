@@ -18,6 +18,18 @@ export interface HostSubscribeIntent {
   readonly mode?: 'auto' | 'manual' | 'once';
 }
 
+export interface HostPluginFocusIntent {
+  readonly homeId: string;
+  readonly route: string;
+  readonly requestId: number;
+}
+
+export interface HostPluginFocusAdapter {
+  read(): Promise<HostPluginFocusIntent | null>;
+  ack(homeId: string, requestId: number): Promise<void>;
+  remember(homeId: string, requestId: number): Promise<void>;
+}
+
 export type DesktopUpdateMutation =
   | { readonly kind: 'checked'; readonly at: number }
   | { readonly kind: 'snooze'; readonly until: number }
@@ -182,7 +194,10 @@ interface HostCapabilities {
    * return value checked so a blocked pop-up surfaces as a rejection.
    */
   openUrl?: (url: string) => Promise<void>;
+  showMainWindow?: () => Promise<void>;
   isWindowVisibleAndFocused?: () => Promise<boolean>;
+  onWindowFocus?: (callback: () => void) => () => void;
+  pluginFocus?: HostPluginFocusAdapter;
   saveBlob?: (blob: Blob, filename: string) => Promise<boolean>;
   openSaveSink?: (filename: string) => Promise<HostSaveSink | null>;
   /** Pick a host path without reading or uploading its contents. */
@@ -271,4 +286,19 @@ export interface TauriHostAdapter extends Required<Omit<HostCapabilities, 'conne
   readonly connection: Required<HostConnectionAdapter>;
 }
 
-export type HostAdapter = BrowserHostAdapter | TauriHostAdapter;
+export interface ElectronHostAdapter extends Required<Omit<HostCapabilities, 'connection'>> {
+  readonly kind: 'electron';
+  readonly connection: Required<HostConnectionAdapter>;
+}
+
+export type DesktopHostAdapter = TauriHostAdapter | ElectronHostAdapter;
+
+export type HostAdapter = BrowserHostAdapter | DesktopHostAdapter;
+
+export function isDesktopHostKind(kind: string): kind is DesktopHostAdapter['kind'] {
+  return kind === 'tauri' || kind === 'electron';
+}
+
+export function isDesktopHost(host: HostAdapter): host is DesktopHostAdapter {
+  return isDesktopHostKind(host.kind);
+}

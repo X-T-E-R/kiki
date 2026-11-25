@@ -69,6 +69,7 @@ import { useWorkModes, workPresetsEnabled } from './lib/workModeCatalog';
 import { readWindowModeId, writeWindowModeId } from './lib/workModes';
 import { landingRouteFor } from './lib/workModeStartup';
 import { useHost } from './host';
+import { isDesktopHost } from './host/host';
 import { writeDraft } from '@kiki/session-core/composer';
 import {
   adjacentRunningSession,
@@ -198,17 +199,6 @@ export function pinnedSessionsQueryKey(
     : ([...PINNED_SESSIONS_QUERY_KEY, showArchived, workspaceFilter, privateFilter] as const);
 }
 
-async function showDesktopWindow(): Promise<void> {
-  const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('show_main_window');
-}
-
-async function publishConsumedPluginFocus(homeId: string, requestId: number): Promise<void> {
-  const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('remember_plugin_focus', { homeId, requestId });
-  await invoke('ack_plugin_focus', { homeId, requestId });
-}
-
 /** Show through the permitted native command before changing route. A rejection leaves the cursor unchanged. */
 async function applyConnectionPluginFocus(input: {
   request: { readonly id: number; readonly sessionId: string } | undefined;
@@ -216,7 +206,7 @@ async function applyConnectionPluginFocus(input: {
   sameConnection: boolean;
   owner: { readonly homeId: string; readonly scopeId: string };
   closed: () => boolean;
-  hostKind: string;
+  showMainWindow?: () => Promise<void>;
   navigate: (route: string) => void;
 }): Promise<{ cursor: PluginFocusCursor; consumed: PluginFocusIdentity | undefined }> {
   const step: PluginFocusStep = pluginFocusStep({
@@ -227,7 +217,7 @@ async function applyConnectionPluginFocus(input: {
   });
   if (step.kind === 'remember') return { cursor: step.cursor, consumed: undefined };
   if (step.kind !== 'focus-current') throw new Error('Current plugin focus lost its connection');
-  if (input.hostKind === 'tauri') await showDesktopWindow();
+  if (input.showMainWindow !== undefined) await input.showMainWindow();
   if (input.closed()) return { cursor: input.cursor, consumed: undefined };
   input.navigate(step.route);
   return { cursor: step.cursor, consumed: pluginFocusPublication(step, input.owner) };
@@ -237,8 +227,9 @@ function RootRedirect() {
   const host = useHost();
   const { scopeId } = useConnection();
   const { pathname } = useLocation();
+  const desktop = isDesktopHost(host);
   const target = useMemo(() => {
-    const saved = host.kind === 'tauri' ? readSpaceViewRoute(scopeId) : undefined;
+    const saved = desktop ? readSpaceViewRoute(scopeId) : undefined;
     if (saved !== undefined) return saved;
     // A window launched into a mode opens on that mode's landing page, so its
     // first frame is the surface the user asked for. The current path is
@@ -248,7 +239,7 @@ function RootRedirect() {
     if (landing !== pathname) return landing;
     const lastSessionId = readLastSessionId();
     return lastSessionId !== undefined ? `/s/${lastSessionId}` : '/new';
-  }, [host.kind, pathname, scopeId]);
+  }, [desktop, pathname, scopeId]);
   return <Navigate to={target} replace />;
 }
 
@@ -301,7 +292,7 @@ function NormalApp() {
   const navType = useNavigationType();
   const { scopeId, spaceKey, meta, connectionRef, localClient, connectionSource, needsScopeReload } = useConnection();
   const scopeRestore = useScopeRestore();
-  const desktop = host.kind === 'tauri';
+  const desktop = isDesktopHost(host);
 
   // Commit the target visit before descendants' passive restoration effects.
   // A blocked transition never changes location and never advances this store.
@@ -315,7 +306,7 @@ function NormalApp() {
     // same rule the scope boundary uses. Reading the local home here would
     // stamp every visit `main` beside a remote scope id, and the window that
     // boots into that visit would refuse its own entry as unreachable.
-    const localHome = host.kind === 'tauri' ? (activeSpace()?.homeId ?? 'main') : 'main';
+    const localHome = isDesktopHost(host) ? (activeSpace()?.homeId ?? 'main') : 'main';
     const home = scopeId.startsWith('remote:')
       ? scopeId
       : (typeof spaceKey === 'string' && spaceKey !== '' ? spaceKey : localHome);
@@ -451,20 +442,22 @@ function NormalApp() {
       if (!pending.some((item) => pluginFocusSameIdentity(item, identity))) pending.push(identity);
     };
     const flushConsumed = async () => {
+      if (!isDesktopHost(host)) return;
       const pending = focusWatch.current.pendingPublish;
       while (pending.length > 0) {
         const identity = pending[0];
         if (identity === undefined) return;
-        await publishConsumedPluginFocus(identity.homeId, identity.requestId);
+        await host.pluginFocus.remember(identity.homeId, identity.requestId);
+        await host.pluginFocus.ack(identity.homeId, identity.requestId);
         if (focusWatch.current.pendingPublish[0] === identity) focusWatch.current.pendingPublish.shift();
       }
     };
     const scheduleNext = (hasActiveRequest: boolean) => {
       if (closed) return;
-      if (host.kind !== 'tauri' && typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      if (!isDesktopHost(host) && typeof document !== 'undefined' && document.visibilityState === 'hidden') {
         return;
       }
-      const delayMs = host.kind === 'tauri' || hasActiveRequest ? 1500 : webIdlePollMs;
+      const delayMs = isDesktopHost(host) || hasActiveRequest ? 1500 : webIdlePollMs;
       timer = setTimeout(() => { void read(); }, delayMs);
     };
     const read = async () => {
@@ -479,21 +472,20 @@ function NormalApp() {
           focusWatch.current.localCursor = { initialized: false, seenId: 0 };
           focusWatch.current.armedLocal = null;
         }
-        if (host.kind === 'tauri') await flushConsumed();
+        if (isDesktopHost(host)) await flushConsumed();
         if (closed) return;
         // An open confirmation owns the seat. A later poll retries after it closes.
         if (!pendingNavigationRef.current) {
           let nativeHandoff: ReturnType<typeof desktopPluginFocusHandoff> = undefined;
-          if (host.kind === 'tauri') {
+          if (isDesktopHost(host)) {
             try {
-              const { invoke } = await import('@tauri-apps/api/core');
-              nativeHandoff = desktopPluginFocusHandoff(await invoke('read_plugin_focus'));
+              nativeHandoff = desktopPluginFocusHandoff(await host.pluginFocus.read());
             } catch {
               nativeHandoff = undefined;
             }
           }
           let localRestore: Extract<PluginFocusStep, { kind: 'restore-owner' }> | undefined;
-          if (nativeHandoff === undefined && host.kind === 'tauri' && localClient !== null && (connectionSource === 'remote' || connectionSource === 'ssh')) {
+          if (nativeHandoff === undefined && isDesktopHost(host) && localClient !== null && (connectionSource === 'remote' || connectionSource === 'ssh')) {
             const home = parseActiveSpacePayload(await host.activeSpace());
             if (home === null) throw new Error('Active desktop space is unavailable');
             const localRequest = (await localClient.pluginNavigation()).request;
@@ -517,8 +509,7 @@ function NormalApp() {
           if (closed) return;
           if (nativeHandoff !== undefined && !pluginFocusSameIdentity(focusWatch.current.armedNative, nativeHandoff)) {
             hasActiveRequest = true;
-            const { invoke } = await import('@tauri-apps/api/core');
-            await invoke('show_main_window');
+            await host.showMainWindow?.();
             if (closed) return;
             await requestScopeNavigation({ homeId: nativeHandoff.homeId, scopeId: nativeHandoff.scopeId, route: nativeHandoff.route });
             const handed = { homeId: nativeHandoff.homeId, requestId: nativeHandoff.requestId };
@@ -527,7 +518,7 @@ function NormalApp() {
             await flushConsumed();
           } else if (localRestore !== undefined) {
             hasActiveRequest = true;
-            await showDesktopWindow();
+            await host.showMainWindow?.();
             if (closed) return;
             await requestScopeNavigation({ homeId: localRestore.homeId, scopeId: localRestore.scopeId, route: localRestore.route });
             const handed = { homeId: localRestore.homeId, requestId: localRestore.cursor.seenId };
@@ -544,12 +535,12 @@ function NormalApp() {
               sameConnection: true,
               owner: { homeId: activeSpace()?.homeId ?? 'main', scopeId: 'local' },
               closed: () => closed,
-              hostKind: host.kind,
+              showMainWindow: isDesktopHost(host) ? host.showMainWindow : undefined,
               navigate: (target) => { void navigate(target); },
             });
             if (closed) return;
             focusWatch.current.current = applied.cursor;
-            if (applied.consumed !== undefined && host.kind === 'tauri') {
+            if (applied.consumed !== undefined && isDesktopHost(host)) {
               noteConsumed(applied.consumed);
               await flushConsumed();
             }
@@ -562,7 +553,7 @@ function NormalApp() {
       scheduleNext(hasActiveRequest);
     };
     const onVisibilityChange = () => {
-      if (closed || host.kind === 'tauri') return;
+      if (closed || isDesktopHost(host)) return;
       if (document.visibilityState === 'hidden') {
         if (timer !== undefined) {
           clearTimeout(timer);
@@ -572,14 +563,14 @@ function NormalApp() {
       }
       if (timer === undefined) void read();
     };
-    if (host.kind !== 'tauri' && typeof document !== 'undefined') {
+    if (!isDesktopHost(host) && typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', onVisibilityChange);
     }
     void read();
     return () => {
       closed = true;
       if (timer !== undefined) clearTimeout(timer);
-      if (host.kind !== 'tauri' && typeof document !== 'undefined') {
+      if (!isDesktopHost(host) && typeof document !== 'undefined') {
         document.removeEventListener('visibilitychange', onVisibilityChange);
       }
     };
@@ -588,7 +579,7 @@ function NormalApp() {
   // Sync native desktop prefs into localStorage on boot; listen for tray
   // "New Session" events.
   useEffect(() => {
-    if (host.kind !== 'tauri') return;
+    if (!isDesktopHost(host)) return;
     void host.readDesktopPrefs().then((prefs) => {
       if (prefs !== null) writeDesktopPrefs(prefs);
     });
@@ -1301,7 +1292,7 @@ function NormalApp() {
   // navigating away from unsaved drafts.
   const subscribeQueue = useSubscribeIntentQueue(host, location, navigate);
   const inRemoteScopeForSubscribe = connectionSource === 'remote' || connectionSource === 'ssh';
-  const subscribeControlClient = host.kind === 'tauri'
+  const subscribeControlClient = isDesktopHost(host)
     ? localClient
     : (localClient ?? (inRemoteScopeForSubscribe ? null : client));
   const subscribeSpaces = useSpaces(subscribeQueue.activeIntent !== null ? subscribeControlClient : null);

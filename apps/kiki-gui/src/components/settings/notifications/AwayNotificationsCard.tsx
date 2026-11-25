@@ -11,6 +11,7 @@ import {
 } from '@kiki/session-core/settings';
 
 import { useHost } from '../../../host';
+import { isDesktopHost } from '../../../host/host';
 import { browserNotificationPermission } from '../../../host/browser';
 import type { SystemNotificationPermission } from '../../../host/notificationPermission';
 import { tauriNotificationPermission } from '../../../host/tauri';
@@ -56,6 +57,10 @@ export function AwayNotificationsCard() {
           .catch(() => { if (live) setPermission(undefined); });
         return;
       }
+      if (host.kind === 'electron') {
+        setPermission('granted');
+        return;
+      }
       if (host.kind === 'browser') {
         setPermission(browserNotificationPermission());
       }
@@ -71,7 +76,7 @@ export function AwayNotificationsCard() {
   }, [host.kind, supported]);
 
   useEffect(() => {
-    if (host.kind !== 'tauri') return;
+    if (!isDesktopHost(host)) return;
     void host.readDesktopPrefs().then((prefs) => {
       if (prefs !== null) setEnabled(prefs.notifications);
     });
@@ -80,7 +85,7 @@ export function AwayNotificationsCard() {
   const setMaster = (next: boolean) => {
     setEnabled(next);
     writeDesktopPrefs({ notifications: next });
-    if (host.kind === 'tauri') void host.writeDesktopPrefs({ notifications: next });
+    if (isDesktopHost(host)) void host.writeDesktopPrefs({ notifications: next });
   };
 
   return (

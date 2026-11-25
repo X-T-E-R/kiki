@@ -5,6 +5,7 @@ import type { SessionListData } from '@kiki/session-core/sessions';
 import { readLastSessionId, writeLastSessionId } from '@kiki/session-core/settings';
 
 import { useHost } from '../host';
+import { isDesktopHost } from '../host/host';
 import { useI18n } from '../i18n';
 import { createBotRoomApi } from '../lib/botRooms';
 import { isSessionNotFoundMessage } from '../lib/client';
@@ -30,10 +31,10 @@ export function SpaceViewMemory() {
   const idRoute = /^\/(?:s|rooms|r)\//.test(stripPlacePrefix(location.pathname));
   const route = `${location.pathname}${location.search}${location.hash}`;
   useEffect(() => {
-    if (host.kind !== 'tauri' || idRoute) return;
+    if (!isDesktopHost(host) || idRoute) return;
     writeSpaceViewRoute(route, scopeId);
     markSpaceViewRoute(route);
-  }, [route, scopeId, host.kind, idRoute]);
+  }, [route, scopeId, host, idRoute]);
   return null;
 }
 
@@ -135,10 +136,10 @@ export function SpaceViewState({ children }: { readonly children: ReactNode }) {
 
   useEffect(() => {
     if (missing && sessionId !== undefined && readLastSessionId() === sessionId) writeLastSessionId(undefined);
-    if (host.kind !== 'tauri' || checking || missing || (targetId !== undefined && target.isError)) return;
+    if (!isDesktopHost(host) || checking || missing || (targetId !== undefined && target.isError)) return;
     writeSpaceViewRoute(route, scopeId);
     markSpaceViewRoute(route);
-  }, [checking, missing, targetId, target.isError, sessionId, route, scopeId, host.kind]);
+  }, [checking, missing, targetId, target.isError, sessionId, route, scopeId, host]);
 
   if (missing) return <Navigate to={placeNewPath(connectionId)} replace />;
   if (checking) return <div className="p-8 text-[12.5px] text-ink-faint">{t('sidebar.loadingSessions')}</div>;

@@ -11,28 +11,42 @@ import {
 import type {
   DesktopAutostartStatus,
   DesktopLogInfo,
-  DesktopWindowMode,
   DesktopSpaceStatus,
   DesktopUpdate,
   TauriHostAdapter,
   HostFileDrop,
   HostSelectedFile,
-  HostSubscribeIntent,
   LocalConnection,
 } from './host';
+import {
+  clampUnreadBadgeCount,
+  createDesktopConnectionCoordinator,
+  createSubscribeIntentController,
+  normalizeDesktopPrefsPatch,
+  normalizeHostPath,
+  parseDesktopWindowMode,
+  parsePluginFocusIntent,
+} from './desktopShared';
 import { readSettings, type DesktopNativePrefs } from '@kiki/session-core/settings';
 import type { ConnectionConfig } from '../state/connectionConfig';
 import { pastedMediaType } from '../lib/pastedFiles';
 import { notificationIntent, notificationScope } from '../lib/notificationNavigation';
 import { NotificationPermissionNotAsked, type SystemNotificationPermission } from './notificationPermission';
 
-let remoteWorkspaceActive = false;
+const coordinator = createDesktopConnectionCoordinator<LocalConnection>({
+  discoverOnce: () =>
+    invoke<ConnectionConfig>('desktop_connection').then((config): LocalConnection => ({ config, persist: false })),
+  cancelOnce: () => invoke<void>('cancel_desktop_startup'),
+});
 
-function requireLocalWorkspace(): void {
-  if (remoteWorkspaceActive) {
-    throw new Error('This is an SSH workspace. Use a remote server operation, not a local file or directory action.');
-  }
-}
+const subscribeIntents = createSubscribeIntentController({
+  peek: () => invoke<unknown>('peek_subscribe_intent'),
+  ack: (id) => invoke<boolean>('ack_subscribe_intent', { id }),
+  listenIntentWake: (onWake) => listen<unknown>('kiki://subscribe-intent', () => { onWake(); }),
+  listenLegacyUrl: (onUrl) => listen<unknown>('kiki://subscribe-url', (event) => {
+    if (typeof event.payload === 'string') onUrl(event.payload);
+  }),
+});
 
 const NATIVE_IMAGE_MIMES: Readonly<Record<string, string>> = {
   png: 'image/png',
@@ -116,127 +130,20 @@ function onTrayNewSession(callback: () => void): () => void {
   };
 }
 
-function parseSubscribeIntentPayload(value: unknown): HostSubscribeIntent | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const record = value as Record<string, unknown>;
-  if (typeof record['id'] !== 'string' || record['id'].trim() === '') return null;
-  if (typeof record['url'] !== 'string' || record['url'].trim() === '') return null;
-  const mode = record['mode'];
-  const parsedMode = mode === 'auto' || mode === 'manual' || mode === 'once' ? mode : undefined;
-  const name = typeof record['name'] === 'string' && record['name'].trim() !== '' ? record['name'].trim() : undefined;
-  return {
-    id: record['id'],
-    url: record['url'].trim(),
-    ...(name !== undefined ? { name } : {}),
-    ...(parsedMode !== undefined ? { mode: parsedMode } : {}),
-  };
-}
-
-const subscribeIntentPumps = new Set<() => void>();
-
-async function peekSubscribeIntent(): Promise<HostSubscribeIntent | null> {
-  try {
-    return parseSubscribeIntentPayload(await invoke<unknown>('peek_subscribe_intent'));
-  } catch {
-    return null;
-  }
-}
-
-async function ackSubscribeIntent(id: string): Promise<boolean> {
-  try {
-    const acked = await invoke<boolean>('ack_subscribe_intent', { id });
-    if (acked) {
-      for (const pump of subscribeIntentPumps) pump();
-    }
-    return acked;
-  } catch {
-    return false;
-  }
-}
-
-/** Subscribes to native wake hints first, then peeks the authoritative FIFO queue without auto-acking. */
-function onSubscribeIntent(callback: (intent: HostSubscribeIntent) => void): () => void {
-  let unsubscribed = false;
+function onWindowFocus(callback: () => void): () => void {
+  let disposed = false;
   let unlisten: (() => void) | undefined;
-  let pumping = false;
-  let dirty = false;
-  let lastDeliveredId: string | undefined;
-
-  const pump = async () => {
-    if (unsubscribed) return;
-    if (pumping) {
-      dirty = true;
-      return;
-    }
-    pumping = true;
-    try {
-      do {
-        dirty = false;
-        const head = await peekSubscribeIntent();
-        if (unsubscribed || head === null) break;
-        if (head.id !== lastDeliveredId) {
-          lastDeliveredId = head.id;
-          callback(head);
-        }
-      } while (dirty && !unsubscribed);
-    } finally {
-      pumping = false;
-    }
-  };
-
-  const triggerPump = () => {
-    void pump();
-  };
-  subscribeIntentPumps.add(triggerPump);
-
-  void listen<unknown>('kiki://subscribe-intent', () => {
-    triggerPump();
-  }).then((fn) => {
-    if (unsubscribed) {
-      fn();
-      return;
-    }
-    unlisten = fn;
-    triggerPump();
-  }, () => undefined);
-
+  void getCurrentWindow()
+    .onFocusChanged(({ payload }) => {
+      if (!disposed && payload) callback();
+    })
+    .then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    }, () => undefined);
   return () => {
-    unsubscribed = true;
-    subscribeIntentPumps.delete(triggerPump);
+    disposed = true;
     unlisten?.();
-  };
-}
-
-function onSubscribeUrl(callback: (url: string) => void): () => void {
-  let unsubscribed = false;
-  let legacyUnlisten: (() => void) | undefined;
-  const unsubscribeIntent = onSubscribeIntent((intent) => {
-    if (unsubscribed) return;
-    callback(intent.url);
-    void ackSubscribeIntent(intent.id);
-  });
-  const pending = (globalThis as { __KIKI_SUBSCRIBE_URL__?: unknown }).__KIKI_SUBSCRIBE_URL__;
-  if (typeof pending === 'string' && pending.trim() !== '') {
-    queueMicrotask(() => {
-      if (unsubscribed) return;
-      const current = (globalThis as { __KIKI_SUBSCRIBE_URL__?: unknown }).__KIKI_SUBSCRIBE_URL__;
-      if (typeof current !== 'string' || current.trim() === '') return;
-      delete (globalThis as { __KIKI_SUBSCRIBE_URL__?: unknown }).__KIKI_SUBSCRIBE_URL__;
-      callback(current.trim());
-    });
-  }
-  void listen<unknown>('kiki://subscribe-url', (event) => {
-    if (!unsubscribed && typeof event.payload === 'string' && event.payload.trim() !== '') {
-      callback(event.payload.trim());
-    }
-  }).then((fn) => {
-    if (unsubscribed) fn();
-    else legacyUnlisten = fn;
-  }, () => undefined);
-  return () => {
-    unsubscribed = true;
-    unsubscribeIntent();
-    legacyUnlisten?.();
   };
 }
 
@@ -277,24 +184,10 @@ function onFileDrop(callback: (drop: HostFileDrop) => void): () => void {
   };
 }
 
-let desktopDiscovery: Promise<LocalConnection> | null = null;
-let desktopCancellation: Promise<void> | null = null;
-
-async function discoverDesktop(): Promise<LocalConnection> {
-  if (desktopCancellation !== null) await desktopCancellation;
-  if (desktopDiscovery === null) {
-    const flight = invoke<ConnectionConfig>('desktop_connection').then((config): LocalConnection => ({ config, persist: false }));
-    desktopDiscovery = flight;
-    const release = () => { if (desktopDiscovery === flight) desktopDiscovery = null; };
-    void flight.then(release, release);
-  }
-  return desktopDiscovery;
-}
-
 export const tauriHost: TauriHostAdapter = {
   kind: 'tauri',
   connection: {
-    discover: discoverDesktop,
+    discover: () => coordinator.discover(),
     listSshProfiles: () => invoke('list_ssh_profiles'),
     saveSshProfile: (profile) => invoke('save_ssh_profile', { profile }),
     removeSshProfile: (id) => invoke('remove_ssh_profile', { id }),
@@ -305,15 +198,8 @@ export const tauriHost: TauriHostAdapter = {
     takeScopeConnection: () => invoke('take_scope_connection'),
     sshTunnelRunning: (id, tunnelId) => invoke('ssh_tunnel_running', { id, tunnelId }),
     disconnectSshProfile: (id, tunnelId) => invoke('disconnect_ssh_profile', { id, tunnelId }),
-    setWorkspaceScope: (scope) => { remoteWorkspaceActive = scope === 'ssh'; },
-    async cancelStartup() {
-      if (desktopCancellation !== null) return desktopCancellation;
-      const pending = desktopDiscovery;
-      const cancellation = invoke<void>('cancel_desktop_startup').then(async () => { await pending?.catch(() => undefined); });
-      desktopCancellation = cancellation;
-      try { await cancellation; }
-      finally { if (desktopCancellation === cancellation) desktopCancellation = null; }
-    },
+    setWorkspaceScope: (scope) => { coordinator.setWorkspaceScope(scope); },
+    cancelStartup: () => coordinator.cancelStartup(),
     async onBackendStage(callback) {
       return listen<unknown>('kiki://desktop-backend-stage', (event) => {
         callback(event.payload);
@@ -331,10 +217,13 @@ export const tauriHost: TauriHostAdapter = {
   onNotificationClick,
   async setUnreadBadge(count, homeId, scopeId, sessionIds) {
     try {
-      await invoke('set_unread_count', { n: Math.max(0, Math.min(0xffffffff, Math.trunc(count))), homeId, scopeId, sessionIds });
+      await invoke('set_unread_count', { n: clampUnreadBadgeCount(count), homeId, scopeId, sessionIds });
     } catch {
       return;
     }
+  },
+  async showMainWindow() {
+    await invoke('show_main_window');
   },
   async isWindowVisibleAndFocused() {
     try {
@@ -344,6 +233,18 @@ export const tauriHost: TauriHostAdapter = {
     } catch {
       return true;
     }
+  },
+  onWindowFocus,
+  pluginFocus: {
+    async read() {
+      return parsePluginFocusIntent(await invoke<unknown>('read_plugin_focus'));
+    },
+    async ack(homeId, requestId) {
+      await invoke('ack_plugin_focus', { homeId, requestId });
+    },
+    async remember(homeId, requestId) {
+      await invoke('remember_plugin_focus', { homeId, requestId });
+    },
   },
   async saveBlob(blob, filename) {
     const [{ save }, { writeFile }] = await Promise.all([
@@ -411,7 +312,7 @@ export const tauriHost: TauriHostAdapter = {
     };
   },
   async pickFilePath(): Promise<string | null> {
-    requireLocalWorkspace();
+    coordinator.requireLocalWorkspace();
     const { open } = await import('@tauri-apps/plugin-dialog');
     const selected = await open({ directory: false, multiple: false });
     if (selected === null) return null;
@@ -471,40 +372,36 @@ export const tauriHost: TauriHostAdapter = {
     return { paths, media };
   },
   async pickDirectories() {
-    requireLocalWorkspace();
+    coordinator.requireLocalWorkspace();
     const { open } = await import('@tauri-apps/plugin-dialog');
     const selected = await open({ directory: true, multiple: true });
     if (selected === null) return null;
     return typeof selected === 'string' ? [selected] : selected;
   },
   async pickDirectory() {
-    requireLocalWorkspace();
+    coordinator.requireLocalWorkspace();
     const { open } = await import('@tauri-apps/plugin-dialog');
     const selected = await open({ directory: true, multiple: false });
     if (selected === null) return null;
     return typeof selected === 'string' ? selected : (selected[0] ?? null);
   },
   async revealPath(path) {
-    requireLocalWorkspace();
-    await invoke('reveal_host_path', { path: /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path });
+    coordinator.requireLocalWorkspace();
+    await invoke('reveal_host_path', { path: normalizeHostPath(path) });
   },
   async openUrl(url) {
     await invoke('open_external_url', { url });
   },
   async openPath(path) {
-    requireLocalWorkspace();
-    await invoke('open_host_path', { path: /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path });
+    coordinator.requireLocalWorkspace();
+    await invoke('open_host_path', { path: normalizeHostPath(path) });
   },
   async writeFileText(path, text) {
-    requireLocalWorkspace();
-    await invoke('write_host_file_text', { path: /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path, text });
+    coordinator.requireLocalWorkspace();
+    await invoke('write_host_file_text', { path: normalizeHostPath(path), text });
   },
   async writeDesktopPrefs(prefs) {
-    // JSON drops undefined keys; an explicitly cleared record must reach native.
-    const patch = Object.hasOwn(prefs, 'updateState') && prefs.updateState === undefined
-      ? { ...prefs, updateState: {} }
-      : prefs;
-    await invoke('write_desktop_prefs', { prefs: patch });
+    await invoke('write_desktop_prefs', { prefs: normalizeDesktopPrefsPatch(prefs) });
   },
   async readDesktopPrefs() {
     try {
@@ -545,10 +442,10 @@ export const tauriHost: TauriHostAdapter = {
     };
   },
   onTrayNewSession,
-  peekSubscribeIntent,
-  ackSubscribeIntent,
-  onSubscribeIntent,
-  onSubscribeUrl,
+  peekSubscribeIntent: subscribeIntents.peekSubscribeIntent,
+  ackSubscribeIntent: subscribeIntents.ackSubscribeIntent,
+  onSubscribeIntent: subscribeIntents.onSubscribeIntent,
+  onSubscribeUrl: subscribeIntents.onSubscribeUrl,
   onFileDrop,
   /**
    * The desktop space this window belongs to. Older desktop builds have no
@@ -561,9 +458,7 @@ export const tauriHost: TauriHostAdapter = {
   async windowMode() {
     try {
       // Native serializes WindowModeDescriptor in camelCase.
-      const mode = await invoke<{ presetId?: unknown; windowId?: unknown }>('desktop_window_mode');
-      if (typeof mode.presetId !== 'string' || typeof mode.windowId !== 'string') return null;
-      return { presetId: mode.presetId, windowId: mode.windowId } satisfies DesktopWindowMode;
+      return parseDesktopWindowMode(await invoke<unknown>('desktop_window_mode'));
     } catch {
       return null;
     }

@@ -1,3 +1,4 @@
+import { isDesktopHostKind } from '../host/host';
 import { activeSpace, readHomeStorageItem, spaceStorage } from './spaceStorage';
 import { BASE_MODE_ID, windowRouteSlot, readWindowModeId } from './workModes';
 import { landingRouteFor } from './workModeStartup';
@@ -118,7 +119,7 @@ function initialSpaceViewRoute(): string {
 
 /** Runs after the space is resolved, before BrowserRouter or any session view mounts. */
 export function restoreSpaceViewAtBoot(host: { readonly kind: string }): void {
-  if (host.kind !== 'tauri') return;
+  if (!isDesktopHostKind(host.kind)) return;
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   const owner = readRouteOwner();
   let target = current;

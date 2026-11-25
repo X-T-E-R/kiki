@@ -24,12 +24,13 @@ const ROOM_ID_PATTERN = new RegExp(`^${ROOM_ID}$`);
 const TAIL = String.raw`(?:[/?#][^\s)\]）」”"']*)?`;
 const LEAD = String.raw`(^|[\s(\[（「“"'])`;
 const TRAIL = String.raw`(?=$|[\s)\]）」”"',.;:!?，。；：！？])`;
-const ORIGIN = String.raw`(?:(?:https?|tauri):\/\/[^\s/]+)?`;
+const ORIGIN = String.raw`(?:(?:https?|tauri|electron):\/\/[^\s/]+)?`;
 /** Loopback names/addresses identify this machine, regardless of port. */
 const LOOPBACK_HOSTS = new Set([
   'localhost', '127.0.0.1', '0.0.0.0', '[::1]', '::1',
-  // The Tauri webview origin is still this machine.
+  // Desktop webview origins are still this machine.
   'tauri.localhost',
+  'electron.localhost',
 ]);
 
 const linkPattern = (): RegExp => new RegExp(

@@ -14,6 +14,7 @@ import type { RemoteConnection } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
 import { useHost } from '../../host';
+import { isDesktopHost } from '../../host/host';
 import { useConnection } from '../../state/connection';
 import { isPeerConnectionSource } from '../../lib/peerAccess';
 import { compactIdentifier } from '../../lib/compactIdentifier';
@@ -78,7 +79,7 @@ export function BridgedOriginLine({ block, records, onOpen }: {
 ${address}`;
   // A remote window has no control home to switch the directory with, so the
   // source is stated there rather than offered as a way in.
-  const target = host.kind === 'tauri' || onOpen !== undefined ? browsableSourceSpace(block, records) : undefined;
+  const target = isDesktopHost(host) || onOpen !== undefined ? browsableSourceSpace(block, records) : undefined;
 
   return (
     <div data-bridged-origin className="flex min-w-0 items-center gap-2">

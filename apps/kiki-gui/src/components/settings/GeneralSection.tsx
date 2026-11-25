@@ -13,6 +13,7 @@ import {
   type SendShortcut,
 } from '@kiki/session-core/settings';
 import { useHost } from '../../host';
+import { isDesktopHost } from '../../host/host';
 import { useI18n } from '../../i18n';
 import { useCoarsePointer, usePhoneMode } from '../../lib/layoutHooks';
 import { useOptionalConnection } from '../../state/connection';
@@ -43,14 +44,14 @@ export function GeneralSection() {
   const [autostartSupported, setAutostartSupported] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
   const [confirmClearDrafts, setConfirmClearDrafts] = useState(false);
-  const isDesktop = host.kind === 'tauri';
+  const isDesktop = isDesktopHost(host);
   // Touch: Enter is always the newline key there, so the send-key choice has
   // nothing to choose. Phone mode: the terminal's opt-in.
   const coarsePointer = useCoarsePointer();
   const phoneMode = usePhoneMode();
 
   useEffect(() => {
-    if (host.kind !== 'tauri') return;
+    if (!isDesktopHost(host)) return;
     let active = true;
     void host.readDesktopPrefs().then((prefs) => {
       if (active && prefs !== null) {
@@ -72,11 +73,11 @@ export function GeneralSection() {
     const next = { ...desktopPrefs, ...patch };
     setDesktopPrefs(next);
     writeDesktopPrefs(next);
-    if (host.kind === 'tauri') void host.writeDesktopPrefs(next);
+    if (isDesktopHost(host)) void host.writeDesktopPrefs(next);
   };
 
   const toggleAutostart = (checked: boolean) => {
-    if (host.kind !== 'tauri' || !host.setDesktopAutostart || autostartBusy) return;
+    if (!isDesktopHost(host) || !host.setDesktopAutostart || autostartBusy) return;
     const previous = autostartEnabled;
     setAutostartEnabled(checked);
     setAutostartBusy(true);

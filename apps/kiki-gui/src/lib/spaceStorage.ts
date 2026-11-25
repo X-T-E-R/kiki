@@ -31,6 +31,7 @@
  * explicit `isPrimary: true`); every other homeId is namespaced.
  */
 
+import { isDesktopHostKind } from '../host/host';
 import {
   configureSpaceStorage,
   activeSpace,
@@ -54,7 +55,7 @@ export const MAIN_SPACE_HOME_ID = 'main';
 
 /** The part of the host adapter the space boot needs. */
 export interface SpaceBootHost {
-  readonly kind: 'browser' | 'tauri' | 'vscode';
+  readonly kind: 'browser' | 'tauri' | 'electron' | 'vscode';
   /** Raw active-space payload from the desktop entry; validated here. */
   readonly activeSpace?: () => Promise<unknown>;
 }
@@ -118,7 +119,7 @@ export async function initializeSpaceStorage(
     configureSpaceStorage(injected);
     return activeSpace();
   }
-  if (host !== null && host.kind === 'tauri' && host.activeSpace !== undefined) {
+  if (host !== null && isDesktopHostKind(host.kind) && host.activeSpace !== undefined) {
     try {
       const fromHost = parseActiveSpacePayload(await host.activeSpace());
       if (fromHost !== null) {

@@ -201,6 +201,7 @@ export type SystemNotificationState = 'granted' | 'notAsked' | 'declined' | 'blo
 async function systemPermission(host: HostAdapter): Promise<SystemNotificationPermission | undefined> {
   if (host.notify === undefined) return undefined;
   if (host.kind === 'tauri') return tauriNotificationPermission();
+  if (host.kind === 'electron') return 'granted';
   // The VS Code webview hands notifications to its extension: nothing to ask.
   if (isVscodeWebview()) return 'granted';
   return browserNotificationPermission();
@@ -225,6 +226,7 @@ export function requestSystemNotifications(host: HostAdapter): Promise<boolean> 
   publishAsk(null);
   if (host.notify === undefined) return Promise.resolve(false);
   if (host.kind === 'tauri') return requestTauriPermission();
+  if (host.kind === 'electron') return Promise.resolve(true);
   if (isVscodeWebview()) return Promise.resolve(true);
   return browserNotificationPermission() === undefined ? Promise.resolve(false) : requestBrowserPermission();
 }
