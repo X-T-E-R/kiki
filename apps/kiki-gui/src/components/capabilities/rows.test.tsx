@@ -2,7 +2,7 @@
 import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SkillDescriptor, Workspace } from '@kiki/protocol';
 import { ApiError } from '@kiki/session-core/transport';
 import { I18nProvider } from '../../i18n';
@@ -45,8 +45,11 @@ const sampleSkill: SkillDescriptor = {
   argument_hint: '--strict',
 };
 
-beforeEach(async () => {
+beforeAll(async () => {
   await LazyPreviewWorkspace.preload();
+}, 30_000);
+
+beforeEach(() => {
   client.previewHostFile.mockReset();
   client.readBuiltinSkill.mockReset();
   client.readHostFile.mockReset();
@@ -670,6 +673,83 @@ describe('SkillsView at scale', () => {
     });
     expect(rows('builtin')).toBe(3);
     expect(container.querySelector('[data-list-count]')?.textContent).toBe('3 of 43');
+    expect(container.querySelector('[data-skills-shelf-scope="filtered"]')?.textContent).toBe('3 of 43 skills match');
+    const jumpKeys = Array.from(container.querySelectorAll('[data-skills-jump]')).map((el) => el.getAttribute('data-skills-jump'));
+    expect(jumpKeys).toEqual(['builtin']);
+    expect(container.querySelector('[data-skills-jump="builtin"]')?.textContent).toContain('3/12');
+  });
+
+  it('shows workspace scope counts, unfolds folded virtualized groups on jump, and scrolls heading below toolbar', async () => {
+    const fiftyPlus: SkillDescriptor[] = [
+      { name: 'plugin-a', description: 'Plugin skill', path: 'C:/pl/a/SKILL.md', source: 'extra', plugin_id: 'alpha' },
+      ...Array.from({ length: 45 }, (_, index) => ({
+        name: `project-${index}`,
+        description: `Project skill ${index}`,
+        path: `C:/p/${index}/SKILL.md`,
+        source: 'project' as const,
+        enabled: index === 0 ? false : true,
+      })),
+      ...Array.from({ length: 6 }, (_, index) => ({
+        name: `kiki-${index}`,
+        description: `Built-in ${index}`,
+        path: `builtin:kiki-${index}`,
+        source: 'builtin' as const,
+      })),
+    ];
+    localStorage.setItem('kiki.locale', 'en');
+    localStorage.removeItem('kiki.settingsLists');
+    resetListPrefsCache();
+    client.listWorkspaceSkills.mockResolvedValue({ skills: fiftyPlus });
+
+    let scrolledToTop: number | null = null;
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <I18nProvider>
+            <MemoryRouter>
+              <MediaPreviewProvider>
+                <div data-settings-scroll style={{ overflowY: 'auto', height: 600 }}>
+                  <SkillsView workspaceId="ws" />
+                </div>
+              </MediaPreviewProvider>
+            </MemoryRouter>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    for (let attempt = 0; attempt < 20 && container.querySelector('[data-skills-shelf-rail]') === null; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+
+    expect(container.querySelector('[data-skills-shelf-scope="workspace"]')?.textContent).toBe('Workspace · On 51/52');
+    expect(Array.from(container.querySelectorAll('[data-skills-jump]')).map((el) => el.getAttribute('data-skills-jump')))
+      .toEqual(['plugin', 'project', 'builtin']);
+
+    // Fold builtin, then jump to it via the shelf rail — must unfold, scroll below toolbar, and focus heading.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-list-group-toggle="builtin"]')!.click();
+    });
+    expect(container.querySelector('[data-list-group="builtin"]')?.hasAttribute('data-list-group-folded')).toBe(true);
+
+    const scroller = container.querySelector<HTMLElement>('[data-settings-scroll]')!;
+    scroller.scrollTo = ((options: ScrollToOptions | number, y?: number) => {
+      scrolledToTop = typeof options === 'number' ? (y ?? 0) : (options.top ?? 0);
+    }) as typeof scroller.scrollTo;
+    scroller.getBoundingClientRect = () => ({ top: 100, bottom: 700, left: 0, right: 800, width: 800, height: 600, x: 0, y: 100, toJSON: () => ({}) }) as DOMRect;
+    const toolbar = container.querySelector<HTMLElement>('[data-list-toolbar]')!;
+    toolbar.getBoundingClientRect = () => ({ top: 100, bottom: 148, left: 0, right: 800, width: 800, height: 48, x: 0, y: 100, toJSON: () => ({}) }) as DOMRect;
+    const builtinSection = container.querySelector<HTMLElement>('[data-list-group="builtin"]')!;
+    builtinSection.getBoundingClientRect = () => ({ top: 2700, bottom: 3000, left: 0, right: 800, width: 800, height: 300, x: 0, y: 2700, toJSON: () => ({}) }) as DOMRect;
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-skills-jump="builtin"]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+
+    expect(container.querySelector('[data-list-group="builtin"]')?.hasAttribute('data-list-group-folded')).toBe(false);
+    // 2700 (section top) - 100 (scroller top) - 48 (toolbar) - 8 (gap) = 2544
+    expect(scrolledToTop).toBe(2544);
+    expect(document.activeElement).toBe(container.querySelector('[data-list-group-toggle="builtin"]'));
   });
 });
 

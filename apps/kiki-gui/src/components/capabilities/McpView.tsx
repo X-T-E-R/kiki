@@ -9,7 +9,7 @@
  * per workspace (the management plane addresses project layers by cwd).
  */
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
@@ -19,7 +19,9 @@ import { useI18n } from '../../i18n';
 import { toolDisplayName } from '../../lib/pluginCatalog';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, InlineError, type Feedback } from '../controls';
-import { McpConfigManager } from '../settings/McpConfigManager';
+import { McpConfigManager, type McpAddIntent } from '../settings/McpConfigManager';
+
+export type { McpAddIntent };
 
 function pathKey(path: string): string | undefined {
   const windows = /^(?:[A-Za-z]:[\\/]|\\\\|\/\/)/.test(path);
@@ -53,7 +55,17 @@ export function findMcpWorkspace(cwd: string, workspaces: readonly WorkspaceCata
   return matched;
 }
 
-export function McpView({ cwd }: { readonly cwd: string }) {
+export function McpView({
+  cwd,
+  externalAddControls = false,
+  addIntent,
+  onConsumeAddIntent,
+}: {
+  readonly cwd: string;
+  readonly externalAddControls?: boolean;
+  readonly addIntent?: McpAddIntent;
+  readonly onConsumeAddIntent?: (id: number) => void;
+}) {
   const { client, klient } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
@@ -120,15 +132,18 @@ export function McpView({ cwd }: { readonly cwd: string }) {
     staleTime: 60_000,
   });
 
-  const toolsByServer = new Map<string, string[]>();
-  for (const tool of toolsQuery.data?.tools ?? []) {
-    if (tool.source !== 'mcp' || tool.mcp_server_id === undefined) continue;
-    const bucket = toolsByServer.get(tool.mcp_server_id) ?? [];
-    bucket.push(toolDisplayName(tool.name));
-    toolsByServer.set(tool.mcp_server_id, bucket);
-  }
+  const toolsByServer = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const tool of toolsQuery.data?.tools ?? []) {
+      if (tool.source !== 'mcp' || tool.mcp_server_id === undefined) continue;
+      const bucket = map.get(tool.mcp_server_id) ?? [];
+      bucket.push(toolDisplayName(tool.name));
+      map.set(tool.mcp_server_id, bucket);
+    }
+    return map;
+  }, [toolsQuery.data]);
 
-  const restart = async (serverId: string) => {
+  const restart = useCallback(async (serverId: string) => {
     setFeedback(null);
     try {
       await client.restartMcpServer(serverId);
@@ -137,38 +152,45 @@ export function McpView({ cwd }: { readonly cwd: string }) {
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     }
-  };
+  }, [client, locale, queryClient, t]);
+
+  const runtime = useMemo(() => ({
+    servers: runtimeQuery.data?.servers ?? [],
+    toolsByServer,
+    onRestart: restart,
+  }), [restart, runtimeQuery.data?.servers, toolsByServer]);
 
   return (
-    <div className="min-w-0 space-y-2" data-mcp-view>
+    <div className="min-w-0 space-y-3" data-mcp-view>
       {matchedWorkspace !== undefined && (trustQuery.data !== undefined || trustQuery.isError) ? (
         <div
           data-workspace-trust-strip
-          className="flex items-center justify-between rounded-lg border border-hairline bg-ink/[0.03] px-3 py-2 text-[12px] text-ink"
+          className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 rounded-lg bg-ink/[0.03] px-3 py-2 text-[12px] text-ink"
         >
           {trustQuery.isError ? (
             <>
-              <div className="flex items-center gap-2 min-w-0">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
                 <InlineError error={trustQuery.error} />
               </div>
               <button
                 type="button"
                 disabled={trustQuery.isRefetching}
                 onClick={() => { void trustQuery.refetch(); }}
-                className="shrink-0 ml-3 font-medium underline hover:text-selected-ink focus-visible:outline-none"
+                className="inline-flex min-h-7 shrink-0 items-center rounded px-1 font-medium text-ink underline-offset-2 hover:text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
               >
                 {t('common.retry')}
               </button>
             </>
           ) : (
             <>
-              <div className="flex items-center gap-2 min-w-0">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
                 <span
+                  aria-hidden
                   className={`inline-block h-2 w-2 shrink-0 rounded-full ${
                     isTrusted ? 'bg-success' : 'bg-ink-faint'
                   }`}
                 />
-                <span className="truncate">
+                <span className="min-w-0 leading-4">
                   {isTrusted
                     ? t('st.mcp.workspaceTrustedNotice')
                     : t('st.mcp.workspaceUntrustedNotice')}
@@ -178,7 +200,7 @@ export function McpView({ cwd }: { readonly cwd: string }) {
                 type="button"
                 disabled={trustBusy || trustQuery.isLoading || trustQuery.isError}
                 onClick={() => { void toggleTrust(); }}
-                className="shrink-0 ml-3 font-medium underline hover:text-selected-ink focus-visible:outline-none"
+                className="inline-flex min-h-7 shrink-0 items-center rounded px-1 font-medium text-ink underline-offset-2 hover:text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
               >
                 {isTrusted
                   ? t('st.mcp.revokeTrustAction')
@@ -194,11 +216,10 @@ export function McpView({ cwd }: { readonly cwd: string }) {
         loading={configQuery.isLoading}
         error={configQuery.error}
         onEcho={(servers) => { queryClient.setQueryData(['mcp-managed-servers', cwd], servers); }}
-        runtime={{
-          servers: runtimeQuery.data?.servers ?? [],
-          toolsByServer,
-          onRestart: restart,
-        }}
+        runtime={runtime}
+        externalAddControls={externalAddControls}
+        addIntent={addIntent}
+        onConsumeAddIntent={onConsumeAddIntent}
       />
       <FeedbackLine feedback={feedback} />
     </div>

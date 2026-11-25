@@ -33,7 +33,7 @@ export function createCapabilitiesWalker({ page, shot, setProofTheme, webUrl, fi
     await reset();
 
     // Market: categories, cards, menu, Advanced, one category.
-    await go('/capabilities', '[data-plugins-view="market"] [data-catalog-row]');
+    await go('/capabilities?view=market', '[data-plugins-view="market"] [data-catalog-row]');
     if (await page.locator('[data-installed-strip]').count() !== 0) throw new Error('the market must not carry an installed strip');
     const officeIcon = await page.locator('[data-catalog-row="kiki-office"] [data-capability-icon]').first().getAttribute('data-capability-icon');
     if (officeIcon !== 'image') throw new Error(`official catalog icon must render as an image, saw ${officeIcon}`);
@@ -153,7 +153,8 @@ export function createCapabilitiesWalker({ page, shot, setProofTheme, webUrl, fi
     await page.waitForSelector('[data-mcp-error="fixture-web"]', { timeout: 5000 });
     await page.waitForTimeout(250);
     await shot(`cap-mcp-error-${tag}`);
-    await page.locator('[data-mcp-add]').click();
+    await page.locator('[data-capabilities-add]').click();
+    await page.locator('[data-capabilities-add-menu] [data-mcp-add]').click();
     await page.waitForSelector('[data-mcp-editor]', { timeout: 5000 });
     await shot(`cap-mcp-add-${tag}`);
     await go('/capabilities?tab=tools', '[data-tools-view] [data-tool-row]');

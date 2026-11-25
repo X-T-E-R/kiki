@@ -13,9 +13,9 @@
  * sub-view of both, so every surface shows the same state.
  */
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 
-import { errorText, type I18nKey } from '@kiki/session-core/i18n';
+import { type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import type { PluginMarketplaceEntry, PluginSummary } from '../../lib/client';
@@ -26,7 +26,7 @@ import { Icon, Spinner } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { AddSourceDialog, CatalogSourceField } from './AddSourceDialog';
 import { MediaSourcesView } from '../media/MediaSourcesView';
-import { InstalledList } from './InstalledList';
+import { InstalledList, PluginLoadFailure, describePluginLoadError } from './InstalledList';
 import { InstallFlow, type InstallRequest } from './InstallFlow';
 import { PluginCard } from './PluginCard';
 import { PluginDetail } from './PluginDetail';
@@ -34,6 +34,19 @@ import { CapabilitySection, Disclosure, EmptyNote, QUIET_BUTTON, RowGrid, Search
 import { useInstalledPlugins, usePluginGithubUpdates, usePluginMarketplace, usePluginRecommendations, type PluginSubject } from './usePlugins';
 
 
+
+function findScrollContainer(anchor: HTMLElement | null): HTMLElement | null {
+  if (anchor === null) return null;
+  const marked = anchor.closest<HTMLElement>('[data-settings-scroll]');
+  if (marked !== null) return marked;
+  for (let node = anchor.parentElement; node !== null; node = node.parentElement) {
+    const overflowY = getComputedStyle(node).overflowY;
+    if (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') {
+      return node;
+    }
+  }
+  return null;
+}
 
 export type PluginsRoute =
   | { readonly view: 'market' }
@@ -71,6 +84,7 @@ export function PluginsView({
 }) {
   const { t, tp, locale, time } = useI18n();
   const { client, scopeId } = useConnection();
+  const rootRef = useRef<HTMLDivElement>(null);
   // The entry exists only where the server offers the import routes, so a build
   // without them shows no dead control.
   const importAvailable = useImportHistoryEnabled(client, scopeId).enabled === true;
@@ -81,6 +95,22 @@ export function PluginsView({
   const [install, setInstall] = useState<InstallRequest | null>(null);
   const [adding, setAdding] = useState(false);
   const [advanced, setAdvanced] = useState(false);
+
+  const jumpToShelf = useCallback((elementId: string) => {
+    const root = rootRef.current;
+    if (root === null) return;
+    const section = root.querySelector<HTMLElement>(`[data-capability-section="${elementId}"]`);
+    if (section === null) return;
+    const scroller = findScrollContainer(root);
+    if (scroller !== null) {
+      const scrollerRect = scroller.getBoundingClientRect();
+      const sectionRect = section.getBoundingClientRect();
+      const targetTop = Math.max(0, Math.round(scroller.scrollTop + sectionRect.top - scrollerRect.top - 12));
+      scroller.scrollTo({ top: targetTop, behavior: 'auto' });
+    } else {
+      section.scrollIntoView?.({ block: 'start' });
+    }
+  }, []);
 
   const installed = installedQuery.data?.plugins ?? [];
   const entries = marketQuery.data?.entries ?? [];
@@ -175,13 +205,20 @@ export function PluginsView({
   const filtering = activeQuery.trim() !== '';
   const relevant = new Set((recommendQuery.data?.entries ?? []).map((entry) => entry.id));
   const shelves = shelveCatalog(entries, activeQuery, relevant);
+  const enabledCount = installed.filter((plugin) => plugin.enabled).length;
   const attention = installed.filter((plugin) => plugin.state === 'error' || plugin.hasErrors || updates.has(plugin.id)).length;
+  const marketFailure = marketQuery.isError
+    ? describePluginLoadError(marketQuery.error, locale, t('err.serverData'), t('common.unknownError'))
+    : undefined;
+  const githubFailure = githubQuery.isError
+    ? describePluginLoadError(githubQuery.error, locale, t('err.serverData'), t('common.unknownError'))
+    : undefined;
   const updateCheck = hasGithub ? (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 text-[12px] leading-[18px]" data-plugins-update-check={githubQuery.isFetching ? 'checking' : githubQuery.isError ? 'failed' : 'checked'}>
       {githubQuery.isFetching ? (
         <span className="flex items-center gap-2 text-ink-faint" role="status"><Spinner label={t('cap.updates.checking')} size={12} />{t('cap.updates.checking')}</span>
-      ) : githubQuery.isError ? (
-        <span className="text-danger" role="alert">{t('cap.updates.failed', { detail: errorText(locale, githubQuery.error) })}</span>
+      ) : githubFailure !== undefined ? (
+        <span className="text-danger" role="alert">{t('cap.updates.failed', { detail: githubFailure.summary })}</span>
       ) : githubQuery.dataUpdatedAt > 0 ? (
         <span className="text-ink-faint">{t('cap.updates.checked', { time: time.relativeTime(new Date(githubQuery.dataUpdatedAt).toISOString()) })}</span>
       ) : null}
@@ -194,7 +231,7 @@ export function PluginsView({
   ) : undefined;
 
   return (
-    <div className="min-w-0 space-y-6" data-plugins-view={route.view}>
+    <div ref={rootRef} className="min-w-0 space-y-6" data-plugins-view={route.view}>
       <div className="flex flex-wrap items-center gap-2.5">
         <Segmented
           value={tab}
@@ -211,6 +248,11 @@ export function PluginsView({
             { value: 'market', label: t('cap.plugins.market') },
           ]}
         />
+        {tab === 'installed' && !inSettings && !installedQuery.isPending && !installedQuery.isError && installed.length > 0 ? (
+          <span className="ml-auto text-[12px] text-ink-faint tabular-nums" data-plugins-installed-summary>
+            {t('st.plugins.summary', { total: installed.length, enabled: enabledCount })}
+          </span>
+        ) : null}
         {tab === 'market' && searchable ? (
           <div className="min-w-[180px] flex-1">
             <SearchField
@@ -272,15 +314,48 @@ export function PluginsView({
           ) : null}
           {marketQuery.isPending ? (
             <p className="flex items-center gap-2 text-[13px] text-ink-faint" role="status"><Spinner label={t('cap.loading')} />{t('cap.plugins.loadingCatalog')}</p>
-          ) : marketQuery.isError ? (
-            <div className="space-y-2" data-plugins-catalog-error>
-              <p role="alert" className="text-[13px] text-ink-soft">{t('cap.market.loadFailed', { detail: errorText(locale, marketQuery.error) })}</p>
-              <button type="button" className={SECONDARY_BUTTON} onClick={() => { void marketQuery.refetch(); }}>{t('common.retry')}</button>
-            </div>
+          ) : marketFailure !== undefined ? (
+            <PluginLoadFailure
+              dataAttr="data-plugins-catalog-error"
+              summary={t('cap.market.loadFailed', { detail: marketFailure.summary })}
+              diagnostic={marketFailure.diagnostic}
+              retrying={marketQuery.isFetching}
+              onRetry={() => { void marketQuery.refetch(); }}
+            />
           ) : marketQuery.data?.configured === false ? (
             <EmptyNote title={t('cap.plugins.noCatalog')} body={t('cap.plugins.noCatalogBody')} />
           ) : (
             <div className="space-y-8">
+              {!filtering && shelves.length > 1 ? (
+                <div className="-mt-2 border-b border-hairline/70 pb-2.5">
+                  <nav
+                    aria-label={t('cap.plugins.views')}
+                    data-plugins-shelf-rail
+                    className="-mx-2 flex flex-wrap items-center gap-0.5"
+                  >
+                    {shelves.map((shelf) => {
+                      const sectionId = shelf.group === undefined
+                        ? `plugins-shelf-${shelf.id}`
+                        : `plugins-shelf-${shelf.id}-${shelf.group}`;
+                      const heading = shelf.group === undefined
+                        ? t(SHELF_TITLE[shelf.id])
+                        : groupHeading(shelf.group, shelf.entries, t);
+                      return (
+                        <button
+                          key={sectionId}
+                          type="button"
+                          data-plugins-shelf-jump={sectionId}
+                          onClick={() => { jumpToShelf(sectionId); }}
+                          className="inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                        >
+                          <span>{heading}</span>
+                          <span className="text-[11.5px] text-ink-faint tabular-nums">{shelf.entries.length}</span>
+                        </button>
+                      );
+                    })}
+                  </nav>
+                </div>
+              ) : null}
               {shelves.map((shelf) => (
                 <CatalogShelfSection
                   key={shelf.group ?? shelf.id}
