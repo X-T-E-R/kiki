@@ -230,6 +230,32 @@ describe('WindowService and TrayService', () => {
     expect(service.isQuitting).toBe(true);
   });
 
+  it('forwards light, dark, and system themes to Electron nativeTheme', () => {
+    const appliedThemes: Array<'light' | 'dark' | 'system'> = [];
+    const service = new WindowService({
+      platform: 'win32',
+      windowMode: { presetId: 'kiki', windowId: 'w-main' },
+      spaceWindowMode: 'switch',
+      startWindowless: false,
+      getCloseToTray: () => true,
+      isTrayActive: () => true,
+      createBrowserWindow: async () => createFakeWindow(),
+      getDaemonOrigin: () => null,
+      ensureDaemonOrigin: async () => 'http://127.0.0.1:41234',
+      detachDesktop: () => undefined,
+      releaseAppQuit: () => undefined,
+      setNativeTheme: (theme) => {
+        appliedThemes.push(theme);
+      },
+      resolveLaunchExecutable: () => 'C:/Kiki/active/kiki-desktop.exe',
+    });
+
+    service.setTheme('light');
+    service.setTheme('dark');
+    service.setTheme('system');
+    expect(appliedThemes).toEqual(['light', 'dark', 'system']);
+  });
+
   it('retries Windows tray creation and reveals fallback window if all logon retries fail', async () => {
     let attempts = 0;
     const recovered = await retryTrayCreation({

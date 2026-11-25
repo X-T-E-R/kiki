@@ -38,7 +38,7 @@ export interface WindowServiceDeps {
   readonly detachDesktop: () => void;
   readonly releaseAppQuit: () => void;
   readonly setDockVisible?: (visible: boolean) => void;
-  readonly setNativeTheme?: (theme: 'light' | 'dark') => void;
+  readonly setNativeTheme?: (theme: 'light' | 'dark' | 'system') => void;
   readonly resolveLaunchExecutable: () => string;
   readonly currentExe?: string;
   readonly currentDir?: string;
@@ -206,7 +206,7 @@ export class WindowService {
     return win.isVisible() && win.isFocused();
   }
 
-  setTheme(theme: 'light' | 'dark'): void {
+  setTheme(theme: 'light' | 'dark' | 'system'): void {
     this.deps.setNativeTheme?.(theme);
   }
 

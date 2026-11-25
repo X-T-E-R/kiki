@@ -193,9 +193,10 @@ export interface ElectronBridge {
   readonly window: {
     showMainWindow(): Promise<void>;
     isVisibleAndFocused(): Promise<boolean>;
-    setTheme(theme: 'light' | 'dark'): Promise<void>;
+    setTheme(theme: 'light' | 'dark' | 'system'): Promise<void>;
     setZoom(factor: number): Promise<boolean>;
     getWindowMode(): Promise<DesktopWindowMode | null>;
+    onFocus(cb: () => void): () => void;
   };
   readonly pluginFocus: {
     read(): Promise<PluginFocusIntent | null>;

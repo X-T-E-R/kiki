@@ -72,6 +72,7 @@ export const IPC_EVENTS = {
   trayNewSession: 'kiki:event:trayNewSession',
   subscribeIntent: 'kiki:event:subscribeIntent',
   subscribeUrl: 'kiki:event:subscribeUrl',
+  windowFocus: 'kiki:event:windowFocus',
 } as const;
 
 const nonEmptyString = z.string().min(1);
@@ -184,7 +185,7 @@ export const IPC_SCHEMAS = {
   [IPC_CHANNELS.sshSetWorkspaceScope]: z.object({ scope: z.enum(['local', 'ssh']) }),
   [IPC_CHANNELS.windowShowMain]: z.void(),
   [IPC_CHANNELS.windowIsVisibleAndFocused]: z.void(),
-  [IPC_CHANNELS.windowSetTheme]: z.object({ theme: z.enum(['light', 'dark']) }),
+  [IPC_CHANNELS.windowSetTheme]: z.object({ theme: z.enum(['light', 'dark', 'system']) }),
   [IPC_CHANNELS.windowSetZoom]: z.object({ factor: z.number().finite().min(0.25).max(5) }),
   [IPC_CHANNELS.windowGetMode]: z.void(),
   [IPC_CHANNELS.pluginFocusRead]: z.void(),

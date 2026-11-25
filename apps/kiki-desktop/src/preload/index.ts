@@ -130,6 +130,10 @@ const bridge: ElectronBridge = {
       ipcRenderer.invoke(IPC_CHANNELS.windowSetZoom, { factor }) as Promise<boolean>,
     getWindowMode: () =>
       ipcRenderer.invoke(IPC_CHANNELS.windowGetMode) as Promise<DesktopWindowMode | null>,
+    onFocus: (cb) =>
+      subscribeIpcEvent<void>(IPC_EVENTS.windowFocus, () => {
+        cb();
+      }),
   },
 
   pluginFocus: {

@@ -239,6 +239,9 @@ if (!singleInstanceLock) {
       activeBrowserWindow = win;
       const wrapped = wrapBrowserWindow(win);
 
+      win.on('focus', () => {
+        sendToRenderer(IPC_EVENTS.windowFocus);
+      });
       win.on('close', (event) => {
         windows.onWindowClose(event);
       });

@@ -17,7 +17,7 @@ import { createIpcHandlers } from '#/main/registerIpc';
 import { SpaceCatalog } from '#/main/spaceCatalog';
 import { parseSubscribeIntent, SubscribeIntentQueue } from '#/main/subscribeIntent';
 import { WindowService } from '#/main/windowService';
-import { IPC_CHANNELS } from '#/shared/ipcChannels';
+import { IPC_CHANNELS, IPC_EVENTS } from '#/shared/ipcChannels';
 import { verifyFuseConfig } from '../scripts/verify-fuses.mjs';
 
 const tempDirs: string[] = [];
@@ -255,6 +255,7 @@ describe('save sink, notifications, prefs, updates, IPC Zod validation, and Elec
       serverEntry: '/opt/kiki/server-entry.mjs',
       homeDir: dir,
     });
+    const appliedThemes: Array<'light' | 'dark' | 'system'> = [];
     const windows = new WindowService({
       windowMode: { presetId: 'kiki', windowId: 'w-1' },
       spaceWindowMode: 'switch',
@@ -268,6 +269,9 @@ describe('save sink, notifications, prefs, updates, IPC Zod validation, and Elec
       ensureDaemonOrigin: async () => 'http://127.0.0.1:41234',
       detachDesktop: () => undefined,
       releaseAppQuit: () => undefined,
+      setNativeTheme: (theme) => {
+        appliedThemes.push(theme);
+      },
       resolveLaunchExecutable: () => '/opt/kiki/kiki-desktop',
     });
     const notifications = new NotificationService({
@@ -304,6 +308,10 @@ describe('save sink, notifications, prefs, updates, IPC Zod validation, and Elec
     });
 
     expect(handlers[IPC_CHANNELS.windowGetMode](undefined)).toEqual({ presetId: 'kiki', windowId: 'w-1' });
+    handlers[IPC_CHANNELS.windowSetTheme]({ theme: 'system' });
+    expect(appliedThemes).toEqual(['system']);
+    expect(() => handlers[IPC_CHANNELS.windowSetTheme]({ theme: 'sepia' })).toThrow(/Invalid IPC payload/);
+    expect(IPC_EVENTS.windowFocus).toBe('kiki:event:windowFocus');
     expect(() => handlers[IPC_CHANNELS.windowSetZoom]({ factor: 99 })).toThrow(/Invalid IPC payload/);
     await expect(
       handlers[IPC_CHANNELS.pluginFocusAck]({ homeId: 'main', requestId: 'not-a-number' }),
