@@ -10,6 +10,7 @@ import {
 import type { Event2, Event2Class } from '#/app/event/event2';
 import type { FoldContext } from '#/state/state';
 import {
+  hasUnfinishedTurn,
   TurnCancel,
   TurnEnded,
   turnKey,
@@ -77,6 +78,10 @@ describe('turnKey lastEnded', () => {
     s = fold(s, new ContextUndo({ count: 1 }));
     expect(s.anchorTurnIds).toEqual([0]);
     expect(s.lastEnded).toBeUndefined();
+    expect(hasUnfinishedTurn(s)).toBe(false);
+
+    const crashed = fold(s, new TurnPrompt({ input: [], origin: { kind: 'user' } }));
+    expect(hasUnfinishedTurn(crashed)).toBe(true);
   });
 
   it('keeps the stored outcome when an undo rewinds only later turns', () => {
@@ -207,5 +212,18 @@ describe('TurnEnded serialization', () => {
       reason: 'completed',
       time: 7,
     });
+  });
+
+  it('rejects pre-upgrade turn checkpoints lacking openTurnIds so canonical replay rebuilds undo state', () => {
+    const legacyCheckpoint = {
+      nextTurnId: 2,
+      cancelledTurnIds: [],
+      heldCancelledTurns: {},
+      anchorTurnIds: [0],
+      activeTurnIds: [0],
+      lastEnded: undefined,
+    };
+    expect(turnKey.replayable.schema.safeParse(legacyCheckpoint).success).toBe(false);
+    expect(turnKey.replayable.schema.safeParse({ ...legacyCheckpoint, openTurnIds: [] }).success).toBe(true);
   });
 });

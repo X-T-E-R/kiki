@@ -45,6 +45,7 @@ const ITestTool = createDecorator<ITestTool>('test-feature-tool');
 
 class TestTool implements ITestTool {
   declare readonly _serviceBrand: undefined;
+  readonly foregroundPolicy = 'instant' as const;
   readonly name = 'TestTool';
   readonly description = 'test tool';
   readonly parameters = {};

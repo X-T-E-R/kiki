@@ -223,6 +223,65 @@ it('settles automatic foreground generation through the existing Task release an
   await vi.waitFor(() => expect(ctx.get(IAgentTaskService).getTask(job.task_id!)).toMatchObject({ kind: 'media', jobId: job.job_id, status: 'completed', terminalNotificationSuppressed: true }));
 });
 
+it('arms the 15s foreground auto-detach timer and detaches immediately on steerSignal for automatic media generation', async () => {
+  const media = ctx.get(IPluginMediaService);
+  let resolveRun!: (job: MediaJob) => void;
+  const runDone = new Promise<MediaJob>((resolve) => { resolveRun = resolve; });
+  const job: MediaJob = { schemaVersion: 1, job_id: 'media-steer0123456789abcdef012345678', request_id: 'steer-fixture', owner_session_id: ctx.get(ISessionContext).sessionId, owner_agent_id: ctx.get(IAgentScopeContext).agentId, provider: 'fixture/synthetic', state: 'running', phase: 'submit', can_resume: false, artifacts: [], created_at: 1, updated_at: 1 };
+  vi.spyOn(media, 'start').mockResolvedValue(job);
+  vi.spyOn(media, 'run').mockImplementation(() => runDone);
+  vi.spyOn(media, 'job').mockImplementation(async () => job);
+  vi.spyOn(media, 'bindTask').mockImplementation(async (_id, taskId) => { job.task_id = taskId; return job; });
+  const stopLocal = vi.spyOn(media, 'stopLocal').mockResolvedValue(job);
+  const tasks = ctx.get(IAgentTaskService);
+  const registerSpy = vi.spyOn(tasks, 'registerTask');
+  const steer = new AbortController();
+  const stop = new AbortController();
+  const request = { kind: 'image' as const, prompt: 'long render' };
+
+  const pending = ctx.get(IAgentPluginMediaService).api('steer-fixture', request, steer.signal, stop.signal).generate({ request });
+  await vi.waitFor(() => expect(job.task_id).toBeDefined());
+  const registerOptions = registerSpy.mock.calls[0]?.[1];
+  expect(registerOptions).toMatchObject({
+    detached: false,
+    detachTimeoutMs: 0,
+    autoBackgroundOnTimeout: true,
+    signal: stop.signal,
+    steerSignal: steer.signal,
+  });
+  expect(registerOptions?.timeoutMs).toBeGreaterThan(0);
+  expect(registerOptions?.timeoutMs).toBeLessThanOrEqual(15_000);
+
+  steer.abort(new Error('send now'));
+  expect(await pending).toMatchObject({ state: 'running', task_id: job.task_id });
+  expect(tasks.getTask(job.task_id!)).toMatchObject({ detached: true, status: 'running' });
+  stop.abort(new Error('turn stopped after detach'));
+  expect(stopLocal).not.toHaveBeenCalled();
+
+  job.state = 'succeeded';
+  resolveRun(job);
+  await vi.waitFor(() => expect(tasks.getTask(job.task_id!)).toMatchObject({ status: 'completed' }));
+
+  const fgJob: MediaJob = { ...job, job_id: 'media-stop0123456789abcdef0123456789', request_id: 'stop-fixture', state: 'running', task_id: undefined };
+  let resolveFgRun!: (value: MediaJob) => void;
+  const fgRunDone = new Promise<MediaJob>((resolve) => { resolveFgRun = resolve; });
+  vi.spyOn(media, 'start').mockResolvedValueOnce(fgJob);
+  vi.spyOn(media, 'run').mockImplementationOnce(() => fgRunDone);
+  vi.spyOn(media, 'job').mockImplementation(async () => fgJob);
+  vi.spyOn(media, 'bindTask').mockImplementationOnce(async (_id, taskId) => { fgJob.task_id = taskId; return fgJob; });
+  stopLocal.mockImplementationOnce(async () => {
+    fgJob.state = 'stopped';
+    resolveFgRun(fgJob);
+    return fgJob;
+  });
+  const fgStop = new AbortController();
+  const fgPending = ctx.get(IAgentPluginMediaService).api('stop-fixture', request, undefined, fgStop.signal).generate({ request });
+  await vi.waitFor(() => expect(fgJob.task_id).toBeDefined());
+  fgStop.abort(new Error('Stopped by user.'));
+  expect(await fgPending).toMatchObject({ state: 'stopped' });
+  expect(stopLocal).toHaveBeenCalledTimes(1);
+});
+
 it.skipIf(!process.env['KIKI_MEDIA_SINGLE_PLUGIN_ROOT'])('carries an independent speech script through the unified plugin, real background Task and completion notification', async () => {
   await ctx.get(IConfigService).replace('pluginSettings', {});
   const plugins = ctx.get(IPluginService);

@@ -105,6 +105,7 @@ describe('thinking-only continuation', () => {
     const local = anthropicAgent(create, { permission: 'yolo' });
     local.get(IAgentToolRegistryService).register({
       name: 'FinishWork',
+      foregroundPolicy: 'instant',
       description: 'Complete work.',
       parameters: { type: 'object' },
       resolveExecution: () => ({
@@ -137,7 +138,7 @@ describe('thinking-only continuation', () => {
     const local = anthropicAgent(create, { permission: 'yolo' });
     const run = vi.fn(async () => ({ output: 'Work saved.' }));
     local.get(IAgentToolRegistryService).register({
-      name: 'FinishWork', description: 'Complete work.', parameters: { type: 'object' },
+      name: 'FinishWork', foregroundPolicy: 'instant', description: 'Complete work.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'FinishWork', execute: run }),
     });
     local.get(IAgentProfileService).update({ activeToolNames: ['FinishWork'] });
@@ -373,6 +374,7 @@ describe('thinking-only continuation', () => {
     const local = anthropicAgent(create, { permission: 'yolo' });
     local.get(IAgentToolRegistryService).register({
       name: 'FinishWork',
+      foregroundPolicy: 'instant',
       description: 'Complete work.',
       parameters: { type: 'object' },
       resolveExecution: () => ({
@@ -472,7 +474,7 @@ describe('thinking-only continuation', () => {
     const local = anthropicAgent(create, { permission: 'yolo', initialConfig: { retry: { policies: [{ match: 'ChatProviderError', backoff: 1 }] } } });
     let toolRuns = 0;
     local.get(IAgentToolRegistryService).register({
-      name: 'FinishWork', description: 'Complete work.', parameters: { type: 'object' },
+      name: 'FinishWork', foregroundPolicy: 'instant', description: 'Complete work.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'FinishWork', execute: async () => {
         toolRuns++;
         return { output: 'work saved' };
@@ -522,7 +524,7 @@ describe('thinking-only continuation', () => {
       const local = anthropicAgent(undefined, { model: 'gemini-4-carbon', permission: 'yolo', sdkFetch,
         initialConfig: { retry: { maxAttempts: mode === 'lower-budget' ? 2 : 5, policies: [{ match: '.*', retry: true, backoff: 1 }] } },
       });
-      local.get(IAgentToolRegistryService).register({ name: 'FinishWork', description: 'Complete work.', parameters: { type: 'object' },
+      local.get(IAgentToolRegistryService).register({ name: 'FinishWork', foregroundPolicy: 'instant', description: 'Complete work.', parameters: { type: 'object' },
         resolveExecution: () => ({ approvalRule: 'FinishWork', execute: async () => { toolRuns++; return { output: 'work saved' }; } }),
       });
       local.get(IAgentProfileService).update({ activeToolNames: ['FinishWork'] });
@@ -894,6 +896,7 @@ describe('zero-output continuation', () => {
     const local = anthropicAgent(create, { permission: 'yolo', initialConfig: { loopControl: { zeroOutputContinuation: true } } });
     local.get(IAgentToolRegistryService).register({
       name: 'FinishWork',
+      foregroundPolicy: 'instant',
       description: 'Complete work.',
       parameters: { type: 'object' },
       resolveExecution: () => ({

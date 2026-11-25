@@ -867,6 +867,7 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
       const executeSpy = vi.fn(async () => ({ output: 'ran' }));
       ix.get(IAgentToolRegistryService).register({
         name: 'DangerTool',
+        foregroundPolicy: 'instant',
         description: 'Fixture',
         parameters: { type: 'object' },
         resolveExecution: () => ({
@@ -1132,6 +1133,7 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
 
       ix.get(IAgentToolRegistryService).register({
         name: 'EchoTool',
+        foregroundPolicy: 'instant',
         description: 'Fixture',
         parameters: { type: 'object' },
         resolveExecution: () => ({
@@ -1341,7 +1343,7 @@ describe('skill frontmatter hooks, context injection, and fail-open Stop', () =>
       ix.get(IAgentExternalHooksService);
 
       ix.get(IAgentToolRegistryService).register({
-        name: 'ReadFixture', description: 'Read fixture', parameters: { type: 'object' },
+        name: 'ReadFixture', foregroundPolicy: 'instant', description: 'Read fixture', parameters: { type: 'object' },
         resolveExecution: () => ({ approvalRule: 'ReadFixture', accesses: ToolAccesses.none(), execute: async () => ({ output: 'fixture' }) }),
       });
       const runChildWithTool = async (prompt: string) => {

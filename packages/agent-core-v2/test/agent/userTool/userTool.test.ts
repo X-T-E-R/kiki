@@ -382,4 +382,40 @@ describe('AgentUserToolService (wire-backed)', () => {
     expect(written[0]).toMatchObject({ type: 'metadata' });
     expect(written.slice(1)).toEqual(records);
   });
+
+  it('releases an awaiting user tool cleanly when steerSignal arrives', async () => {
+    const ixSteer = disposables.add(new TestInstantiationService());
+    ixSteer.stub(IFileSystemStorageService, new InMemoryStorageService());
+    ixSteer.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    ixSteer.set(IAgentStateService, new AgentStateService());
+    ixSteer.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
+    ixSteer.stub(IAgentProfileService, createProfileStub());
+    ixSteer.set(ISessionStateService, new SessionStateService());
+    ixSteer.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+    ixSteer.set(IAgentUserToolService, new SyncDescriptor(AgentUserToolService));
+    registerTestAgentWire(ixSteer, testWireScope(SCOPE, 'user-tool-steer'), {
+      log: ixSteer.get(IAppendLogStore),
+    });
+    ixSteer.stub(IAgentScopeContext, makeAgentScopeContext({ agentId: 'main', agentScope: '' }));
+    const steerDispatcher = registerTestEventDispatcher(ixSteer);
+    const steerSvc = ixSteer.get(IAgentUserToolService);
+    const steerRegistry = ixSteer.get(IAgentToolRegistryService);
+    const interactions = ixSteer.get(ISessionInteractionService);
+
+    steerSvc.register(toolA);
+    const executable = steerRegistry.resolve(toolA.name);
+    expect(executable?.foregroundPolicy).toBe('steerable_wait');
+    const resolved = await executable!.resolveExecution({ x: 1 });
+    if (!('execute' in resolved)) throw new Error('expected runnable execution');
+    const signal = new AbortController();
+    const steer = new AbortController();
+    const running = resolved.execute({ turnId: 1, toolCallId: 'tc-steer', signal: signal.signal, steerSignal: steer.signal });
+    expect(interactions.listPending('user_tool')).toHaveLength(1);
+    steer.abort(new Error('Send now'));
+    const result = await running;
+    expect(result.isError).toBe(false);
+    expect(String(result.output)).toContain('New input arrived while waiting for user tool');
+    expect(interactions.listPending('user_tool')).toEqual([]);
+    await steerDispatcher.flush();
+  });
 });

@@ -24,6 +24,7 @@ describe('cache-safe A2 compaction and TurnCacheEnvelope contracts', () => {
     let toolDesc = 'Initial tool description v1';
     const reg = ctx.get(IAgentToolRegistryService).register({
       name: 'DemoRead',
+      foregroundPolicy: 'instant',
       description: toolDesc,
       parameters: { type: 'object', properties: { path: { type: 'string' } } },
       resolveExecution: () => ({ approvalRule: 'DemoRead', execute: async () => ({ output: 'ok' }) }),

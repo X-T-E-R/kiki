@@ -1047,7 +1047,7 @@ describe('stepRetry plugin', () => {
         usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
     }), { initialConfig: { retry: { policies: [{ match: 'APIConnectionError', backoff: 1 }] } } });
     ctx.get(IAgentPermissionModeService).setMode('yolo', 'ambient');
-    ctx.get(IAgentToolRegistryService).register({ name: 'SaveWork', description: 'Save fixture work.', parameters: { type: 'object' },
+    ctx.get(IAgentToolRegistryService).register({ name: 'SaveWork', foregroundPolicy: 'instant', description: 'Save fixture work.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'SaveWork', execute: action }) });
     ctx.get(IAgentProfileService).update({ activeToolNames: ['SaveWork'] });
     expect((await runTurn(1)).type).toBe('completed');
@@ -1328,7 +1328,7 @@ describe('stepRetry plugin', () => {
     }, responses_web_socket: { targets: [] } } });
     const execute = vi.fn(async () => ({ output: 'fixture saved' }));
     ctx.get(IAgentPermissionModeService).setMode('yolo', 'ambient');
-    ctx.get(IAgentToolRegistryService).register({ name: 'SaveWork', description: 'Save fixture work.', parameters: { type: 'object' },
+    ctx.get(IAgentToolRegistryService).register({ name: 'SaveWork', foregroundPolicy: 'instant', description: 'Save fixture work.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'SaveWork', execute }) });
     ctx.get(IAgentProfileService).update({ activeToolNames: ['SaveWork'] });
     const cancel = ctx.get(IEventBus).subscribe(TurnStepRetrying, () => { if (mode === 'cancel') controller.abort(); });

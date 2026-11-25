@@ -142,6 +142,7 @@ function schemaMessage(...names: string[]): ContextMessage {
 }
 
 class StubMcpTool implements ExecutableTool<Record<string, unknown>> {
+  readonly foregroundPolicy = 'instant' as const;
   readonly description: string;
   calls = 0;
   readonly parameters: Record<string, unknown>;
@@ -170,6 +171,7 @@ class StubMcpTool implements ExecutableTool<Record<string, unknown>> {
 }
 
 class EchoTool implements ExecutableTool<Record<string, unknown>> {
+  readonly foregroundPolicy = 'instant' as const;
   readonly description = 'Echo input text.';
   readonly parameters: Record<string, unknown> = { type: 'object', additionalProperties: true };
   calls = 0;

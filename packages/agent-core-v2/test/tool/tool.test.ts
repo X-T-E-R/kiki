@@ -1710,6 +1710,34 @@ describe('AgentRun tool execution contract', () => {
     expect(context.allEvents.filter((event) => event.type === '[rpc]' && event.event === 'task.notified')).toHaveLength(1);
   });
 
+  it('enforces explicit foregroundPolicy across the production agent tool registry without leaking it to ToolInfo', async () => {
+    const context = ctx = createTestAgent(sessionService(ISessionCronService, cronStub));
+    const registry = context.get(IAgentToolRegistryService);
+    await registry.prepare();
+    const refs = registry.listReferences();
+    expect(refs.length).toBeGreaterThan(15);
+    const policies = new Map<string, string>();
+    for (const ref of refs) {
+      const tool = registry.resolve(ref.name);
+      expect(tool).toBeDefined();
+      expect(['instant', 'detachable_task', 'steerable_wait', 'bounded_io']).toContain(tool!.foregroundPolicy);
+      policies.set(ref.name, tool!.foregroundPolicy);
+    }
+    expect(policies.get('AgentRun')).toBe('detachable_task');
+    expect(policies.get('Bash')).toBe('detachable_task');
+    expect(policies.get('AskUserQuestion')).toBe('detachable_task');
+    expect(policies.get('TaskWait')).toBe('steerable_wait');
+    expect(policies.get('SelectTools')).toBe('instant');
+    expect(policies.get('TaskList')).toBe('instant');
+    expect(policies.get('AgentList')).toBe('bounded_io');
+    expect(policies.get('Read')).toBe('bounded_io');
+    expect(policies.get('WebSearch')).toBe('bounded_io');
+    expect(policies.get('FetchURL')).toBe('bounded_io');
+    for (const info of registry.list()) {
+      expect(Object.prototype.hasOwnProperty.call(info, 'foregroundPolicy')).toBe(false);
+    }
+  });
+
   it('delivers subagent parent_steering to the parent model after foreground AgentRun and TaskWait without polluting tool outputs or SubagentCompleted summaries', async () => {
     const parentSteering = 'Treat this Sol review verdict as independent evidence.';
     const fgChildServices = new Map<unknown, unknown>([[
@@ -2680,6 +2708,69 @@ describe('AgentRun tool execution contract', () => {
     expect(result.output).toContain('agent_id: agent-existing');
     expect(result.output).toContain('actual_profile: explore');
     expect(result.output).toContain('resumed result');
+  });
+
+  it('returns status: queued immediately when AgentRun(resume) is queued behind a launching or held child prompt', async () => {
+    const startGate = deferred<void>();
+    const completionGate = deferred<{ readonly summary: string }>();
+    const lifecycle = createAgentLifecycleStub({
+      runCompletion: () => completionGate.promise,
+    });
+    const resumePromptId = 'resume-prompt:resume:main:0:call_queued_resume';
+    const childServices = new Map<unknown, unknown>([
+      [IAgentPromptService, {
+        list: () => ({
+          active: undefined,
+          launching: { id: 'earlier-prompt', state: 'pending', createdAt: new Date().toISOString() },
+          pending: [
+            { id: 'earlier-prompt', state: 'pending', createdAt: new Date().toISOString(), queueIndex: 0 },
+            { id: resumePromptId, state: 'pending', createdAt: new Date().toISOString(), queueIndex: 1 },
+          ],
+        }),
+      }],
+      [IEventBus, { subscribe: () => ({ dispose: () => {} }) }],
+      [IWireService, { flush: async () => {} }],
+    ]);
+    const context = createAgentToolContext(
+      lifecycle,
+      sessionService(
+        ISessionMetadata,
+        sessionMetadataStub({ 'agent-existing': namedSubagentMeta('busy_child') }),
+      ),
+    );
+    lifecycle.addHandle('agent-existing', 'explore', childServices);
+    lifecycle.run.mockImplementationOnce(async (agentId: string) => {
+      await startGate.promise;
+      return {
+        agentId,
+        turn: {
+          id: 2,
+          signal: new AbortController().signal,
+          ready: Promise.resolve(),
+          cancel: () => true,
+          result: Promise.resolve({ type: 'completed' as const, steps: 1, truncated: false }),
+        },
+        completion: completionGate.promise,
+      };
+    });
+
+    const result = await executeAgentToolRaw(
+      context,
+      {
+        prompt: 'Follow up',
+        description: 'Resume queued child',
+        resume: 'agent-existing',
+      },
+      new AbortController().signal,
+      'call_queued_resume',
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.output).toContain('agent_id: agent-existing');
+    expect(result.output).toContain('status: queued');
+    expect(result.output).toContain('automatic_notification: true');
+    startGate.resolve();
+    completionGate.resolve({ summary: 'done later' });
   });
 
   it('stamps the requested name on the new subagent', async () => {

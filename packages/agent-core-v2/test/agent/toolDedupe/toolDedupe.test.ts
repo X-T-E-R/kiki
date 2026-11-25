@@ -141,6 +141,7 @@ function toolCall(id: string, name: string, args: unknown): ToolCall {
 }
 
 class EchoTool implements ExecutableTool<Record<string, unknown>> {
+  readonly foregroundPolicy = 'instant' as const;
   readonly description = 'Echo input text.';
   readonly parameters = { type: 'object', additionalProperties: true };
   readonly calls: Array<ExecutableToolContext & { readonly args: Record<string, unknown> }> = [];
@@ -1122,6 +1123,7 @@ describe('AgentToolDedupeService', () => {
   describe('preflight-rejected calls (bypass onBeforeExecuteTool)', () => {
     class StrictTool implements ExecutableTool<Record<string, unknown>> {
       readonly name = 'Strict';
+      readonly foregroundPolicy = 'instant' as const;
       readonly description = 'Requires a command string.';
       readonly parameters = {
         type: 'object',

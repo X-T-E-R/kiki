@@ -3881,4 +3881,116 @@ describe('AgentPromptService', () => {
     expect(turn2).toBe(turn1);
     expect(enqueueSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('delivers acceptSteer when targetTurnId is omitted while a turn is active or mid-launch, while preserving mismatched targetTurnId guards', async () => {
+    const { prompt, loop } = harness({ manualTurnResult: true });
+    const first = await prompt.enqueue({ id: 'active-1', message: message('first') });
+    const turn = await first.launched;
+    expect(turn).toBeDefined();
+    const boundarySpy = vi.spyOn(loop, 'atStepBoundary');
+    const steered = await prompt.enqueue({ id: 'steer-unresolved', message: message('steer now') });
+
+    await prompt.acceptSteer([steered.id], undefined);
+    await vi.waitFor(() => expect(boundarySpy).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(steered.state).toBe('steered'));
+
+    const mismatched = await prompt.enqueue({ id: 'steer-wrong-turn', message: message('wrong turn') });
+    const callsBeforeMismatch = boundarySpy.mock.calls.length;
+    await prompt.acceptSteer([mismatched.id], turn!.id + 99);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(boundarySpy.mock.calls.length).toBe(callsBeforeMismatch);
+    expect(mismatched.state).toBe('pending');
+
+    loop.settleActive();
+    await first.completion;
+    const second = await mismatched.launched;
+    expect(second).toBeDefined();
+    loop.settleActive();
+    await mismatched.completion;
+
+    const launchGate = deferred<void>();
+    let holdFirstHook = true;
+    prompt.hooks.onBeforeSubmitPrompt.register('hold-launch', async (_ctx, next) => {
+      if (holdFirstHook) {
+        holdFirstHook = false;
+        await launchGate.promise;
+      }
+      await next();
+    });
+    const launching = await prompt.enqueue({ id: 'launching-turn', message: message('launch') });
+    await vi.waitFor(() => expect(prompt.list().launching?.id).toBe('launching-turn'));
+    const duringLaunch = await prompt.enqueue({ id: 'steer-during-launch', message: message('steer while launching') });
+    await prompt.acceptSteer([duringLaunch.id], undefined);
+    expect(duringLaunch.state).toBe('pending');
+
+    launchGate.resolve();
+    const launchedTurn = await launching.launched;
+    expect(launchedTurn).toBeDefined();
+    await vi.waitFor(() => expect(duringLaunch.state).toBe('steered'));
+    loop.settleActive();
+    await launching.completion;
+  });
+
+  it('awaits durable persistence in abortDurably and abortQueued before returning true for a restored pending prompt', async () => {
+    const { prompt, dispatcher } = harness({ manualTurnResult: true });
+    await dispatcher.dispatch(new PromptEnqueued({
+      schemaVersion: 1,
+      promptId: 'restored-durably-1',
+      userMessageId: 'msg-restored-1',
+      createdAt: new Date().toISOString(),
+      message: message('restored 1'),
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 0,
+      queueIndex: 0,
+    }));
+    await dispatcher.dispatch(new PromptEnqueued({
+      schemaVersion: 1,
+      promptId: 'restored-durably-2',
+      userMessageId: 'msg-restored-2',
+      createdAt: new Date().toISOString(),
+      message: message('restored 2'),
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 0,
+      queueIndex: 1,
+    }));
+    const flushGate = deferred<void>();
+    const flushSpy = vi.spyOn(dispatcher, 'flush').mockImplementationOnce(async () => { await flushGate.promise; });
+
+    let durablyDone = false;
+    const abortPromise = prompt.abortDurably('restored-durably-1').then((res) => {
+      durablyDone = true;
+      return res;
+    });
+    await vi.waitFor(() => expect(flushSpy).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(durablyDone).toBe(false);
+
+    flushGate.resolve();
+    expect(await abortPromise).toBe(true);
+    expect(prompt.lookup('restored-durably-1')?.phase).toBe('terminal');
+    expect(prompt.lookup('restored-durably-1')?.terminal?.state).toBe('cancelled');
+
+    expect(await prompt.abortQueued('restored-durably-2')).toBe(true);
+    expect(prompt.lookup('restored-durably-2')?.terminal?.state).toBe('cancelled');
+
+    await dispatcher.dispatch(new PromptEnqueued({
+      schemaVersion: 1,
+      promptId: 'restored-durably-3',
+      userMessageId: 'msg-restored-3',
+      createdAt: new Date().toISOString(),
+      message: message('restored 3'),
+      alreadyMaterialized: false,
+      appendTiming: 'agent_idle',
+      revision: 0,
+      queueIndex: 2,
+    }));
+    const flushErr = new Error('disk flush failed');
+    vi.spyOn(dispatcher, 'flush').mockRejectedValueOnce(flushErr);
+    await expect(prompt.abortDurably('restored-durably-3')).rejects.toThrow('disk flush failed');
+    expect(prompt.lookup('restored-durably-3')?.phase).toBe('terminal');
+    expect(prompt.lookup('restored-durably-3')?.terminal?.state).toBe('cancelled');
+  });
 });

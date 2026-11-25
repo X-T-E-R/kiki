@@ -210,4 +210,32 @@ describe('native FetchURL donor boundaries', () => {
     expect(compact.output).toContain('direct.fetch: skipped');
     expect(compact.output).not.toContain('jina.reader:');
   });
+
+  it('releases sync FetchURL immediately when steerSignal aborts', async () => {
+    const fetchSpy = vi.spyOn(ix.get(INbSearchService), 'fetch').mockImplementation((_input, options) => new Promise((_resolve, reject) => {
+      options?.signal?.addEventListener('abort', () => {
+        const error = new Error('steered');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }));
+    try {
+      const steer = new AbortController();
+      const execution = await ix.get(IFetchURLTool).resolveExecution({ url: 'https://example.test/slow' });
+      if (execution.isError) throw new Error(String(execution.output));
+      const pending = execution.execute({
+        turnId: 0,
+        toolCallId: 'fetch-steer',
+        signal: new AbortController().signal,
+        steerSignal: steer.signal,
+      });
+      steer.abort(new Error('send now'));
+      expect(await pending).toMatchObject({
+        isError: false,
+        output: expect.stringContaining('New input ended this fetch early'),
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
 });

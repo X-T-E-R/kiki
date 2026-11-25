@@ -214,7 +214,7 @@ describe('StopFailure continuation recovery', () => {
     const f = await fixture();
     try {
       let tools = 0;
-      f.local.get(IAgentToolRegistryService).register({ name: 'SaveWork', description: 'Save work', parameters: { type: 'object' }, resolveExecution: () => ({ approvalRule: 'SaveWork', execute: async () => { tools++; return { output: 'saved' }; } }) });
+      f.local.get(IAgentToolRegistryService).register({ name: 'SaveWork', foregroundPolicy: 'instant', description: 'Save work', parameters: { type: 'object' }, resolveExecution: () => ({ approvalRule: 'SaveWork', execute: async () => { tools++; return { output: 'saved' }; } }) });
       f.local.get(IAgentProfileService).update({ activeToolNames: ['SaveWork'] });
       f.local.mockNextResponse({ type: 'function', name: 'SaveWork', id: 'save-call', arguments: '{}' });
       f.local.mockNextProviderResponse({ parts: [{ type: 'text', text: 'First partial' }], error: missingTerminal() });
@@ -241,7 +241,7 @@ describe('StopFailure continuation recovery', () => {
     const f = await fixture({ hooks: [alwaysContinue] });
     try {
       let tools = 0;
-      f.local.get(IAgentToolRegistryService).register({ name: 'SaveWork', description: 'Save work', parameters: { type: 'object' }, resolveExecution: () => ({ approvalRule: 'SaveWork', execute: async () => { tools++; return { output: 'saved' }; } }) });
+      f.local.get(IAgentToolRegistryService).register({ name: 'SaveWork', foregroundPolicy: 'instant', description: 'Save work', parameters: { type: 'object' }, resolveExecution: () => ({ approvalRule: 'SaveWork', execute: async () => { tools++; return { output: 'saved' }; } }) });
       f.local.get(IAgentProfileService).update({ activeToolNames: ['SaveWork'] });
       f.local.mockNextResponse({ type: 'function', name: 'SaveWork', id: 'save-call-1', arguments: '{}' });
       f.local.mockNextProviderResponse({ parts: [{ type: 'text', text: 'First streak failure' }], error: missingTerminal() });
@@ -313,7 +313,7 @@ describe('StopFailure continuation recovery', () => {
     const f = await fixture({ config: { retry: { maxAttempts: 1 } } });
     try {
       let tools = 0;
-      f.local.get(IAgentToolRegistryService).register({ name: 'SaveWork', description: 'Save work', parameters: { type: 'object' }, resolveExecution: () => ({ approvalRule: 'SaveWork', execute: async () => { tools++; return { output: 'saved' }; } }) });
+      f.local.get(IAgentToolRegistryService).register({ name: 'SaveWork', foregroundPolicy: 'instant', description: 'Save work', parameters: { type: 'object' }, resolveExecution: () => ({ approvalRule: 'SaveWork', execute: async () => { tools++; return { output: 'saved' }; } }) });
       f.local.get(IAgentProfileService).update({ activeToolNames: ['SaveWork'] });
       f.local.mockNextResponse({ type: 'function', name: 'SaveWork', id: 'save-call', arguments: '{}' });
       f.local.mockNextProviderResponse({ error: deniedMissingTerminal() });
@@ -521,6 +521,7 @@ describe('StopFailure continuation recovery', () => {
       const releaseTool = createControlledPromise<void>();
       f.local.get(IAgentToolRegistryService).register({
         name: 'WaitWork',
+        foregroundPolicy: 'instant',
         description: 'Wait work',
         parameters: { type: 'object' },
         resolveExecution: () => ({

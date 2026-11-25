@@ -367,7 +367,7 @@ function createService(
     get: () => options.contextMessages ?? history,
   };
   const tools = { list: () => options.tools ?? [], resolve: (name: string) => name === 'AgentRun' && options.advertisedProfiles !== undefined
-    ? { name: 'AgentRun', description: '', parameters: {}, resolveExecution: () => ({ isError: true as const, output: 'not used' }),
+    ? { name: 'AgentRun', foregroundPolicy: 'instant' as const, description: '', parameters: {}, resolveExecution: () => ({ isError: true as const, output: 'not used' }),
       advertisedProfileDescriptions: () => options.advertisedProfiles! } : undefined };
   const hostRequestHeaders = options.hostRequestHeaders ?? {
     'X-Msh-Device-Name': 'example-host',

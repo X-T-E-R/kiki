@@ -17,6 +17,9 @@ import { createServices, createScopedTestHost, stubPair } from '#/_base/di/test'
 import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentGoalService } from '#/agent/goal/goal';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { MAIN_FOREGROUND_AUTO_DETACH_MS } from '#/agent/task/foregroundPolicy';
 import { IFlagService } from '#/app/flag/flag';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { LocalRuntime } from '#/runtime/localRuntime';
@@ -766,6 +769,9 @@ function bashTool(
     permissionMode?: IAgentPermissionModeService;
     runtime?: Runtime;
     disposeLease?: () => void;
+    scope?: IAgentScopeContext;
+    goals?: IAgentGoalService;
+    prepareFor?: IAgentRuntimeService['prepareFor'];
   } = {},
 ): IBashTool {
   const backend = options.runtime ?? disposables.add(
@@ -776,7 +782,7 @@ function bashTool(
     onDidChange: () => ({ dispose: () => {} }),
     isAvailable: () => true,
     inspect: () => backend,
-    prepareFor: async () => backend,
+    prepareFor: options.prepareFor ?? (async () => backend),
     acquire: () => ({
       runtime: backend,
       track: (resource) => resource,
@@ -794,6 +800,8 @@ function bashTool(
       reg.defineInstance(IConfigService, config);
       reg.defineInstance(IFlagService, stubFlag());
       reg.defineInstance(IAgentPermissionModeService, options.permissionMode ?? stubPermissionModeService(() => 'manual'));
+      if (options.scope !== undefined) reg.defineInstance(IAgentScopeContext, options.scope);
+      if (options.goals !== undefined) reg.defineInstance(IAgentGoalService, options.goals);
     },
   });
   return services.get(IBashTool);
@@ -1896,6 +1904,88 @@ describe('BashTool background mode', () => {
 
     steer.abort(new Error('late input'));
     expect(detach).not.toHaveBeenCalled();
+  });
+
+  it('auto-detaches foreground Bash after 15s on main and branch outside goal mode while keeping full timeout on subagents and active goals', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const makeScope = (agentId: string, parentAgentId?: string, isBranch?: boolean): IAgentScopeContext => ({
+        _serviceBrand: undefined,
+        agentId,
+        parentAgentId,
+        isBranch,
+        agentScope: `agents/${agentId}`,
+      } as unknown as IAgentScopeContext);
+      const makeGoals = (active: boolean): IAgentGoalService => ({
+        _serviceBrand: undefined,
+        getGoal: () => ({ goal: active ? { status: 'active' } : undefined }),
+      } as unknown as IAgentGoalService);
+
+      for (const caller of [
+        { scope: makeScope('main'), goals: makeGoals(false) },
+        { scope: makeScope('branch-1', 'main', true), goals: makeGoals(false) },
+        { scope: makeScope('branch-2', 'main', true), goals: makeGoals(true) },
+      ]) {
+        const { proc, finish } = pendingProcess();
+        const { runner } = createTestRunner(proc);
+        const { service } = createFakeTaskService();
+        const tool = bashTool(runner, createTestEnv(), createTestCtx(), service, stubToolPolicy(), stubConfig(), caller);
+        const running = executeTool(tool, context({ command: 'sleep 60', timeout: 60 }));
+        await vi.waitFor(() => expect(service.list(false)).toHaveLength(1));
+        await vi.advanceTimersByTimeAsync(MAIN_FOREGROUND_AUTO_DETACH_MS - 1_000);
+        expect(service.list(false)[0]).toMatchObject({ detached: false, status: 'running' });
+        await vi.advanceTimersByTimeAsync(1_000);
+        const result = await running;
+        expect(result.isError).toBe(false);
+        expect(proc.kill).not.toHaveBeenCalled();
+        expect(service.list(false)[0]).toMatchObject({ detached: true, status: 'running' });
+        finish(0);
+      }
+
+      for (const caller of [
+        { scope: makeScope('sub-1', 'main', false), goals: makeGoals(false), callerKind: 'model' as const },
+        { scope: makeScope('main'), goals: makeGoals(true), callerKind: 'model' as const },
+        { scope: makeScope('main'), goals: makeGoals(false), callerKind: 'user_shell' as const },
+      ]) {
+        const { proc, finish } = pendingProcess();
+        const { runner } = createTestRunner(proc);
+        const { service } = createFakeTaskService();
+        const tool = bashTool(runner, createTestEnv(), createTestCtx(), service, stubToolPolicy(), stubConfig(), caller);
+        const running = executeTool(tool, { ...context({ command: 'sleep 60', timeout: 60 }), callerKind: caller.callerKind } as ReturnType<typeof context>);
+        await vi.waitFor(() => expect(service.list(false)).toHaveLength(1));
+        await vi.advanceTimersByTimeAsync(MAIN_FOREGROUND_AUTO_DETACH_MS + 5_000);
+        expect(service.list(false)[0]).toMatchObject({ detached: false, status: 'running' });
+        finish(0);
+        expect((await running).isError).toBe(false);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('skips prepareToolRuntime when steerSignal is already aborted before a foreground command starts', async () => {
+    const { proc } = pendingProcess();
+    const { runner } = createTestRunner(proc);
+    const { service } = createFakeTaskService();
+    const prepareFor = vi.fn(async () => {
+      throw new Error('prepareFor should not run after steer');
+    });
+    const tool = bashTool(runner, createTestEnv(), createTestCtx(), service, stubToolPolicy(), stubConfig(), {
+      prepareFor,
+    });
+    const steer = new AbortController();
+    steer.abort(new Error('new input'));
+    const execution = await tool.resolveExecution({ command: 'echo skipped', timeout: 60 });
+    expect('execute' in execution).toBe(true);
+    prepareFor.mockClear();
+    const result = await ('execute' in execution
+      ? execution.execute({ turnId: 0, toolCallId: 'call_pre_steered', signal: new AbortController().signal, steerSignal: steer.signal })
+      : execution);
+    expect(prepareFor).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      isError: false,
+      output: expect.stringContaining('New input arrived before this command started'),
+    });
   });
 
   it('notifies when a foreground command registers its background task', async () => {

@@ -2271,6 +2271,165 @@ describe('AgentTaskService', () => {
     });
   });
 
+  it('auto-backgrounds foreground Bash at 15s and detaches on steerSignal via real AgentTaskService while Stop still kills non-steered Bash', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      stubTaskConfig({ killGracePeriodMs: 0, bashAutoBackgroundOnTimeout: true, bashTaskTimeoutS: 300 });
+      const docs = mapBackedDocs();
+      const bytes = new InMemoryStorageService();
+      ix.stub(IAtomicDocumentStore, docs);
+      ix.stub(IFileSystemStorageService, bytes);
+      const service = ix.get(IAgentTaskService);
+
+      const makePendingProc = (pid: number) => {
+        let resolveWait!: (code: number) => void;
+        let exitCode: number | null = null;
+        const waitPromise = new Promise<number>((resolve) => {
+          resolveWait = (code) => {
+            exitCode = code;
+            resolve(code);
+          };
+        });
+        const stdout = new Readable({ read() {} });
+        const stderr = new Readable({ read() {} });
+        const kill = vi.fn(async () => {
+          stdout.push(null);
+          stderr.push(null);
+          resolveWait(143);
+        });
+        const proc = {
+          _serviceBrand: undefined,
+          stdin: { write: vi.fn(), end: vi.fn() } as unknown as Writable,
+          stdout,
+          stderr,
+          pid,
+          get exitCode() {
+            return exitCode;
+          },
+          wait: () => waitPromise,
+          kill,
+          dispose: vi.fn(async () => {}),
+        } as unknown as IHostProcess;
+        const finish = (code = 0): void => {
+          stdout.push(null);
+          stderr.push(null);
+          resolveWait(code);
+        };
+        return { proc, kill, finish };
+      };
+
+      const env: IHostEnvironment = {
+        _serviceBrand: undefined,
+        osKind: 'Linux',
+        osArch: 'x64',
+        osVersion: 'test',
+        shellPath: '/bin/bash',
+        shellName: 'bash',
+        pathClass: 'posix',
+        homeDir: '/home/test',
+        ready: Promise.resolve(),
+      };
+      const queue = [makePendingProc(71001), makePendingProc(71002), makePendingProc(71003)];
+      let spawnIndex = 0;
+      const runner: IHostProcessService = {
+        _serviceBrand: undefined,
+        spawn: vi.fn(async () => queue[spawnIndex++]!.proc),
+      };
+      const backend = disposables.add(new LocalRuntime('test-ws', env, undefined, runner, undefined, undefined));
+      const runtime: IAgentRuntimeService = {
+        _serviceBrand: undefined,
+        onDidChange: () => ({ dispose: () => {} }),
+        isAvailable: () => true,
+        inspect: () => backend,
+        prepareFor: async () => backend,
+        acquire: () => ({ runtime: backend, track: (r) => r, dispose: () => {} }),
+      };
+      const toolPolicy: IAgentToolPolicyService = {
+        _serviceBrand: undefined,
+        isToolActive: () => true,
+      } as unknown as IAgentToolPolicyService;
+      const mainScope = {
+        current: ix.get(IAgentScopeContext),
+        onDidChange: () => ({ dispose: () => {} }),
+      };
+      const bash = new BashTool(
+        runtime,
+        ix.get(ISessionContext),
+        stubWorkspaceContext('/tmp/test-session'),
+        service,
+        toolPolicy,
+        ix.get(IConfigService),
+        stubFlag(),
+        stubPermissionModeService(() => 'manual'),
+        mainScope,
+      );
+
+      let resolveAutoStart!: (id: string) => void;
+      const autoStarted = new Promise<string>((resolve) => { resolveAutoStart = resolve; });
+      const autoRun = executeTool(bash, {
+        turnId: 1,
+        toolCallId: 'call_real_auto_bg',
+        args: { command: 'sleep 60', timeout: 60 },
+        signal: new AbortController().signal,
+        onForegroundTaskStart: (id) => { resolveAutoStart(id); },
+      });
+      const autoTaskId = await autoStarted;
+      await vi.advanceTimersByTimeAsync(14_900);
+      expect(service.getTask(autoTaskId)).toMatchObject({ detached: false, status: 'running' });
+      await vi.advanceTimersByTimeAsync(200);
+      const autoResult = await autoRun;
+      expect(autoResult.isError).toBe(false);
+      expect(String(autoResult.output)).toContain(autoTaskId);
+      expect(queue[0]!.kill).not.toHaveBeenCalled();
+      expect(service.getTask(autoTaskId)).toMatchObject({ detached: true, status: 'running', timeoutMs: 300_000 });
+      vi.useRealTimers();
+      queue[0]!.finish(0);
+      expect((await service.wait(autoTaskId))?.status).toBe('completed');
+
+      let resolveSteeredStart!: (id: string) => void;
+      const steeredStarted = new Promise<string>((resolve) => { resolveSteeredStart = resolve; });
+      const steerTurnSignal = new AbortController();
+      const steerSignal = new AbortController();
+      const steeredRun = executeTool(bash, {
+        turnId: 2,
+        toolCallId: 'call_real_steer_detach',
+        args: { command: 'sleep 60', timeout: 60 },
+        signal: steerTurnSignal.signal,
+        steerSignal: steerSignal.signal,
+        onForegroundTaskStart: (id) => { resolveSteeredStart(id); },
+      });
+      const steeredTaskId = await steeredStarted;
+      steerSignal.abort(new Error('Send now'));
+      const steeredResult = await steeredRun;
+      expect(steeredResult.isError).toBe(false);
+      expect(service.getTask(steeredTaskId)).toMatchObject({ detached: true, status: 'running' });
+      steerTurnSignal.abort(new Error('Stop after detach'));
+      expect(queue[1]!.kill).not.toHaveBeenCalled();
+      queue[1]!.finish(0);
+      expect((await service.wait(steeredTaskId))?.status).toBe('completed');
+
+      let resolveStoppedStart!: (id: string) => void;
+      const stoppedStarted = new Promise<string>((resolve) => { resolveStoppedStart = resolve; });
+      const stopTurnSignal = new AbortController();
+      const nonSteeredSignal = new AbortController();
+      const stoppedRun = executeTool(bash, {
+        turnId: 3,
+        toolCallId: 'call_real_stop_kills',
+        args: { command: 'sleep 60', timeout: 60 },
+        signal: stopTurnSignal.signal,
+        steerSignal: nonSteeredSignal.signal,
+        onForegroundTaskStart: (id) => { resolveStoppedStart(id); },
+      });
+      const stoppedTaskId = await stoppedStarted;
+      stopTurnSignal.abort(new Error('Stop while foreground'));
+      await stoppedRun;
+      expect(queue[2]!.kill).toHaveBeenCalled();
+      expect((await service.wait(stoppedTaskId))?.status).toBe('killed');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   function mapBackedDocs(): IAtomicDocumentStore {
     const map = new Map<string, unknown>();
     return {

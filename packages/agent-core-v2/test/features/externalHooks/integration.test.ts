@@ -919,7 +919,7 @@ describe('IExternalHooksRunnerService integration', () => {
       const trigger = vi.spyOn(runner, 'fireAndForgetTrigger');
       ix.get(IAgentExternalHooksService);
       ix.get(IAgentToolRegistryService).register({
-        name: 'ReadFixture', description: 'No IO', parameters: { type: 'object' },
+        name: 'ReadFixture', foregroundPolicy: 'instant', description: 'No IO', parameters: { type: 'object' },
         resolveExecution: () => ({ approvalRule: 'ReadFixture', accesses: ToolAccesses.none(), execute: async () => ({ output: 'read completed' }) }),
       });
       const caller = new AbortController();
@@ -1867,6 +1867,7 @@ describe('IExternalHooksRunnerService integration', () => {
       const executor = ix.get(IAgentToolExecutorService);
       ix.get(IAgentToolRegistryService).register({
         name: 'ReadFixture',
+        foregroundPolicy: 'instant',
         description: 'Reads fixture',
         parameters: { type: 'object' },
         resolveExecution: () => ({
@@ -2176,12 +2177,14 @@ describe('IExternalHooksRunnerService integration', () => {
       const registry = ix.get(IAgentToolRegistryService);
       registry.register({
         name: 'FaultTool',
+        foregroundPolicy: 'instant',
         description: 'Fixture',
         parameters: { type: 'object' },
         resolveExecution: () => ({ approvalRule: 'FaultTool', accesses: ToolAccesses.none(), execute: faultToolSpy }),
       });
       registry.register({
         name: 'StrictFaultTool',
+        foregroundPolicy: 'instant',
         description: 'Fixture',
         parameters: { type: 'object' },
         resolveExecution: () => ({ approvalRule: 'StrictFaultTool', accesses: ToolAccesses.none(), execute: strictToolSpy }),

@@ -151,7 +151,7 @@ describe('optional capability review follow-up', () => {
     expect(policy.globalState('thread')).toMatchObject({ allowed: true, defaultOn: false });
     const registered = new AgentToolRegistryService();
     const toolId = Symbol('review-ThreadRead');
-    const tool = { name: 'ThreadRead', description: 'review fixture', parameters: {}, resolveExecution: () => ({ output: '' }) };
+    const tool = { name: 'ThreadRead', foregroundPolicy: 'instant' as const, description: 'review fixture', parameters: {}, resolveExecution: () => ({ output: '' }) };
     const instantiation = {
       invokeFunction: (fn: (accessor: { get: (id: unknown) => unknown }) => unknown) => fn({
         get: (id: unknown) => {
