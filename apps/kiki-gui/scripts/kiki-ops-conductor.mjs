@@ -681,7 +681,7 @@ export async function discoverLiveServer({
     const classified = classifyRuntimeServerPath(runtimeRoot, executablePath);
     if (!classified) continue;
     const meta = await callApi({ port: Number(instance.port), token, path: '/api/meta', method: 'GET' });
-    if (meta.server_id !== instance.server_id || meta.build_id !== instance.build_id) {
+    if (meta.server_id !== instance.server_id || (meta.build_id ?? '') !== (instance.build_id ?? '')) {
       throw new Error(`Live server identity mismatch for ${instance.server_id}.`);
     }
     matches.push({

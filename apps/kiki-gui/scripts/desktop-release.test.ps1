@@ -575,7 +575,7 @@ if ($null -eq $noInterruptParam) {
     throw 'Expected switch parameter -NoInterruptAfterSettle.'
 }
 
-$fnNames = @('Call-Local', 'Execution', 'Lifecycle', 'Stop-ProcessBounded', 'Close-DesktopShell', 'Await-Release', 'Release-OurPauses')
+$fnNames = @('Call-Local', 'Execution', 'Lifecycle', 'Stop-ProcessBounded', 'Close-DesktopShell', 'Get-ExplicitPortFromCommandLine', 'Resolve-ExpectedHeadlessPort', 'Get-ExpectedHeadlessPort', 'Await-AllReleases', 'Release-OurPauses')
 foreach ($definition in $ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $fnNames }, $false)) {
     . ([scriptblock]::Create($definition.Extent.Text))
 }
@@ -628,51 +628,73 @@ if ($restoredPrefs.closeToTray -ne $true -or $restoredPrefs.theme -ne 'paper') {
     throw 'Close-DesktopShell did not restore desktop.json closeToTray preference.'
 }
 
-# 3. Await-Release explicitly verifies meta.build_id / instance.build_id against ExpectedCommit.
+# 3. Await-AllReleases explicitly verifies meta.build_id / instance.build_id against ExpectedCommit (including missing build_id under StrictMode).
 $runtime = Join-Path $ScratchRoot 'await-rt'
-$state = [pscustomobject]@{
+$spaceKey = $homePath.ToLowerInvariant()
+$spaceStateStub = [pscustomobject]@{
+    kikiHome = $homePath
     oldServerId = 'old-srv'
     serverHomeId = 'home-1'
     spaceId = 'main'
     hadDesktop = $false
+    expectedPort = $null
+    headlessLaunchArgs = 'serve'
+    headlessOriginalPort = $null
 }
-$launcherStub = [pscustomobject]@{ HasExited = $false; ExitCode = 0 }
+$launchersMap = @{ $spaceKey = [pscustomobject]@{ HasExited = $false; ExitCode = 0 } }
+$tokensMap = @{ $spaceKey = 'tok-1' }
 $expectedSha = 'c' * 40
 $wrongSha = 'd' * 40
 $script:mockServer = [pscustomobject]@{
     releaseId = 'rel-new'
-    instance = [pscustomobject]@{ build_id = $wrongSha; port = 1; server_id = 'new-srv' }
-    meta = [pscustomobject]@{ build_id = $wrongSha; server_id = 'new-srv'; server_home_id = 'home-1'; current_space_id = 'main' }
+    instance = [pscustomobject]@{ port = 1; server_id = 'new-srv' }
+    meta = [pscustomobject]@{ server_id = 'new-srv'; server_home_id = 'home-1'; current_space_id = 'main' }
 }
 function Find-Server { return $script:mockServer }
-function Find-Shells { return @() }
+function Find-ShellEntries { return @() }
+function Test-ServerHealthz { return $true }
+$missingBuildCaught = $false
+try {
+    $null = Await-AllReleases @($spaceStateStub) 'rel-new' $expectedSha $launchersMap $tokensMap
+} catch {
+    if ($_.Exception.Message -match "reported build_id '' instead of expected commit '$expectedSha'") {
+        $missingBuildCaught = $true
+    } else {
+        throw "Unexpected missing-build_id Await-AllReleases error: $($_.Exception.Message)"
+    }
+}
+if (-not $missingBuildCaught) { throw 'Await-AllReleases did not handle missing build_id safely under StrictMode.' }
+
+$script:mockServer.instance | Add-Member -NotePropertyName build_id -NotePropertyValue $wrongSha -Force
+$script:mockServer.meta | Add-Member -NotePropertyName build_id -NotePropertyValue $wrongSha -Force
 $mismatchCaught = $false
 try {
-    $null = Await-Release 'rel-new' $expectedSha $launcherStub
+    $null = Await-AllReleases @($spaceStateStub) 'rel-new' $expectedSha $launchersMap $tokensMap
 } catch {
     if ($_.Exception.Message -match "reported build_id '$wrongSha' instead of expected commit '$expectedSha'") {
         $mismatchCaught = $true
     } else {
-        throw "Unexpected Await-Release error: $($_.Exception.Message)"
+        throw "Unexpected Await-AllReleases error: $($_.Exception.Message)"
     }
 }
-if (-not $mismatchCaught) { throw 'Await-Release did not reject mismatched build_id.' }
+if (-not $mismatchCaught) { throw 'Await-AllReleases did not reject mismatched build_id.' }
 
 $script:mockServer.instance.build_id = $expectedSha
 $script:mockServer.meta.build_id = $expectedSha
 $script:mockServer | Add-Member -NotePropertyName executablePath -NotePropertyValue (Join-Path (Join-Path $runtime 'releases\rel-new') 'kiki-server.exe') -Force
 $nonActiveCaught = $false
 try {
-    $null = Await-Release 'rel-new' $expectedSha $launcherStub
+    $null = Await-AllReleases @($spaceStateStub) 'rel-new' $expectedSha $launchersMap $tokensMap
 } catch {
     if ($_.Exception.Message -match 'instead of active path') { $nonActiveCaught = $true }
-    else { throw "Unexpected non-active Await-Release error: $($_.Exception.Message)" }
+    else { throw "Unexpected non-active Await-AllReleases error: $($_.Exception.Message)" }
 }
-if (-not $nonActiveCaught) { throw 'Await-Release did not reject a server running outside active\.' }
+if (-not $nonActiveCaught) { throw 'Await-AllReleases did not reject a server running outside active\.' }
 
 $script:mockServer.executablePath = Join-Path (Join-Path $runtime 'active') 'kiki-server.exe'
-$matched = Await-Release 'rel-new' $expectedSha $launcherStub
-if ($matched.meta.build_id -cne $expectedSha) { throw 'Await-Release did not return matching build_id server.' }
+$matchedMap = Await-AllReleases @($spaceStateStub) 'rel-new' $expectedSha $launchersMap $tokensMap
+$matched = $matchedMap[$spaceKey]
+if ($matched.meta.build_id -cne $expectedSha) { throw 'Await-AllReleases did not return matching build_id server.' }
 
 # 4. Release-OurPauses tolerates idle/pausing states when $AllowCancel = $true (post-InterruptAfterSettle).
 $state = [pscustomobject]@{
