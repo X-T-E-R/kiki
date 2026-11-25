@@ -2,6 +2,7 @@ import { toDisposable } from '#/_base/di/lifecycle';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { IPluginExtensionPortRegistryReader } from '#/app/pluginExtensionPorts/pluginExtensionPortRegistry';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -27,11 +28,14 @@ import { PathSecurityError } from '#/tool/path-access';
 import { abortable, isAbortError, isUserCancellation } from '#/_base/utils/abort';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
+  isToolForegroundPolicy,
+  TOOL_FOREGROUND_POLICIES,
   ToolAccesses,
   type ExecutableTool,
   type ExecutableToolResult,
   type RunnableToolExecution,
   type ToolExecution,
+  type ToolForegroundPolicy,
   type ToolResult,
   type ToolResultSpill,
   type ToolUpdate,
@@ -205,6 +209,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     @ref(ISessionContext) private readonly session?: LiveRef<ISessionContext>,
     @ref(IAgentScopeContext) private readonly agent?: LiveRef<IAgentScopeContext>,
     @ref(IAgentRuntimeService) private readonly runtime?: LiveRef<IAgentRuntimeService>,
+    @ref(IAgentTaskService) private readonly tasks?: LiveRef<IAgentTaskService>,
   ) {
     this.states.contributeState(toolExecutorToolCallDupTypesKey);
     this.states.contributeState(toolExecutorDupTypeTurnIdKey);
@@ -324,6 +329,14 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     for (const call of preflighted) {
       if (stopBatch) {
         yield { ...this.prepareSkippedToolCall(call, options), call, readyAt: Date.now() };
+        continue;
+      }
+      if (
+        !options.signal.aborted &&
+        options.steerSignal?.aborted === true &&
+        options.executionWaits?.[call.toolCall.id] === undefined
+      ) {
+        yield { ...this.prepareSteerSkippedToolCall(call, options), call, readyAt: Date.now() };
         continue;
       }
       const prepared = await this.prepareToolCall(call, calls, options);
@@ -473,23 +486,40 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       return settleError(call.args, call.output, 'preflight-rejected');
     }
 
+    const foregroundStartedAt = Date.now();
+
     if (options.executionWaits?.[call.toolCall.id] !== undefined) {
       const resume = call.tool.resumeExecutionWait;
       if (resume === undefined) return settleError(call.args, 'The saved observer is unavailable; its original task was not restarted.', 'preflight-rejected');
       return { task: { accesses: ToolAccesses.none(), execute: signal => this.runSingleExecution(call, {
         approvalRule: call.toolName, execute: ctx => resume.call(call.tool, call.args, ctx),
-      }, undefined, options, signal) } };
+      }, undefined, options, signal, call.tool.foregroundPolicy, foregroundStartedAt) } };
     }
+
+    const admissionSignal = options.steerSignal === undefined
+      ? options.signal
+      : AbortSignal.any([options.signal, options.steerSignal]);
 
     const extensions = this.extensions?.current;
     let validation = validateExecutableToolArgs(call.tool, call.args);
     const preExecutePolicies = extensions?.hasToolPreExecutePolicies === true;
     if (preExecutePolicies && validation.error === null) call.args = validation.args;
-    const proposal = preExecutePolicies ? await extensions!.proposeToolPreExecute({
-      sessionId: this.session!.current!.sessionId, agentId: this.agent!.current!.agentId,
-      turnId: options.turnId, toolCallId: call.toolCall.id, toolName: call.toolName,
-      args: frozenExtensionSnapshot(call.args), signal: options.signal,
-    }) : undefined;
+    let proposal: Awaited<ReturnType<NonNullable<typeof extensions>['proposeToolPreExecute']>> | undefined;
+    if (preExecutePolicies) {
+      try {
+        proposal = await awaitToolPreparation(() => extensions!.proposeToolPreExecute({
+          sessionId: this.session!.current!.sessionId, agentId: this.agent!.current!.agentId,
+          turnId: options.turnId, toolCallId: call.toolCall.id, toolName: call.toolName,
+          args: frozenExtensionSnapshot(call.args), signal: admissionSignal,
+        }), admissionSignal);
+      } catch (error) {
+        if (options.signal.aborted) return settleError(call.args, abortedToolOutput(call.toolName, options.signal), 'aborted');
+        if (options.steerSignal?.aborted === true) return this.prepareSteerSkippedToolCall(call, options);
+        throw error;
+      }
+      if (options.signal.aborted) return settleError(call.args, abortedToolOutput(call.toolName, options.signal), 'aborted');
+      if (options.steerSignal?.aborted === true) return this.prepareSteerSkippedToolCall(call, options);
+    }
     if (proposal?.veto !== undefined) return settleSynthetic(call.args, proposal.veto, 'vetoed');
     if (proposal !== undefined) validation = validateExecutableToolArgs(call.tool, proposal.args);
     if (validation.error !== null) return settleError(call.args, `Invalid args for tool "${call.toolName}": ${validation.error}`, 'preflight-rejected');
@@ -508,19 +538,20 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       for (const handler of this.beforeResolveHandlers) {
         const reason = await awaitToolPreparation(() => handler({
           turnId: options.turnId,
-          signal: options.signal,
+          signal: admissionSignal,
           deduplicationKey: options.deduplicationKey,
           trace: options.trace,
           toolCall: call.toolCall,
           toolCalls: allCalls,
           tool: call.tool,
           args: call.args,
-        }), options.signal);
+        }), admissionSignal);
         if (reason !== undefined) return settleError(call.args, reason, 'preflight-rejected');
       }
-      execution = await awaitToolPreparation(() => call.tool.resolveExecution(call.args), options.signal);
+      execution = await awaitToolPreparation(() => call.tool.resolveExecution(call.args), admissionSignal);
     } catch (error) {
       if (options.signal.aborted) return settleError(call.args, abortedToolOutput(call.toolName, options.signal), 'aborted');
+      if (options.steerSignal?.aborted === true) return this.prepareSteerSkippedToolCall(call, options);
       const output =
         error instanceof PathSecurityError
           ? error.message
@@ -541,14 +572,31 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       );
     }
 
+    if (isSignalAborted(options.steerSignal)) {
+      return this.prepareSteerSkippedToolCall(call, options);
+    }
+
     if (execution.isError === true) {
       return settleSynthetic(call.args, execution, 'synthetic', displayFields);
     }
 
+    const effectiveForegroundPolicy = execution.foregroundPolicy ?? call.tool.foregroundPolicy;
+    if (!isToolForegroundPolicy(effectiveForegroundPolicy)) {
+      return settleError(
+        call.args,
+        `Tool "${call.toolName}" must declare a valid foregroundPolicy (${TOOL_FOREGROUND_POLICIES.join(' | ')}), received ${String(effectiveForegroundPolicy)}`,
+        'resolution-failed',
+        displayFields,
+      );
+    }
+
     try {
-      const beforeContext = buildBeforeExecuteContext(call, execution, allCalls, options);
+      const beforeContext = buildBeforeExecuteContext(call, execution, allCalls, {
+        ...options,
+        signal: admissionSignal,
+      });
       const admissionStartedAt = Date.now();
-      const decision = await awaitToolPreparation(() => this.beforeExecuteEmitter.fireBeforeExecute(beforeContext), options.signal);
+      const decision = await awaitToolPreparation(() => this.beforeExecuteEmitter.fireBeforeExecute(beforeContext), admissionSignal);
       this.logSlowToolPhase(call, 'admission', admissionStartedAt);
 
       if (decision?.veto !== undefined) {
@@ -565,7 +613,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
               ...beforeContext.execution, sessionApprovalRule: undefined,
               display: { kind: 'generic', summary: reason, detail: call.args },
             },
-          }, { kind: 'ask', reason: { extension: reason } }, 'extension-tool-pre-execute'), options.signal);
+          }, { kind: 'ask', reason: { extension: reason } }, 'extension-tool-pre-execute'), admissionSignal);
           if (confirmation?.veto !== undefined) return settleSynthetic(call.args, confirmation.veto, 'vetoed', displayFields);
         }
       }
@@ -581,10 +629,10 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
           args: call.args,
           veto: (result) => { executionVeto ??= result; },
         },
-        options.signal,
-      ), options.signal);
+        admissionSignal,
+      ), admissionSignal);
       this.logSlowToolPhase(call, 'before_execute', beforeExecuteStartedAt);
-      options.signal.throwIfAborted();
+      admissionSignal.throwIfAborted();
       if (executionVeto !== undefined) return settleSynthetic(call.args, executionVeto, 'vetoed', displayFields);
 
       this.dispatchToolCall(call, call.args, options, displayFields);
@@ -593,14 +641,19 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         task: {
           accesses: execution.schedulingAccesses ?? execution.accesses ?? ToolAccesses.all(),
           execute: async (taskSignal) =>
-            this.runSingleExecution(call, execution, executionMetadata, options, taskSignal),
+            this.runSingleExecution(call, execution, executionMetadata, options, taskSignal, effectiveForegroundPolicy, foregroundStartedAt),
         },
         resolvedAccesses: execution.accesses,
         stopBatchAfterThis: execution.stopBatchAfterThis,
       };
     } catch (error) {
-      if (!options.signal.aborted) throw error;
-      return settleError(call.args, abortedToolOutput(call.toolName, options.signal), 'aborted', displayFields);
+      if (options.signal.aborted) {
+        return settleError(call.args, abortedToolOutput(call.toolName, options.signal), 'aborted', displayFields);
+      }
+      if (isSignalAborted(options.steerSignal)) {
+        return this.prepareSteerSkippedToolCall(call, options);
+      }
+      throw error;
     }
   }
 
@@ -612,6 +665,27 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     this.dispatchToolCall(call, call.args, options);
     return {
       task: makeResolvedTask(makeErrorToolResult(call, call.args, output), 'skipped'),
+    };
+  }
+
+  private prepareSteerSkippedToolCall(
+    call: PreflightedToolCall,
+    options: ToolExecutorExecuteOptions,
+  ): { task: ToolExecutionTask } {
+    const output = 'Tool skipped because new input arrived before it started. Read the new input before deciding whether to run it.';
+    this.dispatchToolCall(call, call.args, options);
+    const result = this.normalizeAndMergeResult({ isError: false, output }, call.toolName, undefined);
+    return {
+      task: makeResolvedTask(
+        {
+          toolCall: call.toolCall,
+          toolName: call.toolName,
+          args: call.args,
+          result,
+          stopTurn: false,
+        },
+        'skipped',
+      ),
     };
   }
 
@@ -699,6 +773,8 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     metadata: unknown,
     options: ToolExecutorExecuteOptions,
     signal: AbortSignal,
+    foregroundPolicy: ToolForegroundPolicy,
+    foregroundStartedAt: number,
   ): Promise<ToolExecutionRunResult> {
     if (signal.aborted) {
       return {
@@ -711,7 +787,59 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       };
     }
 
+    if (
+      options.steerSignal?.aborted === true &&
+      options.executionWaits?.[call.toolCall.id] === undefined
+    ) {
+      return {
+        result: this.normalizeAndMergeResult(
+          {
+            isError: false,
+            output: 'Tool skipped because new input arrived before it started. Read the new input before deciding whether to run it.',
+          },
+          call.toolName,
+          execution,
+        ),
+        outcome: 'skipped',
+      };
+    }
+
     let rawResult: ExecutableToolResult;
+    let steeredBeforeBody = false;
+    let bodyStarted = false;
+    let registeredForegroundTaskId: string | undefined;
+    let registeredTaskSteerDetachable = true;
+    const steerSignal = options.steerSignal;
+    const detachRegisteredTaskOnSteer = (): void => {
+      if (
+        !registeredTaskSteerDetachable ||
+        registeredForegroundTaskId === undefined ||
+        signal.aborted ||
+        options.executionPauseSignal?.aborted === true
+      ) {
+        return;
+      }
+      this.tasks?.current?.detach(registeredForegroundTaskId);
+    };
+    if (foregroundPolicy === 'detachable_task' && steerSignal !== undefined) {
+      steerSignal.addEventListener('abort', detachRegisteredTaskOnSteer, { once: true });
+    }
+    const wrapperPreBodyController =
+      steerSignal !== undefined && options.executionWaits?.[call.toolCall.id] === undefined
+        ? new AbortController()
+        : undefined;
+    const abortWrapperOnSignal = (): void => {
+      wrapperPreBodyController?.abort(signal.reason);
+    };
+    const abortWrapperOnSteer = (): void => {
+      if (!bodyStarted) wrapperPreBodyController?.abort(steerSignal?.reason);
+    };
+    if (wrapperPreBodyController !== undefined) {
+      if (signal.aborted) abortWrapperOnSignal();
+      else signal.addEventListener('abort', abortWrapperOnSignal, { once: true });
+      if (steerSignal!.aborted) abortWrapperOnSteer();
+      else steerSignal!.addEventListener('abort', abortWrapperOnSteer, { once: true });
+    }
     try {
       const execContext: import('#/tool/toolContract').ExecutableToolContext = {
         turnId: options.turnId,
@@ -723,27 +851,92 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         taskOwnerSignal: options.taskOwnerSignal,
         executionPauseSignal: options.executionPauseSignal,
         executionWait: options.executionWaits?.[call.toolCall.id],
-        steerSignal: options.steerSignal,
+        steerSignal,
+        foregroundStartedAt,
         onUpdate: (update) => {
           if (signal.aborted) return;
           this.dispatchToolProgress(call, update, options);
         },
+        onForegroundTaskStart: foregroundPolicy === 'detachable_task'
+          ? (taskId, startOptions) => {
+              registeredForegroundTaskId = taskId;
+              registeredTaskSteerDetachable = startOptions?.steerDetachable ?? true;
+              if (steerSignal?.aborted === true) detachRegisteredTaskOnSteer();
+            }
+          : undefined,
       };
       const terminal = (executionSignal: AbortSignal): Promise<ExecutableToolResult> => {
         executionSignal.throwIfAborted();
+        if (
+          steerSignal?.aborted === true &&
+          options.executionWaits?.[call.toolCall.id] === undefined
+        ) {
+          steeredBeforeBody = true;
+          return Promise.resolve({
+            isError: false,
+            output: 'Tool skipped because new input arrived before it started. Read the new input before deciding whether to run it.',
+          });
+        }
+        bodyStarted = true;
+        steerSignal?.removeEventListener('abort', abortWrapperOnSteer);
         options.onToolBodyStart?.();
-        return execution.execute({ ...execContext, signal: executionSignal });
+        const bodySignal = executionSignal === wrapperPreBodyController?.signal ? signal : executionSignal;
+        return execution.execute({ ...execContext, signal: bodySignal });
       };
       const extensions = this.extensions?.current;
-      rawResult = extensions?.hasToolExecutionWrappers === true && execContext.executionWait === undefined
-        ? await extensions.executeApprovedTool({
-            sessionId: this.session!.current!.sessionId, agentId: this.agent!.current!.agentId,
-            turnId: options.turnId, step: options.step, toolCallId: call.toolCall.id,
-            toolName: call.toolName, approvedArgs: frozenExtensionSnapshot(call.args),
-            execContext: { ...execContext, metadata: undefined },
-          }, terminal)
-        : await raceWithAbortGrace(terminal(signal), signal, call.toolName);
+      if (extensions?.hasToolExecutionWrappers === true && execContext.executionWait === undefined) {
+        const wrapperPromise = extensions.executeApprovedTool({
+          sessionId: this.session!.current!.sessionId, agentId: this.agent!.current!.agentId,
+          turnId: options.turnId, step: options.step, toolCallId: call.toolCall.id,
+          toolName: call.toolName, approvedArgs: frozenExtensionSnapshot(call.args),
+          execContext: { ...execContext, signal: wrapperPreBodyController?.signal ?? signal, metadata: undefined },
+        }, terminal);
+        if (wrapperPreBodyController !== undefined) {
+          void wrapperPromise.catch(() => {});
+          rawResult = await abortable(wrapperPromise, wrapperPreBodyController.signal);
+        } else {
+          rawResult = await wrapperPromise;
+        }
+      } else {
+        rawResult = await raceWithAbortGrace(terminal(signal), signal, call.toolName);
+      }
     } catch (error) {
+      if (
+        !bodyStarted &&
+        !signal.aborted &&
+        steerSignal?.aborted === true &&
+        options.executionWaits?.[call.toolCall.id] === undefined
+      ) {
+        return {
+          result: this.normalizeAndMergeResult(
+            {
+              isError: false,
+              output: 'Tool skipped because new input arrived before it started. Read the new input before deciding whether to run it.',
+            },
+            call.toolName,
+            execution,
+          ),
+          outcome: 'skipped',
+        };
+      }
+      if (
+        foregroundPolicy === 'steerable_wait' &&
+        !signal.aborted &&
+        steerSignal?.aborted === true &&
+        isAbortError(error)
+      ) {
+        return {
+          result: this.normalizeAndMergeResult(
+            {
+              isError: false,
+              output: `New input ended the foreground wait for "${call.toolName}". Read the new input before deciding whether to continue.`,
+            },
+            call.toolName,
+            execution,
+          ),
+          outcome: 'executed',
+        };
+      }
       const aborted = isAbortError(error) || signal.aborted;
       const output = aborted
         ? abortedToolOutput(call.toolName, signal)
@@ -752,11 +945,17 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         result: makeErrorToolResult(call, call.args, output).result,
         outcome: 'executed',
       };
+    } finally {
+      signal.removeEventListener('abort', abortWrapperOnSignal);
+      steerSignal?.removeEventListener('abort', abortWrapperOnSteer);
+      if (foregroundPolicy === 'detachable_task' && steerSignal !== undefined) {
+        steerSignal.removeEventListener('abort', detachRegisteredTaskOnSteer);
+      }
     }
 
     return {
       result: this.normalizeAndMergeResult(rawResult, call.toolName, execution),
-      outcome: 'executed',
+      outcome: steeredBeforeBody ? 'skipped' : 'executed',
     };
   }
 
@@ -1189,6 +1388,10 @@ function abortedToolOutput(toolName: string, signal: AbortSignal): string {
     return `The user manually interrupted "${toolName}" (and anything else running at the same time). This was a deliberate user action, not a system error, timeout, or capacity limit. Do not retry automatically or guess at the cause — wait for the user's next instruction.`;
   }
   return `Tool "${toolName}" was aborted`;
+}
+
+function isSignalAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
 }
 
 async function awaitToolPreparation<Result>(

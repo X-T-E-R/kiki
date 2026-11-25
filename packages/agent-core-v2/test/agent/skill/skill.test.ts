@@ -937,6 +937,7 @@ describe('AgentSkillService busy delivery (harness)', () => {
     ctx = createTestAgent(skillServices(catalog));
     ctx.get(IAgentToolRegistryService).register({
       name: 'Work',
+      foregroundPolicy: 'instant',
       description: 'Non-skill work',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       resolveExecution: () => ({

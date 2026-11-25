@@ -60,6 +60,7 @@ export const IThreadCreateTool = createDecorator<IThreadCreateTool>('threadCreat
 export class ThreadCreateTool implements IThreadCreateTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'ThreadCreate';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = THREAD_CREATE_DESCRIPTION;
   readonly parameters = toInputJsonSchema(ThreadCreateToolInputSchema);
 

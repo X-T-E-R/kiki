@@ -117,4 +117,32 @@ describe('native WebSearch zero-configuration contract', () => {
     expect(envelope).toMatchObject({ status: 'succeeded', selection: { source: 'default', lanes: ['duckduckgo.search'] }, output: { channel: 'results', results: expect.arrayContaining([expect.objectContaining({ title: expect.any(String), url: expect.stringMatching(/^https?:\/\/(?!github\.com)/), snippet: expect.any(String) })]) } });
     expect(result.output).toMatch(/Title: .+\n(?:.*\n)*URL: https?:\/\//);
   }, 35_000);
+
+  it('releases sync WebSearch immediately when steerSignal aborts', async () => {
+    const searchSpy = vi.spyOn(ix.get(INbSearchService), 'search').mockImplementation((_input, options) => new Promise((_resolve, reject) => {
+      options?.signal?.addEventListener('abort', () => {
+        const error = new Error('steered');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }));
+    try {
+      const steer = new AbortController();
+      const execution = await ix.get(IWebSearchTool).resolveExecution({ query: 'slow search' });
+      if (execution.isError) throw new Error(String(execution.output));
+      const pending = execution.execute({
+        turnId: 0,
+        toolCallId: 'search-steer',
+        signal: new AbortController().signal,
+        steerSignal: steer.signal,
+      });
+      steer.abort(new Error('send now'));
+      expect(await pending).toMatchObject({
+        isError: false,
+        output: expect.stringContaining('New input ended this search early'),
+      });
+    } finally {
+      searchSpy.mockRestore();
+    }
+  });
 });

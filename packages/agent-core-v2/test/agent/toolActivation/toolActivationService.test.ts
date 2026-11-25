@@ -70,6 +70,7 @@ import '#/agent/tools/web-search/webSearchTool';
 
 class StubTool implements AgentTool {
   declare readonly _serviceBrand: undefined;
+  readonly foregroundPolicy = 'instant' as const;
   readonly description = 'stub';
   readonly parameters: Record<string, unknown> = {};
   constructor(readonly name: string) {}

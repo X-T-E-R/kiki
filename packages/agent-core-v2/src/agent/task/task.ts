@@ -58,8 +58,10 @@ export interface RegisterAgentTaskOptions {
   readonly lifetime?: TaskLifetime;
   readonly timeoutMs?: number;
   readonly detachTimeoutMs?: number;
+  readonly detachTimeoutMode?: 'post_detach' | 'total_budget';
   readonly autoBackgroundOnTimeout?: boolean;
   readonly signal?: AbortSignal;
+  readonly steerSignal?: AbortSignal;
   readonly ownerTurnId?: number;
   readonly terminalNotificationSuppressed?: boolean;
   /** Preallocated by a transactional adapter before the task starts. */
@@ -77,7 +79,10 @@ export interface AgentTaskTrackOptions {
   readonly lifetime?: TaskLifetime;
   readonly timeoutMs?: number;
   readonly detachTimeoutMs?: number;
+  readonly detachTimeoutMode?: 'post_detach' | 'total_budget';
+  readonly autoBackgroundOnTimeout?: boolean;
   readonly signal?: AbortSignal;
+  readonly steerSignal?: AbortSignal;
   readonly forceStop?: () => Promise<void>;
   readonly onDetach?: () => void;
   readonly toInfo: (base: AgentTaskInfoBase) => AgentTaskInfo;

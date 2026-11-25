@@ -14,6 +14,7 @@ import {
 export class EnterPlanModeTool implements IEnterPlanModeTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'EnterPlanMode' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description: string = DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(EnterPlanModeInputSchema);
 

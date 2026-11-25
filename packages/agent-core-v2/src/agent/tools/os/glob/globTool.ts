@@ -73,6 +73,7 @@ const sensitiveFilterCache = new WeakMap<readonly string[], { readonly kept: rea
 export class GlobTool implements IGlobTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Glob' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   get parameters(): Record<string, unknown> {
     return hostToolParameters(GlobInputSchema, this.runtime.nativeSshEnabled?.() === true);
   }

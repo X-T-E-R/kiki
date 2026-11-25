@@ -305,7 +305,7 @@ describe('EnterPlanMode batch boundary', () => {
       const writes: string[] = [];
       for (const name of ['Write', 'Edit']) {
         registry.register({
-          name, description: 'Count test writes without changing files.',
+          name, foregroundPolicy: 'instant', description: 'Count test writes without changing files.',
           parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
           resolveExecution: (args: { path: string }) => ({
             approvalRule: name, accesses: ToolAccesses.writeFile(args.path),

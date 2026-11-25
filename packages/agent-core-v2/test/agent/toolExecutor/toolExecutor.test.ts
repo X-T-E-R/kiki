@@ -25,6 +25,7 @@ import { foldLoopEvent } from '#/agent/contextMemory/loopEventFold';
 import { ContextAppendLoopEvent } from '#/agent/contextMemory/contextEvents';
 import { advanceContinuityClock, initialContinuityClock } from '#/session/todo/continuityState';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
+import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import type {
   BeforeToolExecuteEvent,
@@ -1024,6 +1025,7 @@ describe('AgentToolExecutorService', () => {
     };
     const tool: ExecutableTool<Record<string, unknown>> = {
       name: inner.name,
+      foregroundPolicy: 'instant',
       description: inner.description,
       get parameters() {
         return currentSchema;
@@ -2096,6 +2098,274 @@ describe('truncation pipeline', () => {
     expect(result?.output).toBe(output);
     expect(result?.truncated).toBeUndefined();
   });
+
+  it('skips queued and unprepared tools in a multi-tool batch once steerSignal aborts', async () => {
+    const steer = new AbortController();
+    const t1Started = deferred();
+    const t1Release = deferred();
+    const beforeExecuteCalls: string[] = [];
+    disposables.add(executor.onBeforeExecuteTool((event) => {
+      beforeExecuteCalls.push(event.toolCall.id);
+    }));
+    const t1 = new TestTool('first', {
+      accesses: ToolAccesses.all(),
+      execute: async () => {
+        t1Started.resolve();
+        await t1Release.promise;
+        return { output: 'first detached' };
+      },
+    });
+    const t2 = new TestTool('second', { accesses: ToolAccesses.all() });
+    registry.register(t1);
+    registry.register(t2);
+
+    const results: ToolResult[] = [];
+    const running = (async () => {
+      for await (const item of executor.execute(
+        [toolCall('c1', 'first', {}), toolCall('c2', 'second', {})],
+        { turnId: 0, signal: new AbortController().signal, steerSignal: steer.signal },
+      )) {
+        results.push(item.result);
+      }
+    })();
+
+    await t1Started.promise;
+    steer.abort(new Error('send now'));
+    t1Release.resolve();
+    await running;
+
+    expect(t1.calls).toHaveLength(1);
+    expect(t2.calls).toHaveLength(0);
+    expect(results).toHaveLength(2);
+    expect(results[1]?.isError).toBeFalsy();
+    expect(results[1]?.output).toContain('Tool skipped because new input arrived before it started');
+
+    beforeExecuteCalls.length = 0;
+    const preSkipped: ToolResult[] = [];
+    for await (const item of executor.execute(
+      [toolCall('c3', 'second', {})],
+      { turnId: 0, signal: new AbortController().signal, steerSignal: steer.signal },
+    )) {
+      preSkipped.push(item.result);
+    }
+    expect(beforeExecuteCalls).toEqual([]);
+    expect(t2.calls).toHaveLength(0);
+    expect(preSkipped[0]?.isError).toBeFalsy();
+    expect(preSkipped[0]?.output).toContain('Tool skipped because new input arrived before it started');
+  });
+
+  it('cancels unstarted tool admission waiting in beforeExecute when steerSignal aborts', async () => {
+    const steer = new AbortController();
+    const enteredAdmission = deferred();
+    let observedAdmissionAborted = false;
+    disposables.add(executor.onBeforeExecuteTool(async (event) => {
+      enteredAdmission.resolve();
+      await new Promise<void>((_resolve, reject) => {
+        event.signal.addEventListener('abort', () => {
+          observedAdmissionAborted = true;
+          reject(event.signal.reason ?? new Error('aborted'));
+        }, { once: true });
+      });
+    }));
+    const gated = new TestTool('gated', { accesses: ToolAccesses.all() });
+    registry.register(gated);
+
+    const results: ToolResult[] = [];
+    const running = (async () => {
+      for await (const item of executor.execute(
+        [toolCall('c_gate', 'gated', {})],
+        { turnId: 0, signal: new AbortController().signal, steerSignal: steer.signal },
+      )) {
+        results.push(item.result);
+      }
+    })();
+
+    await enteredAdmission.promise;
+    steer.abort(new Error('send now during approval'));
+    await running;
+
+    expect(observedAdmissionAborted).toBe(true);
+    expect(gated.calls).toHaveLength(0);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.isError).toBeFalsy();
+    expect(results[0]?.output).toContain('Tool skipped because new input arrived before it started');
+  });
+
+  it('enforces valid foregroundPolicy at registry registration and execution resolution without leaking it to ToolInfo', async () => {
+    const missingPolicy = {
+      name: 'MissingPolicy',
+      description: 'Missing policy',
+      parameters: { type: 'object', properties: {} },
+      resolveExecution: () => ({ approvalRule: 'MissingPolicy', execute: async () => ({ output: 'ok' }) }),
+    } as unknown as ExecutableTool;
+    expect(() => registry.register(missingPolicy)).toThrow(/foregroundPolicy/);
+    expect(registry.resolve('MissingPolicy')).toBeUndefined();
+
+    const invalidOverride: ExecutableTool = {
+      name: 'InvalidOverride',
+      foregroundPolicy: 'bounded_io',
+      description: 'Returns invalid runtime foregroundPolicy',
+      parameters: { type: 'object', properties: {} },
+      resolveExecution: () => ({
+        approvalRule: 'InvalidOverride',
+        foregroundPolicy: 'invalid_policy' as unknown as ExecutableTool['foregroundPolicy'],
+        execute: async () => ({ output: 'should not run' }),
+      }),
+    };
+    registry.register(invalidOverride);
+    const info = registry.list().find((entry) => entry.name === 'InvalidOverride');
+    expect(info).toBeDefined();
+    expect(Object.prototype.hasOwnProperty.call(info, 'foregroundPolicy')).toBe(false);
+
+    const results = await execute([toolCall('c_invalid', 'InvalidOverride', {})]);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.isError).toBe(true);
+    expect(results[0]?.output).toContain('foregroundPolicy');
+  });
+
+  it('cancels extension pre-execute proposals, blocks stale wrapper next() bodies, and enforces detachable_task steer detach in the executor', async () => {
+    ix.stub(ISessionContext, { sessionId: 'session-extension' });
+    const detachedTaskIds: string[] = [];
+    ix.stub(IAgentTaskService, {
+      detach: (taskId: string) => {
+        detachedTaskIds.push(taskId);
+        return undefined;
+      },
+    } as unknown as IAgentTaskService);
+
+    const preEntered = deferred<void>();
+    let preSignalAborted = false;
+    const preSub = extensions.registerToolPreExecutePolicy('plugin-slow-pre', (ctx) => new Promise((_resolve, reject) => {
+      preEntered.resolve();
+      ctx.signal.addEventListener('abort', () => {
+        preSignalAborted = true;
+        reject(new Error('pre-execute steered'));
+      }, { once: true });
+    }));
+    const preTool = new TestTool('pre_steered');
+    registry.register(preTool);
+    const preSteer = new AbortController();
+    const preResults: ToolResult[] = [];
+    const preRun = (async () => {
+      for await (const item of executor.execute([toolCall('c_pre', 'pre_steered', {})], {
+        turnId: 0,
+        signal: new AbortController().signal,
+        steerSignal: preSteer.signal,
+      })) {
+        preResults.push(item.result);
+      }
+    })();
+    await preEntered.promise;
+    preSteer.abort(new Error('send now during pre-execute'));
+    await preRun;
+    preSub.dispose();
+    expect(preSignalAborted).toBe(true);
+    expect(preTool.calls).toHaveLength(0);
+    expect(preResults[0]?.isError).toBeFalsy();
+    expect(preResults[0]?.output).toContain('Tool skipped because new input arrived before it started');
+
+    const wrapEntered = deferred<void>();
+    const wrapRelease = deferred<void>();
+    const wrapSub = extensions.registerApprovedToolExecutionWrapper('plugin-slow-wrap', async (_ctx, next) => {
+      wrapEntered.resolve();
+      await wrapRelease.promise;
+      return next();
+    });
+    const bodyStarted = vi.fn();
+    const wrappedTool = new TestTool('wrapped_write');
+    registry.register(wrappedTool);
+    const wrapSteer = new AbortController();
+    const wrapResults: ToolResult[] = [];
+    const wrapRun = (async () => {
+      for await (const item of executor.execute([toolCall('c_wrap', 'wrapped_write', {})], {
+        turnId: 1,
+        signal: new AbortController().signal,
+        steerSignal: wrapSteer.signal,
+        onToolBodyStart: bodyStarted,
+      })) {
+        wrapResults.push(item.result);
+      }
+    })();
+    await wrapEntered.promise;
+    wrapSteer.abort(new Error('send now while wrapper awaited'));
+    await wrapRun;
+    wrapRelease.resolve();
+    await Promise.resolve();
+    wrapSub.dispose();
+    expect(bodyStarted).not.toHaveBeenCalled();
+    expect(wrappedTool.calls).toHaveLength(0);
+    expect(wrapResults[0]?.isError).toBeFalsy();
+    expect(wrapResults[0]?.output).toContain('Tool skipped because new input arrived before it started');
+
+    const restrictedRegistered = deferred<void>();
+    const finishRestricted = deferred<void>();
+    const restrictedTool: ExecutableTool = {
+      name: 'RestrictedDetachable',
+      foregroundPolicy: 'detachable_task',
+      description: 'Reports steerDetachable=false for restricted caller',
+      parameters: { type: 'object', properties: {} },
+      resolveExecution: () => ({
+        approvalRule: 'RestrictedDetachable',
+        execute: async (ctx) => {
+          ctx.onForegroundTaskStart?.('task-restricted-1', { steerDetachable: false });
+          restrictedRegistered.resolve();
+          await finishRestricted.promise;
+          return { output: 'stayed foreground' };
+        },
+      }),
+    };
+    registry.register(restrictedTool);
+    const restrictedSteer = new AbortController();
+    const restrictedRun = (async () => {
+      for await (const _item of executor.execute([toolCall('c_restricted', 'RestrictedDetachable', {})], {
+        turnId: 2,
+        signal: new AbortController().signal,
+        steerSignal: restrictedSteer.signal,
+      })) {
+      }
+    })();
+    await restrictedRegistered.promise;
+    restrictedSteer.abort(new Error('send now must not detach restricted task'));
+    finishRestricted.resolve();
+    await restrictedRun;
+    expect(detachedTaskIds).toEqual([]);
+
+    const taskRegistered = deferred<void>();
+    const finishTask = deferred<void>();
+    let observedStartedAt: number | undefined;
+    const detachableTool: ExecutableTool = {
+      name: 'KernelDetachable',
+      foregroundPolicy: 'detachable_task',
+      description: 'Registers a foreground task without its own steer listener',
+      parameters: { type: 'object', properties: {} },
+      resolveExecution: () => ({
+        approvalRule: 'KernelDetachable',
+        execute: async (ctx) => {
+          observedStartedAt = ctx.foregroundStartedAt;
+          ctx.onForegroundTaskStart?.('task-kernel-1');
+          taskRegistered.resolve();
+          await finishTask.promise;
+          return { output: 'detached cleanly' };
+        },
+      }),
+    };
+    registry.register(detachableTool);
+    const detachSteer = new AbortController();
+    const detachRun = (async () => {
+      for await (const _item of executor.execute([toolCall('c_detach', 'KernelDetachable', {})], {
+        turnId: 2,
+        signal: new AbortController().signal,
+        steerSignal: detachSteer.signal,
+      })) {
+      }
+    })();
+    await taskRegistered.promise;
+    detachSteer.abort(new Error('send now detaches task'));
+    finishTask.resolve();
+    await detachRun;
+    expect(observedStartedAt).toEqual(expect.any(Number));
+    expect(detachedTaskIds).toEqual(['task-kernel-1']);
+  });
 });
 
 function toPosix(path: string): string {
@@ -2174,6 +2444,7 @@ function deferred<T = void>(): {
 }
 
 class TestTool implements ExecutableTool<Record<string, unknown>> {
+  readonly foregroundPolicy = 'instant' as const;
   readonly description = 'Test tool.';
   readonly parameters: Record<string, unknown>;
   readonly calls: Array<ExecutableToolContext & { readonly args: Record<string, unknown> }> = [];
@@ -2219,6 +2490,7 @@ class TestTool implements ExecutableTool<Record<string, unknown>> {
 }
 
 class ControlledTool implements ExecutableTool<Record<string, unknown>> {
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = 'Controlled tool.';
   readonly parameters = { type: 'object', additionalProperties: true };
   readonly calls: ExecutableToolContext[] = [];

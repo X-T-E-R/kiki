@@ -58,6 +58,7 @@ export function formatTaskList(tasks: readonly AgentTaskInfo[], activeOnly: bool
 export class TaskListTool implements ITaskListTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'TaskList' as const;
+  readonly foregroundPolicy = 'instant' as const;
   readonly description = TASK_LIST_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(TaskListInputSchema);
 

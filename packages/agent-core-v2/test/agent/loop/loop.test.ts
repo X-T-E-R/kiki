@@ -222,6 +222,7 @@ describe('Agent loop', () => {
     let modelRequests = 0;
     const tool: ExecutableTool = {
       name: 'Work',
+      foregroundPolicy: 'instant',
       description: 'Perform one test operation.',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       resolveExecution: () => ({
@@ -1449,6 +1450,7 @@ describe('Agent loop', () => {
     };
     const lookupTool: ExecutableTool<{ query: string }> = {
       name: 'Lookup',
+      foregroundPolicy: 'instant',
       description: 'Look up a short test value.',
       parameters: {
         type: 'object',
@@ -1562,6 +1564,7 @@ describe('Agent loop', () => {
   it('withholds truncated tool calls when the provider finish reason is truncated', async () => {
     const lookupTool: ExecutableTool<{ query: string }> = {
       name: 'Lookup',
+      foregroundPolicy: 'instant',
       description: 'Look up a short test value.',
       parameters: {
         type: 'object',
@@ -1619,6 +1622,7 @@ describe('Agent loop', () => {
     };
     const lookupTool: ExecutableTool<{ query: string }> = {
       name: 'Lookup',
+      foregroundPolicy: 'instant',
       description: 'Look up a short test value.',
       parameters: {
         type: 'object',
@@ -1719,6 +1723,7 @@ describe('Agent loop', () => {
     };
     const lookupTool: ExecutableTool<{ query: string }> = {
       name: 'Lookup',
+      foregroundPolicy: 'instant',
       description: 'Look up a short test value.',
       parameters: {
         type: 'object',
@@ -2729,7 +2734,7 @@ describe('post-delivery thinking-only completion', () => {
     await delivery.set('message');
     const run = vi.fn(async () => ({ output: 'Follow-up completed.', allowsTurnEndWithSendMessage: followup === 'bookkeeping' }));
     local.get(IAgentToolRegistryService).register({
-      name: 'FollowupWork', description: 'Complete follow-up work.', parameters: { type: 'object' },
+      name: 'FollowupWork', foregroundPolicy: 'instant', description: 'Complete follow-up work.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'FollowupWork', execute: run }),
     });
     local.get(IAgentProfileService).update({ activeToolNames: ['SendMessage', 'FollowupWork'] });
@@ -2852,7 +2857,7 @@ describe('native empty provider completion', () => {
     Reflect.set(local.get(IAgentScopeContext), 'parentAgentId', 'example-parent');
     try {
       local.get(IAgentToolRegistryService).register({
-        name: 'FinishWork', description: 'Complete work.', parameters: { type: 'object' },
+        name: 'FinishWork', foregroundPolicy: 'instant', description: 'Complete work.', parameters: { type: 'object' },
         resolveExecution: () => ({ approvalRule: 'FinishWork', execute: async () => ({ output: 'work saved', stopTurn }) }),
       });
       local.get(IAgentProfileService).update({ activeToolNames: ['FinishWork'] });
@@ -3011,6 +3016,103 @@ describe('aborted step tool execution', () => {
       await ctx.dispose();
     }
   });
+
+  it('keeps steerSignal aborted on the next step when a second boundary request remains queued for the active turn', async () => {
+    const step1Started = deferred();
+    const step1Release = deferred();
+    const seenSteerAborted: boolean[] = [];
+    const ctx = createTestAgent(permissionModeServices('yolo'));
+    try {
+      const probe: ExecutableTool = {
+        name: 'ProbeSteer',
+        foregroundPolicy: 'instant',
+        description: 'Records steerSignal state.',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+        resolveExecution: () => ({
+          approvalRule: 'ProbeSteer',
+          accesses: [],
+          execute: async ({ steerSignal }) => {
+            step1Started.resolve();
+            await step1Release.promise;
+            seenSteerAborted.push(steerSignal?.aborted === true);
+            return { output: 'ok' };
+          },
+        }),
+      };
+      ctx.get(IAgentProfileService).update({ activeToolNames: ['ProbeSteer'] });
+      ctx.get(IAgentToolRegistryService).register(probe);
+      ctx.mockNextResponse({ type: 'function', id: 'call-1', name: 'ProbeSteer', arguments: '{}' });
+      ctx.mockNextResponse({ type: 'function', id: 'call-2', name: 'ProbeSteer', arguments: '{}' });
+      ctx.mockNextResponse({ type: 'text', text: 'done' });
+      const loopService = ctx.get(IAgentLoopService);
+      const receipt = loopService.enqueue(nextTurnMessage('start'));
+      const { turn } = await receipt.assigned;
+
+      await step1Started.promise;
+      const order: string[] = [];
+      const b1 = loopService.atStepBoundary(async () => { order.push('first'); });
+      const b2 = loopService.atStepBoundary(async () => { order.push('second'); });
+      step1Release.resolve();
+
+      await Promise.all([b1, b2]);
+      await expect(turn.result).resolves.toMatchObject({ type: 'completed' });
+      expect(order).toEqual(['first', 'second']);
+      expect(seenSteerAborted).toEqual([true]);
+      const call2Result = ctx.project().find((msg) => msg.role === 'tool' && msg.toolCallId === 'call-2');
+      expect(JSON.stringify(call2Result?.content ?? '')).toContain('Tool skipped because new input arrived before it started');
+    } finally {
+      await ctx.dispose();
+    }
+  });
+
+  it('does not abort steerSignal or detach foreground work for non-preempting model-switch boundaries, preserving Stop cancellation', async () => {
+    const toolStarted = deferred();
+    let observedSteerAborted = false;
+    let observedHardAbort = false;
+    const ctx = createTestAgent(permissionModeServices('yolo'));
+    try {
+      const probe: ExecutableTool = {
+        name: 'ForegroundSwitchProbe',
+        foregroundPolicy: 'detachable_task',
+        description: 'Waits in foreground until aborted.',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+        resolveExecution: () => ({
+          approvalRule: 'ForegroundSwitchProbe',
+          accesses: [],
+          execute: async ({ signal, steerSignal }) => {
+            toolStarted.resolve();
+            steerSignal?.addEventListener('abort', () => { observedSteerAborted = true; }, { once: true });
+            await new Promise<void>((resolve) => {
+              signal.addEventListener('abort', () => {
+                observedHardAbort = true;
+                resolve();
+              }, { once: true });
+            });
+            return { isError: true, output: 'aborted' };
+          },
+        }),
+      };
+      ctx.get(IAgentProfileService).update({ activeToolNames: ['ForegroundSwitchProbe'] });
+      ctx.get(IAgentToolRegistryService).register(probe);
+      ctx.mockNextResponse({ type: 'function', id: 'call-fg', name: 'ForegroundSwitchProbe', arguments: '{}' });
+      const loopService = ctx.get(IAgentLoopService);
+      const { turn } = await loopService.enqueue(nextTurnMessage('run foreground')).assigned;
+
+      await toolStarted.promise;
+      const switchBoundary = loopService.atStepBoundary(async () => {}, { preemptForeground: false });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(observedSteerAborted).toBe(false);
+
+      loopService.cancelFromUser(turn.id);
+      await expect(switchBoundary).rejects.toThrow();
+      await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
+      expect(observedSteerAborted).toBe(false);
+      expect(observedHardAbort).toBe(true);
+    } finally {
+      await ctx.dispose();
+    }
+  });
 });
 
 function nextTurnMessage(text: string): MessageStepRequest {
@@ -3142,6 +3244,7 @@ function registerAbortableWorkTool(ctx: TestAgentContext): ReturnType<typeof def
   let executions = 0;
   const tool: ExecutableTool = {
     name: 'Work',
+    foregroundPolicy: 'bounded_io',
     description: 'Run one fast operation and one cancellable operation.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     resolveExecution: () => ({

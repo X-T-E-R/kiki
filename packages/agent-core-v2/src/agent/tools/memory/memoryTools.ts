@@ -148,6 +148,7 @@ export const IMemoryWriteTool = createDecorator<IMemoryWriteTool>('memoryWriteTo
 export class MemoryWriteTool implements IMemoryWriteTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'MemoryWrite';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = `Maintain durable guidance for future relevant tasks. First choose its home: lasting preferences and working rules belong in memory; current progress, schedules, one-off exceptions, and temporary experiments belong in task records. When an authoritative file already contains the guidance, prefer a useful pointer over a second copy. Apply direct user instructions to the current task independently of storage.
 
 Reuse a complete, current entry already in view; otherwise search for the subject and read related entries in full. Leave an already complete rule unchanged. Prefer update on the same ID, preserving valid conditions and exceptions. Create only genuinely new guidance. Supersede creates a distinct replacement ID and retires its predecessor only when the replacement is active. Archive revoked or fully covered entries; for consolidation, first confirm the retained same-scope entry is active and pass its id and revision in covered_by. Do not replace global guidance with a narrower workspace entry or erase an intentional local exception.
@@ -226,6 +227,7 @@ export const IMemorySearchTool = createDecorator<IMemorySearchTool>('memorySearc
 export class MemorySearchTool implements IMemorySearchTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'MemorySearch';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = `Find saved guidance in scopes visible to this context. Use mode=search, the default, for a short subject, title, or alias query when relevant details are missing. Reuse complete current entries already in view. Ranked search is for recall, not proof that no related rule exists. Use mode=list for a browsable inventory when a known entry is missing or scoped maintenance requires coverage; do not scan the whole inventory before ordinary work.
 
 Search requires query: 1–200 characters and at most 10 whitespace-separated words. List accepts no query. Omitted scope searches all visible scopes; type and statuses narrow the result. Statuses default to active only. Explicit historical or pending results are not current guidance. The legacy include_superseded option means active plus superseded and cannot be combined with statuses.
@@ -277,6 +279,7 @@ export const IMemoryReadTool = createDecorator<IMemoryReadTool>('memoryReadTool'
 export class MemoryReadTool implements IMemoryReadTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'MemoryRead';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = `Read full saved memory by id or ids, up to 10 entries. Supply exactly one of id and ids. Omitted scope resolves IDs across scopes visible to this context; an explicit scope limits the lookup. Ambiguous IDs return visible candidates rather than choosing a scope silently.
 
 Use this to recover missing conditions or inspect an entry before changing or combining it. Reuse a complete current read already in view. Each result includes the full entry, owning scope, latest revision, applicability, and target fields ready to copy into MemoryWrite. If output is incomplete, it is marked incomplete and must not be used as a full replacement source.

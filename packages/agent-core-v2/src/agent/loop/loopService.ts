@@ -168,6 +168,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private boundaryWake?: ReturnType<typeof createControlledPromise<void>>;
   private readonly boundaryRequests: Array<{
     readonly turnId: number;
+    readonly preemptForeground: boolean;
     readonly run: (boundary: import('./loop').StepBoundary | undefined) => Promise<void>;
     readonly result: ReturnType<typeof createControlledPromise<void>>;
   }> = [];
@@ -566,13 +567,19 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     return toDisposable(() => this.releaseQuiescence());
   }
 
-  atStepBoundary(run: (boundary: import('./loop').StepBoundary | undefined) => Promise<void>): Promise<void> {
+  atStepBoundary(
+    run: (boundary: import('./loop').StepBoundary | undefined) => Promise<void>,
+    options?: import('./loop').StepBoundaryOptions,
+  ): Promise<void> {
     if (this.disposing) return Promise.reject(abortError('Agent loop disposed'));
     const job = this.activeTurnJob;
     if (job === undefined) return run(undefined);
+    const preemptForeground = options?.preemptForeground !== false;
     const result = createControlledPromise<void>();
-    this.boundaryRequests.push({ turnId: job.turn.id, run, result });
-    job.steerController.abort(abortError('New input awaiting a model boundary'));
+    this.boundaryRequests.push({ turnId: job.turn.id, preemptForeground, run, result });
+    if (preemptForeground) {
+      job.steerController.abort(abortError('New input awaiting a model boundary'));
+    }
     this.boundaryWake?.resolve();
     return result;
   }
@@ -1187,7 +1194,12 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       const origin = request.turnSeed?.origin;
       return request.kind === 'steer' && origin?.kind === 'agent_message' && origin.senderAgentId === parentId;
     }) ? phase : undefined;
-    if (runtime.job !== undefined) runtime.job.steerController = new AbortController();
+    if (runtime.job !== undefined) {
+      runtime.job.steerController = new AbortController();
+      if (this.boundaryRequests.some((request) => request.turnId === runtime.turnId && request.preemptForeground)) {
+        runtime.job.steerController.abort(abortError('New input awaiting a model boundary'));
+      }
+    }
     const mutableStep = runtime.job?.steps.get(batch.driver.id);
     if (mutableStep !== undefined) {
       mutableStep.state = 'running';

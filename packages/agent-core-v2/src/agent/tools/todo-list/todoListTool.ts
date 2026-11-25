@@ -11,6 +11,7 @@ import DESCRIPTION from './todo-list.md?raw';
 export class TodoListTool implements ITodoListTool {
   declare readonly _serviceBrand: undefined;
   readonly name = TODO_LIST_TOOL_NAME;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description: string = DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(TodoListInputSchema);
 

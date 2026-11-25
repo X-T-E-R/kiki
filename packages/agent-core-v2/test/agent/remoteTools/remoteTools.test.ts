@@ -406,6 +406,7 @@ describe('AgentRemoteToolService & progressive disclosure integration', () => {
     const localDisposable = registry.register(
       {
         name: localCollisionName,
+        foregroundPolicy: 'instant',
         description: 'Local tool that must not be overwritten',
         parameters: { type: 'object', properties: {} },
         resolveExecution: () => ({

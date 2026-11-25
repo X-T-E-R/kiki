@@ -75,6 +75,7 @@ describe('google model-turn continuation', () => {
     const local = googleAgent('gemini-4-argon', generateContentStream, 'yolo');
     local.get(IAgentToolRegistryService).register({
       name: 'FinishWork',
+      foregroundPolicy: 'instant',
       description: 'Complete work.',
       parameters: { type: 'object' },
       resolveExecution: () => ({
@@ -263,7 +264,7 @@ describe('google model-turn continuation', () => {
     const local = googleAgent('gemini-4-argon', generateContentStream, 'yolo');
     let toolRuns = 0;
     local.get(IAgentToolRegistryService).register({
-      name: 'FinishWork', description: 'Complete work.', parameters: { type: 'object' },
+      name: 'FinishWork', foregroundPolicy: 'instant', description: 'Complete work.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'FinishWork', execute: async () => { toolRuns += 1; return { output: 'saved' }; } }),
     });
     local.get(IAgentProfileService).update({ activeToolNames: ['FinishWork'] });
@@ -359,6 +360,7 @@ describe('google model-turn continuation', () => {
     const local = googleAgent('gemini-4-argon', generateContentStream, 'yolo');
     local.get(IAgentToolRegistryService).register({
       name: 'FinishWork',
+      foregroundPolicy: 'instant',
       description: 'Complete work.',
       parameters: { type: 'object' },
       resolveExecution: () => ({
@@ -440,6 +442,7 @@ describe('google model-turn continuation', () => {
     }, 'yolo');
     fixture.local.get(IAgentToolRegistryService).register({
       name: 'FinishWork',
+      foregroundPolicy: 'instant',
       description: 'Complete work.',
       parameters: { type: 'object' },
       resolveExecution: () => ({
@@ -673,6 +676,7 @@ describe('google model-turn continuation', () => {
     }, 'yolo');
     fixture.local.get(IAgentToolRegistryService).register({
       name: 'FinishWork',
+      foregroundPolicy: 'instant',
       description: 'Complete work.',
       parameters: { type: 'object' },
       resolveExecution: () => ({
@@ -824,6 +828,7 @@ describe('google model-turn continuation', () => {
     }, 'yolo');
     fixture.local.get(IAgentToolRegistryService).register({
       name: 'FinishWork',
+      foregroundPolicy: 'instant',
       description: 'Complete work.',
       parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'FinishWork', execute: toolRuns }),

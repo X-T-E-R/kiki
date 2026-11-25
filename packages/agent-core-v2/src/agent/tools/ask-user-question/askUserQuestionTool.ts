@@ -49,6 +49,7 @@ const QUESTION_UNSUPPORTED_FAILURE_MESSAGE =
 export class AskUserQuestionTool implements IAskUserQuestionTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'AskUserQuestion' as const;
+  readonly foregroundPolicy = 'detachable_task' as const;
   readonly description: string;
   readonly parameters: Record<string, unknown>;
   private readonly activeCalls = new Map<string, Promise<ExecutableToolResult>>();

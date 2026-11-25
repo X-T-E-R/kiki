@@ -59,6 +59,7 @@ export function branchToolDescription(preference: BranchUsagePreference = 'balan
 export class BranchTool implements AgentTool<BranchInput> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Branch' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(BranchInputSchema);
 
   constructor(

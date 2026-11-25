@@ -238,7 +238,7 @@ async function replay(choose: (requestNumber: number, continued: boolean) => Buf
   if (options.profileName !== undefined) local.get(IAgentProfileService).update({ profileName: options.profileName });
   if (options.tool === true) {
     local.get(IAgentToolRegistryService).register({
-      name: 'SaveWork', description: 'Save work', parameters: { type: 'object' },
+      name: 'SaveWork', foregroundPolicy: 'instant', description: 'Save work', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'SaveWork', execute: async () => { tools += 1; return { output: 'saved' }; } }),
     });
     local.get(IAgentProfileService).update({ activeToolNames: ['SaveWork'] });

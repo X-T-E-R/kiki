@@ -50,7 +50,7 @@ function setup(workspace: string, usage?: IPluginUsageService, workspaceId = 'wo
     disclosure: 'deferred' as const,
   } }]), execute: vi.fn(async () => ({ output: 'created' })) } as unknown as IPluginHostService;
   const tools = new Map<string, ExecutableTool>();
-  if (messageExecutor !== undefined) tools.set('SendMessage', { name: 'SendMessage', description: 'Send', parameters: { type: 'object' }, resolveExecution: () => ({ approvalRule: 'SendMessage', execute: async () => ({ output: '{}' }) }) });
+  if (messageExecutor !== undefined) tools.set('SendMessage', { name: 'SendMessage', foregroundPolicy: 'instant', description: 'Send', parameters: { type: 'object' }, resolveExecution: () => ({ approvalRule: 'SendMessage', execute: async () => ({ output: '{}' }) }) });
   const registry = {
     register: (tool: ExecutableTool) => { tools.set(tool.name, tool); return { dispose: () => { tools.delete(tool.name); } }; },
     registerPreparation: () => ({ dispose: () => {} }),

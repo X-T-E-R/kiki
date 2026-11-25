@@ -841,6 +841,7 @@ describe('agentsMdReminder duplicate calls', () => {
 
     class ReadTool implements ExecutableTool<Record<string, unknown>> {
       readonly name = 'Read';
+      readonly foregroundPolicy = 'instant' as const;
       readonly description = 'Returns file contents.';
       readonly parameters = { type: 'object', additionalProperties: true };
       resolveExecution(args: Record<string, unknown>): ToolExecution {
@@ -1512,6 +1513,7 @@ describe('agentsMdReminder round-2 hardening', () => {
 
     class BigTool implements ExecutableTool<Record<string, unknown>> {
       readonly name = 'Read';
+      readonly foregroundPolicy = 'instant' as const;
       readonly description = 'Returns a huge output.';
       readonly parameters = { type: 'object', additionalProperties: true };
       resolveExecution(args: Record<string, unknown>): ToolExecution {
@@ -1556,6 +1558,7 @@ describe('agentsMdReminder round-2 hardening', () => {
 
     class ResolvedReadTool implements ExecutableTool<Record<string, unknown>> {
       readonly name = 'Read';
+      readonly foregroundPolicy = 'instant' as const;
       readonly description = 'Returns a resolved file result.';
       readonly parameters = { type: 'object', additionalProperties: true };
 
@@ -1601,6 +1604,7 @@ describe('agentsMdReminder round-2 hardening', () => {
 
     class ReadTool implements ExecutableTool<Record<string, unknown>> {
       readonly name = 'Read';
+      readonly foregroundPolicy = 'instant' as const;
       readonly description = 'Returns file contents.';
       readonly parameters = { type: 'object', additionalProperties: true };
 
@@ -1652,7 +1656,7 @@ describe('agentsMdReminder first write disclosure', () => {
     const instructionPath = await writeAgentsMd(subDir, 'Complete nested rule with an exception: preserve existing fixtures.');
     const target = join(subDir, 'output.ts');
     const execute = vi.fn(async () => ({ output: 'written' }));
-    const tool: ExecutableTool = { name: 'Write', description: 'Writes', parameters: { type: 'object' },
+    const tool: ExecutableTool = { name: 'Write', foregroundPolicy: 'instant', description: 'Writes', parameters: { type: 'object' },
       resolveExecution: () => ({ accesses: ToolAccesses.writeFile(target), approvalRule: 'Write', execute }) };
     h.ix.get(IAgentToolRegistryService).register(tool);
     h.ix.get(IAgentToolExecutorService).onBeforeExecuteTool((event) => { event.allow(); });
@@ -1686,6 +1690,7 @@ describe('agentsMdReminder first write disclosure', () => {
     const writeExecute = vi.fn(async () => ({ output: 'written' }));
     const agentRunTool: ExecutableTool = {
       name: 'AgentRun',
+      foregroundPolicy: 'instant',
       description: 'Runs subagent',
       parameters: { type: 'object' },
       resolveExecution: () => ({
@@ -1700,6 +1705,7 @@ describe('agentsMdReminder first write disclosure', () => {
     };
     const writeTool: ExecutableTool = {
       name: 'Write',
+      foregroundPolicy: 'instant',
       description: 'Writes file',
       parameters: { type: 'object' },
       resolveExecution: () => ({
@@ -1752,6 +1758,7 @@ describe('agentsMdReminder cancellation outcomes', () => {
 
     class BlockingBash implements ExecutableTool<Record<string, unknown>> {
       readonly name = 'Bash';
+      readonly foregroundPolicy = 'instant' as const;
       readonly description = 'Blocks until cancelled.';
       readonly parameters = { type: 'object', additionalProperties: true };
 
@@ -1776,6 +1783,7 @@ describe('agentsMdReminder cancellation outcomes', () => {
 
     class ReadTool implements ExecutableTool<Record<string, unknown>> {
       readonly name = 'Read';
+      readonly foregroundPolicy = 'instant' as const;
       readonly description = 'Reads a file.';
       readonly parameters = { type: 'object', additionalProperties: true };
 

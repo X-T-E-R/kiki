@@ -2,11 +2,13 @@ import { toDisposable, type IDisposable } from "#/_base/di/lifecycle";
 import { abortable } from '#/_base/utils/abort';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import type {
-  ExecutableTool,
-  ToolDisclosure,
-  ToolInfo,
-  ToolSource,
+import {
+  isToolForegroundPolicy,
+  TOOL_FOREGROUND_POLICIES,
+  type ExecutableTool,
+  type ToolDisclosure,
+  type ToolInfo,
+  type ToolSource,
 } from '#/tool/toolContract';
 import {
   IAgentToolRegistryService,
@@ -39,6 +41,11 @@ export class AgentToolRegistryService implements IAgentToolRegistryService {
   }
 
   register(tool: ExecutableTool, options: ToolRegistrationOptions = {}): IDisposable {
+    if (!isToolForegroundPolicy(tool.foregroundPolicy)) {
+      throw new Error(
+        `Tool "${tool.name}" must declare a valid foregroundPolicy (${TOOL_FOREGROUND_POLICIES.join(' | ')}), received ${String(tool.foregroundPolicy)}`,
+      );
+    }
     const source = options.source ?? 'builtin';
     const entry: ToolEntry = { tool, source, disclosure: options.disclosure };
     this.unregisterTool(tool.name);

@@ -796,7 +796,7 @@ describe('SendMessage completion guidance', () => {
     const companions = ['AgentRun', 'Bash', 'AgentSend', 'AskUserQuestion', 'DetachedWork'];
     const runs = new Set<string>();
     const registrations = companions.map(name => ctx.get(IAgentToolRegistryService).register({
-      name, description: 'Dispatch fixture work.', parameters: { type: 'object' },
+      name, foregroundPolicy: 'instant', description: 'Dispatch fixture work.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: name, execute: async () => {
         runs.add(name);
         return { output: 'Detached receipt.', allowsTurnEndWithSendMessage: true };
@@ -827,7 +827,7 @@ describe('SendMessage completion guidance', () => {
   ])('reviews the synchronous or failed $name result before ending', async ({ name, args, result }) => {
     await messageAgent();
     const registration = ctx.get(IAgentToolRegistryService).register({
-      name, description: 'Return a fixture result.', parameters: { type: 'object' },
+      name, foregroundPolicy: 'instant', description: 'Return a fixture result.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: name, execute: async () => result }),
     });
     try {
@@ -853,7 +853,7 @@ describe('SendMessage completion guidance', () => {
     await messageAgent({ initialConfig: { loopControl: { zeroOutputContinuation: true } } });
     declareNormalCompletions();
     const read = ctx.get(IAgentToolRegistryService).register({
-      name: 'Read', description: 'Read the final receipt.', parameters: { type: 'object' },
+      name: 'Read', foregroundPolicy: 'instant', description: 'Read the final receipt.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'Read', execute: async () => ({ output: 'Receipt verified successfully.' }) }),
     });
     try {
@@ -882,7 +882,7 @@ describe('SendMessage completion guidance', () => {
     await messageAgent();
     declareNormalCompletions();
     const read = ctx.get(IAgentToolRegistryService).register({
-      name: 'Read', description: 'Read required evidence.', parameters: { type: 'object' },
+      name: 'Read', foregroundPolicy: 'instant', description: 'Read required evidence.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'Read', execute: async () => invalidation === 'error'
         ? { output: 'Receipt verification failed.', isError: true }
         : { output: 'New evidence requires a revised answer.' } }),
@@ -928,7 +928,7 @@ describe('SendMessage completion guidance', () => {
     await messageAgent({ initialConfig: { loopControl: { zeroOutputContinuation: true } } });
     declareNormalCompletions();
     const read = ctx.get(IAgentToolRegistryService).register({
-      name: 'Read', description: 'Read required fixture evidence.', parameters: { type: 'object' },
+      name: 'Read', foregroundPolicy: 'instant', description: 'Read required fixture evidence.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'Read', execute: async () => ({ output: 'Evidence still needs a final answer.' }) }),
     });
     try {
@@ -1078,7 +1078,7 @@ describe('SendMessage completion guidance', () => {
     await messageAgent();
     declareNormalCompletions();
     const compatible = ctx.get(IAgentToolRegistryService).register({
-      name: 'DetachedWork', description: 'Record detached work.', parameters: { type: 'object' },
+      name: 'DetachedWork', foregroundPolicy: 'instant', description: 'Record detached work.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'DetachedWork', execute: async () => ({ output: 'Detached receipt.', allowsTurnEndWithSendMessage: true }) }),
     });
     try {
@@ -1226,13 +1226,13 @@ describe('SendMessage completion guidance', () => {
     });
     let waits = 0;
     const receipt = ctx.get(IAgentToolRegistryService).register({
-      name: 'Read', description: 'Inspect the current receipt.', parameters: { type: 'object' },
+      name: 'Read', foregroundPolicy: 'instant', description: 'Inspect the current receipt.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'Read', execute: async () => hasError
         ? { output: 'Receipt failed.', isError: true }
         : { output: 'Receipt succeeded.' } }),
     });
     const wait = ctx.get(IAgentToolRegistryService).register({
-      name: 'WaitWork', description: 'Wait across an execution pause.', parameters: { type: 'object' },
+      name: 'WaitWork', foregroundPolicy: 'instant', description: 'Wait across an execution pause.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'WaitWork', execute: async () => {
         waits += 1;
         await held;
@@ -1466,7 +1466,7 @@ describe('SendMessage completion guidance', () => {
   it('keeps sibling tool results available to the model even when SendMessage requests completion', async () => {
     await messageAgent();
     const registration = ctx.get(IAgentToolRegistryService).register({
-      name: 'RequiredWork', description: 'Finish required work.', parameters: { type: 'object' },
+      name: 'RequiredWork', foregroundPolicy: 'instant', description: 'Finish required work.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'RequiredWork', execute: async () => ({ output: 'Inspect this result.' }) }),
     });
     try {
@@ -1487,7 +1487,7 @@ describe('SendMessage completion guidance', () => {
     await messageAgent();
     const work = vi.fn(async () => ({ output: 'Work finished.' }));
     const registration = ctx.get(IAgentToolRegistryService).register({
-      name: 'RequiredWork', description: 'Finish required work.', parameters: { type: 'object' },
+      name: 'RequiredWork', foregroundPolicy: 'instant', description: 'Finish required work.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'RequiredWork', execute: work }),
     });
     try {

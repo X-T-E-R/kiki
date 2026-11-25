@@ -4034,7 +4034,7 @@ describe('incomplete provider tool streams through the agent loop', () => {
     const execute = vi.fn(async () => ({ output: 'must not run' }));
     try {
       ctx.get(IAgentProfileService).update({ activeToolNames: ['Lookup'] });
-      ctx.get(IAgentToolRegistryService).register({ name: 'Lookup', description: 'Fixture lookup', parameters: { type: 'object', properties: {} },
+      ctx.get(IAgentToolRegistryService).register({ name: 'Lookup', foregroundPolicy: 'instant', description: 'Fixture lookup', parameters: { type: 'object', properties: {} },
         resolveExecution: () => ({ approvalRule: 'Lookup', execute }) });
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Run the fixture lookup.' }] });
       await ctx.untilTurnEnd();
@@ -4083,7 +4083,7 @@ describe('Responses completed silence through the agent loop', () => {
     try {
       ctx.get(IAgentProfileService).update({ activeToolNames: ['Lookup'] });
       ctx.get(IAgentToolRegistryService).register({
-        name: 'Lookup', description: 'Fixture lookup', parameters: { type: 'object', properties: {}, additionalProperties: false },
+        name: 'Lookup', foregroundPolicy: 'instant', description: 'Fixture lookup', parameters: { type: 'object', properties: {}, additionalProperties: false },
         resolveExecution: () => ({ approvalRule: 'Lookup', execute }),
       });
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Check; stay silent when nothing changed.' }] });

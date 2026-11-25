@@ -588,7 +588,7 @@ describe('hooks v2 completed-step engine contract', () => {
     const ctx = agentWithRules(() => config, (event) => { events.push(`${event.event}:${event.status ?? ''}`); });
     ctx.get(IAgentProfileService).update({ activeToolNames: ['ExampleTool'] });
     ctx.get(IAgentToolRegistryService).register({
-      name: 'ExampleTool', description: 'Example', parameters: { type: 'object', properties: { value: { type: 'integer' } } },
+      name: 'ExampleTool', foregroundPolicy: 'instant', description: 'Example', parameters: { type: 'object', properties: { value: { type: 'integer' } } },
       resolveExecution: () => ({ approvalRule: 'ExampleTool', execute: async () => ({ output: 'original-result' }) }),
     });
     ctx.mockNextResponse({ type: 'function', id: 'tool-a', name: 'ExampleTool', arguments: '{"value":1}' }, { type: 'function', id: 'tool-b', name: 'ExampleTool', arguments: '{"value":2}' });
@@ -1162,6 +1162,7 @@ describe('hooks v2 completed-step engine contract', () => {
     ctx.get(IAgentProfileService).update({ activeToolNames: ['BashFixture'] });
     ctx.get(IAgentToolRegistryService).register({
       name: 'BashFixture',
+      foregroundPolicy: 'instant',
       description: 'Runs command fixture',
       parameters: { type: 'object' },
       resolveExecution: () => ({

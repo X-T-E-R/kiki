@@ -1,6 +1,7 @@
 import { normalizeEndpointLayer } from '@kiki/protocol';
 import { IAdhocEndpointVault } from '#/session/adhocEndpoint/adhocEndpointVault';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
+import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import type { Runtime, RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
@@ -22,6 +23,11 @@ import {
   type AgentTaskOutputSnapshot,
   type RegisterAgentTaskOptions,
 } from '#/agent/task/task';
+import {
+  attachForegroundSteerDetach,
+  MAIN_FOREGROUND_AUTO_DETACH_MS,
+  resolveForegroundCallerPolicy,
+} from '#/agent/task/foregroundPolicy';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import {
@@ -73,6 +79,11 @@ import {
   type DispatchChild,
 } from '#/session/dispatch/dispatch';
 import { emitAgentRunSpawned, mirrorAgentRun, SubagentStarted } from '#/session/subagent/mirrorAgentRun';
+import { IEventBus } from '#/app/event/eventBus';
+import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { PromptEnqueued, PromptQueued, PromptSubmitted } from '#/agent/prompt/promptService';
+import { IWireService } from '#/wire/wire';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
   addSubagentBindingSchemaConstraints,
@@ -121,7 +132,7 @@ const SUBAGENT_TOOL_PARAMETERS = toInputJsonSchema(SubagentToolInputSchema, (sch
 const PARENT_NOTIFY_DESCRIPTION =
   'Subagents may use AgentNotify only when the parent must change course before their final result; routine progress belongs in the final receipt.';
 const AGENT_RUN_SLOW_PHASE_MS = 1000;
-export const MAIN_FOREGROUND_AUTO_DETACH_MS = 15_000;
+export { MAIN_FOREGROUND_AUTO_DETACH_MS };
 const RESUME_FIXED_ARGUMENTS = ['workDir', 'additionalDirs', 'executor_launch'] as const;
 
 type AgentRunPhase = 'launch_prepare' | 'dispatch' | 'started' | 'task_register';
@@ -134,6 +145,7 @@ const BACKGROUND_LAUNCH_BURST_PACE_MS = 35;
 export class SubagentTool implements ISubagentTool {
   declare readonly _serviceBrand: undefined;
   readonly name: string = 'AgentRun';
+  readonly foregroundPolicy = 'detachable_task' as const;
 
   readonly parameters: Record<string, unknown> = SUBAGENT_TOOL_PARAMETERS;
 
@@ -154,7 +166,7 @@ export class SubagentTool implements ISubagentTool {
     @ISessionDispatchService private readonly dispatch: ISessionDispatchService,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @ISessionAgentProfileCatalog private readonly catalog: ISessionAgentProfileCatalog,
-    @IAgentScopeContext scopeContext: IAgentScopeContext,
+    @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
     @IAgentTaskService private readonly tasks: IAgentTaskService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
@@ -170,13 +182,17 @@ export class SubagentTool implements ISubagentTool {
     @ref(IAgentGoalService) private readonly goals?: LiveRef<IAgentGoalService>,
   ) {
     this.callerAgentId = scopeContext.agentId;
-    this.isMainCaller =
-      (scopeContext.agentId === MAIN_AGENT_ID && scopeContext.parentAgentId === undefined) ||
-      scopeContext.isBranch === true;
+    this.isMainCaller = resolveForegroundCallerPolicy({
+      scope: scopeContext,
+      goals: this.goals?.current,
+      toolPolicy: this.toolPolicy,
+    }).isMainOrBranch;
     this.canRunInBackground = () =>
-      this.toolPolicy.isToolActive('TaskList') &&
-      this.toolPolicy.isToolActive('TaskOutput') &&
-      this.toolPolicy.isToolActive('TaskStop');
+      resolveForegroundCallerPolicy({
+        scope: this.scopeContext,
+        goals: this.goals?.current,
+        toolPolicy: this.toolPolicy,
+      }).canRunInBackground;
     void this.catalog.ready.then(() => {
       this.catalogReady = true;
     });
@@ -630,6 +646,7 @@ export class SubagentTool implements ISubagentTool {
     capturedLaunchPolicy: DispatchLaunchPolicy,
     runTask: Promise<string | undefined>,
     workspaceRoots: RuntimeWorkspaceRoots | undefined,
+    resolvedExistingChild?: DispatchChild,
   ): Promise<SubagentHandle> {
     const resumeRef = args.resume?.trim();
     const prepared = await this.withAgentRunPhase(toolCallId, 'launch_prepare', async () => {
@@ -663,7 +680,7 @@ export class SubagentTool implements ISubagentTool {
         : this.defaultDispatchSelection();
       const existingChild = resumeRef === undefined || resumeRef.length === 0
         ? undefined
-        : await this.dispatch.resolveOwnedChild(
+        : resolvedExistingChild ?? await this.dispatch.resolveOwnedChild(
             { kind: 'agent', agentId: this.callerAgentId },
             resumeRef,
           );
@@ -724,7 +741,15 @@ export class SubagentTool implements ISubagentTool {
               },
             },
           ));
-    const admitted = await this.withAgentRunPhase(toolCallId, 'started', () => Promise.race([run.started, queued]));
+    const stopQueuedWatch = prepared.existingChild !== undefined && run.request.kind === 'prompt' && run.request.promptId !== undefined
+      ? watchQueuedResume(run.child.agent, run.request.promptId, controller.signal, markQueued)
+      : undefined;
+    let admitted: Awaited<typeof run.started> | 'queued';
+    try {
+      admitted = await this.withAgentRunPhase(toolCallId, 'started', () => Promise.race([run.started, queued]));
+    } finally {
+      stopQueuedWatch?.();
+    }
     const started = admitted === 'queued'
       ? { agentId: run.child.agentId, turn: run.started.then((handle) => handle.turn), completion: run.started.then((handle) => handle.completion) }
       : admitted;
@@ -906,6 +931,7 @@ export class SubagentTool implements ISubagentTool {
     },
   ): Promise<ExecutableToolResult> {
     const { toolCallId, signal, turnId } = context;
+    const callStartedAt = context.foregroundStartedAt ?? Date.now();
     try {
       signal.throwIfAborted();
       const runLabel = args.description;
@@ -927,8 +953,10 @@ export class SubagentTool implements ISubagentTool {
       }
       const timeoutMs = resolveSubagentTimeoutMs(this.config);
       const resumeOperationId = isResume ? `resume:${this.callerAgentId}:${turnId}:${toolCallId}` : undefined;
+      let resolvedExistingChild: DispatchChild | undefined;
       if (resumeOperationId !== undefined) {
         const child = await this.dispatch.resolveOwnedChild({ kind: 'agent', agentId: this.callerAgentId }, resumeAgentId!);
+        resolvedExistingChild = child;
         const saved = readResumeRecord((await this.metadata.read()).agents?.[child.agentId], resumeOperationId);
         if (saved !== undefined) {
           assertResumeFingerprint(saved.fingerprint, resumeFingerprint({ kind: 'prompt', prompt: args.prompt }, {
@@ -997,7 +1025,7 @@ export class SubagentTool implements ISubagentTool {
       let resolveRunTask!: (taskId: string | undefined) => void;
       const runTask = new Promise<string | undefined>((resolve) => { resolveRunTask = resolve; });
       try {
-        handle = await this.launch(args, toolCallId, turnId, controller, runtimeLease.runtime, snapshot, capturedLaunchPolicy, runTask, workspaceRoots);
+        handle = await this.launch(args, toolCallId, turnId, controller, runtimeLease.runtime, snapshot, capturedLaunchPolicy, runTask, workspaceRoots, resolvedExistingChild);
       } catch (error) {
         resolveRunTask(undefined);
         signal.removeEventListener('abort', abortBeforeRegister);
@@ -1016,6 +1044,7 @@ export class SubagentTool implements ISubagentTool {
       const finishTaskRegisterPhase = this.startAgentRunPhase(toolCallId, 'task_register');
 
       let taskId: string | undefined;
+      let preRegisterDetachedReason: 'steered' | 'timeout' | undefined;
       try {
         const resumeRecord = resumeOperationId === undefined ? undefined
           : readResumeRecord((await this.metadata.read()).agents?.[handle.agentId], resumeOperationId);
@@ -1023,24 +1052,53 @@ export class SubagentTool implements ISubagentTool {
         if (resumeRecord !== undefined && allocatedTaskId !== undefined) {
           await writeResumeRecord(this.metadata, handle.agentId, { ...resumeRecord, taskId: allocatedTaskId });
         }
-        const hasActiveGoal =
-          this.callerAgentId === MAIN_AGENT_ID &&
-          this.goals?.current?.getGoal().goal?.status === 'active';
-        const mainOutsideGoal = this.isMainCaller && !hasActiveGoal;
-        const autoBackgroundMainWait = mainOutsideGoal && !runInBackground && allowBackground;
-        const foregroundTimeoutMs = autoBackgroundMainWait
-          ? timeoutMs > 0
-            ? Math.min(timeoutMs, MAIN_FOREGROUND_AUTO_DETACH_MS)
-            : MAIN_FOREGROUND_AUTO_DETACH_MS
-          : timeoutMs;
+        const callerPolicy = resolveForegroundCallerPolicy({
+          scope: this.scopeContext,
+          goals: this.goals?.current,
+          toolPolicy: this.toolPolicy,
+        });
+        const preRegisterElapsedMs = Math.max(0, Date.now() - callStartedAt);
+        const hasTotalTimeout = timeoutMs !== undefined && timeoutMs > 0;
+        const rawRemainingTotalMs = hasTotalTimeout ? timeoutMs - preRegisterElapsedMs : undefined;
+        const remainingTotalTimeoutMs =
+          hasTotalTimeout ? Math.max(1, rawRemainingTotalMs!) : timeoutMs;
+        const mainDetachCapActive = !runInBackground && callerPolicy.autoBackgroundMainWait;
+        const remainingMainDetachMs = mainDetachCapActive
+          ? MAIN_FOREGROUND_AUTO_DETACH_MS - preRegisterElapsedMs
+          : undefined;
+        const totalAlreadyExpired = hasTotalTimeout && rawRemainingTotalMs! <= 0;
+        const steeredBeforeRegister =
+          !runInBackground &&
+          (this.isMainCaller || allowBackground) &&
+          !signal.aborted &&
+          !totalAlreadyExpired &&
+          context.executionPauseSignal?.aborted !== true &&
+          context.steerSignal?.aborted === true;
+        const autoDetachedBeforeRegister =
+          mainDetachCapActive &&
+          !signal.aborted &&
+          !totalAlreadyExpired &&
+          remainingMainDetachMs !== undefined &&
+          remainingMainDetachMs <= 0;
+        if (steeredBeforeRegister) preRegisterDetachedReason = 'steered';
+        else if (autoDetachedBeforeRegister) preRegisterDetachedReason = 'timeout';
+        const startDetached = runInBackground || preRegisterDetachedReason !== undefined;
+        const foregroundTimeoutMs = startDetached
+          ? remainingTotalTimeoutMs
+          : mainDetachCapActive
+            ? hasTotalTimeout
+              ? Math.min(remainingTotalTimeoutMs!, Math.max(1, remainingMainDetachMs!))
+              : Math.max(1, remainingMainDetachMs!)
+            : remainingTotalTimeoutMs;
         const registerOptions: RegisterAgentTaskOptions = {
           taskId: allocatedTaskId,
           ownerTurnId: turnId,
-          detached: runInBackground,
-          timeoutMs: runInBackground ? timeoutMs : foregroundTimeoutMs,
-          detachTimeoutMs: timeoutMs,
-          autoBackgroundOnTimeout: !runInBackground && allowBackground,
-          signal: runInBackground ? undefined : context.taskOwnerSignal ?? signal,
+          detached: startDetached,
+          timeoutMs: foregroundTimeoutMs,
+          detachTimeoutMs: remainingTotalTimeoutMs,
+          detachTimeoutMode: 'total_budget',
+          autoBackgroundOnTimeout: !startDetached && allowBackground,
+          signal: startDetached ? undefined : context.taskOwnerSignal ?? signal,
         };
         taskId = this.tasks.registerTask(
           new SubagentTask(
@@ -1112,6 +1170,19 @@ export class SubagentTool implements ISubagentTool {
         };
       }
 
+      if (preRegisterDetachedReason !== undefined) {
+        const output = formatBackgroundAgentResult(taskId, handle, runLabel);
+        const trailingNote = preRegisterDetachedReason === 'steered'
+          ? 'New input ended this foreground wait. Read the new input before deciding what to do next. The subagent has not been stopped; completion still arrives via automatic notification.'
+          : 'Foreground wait moved to background; the subagent has not been stopped and completion arrives via automatic notification. Do independent work or end the turn.';
+        return {
+          allowsTurnEndWithSendMessage: true,
+          output: this.withMainProfileNotice(handle, `${output}\n${trailingNote}`),
+        };
+      }
+
+      if (this.isMainCaller || allowBackground) context.onForegroundTaskStart?.(taskId);
+      else context.onForegroundTaskStart?.(taskId, { steerDetachable: false });
       const { completion: _completion, ...facts } = handle;
       return await this.waitForAgent({ kind: 'agent', taskId, handle: facts, runLabel, timeoutMs }, context);
     } catch (error) {
@@ -1135,7 +1206,6 @@ export class SubagentTool implements ISubagentTool {
     const { taskId, handle, runLabel, timeoutMs } = wait;
     const pause = ctx.executionPauseSignal;
     const steer = this.isMainCaller || this.canRunInBackground() ? ctx.steerSignal : undefined;
-    const detach = (): void => { if (!ctx.signal.aborted && pause?.aborted !== true) this.tasks.detach(taskId); };
     const cancelForeground = (): void => {
       const current = this.tasks.getTask(taskId);
       if (current === undefined || current.detached) return;
@@ -1146,10 +1216,13 @@ export class SubagentTool implements ISubagentTool {
         : this.tasks.stop(taskId, reason instanceof Error ? reason.message : reason === undefined ? undefined : String(reason));
       void stopTask.catch(() => {});
     };
-    steer?.addEventListener('abort', detach, { once: true });
+    const disposeSteerDetach = attachForegroundSteerDetach(this.tasks, taskId, {
+      signal: ctx.signal,
+      steerSignal: steer,
+      pauseSignal: pause,
+    });
     ctx.signal.addEventListener('abort', cancelForeground, { once: true });
     try {
-      if (steer?.aborted === true) detach();
       if (ctx.signal.aborted) cancelForeground();
       const releasePromise = this.tasks.waitForForegroundRelease(taskId);
       const release = pause === undefined ? await releasePromise : await abortable(releasePromise, pause);
@@ -1170,7 +1243,7 @@ export class SubagentTool implements ISubagentTool {
       if (!ctx.signal.aborted && pause?.aborted && error === pause.reason) return { output: '', executionWait: wait };
       throw error;
     } finally {
-      steer?.removeEventListener('abort', detach);
+      disposeSteerDetach();
       ctx.signal.removeEventListener('abort', cancelForeground);
     }
   }
@@ -1350,4 +1423,74 @@ function containsRuntimePath(runtime: Runtime, root: string, candidate: string):
     !relative.startsWith(`..${runtime.path.separator}`) &&
     !runtime.path.isAbsolute(relative)
   );
+}
+
+function watchQueuedResume(
+  child: IAgentScopeHandle,
+  promptId: string,
+  signal: AbortSignal,
+  onQueued: () => void,
+): (() => void) | undefined {
+  let childPrompts: IAgentPromptService;
+  let childEvents: IEventBus;
+  let childWire: IWireService;
+  let childCompaction: IAgentFullCompactionService | undefined;
+  try {
+    childPrompts = child.accessor.get(IAgentPromptService);
+    childEvents = child.accessor.get(IEventBus);
+    childWire = child.accessor.get(IWireService);
+    try {
+      childCompaction = child.accessor.get(IAgentFullCompactionService);
+    } catch {
+      childCompaction = undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  let stopped = false;
+  const subs: Array<{ dispose(): void }> = [];
+  const isQueuedBehind = (): boolean => {
+    const snapshot = childPrompts.list();
+    const pendingEntry = snapshot.pending.find((item) => item.id === promptId);
+    if (pendingEntry === undefined) return false;
+    return snapshot.active !== undefined
+      || (snapshot.launching !== undefined && snapshot.launching.id !== promptId)
+      || snapshot.hold !== undefined
+      || (pendingEntry.queueIndex !== undefined && pendingEntry.queueIndex > 0)
+      || snapshot.pending[0]?.id !== promptId
+      || (childCompaction !== undefined && childCompaction.compacting !== null);
+  };
+  let disposed = false;
+  const disposeSubs = (): void => {
+    for (const sub of subs) sub.dispose();
+    subs.length = 0;
+  };
+  const check = (): void => {
+    if (stopped || disposed || signal.aborted || !isQueuedBehind()) return;
+    stopped = true;
+    disposeSubs();
+    void childWire.flush().catch(() => undefined).then(() => {
+      if (!disposed && !signal.aborted && isQueuedBehind()) onQueued();
+    });
+  };
+  subs.push(
+    childEvents.subscribe(PromptQueued, (event) => {
+      if (event.promptId === promptId) check();
+    }),
+    childEvents.subscribe(PromptSubmitted, (event) => {
+      if (event.promptId === promptId && event.status === 'queued') check();
+    }),
+    childEvents.subscribe(PromptEnqueued, (event) => {
+      if (event.promptId === promptId) {
+        check();
+        queueMicrotask(check);
+      }
+    }),
+  );
+  check();
+  return () => {
+    disposed = true;
+    stopped = true;
+    disposeSubs();
+  };
 }

@@ -15,7 +15,7 @@ import { formatPlainObject } from '#/agent/task/tools/format';
 import { formatTaskList } from '#/agent/tools/task/task-list/taskListTool';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentGoalService } from '#/agent/goal/goal';
-import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
+import { resolveForegroundCallerPolicy } from '#/agent/task/foregroundPolicy';
 import { IFlagService } from '#/app/flag/flag';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { abortError, isAbortError, linkAbortSignal } from '#/_base/utils/abort';
@@ -121,6 +121,7 @@ export function startWaitProgress(
 export class TaskWaitTool implements ITaskWaitTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'TaskWait' as const;
+  readonly foregroundPolicy = 'steerable_wait' as const;
   readonly description: string = TASK_WAIT_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(TaskWaitInputSchema);
 
@@ -161,9 +162,10 @@ export class TaskWaitTool implements ITaskWaitTool {
     const saved = ctx.executionWait?.kind === 'task' ? ctx.executionWait : undefined;
     const startedAt = saved?.startedAt ?? Date.now();
     const timeoutMs = saved?.timeoutMs ?? args.timeout * 1000;
-    const isRootMain = this.scope.agentId === MAIN_AGENT_ID && this.scope.parentAgentId === undefined;
-    const hasActiveGoal = isRootMain && this.goals.getGoal().goal?.status === 'active';
-    const mainOutsideGoal = (isRootMain || this.scope.isBranch === true) && !hasActiveGoal;
+    const mainOutsideGoal = resolveForegroundCallerPolicy({
+      scope: this.scope,
+      goals: this.goals,
+    }).mainOutsideGoal;
     const running = saved === undefined ? this.tasks.list(true)
       : saved.taskIds.flatMap(id => { const task = this.tasks.getTask(id); return task === undefined ? [] : [task]; });
     const skippedSubagents = args.task_id === undefined && mainOutsideGoal

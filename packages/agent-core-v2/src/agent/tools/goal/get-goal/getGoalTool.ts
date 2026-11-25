@@ -12,6 +12,7 @@ import { GetGoalToolInputSchema, IGetGoalTool, type GetGoalToolInput } from './g
 export class GetGoalTool implements IGetGoalTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'GetGoal' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description: string = DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(GetGoalToolInputSchema);
 

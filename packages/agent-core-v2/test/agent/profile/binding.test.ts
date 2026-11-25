@@ -4526,6 +4526,7 @@ async function executeDirectToolCall(ctx: TestAgentContext, name: string): Promi
 }
 
 class PolicyProbeTool implements ExecutableTool<Record<string, never>> {
+  readonly foregroundPolicy = 'instant' as const;
   readonly description = 'Policy enforcement probe.';
   readonly parameters = { type: 'object', additionalProperties: false };
   calls = 0;

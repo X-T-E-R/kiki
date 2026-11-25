@@ -388,6 +388,7 @@ function decodeSearchCursor(value: string): SearchCursor {
 export class HistorySearchTool extends HistoryToolBase implements AgentTool<SearchInput> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistorySearch';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = 'Find earlier conversation text. Defaults to this session and this agent, with auto phrase matching over user and assistant text only; set include_tool_output=true or role=tool to include tool results. Pass agent_id="<branchId>" (or a branch name/alias) to search an active or merged side-branch transcript on demand; include_subagents explicitly expands to all readable agents in the selected scope. Thinking, tool names, and tool parameters are never searched. To search other sessions use scope=workspace or select a session_id. scope=peer searches only cross-thread messages in the selected workspace, newest-first, with optional session_id; peer hits carry communication message/endpoints rather than transcript turns or HistoryRead refs. This is lexical search. Transcript fallback prepares visibility before returning hits; relevance is page-local, not a global ranking, and continuation scans newest-first. Check coverage when results may be partial; use a hit ref when present or its turn/step with HistoryRead. Pass only cursor to continue available pages; use HistoryList without search words. A known session_id can omit workspace_id; the indexed workspace is used and another workspace still requires access approval. An explicit mismatch returns a recovery call for that indexed target and does not read it. An unknown session is not replaced with this session.';
   readonly parameters = toInputJsonSchema(HistorySearchInputSchema, (schema) => {
     schema['anyOf'] = [{ required: ['query'] }, { required: ['cursor'] }];
@@ -567,6 +568,7 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
 export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infer<typeof HistoryReadInputSchema>> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistoryRead';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = 'Read original history as bounded source blocks. Pass agent_id="<branchId>" (or a branch name/alias) to inspect an active or merged side-branch transcript on demand. A HistoryList turn ref opens the entire turn; step_id such as t42.3 or a 0-based turn also selects a block directory. A Search hit ref starts near its match and stays bound to its workspace, session, and agent. Pass cursor alone for more blocks or navigation preparation; a partial scan with empty blocks is not a no-match result. Reopen one block by ref plus start_char=range.end. For a stale ref, use the returned recovery call to obtain a fresh source. An unknown session is not read as this session\'s turn.';
   readonly parameters = toInputJsonSchema(HistoryReadInputSchema, (schema) => {
     schema['anyOf'] = [{ required: ['ref'] }, { required: ['turn'] }, { required: ['step_id'] }, { required: ['cursor'] }];

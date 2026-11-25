@@ -122,6 +122,7 @@ export interface ExecutableToolContext {
   readonly executionPauseSignal?: AbortSignal;
   readonly taskOwnerSignal?: AbortSignal;
   readonly executionWait?: ExecutionTaskWait;
+  readonly callerKind?: 'model' | 'user_shell';
   readonly turnId: number;
   readonly step?: number;
   readonly toolCallId: string;
@@ -129,12 +130,36 @@ export interface ExecutableToolContext {
   readonly metadata?: unknown;
   readonly signal: AbortSignal;
   readonly steerSignal?: AbortSignal;
+  readonly foregroundStartedAt?: number;
   readonly onUpdate?: ((update: ToolUpdate) => void) | undefined;
-  readonly onForegroundTaskStart?: ((taskId: string) => void) | undefined;
+  readonly onForegroundTaskStart?: ((taskId: string, options?: { readonly steerDetachable?: boolean }) => void) | undefined;
+}
+
+/** Declares how a host tool holds or yields the agent foreground under auto-detach and steer. */
+export type ToolForegroundPolicy = 'instant' | 'detachable_task' | 'steerable_wait' | 'bounded_io';
+
+/** Recognized host tool foreground policy discriminators. */
+export const TOOL_FOREGROUND_POLICIES: readonly ToolForegroundPolicy[] = [
+  'instant',
+  'detachable_task',
+  'steerable_wait',
+  'bounded_io',
+];
+
+/** Returns true when a value is a recognized host tool foreground policy discriminator. */
+export function isToolForegroundPolicy(value: unknown): value is ToolForegroundPolicy {
+  return (
+    value === 'instant' ||
+    value === 'detachable_task' ||
+    value === 'steerable_wait' ||
+    value === 'bounded_io'
+  );
 }
 
 export interface RunnableToolExecution {
   readonly isError?: false | undefined;
+  /** Optional per-invocation override when a mixed-action tool resolves a different foreground class after argument normalization. */
+  readonly foregroundPolicy?: ToolForegroundPolicy;
   readonly accesses?: ToolAccesses | undefined;
   /** Override scheduling conflicts without changing permission admission or approval accesses. */
   readonly schedulingAccesses?: ToolAccesses;
@@ -156,6 +181,7 @@ export interface RunnableToolExecution {
 export type ToolExecution = RunnableToolExecution | ExecutableToolErrorResult;
 
 export interface ExecutableTool<Input = unknown> extends Tool {
+  readonly foregroundPolicy: ToolForegroundPolicy;
   readonly subagentDefault?: 'opt-in';
   resolveExecution(input: Input): ToolExecution | Promise<ToolExecution>;
   resumeExecutionWait?(input: Input, ctx: ExecutableToolContext): Promise<ExecutableToolResult>;

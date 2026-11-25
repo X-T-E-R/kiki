@@ -120,6 +120,7 @@ export function createMcpAuthTool(options: CreateMcpAuthToolOptions): Executable
 
   return {
     name,
+    foregroundPolicy: 'bounded_io',
     description,
     parameters,
     resolveExecution: () => {

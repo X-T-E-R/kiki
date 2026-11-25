@@ -70,6 +70,7 @@ function indexedFailure(index: number, path: string, error: string): string {
 export class EditTool implements IEditTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Edit' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = editDescriptionTemplate;
   get parameters(): Record<string, unknown> {
     return hostToolParameters(EditInputSchema, this.runtime.nativeSshEnabled?.() === true);

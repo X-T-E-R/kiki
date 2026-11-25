@@ -1388,4 +1388,145 @@ describe('AgentTaskService', () => {
     expect(await waitRelease).toBe('terminal');
     expect(await stopPromise).toMatchObject({ status: 'killed', stopReason: 'Stopped by operator' });
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('detaches a foreground task on registerTask steerSignal without cancelling it or duplicating task.started', async () => {
+    const { ctx, manager } = createAgentTaskService();
+    const makeProc = (): { proc: IHostProcess; finish: (code: number) => void } => {
+      let resolveExit!: (code: number) => void;
+      let exitCode: number | null = null;
+      const exitPromise = new Promise<number>((resolve) => { resolveExit = resolve; });
+      return {
+        proc: {
+          _serviceBrand: undefined,
+          stdin: { write: vi.fn(), end: vi.fn() } as unknown as Writable,
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+          pid: 5151,
+          get exitCode(): number | null { return exitCode; },
+          wait: () => exitPromise,
+          kill: vi.fn(async () => {}) as unknown as IHostProcess['kill'],
+          dispose: vi.fn(async () => {}) as IHostProcess['dispose'],
+        },
+        finish: (code: number) => {
+          exitCode = code;
+          resolveExit(code);
+        },
+      };
+    };
+
+    const live = makeProc();
+    const liveSteer = new AbortController();
+    const liveId = manager.registerTask(new ProcessTask(live.proc, 'sleep 60', 'live steer'), {
+      detached: false,
+      timeoutMs: 60_000,
+      steerSignal: liveSteer.signal,
+    });
+    const liveWait = manager.waitForForegroundRelease(liveId);
+    liveSteer.abort(new Error('new input'));
+    expect(await liveWait).toBe('detached');
+    expect(live.proc.kill).not.toHaveBeenCalled();
+    expect(manager.getTask(liveId)).toMatchObject({ detached: true, status: 'running' });
+    live.finish(0);
+    expect(await manager.wait(liveId)).toMatchObject({ status: 'completed' });
+
+    const preAborted = makeProc();
+    const alreadySteered = new AbortController();
+    alreadySteered.abort(new Error('already steered'));
+    const preId = manager.registerTask(new ProcessTask(preAborted.proc, 'sleep 60', 'pre steered'), {
+      detached: false,
+      timeoutMs: 60_000,
+      steerSignal: alreadySteered.signal,
+    });
+    expect(manager.getTask(preId)).toMatchObject({ detached: true, status: 'running' });
+    expect(
+      ctx.allEvents.filter(
+        (entry) => entry.type === '[wire]' && entry.event === 'task.started' && (entry.args as { info?: { taskId?: string } }).info?.taskId === preId,
+      ),
+    ).toHaveLength(1);
+    preAborted.finish(0);
+    expect(await manager.wait(preId)).toMatchObject({ status: 'completed' });
+  });
+
+  it('preserves remaining total timeout budget after real-timer auto-detach and records accurate non-user foreground abort reasons', async () => {
+    const { manager } = createAgentTaskService();
+    const makeProc = (): { proc: IHostProcess; finish: (code: number) => void } => {
+      let resolveExit!: (code: number) => void;
+      let exitCode: number | null = null;
+      const exitPromise = new Promise<number>((resolve) => { resolveExit = resolve; });
+      return {
+        proc: {
+          _serviceBrand: undefined,
+          stdin: { write: vi.fn(), end: vi.fn() } as unknown as Writable,
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+          pid: 5252,
+          get exitCode(): number | null { return exitCode; },
+          wait: () => exitPromise,
+          kill: vi.fn(async () => {
+            if (exitCode === null) {
+              exitCode = 137;
+              resolveExit(137);
+            }
+          }) as unknown as IHostProcess['kill'],
+          dispose: vi.fn(async () => {}) as unknown as IHostProcess['dispose'],
+        },
+        finish: (code: number) => {
+          exitCode = code;
+          resolveExit(code);
+        },
+      };
+    };
+
+    const budgeted = makeProc();
+    const startedAt = Date.now();
+    const budgetedId = manager.registerTask(new ProcessTask(budgeted.proc, 'sleep 60', 'budgeted agent'), {
+      detached: false,
+      timeoutMs: 40,
+      detachTimeoutMs: 120,
+      detachTimeoutMode: 'total_budget',
+      autoBackgroundOnTimeout: true,
+    });
+    expect(await manager.waitForForegroundRelease(budgetedId)).toBe('timeout_detached');
+    const detachedInfo = manager.getTask(budgetedId);
+    expect(detachedInfo).toMatchObject({ detached: true, status: 'running' });
+    expect(detachedInfo?.timeoutMs).toBeGreaterThan(0);
+    expect(detachedInfo?.timeoutMs).toBeLessThan(120);
+    const timedOut = await manager.wait(budgetedId);
+    expect(timedOut?.status).toBe('timed_out');
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
+
+    const equalBudget = makeProc();
+    const equalBudgetId = manager.registerTask(new ProcessTask(equalBudget.proc, 'sleep 60', 'equal budget task'), {
+      detached: false,
+      timeoutMs: 40,
+      detachTimeoutMs: 40,
+      detachTimeoutMode: 'total_budget',
+      autoBackgroundOnTimeout: true,
+    });
+    expect(await manager.waitForForegroundRelease(equalBudgetId)).toBe('terminal');
+    expect((await manager.wait(equalBudgetId))?.status).toBe('timed_out');
+
+    const nonUser = makeProc();
+    const nonUserAbort = new AbortController();
+    const nonUserId = manager.registerTask(new ProcessTask(nonUser.proc, 'sleep 60', 'non-user abort'), {
+      detached: false,
+      signal: nonUserAbort.signal,
+    });
+    nonUserAbort.abort(new Error('Session closed'));
+    const nonUserResult = await manager.wait(nonUserId);
+    expect(nonUserResult?.status).toBe('killed');
+    expect(nonUserResult?.stopReason).toBe('Session closed');
+    expect(nonUserResult?.stopReason).not.toBe(userCancellationReason().message);
+
+    const userStopped = makeProc();
+    const userAbort = new AbortController();
+    const userId = manager.registerTask(new ProcessTask(userStopped.proc, 'sleep 60', 'user abort'), {
+      detached: false,
+      signal: userAbort.signal,
+    });
+    userAbort.abort(userCancellationReason());
+    const userResult = await manager.wait(userId);
+    expect(userResult?.status).toBe('killed');
+    expect(userResult?.stopReason).toBe(userCancellationReason().message);
+  });
 });

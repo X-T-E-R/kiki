@@ -31,6 +31,7 @@ function enabledAgent(scope: IAgentScopeContext, flags: IFlagService): boolean {
 export class BoardReadTool implements IBoardReadTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'BoardRead';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = 'Read persistent Own Work requirements in the current workspace, optionally filtered by active, in_progress, paused, done, cancelled, or superseded status. Overview requires explicit authorized workspace IDs. These cards are not agent runs or TodoList entries.';
   readonly parameters = toInputJsonSchema(BoardReadSchema);
 
@@ -65,6 +66,7 @@ export class BoardReadTool implements IBoardReadTool {
 export class BoardWriteTool implements IBoardWriteTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'BoardWrite';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = 'Create or update a persistent Own Work requirement without starting a session or execution. Creation always starts an active card and keeps its existing requestKey/idempotency semantics; do not pass status to create. Use a stable requestKey and a BoardRead preview target for creation retries. Updates require the card’s original storage address and expectedRevision; read again on conflict. Update status to active, in_progress, paused, done, cancelled, or superseded explicitly; session/execution IDs are associations, not a runner. Never automatically complete requirements after runs. Reopen a terminal card by setting status back to active, in_progress, or paused; its completedAt clears. BoardWrite is unavailable in plan mode.';
   readonly parameters = toInputJsonSchema(BoardWriteSchema);
 

@@ -4,7 +4,7 @@ import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 
 export interface IAgentPluginMediaService {
   readonly _serviceBrand: undefined;
-  api(requestId: string, admittedRequest?: MediaRequest): PluginMediaApi;
+  api(requestId: string, admittedRequest?: MediaRequest, steerSignal?: AbortSignal, signal?: AbortSignal, startedAt?: number): PluginMediaApi;
   resolveInput(ref: MediaInputRef): Promise<MediaInputRef>;
   snapshotInput(ref: MediaInputRef, key: string, fs: IHostFileSystem, signal: AbortSignal): Promise<MediaInputRef>;
   cancel(jobId: string): Promise<MediaJob>;

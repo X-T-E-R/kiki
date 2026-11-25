@@ -1,6 +1,7 @@
 import { canonicalFetchUrl, type FetchDocument, type FetchInput, type FetchRunSyncEnvelope, type PublicError } from '@nb-corp/nb-search';
 import { parseNativeFetchInput, nativeFetchParameters } from '#/app/nbSearch/nativeInput';
 import { renderNativeEnvelope } from '#/app/nbSearch/nativeOutput';
+import { isAbortError } from '#/_base/utils/abort';
 import { sliceUtf16 } from '#/_base/text/utf16';
 import { IAgentRuntimeService, inspectAgentRuntime, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -25,6 +26,7 @@ import DESCRIPTION from './fetch-url.md?raw';
 export class FetchURLTool implements IFetchURLTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'FetchURL' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   get description(): string {
     return `${DESCRIPTION}\n\n${this.nbSearch.toolDescription('FetchURL')}`;
   }
@@ -77,19 +79,36 @@ export class FetchURLTool implements IFetchURLTool {
 
   private async execution(
     args: FetchInput,
-    { toolCallId, signal }: ExecutableToolContext,
+    { toolCallId, signal, steerSignal }: ExecutableToolContext,
     admittedFile?: string,
     identity?: import('#/app/nbSearch/nbSearch').FetchFileIdentity,
   ): Promise<ExecutableToolResult> {
+    const isSyncRun = 'action' in args
+      ? args.action === 'run' && args.execution !== 'async'
+      : args.execution !== 'async';
+    const steer = isSyncRun ? steerSignal : undefined;
+    if (!signal.aborted && steer?.aborted === true) {
+      return {
+        isError: false,
+        output: 'New input arrived before this fetch started; it was not started. Read the new input before deciding whether to run it.',
+      };
+    }
+    const requestSignal = steer === undefined ? signal : AbortSignal.any([signal, steer]);
     try {
       const result = admittedFile === undefined
-        ? await this.nbSearch.fetch(args, { requestId: toolCallId, signal })
-        : await this.nbSearch.fetch(args, { requestId: toolCallId, signal }, admittedFile, identity);
+        ? await this.nbSearch.fetch(args, { requestId: toolCallId, signal: requestSignal })
+        : await this.nbSearch.fetch(args, { requestId: toolCallId, signal: requestSignal }, admittedFile, identity);
       signal.throwIfAborted();
       const compact = 'source' in args && args.source.kind === 'url';
       return compact && result.action === 'run' && result.execution === 'sync' ? renderFetchResult(result) : renderNativeEnvelope(result);
     } catch (error) {
       signal.throwIfAborted();
+      if (steer?.aborted === true && (error === steer.reason || isAbortError(error))) {
+        return {
+          isError: false,
+          output: 'New input ended this fetch early. Read the new input before deciding whether to retry it.',
+        };
+      }
       const message = error instanceof Error ? error.message : String(error);
       return {
         isError: true,

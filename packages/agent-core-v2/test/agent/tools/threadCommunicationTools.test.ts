@@ -497,6 +497,46 @@ describe('thread communication tools', () => {
     }
   });
 
+  it('releases ThreadWait immediately when steerSignal aborts', async () => {
+    const { WaitThreadsTool } = await import('#/agent/tools/thread-communication/threadCommunicationTools');
+    const waitThreads = vi.fn<IThreadCommunicationService['waitThreads']>(({ signal }) => new Promise((_resolve, reject) => {
+      signal?.addEventListener('abort', () => {
+        const error = new Error('steered');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }));
+    const threads = {
+      _serviceBrand: undefined,
+      hostId: 'local-host',
+      isWorkspaceEnabled: async () => true,
+      waitThreads,
+    } as unknown as IThreadCommunicationService;
+    const session = { _serviceBrand: undefined, workspaceId: 'ws-1', sessionId: 's-1', cwd: '/ws' } as unknown as ISessionContext;
+    const instantiation = { _serviceBrand: undefined, invokeFunction: () => undefined } as unknown as ConstructorParameters<typeof WaitThreadsTool>[2];
+    const tool = new WaitThreadsTool(threads, session, instantiation);
+    const execution = tool.resolveExecution({
+      threads: [{ thread: { workspace_id: 'ws-1', session_id: 's-2' } }],
+      timeout_ms: 30_000,
+    });
+    if ('isError' in execution && execution.isError) throw new Error(String(execution.output));
+    const steer = new AbortController();
+    const pending = execution.execute({
+      turnId: 0,
+      toolCallId: 'wait-steer',
+      signal: new AbortController().signal,
+      steerSignal: steer.signal,
+    });
+    await vi.waitFor(() => expect(waitThreads).toHaveBeenCalledTimes(1));
+    steer.abort(new Error('send now'));
+    const result = await pending;
+    expect(result.isError).toBeFalsy();
+    expect(JSON.parse(result.output as string)).toMatchObject({
+      interrupted: true,
+      reason: 'steer',
+    });
+  });
+
   it('uses the ambient workspace and leaves the thread empty without a prompt', async () => {
     const { tool, create, metadata, prompt, lifecycle } = createThreadFixture({ custom: { retained: true } });
     const result = await executeThreadCreate(tool, {});

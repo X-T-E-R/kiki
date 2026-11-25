@@ -85,6 +85,7 @@ interface RgSearchPlan {
 export class GrepTool implements IGrepTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Grep' as const;
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = GREP_DESCRIPTION;
   get parameters(): Record<string, unknown> {
     return hostToolParameters(GrepInputSchema, this.runtime.nativeSshEnabled?.() === true);

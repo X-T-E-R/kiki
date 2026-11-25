@@ -27,6 +27,7 @@ export const IGoalTool = createDecorator<IGoalTool>('goalTool');
 export class GoalTool implements IGoalTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Goal';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = GOAL_DESCRIPTION;
   readonly parameters = toInputJsonSchema(z.discriminatedUnion('action', [
     CreateGoalToolInputSchema.extend({ action: z.literal('create') }),

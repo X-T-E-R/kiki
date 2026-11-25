@@ -606,7 +606,7 @@ it.skipIf(!process.env['KIKI_AGY_LIVE_SMOKE'])('live AGY session uses the source
     const child = await session.accessor.get(IAgentLifecycleService).create({ agentId: 'agy-vertical-child', delegator: { kind: 'agent', agentId: 'main' } });
     child.accessor.get(IAgentPermissionModeService).setMode('yolo');
     for (const source of ['plugin', 'mcp'] as const) child.accessor.get(IAgentToolRegistryService).register({
-      name: `${source}_identity_fixture`, description: 'Return the current native child identity.', parameters: { type: 'object', properties: {} },
+      name: `${source}_identity_fixture`, foregroundPolicy: 'instant', description: 'Return the current native child identity.', parameters: { type: 'object', properties: {} },
       resolveExecution: () => ({ approvalRule: `${source}_identity_fixture`, accesses: ToolAccesses.none(), execute: async () => {
         record('native_tool_consumed', { source, agentId: child.id }); return { output: `${source}:${child.id}` };
       } }),

@@ -526,7 +526,7 @@ describe('model switch control queue with real engine', () => {
     const entered = deferred<void>();
     const release = deferred<void>();
     const tool: ExecutableTool<{ query: string }> = {
-      name: 'Lookup', description: 'Look up a test value.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+      name: 'Lookup', foregroundPolicy: 'instant', description: 'Look up a test value.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
       resolveExecution: () => ({ approvalRule: 'Lookup', execute: async () => {
         entered.resolve(); await release.promise; return { output: 'complete-original-tool-result' };
       } }),
@@ -908,7 +908,7 @@ describe('model switch control queue with real engine', () => {
     const entered = deferred<void>();
     const release = deferred<void>();
     const tool: ExecutableTool<{ query: string }> = {
-      name: 'Lookup', description: 'Look up a test value.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+      name: 'Lookup', foregroundPolicy: 'instant', description: 'Look up a test value.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
       resolveExecution: () => ({ approvalRule: 'Lookup', execute: async () => {
         entered.resolve(); await release.promise; return { output: 'complete-original-tool-result' };
       } }),
@@ -1868,7 +1868,7 @@ it.each([false, true])('applies a standalone live binding before the next reques
   }])) };
   ctx.get(IAgentPermissionModeService).setMode('yolo');
   ctx.get(IAgentProfileService).update({ activeToolNames: ['Lookup'] });
-  ctx.get(IAgentToolRegistryService).register({ name: 'Lookup', description: 'Read a value.', parameters: { type: 'object', properties: {} },
+  ctx.get(IAgentToolRegistryService).register({ name: 'Lookup', foregroundPolicy: 'instant', description: 'Read a value.', parameters: { type: 'object', properties: {} },
     resolveExecution: () => ({ approvalRule: 'Lookup', execute: async () => ({ output: 'original-tool-result' }) }),
   });
   scripted.mockNextResponse({ type: 'function', id: 'live-lookup', name: 'Lookup', arguments: '{}' });

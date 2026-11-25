@@ -95,6 +95,7 @@ type WireEvent = Extract<
 >;
 
 class StubMcpTool implements ExecutableTool<Record<string, unknown>> {
+  readonly foregroundPolicy = 'instant' as const;
   readonly description: string;
   readonly parameters: Record<string, unknown> = {
     type: 'object',
@@ -622,7 +623,7 @@ describe('progressive tool disclosure end-to-end', () => {
     const started = new Promise<void>((resolve) => { start = resolve; });
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const registration = ctx.get(IAgentToolRegistryService).register({
-      name: 'test_gate', description: 'Block this test turn.',
+      name: 'test_gate', foregroundPolicy: 'instant', description: 'Block this test turn.',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       resolveExecution: () => ({ approvalRule: 'test_gate', execute: async () => { start(); await gate; return { output: 'created' }; } }),
     });
@@ -673,7 +674,7 @@ describe('progressive tool disclosure end-to-end', () => {
     let started!: () => void;
     const running = new Promise<void>((resolve) => { started = resolve; });
     const registration = ctx.get(IAgentToolRegistryService).register({
-      name: 'test_gate', description: 'Block session A.',
+      name: 'test_gate', foregroundPolicy: 'instant', description: 'Block session A.',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       resolveExecution: () => ({ approvalRule: 'test_gate', execute: async () => { started(); await gate; return { output: 'done' }; } }),
     });

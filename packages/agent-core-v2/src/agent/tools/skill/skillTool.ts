@@ -38,6 +38,7 @@ import skillDescriptionTemplate from './skill.md?raw';
 export class SkillTool implements ISkillTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Skill';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description: string = skillDescriptionTemplate;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(SkillToolInputSchema, (schema) => {
     schema['oneOf'] = [{ required: ['skill'] }, { required: ['path'] }];

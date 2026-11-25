@@ -4363,6 +4363,7 @@ function mcpTool(
 ): ExecutableTool<Record<string, unknown>> {
   return {
     name,
+    foregroundPolicy: 'instant',
     description: `${name} desc`,
     parameters,
     resolveExecution(): ToolExecution {

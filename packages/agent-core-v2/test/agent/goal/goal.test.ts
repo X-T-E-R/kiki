@@ -2214,6 +2214,7 @@ describe('AgentGoalService user pause recovery', () => {
     try {
       ctx.get(IAgentToolRegistryService).register({
         name: 'SlowWork',
+        foregroundPolicy: 'instant',
         description: 'Wait for cancellation.',
         parameters: { type: 'object', properties: {}, additionalProperties: false },
         resolveExecution: () => ({
@@ -2289,6 +2290,7 @@ describe('AgentGoalService hard wall-clock deadline', () => {
     let toolSignal: AbortSignal | undefined;
     const tool: ExecutableTool = {
       name: 'SlowWork',
+      foregroundPolicy: 'instant',
       description: 'Wait for cancellation.',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       resolveExecution: () => ({

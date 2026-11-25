@@ -134,6 +134,7 @@ describe('server-v2 /api tools + mcp', () => {
   function makeTool(name: string, parameters?: Record<string, unknown>): ExecutableTool {
     return {
       name,
+      foregroundPolicy: 'instant',
       description: `tool ${name}`,
       parameters,
       resolveExecution: () => ({

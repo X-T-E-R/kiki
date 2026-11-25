@@ -4,6 +4,7 @@ import { type TokenUsage } from '#/kosong/contract/usage';
 import { abortable, linkAbortSignal, userCancellationReason } from '#/_base/utils/abort';
 import type { AgentExecutorAgentContext } from '#/app/agentExecutor/agentExecutor';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { Error2, ErrorCodes, attachErrorDetails, fromErrorPayload, toKimiErrorPayload, type KimiErrorPayload } from '#/errors';
 import { IAgentPromptService, type PromptInput } from '#/agent/prompt/prompt';
@@ -107,7 +108,7 @@ async function launchRunPrompt(target: AgentExecutorAgentContext, input: PromptI
   try {
     if (signal.aborted) cancel();
     signal.throwIfAborted();
-    if (onQueued !== undefined && prompt.state === 'pending' && queuedBehindWork(target)) {
+    if (onQueued !== undefined && prompt.state === 'pending' && queuedBehindWork(target, prompt.id)) {
       await target.accessor.get(IWireService).flush();
       signal.throwIfAborted();
       if (prompt.state === 'pending') onQueued();
@@ -124,9 +125,20 @@ async function launchRunPrompt(target: AgentExecutorAgentContext, input: PromptI
   }
 }
 
-function queuedBehindWork(target: AgentExecutorAgentContext): boolean {
+function queuedBehindWork(target: AgentExecutorAgentContext, promptId: string): boolean {
   const loop = target.accessor.get(IAgentLoopService).status();
-  return loop.state === 'running' || loop.pendingTurnIds.length > 0;
+  if (loop.state === 'running' || loop.pendingTurnIds.length > 0) return true;
+  const prompts = target.accessor.get(IAgentPromptService).list();
+  if (prompts.active !== undefined) return true;
+  if (prompts.launching !== undefined && prompts.launching.id !== promptId) return true;
+  if (prompts.hold !== undefined) return true;
+  if (prompts.pending.length > 0 && prompts.pending[0]?.id !== promptId) return true;
+  try {
+    const compaction = target.accessor.get(IAgentFullCompactionService);
+    if (compaction.compacting !== null) return true;
+  } catch {
+  }
+  return false;
 }
 
 async function awaitRun(

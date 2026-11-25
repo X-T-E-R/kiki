@@ -283,6 +283,8 @@ export interface IAgentPromptService {
    * to another prompt.
    */
   abort(promptId: string, reason?: Error): boolean;
+  /** Cancels one prompt and awaits durable wire persistence before returning true. */
+  abortDurably(promptId: string, reason?: Error): Promise<boolean>;
   /** Remove an unlaunched queued request without cancelling a turn it has joined. */
   abortQueued(promptId: string): Promise<boolean>;
   /** Stop admission and unlink unstarted requests from runtime cancellation before closing their task and execution owners. */

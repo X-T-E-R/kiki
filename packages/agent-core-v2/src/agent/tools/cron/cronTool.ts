@@ -25,6 +25,7 @@ export const ICronTool = createDecorator<ICronTool>('cronTool');
 export class CronTool implements ICronTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Cron';
+  readonly foregroundPolicy = 'bounded_io' as const;
   readonly description = CRON_DESCRIPTION;
   readonly parameters = toInputJsonSchema(CronInputSchema);
 

@@ -1536,7 +1536,7 @@ describe('dispatch resume after cancellation with deferred task notifications', 
     }
     const action = vi.fn(async () => ({ output: 'saved once' }));
     ctx.get(IAgentPermissionModeService).setMode('yolo', 'ambient');
-    ctx.get(IAgentToolRegistryService).register({ name: 'SaveWork', description: 'Save fixture work.', parameters: { type: 'object' },
+    ctx.get(IAgentToolRegistryService).register({ name: 'SaveWork', foregroundPolicy: 'instant', description: 'Save fixture work.', parameters: { type: 'object' },
       resolveExecution: () => ({ approvalRule: 'SaveWork', execute: action }) });
     ctx.get(IAgentProfileService).update({ activeToolNames: ['SaveWork'] });
     ctx.mockNextResponse({ type: 'function', id: 'save-work', name: 'SaveWork', arguments: '{}' });
