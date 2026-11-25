@@ -146,6 +146,38 @@ describe('durable managed writer ownership', () => {
     }
   });
 
+  it('verifies unpacked Electron directory schemaVersion 2 releases under resources/app.asar.unpacked', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-runtime-releases-v2-unpacked-'));
+    const releaseId = `${'5a'.repeat(12)}-${'6b'.repeat(12)}`;
+    try {
+      const releaseDir = join(root, 'releases', releaseId);
+      const serverDir = join(releaseDir, 'resources', 'app.asar.unpacked', 'dist', 'server');
+      await mkdir(serverDir, { recursive: true });
+      const desktopBytes = Buffer.from('unpacked-electron-exe');
+      const serverEntryBytes = Buffer.from('unpacked-server-entry');
+      const nativeAddonsBytes = Buffer.from(JSON.stringify({ schemaVersion: 1, packages: {} }));
+      const sha = (buf: Buffer) => createHash('sha256').update(buf).digest('hex');
+      await writeFile(join(releaseDir, 'kiki-desktop.exe'), desktopBytes);
+      await writeFile(join(releaseDir, 'resources', 'app.asar'), Buffer.from('asar-archive'));
+      await writeFile(join(serverDir, 'server-entry.mjs'), serverEntryBytes);
+      await writeFile(join(serverDir, 'native-addons.json'), nativeAddonsBytes);
+      await writeFile(join(releaseDir, 'build-info.txt'), 'gitSha: 9988776655443322\n');
+      const listed = await installedRuntimeReleases(root);
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({
+        schemaVersion: 2,
+        runtimeKind: 'electron-single-binary',
+        releaseId,
+        serverEntry: 'resources/app.asar.unpacked/dist/server/server-entry.mjs',
+      });
+      const verified = await verifiedRuntimeRelease(root, releaseId);
+      expect(verified.executable).toBe(join(releaseDir, 'kiki-desktop.exe'));
+      expect(verified.args).toEqual([join(serverDir, 'server-entry.mjs')]);
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
   it('reads schemaVersion 2 fallback from current.json and v2 pointers', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-runtime-releases-v2-current-'));
     const releaseId = `${'1a'.repeat(12)}-${'2b'.repeat(12)}`;

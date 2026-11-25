@@ -1,9 +1,12 @@
-import { closeSync, mkdirSync, openSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
+import { mkdirSync, openSync, renameSync, rmSync, statSync } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { dirname, join } from 'pathe';
 import type { DesktopLogInfo, DesktopLogLevel } from '#/shared/types';
 
 export const LOG_MAX_BYTES = 5 * 1024 * 1024;
 export const LOG_BACKUPS = 3;
+const DEFAULT_TAIL_LINES = 100;
+const DEFAULT_TAIL_BYTES = 64 * 1024;
 
 export function desktopLogDirectory(homeDir: string): string {
   return join(homeDir, 'logs');
@@ -65,57 +68,46 @@ export function openDetachedBackendLogFd(
   return { path: logPath, fd };
 }
 
-export class RotatingLog {
-  private fd: number | null;
-  private size: number;
-
-  constructor(
-    readonly filePath: string,
-    readonly limit: number = LOG_MAX_BYTES,
-    readonly backups: number = LOG_BACKUPS,
-  ) {
-    mkdirSync(dirname(filePath), { recursive: true });
-    this.fd = openSync(filePath, 'a', 0o600);
-    this.size = statSync(filePath).size;
-    if (this.size >= this.limit) {
-      this.rotate();
-    }
+/**
+ * Reads the last `maxLines` lines from `<home>/logs/desktop-backend.log` bounded to
+ * `maxBytes`, decoding UTF-8 via standard `TextDecoder` without manual byte bit-masks.
+ */
+export async function readBackendLogTail(
+  homeDir: string,
+  maxLines: number = DEFAULT_TAIL_LINES,
+  maxBytes: number = DEFAULT_TAIL_BYTES,
+): Promise<string[]> {
+  const logPath = desktopBackendLogPath(homeDir);
+  let handle;
+  try {
+    handle = await open(logPath, 'r');
+  } catch {
+    return [];
   }
-
-  private rotate(): void {
-    if (this.fd !== null) {
-      closeSync(this.fd);
-      this.fd = null;
-    }
-    rotateFiles(this.filePath, this.backups);
-    this.fd = openSync(this.filePath, 'w', 0o600);
-    this.size = 0;
-  }
-
-  writeLine(line: string): void {
-    if (this.fd === null) throw new Error('log file is closed');
-    const maxLineBytes = Math.max(0, this.limit - 1);
-    let buf = Buffer.from(line, 'utf8');
-    if (buf.byteLength > maxLineBytes) {
-      let start = buf.byteLength - maxLineBytes;
-      while (start < buf.byteLength && (buf[start]! & 0xc0) === 0x80) {
-        start += 1;
+  try {
+    const info = await handle.stat();
+    if (info.size <= 0) return [];
+    const readBytes = Math.min(info.size, Math.max(1, maxBytes));
+    const startOffset = info.size - readBytes;
+    const buffer = new Uint8Array(readBytes);
+    const { bytesRead } = await handle.read(buffer, 0, readBytes, startOffset);
+    const decoder = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true });
+    let decoded = decoder.decode(buffer.subarray(0, bytesRead));
+    if (startOffset > 0) {
+      decoded = decoded.replace(/^\uFFFD+/, '');
+      const firstNewline = decoded.indexOf('\n');
+      if (firstNewline !== -1) {
+        decoded = decoded.slice(firstNewline + 1);
       }
-      buf = buf.subarray(start);
     }
-    const lineBytes = buf.byteLength + 1;
-    if (this.size + lineBytes > this.limit) {
-      this.rotate();
-    }
-    writeSync(this.fd, buf);
-    writeSync(this.fd, '\n');
-    this.size += lineBytes;
-  }
-
-  close(): void {
-    if (this.fd !== null) {
-      closeSync(this.fd);
-      this.fd = null;
-    }
+    const lines = decoded
+      .split(/\r?\n/)
+      .map((line) => line.trimEnd())
+      .filter((line) => line.length > 0);
+    return lines.slice(-Math.max(1, maxLines));
+  } catch {
+    return [];
+  } finally {
+    await handle.close().catch(() => undefined);
   }
 }

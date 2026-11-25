@@ -29,7 +29,7 @@ import {
 } from './desktopShared';
 import { readSettings, type DesktopNativePrefs } from '@kiki/session-core/settings';
 import type { ConnectionConfig } from '../state/connectionConfig';
-import { pastedMediaType } from '../lib/pastedFiles';
+import { pastedMediaType } from '@kiki/session-core/composer';
 import { notificationIntent, notificationScope } from '../lib/notificationNavigation';
 import { NotificationPermissionNotAsked, type SystemNotificationPermission } from './notificationPermission';
 
@@ -442,10 +442,10 @@ export const tauriHost: TauriHostAdapter = {
     };
   },
   onTrayNewSession,
-  peekSubscribeIntent: subscribeIntents.peekSubscribeIntent,
-  ackSubscribeIntent: subscribeIntents.ackSubscribeIntent,
-  onSubscribeIntent: subscribeIntents.onSubscribeIntent,
-  onSubscribeUrl: subscribeIntents.onSubscribeUrl,
+  peekSubscribeIntent: () => subscribeIntents.peekSubscribeIntent(),
+  ackSubscribeIntent: (id) => subscribeIntents.ackSubscribeIntent(id),
+  onSubscribeIntent: (callback) => subscribeIntents.onSubscribeIntent(callback),
+  onSubscribeUrl: (callback) => subscribeIntents.onSubscribeUrl(callback),
   onFileDrop,
   /**
    * The desktop space this window belongs to. Older desktop builds have no
@@ -462,6 +462,9 @@ export const tauriHost: TauriHostAdapter = {
     } catch {
       return null;
     }
+  },
+  async openModeWindow(presetId) {
+    await invoke('open_mode_window', { presetId });
   },
   takeNavigationIntent: () => invoke('take_navigation_intent'),
   async spaceStatuses() {

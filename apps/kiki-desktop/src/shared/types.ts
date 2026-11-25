@@ -99,6 +99,7 @@ export interface DesktopSpace {
   readonly path: string;
   readonly baseHome?: string | null;
   readonly credentialsShared: boolean;
+  readonly isPrimary?: boolean;
 }
 
 export interface LocalSpaceSummary {
@@ -116,7 +117,20 @@ export interface DesktopSpaceStatus {
   readonly hot: boolean;
   readonly pendingCount: number;
   readonly busyCount: number;
+  readonly needsYouSessionIds?: readonly string[];
 }
+
+export type SpaceShortcutErrorCode =
+  | 'unsupported_platform'
+  | 'invalid_space'
+  | 'desktop_unavailable'
+  | 'executable_unavailable'
+  | 'shortcut_exists'
+  | 'shortcut_failed';
+
+export type SpaceShortcutResult =
+  | { readonly ok: true; readonly homeId: string; readonly path: string }
+  | { readonly ok: false; readonly code: SpaceShortcutErrorCode; readonly message: string };
 
 export interface DesktopAutostartStatus {
   readonly enabled: boolean;
@@ -163,14 +177,40 @@ export interface ReadFilesResult {
   readonly files: SelectedFileDescriptor[];
 }
 
-export interface BackendStagePayload {
-  readonly stage: 'checking' | 'waiting' | 'starting' | 'ready' | 'failed';
-  readonly message?: string;
-  readonly homeId?: string;
+export type DesktopFailureKind = 'identity' | 'authentication' | 'protocol';
+
+export interface DesktopFailurePayload {
+  readonly kind?: DesktopFailureKind;
+  readonly message: string;
+  readonly stderrTail: readonly string[];
+  readonly logPath: string | null;
 }
 
+export type BackendStagePayload =
+  | 'waiting'
+  | {
+      readonly stage: 'checking' | 'waiting' | 'starting';
+      readonly message?: string;
+      readonly homeId?: string;
+    }
+  | {
+      readonly stage: 'ready';
+      readonly connection: ConnectionConfig;
+      readonly homeId?: string;
+    }
+  | {
+      readonly stage: 'failed';
+      readonly message: string;
+      readonly failure: DesktopFailurePayload;
+      readonly homeId?: string;
+    };
+
+export type DiscoverConnectionEnvelope =
+  | { readonly ok: true; readonly connection: LocalConnection }
+  | { readonly ok: false; readonly failure: DesktopFailurePayload };
+
 export interface ElectronBridge {
-  discoverConnection(): Promise<LocalConnection | null>;
+  discoverConnection(): Promise<LocalConnection | DiscoverConnectionEnvelope | null>;
   cancelStartup(): Promise<void>;
   onBackendStage(cb: (payload: unknown) => void): () => void;
   readonly ssh: {
@@ -196,6 +236,7 @@ export interface ElectronBridge {
     setTheme(theme: 'light' | 'dark' | 'system'): Promise<void>;
     setZoom(factor: number): Promise<boolean>;
     getWindowMode(): Promise<DesktopWindowMode | null>;
+    openModeWindow(presetId: string): Promise<void>;
     onFocus(cb: () => void): () => void;
   };
   readonly pluginFocus: {
@@ -207,7 +248,9 @@ export interface ElectronBridge {
     send(options: HostNotification): Promise<void>;
     acknowledge(sessionId: string, scope: NavScopeIdentity, deliveryId?: string): Promise<void>;
     onClick(cb: (route: string, homeId?: string, scope?: NavScopeIdentity) => void): () => void;
+    peekNavigationIntent(): Promise<NotificationNavigationIntent | { readonly connectionId: string } | null>;
     takeNavigationIntent(): Promise<NotificationNavigationIntent | { readonly connectionId: string } | null>;
+    ackNavigationIntent(navigationId: string): Promise<boolean>;
     setUnreadBadge(count: number, homeId?: string, scopeId?: string, sessionIds?: readonly string[]): Promise<void>;
   };
   readonly files: {
@@ -240,7 +283,7 @@ export interface ElectronBridge {
     prepareSpace(homeId: string): Promise<{ readonly homeId: string }>;
     openSpace(homeId: string): Promise<void>;
     openRemoteSpace(connectionId: string): Promise<void>;
-    createSpaceShortcut(homeId: string): Promise<{ readonly homeId: string; readonly path: string }>;
+    createSpaceShortcut(homeId: string): Promise<SpaceShortcutResult | { readonly homeId: string; readonly path: string }>;
     restartSpace(homeId: string): Promise<void>;
     restartServer(): Promise<void>;
     logInfo(): Promise<DesktopLogInfo>;

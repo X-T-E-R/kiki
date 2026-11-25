@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FuseState, FuseV1Options } from '@electron/fuses';
+import { resolveKikiAppAssetPath } from '#/main/appProtocol';
+import { parseWindowsCfHdropBuffer } from '#/main/clipboardDropFiles';
 import { DaemonSupervisor } from '#/main/daemonSupervisor';
 import {
   decodeClipboardUriList,
@@ -15,8 +17,10 @@ import { NotificationService, type NativeNotificationHandle } from '#/main/notif
 import { PrefsAndUpdateService } from '#/main/prefsAndUpdateService';
 import { createIpcHandlers } from '#/main/registerIpc';
 import { SpaceCatalog } from '#/main/spaceCatalog';
+import { combineSpaceAttentionTotal, OVERLAY_SIZE, renderPendingBadgeRgba } from '#/main/spaceBadge';
 import { parseSubscribeIntent, SubscribeIntentQueue } from '#/main/subscribeIntent';
 import { WindowService } from '#/main/windowService';
+import { rescueWindowBounds } from '#/main/windowState';
 import { IPC_CHANNELS, IPC_EVENTS } from '#/shared/ipcChannels';
 import { verifyFuseConfig } from '../scripts/verify-fuses.mjs';
 
@@ -90,6 +94,91 @@ describe('host path and URL safety', () => {
 
     const winDecoded = decodeClipboardUriList('file:///C:/Users/demo/hello%20world.png\n', 'win32');
     expect(winDecoded).toEqual(['C:\\Users\\demo\\hello world.png']);
+  });
+
+  it('serves kiki-app://localhost static files with SPA fallback and blocks path traversal', async () => {
+    const webDir = makeTempDir();
+    writeFileSync(join(webDir, 'index.html'), '<!doctype html><title>Kiki</title>');
+    const assetsDir = join(webDir, 'assets');
+    writeFileSync(join(webDir, 'favicon.svg'), '<svg/>');
+    await import('node:fs/promises').then((fs) => fs.mkdir(assetsDir, { recursive: true }));
+    writeFileSync(join(assetsDir, 'app.js'), 'console.log(1);');
+
+    expect(await resolveKikiAppAssetPath(webDir, 'kiki-app://localhost/assets/app.js')).toEqual({
+      status: 200,
+      filePath: join(assetsDir, 'app.js'),
+    });
+    expect(await resolveKikiAppAssetPath(webDir, 'kiki-app://localhost/s/session-123?panel=config')).toEqual({
+      status: 200,
+      filePath: join(webDir, 'index.html'),
+    });
+    expect(await resolveKikiAppAssetPath(webDir, 'kiki-app://localhost/assets/missing.js')).toEqual({
+      status: 404,
+    });
+    expect(await resolveKikiAppAssetPath(webDir, 'kiki-app://localhost/%2e%2e/secret.txt')).toEqual({
+      status: 403,
+    });
+  });
+
+  it('parses multi-file Unicode Windows CF_HDROP buffers and classifies audio/video/image via pastedMediaType', async () => {
+    const dir = makeTempDir();
+    const audioFile = join(dir, 'voice 世界.mp3');
+    const docFile = join(dir, 'notes.pdf');
+    writeFileSync(audioFile, Buffer.from([1, 2, 3]));
+    writeFileSync(docFile, Buffer.from([4, 5]));
+
+    const header = Buffer.alloc(20);
+    header.writeUInt32LE(20, 0);
+    header.writeInt32LE(1, 16);
+    const widePayload = Buffer.from(`${audioFile}\0${docFile}\0\0`, 'utf16le');
+    const cfHdrop = new Uint8Array(Buffer.concat([header, widePayload]));
+
+    const parsedPaths = parseWindowsCfHdropBuffer(cfHdrop);
+    expect(parsedPaths).toEqual([audioFile, docFile]);
+
+    const service = new FileAndClipboardService({
+      platform: 'win32',
+      tempSaveDir: join(dir, 'tmp'),
+      showSaveDialog: async () => join(dir, 'blob-out.bin'),
+      showOpenDialog: async () => null,
+      readOsClipboardFilePaths: () => parsedPaths,
+      revealInFileManager: () => undefined,
+      openWithDefaultApp: async () => undefined,
+      openExternal: async () => undefined,
+    });
+    const classified = await service.readClipboardFiles();
+    expect(classified?.paths).toEqual([docFile]);
+    expect(classified?.files).toHaveLength(1);
+    expect(classified?.files[0]?.type).toBe('audio/mpeg');
+    expect(await service.saveBlob(new Uint8Array([9, 8, 7]), 'blob-out.bin')).toBe(true);
+    expect([...readFileSync(join(dir, 'blob-out.bin'))]).toEqual([9, 8, 7]);
+  });
+
+  it('renders 32x32 RGBA taskbar badges, unions attention session IDs, and rescues off-screen window bounds', () => {
+    expect(renderPendingBadgeRgba(0)).toBeNull();
+    const badge = renderPendingBadgeRgba(12)!;
+    expect(badge.byteLength).toBe(OVERLAY_SIZE * OVERLAY_SIZE * 4);
+    expect([...badge.subarray((3 * OVERLAY_SIZE + 19) * 4, (3 * OVERLAY_SIZE + 19) * 4 + 4)]).toEqual([
+      255, 255, 255, 255,
+    ]);
+    expect(
+      combineSpaceAttentionTotal({
+        scopeUnreadTotal: 2,
+        scopeSessionIds: new Set(['s1', 's2']),
+        statuses: [
+          { homeId: 'main', active: true, hot: true, pendingCount: 5, busyCount: 0, needsYouSessionIds: ['s1'] },
+          { homeId: 'work', active: false, hot: true, pendingCount: 2, busyCount: 1, needsYouSessionIds: ['s2', 's3'] },
+        ],
+      }),
+    ).toBe(3);
+
+    const rescued = rescueWindowBounds(
+      { x: -9000, y: -9000, width: 1200, height: 800, isMaximized: false, isFullScreen: false },
+      [{ x: 0, y: 0, width: 1920, height: 1040 }],
+      { width: 1440, height: 920 },
+    );
+    expect(rescued.x).toBe(360);
+    expect(rescued.y).toBe(120);
   });
 });
 
@@ -228,9 +317,35 @@ describe('save sink, notifications, prefs, updates, IPC Zod validation, and Elec
       service.writePrefs({ compatibility: { homeKind: 'custom', customHome: '/tmp/other' } }, childHome),
     ).rejects.toThrow(/Isolated spaces must use their own OAuth home/);
 
-    // Autostart uses Electron loginItemController
+    // Autostart uses Electron loginItemController (and Windows registry when configured)
     expect(service.setAutostart(true).enabled).toBe(true);
     expect(service.getAutostart().command).toBe('"C:/Kiki/active/kiki-desktop.exe" --autostart');
+
+    const desktopDir = join(root, 'Desktop');
+    await import('node:fs/promises').then((fs) => fs.mkdir(desktopDir, { recursive: true }));
+    const shortcutSvc = new PrefsAndUpdateService({
+      mainHome,
+      getActiveHome: () => mainHome,
+      resolveLaunchExecutable: () => 'C:\\Kiki\\active\\kiki-desktop.exe',
+      platform: 'win32',
+      desktopDir,
+      shortcutWriter: {
+        writeShortcutLink: (shortcutPath) => {
+          writeFileSync(shortcutPath, 'lnk');
+          return true;
+        },
+      },
+    });
+    const createdShortcut = shortcutSvc.createSpaceShortcut('work', 'C:\\Spaces\\Work', 'Work:Space');
+    expect(createdShortcut).toEqual({
+      ok: true,
+      homeId: 'work',
+      path: join(desktopDir, 'Kiki - Work_Space (work).lnk'),
+    });
+    expect(shortcutSvc.createSpaceShortcut('work', 'C:\\Spaces\\Work', 'Work:Space')).toMatchObject({
+      ok: false,
+      code: 'shortcut_exists',
+    });
 
     // 30s update check caching + stale selection + cancel confirmation
     expect((await service.checkUpdate('stable'))?.version).toBe('0.7.1');

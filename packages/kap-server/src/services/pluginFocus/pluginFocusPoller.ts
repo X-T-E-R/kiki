@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { pluginNavigationSchema, spaceRecordSchema } from '@kiki/protocol';
 import { listLiveServerInstances, type ServerInstanceInfo } from '../../instanceRegistry';
+import { readLocalOwnerToken } from '../auth/localOwner';
 import type { PluginFocusRequest, PluginFocusService } from './pluginFocusService';
 import { pluginFocusIsActionable } from './pluginFocusService';
 
@@ -17,7 +18,8 @@ export interface PluginFocusPollerOptions {
   readonly focus: PluginFocusService;
   readonly mainHomeDir: string;
   readonly currentSpaceId: string;
-  readonly serverToken: () => string;
+  readonly serverToken?: () => string;
+  readonly readToken?: (homeDir: string) => Promise<string | undefined>;
   readonly fetchImpl?: typeof fetch;
   readonly intervalMs?: number;
   readonly now?: () => number;
@@ -26,6 +28,7 @@ export interface PluginFocusPollerOptions {
 
 export class PluginFocusPoller {
   private readonly fetchImpl: typeof fetch;
+  private readonly readToken: (homeDir: string) => Promise<string | undefined>;
   private readonly intervalMs: number;
   private readonly now: () => number;
   private readonly lifetime = new AbortController();
@@ -35,6 +38,7 @@ export class PluginFocusPoller {
 
   constructor(private readonly options: PluginFocusPollerOptions) {
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    this.readToken = options.readToken ?? readLocalOwnerToken;
     this.intervalMs = options.intervalMs ?? PLUGIN_FOCUS_POLL_INTERVAL_MS;
     this.now = options.now ?? Date.now;
   }
@@ -71,7 +75,7 @@ export class PluginFocusPoller {
     const nowMs = this.now();
     const candidates: { homeId: string; request: PluginFocusRequest }[] = [];
     await Promise.all(targets.map(async (target) => {
-      const request = await this.probe(target.port).catch(() => undefined);
+      const request = await this.probe(target).catch(() => undefined);
       if (request === undefined) return;
       if (!pluginFocusIsActionable(request, this.options.focus.seenRequestId(target.homeId), nowMs)) return;
       candidates.push({ homeId: target.homeId, request });
@@ -83,10 +87,12 @@ export class PluginFocusPoller {
     if (intent === undefined) this.options.focus.remember(selected.homeId, selected.request.id);
   }
 
-  private async probe(port: number): Promise<PluginFocusRequest | undefined> {
+  private async probe(target: { homeId: string; homeDir: string; port: number }): Promise<PluginFocusRequest | undefined> {
+    const token = (await this.readToken(target.homeDir).catch(() => undefined)) ?? this.options.serverToken?.();
+    if (token === undefined || token === '') return undefined;
     const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(PLUGIN_FOCUS_PROBE_TIMEOUT_MS)]);
-    const response = await this.fetchImpl(new URL('/api/plugins/navigation', `http://127.0.0.1:${port}`), {
-      headers: { authorization: `Bearer ${this.options.serverToken()}`, accept: 'application/json' },
+    const response = await this.fetchImpl(new URL('/api/plugins/navigation', `http://127.0.0.1:${target.port}`), {
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
       redirect: 'error',
       signal,
     });
@@ -99,12 +105,12 @@ export class PluginFocusPoller {
     return parsed.data.data.request;
   }
 
-  private async siblingTargets(): Promise<{ homeId: string; port: number }[]> {
+  private async siblingTargets(): Promise<{ homeId: string; homeDir: string; port: number }[]> {
     const homes: { homeId: string; homeDir: string }[] = [{ homeId: 'main', homeDir: this.options.mainHomeDir }];
     for (const record of await readHomesFile(this.options.mainHomeDir)) {
       homes.push({ homeId: record.id, homeDir: record.path });
     }
-    const targets: { homeId: string; port: number }[] = [];
+    const targets: { homeId: string; homeDir: string; port: number }[] = [];
     for (const home of homes) {
       if (home.homeId === this.options.currentSpaceId) continue;
       const listInstances = this.options.listInstances ?? listLiveServerInstances;
@@ -113,7 +119,7 @@ export class PluginFocusPoller {
       for (const instance of instances) {
         if (newest === undefined || instance.heartbeatAt > newest.heartbeatAt) newest = instance;
       }
-      if (newest !== undefined) targets.push({ homeId: home.homeId, port: newest.port });
+      if (newest !== undefined) targets.push({ homeId: home.homeId, homeDir: home.homeDir, port: newest.port });
     }
     return targets;
   }

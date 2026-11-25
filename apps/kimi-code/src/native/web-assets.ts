@@ -1,5 +1,6 @@
 import { statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { KIMI_BUILD_INFO } from '#/cli/build-info';
 import { getHostPackageRoot } from '#/cli/version';
@@ -155,7 +156,12 @@ export function getNativeWebAssetsDir(options: WebAssetOptions = {}): string | n
 export function resolveServerWebAssetsDir(
   nativeWebAssetsDir: string | null = getNativeWebAssetsDir(),
 ): string {
-  return nativeWebAssetsDir ?? join(getHostPackageRoot(), WEB_ASSETS_DIR);
+  if (nativeWebAssetsDir !== null) return nativeWebAssetsDir;
+  const siblingWebDir = join(dirname(fileURLToPath(import.meta.url)), 'web');
+  if (statSync(join(siblingWebDir, 'index.html'), { throwIfNoEntry: false })?.isFile()) {
+    return siblingWebDir;
+  }
+  return join(getHostPackageRoot(), WEB_ASSETS_DIR);
 }
 
 export function findServerWebAssetsDir(): string | undefined {

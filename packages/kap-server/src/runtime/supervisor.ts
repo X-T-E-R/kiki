@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { spawn, type SpawnOptions } from 'node:child_process';
+import { totalmem } from 'node:os';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -95,7 +96,12 @@ export function createRuntimeProcessDriver(homeDir: string, options?: { readonly
       else delete childEnv['KIKI_BUILD_ID'];
       if (target.buildChannel !== undefined) childEnv['KIKI_BUILD_CHANNEL'] = target.buildChannel;
       else delete childEnv['KIKI_BUILD_CHANNEL'];
-      const child = spawn(target.executable, [...target.args, 'serve', '--home', homeDir, '--idle-exit', target.idleExit ?? '0ms', '--port', String(target.port ?? 0), '--json'], {
+      if (target.args.length > 0) childEnv['ELECTRON_RUN_AS_NODE'] = '1';
+      else delete childEnv['ELECTRON_RUN_AS_NODE'];
+      const nodeHeapArgs = target.args.length > 0
+        ? [`--max-old-space-size=${Math.max(8192, Math.floor(totalmem() / 1_048_576 / 4))}`]
+        : [];
+      const child = spawn(target.executable, [...nodeHeapArgs, ...target.args, 'serve', '--home', homeDir, '--idle-exit', target.idleExit ?? '0ms', '--port', String(target.port ?? 0), '--json'], {
         detached: true, stdio: 'ignore', ...options?.spawnOptions, windowsHide: true,
         env: childEnv,
       });

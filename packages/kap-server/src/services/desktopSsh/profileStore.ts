@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { atomicWriteJson } from '@kiki/kaos/atomic-fs';
 import { desktopSshProfileSchema, desktopSshProfilesResponseSchema, type DesktopSshProfile } from '@kiki/protocol';
-import { writePrivateFile } from '../auth/privateFiles';
 
 export const MAX_DESKTOP_SSH_PROFILES = 100;
 const MAX_PROFILE_FILE_BYTES = 1024 * 1024;
@@ -87,7 +87,7 @@ export class DesktopSshProfileStore {
   private async writeUnlocked(profiles: DesktopSshProfile[]): Promise<void> {
     desktopSshProfilesResponseSchema.parse({ profiles });
     try {
-      await writePrivateFile(this.options.filePath, JSON.stringify(profiles));
+      await atomicWriteJson(this.options.filePath, profiles, { mode: 0o600, dirMode: 0o700 });
     } catch (error) {
       throw new DesktopSshProfileError('unavailable', `Cannot save SSH profiles: ${(error as Error).message}`);
     }

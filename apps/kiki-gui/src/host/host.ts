@@ -254,6 +254,8 @@ interface HostCapabilities {
    * which the boot reads as "this window has no mode of its own".
    */
   windowMode?: () => Promise<DesktopWindowMode | null>;
+  /** Open a dedicated sibling mode window (`--preset <presetId>`) for the active space. */
+  openModeWindow?: (presetId: string) => Promise<void>;
   /** Windows mode: source-home broker window; only a registered connection id crosses the bridge. */
   openRemoteSpace?: (connectionId: string) => Promise<void>;
   /** Windows-only. Rejects with `{ code, message }`; never overwrites an existing shortcut. */

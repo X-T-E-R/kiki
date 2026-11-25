@@ -947,7 +947,175 @@ if (Test-Path -LiteralPath (Join-Path $activeDir 'kiki-server.exe')) {
 '@, (New-Object Text.UTF8Encoding($false)))
     Invoke-Controller @('-HotSwitchPath', $hotSwitchPath, '-ControllerPath', $controller, '-RuntimePath', $runtimeRoot, '-V1ReleaseId', $secondReleaseId, '-V2ReleaseId', $v2ReleaseId, '-Commit', $expectedCommit) 0 $v2SwitchRunner | Out-Null
 
-    Write-Output 'desktop-release tests passed: initial, repeated, fail-closed, verification, cli-publish, installed-controller, production-default, shortcut, main-runtime-shortcut, receipt, legacy-launch, hot-switch-guard, child-home-inference, autostart-sync, and v1/v2 dual-manifest rollback cases.'
+    # 9. Full unpacked Electron v2 directory tree (resources\app.asar + resources\app.asar.unpacked\dist\server\** + DLLs/locales), write-build-receipt.mjs, v2<->v1 tree cleanup, and --type=* / helper filtering.
+    $v2UnpackedCandidate = Join-Path $testRoot 'v2-unpacked-candidate'
+    [IO.Directory]::CreateDirectory((Join-Path $v2UnpackedCandidate 'locales')) | Out-Null
+    [IO.Directory]::CreateDirectory((Join-Path $v2UnpackedCandidate 'resources\icons')) | Out-Null
+    [IO.Directory]::CreateDirectory((Join-Path $v2UnpackedCandidate 'resources\app.asar.unpacked\dist\server\native\node_modules\node-pty\build\Release')) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'kiki-desktop.exe'), 'electron-44-unpacked-binary')
+    [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'ffmpeg.dll'), 'ffmpeg-dll-payload')
+    [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'icudtl.dat'), 'icu-data-payload')
+    [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'locales\en-US.pak'), 'en-us-pak')
+    [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'resources\app.asar'), 'packed-asar-archive')
+    [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'resources\icons\icon.ico'), 'tray-icon-bytes')
+    [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'resources\app.asar.unpacked\dist\server\server-entry.mjs'), 'export const unpackedServer = true;')
+    [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'resources\app.asar.unpacked\dist\server\native-addons.json'), '{"format":1,"packages":["node-pty"]}')
+    [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'resources\app.asar.unpacked\dist\server\sqlite-indexer.mjs'), 'export const indexer = true;')
+    [IO.File]::WriteAllText((Join-Path $v2UnpackedCandidate 'resources\app.asar.unpacked\dist\server\native\node_modules\node-pty\build\Release\pty.node'), 'pty-abi-149')
+
+    $receiptWriter = Join-Path $repoRoot 'apps\kiki-desktop\scripts\write-build-receipt.mjs'
+    $nodeOut = & node $receiptWriter --candidate-dir $v2UnpackedCandidate --source-commit $expectedCommit 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        throw "write-build-receipt.mjs failed:`n$nodeOut"
+    }
+    $unpackedPromoteOut = Invoke-Controller @('-Action', 'Promote', '-RuntimeRoot', $runtimeRoot, '-CandidateRoot', $v2UnpackedCandidate, '-ExpectedCommit', $expectedCommit)
+    Assert-True ($unpackedPromoteOut -match 'Promoted Kiki release') "Unpacked v2 promotion failed.`n$unpackedPromoteOut"
+
+    $unpackedCurrent = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    Assert-Equal 2 ([int]$unpackedCurrent.schemaVersion) 'Unpacked v2 schemaVersion mismatch.'
+    Assert-Equal 'resources/app.asar.unpacked/dist/server/server-entry.mjs' ([string]$unpackedCurrent.serverEntry) 'Unpacked v2 serverEntry mismatch.'
+    Assert-Equal 'resources/app.asar.unpacked/dist/server/native-addons.json' ([string]$unpackedCurrent.nativeAddons) 'Unpacked v2 nativeAddons mismatch.'
+    $unpackedReleaseId = [string]$unpackedCurrent.releaseId
+
+    foreach ($relCheck in @(
+        'kiki-desktop.exe',
+        'ffmpeg.dll',
+        'icudtl.dat',
+        'locales\en-US.pak',
+        'resources\app.asar',
+        'resources\icons\icon.ico',
+        'resources\app.asar.unpacked\dist\server\server-entry.mjs',
+        'resources\app.asar.unpacked\dist\server\native-addons.json',
+        'resources\app.asar.unpacked\dist\server\sqlite-indexer.mjs',
+        'resources\app.asar.unpacked\dist\server\native\node_modules\node-pty\build\Release\pty.node'
+    )) {
+        Assert-True (Test-Path -LiteralPath (Join-Path (Join-Path (Join-Path $runtimeRoot 'releases') $unpackedReleaseId) $relCheck) -PathType Leaf) "Promoted unpacked release missing $relCheck"
+        Assert-True (Test-Path -LiteralPath (Join-Path $activeDir $relCheck) -PathType Leaf) "Synced active\ missing unpacked artifact $relCheck"
+    }
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $activeDir 'kiki-server.exe'))) 'Unpacked v2 active\ still had stale kiki-server.exe.'
+
+    $v2UnpackedSwitchRunner = Join-Path $testRoot 'v2-unpacked-switch-unit.ps1'
+    [IO.File]::WriteAllText($v2UnpackedSwitchRunner, @'
+param([string]$HotSwitchPath, [string]$ControllerPath, [string]$RuntimePath, [string]$V1ReleaseId, [string]$UnpackedV2ReleaseId, [string]$Commit)
+$ErrorActionPreference = 'Stop'
+. $ControllerPath -Action Launch
+$runtime = [IO.Path]::GetFullPath($RuntimePath)
+$homePath = Join-Path $runtime 'dummy-home'
+$ast = [Management.Automation.Language.Parser]::ParseFile($HotSwitchPath, [ref]$null, [ref]$null)
+$fnNames = @(
+    'Normalize-HomePath',
+    'Get-ExplicitHomeFromCommandLine',
+    'Get-ShellHomeFromCommandLine',
+    'Test-IsElectronServerCommandLine',
+    'Test-IsChromiumSubprocessCommandLine',
+    'Test-IsElectronBackendHelperCommandLine',
+    'Get-InferredHomeFromChildArgs',
+    'Find-ShellEntries',
+    'Test-InstalledRelease',
+    'Select-InstalledRelease'
+)
+foreach ($definition in $ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $fnNames }, $false)) {
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
+
+$origHash = ${function:Get-Sha256}
+function Get-Sha256 { throw 'Resolve-LaunchTarget must not hash unpacked v2 executables.' }
+$targetUnpacked = Resolve-LaunchTarget $runtime
+$expectedEntry = Join-Path (Join-Path $runtime 'active') 'resources\app.asar.unpacked\dist\server\server-entry.mjs'
+if (-not $targetUnpacked.UsingActive -or $targetUnpacked.ServerEntryPath -ine $expectedEntry) {
+    throw "Unpacked Resolve-LaunchTarget failed: UsingActive=$($targetUnpacked.UsingActive) ServerEntryPath=$($targetUnpacked.ServerEntryPath)"
+}
+${function:Get-Sha256} = $origHash
+
+if (-not (Test-InstalledRelease $UnpackedV2ReleaseId)) {
+    throw "Unpacked v2 release $UnpackedV2ReleaseId was not recognized as installed."
+}
+
+# Verify Chromium --type=* and Electron backend helper command lines are filtered out of Find-ShellEntries.
+foreach ($subCmd in @(
+    '"C:\rt\active\kiki-desktop.exe" --type=gpu-process --gpu-preferences=abc',
+    '"C:\rt\active\kiki-desktop.exe" --type=renderer --lang=en-US --app-path="C:\rt\active\resources\app.asar"',
+    '"C:\rt\active\kiki-desktop.exe" --type=utility --utility-sub-type=network.mojom.NetworkService',
+    '"C:\rt\active\kiki-desktop.exe" --type=crashpad-handler /prefetch:7'
+)) {
+    if (-not (Test-IsChromiumSubprocessCommandLine $subCmd)) {
+        throw "Test-IsChromiumSubprocessCommandLine missed: $subCmd"
+    }
+}
+if (Test-IsChromiumSubprocessCommandLine '"C:\rt\active\kiki-desktop.exe" --home "C:\spaces\work" --tray-only') {
+    throw 'Test-IsChromiumSubprocessCommandLine falsely matched GUI shell.'
+}
+if (-not (Test-IsElectronBackendHelperCommandLine '--max-old-space-size=512 "C:\rt\active\resources\app.asar.unpacked\dist\server\sqlite-indexer.mjs" "C:\Users\alice\.kiki\search-index-v2\index.sqlite"')) {
+    throw 'Test-IsElectronBackendHelperCommandLine missed sqlite-indexer.mjs.'
+}
+if (-not (Test-IsElectronBackendHelperCommandLine '"C:\rt\active\resources\app.asar.unpacked\dist\server\hostRunner.mjs" "C:\Users\alice\.kiki\plugins\foo\entry.mjs"')) {
+    throw 'Test-IsElectronBackendHelperCommandLine missed hostRunner.mjs.'
+}
+$inferredIdx = Get-InferredHomeFromChildArgs '--max-old-space-size=512 "C:\rt\active\resources\app.asar.unpacked\dist\server\sqlite-indexer.mjs" "C:\Users\alice\.kiki\search-index-v2\index.sqlite"'
+if ($inferredIdx -ine 'C:\Users\alice\.kiki') {
+    throw "Expected C:\Users\alice\.kiki from sqlite-indexer.mjs, saw '$inferredIdx'."
+}
+$inferredHost = Get-InferredHomeFromChildArgs '"C:\rt\active\resources\app.asar.unpacked\dist\server\hostRunner.mjs" "C:\Users\alice\.kiki\plugins\managed\bar\entry.mjs"'
+if ($inferredHost -ine 'C:\Users\alice\.kiki') {
+    throw "Expected C:\Users\alice\.kiki from hostRunner.mjs, saw '$inferredHost'."
+}
+
+$activeExe = Join-Path (Join-Path $runtime 'active') 'kiki-desktop.exe'
+function Get-CimInstance {
+    @(
+        [pscustomobject]@{ ProcessId = 101; CommandLine = "`"$activeExe`" --home `"C:\spaces\alpha`"" },
+        [pscustomobject]@{ ProcessId = 102; CommandLine = "`"$activeExe`" --type=renderer --lang=en-US" },
+        [pscustomobject]@{ ProcessId = 103; CommandLine = "`"$activeExe`" --type=gpu-process" },
+        [pscustomobject]@{ ProcessId = 104; CommandLine = "`"$activeExe`" `"$expectedEntry`" serve --port 0" },
+        [pscustomobject]@{ ProcessId = 105; CommandLine = "`"$activeExe`" --max-old-space-size=512 `"C:\rt\sqlite-indexer.mjs`" `"C:\spaces\alpha\search-index-v2\index.sqlite`"" }
+    )
+}
+function Get-Process {
+    @(
+        [pscustomobject]@{ Id = 101; Path = $activeExe },
+        [pscustomobject]@{ Id = 102; Path = $activeExe },
+        [pscustomobject]@{ Id = 103; Path = $activeExe },
+        [pscustomobject]@{ Id = 104; Path = $activeExe },
+        [pscustomobject]@{ Id = 105; Path = $activeExe }
+    )
+}
+$shells = @(Find-ShellEntries)
+if ($shells.Count -ne 1 -or $shells[0].pid -ne 101) {
+    throw "Find-ShellEntries misclassified subprocesses; expected only PID 101, got PIDs: $(($shells | ForEach-Object { $_.pid }) -join ',')"
+}
+
+# Rollback unpacked v2 -> v1 must purge resources\, locales\, ffmpeg.dll, icudtl.dat from active\ and restore kiki-server.exe.
+Select-InstalledRelease $V1ReleaseId $Commit 'Original' -RequireActiveSync
+$activeDir = Join-Path $runtime 'active'
+if (-not (Test-Path -LiteralPath (Join-Path $activeDir 'kiki-server.exe') -PathType Leaf)) {
+    throw 'Unpacked v2 -> v1 rollback did not restore kiki-server.exe.'
+}
+foreach ($mustBeGone in @('resources', 'locales', 'ffmpeg.dll', 'icudtl.dat')) {
+    if (Test-Path -LiteralPath (Join-Path $activeDir $mustBeGone)) {
+        throw "Unpacked v2 -> v1 rollback left stale '$mustBeGone' in active\."
+    }
+}
+
+# Switch v1 -> unpacked v2 must restore full unpacked tree and purge kiki-server.exe.
+Select-InstalledRelease $UnpackedV2ReleaseId $Commit 'Target' -RequireActiveSync
+if (Test-Path -LiteralPath (Join-Path $activeDir 'kiki-server.exe')) {
+    throw 'v1 -> unpacked v2 switch left stale kiki-server.exe.'
+}
+foreach ($mustExist in @(
+    'ffmpeg.dll',
+    'locales\en-US.pak',
+    'resources\app.asar',
+    'resources\app.asar.unpacked\dist\server\server-entry.mjs',
+    'resources\app.asar.unpacked\dist\server\native\node_modules\node-pty\build\Release\pty.node'
+)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $activeDir $mustExist) -PathType Leaf)) {
+        throw "v1 -> unpacked v2 switch did not restore '$mustExist' in active\."
+    }
+}
+'@, (New-Object Text.UTF8Encoding($false)))
+    Invoke-Controller @('-HotSwitchPath', $hotSwitchPath, '-ControllerPath', $controller, '-RuntimePath', $runtimeRoot, '-V1ReleaseId', $secondReleaseId, '-UnpackedV2ReleaseId', $unpackedReleaseId, '-Commit', $expectedCommit) 0 $v2UnpackedSwitchRunner | Out-Null
+
+    Write-Output 'desktop-release tests passed: initial, repeated, fail-closed, verification, cli-publish, installed-controller, production-default, shortcut, main-runtime-shortcut, receipt, legacy-launch, hot-switch-guard, child-home-inference, autostart-sync, flat-v2, and unpacked-electron-v2 rollback/subprocess cases.'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot) {

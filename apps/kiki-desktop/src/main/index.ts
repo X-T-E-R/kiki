@@ -11,7 +11,10 @@ import {
   Menu,
   nativeImage,
   nativeTheme,
+  net,
   Notification,
+  protocol,
+  screen,
   session,
   shell,
   Tray,
@@ -19,14 +22,25 @@ import {
 } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { join, resolve } from 'pathe';
+import {
+  createKikiAppProtocolHandler,
+  KIKI_APP_ORIGIN,
+  KIKI_APP_SCHEME,
+} from '#/main/appProtocol';
+import { parseWindowsCfHdropBuffer } from '#/main/clipboardDropFiles';
 import { DaemonSupervisor } from '#/main/daemonSupervisor';
 import {
   decodeClipboardUriList,
   FileAndClipboardService,
 } from '#/main/fileAndClipboardService';
-import { parseLaunchArgs, resolveInstanceIdentity } from '#/main/launchArgs';
+import {
+  canonicalHomeKey,
+  parseLaunchArgs,
+  resolveInstanceIdentity,
+} from '#/main/launchArgs';
 import { NotificationService } from '#/main/notificationService';
 import {
+  createDefaultWindowsRegistryRunner,
   PrefsAndUpdateService,
   readDesktopSpaceToml,
   type UpdaterFeedAdapter,
@@ -36,6 +50,7 @@ import {
   maybeRedirectToCurrentRelease,
   resolveLaunchExecutable,
 } from '#/main/releaseRedirect';
+import { OVERLAY_SIZE, renderPendingBadgeRgba, rgbaToBgraBitmap } from '#/main/spaceBadge';
 import { SpaceCatalog } from '#/main/spaceCatalog';
 import {
   extractSubscribeIntentsFromArgs,
@@ -44,8 +59,10 @@ import {
 } from '#/main/subscribeIntent';
 import {
   buildTrayMenuTemplate,
+  desktopExitCopy,
   executeStopBackgroundSpace,
   executeTrayQuit,
+  formatTrayTooltip,
   retryTrayCreation,
 } from '#/main/trayService';
 import {
@@ -55,18 +72,41 @@ import {
   WindowService,
   type ManagedWindowLike,
 } from '#/main/windowService';
+import { readWindowState, rescueWindowBounds, writeWindowState } from '#/main/windowState';
 import { IPC_EVENTS } from '#/shared/ipcChannels';
 import type { DesktopUpdateOffer, LocalSpaceSummary, UpdateChannel } from '#/shared/types';
+
+declare const __KIKI_DESKTOP_BUILD_ID__: string | undefined;
+declare const __KIKI_DESKTOP_CHANNEL__: string | undefined;
+declare const __KIKI_DESKTOP_DISTRIBUTION__: string | undefined;
 
 const BASE_APP_ID = 'com.kiki.desktop';
 const APP_NAME = 'Kiki';
 const WINDOW_WIDTH = 1440;
 const WINDOW_HEIGHT = 920;
+const TRAY_POLL_INTERVAL_MS = 5_000;
 const MAIN_DIR = import.meta.dirname;
 const PRELOAD_PATH = resolve(MAIN_DIR, '../preload/index.cjs');
 
-// Step 1: Execute release redirect BEFORE single-instance lock, window creation, or daemon startup.
 maybeRedirectToCurrentRelease();
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: KIKI_APP_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
+]);
+
+const explicitUserDataDir = process.env['KIKI_DESKTOP_USER_DATA_DIR']?.trim();
+if (explicitUserDataDir !== undefined && explicitUserDataDir !== '') {
+  app.setPath('userData', resolve(explicitUserDataDir));
+}
 
 const launchArgs = parseLaunchArgs(process.argv);
 const defaultHome = join(homedir(), '.kiki');
@@ -117,30 +157,95 @@ if (!singleInstanceLock) {
 } else {
   let tray: Tray | null = null;
   let trayActive = false;
+  let lastTraySignature = '';
+  let lastTrayTooltip = '';
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
   let quitReleased = false;
   let quitInFlight: Promise<void> | null = null;
   let activeBrowserWindow: BrowserWindow | null = null;
 
+  const userDataDir = app.getPath('userData');
   const spaces = new SpaceCatalog(mainHome, defaultHome, startupSpace ?? undefined);
 
-  const serverEntry = app.isPackaged
-    ? join(process.resourcesPath, 'app.asar.unpacked', 'dist', 'server', 'server-entry.mjs')
-    : process.env['KIKI_DESKTOP_SERVER_ENTRY']?.trim() ||
-      resolve(MAIN_DIR, '../../../kimi-code/dist/index.mjs');
+  const envServerEntry = process.env['KIKI_DESKTOP_SERVER_ENTRY']?.trim();
+  const resolveDevServerEntry = (): string => {
+    const stagedEntry = resolve(MAIN_DIR, '../server/server-entry.mjs');
+    if (existsSync(stagedEntry)) return stagedEntry;
+    return resolve(MAIN_DIR, '../../../kimi-code/dist/main.mjs');
+  };
 
-  const daemon = new DaemonSupervisor({
-    electronBinary: resolveLaunchExecutable(process.execPath),
-    serverEntry,
-    homeDir: startupHome,
-    oauthHomeDir: mainHome,
-    logLevel: initialPrefs.logLevel ?? 'warn',
-    idleExit: instanceIdentity.effectiveWindowMode === 'switch' && startupHome !== mainHome,
-  });
+  const serverEntry =
+    envServerEntry !== undefined && envServerEntry !== ''
+      ? envServerEntry
+      : app.isPackaged
+        ? join(process.resourcesPath, 'app.asar.unpacked', 'dist', 'server', 'server-entry.mjs')
+        : resolveDevServerEntry();
+
+  const resolveWebRootDir = (): string => {
+    if (app.isPackaged) {
+      return join(process.resourcesPath, 'app.asar.unpacked', 'dist', 'server', 'web');
+    }
+    const stagedWeb = resolve(MAIN_DIR, '../server/web');
+    if (existsSync(join(stagedWeb, 'index.html'))) return stagedWeb;
+    return resolve(MAIN_DIR, '../../../kiki-gui/dist');
+  };
+
+  const devRendererOrigin = !app.isPackaged
+    ? process.env['KIKI_DESKTOP_DEV_URL']?.trim() || undefined
+    : undefined;
+  const effectiveRendererOrigin = devRendererOrigin ?? KIKI_APP_ORIGIN;
+
+  const bakedBuildId =
+    (typeof __KIKI_DESKTOP_BUILD_ID__ === 'string' && __KIKI_DESKTOP_BUILD_ID__ !== ''
+      ? __KIKI_DESKTOP_BUILD_ID__
+      : undefined) ?? process.env['KIKI_BUILD_ID']?.trim();
+  const bakedChannel =
+    (typeof __KIKI_DESKTOP_CHANNEL__ === 'string' && __KIKI_DESKTOP_CHANNEL__ !== ''
+      ? __KIKI_DESKTOP_CHANNEL__
+      : undefined) ?? process.env['KIKI_CHANNEL']?.trim();
+  const bakedDistributionRaw =
+    (typeof __KIKI_DESKTOP_DISTRIBUTION__ === 'string' && __KIKI_DESKTOP_DISTRIBUTION__ !== ''
+      ? __KIKI_DESKTOP_DISTRIBUTION__
+      : undefined) ?? process.env['KIKI_DESKTOP_DISTRIBUTION']?.trim();
+
+  const daemon = new DaemonSupervisor(
+    {
+      electronBinary: resolveLaunchExecutable(process.execPath),
+      serverEntry,
+      homeDir: startupHome,
+      oauthHomeDir: mainHome,
+      ...(bakedBuildId ? { buildId: bakedBuildId } : {}),
+      ...(bakedChannel ? { buildChannel: bakedChannel } : {}),
+      logLevel: initialPrefs.logLevel ?? 'warn',
+      idleExit: instanceIdentity.effectiveWindowMode === 'switch' && startupHome !== mainHome,
+    },
+    {
+      autoRecoverManagedExit: true,
+    },
+  );
 
   const sendToRenderer = (channel: string, payload?: unknown): void => {
     if (activeBrowserWindow !== null && !activeBrowserWindow.isDestroyed()) {
       activeBrowserWindow.webContents.send(channel, payload);
     }
+  };
+
+  const applyWindowsOverlayBadge = (win: BrowserWindow | null, pendingCount: number): void => {
+    if (process.platform !== 'win32' || win === null || win.isDestroyed()) return;
+    const rgba = renderPendingBadgeRgba(pendingCount);
+    if (rgba === null) {
+      win.setOverlayIcon(null, '');
+      return;
+    }
+    const bgra = rgbaToBgraBitmap(rgba);
+    const overlayImage = nativeImage.createFromBitmap(bgra, {
+      width: OVERLAY_SIZE,
+      height: OVERLAY_SIZE,
+    });
+    win.setOverlayIcon(
+      overlayImage,
+      pendingCount > 9 ? '9+ items need attention' : `${pendingCount} item(s) need attention`,
+    );
   };
 
   const hardenSession = (): void => {
@@ -155,6 +260,10 @@ if (!singleInstanceLock) {
 
   const releaseAppQuit = (): void => {
     quitReleased = true;
+    if (pollTimer !== null) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
     globalShortcut.unregisterAll();
     tray?.destroy();
     tray = null;
@@ -188,20 +297,40 @@ if (!singleInstanceLock) {
       win.webContents.reload();
     },
     loadURL: (url) => win.loadURL(url),
+    getURL: () => win.webContents.getURL(),
     setZoomFactor: (factor) => {
       win.webContents.setZoomFactor(factor);
     },
     close: () => {
       win.close();
     },
+    destroy: () => {
+      win.destroy();
+    },
   });
 
   let closeToTrayCached = initialPrefs.closeToTray;
+  let activeLocaleCached = initialPrefs.locale;
+  let notificationsRef: NotificationService | null = null;
+
+  const persistCurrentWindowBounds = (win: BrowserWindow): void => {
+    if (win.isDestroyed()) return;
+    const normalBounds = win.isMaximized() || win.isFullScreen() ? win.getNormalBounds() : win.getBounds();
+    void writeWindowState(userDataDir, {
+      x: normalBounds.x,
+      y: normalBounds.y,
+      width: normalBounds.width,
+      height: normalBounds.height,
+      isMaximized: win.isMaximized(),
+      isFullScreen: win.isFullScreen(),
+    }).catch(() => undefined);
+  };
 
   const windows = new WindowService({
     windowMode: instanceIdentity.descriptor,
     spaceWindowMode: instanceIdentity.effectiveWindowMode,
     startWindowless: launchArgs.startWindowless,
+    rendererOrigin: effectiveRendererOrigin,
     getCloseToTray: () => closeToTrayCached,
     isTrayActive: () => trayActive,
     getDaemonOrigin: () => daemon.currentConnection?.url ?? null,
@@ -220,9 +349,17 @@ if (!singleInstanceLock) {
     },
     resolveLaunchExecutable: () => resolveLaunchExecutable(process.execPath),
     createBrowserWindow: async (initialUrl) => {
-      const win = new BrowserWindow({
+      const savedBounds = await readWindowState(userDataDir);
+      const workAreas = screen.getAllDisplays().map((display) => display.workArea);
+      const bounds = rescueWindowBounds(savedBounds, workAreas, {
         width: WINDOW_WIDTH,
         height: WINDOW_HEIGHT,
+      });
+
+      const win = new BrowserWindow({
+        ...(bounds.x !== undefined && bounds.y !== undefined ? { x: bounds.x, y: bounds.y } : {}),
+        width: bounds.width,
+        height: bounds.height,
         minWidth: 960,
         minHeight: 640,
         show: false,
@@ -236,16 +373,35 @@ if (!singleInstanceLock) {
           webSecurity: true,
         },
       });
+      if (bounds.isMaximized) win.maximize();
+      if (bounds.isFullScreen) win.setFullScreen(true);
+
       activeBrowserWindow = win;
       const wrapped = wrapBrowserWindow(win);
 
+      let boundsSaveTimer: ReturnType<typeof setTimeout> | null = null;
+      const scheduleBoundsSave = (): void => {
+        if (boundsSaveTimer !== null) clearTimeout(boundsSaveTimer);
+        boundsSaveTimer = setTimeout(() => {
+          boundsSaveTimer = null;
+          persistCurrentWindowBounds(win);
+        }, 250);
+      };
+
+      win.on('resize', scheduleBoundsSave);
+      win.on('move', scheduleBoundsSave);
       win.on('focus', () => {
         sendToRenderer(IPC_EVENTS.windowFocus);
       });
       win.on('close', (event) => {
+        persistCurrentWindowBounds(win);
         windows.onWindowClose(event);
       });
       win.on('closed', () => {
+        if (boundsSaveTimer !== null) {
+          clearTimeout(boundsSaveTimer);
+          boundsSaveTimer = null;
+        }
         if (activeBrowserWindow === win) activeBrowserWindow = null;
         windows.onWindowClosed(wrapped);
       });
@@ -255,7 +411,9 @@ if (!singleInstanceLock) {
         }
       });
       win.webContents.on('will-navigate', (event, targetUrl) => {
-        if (isAllowedRendererNavigation(targetUrl, daemon.currentConnection?.url ?? null)) return;
+        if (isAllowedRendererNavigation(targetUrl, devRendererOrigin ?? daemon.currentConnection?.url ?? null)) {
+          return;
+        }
         event.preventDefault();
         const external = tryValidateExternalForNavigation(targetUrl);
         if (external !== null) void shell.openExternal(external);
@@ -267,6 +425,9 @@ if (!singleInstanceLock) {
       });
 
       await win.loadURL(initialUrl);
+      if (notificationsRef !== null) {
+        applyWindowsOverlayBadge(win, notificationsRef.currentBadgeTotal());
+      }
       return wrapped;
     },
   });
@@ -299,7 +460,12 @@ if (!singleInstanceLock) {
         app.setBadgeCount(total);
       }
     },
+    setOverlayBadgeCount: (total) => {
+      applyWindowsOverlayBadge(activeBrowserWindow, total);
+    },
+    registryPath: join(userDataDir, 'notifications-registry.json'),
   });
+  notificationsRef = notifications;
 
   if (launchArgs.remoteConnection !== undefined) {
     notifications.setPendingRemoteConnectionIntent(launchArgs.remoteConnection);
@@ -308,6 +474,20 @@ if (!singleInstanceLock) {
   const readOsClipboardFilePaths = async (): Promise<readonly string[] | null> => {
     const items = await clipboard.read();
     for (const item of items) {
+      if (process.platform === 'win32') {
+        const cfHdropType = item.types.find((type) =>
+          type.toLowerCase().includes('format="cf_hdrop"'),
+        );
+        if (cfHdropType !== undefined) {
+          const blob = await item.getType(cfHdropType);
+          if (blob instanceof Blob) {
+            const parsedDrop = parseWindowsCfHdropBuffer(new Uint8Array(await blob.arrayBuffer()));
+            if (parsedDrop !== null && parsedDrop.length > 0) {
+              return parsedDrop;
+            }
+          }
+        }
+      }
       if (item.types.includes('text/uri-list')) {
         const blob = await item.getType('text/uri-list');
         const parsed = decodeClipboardUriList(await blob.text());
@@ -333,7 +513,7 @@ if (!singleInstanceLock) {
   };
 
   const files = new FileAndClipboardService({
-    tempSaveDir: join(app.getPath('userData'), 'kiki-media-saves'),
+    tempSaveDir: join(userDataDir, 'kiki-media-saves'),
     showSaveDialog: async (defaultPath) => {
       const result = await dialog.showSaveDialog({ defaultPath });
       return result.canceled ? null : result.filePath ?? null;
@@ -361,6 +541,11 @@ if (!singleInstanceLock) {
     async checkForUpdate(channel: UpdateChannel): Promise<DesktopUpdateOffer | null> {
       autoUpdater.autoDownload = false;
       autoUpdater.allowPrerelease = channel === 'beta';
+      autoUpdater.channel = channel === 'beta' ? 'beta' : 'latest';
+      const customFeedUrl = process.env['KIKI_UPDATE_FEED_URL']?.trim();
+      if (customFeedUrl !== undefined && customFeedUrl !== '') {
+        autoUpdater.setFeedURL({ provider: 'generic', url: customFeedUrl });
+      }
       const result = await autoUpdater.checkForUpdates();
       const info = result?.updateInfo;
       if (info === undefined || info.version === app.getVersion()) return null;
@@ -373,21 +558,26 @@ if (!singleInstanceLock) {
     },
     async downloadAndInstall(channel: UpdateChannel): Promise<void> {
       autoUpdater.allowPrerelease = channel === 'beta';
+      autoUpdater.channel = channel === 'beta' ? 'beta' : 'latest';
       await autoUpdater.downloadUpdate();
       autoUpdater.quitAndInstall();
     },
   };
 
-  const confirmShutdownDialog = async (reason: string, pendingWork: readonly string[]): Promise<boolean> => {
+  const confirmShutdownDialog = async (_reason: string, pendingWork: readonly string[]): Promise<boolean> => {
+    const zh = activeLocaleCached === 'zh';
+    const copy = desktopExitCopy(zh);
     const count = pendingWork.length;
     const response = await dialog.showMessageBox({
       type: 'warning',
-      buttons: ['Cancel', 'Stop Services and Continue'],
+      buttons: [copy.cancelButton, copy.confirmButton],
       defaultId: 0,
       cancelId: 0,
       title: APP_NAME,
-      message: `${reason} will stop ${count} active Kiki session(s).`,
-      detail: 'Wait for running work to finish or confirm to interrupt and stop the managed Kiki daemon.',
+      message: zh
+        ? `当前有 ${count} 个活跃会话正在运行。`
+        : `${count} active Kiki session(s) are still running.`,
+      detail: copy.message,
     });
     return response.response === 1;
   };
@@ -429,10 +619,18 @@ if (!singleInstanceLock) {
     return quitInFlight;
   };
 
+  const distribution: 'github' | 'local' =
+    bakedDistributionRaw === 'github' || (app.isPackaged && bakedDistributionRaw !== 'local')
+      ? 'github'
+      : 'local';
+
   const prefsAndUpdates = new PrefsAndUpdateService({
     mainHome,
     getActiveHome: () => spaces.getActiveSpace().path,
     resolveLaunchExecutable: () => resolveLaunchExecutable(process.execPath),
+    ...(process.platform === 'win32'
+      ? { windowsRegistry: createDefaultWindowsRegistryRunner() }
+      : {}),
     loginItemController: {
       getLoginItemSettings: (opts) => app.getLoginItemSettings(opts),
       setLoginItemSettings: (settings) => {
@@ -446,8 +644,8 @@ if (!singleInstanceLock) {
               shell.writeShortcutLink(shortcutPath, operation, opts),
           }
         : undefined,
-    desktopDir: app.getPath('desktop'),
-    distribution: process.env['KIKI_DESKTOP_DISTRIBUTION'] === 'github' ? 'github' : 'local',
+    desktopDir: process.env['KIKI_DESKTOP_SHORTCUT_DIR']?.trim() || app.getPath('desktop'),
+    distribution,
     updaterAdapter: electronUpdaterAdapter,
     confirmShutdownForUpdate: async () => {
       const state = await daemon.readLifecycleState();
@@ -457,8 +655,19 @@ if (!singleInstanceLock) {
     prepareDaemonForUpdate: async () => {
       await daemon.stopManagedDaemon({ action: 'update', interruptWork: true });
     },
+    onPrefsChanged: (nextPrefs, changedHomeDir) => {
+      const changedKey = canonicalHomeKey(changedHomeDir);
+      if (
+        changedKey === canonicalHomeKey(spaces.getActiveSpace().path) ||
+        changedKey === canonicalHomeKey(mainHome)
+      ) {
+        closeToTrayCached = nextPrefs.closeToTray;
+        activeLocaleCached = nextPrefs.locale;
+      }
+      void refreshTrayMenu(true);
+    },
     onLocaleChanged: () => {
-      void refreshTrayMenu();
+      void refreshTrayMenu(true);
     },
   });
 
@@ -490,6 +699,14 @@ if (!singleInstanceLock) {
     },
   });
 
+  // Start the detached backend daemon in parallel with Chromium app.whenReady() + BrowserWindow creation.
+  const earlyDaemonBoot = !launchArgs.startTrayOnly
+    ? daemon.discoverConnection().catch((error: unknown) => {
+        console.error('Kiki daemon startup failed:', error);
+        return null;
+      })
+    : null;
+
   const loadTrayIcon = (): Electron.NativeImage => {
     const candidates = [
       join(process.resourcesPath, 'icons', '32x32.png'),
@@ -501,30 +718,62 @@ if (!singleInstanceLock) {
     return image;
   };
 
-  const refreshTrayMenu = async (): Promise<void> => {
-    if (tray === null) return;
-    const prefs = await prefsAndUpdates.readPrefs(spaces.getActiveSpace().path);
+  const refreshTrayMenu = async (force = false): Promise<void> => {
+    const activeSpace = spaces.getActiveSpace();
+    const prefs = await prefsAndUpdates.readPrefs(activeSpace.path);
     closeToTrayCached = prefs.closeToTray;
+    activeLocaleCached = prefs.locale;
+    const zh = prefs.locale === 'zh';
+    const windowVisible = windows.currentWindow?.isVisible() === true;
     const autostart = prefsAndUpdates.getAutostart();
+
     let localSpaces: LocalSpaceSummary[] = [];
-    try {
-      localSpaces = (await daemon.listSpacesAndStatuses(spaces.getActiveSpace().homeId)).spaces;
-    } catch {
-      localSpaces = [];
+    if (daemon.currentConnection !== null) {
+      try {
+        const listed = await daemon.listSpacesAndStatuses(activeSpace.homeId);
+        localSpaces = listed.spaces;
+        notifications.setBackgroundSpaceStatuses(listed.statuses);
+      } catch {
+        localSpaces = [];
+      }
     }
+
+    if (tray === null) return;
+
+    const tooltip = formatTrayTooltip({
+      spaces: localSpaces,
+      activeSpace,
+      windowVisible,
+      zh,
+    });
+    if (tooltip !== lastTrayTooltip) {
+      lastTrayTooltip = tooltip;
+      tray.setToolTip(tooltip);
+    }
+
+    const signature = JSON.stringify({
+      zh,
+      windowVisible,
+      autostartSupported: autostart.supported,
+      autostartEnabled: autostart.enabled,
+      spaces: localSpaces,
+    });
+    if (!force && signature === lastTraySignature) return;
+    lastTraySignature = signature;
+
     const template = buildTrayMenuTemplate({
-      zh: prefs.locale === 'zh',
-      windowVisible: windows.currentWindow?.isVisible() === true,
+      zh,
+      windowVisible,
       autostartSupported: autostart.supported,
       autostartEnabled: autostart.enabled,
       spaces: localSpaces,
       callbacks: {
         onShowWindow: () => {
-          void windows.showMainWindow().then(() => refreshTrayMenu());
+          void windows.showMainWindow().then(() => refreshTrayMenu(true));
         },
         onHideWindow: () => {
           windows.hideMainWindow();
-          void refreshTrayMenu();
+          void refreshTrayMenu(true);
         },
         onNewSession: () => {
           void windows.showMainWindow().then(() => {
@@ -536,7 +785,7 @@ if (!singleInstanceLock) {
             if (instanceIdentity.effectiveWindowMode === 'switch') {
               daemon.setTargetHome(space.path);
               spaces.setActiveSpace(space);
-              return windows.reloadForSwitchedSpace();
+              return windows.reloadForSwitchedSpace().then(() => refreshTrayMenu(true));
             }
             windows.openSpaceWindow(space.path);
             return undefined;
@@ -551,19 +800,19 @@ if (!singleInstanceLock) {
               stopManagedDaemonForHome: (homeDir, opts) =>
                 daemon.stopManagedDaemonForHome(homeDir, opts),
             });
-            await refreshTrayMenu();
+            await refreshTrayMenu(true);
           });
         },
         onToggleAutostart: (enabled) => {
           try {
             prefsAndUpdates.setAutostart(enabled);
           } finally {
-            void refreshTrayMenu();
+            void refreshTrayMenu(true);
           }
         },
         onCloseWindowKeepTray: () => {
-          windows.hideMainWindow();
-          void refreshTrayMenu();
+          windows.destroyMainWindowKeepTray();
+          void refreshTrayMenu(true);
         },
         onQuitCompletely: () => {
           void requestConfirmedQuit();
@@ -573,7 +822,6 @@ if (!singleInstanceLock) {
     tray.setContextMenu(Menu.buildFromTemplate(template));
   };
 
-  // Register macOS open-url BEFORE app.whenReady() so cold deep links are queued cleanly.
   app.on('open-url', (event, rawUrl) => {
     event.preventDefault();
     try {
@@ -615,13 +863,14 @@ if (!singleInstanceLock) {
               daemon.setTargetHome(space.path);
               spaces.setActiveSpace(space);
               await windows.reloadForSwitchedSpace();
+              await refreshTrayMenu(true);
             })
             .catch(() => windows.showMainWindow());
         } else {
           void windows.showMainWindow();
         }
       } else {
-        void refreshTrayMenu();
+        void refreshTrayMenu(true);
       }
     } catch {
       void windows.showMainWindow();
@@ -645,8 +894,24 @@ if (!singleInstanceLock) {
   });
 
   void app.whenReady().then(async () => {
+    protocol.handle(
+      KIKI_APP_SCHEME,
+      createKikiAppProtocolHandler(resolveWebRootDir(), (fileUrl, init) => net.fetch(fileUrl, init)),
+    );
     hardenSession();
     windows.applyInitialWindowlessPolicy();
+
+    const showWindowPromise =
+      !launchArgs.startTrayOnly && !launchArgs.startWindowless
+        ? windows.showMainWindow()
+        : Promise.resolve();
+
+    await Promise.all([
+      showWindowPromise,
+      notifications.restoreFromDisk(),
+      prefsAndUpdates.refreshAutostartIfEnabled(),
+    ]);
+
     if (startupHome === mainHome && instanceIdentity.effectiveWindowMode === 'switch') {
       if (process.defaultApp && process.argv.length >= 2) {
         app.setAsDefaultProtocolClient('kiki', process.execPath, [resolve(process.argv[1]!)]);
@@ -663,14 +928,14 @@ if (!singleInstanceLock) {
         tray.setToolTip(APP_NAME);
         if (process.platform !== 'darwin') {
           tray.on('click', () => {
-            void windows.showMainWindow().then(() => refreshTrayMenu());
+            void windows.showMainWindow().then(() => refreshTrayMenu(true));
           });
         }
       },
     });
     trayActive = trayResult.trayCreated;
     if (trayActive) {
-      await refreshTrayMenu();
+      await refreshTrayMenu(true);
     } else if (trayResult.revealFallbackWindow) {
       await windows.showMainWindow();
     }
@@ -690,25 +955,21 @@ if (!singleInstanceLock) {
       }
     }
 
+    pollTimer = setInterval(() => {
+      void daemon
+        .checkHealthAndRecoverIfNeeded()
+        .then(() => refreshTrayMenu(false))
+        .catch(() => undefined);
+    }, TRAY_POLL_INTERVAL_MS);
+    pollTimer.unref?.();
+
     if (launchArgs.startTrayOnly) {
-      // Windowless tray-only mode: attach only if a verified daemon is already running.
       await daemon.attachIfRunning();
-      await refreshTrayMenu();
+      await refreshTrayMenu(true);
       return;
     }
 
-    if (!launchArgs.startWindowless) {
-      await windows.showMainWindow();
-    }
-
-    try {
-      const connection = await daemon.discoverConnection();
-      if (windows.currentWindow !== null) {
-        await windows.navigateToDaemonOrigin(connection.config.url);
-      }
-      await refreshTrayMenu();
-    } catch (error) {
-      console.error('Kiki daemon startup failed:', error);
-    }
+    await earlyDaemonBoot;
+    await refreshTrayMenu(true);
   });
 }

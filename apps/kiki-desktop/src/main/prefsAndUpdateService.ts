@@ -1,9 +1,21 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
+import { atomicWriteJson } from '@kiki/kaos/atomic-fs';
 import { basename, dirname, isAbsolute, join } from 'pathe';
-import { atomicWrite } from '@kiki/kaos/atomic-fs';
 import { parse as parseToml } from 'smol-toml';
 import { z } from 'zod';
+import {
+  cleanupStaleWindowsElectronRunEntries,
+  createDefaultWindowsRegistryRunner,
+  formatAutostartCommand,
+  readLinuxAutostartStatus,
+  resolveAutostartExecutablePath,
+  resolveLinuxAutostartDesktopPath,
+  WINDOWS_RUN_KEY,
+  WINDOWS_RUN_VALUE_NAME,
+  writeLinuxAutostartStatus,
+  type WindowsRegistryRunner,
+} from '#/main/autostart';
 import { desktopPrefsPatchSchema } from '#/shared/ipcChannels';
 import type {
   DesktopAutostartStatus,
@@ -13,6 +25,8 @@ import type {
   DesktopUpdateMutation,
   DesktopUpdateOffer,
   DesktopUpdateState,
+  SpaceShortcutErrorCode,
+  SpaceShortcutResult,
   SpaceWindowMode,
   UpdateChannel,
 } from '#/shared/types';
@@ -30,11 +44,13 @@ export const DEFAULT_DESKTOP_PREFS: DesktopNativePrefs = {
 };
 
 const homeTomlSchema = z.object({
+  schema: z.number().int().optional(),
   id: z.string().min(1).optional(),
   home_id: z.string().min(1).optional(),
   name: z.string().min(1).optional(),
   color: z.string().nullable().optional(),
   preset: z.string().nullable().optional(),
+  base: z.string().min(1).nullable().optional(),
   base_home: z.string().min(1).nullable().optional(),
   credentials_shared: z.boolean().optional(),
 });
@@ -44,8 +60,7 @@ function normalizeUpdateState(raw: unknown): DesktopUpdateState | undefined {
   const record = raw as Record<string, unknown>;
   const cleanList = (value: unknown): string[] | undefined => {
     if (!Array.isArray(value)) return undefined;
-    const filtered = value.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
-    return filtered;
+    return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
   };
   let skipped: DesktopUpdateState['skipped'];
   if (typeof record['skipped'] === 'object' && record['skipped'] !== null && !Array.isArray(record['skipped'])) {
@@ -127,11 +142,6 @@ function parseDesktopPrefsRecord(raw: unknown): DesktopNativePrefs {
   };
 }
 
-async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true });
-  await atomicWrite(filePath, `${JSON.stringify(value, null, 2)}\n`, undefined, undefined, undefined, true);
-}
-
 export async function readDesktopSpaceToml(homeDir: string): Promise<DesktopSpace | null> {
   const tomlPath = join(homeDir, 'home.toml');
   let raw: string;
@@ -149,8 +159,42 @@ export async function readDesktopSpaceToml(homeDir: string): Promise<DesktopSpac
     color: parsed.color ?? null,
     preset: parsed.preset ?? null,
     path: homeDir,
-    baseHome: parsed.base_home ?? null,
+    baseHome: parsed.base ?? parsed.base_home ?? null,
     credentialsShared: parsed.credentials_shared ?? true,
+    isPrimary: homeId === 'main',
+  };
+}
+
+export function formatSpaceShortcutFileName(name: string, homeId: string): string {
+  const sanitized = Array.from(name)
+    .map((ch) => (/[\u0000-\u001F\u007F<>:"/\\|?*]/.test(ch) ? '_' : ch))
+    .slice(0, 60)
+    .join('')
+    .trim()
+    .replace(/[. ]+$/, '');
+  return `Kiki - ${sanitized === '' ? 'Space' : sanitized} (${homeId}).lnk`;
+}
+
+export function formatSpaceHomeArguments(
+  spaceHomePath: string,
+  platform: NodeJS.Platform = process.platform,
+): { readonly ok: true; readonly args: string } | { readonly ok: false; readonly code: SpaceShortcutErrorCode; readonly message: string } {
+  const winAbs = /^[A-Za-z]:[\\/]/.test(spaceHomePath);
+  const abs = platform === 'win32' ? winAbs : isAbsolute(spaceHomePath);
+  if (!abs || spaceHomePath.includes('"') || /[\u0000-\u001F\u007F]/.test(spaceHomePath)) {
+    return {
+      ok: false,
+      code: 'invalid_space',
+      message: 'Space path is not a valid absolute directory',
+    };
+  }
+  let trailingBackslashes = 0;
+  for (let i = spaceHomePath.length - 1; i >= 0 && spaceHomePath[i] === '\\'; i -= 1) {
+    trailingBackslashes += 1;
+  }
+  return {
+    ok: true,
+    args: `--home "${spaceHomePath}${'\\'.repeat(trailingBackslashes)}"`,
   };
 }
 
@@ -174,6 +218,8 @@ export interface ShortcutWriter {
       readonly args?: string;
       readonly description?: string;
       readonly cwd?: string;
+      readonly icon?: string;
+      readonly iconIndex?: number;
     },
   ): boolean;
 }
@@ -188,6 +234,8 @@ export interface PrefsAndUpdateServiceDeps {
   readonly getActiveHome: () => string;
   readonly resolveLaunchExecutable: () => string;
   readonly loginItemController?: LoginItemController;
+  readonly windowsRegistry?: WindowsRegistryRunner;
+  readonly linuxDesktopEntryPath?: string;
   readonly shortcutWriter?: ShortcutWriter;
   readonly desktopDir?: string;
   readonly distribution?: 'github' | 'local';
@@ -196,6 +244,7 @@ export interface PrefsAndUpdateServiceDeps {
   readonly prepareDaemonForUpdate?: () => Promise<void>;
   readonly releaseUpdateLocks?: () => void;
   readonly onLocaleChanged?: (locale: string | undefined) => void;
+  readonly onPrefsChanged?: (prefs: DesktopNativePrefs, homeDir: string) => void;
   readonly platform?: NodeJS.Platform;
   readonly now?: () => number;
 }
@@ -228,22 +277,23 @@ export class PrefsAndUpdateService {
     return join(homeDir, 'desktop.json');
   }
 
-  async readPrefs(homeDir: string = this.deps.getActiveHome()): Promise<DesktopNativePrefs> {
-    let localRaw: unknown = null;
+  private async readRawPrefsObject(homeDir: string): Promise<Record<string, unknown> | null> {
     try {
-      localRaw = JSON.parse(await readFile(this.prefsFilePath(homeDir), 'utf8'));
+      const parsed: unknown = JSON.parse(await readFile(this.prefsFilePath(homeDir), 'utf8'));
+      return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
     } catch {
-      localRaw = null;
+      return null;
     }
+  }
+
+  async readPrefs(homeDir: string = this.deps.getActiveHome()): Promise<DesktopNativePrefs> {
+    const localRaw = await this.readRawPrefsObject(homeDir);
     const localPrefs = parseDesktopPrefsRecord(localRaw);
     if (homeDir === this.deps.mainHome) return localPrefs;
 
-    let mainRaw: unknown = null;
-    try {
-      mainRaw = JSON.parse(await readFile(this.prefsFilePath(this.deps.mainHome), 'utf8'));
-    } catch {
-      mainRaw = null;
-    }
+    const mainRaw = await this.readRawPrefsObject(this.deps.mainHome);
     const mainPrefs = parseDesktopPrefsRecord(mainRaw);
     return {
       ...localPrefs,
@@ -260,6 +310,7 @@ export class PrefsAndUpdateService {
   ): Promise<void> {
     const parsedPatch = desktopPrefsPatchSchema.parse(patchInput);
     await this.enqueueWrite(async () => {
+      const existingRaw = await this.readRawPrefsObject(homeDir);
       const current = await this.readPrefs(homeDir);
       const nextWindowMode = parsedPatch.windowMode ?? parsedPatch.window_mode ?? current.windowMode;
       const nextCompat = parsedPatch.compatibility ?? current.compatibility;
@@ -305,10 +356,14 @@ export class PrefsAndUpdateService {
       };
 
       const persisted = {
+        ...(typeof existingRaw?.['autostart'] === 'boolean' ? { autostart: existingRaw['autostart'] } : {}),
         ...next,
         window_mode: next.windowMode,
       };
-      await atomicWriteJson(this.prefsFilePath(homeDir), persisted);
+      await atomicWriteJson(this.prefsFilePath(homeDir), persisted, {
+        indent: 2,
+        preserveDestinationOnError: true,
+      });
 
       if (
         homeDir !== this.deps.mainHome &&
@@ -318,6 +373,7 @@ export class PrefsAndUpdateService {
           parsedPatch.window_mode !== undefined ||
           Object.hasOwn(parsedPatch, 'updateState'))
       ) {
+        const mainRaw = await this.readRawPrefsObject(this.deps.mainHome);
         const mainCurrent = await this.readPrefs(this.deps.mainHome);
         const mainNext: DesktopNativePrefs = {
           ...mainCurrent,
@@ -327,12 +383,18 @@ export class PrefsAndUpdateService {
           windowMode: next.windowMode,
         };
         if (nextUpdateState === undefined) delete mainNext.updateState;
-        await atomicWriteJson(this.prefsFilePath(this.deps.mainHome), {
-          ...mainNext,
-          window_mode: mainNext.windowMode,
-        });
+        await atomicWriteJson(
+          this.prefsFilePath(this.deps.mainHome),
+          {
+            ...(typeof mainRaw?.['autostart'] === 'boolean' ? { autostart: mainRaw['autostart'] } : {}),
+            ...mainNext,
+            window_mode: mainNext.windowMode,
+          },
+          { indent: 2, preserveDestinationOnError: true },
+        );
       }
 
+      this.deps.onPrefsChanged?.(next, homeDir);
       if (parsedPatch.locale !== undefined && parsedPatch.locale !== current.locale) {
         this.deps.onLocaleChanged?.(parsedPatch.locale);
       }
@@ -341,6 +403,7 @@ export class PrefsAndUpdateService {
 
   async mutateUpdateState(mutation: DesktopUpdateMutation): Promise<DesktopUpdateState> {
     return this.enqueueWrite(async () => {
+      const mainRaw = await this.readRawPrefsObject(this.deps.mainHome);
       const mainPrefs = await this.readPrefs(this.deps.mainHome);
       const current = mainPrefs.updateState ?? {};
       const next: {
@@ -394,15 +457,36 @@ export class PrefsAndUpdateService {
         ...mainPrefs,
         updateState: next,
       };
-      await atomicWriteJson(this.prefsFilePath(this.deps.mainHome), {
-        ...persisted,
-        window_mode: persisted.windowMode,
-      });
+      await atomicWriteJson(
+        this.prefsFilePath(this.deps.mainHome),
+        {
+          ...(typeof mainRaw?.['autostart'] === 'boolean' ? { autostart: mainRaw['autostart'] } : {}),
+          ...persisted,
+          window_mode: persisted.windowMode,
+        },
+        { indent: 2, preserveDestinationOnError: true },
+      );
       return next;
     });
   }
 
+  private resolveAutostartExe(): string {
+    return resolveAutostartExecutablePath(this.deps.resolveLaunchExecutable(), this.platform);
+  }
+
   getAutostart(): DesktopAutostartStatus {
+    if (this.platform === 'win32' && this.deps.windowsRegistry !== undefined) {
+      const command = this.deps.windowsRegistry.queryValue(WINDOWS_RUN_KEY, WINDOWS_RUN_VALUE_NAME);
+      return {
+        enabled: command !== null,
+        supported: true,
+        command,
+      };
+    }
+    if (this.platform === 'linux') {
+      const entryPath = this.deps.linuxDesktopEntryPath ?? resolveLinuxAutostartDesktopPath();
+      return readLinuxAutostartStatus(entryPath);
+    }
     const controller = this.deps.loginItemController;
     const supported =
       controller !== undefined && (this.platform === 'win32' || this.platform === 'darwin');
@@ -420,55 +504,136 @@ export class PrefsAndUpdateService {
   }
 
   setAutostart(enabled: boolean): DesktopAutostartStatus {
-    const controller = this.deps.loginItemController;
-    if (controller === undefined || (this.platform !== 'win32' && this.platform !== 'darwin')) {
-      throw new Error('Autostart is not supported on this platform');
+    let status: DesktopAutostartStatus;
+    if (this.platform === 'win32' && this.deps.windowsRegistry !== undefined) {
+      cleanupStaleWindowsElectronRunEntries(this.deps.windowsRegistry);
+      if (enabled) {
+        const exePath = this.resolveAutostartExe();
+        const command = formatAutostartCommand(exePath, 'win32');
+        this.deps.windowsRegistry.setValue(WINDOWS_RUN_KEY, WINDOWS_RUN_VALUE_NAME, command);
+        status = { enabled: true, supported: true, command };
+      } else {
+        this.deps.windowsRegistry.deleteValue(WINDOWS_RUN_KEY, WINDOWS_RUN_VALUE_NAME);
+        status = { enabled: false, supported: true, command: null };
+      }
+    } else if (this.platform === 'linux') {
+      const entryPath = this.deps.linuxDesktopEntryPath ?? resolveLinuxAutostartDesktopPath();
+      status = writeLinuxAutostartStatus(entryPath, enabled, this.resolveAutostartExe());
+    } else {
+      const controller = this.deps.loginItemController;
+      if (controller === undefined || (this.platform !== 'win32' && this.platform !== 'darwin')) {
+        throw new Error('Autostart is not supported on this platform');
+      }
+      const exePath = this.deps.resolveLaunchExecutable();
+      const args = ['--autostart'];
+      controller.setLoginItemSettings({
+        openAtLogin: enabled,
+        path: exePath,
+        args,
+      });
+      status = this.getAutostart();
     }
-    const exePath = this.deps.resolveLaunchExecutable();
-    const args = ['--autostart'];
-    controller.setLoginItemSettings({
-      openAtLogin: enabled,
-      path: exePath,
-      args,
-    });
-    return this.getAutostart();
+
+    void this.enqueueWrite(async () => {
+      const raw = (await this.readRawPrefsObject(this.deps.mainHome)) ?? {};
+      await atomicWriteJson(
+        this.prefsFilePath(this.deps.mainHome),
+        { ...raw, autostart: enabled },
+        { indent: 2, preserveDestinationOnError: true },
+      );
+    }).catch(() => undefined);
+
+    return status;
   }
 
-  async createSpaceShortcut(
+  async refreshAutostartIfEnabled(): Promise<void> {
+    try {
+      const raw = await this.readRawPrefsObject(this.deps.mainHome);
+      if (raw?.['autostart'] === false) return;
+      const current = this.getAutostart();
+      if (!current.supported || !current.enabled) return;
+      this.setAutostart(true);
+    } catch {
+      // Best-effort startup autostart target refresh.
+    }
+  }
+
+  createSpaceShortcut(
     homeId: string,
     spaceHomePath: string,
     spaceName: string,
-  ): Promise<{ readonly homeId: string; readonly path: string }> {
+  ): SpaceShortcutResult {
     if (this.platform !== 'win32') {
-      throw Object.assign(new Error('Desktop space shortcuts are only supported on Windows'), {
-        code: 'UNSUPPORTED_PLATFORM',
-      });
+      return {
+        ok: false,
+        code: 'unsupported_platform',
+        message: 'Desktop space shortcuts are currently supported only on Windows',
+      };
     }
-    if (this.deps.shortcutWriter === undefined || this.deps.desktopDir === undefined) {
-      throw Object.assign(new Error('Windows shortcut writer is unavailable'), {
-        code: 'UNAVAILABLE',
-      });
+    if (this.deps.shortcutWriter === undefined || this.deps.desktopDir === undefined || this.deps.desktopDir.trim() === '') {
+      return {
+        ok: false,
+        code: 'desktop_unavailable',
+        message: 'Cannot locate the Windows desktop directory',
+      };
     }
-    const safeName = spaceName.replaceAll(/[<>:"/\\|?*]/g, '_').trim() || homeId;
-    const shortcutPath = join(this.deps.desktopDir, `Kiki - ${safeName}.lnk`);
+    const homeArgs = formatSpaceHomeArguments(spaceHomePath, 'win32');
+    if (!homeArgs.ok) {
+      return homeArgs;
+    }
+    let exePath: string;
+    try {
+      exePath = this.deps.resolveLaunchExecutable();
+      if (exePath.trim() === '') throw new Error('Empty executable path');
+    } catch (error) {
+      return {
+        ok: false,
+        code: 'executable_unavailable',
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const shortcutPath = join(this.deps.desktopDir, formatSpaceShortcutFileName(spaceName, homeId));
     if (existsSync(shortcutPath)) {
-      throw Object.assign(new Error(`Shortcut already exists: ${shortcutPath}`), {
-        code: 'ALREADY_EXISTS',
-      });
+      return {
+        ok: false,
+        code: 'shortcut_exists',
+        message: 'A shortcut for this space already exists',
+      };
     }
-    const exePath = this.deps.resolveLaunchExecutable();
-    const ok = this.deps.shortcutWriter.writeShortcutLink(shortcutPath, 'create', {
-      target: exePath,
-      args: `--home "${spaceHomePath}"`,
-      description: `Open Kiki space ${spaceName}`,
-      cwd: dirname(exePath),
-    });
+    let ok = false;
+    try {
+      ok = this.deps.shortcutWriter.writeShortcutLink(shortcutPath, 'create', {
+        target: exePath,
+        args: homeArgs.args,
+        description: spaceName,
+        cwd: dirname(exePath),
+        icon: exePath,
+        iconIndex: 0,
+      });
+    } catch (error) {
+      if (existsSync(shortcutPath)) {
+        return {
+          ok: false,
+          code: 'shortcut_exists',
+          message: 'A shortcut for this space already exists',
+        };
+      }
+      return {
+        ok: false,
+        code: 'shortcut_failed',
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
     if (!ok) {
-      throw Object.assign(new Error(`Failed to create shortcut at ${shortcutPath}`), {
-        code: 'CREATE_FAILED',
-      });
+      return {
+        ok: false,
+        code: existsSync(shortcutPath) ? 'shortcut_exists' : 'shortcut_failed',
+        message: existsSync(shortcutPath)
+          ? 'A shortcut for this space already exists'
+          : `Failed to create shortcut at ${shortcutPath}`,
+      };
     }
-    return { homeId, path: shortcutPath };
+    return { ok: true, homeId, path: shortcutPath };
   }
 
   supportsUpdates(): boolean {
@@ -526,3 +691,5 @@ export class PrefsAndUpdateService {
     }
   }
 }
+
+export { createDefaultWindowsRegistryRunner };

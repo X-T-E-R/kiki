@@ -12,6 +12,7 @@ const builtins = new Set([
 
 const optionalRuntimeRequires = new Set([
   '@napi-rs/keyring',
+  '@mariozechner/clipboard',
   '@kiki/auth-native',
   'node-pty',
   'ajv-formats/dist/formats',

@@ -104,7 +104,12 @@ describe('releaseRedirect', () => {
     const newExe = join(newDir, 'kiki-desktop.exe');
     writeFileSync(oldExe, 'old-desktop');
     writeFileSync(newExe, 'new-electron-single-binary');
+    writeFileSync(join(newDir, 'resources/app.asar'), 'packed-electron-asar');
     writeFileSync(join(newDir, serverEntryRel), 'export default {};');
+    writeFileSync(
+      join(newDir, 'resources/app.asar.unpacked/dist/server/native-addons.json'),
+      '{"addons":["node-pty"]}',
+    );
     writeFileSync(
       join(root, 'current.json'),
       JSON.stringify({
@@ -112,6 +117,12 @@ describe('releaseRedirect', () => {
         runtimeKind: 'electron-single-binary',
         releaseId: NEW_RELEASE,
         serverEntry: serverEntryRel,
+        nativeAddons: 'resources/app.asar.unpacked/dist/server/native-addons.json',
+        files: {
+          'kiki-desktop.exe': { sha256: '1'.repeat(64), bytes: 26 },
+          'server-entry.mjs': { sha256: '2'.repeat(64), bytes: 18 },
+          'native-addons.json': { sha256: '3'.repeat(64), bytes: 23 },
+        },
       }),
     );
 

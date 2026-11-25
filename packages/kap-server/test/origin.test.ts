@@ -79,6 +79,13 @@ describe('isOriginAllowed', () => {
   it('still treats full dotted-quad 127/8 literals as loopback', () => {
     expect(isOriginAllowed('http://127.7.7.7:5175', 'localhost:58627', [])).toBe(true);
   });
+
+  it('allows fixed desktop app origins (kiki-app://localhost and tauri) only against loopback hosts', () => {
+    expect(isOriginAllowed('kiki-app://localhost', '127.0.0.1:58627', [])).toBe(true);
+    expect(isOriginAllowed('tauri://localhost', '127.0.0.1:58627', [])).toBe(true);
+    expect(isOriginAllowed('http://tauri.localhost', '127.0.0.1:58627', [])).toBe(true);
+    expect(isOriginAllowed('kiki-app://localhost', 'example.com:80', [])).toBe(false);
+  });
 });
 
 describe('parseCorsOrigins', () => {

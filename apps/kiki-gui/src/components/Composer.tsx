@@ -68,6 +68,7 @@ import {
   subscribeComposerInserts,
   threadRefDeletionRange,
   parseMentionTrigger,
+  pastedMediaType,
   pushInputHistory,
   readInputHistory,
   reserveImageFiles,
@@ -124,7 +125,6 @@ import { useLayerHistory } from '../lib/layerHistory';
 import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
 import { useSeatFileDrop } from './seatFileDrop';
 import { isCoarsePointer, useCoarsePointer } from '../lib/layoutHooks';
-import { pastedMediaType } from '../lib/pastedFiles';
 import { pushToast } from '../lib/toasts';
 import { matchesShortcutAction } from '../lib/shortcuts';
 import { useRemoteConnections } from '../lib/remoteConnections';

@@ -1,11 +1,15 @@
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { isSea } from 'node:sea';
 import type * as NodePty from 'node-pty';
 
 import {
+  currentTarget,
   ensureNativeAssetTree,
+  getBundledDiskAssetManifest,
   getNativePackageRoot,
+  getSeaAssetSource,
   type NativeAssetOptions,
 } from './native-assets';
 
@@ -15,6 +19,18 @@ export function createNativePackageRequire(
 ): ReturnType<typeof createRequire> | null {
   const packageRoot = getNativePackageRoot(packageName, options);
   if (packageRoot === null) return null;
+
+  if (getSeaAssetSource() === null && options.source === undefined && options.manifest === undefined) {
+    const disk = getBundledDiskAssetManifest(currentTarget(), options.env);
+    if (disk !== null) {
+      const entryPath = join(disk.rootDir, 'native', 'node_modules', '.kimi-native-entry.cjs');
+      if (!existsSync(entryPath)) {
+        mkdirSync(dirname(entryPath), { recursive: true });
+        writeFileSync(entryPath, 'module.exports = require;\n', 'utf-8');
+      }
+      return createRequire(entryPath);
+    }
+  }
 
   const cacheRoot = ensureNativeAssetTree(options);
   if (cacheRoot === null) return null;
@@ -31,7 +47,12 @@ export function loadNativePackage<T>(
   const packageRoot = getNativePackageRoot(packageName, options);
   if (packageRoot === null) return null;
   const pkg = nativeRequire(packageRoot) as T;
-  if (packageName !== 'node-pty' || process.platform !== 'win32' || !isSea()) return pkg;
+  const usePackagedPtyAdapter =
+    isSea() ||
+    (options.source === undefined &&
+      options.manifest === undefined &&
+      getBundledDiskAssetManifest(currentTarget(), options.env) !== null);
+  if (packageName !== 'node-pty' || process.platform !== 'win32' || !usePackagedPtyAdapter) return pkg;
   const metadata = nativeRequire(join(packageRoot, 'package.json')) as { version: string };
   if (metadata.version !== '1.1.0') throw new Error(`Unsupported SEA node-pty adapter version: ${metadata.version}`);
   const pty = pkg as typeof NodePty;

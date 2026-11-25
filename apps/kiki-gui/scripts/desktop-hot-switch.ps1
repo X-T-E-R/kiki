@@ -348,10 +348,20 @@ function Test-IsElectronServerCommandLine([string]$CommandLine) {
     return ($CommandLine -match '(?i)(?:^|[\s"''\\\/])server-entry\.mjs(?:["''\s]|$)')
 }
 
+function Test-IsChromiumSubprocessCommandLine([string]$CommandLine) {
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $false }
+    return ($CommandLine -match '(?i)(?:^|\s)--type=')
+}
+
+function Test-IsElectronBackendHelperCommandLine([string]$CommandLine) {
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $false }
+    return ($CommandLine -match '(?i)(?:^|[\s"''\\\/])(?:sqlite-indexer\.mjs|hostRunner\.mjs)(?:["''\s]|$)|(?:^|\s)__(?:search-indexer|plugin_run_node)(?:\s|$)')
+}
+
 function Strip-LeadingServerEntryArgument([string]$LaunchArgs) {
     if ([string]::IsNullOrWhiteSpace($LaunchArgs)) { return '' }
     $trimmed = $LaunchArgs.Trim()
-    if ($trimmed -match '^(?i)(?:"[^"]*server-entry\.mjs"|''[^'']*server-entry\.mjs''|\S*server-entry\.mjs)(?:\s+(.*))?$') {
+    if ($trimmed -match '^(?i)(?:--max[-_]old[-_]space[-_]size=\d+\s+)*(?:"[^"]*server-entry\.mjs"|''[^'']*server-entry\.mjs''|\S*server-entry\.mjs)(?:\s+(.*))?$') {
         if ($Matches.ContainsKey(1) -and $null -ne $Matches[1]) { return ([string]$Matches[1]).Trim() }
         return ''
     }
@@ -387,7 +397,7 @@ function Get-OtherActiveServerPids([int[]]$OwnedPids = @()) {
             if ($proc.HasExited) { continue }
             $procPath = Get-ProcessPathSafe $proc
             $cmdLine = if ($desktopCmdByPid.ContainsKey([int]$proc.Id)) { $desktopCmdByPid[[int]$proc.Id] } else { '' }
-            if ($procPath -and ($procPath -ieq $expectedActiveDesktop) -and (Test-IsElectronServerCommandLine $cmdLine) -and (-not $ownedSet.Contains([int]$proc.Id))) {
+            if ($procPath -and ($procPath -ieq $expectedActiveDesktop) -and ((Test-IsElectronServerCommandLine $cmdLine) -or (Test-IsElectronBackendHelperCommandLine $cmdLine)) -and (-not $ownedSet.Contains([int]$proc.Id))) {
                 $otherPids += [int]$proc.Id
             }
         } catch {}
@@ -408,7 +418,7 @@ function Get-RuntimeServerBinaryInfo([string]$BinaryPath, [string]$CommandLine =
     if ($BinaryPath -ieq $expectedActiveDesktop) {
         $activeManifest = Read-ActiveManifest $runtime -AllowMissing
         $activeSchema = if ($null -ne $activeManifest) { Get-ManifestSchemaVersion $activeManifest } else { Get-DirectoryReleaseSchemaVersion $activePath }
-        if ($activeSchema -eq 2 -and ([string]::IsNullOrWhiteSpace($CommandLine) -or (Test-IsElectronServerCommandLine $CommandLine))) {
+        if ($activeSchema -eq 2 -and ([string]::IsNullOrWhiteSpace($CommandLine) -or (Test-IsElectronServerCommandLine $CommandLine) -or (Test-IsElectronBackendHelperCommandLine $CommandLine))) {
             $activeReleaseId = Resolve-ActiveReleaseId $runtime
             if ([string]::IsNullOrWhiteSpace($activeReleaseId)) { return $null }
             return [pscustomobject]@{ layout = 'active'; releaseId = $activeReleaseId; executablePath = $BinaryPath; schemaVersion = 2 }
@@ -422,7 +432,7 @@ function Get-RuntimeServerBinaryInfo([string]$BinaryPath, [string]$CommandLine =
             if ($BinaryPath -ieq (Join-Path $releaseDir 'kiki-server.exe')) {
                 return [pscustomobject]@{ layout = 'releases'; releaseId = $releaseId; executablePath = $BinaryPath; schemaVersion = 1 }
             }
-            if ($BinaryPath -ieq (Join-Path $releaseDir 'kiki-desktop.exe') -and (Get-DirectoryReleaseSchemaVersion $releaseDir) -eq 2 -and ([string]::IsNullOrWhiteSpace($CommandLine) -or (Test-IsElectronServerCommandLine $CommandLine))) {
+            if ($BinaryPath -ieq (Join-Path $releaseDir 'kiki-desktop.exe') -and (Get-DirectoryReleaseSchemaVersion $releaseDir) -eq 2 -and ([string]::IsNullOrWhiteSpace($CommandLine) -or (Test-IsElectronServerCommandLine $CommandLine) -or (Test-IsElectronBackendHelperCommandLine $CommandLine))) {
                 return [pscustomobject]@{ layout = 'releases'; releaseId = $releaseId; executablePath = $BinaryPath; schemaVersion = 2 }
             }
         }
@@ -560,7 +570,7 @@ function Resolve-ServerHomeByPid([int]$ServerPid, [object]$Proc, [string[]]$Cand
 
 function Get-InferredHomeFromChildArgs([string]$LaunchArgs) {
     if ([string]::IsNullOrWhiteSpace($LaunchArgs)) { return $null }
-    if ($LaunchArgs -match '(?i)(?:^|\s)__search-indexer\s+(?:"([^"]+)"|''([^'']+)''|(\S+))') {
+    if ($LaunchArgs -match '(?i)(?:(?:^|\s)__search-indexer|(?:^|[\s"''\\\/])sqlite-indexer\.mjs["'']?)\s+(?:"([^"]+)"|''([^'']+)''|(\S+))') {
         $dbPath = if ($Matches[1]) { $Matches[1] } elseif ($Matches[2]) { $Matches[2] } else { $Matches[3] }
         if (-not [string]::IsNullOrWhiteSpace($dbPath) -and [IO.Path]::IsPathRooted($dbPath)) {
             $indexDir = Split-Path -Parent $dbPath
@@ -573,7 +583,7 @@ function Get-InferredHomeFromChildArgs([string]$LaunchArgs) {
             }
         }
     }
-    if ($LaunchArgs -match '(?i)(?:^|\s)__plugin_run_node\s+') {
+    if ($LaunchArgs -match '(?i)(?:(?:^|\s)__plugin_run_node|(?:^|[\s"''\\\/])hostRunner\.mjs["'']?)\s+') {
         foreach ($m in [regex]::Matches($LaunchArgs, '(?:"([^"]+)"|''([^'']+)''|(\S+))')) {
             $tok = if ($m.Groups[1].Success) { $m.Groups[1].Value } elseif ($m.Groups[2].Success) { $m.Groups[2].Value } else { $m.Groups[3].Value }
             if ([string]::IsNullOrWhiteSpace($tok) -or (-not [IO.Path]::IsPathRooted($tok))) { continue }
@@ -603,7 +613,7 @@ function Find-RuntimeServerEntries([string[]]$KnownHomes = @()) {
             $procPath = Get-ProcessPathSafe $proc
             $wmi = if ($wmiByPid.ContainsKey($procPid)) { $wmiByPid[$procPid] } else { $null }
             $cmdLine = if ($null -ne $wmi) { [string]$wmi.CommandLine } else { '' }
-            if ($proc.ProcessName -ieq 'kiki-desktop' -and (-not (Test-IsElectronServerCommandLine $cmdLine))) { continue }
+            if ($proc.ProcessName -ieq 'kiki-desktop' -and (-not ((Test-IsElectronServerCommandLine $cmdLine) -or (Test-IsElectronBackendHelperCommandLine $cmdLine)))) { continue }
             $binaryInfo = Get-RuntimeServerBinaryInfo $procPath $cmdLine
             if ($null -eq $binaryInfo) { continue }
             $null = $matchedPids.Add($procPid)
@@ -617,6 +627,7 @@ function Find-RuntimeServerEntries([string[]]$KnownHomes = @()) {
                 executablePath = $procPath
                 commandLine = $cmdLine
                 launchArgs = $launchArgs
+                isHelper = (Test-IsElectronBackendHelperCommandLine $cmdLine)
                 binaryInfo = $binaryInfo
             }
         } catch {}
@@ -627,7 +638,7 @@ function Find-RuntimeServerEntries([string[]]$KnownHomes = @()) {
     }
     $inferredHomeByServerPid = @{}
     foreach ($item in $candidates) {
-        if ($item.launchArgs -notmatch '^__') { continue }
+        if (-not ($item.isHelper -or ($item.launchArgs -match '^__'))) { continue }
         $inferred = Get-InferredHomeFromChildArgs $item.launchArgs
         if (-not [string]::IsNullOrWhiteSpace($inferred) -and $item.parentPid -gt 0) {
             if (-not $inferredHomeByServerPid.ContainsKey([int]$item.parentPid)) {
@@ -638,7 +649,7 @@ function Find-RuntimeServerEntries([string[]]$KnownHomes = @()) {
     $heapLauncherParentPids = New-Object 'System.Collections.Generic.HashSet[int]'
     $heapLauncherByChildPid = @{}
     foreach ($item in $candidates) {
-        if ($item.launchArgs -match '^__') { continue }
+        if ($item.isHelper -or ($item.launchArgs -match '^__')) { continue }
         if ($item.parentPid -gt 0 -and $candidateByPid.ContainsKey($item.parentPid)) {
             $parentItem = $candidateByPid[$item.parentPid]
             if (($parentItem.executablePath -ieq $item.executablePath) -and (-not [string]::IsNullOrWhiteSpace($item.launchArgs)) -and ($parentItem.launchArgs -ceq $item.launchArgs)) {
@@ -649,7 +660,7 @@ function Find-RuntimeServerEntries([string[]]$KnownHomes = @()) {
     }
     $entries = @()
     foreach ($item in $candidates) {
-        if ($item.launchArgs -match '^__') { continue }
+        if ($item.isHelper -or ($item.launchArgs -match '^__')) { continue }
         if ($heapLauncherParentPids.Contains([int]$item.pid)) { continue }
         $launcherItem = if ($heapLauncherByChildPid.ContainsKey([int]$item.pid)) { $heapLauncherByChildPid[[int]$item.pid] } else { $null }
         if ($null -eq $launcherItem -and $item.parentPid -gt 0 -and $matchedPids.Contains($item.parentPid)) { continue }
@@ -698,7 +709,7 @@ function Find-ShellEntries {
         if (-not $procPath) { continue }
         if (($procPath -ine $expectedActiveDesktop) -and (-not $procPath.StartsWith($releasesPrefix, [StringComparison]::OrdinalIgnoreCase))) { continue }
         $cmdLine = if ($cmdByPid.ContainsKey([int]$proc.Id)) { $cmdByPid[[int]$proc.Id] } else { '' }
-        if (Test-IsElectronServerCommandLine $cmdLine) { continue }
+        if ((Test-IsElectronServerCommandLine $cmdLine) -or (Test-IsChromiumSubprocessCommandLine $cmdLine) -or (Test-IsElectronBackendHelperCommandLine $cmdLine)) { continue }
         $shellHome = Get-ShellHomeFromCommandLine $cmdLine $homePath
         $entries += [pscustomobject]@{
             process = $proc
@@ -1521,9 +1532,14 @@ function Test-InstalledRelease([string]$ReleaseId) {
         if (-not (Test-Path -LiteralPath $desktopPath -PathType Leaf)) { return $false }
         $schema = Get-DirectoryReleaseSchemaVersion $path
         if ($schema -eq 2) {
-            $serverEntryPath = Join-Path $path 'server-entry.mjs'
-            $nativeAddonsPath = Join-Path $path 'native-addons.json'
+            $v2 = Resolve-V2Layout $path
+            if ($null -eq $v2) { return $false }
+            $serverEntryPath = Join-Path $path $v2.ServerEntryRel
+            $nativeAddonsPath = Join-Path $path $v2.NativeAddonsRel
             if (-not (Test-Path -LiteralPath $serverEntryPath -PathType Leaf) -or -not (Test-Path -LiteralPath $nativeAddonsPath -PathType Leaf)) {
+                return $false
+            }
+            if ($v2.IsUnpacked -and (-not (Test-Path -LiteralPath (Join-Path $path $v2.AppAsarRel) -PathType Leaf))) {
                 return $false
             }
             $desktop = Get-ArtifactInfo $desktopPath 'Installed Kiki GUI'
@@ -1548,19 +1564,28 @@ function Select-InstalledRelease([string]$ReleaseId, [string]$BuildId, [string]$
     $schema = Get-DirectoryReleaseSchemaVersion $path
     $desktop = Get-ArtifactInfo (Join-Path $path 'kiki-desktop.exe') "$Label Kiki GUI"
     if ($schema -eq 2) {
-        $serverEntry = Get-ArtifactInfo (Join-Path $path 'server-entry.mjs') "$Label Kiki server entry"
-        $nativeAddons = Get-ArtifactInfo (Join-Path $path 'native-addons.json') "$Label Kiki native addon manifest"
+        $v2 = Resolve-V2Layout $path
+        if ($null -eq $v2) {
+            throw "The $($Label.ToLowerInvariant()) release directory is missing v2 server-entry.mjs or native-addons.json."
+        }
+        $serverEntry = Get-ArtifactInfo (Join-Path $path $v2.ServerEntryRel) "$Label Kiki server entry"
+        $nativeAddons = Get-ArtifactInfo (Join-Path $path $v2.NativeAddonsRel) "$Label Kiki native addon manifest"
         if (('{0}-{1}' -f $desktop.Hash.Substring(0,24), $serverEntry.Hash.Substring(0,24)) -cne $ReleaseId) {
             throw "The $($Label.ToLowerInvariant()) binaries no longer match their installed release. Restore the release files before continuing."
         }
-        Write-AtomicUtf8Json (Join-Path $runtime 'current.json') ([ordered]@{
+        $manifestObj = [ordered]@{
             schemaVersion = 2; runtimeKind = 'electron-single-binary'; releaseId = $ReleaseId; gitSha = $BuildId; promotedAtUtc = [DateTime]::UtcNow.ToString('o')
-            files = [ordered]@{
-                'kiki-desktop.exe' = @{ sha256 = $desktop.Hash; bytes = $desktop.Length }
-                'server-entry.mjs' = @{ sha256 = $serverEntry.Hash; bytes = $serverEntry.Length }
-                'native-addons.json' = @{ sha256 = $nativeAddons.Hash; bytes = $nativeAddons.Length }
-            }
-        })
+        }
+        if ($v2.IsUnpacked) {
+            $manifestObj['serverEntry'] = $v2.ServerEntryPosix
+            $manifestObj['nativeAddons'] = $v2.NativeAddonsPosix
+        }
+        $manifestObj['files'] = [ordered]@{
+            'kiki-desktop.exe' = @{ sha256 = $desktop.Hash; bytes = $desktop.Length }
+            'server-entry.mjs' = @{ sha256 = $serverEntry.Hash; bytes = $serverEntry.Length }
+            'native-addons.json' = @{ sha256 = $nativeAddons.Hash; bytes = $nativeAddons.Length }
+        }
+        Write-AtomicUtf8Json (Join-Path $runtime 'current.json') $manifestObj
         if ($RequireActiveSync) {
             Sync-ActiveRelease $runtime $ReleaseId $BuildId $desktop $null -SchemaVersion 2 -ExpectedServerEntry $serverEntry -ExpectedNativeAddons $nativeAddons | Out-Null
         } else {

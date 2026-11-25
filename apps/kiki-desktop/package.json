@@ -3,6 +3,7 @@
   "version": "0.7.0",
   "private": true,
   "description": "Kiki Electron 44 desktop shell with detached kiki-server daemon supervisor",
+  "author": "EasyAgent",
   "homepage": "https://github.com/X-T-E-R/kiki/releases",
   "repository": {
     "type": "git",
@@ -20,11 +21,17 @@
   },
   "scripts": {
     "build": "tsdown --config tsdown.config.ts",
+    "stage:server": "node --max-old-space-size=8192 scripts/stage-server.mjs",
+    "package:dir": "node --max-old-space-size=8192 scripts/package-dir.mjs",
+    "write:receipt": "node scripts/write-build-receipt.mjs",
+    "smoke:node": "node scripts/smoke-packaged-node.mjs",
+    "smoke:home": "node scripts/smoke-sanitized-home.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "test:fast": "vitest run --config vitest.config.ts --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "verify:fuses": "node scripts/verify-fuses.mjs",
-    "clean": "node -e \"import('node:fs').then((fs) => fs.rmSync('dist', { recursive: true, force: true }))\""
+    "clean": "node -e \"import('node:fs').then((fs) => { fs.rmSync('dist', { recursive: true, force: true }); fs.rmSync('out', { recursive: true, force: true }); })\""
   },
   "dependencies": {
     "@kiki/kaos": "workspace:^",
@@ -38,24 +45,50 @@
   },
   "devDependencies": {
     "@electron/fuses": "2.1.3",
+    "@electron/rebuild": "^4.2.1",
     "@types/node": "^22.15.3",
+    "@types/ws": "^8.18.1",
     "electron": "44.10.1",
+    "electron-builder": "^26.18.0",
+    "playwright": "1.60.0",
     "tsdown": "0.22.0",
     "typescript": "6.0.2",
-    "vitest": "4.1.4"
+    "vitest": "4.1.4",
+    "ws": "^8.22.0"
   },
   "build": {
     "appId": "com.kiki.desktop",
     "productName": "Kiki",
+    "executableName": "kiki-desktop",
+    "npmRebuild": false,
+    "afterPack": "./scripts/after-pack.mjs",
+    "directories": {
+      "output": "out"
+    },
     "asar": true,
     "asarUnpack": [
-      "dist/server/**",
-      "**/*.node",
-      "**/node-pty/**"
+      "dist/server/**"
     ],
     "files": [
       "dist/**",
-      "package.json"
+      "package.json",
+      "!node_modules/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../kiki-gui/src-tauri/icons",
+        "to": "icons",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "X-T-E-R",
+        "repo": "kiki"
+      }
     ],
     "protocols": [
       {
@@ -67,10 +100,12 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
+      "icon": "../kiki-gui/src-tauri/icons/icon.icns",
       "hardenedRuntime": true,
       "gatekeeperAssess": false
     },
     "win": {
+      "icon": "../kiki-gui/src-tauri/icons/icon.ico",
       "target": [
         "nsis",
         "dir"
@@ -78,6 +113,7 @@
     },
     "linux": {
       "category": "Development",
+      "icon": "../kiki-gui/src-tauri/icons/icon.png",
       "target": [
         "AppImage",
         "deb"

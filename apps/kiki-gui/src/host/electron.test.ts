@@ -39,6 +39,7 @@ function createMockBridge() {
       setTheme: vi.fn(),
       setZoom: vi.fn(),
       getWindowMode: vi.fn(),
+      openModeWindow: vi.fn(),
     },
     pluginFocus: {
       read: vi.fn(),
@@ -482,6 +483,33 @@ describe('Electron host adapter', () => {
 
     vi.mocked(bridge.window.getWindowMode).mockResolvedValueOnce({ presetId: 'work', windowId: 'win-1' });
     await expect(host.windowMode()).resolves.toEqual({ presetId: 'work', windowId: 'win-1' });
+
+    await host.openModeWindow('research');
+    expect(bridge.window.openModeWindow).toHaveBeenCalledWith('research');
+
+    vi.mocked(bridge.desktop.createSpaceShortcut).mockResolvedValueOnce({
+      ok: false,
+      code: 'shortcut_exists',
+      message: 'A shortcut for this space already exists',
+    });
+    await expect(host.createSpaceShortcut('work')).rejects.toEqual({
+      code: 'shortcut_exists',
+      message: 'A shortcut for this space already exists',
+    });
+
+    vi.mocked(bridge.discoverConnection).mockResolvedValueOnce({
+      ok: false,
+      failure: {
+        message: 'Backend exited (code 1)',
+        stderrTail: ['FATAL: invalid port'],
+        logPath: 'C:/temp/logs/desktop-backend.log',
+      },
+    });
+    await expect(host.connection.discover()).rejects.toMatchObject({
+      message: 'Backend exited (code 1)',
+      stderrTail: ['FATAL: invalid port'],
+      logPath: 'C:/temp/logs/desktop-backend.log',
+    });
 
     vi.mocked(bridge.pluginFocus.read).mockResolvedValueOnce({
       homeId: 'space-a',

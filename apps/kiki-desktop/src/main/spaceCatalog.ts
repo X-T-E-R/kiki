@@ -18,7 +18,10 @@ export class SpaceCatalog {
     readonly defaultHome: string,
     initialSpace?: DesktopSpace,
   ) {
-    this.activeSpace = initialSpace ?? this.buildMainSpace();
+    this.activeSpace =
+      initialSpace !== undefined
+        ? { ...initialSpace, isPrimary: initialSpace.homeId === 'main' }
+        : this.buildMainSpace();
   }
 
   private buildMainSpace(): DesktopSpace {
@@ -32,6 +35,7 @@ export class SpaceCatalog {
       path: this.mainHome,
       baseHome: null,
       credentialsShared: true,
+      isPrimary: true,
     };
   }
 
@@ -40,7 +44,7 @@ export class SpaceCatalog {
   }
 
   setActiveSpace(space: DesktopSpace): void {
-    this.activeSpace = space;
+    this.activeSpace = { ...space, isPrimary: space.homeId === 'main' };
   }
 
   async findSpace(homeId: string): Promise<DesktopSpace> {
@@ -71,6 +75,6 @@ export class SpaceCatalog {
     ) {
       throw new Error('Space identity or base changed since registration');
     }
-    return space;
+    return { ...space, isPrimary: false };
   }
 }

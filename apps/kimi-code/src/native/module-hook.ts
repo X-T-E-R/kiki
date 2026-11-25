@@ -3,19 +3,41 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { getNativePackageRoot, getSeaAssetSource } from './native-assets';
+import { getBundledDiskAssetManifest, getNativePackageRoot, getSeaAssetSource } from './native-assets';
 import { loadNativePackage } from './native-require';
 
 type ModuleLoad = (request: string, parent: unknown, isMain: boolean) => unknown;
 
+interface ModuleResolveResult {
+  readonly url: string;
+  readonly shortCircuit?: boolean;
+}
+
+type ModuleResolveNext = (specifier: string, context: unknown) => ModuleResolveResult;
+
 interface ModuleWithLoad {
   _load?: ModuleLoad;
+  registerHooks?: (hooks: {
+    resolve?: (
+      specifier: string,
+      context: unknown,
+      nextResolve: ModuleResolveNext,
+    ) => ModuleResolveResult;
+  }) => unknown;
 }
+
+const NATIVE_HOOK_SPECIFIERS = new Set([
+  '@napi-rs/keyring',
+  '@mariozechner/clipboard',
+  'node-pty',
+  '@kiki/auth-native',
+]);
 
 const nodeRequire = createRequire(import.meta.url);
 let installed = false;
 const loadingPackages = new Set<string>();
 const loadedPackages = new Map<string, unknown>();
+const esmWrapperUrls = new Map<string, string>();
 
 // pi-tui loads its platform-specific native helpers via an absolute-path
 // require() computed from import.meta.url / process.execPath
@@ -42,8 +64,9 @@ export function installNativeModuleHook(): void {
     isMain: boolean,
   ): unknown {
     if (
-      (request === '@napi-rs/keyring' || request === 'node-pty' || request === '@kiki/auth-native') &&
-      !loadingPackages.has(request) && getSeaAssetSource() !== null
+      NATIVE_HOOK_SPECIFIERS.has(request) &&
+      !loadingPackages.has(request) &&
+      (getSeaAssetSource() !== null || getBundledDiskAssetManifest() !== null)
     ) {
       if (loadedPackages.has(request)) return loadedPackages.get(request);
       loadingPackages.add(request);
@@ -78,4 +101,39 @@ export function installNativeModuleHook(): void {
     }
     return originalLoad.call(this, request, parent, isMain);
   };
+
+  if (typeof moduleBuiltin.registerHooks === 'function') {
+    const anchorUrl = import.meta.url;
+    moduleBuiltin.registerHooks({
+      resolve(specifier, context, nextResolve) {
+        if (
+          NATIVE_HOOK_SPECIFIERS.has(specifier) &&
+          (getSeaAssetSource() !== null || getBundledDiskAssetManifest() !== null)
+        ) {
+          let dataUrl = esmWrapperUrls.get(specifier);
+          if (dataUrl === undefined) {
+            const pkg = nodeRequire(specifier) as Record<string, unknown>;
+            const exportKeys =
+              pkg !== null && typeof pkg === 'object'
+                ? Object.keys(pkg).filter(
+                    (key) => key !== 'default' && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key),
+                  )
+                : [];
+            const wrapperSource = [
+              'import { createRequire } from "node:module";',
+              `const mod = createRequire(${JSON.stringify(anchorUrl)})(${JSON.stringify(specifier)});`,
+              ...exportKeys.map(
+                (key) => `export const ${key} = mod[${JSON.stringify(key)}];`,
+              ),
+              'export default mod;',
+            ].join('\n');
+            dataUrl = `data:text/javascript;charset=utf-8,${encodeURIComponent(wrapperSource)}`;
+            esmWrapperUrls.set(specifier, dataUrl);
+          }
+          return { url: dataUrl, shortCircuit: true };
+        }
+        return nextResolve(specifier, context);
+      },
+    });
+  }
 }

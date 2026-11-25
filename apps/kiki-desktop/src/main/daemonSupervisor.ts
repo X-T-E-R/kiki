@@ -1,7 +1,7 @@
 import { spawn, type SpawnOptions } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { closeSync } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { closeSync, existsSync } from 'node:fs';
+import { mkdir, open, readdir, readFile, stat, unlink } from 'node:fs/promises';
 import { totalmem } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'pathe';
@@ -15,13 +15,21 @@ import {
   desktopSshResumeResponseSchema,
   type DesktopSshResolvedConnection,
 } from '@kiki/protocol';
+import { canonicalHomeKey } from '#/main/launchArgs';
 import { ELECTRON_RUN_AS_NODE_ENV, filterGuiChildEnv } from '#/main/releaseRedirect';
-import { openDetachedBackendLogFd } from '#/main/rotatingLog';
+import {
+  desktopBackendLogPath,
+  openDetachedBackendLogFd,
+  readBackendLogTail,
+} from '#/main/rotatingLog';
 import type {
   BackendStagePayload,
   ConnectionConfig,
+  DesktopFailureKind,
+  DesktopFailurePayload,
   DesktopLogLevel,
   DesktopSpaceStatus,
+  DiscoverConnectionEnvelope,
   LocalConnection,
   LocalSpaceSummary,
   PluginFocusIntent,
@@ -33,6 +41,9 @@ const DEFAULT_STARTUP_TIMEOUT_MS = 120_000;
 const DEFAULT_POLL_INTERVAL_MS = 200;
 const DEFAULT_HTTP_TIMEOUT_MS = 10_000;
 const HEARTBEAT_FRESHNESS_MS = 60_000;
+const ENSURE_LOCK_STALE_MS = 30_000;
+const RECOVERY_MAX_ATTEMPTS = 3;
+const RECOVERY_STABLE_WINDOW_MS = 60_000;
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
@@ -87,6 +98,7 @@ export interface SpawnedDaemonChild {
   kill(signal?: NodeJS.Signals | number): boolean;
   on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
   on(event: 'error', listener: (error: Error) => void): unknown;
+  off?(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
 }
 
 export interface DaemonRuntimeDescriptor {
@@ -106,18 +118,25 @@ export interface DaemonSupervisorDeps {
   readonly isPidAlive?: (pid: number) => boolean;
   readonly openLogFd?: (homeDir: string) => { readonly path: string; readonly fd: number };
   readonly closeFd?: (fd: number) => void;
+  readonly readLogTail?: (homeDir: string) => Promise<readonly string[]>;
   readonly now?: () => number;
   readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   readonly totalMemoryBytes?: () => number;
   readonly startupTimeoutMs?: number;
   readonly pollIntervalMs?: number;
   readonly baseEnv?: NodeJS.ProcessEnv;
+  readonly autoRecoverManagedExit?: boolean;
 }
 
 export interface StopManagedDaemonResult {
   readonly stopped: boolean;
   readonly reason: 'stopped' | 'not-running' | 'external' | 'pending-work';
   readonly pendingWork?: readonly string[];
+}
+
+interface EnsureLease {
+  transferTo(pid: number): Promise<void>;
+  retain(): void;
 }
 
 export function computeDaemonHeapMb(totalMemoryBytes: number): number {
@@ -164,10 +183,10 @@ export function buildDaemonSpawnEnv(
   if (descriptor.oauthHomeDir !== undefined) {
     cleanEnv['KIKI_DESKTOP_OAUTH_HOME'] = descriptor.oauthHomeDir;
   }
-  if (descriptor.buildId !== undefined) {
+  if (descriptor.buildId !== undefined && descriptor.buildId !== '') {
     cleanEnv['KIKI_BUILD_ID'] = descriptor.buildId;
   }
-  if (descriptor.buildChannel !== undefined) {
+  if (descriptor.buildChannel !== undefined && descriptor.buildChannel !== '') {
     cleanEnv['KIKI_BUILD_CHANNEL'] = descriptor.buildChannel;
   }
   return cleanEnv;
@@ -199,19 +218,27 @@ export class DaemonSupervisor extends EventEmitter {
   private readonly isPidAlive: (pid: number) => boolean;
   private readonly openLogFd: NonNullable<DaemonSupervisorDeps['openLogFd']>;
   private readonly closeFd: (fd: number) => void;
+  private readonly readLogTail: NonNullable<DaemonSupervisorDeps['readLogTail']>;
   private readonly now: () => number;
   private readonly sleep: NonNullable<DaemonSupervisorDeps['sleep']>;
   private readonly totalMemoryBytes: () => number;
   private readonly startupTimeoutMs: number;
   private readonly pollIntervalMs: number;
   private readonly baseEnv: NodeJS.ProcessEnv;
+  private readonly autoRecoverManagedExit: boolean;
 
   private descriptor: DaemonRuntimeDescriptor;
   private attached: VerifiedBackend | null = null;
   private discoveryFlight: Promise<LocalConnection> | null = null;
   private startupAbort: AbortController | null = null;
   private preReadyChild: SpawnedDaemonChild | null = null;
+  private readonly cancelledChildren = new WeakSet<SpawnedDaemonChild>();
   private stagedScopeHandoff: { profile: SshProfile; connection: SshResolvedConnection } | null = null;
+  private intentionalStopCount = 0;
+  private detachedFromUi = false;
+  private recoveryAttempts = 0;
+  private lastReadyAt = 0;
+  private recoveryInFlight: Promise<void> | null = null;
 
   constructor(descriptor: DaemonRuntimeDescriptor, deps: DaemonSupervisorDeps = {}) {
     super();
@@ -221,12 +248,14 @@ export class DaemonSupervisor extends EventEmitter {
     this.isPidAlive = deps.isPidAlive ?? defaultIsPidAlive;
     this.openLogFd = deps.openLogFd ?? openDetachedBackendLogFd;
     this.closeFd = deps.closeFd ?? closeSync;
+    this.readLogTail = deps.readLogTail ?? ((homeDir) => readBackendLogTail(homeDir, 100));
     this.now = deps.now ?? Date.now;
     this.sleep = deps.sleep ?? defaultSleep;
     this.totalMemoryBytes = deps.totalMemoryBytes ?? totalmem;
     this.startupTimeoutMs = deps.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
     this.pollIntervalMs = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.baseEnv = deps.baseEnv ?? process.env;
+    this.autoRecoverManagedExit = deps.autoRecoverManagedExit ?? false;
   }
 
   get activeHomeDir(): string {
@@ -241,10 +270,24 @@ export class DaemonSupervisor extends EventEmitter {
     return this.attached?.managed === true;
   }
 
+  private isActiveHome(homeDir: string): boolean {
+    return canonicalHomeKey(homeDir) === canonicalHomeKey(this.descriptor.homeDir);
+  }
+
   setTargetHome(homeDir: string, oauthHomeDir?: string): void {
-    if (this.descriptor.homeDir === homeDir) return;
-    this.descriptor = { ...this.descriptor, homeDir, oauthHomeDir };
+    if (this.isActiveHome(homeDir)) return;
+    this.discoveryFlight?.catch(() => undefined);
+    this.startupAbort?.abort(new Error('A newer space switch replaced this request'));
+    this.startupAbort = null;
+    this.discoveryFlight = null;
+    this.descriptor = {
+      ...this.descriptor,
+      homeDir,
+      oauthHomeDir: oauthHomeDir ?? this.descriptor.oauthHomeDir,
+    };
     this.attached = null;
+    this.recoveryAttempts = 0;
+    this.lastReadyAt = 0;
   }
 
   onBackendStage(listener: (payload: BackendStagePayload) => void): () => void {
@@ -254,8 +297,29 @@ export class DaemonSupervisor extends EventEmitter {
     };
   }
 
-  private emitStage(stage: BackendStagePayload['stage'], message?: string): void {
-    this.emit('stage', { stage, message, homeId: this.attached?.homeId } satisfies BackendStagePayload);
+  private emitStagePayload(payload: BackendStagePayload): void {
+    this.emit('stage', payload);
+  }
+
+  private async buildFailurePayload(
+    homeDir: string,
+    error: unknown,
+    kind?: DesktopFailureKind,
+  ): Promise<DesktopFailurePayload> {
+    const baseMessage = error instanceof Error ? error.message : String(error);
+    const stderrTail = await this.readLogTail(homeDir).catch(() => []);
+    const candidateLogPath = desktopBackendLogPath(homeDir);
+    const logPath = existsSync(candidateLogPath) || stderrTail.length > 0 ? candidateLogPath : null;
+    const message =
+      stderrTail.length > 0 && !baseMessage.includes('stderr (last ')
+        ? `${baseMessage}\nstderr (last ${stderrTail.length} lines):\n${stderrTail.join('\n')}`
+        : baseMessage;
+    return {
+      ...(kind !== undefined ? { kind } : {}),
+      message,
+      stderrTail,
+      logPath,
+    };
   }
 
   private async readOwnerToken(homeDir: string): Promise<string | null> {
@@ -319,7 +383,7 @@ export class DaemonSupervisor extends EventEmitter {
       const data = parsed.data.data;
       const serverId = data.server_id ?? data.serverId ?? '';
       const homeId = data.current_space_id ?? data.home_id ?? data.homeId ?? 'main';
-      if (this.descriptor.buildId !== undefined) {
+      if (this.descriptor.buildId !== undefined && this.descriptor.buildId !== '') {
         const reportedBuild = data.build_id ?? data.buildId;
         if (reportedBuild !== null && reportedBuild !== undefined && reportedBuild !== this.descriptor.buildId) {
           return null;
@@ -340,14 +404,21 @@ export class DaemonSupervisor extends EventEmitter {
     homeDir: string,
     signal?: AbortSignal,
   ): Promise<VerifiedBackend | null> {
-    if (homeDir === this.descriptor.homeDir && this.attached !== null) {
-      const port = Number(new URL(this.attached.config.url).port);
-      const verified = await this.verifyEndpoint(port, this.attached.config.token, signal);
-      if (verified !== null) {
-        this.attached = verified;
-        return verified;
+    if (this.isActiveHome(homeDir) && this.attached !== null) {
+      const parsedUrl = URL.parse(this.attached.config.url);
+      const port = parsedUrl !== null ? Number(parsedUrl.port) : 0;
+      if (port > 0) {
+        const verified = await this.verifyEndpoint(port, this.attached.config.token, signal);
+        if (verified !== null) {
+          if (this.isActiveHome(homeDir)) {
+            this.attached = verified;
+          }
+          return verified;
+        }
       }
-      this.attached = null;
+      if (this.isActiveHome(homeDir)) {
+        this.attached = null;
+      }
     }
     const token = await this.readOwnerToken(homeDir);
     if (token === null) return null;
@@ -355,13 +426,135 @@ export class DaemonSupervisor extends EventEmitter {
     for (const record of records) {
       const verified = await this.verifyEndpoint(record.port, token, signal);
       if (verified !== null) {
-        if (homeDir === this.descriptor.homeDir) {
+        if (this.isActiveHome(homeDir)) {
           this.attached = verified;
         }
         return verified;
       }
     }
     return null;
+  }
+
+  private async withEnsureLock<T>(
+    homeDir: string,
+    work: (lease: EnsureLease) => Promise<T>,
+    signal: AbortSignal,
+    onWait: () => Promise<T | null>,
+  ): Promise<T> {
+    const serverDir = join(homeDir, 'server');
+    const lockPath = join(serverDir, 'ensure.lock');
+    await mkdir(serverDir, { recursive: true });
+    const deadline = this.now() + this.startupTimeoutMs;
+
+    for (;;) {
+      if (signal.aborted) {
+        throw signal.reason instanceof Error
+          ? signal.reason
+          : new Error('Desktop daemon startup was cancelled');
+      }
+      if (this.now() >= deadline) {
+        throw new Error(
+          'This space is still starting or updating. Keep its owner running and retry when it finishes; its lifecycle lock was not removed.',
+        );
+      }
+
+      let handle;
+      try {
+        handle = await open(lockPath, 'wx');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        const ready = await onWait();
+        if (signal.aborted) {
+          throw signal.reason instanceof Error
+            ? signal.reason
+            : new Error('Desktop daemon startup was cancelled');
+        }
+        if (ready !== null) return ready;
+
+        let info;
+        try {
+          info = await stat(lockPath);
+        } catch (statError) {
+          if ((statError as NodeJS.ErrnoException).code === 'ENOENT') continue;
+          throw statError;
+        }
+
+        const ownerText = (await readFile(lockPath, 'utf8').catch(() => '')).trim();
+        const ownerPid = Number(ownerText);
+        const ownerAlive =
+          Number.isInteger(ownerPid) && ownerPid > 0 ? this.isPidAlive(ownerPid) : false;
+
+        if (
+          !ownerAlive &&
+          (ownerPid > 0 || this.now() - info.mtimeMs >= ENSURE_LOCK_STALE_MS) &&
+          (await readFile(lockPath, 'utf8').catch(() => '')).trim() === ownerText
+        ) {
+          await unlink(lockPath).catch(() => undefined);
+        } else {
+          await this.sleep(Math.min(100, this.pollIntervalMs), signal);
+        }
+        continue;
+      }
+
+      let owner = String(process.pid);
+      let release = true;
+      try {
+        await handle.writeFile(owner);
+        await handle.close();
+        return await work({
+          transferTo: async (pid: number) => {
+            if (!Number.isSafeInteger(pid) || pid <= 0) {
+              throw new Error('The starting server has no valid PID');
+            }
+            if ((await readFile(lockPath, 'utf8').catch(() => '')).trim() !== owner) {
+              throw new Error('The service startup lease changed ownership');
+            }
+            const leaseHandle = await open(lockPath, 'r+');
+            try {
+              await leaseHandle.truncate(0);
+              await leaseHandle.write(String(pid), 0, 'utf8');
+              owner = String(pid);
+            } finally {
+              await leaseHandle.close();
+            }
+          },
+          retain: () => {
+            release = false;
+          },
+        });
+      } finally {
+        await handle.close().catch(() => undefined);
+        if (release && (await readFile(lockPath, 'utf8').catch(() => '')).trim() === owner) {
+          await unlink(lockPath).catch(() => undefined);
+        }
+      }
+    }
+  }
+
+  private async stopUnreadyChild(child: SpawnedDaemonChild): Promise<boolean> {
+    if (child.pid === undefined || !this.isPidAlive(child.pid)) return true;
+    let resolvedExit = false;
+    const exitPromise = new Promise<boolean>((resolve) => {
+      const onExit = (): void => {
+        resolvedExit = true;
+        resolve(true);
+      };
+      child.on('exit', onExit);
+    });
+    if (!this.cancelledChildren.has(child)) {
+      this.cancelledChildren.add(child);
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        return !this.isPidAlive(child.pid);
+      }
+    }
+    if (resolvedExit || !this.isPidAlive(child.pid)) return true;
+    const exited = await Promise.race([
+      exitPromise,
+      this.sleep(Math.min(2_000, this.pollIntervalMs * 10)).then(() => !this.isPidAlive(child.pid!)),
+    ]);
+    return exited;
   }
 
   /**
@@ -374,9 +567,13 @@ export class DaemonSupervisor extends EventEmitter {
 
   async discoverConnection(): Promise<LocalConnection> {
     if (this.discoveryFlight !== null) return this.discoveryFlight;
+    this.detachedFromUi = false;
     const abort = new AbortController();
     this.startupAbort = abort;
-    const flight = this.resolveConnection(abort.signal).finally(() => {
+    const flight = this.ensureDaemonForHome(this.descriptor.homeDir, {
+      active: true,
+      signal: abort.signal,
+    }).finally(() => {
       if (this.discoveryFlight === flight) this.discoveryFlight = null;
       if (this.startupAbort === abort) this.startupAbort = null;
     });
@@ -384,114 +581,319 @@ export class DaemonSupervisor extends EventEmitter {
     return flight;
   }
 
-  private async resolveConnection(signal: AbortSignal): Promise<LocalConnection> {
-    this.emitStage('checking');
-    const existing = await this.attachIfRunning(signal);
-    if (existing !== null) {
-      this.emitStage('ready');
-      return existing;
-    }
-
-    this.emitStage('starting');
-    const logLevel = this.descriptor.logLevel ?? 'warn';
-    const idleExit = this.descriptor.idleExit === true ? '30m' : '0ms';
-    const args = [
-      this.descriptor.serverEntry,
-      'serve',
-      '--port',
-      '0',
-      '--log-level',
-      logLevel,
-      '--idle-exit',
-      idleExit,
-    ];
-    const env = buildDaemonSpawnEnv(this.descriptor, this.baseEnv, this.totalMemoryBytes());
-
-    let logFd: number | undefined;
+  async discoverConnectionEnvelope(): Promise<DiscoverConnectionEnvelope> {
     try {
-      logFd = this.openLogFd(this.descriptor.homeDir).fd;
-    } catch {
-      logFd = undefined;
-    }
-
-    const childStatus: {
-      exited: { readonly code: number | null; readonly signal: NodeJS.Signals | null } | null;
-      spawnError: Error | null;
-    } = { exited: null, spawnError: null };
-
-    const child = this.spawnFn(this.descriptor.electronBinary, args, {
-      env,
-      detached: true,
-      windowsHide: true,
-      stdio: logFd !== undefined ? ['ignore', logFd, logFd] : 'ignore',
-    });
-    if (logFd !== undefined) {
-      this.closeFd(logFd);
-    }
-
-    this.preReadyChild = child;
-    child.on('exit', (code, exitSignal) => {
-      childStatus.exited = { code, signal: exitSignal };
-      if (this.preReadyChild === child) this.preReadyChild = null;
-    });
-    child.on('error', (error) => {
-      childStatus.spawnError = error;
-      if (this.preReadyChild === child) this.preReadyChild = null;
-    });
-
-    const deadline = this.now() + this.startupTimeoutMs;
-    try {
-      while (this.now() < deadline) {
-        if (signal.aborted) {
-          throw new Error('Desktop daemon startup was cancelled');
-        }
-        if (childStatus.spawnError !== null) {
-          throw new Error(`Cannot start Kiki backend: ${childStatus.spawnError.message}`);
-        }
-        if (childStatus.exited !== null) {
-          throw new Error(
-            `Kiki backend exited during startup (code ${String(childStatus.exited.code)}, signal ${String(childStatus.exited.signal)})`,
-          );
-        }
-
-        const token = await this.readOwnerToken(this.descriptor.homeDir);
-        if (token !== null) {
-          const records = await this.readLiveInstanceRecords(this.descriptor.homeDir);
-          const matching =
-            child.pid !== undefined ? records.filter((record) => record.pid === child.pid) : records;
-          for (const record of matching) {
-            const verified = await this.verifyEndpoint(record.port, token, signal);
-            if (verified !== null) {
-              // Ready is the ownership boundary: unref the detached daemon so
-              // closing the desktop window leaves the shared daemon alive.
-              this.preReadyChild = null;
-              child.unref();
-              this.attached = verified;
-              this.emitStage('ready');
-              return { config: verified.config, persist: false };
-            }
-          }
-        }
-        await this.sleep(this.pollIntervalMs, signal);
-      }
-      throw new Error(`Kiki backend did not become ready within ${Math.round(this.startupTimeoutMs / 1000)}s`);
+      const connection = await this.discoverConnection();
+      return { ok: true, connection };
     } catch (error) {
-      if (this.preReadyChild === child) {
-        this.preReadyChild = null;
-        try {
-          child.kill('SIGTERM');
-        } catch {
-          // Best-effort pre-ready termination only.
-        }
+      if (
+        error !== null &&
+        typeof error === 'object' &&
+        'stderrTail' in error &&
+        'logPath' in error &&
+        'message' in error &&
+        typeof (error as { message: unknown }).message === 'string'
+      ) {
+        const enriched = error as DesktopFailurePayload;
+        return {
+          ok: false,
+          failure: {
+            ...(enriched.kind !== undefined ? { kind: enriched.kind } : {}),
+            message: enriched.message,
+            stderrTail: enriched.stderrTail,
+            logPath: enriched.logPath,
+          },
+        };
       }
+      const failure = await this.buildFailurePayload(this.descriptor.homeDir, error);
+      return { ok: false, failure };
+    }
+  }
+
+  private async ensureDaemonForHome(
+    homeDir: string,
+    options: {
+      readonly active: boolean;
+      readonly signal: AbortSignal;
+    },
+  ): Promise<LocalConnection> {
+    const { active, signal } = options;
+    if (active) {
+      this.emitStagePayload({ stage: 'checking' });
+    }
+
+    const existing = await this.discoverVerifiedForHome(homeDir, signal);
+    if (existing !== null) {
+      if (active && this.isActiveHome(homeDir)) {
+        this.attached = existing;
+        this.lastReadyAt = this.now();
+        this.emitStagePayload({
+          stage: 'ready',
+          connection: existing.config,
+          homeId: existing.homeId,
+        });
+      }
+      return { config: existing.config, persist: false };
+    }
+
+    try {
+      const verified = await this.withEnsureLock<VerifiedBackend>(
+        homeDir,
+        async (lease) => {
+          const raced = await this.discoverVerifiedForHome(homeDir, signal);
+          if (raced !== null) return raced;
+
+          if (active) {
+            this.emitStagePayload('waiting');
+          }
+
+          const drainDeadline = this.now() + this.startupTimeoutMs;
+          while ((await this.readLiveInstanceRecords(homeDir)).length > 0) {
+            if (signal.aborted) {
+              throw signal.reason instanceof Error
+                ? signal.reason
+                : new Error('Desktop daemon startup was cancelled');
+            }
+            const recovered = await this.discoverVerifiedForHome(homeDir, signal);
+            if (recovered !== null) return recovered;
+            if (this.now() >= drainDeadline) {
+              throw new Error(
+                'A live Kiki service in this home is still draining or unreachable. Retry after it stops; no second service was started.',
+              );
+            }
+            await this.sleep(this.pollIntervalMs, signal);
+          }
+
+          if (active) {
+            this.emitStagePayload({ stage: 'starting' });
+            this.emitStagePayload('waiting');
+          }
+
+          const targetDescriptor: DaemonRuntimeDescriptor = this.isActiveHome(homeDir)
+            ? this.descriptor
+            : {
+                ...this.descriptor,
+                homeDir,
+                idleExit: true,
+              };
+          const logLevel = targetDescriptor.logLevel ?? 'warn';
+          const idleExit = targetDescriptor.idleExit === true ? '30m' : '0ms';
+          const totalMem = this.totalMemoryBytes();
+          const heapArg = `--max-old-space-size=${computeDaemonHeapMb(totalMem)}`;
+          const args = [
+            heapArg,
+            targetDescriptor.serverEntry,
+            'serve',
+            '--port',
+            '0',
+            '--log-level',
+            logLevel,
+            '--idle-exit',
+            idleExit,
+          ];
+          const env = buildDaemonSpawnEnv(targetDescriptor, this.baseEnv, totalMem);
+
+          let logFd: number | undefined;
+          try {
+            logFd = this.openLogFd(homeDir).fd;
+          } catch {
+            logFd = undefined;
+          }
+
+          const childStatus: {
+            exited: { readonly code: number | null; readonly signal: NodeJS.Signals | null } | null;
+            spawnError: Error | null;
+          } = { exited: null, spawnError: null };
+
+          const child = this.spawnFn(targetDescriptor.electronBinary, args, {
+            env,
+            detached: true,
+            windowsHide: true,
+            stdio: logFd !== undefined ? ['ignore', logFd, logFd] : 'ignore',
+          });
+          if (logFd !== undefined) {
+            this.closeFd(logFd);
+          }
+
+          if (active) {
+            this.preReadyChild = child;
+          }
+          child.on('exit', (code, exitSignal) => {
+            childStatus.exited = { code, signal: exitSignal };
+            if (active && this.preReadyChild === child) {
+              this.preReadyChild = null;
+            }
+          });
+          child.on('error', (error) => {
+            childStatus.spawnError = error;
+            if (active && this.preReadyChild === child) {
+              this.preReadyChild = null;
+            }
+          });
+
+          let becameReady = false;
+          try {
+            if (child.pid !== undefined && child.pid > 0) {
+              await lease.transferTo(child.pid);
+            }
+
+            const deadline = this.now() + this.startupTimeoutMs;
+            while (this.now() < deadline) {
+              if (signal.aborted) {
+                throw new Error('Desktop daemon startup was cancelled');
+              }
+              if (childStatus.spawnError !== null) {
+                throw new Error(`Cannot start Kiki backend: ${childStatus.spawnError.message}`);
+              }
+              if (childStatus.exited !== null) {
+                throw new Error(
+                  `Kiki backend exited during startup (code ${String(childStatus.exited.code)}, signal ${String(childStatus.exited.signal)})`,
+                );
+              }
+
+              const token = await this.readOwnerToken(homeDir);
+              if (token !== null) {
+                const records = await this.readLiveInstanceRecords(homeDir);
+                const matching =
+                  child.pid !== undefined
+                    ? records.filter((record) => record.pid === child.pid)
+                    : records;
+                for (const record of matching) {
+                  const candidate = await this.verifyEndpoint(record.port, token, signal);
+                  if (candidate !== null) {
+                    becameReady = true;
+                    if (active && this.preReadyChild === child) {
+                      this.preReadyChild = null;
+                    }
+                    child.unref();
+                    if (active && this.autoRecoverManagedExit) {
+                      this.attachRuntimeExitWatcher(child, homeDir, candidate.serverId);
+                    }
+                    return candidate;
+                  }
+                }
+              }
+
+              await this.sleep(this.pollIntervalMs, signal);
+            }
+
+            throw new Error(
+              `Kiki backend did not become ready within ${Math.round(this.startupTimeoutMs / 1000)}s`,
+            );
+          } catch (spawnAttemptError) {
+            if (!becameReady) {
+              if (active && this.preReadyChild === child) {
+                this.preReadyChild = null;
+              }
+              const stopped = await this.stopUnreadyChild(child);
+              if (!stopped) {
+                lease.retain();
+              }
+            }
+            throw spawnAttemptError;
+          }
+        },
+        signal,
+        () => this.discoverVerifiedForHome(homeDir, signal),
+      );
+
+      if (active && this.isActiveHome(homeDir)) {
+        this.attached = verified;
+        this.lastReadyAt = this.now();
+        this.emitStagePayload({
+          stage: 'ready',
+          connection: verified.config,
+          homeId: verified.homeId,
+        });
+      }
+      return { config: verified.config, persist: false };
+    } catch (error) {
       const normalizedError =
         signal.aborted && signal.reason instanceof Error ? signal.reason : error;
-      this.emitStage(
-        'failed',
-        normalizedError instanceof Error ? normalizedError.message : String(normalizedError),
-      );
+      if (active && this.isActiveHome(homeDir)) {
+        const failure = await this.buildFailurePayload(homeDir, normalizedError);
+        this.emitStagePayload({
+          stage: 'failed',
+          message: failure.message,
+          failure,
+          homeId: this.attached?.homeId,
+        });
+        throw Object.assign(
+          normalizedError instanceof Error ? normalizedError : new Error(failure.message),
+          failure,
+        );
+      }
       throw normalizedError;
     }
+  }
+
+  private attachRuntimeExitWatcher(
+    child: SpawnedDaemonChild,
+    homeDir: string,
+    serverId: string,
+  ): void {
+    child.on('exit', () => {
+      if (this.detachedFromUi || this.intentionalStopCount > 0) return;
+      if (!this.isActiveHome(homeDir)) return;
+      if (this.attached !== null && this.attached.serverId !== serverId) return;
+      this.attached = null;
+      void this.triggerManagedRecovery('unexpected_exit');
+    });
+  }
+
+  async checkHealthAndRecoverIfNeeded(): Promise<void> {
+    if (this.detachedFromUi || this.intentionalStopCount > 0 || this.discoveryFlight !== null) return;
+    if (this.attached === null || !this.attached.managed) return;
+    const parsedUrl = URL.parse(this.attached.config.url);
+    const port = parsedUrl !== null ? Number(parsedUrl.port) : 0;
+    if (port <= 0) return;
+    const healthy = await this.verifyEndpoint(port, this.attached.config.token);
+    if (healthy !== null) {
+      this.attached = healthy;
+      if (this.lastReadyAt > 0 && this.now() - this.lastReadyAt >= RECOVERY_STABLE_WINDOW_MS) {
+        this.recoveryAttempts = 0;
+      }
+      return;
+    }
+    this.attached = null;
+    await this.triggerManagedRecovery('health_unreachable');
+  }
+
+  private async triggerManagedRecovery(reason: string): Promise<void> {
+    if (this.recoveryInFlight !== null) return this.recoveryInFlight;
+    const run = (async () => {
+      if (this.lastReadyAt > 0 && this.now() - this.lastReadyAt >= RECOVERY_STABLE_WINDOW_MS) {
+        this.recoveryAttempts = 0;
+      }
+      if (this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) {
+        const exhaustedError = new Error(
+          `Kiki backend stopped repeatedly (${reason}); automatic recovery paused after ${RECOVERY_MAX_ATTEMPTS} attempts.`,
+        );
+        const failure = await this.buildFailurePayload(
+          this.descriptor.homeDir,
+          exhaustedError,
+          'protocol',
+        );
+        this.emitStagePayload({
+          stage: 'failed',
+          message: failure.message,
+          failure,
+        });
+        return;
+      }
+      this.recoveryAttempts += 1;
+      try {
+        await this.discoverConnection();
+      } catch {
+        // Stage 'failed' has already been emitted by ensureDaemonForHome.
+      }
+    })().finally(() => {
+      if (this.recoveryInFlight === run) {
+        this.recoveryInFlight = null;
+      }
+    });
+    this.recoveryInFlight = run;
+    return run;
   }
 
   /**
@@ -502,7 +904,8 @@ export class DaemonSupervisor extends EventEmitter {
     const child = this.preReadyChild;
     this.preReadyChild = null;
     this.startupAbort?.abort(new Error('Desktop daemon startup was cancelled'));
-    if (child !== null) {
+    if (child !== null && !this.cancelledChildren.has(child)) {
+      this.cancelledChildren.add(child);
       try {
         child.kill('SIGTERM');
       } catch {
@@ -517,10 +920,12 @@ export class DaemonSupervisor extends EventEmitter {
    * Kills any unready startup child, but deliberately leaves a ready shared daemon running.
    */
   detachDesktop(): void {
+    this.detachedFromUi = true;
     const preReady = this.preReadyChild;
     this.preReadyChild = null;
     this.startupAbort?.abort(new Error('Desktop window closed during startup'));
-    if (preReady !== null) {
+    if (preReady !== null && !this.cancelledChildren.has(preReady)) {
+      this.cancelledChildren.add(preReady);
       try {
         preReady.kill('SIGTERM');
       } catch {
@@ -564,50 +969,51 @@ export class DaemonSupervisor extends EventEmitter {
       readonly interruptWork?: boolean;
     },
   ): Promise<StopManagedDaemonResult> {
-    const resolved = await this.readLifecycleStateForHome(homeDir);
-    if (resolved === null) {
-      return { stopped: false, reason: 'not-running' };
-    }
-    const { backend, state } = resolved;
-    if (!state.managed) {
-      return { stopped: false, reason: 'external' };
-    }
-    if (state.work_pending.length > 0 && options.interruptWork !== true) {
-      return {
-        stopped: false,
-        reason: 'pending-work',
-        pendingWork: state.work_pending,
-      };
-    }
+    this.intentionalStopCount += 1;
+    try {
+      const resolved = await this.readLifecycleStateForHome(homeDir);
+      if (resolved === null) {
+        return { stopped: false, reason: 'not-running' };
+      }
+      const { backend, state } = resolved;
+      if (!state.managed) {
+        return { stopped: false, reason: 'external' };
+      }
+      if (state.work_pending.length > 0 && options.interruptWork !== true) {
+        return {
+          stopped: false,
+          reason: 'pending-work',
+          pendingWork: state.work_pending,
+        };
+      }
 
-    const response = await this.fetchFn(`${backend.config.url}/api/desktop-lifecycle`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${backend.config.token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        action: options.action,
-        server_id: state.server_id,
-        consent: true,
-        interrupt_work: options.interruptWork === true,
-      }),
-      signal: AbortSignal.timeout(DEFAULT_HTTP_TIMEOUT_MS),
-    });
-    const payload = (await response.json()) as { code?: number; msg?: string };
-    if (!response.ok || payload.code !== 0) {
-      throw new Error(payload.msg ?? 'Failed to stop managed Kiki daemon');
+      const response = await this.fetchFn(`${backend.config.url}/api/desktop-lifecycle`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${backend.config.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: options.action,
+          server_id: state.server_id,
+          consent: true,
+          interrupt_work: options.interruptWork === true,
+        }),
+        signal: AbortSignal.timeout(DEFAULT_HTTP_TIMEOUT_MS),
+      });
+      const payload = (await response.json()) as { code?: number; msg?: string };
+      if (!response.ok || payload.code !== 0) {
+        throw new Error(payload.msg ?? 'Failed to stop managed Kiki daemon');
+      }
+      if (this.isActiveHome(homeDir)) {
+        this.attached = null;
+      }
+      return { stopped: true, reason: 'stopped' };
+    } finally {
+      this.intentionalStopCount = Math.max(0, this.intentionalStopCount - 1);
     }
-    if (homeDir === this.descriptor.homeDir) {
-      this.attached = null;
-    }
-    return { stopped: true, reason: 'stopped' };
   }
 
-  /**
-   * Stops ONLY a desktop-managed local daemon for the active home via kap-server's
-   * `/api/desktop-lifecycle` consent contract. Never kills externally managed or remote daemons.
-   */
   async stopManagedDaemon(options: {
     readonly action: 'quit' | 'restart' | 'update';
     readonly interruptWork?: boolean;
@@ -618,17 +1024,46 @@ export class DaemonSupervisor extends EventEmitter {
   async restartServer(interruptWork = false): Promise<LocalConnection> {
     const result = await this.stopManagedDaemon({ action: 'restart', interruptWork });
     if (result.reason === 'external') {
-      throw new Error('The connected Kiki daemon is externally managed; restart is unsupported from this desktop window');
+      throw new Error(
+        'The connected Kiki daemon is externally managed; restart is unsupported from this desktop window',
+      );
     }
     if (result.reason === 'pending-work') {
-      throw new Error('Some work is still settling; wait for its saved outcome before restarting this service');
+      throw new Error(
+        'Some work is still settling; wait for its saved outcome before restarting this service',
+      );
     }
+    this.recoveryAttempts = 0;
     return this.discoverConnection();
   }
 
+  /**
+   * Restarts ONLY `homeDir`'s daemon. When `homeDir` is a background sibling space,
+   * the active window's `descriptor.homeDir` and `attached` connection remain untouched.
+   */
   async restartSpace(homeDir: string, interruptWork = false): Promise<LocalConnection> {
-    this.setTargetHome(homeDir);
-    return this.restartServer(interruptWork);
+    if (this.isActiveHome(homeDir)) {
+      return this.restartServer(interruptWork);
+    }
+    const result = await this.stopManagedDaemonForHome(homeDir, {
+      action: 'restart',
+      interruptWork,
+    });
+    if (result.reason === 'external') {
+      throw new Error(
+        'The target space daemon is externally managed; restart is unsupported from this desktop window',
+      );
+    }
+    if (result.reason === 'pending-work') {
+      throw new Error(
+        'Some work in that space is still settling; wait for its saved outcome before restarting it',
+      );
+    }
+    const abort = new AbortController();
+    return this.ensureDaemonForHome(homeDir, {
+      active: false,
+      signal: abort.signal,
+    });
   }
 
   private async requestDesktopApi<T>(
@@ -785,6 +1220,9 @@ export class DaemonSupervisor extends EventEmitter {
       hot: entry.state !== 'offline',
       pendingCount: entry.needs_you_sessions,
       busyCount: entry.busy_sessions,
+      ...(entry.needs_you_session_ids !== undefined
+        ? { needsYouSessionIds: entry.needs_you_session_ids }
+        : {}),
     }));
 
     return { spaces, statuses };

@@ -30,7 +30,7 @@ import { composerInputElement, type ComposerInputHandle } from '../lib/composerI
 import { copyTextToClipboard } from '../lib/clipboard';
 import { isCoarsePointer } from '../lib/layoutHooks';
 import { runToastAction } from '../lib/toasts';
-import { pastedMediaType } from '../lib/pastedFiles';
+import { pastedMediaType } from '@kiki/session-core/composer';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 
 /** Whether the async Clipboard read API is present (secure context). */

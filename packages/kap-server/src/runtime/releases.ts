@@ -23,11 +23,16 @@ const releaseManifestV1Schema = z.object({
   rollbackVerifiedWith: z.array(releaseIdSchema).default([]),
   files: releaseFilesV1Schema,
 });
+const UNPACKED_SERVER_ENTRY_REL = 'resources/app.asar.unpacked/dist/server/server-entry.mjs';
+const UNPACKED_NATIVE_ADDONS_REL = 'resources/app.asar.unpacked/dist/server/native-addons.json';
+
 const releaseManifestV2Schema = z.object({
   schemaVersion: z.literal(2), runtimeKind: z.literal('electron-single-binary'),
   releaseId: releaseIdSchema, gitSha: z.string(), installedAt: z.string(),
   promotedAtUtc: z.string().optional(),
   serverVersion: z.string(), buildId: z.string().optional(), buildChannel: z.string().optional(),
+  serverEntry: z.string().min(1).optional(),
+  nativeAddons: z.string().min(1).optional(),
   rollbackVerifiedWith: z.array(releaseIdSchema).default([]),
   files: releaseFilesV2Schema,
 });
@@ -43,7 +48,10 @@ const currentManifestV2Schema = z.object({
   schemaVersion: z.literal(2), runtimeKind: z.literal('electron-single-binary'),
   releaseId: releaseIdSchema, gitSha: z.string(), promotedAtUtc: z.string(),
   installedAt: z.string().optional(), serverVersion: z.string().optional(), buildId: z.string().optional(),
-  buildChannel: z.string().optional(), rollbackVerifiedWith: z.array(releaseIdSchema).optional(),
+  buildChannel: z.string().optional(),
+  serverEntry: z.string().min(1).optional(),
+  nativeAddons: z.string().min(1).optional(),
+  rollbackVerifiedWith: z.array(releaseIdSchema).optional(),
   files: releaseFilesV2Schema,
 });
 const currentManifestSchema = z.discriminatedUnion('schemaVersion', [currentManifestV1Schema, currentManifestV2Schema]);
@@ -64,6 +72,36 @@ async function hashFile(filePath: string): Promise<{ sha256: string; bytes: numb
 
 type ManifestFiles = InstalledRuntimeRelease['files'];
 
+async function resolveV2ArtifactPaths(
+  releaseDir: string,
+  manifest?: { readonly serverEntry?: string; readonly nativeAddons?: string },
+): Promise<{ readonly serverEntryPath: string; readonly nativeAddonsPath: string; readonly unpackedLayout: boolean } | undefined> {
+  const unpackedEntry = join(releaseDir, UNPACKED_SERVER_ENTRY_REL);
+  const unpackedAddons = join(releaseDir, UNPACKED_NATIVE_ADDONS_REL);
+  if (manifest?.serverEntry !== undefined) {
+    const customEntry = join(releaseDir, manifest.serverEntry);
+    const customAddons = join(
+      releaseDir,
+      manifest.nativeAddons ??
+        (manifest.serverEntry === UNPACKED_SERVER_ENTRY_REL ? UNPACKED_NATIVE_ADDONS_REL : 'native-addons.json'),
+    );
+    return {
+      serverEntryPath: customEntry,
+      nativeAddonsPath: customAddons,
+      unpackedLayout: manifest.serverEntry === UNPACKED_SERVER_ENTRY_REL,
+    };
+  }
+  if ((await fileExists(unpackedEntry)) && (await fileExists(unpackedAddons))) {
+    return { serverEntryPath: unpackedEntry, nativeAddonsPath: unpackedAddons, unpackedLayout: true };
+  }
+  const flatEntry = join(releaseDir, 'server-entry.mjs');
+  const flatAddons = join(releaseDir, 'native-addons.json');
+  if ((await fileExists(flatEntry)) && (await fileExists(flatAddons))) {
+    return { serverEntryPath: flatEntry, nativeAddonsPath: flatAddons, unpackedLayout: false };
+  }
+  return undefined;
+}
+
 async function hashReleaseFiles(releaseDir: string, schemaVersion: 1 | 2): Promise<ManifestFiles> {
   if (schemaVersion === 1) {
     const [serverFile, desktopFile] = await Promise.all([
@@ -72,10 +110,13 @@ async function hashReleaseFiles(releaseDir: string, schemaVersion: 1 | 2): Promi
     ]);
     return { 'kiki-server.exe': serverFile, 'kiki-desktop.exe': desktopFile };
   }
+  const resolved = await resolveV2ArtifactPaths(releaseDir);
+  const entryPath = resolved?.serverEntryPath ?? join(releaseDir, 'server-entry.mjs');
+  const addonsPath = resolved?.nativeAddonsPath ?? join(releaseDir, 'native-addons.json');
   const [desktopFile, serverEntry, nativeAddons] = await Promise.all([
     hashFile(join(releaseDir, 'kiki-desktop.exe')),
-    hashFile(join(releaseDir, 'server-entry.mjs')),
-    hashFile(join(releaseDir, 'native-addons.json')),
+    hashFile(entryPath),
+    hashFile(addonsPath),
   ]);
   return { 'kiki-desktop.exe': desktopFile, 'server-entry.mjs': serverEntry, 'native-addons.json': nativeAddons };
 }
@@ -93,7 +134,13 @@ function manifestForCurrent(current: z.infer<typeof currentManifestSchema>, rele
     files: current.files,
   };
   if (current.schemaVersion === 2) {
-    return releaseManifestV2Schema.parse({ ...shared, schemaVersion: 2, runtimeKind: 'electron-single-binary' });
+    return releaseManifestV2Schema.parse({
+      ...shared,
+      schemaVersion: 2,
+      runtimeKind: 'electron-single-binary',
+      serverEntry: current.serverEntry,
+      nativeAddons: current.nativeAddons,
+    });
   }
   return releaseManifestV1Schema.parse({ ...shared, schemaVersion: 1 });
 }
@@ -120,12 +167,17 @@ async function fallbackInstalledRelease(root: string, releaseId: string): Promis
   }
   const timestamp = dirStat.mtime.toISOString();
   const shared = { releaseId, gitSha, installedAt: timestamp, promotedAtUtc: timestamp, serverVersion: getServerVersion(), rollbackVerifiedWith: [] as string[] };
-  const v2Layout = !(await fileExists(join(releaseDir, 'kiki-server.exe'))) &&
-    await fileExists(join(releaseDir, 'server-entry.mjs')) &&
-    await fileExists(join(releaseDir, 'native-addons.json'));
-  if (v2Layout) {
+  const v2Resolved = !(await fileExists(join(releaseDir, 'kiki-server.exe')))
+    ? await resolveV2ArtifactPaths(releaseDir)
+    : undefined;
+  if (v2Resolved !== undefined) {
     return releaseManifestV2Schema.parse({
-      ...shared, schemaVersion: 2, runtimeKind: 'electron-single-binary', files: await hashReleaseFiles(releaseDir, 2),
+      ...shared,
+      schemaVersion: 2,
+      runtimeKind: 'electron-single-binary',
+      serverEntry: v2Resolved.unpackedLayout ? UNPACKED_SERVER_ENTRY_REL : undefined,
+      nativeAddons: v2Resolved.unpackedLayout ? UNPACKED_NATIVE_ADDONS_REL : undefined,
+      files: await hashReleaseFiles(releaseDir, 2),
     });
   }
   return releaseManifestV1Schema.parse({
@@ -176,10 +228,16 @@ export async function verifiedRuntimeRelease(root: string, releaseId: string): P
   if (manifest.schemaVersion === 2) {
     const desktop = join(releaseDir, 'kiki-desktop.exe');
     await verifyFileDigest(desktop, manifest.files['kiki-desktop.exe'], 'desktop binary');
-    await verifyFileDigest(join(releaseDir, 'server-entry.mjs'), manifest.files['server-entry.mjs'], 'server entry');
-    await verifyFileDigest(join(releaseDir, 'native-addons.json'), manifest.files['native-addons.json'], 'native addon manifest');
+    const resolved = await resolveV2ArtifactPaths(releaseDir, manifest);
+    const serverEntryPath = resolved?.serverEntryPath ?? join(releaseDir, 'server-entry.mjs');
+    const nativeAddonsPath = resolved?.nativeAddonsPath ?? join(releaseDir, 'native-addons.json');
+    if (resolved?.unpackedLayout && !(await fileExists(join(releaseDir, 'resources', 'app.asar')))) {
+      throw new Error('The installed Electron app.asar archive is missing.');
+    }
+    await verifyFileDigest(serverEntryPath, manifest.files['server-entry.mjs'], 'server entry');
+    await verifyFileDigest(nativeAddonsPath, manifest.files['native-addons.json'], 'native addon manifest');
     return runtimeReleaseSchema.parse({
-      releaseId, executable: desktop, args: [join(releaseDir, 'server-entry.mjs')], serverVersion: manifest.serverVersion,
+      releaseId, executable: desktop, args: [serverEntryPath], serverVersion: manifest.serverVersion,
       buildId: manifest.buildId, buildChannel: manifest.buildChannel, rollbackVerifiedWith: manifest.rollbackVerifiedWith,
     });
   }

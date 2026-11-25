@@ -1,0 +1,34 @@
+# Kiki Desktop Agent Guide (`apps/kiki-desktop`)
+
+Electron 44 desktop shell (`@kiki/desktop`, `0.7.0`) supervising a detached single-binary `kiki-server` daemon (`ELECTRON_RUN_AS_NODE=1 kiki-desktop.exe`) and exposing `window.__KIKI_ELECTRON__` (`src/preload/index.ts`) to the shared React UI (`apps/kiki-gui`).
+
+## Hard Invariants & Platform Pitfalls
+
+1. **Fixed `kiki-app://localhost` renderer origin (`src/main/appProtocol.ts`)**:
+   - Packaged renderer windows always load `kiki-app://localhost` via Electron 44 `protocol.handle('kiki-app', ...)` + `net.fetch(pathToFileURL(...))`, with path-traversal rejection and SPA `index.html` fallback for extensionless routes.
+   - Never serve the packaged UI from `http://127.0.0.1:<ephemeral_port>` (which wipes `localStorage` across daemon restarts) and never enable the `GrantFileProtocolExtraPrivileges` fuse.
+   - `packages/kap-server/src/middleware/origin.ts` admits `kiki-app://localhost` against loopback `Host` headers.
+
+2. **Packaged fuses & single-PID daemon heap (`scripts/after-pack.mjs`, `scripts/verify-fuses.mjs`, `src/main/daemonSupervisor.ts`)**:
+   - `after-pack.mjs` invokes `@electron/fuses` `flipFuses` with `RunAsNode: true`, `GrantFileProtocolExtraPrivileges: false`, and `OnlyLoadAppFromAsar: true` (verified by `verify-fuses.mjs --packaged`), while `@electron/fuses` V1 wire defaults set `EnableNodeOptionsEnvironmentVariable: false` and `EnableNodeCliInspectArguments: false` on the packaged executable.
+   - Because `EnableNodeOptionsEnvironmentVariable` is `false` on packaged binaries, `NODE_OPTIONS` in `env` is ignored by Electron. Always pass `--max-old-space-size=<mb>` directly on CLI `argv` before `server-entry.mjs` (in `daemonSupervisor.ts`, `kap-server/src/runtime/supervisor.ts`, and `desktop-release.ps1` `Invoke-HeadlessLaunch`) so `initializeMainHeap()` does not re-exec a second 45 MiB server process and `ensure.lock` / `RuntimeStore` PIDs match the active server PID.
+
+3. **Unpacked server staging & ESM/CJS native addon hook (`scripts/stage-server.mjs`, `apps/kimi-code/src/native/module-hook.ts`)**:
+   - `stage-server.mjs` bundles `server-entry.mjs` (ESM), `sqlite-indexer.mjs`, and all 9 worker entries into `dist/server/` (`asarUnpack: ["dist/server/**"]`), rebuilds `node-pty` against Electron's ABI (`modules=149`), stages `@kiki/auth-native`, `@napi-rs/keyring`, `@mariozechner/clipboard`, and `@kiki/pi-tui` under `dist/server/native/node_modules/`, and writes `dist/server/native-addons.json`.
+   - `module-hook.ts` hooks both CommonJS `Module._load` and Node 24 synchronous `module.registerHooks({ resolve })` so dynamic `await import('node-pty')` in ESM bundles resolves the staged Electron-ABI addon with `{ useConptyDll: true }` on Windows.
+   - `tsdown.config.ts` bundles all JS dependencies into `dist/main/index.js` and `dist/preload/index.cjs`; `package.json` `build.files` excludes `!node_modules/**` to keep `resources/app.asar` compact (~10 MiB).
+
+4. **Multi-space & subprocess hygiene**:
+   - Read per-space `<spaceHome>/server.local-owner` tokens when probing or stopping sibling spaces; never reuse the primary space's owner token for another home.
+   - `readDesktopSpaceToml` (`src/main/prefsAndUpdateService.ts`) reads `<spaceHome>/home.toml` (`base` or legacy `base_home`).
+   - `window-state.json` (`src/main/windowState.ts`) lives under each instance's `app.getPath('userData')` and rescues off-screen coordinates onto visible `screen.getAllDisplays()` `workArea`s before showing the window.
+   - Windows release/hot-switch scripts (`apps/kiki-gui/scripts/desktop-release.ps1` and `desktop-hot-switch.ps1`) mirror the full unpacked Electron v2 directory tree on `Promote` / `Sync-ActiveRelease` and filter `--type=*`, `sqlite-indexer.mjs`, and `hostRunner.mjs` subprocesses out of `Find-ShellEntries`.
+
+## Verification Lanes
+
+- Fast unit suite: `pnpm --filter @kiki/desktop test:fast`
+- Build unpacked release + verify fuses + emit `desktop-build-receipt.json`: `pnpm --filter @kiki/desktop run package:dir`
+- Layer 1 (`ELECTRON_RUN_AS_NODE=1` native addons, SQLite WAL+FTS5, workers, live `serve`, real-binary `Promote` + `Invoke-HeadlessLaunch`): `pnpm --filter @kiki/desktop run smoke:node`
+- Layer 2 (Playwright `_electron.launch` cold-boot `< 5s`, `kiki-app://localhost`, `restartServer` `localStorage`, security guards, `closeToTray`, `window-state.json` rescue, sibling `restartSpace`, startup failure diagnostics): `pnpm --filter @kiki/desktop run test:e2e`
+- Layer 3 (Isolated sanitized `KIKI_HOME` `@2x` route traversal): `pnpm --filter @kiki/desktop run smoke:home`
+- Layer 4 (Windows dual-manifest v1/v2 `Promote` / `Rollback` / subprocess filtering): `powershell.exe -NoProfile -ExecutionPolicy Bypass -File apps/kiki-gui/scripts/desktop-release.test.ps1`

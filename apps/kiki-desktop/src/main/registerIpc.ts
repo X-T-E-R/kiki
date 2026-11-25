@@ -13,7 +13,7 @@ import {
   validateIpcPayload,
   type IpcChannel,
 } from '#/shared/ipcChannels';
-import type { SpaceWindowMode } from '#/shared/types';
+import type { SpaceShortcutResult, SpaceWindowMode } from '#/shared/types';
 
 export interface DesktopServices {
   readonly daemon: DaemonSupervisor;
@@ -47,7 +47,7 @@ export function createIpcHandlers(services: DesktopServices): IpcHandlerMap {
   return {
     [IPC_CHANNELS.discoverConnection]: async (payload) => {
       validateIpcPayload(IPC_SCHEMAS[IPC_CHANNELS.discoverConnection], payload);
-      return daemon.discoverConnection();
+      return daemon.discoverConnectionEnvelope();
     },
     [IPC_CHANNELS.cancelStartup]: async (payload) => {
       validateIpcPayload(IPC_SCHEMAS[IPC_CHANNELS.cancelStartup], payload);
@@ -126,6 +126,10 @@ export function createIpcHandlers(services: DesktopServices): IpcHandlerMap {
       validateIpcPayload(IPC_SCHEMAS[IPC_CHANNELS.windowGetMode], payload);
       return windows.getWindowMode();
     },
+    [IPC_CHANNELS.windowOpenMode]: (payload) => {
+      const { presetId } = validateIpcPayload(IPC_SCHEMAS[IPC_CHANNELS.windowOpenMode], payload);
+      windows.openModeWindow(spaces.getActiveSpace().path, presetId);
+    },
     [IPC_CHANNELS.pluginFocusRead]: async (payload) => {
       validateIpcPayload(IPC_SCHEMAS[IPC_CHANNELS.pluginFocusRead], payload);
       return daemon.readPluginFocus(spaces.getActiveSpace().homeId);
@@ -152,6 +156,10 @@ export function createIpcHandlers(services: DesktopServices): IpcHandlerMap {
       );
       notifications.acknowledge(sessionId, scope, deliveryId);
     },
+    [IPC_CHANNELS.notificationsPeekIntent]: (payload) => {
+      validateIpcPayload(IPC_SCHEMAS[IPC_CHANNELS.notificationsPeekIntent], payload);
+      return notifications.peekNavigationIntent();
+    },
     [IPC_CHANNELS.notificationsTakeIntent]: (payload) => {
       validateIpcPayload(IPC_SCHEMAS[IPC_CHANNELS.notificationsTakeIntent], payload);
       return notifications.takeNavigationIntent();
@@ -164,11 +172,11 @@ export function createIpcHandlers(services: DesktopServices): IpcHandlerMap {
       return notifications.ackNavigationIntent(navigationId);
     },
     [IPC_CHANNELS.notificationsSetUnreadBadge]: (payload) => {
-      const { count, homeId, scopeId } = validateIpcPayload(
+      const { count, homeId, scopeId, sessionIds } = validateIpcPayload(
         IPC_SCHEMAS[IPC_CHANNELS.notificationsSetUnreadBadge],
         payload,
       );
-      notifications.setUnreadBadge(count, homeId, scopeId);
+      notifications.setUnreadBadge(count, homeId, scopeId, sessionIds);
     },
     [IPC_CHANNELS.filesOpenSaveSink]: async (payload) => {
       const { filename } = validateIpcPayload(IPC_SCHEMAS[IPC_CHANNELS.filesOpenSaveSink], payload);
@@ -264,6 +272,7 @@ export function createIpcHandlers(services: DesktopServices): IpcHandlerMap {
       validateIpcPayload(IPC_SCHEMAS[IPC_CHANNELS.desktopSpaceStatuses], payload);
       try {
         const result = await daemon.listSpacesAndStatuses(spaces.getActiveSpace().homeId);
+        notifications.setBackgroundSpaceStatuses(result.statuses);
         return result.statuses;
       } catch {
         return [
@@ -306,12 +315,21 @@ export function createIpcHandlers(services: DesktopServices): IpcHandlerMap {
       }
       windows.openRemoteSpaceWindow(spaces.getActiveSpace().path, connectionId);
     },
-    [IPC_CHANNELS.desktopCreateSpaceShortcut]: async (payload) => {
+    [IPC_CHANNELS.desktopCreateSpaceShortcut]: async (payload): Promise<SpaceShortcutResult> => {
       const { homeId } = validateIpcPayload(
         IPC_SCHEMAS[IPC_CHANNELS.desktopCreateSpaceShortcut],
         payload,
       );
-      const space = await spaces.findSpace(homeId);
+      let space;
+      try {
+        space = await spaces.findSpace(homeId);
+      } catch (error) {
+        return {
+          ok: false,
+          code: 'invalid_space',
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
       return prefsAndUpdates.createSpaceShortcut(space.homeId, space.path, space.name);
     },
     [IPC_CHANNELS.desktopRestartSpace]: async (payload) => {

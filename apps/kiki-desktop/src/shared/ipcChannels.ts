@@ -19,11 +19,13 @@ export const IPC_CHANNELS = {
   windowSetTheme: 'kiki:window:setTheme',
   windowSetZoom: 'kiki:window:setZoom',
   windowGetMode: 'kiki:window:getMode',
+  windowOpenMode: 'kiki:window:openMode',
   pluginFocusRead: 'kiki:pluginFocus:read',
   pluginFocusAck: 'kiki:pluginFocus:ack',
   pluginFocusRemember: 'kiki:pluginFocus:remember',
   notificationsSend: 'kiki:notifications:send',
   notificationsAcknowledge: 'kiki:notifications:acknowledge',
+  notificationsPeekIntent: 'kiki:notifications:peekNavigationIntent',
   notificationsTakeIntent: 'kiki:notifications:takeNavigationIntent',
   notificationsAckIntent: 'kiki:notifications:ackNavigationIntent',
   notificationsSetUnreadBadge: 'kiki:notifications:setUnreadBadge',
@@ -188,6 +190,9 @@ export const IPC_SCHEMAS = {
   [IPC_CHANNELS.windowSetTheme]: z.object({ theme: z.enum(['light', 'dark', 'system']) }),
   [IPC_CHANNELS.windowSetZoom]: z.object({ factor: z.number().finite().min(0.25).max(5) }),
   [IPC_CHANNELS.windowGetMode]: z.void(),
+  [IPC_CHANNELS.windowOpenMode]: z.object({
+    presetId: nonEmptyString.regex(/^[A-Za-z0-9_-]{1,64}$/, 'Invalid window preset id'),
+  }),
   [IPC_CHANNELS.pluginFocusRead]: z.void(),
   [IPC_CHANNELS.pluginFocusAck]: z.object({
     homeId: nonEmptyString,
@@ -203,6 +208,7 @@ export const IPC_SCHEMAS = {
     scope: navScopeIdentitySchema,
     deliveryId: z.string().optional(),
   }),
+  [IPC_CHANNELS.notificationsPeekIntent]: z.void(),
   [IPC_CHANNELS.notificationsTakeIntent]: z.void(),
   [IPC_CHANNELS.notificationsAckIntent]: z.object({ navigationId: nonEmptyString }),
   [IPC_CHANNELS.notificationsSetUnreadBadge]: z.object({

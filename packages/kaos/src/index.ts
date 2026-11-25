@@ -26,6 +26,8 @@ export {
   AtomicWriteChmodError,
   atomicCreate,
   atomicWrite,
+  atomicWriteBytes,
+  atomicWriteJson,
   atomicWriteStream,
   atomicWriteSync,
   registerWin32MoveFileReplace,
@@ -33,6 +35,7 @@ export {
   syncDir,
   syncDirSync,
   writeFileAtomicDurable,
+  type AtomicWriteOptions,
   type Win32MoveFileReplace,
 } from './atomic-fs';
 export { LocalKaos } from './local';

@@ -9,6 +9,7 @@ import type {
   DesktopUpdateOffer,
   DesktopUpdateState,
   DesktopWindowMode,
+  DiscoverConnectionEnvelope,
   ElectronBridge,
   HostFileDrop,
   HostNotification,
@@ -19,6 +20,7 @@ import type {
   PluginFocusIntent,
   ReadFilesResult,
   SelectedFileDescriptor,
+  SpaceShortcutResult,
   SshProfile,
   SshResolvedConnection,
   UpdateChannel,
@@ -80,7 +82,10 @@ function ensureDomFileDropListener(): void {
 }
 
 const bridge: ElectronBridge = {
-  discoverConnection: () => ipcRenderer.invoke(IPC_CHANNELS.discoverConnection) as Promise<LocalConnection | null>,
+  discoverConnection: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.discoverConnection) as Promise<
+      LocalConnection | DiscoverConnectionEnvelope | null
+    >,
   cancelStartup: () => ipcRenderer.invoke(IPC_CHANNELS.cancelStartup) as Promise<void>,
   onBackendStage: (cb) => subscribeIpcEvent<unknown>(IPC_EVENTS.backendStage, cb),
 
@@ -130,6 +135,8 @@ const bridge: ElectronBridge = {
       ipcRenderer.invoke(IPC_CHANNELS.windowSetZoom, { factor }) as Promise<boolean>,
     getWindowMode: () =>
       ipcRenderer.invoke(IPC_CHANNELS.windowGetMode) as Promise<DesktopWindowMode | null>,
+    openModeWindow: (presetId) =>
+      ipcRenderer.invoke(IPC_CHANNELS.windowOpenMode, { presetId }) as Promise<void>,
     onFocus: (cb) =>
       subscribeIpcEvent<void>(IPC_EVENTS.windowFocus, () => {
         cb();
@@ -155,17 +162,23 @@ const bridge: ElectronBridge = {
       }) as Promise<void>,
     onClick: (cb) =>
       subscribeIpcEvent<NotificationNavigationIntent>(IPC_EVENTS.notificationClick, (intent) => {
+        cb(intent.route, intent.homeId, intent.scope);
         if (intent.navigationId !== undefined) {
           void ipcRenderer.invoke(IPC_CHANNELS.notificationsAckIntent, {
             navigationId: intent.navigationId,
           });
         }
-        cb(intent.route, intent.homeId, intent.scope);
       }),
+    peekNavigationIntent: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.notificationsPeekIntent) as Promise<
+        NotificationNavigationIntent | { readonly connectionId: string } | null
+      >,
     takeNavigationIntent: () =>
       ipcRenderer.invoke(IPC_CHANNELS.notificationsTakeIntent) as Promise<
         NotificationNavigationIntent | { readonly connectionId: string } | null
       >,
+    ackNavigationIntent: (navigationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.notificationsAckIntent, { navigationId }) as Promise<boolean>,
     setUnreadBadge: (count, homeId, scopeId, sessionIds) =>
       ipcRenderer.invoke(IPC_CHANNELS.notificationsSetUnreadBadge, {
         count,
@@ -241,10 +254,9 @@ const bridge: ElectronBridge = {
     openRemoteSpace: (connectionId) =>
       ipcRenderer.invoke(IPC_CHANNELS.desktopOpenRemoteSpace, { connectionId }) as Promise<void>,
     createSpaceShortcut: (homeId) =>
-      ipcRenderer.invoke(IPC_CHANNELS.desktopCreateSpaceShortcut, { homeId }) as Promise<{
-        readonly homeId: string;
-        readonly path: string;
-      }>,
+      ipcRenderer.invoke(IPC_CHANNELS.desktopCreateSpaceShortcut, {
+        homeId,
+      }) as Promise<SpaceShortcutResult>,
     restartSpace: (homeId) =>
       ipcRenderer.invoke(IPC_CHANNELS.desktopRestartSpace, { homeId }) as Promise<void>,
     restartServer: () => ipcRenderer.invoke(IPC_CHANNELS.desktopRestartServer) as Promise<void>,

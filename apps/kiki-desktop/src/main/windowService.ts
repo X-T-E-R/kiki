@@ -1,6 +1,7 @@
 import { spawn, type SpawnOptions } from 'node:child_process';
-import { filterGuiChildEnv, resolveChildWorkingDir } from '#/main/releaseRedirect';
+import { KIKI_APP_ORIGIN } from '#/main/appProtocol';
 import { validateExternalUrl } from '#/main/fileAndClipboardService';
+import { filterGuiChildEnv, resolveChildWorkingDir } from '#/main/releaseRedirect';
 import type { DesktopWindowMode, SpaceWindowMode } from '#/shared/types';
 
 export interface WindowCloseEventLike {
@@ -21,8 +22,10 @@ export interface ManagedWindowLike {
   once(event: 'leave-full-screen', listener: () => void): unknown;
   reload(): void;
   loadURL(url: string): Promise<void>;
+  getURL?(): string;
   setZoomFactor(factor: number): void;
   close(): void;
+  destroy?(): void;
 }
 
 export interface WindowServiceDeps {
@@ -33,6 +36,7 @@ export interface WindowServiceDeps {
   readonly getCloseToTray: () => boolean;
   readonly isTrayActive: () => boolean;
   readonly createBrowserWindow: (initialUrl: string) => Promise<ManagedWindowLike>;
+  readonly rendererOrigin?: string;
   readonly getDaemonOrigin: () => string | null;
   readonly ensureDaemonOrigin: () => Promise<string>;
   readonly detachDesktop: () => void;
@@ -50,26 +54,17 @@ export interface WindowServiceDeps {
   ) => { unref?: () => void };
 }
 
-export function buildBootstrapDataUrl(): string {
-  const html =
-    '<!doctype html><html><head><meta charset="utf-8"><title>Kiki</title>' +
-    '<style>html,body{height:100%;margin:0;display:grid;place-items:center;' +
-    'font:14px/1.5 system-ui,-apple-system,sans-serif;background:#fafaf9;color:#1c1917}' +
-    '@media(prefers-color-scheme:dark){html,body{background:#121212;color:#f5f5f4}}</style></head>' +
-    '<body><div>Starting Kiki…</div></body></html>';
-  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
-}
-
 export function isAllowedRendererNavigation(targetUrl: string, daemonOrigin: string | null): boolean {
   if (targetUrl.startsWith('data:text/html')) return true;
-  if (daemonOrigin === null) return false;
-  try {
-    const parsedTarget = new URL(targetUrl);
-    const parsedOrigin = new URL(daemonOrigin);
-    return parsedTarget.origin === parsedOrigin.origin;
-  } catch {
-    return false;
+  const parsedTarget = URL.parse(targetUrl);
+  if (parsedTarget === null) return false;
+  if (parsedTarget.protocol.toLowerCase() === 'kiki-app:' && parsedTarget.hostname.toLowerCase() === 'localhost') {
+    return true;
   }
+  if (daemonOrigin === null) return false;
+  const parsedOrigin = URL.parse(daemonOrigin);
+  if (parsedOrigin === null) return false;
+  return parsedTarget.origin === parsedOrigin.origin;
 }
 
 export function shouldBlockRendererAccelerator(input: {
@@ -98,12 +93,15 @@ export function tryValidateExternalForNavigation(rawUrl: string): string | null 
 
 export class WindowService {
   private readonly platform: NodeJS.Platform;
+  private readonly rendererOrigin: string;
   private mainWindow: ManagedWindowLike | null = null;
   private creatingWindow: Promise<ManagedWindowLike> | null = null;
   private quitting = false;
+  private closingKeepTray = false;
 
   constructor(private readonly deps: WindowServiceDeps) {
     this.platform = deps.platform ?? process.platform;
+    this.rendererOrigin = deps.rendererOrigin ?? KIKI_APP_ORIGIN;
   }
 
   get isQuitting(): boolean {
@@ -131,6 +129,19 @@ export class WindowService {
     return !this.quitting && this.deps.isTrayActive();
   }
 
+  private resolveInitialWindowUrl(): string {
+    if (this.deps.rendererOrigin !== undefined) {
+      return this.deps.rendererOrigin.endsWith('/')
+        ? this.deps.rendererOrigin
+        : `${this.deps.rendererOrigin}/`;
+    }
+    const legacyOrigin = this.deps.getDaemonOrigin();
+    if (legacyOrigin !== null) {
+      return legacyOrigin;
+    }
+    return `${this.rendererOrigin}/`;
+  }
+
   async showMainWindow(): Promise<ManagedWindowLike | null> {
     if (this.quitting) return null;
     if (this.platform === 'darwin') {
@@ -139,7 +150,7 @@ export class WindowService {
     let win = this.currentWindow;
     if (win === null) {
       if (this.creatingWindow === null) {
-        const initialUrl = this.deps.getDaemonOrigin() ?? buildBootstrapDataUrl();
+        const initialUrl = this.resolveInitialWindowUrl();
         this.creatingWindow = this.deps.createBrowserWindow(initialUrl).finally(() => {
           this.creatingWindow = null;
         });
@@ -154,8 +165,12 @@ export class WindowService {
   }
 
   async navigateToDaemonOrigin(origin: string): Promise<void> {
-    const parsed = new URL(origin);
-    if (parsed.protocol !== 'http:' || (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost')) {
+    const parsed = URL.parse(origin);
+    if (
+      parsed === null ||
+      (parsed.protocol !== 'http:' && parsed.protocol !== 'kiki-app:') ||
+      (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost')
+    ) {
       throw new Error(`Refusing non-loopback daemon origin: ${origin}`);
     }
     const win = this.currentWindow;
@@ -176,15 +191,36 @@ export class WindowService {
     win.hide();
   }
 
+  destroyMainWindowKeepTray(): void {
+    const win = this.currentWindow;
+    if (win === null) return;
+    if (!this.deps.isTrayActive()) {
+      this.hideMainWindow();
+      return;
+    }
+    this.closingKeepTray = true;
+    try {
+      if (typeof win.destroy === 'function') {
+        win.destroy();
+      } else {
+        win.close();
+      }
+      this.mainWindow = null;
+    } finally {
+      this.closingKeepTray = false;
+    }
+    if (this.platform === 'darwin') {
+      this.deps.setDockVisible?.(false);
+    }
+  }
+
   onWindowClose(event: WindowCloseEventLike): void {
-    if (this.quitting) return;
+    if (this.quitting || this.closingKeepTray) return;
     if (this.deps.getCloseToTray() && this.deps.isTrayActive()) {
       event.preventDefault();
       this.hideMainWindow();
       return;
     }
-    // Closing the desktop UI when close_to_tray=false detaches desktop ownership
-    // and leaves a ready shared kiki-server daemon alive.
     this.quitting = true;
     this.deps.detachDesktop();
     this.deps.releaseAppQuit();
@@ -218,10 +254,19 @@ export class WindowService {
   }
 
   async reloadForSwitchedSpace(): Promise<void> {
-    const origin = await this.deps.ensureDaemonOrigin();
+    await this.deps.ensureDaemonOrigin();
+    const hadWindow = this.currentWindow !== null;
     const win = await this.showMainWindow();
     if (win === null) return;
-    await win.loadURL(`${new URL(origin).origin}/`);
+    if (!hadWindow) return;
+
+    const currentUrl = win.getURL?.();
+    const parsedCurrent = currentUrl !== undefined ? URL.parse(currentUrl) : null;
+    if (parsedCurrent !== null && (parsedCurrent.protocol === 'kiki-app:' || parsedCurrent.protocol === 'http:')) {
+      win.reload();
+      return;
+    }
+    await win.loadURL(this.resolveInitialWindowUrl());
   }
 
   spawnSiblingWindow(args: readonly string[], extraEnv?: Readonly<Record<string, string>>): void {

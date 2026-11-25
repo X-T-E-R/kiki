@@ -180,7 +180,6 @@ export async function registerApiV1Routes(
     focus: desktopPluginFocus,
     mainHomeDir: desktopMainHome,
     currentSpaceId: desktopBootstrap.spaceId ?? 'main',
-    serverToken: opts.pluginBridgeServerToken,
   });
   desktopFocusPoller.start();
   opts.shutdownSignal?.addEventListener('abort', () => { void desktopTunnels.shutdown().catch(() => undefined); }, { once: true });
@@ -200,19 +199,24 @@ export async function registerApiV1Routes(
       registerDesktopSpacesRoutes(apiV1 as unknown as Parameters<typeof registerDesktopSpacesRoutes>[0], {
         spaces: new LocalSpacesService({
           mainHomeDir: desktopMainHome,
-                currentSpaceId: desktopBootstrap.spaceId ?? 'main',
+          currentSpaceId: desktopBootstrap.spaceId ?? 'main',
           desktopManaged: desktopBootstrap.getEnv('KIKI_DESKTOP_BUNDLED') === '1' || desktopBootstrap.getEnv('KIKI_RUNTIME_MANAGED') === '1',
           readBusySessions: async (homeDir) => {
             if (homeDir !== desktopBootstrap.homeDir) return undefined;
             const sessions = core.accessor.get(ISessionManager);
             let busy = 0;
             let needsYou = 0;
-            for (const session of [...new Set([...sessions.list(), ...sessions.listEphemeral()])]) {
+            const needsYouSessionIds: string[] = [];
+            for (const session of new Set([...sessions.list(), ...sessions.listEphemeral()])) {
               const state = session.accessor.get(ISessionActivityView).state();
-              if (state.pendingInteraction !== 'none') needsYou += 1;
-              else if (state.busy) busy += 1;
+              if (state.pendingInteraction !== 'none') {
+                needsYou += 1;
+                needsYouSessionIds.push(session.id);
+              } else if (state.busy) {
+                busy += 1;
+              }
             }
-            return { busy, needsYou };
+            return { busy, needsYou, needsYouSessionIds };
           },
         }),
         pluginFocus: desktopPluginFocus,

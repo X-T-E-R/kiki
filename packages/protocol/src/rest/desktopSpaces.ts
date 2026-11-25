@@ -25,6 +25,7 @@ export const desktopSpaceStatusSchema = /* @__PURE__ */ z.object({
   needs_you_sessions: z.number().int().nonnegative(),
   heartbeat_fresh: z.boolean(),
   server_id: z.string().min(1).max(128).optional(),
+  needs_you_session_ids: z.array(z.string().min(1)).optional(),
   as_of: z.number().int().nonnegative(),
 }).strict();
 export type DesktopSpaceStatus = z.infer<typeof desktopSpaceStatusSchema>;

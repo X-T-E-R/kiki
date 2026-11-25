@@ -61,6 +61,7 @@
     "@fastify/multipart": "^10.0.0",
     "@fastify/swagger": "^9.7.0",
     "@kiki/agent-core-v2": "workspace:^",
+    "@kiki/kaos": "workspace:^",
     "@kiki/klient": "workspace:^",
     "@kiki/lexical": "workspace:^",
     "@kiki/oauth": "workspace:^",

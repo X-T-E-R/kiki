@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { chmodSync, closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as nodeFs from 'node:fs';
-import { chmod, link, open, rename, unlink } from 'node:fs/promises';
+import { chmod, link, mkdir, open, rename, unlink } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { dirname, join } from 'pathe';
 
@@ -354,4 +354,55 @@ export async function atomicWriteStream(
       }
     }
   }
+}
+
+export interface AtomicWriteOptions {
+  readonly mode?: number;
+  readonly dirMode?: number;
+  readonly signal?: AbortSignal;
+  readonly preserveDestinationOnError?: boolean;
+}
+
+export async function atomicWriteBytes(
+  filePath: string,
+  bytes: Uint8Array,
+  options?: AtomicWriteOptions,
+): Promise<void> {
+  const dir = dirname(filePath);
+  await mkdir(dir, { recursive: true, mode: options?.dirMode });
+  if (options?.dirMode !== undefined) {
+    await applyAtomicMode(dir, options.dirMode);
+  }
+  await atomicWrite(
+    filePath,
+    bytes,
+    undefined,
+    options?.mode,
+    options?.signal,
+    options?.preserveDestinationOnError ?? false,
+  );
+}
+
+export async function atomicWriteJson(
+  filePath: string,
+  value: unknown,
+  options?: AtomicWriteOptions & { readonly indent?: number },
+): Promise<void> {
+  const serialized =
+    options?.indent !== undefined
+      ? `${JSON.stringify(value, null, options.indent)}\n`
+      : JSON.stringify(value);
+  const dir = dirname(filePath);
+  await mkdir(dir, { recursive: true, mode: options?.dirMode });
+  if (options?.dirMode !== undefined) {
+    await applyAtomicMode(dir, options.dirMode);
+  }
+  await atomicWrite(
+    filePath,
+    serialized,
+    undefined,
+    options?.mode,
+    options?.signal,
+    options?.preserveDestinationOnError ?? false,
+  );
 }

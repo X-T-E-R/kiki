@@ -101,6 +101,46 @@ describe('PluginFocusPoller', () => {
     }
   });
 
+  it('authenticates each sibling space using its own server.local-owner capability', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-plugin-focus-sibling-token-'));
+    try {
+      const child = join(root, 'child-space');
+      await mkdir(child, { recursive: true });
+      await writeFile(join(root, 'server.local-owner'), 'main-owner-token');
+      await writeFile(join(child, 'server.local-owner'), 'child-owner-token');
+      await writeFile(join(root, 'homes.json'), JSON.stringify([{ id: 'h-child', name: 'Child space', path: child }]));
+      const seenAuthHeaders: string[] = [];
+      const navigation = JSON.stringify({ code: 0, data: { request: { id: 12, pluginId: 'kiki-office', sessionId: 'session-child', at: 49_800 } } });
+      const fetchImpl: typeof fetch = async (_url, init) => {
+        const headers = new Headers(init?.headers);
+        const auth = headers.get('authorization') ?? '';
+        seenAuthHeaders.push(auth);
+        if (auth !== 'Bearer child-owner-token') {
+          return new Response(JSON.stringify({ code: 40101 }), { status: 401 });
+        }
+        return new Response(navigation, { status: 200, headers: { 'content-type': 'application/json' } });
+      };
+      const focus = new PluginFocusService({ now: () => 50_000 });
+      const poller = new PluginFocusPoller({
+        focus,
+        mainHomeDir: root,
+        currentSpaceId: 'main',
+        fetchImpl,
+        now: () => 50_000,
+        listInstances: async (homeDir) => homeDir === child ? [{
+          serverId: 'server-child', pid: 4321, host: '127.0.0.1', port: 9002,
+          startedAt: 1_000, heartbeatAt: 2_000, workspaces: [],
+        }] : [],
+      });
+      await poller.pollOnce();
+      expect(seenAuthHeaders).toEqual(['Bearer child-owner-token']);
+      expect(focus.read('main')).toMatchObject({ homeId: 'h-child', route: '/s/session-child', requestId: 12 });
+      await poller.stop();
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
   it('aborts an in-flight probe immediately on stop instead of waiting out the timeout', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-plugin-focus-stop-'));
     try {
@@ -187,6 +227,75 @@ describe('LocalSpacesService', () => {
       expect(childSummary).toMatchObject({ running: false, name: 'Child space', registered: true });
       const childStatus = snapshot.statuses.find((status) => status.home_id === 'h-child');
       expect(childStatus).toMatchObject({ state: 'offline', heartbeat_fresh: false });
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('probes running sibling spaces with their own server.local-owner for busy, needsYou, and desktop_managed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-desktop-spaces-sibling-probe-'));
+    try {
+      const child = join(root, 'child-space');
+      await mkdir(child, { recursive: true });
+      await writeFile(join(child, 'home.toml'), 'schema = 1\nid = "h-child"\nname = "Child space"\n');
+      await writeFile(join(child, 'server.local-owner'), 'child-secret-token');
+      await writeFile(join(root, 'homes.json'), JSON.stringify([{ id: 'h-child', name: 'Child space', path: child }]));
+      const fetchImpl: typeof fetch = async (input, init) => {
+        const url =
+          input instanceof URL
+            ? input
+            : new URL(typeof input === 'string' ? input : input.url);
+        const headers = new Headers(init?.headers);
+        if (headers.get('authorization') !== 'Bearer child-secret-token') {
+          return new Response(JSON.stringify({ code: 40101 }), { status: 401 });
+        }
+        if (url.pathname === '/api/desktop-lifecycle') {
+          return new Response(JSON.stringify({ code: 0, data: { managed: false } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (url.pathname === '/api/sessions') {
+          return new Response(JSON.stringify({
+            code: 0,
+            data: {
+              items: [
+                { id: 'sess-busy', busy: true, pending_interaction: 'none' },
+                { id: 'sess-approval', busy: true, pending_interaction: 'approval' },
+              ],
+              ephemeral: [{ id: 'sess-question', busy: false, pending_interaction: 'question' }],
+            },
+          }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response('not found', { status: 404 });
+      };
+      const service = new LocalSpacesService({
+        mainHomeDir: root,
+        currentSpaceId: 'main',
+        desktopManaged: true,
+        fetchImpl,
+        listInstances: async (homeDir) => homeDir === child ? [{
+          serverId: 'server-child', pid: 5678, host: '127.0.0.1', port: 9123,
+          startedAt: 1_000, heartbeatAt: 2_000, workspaces: [],
+        }] : [{
+          serverId: 'server-main', pid: 1234, host: '127.0.0.1', port: 9100,
+          startedAt: 1_000, heartbeatAt: 2_000, workspaces: [],
+        }],
+        readBusySessions: async (homeDir) => homeDir === root ? { busy: 0, needsYou: 0 } : undefined,
+      });
+      const snapshot = await service.snapshot();
+      const childSummary = snapshot.spaces.find((space) => space.home_id === 'h-child');
+      expect(childSummary).toMatchObject({ running: true, desktop_managed: false });
+      const childStatus = snapshot.statuses.find((status) => status.home_id === 'h-child');
+      expect(childStatus).toMatchObject({
+        state: 'pending',
+        busy_sessions: 1,
+        needs_you_sessions: 2,
+        needs_you_session_ids: ['sess-approval', 'sess-question'],
+      });
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }

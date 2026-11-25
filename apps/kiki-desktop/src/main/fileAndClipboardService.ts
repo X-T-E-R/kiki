@@ -1,10 +1,19 @@
 import { randomUUID } from 'node:crypto';
-import { createWriteStream, type WriteStream } from 'node:fs';
-import { copyFile, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
+import {
+  copyFile,
+  mkdir,
+  open,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+  type FileHandle,
+} from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { basename, extname, isAbsolute, join } from 'pathe';
+import { atomicWriteBytes, replaceFileNonDestructive } from '@kiki/kaos/atomic-fs';
+import { pastedMediaType } from '@kiki/session-core/composer';
+import { basename, dirname, extname, isAbsolute, join } from 'pathe';
 import type { ReadFilesResult, SelectedFileDescriptor } from '#/shared/types';
 
 export type HostPathOp = 'open' | 'reveal' | 'write';
@@ -38,14 +47,6 @@ const WINDOWS_EXECUTABLE_EXTENSIONS = new Set([
 
 const MACOS_EXECUTABLE_EXTENSIONS = new Set(['app', 'command']);
 const LINUX_EXECUTABLE_EXTENSIONS = new Set(['desktop']);
-
-const IMAGE_MIMES: Readonly<Record<string, string>> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-};
 
 const MAX_SAVE_CHUNK_BYTES = 64 * 1024;
 const MAX_SELECTED_TOKENS = 512;
@@ -114,10 +115,8 @@ export function validateExternalUrl(raw: string): string {
   if (/[\u0000-\u001F\u007F]/.test(raw)) {
     throw new Error('Invalid URL');
   }
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
+  const parsed = URL.parse(raw);
+  if (parsed === null) {
     throw new Error('Invalid URL');
   }
   if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
@@ -162,7 +161,7 @@ export interface FileAndClipboardDeps {
 interface ActiveSaveSink {
   readonly targetPath: string;
   readonly tempPath: string;
-  readonly stream: WriteStream;
+  readonly handle: FileHandle;
   phase: 'writing' | 'committing' | 'closed';
 }
 
@@ -204,8 +203,8 @@ export class FileAndClipboardService {
     await mkdir(this.deps.tempSaveDir, { recursive: true });
     const sinkId = randomUUID();
     const tempPath = join(this.deps.tempSaveDir, `${sinkId}.part`);
-    const stream = createWriteStream(tempPath, { flags: 'wx' });
-    this.sinks.set(sinkId, { targetPath: target, tempPath, stream, phase: 'writing' });
+    const handle = await open(tempPath, 'wx');
+    this.sinks.set(sinkId, { targetPath: target, tempPath, handle, phase: 'writing' });
     return { sinkId };
   }
 
@@ -217,12 +216,14 @@ export class FileAndClipboardService {
     if (chunk.byteLength > MAX_SAVE_CHUNK_BYTES) {
       throw new Error('The save chunk exceeds 64 KiB');
     }
-    await new Promise<void>((resolve, reject) => {
-      sink.stream.write(chunk, (error) => {
-        if (error !== null && error !== undefined) reject(error);
-        else resolve();
-      });
-    });
+    let offset = 0;
+    while (offset < chunk.byteLength) {
+      const { bytesWritten } = await sink.handle.write(chunk, offset, chunk.byteLength - offset);
+      if (bytesWritten <= 0) {
+        throw new Error('Failed to write save chunk');
+      }
+      offset += bytesWritten;
+    }
   }
 
   async closeSaveSink(sinkId: string): Promise<boolean> {
@@ -230,14 +231,11 @@ export class FileAndClipboardService {
     if (sink === undefined || sink.phase !== 'writing') return false;
     sink.phase = 'committing';
     try {
-      await new Promise<void>((resolve, reject) => {
-        sink.stream.once('error', reject);
-        sink.stream.end(() => {
-          resolve();
-        });
-      });
+      await sink.handle.sync();
+      await sink.handle.close();
+      await mkdir(dirname(sink.targetPath), { recursive: true });
       try {
-        await rename(sink.tempPath, sink.targetPath);
+        await replaceFileNonDestructive(sink.tempPath, sink.targetPath);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error;
         await copyFile(sink.tempPath, sink.targetPath);
@@ -246,6 +244,7 @@ export class FileAndClipboardService {
     } finally {
       sink.phase = 'closed';
       this.sinks.delete(sinkId);
+      await sink.handle.close().catch(() => undefined);
       await rm(sink.tempPath, { force: true }).catch(() => undefined);
     }
   }
@@ -255,33 +254,15 @@ export class FileAndClipboardService {
     if (sink === undefined || sink.phase !== 'writing') return;
     sink.phase = 'closed';
     this.sinks.delete(sinkId);
-    sink.stream.destroy();
+    await sink.handle.close().catch(() => undefined);
     await rm(sink.tempPath, { force: true }).catch(() => undefined);
   }
 
   async saveBlob(bytes: Uint8Array, filename: string): Promise<boolean> {
     const target = await this.deps.showSaveDialog(basename(filename));
     if (target === null) return false;
-    await mkdir(this.deps.tempSaveDir, { recursive: true });
-    const tempPath = join(this.deps.tempSaveDir, `${randomUUID()}.part`);
-    try {
-      await pipeline(Readable.from([bytes]), createWriteStream(tempPath, { flags: 'wx' }));
-      try {
-        await rename(tempPath, target);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error;
-        await copyFile(tempPath, target);
-      }
-      return true;
-    } finally {
-      await rm(tempPath, { force: true }).catch(() => undefined);
-    }
-  }
-
-  async pickFilePath(): Promise<string | null> {
-    this.requireLocalWorkspace();
-    const selected = await this.deps.showOpenDialog({ directory: false, multiple: false });
-    return selected?.[0] ?? null;
+    await atomicWriteBytes(target, bytes, { preserveDestinationOnError: true });
+    return true;
   }
 
   async pickFiles(): Promise<SelectedFileDescriptor[] | null> {
@@ -291,15 +272,20 @@ export class FileAndClipboardService {
     for (const filePath of selected) {
       const info = await stat(filePath);
       const name = basename(filePath.replaceAll('\\', '/'));
-      const ext = extname(name).slice(1).toLowerCase();
       descriptors.push({
         token: this.registerSelectedToken(filePath),
         name,
         size: info.size,
-        type: IMAGE_MIMES[ext] ?? '',
+        type: pastedMediaType({ name, type: '' }) ?? '',
       });
     }
     return descriptors;
+  }
+
+  async pickFilePath(): Promise<string | null> {
+    this.requireLocalWorkspace();
+    const selected = await this.deps.showOpenDialog({ directory: false, multiple: false });
+    return selected?.[0] ?? null;
   }
 
   async readSelectedFile(token: string): Promise<Uint8Array> {
@@ -327,9 +313,8 @@ export class FileAndClipboardService {
     const files: SelectedFileDescriptor[] = [];
     for (const candidate of rawPaths) {
       const name = basename(candidate.replaceAll('\\', '/'));
-      const ext = extname(name).slice(1).toLowerCase();
-      const mime = IMAGE_MIMES[ext];
-      if (mime === undefined) {
+      const mime = pastedMediaType({ name, type: '' });
+      if (mime === null) {
         paths.push(candidate);
         continue;
       }
@@ -390,9 +375,9 @@ export function decodeClipboardUriList(
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const url = URL.parse(trimmed);
+    if (url === null || url.protocol !== 'file:') continue;
     try {
-      const url = new URL(trimmed);
-      if (url.protocol !== 'file:') continue;
       paths.push(fileURLToPath(url, { windows: platform === 'win32' }));
     } catch {
       continue;

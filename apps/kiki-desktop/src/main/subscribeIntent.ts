@@ -31,10 +31,8 @@ function parseTargetUrl(raw: string, allowLoopback: boolean): string {
   if (trimmed === '' || /[\u0000-\u001F\u007F]/.test(trimmed)) {
     throw new Error('Invalid subscription target URL');
   }
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
+  const parsed = URL.parse(trimmed);
+  if (parsed === null) {
     throw new Error('Invalid subscription target URL');
   }
   if (parsed.username !== '' || parsed.password !== '') {
@@ -62,13 +60,8 @@ export function parseSubscribeIntent(
 ): ParsedSubscribeIntent | null {
   const trimmed = raw.trim();
   if (trimmed === '') return null;
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol.toLowerCase() !== 'kiki:') return null;
+  const parsed = URL.parse(trimmed);
+  if (parsed === null || parsed.protocol.toLowerCase() !== 'kiki:') return null;
   if (parsed.username !== '' || parsed.password !== '') {
     throw new Error('Subscribe deep link must not include userinfo');
   }

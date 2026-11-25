@@ -15,6 +15,7 @@ instructions. This page is a router: it holds no package contracts.
 | Shared framework-free client session state | [`packages/session-core/AGENTS.md`](packages/session-core/AGENTS.md) | [`docs/en/guides/settings.md`](docs/en/guides/settings.md) |
 | Vendored terminal rendering library | [`packages/pi-tui/AGENTS.md`](packages/pi-tui/AGENTS.md) | [`packages/pi-tui/README.md`](packages/pi-tui/README.md) |
 | CLI and terminal UI | [`apps/kimi-code/AGENTS.md`](apps/kimi-code/AGENTS.md) | [`apps/kimi-code/README.md`](apps/kimi-code/README.md), [`docs/en/reference/command.md`](docs/en/reference/command.md) |
+| Electron desktop shell (`0.7.0`) | [`apps/kiki-desktop/AGENTS.md`](apps/kiki-desktop/AGENTS.md) | [`docs/en/getting-started/installation.md`](docs/en/getting-started/installation.md) |
 | Kiki GUI (Web, Desktop, Mobile remote shell) | [`apps/kiki-gui/AGENTS.md`](apps/kiki-gui/AGENTS.md) | [`docs/en/server/local-server.md`](docs/en/server/local-server.md) |
 | Android APK builds, signing, and local host | `apps/kiki-android` and `apps/kiki-gui/mobile/scripts/` ([release workflow](.github/workflows/kiki-desktop-release.yml)) | [Build and verify APKs](docs/maintainer/android-release.md), [install Android](docs/en/getting-started/installation.md#install-the-android-app) |
 | Documentation site and catch-up lifecycle | [`docs/AGENTS.md`](docs/AGENTS.md) | [`docs/en/index.md`](docs/en/index.md) |

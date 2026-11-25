@@ -19,7 +19,7 @@ Kiki maintains **two UI codebases** across all client surfaces:
 | Path | Role & Key Entrypoints |
 | --- | --- |
 | `apps/kimi-code` | CLI, `DaemonTUI`, and SEA entrypoint (`@kiki/cli`); uses `@kiki/klient`, `@kiki/session-core`, `@kiki/node-sdk`; TUI work uses `.agents/skills/write-tui/SKILL.md` and `apps/kimi-code/AGENTS.md`. |
-| `apps/kiki-desktop` | Electron 44 desktop shell (`@kiki/desktop`) supervising a detached `kiki-server` daemon and exposing the typed preload bridge to `apps/kiki-gui`. |
+| `apps/kiki-desktop` | Electron 44 desktop shell (`@kiki/desktop`) supervising a detached `kiki-server` daemon and exposing the typed preload bridge to `apps/kiki-gui`; see `apps/kiki-desktop/AGENTS.md`. |
 | `apps/kiki-gui` | Shared browser, desktop, and responsive mobile React UI (`@kiki/gui`); visual acceptance uses `apps/kiki-gui/scripts/visual-proof.mjs`; see `apps/kiki-gui/AGENTS.md`. |
 | `apps/kiki-gui/src-tauri` | Tauri v2 desktop shell wrapping `apps/kiki-gui` and the local SEA sidecar. |
 | `apps/kiki-gui/mobile` | Unified Capacitor (`@capacitor/{ios,android}`) remote pairing shell (`launcher/`, iOS `SceneDelegate.swift`, Android `KikiShellPlugin.java`). |

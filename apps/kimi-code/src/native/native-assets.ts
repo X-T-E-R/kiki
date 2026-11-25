@@ -151,7 +151,35 @@ export function installRuntimeAsset(
   options: NativeAssetOptions = {},
 ): RuntimeAssetInstallStatus {
   const source = options.source ?? getSeaAssetSource();
-  if (source === null) return { status: 'not-sea' };
+  if (source === null) {
+    if (options.source === undefined && options.manifest === undefined) {
+      const disk = getBundledDiskAssetManifest(currentTarget(), options.env);
+      if (disk !== null) {
+        let assetSha256: string | undefined;
+        try {
+          const file = disk.manifest.runtimeFiles.find((entry) => entry.key === spec.assetKey);
+          if (file === undefined) return { status: 'asset-missing' };
+          assetSha256 = file.sha256;
+          const filePath = resolveAssetPath(disk.rootDir, file.relativePath);
+          if (!existsSync(filePath)) return { status: 'asset-missing' };
+          spec.configure(filePath);
+          spec.verify?.();
+          return {
+            status: 'installed',
+            assetSha256,
+            basename: basename(filePath),
+          };
+        } catch (error) {
+          return {
+            status: 'failed',
+            errorCode: nativeErrorCode(error),
+            assetSha256,
+          };
+        }
+      }
+    }
+    return { status: 'not-sea' };
+  }
 
   let assetSha256: string | undefined;
   try {
@@ -348,6 +376,40 @@ export function getSeaAssetSource(): NativeAssetSource | null {
 }
 
 const embeddedManifests = new WeakMap<NativeAssetSource, Map<string, NativeAssetManifest | null>>();
+const diskManifestCache = new Map<string, BundledDiskAssetManifest | null>();
+
+export interface BundledDiskAssetManifest {
+  readonly rootDir: string;
+  readonly manifest: NativeAssetManifest;
+}
+
+export function getBundledDiskAssetManifest(
+  target = currentTarget(),
+  env = process.env,
+): BundledDiskAssetManifest | null {
+  if (getSeaAssetSource() !== null) return null;
+  const envOverride = optionalEnvValue(env, 'KIKI_NATIVE_ADDONS_MANIFEST');
+  const manifestPath =
+    envOverride !== null
+      ? resolve(envOverride)
+      : fileURLToPath(new URL('./native-addons.json', import.meta.url));
+  const cacheKey = `${manifestPath}\u0000${target}`;
+  if (diskManifestCache.has(cacheKey)) {
+    return diskManifestCache.get(cacheKey) ?? null;
+  }
+  if (!existsSync(manifestPath)) {
+    diskManifestCache.set(cacheKey, null);
+    return null;
+  }
+  const parsed: unknown = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+  const validated = validateNativeAssetManifest(parsed, target);
+  const loaded: BundledDiskAssetManifest = {
+    rootDir: dirname(manifestPath),
+    manifest: validated,
+  };
+  diskManifestCache.set(cacheKey, loaded);
+  return loaded;
+}
 
 export function getEmbeddedNativeAssetManifest(
   source = getSeaAssetSource(),
@@ -488,6 +550,7 @@ const verifiedRoots = new Set<string>();
  */
 export function resetNativeAssetVerification(): void {
   verifiedRoots.clear();
+  diskManifestCache.clear();
 }
 
 type VerifiedStamp = Record<string, { readonly size: number; readonly mtimeMs: number }>;
@@ -581,7 +644,18 @@ export function getNativeRuntimeFile(
   options: NativeAssetOptions = {},
 ): string | null {
   const source = options.source ?? getSeaAssetSource();
-  if (source === null) return null;
+  if (source === null) {
+    if (options.source === undefined && options.manifest === undefined) {
+      const disk = getBundledDiskAssetManifest(currentTarget(), options.env);
+      if (disk !== null) {
+        const file = disk.manifest.runtimeFiles.find((entry) => entry.key === key);
+        if (file === undefined) return null;
+        const resolved = resolveAssetPath(disk.rootDir, file.relativePath);
+        return existsSync(resolved) ? resolved : null;
+      }
+    }
+    return null;
+  }
 
   const rawManifest =
     options.manifest ?? getEmbeddedNativeAssetManifest(source, currentTarget());
@@ -693,7 +767,18 @@ export function getNativePackageRoot(
   options: NativeAssetOptions = {},
 ): string | null {
   const source = options.source ?? getSeaAssetSource();
-  if (source === null) return null;
+  if (source === null) {
+    if (options.source === undefined && options.manifest === undefined) {
+      const disk = getBundledDiskAssetManifest(currentTarget(), options.env);
+      if (disk !== null) {
+        const pkg = disk.manifest.packages.find((entry) => entry.name === packageName);
+        if (pkg === undefined) return null;
+        const resolved = resolveAssetPath(disk.rootDir, pkg.root);
+        return existsSync(resolved) ? resolved : null;
+      }
+    }
+    return null;
+  }
 
   const rawManifest =
     options.manifest ?? getEmbeddedNativeAssetManifest(source, currentTarget());

@@ -48,8 +48,26 @@ export interface KikiElectronFileSelectionResult {
   readonly files: readonly KikiElectronSelectedFile[];
 }
 
+export interface KikiElectronFailurePayload {
+  readonly kind?: 'identity' | 'authentication' | 'protocol';
+  readonly message: string;
+  readonly stderrTail: readonly string[];
+  readonly logPath: string | null;
+}
+
+export type KikiElectronDiscoverResult =
+  | LocalConnection
+  | { readonly ok: true; readonly connection: LocalConnection }
+  | { readonly ok: false; readonly failure: KikiElectronFailurePayload }
+  | null;
+
+export type KikiElectronShortcutResult =
+  | { readonly homeId: string; readonly path: string }
+  | { readonly ok: true; readonly homeId: string; readonly path: string }
+  | { readonly ok: false; readonly code: string; readonly message: string };
+
 export interface KikiElectronBridge {
-  discoverConnection(): Promise<LocalConnection | null>;
+  discoverConnection(): Promise<KikiElectronDiscoverResult>;
   cancelStartup(): Promise<void>;
   onBackendStage(cb: (payload: unknown) => void): () => void;
   readonly ssh: {
@@ -76,6 +94,7 @@ export interface KikiElectronBridge {
     setTheme(theme: ResolvedTheme | 'system'): Promise<void>;
     setZoom(factor: number): Promise<boolean>;
     getWindowMode(): Promise<DesktopWindowMode | null>;
+    openModeWindow?(presetId: string): Promise<void>;
   };
   readonly pluginFocus: {
     read(): Promise<HostPluginFocusIntent | null>;
@@ -86,7 +105,9 @@ export interface KikiElectronBridge {
     send(options: HostNotification): Promise<void>;
     acknowledge(sessionId: string, scope: NavScopeIdentity, deliveryId?: string): Promise<void>;
     onClick(cb: (route: string, homeId?: string, scope?: NavScopeIdentity) => void): () => void;
+    peekNavigationIntent?(): Promise<NotificationNavigationIntent | { readonly connectionId: string } | null>;
     takeNavigationIntent(): Promise<NotificationNavigationIntent | { readonly connectionId: string } | null>;
+    ackNavigationIntent?(navigationId: string): Promise<boolean>;
     setUnreadBadge(count: number, homeId?: string, scopeId?: string, sessionIds?: readonly string[]): Promise<void>;
   };
   readonly files: {
@@ -119,7 +140,7 @@ export interface KikiElectronBridge {
     prepareSpace(homeId: string): Promise<{ readonly homeId: string }>;
     openSpace(homeId: string): Promise<void>;
     openRemoteSpace(connectionId: string): Promise<void>;
-    createSpaceShortcut(homeId: string): Promise<{ readonly homeId: string; readonly path: string }>;
+    createSpaceShortcut(homeId: string): Promise<KikiElectronShortcutResult>;
     restartSpace(homeId: string): Promise<void>;
     restartServer(): Promise<void>;
     logInfo(): Promise<DesktopLogInfo>;
@@ -141,7 +162,9 @@ declare global {
 }
 
 export function getElectronBridge(): KikiElectronBridge | null {
-  return '__KIKI_ELECTRON__' in globalThis && globalThis.__KIKI_ELECTRON__ != null
+  return '__KIKI_ELECTRON__' in globalThis &&
+    globalThis.__KIKI_ELECTRON__ !== undefined &&
+    globalThis.__KIKI_ELECTRON__ !== null
     ? globalThis.__KIKI_ELECTRON__
     : null;
 }
@@ -165,9 +188,20 @@ function toSelectedFile(
   };
 }
 
+function unwrapDiscoverResult(result: KikiElectronDiscoverResult): LocalConnection | null {
+  if (result === null) return null;
+  if ('ok' in result) {
+    if (result.ok) return result.connection;
+    throw Object.assign(new Error(result.failure.message), result.failure);
+  }
+  return result;
+}
+
 export function createElectronHost(bridge: KikiElectronBridge): ElectronHostAdapter {
+  let latestNotificationSeq = 0;
+
   const coordinator = createDesktopConnectionCoordinator<LocalConnection | null>({
-    discoverOnce: () => bridge.discoverConnection(),
+    discoverOnce: async () => unwrapDiscoverResult(await bridge.discoverConnection()),
     cancelOnce: () => bridge.cancelStartup(),
     onScopeChange: (scope) => {
       bridge.ssh.setWorkspaceScope(scope);
@@ -217,14 +251,30 @@ export function createElectronHost(bridge: KikiElectronBridge): ElectronHostAdap
       const unlisten = bridge.notifications.onClick((route, homeId, scope) => {
         if (unsubscribed) return;
         liveDelivered = true;
+        latestNotificationSeq += 1;
         callback(route, homeId, scope);
       });
-      void bridge.notifications.takeNavigationIntent().then((pending) => {
-        if (unsubscribed || liveDelivered) return;
-        const payload = notificationIntent(pending);
-        if (payload === undefined) return;
-        callback(payload.route, payload.homeId, payload.scope);
-      }, () => undefined);
+      const seqBeforeBootRead = latestNotificationSeq;
+      const readBootIntent =
+        typeof bridge.notifications.peekNavigationIntent === 'function'
+          ? bridge.notifications.peekNavigationIntent()
+          : bridge.notifications.takeNavigationIntent();
+      void readBootIntent.then(
+        (pending) => {
+          if (unsubscribed || liveDelivered || latestNotificationSeq !== seqBeforeBootRead) return;
+          const payload = notificationIntent(pending);
+          if (payload === undefined) return;
+          const navId =
+            pending !== null && typeof pending === 'object' && 'navigationId' in pending && typeof pending.navigationId === 'string'
+              ? pending.navigationId
+              : undefined;
+          callback(payload.route, payload.homeId, payload.scope);
+          if (navId !== undefined && typeof bridge.notifications.ackNavigationIntent === 'function') {
+            void bridge.notifications.ackNavigationIntent(navId);
+          }
+        },
+        () => undefined,
+      );
       return () => {
         unsubscribed = true;
         unlisten();
@@ -304,21 +354,27 @@ export function createElectronHost(bridge: KikiElectronBridge): ElectronHostAdap
     async pickFiles() {
       const selected = await bridge.files.pickFiles();
       if (selected === null) return null;
-      return selected.map((file) => toSelectedFile(file, bridge.files.readSelectedFile));
+      return selected.map((file) =>
+        toSelectedFile(file, (token) => bridge.files.readSelectedFile(token)),
+      );
     },
     async readClipboardFiles() {
       const copied = await bridge.files.readClipboardFiles();
       if (copied === null) return null;
       return {
         paths: copied.paths,
-        media: copied.files.map((file) => toSelectedFile(file, bridge.files.readSelectedFile)),
+        media: copied.files.map((file) =>
+          toSelectedFile(file, (token) => bridge.files.readSelectedFile(token)),
+        ),
       };
     },
     async readDroppedFiles(paths) {
       const dropped = await bridge.files.readDroppedFiles(paths);
       return {
         paths: dropped.paths,
-        media: dropped.files.map((file) => toSelectedFile(file, bridge.files.readSelectedFile)),
+        media: dropped.files.map((file) =>
+          toSelectedFile(file, (token) => bridge.files.readSelectedFile(token)),
+        ),
       };
     },
     onFileDrop(callback) {
@@ -381,7 +437,14 @@ export function createElectronHost(bridge: KikiElectronBridge): ElectronHostAdap
     prepareSpace: async (homeId) => bridge.desktop.prepareSpace(homeId),
     openSpace: async (homeId) => bridge.desktop.openSpace(homeId),
     openRemoteSpace: async (connectionId) => bridge.desktop.openRemoteSpace(connectionId),
-    createSpaceShortcut: async (homeId) => bridge.desktop.createSpaceShortcut(homeId),
+    async createSpaceShortcut(homeId) {
+      const result = await bridge.desktop.createSpaceShortcut(homeId);
+      if ('ok' in result) {
+        if (result.ok) return { homeId: result.homeId, path: result.path };
+        return Promise.reject({ code: result.code, message: result.message });
+      }
+      return result;
+    },
     restartSpace: async (homeId) => bridge.desktop.restartSpace(homeId),
     restartServer: async () => bridge.desktop.restartServer(),
     desktopLogInfo: async () => bridge.desktop.logInfo(),
@@ -408,16 +471,19 @@ export function createElectronHost(bridge: KikiElectronBridge): ElectronHostAdap
         unlisten();
       };
     },
-    peekSubscribeIntent: subscribeIntents.peekSubscribeIntent,
-    ackSubscribeIntent: subscribeIntents.ackSubscribeIntent,
-    onSubscribeIntent: subscribeIntents.onSubscribeIntent,
-    onSubscribeUrl: subscribeIntents.onSubscribeUrl,
+    peekSubscribeIntent: () => subscribeIntents.peekSubscribeIntent(),
+    ackSubscribeIntent: (id) => subscribeIntents.ackSubscribeIntent(id),
+    onSubscribeIntent: (callback) => subscribeIntents.onSubscribeIntent(callback),
+    onSubscribeUrl: (callback) => subscribeIntents.onSubscribeUrl(callback),
     async windowMode() {
       try {
         return parseDesktopWindowMode(await bridge.window.getWindowMode());
       } catch {
         return null;
       }
+    },
+    async openModeWindow(presetId) {
+      await bridge.window.openModeWindow?.(presetId);
     },
     async setTheme(resolved) {
       try {

@@ -1,5 +1,6 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import type { MenuItemConstructorOptions } from 'electron';
-import type { LocalSpaceSummary } from '#/shared/types';
+import type { DesktopSpace, LocalSpaceSummary } from '#/shared/types';
 import type { StopManagedDaemonResult } from '#/main/daemonSupervisor';
 
 export const TRAY_LOGON_RETRY_LIMIT = 12;
@@ -53,6 +54,53 @@ export function getTrayCopy(zh: boolean): TrayCopy {
   };
 }
 
+export function desktopExitCopy(zh: boolean): {
+  readonly message: string;
+  readonly confirmButton: string;
+  readonly cancelButton: string;
+} {
+  if (zh) {
+    return {
+      message:
+        '退出会停止本桌面连接的本机共享服务，断开其他客户端，并取消未完成的工作。其他空间、远端和外部管理的服务不受影响。关闭窗口可保留后台。',
+      confirmButton: '停止服务并退出',
+      cancelButton: '取消',
+    };
+  }
+  return {
+    message:
+      'Quitting stops this desktop’s connected local shared services, disconnects other clients, and cancels unfinished work. Other spaces, remote and externally managed services are unaffected. Close the window to keep the backend running.',
+    confirmButton: 'Stop services and quit',
+    cancelButton: 'Cancel',
+  };
+}
+
+export function formatTrayTooltip(options: {
+  readonly spaces: readonly LocalSpaceSummary[];
+  readonly activeSpace?: DesktopSpace | null;
+  readonly windowVisible: boolean;
+  readonly zh: boolean;
+}): string {
+  if (options.activeSpace !== undefined && options.activeSpace !== null && options.activeSpace.homeId !== 'main') {
+    return `Kiki · ${options.activeSpace.name}`;
+  }
+  const running = options.spaces
+    .filter((space) => space.status !== 'stopped')
+    .map((space) => space.name);
+  if (running.length === 0) {
+    return 'Kiki';
+  }
+  const summary = running.join(', ');
+  if (options.zh) {
+    return options.windowVisible
+      ? `Kiki · 运行中（${summary}）`
+      : `Kiki · 后台运行中（${summary}）`;
+  }
+  return options.windowVisible
+    ? `Kiki · Running (${summary})`
+    : `Kiki · Running in background (${summary})`;
+}
+
 export interface TrayRetryOutcome {
   readonly trayCreated: boolean;
   readonly revealFallbackWindow: boolean;
@@ -70,12 +118,7 @@ export async function retryTrayCreation(options: {
 }): Promise<TrayRetryOutcome> {
   const retryLimit = options.retryLimit ?? TRAY_LOGON_RETRY_LIMIT;
   const delayMs = options.delayMs ?? TRAY_LOGON_RETRY_DELAY_MS;
-  const sleep =
-    options.sleep ??
-    ((ms) =>
-      new Promise<void>((resolve) => {
-        setTimeout(resolve, ms);
-      }));
+  const sleep = options.sleep ?? ((ms) => delay(ms));
 
   let lastError: string | undefined;
   for (let attempt = 1; attempt <= retryLimit + 1; attempt += 1) {
@@ -213,20 +256,18 @@ export interface TrayQuitDeps {
   readonly releaseQuit: () => void;
 }
 
-/**
- * Tray "Quit" coordinator:
- * 1. Confirms if the managed local daemon reports pending sessions.
- * 2. Stops ONLY desktop-managed local daemons; externally managed/remote daemons are left untouched.
- * 3. Releases Electron quit only after user confirmation completes.
- */
 export async function executeTrayQuit(deps: TrayQuitDeps): Promise<{ readonly quit: boolean }> {
-  const first = await deps.stopManagedDaemon({ action: 'quit', interruptWork: false });
-  if (first.reason === 'pending-work') {
-    const confirmed = await deps.confirmInterruptPendingWork(first.pendingWork ?? []);
-    if (!confirmed) {
-      return { quit: false };
+  try {
+    const first = await deps.stopManagedDaemon({ action: 'quit', interruptWork: false });
+    if (first.reason === 'pending-work') {
+      const confirmed = await deps.confirmInterruptPendingWork(first.pendingWork ?? []);
+      if (!confirmed) {
+        return { quit: false };
+      }
+      await deps.stopManagedDaemon({ action: 'quit', interruptWork: true });
     }
-    await deps.stopManagedDaemon({ action: 'quit', interruptWork: true });
+  } catch {
+    // Never trap the user in an unquittable window if the daemon is unreachable during quit.
   }
   deps.detachDesktop();
   deps.releaseQuit();

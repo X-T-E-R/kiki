@@ -30,6 +30,7 @@ const currentReleaseV2Schema = z.object({
   runtimeKind: z.literal('electron-single-binary'),
   releaseId: z.string().regex(RELEASE_ID_RE),
   serverEntry: z.string().min(1).optional(),
+  nativeAddons: z.string().min(1).optional(),
   files: z.record(z.string(), fileDigestSchema).optional(),
 });
 
@@ -90,7 +91,7 @@ function serverExecutableName(platform: NodeJS.Platform): string {
   return platform === 'win32' ? 'kiki-server.exe' : 'kiki-server';
 }
 
-function stripWindowsVerbatimPrefix(rawPath: string): string {
+export function stripWindowsVerbatimPrefix(rawPath: string): string {
   if (rawPath.startsWith('\\\\?\\UNC\\')) return `\\\\${rawPath.slice(8)}`;
   if (rawPath.startsWith('\\\\?\\')) return rawPath.slice(4);
   return rawPath;
@@ -164,6 +165,19 @@ export function parseReleaseLayout(
   return { runtimeRoot, kind: 'versioned', releaseId: dirName, releaseDir };
 }
 
+function isSafeRelativeManifestPath(relPath: string): boolean {
+  const normalized = relPath.trim().replaceAll('\\', '/');
+  if (
+    normalized === '' ||
+    normalized.startsWith('/') ||
+    /^[a-zA-Z]:/.test(normalized)
+  ) {
+    return false;
+  }
+  const segments = normalized.split('/');
+  return segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
 function hasValidRuntimeArtifacts(
   dir: string,
   manifest: CurrentReleaseManifest,
@@ -180,16 +194,31 @@ function hasValidRuntimeArtifacts(
   if (!checkFile(desktopExe)) return { ok: false, desktopExe };
 
   if (manifest.schemaVersion === 2) {
+    if (manifest.serverEntry !== undefined && !isSafeRelativeManifestPath(manifest.serverEntry)) {
+      return { ok: false, desktopExe };
+    }
+    if (manifest.nativeAddons !== undefined && !isSafeRelativeManifestPath(manifest.nativeAddons)) {
+      return { ok: false, desktopExe };
+    }
     const candidates =
       manifest.serverEntry !== undefined
         ? [manifest.serverEntry]
-        : ['server-entry.mjs', 'resources/app.asar.unpacked/dist/server/server-entry.mjs'];
-    const entryPath = candidates.map((rel) => join(dir, rel)).find((candidate) => checkFile(candidate));
-    if (entryPath === undefined) return { ok: false, desktopExe };
+        : ['resources/app.asar.unpacked/dist/server/server-entry.mjs', 'server-entry.mjs'];
+    const matchedRel = candidates.find((rel) => checkFile(join(dir, rel)));
+    if (matchedRel === undefined) return { ok: false, desktopExe };
+    const entryPath = join(dir, matchedRel);
+    const unpackedLayout = matchedRel.replaceAll('\\', '/').startsWith('resources/app.asar.unpacked/');
+    if (unpackedLayout && !checkFile(join(dir, 'resources/app.asar'))) {
+      return { ok: false, desktopExe };
+    }
+    const addonsPath =
+      manifest.nativeAddons !== undefined
+        ? join(dir, manifest.nativeAddons)
+        : join(dirname(entryPath), 'native-addons.json');
     if (
       manifest.files !== undefined &&
       Object.hasOwn(manifest.files, 'native-addons.json') &&
-      !checkFile(join(dir, 'native-addons.json'))
+      !checkFile(addonsPath)
     ) {
       return { ok: false, desktopExe };
     }

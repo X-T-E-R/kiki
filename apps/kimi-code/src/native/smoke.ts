@@ -5,12 +5,14 @@ import { dirname, join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 
 import {
+  getBundledDiskAssetManifest,
   getEmbeddedNativeAssetManifest,
   getMailboxWorkerFile,
   getMemoryWorkerFile,
   getNativeCacheBase,
   getNativePackageRoot,
   getQueryStoreWorkerFile,
+  getSeaAssetSource,
   getUsageReadModelWorkerFile,
 } from './native-assets';
 
@@ -105,7 +107,8 @@ function smokePiTuiNativeLoad(): void {
   if (rel === undefined) return;
 
   const req = createRequire(import.meta.url);
-  const helper = req(join(dirname(process.execPath), rel)) as {
+  const piTuiRoot = getNativePackageRoot('@kiki/pi-tui') ?? dirname(process.execPath);
+  const helper = req(join(piTuiRoot, rel)) as {
     isModifierPressed?: unknown;
     enableVirtualTerminalInput?: unknown;
   };
@@ -304,10 +307,14 @@ export async function smokeAuthNative(): Promise<void> {
 }
 
 async function runSmoke(): Promise<void> {
-  const manifest = getEmbeddedNativeAssetManifest();
+  const seaSource = getSeaAssetSource();
+  const manifest =
+    seaSource !== null
+      ? getEmbeddedNativeAssetManifest(seaSource)
+      : (getBundledDiskAssetManifest()?.manifest ?? null);
   if (manifest === null) throw new Error('Native asset manifest is not available.');
   for (const packageName of smokePackages) {
-    if (getNativePackageRoot(packageName, { manifest }) === null) {
+    if (getNativePackageRoot(packageName, seaSource !== null ? { manifest } : {}) === null) {
       throw new Error(`Native package is not available: ${packageName}`);
     }
   }

@@ -5,6 +5,7 @@ import {
 } from '#/main/launchArgs';
 import {
   buildTrayMenuTemplate,
+  formatTrayTooltip,
   retryTrayCreation,
 } from '#/main/trayService';
 import {
@@ -291,6 +292,7 @@ describe('WindowService and TrayService', () => {
   });
 
   it('enforces loopback-only navigation guard and blocks browser reload/print accelerators', () => {
+    expect(isAllowedRendererNavigation('kiki-app://localhost/s/abc', null)).toBe(true);
     expect(isAllowedRendererNavigation('http://127.0.0.1:41234/s/abc', 'http://127.0.0.1:41234')).toBe(true);
     expect(isAllowedRendererNavigation('data:text/html;charset=utf-8,hi', null)).toBe(true);
     expect(isAllowedRendererNavigation('file:///C:/Windows/win.ini', 'http://127.0.0.1:41234')).toBe(false);
@@ -349,5 +351,19 @@ describe('WindowService and TrayService', () => {
     expect(menu.some((item) => item.label === '打开主窗口')).toBe(true);
     expect(menu.some((item) => item.label === '本地空间')).toBe(true);
     expect(menu.some((item) => item.label === '完全退出（停止后台服务）')).toBe(true);
+    expect(
+      formatTrayTooltip({
+        spaces: [{ homeId: 'main', name: 'Main space', path: '/kiki', status: 'running', active: true }],
+        activeSpace: {
+          homeId: 'main',
+          name: 'Main space',
+          path: '/kiki',
+          credentialsShared: true,
+          isPrimary: true,
+        },
+        windowVisible: false,
+        zh: true,
+      }),
+    ).toBe('Kiki · 后台运行中（Main space）');
   });
 });

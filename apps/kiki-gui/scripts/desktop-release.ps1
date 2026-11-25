@@ -111,18 +111,96 @@ function Get-ManifestSchemaVersion([object]$Manifest) {
     return 1
 }
 
+function Assert-SafeRelativeReleasePath([string]$RelativePath, [string]$Label) {
+    if ([string]::IsNullOrWhiteSpace($RelativePath)) {
+        throw "$Label cannot be empty."
+    }
+    $normalized = $RelativePath.Trim().Replace('/', '\')
+    if ([IO.Path]::IsPathRooted($normalized) -or $normalized.StartsWith('\') -or $normalized -match '^[a-zA-Z]:') {
+        throw "$Label must be a relative path inside the release directory: $RelativePath"
+    }
+    foreach ($segment in $normalized.Split('\')) {
+        if ([string]::IsNullOrEmpty($segment) -or $segment -eq '.' -or $segment -eq '..') {
+            throw "$Label contains an invalid path segment: $RelativePath"
+        }
+    }
+    return $normalized
+}
+
+function Resolve-V2Layout([string]$DirectoryPath = '', [object]$ManifestOrReceipt = $null) {
+    $unpackedEntryRel = 'resources\app.asar.unpacked\dist\server\server-entry.mjs'
+    $unpackedAddonsRel = 'resources\app.asar.unpacked\dist\server\native-addons.json'
+    $unpackedAsarRel = 'resources\app.asar'
+
+    $explicitEntry = [string](Get-ObjectProperty $ManifestOrReceipt 'serverEntry')
+    $explicitAddons = [string](Get-ObjectProperty $ManifestOrReceipt 'nativeAddons')
+    if (-not [string]::IsNullOrWhiteSpace($explicitEntry)) {
+        $serverEntryRel = Assert-SafeRelativeReleasePath $explicitEntry 'V2 serverEntry'
+        $parentRel = Split-Path -Parent $serverEntryRel
+        $defaultAddonsRel = if ([string]::IsNullOrWhiteSpace($parentRel)) { 'native-addons.json' } else { Join-Path $parentRel 'native-addons.json' }
+        $nativeAddonsRel = if (-not [string]::IsNullOrWhiteSpace($explicitAddons)) {
+            Assert-SafeRelativeReleasePath $explicitAddons 'V2 nativeAddons'
+        }
+        else {
+            $defaultAddonsRel
+        }
+        $isUnpacked = $serverEntryRel.StartsWith('resources\app.asar.unpacked\', [StringComparison]::OrdinalIgnoreCase)
+        $appAsarRel = if ($isUnpacked) { $unpackedAsarRel } else { $null }
+        return [pscustomobject]@{
+            IsUnpacked = $isUnpacked
+            ServerEntryRel = $serverEntryRel
+            NativeAddonsRel = $nativeAddonsRel
+            AppAsarRel = $appAsarRel
+            ServerEntryPosix = $serverEntryRel.Replace('\', '/')
+            NativeAddonsPosix = $nativeAddonsRel.Replace('\', '/')
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($DirectoryPath)) {
+        if ((Test-Path -LiteralPath (Join-Path $DirectoryPath $unpackedEntryRel) -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $DirectoryPath $unpackedAddonsRel) -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $DirectoryPath $unpackedAsarRel) -PathType Leaf)) {
+            return [pscustomobject]@{
+                IsUnpacked = $true
+                ServerEntryRel = $unpackedEntryRel
+                NativeAddonsRel = $unpackedAddonsRel
+                AppAsarRel = $unpackedAsarRel
+                ServerEntryPosix = $unpackedEntryRel.Replace('\', '/')
+                NativeAddonsPosix = $unpackedAddonsRel.Replace('\', '/')
+            }
+        }
+        if ((Test-Path -LiteralPath (Join-Path $DirectoryPath 'server-entry.mjs') -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $DirectoryPath 'native-addons.json') -PathType Leaf)) {
+            return [pscustomobject]@{
+                IsUnpacked = $false
+                ServerEntryRel = 'server-entry.mjs'
+                NativeAddonsRel = 'native-addons.json'
+                AppAsarRel = $null
+                ServerEntryPosix = 'server-entry.mjs'
+                NativeAddonsPosix = 'native-addons.json'
+            }
+        }
+    }
+    return $null
+}
+
 function Get-DirectoryReleaseSchemaVersion([string]$DirectoryPath) {
     $serverExe = Join-Path $DirectoryPath 'kiki-server.exe'
-    $serverEntry = Join-Path $DirectoryPath 'server-entry.mjs'
-    $nativeAddons = Join-Path $DirectoryPath 'native-addons.json'
-    if ((-not (Test-Path -LiteralPath $serverExe -PathType Leaf)) -and (Test-Path -LiteralPath $serverEntry -PathType Leaf) -and (Test-Path -LiteralPath $nativeAddons -PathType Leaf)) {
+    if ((-not (Test-Path -LiteralPath $serverExe -PathType Leaf)) -and ($null -ne (Resolve-V2Layout $DirectoryPath))) {
         return 2
     }
     return 1
 }
 
-function Get-ReleaseRequiredFileNames([int]$SchemaVersion) {
+function Get-ReleaseRequiredFileNames([int]$SchemaVersion, [string]$DirectoryPath = '', [object]$Manifest = $null) {
     if ($SchemaVersion -eq 2) {
+        $v2 = Resolve-V2Layout $DirectoryPath $Manifest
+        if ($null -ne $v2 -and $v2.IsUnpacked) {
+            return @('kiki-desktop.exe', $v2.AppAsarRel, $v2.ServerEntryRel, $v2.NativeAddonsRel)
+        }
+        if ($null -ne $v2) {
+            return @('kiki-desktop.exe', $v2.ServerEntryRel, $v2.NativeAddonsRel)
+        }
         return @('kiki-desktop.exe', 'server-entry.mjs', 'native-addons.json')
     }
     return @('kiki-desktop.exe', 'kiki-server.exe')
@@ -132,7 +210,7 @@ function Get-ReleaseStaleFileNames([int]$SchemaVersion) {
     if ($SchemaVersion -eq 2) {
         return @('kiki-server.exe')
     }
-    return @('server-entry.mjs', 'native-addons.json')
+    return @('server-entry.mjs', 'native-addons.json', 'resources', 'locales', 'swiftshader', 'icudtl.dat', 'v8_context_snapshot.bin', 'chrome_100_percent.pak', 'chrome_200_percent.pak', 'resources.pak')
 }
 
 function Read-CurrentManifest([string]$Root, [switch]$AllowMissing) {
@@ -217,17 +295,22 @@ function Resolve-ActiveReleaseId([string]$Root) {
     $activeDir = Get-ActivePath $Root
     $desktopPath = Join-Path $activeDir 'kiki-desktop.exe'
     $serverPath = Join-Path $activeDir 'kiki-server.exe'
-    $serverEntryPath = Join-Path $activeDir 'server-entry.mjs'
-    $nativeAddonsPath = Join-Path $activeDir 'native-addons.json'
     $activeManifest = Read-ActiveManifest $Root -AllowMissing
     $schema = if ($null -ne $activeManifest) { Get-ManifestSchemaVersion $activeManifest } else { Get-DirectoryReleaseSchemaVersion $activeDir }
-    if ($schema -eq 2 -and (Test-Path -LiteralPath $desktopPath -PathType Leaf) -and (Test-Path -LiteralPath $serverEntryPath -PathType Leaf) -and (Test-Path -LiteralPath $nativeAddonsPath -PathType Leaf)) {
-        try {
-            $desktop = Get-ArtifactInfo $desktopPath 'Active Kiki GUI'
-            $serverEntry = Get-ArtifactInfo $serverEntryPath 'Active Kiki server entry'
-            return '{0}-{1}' -f $desktop.Hash.Substring(0, 24), $serverEntry.Hash.Substring(0, 24)
-        }
-        catch {
+    if ($schema -eq 2 -and (Test-Path -LiteralPath $desktopPath -PathType Leaf)) {
+        $v2 = Resolve-V2Layout $activeDir $activeManifest
+        if ($null -ne $v2) {
+            $serverEntryPath = Join-Path $activeDir $v2.ServerEntryRel
+            $nativeAddonsPath = Join-Path $activeDir $v2.NativeAddonsRel
+            if ((Test-Path -LiteralPath $serverEntryPath -PathType Leaf) -and (Test-Path -LiteralPath $nativeAddonsPath -PathType Leaf)) {
+                try {
+                    $desktop = Get-ArtifactInfo $desktopPath 'Active Kiki GUI'
+                    $serverEntry = Get-ArtifactInfo $serverEntryPath 'Active Kiki server entry'
+                    return '{0}-{1}' -f $desktop.Hash.Substring(0, 24), $serverEntry.Hash.Substring(0, 24)
+                }
+                catch {
+                }
+            }
         }
     }
     if ((Test-Path -LiteralPath $desktopPath -PathType Leaf) -and (Test-Path -LiteralPath $serverPath -PathType Leaf)) {
@@ -245,6 +328,11 @@ function Resolve-ActiveReleaseId([string]$Root) {
     return $null
 }
 
+function Test-IsTransientSyncEntryName([string]$Name) {
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
+    return ($Name.StartsWith('.stage-') -or $Name.StartsWith('.backup-') -or $Name.StartsWith('.stale-') -or ($Name -match '^\..*\.(tmp|bak)$'))
+}
+
 function Test-ActiveReleaseAligned([string]$Root, [string]$ReleaseId, [int]$ExpectedSchema = 0) {
     $activeDir = Get-ActivePath $Root
     if (-not (Test-Path -LiteralPath $activeDir -PathType Container)) { return $false }
@@ -253,7 +341,7 @@ function Test-ActiveReleaseAligned([string]$Root, [string]$ReleaseId, [int]$Expe
     if ($null -eq $activeManifest -or ([string]$activeManifest.releaseId) -cne $ReleaseId) { return $false }
     $activeSchema = Get-ManifestSchemaVersion $activeManifest
     if ($ExpectedSchema -gt 0 -and $activeSchema -ne $ExpectedSchema) { return $false }
-    foreach ($name in (Get-ReleaseRequiredFileNames $activeSchema)) {
+    foreach ($name in (Get-ReleaseRequiredFileNames $activeSchema $activeDir $activeManifest)) {
         $filePath = Join-Path $activeDir $name
         if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) { return $false }
         if (Test-IsReparsePoint $filePath) { return $false }
@@ -263,18 +351,85 @@ function Test-ActiveReleaseAligned([string]$Root, [string]$ReleaseId, [int]$Expe
         $stalePath = Join-Path $activeDir $staleName
         if (Test-Path -LiteralPath $stalePath) { return $false }
     }
+    if ($activeSchema -eq 1) {
+        $allowedV1 = @('kiki-desktop.exe', 'kiki-server.exe', 'build-info.txt', 'active-release.json')
+        foreach ($entry in @(Get-ChildItem -LiteralPath $activeDir -Force -ErrorAction SilentlyContinue)) {
+            if (Test-IsTransientSyncEntryName $entry.Name) { continue }
+            if ($entry.PSIsContainer -or ($entry.Name -notin $allowedV1)) { return $false }
+        }
+    }
+    else {
+        $releaseDir = Get-ReleasePath $Root $ReleaseId
+        if (Test-Path -LiteralPath $releaseDir -PathType Container) {
+            foreach ($relEntry in @(Get-ChildItem -LiteralPath $releaseDir -Force -ErrorAction SilentlyContinue)) {
+                if (Test-IsTransientSyncEntryName $relEntry.Name) { continue }
+                $expectedInActive = Join-Path $activeDir $relEntry.Name
+                if (-not (Test-Path -LiteralPath $expectedInActive)) { return $false }
+            }
+        }
+    }
     return $true
 }
 
-function Test-FileExclusiveWritable([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $true }
+function ConvertTo-LongLiteralPath([string]$Path) {
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($full.StartsWith('\\?\')) { return $full }
+    if ($full.StartsWith('\\')) { return ('\\?\UNC\' + $full.Substring(2)) }
+    return ('\\?\' + $full)
+}
+
+function Remove-DirectoryTreeSafe([string]$DirPath) {
+    $longDir = ConvertTo-LongLiteralPath $DirPath
+    if (-not [IO.Directory]::Exists($longDir)) { return }
     try {
-        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        [IO.Directory]::Delete($longDir, $true)
+    }
+    catch {
+        Remove-Item -LiteralPath $DirPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-FileExclusiveWritable([string]$Path) {
+    $longPath = ConvertTo-LongLiteralPath $Path
+    if (-not [IO.File]::Exists($longPath)) { return $true }
+    try {
+        $stream = [IO.File]::Open($longPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
         $stream.Dispose()
         return $true
     }
     catch {
         return $false
+    }
+}
+
+function Copy-DirectoryTreeStrict([string]$SourceDir, [string]$DestinationDir, [string[]]$ExcludeRootNames = @()) {
+    $longSrcDir = ConvertTo-LongLiteralPath $SourceDir
+    $longDstDir = ConvertTo-LongLiteralPath $DestinationDir
+    if (([IO.File]::GetAttributes($longSrcDir) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing to copy reparse point directory: $SourceDir"
+    }
+    [IO.Directory]::CreateDirectory($longDstDir) | Out-Null
+    $excludeSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($ex in @($ExcludeRootNames)) {
+        if (-not [string]::IsNullOrWhiteSpace($ex)) { $null = $excludeSet.Add($ex) }
+    }
+    foreach ($subDir in @([IO.Directory]::GetDirectories($longSrcDir))) {
+        $name = [IO.Path]::GetFileName($subDir)
+        if ($excludeSet.Contains($name)) { continue }
+        if ($name.StartsWith('.pending-') -or (Test-IsTransientSyncEntryName $name)) { continue }
+        if (([IO.File]::GetAttributes($subDir) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing to copy symlink or junction inside release payload: $subDir"
+        }
+        Copy-DirectoryTreeStrict $subDir ([IO.Path]::Combine($longDstDir, $name)) @()
+    }
+    foreach ($file in @([IO.Directory]::GetFiles($longSrcDir))) {
+        $name = [IO.Path]::GetFileName($file)
+        if ($excludeSet.Contains($name)) { continue }
+        if ($name.StartsWith('.pending-') -or (Test-IsTransientSyncEntryName $name)) { continue }
+        if (([IO.File]::GetAttributes($file) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing to copy symlink or junction inside release payload: $file"
+        }
+        [IO.File]::Copy($file, [IO.Path]::Combine($longDstDir, $name), $true)
     }
 }
 
@@ -287,7 +442,8 @@ function Sync-ActiveReleaseCore(
     [switch]$SkipIfLocked,
     [int]$SchemaVersion = 1,
     [object]$ServerEntryInfo = $null,
-    [object]$NativeAddonsInfo = $null
+    [object]$NativeAddonsInfo = $null,
+    [object]$V2Layout = $null
 ) {
     $activePath = Get-ActivePath $RootPath
     $releasePath = Get-ReleasePath $RootPath $ReleaseId
@@ -295,26 +451,35 @@ function Sync-ActiveReleaseCore(
     $activeBuildInfo = Join-Path $activePath 'build-info.txt'
     $activeManifestPath = Join-Path $activePath 'active-release.json'
 
+    $resolvedV2 = if ($SchemaVersion -eq 2) {
+        if ($null -ne $V2Layout) { $V2Layout } else { Resolve-V2Layout $releasePath }
+    }
+    else {
+        $null
+    }
+    if ($SchemaVersion -eq 2 -and $null -eq $resolvedV2) {
+        throw "Release directory at $releasePath is missing v2 server-entry.mjs or native-addons.json."
+    }
+
     $requiredSpecs = if ($SchemaVersion -eq 2) {
         @(
-            @{ Name = 'kiki-desktop.exe'; Label = 'Active Kiki GUI'; Expected = $DesktopInfo },
-            @{ Name = 'server-entry.mjs'; Label = 'Active Kiki server entry'; Expected = $ServerEntryInfo },
-            @{ Name = 'native-addons.json'; Label = 'Active Kiki native addon manifest'; Expected = $NativeAddonsInfo }
+            @{ RelPath = 'kiki-desktop.exe'; ManifestKey = 'kiki-desktop.exe'; Label = 'Active Kiki GUI'; Expected = $DesktopInfo },
+            @{ RelPath = $resolvedV2.ServerEntryRel; ManifestKey = 'server-entry.mjs'; Label = 'Active Kiki server entry'; Expected = $ServerEntryInfo },
+            @{ RelPath = $resolvedV2.NativeAddonsRel; ManifestKey = 'native-addons.json'; Label = 'Active Kiki native addon manifest'; Expected = $NativeAddonsInfo }
         )
     }
     else {
         @(
-            @{ Name = 'kiki-desktop.exe'; Label = 'Active Kiki GUI'; Expected = $DesktopInfo },
-            @{ Name = 'kiki-server.exe'; Label = 'Active Kiki backend'; Expected = $SidecarInfo }
+            @{ RelPath = 'kiki-desktop.exe'; ManifestKey = 'kiki-desktop.exe'; Label = 'Active Kiki GUI'; Expected = $DesktopInfo },
+            @{ RelPath = 'kiki-server.exe'; ManifestKey = 'kiki-server.exe'; Label = 'Active Kiki backend'; Expected = $SidecarInfo }
         )
     }
-    $staleNames = @(Get-ReleaseStaleFileNames $SchemaVersion)
 
     if (Test-ActiveReleaseAligned $RootPath $ReleaseId $SchemaVersion) {
         $allMatched = (Test-Path -LiteralPath $activeBuildInfo -PathType Leaf)
         if ($allMatched) {
             foreach ($spec in $requiredSpecs) {
-                $existing = Get-ArtifactInfo (Join-Path $activePath $spec.Name) $spec.Label
+                $existing = Get-ArtifactInfo (Join-Path $activePath $spec.RelPath) $spec.Label
                 if ($existing.Hash -cne $spec.Expected.Hash -or $existing.Length -ne $spec.Expected.Length) {
                     $allMatched = $false
                     break
@@ -350,11 +515,27 @@ function Sync-ActiveReleaseCore(
     }
 
     $lockCheckPaths = New-Object System.Collections.Generic.List[string]
-    foreach ($spec in $requiredSpecs) { $lockCheckPaths.Add((Join-Path $activePath $spec.Name)) }
-    foreach ($staleName in $staleNames) { $lockCheckPaths.Add((Join-Path $activePath $staleName)) }
+    if (Test-Path -LiteralPath $activePath -PathType Container) {
+        $longActive = ConvertTo-LongLiteralPath $activePath
+        foreach ($topEntry in @(Get-ChildItem -LiteralPath $activePath -Force -ErrorAction SilentlyContinue)) {
+            if (Test-IsTransientSyncEntryName $topEntry.Name) { continue }
+            if ($topEntry.PSIsContainer) {
+                $longSub = [IO.Path]::Combine($longActive, $topEntry.Name)
+                foreach ($subFile in @([IO.Directory]::EnumerateFiles($longSub, '*', [IO.SearchOption]::AllDirectories))) {
+                    $lockCheckPaths.Add($subFile)
+                }
+            }
+            else {
+                $lockCheckPaths.Add($topEntry.FullName)
+            }
+        }
+    }
+    foreach ($spec in $requiredSpecs) { $lockCheckPaths.Add((Join-Path $activePath $spec.RelPath)) }
     $lockCheckPaths.Add($activeBuildInfo)
     $lockCheckPaths.Add($activeManifestPath)
+    $checkedSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($checkPath in $lockCheckPaths) {
+        if (-not $checkedSet.Add($checkPath)) { continue }
         if (-not (Test-FileExclusiveWritable $checkPath)) {
             if ($SkipIfLocked) {
                 return [pscustomobject]@{
@@ -372,18 +553,140 @@ function Sync-ActiveReleaseCore(
 
     [IO.Directory]::CreateDirectory($activePath) | Out-Null
     $nonce = [guid]::NewGuid().ToString('N')
+
+    if ($SchemaVersion -eq 2) {
+        $stageDir = Join-Path $activePath ('.stage-{0}' -f $nonce)
+        $backupDir = Join-Path $activePath ('.backup-{0}' -f $nonce)
+        $rollbackMoves = New-Object System.Collections.Generic.List[object]
+        $restoreFailed = $false
+        try {
+            Copy-DirectoryTreeStrict $releasePath $stageDir @('active-release.json', 'desktop-build-receipt.json')
+            $stagedBuildInfo = Join-Path $stageDir 'build-info.txt'
+            if (-not (Test-Path -LiteralPath $stagedBuildInfo -PathType Leaf)) {
+                Write-BuildInfo $stagedBuildInfo $GitSha
+            }
+            foreach ($spec in $requiredSpecs) {
+                Assert-ArtifactMatches $spec.Expected (Join-Path $stageDir $spec.RelPath) $spec.Label
+            }
+            if ($resolvedV2.IsUnpacked) {
+                $stagedAsar = Join-Path $stageDir $resolvedV2.AppAsarRel
+                if (-not (Test-Path -LiteralPath $stagedAsar -PathType Leaf) -or (Get-Item -LiteralPath $stagedAsar).Length -le 0) {
+                    throw "Active Kiki app.asar is missing or empty after staging: $stagedAsar"
+                }
+            }
+
+            [IO.Directory]::CreateDirectory($backupDir) | Out-Null
+            try {
+                foreach ($existingEntry in @(Get-ChildItem -LiteralPath $activePath -Force)) {
+                    if ($existingEntry.Name -ceq (Split-Path -Leaf $stageDir) -or
+                        $existingEntry.Name -ceq (Split-Path -Leaf $backupDir) -or
+                        $existingEntry.Name -ieq 'active-release.json') {
+                        continue
+                    }
+                    $backupTarget = Join-Path $backupDir $existingEntry.Name
+                    if ($existingEntry.PSIsContainer) {
+                        [IO.Directory]::Move($existingEntry.FullName, $backupTarget)
+                        $rollbackMoves.Add(@{ Kind = 'dir-backup'; Original = $existingEntry.FullName; Backup = $backupTarget })
+                    }
+                    else {
+                        [IO.File]::Move($existingEntry.FullName, $backupTarget)
+                        $rollbackMoves.Add(@{ Kind = 'file-backup'; Original = $existingEntry.FullName; Backup = $backupTarget })
+                    }
+                }
+                foreach ($stagedEntry in @(Get-ChildItem -LiteralPath $stageDir -Force)) {
+                    $destTarget = Join-Path $activePath $stagedEntry.Name
+                    if ($stagedEntry.PSIsContainer) {
+                        [IO.Directory]::Move($stagedEntry.FullName, $destTarget)
+                        $rollbackMoves.Add(@{ Kind = 'dir-installed'; Dest = $destTarget })
+                    }
+                    else {
+                        [IO.File]::Move($stagedEntry.FullName, $destTarget)
+                        $rollbackMoves.Add(@{ Kind = 'file-installed'; Dest = $destTarget })
+                    }
+                }
+
+                $filesMap = [ordered]@{}
+                foreach ($spec in $requiredSpecs) {
+                    $filesMap[$spec.ManifestKey] = [ordered]@{ sha256 = $spec.Expected.Hash; bytes = $spec.Expected.Length }
+                }
+                $activeManifest = [ordered]@{
+                    schemaVersion = 2
+                    runtimeKind = 'electron-single-binary'
+                    releaseId = $ReleaseId
+                    gitSha = $GitSha
+                    syncedAtUtc = [DateTime]::UtcNow.ToString('o')
+                }
+                if ($resolvedV2.IsUnpacked) {
+                    $activeManifest['serverEntry'] = $resolvedV2.ServerEntryPosix
+                    $activeManifest['nativeAddons'] = $resolvedV2.NativeAddonsPosix
+                }
+                $activeManifest['files'] = $filesMap
+                Write-AtomicUtf8Json $activeManifestPath $activeManifest
+            }
+            catch {
+                $syncFailure = $_
+                for ($idx = $rollbackMoves.Count - 1; $idx -ge 0; $idx--) {
+                    $mv = $rollbackMoves[$idx]
+                    try {
+                        switch ($mv.Kind) {
+                            'dir-installed' {
+                                Remove-DirectoryTreeSafe $mv.Dest
+                            }
+                            'file-installed' {
+                                if (Test-Path -LiteralPath $mv.Dest -PathType Leaf) {
+                                    Remove-Item -LiteralPath $mv.Dest -Force -ErrorAction Stop
+                                }
+                            }
+                            'dir-backup' {
+                                if (Test-Path -LiteralPath $mv.Backup -PathType Container) {
+                                    [IO.Directory]::Move($mv.Backup, $mv.Original)
+                                }
+                            }
+                            'file-backup' {
+                                if (Test-Path -LiteralPath $mv.Backup -PathType Leaf) {
+                                    [IO.File]::Move($mv.Backup, $mv.Original)
+                                }
+                            }
+                        }
+                    }
+                    catch {
+                        $restoreFailed = $true
+                        Write-Warning ("Failed to roll back active v2 entry: {0}" -f $_.Exception.Message)
+                    }
+                }
+                throw $syncFailure
+            }
+        }
+        finally {
+            Remove-DirectoryTreeSafe $stageDir
+            if (-not $restoreFailed) {
+                Remove-DirectoryTreeSafe $backupDir
+            }
+        }
+
+        return [pscustomobject]@{
+            Synced = $true
+            AlreadyCurrent = $false
+            Locked = $false
+            ActivePath = $activePath
+            ReleaseId = $ReleaseId
+            LockingPids = @()
+        }
+    }
+
     $stagedFiles = New-Object System.Collections.Generic.List[string]
     $backupFiles = New-Object System.Collections.Generic.List[string]
+    $staleBackupDir = Join-Path $activePath ('.stale-{0}' -f $nonce)
     $rollbackItems = New-Object System.Collections.Generic.List[object]
     $restoreFailed = $false
 
     try {
         $replacePlan = New-Object System.Collections.Generic.List[object]
         foreach ($spec in $requiredSpecs) {
-            $srcPath = Join-Path $releasePath $spec.Name
-            $destPath = Join-Path $activePath $spec.Name
-            $stagedPath = Join-Path $activePath ('.{0}.{1}.tmp' -f $spec.Name, $nonce)
-            $backupPath = Join-Path $activePath ('.{0}.{1}.bak' -f $spec.Name, $nonce)
+            $srcPath = Join-Path $releasePath $spec.RelPath
+            $destPath = Join-Path $activePath $spec.RelPath
+            $stagedPath = Join-Path $activePath ('.{0}.{1}.tmp' -f $spec.ManifestKey, $nonce)
+            $backupPath = Join-Path $activePath ('.{0}.{1}.bak' -f $spec.ManifestKey, $nonce)
             $stagedFiles.Add($stagedPath)
             $backupFiles.Add($backupPath)
             Copy-Item -LiteralPath $srcPath -Destination $stagedPath -Force
@@ -418,38 +721,31 @@ function Sync-ActiveReleaseCore(
                 else { [IO.File]::Move($step.Staged, $step.Dest) }
                 $rollbackItems.Add(@{ Kind = 'replace'; Had = $step.Had; Dest = $step.Dest; Backup = $step.Backup })
             }
-            foreach ($staleName in $staleNames) {
-                $stalePath = Join-Path $activePath $staleName
-                if (Test-Path -LiteralPath $stalePath -PathType Leaf) {
-                    $staleBackup = Join-Path $activePath ('.{0}.{1}.stale.bak' -f $staleName, $nonce)
-                    $backupFiles.Add($staleBackup)
-                    [IO.File]::Move($stalePath, $staleBackup)
-                    $rollbackItems.Add(@{ Kind = 'removed'; Had = $true; Dest = $stalePath; Backup = $staleBackup })
+            $allowedV1Names = @('kiki-desktop.exe', 'kiki-server.exe', 'build-info.txt', 'active-release.json')
+            foreach ($entry in @(Get-ChildItem -LiteralPath $activePath -Force -ErrorAction SilentlyContinue)) {
+                if (($entry.Name -in $allowedV1Names) -or (Test-IsTransientSyncEntryName $entry.Name)) { continue }
+                [IO.Directory]::CreateDirectory($staleBackupDir) | Out-Null
+                $staleBackup = Join-Path $staleBackupDir $entry.Name
+                if ($entry.PSIsContainer) {
+                    [IO.Directory]::Move($entry.FullName, $staleBackup)
+                    $rollbackItems.Add(@{ Kind = 'removed-dir'; Had = $true; Dest = $entry.FullName; Backup = $staleBackup })
+                }
+                else {
+                    [IO.File]::Move($entry.FullName, $staleBackup)
+                    $rollbackItems.Add(@{ Kind = 'removed'; Had = $true; Dest = $entry.FullName; Backup = $staleBackup })
                 }
             }
 
             $filesMap = [ordered]@{}
             foreach ($spec in $requiredSpecs) {
-                $filesMap[$spec.Name] = [ordered]@{ sha256 = $spec.Expected.Hash; bytes = $spec.Expected.Length }
+                $filesMap[$spec.ManifestKey] = [ordered]@{ sha256 = $spec.Expected.Hash; bytes = $spec.Expected.Length }
             }
-            $activeManifest = if ($SchemaVersion -eq 2) {
-                [ordered]@{
-                    schemaVersion = 2
-                    runtimeKind = 'electron-single-binary'
-                    releaseId = $ReleaseId
-                    gitSha = $GitSha
-                    syncedAtUtc = [DateTime]::UtcNow.ToString('o')
-                    files = $filesMap
-                }
-            }
-            else {
-                [ordered]@{
-                    schemaVersion = 1
-                    releaseId = $ReleaseId
-                    gitSha = $GitSha
-                    syncedAtUtc = [DateTime]::UtcNow.ToString('o')
-                    files = $filesMap
-                }
+            $activeManifest = [ordered]@{
+                schemaVersion = 1
+                releaseId = $ReleaseId
+                gitSha = $GitSha
+                syncedAtUtc = [DateTime]::UtcNow.ToString('o')
+                files = $filesMap
             }
             Write-AtomicUtf8Json $activeManifestPath $activeManifest
         }
@@ -461,6 +757,11 @@ function Sync-ActiveReleaseCore(
                     if ($rollbackItem.Kind -eq 'removed') {
                         if (Test-Path -LiteralPath $rollbackItem.Backup -PathType Leaf) {
                             [IO.File]::Move($rollbackItem.Backup, $rollbackItem.Dest)
+                        }
+                    }
+                    elseif ($rollbackItem.Kind -eq 'removed-dir') {
+                        if (Test-Path -LiteralPath $rollbackItem.Backup -PathType Container) {
+                            [IO.Directory]::Move($rollbackItem.Backup, $rollbackItem.Dest)
                         }
                     }
                     elseif ($rollbackItem.Had -and (Test-Path -LiteralPath $rollbackItem.Backup -PathType Leaf)) {
@@ -490,6 +791,9 @@ function Sync-ActiveReleaseCore(
                 if (Test-Path -LiteralPath $backupFile) {
                     Remove-Item -LiteralPath $backupFile -Force -ErrorAction SilentlyContinue
                 }
+            }
+            if (Test-Path -LiteralPath $staleBackupDir) {
+                Remove-DirectoryTreeSafe $staleBackupDir
             }
         }
     }
@@ -537,8 +841,6 @@ function Sync-ActiveRelease(
     $releasePath = Get-ReleasePath $rootPath $ReleaseId
     $releaseMain = Join-Path $releasePath 'kiki-desktop.exe'
     $releaseSidecar = Join-Path $releasePath 'kiki-server.exe'
-    $releaseServerEntry = Join-Path $releasePath 'server-entry.mjs'
-    $releaseNativeAddons = Join-Path $releasePath 'native-addons.json'
     $releaseBuildInfo = Join-Path $releasePath 'build-info.txt'
 
     $resolvedSchema = if ($SchemaVersion -gt 0) { $SchemaVersion } else { Get-DirectoryReleaseSchemaVersion $releasePath }
@@ -546,7 +848,14 @@ function Sync-ActiveRelease(
     $sidecarInfo = $null
     $serverEntryInfo = $null
     $nativeAddonsInfo = $null
+    $v2Layout = $null
     if ($resolvedSchema -eq 2) {
+        $v2Layout = Resolve-V2Layout $releasePath
+        if ($null -eq $v2Layout) {
+            throw "Release directory at $releasePath is missing v2 server-entry.mjs or native-addons.json."
+        }
+        $releaseServerEntry = Join-Path $releasePath $v2Layout.ServerEntryRel
+        $releaseNativeAddons = Join-Path $releasePath $v2Layout.NativeAddonsRel
         $serverEntryInfo = if ($null -ne $ExpectedServerEntry) { $ExpectedServerEntry } else { Get-ArtifactInfo $releaseServerEntry 'Release Kiki server entry' }
         $nativeAddonsInfo = if ($null -ne $ExpectedNativeAddons) { $ExpectedNativeAddons } else { Get-ArtifactInfo $releaseNativeAddons 'Release Kiki native addon manifest' }
         if (('{0}-{1}' -f $desktopInfo.Hash.Substring(0, 24), $serverEntryInfo.Hash.Substring(0, 24)) -cne $ReleaseId) {
@@ -594,7 +903,7 @@ function Sync-ActiveRelease(
         throw "Cannot acquire active publication lock under $rootPath."
     }
     try {
-        return Sync-ActiveReleaseCore $rootPath $ReleaseId $resolvedGitSha $desktopInfo $sidecarInfo -SkipIfLocked:$SkipIfLocked -SchemaVersion $resolvedSchema -ServerEntryInfo $serverEntryInfo -NativeAddonsInfo $nativeAddonsInfo
+        return Sync-ActiveReleaseCore $rootPath $ReleaseId $resolvedGitSha $desktopInfo $sidecarInfo -SkipIfLocked:$SkipIfLocked -SchemaVersion $resolvedSchema -ServerEntryInfo $serverEntryInfo -NativeAddonsInfo $nativeAddonsInfo -V2Layout $v2Layout
     }
     finally {
         $activeLock.Dispose()
@@ -697,12 +1006,26 @@ function Assert-ReceiptFile([object]$Record, [object]$Actual, [string]$Label) {
     }
 }
 
-function Assert-ReceiptFiles([object]$Receipt, [object]$Desktop, [object]$Server, [int]$SchemaVersion = 1, [object]$ServerEntry = $null, [object]$NativeAddons = $null) {
+function Assert-ReceiptFiles([object]$Receipt, [object]$Desktop, [object]$Server, [int]$SchemaVersion = 1, [object]$ServerEntry = $null, [object]$NativeAddons = $null, [object]$AppAsar = $null) {
     $files = Get-ObjectProperty $Receipt 'files'
     Assert-ReceiptFile (Get-ObjectProperty $files 'kiki-desktop.exe') $Desktop 'Kiki GUI'
     if ($SchemaVersion -eq 2) {
-        Assert-ReceiptFile (Get-ObjectProperty $files 'server-entry.mjs') $ServerEntry 'Kiki server entry'
-        Assert-ReceiptFile (Get-ObjectProperty $files 'native-addons.json') $NativeAddons 'Kiki native addon manifest'
+        $entryRecord = Get-ObjectProperty $files 'server-entry.mjs'
+        if ($null -eq $entryRecord) {
+            $entryRecord = Get-ObjectProperty $files 'resources/app.asar.unpacked/dist/server/server-entry.mjs'
+        }
+        $addonsRecord = Get-ObjectProperty $files 'native-addons.json'
+        if ($null -eq $addonsRecord) {
+            $addonsRecord = Get-ObjectProperty $files 'resources/app.asar.unpacked/dist/server/native-addons.json'
+        }
+        Assert-ReceiptFile $entryRecord $ServerEntry 'Kiki server entry'
+        Assert-ReceiptFile $addonsRecord $NativeAddons 'Kiki native addon manifest'
+        if ($null -ne $AppAsar) {
+            $asarRecord = Get-ObjectProperty $files 'resources/app.asar'
+            if ($null -ne $asarRecord) {
+                Assert-ReceiptFile $asarRecord $AppAsar 'Kiki app.asar'
+            }
+        }
     }
     else {
         Assert-ReceiptFile (Get-ObjectProperty $files 'kiki-server.exe') $Server 'Kiki backend'
@@ -724,9 +1047,14 @@ function Read-PromotionCandidate([string]$Candidate, [string]$ExpectedCommit) {
     $schemaVersion = Get-ManifestSchemaVersion $receipt
     $desktop = Get-ArtifactInfo (Join-Path $path 'kiki-desktop.exe') 'Kiki GUI build artifact'
     if ($schemaVersion -eq 2) {
-        $serverEntry = Get-ArtifactInfo (Join-Path $path 'server-entry.mjs') 'Kiki server entry build artifact'
-        $nativeAddons = Get-ArtifactInfo (Join-Path $path 'native-addons.json') 'Kiki native addon manifest build artifact'
-        Assert-ReceiptFiles $receipt $desktop $null 2 $serverEntry $nativeAddons
+        $v2Layout = Resolve-V2Layout $path $receipt
+        if ($null -eq $v2Layout) {
+            throw "Kiki v2 server entry or native addon manifest is missing in candidate: $path. The runtime was not changed."
+        }
+        $serverEntry = Get-ArtifactInfo (Join-Path $path $v2Layout.ServerEntryRel) 'Kiki server entry build artifact'
+        $nativeAddons = Get-ArtifactInfo (Join-Path $path $v2Layout.NativeAddonsRel) 'Kiki native addon manifest build artifact'
+        $appAsar = if ($v2Layout.IsUnpacked) { Get-ArtifactInfo (Join-Path $path $v2Layout.AppAsarRel) 'Kiki app.asar build artifact' } else { $null }
+        Assert-ReceiptFiles $receipt $desktop $null 2 $serverEntry $nativeAddons $appAsar
         return [pscustomobject]@{
             SchemaVersion = 2
             RuntimeKind = 'electron-single-binary'
@@ -736,6 +1064,8 @@ function Read-PromotionCandidate([string]$Candidate, [string]$ExpectedCommit) {
             Sidecar = $null
             ServerEntry = $serverEntry
             NativeAddons = $nativeAddons
+            AppAsar = $appAsar
+            V2Layout = $v2Layout
             ReleaseId = '{0}-{1}' -f $desktop.Hash.Substring(0, 24), $serverEntry.Hash.Substring(0, 24)
         }
     }
@@ -750,6 +1080,8 @@ function Read-PromotionCandidate([string]$Candidate, [string]$ExpectedCommit) {
         Sidecar = $sidecar
         ServerEntry = $null
         NativeAddons = $null
+        AppAsar = $null
+        V2Layout = $null
         ReleaseId = '{0}-{1}' -f $desktop.Hash.Substring(0, 24), $sidecar.Hash.Substring(0, 24)
     }
 }
@@ -761,6 +1093,14 @@ function Invoke-Promotion([string]$Root, [object]$Verified) {
     $sidecarSource = Get-ObjectProperty $Verified 'Sidecar'
     $serverEntrySource = Get-ObjectProperty $Verified 'ServerEntry'
     $nativeAddonsSource = Get-ObjectProperty $Verified 'NativeAddons'
+    $appAsarSource = Get-ObjectProperty $Verified 'AppAsar'
+    $v2Layout = if ($schemaVersion -eq 2) {
+        $existingV2 = Get-ObjectProperty $Verified 'V2Layout'
+        if ($null -ne $existingV2) { $existingV2 } else { Resolve-V2Layout $Verified.Path }
+    }
+    else {
+        $null
+    }
     $gitSha = $Verified.GitSha
     $releaseId = $Verified.ReleaseId
     [IO.Directory]::CreateDirectory($rootPath) | Out-Null
@@ -769,8 +1109,6 @@ function Invoke-Promotion([string]$Root, [object]$Verified) {
     $releasePath = Get-ReleasePath $rootPath $releaseId
     $mainDestination = Join-Path $releasePath 'kiki-desktop.exe'
     $sidecarDestination = Join-Path $releasePath 'kiki-server.exe'
-    $serverEntryDestination = Join-Path $releasePath 'server-entry.mjs'
-    $nativeAddonsDestination = Join-Path $releasePath 'native-addons.json'
 
     if (Test-Path -LiteralPath $releasePath) {
         if (-not (Test-Path -LiteralPath $releasePath -PathType Container)) {
@@ -778,8 +1116,11 @@ function Invoke-Promotion([string]$Root, [object]$Verified) {
         }
         Assert-ArtifactMatches $mainSource $mainDestination 'Promoted Kiki GUI'
         if ($schemaVersion -eq 2) {
-            Assert-ArtifactMatches $serverEntrySource $serverEntryDestination 'Promoted Kiki server entry'
-            Assert-ArtifactMatches $nativeAddonsSource $nativeAddonsDestination 'Promoted Kiki native addon manifest'
+            Assert-ArtifactMatches $serverEntrySource (Join-Path $releasePath $v2Layout.ServerEntryRel) 'Promoted Kiki server entry'
+            Assert-ArtifactMatches $nativeAddonsSource (Join-Path $releasePath $v2Layout.NativeAddonsRel) 'Promoted Kiki native addon manifest'
+            if ($null -ne $appAsarSource) {
+                Assert-ArtifactMatches $appAsarSource (Join-Path $releasePath $v2Layout.AppAsarRel) 'Promoted Kiki app.asar'
+            }
         }
         else {
             Assert-ArtifactMatches $sidecarSource $sidecarDestination 'Promoted Kiki backend'
@@ -789,18 +1130,19 @@ function Invoke-Promotion([string]$Root, [object]$Verified) {
         $stagingPath = Join-Path $releasesPath ('.pending-{0}' -f [guid]::NewGuid().ToString('N'))
         [IO.Directory]::CreateDirectory($stagingPath) | Out-Null
         try {
-            $stagedMain = Join-Path $stagingPath 'kiki-desktop.exe'
-            Copy-Item -LiteralPath $mainSource.Path -Destination $stagedMain
-            Assert-ArtifactMatches $mainSource $stagedMain 'Promoted Kiki GUI'
             if ($schemaVersion -eq 2) {
-                $stagedServerEntry = Join-Path $stagingPath 'server-entry.mjs'
-                $stagedNativeAddons = Join-Path $stagingPath 'native-addons.json'
-                Copy-Item -LiteralPath $serverEntrySource.Path -Destination $stagedServerEntry
-                Copy-Item -LiteralPath $nativeAddonsSource.Path -Destination $stagedNativeAddons
-                Assert-ArtifactMatches $serverEntrySource $stagedServerEntry 'Promoted Kiki server entry'
-                Assert-ArtifactMatches $nativeAddonsSource $stagedNativeAddons 'Promoted Kiki native addon manifest'
+                Copy-DirectoryTreeStrict $Verified.Path $stagingPath @('desktop-build-receipt.json')
+                Assert-ArtifactMatches $mainSource (Join-Path $stagingPath 'kiki-desktop.exe') 'Promoted Kiki GUI'
+                Assert-ArtifactMatches $serverEntrySource (Join-Path $stagingPath $v2Layout.ServerEntryRel) 'Promoted Kiki server entry'
+                Assert-ArtifactMatches $nativeAddonsSource (Join-Path $stagingPath $v2Layout.NativeAddonsRel) 'Promoted Kiki native addon manifest'
+                if ($null -ne $appAsarSource) {
+                    Assert-ArtifactMatches $appAsarSource (Join-Path $stagingPath $v2Layout.AppAsarRel) 'Promoted Kiki app.asar'
+                }
             }
             else {
+                $stagedMain = Join-Path $stagingPath 'kiki-desktop.exe'
+                Copy-Item -LiteralPath $mainSource.Path -Destination $stagedMain
+                Assert-ArtifactMatches $mainSource $stagedMain 'Promoted Kiki GUI'
                 $stagedSidecar = Join-Path $stagingPath 'kiki-server.exe'
                 Copy-Item -LiteralPath $sidecarSource.Path -Destination $stagedSidecar
                 Assert-ArtifactMatches $sidecarSource $stagedSidecar 'Promoted Kiki backend'
@@ -810,9 +1152,7 @@ function Invoke-Promotion([string]$Root, [object]$Verified) {
             [IO.Directory]::Move($stagingPath, $releasePath)
         }
         finally {
-            if (Test-Path -LiteralPath $stagingPath) {
-                Remove-Item -LiteralPath $stagingPath -Recurse -Force
-            }
+            Remove-DirectoryTreeSafe $stagingPath
         }
     }
 
@@ -841,18 +1181,23 @@ function Invoke-Promotion([string]$Root, [object]$Verified) {
     }
 
     $manifest = if ($schemaVersion -eq 2) {
-        [ordered]@{
+        $m = [ordered]@{
             schemaVersion = 2
             runtimeKind = 'electron-single-binary'
             releaseId = $releaseId
             gitSha = $gitSha
             promotedAtUtc = [DateTime]::UtcNow.ToString('o')
-            files = [ordered]@{
-                'kiki-desktop.exe' = [ordered]@{ sha256 = $mainSource.Hash; bytes = $mainSource.Length }
-                'server-entry.mjs' = [ordered]@{ sha256 = $serverEntrySource.Hash; bytes = $serverEntrySource.Length }
-                'native-addons.json' = [ordered]@{ sha256 = $nativeAddonsSource.Hash; bytes = $nativeAddonsSource.Length }
-            }
         }
+        if ($null -ne $v2Layout -and $v2Layout.IsUnpacked) {
+            $m['serverEntry'] = $v2Layout.ServerEntryPosix
+            $m['nativeAddons'] = $v2Layout.NativeAddonsPosix
+        }
+        $m['files'] = [ordered]@{
+            'kiki-desktop.exe' = [ordered]@{ sha256 = $mainSource.Hash; bytes = $mainSource.Length }
+            'server-entry.mjs' = [ordered]@{ sha256 = $serverEntrySource.Hash; bytes = $serverEntrySource.Length }
+            'native-addons.json' = [ordered]@{ sha256 = $nativeAddonsSource.Hash; bytes = $nativeAddonsSource.Length }
+        }
+        $m
     }
     else {
         [ordered]@{
@@ -916,7 +1261,7 @@ function Resolve-LaunchTarget([string]$Root) {
     $schemaVersion = Get-ManifestSchemaVersion $manifest
     $releaseId = [string]$manifest.releaseId
     $releasePath = Get-ReleasePath $rootPath $releaseId
-    foreach ($name in (Get-ReleaseRequiredFileNames $schemaVersion)) {
+    foreach ($name in (Get-ReleaseRequiredFileNames $schemaVersion $releasePath $manifest)) {
         $path = Join-Path $releasePath $name
         if (!(Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -le 0) {
             throw "The selected Kiki executable is missing or empty: $path"
@@ -926,7 +1271,14 @@ function Resolve-LaunchTarget([string]$Root) {
     $launchDirectory = if ($usingActive) { Get-ActivePath $rootPath } else { $releasePath }
     $mainPath = Join-Path $launchDirectory 'kiki-desktop.exe'
     $sidecarPath = if ($schemaVersion -eq 2) { $mainPath } else { Join-Path $launchDirectory 'kiki-server.exe' }
-    $serverEntryPath = if ($schemaVersion -eq 2) { Join-Path $launchDirectory 'server-entry.mjs' } else { $null }
+    $serverEntryPath = if ($schemaVersion -eq 2) {
+        $v2 = Resolve-V2Layout $launchDirectory $manifest
+        $entryRel = if ($null -ne $v2) { $v2.ServerEntryRel } else { 'server-entry.mjs' }
+        Join-Path $launchDirectory $entryRel
+    }
+    else {
+        $null
+    }
     return [pscustomobject]@{
         SchemaVersion = $schemaVersion
         RuntimeKind = if ($schemaVersion -eq 2) { 'electron-single-binary' } else { $null }
@@ -1071,9 +1423,14 @@ function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [s
             $sidecarInfo = $null
             $serverEntryInfo = $null
             $nativeAddonsInfo = $null
+            $v2Layout = $null
             if ($schemaVersion -eq 2) {
-                $serverEntryInfo = Get-ArtifactInfo (Join-Path $releasePath 'server-entry.mjs') 'Release Kiki server entry'
-                $nativeAddonsInfo = Get-ArtifactInfo (Join-Path $releasePath 'native-addons.json') 'Release Kiki native addon manifest'
+                $v2Layout = Resolve-V2Layout $releasePath $manifest
+                if ($null -eq $v2Layout) {
+                    throw "Release directory at $releasePath is missing v2 server-entry.mjs or native-addons.json; launch aborted."
+                }
+                $serverEntryInfo = Get-ArtifactInfo (Join-Path $releasePath $v2Layout.ServerEntryRel) 'Release Kiki server entry'
+                $nativeAddonsInfo = Get-ArtifactInfo (Join-Path $releasePath $v2Layout.NativeAddonsRel) 'Release Kiki native addon manifest'
                 if (('{0}-{1}' -f $desktopInfo.Hash.Substring(0, 24), $serverEntryInfo.Hash.Substring(0, 24)) -cne $releaseId) {
                     throw "Release binaries at $releasePath do not match releaseId $releaseId; launch aborted."
                 }
@@ -1086,7 +1443,7 @@ function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [s
             }
             $gitSha = [string](Get-ObjectProperty $manifest 'gitSha')
             if ([string]::IsNullOrWhiteSpace($gitSha)) { $gitSha = 'unknown' }
-            $syncResult = Sync-ActiveReleaseCore $rootPath $releaseId $gitSha $desktopInfo $sidecarInfo -SkipIfLocked -SchemaVersion $schemaVersion -ServerEntryInfo $serverEntryInfo -NativeAddonsInfo $nativeAddonsInfo
+            $syncResult = Sync-ActiveReleaseCore $rootPath $releaseId $gitSha $desktopInfo $sidecarInfo -SkipIfLocked -SchemaVersion $schemaVersion -ServerEntryInfo $serverEntryInfo -NativeAddonsInfo $nativeAddonsInfo -V2Layout $v2Layout
             if ($syncResult.Locked) {
                 Write-Warning ("Active runtime at {0} is locked by running process(es); launching release {1} from releases directory without modifying active." -f $syncResult.ActivePath, $releaseId)
             }
@@ -1167,9 +1524,14 @@ function Invoke-HeadlessLaunch(
             $sidecarInfo = $null
             $serverEntryInfo = $null
             $nativeAddonsInfo = $null
+            $v2Layout = $null
             if ($schemaVersion -eq 2) {
-                $serverEntryInfo = Get-ArtifactInfo (Join-Path $releasePath 'server-entry.mjs') 'Release Kiki server entry'
-                $nativeAddonsInfo = Get-ArtifactInfo (Join-Path $releasePath 'native-addons.json') 'Release Kiki native addon manifest'
+                $v2Layout = Resolve-V2Layout $releasePath $manifest
+                if ($null -eq $v2Layout) {
+                    throw "Release directory at $releasePath is missing v2 server-entry.mjs or native-addons.json; headless launch aborted."
+                }
+                $serverEntryInfo = Get-ArtifactInfo (Join-Path $releasePath $v2Layout.ServerEntryRel) 'Release Kiki server entry'
+                $nativeAddonsInfo = Get-ArtifactInfo (Join-Path $releasePath $v2Layout.NativeAddonsRel) 'Release Kiki native addon manifest'
                 if (('{0}-{1}' -f $desktopInfo.Hash.Substring(0, 24), $serverEntryInfo.Hash.Substring(0, 24)) -cne $releaseId) {
                     throw "Release binaries at $releasePath do not match releaseId $releaseId; headless launch aborted."
                 }
@@ -1182,7 +1544,7 @@ function Invoke-HeadlessLaunch(
             }
             $gitSha = [string](Get-ObjectProperty $manifest 'gitSha')
             if ([string]::IsNullOrWhiteSpace($gitSha)) { $gitSha = 'unknown' }
-            $syncResult = Sync-ActiveReleaseCore $rootPath $releaseId $gitSha $desktopInfo $sidecarInfo -SkipIfLocked -SchemaVersion $schemaVersion -ServerEntryInfo $serverEntryInfo -NativeAddonsInfo $nativeAddonsInfo
+            $syncResult = Sync-ActiveReleaseCore $rootPath $releaseId $gitSha $desktopInfo $sidecarInfo -SkipIfLocked -SchemaVersion $schemaVersion -ServerEntryInfo $serverEntryInfo -NativeAddonsInfo $nativeAddonsInfo -V2Layout $v2Layout
             if ($syncResult.Locked) {
                 Write-Warning ("Active runtime at {0} is locked by running process(es); launching headless server {1} from releases directory without modifying active." -f $syncResult.ActivePath, $releaseId)
             }
@@ -1225,7 +1587,13 @@ function Invoke-HeadlessLaunch(
         $effectiveArgs = if ([string]::IsNullOrWhiteSpace($LaunchArguments)) { 'serve' } else { $LaunchArguments.Trim() }
         if ($target.SchemaVersion -eq 2) {
             $env:ELECTRON_RUN_AS_NODE = '1'
-            $effectiveArgs = ('{0} {1}' -f (Format-WindowsProcessArgument $target.ServerEntryPath), $effectiveArgs)
+            $totalMemBytes = [int64]0
+            try {
+                $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+                if ($null -ne $cs -and $cs.TotalPhysicalMemory -gt 0) { $totalMemBytes = [int64]$cs.TotalPhysicalMemory }
+            } catch {}
+            $heapMb = [Math]::Max(8192, [int][Math]::Floor([double]$totalMemBytes / 1048576.0 / 4.0))
+            $effectiveArgs = ('--max-old-space-size={0} {1} {2}' -f $heapMb, (Format-WindowsProcessArgument $target.ServerEntryPath), $effectiveArgs)
         }
         else {
             Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue

@@ -56,6 +56,9 @@ export function isOriginAllowed(
   allowed: readonly string[],
 ): boolean {
   if (origin === 'null' || isHtmlDocumentOrigin(origin)) return false;
+  if (isDesktopAppOrigin(origin)) {
+    return host !== undefined && isLoopbackHost(stripPort(host));
+  }
   const oh = originHost(origin);
   if (oh === undefined) {
     return true;
@@ -71,6 +74,17 @@ export function isOriginAllowed(
     }
   }
   return allowed.includes(origin as string);
+}
+
+const DESKTOP_APP_ORIGINS = new Set([
+  'kiki-app://localhost',
+  'tauri://localhost',
+  'http://tauri.localhost',
+  'https://tauri.localhost',
+]);
+
+function isDesktopAppOrigin(origin: string | undefined): boolean {
+  return origin !== undefined && DESKTOP_APP_ORIGINS.has(origin.toLowerCase());
 }
 
 function isHtmlDocumentOrigin(origin: string | undefined): boolean {

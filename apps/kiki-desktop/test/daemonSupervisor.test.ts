@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -10,7 +10,10 @@ import {
   DaemonSupervisor,
   type SpawnedDaemonChild,
 } from '#/main/daemonSupervisor';
-import { RotatingLog } from '#/main/rotatingLog';
+import {
+  openDetachedBackendLogFd,
+  readBackendLogTail,
+} from '#/main/rotatingLog';
 import { executeStopBackgroundSpace, executeTrayQuit } from '#/main/trayService';
 
 const tempDirs: string[] = [];
@@ -92,6 +95,7 @@ describe('DaemonSupervisor', () => {
   it('spawns detached ELECTRON_RUN_AS_NODE daemon, unrefs on ready, and survives window close (detachDesktop)', async () => {
     const home = makeTempHome();
     const child = new FakeDaemonChild(4242);
+    let capturedArgs: readonly string[] | undefined;
     let capturedOptions: { detached?: boolean; env?: NodeJS.ProcessEnv } | undefined;
 
     const supervisor = new DaemonSupervisor(
@@ -102,7 +106,8 @@ describe('DaemonSupervisor', () => {
       },
       {
         isPidAlive: (pid) => pid === 4242,
-        spawnFn: (_cmd, _args, options) => {
+        spawnFn: (_cmd, args, options) => {
+          capturedArgs = args;
           capturedOptions = { detached: options.detached, env: options.env };
           mkdirSync(join(home, 'server', 'instances'), { recursive: true });
           writeFileSync(join(home, 'server.local-owner'), 'owner-secret-token');
@@ -131,6 +136,8 @@ describe('DaemonSupervisor', () => {
       config: { url: 'http://127.0.0.1:19001', token: 'owner-secret-token' },
       persist: false,
     });
+    expect(capturedArgs?.[0]).toMatch(/^--max-old-space-size=\d+$/);
+    expect(capturedArgs?.[1]).toBe('/opt/kiki/server-entry.mjs');
     expect(capturedOptions?.detached).toBe(true);
     expect(capturedOptions?.env?.['ELECTRON_RUN_AS_NODE']).toBe('1');
     expect(child.unrefCalled).toBe(true);
@@ -399,19 +406,196 @@ describe('DaemonSupervisor', () => {
     expect(calls).toContain('POST /api/desktop/plugin-focus/remember');
   });
 
-  it('rotates desktop-backend.log within disk budget and preserves UTF-8 boundaries on oversized lines', () => {
+  it('rotates desktop-backend.log via openDetachedBackendLogFd and decodes UTF-8 tails via TextDecoder', async () => {
     const home = makeTempHome();
-    const logPath = join(home, 'logs', 'desktop-backend.log');
-    const log = new RotatingLog(logPath, 16, 2);
-    for (let i = 0; i < 6; i += 1) {
-      log.writeLine('123456789012345');
-    }
-    log.writeLine('测试'.repeat(40));
-    log.close();
+    const first = openDetachedBackendLogFd(home, 32, 2);
+    closeSync(first.fd);
+    writeFileSync(first.path, `${'x'.repeat(40)}\n`);
 
-    for (const candidate of [logPath, `${logPath}.1`, `${logPath}.2`]) {
-      expect(statSync(candidate).size).toBeLessThanOrEqual(16);
-      expect(readFileSync(candidate, 'utf8')).not.toContain('\uFFFD');
+    const second = openDetachedBackendLogFd(home, 32, 2);
+    closeSync(second.fd);
+    expect(statSync(`${first.path}.1`).size).toBeGreaterThanOrEqual(40);
+
+    const multiLine = ['alpha-1', '测试中文日志-2', 'FATAL_BOOT_ERR-3'].join('\n');
+    writeFileSync(first.path, `${'p'.repeat(200)}\n${multiLine}\n`, 'utf8');
+    const tail = await readBackendLogTail(home, 2, 64);
+    expect(tail).toEqual(['测试中文日志-2', 'FATAL_BOOT_ERR-3']);
+    expect(tail.join('\n')).not.toContain('\uFFFD');
+  });
+
+  it('emits connection.tsx-compatible stage payloads, serializes concurrent ensure.lock, and isolates sibling restartSpace', async () => {
+    const activeHome = makeTempHome();
+    const siblingHome = makeTempHome();
+    let spawnCount = 0;
+    const stages: unknown[] = [];
+
+    const supervisor = new DaemonSupervisor(
+      {
+        electronBinary: '/opt/kiki/kiki-desktop',
+        serverEntry: '/opt/kiki/server-entry.mjs',
+        homeDir: activeHome,
+      },
+      {
+        isPidAlive: (pid) => pid === 3101 || pid === 3202,
+        spawnFn: (_cmd, _args, opts) => {
+          spawnCount += 1;
+          const targetHome = opts.env?.['KIKI_HOME'] ?? activeHome;
+          const pid = targetHome === activeHome ? 3101 : 3202;
+          const port = targetHome === activeHome ? 29101 : 29202;
+          mkdirSync(join(targetHome, 'server', 'instances'), { recursive: true });
+          writeFileSync(join(targetHome, 'server.local-owner'), `tok-${port}`);
+          writeFileSync(
+            join(targetHome, 'server', 'instances', `${pid}.json`),
+            JSON.stringify({ pid, port, serverId: `srv-${port}` }),
+          );
+          return new FakeDaemonChild(pid);
+        },
+        fetchFn: async (input, init) => {
+          const url = new URL(requestUrlString(input));
+          const port = Number(url.port);
+          if (url.pathname === '/api/meta') {
+            return jsonResponse({
+              code: 0,
+              msg: 'ok',
+              data: {
+                server_id: `srv-${port}`,
+                home_id: port === 29101 ? 'main' : 'sibling',
+                desktop_managed: true,
+              },
+            });
+          }
+          if (url.pathname === '/api/desktop-lifecycle' && (!init?.method || init.method === 'GET')) {
+            return jsonResponse({
+              code: 0,
+              msg: 'ok',
+              data: {
+                server_id: `srv-${port}`,
+                home_id: port === 29101 ? 'main' : 'sibling',
+                managed: true,
+                draining: false,
+                work_pending: [],
+              },
+            });
+          }
+          if (url.pathname === '/api/desktop-lifecycle' && init?.method === 'POST') {
+            return jsonResponse({ code: 0, msg: 'ok', data: { ok: true } });
+          }
+          return jsonResponse({ code: 1 }, 404);
+        },
+      },
+    );
+
+    supervisor.onBackendStage((payload) => stages.push(payload));
+    const [c1, c2] = await Promise.all([supervisor.discoverConnection(), supervisor.discoverConnection()]);
+    expect(c1.config.url).toBe('http://127.0.0.1:29101');
+    expect(c2.config.url).toBe('http://127.0.0.1:29101');
+    expect(spawnCount).toBe(1);
+    expect(stages).toContain('waiting');
+    expect(stages).toContainEqual({
+      stage: 'ready',
+      connection: { url: 'http://127.0.0.1:29101', token: 'tok-29101' },
+      homeId: 'main',
+    });
+
+    const siblingConn = await supervisor.restartSpace(siblingHome);
+    expect(siblingConn.config.url).toBe('http://127.0.0.1:29202');
+    expect(supervisor.activeHomeDir).toBe(activeHome);
+    expect(supervisor.currentConnection?.url).toBe('http://127.0.0.1:29101');
+  });
+
+  it('includes stderrTail and logPath in failed stage and discoverConnectionEnvelope on startup crash', async () => {
+    const home = makeTempHome();
+    mkdirSync(join(home, 'logs'), { recursive: true });
+    writeFileSync(join(home, 'logs', 'desktop-backend.log'), 'BOOT_LINE_1\nBOOT_CRASH_REASON\n', 'utf8');
+
+    const stages: unknown[] = [];
+    const supervisor = new DaemonSupervisor(
+      {
+        electronBinary: '/opt/kiki/kiki-desktop',
+        serverEntry: '/opt/kiki/server-entry.mjs',
+        homeDir: home,
+      },
+      {
+        isPidAlive: () => false,
+        openLogFd: (h) => ({ path: join(h, 'logs', 'desktop-backend.log'), fd: -1 }),
+        closeFd: () => undefined,
+        spawnFn: () => {
+          const failing = new FakeDaemonChild(9090);
+          queueMicrotask(() => {
+            failing.emit('exit', 1, null);
+          });
+          return failing;
+        },
+        fetchFn: async () => jsonResponse({ code: 1 }, 503),
+        pollIntervalMs: 10,
+      },
+    );
+    supervisor.onBackendStage((p) => stages.push(p));
+
+    const envelope = await supervisor.discoverConnectionEnvelope();
+    expect(envelope.ok).toBe(false);
+    if (!envelope.ok) {
+      expect(envelope.failure.message).toContain('BOOT_CRASH_REASON');
+      expect(envelope.failure.stderrTail).toContain('BOOT_CRASH_REASON');
+      expect(envelope.failure.logPath).toContain('desktop-backend.log');
     }
+    expect(
+      stages.some(
+        (s) =>
+          typeof s === 'object' &&
+          s !== null &&
+          'stage' in s &&
+          (s as { stage: string }).stage === 'failed',
+      ),
+    ).toBe(true);
+  });
+
+  it('aborts an in-flight discoveryFlight when setTargetHome switches spaces so the new space never inherits the old flight', async () => {
+    const homeA = makeTempHome();
+    const homeB = makeTempHome();
+    mkdirSync(join(homeB, 'server', 'instances'), { recursive: true });
+    writeFileSync(join(homeB, 'server.local-owner'), 'token-b');
+    writeFileSync(
+      join(homeB, 'server', 'instances', 'srv-b.json'),
+      JSON.stringify({ server_id: 'srv-b', pid: 7777, port: 42002 }),
+    );
+
+    const supervisor = new DaemonSupervisor(
+      {
+        electronBinary: '/opt/kiki/kiki-desktop',
+        serverEntry: '/opt/kiki/server-entry.mjs',
+        homeDir: homeA,
+      },
+      {
+        isPidAlive: (pid) => pid === 7777 || pid === 6666,
+        openLogFd: (h) => ({ path: join(h, 'logs', 'desktop-backend.log'), fd: -1 }),
+        closeFd: () => undefined,
+        spawnFn: () => new FakeDaemonChild(6666),
+        fetchFn: async (input) => {
+          const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+          if (url === 'http://127.0.0.1:42002/api/meta') {
+            return jsonResponse({
+              code: 0,
+              data: { server_id: 'srv-b', server_home_id: 'space-b', desktop_managed: true },
+            });
+          }
+          if (url === 'http://127.0.0.1:42002/api/remote-connections/handshake') {
+            return jsonResponse({
+              code: 0,
+              data: { server_id: 'srv-b', server_home_id: 'space-b' },
+            });
+          }
+          return jsonResponse({ code: 1 }, 503);
+        },
+        pollIntervalMs: 50,
+      },
+    );
+
+    const staleFlight = supervisor.discoverConnection();
+    const staleRejected = expect(staleFlight).rejects.toThrow(/newer space switch/i);
+    supervisor.setTargetHome(homeB);
+    const nextConn = await supervisor.discoverConnection();
+    expect(nextConn.config.url).toBe('http://127.0.0.1:42002');
+    await staleRejected;
   });
 });
