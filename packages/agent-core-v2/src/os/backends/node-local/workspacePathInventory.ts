@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readdirSync, readFileSync, type Dirent } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync, type Dirent } from 'node:fs';
 import { basename, dirname, join, relative, resolve, isAbsolute } from 'node:path';
 import ignore, { type Ignore } from 'ignore';
 import { isSensitiveFile } from '#/_base/security/sensitiveFile';
@@ -39,6 +39,80 @@ export function isAlwaysIgnoredPathSegment(segment: string): boolean {
 }
 const IGNORE_FILES = ['.gitignore', '.ignore', '.rgignore'];
 const SKIPPABLE = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR']);
+const MAX_PARSED_IGNORE_CACHE_ENTRIES = 512;
+const MAX_TEXT_FILE_CACHE_ENTRIES = 64;
+
+interface FileStamp {
+  readonly mtimeNs: bigint;
+  readonly ctimeNs: bigint;
+  readonly size: bigint;
+  readonly ino: bigint;
+}
+
+interface CachedIgnoreEntry extends FileStamp {
+  readonly matcher: Ignore;
+}
+
+interface CachedTextEntry extends FileStamp {
+  readonly text: string;
+}
+
+const parsedIgnoreCache = new Map<string, CachedIgnoreEntry>();
+const cachedTextFileCache = new Map<string, CachedTextEntry>();
+
+function sameFileStamp(left: FileStamp, right: FileStamp): boolean {
+  return left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs
+    && left.size === right.size
+    && left.ino === right.ino;
+}
+
+function lruSet<V>(cache: Map<string, V>, key: string, value: V, maxEntries: number): void {
+  if (cache.has(key)) cache.delete(key);
+  else if (cache.size >= maxEntries) cache.delete(cache.keys().next().value!);
+  cache.set(key, value);
+}
+
+function statFileStamp(path: string): FileStamp | undefined {
+  try {
+    const stat = statSync(path, { bigint: true });
+    if (!stat.isFile()) return undefined;
+    return {
+      mtimeNs: stat.mtimeNs,
+      ctimeNs: stat.ctimeNs,
+      size: stat.size,
+      ino: stat.ino,
+    };
+  } catch (error) {
+    if (SKIPPABLE.has((error as NodeJS.ErrnoException).code ?? '')) return undefined;
+    throw error;
+  }
+}
+
+function readCachedTextFile(path: string): string | undefined {
+  const stamp = statFileStamp(path);
+  if (stamp === undefined) {
+    cachedTextFileCache.delete(path);
+    return undefined;
+  }
+  const cached = cachedTextFileCache.get(path);
+  if (cached !== undefined && sameFileStamp(cached, stamp)) {
+    cachedTextFileCache.delete(path);
+    cachedTextFileCache.set(path, cached);
+    return cached.text;
+  }
+  try {
+    const text = readFileSync(path, 'utf8');
+    lruSet(cachedTextFileCache, path, { ...stamp, text }, MAX_TEXT_FILE_CACHE_ENTRIES);
+    return text;
+  } catch (error) {
+    if (SKIPPABLE.has((error as NodeJS.ErrnoException).code ?? '')) {
+      cachedTextFileCache.delete(path);
+      return undefined;
+    }
+    throw error;
+  }
+}
 
 class PathRules {
   private readonly rules = new Map<string, readonly (Ignore | undefined)[]>();
@@ -53,8 +127,15 @@ class PathRules {
       const git = join(parent, '.git');
       if (existsSync(git)) {
         let gitDir = git;
-        if (lstatSync(git).isFile()) gitDir = resolve(parent, readFileSync(git, 'utf8').trim().replace(/^gitdir: /u, ''));
-        if (existsSync(join(gitDir, 'commondir'))) gitDir = resolve(gitDir, readFileSync(join(gitDir, 'commondir'), 'utf8').trim());
+        if (lstatSync(git).isFile()) {
+          const pointer = readCachedTextFile(git);
+          if (pointer !== undefined) gitDir = resolve(parent, pointer.trim().replace(/^gitdir: /u, ''));
+        }
+        const commonDirPath = join(gitDir, 'commondir');
+        if (existsSync(commonDirPath)) {
+          const commonDir = readCachedTextFile(commonDirPath);
+          if (commonDir !== undefined) gitDir = resolve(gitDir, commonDir.trim());
+        }
         this.exclude = this.load(join(gitDir, 'info', 'exclude'), parent);
         break;
       }
@@ -65,16 +146,32 @@ class PathRules {
   }
   private load(path: string, directory: string): Ignore | undefined {
     this.signal?.throwIfAborted();
+    const route = relative(directory, this.root).replaceAll('\\', '/');
+    const cacheKey = `${path}\0${route}`;
+    const stamp = statFileStamp(path);
+    if (stamp === undefined) {
+      parsedIgnoreCache.delete(cacheKey);
+      return undefined;
+    }
+    const cached = parsedIgnoreCache.get(cacheKey);
+    if (cached !== undefined && sameFileStamp(cached, stamp)) {
+      parsedIgnoreCache.delete(cacheKey);
+      parsedIgnoreCache.set(cacheKey, cached);
+      return cached.matcher;
+    }
     try {
       const matcher = ignore().add(readFileSync(path, 'utf8'));
-      const route = relative(directory, this.root).replaceAll('\\', '/');
       if (route !== '' && !route.startsWith('../')) {
         const parts = route.split('/');
         matcher.add(parts.map((_part, index) => `!/${parts.slice(0, index + 1).join('/')}/`));
       }
+      lruSet(parsedIgnoreCache, cacheKey, { ...stamp, matcher }, MAX_PARSED_IGNORE_CACHE_ENTRIES);
       return matcher;
     } catch (error) {
-      if (SKIPPABLE.has((error as NodeJS.ErrnoException).code ?? '')) return undefined;
+      if (SKIPPABLE.has((error as NodeJS.ErrnoException).code ?? '')) {
+        parsedIgnoreCache.delete(cacheKey);
+        return undefined;
+      }
       throw error;
     }
   }
@@ -203,5 +300,6 @@ export function workspacePathInventory(root: string, limit: number, signal?: Abo
     entries.push(entry);
     if (entries.length > limit) return { entries: [], overflow: true };
   }
+  entries.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
   return { entries, overflow: false };
 }
