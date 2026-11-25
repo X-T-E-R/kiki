@@ -6030,6 +6030,165 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     });
   });
 
+  it('never appends a stale out-of-window running prompt below newer completed turns', () => {
+    const snapshot = emptySnapshot({
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't14',
+          ordinal: 14,
+          state: 'completed',
+          promptId: 'p14',
+          origin: { kind: 'user', payload: { promptId: 'p14', userMessageId: 'p14' } },
+          prompt: 'recent turn',
+          startedAt: '2026-01-02T00:00:00.000Z',
+          endedAt: '2026-01-02T00:01:00.000Z',
+          steps: [
+            {
+              kind: 'step',
+              stepId: 's14',
+              turnId: 't14',
+              ordinal: 1,
+              state: 'completed',
+              frames: [{ kind: 'text', role: 'assistant', frameId: 'f14', text: 'latest assistant reply' }],
+            },
+          ],
+        },
+      ],
+      hasMoreOlder: true,
+      prompts: [
+        {
+          promptId: 'p13-orphan-running',
+          userMessageId: 'p13-orphan-running',
+          status: 'running',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          content: [{ type: 'text', text: 'day-old interrupted user prompt' }],
+        },
+        {
+          promptId: 'p14',
+          userMessageId: 'p14',
+          status: 'completed',
+          createdAt: '2026-01-02T00:00:00.000Z',
+          finishedAt: '2026-01-02T00:01:00.000Z',
+          content: [{ type: 'text', text: 'recent turn' }],
+        },
+      ],
+    });
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    expect(projected.blocks.at(-1)).toMatchObject({ kind: 'assistant', text: 'latest assistant reply' });
+    expect(projected.blocks.filter((block): block is UserBlock => block.kind === 'user').map((block) => block.text)).toEqual(['recent turn']);
+    const earlier = projected.blocks.find((block) => block.id === EARLIER_PROMPT_OUTCOMES_ID);
+    expect(earlier).toMatchObject({
+      kind: 'notice',
+      earlierPromptOutcomes: [
+        { promptId: 'p13-orphan-running', status: 'aborted', text: 'day-old interrupted user prompt' },
+      ],
+    });
+  });
+
+  it('normalizes an in-window crashed turn prompt out of running without affecting a regenerating prompt for the same message', () => {
+    const crashedSnapshot = emptySnapshot({
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't4',
+          ordinal: 4,
+          state: 'cancelled',
+          cancellation: 'recovery',
+          promptId: 'p4-crashed',
+          origin: { kind: 'user', payload: { promptId: 'p4-crashed', userMessageId: 'm4' } },
+          prompt: 'crashed last turn',
+          startedAt: '2026-01-02T00:00:00.000Z',
+          endedAt: '2026-01-02T00:00:30.000Z',
+          steps: [],
+        },
+      ],
+      prompts: [
+        {
+          promptId: 'p4-crashed',
+          userMessageId: 'm4',
+          status: 'running',
+          createdAt: '2026-01-02T00:00:00.000Z',
+          content: [{ type: 'text', text: 'crashed last turn' }],
+        },
+      ],
+    });
+    const crashedView = projectAgentTranscriptView(createViewState('session_test'), 'main', crashedSnapshot);
+    const crashedUsers = crashedView.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(crashedUsers).toHaveLength(1);
+    expect(crashedUsers[0]).toMatchObject({
+      text: 'crashed last turn',
+      promptStatus: undefined,
+      promptOutcome: { status: 'aborted' },
+    });
+
+    const priorView = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'completed',
+            promptId: 'p1-original',
+            origin: { kind: 'user', payload: { promptId: 'p1-original', userMessageId: 'm1' } },
+            prompt: 'regenerate me',
+            startedAt: '2026-01-02T00:00:00.000Z',
+            endedAt: '2026-01-02T00:01:00.000Z',
+            steps: [],
+          },
+        ],
+        prompts: [
+          {
+            promptId: 'p1-original',
+            userMessageId: 'm1',
+            status: 'completed',
+            createdAt: '2026-01-02T00:00:00.000Z',
+            finishedAt: '2026-01-02T00:01:00.000Z',
+            content: [{ type: 'text', text: 'regenerate me' }],
+          },
+        ],
+      }),
+    );
+    const regenView = projectAgentTranscriptView(
+      priorView,
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user', payload: { promptId: 'p1-retry', userMessageId: 'm1' } },
+            startedAt: '2026-01-02T00:00:00.000Z',
+            endedAt: '2026-01-02T00:01:00.000Z',
+            steps: [],
+          },
+        ],
+        prompts: [
+          {
+            promptId: 'p1-retry',
+            userMessageId: 'm1',
+            status: 'running',
+            createdAt: '2026-01-02T00:02:00.000Z',
+            content: [{ type: 'text', text: 'regenerate me' }],
+          },
+        ],
+      }),
+    );
+    const regenUsers = regenView.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(regenUsers).toHaveLength(1);
+    expect(regenUsers[0]).toMatchObject({
+      id: 'user-m1',
+      userMessageId: 'm1',
+      text: 'regenerate me',
+      promptStatus: undefined,
+    });
+  });
+
   it('clears contentPending on terminal prompts without delivery markers after hydration and hydrates standalone delivery markers', () => {
     const longSteerText = 'STEER_HEAD:' + 'blocked-steer-chunk-'.repeat(160) + ':STEER_TAIL';
     const steerRef = {

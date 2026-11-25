@@ -4750,7 +4750,7 @@ describe('TranscriptService live integration', () => {
         }));
         expect(recovered).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(32);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(34);
         expect(await read()).toEqual(expected);
         expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
         expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
@@ -4796,7 +4796,7 @@ describe('TranscriptService live integration', () => {
           nextByteOffset: number;
           snapshot: AgentTranscriptSnapshot;
         }>('__transcript_projection_checkpoint__', key);
-        expect(saved?.format).toBe(32);
+        expect(saved?.format).toBe(34);
         expect(saved?.nextByteOffset).toBe(originalWire.byteLength);
 
         const legacy = {
@@ -4817,7 +4817,7 @@ describe('TranscriptService live integration', () => {
         const recovered = await read();
         expect(recovered?.meta.agent?.contextTokens).toBe(61_234);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(32);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(34);
 
         const cached = await read();
         expect(cached?.meta.agent?.contextTokens).toBe(61_234);
@@ -4827,7 +4827,7 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       const ref = { refId: 'ar:message-1:worker', profile: 'worker', executor: 'example-acp', configuration: 'profile', label: 'Worker' };
@@ -4930,7 +4930,7 @@ describe('TranscriptService live integration', () => {
         const accepted = expected?.prompts.find(prompt => prompt.promptId === 'accepted-not-delivered');
         expect(accepted).toMatchObject({ status: 'queued', steerAccepted: true, userMessageId: 'logical-accepted' });
         expect(accepted?.steeredAt).toBeUndefined();
-        expect(checkpoint?.format).toBe(32);
+        expect(checkpoint?.format).toBe(34);
         const boundary = expected?.items.find((item) => item.kind === 'turn' && item.turnId === 't5');
         expect(boundary).toMatchObject({ state: 'failed',
           error: 'example_stream_reset: Example worker connection was reset.',
@@ -5864,6 +5864,129 @@ describe('TranscriptService live integration', () => {
           abortedBeforeStart: true,
         });
         service.dropSession('s1');
+      } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
+    it('settles unowned crashed running prompts on cold snapshots and live attach while preserving an engine-active prompt', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'transcript-crashed-running-prompt-'));
+      try {
+        const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+        await mkdir(wireDir, { recursive: true });
+        const records: Record<string, unknown>[] = [
+          {
+            type: 'prompt.enqueued',
+            promptId: 'p-crashed-hist',
+            userMessageId: 'p-crashed-hist',
+            queueIndex: 0,
+            revision: 0,
+            createdAt: '2026-01-01T00:00:00.000Z',
+            message: { id: 'p-crashed-hist', role: 'user', content: [{ type: 'text', text: 'day-old crashed turn' }], origin: { kind: 'user' } },
+            time: 1_000,
+          },
+          { type: 'prompt.launch_committed', promptId: 'p-crashed-hist', time: 1_010 },
+          {
+            type: 'turn.prompt',
+            turnId: 13,
+            promptId: 'p-crashed-hist',
+            input: [{ type: 'text', text: 'day-old crashed turn' }],
+            origin: { kind: 'user' },
+            managed: true,
+            time: 1_020,
+          },
+          {
+            type: 'prompt.enqueued',
+            promptId: 'p-peer-wake',
+            userMessageId: 'p-peer-wake',
+            queueIndex: 0,
+            revision: 0,
+            createdAt: '2026-01-01T02:00:00.000Z',
+            message: { id: 'p-peer-wake', role: 'user', content: [{ type: 'text', text: 'wake' }], origin: { kind: 'peer_thread' } },
+            time: 7_200_000,
+          },
+          { type: 'prompt.launch_committed', promptId: 'p-peer-wake', time: 7_200_010 },
+          {
+            type: 'turn.prompt',
+            turnId: 14,
+            promptId: 'p-peer-wake',
+            input: [{ type: 'text', text: 'wake' }],
+            origin: { kind: 'peer_thread' },
+            managed: true,
+            time: 7_200_020,
+          },
+          { type: 'turn.ended', turnId: 14, reason: 'completed', time: 7_205_000 },
+          {
+            type: 'prompt.enqueued',
+            promptId: 'p-tail-crashed',
+            userMessageId: 'p-tail-crashed',
+            queueIndex: 0,
+            revision: 0,
+            createdAt: '2026-01-01T03:00:00.000Z',
+            message: { id: 'p-tail-crashed', role: 'user', content: [{ type: 'text', text: 'tail crashed turn' }], origin: { kind: 'user' } },
+            time: 10_800_000,
+          },
+          { type: 'prompt.launch_committed', promptId: 'p-tail-crashed', time: 10_800_010 },
+          {
+            type: 'turn.prompt',
+            turnId: 15,
+            promptId: 'p-tail-crashed',
+            input: [{ type: 'text', text: 'tail crashed turn' }],
+            origin: { kind: 'user' },
+            managed: true,
+            time: 10_800_020,
+          },
+        ];
+        await writeFile(
+          join(wireDir, 'wire.jsonl'),
+          `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+        );
+
+        const coldService = new TranscriptService({ homeDir: home, core: coldCore() });
+        const cold = await coldService.readColdSnapshot('s1', 'main');
+        expect(cold?.prompts.find((prompt) => prompt.promptId === 'p-crashed-hist')).toMatchObject({ status: 'aborted' });
+        expect(cold?.prompts.find((prompt) => prompt.promptId === 'p-tail-crashed')).toMatchObject({ status: 'aborted' });
+        expect(cold?.prompts.some((prompt) => prompt.status === 'running')).toBe(false);
+        coldService.dispose();
+
+        const idleAgents = new FakeAgents();
+        idleAgents.add('main', { loopStatus: { state: 'idle' }, prompts: { pending: [] } });
+        const liveIdleService = new TranscriptService({
+          homeDir: home,
+          core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), idleAgents),
+        });
+        const idleStore = liveIdleService.forSessionLive('s1');
+        await liveIdleService.whenReady('s1');
+        expect(idleStore?.getAgent('main')?.getPrompt('p-crashed-hist')).toMatchObject({ status: 'aborted' });
+        expect(idleStore?.getAgent('main')?.getPrompt('p-tail-crashed')).toMatchObject({ status: 'aborted' });
+        liveIdleService.dropSession('s1');
+        liveIdleService.dispose();
+
+        const activeAgents = new FakeAgents();
+        activeAgents.add('main', {
+          loopStatus: { state: 'running', turnId: 15 },
+          prompts: {
+            active: {
+              id: 'p-tail-crashed',
+              userMessageId: 'p-tail-crashed',
+              createdAt: '2026-01-01T03:00:00.000Z',
+              state: 'running',
+              message: { role: 'user', content: [{ type: 'text', text: 'tail crashed turn' }] },
+              revision: 0,
+            },
+            pending: [],
+          },
+        });
+        const liveActiveService = new TranscriptService({
+          homeDir: home,
+          core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), activeAgents),
+        });
+        const activeStore = liveActiveService.forSessionLive('s1');
+        await liveActiveService.whenReady('s1');
+        expect(activeStore?.getAgent('main')?.getPrompt('p-crashed-hist')).toMatchObject({ status: 'aborted' });
+        expect(activeStore?.getAgent('main')?.getPrompt('p-tail-crashed')).toMatchObject({ status: 'running' });
+        liveActiveService.dropSession('s1');
+        liveActiveService.dispose();
       } finally {
         await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }

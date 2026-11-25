@@ -131,7 +131,7 @@ const MAIN_AGENT_ID = 'main';
 const WIRE_FILE = 'wire.jsonl';
 const STATE_FILE = 'state.json';
 const TRANSCRIPT_CHECKPOINT_COLLECTION = '__transcript_projection_checkpoint__';
-const TRANSCRIPT_CHECKPOINT_FORMAT = 33;
+const TRANSCRIPT_CHECKPOINT_FORMAT = 34;
 const TRANSCRIPT_CHECKPOINT_MIN_RECORDS = 256;
 const TRANSCRIPT_CHECKPOINT_MAX_WIRE_BYTES = 8 << 20;
 const OPS_JOURNAL_COMPACT_MIN_HEAD = 1024;
@@ -1942,10 +1942,15 @@ export class TranscriptService {
     for (const pending of snapshot.pending) owned.add(pending.id);
     const entry = this.live.get(sessionId);
     if (owned.size > 0 && entry?.store === store) this.invalidateInitOnlyLiveProof(entry, agentId);
+    const current = transcript.snapshot();
     const ops: TranscriptOperation[] = [];
-    for (const prompt of transcript.snapshot().prompts) {
-      if (prompt.status !== 'queued' || owned.has(prompt.promptId)) continue;
-      ops.push({ op: 'prompt.upsert', prompt: { ...prompt, status: 'aborted', abortedBeforeStart: true } });
+    for (const prompt of current.prompts) {
+      if (owned.has(prompt.promptId)) continue;
+      if (prompt.status === 'queued') {
+        ops.push({ op: 'prompt.upsert', prompt: { ...prompt, status: 'aborted', abortedBeforeStart: true } });
+      } else if (prompt.status === 'running') {
+        ops.push({ op: 'prompt.upsert', prompt: settledRunningPrompt(prompt, ownerTurnForPrompt(prompt, current.items)) });
+      }
     }
     if (ops.length === 0) return;
     if (entry?.store === store) this.invalidateInitOnlyLiveProof(entry, agentId);
@@ -4007,14 +4012,17 @@ export class TranscriptService {
       reducer.apply(adapter.add(record, { ...position, ordinal: startOrdinal === undefined ? position.ordinal : startOrdinal + index }));
     }
     const preservedTurns: TranscriptTurn[] = [];
+    const preservedTurnIds = new Set<string>();
     for (const turnId of preserveOpenTurnIds?.() ?? []) {
       const candidate = transcript.getTurn(turnId);
-      if (candidate?.state === 'running') preservedTurns.push(structuredClone(candidate));
+      if (candidate?.state !== 'running') continue;
+      preservedTurns.push(structuredClone(candidate));
+      preservedTurnIds.add(turnId);
     }
     captureReplayState?.({ adapter: adapter.checkpoint(), acceptedDurableFacts: reducer.checkpoint() });
-    reducer.apply(adapter.finish());
+    reducer.apply(adapter.finish(preservedTurnIds.size > 0 ? preservedTurnIds : undefined));
     for (const turn of preservedTurns) transcript.apply(snapshotTurnOps(turn));
-    const snapshot = transcript.snapshot();
+    const snapshot = settleClosedColdPrompts(transcript.snapshot(), preserveOpenTurnIds !== undefined);
     if (!sawEntireFile) return { ...snapshot, toolCallCount: undefined, toolCallCountKnown: false, hasMoreOlder: true };
     return { ...snapshot, toolCallCount: undefined, toolCallCountKnown: false, hasMoreOlder: false };
   }
@@ -6015,9 +6023,12 @@ export class TranscriptService {
     }
     try {
       const preservedTurns: TranscriptTurn[] = [];
+      const preservedTurnIds = new Set<string>();
       for (const turnId of preserveOpenTurnIds?.() ?? []) {
         const candidate = transcript.getTurn(turnId);
-        if (candidate?.state === 'running') preservedTurns.push(structuredClone(candidate));
+        if (candidate?.state !== 'running') continue;
+        preservedTurns.push(structuredClone(candidate));
+        preservedTurnIds.add(turnId);
       }
       if (
         checkpointEligible &&
@@ -6046,9 +6057,9 @@ export class TranscriptService {
         }
       }
       captureReplayState?.({ adapter: adapter.checkpoint(), acceptedDurableFacts: reducer.checkpoint() });
-      reducer.apply(adapter.finish());
+      reducer.apply(adapter.finish(preservedTurnIds.size > 0 ? preservedTurnIds : undefined));
       for (const turn of preservedTurns) transcript.apply(snapshotTurnOps(turn));
-      const snapshot = transcript.snapshot();
+      const snapshot = settleClosedColdPrompts(transcript.snapshot(), preserveOpenTurnIds !== undefined);
       const stillVerified = verified && (sealed
         ? await this.hasVerifiedWireReceipt(wirePath, info!, signal)
         : await this.hasVerifiedLiveEpoch(sessionId, agentId));
@@ -7544,4 +7555,66 @@ function persistedTaskToTranscriptTask(
     error: state === 'failed' || state === 'timed_out' || state === 'lost' ? (info.stopReason ?? agentMeta?.error) : undefined,
     stateReason: info.stopReason,
   };
+}
+
+function ownerTurnForPrompt(
+  prompt: TranscriptPrompt,
+  items: AgentTranscriptSnapshot['items'],
+): TranscriptTurn | undefined {
+  let fallback: TranscriptTurn | undefined;
+  for (const item of items) {
+    if (item.kind !== 'turn') continue;
+    if (item.promptId === prompt.promptId) return item;
+    if (
+      item.promptId === undefined &&
+      (item.message?.messageId === prompt.promptId ||
+        (prompt.userMessageId !== undefined && item.message?.messageId === prompt.userMessageId))
+    ) {
+      fallback = item;
+    }
+  }
+  return fallback;
+}
+
+function settledRunningPrompt(
+  prompt: TranscriptPrompt,
+  ownerTurn: TranscriptTurn | undefined,
+): TranscriptPrompt {
+  const status: TranscriptPrompt['status'] =
+    ownerTurn?.state === 'completed'
+      ? 'completed'
+      : ownerTurn?.state === 'failed'
+        ? 'failed'
+        : 'aborted';
+  return {
+    ...prompt,
+    status,
+    queuePosition: undefined,
+    finishedAt: prompt.finishedAt ?? ownerTurn?.endedAt,
+    error: prompt.error ?? ownerTurn?.error,
+    errorDetails: prompt.errorDetails ?? ownerTurn?.errorDetails,
+  };
+}
+
+function settleClosedColdPrompts(
+  snapshot: AgentTranscriptSnapshot,
+  liveBackfill: boolean,
+): AgentTranscriptSnapshot {
+  if (!snapshot.prompts.some((prompt) => prompt.status === 'running')) return snapshot;
+  let changed = false;
+  const prompts = snapshot.prompts.map((prompt) => {
+    if (prompt.status !== 'running') return prompt;
+    const ownerTurn = ownerTurnForPrompt(prompt, snapshot.items);
+    if (ownerTurn !== undefined) {
+      if (ownerTurn.state === 'running') return prompt;
+      changed = true;
+      return settledRunningPrompt(prompt, ownerTurn);
+    }
+    if (!liveBackfill) {
+      changed = true;
+      return settledRunningPrompt(prompt, undefined);
+    }
+    return prompt;
+  });
+  return changed ? { ...snapshot, prompts } : snapshot;
 }
