@@ -279,3 +279,49 @@ describe('toShellPath', () => {
     expect(bridge.toShellPath(input)).toBe(expected);
   });
 });
+
+describe('fromShellPath mount-table resolution & cygpath probe cap', () => {
+  it('resolves fstab mounts, /tmp, and arbitrary segments without spawning cygpath when readFileSync is supplied', () => {
+    const execFileSync = vi.fn(() => {
+      throw new Error('must not spawn cygpath');
+    });
+    const bridge = createShellPathBridge(WINDOWS_ENV, {
+      execFileSync,
+      isFile: (p) => p === USR_BIN_CYGPATH,
+      readFileSync: (p) =>
+        p === 'C:\\Program Files\\Git\\etc\\fstab'
+          ? '# comment\nC:/Users /home ntfs binary 0 0\nnone / cygdrive binary 0 0\n'
+          : undefined,
+      env: { TEMP: 'C:\\Users\\me\\AppData\\Local\\Temp' },
+    });
+
+    expect(bridge.fromShellPath('/tmp/scratch/a.txt')).toBe(
+      'C:/Users/me/AppData/Local/Temp/scratch/a.txt',
+    );
+    expect(bridge.fromShellPath('/home/alice/doc.md')).toBe('C:/Users/alice/doc.md');
+    for (let i = 0; i < 1000; i += 1) {
+      expect(bridge.fromShellPath(`/seg${i}/file.txt`)).toBe(
+        `C:/Program Files/Git/seg${i}/file.txt`,
+      );
+    }
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  it('caps fallback cygpath probes per window against unbounded distinct root segments', () => {
+    let clock = 10_000;
+    const execFileSync = vi.fn((_file: string, args: readonly string[]) => {
+      const seg = args[args.length - 1]!.slice(1);
+      return `C:\\Program Files\\Git\\${seg}\n`;
+    });
+    const bridge = createShellPathBridge(WINDOWS_ENV, {
+      execFileSync,
+      isFile: (p) => p === USR_BIN_CYGPATH,
+      now: () => clock,
+    });
+
+    for (let i = 0; i < 64; i += 1) {
+      bridge.fromShellPath(`/a${i}/x`);
+    }
+    expect(execFileSync.mock.calls.length).toBeLessThanOrEqual(16);
+  });
+});

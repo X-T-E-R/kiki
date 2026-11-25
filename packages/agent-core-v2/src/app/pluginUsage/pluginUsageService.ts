@@ -16,6 +16,7 @@ type StoredUsage = z.infer<typeof storedSchema>;
 export class PluginUsageService extends Service implements IPluginUsageService {
   declare readonly _serviceBrand: undefined;
   private readonly documents = new Map<string, Promise<StoredUsage>>();
+  private readonly sessionReadFlights = new Map<string, Promise<StoredUsage>>();
   private readonly application = new Map<string, { revision: number; applyState: PluginUsageSnapshot['applyState']; errors: string[] }>();
   private readonly sessionApplication = new Map<string, PluginUsageSnapshot>();
   private writes: Promise<unknown> = Promise.resolve();
@@ -52,12 +53,23 @@ export class PluginUsageService extends Service implements IPluginUsageService {
     return (await this.readSession(workspaceId, sessionId)).overrides[id] ?? workspace;
   }
   async readSession(workspaceId: string, sessionId: string): Promise<PluginUsageSnapshot> {
-    const value = await this.store.get('session-plugin-usage', sessionId);
-    const stored = value === undefined ? { revision: 0, overrides: {} } : storedSchema.parse(value);
+    const stored = await this.loadSession(sessionId);
     const application = this.sessionApplication.get(sessionId);
     return { workspaceId, sessionId, ...stored,
       applyState: application?.revision === stored.revision ? application.applyState : 'applied',
       errors: application?.revision === stored.revision ? [...application.errors] : [] };
+  }
+  private loadSession(sessionId: string): Promise<StoredUsage> {
+    let flight = this.sessionReadFlights.get(sessionId);
+    if (flight === undefined) {
+      flight = this.store.get('session-plugin-usage', sessionId)
+        .then((value) => value === undefined ? { revision: 0, overrides: {} } : storedSchema.parse(value))
+        .finally(() => {
+          if (this.sessionReadFlights.get(sessionId) === flight) this.sessionReadFlights.delete(sessionId);
+        });
+      this.sessionReadFlights.set(sessionId, flight);
+    }
+    return flight;
   }
   async applySession(snapshot: PluginUsageSnapshot, pluginId: string): Promise<PluginUsageSnapshot> {
     const work: Promise<unknown>[] = [];

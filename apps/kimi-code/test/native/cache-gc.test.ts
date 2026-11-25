@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { cleanupStaleNativeCache } from '#/native/native-assets';
+import { cleanupStaleCacheTree, cleanupStaleNativeCache } from '#/native/native-assets';
 
 describe('cleanupStaleNativeCache', () => {
   let root: string;
@@ -99,5 +99,54 @@ describe('cleanupStaleNativeCache', () => {
       currentRoot: current,
     });
     expect(result.errors).toEqual([]);
+  });
+
+  it('prunes older versions and stale web cache siblings via cleanupStaleCacheTree', async () => {
+    const t = 'darwin-arm64';
+    const makeNsDir = (ns: 'native' | 'web', version: string, hash: string, mtimeOffset: number): string => {
+      const dir = join(root, ns, version, t, hash);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'marker.txt'), hash);
+      const now = Math.floor(Date.now() / 1000);
+      utimesSync(dir, now + mtimeOffset, now + mtimeOffset);
+      utimesSync(join(root, ns, version), now + mtimeOffset, now + mtimeOffset);
+      return dir;
+    };
+
+    makeNsDir('native', '0.1.0', 'h1', -500);
+    makeNsDir('native', '0.2.0', 'h2', -300);
+    makeNsDir('native', '0.3.0', 'h3', -100);
+    const currentNative = makeNsDir('native', '0.4.0', 'h4', 0);
+
+    makeNsDir('web', '0.1.0', 'w1', -500);
+    makeNsDir('web', '0.3.0', 'w3', -100);
+    const webOldSibling = makeNsDir('web', '0.4.0', 'wa', -400);
+    const webRecentSibling = makeNsDir('web', '0.4.0', 'wb', -50);
+    const currentWeb = makeNsDir('web', '0.4.0', 'wc', 0);
+
+    const nativeResult = await cleanupStaleCacheTree({
+      cacheBase: root,
+      namespace: 'native',
+      version: '0.4.0',
+      target: t,
+      currentRoot: currentNative,
+      maxOldVersions: 1,
+    });
+    expect(nativeResult.errors).toEqual([]);
+    expect(readdirSync(join(root, 'native')).toSorted()).toEqual(['0.3.0', '0.4.0']);
+
+    const webResult = await cleanupStaleCacheTree({
+      cacheBase: root,
+      namespace: 'web',
+      version: '0.4.0',
+      target: t,
+      currentRoot: currentWeb,
+      maxOldVersions: 1,
+    });
+    expect(webResult.errors).toEqual([]);
+    expect(readdirSync(join(root, 'web')).toSorted()).toEqual(['0.3.0', '0.4.0']);
+    expect(readdirSync(join(root, 'web', '0.4.0', t)).toSorted()).toEqual(['wb', 'wc']);
+    expect(webResult.removed).toContain(webOldSibling);
+    expect(webResult.kept).toContain(webRecentSibling);
   });
 });

@@ -28,7 +28,8 @@ export async function readWireRecordsBounded(
   const opened = await openLogicalWire(wirePath);
   const handle = opened === undefined ? await open(wirePath, 'r') : undefined;
   let position = 0;
-  let pending = Buffer.alloc(0);
+  let pendingChunks: Buffer[] = [];
+  let pendingBytes = 0;
   let lineNumber = 0;
   let yieldedAt = performance.now();
   try {
@@ -49,12 +50,24 @@ export async function readWireRecordsBounded(
       }
       position += read;
       options.onRead?.(read);
-      pending = pending.length === 0 ? readChunk : Buffer.concat([pending, readChunk]);
+      let scanStart = 0;
       for (;;) {
-        const newline = pending.indexOf(0x0a);
+        const newline = readChunk.indexOf(0x0a, scanStart);
         if (newline < 0) break;
-        const line = pending.subarray(0, newline);
-        pending = pending.subarray(newline + 1);
+        const segment = readChunk.subarray(scanStart, newline);
+        scanStart = newline + 1;
+        let line: Buffer;
+        if (pendingChunks.length === 0) {
+          line = segment;
+        } else {
+          if (segment.length > 0) {
+            pendingChunks.push(segment);
+            pendingBytes += segment.length;
+          }
+          line = pendingChunks.length === 1 ? pendingChunks[0]! : Buffer.concat(pendingChunks, pendingBytes);
+          pendingChunks = [];
+          pendingBytes = 0;
+        }
         lineNumber += 1;
         parseLine(wirePath, line, lineNumber, options.onRecord, options.decodeRecord);
         if (performance.now() - yieldedAt >= WIRE_YIELD_BUDGET_MS) {
@@ -62,14 +75,22 @@ export async function readWireRecordsBounded(
           yieldedAt = performance.now();
         }
       }
+      if (scanStart < readChunk.length) {
+        const tail = readChunk.subarray(scanStart);
+        pendingChunks.push(tail);
+        pendingBytes += tail.length;
+      }
       if (performance.now() - yieldedAt >= WIRE_YIELD_BUDGET_MS) {
         await new Promise<void>((resolve) => { setImmediate(resolve); });
         yieldedAt = performance.now();
       }
     }
-    if (pending.length > 0) {
+    if (pendingBytes > 0) {
+      const finalLine = pendingChunks.length === 1 ? pendingChunks[0]! : Buffer.concat(pendingChunks, pendingBytes);
+      pendingChunks = [];
+      pendingBytes = 0;
       lineNumber += 1;
-      parseLine(wirePath, pending, lineNumber, options.onRecord, options.decodeRecord);
+      parseLine(wirePath, finalLine, lineNumber, options.onRecord, options.decodeRecord);
     }
     if (position !== fileSize) {
       throw new Error(`wire.jsonl: file changed during bounded read for ${wirePath}`);

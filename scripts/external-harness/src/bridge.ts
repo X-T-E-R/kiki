@@ -23,7 +23,7 @@ import {
 } from '../agy-permission-hook.mjs';
 import {
   AUDIT_DEFAULT_MAX_BYTES,
-  compactAuditFile,
+  compactAuditFileWithStats,
   pruneExpiredAuditFiles,
   readAuditFile,
 } from './auditLog';
@@ -143,8 +143,8 @@ export class AgyBridge {
     this.sessions = new Map();
   }
 
-  private nextAuditCompactThreshold(bytes: number): number {
-    const growthStep = Math.max(1024, Math.floor(this.auditMaxBytes / 2));
+  private nextAuditCompactThreshold(bytes: number, stateBytes: number = bytes): number {
+    const growthStep = Math.max(1024, Math.floor(this.auditMaxBytes / 2), stateBytes);
     return Math.max(this.auditMaxBytes, bytes + growthStep);
   }
 
@@ -182,11 +182,14 @@ export class AgyBridge {
         const written = knownBytes + Buffer.byteLength(line, 'utf8');
         const compactAt = this.auditNextCompactAt.get(session.id) ?? this.auditMaxBytes;
         if (this.auditMaxBytes > 0 && written >= compactAt) {
-          const compactedBytes = await compactAuditFile(auditPath, {
+          const compacted = await compactAuditFileWithStats(auditPath, {
             maxBytes: this.auditMaxBytes,
           });
-          this.auditBytes.set(session.id, compactedBytes);
-          this.auditNextCompactAt.set(session.id, this.nextAuditCompactThreshold(compactedBytes));
+          this.auditBytes.set(session.id, compacted.totalBytes);
+          this.auditNextCompactAt.set(
+            session.id,
+            this.nextAuditCompactThreshold(compacted.totalBytes, compacted.stateBytes),
+          );
         } else {
           this.auditBytes.set(session.id, written);
         }
@@ -1088,6 +1091,8 @@ export class AgyBridge {
     for (const [toolCallId, status] of session.toolIds) {
       if (status !== 'pending') continue;
       session.toolIds.set(toolCallId, 'settled');
+      session.toolInputs.delete(toolCallId);
+      session.toolDetails.delete(toolCallId);
       await active.client.notify('session/update', {
         sessionId: session.id,
         update: {
@@ -1397,8 +1402,11 @@ export class AgyBridge {
                 ...structured,
               };
         const previousInput = session.toolInputs.get(id);
-        if (rawInput !== undefined) session.toolInputs.set(id, rawInput);
-        session.toolDetails.set(id, detail);
+        const alreadySettled = session.toolIds.get(id) === 'settled';
+        if (!alreadySettled) {
+          if (rawInput !== undefined) session.toolInputs.set(id, rawInput);
+          session.toolDetails.set(id, detail);
+        }
         if (!session.toolIds.has(id)) {
           session.toolIds.set(id, 'pending');
           await active.client.notify('session/update', {
@@ -1445,6 +1453,8 @@ export class AgyBridge {
           if (freshStep && !failed) active.progressSinceRecovery = true;
           const error = step.tool_info?.error ?? step.error;
           session.toolIds.set(id, 'settled');
+          session.toolInputs.delete(id);
+          session.toolDetails.delete(id);
           const errorText = typeof error === 'string' ? error : error?.message;
           const output =
             step.tool_info?.output ??
@@ -2234,6 +2244,12 @@ export class AgyBridge {
           await session.mcpPlugin?.close();
           await session.releaseResume?.();
           await this.audit(session, 'close', { pid: session.child?.pid, processEnded: true });
+          session.toolInputs.clear();
+          session.toolDetails.clear();
+          session.toolIds.clear();
+          this.auditBytes.delete(session.id);
+          this.auditNextCompactAt.delete(session.id);
+          this.auditChains.delete(session.id);
         }
       }),
     );

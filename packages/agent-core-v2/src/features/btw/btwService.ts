@@ -4,6 +4,7 @@ import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
 import { Emitter } from '#/_base/event';
 import {
+  PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
   readPersistedAgentProfileSnapshot,
   resolvePersistedAgentCreateOptions,
 } from '#/session/agentProfileSnapshot';
@@ -155,7 +156,13 @@ export class SessionBranchService extends Service implements ISessionBranchServi
       });
     }
     const profile = await readPersistedAgentProfileSnapshot(
-      this.profileHost, this.session.workspaceId, this.session.sessionId, agentId, meta,
+      this.profileHost,
+      this.session.workspaceId,
+      this.session.sessionId,
+      agentId,
+      meta,
+      undefined,
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, skipRequestAndMcp: true },
     );
     const createOptions = resolvePersistedAgentCreateOptions(agentId, meta, profile);
     return this.lifecycle.create(createOptions ?? {

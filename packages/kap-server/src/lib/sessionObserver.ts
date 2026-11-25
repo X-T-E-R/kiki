@@ -38,6 +38,7 @@ export interface SessionCursorReader {
     indexed?: boolean,
   ): Promise<SessionCursorSnapshot | undefined> | SessionCursorSnapshot | undefined;
   getCoveredCursor?(sessionId: string): SessionCursorSnapshot | undefined;
+  getCoveredCursorAsync?(sessionId: string): Promise<SessionCursorSnapshot | undefined>;
 }
 
 interface ColdCursorStore {
@@ -98,12 +99,15 @@ export async function readSessionCursor(
     store.values.delete(sessionId);
     return broadcaster.getCursor(sessionId, signal, indexed);
   }
-  if (allowCovered && broadcaster.getCoveredCursor !== undefined) {
-    const covered = broadcaster.getCoveredCursor(sessionId);
+  if (allowCovered && (broadcaster.getCoveredCursorAsync !== undefined || broadcaster.getCoveredCursor !== undefined)) {
+    const covered = broadcaster.getCoveredCursorAsync !== undefined
+      ? await broadcaster.getCoveredCursorAsync(sessionId)
+      : broadcaster.getCoveredCursor!(sessionId);
+    signal?.throwIfAborted();
     if (covered !== undefined) return covered;
     store.values.delete(sessionId);
   }
-  const cached = allowCovered && broadcaster.getCoveredCursor !== undefined ? undefined : store.values.get(sessionId);
+  const cached = allowCovered && (broadcaster.getCoveredCursorAsync !== undefined || broadcaster.getCoveredCursor !== undefined) ? undefined : store.values.get(sessionId);
   if (cached !== undefined) return cached;
   let pending = store.inflight.get(sessionId);
   if (pending === undefined) {

@@ -1234,7 +1234,14 @@ export class BrowserControlService implements IBrowserControlService {
               throw new BrowserError('browser.target', 'WebBridge navigate did not return a command tab id');
             }
             live.commandTabs ??= new Map();
-            live.commandTabs.set(this.commandCallerKey(input.caller), target);
+            const callerKey = this.commandCallerKey(input.caller);
+            live.commandTabs.delete(callerKey);
+            live.commandTabs.set(callerKey, target);
+            while (live.commandTabs.size > 256) {
+              const oldest = live.commandTabs.keys().next().value;
+              if (oldest === undefined) break;
+              live.commandTabs.delete(oldest);
+            }
           } else if (mapped.action === 'close_session') {
             this.dropCallerCommand(live, input.caller);
           }
@@ -1242,7 +1249,13 @@ export class BrowserControlService implements IBrowserControlService {
         if (input.tool === 'agent_browser_snapshot') {
           const returned = data['refs'];
           live.commandObservations ??= new Map();
+          live.commandObservations.delete(binding);
           live.commandObservations.set(binding, new Set(returned !== null && typeof returned === 'object' ? Object.keys(returned).map((ref) => ref.replace(/^@/, '')) : []));
+          while (live.commandObservations.size > 256) {
+            const oldest = live.commandObservations.keys().next().value;
+            if (oldest === undefined) break;
+            live.commandObservations.delete(oldest);
+          }
         } else if (refs.length > 0 || /agent_browser_(?:open|eval|tab_|end_session)/.test(input.tool)) live.commandObservations?.delete(binding);
         live.status = { ...live.status, state: live.admitting ? 'ready' : 'stopping', currentCall: undefined, checkedAt: new Date().toISOString() };
         return this.commandResult(live, session, input, data, target);
@@ -1311,6 +1324,11 @@ export class BrowserControlService implements IBrowserControlService {
   }
 
   async releaseAgent(caller: BrowserCaller, sessionDir?: string): Promise<void> {
+    for (const live of this.connections.values()) {
+      if (live.connection.type === 'webbridge-command') {
+        this.dropCallerCommand(live, caller);
+      }
+    }
     if (caller.agentId === 'main' || caller.agentId === '' || sessionDir === undefined || sessionDir === '') return;
     const binding = await this.ego.readBinding(sessionDir, caller.agentId);
     if (binding === undefined) return;

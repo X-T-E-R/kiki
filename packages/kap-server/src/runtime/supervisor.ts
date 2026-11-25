@@ -178,29 +178,62 @@ export async function startRuntimeSupervisor(options: {
       } else if (path === '/cancel') await controller.cancel(z.object({ operationId: z.string() }).parse(body).operationId);
       else if (path === '/ensure') await controller.ensure(options.initial);
       else { send(404, { error: 'Unknown runtime operation.' }); return; }
+      scheduleReconcile(250);
       send(200, { data: await status() });
     })().catch(error => send(409, { error: error instanceof Error ? error.message : String(error) }));
   });
-  let timer: ReturnType<typeof setInterval> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let tick: Promise<void> | undefined;
   let lastError: string | undefined;
+  let consecutiveErrors = 0;
+  let closed = false;
+  const nextPollDelayMs = (): number => {
+    if (consecutiveErrors > 0) {
+      return Math.min(30_000, 500 * 2 ** Math.min(consecutiveErrors - 1, 6));
+    }
+    const operation = controller.status().operation;
+    if (operation !== undefined && !['completed', 'cancelled', 'failed'].includes(operation.phase)) {
+      return 250;
+    }
+    return 2000;
+  };
+  const scheduleReconcile = (delayMs?: number): void => {
+    if (closed) return;
+    if (timer !== undefined) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = undefined;
+      if (closed || tick !== undefined) return;
+      tick = reconcile()
+        .then(() => {
+          lastError = undefined;
+          consecutiveErrors = 0;
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          consecutiveErrors += 1;
+          if (message !== lastError) {
+            controller.store.write('controller-error', { message, observedAt: Date.now() });
+            options.warn?.(error);
+            lastError = message;
+          }
+        })
+        .finally(() => {
+          tick = undefined;
+          scheduleReconcile();
+        });
+    }, delayMs ?? nextPollDelayMs());
+    timer.unref();
+  };
   try {
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => resolve()); });
     const address = server.address();
     if (address === null || typeof address === 'string') throw new Error('The runtime controller did not bind.');
     await writePrivateFile(join(options.homeDir, 'runtime', 'controller.json'), JSON.stringify({ pid: process.pid, port: address.port, ownerId }));
     await controller.ensure(options.initial);
-    timer = setInterval(() => {
-      if (tick !== undefined) return;
-      tick = reconcile().then(() => { lastError = undefined; }).catch(error => {
-        const message = error instanceof Error ? error.message : String(error);
-        controller.store.write('controller-error', { message, observedAt: Date.now() });
-        if (message !== lastError) options.warn?.(error);
-        lastError = message;
-      }).finally(() => { tick = undefined; });
-    }, 250);
+    scheduleReconcile(250);
     return { port: address.port, controller, close: async () => {
-      clearInterval(timer);
+      closed = true;
+      if (timer !== undefined) clearTimeout(timer);
       await tick;
       await new Promise<void>((resolve, reject) => {
         server.close(error => {
@@ -211,7 +244,8 @@ export async function startRuntimeSupervisor(options: {
       await controller.close();
     } };
   } catch (error) {
-    clearInterval(timer);
+    closed = true;
+    if (timer !== undefined) clearTimeout(timer);
     await new Promise<void>(resolve => { server.close(() => { resolve(); }); });
     await controller.close();
     throw error;

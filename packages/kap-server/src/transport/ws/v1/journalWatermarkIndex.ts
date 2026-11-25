@@ -1,7 +1,7 @@
 import { mkdirSync, statSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { SessionEventJournal, sessionJournalPath, type JournalLogger } from './sessionEventJournal';
 
 export interface JournalWatermark {
@@ -40,12 +40,23 @@ interface StoredWatermarkRow {
   readonly fileCtimeMs?: number;
 }
 
+type PendingWatermarkWrite =
+  | { readonly kind: 'dirty'; readonly reason: string; readonly updatedAt: number }
+  | { readonly kind: 'commit'; readonly row?: StoredWatermarkRow }
+  | { readonly kind: 'removed' }
+  | { readonly kind: 'invalidate'; readonly reason: string; readonly updatedAt: number };
+
 const WATERMARK_DB_FILENAME = '.watermarks.sqlite';
 const GLOBAL_JOURNAL_ID = '_global';
+const FLUSH_DEBOUNCE_MS = 50;
+const WATERMARK_BUSY_TIMEOUT_MS = 50;
 
 /** Persistent journal-owned watermark projection for zero-disk cold session list reads. */
 export class JournalWatermarkIndex {
   private db: DatabaseSync | undefined;
+  private readonly stmts = new Map<string, StatementSync>();
+  private readonly pendingWrites = new Map<string, PendingWatermarkWrite>();
+  private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private covered = false;
   private closed = false;
   private preparePromise: Promise<void> | undefined;
@@ -143,21 +154,63 @@ export class JournalWatermarkIndex {
     };
   }
 
+  async getCoveredAsync(sessionId: string): Promise<JournalWatermark | undefined> {
+    if (this.closed) return undefined;
+    if (!this.covered) {
+      this.legacyMisses += 1;
+      return undefined;
+    }
+    if (this.dirty.has(sessionId)) {
+      this.repairMisses += 1;
+      return undefined;
+    }
+    const seqBefore = this.currentMutationSeq(sessionId);
+    const row = this.rows.get(sessionId);
+    const fullPath = sessionJournalPath(this.eventsDir, sessionId);
+    let fileInfo: { readonly size: number; readonly mtimeMs: number; readonly ctimeMs: number } | undefined;
+    try {
+      const st = await stat(fullPath);
+      fileInfo = { size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        this.repairMisses += 1;
+        return undefined;
+      }
+      fileInfo = undefined;
+    }
+    if (this.closed || !this.covered) return undefined;
+    if (this.dirty.has(sessionId) || this.currentMutationSeq(sessionId) !== seqBefore) {
+      this.repairMisses += 1;
+      return undefined;
+    }
+    if (fileInfo === undefined) {
+      if (row !== undefined) this.recordRemoved(sessionId);
+      this.coveredHits += 1;
+      return { epoch: '', seq: 0, attentionSeq: 0 };
+    }
+    if (
+      row === undefined ||
+      row.fileSize !== fileInfo.size ||
+      Math.abs(row.fileMtimeMs - fileInfo.mtimeMs) >= 0.001 ||
+      (row.fileCtimeMs !== undefined && Math.abs(row.fileCtimeMs - fileInfo.ctimeMs) >= 0.001)
+    ) {
+      this.markDirty(sessionId, 'external_change');
+      this.repairMisses += 1;
+      return undefined;
+    }
+    this.coveredHits += 1;
+    return {
+      epoch: row.epoch,
+      seq: row.seq,
+      attentionSeq: row.attentionSeq,
+    };
+  }
+
   markDirty(sessionId: string, reason: string): void {
     if (this.closed || sessionId === GLOBAL_JOURNAL_ID) return;
     this.bumpMutation(sessionId);
     this.dirty.add(sessionId);
-    try {
-      const db = this.ensureDb();
-      db.prepare('INSERT OR REPLACE INTO dirty (session_id, reason, updated_at) VALUES (?, ?, ?)').run(
-        sessionId,
-        reason,
-        Date.now(),
-      );
-    } catch (error) {
-      this.covered = false;
-      this.logger?.warn({ sessionId, reason, err: String(error) }, 'journal watermark dirty mark failed');
-    }
+    this.enqueueWrite(sessionId, { kind: 'dirty', reason, updatedAt: Date.now() });
   }
 
   commitWatermark(
@@ -167,48 +220,22 @@ export class JournalWatermarkIndex {
   ): void {
     if (this.closed || sessionId === GLOBAL_JOURNAL_ID) return;
     this.bumpMutation(sessionId);
-    try {
-      const db = this.ensureDb();
-      db.exec('BEGIN IMMEDIATE');
-      try {
-        if (watermark.epoch.length > 0) {
-          db.prepare(
-            'INSERT OR REPLACE INTO watermarks (session_id, epoch, seq, attention_seq, file_size, file_mtime_ms, file_ctime_ms) VALUES (?, ?, ?, ?, ?, ?, ?)',
-          ).run(
-            sessionId,
-            watermark.epoch,
-            watermark.seq,
-            watermark.attentionSeq,
-            fileStat.size,
-            fileStat.mtimeMs,
-            fileStat.ctimeMs ?? null,
-          );
-          this.rows.set(sessionId, {
-            epoch: watermark.epoch,
-            seq: watermark.seq,
-            attentionSeq: watermark.attentionSeq,
-            fileSize: fileStat.size,
-            fileMtimeMs: fileStat.mtimeMs,
-            fileCtimeMs: fileStat.ctimeMs,
-          });
-        } else {
-          db.prepare('DELETE FROM watermarks WHERE session_id = ?').run(sessionId);
-          this.rows.delete(sessionId);
-        }
-        db.prepare('DELETE FROM dirty WHERE session_id = ?').run(sessionId);
-        this.dirty.delete(sessionId);
-        db.exec('COMMIT');
-      } catch (error) {
-        try {
-          db.exec('ROLLBACK');
-        } catch {}
-        throw error;
-      }
-    } catch (error) {
-      this.covered = false;
-      this.dirty.add(sessionId);
-      this.logger?.warn({ sessionId, err: String(error) }, 'journal watermark commit failed');
+    let nextRow: StoredWatermarkRow | undefined;
+    if (watermark.epoch.length > 0) {
+      nextRow = {
+        epoch: watermark.epoch,
+        seq: watermark.seq,
+        attentionSeq: watermark.attentionSeq,
+        fileSize: fileStat.size,
+        fileMtimeMs: fileStat.mtimeMs,
+        fileCtimeMs: fileStat.ctimeMs,
+      };
+      this.rows.set(sessionId, nextRow);
+    } else {
+      this.rows.delete(sessionId);
     }
+    this.dirty.delete(sessionId);
+    this.enqueueWrite(sessionId, { kind: 'commit', row: nextRow });
   }
 
   recordRemoved(sessionId: string): void {
@@ -216,23 +243,7 @@ export class JournalWatermarkIndex {
     this.bumpMutation(sessionId);
     this.rows.delete(sessionId);
     this.dirty.delete(sessionId);
-    try {
-      const db = this.ensureDb();
-      db.exec('BEGIN IMMEDIATE');
-      try {
-        db.prepare('DELETE FROM watermarks WHERE session_id = ?').run(sessionId);
-        db.prepare('DELETE FROM dirty WHERE session_id = ?').run(sessionId);
-        db.exec('COMMIT');
-      } catch (error) {
-        try {
-          db.exec('ROLLBACK');
-        } catch {}
-        throw error;
-      }
-    } catch (error) {
-      this.covered = false;
-      this.logger?.warn({ sessionId, err: String(error) }, 'journal watermark removal failed');
-    }
+    this.enqueueWrite(sessionId, { kind: 'removed' });
   }
 
   invalidate(sessionId: string, reason: string): void {
@@ -240,27 +251,7 @@ export class JournalWatermarkIndex {
     this.bumpMutation(sessionId);
     this.rows.delete(sessionId);
     this.dirty.add(sessionId);
-    try {
-      const db = this.ensureDb();
-      db.exec('BEGIN IMMEDIATE');
-      try {
-        db.prepare('DELETE FROM watermarks WHERE session_id = ?').run(sessionId);
-        db.prepare('INSERT OR REPLACE INTO dirty (session_id, reason, updated_at) VALUES (?, ?, ?)').run(
-          sessionId,
-          reason,
-          Date.now(),
-        );
-        db.exec('COMMIT');
-      } catch (error) {
-        try {
-          db.exec('ROLLBACK');
-        } catch {}
-        throw error;
-      }
-    } catch (error) {
-      this.covered = false;
-      this.logger?.warn({ sessionId, reason, err: String(error) }, 'journal watermark invalidation failed');
-    }
+    this.enqueueWrite(sessionId, { kind: 'invalidate', reason, updatedAt: Date.now() });
   }
 
   backfillAuthoritative(
@@ -289,16 +280,98 @@ export class JournalWatermarkIndex {
 
   async close(): Promise<void> {
     if (this.closed) return;
+    if (this.flushTimer !== undefined) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+    this.flushPendingWrites();
     this.closed = true;
     this.covered = false;
     if (this.preparePromise !== undefined) {
       await this.preparePromise.catch(() => {});
     }
+    this.stmts.clear();
     if (this.db !== undefined) {
       try {
         this.db.close();
       } catch {}
       this.db = undefined;
+    }
+  }
+
+  private enqueueWrite(sessionId: string, op: PendingWatermarkWrite): void {
+    this.pendingWrites.set(sessionId, op);
+    if (this.flushTimer !== undefined) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = undefined;
+      this.flushPendingWrites();
+    }, FLUSH_DEBOUNCE_MS);
+    this.flushTimer.unref();
+  }
+
+  private stmt(db: DatabaseSync, sql: string): StatementSync {
+    let statement = this.stmts.get(sql);
+    if (statement === undefined) {
+      statement = db.prepare(sql);
+      this.stmts.set(sql, statement);
+    }
+    return statement;
+  }
+
+  private flushPendingWrites(): void {
+    if (this.pendingWrites.size === 0) return;
+    const batch = [...this.pendingWrites.entries()];
+    this.pendingWrites.clear();
+    try {
+      const db = this.ensureDb();
+      const upsertDirty = this.stmt(db, 'INSERT OR REPLACE INTO dirty (session_id, reason, updated_at) VALUES (?, ?, ?)');
+      const deleteDirty = this.stmt(db, 'DELETE FROM dirty WHERE session_id = ?');
+      const upsertWatermark = this.stmt(
+        db,
+        'INSERT OR REPLACE INTO watermarks (session_id, epoch, seq, attention_seq, file_size, file_mtime_ms, file_ctime_ms) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      );
+      const deleteWatermark = this.stmt(db, 'DELETE FROM watermarks WHERE session_id = ?');
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        for (const [sessionId, op] of batch) {
+          if (op.kind === 'dirty') {
+            upsertDirty.run(sessionId, op.reason, op.updatedAt);
+          } else if (op.kind === 'commit') {
+            if (op.row !== undefined) {
+              upsertWatermark.run(
+                sessionId,
+                op.row.epoch,
+                op.row.seq,
+                op.row.attentionSeq,
+                op.row.fileSize,
+                op.row.fileMtimeMs,
+                op.row.fileCtimeMs ?? null,
+              );
+            } else {
+              deleteWatermark.run(sessionId);
+            }
+            deleteDirty.run(sessionId);
+          } else if (op.kind === 'removed') {
+            deleteWatermark.run(sessionId);
+            deleteDirty.run(sessionId);
+          } else {
+            deleteWatermark.run(sessionId);
+            upsertDirty.run(sessionId, op.reason, op.updatedAt);
+          }
+        }
+        db.exec('COMMIT');
+      } catch (error) {
+        try {
+          db.exec('ROLLBACK');
+        } catch {}
+        throw error;
+      }
+    } catch (error) {
+      this.covered = false;
+      for (const [sessionId, op] of batch) {
+        if (op.kind === 'commit') this.dirty.add(sessionId);
+      }
+      this.logger?.warn({ count: batch.length, err: String(error) }, 'journal watermark flush failed');
     }
   }
 
@@ -312,7 +385,7 @@ export class JournalWatermarkIndex {
     const db = new DatabaseSync(join(this.eventsDir, WATERMARK_DB_FILENAME));
     db.exec('PRAGMA journal_mode = WAL;');
     db.exec('PRAGMA synchronous = NORMAL;');
-    db.exec('PRAGMA busy_timeout = 5000;');
+    db.exec(`PRAGMA busy_timeout = ${WATERMARK_BUSY_TIMEOUT_MS};`);
     db.exec(`
       CREATE TABLE IF NOT EXISTS meta (
         key TEXT PRIMARY KEY,
@@ -446,6 +519,7 @@ export class JournalWatermarkIndex {
     }
 
     if (!this.closed) {
+      this.flushPendingWrites();
       this.covered = true;
       try {
         this.ensureDb()

@@ -397,6 +397,13 @@ async function refreshColdMessageHistory(
   const existing = state.cache.get(sessionId);
   if (existing !== undefined && existing.coldMtimeMs === (mtime ?? 0) &&
     existing.scope === scope && existing.offset === (offset ?? 0)) return existing;
+  const spilled = existing === undefined ? await loadSpilledMessageHistory(core, sessionId) : undefined;
+  signal?.throwIfAborted();
+  if (spilled !== undefined && spilled.coldMtimeMs === (mtime ?? 0) &&
+    spilled.scope === scope && spilled.offset === (offset ?? 0)) {
+    admitMessageHistoryCacheEntry(state, sessionId, spilled, generation);
+    return spilled;
+  }
   signal?.throwIfAborted();
   const reducer = createContextTranscriptReducer();
   let sliceStart = performance.now();
@@ -424,7 +431,10 @@ async function refreshColdMessageHistory(
     offset: offset ?? 0,
     bytes: 0,
   };
-  admitMessageHistoryCacheEntry(state, sessionId, entry, generation);
+  const admission = admitMessageHistoryCacheEntry(state, sessionId, entry, generation);
+  if (admission !== 'stale') {
+    await persistSpilledMessageHistory(core, sessionId, entry, admission === 'spill');
+  }
   return entry;
 }
 
@@ -588,6 +598,7 @@ async function loadSpilledMessageHistory(
       readonly explicitIndexes: readonly [string, number][];
       readonly observedContext: ContextMessage[];
       readonly scope: string;
+      readonly coldMtimeMs?: number;
       readonly offset: number;
       readonly bytes: number;
     }>(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId);
@@ -615,6 +626,7 @@ async function persistSpilledMessageHistory(
     explicitIndexes: [...entry.explicitIndexes],
     observedContext: entry.observedContext,
     scope: entry.scope,
+    coldMtimeMs: entry.coldMtimeMs,
     offset: entry.offset,
     bytes: entry.bytes,
   }).catch(() => undefined);

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { realpath } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, normalize, relative } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
@@ -103,13 +103,18 @@ export function formatHostPinnedUrl(refId: string): string {
   return `${HOSTREF_PROTOCOL}${refId}`;
 }
 
+let cachedDefaultHelperPath: string | undefined | null = null;
+
 function resolvePinnedReaderHelperPath(): string | undefined {
   if (process.platform !== 'win32') return undefined;
   const configured = process.env['KIKI_WINDOWS_PROCESS_HELPER'];
   if (configured !== undefined) {
     return configured.length > 0 && existsSync(configured) ? configured : undefined;
   }
-  return [
+  if (cachedDefaultHelperPath !== null) {
+    return cachedDefaultHelperPath;
+  }
+  cachedDefaultHelperPath = [
     './windows-process-helper.exe',
     './native/windows-process-helper.exe',
     '../../../dist/windows-process-helper.exe',
@@ -117,6 +122,7 @@ function resolvePinnedReaderHelperPath(): string | undefined {
   ]
     .map((rel) => fileURLToPath(new URL(rel, import.meta.url)))
     .find(existsSync);
+  return cachedDefaultHelperPath;
 }
 
 /** Returns true when this platform and runtime can acquire an OS write-deny read lease for host-pinned media. */
@@ -396,6 +402,34 @@ async function assertPinnedPathStillAdmitted(record: HostPinnedRefRecord): Promi
   if (!isPathWithinAnyRoot(currentReal, record.allowedRoots)) {
     throw new HostPinnedSourceChangedError('outside_allowed_roots');
   }
+}
+
+/** Lightweight host-pinned file fingerprint captured after full hash verification. */
+export interface HostPinnedStatFingerprint {
+  readonly path: string;
+  readonly size: number;
+  readonly mtimeNs: bigint;
+  readonly ino: bigint;
+}
+
+/** Captures the current stat fingerprint of an admitted host-pinned file. */
+export async function statHostPinnedRef(record: HostPinnedRefRecord): Promise<HostPinnedStatFingerprint> {
+  await assertPinnedPathStillAdmitted(record);
+  let info;
+  try {
+    info = await stat(record.path, { bigint: true });
+  } catch {
+    throw new HostPinnedSourceChangedError('not_found');
+  }
+  if (Number(info.size) !== record.size) {
+    throw new HostPinnedSourceChangedError('size_mismatch');
+  }
+  return {
+    path: record.path,
+    size: record.size,
+    mtimeNs: info.mtimeNs,
+    ino: info.ino,
+  };
 }
 
 /** Verifies a registered host-pinned reference under a write-deny handle without streaming payload bytes. */

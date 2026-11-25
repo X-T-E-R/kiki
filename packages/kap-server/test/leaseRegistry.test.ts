@@ -119,4 +119,21 @@ describe('LeaseRegistry', () => {
     expect(cleanup).toHaveBeenCalledOnce();
     expect(third).toHaveBeenCalledTimes(2);
   });
+
+  it('enforces maxLeases capacity after sweeping expired leases', () => {
+    let now = 1000;
+    const registry = new LeaseRegistry(500, () => now, undefined, 2);
+    const first = registry.renew();
+    const second = registry.renew();
+    expect(registry.activeCount()).toBe(2);
+
+    expect(() => registry.renew()).toThrow(/limit/i);
+    expect(registry.renew(first.leaseId).leaseId).toBe(first.leaseId);
+
+    now = 1600;
+    const third = registry.renew();
+    expect(third.leaseId).not.toBe(second.leaseId);
+    expect(registry.activeCount()).toBe(1);
+    registry.dispose();
+  });
 });

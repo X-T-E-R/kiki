@@ -18,8 +18,13 @@ import { acquireSessionOperation, type SessionOperationLease } from '../../../li
 import type { EventEnvelope, JournalLogger } from './sessionEventJournal';
 
 const MAX_PATHS_PER_CONNECTION = 100;
+const MAX_WATCHERS_PER_CONNECTION = 32;
 const DEFAULT_DEBOUNCE_MS = 200;
 const DEFAULT_MAX_CHANGES_PER_WINDOW = 500;
+
+function rootWatchKey(workspaceId: string, runtimeId: string, generation: string, workDir: string): string {
+  return `${workspaceId}\0${runtimeId}\0${generation}\0${workDir}`;
+}
 
 function readPositiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -65,6 +70,25 @@ interface ConnEntry {
   readonly paths: Set<string>;
 }
 
+interface SharedRootWatch {
+  readonly rootKey: string;
+  readonly workspaceId: string;
+  readonly runtimeId: string;
+  readonly generation: string;
+  readonly workDir: string;
+  readonly runtime: Runtime;
+  readonly lease: RuntimeLease;
+  readonly handle: IHostFsWatchHandle;
+  readonly sub: IDisposable;
+  readonly listeners: Set<(event: HostFsChange) => void>;
+}
+
+interface PendingRootWatch {
+  readonly task: Promise<SharedRootWatch | undefined>;
+  readonly waiters: Set<AbortSignal>;
+  readonly abort: AbortController;
+}
+
 interface SessionWatch {
   readonly id: string;
   readonly runtimeId: string;
@@ -73,14 +97,13 @@ interface SessionWatch {
   readonly session: ISessionScopeHandle;
   readonly runtime: Runtime;
   readonly view: RuntimeWorkspaceView;
-  readonly handle: IHostFsWatchHandle;
-  readonly lease: RuntimeLease;
+  readonly rootWatch: SharedRootWatch;
+  readonly rootListener: (event: HostFsChange) => void;
   readonly sessionLease: SessionOperationLease;
   readonly workspace: ISessionWorkspaceContext;
   readonly conns: Map<string, ConnEntry>;
   union: Set<string>;
   seq: number;
-  sub: IDisposable | undefined;
   pending: FsChangeEntry[];
   rawCount: number;
   truncated: boolean;
@@ -99,10 +122,14 @@ export class FsWatchBridge {
   private readonly core: Scope;
   private readonly logger: JournalLogger | undefined;
   private readonly bySession = new Map<string, SessionWatch>();
+  private readonly sharedRoots = new Map<string, SharedRootWatch>();
+  private readonly pendingRoots = new Map<string, PendingRootWatch>();
   private readonly connPathCount = new Map<string, number>();
+  private readonly connWatchCount = new Map<string, number>();
   private readonly rebuilding = new Map<string, PendingWatchBuild>();
   private readonly detached = new WeakSet<FsWatchConnection>();
   private readonly tornDown = new WeakSet<SessionWatch>();
+  private readonly tornDownRoots = new WeakSet<SharedRootWatch>();
   private readonly registrySubscriptions = new Map<string, IDisposable>();
   private readonly pendingDisposals = new Set<Promise<void>>();
   private readonly sessionLifecycles: IDisposable[];
@@ -179,10 +206,14 @@ export class FsWatchBridge {
       if (current + toAdd.length > MAX_PATHS_PER_CONNECTION) {
         return { code: FS_WATCH_CODE.LIMIT_EXCEEDED, msg: 'fs.watch_limit_exceeded' };
       }
+      if (entry === undefined && (this.connWatchCount.get(conn.id) ?? 0) >= MAX_WATCHERS_PER_CONNECTION) {
+        return { code: FS_WATCH_CODE.LIMIT_EXCEEDED, msg: 'fs.watch_limit_exceeded' };
+      }
 
       if (entry === undefined) {
         entry = { conn, paths: new Set() };
         sw.conns.set(conn.id, entry);
+        this.connWatchCount.set(conn.id, (this.connWatchCount.get(conn.id) ?? 0) + 1);
       }
       for (const rel of toAdd) entry.paths.add(rel);
       this.connPathCount.set(conn.id, current + toAdd.length);
@@ -211,7 +242,10 @@ export class FsWatchBridge {
       if (entry.paths.delete(rel)) removed += 1;
     }
     this.connPathCount.set(conn.id, Math.max(0, this.countFor(conn.id) - removed));
-    if (entry.paths.size === 0) sw.conns.delete(conn.id);
+    if (entry.paths.size === 0) {
+      sw.conns.delete(conn.id);
+      this.decrementConnWatchCount(conn.id);
+    }
     this.recomputeAndApply(sw);
     if (sw.conns.size === 0) this.teardownSession(sw);
 
@@ -234,6 +268,7 @@ export class FsWatchBridge {
       if (sw.conns.size === 0) this.teardownSession(sw);
     }
     this.connPathCount.delete(conn.id);
+    this.connWatchCount.delete(conn.id);
   }
 
   dispose(): void {
@@ -241,10 +276,19 @@ export class FsWatchBridge {
     this.disposed = true;
     for (const subscription of this.sessionLifecycles) this.collect(subscription.dispose());
     for (const pending of this.rebuilding.values()) pending.abort.abort();
+    for (const pending of this.pendingRoots.values()) pending.abort.abort();
     for (const subscription of this.registrySubscriptions.values()) this.collect(subscription.dispose());
     this.registrySubscriptions.clear();
     for (const sw of this.bySession.values()) this.teardownSession(sw);
+    for (const root of this.sharedRoots.values()) this.teardownSharedRoot(root);
     this.connPathCount.clear();
+    this.connWatchCount.clear();
+  }
+
+  private decrementConnWatchCount(connId: string): void {
+    const next = (this.connWatchCount.get(connId) ?? 0) - 1;
+    if (next <= 0) this.connWatchCount.delete(connId);
+    else this.connWatchCount.set(connId, next);
   }
 
   private teardownSessionWatches(sessionId: string): void {
@@ -255,6 +299,7 @@ export class FsWatchBridge {
       if (sw.id !== sessionId) continue;
       for (const { conn, paths } of sw.conns.values()) {
         this.connPathCount.set(conn.id, Math.max(0, this.countFor(conn.id) - paths.size));
+        this.decrementConnWatchCount(conn.id);
       }
       this.teardownSession(sw);
     }
@@ -292,6 +337,111 @@ export class FsWatchBridge {
     return task;
   }
 
+  private async acquireSharedRoot(
+    workspaceId: string,
+    runtimeId: string,
+    context: ISessionWorkspaceContext,
+    signal: AbortSignal,
+  ): Promise<SharedRootWatch | undefined> {
+    if (signal.aborted || this.disposed) return undefined;
+    const inspected = this.core.accessor.get(IRuntimeResolver).inspect({ workspaceId, runtimeId });
+    const generation = inspected.identity.generation;
+    const workDir = new RuntimeWorkspaceView(inspected, context).workDir;
+    const key = rootWatchKey(workspaceId, runtimeId, generation, workDir);
+    const existing = this.sharedRoots.get(key);
+    if (existing !== undefined) return existing;
+
+    let pending = this.pendingRoots.get(key);
+    if (pending === undefined) {
+      const abort = new AbortController();
+      const waiters = new Set<AbortSignal>();
+      const task = (async (): Promise<SharedRootWatch | undefined> => {
+        let lease: RuntimeLease | undefined;
+        let handle: IHostFsWatchHandle | undefined;
+        let sub: IDisposable | undefined;
+        try {
+          lease = this.core.accessor.get(IRuntimeResolver).acquire({ workspaceId, runtimeId }, ['watch']);
+          const actualGen = lease.runtime.identity.generation;
+          const actualWorkDir = new RuntimeWorkspaceView(lease.runtime, context).workDir;
+          const actualKey = rootWatchKey(workspaceId, runtimeId, actualGen, actualWorkDir);
+          const already = this.sharedRoots.get(actualKey);
+          if (already !== undefined) {
+            this.collect(lease.dispose());
+            lease = undefined;
+            return already;
+          }
+          handle = lease.track(lease.runtime.watch!.watch(actualWorkDir, { recursive: true }));
+          await readyOrAborted(handle.ready, abort.signal);
+          if (abort.signal.aborted || this.disposed) return undefined;
+          const listeners = new Set<(event: HostFsChange) => void>();
+          sub = handle.onDidChange((event) => {
+            for (const listener of listeners) listener(event);
+          });
+          const created: SharedRootWatch = {
+            rootKey: actualKey,
+            workspaceId,
+            runtimeId,
+            generation: actualGen,
+            workDir: actualWorkDir,
+            runtime: lease.runtime,
+            lease,
+            handle,
+            sub,
+            listeners,
+          };
+          this.sharedRoots.set(actualKey, created);
+          lease = undefined;
+          handle = undefined;
+          sub = undefined;
+          return created;
+        } catch (error) {
+          if (!abort.signal.aborted) throw error;
+          return undefined;
+        } finally {
+          this.collect(sub?.dispose());
+          this.collect(handle?.dispose());
+          this.collect(lease?.dispose());
+          if (this.pendingRoots.get(key)?.abort === abort) this.pendingRoots.delete(key);
+        }
+      })();
+      pending = { task, waiters, abort };
+      this.pendingRoots.set(key, pending);
+    }
+
+    pending.waiters.add(signal);
+    const onAbort = (): void => {
+      pending.waiters.delete(signal);
+      if (pending.waiters.size === 0) pending.abort.abort();
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    try {
+      const root = await readyOrAborted(pending.task, signal);
+      if (signal.aborted || this.disposed) {
+        if (root !== undefined && root.listeners.size === 0) this.teardownSharedRoot(root);
+        return undefined;
+      }
+      return root;
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+      pending.waiters.delete(signal);
+    }
+  }
+
+  private releaseSharedRoot(root: SharedRootWatch, listener: (event: HostFsChange) => void): void {
+    root.listeners.delete(listener);
+    if (root.listeners.size === 0) this.teardownSharedRoot(root);
+  }
+
+  private teardownSharedRoot(root: SharedRootWatch): void {
+    if (this.tornDownRoots.has(root)) return;
+    this.tornDownRoots.add(root);
+    if (this.sharedRoots.get(root.rootKey) === root) this.sharedRoots.delete(root.rootKey);
+    root.listeners.clear();
+    this.collect(root.sub.dispose());
+    this.collect(root.handle.dispose());
+    this.collect(root.lease.dispose());
+  }
+
   private async createSessionWatch(
     sessionId: string,
     runtimeId: string,
@@ -300,38 +450,34 @@ export class FsWatchBridge {
   ): Promise<SessionWatch | undefined> {
     const key = sessionRuntimeKey(sessionId, runtimeId);
     const sessionLease = await acquireSessionOperation(this.core, sessionId, 'fs-watch', undefined, { priority: 'background' });
-    let lease: RuntimeLease | undefined;
-    let handle: IHostFsWatchHandle | undefined;
+    let rootWatch: SharedRootWatch | undefined;
+    let rootListener: ((event: HostFsChange) => void) | undefined;
     let sw: SessionWatch | undefined;
     try {
       const session = sessionLease.handle;
       if (session === undefined || signal.aborted || this.disposed) return undefined;
       const context = session.accessor.get(ISessionWorkspaceContext);
       const sessionContext = session.accessor.get(ISessionContext);
-      lease = this.core.accessor.get(IRuntimeResolver).acquire(
-        { workspaceId: sessionContext.workspaceId, runtimeId },
-        ['watch'],
-      );
-      const view = new RuntimeWorkspaceView(lease.runtime, context);
-      handle = lease.track(lease.runtime.watch!.watch(view.workDir, { recursive: true }));
-      await readyOrAborted(handle.ready, signal);
-      if (signal.aborted || this.disposed) return undefined;
+      rootWatch = await this.acquireSharedRoot(sessionContext.workspaceId, runtimeId, context, signal);
+      if (rootWatch === undefined || signal.aborted || this.disposed) return undefined;
+      const view = new RuntimeWorkspaceView(rootWatch.runtime, context);
+      rootListener = (event: HostFsChange) => this.onRuntimeEvent(key, event);
+      rootWatch.listeners.add(rootListener);
       sw = {
         id: sessionId,
         runtimeId,
         workspaceId: sessionContext.workspaceId,
-        generation: lease.runtime.identity.generation,
+        generation: rootWatch.generation,
         session,
-        runtime: lease.runtime,
+        runtime: rootWatch.runtime,
         view,
-        handle,
-        lease,
+        rootWatch,
+        rootListener,
         sessionLease,
         workspace: context,
         conns: carried?.conns ?? new Map(),
         union: new Set(),
         seq: carried?.seq ?? 0,
-        sub: undefined,
         pending: [],
         rawCount: 0,
         truncated: false,
@@ -339,7 +485,6 @@ export class FsWatchBridge {
         debounceMs: readPositiveIntEnv('KIKI_FS_WATCH_DEBOUNCE_MS', DEFAULT_DEBOUNCE_MS),
         maxChangesPerWindow: readPositiveIntEnv('KIKI_FS_WATCH_MAX_CHANGES_PER_WINDOW', DEFAULT_MAX_CHANGES_PER_WINDOW),
       };
-      sw.sub = handle.onDidChange((event) => this.onRuntimeEvent(key, event));
       this.recomputeAndApply(sw);
       this.bySession.set(key, sw);
       this.subscribeRegistry(sessionContext.workspaceId);
@@ -348,17 +493,18 @@ export class FsWatchBridge {
       if (sw !== undefined && this.bySession.get(key) === sw) {
         const created = sw;
         sw = undefined;
-        handle = undefined;
-        lease = undefined;
+        rootWatch = undefined;
+        rootListener = undefined;
         this.teardownSession(created);
       }
       if (!signal.aborted) throw error;
       return undefined;
     } finally {
       if (sw === undefined || this.bySession.get(key) !== sw) {
-        this.collect(sw?.sub?.dispose());
-        this.collect(handle?.dispose());
-        this.collect(lease?.dispose());
+        if (rootWatch !== undefined) {
+          if (rootListener !== undefined) this.releaseSharedRoot(rootWatch, rootListener);
+          else if (rootWatch.listeners.size === 0) this.teardownSharedRoot(rootWatch);
+        }
         this.collect(sessionLease.dispose());
       }
     }
@@ -430,10 +576,7 @@ export class FsWatchBridge {
     if (this.bySession.get(key) === sw) this.bySession.delete(key);
     if (sw.debounceTimer !== undefined) clearTimeout(sw.debounceTimer);
     sw.debounceTimer = undefined;
-    this.collect(sw.sub?.dispose());
-    sw.sub = undefined;
-    this.collect(sw.handle.dispose());
-    this.collect(sw.lease.dispose());
+    this.releaseSharedRoot(sw.rootWatch, sw.rootListener);
     this.collect(sw.sessionLease.dispose());
   }
 
@@ -545,14 +688,14 @@ export class FsWatchBridge {
   }
 }
 
-function readyOrAborted(ready: Promise<void>, signal: AbortSignal): Promise<void> {
+function readyOrAborted<T>(ready: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(new Error('fs watch cancelled'));
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<T>((resolve, reject) => {
     const cancel = (): void => { finish(); reject(new Error('fs watch cancelled')); };
     const finish = (): void => { signal.removeEventListener('abort', cancel); };
     signal.addEventListener('abort', cancel, { once: true });
     void ready.then(
-      () => { finish(); resolve(); },
+      (value) => { finish(); resolve(value); },
       (error: unknown) => { finish(); reject(error); },
     );
   });

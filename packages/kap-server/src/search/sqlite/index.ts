@@ -296,15 +296,8 @@ export class SqliteSearchIndex {
     if (this.closed) throw new Error('search index is closed');
     const sessions = this.stmt('SELECT id FROM sessions').all() as { id: string }[];
     for (const { id } of sessions) {
-      this.db.exec('BEGIN');
-      try {
-        this.deleteDocs('session_id', id);
-        const removed = Number(this.stmt('DELETE FROM sessions WHERE id=?').run(id).changes);
-        this.cachedSessions = Math.max(0, this.cachedSessions - removed);
-        this.bumpGeneration();
-        this.db.exec('COMMIT');
-      } catch (error) { this.db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
-      this.afterCommit();
+      const removed = await this.removeSession(id);
+      if (!removed) throw new Error('search reindex interrupted before completion');
     }
     this.stmt('DELETE FROM file_failures').run();
   }
@@ -332,13 +325,33 @@ export class SqliteSearchIndex {
     const deleteTermsStmt = this.stmt("INSERT INTO docs_terms(docs_terms,rowid,terms) VALUES('delete',?,?)");
     const deleteTriStmt = this.stmt("INSERT INTO docs_tri(docs_tri,rowid,text) VALUES('delete',?,?)");
     const deleteDocStmt = this.stmt('DELETE FROM docs WHERE id=?');
-    const rows = selectStmt.all(key) as { id: number; text: string }[];
-    for (const row of rows) {
+    let removed = 0;
+    for (const row of selectStmt.iterate(key) as Iterable<{ id: number; text: string }>) {
       deleteTermsStmt.run(row.id, encodeTerms(row.text));
       deleteTriStmt.run(row.id, normalizeLiteral(row.text));
       deleteDocStmt.run(row.id);
+      removed += 1;
     }
-    this.cachedDocuments = Math.max(0, this.cachedDocuments - rows.length);
+    this.cachedDocuments = Math.max(0, this.cachedDocuments - removed);
+  }
+
+  private async deleteDocsBatched(where: 'file_id' | 'session_id', key: string | number): Promise<boolean> {
+    const db = this.db;
+    const selectBatch = this.stmt(`SELECT id FROM docs WHERE ${where}=? LIMIT 128`);
+    while (!this.closed && !this.options.isStopped?.()) {
+      if (this.walStuck) return false;
+      const docs = selectBatch.all(key) as { id: number }[];
+      if (docs.length === 0) return true;
+      db.exec('BEGIN');
+      try {
+        for (const doc of docs) this.deleteDocs('id', doc.id);
+        this.bumpGeneration();
+        db.exec('COMMIT');
+      } catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
+      this.afterCommit();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    return false;
   }
 
   private async tailHash(path: string, offset: number, pinned?: PinnedLogicalRead): Promise<string> {
@@ -450,14 +463,7 @@ export class SqliteSearchIndex {
       ? { title: existing.title, branchAgents: EMPTY_BRANCH_AGENTS }
       : await sessionMetaInfo(session.dir, this.indexSubagents);
     if (existing !== undefined && (existing.identity !== id || existing.dir !== session.dir)) {
-      db.exec('BEGIN');
-      try {
-        this.deleteDocs('session_id', session.id);
-        const removed = Number(this.stmt('DELETE FROM sessions WHERE id=?').run(session.id).changes);
-        this.cachedSessions = Math.max(0, this.cachedSessions - removed);
-        this.bumpGeneration();
-        db.exec('COMMIT');
-      } catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
+      if (!await this.removeSession(session.id)) return this.walStuck ? pause() : false;
     }
     const rowUnchanged =
       existing !== undefined &&
@@ -502,9 +508,7 @@ export class SqliteSearchIndex {
         if (file.policy === 'skip') continue;
         if (file.policy === 'quarantined') {
           if (db.prepare('SELECT 1 FROM docs WHERE file_id=? LIMIT 1').get(file.id)) {
-            db.exec('BEGIN');
-            try { this.deleteDocs('file_id', file.id); this.bumpGeneration(); db.exec('COMMIT'); }
-            catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
+            if (!await this.deleteDocsBatched('file_id', file.id)) return this.walStuck ? pause() : false;
           }
           continue;
         }
@@ -513,20 +517,23 @@ export class SqliteSearchIndex {
           continue;
         }
       }
-      this.removeFile(file.id);
+      if (!await this.removeFile(file.id)) return this.walStuck ? pause() : false;
     }
     return true;
   }
 
-  private removeFile(fileId: number): void {
+  private async removeFile(fileId: number): Promise<boolean> {
+    if (!await this.deleteDocsBatched('file_id', fileId)) return false;
     const db = this.db;
     db.exec('BEGIN');
     try {
-      this.deleteDocs('file_id', fileId);
+      db.prepare('DELETE FROM turn_openers WHERE file_id=?').run(fileId);
       db.prepare('DELETE FROM files WHERE id=?').run(fileId);
       this.bumpGeneration();
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
+    this.afterCommit();
+    return true;
   }
 
   private async syncFile(session: SqliteSessionInput, path: string, agentId: string, isBranch = false): Promise<void> {
@@ -537,12 +544,10 @@ export class SqliteSearchIndex {
     if (policy === 'skip') {
       if (file?.policy === 'quarantined') {
         if (db.prepare('SELECT 1 FROM docs WHERE file_id=? LIMIT 1').get(file.id)) {
-          db.exec('BEGIN');
-          try { this.deleteDocs('file_id', file.id); this.bumpGeneration(); db.exec('COMMIT'); }
-          catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
+          await this.deleteDocsBatched('file_id', file.id);
         }
       } else if (file?.policy !== 'skip') {
-        if (file) this.removeFile(file.id);
+        if (file && !await this.removeFile(file.id)) return;
         db.prepare("INSERT INTO files(session_id,agent_id,path,ino,size,mtime_ms,offset,tail_hash,turn_next,turn_has,step_state,policy) VALUES(?,?,?,?,?,?,0,NULL,0,0,?,'skip')")
           .run(session.id, agentId, path, String(st.ino), st.size, st.mtimeMs, JSON.stringify(EMPTY_STEP));
       } else if (file.size !== st.size || file.mtime_ms !== st.mtimeMs || file.ino !== String(st.ino)) {
@@ -585,7 +590,7 @@ export class SqliteSearchIndex {
       }
       db.prepare("INSERT INTO meta(k,v) VALUES('inflight',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").run(path);
       if (replace && file) {
-        this.removeFile(file.id);
+        if (!await this.removeFile(file.id)) return;
         file = undefined;
       }
       if (!file) {
@@ -600,10 +605,16 @@ export class SqliteSearchIndex {
       let dropping = false;
       let next = file.turn_next;
       let hasTurn = !!file.turn_has;
-      let step: StepTrackerState = JSON.parse(file.step_state) as StepTrackerState;
+      const parsedStep = JSON.parse(file.step_state) as StepTrackerState;
+      let step: { begins: number; byUuid: Record<string, number>; byToolCall: Record<string, number> } = {
+        begins: parsedStep.begins,
+        byUuid: { ...parsedStep.byUuid },
+        byToolCall: { ...parsedStep.byToolCall },
+      };
       let docs = 0;
       let textBytes = 0;
       let skipped = 0;
+      let resetAborted = false;
       const commit = async (): Promise<void> => {
         if (offset === file!.offset) return;
         const hash = await this.tailHash(path, offset, pinned);
@@ -640,7 +651,7 @@ export class SqliteSearchIndex {
             if (line.includes('"type":"context.append_') || line.includes('"type":"context.undo"') || line.includes('"type":"branch.base"')) {
               const analysis = analyzeWireLine(line);
               if (analysis.turn.kind === 'open' || (analysis.turn.kind === 'ensure' && !hasTurn) || analysis.turn.kind === 'undo' || analysis.turn.kind === 'reset') {
-                step = EMPTY_STEP;
+                step = { begins: 0, byUuid: {}, byToolCall: {} };
               }
               if (analysis.turn.kind === 'open') {
                 db.prepare('INSERT INTO turn_openers(file_id,idx,turn,anchor) VALUES(?,?,?,?)')
@@ -659,18 +670,27 @@ export class SqliteSearchIndex {
                   hasTurn = !!(db.prepare('SELECT 1 FROM turn_openers WHERE file_id=? LIMIT 1').get(file!.id));
                 }
               } else if (analysis.turn.kind === 'reset') {
-                this.deleteDocs('file_id', file!.id);
+                db.exec('ROLLBACK');
+                this.countsDirty = true;
+                const deleted = await this.deleteDocsBatched('file_id', file!.id);
+                if (!deleted) {
+                  resetAborted = true;
+                  break;
+                }
+                db.exec('BEGIN');
                 db.prepare('DELETE FROM turn_openers WHERE file_id=?').run(file!.id);
                 this.bumpGeneration();
                 next = 0;
                 hasTurn = false;
+                docs = 0;
+                textBytes = 0;
               }
               if (analysis.step.kind === 'begin') {
-                const begins = step.begins + 1;
-                step = { ...step, begins, byUuid: { ...step.byUuid, [analysis.step.uuid]: analysis.step.ordinal ?? begins } };
+                step.begins += 1;
+                step.byUuid[analysis.step.uuid] = analysis.step.ordinal ?? step.begins;
               } else if (analysis.step.kind === 'call') {
                 const ordinal = step.byUuid[analysis.step.uuid];
-                if (ordinal !== undefined) step = { ...step, byToolCall: { ...step.byToolCall, [analysis.step.toolCallId]: ordinal } };
+                if (ordinal !== undefined) step.byToolCall[analysis.step.toolCallId] = ordinal;
               }
               const prompt = agentId === 'main' || analysis.messages.length ? undefined : subagentPrompt(line);
               const messages = prompt === undefined ? analysis.messages : [prompt];
@@ -694,7 +714,7 @@ export class SqliteSearchIndex {
           start = nl + 1;
           if (docs >= (this.options.batchMaxDocs?.() ?? MAX_BATCH_DOCS) ||
             textBytes >= (this.options.batchMaxChars?.() ?? MAX_BATCH_CHARS)) await commit();
-          if (this.walStuck) break;
+          if (this.walStuck || resetAborted) break;
         }
         if (pending.length > MAX_LINE) { dropping = true; pending = Buffer.alloc(0); skipped++; }
       };
@@ -703,27 +723,30 @@ export class SqliteSearchIndex {
         if (pinned?.sealed) {
           if (position < st.size) {
             for await (const raw of pinned.read({ start: position, end: st.size - 1 }, { chunkBytes: CHUNK })) {
-              if (this.walStuck) break;
+              if (this.walStuck || resetAborted) break;
               if (!raw.byteLength) continue;
               await consumeChunk(raw, raw.byteLength);
+              if (resetAborted) break;
             }
           }
         } else {
           const chunk = Buffer.allocUnsafe(CHUNK);
-          while (position < st.size && !this.walStuck) {
+          while (position < st.size && !this.walStuck && !resetAborted) {
             const { bytesRead } = await fd!.read(chunk, 0, Math.min(CHUNK, st.size - position), position);
             if (!bytesRead) break;
             await consumeChunk(chunk, bytesRead);
           }
         }
-        if (skipped) db.prepare("INSERT INTO meta(k,v) VALUES('skipped_lines',?) ON CONFLICT(k) DO UPDATE SET v=CAST(v AS INTEGER)+excluded.v")
-          .run(String(skipped));
-        await commit();
-        db.exec('COMMIT');
+        if (!resetAborted) {
+          if (skipped) db.prepare("INSERT INTO meta(k,v) VALUES('skipped_lines',?) ON CONFLICT(k) DO UPDATE SET v=CAST(v AS INTEGER)+excluded.v")
+            .run(String(skipped));
+          await commit();
+          db.exec('COMMIT');
+        }
         db.exec('BEGIN');
         try {
           db.prepare("DELETE FROM meta WHERE k='inflight' AND v=?").run(path);
-          if (!this.walStuck && file.offset === st.size) db.prepare('DELETE FROM file_failures WHERE path=?').run(path);
+          if (!this.walStuck && !resetAborted && file.offset === st.size) db.prepare('DELETE FROM file_failures WHERE path=?').run(path);
           db.exec('COMMIT');
         } catch (error) { db.exec('ROLLBACK'); throw error; }
       } catch (error) {

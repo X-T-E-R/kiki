@@ -46,9 +46,13 @@ import { buildContentDisposition } from '../lib/contentDisposition';
 import { defineRoute } from '../middleware/defineRoute';
 import { boundedListPreview } from '../transport/klient/boundedContent';
 import { readSessionCursor, type SessionCursorReader } from '../lib/sessionObserver';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { toAttentionCursor } from '../transport/ws/v1/sessionEventJournal';
 import { resolveSessionPersonaId } from './sessionPersona';
 import { resolveSessionFacts, toWireSession } from './sessions';
+
+const PERSONA_SESSION_HEADS_MAX_SCAN = 20_000;
+const PERSONA_SESSION_HEADS_CONCURRENCY = 12;
 
 type PersonaCursorReader = SessionCursorReader;
 
@@ -130,7 +134,7 @@ export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope, broa
     description: 'List aggregated conversation counts and recent head sessions per persona in one index scan',
     tags: ['personas'],
     operationId: 'listPersonaSessionHeads',
-  }, async (req, reply) => {
+  }, async (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
     try {
       const perPersonaLimit = req.query.per_persona_limit;
       const privateOnly = req.query.private_only === true;
@@ -156,9 +160,14 @@ export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope, broa
       }>();
 
       let before: string | undefined;
+      let scanned = 0;
       for (;;) {
-        const page = await index.listRecent({ includeArchived: false, limit: 1000, before });
+        signal.throwIfAborted();
+        const remaining = PERSONA_SESSION_HEADS_MAX_SCAN - scanned;
+        if (remaining <= 0) break;
+        const page = await index.listRecent({ includeArchived: false, limit: Math.min(1000, remaining), before });
         if (page.items.length === 0) break;
+        scanned += page.items.length;
         for (const summary of page.items) {
           if (summary.archived) continue;
           const isPrivate = summary.private === true;
@@ -181,17 +190,50 @@ export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope, broa
         }
         if (page.nextCursor === undefined) break;
         before = page.nextCursor;
+        await new Promise<void>((resolve) => setImmediate(resolve));
       }
 
       const data: Record<string, { total: number; items: Session[] }> = {};
-      await Promise.all([...buckets.entries()].map(async ([personaId, bucket]) => {
-        const items = await Promise.all(bucket.entries.map(async ({ summary, cwd }) => {
+      const pendingTasks: Array<{
+        readonly personaId: string;
+        readonly index: number;
+        readonly summary: SessionSummary;
+        readonly cwd: string;
+      }> = [];
+      const itemSlots = new Map<string, Session[]>();
+      for (const [personaId, bucket] of buckets) {
+        const slots = new Array<Session>(bucket.entries.length);
+        itemSlots.set(personaId, slots);
+        data[personaId] = { total: bucket.total, items: slots };
+        for (let i = 0; i < bucket.entries.length; i += 1) {
+          const entry = bucket.entries[i]!;
+          pendingTasks.push({ personaId, index: i, summary: entry.summary, cwd: entry.cwd });
+        }
+      }
+      const personaNameFlights = new Map<string, Promise<string>>();
+      let nextTaskIndex = 0;
+      const workerCount = Math.min(PERSONA_SESSION_HEADS_CONCURRENCY, pendingTasks.length);
+      await Promise.all(Array.from({ length: workerCount }, async () => {
+        for (;;) {
+          signal.throwIfAborted();
+          const current = nextTaskIndex;
+          nextTaskIndex += 1;
+          if (current >= pendingTasks.length) break;
+          const { personaId, index: slotIndex, summary, cwd } = pendingTasks[current]!;
           let facts = resolveSessionFacts(core, summary.id, summary.usage);
           if (facts.agentConfig?.persona === undefined) {
             let name = personaNames.get(personaId);
             if (name === undefined) {
-              name = (await core.accessor.get(IPersonaStore).get(personaId))?.definition.name ?? personaId;
-              personaNames.set(personaId, name);
+              let flight = personaNameFlights.get(personaId);
+              if (flight === undefined) {
+                flight = core.accessor.get(IPersonaStore).get(personaId).then((snapshot) => {
+                  const resolved = snapshot?.definition.name ?? personaId;
+                  personaNames.set(personaId, resolved);
+                  return resolved;
+                });
+                personaNameFlights.set(personaId, flight);
+              }
+              name = await flight;
             }
             facts = {
               ...facts,
@@ -206,17 +248,20 @@ export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope, broa
               },
             };
           }
-          const cursor = await readSessionCursor(core, broadcaster, summary.id, undefined, true);
-          return boundedListPreview(toWireSession(summary, cwd, facts, cursor?.seq, false, toAttentionCursor(cursor)));
-        }));
-        data[personaId] = { total: bucket.total, items };
+          const cursor = await readSessionCursor(core, broadcaster, summary.id, signal, true, true);
+          itemSlots.get(personaId)![slotIndex] = boundedListPreview(
+            toWireSession(summary, cwd, facts, cursor?.seq, false, toAttentionCursor(cursor)),
+          );
+        }
       }));
 
+      signal.throwIfAborted();
       reply.send(okEnvelope(data, req.id));
     } catch (error) {
+      if (signal.aborted) return;
       sendPersonaError(reply as unknown as PersonaReply, req.id, error);
     }
-  });
+  }));
   app.get(sessionHeadsRoute.path, sessionHeadsRoute.options, sessionHeadsRoute.handler as unknown as Parameters<PersonasRouteHost['get']>[2]);
 
   const homeRoute = defineRoute({

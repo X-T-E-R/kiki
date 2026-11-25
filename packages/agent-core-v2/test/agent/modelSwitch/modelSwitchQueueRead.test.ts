@@ -349,3 +349,36 @@ it('preserves context.undo replacementPrompt queueIndex shifts across multi-MiB 
   expect(switches[0]?.input.operationId).toBe('after-undo-switch');
   expect(switches[0]?.queueIndex).toBe(1);
 });
+
+it('reuses complete cached switches on repeated readReady without rescanning large wires', async () => {
+  const noiseLine = `${JSON.stringify({ type: 'llm.request', payload: 'x'.repeat(256 * 1024) })}\n`;
+  const wire = Buffer.from([noiseLine.repeat(68), `${JSON.stringify(queued('late-switch', 0))}\n`].join(''));
+  expect(wire.length).toBeGreaterThan(16 * 1024 * 1024);
+  let streamReads = 0;
+  const host = {
+    docs: { get: async () => undefined } as unknown as IAtomicDocumentStore,
+    storage: {
+      size: async () => wire.length,
+      mtime: async () => 1,
+      pathFor: () => undefined,
+      read: async () => undefined,
+      readStream: async function* (_scope: string, _key: string, range?: { start?: number; end?: number }, options?: { chunkBytes?: number }) {
+        streamReads += 1;
+        const start = range?.start ?? 0;
+        const end = range?.end ?? wire.length - 1;
+        const step = options?.chunkBytes ?? 1024 * 1024;
+        for (let offset = start; offset <= end; offset += step) {
+          yield wire.subarray(offset, Math.min(end + 1, offset + step));
+        }
+      },
+    } as unknown as IFileSystemStorageService,
+  };
+  const reader = new PersistedModelSwitchReader(host);
+  const first = await reader.readReady('large-cached-scope');
+  expect(first).toHaveLength(1);
+  expect(first[0]?.input.operationId).toBe('late-switch');
+  const readsAfterFirst = streamReads;
+  const second = await reader.readReady('large-cached-scope');
+  expect(second).toEqual(first);
+  expect(streamReads).toBe(readsAfterFirst);
+});

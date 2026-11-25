@@ -18,9 +18,11 @@ interface PendingCleanup {
 
 const CLEANUP_RETRY_BASE_MS = 250;
 const CLEANUP_RETRY_MAX_MS = 10_000;
+const DEFAULT_MAX_LEASES = 10_000;
 
 export class LeaseRegistry {
   private readonly leases = new Map<string, LeaseEntry>();
+  private readonly resourceToLease = new Map<string, string>();
   private readonly pendingCleanups = new Map<string, PendingCleanup>();
   private readonly sweepTimer: ReturnType<typeof setInterval>;
 
@@ -28,6 +30,7 @@ export class LeaseRegistry {
     private readonly ttlMs = 60_000,
     private readonly now: () => number = Date.now,
     private readonly onSweepError: (error: AggregateError) => void = () => {},
+    private readonly maxLeases = DEFAULT_MAX_LEASES,
   ) {
     this.sweepTimer = setInterval(() => {
       this.runSweep();
@@ -36,25 +39,53 @@ export class LeaseRegistry {
   }
 
   renew(leaseId?: string): ServerLease {
-    this.runSweep();
-    const existing = leaseId === undefined ? undefined : this.leases.get(leaseId);
+    const currentNow = this.now();
+    let existing = leaseId === undefined ? undefined : this.leases.get(leaseId);
+    if (existing !== undefined && existing.expiresAt <= currentNow) {
+      this.expireSingle(leaseId!, existing);
+      existing = undefined;
+    }
     const id = existing === undefined ? `lease_${ulid()}` : leaseId!;
-    const expiresAt = this.now() + this.ttlMs;
-    if (existing === undefined) this.leases.set(id, { expiresAt, resources: new Map() });
-    else existing.expiresAt = expiresAt;
+    const expiresAt = currentNow + this.ttlMs;
+    if (existing === undefined) {
+      if (this.leases.size >= this.maxLeases) {
+        this.runSweep();
+        if (this.leases.size >= this.maxLeases) {
+          throw new Error('Maximum active lease limit reached');
+        }
+      }
+      this.leases.set(id, { expiresAt, resources: new Map() });
+    } else {
+      existing.expiresAt = expiresAt;
+      this.leases.delete(id);
+      this.leases.set(id, existing);
+    }
     return { leaseId: id, expiresAt };
   }
 
   isActive(leaseId: string): boolean {
-    this.runSweep();
-    return this.leases.has(leaseId);
+    const lease = this.leases.get(leaseId);
+    if (lease === undefined) return false;
+    if (lease.expiresAt <= this.now()) {
+      this.expireSingle(leaseId, lease);
+      return false;
+    }
+    return true;
   }
 
   attach(leaseId: string, resourceId: string, cleanup: () => void): boolean {
-    this.runSweep();
     const lease = this.leases.get(leaseId);
     if (lease === undefined) return false;
+    if (lease.expiresAt <= this.now()) {
+      this.expireSingle(leaseId, lease);
+      return false;
+    }
+    const previousOwner = this.resourceToLease.get(resourceId);
+    if (previousOwner !== undefined && previousOwner !== leaseId) {
+      this.leases.get(previousOwner)?.resources.delete(resourceId);
+    }
     lease.resources.set(resourceId, cleanup);
+    this.resourceToLease.set(resourceId, leaseId);
     return true;
   }
 
@@ -64,13 +95,14 @@ export class LeaseRegistry {
       this.attemptCleanup(resourceId, pending.cleanup);
       return;
     }
-    for (const lease of this.leases.values()) {
-      const cleanup = lease.resources.get(resourceId);
-      if (cleanup === undefined) continue;
-      lease.resources.delete(resourceId);
-      this.attemptCleanup(resourceId, cleanup);
-      return;
-    }
+    const ownerId = this.resourceToLease.get(resourceId);
+    if (ownerId === undefined) return;
+    this.resourceToLease.delete(resourceId);
+    const lease = this.leases.get(ownerId);
+    const cleanup = lease?.resources.get(resourceId);
+    if (cleanup === undefined) return;
+    lease!.resources.delete(resourceId);
+    this.attemptCleanup(resourceId, cleanup);
   }
 
   activeCount(): number {
@@ -82,6 +114,7 @@ export class LeaseRegistry {
     clearInterval(this.sweepTimer);
     for (const lease of this.leases.values()) this.cleanupLease(lease);
     this.leases.clear();
+    this.resourceToLease.clear();
     const errors: unknown[] = [];
     const pendingCleanups = new Map(this.pendingCleanups);
     for (const [resourceId, pending] of pendingCleanups) {
@@ -95,6 +128,14 @@ export class LeaseRegistry {
     if (errors.length > 0) throw new AggregateError(errors, 'Failed to dispose lease resources');
   }
 
+  private expireSingle(leaseId: string, lease: LeaseEntry): void {
+    this.leases.delete(leaseId);
+    const errors = this.cleanupLease(lease);
+    if (errors.length > 0) {
+      this.onSweepError(new AggregateError(errors, 'Failed to clean up lease resources'));
+    }
+  }
+
   private runSweep(): void {
     try {
       this.sweep();
@@ -105,18 +146,23 @@ export class LeaseRegistry {
 
   private sweep(): void {
     const now = this.now();
-    const due = [...this.pendingCleanups].filter(([, pending]) => pending.nextAttemptAt <= now);
     const errors: unknown[] = [];
     for (const [leaseId, lease] of this.leases) {
-      if (lease.expiresAt > now) continue;
+      if (lease.expiresAt > now) break;
       this.leases.delete(leaseId);
       errors.push(...this.cleanupLease(lease));
     }
-    for (const [resourceId, pending] of due) {
-      try {
-        this.attemptCleanup(resourceId, pending.cleanup);
-      } catch (error) {
-        errors.push(error);
+    if (this.pendingCleanups.size > 0) {
+      const due: Array<[string, PendingCleanup]> = [];
+      for (const entry of this.pendingCleanups) {
+        if (entry[1].nextAttemptAt <= now) due.push(entry);
+      }
+      for (const [resourceId, pending] of due) {
+        try {
+          this.attemptCleanup(resourceId, pending.cleanup);
+        } catch (error) {
+          errors.push(error);
+        }
       }
     }
     if (errors.length > 0) throw new AggregateError(errors, 'Failed to clean up lease resources');
@@ -126,6 +172,7 @@ export class LeaseRegistry {
     const errors: unknown[] = [];
     for (const [resourceId, cleanup] of lease.resources) {
       lease.resources.delete(resourceId);
+      this.resourceToLease.delete(resourceId);
       try {
         this.attemptCleanup(resourceId, cleanup);
       } catch (error) {

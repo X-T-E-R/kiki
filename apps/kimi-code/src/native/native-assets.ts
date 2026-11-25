@@ -10,6 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { readdir as readdirAsync, rm as rmAsync, stat as statAsync } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -793,6 +794,105 @@ export function cleanupStaleNativeCache(options: CleanupOptions): CleanupResult 
   return result;
 }
 
+export interface CleanupCacheTreeOptions {
+  readonly cacheBase: string;
+  readonly namespace: 'native' | 'web';
+  readonly version: string;
+  readonly target: string;
+  readonly currentRoot?: string;
+  readonly maxOldVersions?: number;
+}
+
+async function collectSubdirsByMtime(dir: string, errors: Array<{ path: string; error: unknown }>): Promise<Array<{ name: string; path: string; mtimeMs: number }>> {
+  let entries: string[];
+  try {
+    entries = await readdirAsync(dir);
+  } catch {
+    return [];
+  }
+  const subdirs: Array<{ name: string; path: string; mtimeMs: number }> = [];
+  for (const name of entries) {
+    const path = join(dir, name);
+    try {
+      const st = await statAsync(path);
+      if (!st.isDirectory()) continue;
+      subdirs.push({ name, path, mtimeMs: st.mtimeMs });
+    } catch (error) {
+      errors.push({ path, error });
+    }
+  }
+  subdirs.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return subdirs;
+}
+
+/**
+ * Asynchronously prune stale cache directories for one asset namespace (`native` or `web`):
+ *   - Within the running `(version, target)`, keeps `currentRoot` (when provided) and
+ *     the most recently modified sibling hash directory.
+ *   - Across versions under `<cacheBase>/<namespace>/`, keeps the running `version` and
+ *     at most `maxOldVersions` (default 1) most recently modified older version directories.
+ */
+export async function cleanupStaleCacheTree(
+  options: CleanupCacheTreeOptions,
+): Promise<CleanupResult> {
+  const { cacheBase, namespace, version, target, currentRoot, maxOldVersions = 1 } = options;
+  const result: CleanupResult = { kept: [], removed: [], errors: [] };
+  const errors = result.errors as Array<{ path: string; error: unknown }>;
+  const safeVersion = sanitizeSegment(version);
+  const safeTarget = sanitizeSegment(target);
+
+  const targetDir = join(cacheBase, namespace, safeVersion, safeTarget);
+  const siblings = await collectSubdirsByMtime(targetDir, errors);
+  if (siblings.length > 0) {
+    const keepSet = new Set<string>();
+    if (currentRoot !== undefined) {
+      keepSet.add(currentRoot);
+      const mostRecentOther = siblings.find((entry) => entry.path !== currentRoot)?.path;
+      if (mostRecentOther !== undefined) keepSet.add(mostRecentOther);
+    } else {
+      for (const entry of siblings.slice(0, 2)) keepSet.add(entry.path);
+    }
+    for (const { path } of siblings) {
+      if (keepSet.has(path)) {
+        result.kept.push(path);
+        continue;
+      }
+      try {
+        await rmAsync(path, { recursive: true, force: true });
+        result.removed.push(path);
+      } catch (error) {
+        errors.push({ path, error });
+      }
+    }
+  }
+
+  const namespaceDir = join(cacheBase, namespace);
+  const versionDirs = await collectSubdirsByMtime(namespaceDir, errors);
+  const keepVersions = new Set<string>([safeVersion]);
+  let keptOld = 0;
+  for (const entry of versionDirs) {
+    if (entry.name === safeVersion) continue;
+    if (keptOld < Math.max(0, maxOldVersions)) {
+      keepVersions.add(entry.name);
+      keptOld += 1;
+    }
+  }
+  for (const entry of versionDirs) {
+    if (keepVersions.has(entry.name)) {
+      result.kept.push(entry.path);
+      continue;
+    }
+    try {
+      await rmAsync(entry.path, { recursive: true, force: true });
+      result.removed.push(entry.path);
+    } catch (error) {
+      errors.push({ path: entry.path, error });
+    }
+  }
+
+  return result;
+}
+
 /**
  * Convenience: discover currentRoot from embedded manifest + run cleanup.
  * Safe to call without args from main.ts startup. Returns null if not in SEA mode.
@@ -817,4 +917,39 @@ export function cleanupStaleNativeCacheForCurrent(
     target: manifest.target,
     currentRoot,
   });
+}
+
+export async function cleanupStaleAssetCachesForCurrent(
+  options: NativeAssetOptions & { readonly currentWebManifestDir?: string; readonly maxOldVersions?: number } = {},
+): Promise<{ readonly native: CleanupResult; readonly web: CleanupResult } | null> {
+  const source = options.source ?? getSeaAssetSource();
+  if (source === null) return null;
+
+  const target = currentTarget();
+  const manifest = options.manifest ?? getEmbeddedNativeAssetManifest(source, target);
+  if (manifest === null) return null;
+
+  const cacheBase = getNativeCacheBase(options);
+  const version = KIMI_BUILD_INFO.version ?? 'dev';
+  const currentRoot = getNativeAssetCacheRoot(manifest, options);
+
+  const [native, web] = await Promise.all([
+    cleanupStaleCacheTree({
+      cacheBase,
+      namespace: 'native',
+      version,
+      target: manifest.target,
+      currentRoot,
+      maxOldVersions: options.maxOldVersions,
+    }),
+    cleanupStaleCacheTree({
+      cacheBase,
+      namespace: 'web',
+      version,
+      target: manifest.target,
+      currentRoot: options.currentWebManifestDir,
+      maxOldVersions: options.maxOldVersions,
+    }),
+  ]);
+  return { native, web };
 }

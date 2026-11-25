@@ -90,7 +90,7 @@ export function getEmbeddedWebAssetManifest(
   return manifest as WebAssetManifest;
 }
 
-export function getWebAssetCacheRoot(
+export function getWebAssetCacheManifestDir(
   manifest: WebAssetManifest,
   options: WebAssetOptions = {},
 ): string {
@@ -107,8 +107,22 @@ export function getWebAssetCacheRoot(
     version,
     sanitizeSegment(manifest.target),
     manifestHash,
-    manifest.root,
   );
+}
+
+export function getWebAssetCacheRoot(
+  manifest: WebAssetManifest,
+  options: WebAssetOptions = {},
+): string {
+  return join(getWebAssetCacheManifestDir(manifest, options), manifest.root);
+}
+
+export function getCurrentWebAssetCacheManifestDir(options: WebAssetOptions = {}): string | undefined {
+  const source = options.source ?? getSeaAssetSource();
+  if (source === null) return undefined;
+  const manifest = options.manifest ?? getEmbeddedWebAssetManifest(source, currentTarget());
+  if (manifest === null) return undefined;
+  return getWebAssetCacheManifestDir(manifest, options);
 }
 
 export function getNativeWebAssetsDir(options: WebAssetOptions = {}): string | null {

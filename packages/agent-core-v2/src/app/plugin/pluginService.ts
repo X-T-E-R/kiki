@@ -564,17 +564,27 @@ export class PluginService extends Service implements IPluginService {
   }
 
   private async filterUsage<T>(entries: readonly T[], workspaceId: string | undefined, owner: (entry: T) => string | undefined, sessionId?: string): Promise<readonly T[]> {
-    if (workspaceId === '*') return entries;
+    if (workspaceId === '*' || entries.length === 0) return entries;
     const allowErrorState = this.ignorePluginErrorStateInUsage.getStore() === true;
-    const allowed = await Promise.all(entries.map(async (entry) => {
-      const id = owner(entry);
-      if (id === undefined) return true;
-      if (this.usage === undefined || !this.usage.enabled()) {
-        const info = this.manager.info(id);
-        if (info === undefined || !info.enabled) return false;
-        return (allowErrorState || info.state === 'ok') && info.globalEnabled;
+    const useUsageService = this.usage !== undefined && this.usage.enabled();
+    const decisions = new Map<string, Promise<boolean>>();
+    const checkId = (id: string): Promise<boolean> => {
+      let cached = decisions.get(id);
+      if (cached === undefined) {
+        if (!useUsageService) {
+          const info = this.manager.info(id);
+          const ok = info !== undefined && info.enabled && (allowErrorState || info.state === 'ok') && info.globalEnabled;
+          cached = Promise.resolve(ok);
+        } else {
+          cached = this.usage!.allows(workspaceId, id, sessionId);
+        }
+        decisions.set(id, cached);
       }
-      return this.usage.allows(workspaceId, id, sessionId);
+      return cached;
+    };
+    const allowed = await Promise.all(entries.map((entry) => {
+      const id = owner(entry);
+      return id === undefined ? true : checkId(id);
     }));
     return entries.filter((_, index) => allowed[index]);
   }

@@ -128,8 +128,59 @@ export function executeWorkspaceTrigram(operation: WorkspaceTrigramOperation, si
     const existingEpoch = (db.prepare("SELECT value FROM meta WHERE key='epoch'").get() as { value: string } | undefined)?.value;
     if (existingEpoch !== operation.epoch) return undefined;
 
+    const MAX_TX_TEXT_BYTES = 16 << 20;
     const find = db.prepare('SELECT id,mtime,ctime,size,ino FROM files WHERE path=?');
-    const prepared: PreparedUpdateEntry[] = [];
+    const flushChunk = (prepared: PreparedUpdateEntry[], removedPaths: readonly string[]): boolean => {
+      signal?.throwIfAborted();
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const epoch = (db.prepare("SELECT value FROM meta WHERE key='epoch'").get() as { value: string } | undefined)?.value;
+        if (epoch !== operation.epoch) { rollbackQuietly(db); return false; }
+        db.prepare("INSERT INTO meta(key,value) VALUES('lease_expires_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(Date.now() + TRIGRAM_LEASE_TTL_MS));
+        const deleteContentByPath = db.prepare('DELETE FROM content WHERE rowid IN (SELECT id FROM files WHERE path=?)');
+        const deleteFileByPath = db.prepare('DELETE FROM files WHERE path=?');
+        for (const path of removedPaths) {
+          signal?.throwIfAborted();
+          deleteContentByPath.run(path);
+          deleteFileByPath.run(path);
+        }
+        const touch = db.prepare('UPDATE files SET epoch=? WHERE id=?');
+        const remove = db.prepare('DELETE FROM content WHERE rowid=?');
+        const upsert = db.prepare(`INSERT INTO files(path,mtime,ctime,size,ino,epoch,unindexed,non_ascii) VALUES(?,?,?,?,?,?,?,?)
+          ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime,ctime=excluded.ctime,size=excluded.size,ino=excluded.ino,
+          epoch=excluded.epoch,unindexed=excluded.unindexed,non_ascii=excluded.non_ascii RETURNING id`);
+        const insert = db.prepare('INSERT INTO content(rowid,body) VALUES(?,?)');
+        for (const item of prepared) {
+          signal?.throwIfAborted();
+          if (item.unchanged && item.existingId !== undefined) {
+            touch.run(operation.epoch, item.existingId);
+            continue;
+          }
+          const row = upsert.get(
+            item.entry.path,
+            item.entry.mtimeMs,
+            item.entry.ctimeMs,
+            item.entry.size,
+            item.entry.ino,
+            operation.epoch,
+            Number(item.text === undefined),
+            Number(item.text !== undefined && /[^\x00-\x7f]/u.test(item.text)),
+          ) as { id: number };
+          remove.run(row.id);
+          if (item.text !== undefined) insert.run(row.id, item.text);
+        }
+        signal?.throwIfAborted();
+        db.exec('COMMIT');
+        return true;
+      } catch (error) {
+        rollbackQuietly(db);
+        throw error;
+      }
+    };
+
+    let prepared: PreparedUpdateEntry[] = [];
+    let bufferedBytes = 0;
+    let removedPending: readonly string[] = operation.removed ?? [];
     for (const entry of operation.entries) {
       signal?.throwIfAborted();
       const old = find.get(entry.path) as { id: number; mtime: number; ctime: number; size: number; ino: number } | undefined;
@@ -138,6 +189,7 @@ export function executeWorkspaceTrigram(operation: WorkspaceTrigramOperation, si
         continue;
       }
       let text: string | undefined;
+      let textBytes = 0;
       if (entry.size <= (1 << 20)) {
         signal?.throwIfAborted();
         try {
@@ -147,59 +199,25 @@ export function executeWorkspaceTrigram(operation: WorkspaceTrigramOperation, si
           if (bytes.length === entry.size && stat.mtimeMs === entry.mtimeMs && stat.ctimeMs === entry.ctimeMs &&
             !bytes.includes(0) && !(bytes[0] === 0xff && bytes[1] === 0xfe || bytes[0] === 0xfe && bytes[1] === 0xff)) {
             text = bytes.toString('utf8');
+            textBytes = bytes.length;
           }
         } catch (error) {
           if (!['ENOENT', 'EACCES', 'EPERM', 'EISDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
         }
       }
+      if (prepared.length > 0 && bufferedBytes + textBytes > MAX_TX_TEXT_BYTES) {
+        if (!flushChunk(prepared, removedPending)) return undefined;
+        removedPending = [];
+        prepared = [];
+        bufferedBytes = 0;
+      }
       prepared.push({ entry, unchanged: false, text });
+      bufferedBytes += textBytes;
     }
-
-    signal?.throwIfAborted();
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      const epoch = (db.prepare("SELECT value FROM meta WHERE key='epoch'").get() as { value: string } | undefined)?.value;
-      if (epoch !== operation.epoch) { rollbackQuietly(db); return undefined; }
-      db.prepare("INSERT INTO meta(key,value) VALUES('lease_expires_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(Date.now() + TRIGRAM_LEASE_TTL_MS));
-      const deleteContentByPath = db.prepare('DELETE FROM content WHERE rowid IN (SELECT id FROM files WHERE path=?)');
-      const deleteFileByPath = db.prepare('DELETE FROM files WHERE path=?');
-      for (const path of operation.removed ?? []) {
-        signal?.throwIfAborted();
-        deleteContentByPath.run(path);
-        deleteFileByPath.run(path);
-      }
-      const touch = db.prepare('UPDATE files SET epoch=? WHERE id=?');
-      const remove = db.prepare('DELETE FROM content WHERE rowid=?');
-      const upsert = db.prepare(`INSERT INTO files(path,mtime,ctime,size,ino,epoch,unindexed,non_ascii) VALUES(?,?,?,?,?,?,?,?)
-        ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime,ctime=excluded.ctime,size=excluded.size,ino=excluded.ino,
-        epoch=excluded.epoch,unindexed=excluded.unindexed,non_ascii=excluded.non_ascii RETURNING id`);
-      const insert = db.prepare('INSERT INTO content(rowid,body) VALUES(?,?)');
-      for (const item of prepared) {
-        signal?.throwIfAborted();
-        if (item.unchanged && item.existingId !== undefined) {
-          touch.run(operation.epoch, item.existingId);
-          continue;
-        }
-        const row = upsert.get(
-          item.entry.path,
-          item.entry.mtimeMs,
-          item.entry.ctimeMs,
-          item.entry.size,
-          item.entry.ino,
-          operation.epoch,
-          Number(item.text === undefined),
-          Number(item.text !== undefined && /[^\x00-\x7f]/u.test(item.text)),
-        ) as { id: number };
-        remove.run(row.id);
-        if (item.text !== undefined) insert.run(row.id, item.text);
-      }
-      signal?.throwIfAborted();
-      db.exec('COMMIT');
-      return true;
-    } catch (error) {
-      rollbackQuietly(db);
-      throw error;
+    if (prepared.length > 0 || removedPending.length > 0 || operation.entries.length === 0) {
+      if (!flushChunk(prepared, removedPending)) return undefined;
     }
+    return true;
   } finally {
     db.close();
   }

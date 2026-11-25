@@ -29,6 +29,8 @@ async function readAuditFile(auditPath, options = {}) {
 	const compactMode = info.size > maxBytes;
 	const keptState = [];
 	const keptFrames = [];
+	const latestToolState = /* @__PURE__ */ new Map();
+	let latestNativeUsage;
 	let order = 0;
 	let pendingMalformed;
 	let validByteOffset = 0;
@@ -41,10 +43,20 @@ async function readAuditFile(auditPath, options = {}) {
 			order: order++,
 			record
 		};
-		if (compactMode && HIGH_FREQ_FRAME_TYPES.has(record.type)) {
-			keptFrames.push(entry);
-			if (keptFrames.length > tailFrameLimit) keptFrames.shift();
-			return;
+		if (compactMode) {
+			if (HIGH_FREQ_FRAME_TYPES.has(record.type)) {
+				keptFrames.push(entry);
+				if (keptFrames.length > tailFrameLimit) keptFrames.shift();
+				return;
+			}
+			if (record.type === "tool_state" && typeof record["toolCallId"] === "string") {
+				latestToolState.set(record["toolCallId"], entry);
+				return;
+			}
+			if (record.type === "native_usage") {
+				latestNativeUsage = entry;
+				return;
+			}
 		}
 		keptState.push(entry);
 	};
@@ -120,15 +132,25 @@ async function readAuditFile(auditPath, options = {}) {
 		else if (carry.length > 0) await writeFile(auditPath, "\n", { flag: "a" }).catch(() => {});
 	}
 	if (!compactMode) return keptState.map((item) => item.record);
-	return [...keptState, ...keptFrames].sort((a, b) => a.order - b.order).map((item) => item.record);
+	return [
+		...keptState,
+		...latestToolState.values(),
+		...latestNativeUsage === void 0 ? [] : [latestNativeUsage],
+		...keptFrames
+	].sort((a, b) => a.order - b.order).map((item) => item.record);
 }
-async function compactAuditFile(auditPath, options = {}) {
+async function compactAuditFileWithStats(auditPath, options = {}) {
 	const records = await readAuditFile(auditPath, {
 		maxBytes: 0,
 		tailFrameLimit: options.tailFrameLimit ?? 200,
 		repairTruncatedTail: false
 	});
-	const payload = records.length === 0 ? "" : `${records.map((record) => JSON.stringify(record)).join("\n")}\n`;
+	let stateBytes = 0;
+	const payload = records.map((record) => {
+		const serialized = `${JSON.stringify(record)}\n`;
+		if (!HIGH_FREQ_FRAME_TYPES.has(record.type)) stateBytes += Buffer.byteLength(serialized, "utf8");
+		return serialized;
+	}).join("");
 	const tempPath = `${auditPath}.${process.pid}.${randomUUID()}.tmp`;
 	await writeFile(tempPath, payload, "utf8");
 	try {
@@ -137,7 +159,10 @@ async function compactAuditFile(auditPath, options = {}) {
 		await unlink(tempPath).catch(() => {});
 		throw error;
 	}
-	return Buffer.byteLength(payload, "utf8");
+	return {
+		totalBytes: Buffer.byteLength(payload, "utf8"),
+		stateBytes
+	};
 }
 async function pruneExpiredAuditFiles(auditDir, maxAgeMs = AUDIT_RETENTION_MS) {
 	let entries;
@@ -2064,8 +2089,8 @@ var AgyBridge = class {
 		this.spawnProcess = spawnProcess;
 		this.sessions = /* @__PURE__ */ new Map();
 	}
-	nextAuditCompactThreshold(bytes) {
-		const growthStep = Math.max(1024, Math.floor(this.auditMaxBytes / 2));
+	nextAuditCompactThreshold(bytes, stateBytes = bytes) {
+		const growthStep = Math.max(1024, Math.floor(this.auditMaxBytes / 2), stateBytes);
 		return Math.max(this.auditMaxBytes, bytes + growthStep);
 	}
 	async audit(session, type, data) {
@@ -2096,9 +2121,9 @@ var AgyBridge = class {
 			const written = knownBytes + Buffer.byteLength(line, "utf8");
 			const compactAt = this.auditNextCompactAt.get(session.id) ?? this.auditMaxBytes;
 			if (this.auditMaxBytes > 0 && written >= compactAt) {
-				const compactedBytes = await compactAuditFile(auditPath, { maxBytes: this.auditMaxBytes });
-				this.auditBytes.set(session.id, compactedBytes);
-				this.auditNextCompactAt.set(session.id, this.nextAuditCompactThreshold(compactedBytes));
+				const compacted = await compactAuditFileWithStats(auditPath, { maxBytes: this.auditMaxBytes });
+				this.auditBytes.set(session.id, compacted.totalBytes);
+				this.auditNextCompactAt.set(session.id, this.nextAuditCompactThreshold(compacted.totalBytes, compacted.stateBytes));
 			} else this.auditBytes.set(session.id, written);
 		});
 		this.auditChains.set(session.id, next);
@@ -2786,6 +2811,8 @@ var AgyBridge = class {
 		for (const [toolCallId, status] of session.toolIds) {
 			if (status !== "pending") continue;
 			session.toolIds.set(toolCallId, "settled");
+			session.toolInputs.delete(toolCallId);
+			session.toolDetails.delete(toolCallId);
 			await active.client.notify("session/update", {
 				sessionId: session.id,
 				update: {
@@ -3008,8 +3035,10 @@ var AgyBridge = class {
 					...structured
 				};
 				const previousInput = session.toolInputs.get(id);
-				if (rawInput !== void 0) session.toolInputs.set(id, rawInput);
-				session.toolDetails.set(id, detail);
+				if (!(session.toolIds.get(id) === "settled")) {
+					if (rawInput !== void 0) session.toolInputs.set(id, rawInput);
+					session.toolDetails.set(id, detail);
+				}
 				if (!session.toolIds.has(id)) {
 					session.toolIds.set(id, "pending");
 					await active.client.notify("session/update", {
@@ -3046,6 +3075,8 @@ var AgyBridge = class {
 					if (freshStep && !failed) active.progressSinceRecovery = true;
 					const error = step.tool_info?.error ?? step.error;
 					session.toolIds.set(id, "settled");
+					session.toolInputs.delete(id);
+					session.toolDetails.delete(id);
 					const errorText = typeof error === "string" ? error : error?.message;
 					const output = step.tool_info?.output ?? step.tool_info?.result ?? errorText ?? (failed ? "AGY tool reported an error" : void 0);
 					const deniedCandidate = typeof errorText === "string" ? errorText : typeof output === "string" ? output : "";
@@ -3666,6 +3697,12 @@ var AgyBridge = class {
 					pid: session.child?.pid,
 					processEnded: true
 				});
+				session.toolInputs.clear();
+				session.toolDetails.clear();
+				session.toolIds.clear();
+				this.auditBytes.delete(session.id);
+				this.auditNextCompactAt.delete(session.id);
+				this.auditChains.delete(session.id);
 			}
 		}));
 		return this.closePromise;
