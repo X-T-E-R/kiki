@@ -146,7 +146,33 @@ export interface AgentRecordEvents {
   'context.update_token_count': { tokenCount: number };
   'context.clear': {};
   'context.apply_compaction': CompactionResult;
-  'context.undo': { count: number };
+  'context.undo': {
+    count: number;
+    replacementPrompt?: { readonly message: ContextMessage };
+  };
+  'branch.base': {
+    version: 1;
+    parentAgentId: string;
+    seed: 'fresh' | 'compact' | 'verbatim';
+    inheritedCount: number;
+    baseAnchor?: { turnId?: number; messageId?: string };
+  };
+  'external.text': {
+    recordId: string;
+    text: string;
+    kind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+    title?: string;
+    source: {
+      connectionId: string;
+      clientName: string;
+      sessionRef: string;
+      driver: 'external';
+    };
+  };
+  'agent.model_switch': {
+    context?: readonly ContextMessage[];
+    [key: string]: unknown;
+  };
 
   'tools.update_store': ToolStoreUpdate;
 

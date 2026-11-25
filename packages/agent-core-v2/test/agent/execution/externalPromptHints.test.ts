@@ -6,6 +6,7 @@ import {
   externalPromptHints,
   externalTurnHasModelContent,
 } from '#/agent/execution/externalPromptHints';
+import { renderSpaceContext } from '#/app/bootstrap/spaceIdentity';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 
 const message = (text: string, origin: ContextMessage['origin'], turnId?: number): ContextMessage => ({
@@ -32,6 +33,46 @@ describe('external boundary hook ownership', () => {
     expect(text).not.toContain('private-home');
     expect(text).toContain('Working directory: /work');
     expect(externalPromptHints([message('## Space\nprivate-home', { kind: 'injection', variant: 'runtime_snapshot' })], new Set(), false)).toEqual([]);
+  });
+
+  it('strips the entire multi-line Space section body when includeSpace is false and preserves it when true', () => {
+    const renderedSpace = renderSpaceContext({
+      name: 'Main space',
+      id: 'main',
+      kind: 'main',
+      homeDir: '/home/alice/.kiki-secret',
+      baseHomeDir: '/home/alice/.kiki-base',
+    });
+    const fullSnapshot = message(
+      `<system-reminder>\nHost runtime snapshot rev 1.\n\n${renderedSpace}\n\n## Runtime/workspace\nLocal date: 2026-11-25\n</system-reminder>`,
+      { kind: 'injection', variant: 'runtime_snapshot' },
+    );
+    const filtered = externalPromptHints([fullSnapshot], new Set(), false).map((hint) => hint.text).join('\n');
+    expect(filtered).not.toContain('## Space');
+    expect(filtered).not.toContain('Name:');
+    expect(filtered).not.toContain('ID:');
+    expect(filtered).not.toContain('Kind:');
+    expect(filtered).not.toContain('/home/alice/.kiki-secret');
+    expect(filtered).not.toContain('/home/alice/.kiki-base');
+    expect(filtered).not.toContain('Product docs');
+    expect(filtered).not.toContain('Use this Kiki home');
+    expect(filtered).toContain('## Runtime/workspace');
+    expect(filtered).toContain('Local date: 2026-11-25');
+
+    const spaceOnly = message(
+      `<system-reminder>\nHost runtime snapshot rev 1.\n\n${renderedSpace}\n</system-reminder>`,
+      { kind: 'injection', variant: 'runtime_snapshot' },
+    );
+    expect(externalPromptHints([spaceOnly], new Set(), false)).toEqual([]);
+
+    const oversized = message(
+      `<system-reminder>\nHost runtime snapshot rev 1.\n\n${renderedSpace}\n\n## Skills\n${'x'.repeat(9_000)}\n</system-reminder>`,
+      { kind: 'injection', variant: 'runtime_snapshot' },
+    );
+    const keptSpace = externalPromptHints([oversized], new Set(), true).map((hint) => hint.text).join('\n');
+    expect(keptSpace).toContain('ID: "main"');
+    expect(keptSpace).toContain('/home/alice/.kiki-secret');
+    expect(keptSpace).toContain('Product docs (server host):');
   });
   it('recognizes boundary events by name, not harness', () => {
     expect(externalBoundaryHookEvent('UserPromptSubmit')).toBe(true);

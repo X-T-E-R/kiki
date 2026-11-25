@@ -418,7 +418,17 @@ export function registerRawEventsRoutes(
       let closed = false;
       let unregisterCloser: (() => void) | undefined;
       let lastEmittedSeq = -1;
-      const queued: Array<{ readonly envelope: EventEnvelope; readonly hidden: boolean }> = [];
+      const queued: Array<
+        | { readonly kind: 'event'; readonly envelope: EventEnvelope; readonly hidden: boolean }
+        | {
+            readonly kind: 'gap';
+            readonly epoch: string;
+            readonly seq: number;
+            readonly sessionId?: string;
+            readonly hidden: boolean;
+            readonly reason: 'journal_gap';
+          }
+      > = [];
       let replayDone = false;
 
       const writeFrame = (frame: Record<string, unknown>): boolean => {
@@ -461,14 +471,46 @@ export function registerRawEventsRoutes(
         writeFrame(projectRawFrame(envelope));
       };
 
+      const emitGap = (info: {
+        readonly epoch: string;
+        readonly seq: number;
+        readonly sessionId?: string;
+        readonly hidden: boolean;
+        readonly reason: 'journal_gap';
+      }): void => {
+        if (closed) return;
+        if (info.seq <= lastEmittedSeq) return;
+        if (scopedSessionId !== undefined) {
+          if (info.sessionId !== scopedSessionId) return;
+        } else if (info.hidden) {
+          return;
+        }
+        writeFrame({
+          type: 'reset',
+          epoch: info.epoch,
+          latest_seq: info.seq,
+          reason: info.reason,
+        });
+        cleanup();
+        reply.raw.end();
+      };
+
       const target: GlobalRawTarget = {
         send(envelope, hidden) {
           if (closed) return;
           if (!replayDone) {
-            queued.push({ envelope, hidden });
+            queued.push({ kind: 'event', envelope, hidden });
             return;
           }
           emitEnvelope(envelope, hidden);
+        },
+        onGap(info) {
+          if (closed) return;
+          if (!replayDone) {
+            queued.push({ kind: 'gap', ...info });
+            return;
+          }
+          emitGap(info);
         },
       };
 
@@ -511,7 +553,12 @@ export function registerRawEventsRoutes(
       }
       replayDone = true;
       for (const pending of queued.splice(0)) {
-        emitEnvelope(pending.envelope, pending.hidden);
+        if (pending.kind === 'gap') {
+          emitGap(pending);
+          if (closed) return;
+        } else {
+          emitEnvelope(pending.envelope, pending.hidden);
+        }
       }
       if (!closed && !reply.raw.destroyed && !reply.raw.writableEnded) {
         reply.raw.flushHeaders();

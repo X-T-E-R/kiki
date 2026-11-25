@@ -180,8 +180,15 @@ interface BrowserGlobal {
 
 const browserGlobal = globalThis as unknown as BrowserGlobal;
 
+interface PendingTranscriptChunk {
+  readonly ops: readonly TranscriptOperation[];
+  readonly cursor: TranscriptCursor;
+  readonly throughSeq: number;
+}
+
 interface PendingTranscriptBatch {
   readonly ops: TranscriptOperation[];
+  readonly chunks: PendingTranscriptChunk[];
   cursor: TranscriptCursor;
   /**
    * Server-side coverage watermark of the merged events: seqs beyond
@@ -619,14 +626,19 @@ export class SessionController {
   private queuedTimingWriteSequence = 0;
   private readonly queuedTimingWrites = new Map<string, number>();
   private readonly contentControllers = new Map<string, AbortController>();
-  private readonly contentReaders = new Map<string, { agentId: string; source: ContentSource; roots: readonly string[]; paths?: readonly (readonly (string | number)[])[]; includeOlder: boolean; readers: number; blocked: boolean; retryVersion: number; retryAttempt?: number; retryTimer?: ReturnType<typeof setTimeout>; ref?: ContentRef; controller?: AbortController }>();
+  private readonly contentReaders = new Map<string, { agentId: string; source: ContentSource; sourceKey: string; roots: readonly string[]; paths?: readonly (readonly (string | number)[])[]; includeOlder: boolean; readers: number; blocked: boolean; retryVersion: number; retryAttempt?: number; retryTimer?: ReturnType<typeof setTimeout>; ref?: ContentRef; controller?: AbortController }>();
+  private readonly contentReaderSourceCounts = new Map<string, number>();
+  private readonly contentReaderRootCounts = new Map<string, number>();
   private contentPumpRunning = false;
   private readonly contentPumpReads = new Map<string, object>();
   private readonly contentRanges = new Map<string, string>();
   private contentRangeBytes = 0;
   private readonly rangeControllers = new Map<AbortController, string>();
   private readonly contentBodies = new CountingMap<string, { agentId: string; source: ContentSource; base: ContentWindow; bytes: number }>();
+  private readonly unpinnedContentBodies = new Set<string>();
+  private contentBodyBytes = 0;
   private readonly toolDetails = new CountingMap<string, Extract<SessionViewTranscriptDetail, { kind: 'tool' }>['lookup']>();
+  private readonly toolDetailKeysByFrame = new Map<string, Set<string>>();
   private contentRevision = 0;
   private contentInputs: readonly unknown[] = [];
   private readonly contentListeners = new Set<Listener>();
@@ -642,7 +654,7 @@ export class SessionController {
   private durableSteerReadGeneration = 0;
   private readonly catchupReplay = new Map<
     string,
-    { readonly ops: readonly TranscriptOperation[]; readonly cursor: TranscriptCursor }
+    { readonly preGapCursor: TranscriptCursor | undefined; readonly chunks: PendingTranscriptChunk[] }
   >();
   private ephemeralHint: boolean | undefined;
   private persistenceHint: 'temporary' | 'saved' | 'unknown' | undefined;
@@ -1191,7 +1203,7 @@ export class SessionController {
   suspend(): void {
     if (this.closed || this.isSuspended) return;
     const rewrite = this.resyncDeferredBySuspend?.rewrite === true || this.resyncInFlightRewrite || this.rewriteHold !== undefined || this.rewriteResyncQueued;
-    if (this.resyncDeferredBySuspend !== undefined || this.resyncInFlight || this.shell.resyncing || this.resyncTimer !== null || this.hardResyncQueued || this.rewriteResyncQueued || this.rewriteHold !== undefined) {
+    if (this.resyncDeferredBySuspend !== undefined || this.resyncInFlight || this.shell.resyncing || this.resyncTimer !== null || this.hardResyncQueued || this.rewriteResyncQueued || this.rewriteHold !== undefined || this.catchupReplay.size > 0 || this.catchupByAgent.size > 0) {
       this.resyncDeferredBySuspend = { rewrite };
     }
     this.isParked = false;
@@ -1211,8 +1223,12 @@ export class SessionController {
     this.cancelVisibleFrameFlush();
     this.clearHiddenFrameTimer();
     // Batches that have not been applied yet are dropped together with their
-    // cursors: resume re-requests everything after the last applied cursor.
+    // cursors: roll back any agent with an unrecovered gap to its pre-gap
+    // cursor so resume cannot advance past the missing span.
     this.pendingTranscriptBatches.clear();
+    for (const [agentId, replay] of this.catchupReplay) {
+      this.timeline(agentId).cursor = replay.preGapCursor;
+    }
     this.catchupReplay.clear();
     this.flushFrames();
     for (const { agentId } of this.storeTimelines) this.bumpHistoryGeneration(agentId);
@@ -1395,8 +1411,10 @@ export class SessionController {
       timeline.refreshing = false;
     }
     this.contentReaders.clear();
-    this.contentBodies.clear();
-    this.toolDetails.clear();
+    this.contentReaderSourceCounts.clear();
+    this.contentReaderRootCounts.clear();
+    this.clearContentBodies();
+    this.clearToolDetails();
     this.contentRanges.clear(); this.contentRangeBytes = 0;
     this.olderLoads.cancelAll();
     this.queuedTimingWrites.clear();
@@ -1505,8 +1523,10 @@ export class SessionController {
     if (hold !== undefined && event.agent_id === MAIN_AGENT_ID) {
       if (!this.matchesRewriteGeneration(generation)) return;
       if (hold.deferredBatches.length > 0 || event.ops.some((op) => op.op === 'items.remove')) {
+        const ops = [...event.ops];
         hold.deferredBatches.push({
-          ops: [...event.ops],
+          ops,
+          chunks: [{ ops, cursor: event.cursor, throughSeq: event.through_seq }],
           cursor: event.cursor,
           throughSeq: event.through_seq,
         });
@@ -3251,8 +3271,8 @@ export class SessionController {
     for (const target of this.contentReaders.values()) if (target.agentId === agentId) target.blocked = false;
     for (const [key, entry] of retainedBodies) {
       const entity = this.contentEntity(agentId, entry.source);
-      if (entity === undefined) this.contentBodies.delete(key);
-      else this.contentBodies.set(key, { ...entry, base: snapshotContentEntity(snapshot, entry.source) ?? entry.base, bytes: this.bytesOf(entity) });
+      if (entity === undefined) this.deleteContentBody(key);
+      else this.setContentBody(key, { ...entry, base: snapshotContentEntity(snapshot, entry.source) ?? entry.base, bytes: this.bytesOf(entity) });
     }
     this.timeline(agentId).cursor = cursor;
     if (read !== undefined) this.timeline(agentId).historyRead = read;
@@ -3365,7 +3385,7 @@ export class SessionController {
     const local = this.timelines.get(agentId)?.store?.getToolCall(toolCallId);
     if (local !== undefined) {
       const lookup = { status: 'found' as const, ...local };
-      this.toolDetails.set(key, lookup);
+      this.setToolDetail(key, lookup);
       return lookup;
     }
     if (this.toolDetails.get(key)?.status === 'found') this.invalidateToolDetail(key);
@@ -3385,11 +3405,11 @@ export class SessionController {
         const resident = this.timelines.get(agentId)?.store?.getToolCall(toolCallId);
         if (resident !== undefined) {
           const lookup = { status: 'found' as const, ...resident };
-          this.toolDetails.set(key, lookup);
+          this.setToolDetail(key, lookup);
           return lookup;
         }
         if ((this.toolDetailEpochs.get(key) ?? 0) !== epoch) throw new Error('Tool detail scope changed');
-        this.toolDetails.set(key, detail.lookup);
+        this.setToolDetail(key, detail.lookup);
         return detail.lookup;
       })().finally(() => { this.snapshotControllers.delete(controller); if (this.toolDetailReads.get(key)?.controller === controller) this.toolDetailReads.delete(key); });
       void promise.catch(() => {});
@@ -3410,7 +3430,7 @@ export class SessionController {
   }
 
   isContentRange(agentId: string, ref: ContentRef): boolean {
-    return ref.kind === 'text' && (ref.total > CONTENT_INLINE_TEXT_CHARS || (this.contentBodies.get(JSON.stringify([agentId, ref.source]))?.bytes ?? 0) >= CONTENT_BODY_CACHE_BYTES / 2 || this.contentMemoryReport().bodyBytes >= CONTENT_BODY_CACHE_BYTES);
+    return ref.kind === 'text' && (ref.total > CONTENT_INLINE_TEXT_CHARS || (this.contentBodies.get(JSON.stringify([agentId, ref.source]))?.bytes ?? 0) >= CONTENT_BODY_CACHE_BYTES / 2 || this.contentBodyBytes >= CONTENT_BODY_CACHE_BYTES);
   }
 
   contentRefsFor(agentId: string, source: ContentSource): readonly ContentRef[] {
@@ -3429,7 +3449,13 @@ export class SessionController {
   private contentEntity(agentId: string, source: ContentSource): ContentWindow | undefined {
     if (source.kind === 'snapshot') return this.latestSnapshot;
     if (source.kind === 'frame') {
-      for (const [key, lookup] of this.toolDetails) if (key.startsWith(`${agentId}/`) && lookup.status === 'found' && lookup.frame.frameId === source.id && lookup.turnId === source.turnId && lookup.stepId === source.stepId) return lookup.frame;
+      const keys = this.toolDetailKeysByFrame.get(`${agentId}\u0000${source.id}`);
+      if (keys !== undefined) {
+        for (const key of keys) {
+          const lookup = this.toolDetails.get(key);
+          if (lookup?.status === 'found' && lookup.frame.frameId === source.id && lookup.turnId === source.turnId && lookup.stepId === source.stepId) return lookup.frame;
+        }
+      }
     }
     const store = this.timelines.get(agentId)?.store;
     return store === undefined ? undefined : transcriptContentEntity(store, source);
@@ -3533,11 +3559,15 @@ export class SessionController {
   async copyContentField(agentId: string, source: ContentSource, path: readonly (string | number)[], signal?: AbortSignal): Promise<string> {
     signal?.throwIfAborted();
     if (source.kind === 'frame') {
-      for (const [key, cached] of this.toolDetails) {
-        if (!key.startsWith(`${agentId}/`) || cached.status !== 'found' || cached.frame.frameId !== source.id || cached.turnId !== source.turnId || cached.stepId !== source.stepId) continue;
-        const lookup = await this.lookupToolCallForCopy(agentId, cached.frame.toolCallId, signal, source.turnId);
-        if (lookup.frame.frameId !== source.id || lookup.turnId !== source.turnId || lookup.stepId !== source.stepId) throw new Error('Copy target changed');
-        break;
+      const keys = this.toolDetailKeysByFrame.get(`${agentId}\u0000${source.id}`);
+      if (keys !== undefined) {
+        for (const key of [...keys]) {
+          const cached = this.toolDetails.get(key);
+          if (cached?.status !== 'found' || cached.frame.frameId !== source.id || cached.turnId !== source.turnId || cached.stepId !== source.stepId) continue;
+          const lookup = await this.lookupToolCallForCopy(agentId, cached.frame.toolCallId, signal, source.turnId);
+          if (lookup.frame.frameId !== source.id || lookup.turnId !== source.turnId || lookup.stepId !== source.stepId) throw new Error('Copy target changed');
+          break;
+        }
       }
     }
     return this.copyResolvedContentField(agentId, source, path, signal);
@@ -3605,7 +3635,7 @@ export class SessionController {
   }
 
   contentMemoryReport(): { bodies: number; bodyBytes: number; rangeBytes: number; bodyBudget: number; rangeBudget: number } {
-    return { bodies: this.contentBodies.size, bodyBytes: [...this.contentBodies.values()].reduce((sum, entry) => sum + entry.bytes, 0), rangeBytes: this.contentRangeBytes, bodyBudget: CONTENT_BODY_CACHE_BYTES, rangeBudget: CONTENT_RANGE_CACHE_BYTES };
+    return { bodies: this.contentBodies.size, bodyBytes: this.contentBodyBytes, rangeBytes: this.contentRangeBytes, bodyBudget: CONTENT_BODY_CACHE_BYTES, rangeBudget: CONTENT_RANGE_CACHE_BYTES };
   }
 
   incompleteTurnOrdinals(agentId: string): ReadonlySet<number> {
@@ -3684,6 +3714,85 @@ export class SessionController {
     } finally { lease.release(); }
   }
 
+  private setContentBody(
+    key: string,
+    entry: { agentId: string; source: ContentSource; base: ContentWindow; bytes: number },
+    touch = false,
+  ): void {
+    const previous = this.contentBodies.get(key);
+    if (previous !== undefined) this.contentBodyBytes -= previous.bytes;
+    if (touch) this.contentBodies.delete(key);
+    this.contentBodies.set(key, entry);
+    this.contentBodyBytes += entry.bytes;
+    if ((this.contentReaderSourceCounts.get(key) ?? 0) === 0) {
+      if (touch) this.unpinnedContentBodies.delete(key);
+      this.unpinnedContentBodies.add(key);
+    }
+  }
+
+  private deleteContentBody(key: string): boolean {
+    const previous = this.contentBodies.get(key);
+    if (previous === undefined) return false;
+    this.contentBodyBytes -= previous.bytes;
+    this.contentBodies.delete(key);
+    this.unpinnedContentBodies.delete(key);
+    return true;
+  }
+
+  private clearContentBodies(): void {
+    this.contentBodies.clear();
+    this.unpinnedContentBodies.clear();
+    this.contentBodyBytes = 0;
+  }
+
+  private setToolDetail(
+    key: string,
+    lookup: Extract<SessionViewTranscriptDetail, { kind: 'tool' }>['lookup'],
+  ): void {
+    const slash = key.indexOf('/');
+    const agentId = slash > 0 ? key.slice(0, slash) : '';
+    const previous = this.toolDetails.get(key);
+    if (previous?.status === 'found') {
+      const prevFrameKey = `${agentId}\u0000${previous.frame.frameId}`;
+      const bucket = this.toolDetailKeysByFrame.get(prevFrameKey);
+      if (bucket !== undefined) {
+        bucket.delete(key);
+        if (bucket.size === 0) this.toolDetailKeysByFrame.delete(prevFrameKey);
+      }
+    }
+    this.toolDetails.set(key, lookup);
+    if (lookup.status === 'found') {
+      const nextFrameKey = `${agentId}\u0000${lookup.frame.frameId}`;
+      let bucket = this.toolDetailKeysByFrame.get(nextFrameKey);
+      if (bucket === undefined) {
+        bucket = new Set();
+        this.toolDetailKeysByFrame.set(nextFrameKey, bucket);
+      }
+      bucket.add(key);
+    }
+  }
+
+  private deleteToolDetail(key: string): boolean {
+    const previous = this.toolDetails.get(key);
+    if (previous === undefined) return false;
+    if (previous.status === 'found') {
+      const slash = key.indexOf('/');
+      const agentId = slash > 0 ? key.slice(0, slash) : '';
+      const frameKey = `${agentId}\u0000${previous.frame.frameId}`;
+      const bucket = this.toolDetailKeysByFrame.get(frameKey);
+      if (bucket !== undefined) {
+        bucket.delete(key);
+        if (bucket.size === 0) this.toolDetailKeysByFrame.delete(frameKey);
+      }
+    }
+    return this.toolDetails.delete(key);
+  }
+
+  private clearToolDetails(): void {
+    this.toolDetails.clear();
+    this.toolDetailKeysByFrame.clear();
+  }
+
   private observeContentPreview(agentId: string, op: TranscriptOperation): void {
     const selected = (): readonly [ContentSource, ContentWindow] | undefined => {
       switch (op.op) {
@@ -3706,7 +3815,7 @@ export class SessionController {
     const entry = this.contentBodies.get(key);
     if (entry === undefined) return;
     const changed = JSON.stringify(entry.base.contentRefs ?? []) !== JSON.stringify(preview.contentRefs ?? []);
-    this.contentBodies.set(key, { ...entry, base: source.kind === 'turn' || source.kind === 'meta' ? { ...entry.base, ...preview } : preview, bytes: changed ? this.bytesOf(this.contentEntity(agentId, source)) : entry.bytes });
+    this.setContentBody(key, { ...entry, base: source.kind === 'turn' || source.kind === 'meta' ? { ...entry.base, ...preview } : preview, bytes: changed ? this.bytesOf(this.contentEntity(agentId, source)) : entry.bytes });
   }
 
   private accountContentBody(agentId: string, source: ContentSource, base?: ContentWindow): void {
@@ -3715,12 +3824,15 @@ export class SessionController {
     const previous = this.contentBodies.get(key);
     const entity = this.contentEntity(agentId, source);
     if (entity === undefined) return;
-    this.contentBodies.delete(key);
-    this.contentBodies.set(key, { agentId, source, base: previous?.base ?? base ?? entity, bytes: this.bytesOf(entity) });
-    let total = [...this.contentBodies.values()].reduce((sum, entry) => sum + entry.bytes, 0);
-    for (const [candidateKey, candidate] of this.contentBodies) {
-      if (total <= CONTENT_BODY_CACHE_BYTES) break;
-      if ([...this.contentReaders.values()].some((target) => target.agentId === candidate.agentId && JSON.stringify(target.source) === JSON.stringify(candidate.source))) continue;
+    this.setContentBody(key, { agentId, source, base: previous?.base ?? base ?? entity, bytes: this.bytesOf(entity) }, true);
+    for (const candidateKey of this.unpinnedContentBodies) {
+      if (this.contentBodyBytes <= CONTENT_BODY_CACHE_BYTES) break;
+      const candidate = this.contentBodies.get(candidateKey);
+      if (candidate === undefined) {
+        this.unpinnedContentBodies.delete(candidateKey);
+        continue;
+      }
+      if ((this.contentReaderSourceCounts.get(candidateKey) ?? 0) > 0) continue;
       const current = this.contentEntity(candidate.agentId, candidate.source);
       const partial = candidate.source.kind === 'turn' && (candidate.base as TranscriptTurn).stepsPartial === true;
       if (partial && (current as TranscriptTurn | undefined)?.state === 'running') continue;
@@ -3731,9 +3843,11 @@ export class SessionController {
       }
       const store = this.timelines.get(candidate.agentId)?.store;
       if (restored !== undefined && store !== undefined && transcriptContentEntity(store, candidate.source) !== undefined) replaceAgentContentEntity(store, candidate.source, restored);
-      for (const [toolKey, lookup] of this.toolDetails) if (toolKey.startsWith(`${candidate.agentId}/`) && lookup.status === 'found' && lookup.frame.frameId === candidate.source.id) this.toolDetails.delete(toolKey);
-      this.contentBodies.delete(candidateKey);
-      total -= candidate.bytes;
+      const toolKeys = this.toolDetailKeysByFrame.get(`${candidate.agentId}\u0000${candidate.source.id}`);
+      if (toolKeys !== undefined) {
+        for (const toolKey of [...toolKeys]) this.deleteToolDetail(toolKey);
+      }
+      this.deleteContentBody(candidateKey);
       this.pendingTranscriptAgents.add(candidate.agentId);
     }
     this.flushFrames();
@@ -3741,13 +3855,23 @@ export class SessionController {
 
   beginContentRead(agentId: string, source: ContentSource, roots: readonly string[], includeOlder = true, paths?: readonly (readonly (string | number)[])[]): { release(): void; retry(): void } {
     const key = JSON.stringify([agentId, source, roots, includeOlder, paths]);
-    const target = this.contentReaders.get(key) ?? { agentId, source, roots, paths, includeOlder, readers: 0, blocked: false, retryVersion: 0, ref: undefined, controller: undefined };
+    const sourceKey = JSON.stringify([agentId, source]);
+    const existed = this.contentReaders.get(key);
+    const target = existed ?? { agentId, source, sourceKey, roots, paths, includeOlder, readers: 0, blocked: false, retryVersion: 0, ref: undefined, controller: undefined };
     target.readers += 1;
     target.retryVersion += 1;
     target.retryAttempt = 0;
     if (target.retryTimer !== undefined) { clearTimeout(target.retryTimer); target.retryTimer = undefined; }
     target.blocked = false;
-    this.contentReaders.set(key, target);
+    if (existed === undefined) {
+      this.contentReaders.set(key, target);
+      this.contentReaderSourceCounts.set(sourceKey, (this.contentReaderSourceCounts.get(sourceKey) ?? 0) + 1);
+      this.unpinnedContentBodies.delete(sourceKey);
+      for (const root of new Set(roots)) {
+        const rootKey = `${sourceKey}\u0000${root}`;
+        this.contentReaderRootCounts.set(rootKey, (this.contentReaderRootCounts.get(rootKey) ?? 0) + 1);
+      }
+    }
     void this.pumpContentReads();
     let released = false;
     return {
@@ -3757,9 +3881,23 @@ export class SessionController {
         target.readers -= 1;
         if (target.readers > 0) return;
         this.retireContentRead(key);
-        this.contentReaders.delete(key);
+        if (this.contentReaders.delete(key)) {
+          const nextSourceCount = (this.contentReaderSourceCounts.get(sourceKey) ?? 1) - 1;
+          if (nextSourceCount <= 0) {
+            this.contentReaderSourceCounts.delete(sourceKey);
+            if (this.contentBodies.has(sourceKey)) this.unpinnedContentBodies.add(sourceKey);
+          } else {
+            this.contentReaderSourceCounts.set(sourceKey, nextSourceCount);
+          }
+          for (const root of new Set(roots)) {
+            const rootKey = `${sourceKey}\u0000${root}`;
+            const nextRootCount = (this.contentReaderRootCounts.get(rootKey) ?? 1) - 1;
+            if (nextRootCount <= 0) this.contentReaderRootCounts.delete(rootKey);
+            else this.contentReaderRootCounts.set(rootKey, nextRootCount);
+          }
+        }
         this.accountContentBody(agentId, source);
-        if (target.ref !== undefined && ![...this.contentReaders.values()].some((other) => other.agentId === agentId && JSON.stringify(other.source) === JSON.stringify(source) && other.roots.includes(String(target.ref!.path[0])))) this.cancelContentSegment(agentId, target.ref);
+        if (target.ref !== undefined && (this.contentReaderRootCounts.get(`${sourceKey}\u0000${String(target.ref.path[0])}`) ?? 0) === 0) this.cancelContentSegment(agentId, target.ref);
       },
       retry: () => {
         if (released) return;
@@ -4218,14 +4356,18 @@ export class SessionController {
           const store = this.ensureAgentTranscript(agentId);
           let applied = false;
           if (ref.source.kind === 'frame') {
-            for (const [lookupKey, lookup] of this.toolDetails) {
-              if (!lookupKey.startsWith(`${agentId}/`) || lookup.status !== 'found' || lookup.frame.frameId !== ref.source.id || lookup.turnId !== ref.source.turnId || lookup.stepId !== ref.source.stepId) continue;
-              const frame = applyContentSegment(lookup.frame, segment);
-              if (frame !== lookup.frame) {
-                this.toolDetails.set(lookupKey, { ...lookup, frame });
-                // The owning agent's publication below reports the change
-                // through the content revision (`toolDetails` counts writes).
-                applied = true;
+            const lookupKeys = this.toolDetailKeysByFrame.get(`${agentId}\u0000${ref.source.id}`);
+            if (lookupKeys !== undefined) {
+              for (const lookupKey of [...lookupKeys]) {
+                const lookup = this.toolDetails.get(lookupKey);
+                if (lookup?.status !== 'found' || lookup.frame.frameId !== ref.source.id || lookup.turnId !== ref.source.turnId || lookup.stepId !== ref.source.stepId) continue;
+                const frame = applyContentSegment(lookup.frame, segment);
+                if (frame !== lookup.frame) {
+                  this.setToolDetail(lookupKey, { ...lookup, frame });
+                  // The owning agent's publication below reports the change
+                  // through the content revision (`toolDetails` counts writes).
+                  applied = true;
+                }
               }
             }
           }
@@ -4481,10 +4623,12 @@ export class SessionController {
     const seenThrough = pending === undefined ? last?.seq : Math.max(pending.cursor.seq, pending.throughSeq);
     if (seenThrough !== undefined && throughSeq <= seenThrough) return;
     const freshOps = seenThrough !== undefined && cursor.seq <= seenThrough ? [] : ops;
+    const chunk: PendingTranscriptChunk = { ops: [...freshOps], cursor, throughSeq };
     if (pending === undefined) {
-      this.pendingTranscriptBatches.set(agentId, { ops: [...freshOps], cursor, throughSeq });
+      this.pendingTranscriptBatches.set(agentId, { ops: [...freshOps], chunks: [chunk], cursor, throughSeq });
     } else {
       pending.ops.push(...freshOps);
+      pending.chunks.push(chunk);
       if (cursor.seq >= pending.cursor.seq) pending.cursor = cursor;
       if (throughSeq > pending.throughSeq) pending.throughSeq = throughSeq;
     }
@@ -4519,13 +4663,11 @@ export class SessionController {
       this.toolCountSpans.delete(agentId);
       this.toolCountObservations.delete(agentId);
       const replay = this.catchupReplay.get(agentId);
-      this.catchupReplay.set(agentId, {
-        ops: replay === undefined ? batch.ops : [...replay.ops, ...batch.ops],
-        cursor:
-          replay === undefined || resumeCursor.seq >= replay.cursor.seq
-            ? resumeCursor
-            : replay.cursor,
-      });
+      if (replay === undefined) {
+        this.catchupReplay.set(agentId, { preGapCursor: priorCursor, chunks: [...batch.chunks] });
+      } else {
+        replay.chunks.push(...batch.chunks);
+      }
       if (startCatchUp) void this.catchUpAgent(agentId);
       return false;
     }
@@ -4546,7 +4688,7 @@ export class SessionController {
         if (op.op === 'frame.upsert' && op.frame.kind === 'tool') {
           const key = `${agentId}/${op.frame.toolCallId}`;
           const current = store.getToolCall(op.frame.toolCallId);
-          if (this.toolDetails.has(key) && current !== undefined) this.toolDetails.set(key, { status: 'found', ...current });
+          if (this.toolDetails.has(key) && current !== undefined) this.setToolDetail(key, { status: 'found', ...current });
         }
         this.observeContentPreview(agentId, op);
       }
@@ -4598,7 +4740,7 @@ export class SessionController {
         await this.resync();
         return;
       }
-      const last = this.timelines.get(agentId)?.cursor ?? { seq: 0 };
+      const last = this.catchupReplay.get(agentId)?.preGapCursor ?? this.timelines.get(agentId)?.cursor ?? { seq: 0 };
       const grade = gradeFor(this.transcriptGrades, agentId);
       let result = await this.view.transcript.catchUp({ agentId, since: last, grade: grade === 'off' ? 'turn' : grade }, { signal: controller.signal });
       const pages = [result];
@@ -4640,26 +4782,41 @@ export class SessionController {
       }
       let changed = recovered.accepted.length > 0;
       if (opsAffectForest(recovered.accepted)) this.forestDirtyAgents.add(agentId);
-      let cursor: TranscriptCursor = { seq: result.through_seq, epoch: result.epoch };
+      const recoveredThroughSeq = result.through_seq;
+      let cursor: TranscriptCursor = { seq: recoveredThroughSeq, epoch: result.epoch };
       const live = this.timelines.get(agentId)?.cursor;
       if (live !== undefined && live.epoch === result.epoch && live.seq > cursor.seq) {
         cursor = live;
       }
       const pending = this.catchupReplay.get(agentId);
       this.catchupReplay.delete(agentId);
-      let retried: readonly TranscriptOperation[] = [];
+      const retried: TranscriptOperation[] = [];
       if (pending !== undefined) {
-        const previousTodo = store.getTodo('todo');
-        const retry = this.applyAgentTranscriptOps(agentId, store, pending.ops);
-        retried = retry.accepted;
-        if (retry.gap !== undefined) {
-          await this.resync();
-          return;
+        for (const chunk of pending.chunks) {
+          if (chunk.cursor.epoch !== undefined && chunk.cursor.epoch !== result.epoch) {
+            await this.resync();
+            return;
+          }
+          const chunkResumeCursor: TranscriptCursor =
+            chunk.throughSeq > chunk.cursor.seq
+              ? { seq: chunk.throughSeq, epoch: chunk.cursor.epoch ?? result.epoch }
+              : { seq: chunk.cursor.seq, epoch: chunk.cursor.epoch ?? result.epoch };
+          if (chunk.cursor.seq <= recoveredThroughSeq) {
+            if (chunkResumeCursor.seq > cursor.seq) cursor = chunkResumeCursor;
+            continue;
+          }
+          const previousTodo = store.getTodo('todo');
+          const retry = this.applyAgentTranscriptOps(agentId, store, chunk.ops);
+          if (retry.gap !== undefined) {
+            await this.resync();
+            return;
+          }
+          retried.push(...retry.accepted);
+          this.observeCanonicalTodoRead(agentId, previousTodo, retry.accepted, chunkResumeCursor);
+          if (chunkResumeCursor.seq > cursor.seq) cursor = chunkResumeCursor;
+          if (retry.accepted.length > 0) changed = true;
+          if (opsAffectForest(retry.accepted)) this.forestDirtyAgents.add(agentId);
         }
-        this.observeCanonicalTodoRead(agentId, previousTodo, retry.accepted, pending.cursor);
-        if (pending.cursor.seq > cursor.seq) cursor = pending.cursor;
-        if (retry.accepted.length > 0) changed = true;
-        if (opsAffectForest(retry.accepted)) this.forestDirtyAgents.add(agentId);
       }
       this.toolCountSpans.delete(agentId);
       this.noteAppliedOps(this.timeline(agentId), [...recovered.accepted, ...retried], cursor, grade === 'off' ? 'turn' : grade);
@@ -4703,7 +4860,7 @@ export class SessionController {
       if (accepted.size > 0) {
         this.forgetWindowItems(agentId, accepted);
         for (const [key, entry] of this.contentBodies) if (entry.agentId === agentId &&
-          (entry.source.kind === 'turn' && accepted.has(entry.source.id) || entry.source.kind === 'frame' && entry.source.turnId !== undefined && accepted.has(entry.source.turnId))) this.contentBodies.delete(key);
+          (entry.source.kind === 'turn' && accepted.has(entry.source.id) || entry.source.kind === 'frame' && entry.source.turnId !== undefined && accepted.has(entry.source.turnId))) this.deleteContentBody(key);
         this.timeline(agentId).olderCursor = undefined;
         if (accepted.has(this.timelines.get(agentId)?.olderTurn ?? '')) this.timeline(agentId).olderTurn = undefined;
         this.cancelHistoryRead(agentId);
@@ -4725,7 +4882,7 @@ export class SessionController {
   }
 
   private invalidateToolDetail(key: string): void {
-    this.toolDetails.delete(key);
+    this.deleteToolDetail(key);
     this.toolDetailEpochs.set(key, (this.toolDetailEpochs.get(key) ?? 0) + 1);
     const flight = this.toolDetailReads.get(key);
     if (flight === undefined) return;
@@ -4747,7 +4904,7 @@ export class SessionController {
     }
     void this.pumpContentReads();
     for (const [key, flight] of this.toolDetailReads) if (key.startsWith(`${agentId}/`)) { this.toolDetailReads.delete(key); flight.controller.abort(); }
-    for (const key of this.toolDetails.keys()) if (key.startsWith(`${agentId}/`)) this.toolDetails.delete(key);
+    for (const key of [...this.toolDetails.keys()]) if (key.startsWith(`${agentId}/`)) this.deleteToolDetail(key);
     for (const [controller, owner] of this.rangeControllers) if (owner === agentId) controller.abort();
     this.contentRanges.clear(); this.contentRangeBytes = 0;
     this.cancelHistoryRead(agentId);
@@ -5075,7 +5232,7 @@ export class SessionController {
         .filter(([key]) => !key.startsWith('structure:') || !gone.has(key.slice('structure:'.length)))) };
     }
     for (const [key, entry] of this.contentBodies) if (entry.agentId === agentId &&
-      (entry.source.kind === 'turn' && gone.has(entry.source.id) || entry.source.kind === 'frame' && entry.source.turnId !== undefined && gone.has(entry.source.turnId))) this.contentBodies.delete(key);
+      (entry.source.kind === 'turn' && gone.has(entry.source.id) || entry.source.kind === 'frame' && entry.source.turnId !== undefined && gone.has(entry.source.turnId))) this.deleteContentBody(key);
     timeline.olderCursor = undefined;
     timeline.olderTurn = turns[cut]!.turnId;
     this.forestDirtyAgents.add(agentId);

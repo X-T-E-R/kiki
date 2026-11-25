@@ -104,8 +104,8 @@ export function agentOutputSignature(blocks: readonly Block[]): string | undefin
  */
 export function isQueuedUserBlock(block: Block, queuedPromptIds?: readonly string[]): boolean {
   if (block.kind !== 'user') return false;
-  if (block.promptStatus === 'queued') return true;
-  if (block.steerStatus === 'waiting' || block.steerStatus === 'sending') return true;
+  if (block.promptStatus === 'queued' || block.promptStatus === 'blocked') return true;
+  if (block.steerStatus !== undefined) return true;
   if (block.promptId !== undefined && queuedPromptIds !== undefined && queuedPromptIds.includes(block.promptId)) {
     return true;
   }

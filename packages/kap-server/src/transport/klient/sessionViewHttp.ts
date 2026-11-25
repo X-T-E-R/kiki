@@ -31,6 +31,7 @@ import {
 import { ContentChangedError } from './boundedContent';
 import { CanonicalEntityPreparingError } from '../../services/history/historyCanonicalReader';
 import { SessionViewTarget } from './sessionViewTarget';
+import { KLIENT_CALL_BODY_LIMIT_BYTES } from './registerKlientHttp';
 import { recordSessionViewTiming, timeSessionViewPhase, type SessionViewTimingContext } from './sessionViewTiming';
 
 export const KLIENT_SESSION_VIEW_PATH = '/api/klient/session-view';
@@ -41,7 +42,7 @@ export interface SessionViewHttpOptions {
 }
 
 export function registerSessionViewHttp(app: FastifyInstance, scope: Scope, opts: SessionViewHttpOptions): void {
-  app.post(`${KLIENT_SESSION_VIEW_PATH}/:sessionId/transcript/content`, { bodyLimit: Number.MAX_SAFE_INTEGER }, async (req, reply) => {
+  app.post(`${KLIENT_SESSION_VIEW_PATH}/:sessionId/transcript/content`, { bodyLimit: KLIENT_CALL_BODY_LIMIT_BYTES }, async (req, reply) => {
     const service = opts.sessionViewTranscriptService;
     if (service === undefined) throw new RPCError(50001, 'session view unavailable');
     const parsed = sessionViewTranscriptContentInputSchema.safeParse(req.body);

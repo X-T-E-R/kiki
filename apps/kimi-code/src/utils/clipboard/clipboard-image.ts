@@ -17,7 +17,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { readFileSync, statSync, unlinkSync } from 'node:fs';
+import { open, readFile, stat, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,7 +33,6 @@ import {
   isWaylandSession,
   isWSL,
   parseTargetList,
-  runCommand as runCommandBase,
   runCommandAsync,
   safeAvailableFormats,
   type RunCommand,
@@ -65,6 +64,8 @@ export class ClipboardMediaError extends Error {
 }
 
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 100 * 1024 * 1024;
+const IMAGE_HEADER_PROBE_BYTES = 64;
 
 const VIDEO_MIME_BY_SUFFIX: Readonly<Record<string, string>> = Object.freeze({
   '.mp4': 'video/mp4',
@@ -172,41 +173,81 @@ function splitClipboardPathLines(text: string): string[] {
   return lines;
 }
 
-function readImagePath(path: string): ClipboardImage | null {
-  let stat: ReturnType<typeof statSync>;
+function hasSupportedImageSignature(header: Uint8Array): boolean {
+  if (header.length >= 8 &&
+    header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4e && header[3] === 0x47 &&
+    header[4] === 0x0d && header[5] === 0x0a && header[6] === 0x1a && header[7] === 0x0a) {
+    return true;
+  }
+  if (header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) {
+    return true;
+  }
+  if (header.length >= 6 &&
+    header[0] === 0x47 && header[1] === 0x49 && header[2] === 0x46 && header[3] === 0x38 &&
+    (header[4] === 0x37 || header[4] === 0x39) && header[5] === 0x61) {
+    return true;
+  }
+  if (header.length >= 12 &&
+    header[0] === 0x52 && header[1] === 0x49 && header[2] === 0x46 && header[3] === 0x46 &&
+    header[8] === 0x57 && header[9] === 0x45 && header[10] === 0x42 && header[11] === 0x50) {
+    return true;
+  }
+  return false;
+}
+
+async function readImagePath(path: string): Promise<ClipboardImage | null> {
+  let fileStat: Awaited<ReturnType<typeof stat>>;
   try {
-    stat = statSync(path);
+    fileStat = await stat(path);
   } catch {
     return null;
   }
-  if (!stat.isFile()) return null;
+  if (!fileStat.isFile() || fileStat.size === 0 || fileStat.size > MAX_IMAGE_BYTES) return null;
+
+  const probeLen = Math.min(IMAGE_HEADER_PROBE_BYTES, fileStat.size);
+  const header = Buffer.alloc(probeLen);
+  let bytesRead = 0;
+  try {
+    const handle = await open(path, 'r');
+    try {
+      const result = await handle.read(header, 0, probeLen, 0);
+      bytesRead = result.bytesRead;
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return null;
+  }
+  if (bytesRead === 0 || !hasSupportedImageSignature(header.subarray(0, bytesRead))) {
+    return null;
+  }
 
   let bytes: Buffer;
   try {
-    bytes = readFileSync(path);
+    bytes = await readFile(path);
   } catch {
     return null;
   }
-  if (bytes.length === 0) return null;
+  if (bytes.length === 0 || bytes.length > MAX_IMAGE_BYTES) return null;
 
   const meta = parseImageMeta(bytes);
   if (meta === null) return null;
   return { kind: 'image', bytes: new Uint8Array(bytes), mimeType: meta.mime };
 }
 
-function readVideoPath(path: string): ClipboardVideo | null {
+async function readVideoPath(path: string): Promise<ClipboardVideo | null> {
   const mimeType = videoMimeFromPath(path);
   if (mimeType === null) return null;
-  let stat: ReturnType<typeof statSync>;
+  let fileStat: Awaited<ReturnType<typeof stat>>;
   try {
-    stat = statSync(path);
+    fileStat = await stat(path);
   } catch {
     return null;
   }
-  if (!stat.isFile()) return null;
-  if (stat.size > MAX_VIDEO_BYTES) {
+  if (!fileStat.isFile()) return null;
+  if (fileStat.size > MAX_VIDEO_BYTES) {
     throw new ClipboardMediaError(
-      `Video is ${(stat.size / 1024 / 1024).toFixed(1)} MB; maximum supported size is 100 MB.`,
+      `Video is ${(fileStat.size / 1024 / 1024).toFixed(1)} MB; maximum supported size is 100 MB.`,
     );
   }
   return {
@@ -217,34 +258,39 @@ function readVideoPath(path: string): ClipboardVideo | null {
   };
 }
 
-function readMediaPath(path: string): ClipboardMedia | null {
+async function readMediaPath(path: string): Promise<ClipboardMedia | null> {
   // Video files are never opened as images.
-  const video = readVideoPath(path);
+  const video = await readVideoPath(path);
   if (video !== null) return video;
   return readImagePath(path);
 }
 
-function readMediaFromPaths(paths: readonly string[]): ClipboardMedia | null {
+async function readMediaFromPaths(paths: readonly string[]): Promise<ClipboardMedia | null> {
   for (const path of paths) {
-    const media = readMediaPath(path);
+    const media = await readMediaPath(path);
     if (media !== null) return media;
   }
   return null;
 }
 
-function readMediaFromText(text: string): ClipboardMedia | null {
+async function readMediaFromText(text: string): Promise<ClipboardMedia | null> {
   return readMediaFromPaths(parseClipboardPaths(text));
 }
 
-function runCommand(command: string, args: string[], options?: RunCommandOptions): { stdout: Buffer; ok: boolean } {
-  return runCommandBase(command, args, {
+async function invokeCommand(
+  run: RunCommand | RunCommandAsync,
+  command: string,
+  args: string[],
+  options?: RunCommandOptions,
+): Promise<{ stdout: Buffer; ok: boolean }> {
+  return run(command, args, {
     timeoutMs: options?.timeoutMs ?? DEFAULT_READ_TIMEOUT_MS,
     env: options?.env,
   });
 }
 
-function readClipboardFileMediaViaWlPaste(): ClipboardMedia | null {
-  const list = runCommand('wl-paste', ['--list-types'], {
+async function readClipboardFileMediaViaWlPaste(run: RunCommand | RunCommandAsync): Promise<ClipboardMedia | null> {
+  const list = await invokeCommand(run, 'wl-paste', ['--list-types'], {
     timeoutMs: DEFAULT_LIST_TIMEOUT_MS,
   });
   if (!list.ok) return null;
@@ -253,12 +299,12 @@ function readClipboardFileMediaViaWlPaste(): ClipboardMedia | null {
   const uriType = types.find((t) => baseMimeType(t) === 'text/uri-list');
   if (uriType === undefined) return null;
 
-  const uris = runCommand('wl-paste', ['--type', uriType, '--no-newline']);
+  const uris = await invokeCommand(run, 'wl-paste', ['--type', uriType, '--no-newline']);
   return uris.ok ? readMediaFromText(uris.stdout.toString('utf-8')) : null;
 }
 
-function readClipboardImageViaWlPaste(): ClipboardImage | null {
-  const list = runCommand('wl-paste', ['--list-types'], {
+async function readClipboardImageViaWlPaste(run: RunCommand | RunCommandAsync): Promise<ClipboardImage | null> {
+  const list = await invokeCommand(run, 'wl-paste', ['--list-types'], {
     timeoutMs: DEFAULT_LIST_TIMEOUT_MS,
   });
   if (!list.ok) return null;
@@ -266,13 +312,13 @@ function readClipboardImageViaWlPaste(): ClipboardImage | null {
   const selected = selectPreferredImageMimeType(parseTargetList(list.stdout));
   if (selected === null) return null;
 
-  const data = runCommand('wl-paste', ['--type', selected, '--no-newline']);
+  const data = await invokeCommand(run, 'wl-paste', ['--type', selected, '--no-newline']);
   if (!data.ok || data.stdout.length === 0) return null;
   return { kind: 'image', bytes: data.stdout, mimeType: baseMimeType(selected) };
 }
 
-function readClipboardFileMediaViaXclip(): ClipboardMedia | null {
-  const targets = runCommand('xclip', ['-selection', 'clipboard', '-t', 'TARGETS', '-o'], {
+async function readClipboardFileMediaViaXclip(run: RunCommand | RunCommandAsync): Promise<ClipboardMedia | null> {
+  const targets = await invokeCommand(run, 'xclip', ['-selection', 'clipboard', '-t', 'TARGETS', '-o'], {
     timeoutMs: DEFAULT_LIST_TIMEOUT_MS,
   });
   if (!targets.ok) return null;
@@ -281,12 +327,12 @@ function readClipboardFileMediaViaXclip(): ClipboardMedia | null {
   const uriType = candidates.find((t) => baseMimeType(t) === 'text/uri-list');
   if (uriType === undefined) return null;
 
-  const uris = runCommand('xclip', ['-selection', 'clipboard', '-t', uriType, '-o']);
+  const uris = await invokeCommand(run, 'xclip', ['-selection', 'clipboard', '-t', uriType, '-o']);
   return uris.ok ? readMediaFromText(uris.stdout.toString('utf-8')) : null;
 }
 
-function readClipboardImageViaXclip(): ClipboardImage | null {
-  const targets = runCommand('xclip', ['-selection', 'clipboard', '-t', 'TARGETS', '-o'], {
+async function readClipboardImageViaXclip(run: RunCommand | RunCommandAsync): Promise<ClipboardImage | null> {
+  const targets = await invokeCommand(run, 'xclip', ['-selection', 'clipboard', '-t', 'TARGETS', '-o'], {
     timeoutMs: DEFAULT_LIST_TIMEOUT_MS,
   });
 
@@ -298,7 +344,7 @@ function readClipboardImageViaXclip(): ClipboardImage | null {
       : [...SUPPORTED_IMAGE_MIME_TYPES];
 
   for (const mime of tryTypes) {
-    const data = runCommand('xclip', ['-selection', 'clipboard', '-t', mime, '-o']);
+    const data = await invokeCommand(run, 'xclip', ['-selection', 'clipboard', '-t', mime, '-o']);
     if (data.ok && data.stdout.length > 0) {
       return { kind: 'image', bytes: data.stdout, mimeType: baseMimeType(mime) };
     }
@@ -312,10 +358,10 @@ function readClipboardImageViaXclip(): ClipboardImage | null {
  * we round-trip via a temp PNG because binary stdout is unreliable
  * across the WSL interop boundary.
  */
-function readClipboardImageViaPowerShell(): ClipboardImage | null {
+async function readClipboardImageViaPowerShell(run: RunCommand | RunCommandAsync): Promise<ClipboardImage | null> {
   const tmpFile = join(tmpdir(), `kimi-wsl-clip-${randomUUID()}.png`);
   try {
-    const winPathResult = runCommand('wslpath', ['-w', tmpFile], {
+    const winPathResult = await invokeCommand(run, 'wslpath', ['-w', tmpFile], {
       timeoutMs: DEFAULT_LIST_TIMEOUT_MS,
     });
     if (!winPathResult.ok) return null;
@@ -330,24 +376,22 @@ function readClipboardImageViaPowerShell(): ClipboardImage | null {
       "if ($img) { $img.Save($path, [System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'ok' } else { Write-Output 'empty' }",
     ].join('; ');
 
-    const result = runCommand('powershell.exe', ['-NoProfile', '-Command', psScript], {
+    const result = await invokeCommand(run, 'powershell.exe', ['-NoProfile', '-Command', psScript], {
       timeoutMs: DEFAULT_POWERSHELL_TIMEOUT_MS,
       env: { ...process.env, KIKI_WSL_CLIPBOARD_IMAGE_PATH: winPath },
     });
     if (!result.ok) return null;
     if (result.stdout.toString('utf-8').trim() !== 'ok') return null;
 
-    const bytes = readFileSync(tmpFile);
+    const bytes = await readFile(tmpFile);
     if (bytes.length === 0) return null;
     return { kind: 'image', bytes: new Uint8Array(bytes), mimeType: 'image/png' };
   } catch {
     return null;
   } finally {
-    try {
-      unlinkSync(tmpFile);
-    } catch {
+    await unlink(tmpFile).catch(() => {
       // ignore cleanup errors
-    }
+    });
   }
 }
 
@@ -371,7 +415,7 @@ async function readClipboardFileMediaViaNativeText(
   }
 
   try {
-    return { media: readMediaFromText(await clip.getText()), lookedFileLike };
+    return { media: await readMediaFromText(await clip.getText()), lookedFileLike };
   } catch (error) {
     if (error instanceof ClipboardMediaError) throw error;
     return { media: null, lookedFileLike };
@@ -422,12 +466,13 @@ export async function readClipboardMedia(options?: {
     const wsl = isWSL(env);
 
     if (wayland || wsl) {
-      const fileMedia = readClipboardFileMediaViaWlPaste() ?? readClipboardFileMediaViaXclip();
+      const fileMedia =
+        (await readClipboardFileMediaViaWlPaste(run)) ?? (await readClipboardFileMediaViaXclip(run));
       if (fileMedia !== null) return fileMedia;
-      image = readClipboardImageViaWlPaste() ?? readClipboardImageViaXclip();
+      image = (await readClipboardImageViaWlPaste(run)) ?? (await readClipboardImageViaXclip(run));
     }
     if (image === null && wsl) {
-      image = readClipboardImageViaPowerShell();
+      image = await readClipboardImageViaPowerShell(run);
     }
     if (image === null && !wayland) {
       const nativeFileMedia = await readClipboardFileMediaViaNativeText(clip);
@@ -441,7 +486,7 @@ export async function readClipboardMedia(options?: {
     // lists a file-like one. Plain text and screenshots skip it.
     const formats = safeAvailableFormats(clip);
     if (platform === 'darwin' && (formats.length === 0 || formats.some(isFileLikeNativeFormat))) {
-      const fileMedia = readMediaFromPaths(await readClipboardFilePathsViaMacOs(run));
+      const fileMedia = await readMediaFromPaths(await readClipboardFilePathsViaMacOs(run));
       if (fileMedia !== null) return fileMedia;
     }
 

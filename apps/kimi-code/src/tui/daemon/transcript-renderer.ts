@@ -60,6 +60,7 @@ import { currentTheme } from '#/tui/theme';
 import type { ToolCallBlockData, ToolResultBlockData } from '#/tui/types';
 import type { ImageAttachment } from '#/tui/utils/image-attachment-store';
 import { isRenderCacheEnabled } from '#/tui/utils/render-cache';
+import { sanitizeShellOutput } from '#/tui/utils/shell-output';
 import { parseToolSideChannelNote } from '#/tui/utils/tool-note';
 import { parseImageMeta } from '#/utils/image/image-mime';
 
@@ -838,44 +839,71 @@ export function createBlockComponent(
       return createToolComponent(block, ui, workDir, meta);
     case 'message':
       return new DaemonMessageComponent(block);
-    case 'subagent':
-      return new ProcessDetail(formatSubagent(block), [formatSubagent(block), block.summary, block.error].filter(Boolean).join('\n'), 'text', ui);
-    case 'subagent-event':
-      return new ProcessDetail(`${block.name} · ${block.event}`, [block.name, block.event, block.message, block.error].filter(Boolean).join('\n'), block.error ? 'error' : 'textDim', ui);
-    case 'approval':
+    case 'subagent': {
+      const header = formatSubagent(block);
+      const bodyParts = [
+        header,
+        block.summary === undefined ? undefined : sanitizeShellOutput(block.summary),
+        block.error === undefined ? undefined : sanitizeShellOutput(block.error),
+      ].filter((part): part is string => part !== undefined && part.length > 0);
+      return new ProcessDetail(header, bodyParts.join('\n'), 'text', ui);
+    }
+    case 'subagent-event': {
+      const cleanName = sanitizeShellOutput(block.name);
+      const cleanEvent = sanitizeShellOutput(block.event);
+      const cleanMessage = block.message === undefined ? undefined : sanitizeShellOutput(block.message);
+      const cleanError = block.error === undefined ? undefined : sanitizeShellOutput(block.error);
+      return new ProcessDetail(
+        `${cleanName} · ${cleanEvent}`,
+        [cleanName, cleanEvent, cleanMessage, cleanError].filter(Boolean).join('\n'),
+        block.error ? 'error' : 'textDim',
+        ui,
+      );
+    }
+    case 'approval': {
+      const action = sanitizeShellOutput(block.request.action);
       return new Text(
         block.resolution === undefined
-          ? currentTheme.fg('warning', `Approval required · ${block.request.action}`)
-          : currentTheme.dim(`Approval ${block.resolution.decision} · ${block.request.action}`),
+          ? currentTheme.fg('warning', `Approval required · ${action}`)
+          : currentTheme.dim(`Approval ${sanitizeShellOutput(block.resolution.decision)} · ${action}`),
         2,
         0,
       );
-    case 'question':
+    }
+    case 'question': {
+      const prompt = sanitizeShellOutput(block.request.questions[0]?.question ?? (block.outcome === undefined ? 'Question required' : 'Question answered'));
       return new Text(
         block.outcome === undefined
-          ? currentTheme.fg('warning', block.request.questions[0]?.question ?? 'Question required')
-          : currentTheme.dim(block.request.questions[0]?.question ?? 'Question answered'),
+          ? currentTheme.fg('warning', prompt)
+          : currentTheme.dim(prompt),
         2,
         0,
       );
+    }
     case 'shell': {
       return renderShellBlockComponent(block, meta, expanded, ui);
     }
-    case 'skill':
-      return new Text(currentTheme.dim(`/${block.name}${block.args === undefined ? '' : ` ${block.args}`}`), 2, 0);
+    case 'skill': {
+      const name = sanitizeShellOutput(block.name);
+      const args = block.args === undefined ? '' : ` ${sanitizeShellOutput(block.args)}`;
+      return new Text(currentTheme.dim(`/${name}${args}`), 2, 0);
+    }
     case 'system': {
       const info = classifySystemBlock(block);
-      const body = info.kind === 'other' ? block.text : `${info.summary}\n${block.text}`;
-      return new ProcessDetail(info.summary, body, info.tone ?? 'textDim', ui);
+      const summary = sanitizeShellOutput(info.summary);
+      const cleanText = sanitizeShellOutput(block.text);
+      const body = info.kind === 'other' ? cleanText : `${summary}\n${cleanText}`;
+      return new ProcessDetail(summary, body, info.tone ?? 'textDim', ui);
     }
     case 'system-reminder': {
       const label = block.variant === 'steer' ? 'Steer' : 'Reminder';
       const category = block.category?.kind;
-      const heading = category === undefined ? label : `${label} · ${category}`;
-      return new ProcessDetail(heading, `${heading}\n${block.text}`, 'textDim', ui);
+      const heading = sanitizeShellOutput(category === undefined ? label : `${label} · ${category}`);
+      const cleanText = sanitizeShellOutput(block.text);
+      return new ProcessDetail(heading, `${heading}\n${cleanText}`, 'textDim', ui);
     }
     case 'notice': {
-      const text = formatNoticeText(block);
+      const text = sanitizeShellOutput(formatNoticeText(block));
       return new Text(
         block.tone === 'danger' ? currentTheme.fg('error', text) : currentTheme.dim(text),
         2,
@@ -930,17 +958,18 @@ class TranscriptSummary implements Component, MouseRoutable {
     const marker = this.expanded
       ? currentTheme.fg('primary', FOLD_EXPANDED_MARK)
       : currentTheme.fg('textMuted', FOLD_COLLAPSED_MARK);
+    const cleanLead = sanitizeShellOutput(this.display.lead);
     const lead = this.display.errorTone
-      ? currentTheme.fg('error', this.display.lead)
-      : currentTheme.dim(this.display.lead);
+      ? currentTheme.fg('error', cleanLead)
+      : currentTheme.dim(cleanLead);
     const badge =
       this.display.errorBadge === undefined
         ? ''
-        : `${currentTheme.dim(' · ')}${currentTheme.fg('error', this.display.errorBadge)}`;
+        : `${currentTheme.dim(' · ')}${currentTheme.fg('error', sanitizeShellOutput(this.display.errorBadge))}`;
     const detail =
       this.display.detail === undefined || this.display.detail.length === 0
         ? ''
-        : currentTheme.dim(` · ${this.display.detail}`);
+        : currentTheme.dim(` · ${sanitizeShellOutput(this.display.detail)}`);
     return [truncateToWidth(`  ${marker} ${lead}${badge}${detail}`, width, '…')];
   }
 }
@@ -1417,7 +1446,8 @@ function formatUserPromptStatus(block: UserBlock, expanded = false): string | un
       ? outcome.delivered ? 'Prompt aborted' : 'Prompt aborted before delivery'
       : outcome.delivered ? 'Reply failed' : 'Prompt failed before delivery';
     const rawDetail = expanded ? (outcome.errorDetails ?? outcome.error) : outcome.error;
-    const detail = rawDetail === undefined ? '' : ` · ${rawDetail}`;
+    const cleanDetail = rawDetail === undefined ? undefined : sanitizeShellOutput(rawDetail);
+    const detail = cleanDetail === undefined || cleanDetail.length === 0 ? '' : ` · ${cleanDetail}`;
     return currentTheme.fg(outcome.status === 'failed' ? 'error' : 'warning', `${label}${detail}`);
   }
   if (block.promptStatus === 'queued') return currentTheme.dim('Queued');
@@ -1429,7 +1459,8 @@ function formatUserPromptStatus(block: UserBlock, expanded = false): string | un
   if (block.steerStatus === 'held') return currentTheme.fg('warning', 'Prompt held · check the saved prompt before retrying');
   if (block.branchFold !== undefined) {
     const label = block.branchFold.done !== false ? 'Merged from branch' : 'Folded from branch';
-    return currentTheme.dim(`${label} ${block.branchFold.branchTitle ?? block.branchFold.branchId}`);
+    const branchLabel = sanitizeShellOutput(block.branchFold.branchTitle ?? block.branchFold.branchId);
+    return currentTheme.dim(`${label} ${branchLabel}`);
   }
   return undefined;
 }
@@ -1454,30 +1485,33 @@ class DaemonMessageComponent extends RenderCachedContainer {
     super();
     this.addChild(new Text(formatMessageBlock(block), 2, 0));
     for (const attachment of block.attachments) {
-      const label = attachment.title ?? attachment.path;
+      const label = sanitizeShellOutput(attachment.title ?? attachment.path);
       this.addChild(new Text(currentTheme.dim(`[attachment: ${label}]`), 2, 0));
     }
   }
 }
 
 function formatMessageBlock(block: MessageBlock): string {
-  const target = block.handoff?.targetName ?? block.to;
+  const rawTarget = block.handoff?.targetName ?? block.to;
+  const target = rawTarget === undefined ? undefined : sanitizeShellOutput(rawTarget);
   const targetLabel = target === undefined ? '' : ` → ${target}`;
-  const sender = block.senderName === undefined
+  const cleanSender = block.senderName === undefined ? undefined : sanitizeShellOutput(block.senderName);
+  const cleanText = sanitizeShellOutput(block.text);
+  const sender = cleanSender === undefined
     ? targetLabel === '' ? '' : `${targetLabel}: `
-    : `${block.senderName}${targetLabel}: `;
-  const text = `${sender}${block.text}`;
+    : `${cleanSender}${targetLabel}: `;
+  const text = `${sender}${cleanText}`;
   switch (block.status) {
     case 'sent':
       return text;
     case 'sending':
-      return currentTheme.dim(`Sending${targetLabel}: ${block.text}`);
+      return currentTheme.dim(`Sending${targetLabel}: ${cleanText}`);
     case 'pending':
-      return currentTheme.fg('warning', `Delivery not confirmed${targetLabel}: ${block.text}`);
+      return currentTheme.fg('warning', `Delivery not confirmed${targetLabel}: ${cleanText}`);
     case 'failed':
-      return currentTheme.fg('error', `Message not sent (failed)${targetLabel}: ${block.text}`);
+      return currentTheme.fg('error', `Message not sent (failed)${targetLabel}: ${cleanText}`);
     case 'cancelled':
-      return currentTheme.fg('warning', `Message not sent (cancelled)${targetLabel}: ${block.text}`);
+      return currentTheme.fg('warning', `Message not sent (cancelled)${targetLabel}: ${cleanText}`);
   }
 }
 
@@ -1489,7 +1523,7 @@ function addMediaLabels(container: Container, media: readonly MediaRef[] | undef
       continue;
     }
     const urlLabel = item.url?.startsWith('data:') === true ? (item.mime ?? 'inline') : item.url;
-    const label = item.name ?? item.path ?? item.fileId ?? urlLabel ?? item.kind;
+    const label = sanitizeShellOutput(item.name ?? item.path ?? item.fileId ?? urlLabel ?? item.kind);
     container.addChild(new Text(currentTheme.fg('accent', `[${item.kind}: ${label}]`), 2, 0));
   }
 }
@@ -1556,18 +1590,18 @@ function renderShellBlockComponent(
   expanded = false,
   ui?: TUI,
 ): Component {
-  const fullOutput = `${block.output}${meta?.rangeSuffix ?? ''}`;
-  const command = block.command ?? fullOutput;
+  const fullOutput = sanitizeShellOutput(`${block.output}${meta?.rangeSuffix ?? ''}`);
+  const command = block.command === undefined ? fullOutput : sanitizeShellOutput(block.command);
   const output = block.command === undefined || fullOutput === '' ? '' : `\n${fullOutput}`;
   const noteInfo = parseToolSideChannelNote(meta?.note);
-  const extraLines: string[] = [...noteInfo.actionableLines];
+  const extraLines: string[] = noteInfo.actionableLines.map(sanitizeShellOutput);
   if (expanded) {
-    extraLines.push(...noteInfo.systemLines);
+    extraLines.push(...noteInfo.systemLines.map(sanitizeShellOutput));
     const status = meta?.continuationStatus;
     if (status?.state === 'loading') {
       extraLines.push('Loading full output…');
     } else if (status?.state === 'error') {
-      extraLines.push(`Could not load full output: ${status.message} (toggle Ctrl+O to retry)`);
+      extraLines.push(`Could not load full output: ${sanitizeShellOutput(status.message)} (toggle Ctrl+O to retry)`);
     } else if (status?.state === 'partial') {
       extraLines.push(`Showing ${String(status.loaded)} of ${String(status.total)} characters`);
     }
@@ -1579,7 +1613,7 @@ function renderShellBlockComponent(
   }
   const firstLine = command.split(/\r?\n/u, 1)[0] ?? '';
   const summaryNote =
-    noteInfo.actionableLines.length > 0 ? ` · ${noteInfo.actionableLines[0]}` : '';
+    extraLines.length > 0 && noteInfo.actionableLines.length > 0 ? ` · ${extraLines[0]}` : '';
   return new ProcessDetail(`$ ${firstLine}${summaryNote}`, body, 'text', ui);
 }
 
@@ -1707,8 +1741,10 @@ function formatSubagent(block: Extract<Block, { kind: 'subagent' }>): string {
       : block.status === 'failed' || block.status === 'cancelled'
         ? currentTheme.fg('error', '✗')
         : currentTheme.fg('primary', '●');
-  const detail = block.description ?? block.summary;
-  return `${status} ${currentTheme.boldFg('primary', block.name)}${detail === undefined ? '' : currentTheme.dim(` · ${detail}`)}`;
+  const rawDetail = block.description ?? block.summary;
+  const cleanName = sanitizeShellOutput(block.name);
+  const cleanDetail = rawDetail === undefined ? undefined : sanitizeShellOutput(rawDetail);
+  return `${status} ${currentTheme.boldFg('primary', cleanName)}${cleanDetail === undefined ? '' : currentTheme.dim(` · ${cleanDetail}`)}`;
 }
 
 function disposeComponent(component: Component): void {

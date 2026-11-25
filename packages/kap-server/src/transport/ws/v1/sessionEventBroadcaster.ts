@@ -152,6 +152,13 @@ export interface RawSessionTarget {
 
 export interface GlobalRawTarget {
   send(envelope: EventEnvelope, hidden: boolean): void;
+  onGap?(info: {
+    readonly epoch: string;
+    readonly seq: number;
+    readonly sessionId?: string;
+    readonly hidden: boolean;
+    readonly reason: 'journal_gap';
+  }): void;
 }
 
 export interface SessionSnapshotState {
@@ -671,6 +678,37 @@ export class SessionEventBroadcaster {
     return this.knownPrivateSessionIds.has(sessionId);
   }
 
+  private trimGlobalRawRing(): void {
+    while (
+      this.globalRawRing.length > this.maxBufferSize ||
+      this.globalRawRingBytes > MAX_GLOBAL_RAW_RING_BYTES
+    ) {
+      const dropped = this.globalRawRing.shift();
+      if (dropped === undefined) break;
+      this.globalRawRingBytes = Math.max(0, this.globalRawRingBytes - dropped.bytes);
+    }
+  }
+
+  private recordGlobalRawGap(sessionId: string | undefined): void {
+    const seq = ++this.globalRawSeq;
+    const hidden = this.isHiddenForPublicGlobal(sessionId);
+    const gapBytes = 128;
+    this.globalRawRing.push({ kind: 'gap', seq, sessionId, hidden, bytes: gapBytes });
+    this.globalRawRingBytes += gapBytes;
+    this.trimGlobalRawRing();
+    for (const target of this.globalRawTargets) {
+      try {
+        target.onGap?.({
+          epoch: this.globalRawEpoch,
+          seq,
+          sessionId,
+          hidden,
+          reason: 'journal_gap',
+        });
+      } catch {}
+    }
+  }
+
   private recordAndEmitGlobalRaw(source: EventEnvelope): void {
     const seq = ++this.globalRawSeq;
     const envelope: EventEnvelope = {
@@ -688,14 +726,7 @@ export class SessionEventBroadcaster {
       this.globalRawRing.push({ kind: 'gap', seq, sessionId: envelope.session_id, hidden, bytes: gapBytes });
       this.globalRawRingBytes += gapBytes;
     }
-    while (
-      this.globalRawRing.length > this.maxBufferSize ||
-      this.globalRawRingBytes > MAX_GLOBAL_RAW_RING_BYTES
-    ) {
-      const dropped = this.globalRawRing.shift();
-      if (dropped === undefined) break;
-      this.globalRawRingBytes = Math.max(0, this.globalRawRingBytes - dropped.bytes);
-    }
+    this.trimGlobalRawRing();
     for (const target of this.globalRawTargets) {
       try {
         target.send(envelope, hidden);
@@ -2993,6 +3024,7 @@ export class SessionEventBroadcaster {
                   target.sendControl?.(frame);
                 } catch {}
               }
+              this.recordGlobalRawGap(state.sessionId);
             } else {
               for (const target of state.targets.keys()) {
                 try {
@@ -3301,6 +3333,7 @@ export class SessionEventBroadcaster {
           } catch {}
         }
         this.notifyRawTargetsGap(state, durableSeq);
+        this.recordGlobalRawGap(sessionId);
       }
       return;
     }

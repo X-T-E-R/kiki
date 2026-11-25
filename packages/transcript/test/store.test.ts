@@ -1593,4 +1593,133 @@ describe('TranscriptStore', () => {
     tx.apply([{ op: 'reset', agentId: 'main', snapshot: { items: [], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {} } }]);
     expect(tx.hasEvictedTail).toBe(false);
   });
+
+  it('merges unknown-coverage resets in order at scale without quadratic slowdown', () => {
+    const tx = new AgentTranscript('main');
+    const makeTurn = (ordinal: number, prompt: string): TranscriptItem => ({
+      kind: 'turn',
+      turnId: `t${ordinal}`,
+      ordinal,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt,
+      steps: [],
+    });
+    const initial: TranscriptItem[] = [];
+    for (let i = 0; i < 4000; i += 2) {
+      initial.push(makeTurn(i, `base-${i}`));
+    }
+    initial.push({ kind: 'marker', markerId: 'm-existing', marker: 'notice', payload: 'base-marker' });
+    tx.apply([
+      {
+        op: 'reset',
+        agentId: 'main',
+        coverage: { kind: 'full', hasMoreOlder: false },
+        snapshot: { items: initial, tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {} },
+      },
+    ]);
+
+    const incoming: TranscriptItem[] = [];
+    for (let i = 3999; i >= 1; i -= 2) {
+      incoming.push(makeTurn(i, `odd-${i}`));
+    }
+    incoming.push(makeTurn(0, 'updated-0'));
+    incoming.push({ kind: 'marker', markerId: 'm-new', marker: 'notice', payload: 'new-marker' });
+    incoming.push(makeTurn(4005, 'tail-4005'));
+    incoming.push(makeTurn(4003, 'tail-4003'));
+
+    const start = performance.now();
+    tx.apply([
+      {
+        op: 'reset',
+        agentId: 'main',
+        coverage: { kind: 'unknown', hasMoreOlder: true },
+        read: { source: 'live', readiness: 'ready', watermark: { transcript: { epoch: 'e1', seq: 10 } } },
+        snapshot: { items: incoming, tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {} },
+      },
+    ]);
+    const elapsedMs = performance.now() - start;
+
+    const items = tx.getItems();
+    const turnOrdinals = items.filter((item) => item.kind === 'turn').map((item) => item.ordinal);
+    expect(turnOrdinals.length).toBe(4002);
+    for (let i = 1; i < turnOrdinals.length; i += 1) {
+      expect(turnOrdinals[i]).toBeGreaterThan(turnOrdinals[i - 1]!);
+    }
+    expect(tx.getTurn('t0')?.prompt).toBe('updated-0');
+    expect(items.some((item) => item.kind === 'marker' && item.markerId === 'm-existing')).toBe(true);
+    expect(items.some((item) => item.kind === 'marker' && item.markerId === 'm-new')).toBe(true);
+    expect(elapsedMs).toBeLessThan(1500);
+  });
+
+  it('rebuilds a multi-thousand-step turn in AgentTranscriptDraft without quadratic cloning and isolates checkpoints', () => {
+    const draft = new AgentTranscriptDraft('main');
+    const ops: TranscriptOperation[] = [
+      {
+        op: 'turn.upsert',
+        turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'running', origin: { kind: 'user' }, prompt: 'long' },
+      },
+    ];
+    const stepCount = 2000;
+    for (let s = 1; s <= stepCount; s += 1) {
+      ops.push(
+        {
+          op: 'step.upsert',
+          turnId: 't0',
+          step: { kind: 'step', stepId: `t0.${s}`, turnId: 't0', ordinal: s, state: 'running' },
+        },
+        {
+          op: 'frame.upsert',
+          turnId: 't0',
+          stepId: `t0.${s}`,
+          frame: { kind: 'text', role: 'assistant', frameId: `f-${s}`, text: 'a' },
+        },
+        {
+          op: 'append',
+          target: { type: 'frame', turnId: 't0', stepId: `t0.${s}`, frameId: `f-${s}` },
+          offset: 1,
+          text: 'b',
+        },
+        {
+          op: 'step.upsert',
+          turnId: 't0',
+          step: { kind: 'step', stepId: `t0.${s}`, turnId: 't0', ordinal: s, state: 'completed' },
+        },
+      );
+    }
+    ops.push({
+      op: 'step.upsert',
+      turnId: 't0',
+      step: { kind: 'step', stepId: 't0.0', turnId: 't0', ordinal: 0, state: 'completed' },
+    });
+
+    const start = performance.now();
+    draft.apply(ops);
+    const elapsedMs = performance.now() - start;
+
+    const cp = draft.checkpoint();
+    const turn = cp.items[0];
+    expect(turn?.kind).toBe('turn');
+    if (turn?.kind !== 'turn') throw new Error('expected turn');
+    expect(turn.steps.length).toBe(stepCount + 1);
+    expect(turn.steps[0]?.stepId).toBe('t0.0');
+    expect(turn.steps[stepCount]?.stepId).toBe(`t0.${stepCount}`);
+    const lastFrame = turn.steps[stepCount]?.frames[0];
+    expect(lastFrame?.kind === 'text' ? lastFrame.text : '').toBe('ab');
+    expect(elapsedMs).toBeLessThan(1500);
+
+    draft.apply([
+      {
+        op: 'append',
+        target: { type: 'frame', turnId: 't0', stepId: `t0.${stepCount}`, frameId: `f-${stepCount}` },
+        offset: 2,
+        text: 'c',
+      },
+    ]);
+    const cpFrameAfter = turn.steps[stepCount]?.frames[0];
+    expect(cpFrameAfter?.kind === 'text' ? cpFrameAfter.text : '').toBe('ab');
+    const finalTurn = draft.snapshot().items[0];
+    const finalFrame = finalTurn?.kind === 'turn' ? finalTurn.steps[stepCount]?.frames[0] : undefined;
+    expect(finalFrame?.kind === 'text' ? finalFrame.text : '').toBe('abc');
+  });
 });

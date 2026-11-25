@@ -1,3 +1,4 @@
+import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, normalize } from 'pathe';
 import { Disposable } from '#/_base/di/lifecycle';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
@@ -178,21 +179,72 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
     } catch { return undefined; }
   }
 
-  private async discoverDir(lease: RuntimeLease, directory: string): Promise<readonly string[]> {
-    let target = normalize(directory);
-    try {
-      target = this.discovery.resolveRealPath !== undefined
-        ? await this.discovery.resolveRealPath(lease, target)
-        : normalize(await lease.runtime.fs!.realpath(target));
-    } catch {}
-    const pathClass = lease.runtime.environment.pathClass;
-    const base = normalize(lease.runtime.workspace.mapRoots(inspectAgentWorkspaceRoots(this.runtime, {
+  private async admittedRootsFor(lease: RuntimeLease): Promise<readonly string[]> {
+    const mapped = lease.runtime.workspace.mapRoots(inspectAgentWorkspaceRoots(this.runtime, {
       workDir: this.sessionContext.cwd,
       additionalDirs: [],
-    })).workDir);
-    const normalized = pathClass === 'win32' ? target.toLowerCase() : target;
-    const root = pathClass === 'win32' ? base.toLowerCase() : base;
-    return this.discovery.discover(lease, target, normalized === root || normalized.startsWith(`${root}/`) ? base : undefined);
+    }));
+    const rawRoots = [mapped.workDir, ...(mapped.additionalDirs ?? [])];
+    const resolved = await Promise.all(rawRoots.map(async (dir) => {
+      const normalized = stripTrailingSlash(normalize(dir));
+      try {
+        const real = this.discovery.resolveRealPath !== undefined
+          ? await this.discovery.resolveRealPath(lease, normalized)
+          : normalize(await lease.runtime.fs!.realpath(normalized));
+        return stripTrailingSlash(real);
+      } catch {
+        return normalized;
+      }
+    }));
+    return [...new Set([...rawRoots.map((dir) => stripTrailingSlash(normalize(dir))), ...resolved])];
+  }
+
+  private async isTrustedExternalPath(
+    lease: RuntimeLease,
+    targetPath: string,
+    checkDirectory = true,
+  ): Promise<boolean> {
+    const pathClass = lease.runtime.environment.pathClass;
+    const normalized = stripTrailingSlash(normalize(targetPath));
+    if (checkDirectory && isSharedSystemDirectory(normalized, pathClass)) return false;
+    const fs = lease.runtime.fs;
+    if (fs === undefined) return false;
+    try {
+      const info = await fs.stat(normalized);
+      if (!isTrustedExternalStat(info, lease.runtime.identity.runtimeId, lease.runtime.environment)) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async discoverDir(lease: RuntimeLease, directory: string): Promise<readonly string[]> {
+    let target = stripTrailingSlash(normalize(directory));
+    try {
+      target = stripTrailingSlash(this.discovery.resolveRealPath !== undefined
+        ? await this.discovery.resolveRealPath(lease, target)
+        : normalize(await lease.runtime.fs!.realpath(target)));
+    } catch {}
+    const pathClass = lease.runtime.environment.pathClass;
+    const admittedRoots = await this.admittedRootsFor(lease);
+    const matchedRoot = matchAdmittedRoot(target, admittedRoots, pathClass);
+    if (matchedRoot !== undefined) {
+      return this.discovery.discover(lease, target, matchedRoot);
+    }
+    if (!await this.isTrustedExternalPath(lease, target, true)) return [];
+    const discovered = await this.discovery.discover(lease, target, undefined);
+    if (discovered.length === 0) return discovered;
+    const trusted: string[] = [];
+    for (const filePath of discovered) {
+      const parentDir = dirname(filePath);
+      const scopeDir = basename(parentDir).toLowerCase() === '.kiki' ? dirname(parentDir) : parentDir;
+      const scopeOk = await this.isTrustedExternalPath(lease, scopeDir, true);
+      if (!scopeOk) continue;
+      if (parentDir !== scopeDir && !await this.isTrustedExternalPath(lease, parentDir, true)) continue;
+      if (!await this.isTrustedExternalPath(lease, filePath, false)) continue;
+      trusted.push(filePath);
+    }
+    return trusted;
   }
 
   private async discoverFor(accesses: readonly import('#/tool/toolContract').ToolResourceAccess[], args: unknown): Promise<PendingInstruction[]> {
@@ -264,6 +316,84 @@ function preferredInstructions(items: readonly (PendingInstruction | undefined)[
     if (!selected.has(key)) selected.set(key, item);
   }
   return [...selected.values()];
+}
+
+function stripTrailingSlash(path: string): string {
+  if (path === '/' || /^[a-zA-Z]:\/$/u.test(path)) return path;
+  return path.replace(/\/+$/u, '');
+}
+
+function matchAdmittedRoot(
+  target: string,
+  roots: readonly string[],
+  pathClass: 'posix' | 'win32',
+): string | undefined {
+  const normTarget = pathClass === 'win32' ? target.toLowerCase() : target;
+  let best: string | undefined;
+  for (const root of roots) {
+    const normRoot = pathClass === 'win32' ? root.toLowerCase() : root;
+    const prefix = normRoot.endsWith('/') ? normRoot : `${normRoot}/`;
+    if (normTarget === normRoot || normTarget.startsWith(prefix)) {
+      if (best === undefined || root.length > best.length) best = root;
+    }
+  }
+  return best;
+}
+
+function isSharedSystemDirectory(dir: string, pathClass: 'posix' | 'win32'): boolean {
+  const normalized = stripTrailingSlash(normalize(dir));
+  const localTmp = stripTrailingSlash(normalize(tmpdir()));
+  if (pathClass === 'win32') {
+    const lower = normalized.toLowerCase();
+    if (/^[a-z]:\/?$/u.test(lower)) return true;
+    const sharedWin = new Set([
+      localTmp.toLowerCase(),
+      'c:/windows',
+      'c:/windows/temp',
+      'c:/temp',
+      'c:/tmp',
+      'c:/users/public',
+    ]);
+    return sharedWin.has(lower);
+  }
+  if (process.platform === 'win32' && normalized.toLowerCase() === localTmp.toLowerCase()) {
+    return true;
+  }
+  const sharedPosix = new Set([
+    '/',
+    '/tmp',
+    '/var/tmp',
+    '/private/tmp',
+    '/dev/shm',
+    '/Users/Shared',
+    '/var',
+    '/usr',
+    '/etc',
+    localTmp,
+  ]);
+  return sharedPosix.has(normalized);
+}
+
+function isTrustedExternalStat(
+  info: { readonly mode?: number; readonly uid?: number },
+  runtimeId: string,
+  environment: { readonly pathClass: 'posix' | 'win32'; readonly osKind?: string },
+): boolean {
+  if (environment.pathClass !== 'posix') return true;
+  if (
+    runtimeId === 'local' &&
+    process.platform === 'win32' &&
+    environment.osKind !== 'linux' &&
+    environment.osKind !== 'darwin'
+  ) {
+    return true;
+  }
+  if (info.mode !== undefined && (info.mode & 0o002) !== 0) return false;
+  if (runtimeId === 'local' && typeof process.getuid === 'function') {
+    const currentUid = process.getuid();
+    if (info.uid !== undefined && info.uid !== currentUid) return false;
+  }
+  return true;
 }
 
 function stringArg(args: unknown, key: string): string | undefined {

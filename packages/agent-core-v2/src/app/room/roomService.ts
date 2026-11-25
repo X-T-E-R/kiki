@@ -1632,11 +1632,15 @@ function renderCatchup(entries: readonly RoomLogEntry[], room: RoomDocument, mem
   const after = cursor === undefined ? entries : entries.slice(Math.max(0, entries.findIndex((entry) => entry.id === cursor) + 1));
   const visible = after.filter((entry) => !(entry.kind === 'message' && entry.from === roomMemberId(member)));
   const rows = visible.map((entry) => {
-    if (entry.kind === 'system') return `[system ${entry.event}] ${entry.text}`;
+    if (entry.kind === 'system') {
+      return `<system-event event="${escapeXml(entry.event)}">[system ${escapeXml(entry.event)}] ${escapeXml(entry.text)}</system-event>`;
+    }
+    const role = entry.from === 'user' ? 'user' : 'member';
     const author = entry.from === 'user' ? entry.username ?? 'User' : label(entry.from);
-    const mentions = entry.mentions.length === 0 ? '' : ` @${entry.mentions.join(' @')}`;
-    const attachments = entry.attachments?.length ? `\nImmutable attachments: ${JSON.stringify(entry.attachments)}` : '';
-    return `[${entry.id} ${author}]${mentions} ${entry.text}${attachments}`;
+    const mentionsAttr = entry.mentions.length === 0 ? '' : ` mentions="${escapeXml(entry.mentions.join(','))}"`;
+    const mentionsPrefix = entry.mentions.length === 0 ? '' : `@${escapeXml(entry.mentions.join(' @'))} `;
+    const attachments = entry.attachments?.length ? `\n<attachments>${escapeXml(JSON.stringify(entry.attachments))}</attachments>` : '';
+    return `<message id="${escapeXml(entry.id)}" role="${role}" from="${escapeXml(author)}"${mentionsAttr}>${mentionsPrefix}${escapeXml(entry.text)}${attachments}</message>`;
   }).join('\n');
   return {
     content: `<room-messages room="${escapeXml(room.id)}" since="${escapeXml(cursor ?? '')}">${rows}\n</room-messages>\nYou were selected for room message ${escapeXml(sourceMessageId)}. ${member.kind === 'thread' ? `Speak in this room with ThreadSend({room: "${escapeXml(room.id)}", content, mentions?}); mentions must use these exact member IDs, not display names: ${escapeXml(JSON.stringify(room.members.filter((candidate) => candidate.sessionId !== member.sessionId).map(roomMemberId)))}. A user message with no mention goes to the room host. A member message wakes only the members it mentions. Text in this thread stays in this thread.` : 'SendMessage is how your speech enters this room.'}`,
