@@ -65,10 +65,27 @@ import { PERSONAS_QUERY_KEY } from './persona/usePersonas';
 import { RelativeTime } from './RelativeTime';
 import { ThreadTitle } from './ThreadTitle';
 import { getPickerScaleConfig } from '../lib/subagentScaleConfig';
-import { segmentClass, WorkspaceScopeControl } from './WorkspaceScopeControl';
+import { WorkspaceScopeControl } from './WorkspaceScopeControl';
 
 type ActivityView = 'inbox' | 'comms';
 export const ACTIVITY_VIRTUALIZE_THRESHOLD = getPickerScaleConfig().catalogVirtualizeThreshold;
+const DESKTOP_SPLIT_QUERY = '(min-width: 1024px)';
+
+function useDesktopSplit(): boolean {
+  const read = () => typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia(DESKTOP_SPLIT_QUERY).matches;
+  const [matches, setMatches] = useState(read);
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia(DESKTOP_SPLIT_QUERY);
+    const onChange = () => { setMatches(media.matches); };
+    setMatches(media.matches);
+    media.addEventListener?.('change', onChange);
+    return () => { media.removeEventListener?.('change', onChange); };
+  }, []);
+  return matches;
+}
 
 type FlatActivityRow =
   | {
@@ -170,11 +187,14 @@ function InboxRow({
   workspaceName,
   personaLabel,
   focused,
+  selected = false,
   expanded,
   canExpandInline,
+  splitMode = false,
   suppressAutoScroll = false,
   bare = false,
   onFocusRow,
+  onInspectRow,
   onToggleExpand,
   onDismiss,
   onOpen,
@@ -183,11 +203,14 @@ function InboxRow({
   workspaceName: string | undefined;
   personaLabel: string | undefined;
   focused: boolean;
+  selected?: boolean;
   expanded: boolean;
   canExpandInline: boolean;
+  splitMode?: boolean;
   suppressAutoScroll?: boolean;
   bare?: boolean;
   onFocusRow: () => void;
+  onInspectRow?: () => void;
   onToggleExpand?: () => void;
   onDismiss?: () => void;
   onOpen: (href: string) => void;
@@ -206,32 +229,41 @@ function InboxRow({
     }
   }, [focused, suppressAutoScroll]);
 
+  const activeHighlight = selected
+    ? 'relative bg-ink/[0.045] before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-selected-ink'
+    : focused
+      ? 'bg-ink/[0.045]'
+      : 'hover:bg-ink/[0.03]';
+  const quietReveal = focused || selected
+    ? 'opacity-100'
+    : 'opacity-100 [@media(hover:hover)_and_(pointer:fine)]:opacity-0 [@media(hover:hover)_and_(pointer:fine)]:group-hover:opacity-100 [@media(hover:hover)_and_(pointer:fine)]:group-focus-within:opacity-100 focus-visible:opacity-100';
+
   const body = (
     <div
       ref={rowRef}
       data-activity-item={item.sessionId}
       data-activity-reason={item.reason}
       data-activity-focused={focused ? 'true' : undefined}
+      data-activity-selected={selected ? 'true' : undefined}
       onMouseEnter={onFocusRow}
-      className={`group rounded-lg px-2 py-1 transition-colors ${
-        focused ? 'bg-ink/[0.045]' : 'hover:bg-ink/[0.03]'
-      }`}
+      className={`group rounded-lg px-2 py-1.5 transition-colors ${activeHighlight}`}
     >
-        <div className="flex min-h-10 items-start gap-1.5">
-          <button
-            type="button"
-            data-activity-open={item.sessionId}
-            onFocus={onFocusRow}
-            onClick={() => { onOpen(itemHref(item, cachedInteractionTarget(queryClient, item))); }}
-            className="flex min-w-0 flex-1 items-start gap-2 rounded-md px-1 py-0.5 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-          >
-            <ReasonMark item={item} />
-            <span className="min-w-0 flex-1">
+      <div className="grid min-h-10 grid-cols-[minmax(0,1fr)_auto] items-start gap-1.5">
+        <button
+          type="button"
+          data-activity-open={item.sessionId}
+          onFocus={onFocusRow}
+          onClick={() => { onOpen(itemHref(item, cachedInteractionTarget(queryClient, item))); }}
+          className="flex min-w-0 items-start gap-2 rounded-md px-1 py-0.5 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+        >
+          <ReasonMark item={item} />
+          <span className="min-w-0 flex-1">
+            <span className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-baseline gap-2">
               <span className="flex min-w-0 items-center gap-1.5">
                 {personaLabel !== undefined && personaLabel !== '' ? (
                   <span
                     data-activity-persona={item.personaId}
-                    className="max-w-32 shrink-0 truncate rounded bg-ink/[0.055] px-1.5 py-px text-[11px] leading-4 font-medium text-ink-soft"
+                    className="max-w-28 shrink-0 truncate rounded bg-ink/[0.055] px-1.5 py-px text-[11px] leading-4 font-medium text-ink-soft"
                   >
                     {personaLabel}
                   </span>
@@ -239,97 +271,233 @@ function InboxRow({
                 <span className="min-w-0 flex-1 truncate text-[13px] leading-[19px] font-medium text-ink">
                   <ThreadTitle text={item.title.trim() === '' ? t('sidebar.untitled') : item.title} />
                 </span>
-                <RelativeTime
-                  at={item.at}
-                  className={`shrink-0 text-[12px] leading-4 tabular-nums ${
-                    urgentWait ? 'font-medium text-accent-deep' : 'text-ink-faint'
-                  }`}
-                />
               </span>
-              <span className="mt-px flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
-                <span
-                  className={`shrink-0 ${
-                    waiting
-                      ? 'font-medium text-accent-deep'
-                      : failed
-                        ? 'font-medium text-danger'
-                        : item.reason === 'running'
-                          ? 'font-medium text-ink-soft'
-                          : ''
-                  }`}
-                >
-                  {t(REASON_LABEL[item.reason] as 'activity.reason.approval')}
-                </span>
-                {workspaceName !== undefined && workspaceName !== '' ? (
-                  <span data-activity-workspace className="min-w-0 truncate">· {workspaceName}</span>
-                ) : null}
-                {item.reason === 'running' && modelShort !== undefined ? (
-                  <span className="hidden truncate sm:inline">· {modelShort}</span>
-                ) : null}
-                {item.turnCount !== undefined && item.reason === 'running' ? (
-                  <span className="hidden shrink-0 tabular-nums sm:inline">
-                    · {t(item.turnCount === 1 ? 'activity.turns.one' : 'activity.turns.other', { count: item.turnCount })}
-                  </span>
-                ) : null}
+              <RelativeTime
+                at={item.at}
+                className={`shrink-0 text-right text-[12px] leading-4 tabular-nums ${
+                  urgentWait ? 'font-medium text-accent-deep' : 'text-ink-faint'
+                }`}
+              />
+            </span>
+            <span className="mt-px flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
+              <span
+                className={`shrink-0 ${
+                  waiting
+                    ? 'font-medium text-accent-deep'
+                    : failed
+                      ? 'font-medium text-danger'
+                      : item.reason === 'running'
+                        ? 'font-medium text-ink-soft'
+                        : ''
+                }`}
+              >
+                {t(REASON_LABEL[item.reason] as 'activity.reason.approval')}
               </span>
-              {item.preview !== undefined ? (
-                <span data-activity-preview className="mt-px block truncate text-[12px] leading-4 text-ink-soft">
-                  {item.preview}
+              {workspaceName !== undefined && workspaceName !== '' ? (
+                <span data-activity-workspace className="min-w-0 truncate">· {workspaceName}</span>
+              ) : null}
+              {item.reason === 'running' && modelShort !== undefined ? (
+                <span className="hidden truncate sm:inline">· {modelShort}</span>
+              ) : null}
+              {item.turnCount !== undefined && item.reason === 'running' ? (
+                <span className="hidden shrink-0 tabular-nums sm:inline">
+                  · {t(item.turnCount === 1 ? 'activity.turns.one' : 'activity.turns.other', { count: item.turnCount })}
                 </span>
               ) : null}
             </span>
-          </button>
-
-          <div className="mt-0.5 flex w-7 pointer-coarse:w-9 shrink-0 items-center justify-center">
-            {canExpandInline && onToggleExpand !== undefined ? (
-              <button
-                type="button"
-                data-activity-expand={item.sessionId}
-                aria-expanded={expanded}
-                aria-label={t(expanded ? 'activity.collapseDecision' : 'activity.expandDecision')}
-                title={t(expanded ? 'activity.collapseDecision' : 'activity.expandDecision')}
-                onClick={onToggleExpand}
-                className="inline-flex h-7 w-7 pointer-coarse:h-9 pointer-coarse:w-9 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-              >
-                <DisclosureChevron open={expanded} size={12} />
-              </button>
-            ) : onDismiss !== undefined ? (
-              <button
-                type="button"
-                data-activity-dismiss={item.sessionId}
-                aria-label={t('activity.markReadShortcut')}
-                title={t('activity.markReadShortcut')}
-                onClick={onDismiss}
-                className={`inline-flex h-7 w-7 pointer-coarse:h-9 pointer-coarse:w-9 items-center justify-center rounded-md text-ink-faint transition-[opacity,background-color,color] hover:bg-ink/[0.06] hover:text-ink focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink [@media(hover:none)]:opacity-100 ${
-                  focused ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                }`}
-              >
-                <Icon name="check" size={14} />
-              </button>
-            ) : (
-              <span
-                aria-hidden="true"
-                className={`inline-flex h-7 w-7 pointer-coarse:h-9 pointer-coarse:w-9 items-center justify-center text-ink-faint transition-[opacity,transform,color] group-hover:translate-x-0.5 group-hover:opacity-100 [@media(hover:none)]:opacity-60 ${
-                  focused ? 'opacity-100' : 'opacity-0'
-                }`}
-              >
-                <Icon name="arrowRight" size={12} />
+            {item.preview !== undefined ? (
+              <span data-activity-preview className="mt-px block truncate text-[12px] leading-4 text-ink-soft">
+                {item.preview}
               </span>
-            )}
-          </div>
-        </div>
+            ) : null}
+          </span>
+        </button>
 
-        {canExpandInline && expanded && (item.reason === 'approval' || item.reason === 'question') ? (
+        <div
+          className={`mt-0.5 flex shrink-0 items-center gap-0.5 ${
+            splitMode ? 'w-[58px] justify-end pointer-coarse:w-[90px]' : 'w-7 justify-center pointer-coarse:w-11'
+          }`}
+        >
+          {canExpandInline && onToggleExpand !== undefined ? (
+            <button
+              type="button"
+              data-activity-expand={item.sessionId}
+              aria-expanded={splitMode ? selected : expanded}
+              aria-label={t((splitMode ? selected : expanded) ? 'activity.collapseDecision' : 'activity.expandDecision')}
+              title={t((splitMode ? selected : expanded) ? 'activity.collapseDecision' : 'activity.expandDecision')}
+              onClick={onToggleExpand}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11"
+            >
+              {splitMode ? <Icon name="chevron" size={12} /> : <DisclosureChevron open={expanded} size={12} />}
+            </button>
+          ) : (
+            <>
+              {onDismiss !== undefined ? (
+                <button
+                  type="button"
+                  data-activity-dismiss={item.sessionId}
+                  aria-label={t('activity.markReadShortcut')}
+                  title={t('activity.markReadShortcut')}
+                  onClick={onDismiss}
+                  className={`inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-faint transition-[opacity,background-color,color] hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11 ${quietReveal}`}
+                >
+                  <Icon name="check" size={14} />
+                </button>
+              ) : null}
+              {splitMode && onInspectRow !== undefined ? (
+                <button
+                  type="button"
+                  data-activity-inspect={item.sessionId}
+                  aria-pressed={selected}
+                  aria-label={t('activity.expandDecision')}
+                  title={t('activity.expandDecision')}
+                  onClick={onInspectRow}
+                  className={`inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11 ${
+                    selected ? 'text-ink' : 'text-ink-faint'
+                  }`}
+                >
+                  <Icon name="chevron" size={12} />
+                </button>
+              ) : onDismiss === undefined ? (
+                <span
+                  aria-hidden="true"
+                  className={`inline-flex h-7 w-7 items-center justify-center text-ink-faint transition-[opacity,transform,color] group-hover:translate-x-0.5 pointer-coarse:h-11 pointer-coarse:w-11 ${quietReveal}`}
+                >
+                  <Icon name="arrowRight" size={12} />
+                </span>
+              ) : null}
+            </>
+          )}
+        </div>
+      </div>
+
+      {!splitMode && canExpandInline && expanded && (item.reason === 'approval' || item.reason === 'question') ? (
+        <ActivityInlineDecisionStrip
+          sessionId={item.sessionId}
+          reason={item.reason}
+          lastSeq={item.lastSeq}
+          onOpenThread={(target) => { onOpen(itemHref(item, target)); }}
+        />
+      ) : null}
+    </div>
+  );
+  return bare ? body : <li>{body}</li>;
+}
+
+function ActivityDetailPane({
+  item,
+  workspaceName,
+  personaLabel,
+  canInline,
+  dismissible,
+  onDismiss,
+  onOpen,
+}: {
+  readonly item: InboxItem;
+  readonly workspaceName: string | undefined;
+  readonly personaLabel: string | undefined;
+  readonly canInline: boolean;
+  readonly dismissible: boolean;
+  readonly onDismiss: () => void;
+  readonly onOpen: (href: string) => void;
+}) {
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const waiting = item.reason === 'approval' || item.reason === 'question' || item.reason === 'budget';
+  const failed = item.reason === 'failed';
+  const modelShort = shortModelLabel(item.model);
+  const showInlineStrip = canInline && (item.reason === 'approval' || item.reason === 'question');
+
+  return (
+    <section
+      data-activity-detail-pane={item.sessionId}
+      aria-label={item.title.trim() === '' ? t('sidebar.untitled') : item.title}
+      className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-5 xl:px-8"
+    >
+      <div className="mx-auto w-full max-w-[680px] space-y-5">
+        <header className="space-y-2 border-b border-hairline pb-4">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-ink-faint">
+            <ReasonMark item={item} />
+            <span
+              className={
+                waiting
+                  ? 'font-medium text-accent-deep'
+                  : failed
+                    ? 'font-medium text-danger'
+                    : item.reason === 'running'
+                      ? 'font-medium text-ink-soft'
+                      : 'text-ink-soft'
+              }
+            >
+              {t(REASON_LABEL[item.reason] as 'activity.reason.approval')}
+            </span>
+            {personaLabel !== undefined && personaLabel !== '' ? (
+              <span className="rounded bg-ink/[0.055] px-1.5 py-px text-[11px] font-medium text-ink-soft">
+                {personaLabel}
+              </span>
+            ) : null}
+            {workspaceName !== undefined && workspaceName !== '' ? (
+              <span>· {workspaceName}</span>
+            ) : null}
+            {item.reason === 'running' && modelShort !== undefined ? (
+              <span>· {modelShort}</span>
+            ) : null}
+            {item.turnCount !== undefined && item.reason === 'running' ? (
+              <span className="tabular-nums">
+                · {t(item.turnCount === 1 ? 'activity.turns.one' : 'activity.turns.other', { count: item.turnCount })}
+              </span>
+            ) : null}
+            <RelativeTime at={item.at} className="ml-auto tabular-nums text-ink-faint" />
+          </div>
+
+          <h2 className="font-display text-[20px] font-semibold leading-7 tracking-tight text-ink">
+            <ThreadTitle text={item.title.trim() === '' ? t('sidebar.untitled') : item.title} />
+          </h2>
+
+          {!showInlineStrip || dismissible ? (
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              {!showInlineStrip ? (
+                <button
+                  type="button"
+                  data-activity-detail-open={item.sessionId}
+                  onClick={() => { onOpen(itemHref(item, cachedInteractionTarget(queryClient, item))); }}
+                  className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-hairline px-3 text-[12.5px] font-medium text-ink transition-colors hover:border-hairline-strong hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink"
+                >
+                  <span>{t('activity.reviewInThread')}</span>
+                  <Icon name="arrowRight" size={12} />
+                </button>
+              ) : null}
+              {dismissible ? (
+                <button
+                  type="button"
+                  data-activity-detail-dismiss={item.sessionId}
+                  onClick={onDismiss}
+                  className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+                >
+                  <Icon name="check" size={14} />
+                  <span>{t('activity.markReadShortcut')}</span>
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </header>
+
+        {showInlineStrip ? (
           <ActivityInlineDecisionStrip
+            key={`${item.reason}:${item.sessionId}:${item.lastSeq}`}
             sessionId={item.sessionId}
             reason={item.reason}
             lastSeq={item.lastSeq}
             onOpenThread={(target) => { onOpen(itemHref(item, target)); }}
           />
+        ) : item.preview !== undefined ? (
+          <div className="space-y-1.5">
+            <p className="text-[13.5px] leading-relaxed text-ink-soft">{item.preview}</p>
+          </div>
         ) : null}
-    </div>
+      </div>
+    </section>
   );
-  return bare ? body : <li>{body}</li>;
 }
 
 function InboxGroup({
@@ -339,10 +507,13 @@ function InboxGroup({
   workspaceNames,
   personaNames,
   focusedSessionId,
+  selectedSessionId,
   expandedIds,
+  splitMode = false,
   canInlineFor,
   dismissible,
   onFocusItem,
+  onInspectItem,
   onToggleExpand,
   onDismissItem,
   onOpen,
@@ -355,10 +526,13 @@ function InboxGroup({
   workspaceNames: ReadonlyMap<string, string>;
   personaNames: ReadonlyMap<string, string>;
   focusedSessionId: string | undefined;
+  selectedSessionId?: string | undefined;
   expandedIds: ReadonlySet<string>;
+  splitMode?: boolean;
   canInlineFor: (item: InboxItem) => boolean;
   dismissible?: boolean;
   onFocusItem: (sessionId: string) => void;
+  onInspectItem?: (sessionId: string) => void;
   onToggleExpand: (sessionId: string) => void;
   onDismissItem: (item: InboxItem) => void;
   onOpen: (href: string) => void;
@@ -387,9 +561,12 @@ function InboxGroup({
               workspaceName={workspaceNames.get(item.workspaceId)}
               personaLabel={personaLabel}
               focused={focusedSessionId === item.sessionId}
+              selected={splitMode && selectedSessionId === item.sessionId}
               expanded={expandedIds.has(item.sessionId)}
               canExpandInline={canExpandInline}
+              splitMode={splitMode}
               onFocusRow={() => { onFocusItem(item.sessionId); }}
+              onInspectRow={onInspectItem === undefined ? undefined : () => { onInspectItem(item.sessionId); }}
               onToggleExpand={canExpandInline ? () => { onToggleExpand(item.sessionId); } : undefined}
               onDismiss={dismissible === true ? () => { onDismissItem(item); } : undefined}
               onOpen={onOpen}
@@ -479,7 +656,9 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
     [rawModel, scope, filter],
   );
 
+  const desktopSplit = useDesktopSplit();
   const [focusedId, setFocusedId] = useState<string | undefined>(undefined);
+  const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [manualExpanded, setManualExpanded] = useState<Readonly<Record<string, boolean>>>({});
 
   const canInlineFor = (item: InboxItem): boolean =>
@@ -515,7 +694,20 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
     return undefined;
   }, [focusedId, visibleItemById]);
 
+  const splitActive = desktopSplit && view === 'inbox' && model.visibleItems.length > 0;
+  const activeSelectedId = useMemo(() => {
+    if (!splitActive) return undefined;
+    if (selectedId !== undefined && visibleItemById.has(selectedId)) return selectedId;
+    return firstExpandableId ?? model.visibleItems[0]?.sessionId;
+  }, [splitActive, selectedId, visibleItemById, firstExpandableId, model.visibleItems]);
+  const selectedItem = activeSelectedId === undefined ? undefined : visibleItemById.get(activeSelectedId);
+
   const toggleExpand = (sessionId: string) => {
+    if (splitActive) {
+      setSelectedId(sessionId);
+      setFocusedId(sessionId);
+      return;
+    }
     setManualExpanded((prev) => {
       const currentlyOpen = expandedIds.has(sessionId);
       return { ...prev, [sessionId]: !currentlyOpen };
@@ -593,6 +785,9 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
     if (activeFocusedId === item.sessionId) {
       setFocusedId(nextCursor);
     }
+    if (activeSelectedId === item.sessionId) {
+      setSelectedId(nextCursor);
+    }
   };
 
   const markAllRead = () => {
@@ -615,12 +810,16 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
 
       if (event.key === 'j' || event.key === 'ArrowDown') {
         event.preventDefault();
-        setFocusedId((current) => stepInboxCursor(items, current, 1));
+        const next = stepInboxCursor(items, activeFocusedId, 1);
+        setFocusedId(next);
+        if (splitActive && next !== undefined) setSelectedId(next);
         return;
       }
       if (event.key === 'k' || event.key === 'ArrowUp') {
         event.preventDefault();
-        setFocusedId((current) => stepInboxCursor(items, current, -1));
+        const next = stepInboxCursor(items, activeFocusedId, -1);
+        setFocusedId(next);
+        if (splitActive && next !== undefined) setSelectedId(next);
         return;
       }
       const currentId = activeFocusedId ?? items[0]?.sessionId;
@@ -649,7 +848,7 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
         open(itemHref(currentItem, cachedInteractionTarget(queryClient, currentItem)));
         return;
       }
-      if (event.key === ' ' && canInlineFor(currentItem)) {
+      if (event.key === ' ' && (splitActive || canInlineFor(currentItem))) {
         event.preventDefault();
         toggleExpand(currentItem.sessionId);
       }
@@ -657,7 +856,7 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, model.visibleItems, activeFocusedId, expandedIds, connection?.client]);
+  }, [view, model.visibleItems, activeFocusedId, expandedIds, splitActive, connection?.client]);
 
   const allCount = scopedAll.needsYou.length + scopedAll.unread.length + scopedAll.running.length;
   const filterOptions: readonly {
@@ -743,7 +942,7 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
       const row = flatRows[index];
       if (row === undefined) return 60;
       if (row.kind === 'header') return row.isFirst ? 30 : 44;
-      return expandedIds.has(row.item.sessionId) ? 140 : 60;
+      return !splitActive && expandedIds.has(row.item.sessionId) ? 140 : 62;
     },
     getItemKey: (index) => flatRows[index]?.key ?? index,
     overscan: 8,
@@ -776,16 +975,169 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
     if (index >= 0) activityVirtualizer.scrollToIndex(index, { align: 'auto' });
   }, [windowed, activeFocusedId, flatRows, activityVirtualizer]);
 
+  const queueContent = windowed ? (
+    <div className={splitActive ? 'flex flex-col pt-1' : `mx-auto flex w-full ${PAGE_WIDTH.reading} flex-col pt-1`}>
+      <ul
+        data-activity-virtualized="true"
+        className="relative"
+        style={{ height: activityVirtualizer.getTotalSize() }}
+      >
+        {activityVirtualizer.getVirtualItems().map((virtualRow) => {
+          const row = flatRows[virtualRow.index];
+          if (row === undefined) return null;
+          if (row.kind === 'header') {
+            return (
+              <li
+                key={row.key}
+                data-index={virtualRow.index}
+                ref={activityVirtualizer.measureElement}
+                data-activity-group={row.groupKey}
+                className={`absolute inset-x-0 ${row.isFirst ? '' : 'pt-3.5'}`}
+                style={{ top: virtualRow.start }}
+              >
+                <div className="flex h-7 items-center gap-1.5 px-3 text-[12px] leading-4">
+                  <h2 className="shrink-0 font-medium text-ink-soft">{row.title}</h2>
+                  <span className="shrink-0 text-ink-faint tabular-nums">{row.count}</span>
+                  <span aria-hidden className="hidden text-ink-faint sm:inline">·</span>
+                  <span className="hidden min-w-0 flex-1 truncate text-ink-faint sm:inline">{row.hint}</span>
+                  <span className="flex-1 sm:hidden" />
+                  {row.action}
+                </div>
+              </li>
+            );
+          }
+          const item = row.item;
+          const canExpandInline = canInlineFor(item);
+          const personaLabel = item.personaName ?? (item.personaId !== undefined ? personaNames.get(item.personaId) : undefined);
+          return (
+            <li
+              key={row.key}
+              data-index={virtualRow.index}
+              ref={activityVirtualizer.measureElement}
+              className="absolute inset-x-0 pb-0.5"
+              style={{ top: virtualRow.start }}
+            >
+              <InboxRow
+                item={item}
+                workspaceName={workspaceNames.get(item.workspaceId)}
+                personaLabel={personaLabel}
+                focused={activeFocusedId === item.sessionId}
+                selected={splitActive && activeSelectedId === item.sessionId}
+                expanded={expandedIds.has(item.sessionId)}
+                canExpandInline={canExpandInline}
+                splitMode={splitActive}
+                suppressAutoScroll
+                bare
+                onFocusRow={() => { setFocusedId(item.sessionId); }}
+                onInspectRow={splitActive ? () => { setSelectedId(item.sessionId); setFocusedId(item.sessionId); } : undefined}
+                onToggleExpand={canExpandInline ? () => { toggleExpand(item.sessionId); } : undefined}
+                onDismiss={row.dismissible ? () => { dismissOne(item); } : undefined}
+                onOpen={open}
+              />
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  ) : (
+    <div className={splitActive ? 'flex flex-col gap-3.5 pt-1' : `mx-auto flex w-full ${PAGE_WIDTH.reading} flex-col gap-3.5 pt-1`}>
+      {showNeedsYou ? (
+        <InboxGroup
+          hook={{ 'data-activity-group': 'needs-you' }}
+          title={t('activity.needsYou')}
+          hint={t('activity.needsYouOrder')}
+          items={model.needsYou}
+          workspaceNames={workspaceNames}
+          personaNames={personaNames}
+          focusedSessionId={activeFocusedId}
+          selectedSessionId={activeSelectedId}
+          expandedIds={expandedIds}
+          splitMode={splitActive}
+          canInlineFor={canInlineFor}
+          onFocusItem={setFocusedId}
+          onInspectItem={splitActive ? (id) => { setSelectedId(id); setFocusedId(id); } : undefined}
+          onToggleExpand={toggleExpand}
+          onDismissItem={dismissOne}
+          onOpen={open}
+        />
+      ) : null}
+
+      {showUnread ? (
+        <InboxGroup
+          hook={{ 'data-activity-group': 'unread' }}
+          title={t('activity.unread')}
+          hint={t('activity.unreadOrder')}
+          items={model.unread}
+          workspaceNames={workspaceNames}
+          personaNames={personaNames}
+          focusedSessionId={activeFocusedId}
+          selectedSessionId={activeSelectedId}
+          expandedIds={expandedIds}
+          splitMode={splitActive}
+          canInlineFor={canInlineFor}
+          dismissible
+          onFocusItem={setFocusedId}
+          onInspectItem={splitActive ? (id) => { setSelectedId(id); setFocusedId(id); } : undefined}
+          onToggleExpand={toggleExpand}
+          onDismissItem={dismissOne}
+          onOpen={open}
+          action={markAllReadAction}
+        />
+      ) : null}
+
+      {showRunning ? (
+        <InboxGroup
+          hook={{ 'data-activity-group': 'running' }}
+          title={t('activity.runningGroup')}
+          hint={t('activity.runningOrder')}
+          items={model.running}
+          workspaceNames={workspaceNames}
+          personaNames={personaNames}
+          focusedSessionId={activeFocusedId}
+          selectedSessionId={activeSelectedId}
+          expandedIds={expandedIds}
+          splitMode={splitActive}
+          canInlineFor={canInlineFor}
+          onFocusItem={setFocusedId}
+          onInspectItem={splitActive ? (id) => { setSelectedId(id); setFocusedId(id); } : undefined}
+          onToggleExpand={toggleExpand}
+          onDismissItem={dismissOne}
+          onOpen={open}
+        />
+      ) : null}
+
+      {scopedAll.needsYou.length === 0 && scopedAll.unread.length === 0 && scopedAll.running.length === 0 ? (
+        <div data-activity-empty className="px-3 pt-10">
+          <p className="text-[14px] text-ink">{t('activity.emptyTitle')}</p>
+          <p className="mt-1 text-[12.5px] text-ink-soft">{t('activity.emptyBody')}</p>
+        </div>
+      ) : model.visibleItems.length === 0 ? (
+        <div data-activity-empty-filter className="px-3 pt-8">
+          <p className="text-[13.5px] text-ink-soft">{t('activity.emptyFilterTitle')}</p>
+        </div>
+      ) : null}
+    </div>
+  );
+
+  const selectedPersonaLabel = selectedItem === undefined
+    ? undefined
+    : (selectedItem.personaName ?? (selectedItem.personaId !== undefined ? personaNames.get(selectedItem.personaId) : undefined));
+  const selectedDismissible = selectedItem !== undefined && (
+    selectedItem.reason === 'completed' ||
+    selectedItem.reason === 'failed' ||
+    selectedItem.reason === 'cancelled'
+  );
+
   return (
     <div data-activity-page data-activity-view={view} className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
-      <PageHeader title={t('nav.activity')} onToggleSidebar={onToggleSidebar} width="reading" />
-      <div className="shrink-0 px-4 pb-2 lg:px-6">
-        <div className={`mx-auto flex w-full ${PAGE_WIDTH.reading} flex-wrap items-center gap-x-3 gap-y-2`}>
+      <PageHeader title={t('nav.activity')} onToggleSidebar={onToggleSidebar} width={splitActive ? undefined : 'reading'} />
+      <div className="shrink-0 border-b border-hairline/70 px-4 lg:px-6">
+        <div className={`${splitActive ? '' : `mx-auto ${PAGE_WIDTH.reading}`} flex w-full flex-col sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-1.5`}>
           <div
             role="group"
             aria-label={t('activity.viewAria')}
             data-activity-views
-            className="flex items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5"
+            className="flex items-center gap-4 border-b border-hairline/70 sm:-mb-px sm:border-b-0"
           >
             {(['inbox', 'comms'] as const).map((candidate) => (
               <button
@@ -794,7 +1146,11 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
                 data-activity-view-option={candidate}
                 aria-pressed={view === candidate}
                 onClick={() => { chooseView(candidate); }}
-                className={segmentClass(view === candidate, 'h-7 px-3 text-[13px]')}
+                className={`inline-flex min-h-10 items-center border-b-[1.5px] px-0.5 text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
+                  view === candidate
+                    ? 'border-ink font-medium text-ink'
+                    : 'border-transparent text-ink-soft hover:text-ink'
+                }`}
               >
                 {t(candidate === 'inbox' ? 'activity.view.inbox' : 'activity.view.comms')}
               </button>
@@ -806,7 +1162,7 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
               role="group"
               aria-label={t('activity.filterAria')}
               data-activity-filters
-              className="flex flex-wrap items-center gap-1"
+              className="flex flex-wrap items-center gap-1 py-1"
             >
               {filterOptions.map((opt) => {
                 const active = filter === opt.key;
@@ -817,9 +1173,9 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
                     data-activity-filter={opt.key}
                     aria-pressed={active}
                     onClick={() => { chooseFilter(opt.key); }}
-                    className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+                    className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
                       active
-                        ? 'bg-ink/[0.07] font-medium text-ink'
+                        ? 'bg-ink/[0.065] font-medium text-ink'
                         : 'text-ink-soft hover:bg-ink/[0.035] hover:text-ink'
                     }`}
                   >
@@ -837,162 +1193,58 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
           ) : null}
 
           {workspaceOptions.length > 1 && (view === 'comms' || rawModel.total + rawModel.running.length > 0 || scope !== undefined) ? (
-            <WorkspaceScopeControl
-              workspaces={workspaceOptions}
-              value={scope}
-              onChange={setScope}
-              dataAttribute="data-activity-scope"
-            />
-          ) : null}
-
-          {view === 'inbox' && model.visibleItems.length > 0 ? (
-            <span
-              data-activity-shortcuts-hint
-              className="ml-auto hidden text-[11.5px] leading-4 text-ink-faint lg:inline"
-            >
-              {t('activity.shortcutsHint')}
-            </span>
+            <div className="ml-auto py-1">
+              <WorkspaceScopeControl
+                workspaces={workspaceOptions}
+                value={scope}
+                onChange={setScope}
+                dataAttribute="data-activity-scope"
+              />
+            </div>
           ) : null}
         </div>
       </div>
 
-      <div ref={scrollRef} data-activity-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 lg:px-6">
-        {view === 'comms' ? (
+      {view === 'comms' ? (
+        <div ref={scrollRef} data-activity-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pt-2 pb-8 lg:px-6">
           <div className={`mx-auto flex w-full ${PAGE_WIDTH.reading} flex-col gap-3 pt-1`}>
             <ActivityComms workspaceId={scope} workspaceNames={workspaceNames} onOpen={open} />
           </div>
-        ) : windowed ? (
-          <div className={`mx-auto flex w-full ${PAGE_WIDTH.reading} flex-col pt-1`}>
-            <ul
-              data-activity-virtualized="true"
-              className="relative"
-              style={{ height: activityVirtualizer.getTotalSize() }}
-            >
-              {activityVirtualizer.getVirtualItems().map((virtualRow) => {
-                const row = flatRows[virtualRow.index];
-                if (row === undefined) return null;
-                if (row.kind === 'header') {
-                  return (
-                    <li
-                      key={row.key}
-                      data-index={virtualRow.index}
-                      ref={activityVirtualizer.measureElement}
-                      data-activity-group={row.groupKey}
-                      className={`absolute inset-x-0 ${row.isFirst ? '' : 'pt-3.5'}`}
-                      style={{ top: virtualRow.start }}
-                    >
-                      <div className="flex h-7 items-center gap-1.5 px-3 text-[12px] leading-4">
-                        <h2 className="shrink-0 font-medium text-ink-soft">{row.title}</h2>
-                        <span className="shrink-0 text-ink-faint tabular-nums">{row.count}</span>
-                        <span aria-hidden className="hidden text-ink-faint sm:inline">·</span>
-                        <span className="hidden min-w-0 flex-1 truncate text-ink-faint sm:inline">{row.hint}</span>
-                        <span className="flex-1 sm:hidden" />
-                        {row.action}
-                      </div>
-                    </li>
-                  );
-                }
-                const item = row.item;
-                const canExpandInline = canInlineFor(item);
-                const personaLabel = item.personaName ?? (item.personaId !== undefined ? personaNames.get(item.personaId) : undefined);
-                return (
-                  <li
-                    key={row.key}
-                    data-index={virtualRow.index}
-                    ref={activityVirtualizer.measureElement}
-                    className="absolute inset-x-0 pb-0.5"
-                    style={{ top: virtualRow.start }}
-                  >
-                    <InboxRow
-                      item={item}
-                      workspaceName={workspaceNames.get(item.workspaceId)}
-                      personaLabel={personaLabel}
-                      focused={activeFocusedId === item.sessionId}
-                      expanded={expandedIds.has(item.sessionId)}
-                      canExpandInline={canExpandInline}
-                      suppressAutoScroll
-                      bare
-                      onFocusRow={() => { setFocusedId(item.sessionId); }}
-                      onToggleExpand={canExpandInline ? () => { toggleExpand(item.sessionId); } : undefined}
-                      onDismiss={row.dismissible ? () => { dismissOne(item); } : undefined}
-                      onOpen={open}
-                    />
-                  </li>
-                );
-              })}
-            </ul>
+        </div>
+      ) : splitActive && selectedItem !== undefined ? (
+        <div data-activity-split className="flex min-h-0 flex-1 overflow-hidden">
+          <div className="flex w-[360px] shrink-0 flex-col border-r border-hairline xl:w-[400px]">
+            <div ref={scrollRef} data-activity-scroll className="min-h-0 flex-1 overflow-y-auto px-3 pt-2 pb-4">
+              {queueContent}
+            </div>
+            <div className="shrink-0 border-t border-hairline/70 px-4 py-2">
+              <span data-activity-shortcuts-hint className="text-[11.5px] leading-4 text-ink-faint">
+                {t('activity.shortcutsHint')}
+              </span>
+            </div>
           </div>
-        ) : (
-          <div className={`mx-auto flex w-full ${PAGE_WIDTH.reading} flex-col gap-3.5 pt-1`}>
-            {showNeedsYou ? (
-              <InboxGroup
-                hook={{ 'data-activity-group': 'needs-you' }}
-                title={t('activity.needsYou')}
-                hint={t('activity.needsYouOrder')}
-                items={model.needsYou}
-                workspaceNames={workspaceNames}
-                personaNames={personaNames}
-                focusedSessionId={activeFocusedId}
-                expandedIds={expandedIds}
-                canInlineFor={canInlineFor}
-                onFocusItem={setFocusedId}
-                onToggleExpand={toggleExpand}
-                onDismissItem={dismissOne}
-                onOpen={open}
-              />
-            ) : null}
-
-            {showUnread ? (
-              <InboxGroup
-                hook={{ 'data-activity-group': 'unread' }}
-                title={t('activity.unread')}
-                hint={t('activity.unreadOrder')}
-                items={model.unread}
-                workspaceNames={workspaceNames}
-                personaNames={personaNames}
-                focusedSessionId={activeFocusedId}
-                expandedIds={expandedIds}
-                canInlineFor={canInlineFor}
-                dismissible
-                onFocusItem={setFocusedId}
-                onToggleExpand={toggleExpand}
-                onDismissItem={dismissOne}
-                onOpen={open}
-                action={markAllReadAction}
-              />
-            ) : null}
-
-            {showRunning ? (
-              <InboxGroup
-                hook={{ 'data-activity-group': 'running' }}
-                title={t('activity.runningGroup')}
-                hint={t('activity.runningOrder')}
-                items={model.running}
-                workspaceNames={workspaceNames}
-                personaNames={personaNames}
-                focusedSessionId={activeFocusedId}
-                expandedIds={expandedIds}
-                canInlineFor={canInlineFor}
-                onFocusItem={setFocusedId}
-                onToggleExpand={toggleExpand}
-                onDismissItem={dismissOne}
-                onOpen={open}
-              />
-            ) : null}
-
-            {scopedAll.needsYou.length === 0 && scopedAll.unread.length === 0 && scopedAll.running.length === 0 ? (
-              <div data-activity-empty className="px-3 pt-10">
-                <p className="text-[14px] text-ink">{t('activity.emptyTitle')}</p>
-                <p className="mt-1 text-[12.5px] text-ink-soft">{t('activity.emptyBody')}</p>
-              </div>
-            ) : model.visibleItems.length === 0 ? (
-              <div data-activity-empty-filter className="px-3 pt-8">
-                <p className="text-[13.5px] text-ink-soft">{t('activity.emptyFilterTitle')}</p>
-              </div>
-            ) : null}
-          </div>
-        )}
-      </div>
+          <ActivityDetailPane
+            item={selectedItem}
+            workspaceName={workspaceNames.get(selectedItem.workspaceId)}
+            personaLabel={selectedPersonaLabel}
+            canInline={canInlineFor(selectedItem)}
+            dismissible={selectedDismissible}
+            onDismiss={() => { dismissOne(selectedItem); }}
+            onOpen={open}
+          />
+        </div>
+      ) : (
+        <div ref={scrollRef} data-activity-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pt-2 pb-8 lg:px-6">
+          {queueContent}
+          {model.visibleItems.length > 0 ? (
+            <div className={`mx-auto mt-6 hidden w-full ${PAGE_WIDTH.reading} px-3 lg:block`}>
+              <span data-activity-shortcuts-hint className="text-[11.5px] leading-4 text-ink-faint">
+                {t('activity.shortcutsHint')}
+              </span>
+            </div>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }

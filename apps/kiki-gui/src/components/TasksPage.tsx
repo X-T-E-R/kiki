@@ -19,7 +19,7 @@
  * success-shaped refetch, matching `KikiClient.cancelTask`'s okCodes.
  */
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 
@@ -28,7 +28,7 @@ import type { Task, TaskStatus } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import { sortTasks } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
-import { DisclosureChevron } from './icons';
+import { DisclosureChevron, Icon } from './icons';
 import { PAGE_WIDTH, PageHeader } from './PageChrome';
 import { LIST_TOOLS_MIN_ITEMS } from './settings/list';
 import { SECONDARY_BUTTON } from './ui';
@@ -42,9 +42,54 @@ const STATUS_FILTERS: readonly (TaskStatus | 'all')[] = [
   'cancelled',
 ];
 
+const DESKTOP_SPLIT_QUERY = '(min-width: 1024px)';
+
+function useDesktopSplit(): boolean {
+  const read = () => typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia(DESKTOP_SPLIT_QUERY).matches;
+  const [matches, setMatches] = useState(read);
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia(DESKTOP_SPLIT_QUERY);
+    const onChange = () => { setMatches(media.matches); };
+    setMatches(media.matches);
+    media.addEventListener?.('change', onChange);
+    return () => { media.removeEventListener?.('change', onChange); };
+  }, []);
+  return matches;
+}
+
+function CopyTextButton({ text, label }: { readonly text: string; readonly label: string }) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+  }, []);
+  const copy = () => {
+    void navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true);
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => { setCopied(false); }, 1500);
+    }).catch(() => {});
+  };
+  return (
+    <button
+      type="button"
+      data-task-copy
+      onClick={copy}
+      className="inline-flex min-h-6 items-center gap-1 rounded-md px-1.5 text-[11.5px] font-medium text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:px-2.5"
+    >
+      <Icon name={copied ? 'check' : 'copy'} size={12} />
+      <span>{copied ? t('cb.copied') : label}</span>
+    </button>
+  );
+}
+
 function DetailRow({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="flex items-baseline gap-3">
+    <div className="flex min-w-0 items-baseline gap-3">
       <span className="w-20 shrink-0 text-[12px] text-ink-faint">{label}</span>
       <span
         className={`min-w-0 truncate text-[12px] text-ink ${mono ? 'font-mono' : ''}`}
@@ -56,75 +101,159 @@ function DetailRow({ label, value, mono = true }: { label: string; value: string
   );
 }
 
-/** Expanded detail: static fields from the list row + lazy output preview. */
-function TaskDetail({ task }: { task: Task }) {
+/** Selected/expanded detail: static fields from the list row + lazy bounded tail snapshot. */
+function TaskDetail({
+  task,
+  split = false,
+  cancelling = false,
+  stopFailure,
+  onStop,
+}: {
+  readonly task: Task;
+  readonly split?: boolean;
+  readonly cancelling?: boolean;
+  readonly stopFailure?: string;
+  readonly onStop?: () => void;
+}) {
   const { client } = useConnection();
   const { t, time, locale } = useI18n();
   const detailQuery = useQuery({
     queryKey: ['session-task', task.session_id, task.id],
     queryFn: () => client.getTask(task.session_id, task.id, { with_output: true }),
-    // Keep the tail fresh while the task is still producing output.
-    refetchInterval: task.status === 'running' ? 3000 : false,
+    // Keep the bounded tail fresh only for this selected running task.
+    refetchInterval: (query) => {
+      const status = query.state.data?.status ?? task.status;
+      return status === 'running' ? 3000 : false;
+    },
   });
+  const current = detailQuery.data ?? task;
   const output = detailQuery.data?.output_preview ?? task.output_preview;
 
-  const startedMs = new Date(task.started_at ?? task.created_at).getTime();
+  const startedMs = new Date(current.started_at ?? current.created_at).getTime();
   const finishedMs =
-    task.completed_at !== undefined ? new Date(task.completed_at).getTime() : undefined;
+    current.completed_at !== undefined ? new Date(current.completed_at).getTime() : undefined;
   const durationMs =
     finishedMs !== undefined && !Number.isNaN(startedMs) && !Number.isNaN(finishedMs)
-      ? finishedMs - startedMs
+      ? Math.max(0, finishedMs - startedMs)
       : undefined;
   const stamp = (iso: string) =>
     `${new Date(iso).toLocaleString(locale === 'zh' ? 'zh-CN' : 'en')} · ${time.relativeTime(iso)}`;
 
   return (
-    <div className="mt-2 space-y-2 border-t border-hairline pt-3" data-task-detail>
-      <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
-        <DetailRow label={t('tasks.field.id')} value={task.id} />
-        <DetailRow label={t('tasks.field.kind')} value={t(`tasks.kind.${task.kind}`)} mono={false} />
-        <DetailRow label={t('tasks.field.created')} value={stamp(task.created_at)} />
-        {task.started_at !== undefined ? (
-          <DetailRow label={t('tasks.field.started')} value={stamp(task.started_at)} />
+    <div
+      className={split ? 'space-y-4' : 'mt-2 space-y-3 border-t border-hairline pt-3'}
+      data-task-detail
+      data-task-detail-id={current.id}
+    >
+      {split ? (
+        <div className="flex flex-wrap items-start justify-between gap-2 border-b border-hairline pb-3">
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate font-display text-[16px] font-semibold leading-6 text-ink" title={current.description}>
+              {current.description}
+            </h2>
+            <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[12px] text-ink-faint tabular-nums">
+              <span className={current.status === 'failed' ? 'font-medium text-danger' : current.status === 'running' ? 'font-medium text-selected-ink' : 'text-ink-soft'}>
+                {t(`rail.taskStatus.${current.status}`)}
+              </span>
+              <span aria-hidden>·</span>
+              <span>{t(`tasks.kind.${current.kind}`)}</span>
+              {durationMs !== undefined ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span>{time.formatDuration(durationMs)}</span>
+                </>
+              ) : null}
+            </p>
+          </div>
+          {current.status === 'running' && onStop !== undefined ? (
+            <button
+              type="button"
+              data-task-detail-stop
+              disabled={cancelling}
+              onClick={onStop}
+              title={t('rail.stopTitle')}
+              className="shrink-0 rounded-md border border-hairline px-2.5 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
+            >
+              {cancelling ? t('tasks.stopping') : t('rail.stop')}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {split && stopFailure !== undefined ? (
+        <p role="alert" data-task-stop-error className="text-[12px] text-danger">
+          {t('tasks.stopFailed', { detail: stopFailure })}
+        </p>
+      ) : null}
+      <div className="grid gap-x-6 gap-y-1.5 sm:grid-cols-2">
+        <DetailRow label={t('tasks.field.id')} value={current.id} />
+        <DetailRow label={t('tasks.field.kind')} value={t(`tasks.kind.${current.kind}`)} mono={false} />
+        <DetailRow label={t('tasks.field.created')} value={stamp(current.created_at)} />
+        {current.started_at !== undefined ? (
+          <DetailRow label={t('tasks.field.started')} value={stamp(current.started_at)} />
         ) : null}
-        {task.completed_at !== undefined ? (
-          <DetailRow label={t('tasks.field.finished')} value={stamp(task.completed_at)} />
+        {current.completed_at !== undefined ? (
+          <DetailRow label={t('tasks.field.finished')} value={stamp(current.completed_at)} />
         ) : null}
         {durationMs !== undefined ? (
           <DetailRow label={t('tasks.field.duration')} value={time.formatDuration(durationMs)} />
         ) : null}
-        {task.model !== undefined ? (
-          <DetailRow label={t('rail.model')} value={task.model} />
+        {current.model !== undefined ? (
+          <DetailRow label={t('rail.model')} value={current.model} />
+        ) : null}
+        {current.exit_code !== undefined ? (
+          <DetailRow label={t('tasks.detail.exitCode')} value={String(current.exit_code)} />
+        ) : null}
+        {current.stop_reason !== undefined ? (
+          <DetailRow label={t('tasks.detail.stopReason')} value={current.stop_reason} mono={false} />
         ) : null}
       </div>
-      {task.command !== undefined ? (
+      {current.command !== undefined ? (
         <div>
-          <p className="mb-1 text-[12px] font-medium text-ink-soft">
-            {t('tasks.field.command')}
-          </p>
-          <pre className="overflow-x-auto rounded-lg bg-paper px-3 py-2 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap text-ink">
-            {task.command}
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <p className="text-[12px] font-medium text-ink-soft">
+              {t('tasks.field.command')}
+            </p>
+            <CopyTextButton text={current.command} label={t('tasks.detail.copyCommand')} />
+          </div>
+          <pre className="overflow-x-auto rounded-lg bg-ink/[0.04] px-3 py-2 font-mono text-[11.5px] leading-relaxed break-all whitespace-pre-wrap text-ink">
+            {current.command}
           </pre>
         </div>
       ) : null}
       <div>
-        <p className="mb-1 text-[12px] font-medium text-ink-soft">
-          {t('tasks.field.output')}
-        </p>
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <p className="text-[12px] font-medium text-ink-soft">
+            {t('tasks.field.output')}
+          </p>
+          {output !== undefined && output !== '' ? (
+            <CopyTextButton text={output} label={t('contextMenu.copy')} />
+          ) : null}
+        </div>
         {detailQuery.isPending && output === undefined ? (
-          <p className="flex items-center gap-2 text-[11px] text-ink-faint">
+          <p className="flex items-center gap-2 text-[11.5px] text-ink-faint">
             <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
             {t('tasks.outputLoading')}
           </p>
+        ) : detailQuery.isError && output === undefined ? (
+          <div role="alert" data-task-output-error className="flex flex-wrap items-center gap-2 text-[12px] text-ink-soft">
+            <span>{errorText(locale, detailQuery.error)}</span>
+            <button
+              type="button"
+              onClick={() => { void detailQuery.refetch(); }}
+              className="font-medium text-ink underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-selected-ink"
+            >
+              {t('common.retry')}
+            </button>
+          </div>
         ) : output !== undefined && output !== '' ? (
           <pre
             data-task-output
-            className="max-h-72 overflow-auto rounded-lg bg-paper px-3 py-2 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap text-ink-soft"
+            className={`${split ? 'max-h-[420px]' : 'max-h-72'} overflow-auto rounded-lg bg-ink/[0.04] px-3 py-2.5 font-mono text-[11.5px] leading-relaxed whitespace-pre text-ink-soft`}
           >
             {output}
           </pre>
         ) : (
-          <p className="text-[11px] text-ink-faint">{t('tasks.noOutput')}</p>
+          <p className="text-[11.5px] text-ink-faint">{t('tasks.noOutput')}</p>
         )}
       </div>
     </div>
@@ -136,6 +265,7 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const { t, tp, time, locale } = useI18n();
   const queryClient = useQueryClient();
   const { id: sessionId = '' } = useParams<{ id: string }>();
+  const desktopSplit = useDesktopSplit();
   const [filter, setFilter] = useState<TaskStatus | 'all'>('all');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [pendingCancelId, setPendingCancelId] = useState<string | null>(null);
@@ -192,22 +322,54 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   // The status filter is a list tool: it appears on a long list, and stays
   // while it is narrowing one so it can be turned back off.
   const showFilter = filter !== 'all' || tasks.length >= LIST_TOOLS_MIN_ITEMS;
+  const selectedSplitTask = desktopSplit && tasks.length > 0
+    ? (tasks.find((task) => task.id === expandedId) ?? tasks[0])
+    : undefined;
+
+  const stopTask = (taskId: string) => {
+    setPendingCancelId(taskId);
+    setStopFailure(null);
+    cancelMutation.mutate(taskId);
+  };
 
   const renderRow = (task: Task) => {
-    const expanded = expandedId === task.id;
+    const selected = desktopSplit ? selectedSplitTask?.id === task.id : expandedId === task.id;
     const isRunning = task.status === 'running';
     const failure = stopFailure?.taskId === task.id ? stopFailure.detail : undefined;
+    const statusTone = task.status === 'failed'
+      ? 'text-danger'
+      : isRunning
+        ? 'text-selected-ink font-medium'
+        : 'text-ink-soft';
     return (
-      <li key={task.id} data-task-row className="py-2.5">
+      <li
+        key={task.id}
+        data-task-row
+        data-task-selected={selected ? 'true' : undefined}
+        className={`py-2.5 transition-colors ${desktopSplit && selected ? 'relative -mx-2 rounded-lg bg-ink/[0.045] px-2 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-selected-ink' : ''}`}
+      >
         <div className="flex min-w-0 items-center gap-2">
           {isRunning ? (
-            <span aria-hidden className="status-dot-busy inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
+            <span aria-hidden className="status-dot-busy inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-selected-ink" />
           ) : null}
-          <span className="min-w-0 flex-1 truncate text-[13px] text-ink" title={task.description}>
-            <span data-task-status={task.status} className="text-ink-soft">{t(`rail.taskStatus.${task.status}`)}</span>
-            <span aria-hidden className="text-ink-faint"> · </span>
-            <span className="font-medium">{task.description}</span>
-          </span>
+          {desktopSplit ? (
+            <button
+              type="button"
+              onClick={() => { setExpandedId(task.id); }}
+              className="min-w-0 flex-1 truncate rounded-sm text-left text-[13px] text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+              title={task.description}
+            >
+              <span data-task-status={task.status} className={statusTone}>{t(`rail.taskStatus.${task.status}`)}</span>
+              <span aria-hidden className="text-ink-faint"> · </span>
+              <span className="font-medium">{task.description}</span>
+            </button>
+          ) : (
+            <span className="min-w-0 flex-1 truncate text-[13px] text-ink" title={task.description}>
+              <span data-task-status={task.status} className={statusTone}>{t(`rail.taskStatus.${task.status}`)}</span>
+              <span aria-hidden className="text-ink-faint"> · </span>
+              <span className="font-medium">{task.description}</span>
+            </span>
+          )}
           <span className="hidden shrink-0 text-[12px] text-ink-faint tabular-nums sm:inline">
             {time.relativeTime(task.created_at)}
           </span>
@@ -215,25 +377,31 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
             <button
               type="button"
               disabled={pendingCancelId === task.id}
-              onClick={() => {
-                setPendingCancelId(task.id);
-                setStopFailure(null);
-                cancelMutation.mutate(task.id);
-              }}
+              onClick={() => { stopTask(task.id); }}
               title={t('rail.stopTitle')}
-              className="shrink-0 rounded-md border border-hairline px-2 py-0.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-3"
+              className="shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-3"
             >
               {pendingCancelId === task.id ? t('tasks.stopping') : t('rail.stop')}
             </button>
           ) : null}
           <button
             type="button"
-            aria-expanded={expanded}
-            aria-label={expanded ? t('tasks.collapse') : t('tasks.expand')}
-            onClick={() => { setExpandedId(expanded ? null : task.id); }}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink pointer-coarse:h-11 pointer-coarse:w-11"
+            aria-expanded={selected}
+            aria-label={selected ? t('tasks.collapse') : t('tasks.expand')}
+            onClick={() => {
+              if (desktopSplit) {
+                setExpandedId(task.id);
+              } else {
+                setExpandedId(selected ? null : task.id);
+              }
+            }}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11"
           >
-            <DisclosureChevron open={expanded} className="text-current" />
+            {desktopSplit ? (
+              <Icon name="chevron" size={12} className="text-current" />
+            ) : (
+              <DisclosureChevron open={selected} className="text-current" />
+            )}
           </button>
         </div>
         {task.command !== undefined ? (
@@ -242,11 +410,11 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
           </p>
         ) : null}
         {failure !== undefined ? (
-          <p role="alert" data-task-stop-error className="mt-1 text-[12px] text-ink-soft">
+          <p role="alert" data-task-stop-error className="mt-1 text-[12px] text-danger">
             {t('tasks.stopFailed', { detail: failure })}
           </p>
         ) : null}
-        {expanded ? <TaskDetail task={task} /> : null}
+        {!desktopSplit && selected ? <TaskDetail task={task} /> : null}
       </li>
     );
   };
@@ -264,9 +432,9 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
 
   return (
     <>
-      <PageHeader title={t('tasks.title')} onToggleSidebar={onToggleSidebar} width="split" />
+      <PageHeader title={t('tasks.title')} onToggleSidebar={onToggleSidebar} width={desktopSplit ? 'dashboard' : 'split'} />
       <main className="min-h-0 flex-1 overflow-y-auto px-4 pt-3 pb-10 lg:px-6">
-        <div className={`mx-auto ${PAGE_WIDTH.split} space-y-6`} data-tasks-page>
+        <div className={`mx-auto ${desktopSplit ? PAGE_WIDTH.dashboard : PAGE_WIDTH.split} space-y-6`} data-tasks-page>
           {tasksQuery.isPending ? (
             <p role="status" className="flex items-center gap-2 py-6 text-[13px] text-ink-faint">
               <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
@@ -325,19 +493,46 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
 
               {tasks.length === 0 ? (
                 <p className="py-6 text-[13px] text-ink-faint">{t('tasks.emptyFilter')}</p>
+              ) : desktopSplit && selectedSplitTask !== undefined ? (
+                <div data-tasks-split className="grid grid-cols-[minmax(0,360px)_minmax(0,1fr)] items-start gap-8">
+                  <div className="min-w-0 space-y-6">
+                    {group('running', running)}
+                    {group('finished', finished)}
+                    {tasksQuery.hasNextPage ? (
+                      <button type="button" disabled={tasksQuery.isFetchingNextPage}
+                        onClick={() => { void tasksQuery.fetchNextPage(); }}
+                        className={`${SECONDARY_BUTTON} disabled:opacity-50`}>
+                        {t('tasks.loadMore')}
+                      </button>
+                    ) : null}
+                  </div>
+                  <section
+                    aria-label={t('tasks.detail.title')}
+                    className="sticky top-0 min-w-0 border-l border-hairline pl-6"
+                  >
+                    <TaskDetail
+                      key={selectedSplitTask.id}
+                      task={selectedSplitTask}
+                      split
+                      cancelling={pendingCancelId === selectedSplitTask.id}
+                      stopFailure={stopFailure?.taskId === selectedSplitTask.id ? stopFailure.detail : undefined}
+                      onStop={() => { stopTask(selectedSplitTask.id); }}
+                    />
+                  </section>
+                </div>
               ) : (
                 <>
                   {group('running', running)}
                   {group('finished', finished)}
+                  {tasksQuery.hasNextPage ? (
+                    <button type="button" disabled={tasksQuery.isFetchingNextPage}
+                      onClick={() => { void tasksQuery.fetchNextPage(); }}
+                      className={`${SECONDARY_BUTTON} disabled:opacity-50`}>
+                      {t('tasks.loadMore')}
+                    </button>
+                  ) : null}
                 </>
               )}
-              {tasksQuery.hasNextPage ? (
-                <button type="button" disabled={tasksQuery.isFetchingNextPage}
-                  onClick={() => { void tasksQuery.fetchNextPage(); }}
-                  className={`${SECONDARY_BUTTON} disabled:opacity-50`}>
-                  {t('tasks.loadMore')}
-                </button>
-              ) : null}
             </>
           )}
         </div>

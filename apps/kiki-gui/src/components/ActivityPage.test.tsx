@@ -626,4 +626,101 @@ describe('ActivityPage', () => {
     expect(mountedUnread.length).toBeGreaterThan(5);
     expect(mountedUnread.length).toBeLessThanOrEqual(50);
   });
+
+  it('uses master-detail split on >=1024px without hover fetches or marking inspected unread rows seen', async () => {
+    const origMatchMedia = window.matchMedia;
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+      matches: query === '(min-width: 1024px)',
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })));
+    try {
+      const approval: ApprovalRequest = {
+        approval_id: 'app-split-1',
+        session_id: 'need-1',
+        tool_call_id: 'tc-split-1',
+        tool_name: 'Bash',
+        action: 'Run tests',
+        tool_input_display: { command: 'pnpm test' },
+        created_at: '2026-01-01T00:01:00.000Z',
+        expires_at: '2026-01-01T01:00:00.000Z',
+      };
+      const question: QuestionRequest = {
+        question_id: 'q-split-2',
+        session_id: 'need-2',
+        questions: [{ id: 'env', question: 'Target env?', options: [{ id: 'prod', label: 'Prod' }] }],
+        created_at: '2026-01-01T00:02:00.000Z',
+      };
+      client.listPendingApprovals.mockResolvedValue([approval]);
+      client.listPendingQuestions.mockResolvedValue([question]);
+
+      const page = await render([
+        session({ id: 'need-1', title: 'Approval task', pending_interaction: 'approval', updated_at: '2026-01-01T00:01:00.000Z' }),
+        session({ id: 'need-2', title: 'Question task', pending_interaction: 'question', updated_at: '2026-01-01T00:02:00.000Z' }),
+        session({ id: 'unread-1', title: 'Finished audit', last_seq: 9, last_turn_reason: 'completed', last_prompt: 'Check logs', updated_at: '2026-01-01T00:03:00.000Z' }),
+      ]);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+
+      expect(page.querySelector('[data-activity-split]')).not.toBeNull();
+      expect(page.querySelector('[data-activity-detail-pane="need-1"]')).not.toBeNull();
+      expect(client.listPendingApprovals).toHaveBeenCalledTimes(1);
+      expect(client.listPendingQuestions).not.toHaveBeenCalled();
+
+      // Volatile hover over need-2 must NOT switch detail pane or issue a fetch.
+      await act(async () => {
+        page.querySelector<HTMLElement>('[data-activity-item="need-2"]')!
+          .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+      expect(page.querySelector('[data-activity-detail-pane="need-1"]')).not.toBeNull();
+      expect(client.listPendingQuestions).not.toHaveBeenCalled();
+
+      // Explicit inspect/expand selects need-2 in the right detail pane.
+      await act(async () => {
+        page.querySelector<HTMLButtonElement>('[data-activity-expand="need-2"]')!.click();
+      });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+      expect(page.querySelector('[data-activity-detail-pane="need-2"]')).not.toBeNull();
+      expect(client.listPendingQuestions).toHaveBeenCalledTimes(1);
+
+      // Pointer/touch inspect on a dismissible unread row selects it in the detail
+      // pane WITHOUT navigating away and WITHOUT marking it seen, while keeping
+      // both Mark read and Open separately operable.
+      const unreadInspect = page.querySelector<HTMLButtonElement>('[data-activity-inspect="unread-1"]');
+      const unreadDismiss = page.querySelector<HTMLButtonElement>('[data-activity-dismiss="unread-1"]');
+      expect(unreadInspect).not.toBeNull();
+      expect(unreadDismiss).not.toBeNull();
+      await act(async () => {
+        unreadInspect!.click();
+      });
+      expect(page.querySelector('[data-activity-detail-pane="unread-1"]')).not.toBeNull();
+      expect(page.querySelector('[data-activity-detail-pane="unread-1"]')?.textContent).toContain('Check logs');
+      expect(page.querySelector('[data-activity-test-location]')?.textContent).toBe('/activity');
+      expect(sessionSeenSnapshot()['unread-1']).toBeUndefined();
+
+      // Keyboard k moves back to need-2 and j selects unread-1 again without marking seen.
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', bubbles: true }));
+      });
+      expect(page.querySelector('[data-activity-detail-pane="need-2"]')).not.toBeNull();
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true }));
+      });
+      expect(page.querySelector('[data-activity-detail-pane="unread-1"]')).not.toBeNull();
+      expect(sessionSeenSnapshot()['unread-1']).toBeUndefined();
+
+      // Explicit open button preserves navigation destination.
+      await act(async () => {
+        page.querySelector<HTMLButtonElement>('[data-activity-open="unread-1"]')!.click();
+      });
+      expect(page.querySelector('[data-activity-test-location]')?.textContent).toBe('/s/unread-1');
+    } finally {
+      vi.stubGlobal('matchMedia', origMatchMedia);
+    }
+  });
 });

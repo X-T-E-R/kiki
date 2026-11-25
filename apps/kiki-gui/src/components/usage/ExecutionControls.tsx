@@ -36,7 +36,9 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine } from '../controls';
 import { DisclosureChevron, Icon } from '../icons';
 
-const ROW_BUTTON = 'inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-hairline px-2 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50';
+const ROW_BUTTON = 'inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-2.5';
+const RESUME_BUTTON = 'inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-selected-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-selected/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-2.5';
+const PAUSE_ALL_BUTTON = 'inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md border border-hairline px-2.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:border-hairline-strong hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11';
 
 type Translate = (key: I18nKey, params?: Record<string, string | number>) => string;
 
@@ -109,12 +111,18 @@ function PhaseChip({ state }: { readonly state: ExecutionControlState }) {
   if (state.phase === 'running') return null;
   const label = t(`usage.execution.phase.${state.phase}` as I18nKey);
   const tone = state.phase === 'paused'
-    ? 'border-selected-ink/35 text-selected-ink'
+    ? 'text-selected-ink'
     : state.phase === 'failed'
-      ? 'border-danger/40 text-danger'
-      : 'border-hairline text-ink-faint';
+      ? 'text-danger'
+      : 'text-amber-ink';
+  const dot = state.phase === 'paused'
+    ? 'bg-selected-ink'
+    : state.phase === 'failed'
+      ? 'bg-danger'
+      : 'bg-amber-rule';
   return (
-    <span data-execution-phase={state.phase} className={`shrink-0 rounded-full border px-1.5 text-[10.5px] leading-4 ${tone}`}>
+    <span data-execution-phase={state.phase} className={`inline-flex shrink-0 items-center gap-1.5 text-[11.5px] font-medium leading-4 ${tone}`}>
+      <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
       {label}
     </span>
   );
@@ -139,7 +147,7 @@ export function PauseAllExecutions({ snapshot, states, labelOf }: {
   if (sessionIds.length === 0 || !anyAvailable) return null;
   return (
     <span className="inline-flex items-center gap-2" data-execution-pause-all>
-      <button type="button" className={ROW_BUTTON} disabled={pause.pending} onClick={() => { setConfirming(true); }}>
+      <button type="button" className={PAUSE_ALL_BUTTON} disabled={pause.pending} onClick={() => { setConfirming(true); }}>
         <Icon name="hold" size={12} />
         {t('usage.execution.pauseAll')}
       </button>
@@ -278,18 +286,20 @@ function ExecutionSessionRow({ sessionId, state, label, collapsed, phaseHintShar
       hidden={collapsed && !needsUser}
       className="py-1"
     >
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
         <button
           type="button"
           data-execution-session-open
           title={`${name}\n${sessionId}`}
           onClick={() => void navigate(`/s/${sessionId}`)}
-          className="group flex min-h-7 min-w-0 flex-1 items-baseline gap-2 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+          className="group flex min-h-7 min-w-0 flex-1 items-baseline gap-2 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:items-center"
         >
           <span className={`min-w-0 truncate text-[13px] underline-offset-2 group-hover:underline sm:max-w-[40rem] ${label.titled ? 'text-ink' : 'text-ink-soft'}`}>{label.text}</span>
-          <span className={`shrink-0 font-mono text-[11px] text-ink-faint tabular-nums ${label.titled ? 'hidden sm:inline' : ''}`}>{label.shortId}</span>
+          {label.titled ? null : (
+            <span className="shrink-0 font-mono text-[11px] text-ink-faint tabular-nums">{label.shortId}</span>
+          )}
         </button>
-        <span className="flex shrink-0 items-center gap-2" data-execution-control={sessionId}>
+        <span className="flex shrink-0 flex-wrap items-center gap-1.5" data-execution-control={sessionId}>
           <PhaseChip state={state} />
           {phase === 'running' ? (
             <button type="button" data-execution-action="pause" className={ROW_BUTTON} disabled={busy} onClick={() => { setConfirming(true); }}>
@@ -316,7 +326,7 @@ function ExecutionSessionRow({ sessionId, state, label, collapsed, phaseHintShar
             </button>
           ) : null}
           {phase === 'paused' || (phase === 'failed' && state.pausedAt !== undefined && state.pauseOperationId !== undefined) ? (
-            <button type="button" data-execution-action="resume" className={ROW_BUTTON} disabled={busy} onClick={() => { resume.reset(); resume.run(); }}>
+            <button type="button" data-execution-action="resume" className={RESUME_BUTTON} disabled={busy} onClick={() => { resume.reset(); resume.run(); }}>
               <Icon name="refresh" size={12} />
               {t('usage.execution.resumeSession')}
             </button>

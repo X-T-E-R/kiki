@@ -21,11 +21,7 @@ import {
   usePausedSessionDiscovery,
   useSessionExecutions,
 } from '../lib/executionControls';
-import { usePhoneMode } from '../lib/layoutHooks';
-import {
-  useLiveAgentGovernance,
-  type LiveAgentDimensionKind,
-} from '../lib/liveAgentGovernance';
+import { useLiveAgentGovernance, type LiveAgentDimensionKind } from '../lib/liveAgentGovernance';
 import { useRequestGovernance } from '../lib/useRequestGovernance';
 import { useSessionNames } from '../lib/threadTitles';
 import { DisclosureChevron, Icon } from './icons';
@@ -85,6 +81,16 @@ export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime'
     return (
       <p role="status" className="py-12 text-center text-[13px] text-ink-faint">
         {t(loading ? 'usage.governance.loading' : 'usage.governance.unavailable')}
+        {loading ? null : (
+          <button
+            type="button"
+            data-governance-retry
+            onClick={() => { void queryClient.invalidateQueries({ queryKey: ['request-governance'] }); }}
+            className="ml-2 font-medium text-ink underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+          >
+            {t('usage.execution.retryRefresh')}
+          </button>
+        )}
       </p>
     );
   }
@@ -145,7 +151,6 @@ function RealtimePanel({ snapshot, stale, onRefresh, onJumpToRule }: {
   readonly onJumpToRule?: (ruleId: string) => void;
 }) {
   const { t, time } = useI18n();
-  const phone = usePhoneMode();
   const liveAgent = useLiveAgentGovernance();
 
   // Request dimensions
@@ -240,10 +245,33 @@ function RealtimePanel({ snapshot, stale, onRefresh, onJumpToRule }: {
     ...(agentSnapshot !== null && agentSnapshot !== undefined && agentSnapshot.queued > 0 ? [`${t('usage.governance.queued')} ${agentSnapshot.queued}`] : []),
   ].join(' · ');
 
+  const requestMaxCount = useMemo(
+    () => Math.max(1, ...shown.map((row) => row.active + row.queued)),
+    [shown],
+  );
+  const waitingMaxMs = useMemo(
+    () => Math.max(1, ...snapshot.waiting.map((row) => row.waitedMs)),
+    [snapshot.waiting],
+  );
+  const agentMaxCount = useMemo(
+    () => Math.max(1, ...shownAgentRows.map((row) => row.totalActive ?? row.active ?? 0)),
+    [shownAgentRows],
+  );
+  const showWaitingLedger = snapshot.waiting.length > 0 || snapshot.queued > 0;
+  const staleTimeLabel = time.absoluteTime(snapshot.asOf) ?? snapshot.asOf;
+  const agentStaleTimeLabel = agentSnapshot === undefined
+    ? ''
+    : (time.absoluteTime(agentSnapshot.asOf) ?? agentSnapshot.asOf);
+  const requestBandTotal = shown.reduce((sum, row) => sum + row.active + row.queued, 0);
+  const requestBandActive = shown.reduce((sum, row) => sum + row.active, 0);
+  const requestBandQueued = shown.reduce((sum, row) => sum + row.queued, 0);
+
   return (
     <div className="space-y-8">
       {/* Model requests: a section on the page, not a card — the heading and
-          the muted count line carry the group, the tables divide by hairlines. */}
+          the muted count line carry the group, the count band shows the
+          selected dimension's observed running vs queued counts, and the
+          tables divide by hairlines. */}
       <section data-governance-live>
         <UsageSectionHeading
           title={t('usage.governance.viewRequests')}
@@ -251,23 +279,64 @@ function RealtimePanel({ snapshot, stale, onRefresh, onJumpToRule }: {
           actions={(
             <>
               {stale ? (
-                <button
-                  type="button"
-                  data-governance-stale
-                  aria-label={`${t('usage.governance.stale', { time: time.absoluteTime(snapshot.asOf) ?? snapshot.asOf })} · ${t('usage.execution.retryRefresh')}`}
-                  title={`${t('usage.governance.stale', { time: time.absoluteTime(snapshot.asOf) ?? snapshot.asOf })} · ${t('usage.execution.retryRefresh')}`}
-                  onClick={onRefresh}
-                  className="inline-flex items-center text-amber-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
-                >
-                  <Icon name="refresh" size={12} className="h-[13px] w-[13px]" />
-                </button>
+                <span className="inline-flex items-center gap-1.5">
+                  <span data-governance-stale-time className="text-[11.5px] text-amber-ink tabular-nums">
+                    {t('usage.governance.stale', { time: staleTimeLabel })}
+                  </span>
+                  <button
+                    type="button"
+                    data-governance-stale
+                    aria-label={`${t('usage.governance.stale', { time: staleTimeLabel })} · ${t('usage.execution.retryRefresh')}`}
+                    title={`${t('usage.governance.stale', { time: staleTimeLabel })} · ${t('usage.execution.retryRefresh')}`}
+                    onClick={onRefresh}
+                    className="inline-flex min-h-7 min-w-7 items-center justify-center text-amber-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+                  >
+                    <Icon name="refresh" size={12} className="h-[13px] w-[13px]" />
+                  </button>
+                </span>
               ) : null}
               <span className="sr-only" data-governance-active>{snapshot.active}</span>
               <span className="sr-only" data-governance-queued>{snapshot.queued}</span>
             </>
           )}
         />
-        <div className="grid gap-x-8 gap-y-5 lg:grid-cols-2">
+        {shown.length > 0 && dimension !== undefined && requestBandTotal > 0 ? (
+          <div
+            data-governance-count-band={dimension}
+            aria-label={t('usage.governance.countBandAria', { dimension: t(`usage.governance.${dimension}` as I18nKey) })}
+            className="mb-4 space-y-1.5"
+          >
+            <div className="flex h-2 w-full overflow-hidden rounded-full bg-ink/[0.06]">
+              {requestBandActive > 0 ? (
+                <span
+                  data-governance-band-active
+                  className="block h-full bg-selected-ink transition-[width] duration-200"
+                  style={{ width: `${(requestBandActive / requestBandTotal) * 100}%` }}
+                />
+              ) : null}
+              {requestBandQueued > 0 ? (
+                <span
+                  data-governance-band-queued
+                  className={`block h-full bg-amber-rule transition-[width] duration-200 ${requestBandActive > 0 ? 'border-l border-paper' : ''}`}
+                  style={{ width: `${(requestBandQueued / requestBandTotal) * 100}%` }}
+                />
+              ) : null}
+            </div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-ink-faint tabular-nums">
+              <span className="inline-flex items-center gap-1.5">
+                <span aria-hidden className="h-2 w-2 rounded-full bg-selected-ink" />
+                <span>{t('usage.governance.running')}</span>
+                <span className="font-medium text-ink">{requestBandActive}</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span aria-hidden className="h-2 w-2 rounded-full bg-amber-rule" />
+                <span>{t('usage.governance.queued')}</span>
+                <span className="font-medium text-ink">{requestBandQueued}</span>
+              </span>
+            </div>
+          </div>
+        ) : null}
+        <div className={`grid gap-x-8 gap-y-6 ${showWaitingLedger ? 'lg:grid-cols-2' : ''}`}>
           <section className="min-w-0">
             <div className="mb-3 flex flex-wrap items-center gap-3">
               {options.length > 1 && dimension !== undefined ? (
@@ -284,73 +353,97 @@ function RealtimePanel({ snapshot, stale, onRefresh, onJumpToRule }: {
             {shown.length === 0 ? (
               <p data-governance-dimensions-empty className="text-[12.5px] text-ink-faint">{t('usage.governance.idleNow')}</p>
             ) : (
-              phone ? (
-                <ol data-governance-dimensions data-governance-dimension={dimension} className="divide-y divide-hairline border-t border-hairline">
-                  {shown.map((row) => (
-                    <li key={`${row.dimension}:${row.id}`} data-governance-row={row.id} className="py-2">
-                      <span className="block truncate text-[13px] text-ink" title={row.id}>{dimensionLabel(row)}</span>
-                      <span className="block text-[12px] text-ink-soft tabular-nums">
-                        {`${t('usage.governance.running')} ${row.active} · ${t('usage.governance.queued')} ${row.queued}`}
-                      </span>
-                    </li>
-                  ))}
-                </ol>
-              ) : (
               <div data-governance-dimensions data-governance-dimension={dimension}>
-                <div aria-hidden className="grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] pb-2 text-[11px] text-ink-faint">
+                <div aria-hidden className="hidden grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] pb-2 text-[11px] text-ink-faint sm:grid">
                   <span>{t('usage.governance.target')}</span>
                   <span className="text-right">{t('usage.governance.running')}</span>
                   <span className="text-right">{t('usage.governance.queued')}</span>
                 </div>
                 <ol className="divide-y divide-hairline border-t border-hairline">
-                  {shown.map((row) => (
-                    <li key={`${row.dimension}:${row.id}`} data-governance-row={row.id} className="grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] items-baseline py-2">
-                      <span className="flex min-w-0 items-baseline gap-1.5">
-                        <span className="min-w-0 truncate text-[13px] text-ink" title={row.id}>{dimensionLabel(row)}</span>
-                      </span>
-                      <span className="text-right text-[12.5px] text-ink tabular-nums">{row.active}</span>
-                      <span className="text-right text-[12.5px] text-ink-soft tabular-nums">{row.queued}</span>
-                    </li>
-                  ))}
+                  {shown.map((row) => {
+                    const activePct = (row.active / requestMaxCount) * 100;
+                    const queuedPct = (row.queued / requestMaxCount) * 100;
+                    return (
+                      <li key={`${row.dimension}:${row.id}`} data-governance-row={row.id} className="py-2">
+                        <div className="flex flex-col gap-0.5 sm:grid sm:grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] sm:items-baseline">
+                          <span className="min-w-0 truncate text-[13px] text-ink" title={row.id}>{dimensionLabel(row)}</span>
+                          <span className="text-[12px] text-ink-soft tabular-nums sm:hidden">
+                            {`${t('usage.governance.running')} ${row.active} · ${t('usage.governance.queued')} ${row.queued}`}
+                          </span>
+                          <span className="hidden text-right text-[12.5px] text-ink tabular-nums sm:inline">{row.active}</span>
+                          <span className="hidden text-right text-[12.5px] text-ink-soft tabular-nums sm:inline">{row.queued}</span>
+                        </div>
+                        {row.active + row.queued > 0 ? (
+                          <div aria-hidden className="mt-1.5 flex h-1 w-full overflow-hidden rounded-full bg-ink/[0.05]">
+                            {row.active > 0 ? (
+                              <span className="block h-full bg-selected-ink/80" style={{ width: `${Math.max(2, activePct)}%` }} />
+                            ) : null}
+                            {row.queued > 0 ? (
+                              <span className={`block h-full bg-amber-rule ${row.active > 0 ? 'border-l border-paper' : ''}`} style={{ width: `${Math.max(2, queuedPct)}%` }} />
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </li>
+                    );
+                  })}
                 </ol>
               </div>
-              )
             )}
           </section>
-          {snapshot.waiting.length > 0 ? (
+          {showWaitingLedger ? (
             <section className="min-w-0" data-governance-waiting>
-              <div className="mb-3 flex min-h-8 items-center">
+              <div className="mb-3 flex min-h-8 flex-wrap items-center justify-between gap-2">
                 <h2 className="text-[12px] font-medium text-ink-faint">{t('usage.governance.waitingTitle')}</h2>
+                {snapshot.queued > snapshot.waiting.length ? (
+                  <span data-governance-waiting-showing className="text-[11.5px] text-ink-faint tabular-nums">
+                    {t('usage.governance.waitingShowing', { shown: snapshot.waiting.length, total: snapshot.queued })}
+                  </span>
+                ) : null}
               </div>
-              <ol className="divide-y divide-hairline border-t border-hairline">
-                {snapshot.waiting.map((row) => {
-                  const longWait = row.waitedMs >= 10_000;
-                  return (
-                    <li key={row.attemptId} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-2 text-[12.5px]">
-                      <span className="min-w-0 truncate text-ink" title={row.modelId}>{row.modelId}</span>
-                      {row.blockingRules.length > 0 ? (
-                        onJumpToRule !== undefined ? (
-                          <button
-                            type="button"
-                            onClick={() => { onJumpToRule(row.blockingRules[0]!); }}
-                            className="min-w-0 truncate rounded font-mono text-[12px] text-ink-faint underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+              {snapshot.waiting.length > 0 ? (
+                <ol className={`divide-y divide-hairline border-t border-hairline ${snapshot.waiting.length > 8 ? 'max-h-[360px] overflow-y-auto pr-1' : ''}`}>
+                  {snapshot.waiting.map((row) => {
+                    const longWait = row.waitedMs >= 10_000;
+                    const cachedSession = row.sessionId === undefined ? undefined : nameOf(row.sessionId);
+                    const sessionHint = cachedSession?.title;
+                    const waitWidth = Math.max(4, Math.min(100, (row.waitedMs / waitingMaxMs) * 100));
+                    return (
+                      <li key={row.attemptId} data-governance-waiter={row.attemptId} className="py-2 text-[12.5px]">
+                        <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
+                          <span className="min-w-0 truncate font-medium text-ink" title={row.modelId}>{row.modelId}</span>
+                          {sessionHint !== undefined ? (
+                            <span className="min-w-0 truncate text-[12px] text-ink-soft" title={row.sessionId}>
+                              {sessionHint}
+                            </span>
+                          ) : null}
+                          {row.blockingRules.length > 0 ? (
+                            onJumpToRule !== undefined ? (
+                              <button
+                                type="button"
+                                onClick={() => { onJumpToRule(row.blockingRules[0]!); }}
+                                className="min-w-0 truncate rounded font-mono text-[11.5px] text-ink-faint underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+                              >
+                                {t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}
+                              </button>
+                            ) : (
+                              <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-faint">{t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}</span>
+                            )
+                          ) : null}
+                          <span
+                            data-governance-wait-long={longWait ? 'true' : undefined}
+                            className={`ml-auto shrink-0 tabular-nums ${longWait ? 'font-mono font-medium text-amber-ink' : 'text-ink-soft'}`}
                           >
-                            {t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}
-                          </button>
-                        ) : (
-                          <span className="min-w-0 truncate font-mono text-[12px] text-ink-faint">{t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}</span>
-                        )
-                      ) : null}
-                      <span
-                        data-governance-wait-long={longWait ? 'true' : undefined}
-                        className={`ml-auto shrink-0 tabular-nums ${longWait ? 'font-mono font-medium text-amber-ink' : 'text-ink-soft'}`}
-                      >
-                        {time.formatDuration(row.waitedMs)}
-                      </span>
-                    </li>
-                  );
-                })}
-              </ol>
+                            {time.formatDuration(row.waitedMs)}
+                          </span>
+                        </div>
+                        <div aria-hidden className="mt-1.5 flex h-0.5 w-full overflow-hidden rounded-full bg-ink/[0.05]">
+                          <span className={`block h-full ${longWait ? 'bg-amber-rule' : 'bg-ink-faint/45'}`} style={{ width: `${waitWidth}%` }} />
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ol>
+              ) : null}
             </section>
           ) : null}
         </div>
@@ -363,17 +456,22 @@ function RealtimePanel({ snapshot, stale, onRefresh, onJumpToRule }: {
           actions={agentSnapshot === undefined ? undefined : (
             <>
               {liveAgent.stale ? (
-                <button
-                  type="button"
-                  data-governance-agents-stale
-                  data-governance-agents-retry
-                  aria-label={`${t('usage.governance.stale', { time: time.absoluteTime(agentSnapshot.asOf) ?? agentSnapshot.asOf })} · ${t('usage.execution.retryRefresh')}`}
-                  title={`${t('usage.governance.stale', { time: time.absoluteTime(agentSnapshot.asOf) ?? agentSnapshot.asOf })} · ${t('usage.execution.retryRefresh')}`}
-                  onClick={() => { void liveAgent.refetch(); }}
-                  className="inline-flex items-center text-amber-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
-                >
-                  <Icon name="refresh" size={12} className="h-[13px] w-[13px]" />
-                </button>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="text-[11.5px] text-amber-ink tabular-nums">
+                    {t('usage.governance.stale', { time: agentStaleTimeLabel })}
+                  </span>
+                  <button
+                    type="button"
+                    data-governance-agents-stale
+                    data-governance-agents-retry
+                    aria-label={`${t('usage.governance.stale', { time: agentStaleTimeLabel })} · ${t('usage.execution.retryRefresh')}`}
+                    title={`${t('usage.governance.stale', { time: agentStaleTimeLabel })} · ${t('usage.execution.retryRefresh')}`}
+                    onClick={() => { void liveAgent.refetch(); }}
+                    className="inline-flex min-h-7 min-w-7 items-center justify-center text-amber-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+                  >
+                    <Icon name="refresh" size={12} className="h-[13px] w-[13px]" />
+                  </button>
+                </span>
               ) : null}
               {executionVisibleError !== undefined ? (
                 <span role="status" data-execution-stale className="inline-flex items-center">
@@ -402,7 +500,7 @@ function RealtimePanel({ snapshot, stale, onRefresh, onJumpToRule }: {
           <p role="status" data-governance-agents-status className="text-[12.5px] text-ink-faint">
             {t(liveAgent.isError || !liveAgent.loading ? 'usage.governance.agentsUnavailable' : 'usage.governance.agentsLoading')}
             {liveAgent.isError || !liveAgent.loading ? (
-              <button type="button" data-governance-agents-retry className="ml-2 underline underline-offset-2 hover:text-ink" onClick={() => { void liveAgent.refetch(); }}>
+              <button type="button" data-governance-agents-retry className="ml-2 font-medium text-ink underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink" onClick={() => { void liveAgent.refetch(); }}>
                 {t('usage.execution.retryRefresh')}
               </button>
             ) : null}
@@ -426,48 +524,61 @@ function RealtimePanel({ snapshot, stale, onRefresh, onJumpToRule }: {
             </div>
             {shownAgentRows.length === 0 ? (
               <p data-governance-agents-empty className="text-[12.5px] text-ink-faint">{t('usage.governance.idleAgents')}</p>
-            ) : phone ? (
-              <ol data-governance-agent-dimensions data-governance-agent-dimension={agentDimension} className="divide-y divide-hairline border-t border-hairline">
-                {shownAgentRows.map((row) => (
-                  <li key={`${row.dimension}:${row.id ?? 'unknown'}`} data-governance-agent-row={row.id ?? 'unknown'} className="py-2">
-                    <span className="block truncate text-[13px] text-ink" title={row.id ?? ''}>{agentRowDisplay(row.id)}</span>
-                    <span className="block text-[12px] text-ink-soft tabular-nums">
-                      {[
-                        `${t('usage.governance.mainAgents')} ${row.mainActive ?? row.main}`,
-                        `${t('usage.governance.subagents')} ${row.subActive ?? row.subagent}`,
-                        `${t('usage.governance.independentAgents')} ${row.independentActive ?? row.independent ?? 0}`,
-                        `${t('usage.governance.totalAgents')} ${row.totalActive ?? row.active}`,
-                      ].join(' · ')}
-                    </span>
-                  </li>
-                ))}
-              </ol>
             ) : (
-              <div className="overflow-x-auto pb-1" data-governance-agent-dimensions data-governance-agent-dimension={agentDimension}>
-                <div className="min-w-[480px]">
-                  <div aria-hidden className="grid grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_4.5rem] gap-x-2 pb-2 text-[11px] text-ink-faint">
-                    <span>{t('usage.governance.target')}</span>
-                    <span className="text-right">{t('usage.governance.mainAgents')}</span>
-                    <span className="text-right">{t('usage.governance.subagents')}</span>
-                    <span className="text-right">{t('usage.governance.independentAgents')}</span>
-                    <span className="text-right">{t('usage.governance.totalAgents')}</span>
-                  </div>
-                  <ol className="divide-y divide-hairline border-t border-hairline">
-                    {shownAgentRows.map((row) => (
-                      <li key={`${row.dimension}:${row.id ?? 'unknown'}`} data-governance-agent-row={row.id ?? 'unknown'} className="grid grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_4.5rem] items-baseline gap-x-2 py-2">
-                        <span className="flex min-w-0 items-baseline gap-1.5">
+              <div
+                data-governance-agent-dimensions
+                data-governance-agent-dimension={agentDimension}
+                aria-label={t('usage.governance.agentBandAria', { dimension: t(`usage.governance.${agentDimension}` as I18nKey) })}
+              >
+                <div aria-hidden className="hidden grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_4.5rem] gap-x-2 pb-2 text-[11px] text-ink-faint sm:grid">
+                  <span>{t('usage.governance.target')}</span>
+                  <span className="text-right">{t('usage.governance.mainAgents')}</span>
+                  <span className="text-right">{t('usage.governance.subagents')}</span>
+                  <span className="text-right">{t('usage.governance.independentAgents')}</span>
+                  <span className="text-right">{t('usage.governance.totalAgents')}</span>
+                </div>
+                <ol className="divide-y divide-hairline border-t border-hairline">
+                  {shownAgentRows.map((row) => {
+                    const mainCount = row.mainActive ?? row.main ?? 0;
+                    const subCount = row.subActive ?? row.subagent ?? 0;
+                    const indCount = row.independentActive ?? row.independent ?? 0;
+                    const totalCount = row.totalActive ?? row.active ?? 0;
+                    return (
+                      <li key={`${row.dimension}:${row.id ?? 'unknown'}`} data-governance-agent-row={row.id ?? 'unknown'} className="py-2">
+                        <div className="flex flex-col gap-0.5 sm:grid sm:grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_4.5rem] sm:items-baseline sm:gap-x-2">
                           <span className="min-w-0 truncate text-[13px] text-ink" title={row.id ?? ''}>
                             {agentRowDisplay(row.id)}
                           </span>
-                        </span>
-                        <span className="text-right text-[12.5px] text-ink tabular-nums">{row.mainActive ?? row.main}</span>
-                        <span className="text-right text-[12.5px] text-ink-soft tabular-nums">{row.subActive ?? row.subagent}</span>
-                        <span className="text-right text-[12.5px] text-ink-faint tabular-nums">{row.independentActive ?? row.independent ?? 0}</span>
-                        <span className="text-right text-[12.5px] text-ink tabular-nums">{row.totalActive ?? row.active}</span>
+                          <span className="text-[12px] text-ink-soft tabular-nums sm:hidden">
+                            {[
+                              `${t('usage.governance.mainAgents')} ${mainCount}`,
+                              `${t('usage.governance.subagents')} ${subCount}`,
+                              `${t('usage.governance.independentAgents')} ${indCount}`,
+                              `${t('usage.governance.totalAgents')} ${totalCount}`,
+                            ].join(' · ')}
+                          </span>
+                          <span className="hidden text-right text-[12.5px] text-ink tabular-nums sm:inline">{mainCount}</span>
+                          <span className="hidden text-right text-[12.5px] text-ink-soft tabular-nums sm:inline">{subCount}</span>
+                          <span className="hidden text-right text-[12.5px] text-ink-faint tabular-nums sm:inline">{indCount}</span>
+                          <span className="hidden text-right text-[12.5px] text-ink tabular-nums sm:inline">{totalCount}</span>
+                        </div>
+                        {totalCount > 0 ? (
+                          <div aria-hidden className="mt-1.5 flex h-1 w-full overflow-hidden rounded-full bg-ink/[0.05]">
+                            {mainCount > 0 ? (
+                              <span className="block h-full bg-ink/70" style={{ width: `${Math.max(2, (mainCount / agentMaxCount) * 100)}%` }} />
+                            ) : null}
+                            {subCount > 0 ? (
+                              <span className={`block h-full bg-selected-ink/80 ${mainCount > 0 ? 'border-l border-paper' : ''}`} style={{ width: `${Math.max(2, (subCount / agentMaxCount) * 100)}%` }} />
+                            ) : null}
+                            {indCount > 0 ? (
+                              <span className={`block h-full bg-ink-faint/55 ${(mainCount > 0 || subCount > 0) ? 'border-l border-paper' : ''}`} style={{ width: `${Math.max(2, (indCount / agentMaxCount) * 100)}%` }} />
+                            ) : null}
+                          </div>
+                        ) : null}
                       </li>
-                    ))}
-                  </ol>
-                </div>
+                    );
+                  })}
+                </ol>
               </div>
             )}
           </>

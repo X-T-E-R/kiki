@@ -1535,4 +1535,50 @@ describe('live agent snapshot availability', () => {
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-agents-retry]')!.click(); });
     expect(refetch).toHaveBeenCalledTimes(1);
   });
+
+  it('shows Showing N of Q for a 101-waiter snapshot, renders one-dimension count band, and reuses cached titles without fetching waiters', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', 'en');
+    connection.wsStatus = 'open';
+    liveAgentsWith([]);
+    const waiting = Array.from({ length: 100 }, (_, i) => ({
+      attemptId: `att-${i}`,
+      sessionId: i === 0 ? 'session_cached_waiter' : `session_uncached_waiter_${i}`,
+      modelId: i === 0 ? 'fixture_model' : 'k2-thinking',
+      providerId: 'provider-example',
+      purpose: 'turn',
+      waitedMs: (100 - i) * 500,
+      blockingRules: ['provider-cap'],
+    }));
+    connection.client.getRequestGovernance.mockResolvedValue({
+      ...snapshot,
+      active: 12,
+      queued: 101,
+      dimensions: [
+        { dimension: 'model', id: 'k2-thinking', active: 10, queued: 100 },
+        { dimension: 'model', id: 'fixture_model', active: 2, queued: 1 },
+        { dimension: 'provider', id: 'provider-example', active: 12, queued: 101 },
+      ],
+      waiting,
+    });
+    const { container, render } = mount('realtime', false, (queryClient) => {
+      queryClient.setQueryData(['sessions', false, undefined], {
+        pages: [{
+          items: [{ id: 'session_cached_waiter', title: 'Production rollout', workspace_id: 'wd_example', updated_at: '2026-01-01T12:00:00Z' }],
+          has_more: false,
+        }],
+        pageParams: [undefined],
+      });
+    });
+    await settle(render, 1100);
+
+    expect(container.querySelector('[data-governance-count-band="model"]')).not.toBeNull();
+    expect(container.querySelector('[data-governance-waiting-showing]')?.textContent).toBe('Showing 100 of 101');
+    const firstWaiter = container.querySelector('[data-governance-waiter="att-0"]')!;
+    expect(firstWaiter.textContent).toContain('fixture_model');
+    expect(firstWaiter.textContent).toContain('Production rollout');
+    expect(firstWaiter.querySelector('[title="session_cached_waiter"]')).not.toBeNull();
+    // Waiter session ids must not trigger per-waiter metadata fetches.
+    expect(connection.client.getSession).not.toHaveBeenCalled();
+  });
 });

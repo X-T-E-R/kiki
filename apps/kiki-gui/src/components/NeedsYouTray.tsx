@@ -142,6 +142,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
   // they have not read. The same pause keeps a double-pressed `y` from also
   // approving the approval that slides in behind the first.
   const armedRef = useRef<{ readonly id: string; readonly armsAt: number } | null>(null);
+  const inFlightApprovalRef = useRef<string | null>(null);
   useEffect(() => {
     if (currentApprovalId === undefined) return;
     if (armedRef.current?.id !== currentApprovalId) {
@@ -158,13 +159,21 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
         || target.tagName === 'SELECT' || target.isContentEditable || target.closest('.xterm') !== null)) return;
       if (anyOverlayOpen()) return;
       if (Date.now() < (armedRef.current?.armsAt ?? 0)) return;
+      if (inFlightApprovalRef.current === currentApprovalId) return;
       event.preventDefault();
-      void onResolveApproval(currentApprovalId, decision).catch((error: unknown) => {
-        pushToast({
-          tone: 'error',
-          text: t('sv.approvalShortcutFailed', { detail: error instanceof Error ? error.message : String(error) }),
+      inFlightApprovalRef.current = currentApprovalId;
+      void Promise.resolve(onResolveApproval(currentApprovalId, decision))
+        .catch((error: unknown) => {
+          pushToast({
+            tone: 'error',
+            text: t('sv.approvalShortcutFailed', { detail: error instanceof Error ? error.message : String(error) }),
+          });
+        })
+        .finally(() => {
+          if (inFlightApprovalRef.current === currentApprovalId) {
+            inFlightApprovalRef.current = null;
+          }
         });
-      });
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
@@ -230,7 +239,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
     const stepButton = 'flex h-7 w-7 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11 pointer-coarse:w-11';
     return (
       <section ref={rootRef} data-needs-you-tray data-needs-you-card aria-label={t('tray.aria')} className="anim-enter">
-        <header className="flex min-h-10 items-center gap-2 px-3 pt-1.5">
+        <header className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 border-b border-hairline/60 px-3 py-1.5">
           <LifeMark markId="composer-needs-you" life="waiting" tone="bg-attention" />
           <h2 className="shrink-0 text-[13px] font-medium text-attention">{t('composer.needsYou.title')}</h2>
           {ordered.length > 1 ? (
@@ -238,7 +247,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
               <button type="button" aria-label={t('composer.needsYou.previous')} title={t('composer.needsYou.previous')} onClick={() => { step(-1); }} className={stepButton}>
                 <Icon name="chevron" size={12} className="rotate-180" />
               </button>
-              <span>{t('composer.needsYou.step', { index: index + 1, total: ordered.length })}</span>
+              <span className="px-0.5">{t('composer.needsYou.step', { index: index + 1, total: ordered.length })}</span>
               <button type="button" aria-label={t('composer.needsYou.next')} title={t('composer.needsYou.next')} onClick={() => { step(1); }} className={stepButton}>
                 <Icon name="chevron" size={12} />
               </button>
@@ -247,19 +256,21 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
           <span className="min-w-0 flex-1 truncate text-[12px] text-ink-faint max-sm:hidden">
             {originName(current) === undefined ? '' : t('tray.from', { name: originName(current)! })}
           </span>
-          {batch}
-          {current.kind === 'question' && rest.length > 0 ? (
-            <button type="button" data-tray-later title={t('tray.laterTitle')} className={headAction}
-              onClick={() => { setPinned(null); setLater((set) => new Set(set).add(currentId)); }}>
-              {t('tray.later')}
-            </button>
-          ) : null}
+          <span className="ml-auto flex shrink-0 items-center gap-1">
+            {batch}
+            {current.kind === 'question' && rest.length > 0 ? (
+              <button type="button" data-tray-later title={t('tray.laterTitle')} className={headAction}
+                onClick={() => { setPinned(null); setLater((set) => new Set(set).add(currentId)); }}>
+                {t('tray.later')}
+              </button>
+            ) : null}
+          </span>
         </header>
         {/* Bounded by the visible height, not the layout height: with a phone
             keyboard up (a reject note, an answer) `vh` still counts the
             space behind the keyboard, and the card would push the session
             off the top of what is left. */}
-        <div data-tray-current={currentId} className={`max-h-[min(400px,calc(var(--kiki-visual-height,100vh)*0.44))] overflow-y-auto px-3 pt-1 ${current.kind === 'approval' ? 'pb-0' : 'pb-2'}`}>
+        <div data-tray-current={currentId} className={`max-h-[min(400px,calc(var(--kiki-visual-height,100vh)*0.44))] overflow-y-auto px-3 pt-2 ${current.kind === 'approval' ? 'pb-0' : 'pb-2'}`}>
           {currentCard}
         </div>
         {footer}
@@ -275,7 +286,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
         aria-label={t('tray.aria')}
         className={`anim-enter mx-auto max-w-[var(--kiki-chat-content-width,760px)] rounded-[14px] border border-hairline bg-panel shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]`}
       >
-        <header className="flex items-center gap-2 px-3 pt-2">
+        <header className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-hairline/60 px-3 py-2">
           {/* The one moving accent mark on the screen: the tray is where the
               session waits, so it alone beckons. */}
           <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
@@ -337,11 +348,11 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
         </header>
         {/* The current item: the real card, bounded so a long question never
             pushes the composer off screen. */}
-        <div data-tray-current={currentId} className={`max-h-[min(46vh,420px)] overflow-y-auto px-3 pt-2 ${current.kind === 'approval' ? 'pb-0' : 'pb-3'}`}>
+        <div data-tray-current={currentId} className={`max-h-[min(46vh,420px)] overflow-y-auto px-3 pt-2.5 ${current.kind === 'approval' ? 'pb-0' : 'pb-3'}`}>
           {currentCard}
         </div>
         {rest.length > 0 ? (
-          <ul data-tray-rest aria-label={tp('tray.more', rest.length)} className="border-t border-hairline px-1.5 py-1">
+          <ul data-tray-rest aria-label={tp('tray.more', rest.length)} className="divide-y divide-hairline/60 border-t border-hairline px-1.5 py-1">
             {rest.map((item) => {
               const id = itemId(item);
               const origin = originName(item);
