@@ -277,7 +277,7 @@ function FilterRail({
             onClick={() => { onChange(band.id); }}
             className={`inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[12px] whitespace-nowrap transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-10 ${
               active
-                ? 'bg-ink/[0.08] font-medium text-ink'
+                ? 'bg-ink/[0.08] text-ink'
                 : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
             }`}
           >
@@ -325,7 +325,7 @@ function MediaSourceRow({
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className={`truncate text-[13px] ${status === 'broken' ? 'text-ink-faint line-through decoration-ink-faint/60' : status === 'off' || status === 'removed' ? 'text-ink-soft' : 'font-medium text-ink'}`}>
+            <span className={`truncate text-[13px] ${status === 'broken' ? 'text-ink-faint line-through decoration-ink-faint/60' : status === 'off' || status === 'removed' ? 'text-ink-soft' : 'font-normal text-ink'}`}>
               {entry.displayName}
             </span>
             {/* A reader's own script is marked by what it is, not by the

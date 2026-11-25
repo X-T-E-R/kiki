@@ -168,19 +168,19 @@ export function ProfileDetailSections({
     <div data-profile-detail className="space-y-3 text-[11.5px]">
       {/* 1. 身份与来源 */}
       <details open data-profile-section="identity" className="rounded-lg border border-hairline bg-paper/40 p-2">
-        <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
+        <summary className="font-mono text-[10px] font-normal uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.identity')}
         </summary>
         <div className="mt-2 space-y-2">
           <div className="flex items-center justify-between gap-2">
-            <span className="font-mono text-[14px] font-semibold text-ink">{profileName}</span>
+            <span className="font-mono text-[14px] font-bold text-ink">{profileName}</span>
             <SourceBadge source={source} variant="accent" />
           </div>
           <dl className="grid grid-cols-1 gap-1.5 font-mono text-[10.5px] rounded bg-paper/60 p-2 border border-hairline">
             {identity?.id ? (
               <div className="flex items-baseline justify-between gap-2">
                 <dt className="text-ink-faint">{t('agentPanel.internalId')}</dt>
-                <dd className="font-medium text-ink truncate select-all">{identity.id}</dd>
+                <dd className="font-normal text-ink truncate select-all">{identity.id}</dd>
               </div>
             ) : null}
             <div className="flex items-baseline justify-between gap-2">
@@ -196,7 +196,7 @@ export function ProfileDetailSections({
             {route ? (
               <div className="flex items-baseline justify-between gap-2">
                 <dt className="text-ink-faint">{t('st.namedAgents.route')}</dt>
-                <dd className="text-ink font-medium">{route}</dd>
+                <dd className="text-ink font-normal">{route}</dd>
               </div>
             ) : null}
             {definitionId ? (
@@ -224,7 +224,7 @@ export function ProfileDetailSections({
       {/* 1b. 磁盘上的同名定义：与上面这份绑定定义不是同一个文件时单列 */}
       {other ? (
         <details data-disk-definition className="rounded-lg border border-hairline bg-paper/40 p-2">
-          <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
+          <summary className="font-mono text-[10px] font-normal uppercase text-ink-faint cursor-pointer select-none">
             {t('st.namedAgents.diskVersion')} · {other.source_file ?? t('st.namedAgents.builtin')}
           </summary>
           <DiskDefinitionSummary
@@ -237,13 +237,13 @@ export function ProfileDetailSections({
 
       {/* 2. 意图与定位 */}
       <details open data-profile-section="intent" className="rounded-lg border border-hairline bg-paper/40 p-2">
-        <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
+        <summary className="font-mono text-[10px] font-normal uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.intent')}
         </summary>
         <div className="mt-2 space-y-2">
           {description ? (
             <div>
-              <div className="text-[10px] font-medium text-ink-faint">
+              <div className="text-[10px] font-normal text-ink-faint">
                 {t('agentPanel.profileDescription')}
               </div>
               <p className="mt-0.5 whitespace-pre-wrap leading-relaxed text-ink">{description}</p>
@@ -253,7 +253,7 @@ export function ProfileDetailSections({
           ) : null}
           {whenToUse ? (
             <div className="rounded bg-ink/[0.04] p-2 text-[11px] leading-snug text-ink-soft">
-              <div className="mb-0.5 text-[10px] font-medium uppercase text-accent">
+              <div className="mb-0.5 text-[10px] font-normal uppercase text-accent">
                 {t('st.namedAgents.whenToUse')}
               </div>
               <p className="italic">{whenToUse}</p>
@@ -264,12 +264,12 @@ export function ProfileDetailSections({
 
       {/* 3. 模型与推理（字段、声明值、生效值、来源/锁定） */}
       <details open data-profile-section="model" className="rounded-lg border border-hairline bg-paper/40 p-2">
-        <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
+        <summary className="font-mono text-[10px] font-normal uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.model')}
         </summary>
         <div className="mt-2 space-y-2">
           <div className="rounded border border-hairline bg-paper/60 p-2 font-mono text-[10.5px]">
-            <div className="grid grid-cols-[minmax(3.5rem,0.7fr)_minmax(0,1fr)_minmax(0,1.1fr)_minmax(0,0.9fr)] gap-1 border-b border-hairline pb-1 text-[9.5px] font-semibold uppercase text-ink-faint">
+            <div className="grid grid-cols-[minmax(3.5rem,0.7fr)_minmax(0,1fr)_minmax(0,1.1fr)_minmax(0,0.9fr)] gap-1 border-b border-hairline pb-1 text-[9.5px] font-normal uppercase text-ink-faint">
               <div>{t('agentPanel.value.field')}</div>
               <div>{t('agentPanel.value.declared')}</div>
               <div>{t('agentPanel.value.effective')}</div>
@@ -283,7 +283,7 @@ export function ProfileDetailSections({
               <div className="truncate text-ink" title={pinnedModel}>
                 {pinnedModel ?? t('st.namedAgents.unspecified')}
               </div>
-              <div className="truncate font-medium text-ink" title={effectiveModel}>
+              <div className="truncate font-normal text-ink" title={effectiveModel}>
                 {effectiveModel ?? t('agentPanel.unknownModel')}
               </div>
               <div className="text-right">
@@ -307,7 +307,7 @@ export function ProfileDetailSections({
               <div className="truncate text-ink" title={pinnedEffort}>
                 {pinnedEffort ?? t('st.namedAgents.unspecified')}
               </div>
-              <div className="truncate font-medium text-ink">
+              <div className="truncate font-normal text-ink">
                 {effectiveEffort ?? t('agentPanel.default')}
               </div>
               <div className="text-right">
@@ -327,19 +327,19 @@ export function ProfileDetailSections({
             {serviceTier ? (
               <div className="flex justify-between py-1 text-ink-soft">
                 <span>{t('st.namedAgents.serviceTier')}</span>
-                <span className="font-medium text-ink">{serviceTier}</span>
+                <span className="font-normal text-ink">{serviceTier}</span>
               </div>
             ) : null}
             {contextBudget ? (
               <div className="flex justify-between py-1 text-ink-soft">
                 <span>{t('st.namedAgents.contextBudget')}</span>
-                <span className="font-medium text-ink">{contextBudget}</span>
+                <span className="font-normal text-ink">{contextBudget}</span>
               </div>
             ) : null}
             {maxCompletionTokens ? (
               <div className="flex justify-between py-1 text-ink-soft">
                 <span>{t('st.namedAgents.maxCompletionTokens')}</span>
-                <span className="font-medium text-ink">{maxCompletionTokens}</span>
+                <span className="font-normal text-ink">{maxCompletionTokens}</span>
               </div>
             ) : null}
             {requestParams && Object.keys(requestParams).length > 0 ? (
@@ -355,7 +355,7 @@ export function ProfileDetailSections({
           {/* Model profiles list */}
           {bound?.model_profiles && bound.model_profiles.length > 0 ? (
             <div className="space-y-1 pt-1">
-              <div className="text-[10px] font-semibold uppercase text-ink-faint">
+              <div className="text-[10px] font-normal uppercase text-ink-faint">
                 {t('st.namedAgents.modelProfile')}
               </div>
               <div className="space-y-1">
@@ -366,7 +366,7 @@ export function ProfileDetailSections({
                       key={mp.alias}
                       className="rounded border border-hairline bg-paper/60 p-2 font-mono text-[10px]"
                     >
-                      <div className="font-medium text-ink">{summary.headline}</div>
+                      <div className="font-normal text-ink">{summary.headline}</div>
                       {summary.details.map((d, i) => (
                         <div key={i} className="text-ink-soft pl-2">
                           {t(NAMED_AGENT_LEASE_DETAIL_LABEL_KEYS[d.label])}: {d.value}
@@ -383,12 +383,12 @@ export function ProfileDetailSections({
 
       {/* 4. 工具与策略 */}
       <details open data-profile-section="tools" className="rounded-lg border border-hairline bg-paper/40 p-2">
-        <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
+        <summary className="font-mono text-[10px] font-normal uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.tools')}
         </summary>
         <div className="mt-2 space-y-2 font-mono text-[10.5px]">
           <div>
-            <div className="text-[10px] font-semibold uppercase text-ink-faint mb-1">
+            <div className="text-[10px] font-normal uppercase text-ink-faint mb-1">
               {t('st.namedAgents.tools')}
             </div>
             {tools === undefined ? (
@@ -416,14 +416,14 @@ export function ProfileDetailSections({
 
           {disallowedTools && disallowedTools.length > 0 ? (
             <div>
-              <div className="text-[10px] font-semibold uppercase text-danger mb-1">
+              <div className="text-[10px] font-normal uppercase text-danger mb-1">
                 {t('st.namedAgents.disallowedTools')}
               </div>
               <div className="flex flex-wrap gap-1">
                 {disallowedTools.map((name: string) => (
                   <span
                     key={name}
-                    className="rounded bg-danger/10 border border-danger/20 px-1.5 py-0.5 text-[9.5px] text-danger font-medium"
+                    className="rounded bg-danger/10 border border-danger/20 px-1.5 py-0.5 text-[9.5px] text-danger font-normal"
                   >
                     {name}
                   </span>
@@ -434,7 +434,7 @@ export function ProfileDetailSections({
 
           {skills && skills.length > 0 ? (
             <div>
-              <div className="text-[10px] font-semibold uppercase text-ink-faint mb-1">
+              <div className="text-[10px] font-normal uppercase text-ink-faint mb-1">
                 {t('agentPanel.skills')} ({skills.length})
               </div>
               <ToolChipList
@@ -453,7 +453,7 @@ export function ProfileDetailSections({
 
           {toolAllowPolicies && toolAllowPolicies.length > 0 ? (
             <div>
-              <div className="text-[10px] font-semibold uppercase text-ink-faint mb-1">
+              <div className="text-[10px] font-normal uppercase text-ink-faint mb-1">
                 {t('st.tools.title')} ({toolAllowPolicies.length})
               </div>
               <div className="space-y-1">
@@ -480,12 +480,12 @@ export function ProfileDetailSections({
 
       {/* 5. 派生能力 */}
       <details open data-profile-section="subagents" className="rounded-lg border border-hairline bg-paper/40 p-2">
-        <summary className="font-mono text-[10px] font-semibold uppercase text-ink-faint cursor-pointer select-none">
+        <summary className="font-mono text-[10px] font-normal uppercase text-ink-faint cursor-pointer select-none">
           {t('agentPanel.profileSection.subagents')}
         </summary>
         <div className="mt-2 space-y-2 font-mono text-[10.5px]">
           <div className="flex items-center justify-between gap-2 border-b border-hairline pb-2">
-            <span className="text-[10px] font-semibold uppercase text-ink-faint">
+            <span className="text-[10px] font-normal uppercase text-ink-faint">
               {t('agentPanel.subagentPolicy')}
             </span>
             <DispatchPolicyBadges profilePolicy={profilePolicy} targets={dispatchTargets} />
@@ -493,7 +493,7 @@ export function ProfileDetailSections({
 
           {spawnConstraints ? (
             <div className="space-y-1.5 rounded border border-hairline bg-paper/60 p-2">
-              <div className="text-[9.5px] font-semibold uppercase text-ink-faint">
+              <div className="text-[9.5px] font-normal uppercase text-ink-faint">
                 {t('st.namedAgents.spawnConstraints')}
               </div>
               {spawnConstraints.allowed_models && spawnConstraints.allowed_models.length > 0 ? (
@@ -533,7 +533,7 @@ export function ProfileDetailSections({
 
           {presetList && presetList.length > 0 ? (
             <div className="space-y-1 pt-1">
-              <div className="text-[10px] font-semibold uppercase text-ink-faint">
+              <div className="text-[10px] font-normal uppercase text-ink-faint">
                 {t('agentPanel.subagents')} ({presetList.length})
               </div>
               <SubagentLeaseList

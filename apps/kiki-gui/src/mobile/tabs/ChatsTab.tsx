@@ -61,7 +61,7 @@ function SwipeChatRow({
               setOffsetX(0);
               onMarkRead();
             }}
-            className="flex h-11 items-center rounded-full bg-selected px-3.5 text-[12px] font-medium text-selected-ink"
+            className="flex h-11 items-center rounded-full bg-selected px-3.5 text-[12px] font-normal text-selected-ink"
           >
             {t('mobile.chats.markRead')}
           </button>
@@ -72,7 +72,7 @@ function SwipeChatRow({
             setOffsetX(0);
             onArchive();
           }}
-          className="flex h-11 items-center rounded-full bg-ink/[0.08] px-3.5 text-[12px] font-medium text-ink"
+          className="flex h-11 items-center rounded-full bg-ink/[0.08] px-3.5 text-[12px] font-normal text-ink"
         >
           {t('mobile.chats.archive')}
         </button>
@@ -116,7 +116,7 @@ function SwipeChatRow({
         }}
         className="relative flex min-h-[68px] w-full items-center gap-3.5 bg-paper px-4 py-3 text-left transition-transform duration-150 active:bg-ink/[0.03]"
       >
-        <span className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-canvas font-display text-[16px] font-medium text-ink-soft">
+        <span className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-canvas font-display text-[16px] font-normal text-ink-soft">
           {initial}
           {dotClass !== null ? (
             <span
@@ -129,14 +129,14 @@ function SwipeChatRow({
 
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline justify-between gap-2">
-            <span className={`min-w-0 truncate text-[15px] ${item.unread || item.needsYou ? 'font-semibold text-ink' : 'font-medium text-ink'}`}>
+            <span className={`min-w-0 truncate text-[15px] font-normal ${item.unread || item.needsYou ? 'text-ink' : 'text-ink-soft'}`}>
               {item.title}
             </span>
             <RelativeTime at={item.at} className="shrink-0 text-[12px] tabular-nums text-ink-faint" />
           </span>
           <span className="mt-0.5 flex items-center gap-1.5 text-[13px] text-ink-faint">
             {showSpaceTag ? (
-              <span className="shrink-0 rounded bg-ink/[0.05] px-1.5 py-0.5 text-[11px] font-medium text-ink-soft">
+              <span className="shrink-0 rounded bg-ink/[0.05] px-1.5 py-0.5 text-[11px] font-normal text-ink-soft">
                 {item.spaceName}
               </span>
             ) : null}
@@ -279,7 +279,7 @@ export function ChatsTab({
                 type="button"
                 data-mobile-chats-filter={entry.id}
                 onClick={() => { setFilter(entry.id); }}
-                className={`h-11 rounded-full px-4 text-[13.5px] font-medium transition-colors ${
+                className={`h-11 rounded-full px-4 text-[13.5px] font-normal transition-colors ${
                   active
                     ? 'bg-ink text-paper'
                     : 'border border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
@@ -326,7 +326,7 @@ export function ChatsTab({
               data-mobile-chats-load-more
               disabled={loadingMore}
               onClick={onLoadMore}
-              className="inline-flex h-10 items-center rounded-full border border-hairline bg-panel px-5 text-[13.5px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-50"
+              className="inline-flex h-10 items-center rounded-full border border-hairline bg-panel px-5 text-[13.5px] font-normal text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-50"
             >
               {loadingMore ? t('sidebar.loadingMore') : t('sidebar.loadMore')}
             </button>

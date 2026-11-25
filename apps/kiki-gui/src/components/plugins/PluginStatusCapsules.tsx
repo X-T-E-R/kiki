@@ -297,7 +297,7 @@ export function PluginStatusCapsules({
                 aria-label={t('pluginSlot.statusAria')}
                 className={`anim-enter flex w-64 max-h-[min(20rem,var(--available-height,60vh))] flex-col p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
               >
-                <p className="px-2.5 py-1 text-[11px] font-medium text-ink-faint">
+                <p className="px-2.5 py-1 text-[11px] font-normal text-ink-faint">
                   {t('pluginSlot.statusAria')}
                 </p>
                 {capsules.length >= CAPSULE_POPOVER_SEARCH_MIN ? (

@@ -69,7 +69,7 @@ export const RawFileCollapse = memo(function RawFileCollapse({
         data-profile-section={dataSection}
         className="rounded-lg border border-hairline bg-paper/40 p-2"
       >
-        <summary className="cursor-pointer text-[12px] font-medium text-ink-soft select-none">
+        <summary className="cursor-pointer text-[12px] font-normal text-ink-soft select-none">
           {t('agentPanel.profileSection.raw')}
         </summary>
         <div className="mt-2">

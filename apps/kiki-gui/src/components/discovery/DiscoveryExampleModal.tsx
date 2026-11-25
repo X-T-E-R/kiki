@@ -36,7 +36,7 @@ export function DiscoveryExampleModal({
         <div className="min-w-0">
           <span
             data-discovery-example-badge
-            className="inline-flex items-center gap-1 rounded-md bg-ink/[0.06] px-2 py-0.5 text-[11px] font-medium text-ink-soft"
+            className="inline-flex items-center gap-1 rounded-md bg-ink/[0.06] px-2 py-0.5 text-[11px] font-normal text-ink-soft"
           >
             <Icon name="info" size={12} />
             {t(example.labelKey)}
@@ -61,10 +61,10 @@ export function DiscoveryExampleModal({
               className="rounded-xl border border-hairline bg-paper p-3 shadow-[var(--kiki-sheet-shadow)]"
             >
               <div className="flex items-center gap-2">
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-ink/[0.06] text-[11px] font-semibold text-ink">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-ink/[0.06] text-[11px] font-normal text-ink">
                   {index + 1}
                 </span>
-                <span className="text-[13px] font-medium text-ink">{t(item.titleKey)}</span>
+                <span className="text-[13px] font-normal text-ink">{t(item.titleKey)}</span>
               </div>
               <p className="mt-1 text-[12px] leading-relaxed text-ink-soft">{t(item.bodyKey)}</p>
             </div>

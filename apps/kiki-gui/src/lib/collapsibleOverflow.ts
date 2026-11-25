@@ -60,11 +60,12 @@ export function useCollapsibleOverflow<T extends HTMLElement>(
 
   useLayoutEffect(() => {
     if (expanded) return;
-    if (!mountedMeasuredRef.current || typeof ResizeObserver === 'undefined') {
+    if (typeof ResizeObserver === 'undefined') {
       mountedMeasuredRef.current = true;
       measure();
       return;
     }
+    mountedMeasuredRef.current = true;
     return scheduleOverflowMeasure(measure);
   }, [contentKey, expanded, measure]);
 

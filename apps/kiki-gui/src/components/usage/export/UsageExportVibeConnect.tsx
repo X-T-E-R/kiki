@@ -146,7 +146,7 @@ export function UsageExportVibeConnect({
   return (
     <section data-usage-export-vibe-connect={flow?.state ?? (credentialStored ? 'connected' : 'idle')} className="space-y-3 rounded-xl border border-hairline bg-panel p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-[13px] font-semibold text-ink">VibeCafe</p>
+        <p className="text-[13px] font-normal text-ink">VibeCafe</p>
         <span className="text-[11.5px] text-ink-faint">vibecafe.ai</span>
       </div>
       <p className="text-[12px] leading-relaxed text-ink-soft">{t('usage.export.vibeAuth.hint')}</p>
@@ -154,7 +154,7 @@ export function UsageExportVibeConnect({
       {pending ? (
         <>
           <p className="text-[11.5px] text-ink-soft">{t('st.oauth.codeLabel')}</p>
-          <code data-usage-export-vibe-code className="inline-block rounded-md bg-paper px-3 py-2 font-mono text-[20px] font-semibold tracking-[0.15em] text-ink">{flow.user_code}</code>
+          <code data-usage-export-vibe-code className="inline-block rounded-md bg-paper px-3 py-2 font-mono text-[20px] font-bold tracking-[0.15em] text-ink">{flow.user_code}</code>
           <p role="status" className="text-[12px] text-ink-soft">{t(flow.error_category === 'vibe-auth-network' ? 'usage.export.vibeAuth.network' : 'usage.export.vibeAuth.pending')}</p>
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" data-usage-export-vibe-open className={SECONDARY_BUTTON} onClick={() => void open(flow.verification_uri)}>{t('st.oauth.openPage')}</button>
@@ -167,7 +167,7 @@ export function UsageExportVibeConnect({
         <div className="space-y-2.5">
           <div className="flex items-center gap-2">
             <span aria-hidden className="h-2 w-2 rounded-full bg-success" />
-            <p role="status" className="text-[12.5px] font-medium text-ink">
+            <p role="status" className="text-[12.5px] font-normal text-ink">
               {t(flow?.state === 'connected' ? 'usage.export.vibeAuth.connected' : 'usage.export.vibeAuth.stored')}
             </p>
           </div>

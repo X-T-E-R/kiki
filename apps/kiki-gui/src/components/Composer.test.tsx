@@ -510,10 +510,13 @@ describe('Composer host compatibility', () => {
     writeSettings({ sendShortcut: 'enter' });
   });
 
-  it('omits redundant working prose from the status line and keeps actionable queued state', async () => {
+  it('renders working status with last-response time and switches to actionable queued state', async () => {
     const at = Date.now() - 12_000;
     const { container, rerender } = await renderComposer({ value: '', busy: true, working: { lastResponseAt: at } });
-    expect(container.querySelector('[data-composer-working]')).toBeNull();
+    const workingLine = container.querySelector('[data-composer-working]');
+    expect(workingLine).not.toBeNull();
+    expect(workingLine?.getAttribute('data-last-response-at')).toBe(String(at));
+    expect(workingLine?.textContent).toContain('Working · last response');
     expect(container.querySelector('[data-composer-hints]')).toBeNull();
 
     await rerender({ value: '', busy: true, working: { lastResponseAt: at, queued: { waitedMs: 4_000, modelId: 'fixture/kiki-pro' } } });

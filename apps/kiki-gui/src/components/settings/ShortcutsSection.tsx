@@ -330,7 +330,7 @@ export function ShortcutsSection() {
           ) : null}
           {bindings !== undefined ? grouped.map((group) => (
             <div key={group.context} data-shortcut-group={group.context}>
-              <p className="pb-1 text-[12px] font-medium text-section-ink">{t(CONTEXT_TITLE[group.context])}</p>
+              <p className="pb-1 text-[12px] font-normal text-section-ink">{t(CONTEXT_TITLE[group.context])}</p>
               <ul className="divide-y divide-hairline border-y border-hairline">
                 {group.definitions.map((definition) => (
                   <ShortcutRow
@@ -381,7 +381,7 @@ function Keycaps({ keys }: { keys: readonly string[] }) {
   return (
     <span className="inline-flex items-center gap-0.5">
       {keys.map((key, index) => (
-        <kbd key={`${key}-${index}`} className="min-w-[1.4rem] rounded-[4px] border border-hairline bg-paper px-1.5 py-px text-center font-mono text-[11px] font-medium text-ink shadow-[0_1px_0_var(--color-hairline-strong)]">
+        <kbd key={`${key}-${index}`} className="min-w-[1.4rem] rounded-[4px] border border-hairline bg-paper px-1.5 py-px text-center font-mono text-[11px] font-normal text-ink shadow-[0_1px_0_var(--color-hairline-strong)]">
           {key}
         </kbd>
       ))}
@@ -528,7 +528,7 @@ function ChordRecorder({ platform, desktop, describedBy, onRecorded, onCancel, o
           }
           onRecorded(result.chord);
         }}
-        className="inline-flex min-h-8 min-w-[9rem] items-center justify-center gap-1.5 rounded-md bg-selected px-3 text-[12px] font-medium text-selected-ink outline-2 outline-selected-ink/60 [outline-style:solid] pointer-coarse:min-h-11"
+        className="inline-flex min-h-8 min-w-[9rem] items-center justify-center gap-1.5 rounded-md bg-selected px-3 text-[12px] font-normal text-selected-ink outline-2 outline-selected-ink/60 [outline-style:solid] pointer-coarse:min-h-11"
       >
         <span aria-hidden className="h-1.5 w-1.5 animate-pulse rounded-full bg-selected-ink motion-reduce:animate-none" />
         {t('st.shortcuts.recording')}

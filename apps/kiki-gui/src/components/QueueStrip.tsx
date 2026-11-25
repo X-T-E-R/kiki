@@ -188,12 +188,12 @@ export function QueueHeaderSummary({
   return (
     <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
       {count > 0 ? (
-        <span data-queue-count className="shrink-0 font-medium text-section-ink tabular-nums">
+        <span data-queue-count className="shrink-0 font-normal text-section-ink tabular-nums">
           {tp('composer.queueStack.count', count)}
         </span>
       ) : null}
       {heldCount > 0 ? (
-        <span data-queue-held-count className="shrink-0 font-medium text-ink-soft tabular-nums">
+        <span data-queue-held-count className="shrink-0 font-normal text-ink-soft tabular-nums">
           {count > 0 ? t('queue.heldSummary', { count: heldCount }) : t('queue.heldOnlySummary', { count: heldCount })}
         </span>
       ) : null}
@@ -595,7 +595,7 @@ export function QueueStrip({
                   type="button"
                   disabled={pending}
                   onClick={() => { onEditModelSwitch(row.operationId); }}
-                  className="h-7 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+                  className="h-7 rounded-md px-2 text-[12px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
                 >
                   {t('modelSwitch.action.edit')}
                 </button>
@@ -605,7 +605,7 @@ export function QueueStrip({
                   type="button"
                   disabled={pending}
                   onClick={() => { run(row.operationId, (id) => onCancelModelSwitch(id)); }}
-                  className="h-7 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+                  className="h-7 rounded-md px-2 text-[12px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
                 >
                   {t('modelSwitch.action.cancel')}
                 </button>
@@ -791,7 +791,7 @@ export function QueueStrip({
                 onClick={() => { onEdit(item.promptId); }}
                 title={t('queue.editTitle')}
                 aria-label={t('sv.queueEditAria')}
-                className="h-7 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+                className="h-7 rounded-md px-2 text-[12px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
               >
                 {t('sv.queueEdit')}
               </button>
@@ -808,7 +808,7 @@ export function QueueStrip({
                 onClick={() => { run(item.promptId, onSendNow); }}
                 title={sendNowDisabled ? t('sv.sendPaused') : sendNowUnavailable ?? t('sv.queueSendNowTitle')}
                 aria-label={t('sv.queueSendNow')}
-                className="h-7 rounded-md px-2 text-[12px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+                className="h-7 rounded-md px-2 text-[12px] font-normal text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
               >
                 {t('sv.queueSendNow')}
               </button>
@@ -826,7 +826,7 @@ export function QueueStrip({
               }}
               title={armed ? t('queue.removeConfirmTitle') : t('sv.queueRemoveTitle')}
               aria-label={armed ? t('queue.removeConfirm') : t('sv.queueRemove')}
-              className={`h-7 rounded-md px-2 text-[12px] font-medium transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none ${
+              className={`h-7 rounded-md px-2 text-[12px] font-normal transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none ${
                 armed
                   ? 'bg-danger/10 text-danger hover:bg-danger/15 focus-visible:ring-danger/50'
                   : 'text-ink-soft hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-selected-ink/40'
@@ -855,7 +855,7 @@ export function QueueStrip({
     >
       {idleNodes.length > 0 ? (
         <div data-queue-idle-region className="mb-1 rounded-md bg-ink/[0.025] px-1 py-1">
-          <div className="flex min-h-7 items-center gap-2 px-1.5 text-[12px] font-medium text-ink-soft">
+          <div className="flex min-h-7 items-center gap-2 px-1.5 text-[12px] font-normal text-ink-soft">
             <Icon name="clock" size={12} />
             {t('queue.scheduledMode', { mode: t('cron.delivery.idle') })}
           </div>
@@ -873,7 +873,7 @@ export function QueueStrip({
             data-queue-sort-toggle
             aria-pressed={sortMode}
             onClick={() => { setSortMode((value) => !value); setTouchOpenId(null); }}
-            className={`h-9 shrink-0 rounded-md px-3 text-[12px] font-medium transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
+            className={`h-9 shrink-0 rounded-md px-3 text-[12px] font-normal transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
               sortMode ? 'bg-ink/[0.07] text-ink hover:bg-ink/[0.09]' : 'text-ink-soft hover:bg-ink/[0.05] hover:text-ink'
             }`}
           >

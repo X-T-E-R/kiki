@@ -108,7 +108,7 @@ export function ImAccountRow({ account, data, catalog, setupPlatform, initialTar
 
       {state === 'auth_expired' && bindings.length === 0 && discoveries.length === 0 ? null : <section className="space-y-3" data-im-conversations={account.id}>
         <div className="flex items-center justify-between gap-2">
-          <p className="text-[13px] font-medium text-ink">{t('st.channels.conversations')}</p>
+          <p className="text-[13px] font-normal text-ink">{t('st.channels.conversations')}</p>
           {account.listening ? (
             <button type="button" className="rounded-md px-2 py-1 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink" data-im-refresh-discovery onClick={refresh}>
               {t('st.im.refreshDiscovery')}

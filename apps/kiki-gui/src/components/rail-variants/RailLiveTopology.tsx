@@ -230,7 +230,7 @@ export const RailLiveTopology = memo(function RailLiveTopology({
       className="mb-3 border-b border-hairline pb-3"
     >
       <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-[11px] font-medium tracking-[0.02em] text-ink-faint">
+        <span className="text-[11px] font-normal text-ink-faint">
           {t('rail.topology.title')}
         </span>
         {summaryParts.length > 0 ? (
@@ -251,7 +251,7 @@ export const RailLiveTopology = memo(function RailLiveTopology({
           data-topology-root=""
           title={mainElapsed === undefined ? mainLabel : `${mainLabel} · ${mainElapsed}`}
           onClick={onSwitchToRun}
-          className={`inline-flex h-7 max-w-[88px] shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-hairline-strong bg-paper px-2 text-left text-[11.5px] font-medium text-ink transition-colors hover:border-ink-faint hover:bg-canvas ${FOCUS_RING}`}
+          className={`inline-flex h-7 max-w-[88px] shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-hairline-strong bg-paper px-2 text-left text-[11.5px] font-normal text-ink transition-colors hover:border-ink-faint hover:bg-canvas ${FOCUS_RING}`}
         >
           <StateMark
             state={pendingCount > 0 ? 'waiting' : busy ? 'running' : 'done'}
@@ -305,7 +305,7 @@ export const RailLiveTopology = memo(function RailLiveTopology({
               onClick={onSwitchToRun}
               className={`flex h-7 w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md border border-hairline bg-paper/70 px-2 text-left transition-colors hover:border-hairline-strong hover:bg-canvas ${FOCUS_RING}`}
             >
-              <span className={`min-w-0 flex-1 truncate text-[11.5px] ${pendingCount > 0 ? 'font-medium text-attention' : 'text-ink-soft'}`}>
+              <span className={`min-w-0 flex-1 truncate text-[11.5px] ${pendingCount > 0 ? 'text-attention' : 'text-ink-soft'}`}>
                 {pendingCount > 0
                   ? `${t('inspector.nowWaiting')} (${pendingCount})`
                   : t('inspector.nowWorking')}
@@ -364,13 +364,13 @@ export const RailLiveTopology = memo(function RailLiveTopology({
                       size={12}
                       className={isWaiting ? 'shrink-0 text-attention' : 'shrink-0 text-ink-soft'}
                     />
-                    <span className={`min-w-0 flex-1 truncate text-[11.5px] ${isWaiting ? 'font-medium text-attention' : 'text-ink'}`}>
+                    <span className={`min-w-0 flex-1 truncate text-[11.5px] ${isWaiting ? 'text-attention' : 'text-ink'}`}>
                       {item.label}
                     </span>
                     <span
                       className={`shrink-0 text-[10.5px] ${
                         isWaiting
-                          ? 'font-medium text-attention'
+                          ? 'text-attention'
                           : item.state === 'running'
                             ? 'text-accent'
                             : 'text-ink-faint'
@@ -394,11 +394,11 @@ export const RailLiveTopology = memo(function RailLiveTopology({
                   className={`flex h-7 w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md border border-hairline bg-paper/70 px-2 text-left transition-colors hover:border-hairline-strong hover:bg-canvas ${FOCUS_RING}`}
                 >
                   <StateMark state={item.state} className="h-[7px] w-[7px]" />
-                  <span className={`min-w-0 flex-1 truncate text-[11.5px] ${isWaiting ? 'font-medium text-attention' : 'text-ink'}`}>
+                  <span className={`min-w-0 flex-1 truncate text-[11.5px] ${isWaiting ? 'text-attention' : 'text-ink'}`}>
                     {item.label}
                   </span>
                   {isWaiting ? (
-                    <span className="shrink-0 text-[10.5px] font-medium text-attention">
+                    <span className="shrink-0 text-[10.5px] font-normal text-attention">
                       {t('rail.needsInput')}
                     </span>
                   ) : elapsed !== undefined ? (

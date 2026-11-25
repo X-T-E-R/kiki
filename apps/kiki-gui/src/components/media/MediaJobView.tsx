@@ -163,7 +163,7 @@ export function MediaJobView({
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
         {modality === undefined ? null : <MediaKindGlyph kind={modality} className="h-3.5 w-3.5 text-ink-faint" />}
         <span className="min-w-0 flex-1 truncate text-[12px] text-ink" title={job.request_id}>{job.request_id}</span>
-        <span className={`text-[11px] font-medium ${STATE_TONE[tone]}`}>
+        <span className={`text-[11px] font-normal ${STATE_TONE[tone]}`}>
           {isJobActive(job) ? <Spinner label={t(jobStateKey(job.state))} size={12} /> : t(jobStateKey(job.state))}
         </span>
       </div>
@@ -187,7 +187,7 @@ export function MediaJobView({
           {delivery.messages && delivery.messages.length > 0 ? (
             <div className="space-y-1" data-media-delivery-messages>
               <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
-                <span className="font-medium text-ink-faint">{t('cap.media.delivery.label')}</span>
+                <span className="font-normal text-ink-faint">{t('cap.media.delivery.label')}</span>
                 {delivery.request_id ? <span className="font-mono text-ink-faint">{delivery.request_id}</span> : null}
               </div>
               {delivery.detail ? (
@@ -201,7 +201,7 @@ export function MediaJobView({
                   <div key={idx} className="rounded bg-panel/50 px-2 py-1 text-[11px]" data-media-delivery-item={itemIndex}>
                     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
                       <span className="font-mono text-[11px] text-ink-faint">#{itemIndex + 1}</span>
-                      <span className={`font-medium ${STATE_TONE[msgTone]}`} data-media-delivery-item-status={status}>
+                      <span className={`font-normal ${STATE_TONE[msgTone]}`} data-media-delivery-item-status={status}>
                         {t(deliveryStatusKey(status))}
                       </span>
                       {msg.message_id ? <span className="font-mono text-[11px] text-ink-faint">{msg.message_id}</span> : null}
@@ -236,8 +236,8 @@ export function MediaJobView({
           ) : (
             <>
               <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
-                <span className="font-medium text-ink-faint">{t('cap.media.delivery.label')}</span>
-                <span className={`font-medium ${STATE_TONE[deliveryTone(delivery.delivery ?? delivery.status)]}`}>
+                <span className="font-normal text-ink-faint">{t('cap.media.delivery.label')}</span>
+                <span className={`font-normal ${STATE_TONE[deliveryTone(delivery.delivery ?? delivery.status)]}`}>
                   {t(deliveryStatusKey(delivery.delivery ?? delivery.status))}
                 </span>
                 {delivery.request_id ? <span className="font-mono text-ink-faint">{delivery.request_id}</span> : null}

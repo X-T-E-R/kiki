@@ -147,7 +147,7 @@ export function SpaceCredentialsDialog({ client: controlClient, space, onClose, 
             return (
               <div key={mode} data-space-credentials-mode={mode}
                 className={`rounded-lg p-3 ${isTarget ? 'bg-panel shadow-[var(--kiki-sheet-shadow)] ring-1 ring-selected-ink/40' : 'bg-ink/[0.03]'}`}>
-                <p className={`text-[13px] font-medium ${isTarget ? 'text-ink' : 'text-ink-soft'}`}>{t(mode === 'shared' ? 'st.spaces.credShared' : 'st.spaces.credIsolated')}</p>
+                <p className={`text-[13px] font-normal ${isTarget ? 'text-ink' : 'text-ink-soft'}`}>{t(mode === 'shared' ? 'st.spaces.credShared' : 'st.spaces.credIsolated')}</p>
                 <p className="mt-0.5 text-[12px] text-ink-faint">{t(mode === 'shared' ? 'st.spaces.credSharedDesc' : 'st.spaces.credIsolatedDesc')}</p>
               </div>
             );
@@ -160,7 +160,7 @@ export function SpaceCredentialsDialog({ client: controlClient, space, onClose, 
             <fieldset className="mt-4 pt-3" data-space-copy-ssh>
               <legend className="sr-only">{t('st.spaces.copySsh', { name: space.name })}</legend>
               <div className="flex items-baseline justify-between gap-3">
-                <p aria-hidden className="text-[13px] font-medium text-ink">{t('st.spaces.copySsh', { name: space.name })}</p>
+                <p aria-hidden className="text-[13px] font-normal text-ink">{t('st.spaces.copySsh', { name: space.name })}</p>
                 {hosts.length > 1 ? (
                   <label className="flex shrink-0 items-center gap-1.5 text-[12px] text-ink-soft">
                     <input type="checkbox" data-space-copy-ssh-all checked={allSelected} className="accent-[var(--color-selected-ink)]"

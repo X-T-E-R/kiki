@@ -229,7 +229,7 @@ export async function readWorkspaceBytesViaSession(
   sessionId: string,
   path: string,
   workspaceRoot: string | undefined,
-  options?: { readonly ifNoneMatch?: string; readonly signal?: AbortSignal },
+  options?: { readonly ifNoneMatch?: string; readonly probeOnly?: boolean; readonly signal?: AbortSignal },
 ): Promise<{
   readonly bytes: Uint8Array;
   readonly mime: string;
@@ -238,6 +238,34 @@ export async function readWorkspaceBytesViaSession(
 }> {
   const relPath = toWorkspaceRelativePath(path, workspaceRoot);
   if (relPath === undefined) throw makeRemoteUnreadableError();
+  // Conditional or metadata-only checks read 1 byte instead of downloading up to 10 MiB base64.
+  if (options?.ifNoneMatch !== undefined || options?.probeOnly === true) {
+    const probe = await client.fsRead(
+      sessionId,
+      {
+        path: relPath,
+        encoding: 'base64',
+        length: 1,
+      },
+      { signal: options?.signal },
+    );
+    if (options?.ifNoneMatch !== undefined && probe.etag === options.ifNoneMatch) {
+      return {
+        bytes: new Uint8Array(),
+        mime: probe.mime,
+        etag: probe.etag,
+        notModified: true,
+      };
+    }
+    if (options?.probeOnly === true) {
+      return {
+        bytes: new Uint8Array(),
+        mime: probe.mime,
+        etag: probe.etag,
+        notModified: false,
+      };
+    }
+  }
   const res = await client.fsRead(
     sessionId,
     {
@@ -390,7 +418,7 @@ export async function readPreviewFileBytes(
   client: KikiClient,
   path: string,
   scope: SessionWorkspaceReadScope,
-  options?: { readonly ifNoneMatch?: string; readonly signal?: AbortSignal },
+  options?: { readonly ifNoneMatch?: string; readonly probeOnly?: boolean; readonly signal?: AbortSignal },
 ): Promise<{
   readonly bytes: Uint8Array;
   readonly mime: string;
@@ -569,7 +597,7 @@ export const BODY_ACTION_CLASS =
 
 // Neutral ink primary button (used for unsupported/damaged download instead of vermilion accent).
 export const INK_BUTTON_CLASS =
-  'rounded-lg border border-ink bg-ink px-3 py-1.5 text-[12px] font-medium text-paper transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
+  'rounded-lg border border-ink bg-ink px-3 py-1.5 text-[12px] font-normal text-paper transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 
 export function TabPathCaption({ path }: { readonly path: string }) {
   return (
@@ -747,7 +775,7 @@ export function ChangedOnDiskStrip({ onReload }: { readonly onReload: () => void
         type="button"
         data-changed-reload
         onClick={onReload}
-        className="rounded-full border border-amber-rule/60 px-2.5 py-0.5 font-medium transition-colors hover:bg-amber-rule/20"
+        className="rounded-full border border-amber-rule/60 px-2.5 py-0.5 font-normal transition-colors hover:bg-amber-rule/20"
       >
         {t('preview.reloadFile')}
       </button>

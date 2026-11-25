@@ -92,7 +92,7 @@ export function PreviewSkillView({
             data-md-mode={option}
             onClick={() => { setMode(option); }}
             className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
-              mode === option ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-faint hover:text-ink-soft'
+              mode === option ? 'bg-paper text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-faint hover:text-ink-soft'
             }`}
           >
             {t(option === 'rendered' ? 'preview.rendered' : 'preview.source')}

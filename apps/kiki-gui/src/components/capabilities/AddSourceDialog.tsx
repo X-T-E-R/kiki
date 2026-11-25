@@ -76,7 +76,7 @@ export function AddSourceDialog({
             { value: 'zip', label: t('cap.source.zip') },
           ]}
         />
-        <label className="block space-y-1 text-[12px] font-medium text-ink-soft">
+        <label className="block space-y-1 text-[12px] font-normal text-ink-soft">
           {kind === 'github' ? t('cap.source.githubLabel') : kind === 'path' ? t('cap.source.pathLabel') : t('cap.source.zipLabel')}
           <div className="flex gap-2">
             <input
@@ -94,7 +94,7 @@ export function AddSourceDialog({
           </div>
         </label>
         {kind === 'zip' ? (
-          <label className="block space-y-1 text-[12px] font-medium text-ink-soft">
+          <label className="block space-y-1 text-[12px] font-normal text-ink-soft">
             {t('cap.source.sha')}
             <input
               className={`${INPUT} font-mono`}
@@ -146,7 +146,7 @@ export function CatalogSourceField() {
   const dirty = draft !== (configQuery.data?.plugins?.marketplaceUrl ?? '');
   return (
     <div className="space-y-2" data-catalog-source>
-      <label className="block space-y-1 text-[12px] font-medium text-ink-soft">
+      <label className="block space-y-1 text-[12px] font-normal text-ink-soft">
         {t('st.plugins.sourceLabel')}
         <input className={`${INPUT} font-mono`} value={draft} spellCheck={false} placeholder={t('st.plugins.sourcePlaceholder')} onChange={(event) => { setDraft(event.target.value); }} />
       </label>

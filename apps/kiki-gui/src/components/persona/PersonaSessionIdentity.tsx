@@ -165,7 +165,7 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
     >
       <div className="flex shrink-0 items-center gap-1.5">
         <PersonaAvatar persona={face} size={20} decorative />
-        <span data-session-persona-name className="max-w-[9rem] truncate font-sans text-[13.5px] leading-5 font-medium text-ink">{displayName}</span>
+        <span data-session-persona-name className="max-w-[9rem] truncate font-sans text-[13.5px] leading-5 font-normal text-ink">{displayName}</span>
         <button
           type="button"
           ref={toggle}
@@ -193,11 +193,11 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
       <span aria-hidden className="shrink-0 text-[13px] text-ink-faint/70">/</span>
       <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[13.5px] leading-5 text-ink-soft">
         {isDaily ? (
-          <span data-session-conversation-kind="daily" className="min-w-0 truncate font-sans text-[13.5px] font-medium text-ink">{t('persona.dailyTitle')}</span>
+          <span data-session-conversation-kind="daily" className="min-w-0 truncate font-sans text-[13.5px] font-normal text-ink">{t('persona.dailyTitle')}</span>
         ) : roomId !== undefined ? (
           <span className="flex min-w-0 items-center gap-1">
             <span aria-hidden className="shrink-0 font-mono text-ink-faint">#</span>
-            <span data-session-conversation-kind="room" className="min-w-0 truncate font-sans text-[13.5px] font-medium text-ink">{roomName ?? t('persona.roomSeat')}</span>
+            <span data-session-conversation-kind="room" className="min-w-0 truncate font-sans text-[13.5px] font-normal text-ink">{roomName ?? t('persona.roomSeat')}</span>
           </span>
         ) : (
           <span data-session-identity-title className="flex min-w-0 flex-1 items-center">{title}</span>

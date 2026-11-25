@@ -36,7 +36,7 @@ export function ToolRecordField({ block, agentId, field, children }: {
   const label = t(field === 'input' ? 'tc.input' : 'tc.output');
   const absent = field === 'output' && block.output === undefined;
   return <div data-tool-record-field={field}>
-    <div className="mb-1 flex items-center justify-between text-[12px] font-medium text-ink-faint">
+    <div className="mb-1 flex items-center justify-between text-[12px] font-normal text-ink-faint">
       <span>{label}{field === 'output' && block.isError === true ? t('tc.outputError') : ''}</span>
       {absent ? null : <CopyButton label={label} text={text} prepare={prepare} />}
     </div>

@@ -7,8 +7,9 @@
  * back to English, then Chinese, then the raw key.
  */
 
-import { en } from './en';
-import { zh } from './zh';
+import type { en } from './en';
+import type { zh } from './zh';
+import { initialDictionaries } from './dictionaries';
 import { mappedErrorKey } from './errorMapping';
 import { errorToText } from '../util/errorText';
 
@@ -18,7 +19,22 @@ export type I18nParams = Readonly<Record<string, string | number>>;
 
 export const LOCALE_STORAGE_KEY = 'kiki.locale';
 
-const DICTIONARIES: Record<Locale, Partial<Record<I18nKey, string>>> = { en, zh };
+const DICTIONARIES: Record<Locale, Partial<Record<I18nKey, string>>> = initialDictionaries();
+const LOADED_LOCALES = new Set<Locale>(
+  (['en', 'zh'] as const).filter((loc) => Object.keys(DICTIONARIES[loc]).length > 0),
+);
+
+export function hasLocaleDictionary(locale: Locale): boolean {
+  return LOADED_LOCALES.has(locale);
+}
+
+export function registerLocaleDictionary(
+  locale: Locale,
+  dictionary: Partial<Record<I18nKey, string>>,
+): void {
+  DICTIONARIES[locale] = dictionary;
+  if (Object.keys(dictionary).length > 0) LOADED_LOCALES.add(locale);
+}
 
 /**
  * Resolution order: an explicit stored choice wins; otherwise the browser

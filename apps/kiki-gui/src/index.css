@@ -1790,7 +1790,7 @@ button.context-image:hover {
   border-radius: 4px;
   background: color-mix(in srgb, var(--color-accent) 11%, transparent);
   color: var(--color-accent-ink);
-  font-weight: 500;
+  font-weight: 400;
 }
 /* The ＋ menu's search field: its rounded well carries the focus ring. */
 input[data-add-search]:focus-visible {

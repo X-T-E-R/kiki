@@ -246,7 +246,7 @@ function GroupBindingOptions({
       {policyVisible && wake === 'senders' && onSenders ? (
         <div className="space-y-2.5 max-w-lg rounded-lg border border-hairline bg-paper/60 p-3" data-im-group-senders={prefix}>
           <div className="space-y-1.5">
-            <p className="text-[12.5px] font-medium text-ink-soft">{t('st.im.wake.sendersLabel')}</p>
+            <p className="text-[12.5px] font-normal text-ink-soft">{t('st.im.wake.sendersLabel')}</p>
             {activeSenders.length > 0 ? (
               <div className="flex flex-wrap gap-1.5" data-im-sender-chips={prefix}>
                 {activeSenders.map((senderId) => {
@@ -257,7 +257,7 @@ function GroupBindingOptions({
                       data-im-sender-chip={senderId}
                       className="inline-flex items-center gap-1.5 rounded-md border border-hairline-strong bg-panel px-2 py-0.5 text-[12px] text-ink"
                     >
-                      {name ? <span className="font-medium">{name}</span> : null}
+                      {name ? <span className="font-normal">{name}</span> : null}
                       <span className="font-mono text-[11.5px] text-ink-soft" title={senderId}>{compactIdentifier(senderId)}</span>
                       <button
                         type="button"
@@ -502,7 +502,7 @@ export function BindingRow({ binding, snapshot, policy, catalog, setupPlatform, 
         className="group/row flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40">
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-2">
-            <span className="min-w-0 truncate text-[13px] font-medium text-ink" data-im-binding-identity>{identity}</span>
+            <span className="min-w-0 truncate text-[13px] font-normal text-ink" data-im-binding-identity>{identity}</span>
             {!binding.enabled ? <span className="shrink-0 rounded-[4px] border border-hairline px-1.5 py-px text-[11px] leading-4 text-ink-faint">{t('st.im.disabled')}</span> : null}
           </span>
           <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px]">
@@ -685,9 +685,9 @@ export function DiscoveryRow({ discovery, snapshot, catalog, setupPlatform, init
   const selected = target || defaultTarget(catalog);
   return <div data-im-discovery={discovery.id} className="space-y-3 rounded-lg border border-amber-rule/40 bg-amber-card p-3.5">
     <div className="space-y-1">
-      <p className="text-[11.5px] font-medium text-amber-ink">{t('st.im.discovery')}</p>
+      <p className="text-[11.5px] font-normal text-amber-ink">{t('st.im.discovery')}</p>
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-        <p className="break-words text-[14px] font-medium text-ink">{identityLabel(discovery.identity, t)}</p>
+        <p className="break-words text-[14px] font-normal text-ink">{identityLabel(discovery.identity, t)}</p>
         {discovery.preview !== '' ? <p className="min-w-0 truncate text-[13px] text-ink-soft" title={discovery.preview}>“{discovery.preview}”</p> : null}
       </div>
       <IdentityIds identity={discovery.identity} />

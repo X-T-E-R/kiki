@@ -120,7 +120,7 @@ export function SshProfilesPanel({
 
   return (
     <section className="mt-5 border-t border-hairline pt-4" aria-label={t('connect.sshTitle')}>
-      <h2 className="text-[13px] font-semibold text-ink">{t('connect.sshTitle')}</h2>
+      <h2 className="text-[13px] font-bold text-ink">{t('connect.sshTitle')}</h2>
       <p className="mt-1 text-[11px] leading-relaxed text-ink-soft">{t('connect.sshHint')}</p>
       {listFailed ? <button type="button" disabled={busy !== null} onClick={retryList}
         className="mt-2 rounded-md border border-hairline-strong px-2 py-1 text-[11px] text-ink disabled:opacity-50">
@@ -131,7 +131,7 @@ export function SshProfilesPanel({
         <div key={profile.id} className="mt-2 rounded-lg border border-hairline px-3 py-2">
           <div className="flex items-center gap-2">
             <div className="min-w-0 flex-1">
-              <p className="truncate text-[12px] font-medium text-ink">{profile.label}</p>
+              <p className="truncate text-[12px] font-normal text-ink">{profile.label}</p>
               <p className="truncate font-mono text-[10px] text-ink-soft">
                 {profile.target.kind === 'alias' ? profile.target.alias : profile.target.hostname}
                 {profile.remotePort ? ` · 127.0.0.1:${profile.remotePort}` : ''}

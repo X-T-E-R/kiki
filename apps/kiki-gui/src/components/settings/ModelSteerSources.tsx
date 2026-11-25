@@ -224,7 +224,7 @@ function SteerSourceBody({ source, steerScope, bodies, text, disabled, onChange 
   if (view !== undefined && view.source === 'files') {
     return (
       <div className="space-y-1.5" data-steer-body={source} data-steer-body-source="files">
-        <p className="text-[12px] font-medium text-ink-soft">{t('st.steerSource.body')}</p>
+        <p className="text-[12px] font-normal text-ink-soft">{t('st.steerSource.body')}</p>
         <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-ink/[0.035] px-3 py-2 font-mono text-[12px] leading-5 text-ink-soft select-text"
           data-steer-body-readonly={source}>{view.text ?? ''}</pre>
         <button type="button"
@@ -245,7 +245,7 @@ function SteerSourceBody({ source, steerScope, bodies, text, disabled, onChange 
 
   return (
     <div className="space-y-1.5" data-steer-body={source} data-steer-body-source={view?.source ?? 'unset'}>
-      <p className="text-[12px] font-medium text-ink-soft">{t('st.steerSource.body')}</p>
+      <p className="text-[12px] font-normal text-ink-soft">{t('st.steerSource.body')}</p>
       <textarea rows={5} spellCheck={false} disabled={disabled} aria-label={label}
         placeholder={t('st.steerSource.emptyBody')}
         className="h-auto w-full resize-y rounded-md border border-hairline-strong bg-panel px-2.5 py-2 font-mono text-[12px] leading-5 text-ink outline-none transition-colors placeholder:text-ink-faint focus-visible:border-selected-ink/45 disabled:cursor-not-allowed disabled:opacity-60"
@@ -272,7 +272,7 @@ function SteerCadenceFields({ source, cadence, disabled, onChange }: {
   const intervalProblem = steerCadenceProblem(cadence.intervalSteps);
   return (
     <div className="space-y-1.5" data-steer-cadence>
-      <p className="text-[12px] font-medium text-ink-soft">{t('st.modelPrompt.cadence')}</p>
+      <p className="text-[12px] font-normal text-ink-soft">{t('st.modelPrompt.cadence')}</p>
       <Toggle
         id={`steer-cadence-turn-${source}`}
         label={t('st.modelPrompt.cadenceTurn')}

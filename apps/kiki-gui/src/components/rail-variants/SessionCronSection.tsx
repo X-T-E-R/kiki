@@ -222,7 +222,7 @@ function CronRow({
         // The control asks for the state the task is not in: a live task
         // pauses, a paused one resumes.
         onClick={() => { onToggle(task.paused); }}
-        className={`${ROW_ACTION} ${reveal} ${task.paused ? 'font-medium text-ink-soft' : 'text-ink-faint'}`}
+        className={`${ROW_ACTION} ${reveal} ${task.paused ? 'text-ink-soft' : 'text-ink-faint'}`}
       >
         {t(task.paused ? 'cron.action.resume' : 'cron.action.pause')}
       </button>
@@ -244,7 +244,7 @@ function CronRow({
             if (armTimerRef.current !== null) clearTimeout(armTimerRef.current);
             onDelete();
           }}
-          className={`${ROW_ACTION} ${reveal} ${deleteArmed ? 'bg-danger/10 font-medium text-danger hover:bg-danger/15 hover:text-danger' : 'text-ink-faint hover:bg-danger/10 hover:text-danger'}`}
+          className={`${ROW_ACTION} ${reveal} ${deleteArmed ? 'bg-danger/10 text-danger hover:bg-danger/15 hover:text-danger' : 'text-ink-faint hover:bg-danger/10 hover:text-danger'}`}
         >
           {deleteArmed ? (locale === 'zh' ? '确认?' : 'Delete?') : <Icon name="close" size={12} />}
         </button>
@@ -362,7 +362,7 @@ function SessionCronList({ sessionId, client }: { readonly sessionId: string; re
                 type="button"
                 data-rail-cron-retry
                 onClick={() => { void read.refetch(); }}
-                className={`ml-1.5 rounded font-medium text-ink-soft transition-colors hover:text-ink ${FOCUS_RING}`}
+                className={`ml-1.5 rounded font-normal text-ink-soft transition-colors hover:text-ink ${FOCUS_RING}`}
               >
                 {t('common.retry')}
               </button>
@@ -414,7 +414,7 @@ function SessionCronList({ sessionId, client }: { readonly sessionId: string; re
                 type="button"
                 data-rail-cron-error-retry
                 onClick={() => { toggle.mutate(failed); }}
-                className={`shrink-0 rounded font-medium text-ink-soft transition-colors hover:text-ink ${FOCUS_RING}`}
+                className={`shrink-0 rounded font-normal text-ink-soft transition-colors hover:text-ink ${FOCUS_RING}`}
               >
                 {t('common.retry')}
               </button>
@@ -522,7 +522,7 @@ export function RunCronSection({
         </h3>
         <span className="text-[12px] text-ink-faint tabular-nums">{activeTasks.length}</span>
         {headerRunning ? (
-          <span data-rail-run-cron-live="" className="inline-flex items-center gap-1 text-[11px] font-medium text-accent">
+          <span data-rail-run-cron-live="" className="inline-flex items-center gap-1 text-[11px] font-normal text-accent">
             <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-accent" />
             {t('rail.cron.running')}
           </span>
@@ -576,7 +576,7 @@ export function RunCronSection({
                     {running ? (
                       <>
                         <span aria-hidden>·</span>
-                        <span data-rail-run-cron-live="" className="shrink-0 font-medium text-accent">{t('rail.cron.running')}</span>
+                        <span data-rail-run-cron-live="" className="shrink-0 font-normal text-accent">{t('rail.cron.running')}</span>
                       </>
                     ) : task.next_fire_at !== null ? (
                       <>
@@ -619,7 +619,7 @@ export function RunCronSection({
             type="button"
             data-rail-cron-error-retry
             onClick={() => { pause.mutate(failedId); }}
-            className={`shrink-0 rounded font-medium text-ink-soft transition-colors hover:text-ink ${FOCUS_RING}`}
+            className={`shrink-0 rounded font-normal text-ink-soft transition-colors hover:text-ink ${FOCUS_RING}`}
           >
             {t('common.retry')}
           </button>

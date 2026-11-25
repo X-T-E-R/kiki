@@ -1014,7 +1014,7 @@ export function MediaLoadFailure({
       <span className="min-w-0 truncate font-mono">{safeName}</span>
       <span aria-hidden className="shrink-0 text-ink-faint">·</span>
       <span className="shrink-0 text-ink-faint">{statusText}</span>
-      <span className="ml-0.5 shrink-0 text-[11.5px] font-medium text-ink">{actionLabel}</span>
+      <span className="ml-0.5 shrink-0 text-[11.5px] font-normal text-ink">{actionLabel}</span>
     </button>
   );
 }
@@ -1649,7 +1649,7 @@ function DeferredMediaPart({ item, size, onStripFailure }: { item: MediaRef & { 
       </span>
       <span className="w-full min-w-0">
         <span className="block truncate font-mono text-[12px] text-ink" title={name}>{name}</span>
-        <span className="mt-0.5 flex items-center gap-1.5 text-[12px] font-medium text-accent-ink">
+        <span className="mt-0.5 flex items-center gap-1.5 text-[12px] font-normal text-accent-ink">
           {status === 'loading' ? <span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" /> : null}
           {status === 'loading' ? t('preview.loading') : t('media.detail.action')}
         </span>

@@ -92,7 +92,7 @@ export function GoalPauseButton({ onPause }: { readonly onPause: () => Promise<u
         disabled={pending}
         aria-busy={pending}
         title={t('goal.pauseTitle')}
-        className="h-6 shrink-0 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+        className="h-6 shrink-0 rounded-md px-1.5 text-[12px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
         onClick={() => {
           if (pending) return;
           setPending(true);
@@ -306,7 +306,7 @@ export function GoalCard({
     goal.followUpTiming !== undefined ? t(GOAL_TIMING_LABEL_KEY[goal.followUpTiming]) : undefined;
 
   const actionClass =
-    'h-6 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none';
+    'h-6 rounded-md px-1.5 text-[12px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none';
   const statusTone =
     goal.status === 'active' ? 'text-ink-faint' : goal.status === 'paused' ? 'text-amber-ink' : 'text-accent-ink';
   const followUp = timingLabel !== undefined ? t('goal.followUp', { timing: timingLabel }) : undefined;
@@ -321,7 +321,7 @@ export function GoalCard({
       <div className="flex items-start justify-between gap-2.5">
         <div className="flex min-w-0 flex-1 items-start gap-2">
           <span aria-hidden className="w-[7px] shrink-0" />
-          <p data-goal-objective className="min-w-0 flex-1 text-[13.5px] leading-5 font-medium break-words text-ink">
+          <p data-goal-objective className="min-w-0 flex-1 text-[13.5px] leading-5 font-normal break-words text-ink">
             {goal.objective}
           </p>
         </div>
@@ -373,7 +373,7 @@ export function GoalCard({
               }
             }}
             title={armedCancel ? t('goal.cancelConfirm') : t('goal.cancelTitle')}
-            className={`h-6 rounded-md px-1.5 text-[12px] font-medium transition-colors duration-[var(--kiki-motion-quick)] disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none ${
+            className={`h-6 rounded-md px-1.5 text-[12px] font-normal transition-colors duration-[var(--kiki-motion-quick)] disabled:opacity-50 focus-visible:ring-2 focus-visible:outline-none ${
               armedCancel
                 ? 'bg-danger/10 text-danger hover:bg-danger/15 focus-visible:ring-danger/50'
                 : 'text-ink-soft hover:bg-danger/10 hover:text-danger focus-visible:ring-selected-ink/50'
@@ -398,7 +398,7 @@ export function GoalCard({
           className="ml-[15px] rounded-lg bg-ink/[0.025] border border-hairline/60 px-3 py-2 text-[12px] text-ink-soft"
         >
           <div className="flex items-center justify-between gap-2">
-            <span className="font-medium text-ink-faint text-[11.5px]">
+            <span className="font-normal text-ink-faint text-[11.5px]">
               {t('goal.criterionLabel')}
             </span>
             {goal.completionCriterion.length > 50 ? (
@@ -407,7 +407,7 @@ export function GoalCard({
                 data-goal-criterion-toggle
                 onClick={() => { setCriterionExpanded((open) => !open); }}
                 aria-expanded={criterionExpanded}
-                className="cursor-pointer text-[11px] font-medium text-ink-faint transition-colors hover:text-ink underline-offset-2 hover:underline"
+                className="cursor-pointer text-[11px] font-normal text-ink-faint transition-colors hover:text-ink underline-offset-2 hover:underline"
               >
                 {criterionExpanded ? t('transcript.showLess') : t('transcript.showMore')}
               </button>
@@ -444,7 +444,7 @@ export function GoalCard({
             <span className="text-[11px] text-ink-faint font-normal">
               {t(`goal.budget.${unit}`)}
             </span>
-            <span className="flex items-baseline gap-1 text-[13px] font-medium leading-none mt-0.5">
+            <span className="flex items-baseline gap-1 text-[13px] font-normal leading-none mt-0.5">
               <span className={reached ? 'text-amber-ink' : 'text-ink'}>
                 {used.toLocaleString()}
               </span>
@@ -464,7 +464,7 @@ export function GoalCard({
       <InlineEditor open={editing} lazy className="mt-2 mb-1 ml-[15px] space-y-3">
           <div className="space-y-3" data-goal-editor>
             <label className="block">
-              <span className="mb-1 block text-[12px] font-medium text-ink-soft">
+              <span className="mb-1 block text-[12px] font-normal text-ink-soft">
                 {t('goal.editObjective')}
               </span>
               <textarea
@@ -480,7 +480,7 @@ export function GoalCard({
               />
             </label>
             <label className="block">
-              <span className="mb-1 block text-[12px] font-medium text-ink-soft">
+              <span className="mb-1 block text-[12px] font-normal text-ink-soft">
                 {t('goal.editCriterion')}
               </span>
               <input
@@ -499,12 +499,12 @@ export function GoalCard({
                 type="button"
                 data-goal-advanced-toggle
                 onClick={() => { setAdvancedOpen((open) => !open); }}
-                className="flex items-center gap-1.5 text-[12px] font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-none"
+                className="flex items-center gap-1.5 text-[12px] font-normal text-ink-soft transition-colors hover:text-ink focus-visible:outline-none"
               >
                 <DisclosureChevron open={advancedOpen} size={12} />
                 <span>{t('st.section.advanced')}</span>
                 {(turnBudget.trim() !== '' || tokenBudget.trim() !== '' || wallClockBudget.trim() !== '') ? (
-                  <span className="rounded-full bg-accent/10 px-1.5 py-0.2 text-[10px] font-medium text-accent">
+                  <span className="rounded-full bg-accent/10 px-1.5 py-0.2 text-[10px] font-normal text-accent">
                     {t('goal.hardBudgets')}
                   </span>
                 ) : null}
@@ -514,7 +514,7 @@ export function GoalCard({
                 className={advancedOpen ? 'mt-2 space-y-3 rounded-lg border border-hairline/40 bg-ink/[0.02] p-2.5' : 'hidden'}
               >
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-[12px] font-medium text-ink-soft">
+                  <span className="text-[12px] font-normal text-ink-soft">
                     {t('goal.editTiming')}
                   </span>
                   <span
@@ -532,7 +532,7 @@ export function GoalCard({
                         onClick={() => { setFollowUpTiming(timing); }}
                         className={`h-6 rounded-md px-2 text-[12px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none ${
                           timing === followUpTiming
-                            ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                            ? 'bg-paper text-ink shadow-[var(--kiki-sheet-shadow)]'
                             : 'text-ink-soft hover:text-ink'
                         }`}
                       >
@@ -543,7 +543,7 @@ export function GoalCard({
                 </div>
                 <fieldset disabled={busy} className="min-w-0 space-y-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <legend className="text-[12px] font-medium text-ink-soft">{t('goal.hardBudgets')}</legend>
+                    <legend className="text-[12px] font-normal text-ink-soft">{t('goal.hardBudgets')}</legend>
                     <button
                       type="button"
                       className={actionClass}
@@ -590,7 +590,7 @@ export function GoalCard({
                                 }}
                                 className={`h-5 rounded px-1.5 text-[11px] transition-colors focus-visible:outline-none ${
                                   !isCustom
-                                    ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                                    ? 'bg-paper text-ink shadow-[var(--kiki-sheet-shadow)]'
                                     : 'text-ink-soft hover:text-ink'
                                 }`}
                               >
@@ -607,7 +607,7 @@ export function GoalCard({
                                 }}
                                 className={`h-5 rounded px-1.5 text-[11px] transition-colors focus-visible:outline-none ${
                                   isCustom
-                                    ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                                    ? 'bg-paper text-ink shadow-[var(--kiki-sheet-shadow)]'
                                     : 'text-ink-soft hover:text-ink'
                                 }`}
                               >
@@ -689,7 +689,7 @@ export function GoalCard({
                   setActionError(null);
                 }}
                 disabled={pending === 'save'}
-                className="h-7 rounded-md px-3 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+                className="h-7 rounded-md px-3 text-[12px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
               >
                 {t('common.cancel')}
               </button>
@@ -698,7 +698,7 @@ export function GoalCard({
                 onClick={save}
                 disabled={pending !== null || baseline === null || objective.trim() === ''}
                 data-goal-save
-                className="h-7 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+                className="h-7 rounded-md bg-accent px-3 text-[12px] font-normal text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
               >
                 {t('common.save')}
               </button>
@@ -739,7 +739,7 @@ export function RecoveryHoldBar({
             type="button"
             disabled={pending}
             onClick={onConfirm}
-            className="h-7 shrink-0 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+            className="h-7 shrink-0 rounded-md bg-accent px-3 text-[12px] font-normal text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
           >
             {t('sv.queueRecovered.confirm')}
           </button>
@@ -764,7 +764,7 @@ export function RecoveryHoldBar({
             type="button"
             disabled={pending}
             onClick={onConfirm}
-            className="h-7 shrink-0 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+            className="h-7 shrink-0 rounded-md bg-accent px-3 text-[12px] font-normal text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
           >
             {t('sv.queueRecovered.confirm')}
           </button>
@@ -772,7 +772,7 @@ export function RecoveryHoldBar({
             type="button"
             disabled={pending}
             onClick={() => setCompact(true)}
-            className="h-7 shrink-0 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+            className="h-7 shrink-0 rounded-md px-2 text-[12px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
           >
             {t('sv.queueRecovered.dismiss')}
           </button>

@@ -171,7 +171,7 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
                       }}
                       className={`rounded-md border px-2 py-0.5 text-[11px] transition-colors ${
                         asrProvider === ''
-                          ? 'border-selected-border bg-selected text-selected-ink font-medium'
+                          ? 'border-selected-border bg-selected text-selected-ink'
                           : 'border-hairline bg-paper text-ink-soft hover:bg-panel hover:text-ink'
                       }`}
                     >
@@ -195,7 +195,7 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
                           title={title}
                           className={`rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors ${
                             active
-                              ? 'border-selected-border bg-selected text-selected-ink font-medium'
+                              ? 'border-selected-border bg-selected text-selected-ink'
                               : 'border-hairline bg-paper text-ink-soft hover:bg-panel hover:text-ink'
                           }`}
                           onClick={() => {
@@ -262,7 +262,7 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
                       }}
                       className={`rounded-md border px-2 py-0.5 text-[11px] transition-colors ${
                         ttsProvider === ''
-                          ? 'border-selected-border bg-selected text-selected-ink font-medium'
+                          ? 'border-selected-border bg-selected text-selected-ink'
                           : 'border-hairline bg-paper text-ink-soft hover:bg-panel hover:text-ink'
                       }`}
                     >
@@ -282,7 +282,7 @@ export function ImRules({ policy }: { policy: ImSessionSnapshot['policy'] }) {
                           }}
                           className={`rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors ${
                             active
-                              ? 'border-selected-border bg-selected text-selected-ink font-medium'
+                              ? 'border-selected-border bg-selected text-selected-ink'
                               : 'border-hairline bg-paper text-ink-soft hover:bg-panel hover:text-ink'
                           }`}
                         >

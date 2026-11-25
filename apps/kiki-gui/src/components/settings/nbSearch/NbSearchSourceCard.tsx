@@ -109,7 +109,7 @@ export function NbSearchSourceCard({
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-ink-soft">{t('st.nbSearch.source.localConfigStatus')}</span>
             <span
-              className={`inline-block rounded px-1.5 py-px text-[11px] font-medium border ${
+              className={`inline-block rounded px-1.5 py-px text-[11px] font-normal border ${
                 LOCAL_CONFIG_BADGE[localConfigStatus] ?? 'border-hairline bg-paper text-ink-faint'
               }`}
             >
@@ -120,7 +120,7 @@ export function NbSearchSourceCard({
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-ink-soft">{t('st.nbSearch.source.credentialsStatus')}</span>
               <span
-                className={`inline-block rounded px-1.5 py-px text-[11px] font-medium border ${
+                className={`inline-block rounded px-1.5 py-px text-[11px] font-normal border ${
                   LOCAL_CONFIG_BADGE[localCredentialsStatus] ?? 'border-hairline bg-paper text-ink-faint'
                 }`}
               >
@@ -136,13 +136,13 @@ export function NbSearchSourceCard({
         <AdvancedDetails summary={t('st.nbSearch.source.technicalDetails')} data-technical-details>
           <div className="space-y-3">
             <div>
-              <span className="font-medium text-ink-soft">{t('st.nbSearch.source.daemonHost')}:</span>{' '}
+              <span className="font-normal text-ink-soft">{t('st.nbSearch.source.daemonHost')}:</span>{' '}
               <span className="font-mono text-ink">{t('st.nbSearch.source.daemonHostLocal')}</span>
             </div>
 
             {activeLayers !== undefined ? (
               <div className="pt-1">
-                <span className="block font-medium text-ink-soft mb-1.5">
+                <span className="block font-normal text-ink-soft mb-1.5">
                   {t('st.nbSearch.source.activeLayers')}
                 </span>
                 <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px]">

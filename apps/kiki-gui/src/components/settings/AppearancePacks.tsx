@@ -164,7 +164,7 @@ export function AppearancePacks() {
               <PackPreview entry={entry} />
               <div className="min-w-0 px-1">
                 <p className="flex flex-wrap items-baseline gap-x-1.5">
-                  <span className="text-[13px] font-medium text-ink">{entry.pack.name}</span>
+                  <span className="text-[13px] font-normal text-ink">{entry.pack.name}</span>
                   <span className="text-[12px] text-ink-faint">
                     {[
                       entry.summary.hasSkin ? t('st.pack.colors') : null,

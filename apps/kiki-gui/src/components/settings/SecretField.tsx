@@ -152,7 +152,7 @@ export function SecretField({
 
   return (
     <div className="min-w-0 space-y-1.5" data-secret-field data-secret-source={source} data-secret-mode={draft.mode}>
-      <label htmlFor={inputId} className={labelHidden ? 'sr-only' : 'block text-[13px] font-medium text-ink'}>{label}</label>
+      <label htmlFor={inputId} className={labelHidden ? 'sr-only' : 'block text-[13px] font-normal text-ink'}>{label}</label>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <div className={`flex min-w-0 flex-[1_1_16rem] items-center rounded-lg border bg-paper transition-colors focus-within:border-selected-ink ${
           draft.mode === 'clear' ? 'border-dashed border-hairline-strong' : 'border-hairline'} ${disabled ? 'bg-hairline/20' : ''}`}>

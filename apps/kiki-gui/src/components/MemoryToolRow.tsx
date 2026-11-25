@@ -187,7 +187,7 @@ export function MemoryToolRow({ block, agentId = 'main' }: { readonly block: Too
           <span aria-hidden className={`flex h-4 w-[18px] shrink-0 items-center justify-center ${failed ? 'text-danger' : 'text-ink-faint'}`}>
             <Icon name="memory" />
           </span>
-          <span className={`shrink-0 text-[13px] font-medium ${failed ? 'text-danger' : 'text-ink'}`}>{verb}</span>
+          <span className={`shrink-0 text-[13px] font-normal ${failed ? 'text-danger' : 'text-ink'}`}>{verb}</span>
           {detail !== undefined ? (
             <span className={`min-w-0 flex-1 truncate text-[12px] ${failed ? 'text-danger' : 'text-ink-soft'}`}>{detail}</span>
           ) : (

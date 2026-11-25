@@ -745,7 +745,7 @@ export function SessionRenameDialog({
       panelClassName={`${DIALOG_DEFAULT_PANEL_CLASS} max-w-[380px] p-4`}
     >
       <form onSubmit={(event) => { void handleSubmit(event); }} className="flex flex-col gap-3">
-        <h2 className="font-display text-[15px] font-medium text-ink">{t('rename.title')}</h2>
+        <h2 className="font-display text-[15px] font-bold text-ink">{t('rename.title')}</h2>
         <input
           ref={inputRef}
           type="text"

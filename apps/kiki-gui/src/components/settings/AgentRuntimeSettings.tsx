@@ -84,7 +84,7 @@ function StringListEditor({ label, values, onChange, placeholder }: {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
-        <span className="text-[11px] font-medium text-ink-soft">{label}</span>
+        <span className="text-[11px] font-normal text-ink-soft">{label}</span>
         <button type="button" className={SECONDARY_BUTTON} onClick={() => { update([...entries, { id: nextStringListId(), value: '' }]); }}>
           {t('st.agentIdentity.addEntry')}
         </button>
@@ -214,10 +214,10 @@ export function AgentRuntimeCard() {
         <Hint>{t('st.agentIdentity.hint')}</Hint>
         <fieldset disabled={saving} className="min-w-0 space-y-4 disabled:opacity-60">
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="text-[11px] font-medium text-ink-soft">{t('st.agentIdentity.identityName')}
+            <label className="text-[11px] font-normal text-ink-soft">{t('st.agentIdentity.identityName')}
               <input className={`${INPUT} mt-1`} value={draft.identityName} onChange={(event) => { updateDraft({ ...draft, identityName: event.target.value }); }} />
             </label>
-            <label className="text-[11px] font-medium text-ink-soft">{t('st.agentIdentity.identitySlug')}
+            <label className="text-[11px] font-normal text-ink-soft">{t('st.agentIdentity.identitySlug')}
               <input className={`${INPUT} mt-1 font-mono`} value={draft.identitySlug} onChange={(event) => { updateDraft({ ...draft, identitySlug: event.target.value }); }} />
             </label>
           </div>

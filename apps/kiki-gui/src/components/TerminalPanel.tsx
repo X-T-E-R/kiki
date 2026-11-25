@@ -408,7 +408,7 @@ export function TerminalPanel({
                   onClick={() => { killTab(tab.id); }}
                   className={`rounded px-0.5 text-[10px] transition-colors ${
                     confirmKillId === tab.id
-                      ? 'bg-danger/80 font-semibold text-on-danger'
+                      ? 'bg-danger/80 text-on-danger'
                       : 'text-shell-ink-soft hover:bg-shell-hover hover:text-shell-ink-strong'
                   }`}
                 >

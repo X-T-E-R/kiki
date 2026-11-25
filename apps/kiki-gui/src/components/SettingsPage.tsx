@@ -172,7 +172,7 @@ function SectionIntro({ section, workspaceName, remoteAddress, dirty, hidePurpos
       ) : null}
       {workspaceName !== null ? <span data-settings-storage-workspace>{remote ? '· ' : ''}{t('st.storage.workspace', { name: workspaceName })}</span> : null}
       {dirty ? (
-        <span role="status" data-settings-unsaved className="inline-flex items-center gap-1.5 font-medium text-accent-ink">
+        <span role="status" data-settings-unsaved className="inline-flex items-center gap-1.5 font-normal text-accent-ink">
           <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-accent" />
           {t('st.storage.unsaved')}
         </span>
@@ -607,7 +607,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
         ) : null}
         {/* The page title is the leaf; "Settings" is the breadcrumb above it.
             The narrow section list is no leaf, so there it is just "Settings". */}
-        <h1 className={`${headerSearchToken !== null ? 'max-lg:hidden ' : ''}flex min-w-0 flex-1 items-baseline gap-1.5 truncate font-display text-[16px] font-bold tracking-tight text-ink`}>
+        <h1 className={`${headerSearchToken !== null ? 'max-lg:hidden ' : ''}flex min-w-0 flex-1 items-baseline gap-1.5 truncate font-display text-[16px] font-bold text-ink`}>
           <span className={activeLabel === undefined ? '' : settingsIndex ? 'lg:font-normal lg:text-ink-faint' : 'font-normal text-ink-faint'}>{t('st.title')}</span>
           {activeLabel !== undefined ? <><span aria-hidden className={`font-normal text-ink-faint${settingsIndex ? ' hidden lg:inline' : ''}`}>/</span><span data-settings-page-title className={`truncate${settingsIndex ? ' hidden lg:inline' : ''}`}>{activeLabel}</span></> : null}
           {activePluginId !== null ? <SettingsPluginTitle pluginId={activePluginId} /> : null}

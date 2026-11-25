@@ -127,16 +127,54 @@ export function useWechatQr(onConfirmed: (instanceId: string | undefined) => voi
   useEffect(() => {
     if (!polling || loginId === undefined) return;
     let stop = false;
-    const tick = () => {
-      void client.imSessions.pollWechatQr(loginId).then((result) => { if (!stop) settle(result); }).catch((caught: unknown) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const scheduleNext = (delayMs: number) => {
+      if (stop) return;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = undefined;
+        void runTick();
+      }, delayMs);
+    };
+
+    const runTick = async () => {
+      if (stop) return;
+      if (typeof document !== 'undefined' && document.hidden) return;
+      try {
+        const result = await client.imSessions.pollWechatQr(loginId);
+        if (stop) return;
+        settle(result);
+        if (result.status === 'wait' || result.status === 'scaned' || result.status === 'scaned_but_redirect') {
+          scheduleNext(1500);
+        }
+      } catch (caught: unknown) {
         if (stop) return;
         const message = caught instanceof Error ? caught.message : '';
         if (message === 'wechat_login_cancelled' || message === 'unknown_login') return;
         setError(message.length > 0 ? message : t('st.im.error'));
-      });
+        scheduleNext(3000);
+      }
     };
-    const timer = setInterval(tick, 1500);
-    return () => { stop = true; clearInterval(timer); };
+
+    const onVisibility = () => {
+      if (stop) return;
+      if (typeof document !== 'undefined' && !document.hidden && timer === undefined) {
+        scheduleNext(200);
+      }
+    };
+
+    scheduleNext(1500);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibility);
+    }
+    return () => {
+      stop = true;
+      if (timer !== undefined) clearTimeout(timer);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibility);
+      }
+    };
   }, [client, loginId, polling, settle, t]);
 
   const start = useCallback(() => {

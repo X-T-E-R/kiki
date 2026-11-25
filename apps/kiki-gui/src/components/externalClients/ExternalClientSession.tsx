@@ -97,7 +97,7 @@ export function ExternalClientMark({ mark }: { mark: ExternalClientSessionMark }
       <button type="button" data-xs-mark aria-expanded={open}
         title={t('st.xs.sourceTitle', { client: mark.clientName })}
         onClick={() => { setOpen((value) => !value); }}
-        className="inline-flex h-[18px] max-w-[14rem] items-center gap-1 rounded-[5px] border border-hairline-strong px-1.5 text-[11px] leading-none font-medium text-ink-soft transition-colors hover:border-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink">
+        className="inline-flex h-[18px] max-w-[14rem] items-center gap-1 rounded-[5px] border border-hairline-strong px-1.5 text-[11px] leading-none font-normal text-ink-soft transition-colors hover:border-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink">
         <Icon name="external" size={12} className="shrink-0 text-ink-faint" />
         <span className="truncate">{t('st.xs.source')}</span>
         <span className="truncate font-normal text-ink-faint">{mark.clientName}</span>
@@ -105,7 +105,7 @@ export function ExternalClientMark({ mark }: { mark: ExternalClientSessionMark }
       {open ? (
         <div data-xs-mark-panel role="dialog" aria-label={t('st.xs.drivenByNamed', { client: mark.clientName })}
           className="anim-enter absolute top-full right-0 z-40 mt-1.5 w-72 rounded-[10px] border border-hairline bg-panel p-3 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]">
-          <p className="text-[12.5px] font-medium text-ink">{t('st.xs.drivenByNamed', { client: mark.clientName })}</p>
+          <p className="text-[12.5px] font-normal text-ink">{t('st.xs.drivenByNamed', { client: mark.clientName })}</p>
           <p data-xs-model-unknown className="mt-1 text-[12px] leading-snug text-ink-soft">{t('st.xs.modelUnknown')}</p>
           {/* The honesty line, placed where a reader looks for the model. */}
           <p data-xs-usage-unknown className="mt-1 text-[12px] leading-snug text-ink-faint">{t('st.xs.usageUnknown')}</p>
@@ -264,7 +264,7 @@ export function ExternalSessionComposer({ sessionId, mark, materialsPreview, bus
         {/* Continuing is the one way to local work, but it is not what the
             composer is for, so it stays closed until asked for. */}
         <details data-xs-continue-disclosure className="mt-2 border-t border-hairline pt-2">
-          <summary className="flex min-h-7 cursor-pointer list-none items-center gap-1.5 text-[12px] font-medium text-ink-soft outline-none transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink [&::-webkit-details-marker]:hidden">
+          <summary className="flex min-h-7 cursor-pointer list-none items-center gap-1.5 text-[12px] font-normal text-ink-soft outline-none transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink [&::-webkit-details-marker]:hidden">
             <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/xc:rotate-90" />
             {t('st.xs.continueAction')}
           </summary>

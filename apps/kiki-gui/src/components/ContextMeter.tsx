@@ -371,7 +371,7 @@ export function ContextMeter({
         {/* On a narrow composer keep the compact 20x20 ring visible (with its
             ok/warn/danger color and click popover) while folding the percent
             text to screen readers so narrow toolbars stay uncrowded. */}
-        <span className={`text-[12px] tabular-nums @max-[24rem]/toolbar:sr-only ${warn ? 'font-medium' : ''}`}>{label}</span>
+        <span className={`text-[12px] tabular-nums @max-[24rem]/toolbar:sr-only`}>{label}</span>
         {warn ? <span className="sr-only">{t('context.detailsHint')}</span> : null}
       </button>
       {compaction !== undefined ? (
@@ -424,7 +424,7 @@ export function ContextMeter({
                 className={`composer-floating-panel anim-enter w-72 max-w-[calc(100vw-24px)] max-h-[min(var(--available-height,480px),calc(100dvh-96px))] overflow-y-auto overscroll-contain p-3 outline-none ${POPOVER_SURFACE_CLASS}`}
               >
           <div className="flex items-baseline justify-between gap-3">
-            <p className="font-display text-[15px] font-semibold text-ink">{t('context.detailsTitle')}</p>
+            <p className="font-display text-[15px] font-bold text-ink">{t('context.detailsTitle')}</p>
             <span className="shrink-0 whitespace-nowrap text-[12px] text-ink-soft tabular-nums">
               {measured ? `${label} · ${usedLabel}` : `— · ${time.formatTokens(usable)}`}
             </span>
@@ -440,7 +440,7 @@ export function ContextMeter({
             />
           ) : (<>
           <div className="mt-2 flex items-baseline justify-between gap-3">
-            <p className="text-[12px] font-medium text-ink-soft">{t('context.windowTitle')}</p>
+            <p className="text-[12px] font-normal text-ink-soft">{t('context.windowTitle')}</p>
             <span className="text-[12px] text-ink-faint">{t('context.windowHint')}</span>
           </div>
           <div className="mt-1.5 flex items-center gap-3">
@@ -470,7 +470,7 @@ export function ContextMeter({
                   />
                 ) : null}
               </svg>
-              <span className="absolute font-mono text-[11px] leading-none font-medium tabular-nums">
+              <span className="absolute font-mono text-[11px] leading-none font-normal tabular-nums">
                 {percent !== undefined ? percent : '—'}
               </span>
             </span>
@@ -500,7 +500,7 @@ export function ContextMeter({
               className="mt-3 space-y-1.5 border-t border-hairline pt-3 text-[12px]"
             >
               <div className="flex items-baseline justify-between gap-3">
-                <p className="inline-flex items-center gap-1.5 text-[12px] font-medium text-ink-soft">
+                <p className="inline-flex items-center gap-1.5 text-[12px] font-normal text-ink-soft">
                   {t(hasCanonicalIdentity ? 'context.agentUsage' : usageScope === 'agent' ? 'context.agentUsage' : 'context.sessionUsage')}
                   {usageStatus !== undefined ? (
                     <span
@@ -563,7 +563,7 @@ export function ContextMeter({
                   data-context-usage-link
                   to={usageSessionDeepLink(sessionId)}
                   onClick={() => { setOpen(false); }}
-                  className="block pt-1 text-[12px] font-medium text-ink underline decoration-hairline-strong underline-offset-2 hover:decoration-ink"
+                  className="block pt-1 text-[12px] font-normal text-ink underline decoration-hairline-strong underline-offset-2 hover:decoration-ink"
                 >
                   {t('context.viewInUsage')}
                 </Link>
@@ -574,7 +574,7 @@ export function ContextMeter({
           {breakdown !== undefined ? (
             <div data-context-breakdown className="mt-3 border-t border-hairline pt-3">
               <div className="flex items-baseline justify-between gap-3">
-                <p className="text-[12px] font-medium text-ink-soft">{t('context.breakdownTitle')}</p>
+                <p className="text-[12px] font-normal text-ink-soft">{t('context.breakdownTitle')}</p>
                 <span className="text-[12px] text-ink-faint">{t('context.breakdownEstimated')}</span>
               </div>
               <dl className="mt-2 space-y-1.5 text-[12px]">
@@ -645,7 +645,7 @@ function CompactActions({
   const { t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
   const chevronRef = useRef<HTMLButtonElement | null>(null);
-  const tone = 'bg-amber-card text-[12px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/25 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none';
+  const tone = 'bg-amber-card text-[12px] font-normal text-amber-ink transition-colors hover:bg-amber-rule/25 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none';
   if (strategy === undefined || !strategy.writable || strategy.status?.source === 'executor') {
     return (
       <button type="button" data-context-compact data-executor-action="manual_compact" disabled={pending} onClick={onCompact} className={`mt-3 w-full rounded-md px-3 py-1.5 ${tone}`}>
@@ -693,7 +693,7 @@ function CompactActions({
           return true;
         }}
       >
-        <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('context.strategy.compactWith')}</p>
+        <p className="px-3 pt-1.5 pb-1 text-[12px] font-normal text-ink-faint">{t('context.strategy.compactWith')}</p>
         {COMPACT_OPTIONS.map((option) => (
           <button
             key={option}

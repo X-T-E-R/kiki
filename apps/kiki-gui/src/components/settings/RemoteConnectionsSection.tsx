@@ -260,7 +260,7 @@ function RemoteConnectionRow({ record, busy, threadFact, onEnter, onVerifyFinger
       <Icon name="web" size={14} className="shrink-0 text-ink-faint" />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-          <span className="min-w-0 max-w-full truncate text-[13px] font-medium text-ink" title={record.label}>{record.label}</span>
+          <span className="min-w-0 max-w-full truncate text-[13px] font-normal text-ink" title={record.label}>{record.label}</span>
           <RemoteStateChip state={record.state} staleLabel={staleLabel} />
         </div>
         <p className="mt-0.5 truncate font-mono text-[11px] text-ink-faint" data-remote-address title={record.endpoint}>
@@ -277,7 +277,7 @@ function RemoteConnectionRow({ record, busy, threadFact, onEnter, onVerifyFinger
                 data-remote-verify-fingerprint={record.id}
                 disabled={busy}
                 onClick={onVerifyFingerprint}
-                className="rounded px-1.5 py-0.5 text-[11px] font-medium text-ink underline decoration-hairline-strong underline-offset-2 hover:text-accent disabled:opacity-50"
+                className="rounded px-1.5 py-0.5 text-[11px] font-normal text-ink underline decoration-hairline-strong underline-offset-2 hover:text-accent disabled:opacity-50"
               >
                 {t('st.remote.verifyFingerprint')}
               </button>

@@ -82,13 +82,13 @@ export function PresetGrid({
       />
       {hasAnyMatches ? (
         <section aria-label={t('st.presets.matches')} data-preset-results>
-          <p className="mb-1.5 text-[12px] font-medium text-ink-soft">{t('st.presets.matches')}</p>
+          <p className="mb-1.5 text-[12px] font-normal text-ink-soft">{t('st.presets.matches')}</p>
           <ul className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-paper">
             {matches.map((preset) => (
               <li key={preset.id}>
                 <button type="button" data-provider-template={preset.id} onClick={() => { onPick(preset); }} className={ROW}>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] font-medium text-ink">{preset.label}</span>
+                    <span className="block truncate text-[13px] font-normal text-ink">{preset.label}</span>
                     <span className="block truncate text-[12px] text-ink-faint">
                       {protocolLabel(preset.type)} · {hostLabel(preset.baseUrl)}
                     </span>
@@ -101,7 +101,7 @@ export function PresetGrid({
               <li key={`decision-${preset.id}`}>
                 <button type="button" data-decision-template={preset.id} onClick={() => { onPickDecision?.(preset.id); }} className={ROW}>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] font-medium text-ink">{t(`st.decision.preset.${preset.id}` as I18nKey)}</span>
+                    <span className="block truncate text-[13px] font-normal text-ink">{t(`st.decision.preset.${preset.id}` as I18nKey)}</span>
                     <span className="block truncate text-[12px] text-ink-faint">
                       {t(`st.decision.presetHint.${preset.id}` as I18nKey)}
                     </span>
@@ -117,7 +117,7 @@ export function PresetGrid({
         <>
           {needle !== '' ? <p className="text-[12px] text-ink-faint">{t('st.presets.empty', { query: query.trim() })}</p> : null}
           <section aria-label={t('st.presets.protocols')}>
-            <p className="mb-1.5 text-[12px] font-medium text-ink-soft">{t('st.presets.protocols')}</p>
+            <p className="mb-1.5 text-[12px] font-normal text-ink-soft">{t('st.presets.protocols')}</p>
             <ul className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-paper">
               {API_PROTOCOLS.map((type) => {
                 const hintKey = PROTOCOL_HINT_KEYS[type];
@@ -125,7 +125,7 @@ export function PresetGrid({
                   <li key={type}>
                     <button type="button" data-provider-protocol={type} onClick={() => { onPick(null, type); }} className={ROW}>
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[13px] font-medium text-ink" title={protocolLabel(type)}>{protocolLabel(type)}</span>
+                        <span className="block truncate text-[13px] font-normal text-ink" title={protocolLabel(type)}>{protocolLabel(type)}</span>
                         {hintKey !== undefined ? (
                           <span className="block text-[12px] leading-4 text-ink-faint">{t(hintKey)}</span>
                         ) : null}
@@ -140,13 +140,13 @@ export function PresetGrid({
           </section>
           {onPickDecision !== undefined && !dense && needle === '' ? (
             <section aria-label={t('st.decision.presetsGroup')} data-decision-presets>
-              <p className="mb-1.5 text-[12px] font-medium text-ink-soft">{t('st.decision.presetsGroup')}</p>
+              <p className="mb-1.5 text-[12px] font-normal text-ink-soft">{t('st.decision.presetsGroup')}</p>
               <ul className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-paper">
                 {DECISION_CONNECTION_PRESETS.map((preset) => (
                   <li key={preset.id}>
                     <button type="button" data-decision-template={preset.id} onClick={() => { onPickDecision(preset.id); }} className={ROW}>
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[13px] font-medium text-ink">{t(`st.decision.preset.${preset.id}` as I18nKey)}</span>
+                        <span className="block truncate text-[13px] font-normal text-ink">{t(`st.decision.preset.${preset.id}` as I18nKey)}</span>
                         <span className="block text-[12px] leading-4 text-ink-faint">{t(`st.decision.presetHint.${preset.id}` as I18nKey)}</span>
                       </span>
                       <span className="hidden shrink-0 font-mono text-[11px] text-ink-faint sm:inline">{preset.type}</span>

@@ -47,7 +47,7 @@ export function RecipeDetailBody({ detail, initialPosition = 'main' }: {
         Recipe read as a config fragment rather than a recipe.
       */}
       <header className="space-y-1">
-        <h3 className="font-display text-[28px] leading-9 tracking-tight text-ink" data-recipe-package-name>
+        <h3 className="font-display text-[28px] leading-9 text-ink" data-recipe-package-name>
           {detail.summary.name}
         </h3>
         <p className="font-mono text-[11.5px] text-ink-faint" data-recipe-package-version>
@@ -72,7 +72,7 @@ export function RecipeDetailBody({ detail, initialPosition = 'main' }: {
       ) : null}
 
       <section className="space-y-2" data-recipe-effects>
-        <h4 className="text-[13px] font-medium text-ink">{t('st.recipe.effects')}</h4>
+        <h4 className="text-[13px] font-normal text-ink">{t('st.recipe.effects')}</h4>
         <p className="text-[12px] leading-5 text-ink-soft">{t('st.recipe.promptsReplaced')}</p>
         {modelLeaves.length === 0 ? (
           <p className="text-[12px] leading-5 text-ink-faint">{t('st.recipe.noParameterOverrides')}</p>
@@ -97,7 +97,7 @@ export function RecipeDetailBody({ detail, initialPosition = 'main' }: {
       </section>
 
       <section className="space-y-3" data-recipe-content>
-        <h4 className="text-[13px] font-medium text-ink">{t('st.recipe.promptContent')}</h4>
+        <h4 className="text-[13px] font-normal text-ink">{t('st.recipe.promptContent')}</h4>
         <SettingsSegmented<RecipePosition>
           ariaLabel={t('st.recipe.readAs')}
           value={position}
@@ -116,7 +116,7 @@ export function RecipeDetailBody({ detail, initialPosition = 'main' }: {
           return (
             <div key={id} className="space-y-1.5" data-recipe-slot={id}>
               <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-                <h5 className="text-[12px] font-medium text-ink-soft">{t(key)}</h5>
+                <h5 className="text-[12px] font-normal text-ink-soft">{t(key)}</h5>
                 {originsFor(id).length === 0 ? null : (
                   <span className="text-[11px] text-ink-faint" data-recipe-slot-origins={id}>
                     {originsFor(id).map((origin) => origin.file ?? `${origin.manifest_id} ${origin.version}`).join(' · ')}
@@ -131,7 +131,7 @@ export function RecipeDetailBody({ detail, initialPosition = 'main' }: {
         {branch.anchor === undefined ? null : (
           <div className="space-y-1.5" data-recipe-slot="anchor">
             <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-              <h5 className="text-[12px] font-medium text-ink-soft">{t('st.recipe.slot.anchor')}</h5>
+              <h5 className="text-[12px] font-normal text-ink-soft">{t('st.recipe.slot.anchor')}</h5>
               {/* Scoped on purpose: the anchor replaces this Recipe's own system
                   section, never the whole system prompt. */}
               <span className="text-[11px] text-ink-faint">
@@ -146,7 +146,7 @@ export function RecipeDetailBody({ detail, initialPosition = 'main' }: {
 
         {Object.keys(branch.fields).length === 0 ? null : (
           <div className="space-y-2" data-recipe-slot="fields">
-            <h5 className="text-[12px] font-medium text-ink-soft">{t('st.recipe.slotFields')}</h5>
+            <h5 className="text-[12px] font-normal text-ink-soft">{t('st.recipe.slotFields')}</h5>
             <dl className="divide-y divide-hairline border-y border-hairline">
               {Object.entries(branch.fields).toSorted(([a], [b]) => a.localeCompare(b)).map(([id, value]) => (
                 <div key={id} className="space-y-0.5 py-2">
@@ -169,7 +169,7 @@ export function RecipeDetailBody({ detail, initialPosition = 'main' }: {
       </section>
 
       <section className="space-y-2" data-recipe-source>
-        <h4 className="text-[13px] font-medium text-ink">{t('st.recipe.sourceAndVersion')}</h4>
+        <h4 className="text-[13px] font-normal text-ink">{t('st.recipe.sourceAndVersion')}</h4>
         <dl className="space-y-1.5">
           <Row label={t('st.recipe.sourceLabel')} value={detail.summary.source.locator} mono selectable />
           {detail.summary.source.sha256 === undefined ? null : (
@@ -225,7 +225,7 @@ function CadenceSummary({ branch }: { branch: RecipeDetail['resolved']['branches
   const { t } = useI18n();
   return (
     <div className="space-y-1.5" data-recipe-cadence>
-      <h5 className="text-[12px] font-medium text-ink-soft">{t('st.modelPrompt.cadence')}</h5>
+      <h5 className="text-[12px] font-normal text-ink-soft">{t('st.modelPrompt.cadence')}</h5>
       <dl className="space-y-1">
         <div className="flex items-baseline justify-between gap-3">
           <dt className="text-[12px] text-ink-faint">{t('st.modelPrompt.cadenceTurn')}</dt>

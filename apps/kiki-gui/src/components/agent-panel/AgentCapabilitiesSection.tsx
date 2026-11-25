@@ -170,7 +170,7 @@ function CapabilitiesGap({ status, onRetry }: { status: 'loading' | 'failed'; on
           type="button"
           data-rail-capabilities-retry
           onClick={onRetry}
-          className="ml-1.5 rounded font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+          className="ml-1.5 rounded font-normal text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
         >
           {t('common.retry')}
         </button>
@@ -670,7 +670,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
               data-capability-tab-button={entry.id}
               onClick={() => { chooseTab(entry.id); }}
               className={`flex h-7 min-w-0 flex-auto items-center justify-center gap-1 rounded-md px-1.5 text-[12px] whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-9 ${
-                selected ? 'bg-panel font-medium text-ink shadow-[0_1px_2px_rgb(0_0_0/0.08)]' : 'text-ink-soft hover:text-ink'
+                selected ? 'bg-panel text-ink shadow-[0_1px_2px_rgb(0_0_0/0.08)]' : 'text-ink-soft hover:text-ink'
               }`}
             >
               {/* The label gives way first; a count never truncates and no tab
@@ -721,7 +721,7 @@ export const AgentCapabilitiesSection = memo(function AgentCapabilitiesSection({
                 const hidden = skillFolds[key]?.hidden ?? 0;
                 return (
                   <div key={scope} data-capability-group={scope}>
-                    <div aria-hidden className="flex items-baseline gap-1.5 px-2 pt-1 text-[11px] font-medium text-ink-faint">
+                    <div aria-hidden className="flex items-baseline gap-1.5 px-2 pt-1 text-[11px] font-normal text-ink-faint">
                       {t(scope === 'workspace' ? 'rail.source.workspace' : 'rail.source.global')}<span className="font-normal tabular-nums">{list.length}</span>
                     </div>
                     <SkillChipCluster

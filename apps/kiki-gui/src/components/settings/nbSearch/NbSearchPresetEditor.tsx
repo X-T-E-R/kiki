@@ -171,7 +171,7 @@ export function NbSearchPresetEditor({
       ) : null}
 
       <div className="space-y-1.5">
-        <p className="text-[12px] font-medium text-ink-soft">{t('st.nbSearch.custom.preset.lanes')}</p>
+        <p className="text-[12px] font-normal text-ink-soft">{t('st.nbSearch.custom.preset.lanes')}</p>
         <ol className="space-y-0" data-nb-search-preset-lanes>
           {lanes.map((laneId, index) => (
             <li key={`${index}:${laneId}`} className="flex flex-wrap items-center gap-2 py-1.5">

@@ -61,7 +61,7 @@ export function RoomRefChip({
       <span aria-hidden className="flex h-3 w-3 shrink-0 items-center justify-center">
         <Icon name="room" size={12} className="text-ink-faint" />
       </span>
-      <span className="min-w-0 truncate font-medium text-ink">{label}</span>
+      <span className="min-w-0 truncate font-normal text-ink">{label}</span>
       {members === undefined ? null : <span className="shrink-0 tabular-nums text-ink-faint">{tp('roomRef.members', members)}</span>}
     </>
   );
@@ -145,7 +145,7 @@ export function ThreadRefChip({
           <LifeMark markId={`ref:${sessionId}`} life={life} still className="h-[6px] w-[6px]" tone={life === 'waiting' ? 'bg-attention' : undefined} />
         )}
       </span>
-      <span className="min-w-0 truncate font-medium text-ink">{label}</span>
+      <span className="min-w-0 truncate font-normal text-ink">{label}</span>
       {workspace !== undefined ? <span className="shrink-0 text-ink-faint">{workspace}</span> : null}
     </>
   );

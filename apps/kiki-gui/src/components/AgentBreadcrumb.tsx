@@ -125,7 +125,7 @@ export const AgentBreadcrumb = memo(function AgentBreadcrumb({
               {last ? (
                 <span
                   data-branch-crumb={branch ? (crumb.branchSealed === true ? 'merged' : 'open') : undefined}
-                  className="inline-flex min-w-0 items-center gap-1 truncate font-medium text-ink"
+                  className="inline-flex min-w-0 items-center gap-1 truncate font-normal text-ink"
                   aria-current="page"
                 >
                   {branch ? (
@@ -799,7 +799,7 @@ export const AgentFamilyPopover = memo(function AgentFamilyPopover({
           className={`shrink-0 ${branchSealed ? 'text-ink-faint' : 'text-accent'}`}
         />
       ) : null}
-      <h1 className="min-w-0 truncate font-display text-[14px] leading-tight font-semibold tracking-tight text-ink">
+      <h1 className="min-w-0 truncate font-display text-[14px] leading-tight font-bold text-ink">
         {name}
       </h1>
     </>
@@ -854,7 +854,7 @@ export const AgentFamilyPopover = memo(function AgentFamilyPopover({
       return (
         <div
           data-family-section={item.section}
-          className="flex items-center justify-between px-2 py-1 text-[11px] font-medium text-ink-faint"
+          className="flex items-center justify-between px-2 py-1 text-[11px] font-normal text-ink-faint"
         >
           <span>{item.label}</span>
           {item.count !== undefined ? <span className="tabular-nums">{item.count}</span> : null}

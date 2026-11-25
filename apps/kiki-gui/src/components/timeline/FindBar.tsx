@@ -77,7 +77,7 @@ const SERVER_DEBOUNCE_MS = 300;
 const BAR_BUTTON =
   'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink-faint pointer-coarse:h-9 pointer-coarse:w-9';
 const NOTE_ACTION =
-  'shrink-0 rounded-md px-1.5 py-0.5 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-9';
+  'shrink-0 rounded-md px-1.5 py-0.5 text-[12px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-9';
 const TOGGLE_ON = 'bg-selected text-selected-ink hover:bg-selected hover:text-selected-ink';
 
 /** Stable identity of a match across re-renders (streaming, paging). */
@@ -389,7 +389,7 @@ export function FindBar({
   const canLookBack = hasQuery && (rangeHit?.key !== readKey || readFailed) && (hasMoreHistory || outside.nearestTurn !== undefined && incompleteTurns.has(outside.nearestTurn)) && (earlierCount > 0 || !outside.known || (total === 0 && outside.more));
   const plus = outside.more ? '+' : '';
 
-  const toggle = (on: boolean) => `${BAR_BUTTON} font-mono text-[11px] font-semibold ${on ? TOGGLE_ON : ''}`;
+  const toggle = (on: boolean) => `${BAR_BUTTON} font-mono text-[11px] font-normal ${on ? TOGGLE_ON : ''}`;
   // Icon toggles keep the plain button box; only the on state adds the fill.
   const iconToggle = (on: boolean) => `${BAR_BUTTON} ${on ? TOGGLE_ON : ''}`;
   const includeToolOutput = options.includeToolOutput === true;

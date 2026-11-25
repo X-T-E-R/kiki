@@ -161,7 +161,7 @@ export function DecisionConnectionsCard({ providers, configuredIds, onChanged }:
           <DecisionJudgeRows />
         </div>
         <div className="space-y-2" data-decision-services>
-          <p className="text-[12px] font-medium text-ink-soft">{t('st.decision.servicesTitle')}</p>
+          <p className="text-[12px] font-normal text-ink-soft">{t('st.decision.servicesTitle')}</p>
           {providers.length === 0 ? <Hint>{t('st.decision.connectionsHint')}</Hint> : (
             <div data-decision-list className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-panel">
               {providers.map((provider) => (
@@ -318,7 +318,7 @@ export function NewDecisionConnection({
 
   return (
     <div data-decision-new id="decision-connection-add" className="space-y-4 rounded-lg border border-hairline bg-paper p-4">
-      <p className="text-[13px] font-medium text-ink">{t('st.decision.addTitle')}</p>
+      <p className="text-[13px] font-normal text-ink">{t('st.decision.addTitle')}</p>
       <fieldset disabled={saving} className="min-w-0 space-y-3 disabled:opacity-60">
         <SettingField label={t('st.decision.kind')} labelId={`${idPrefix}-kind`} layout="stack"
           help={t(`st.decision.presetHint.${presetId}` as I18nKey)}>
@@ -581,11 +581,11 @@ export function DecisionConnectionEditor({
         <span className="min-w-0 flex-1">
           <span className={`flex min-w-0 items-baseline ${phone ? 'justify-between gap-2' : 'gap-2'}`}>
             <span className="flex min-w-0 items-center gap-2">
-              <span className="truncate text-[13px] font-medium text-ink">{displayName}</span>
+              <span className="truncate text-[13px] font-normal text-ink">{displayName}</span>
               {displayName !== provider.id ? (
                 <span className="hidden truncate font-mono text-[11px] text-ink-faint sm:inline">{provider.id}</span>
               ) : null}
-              <span data-decision-badge className="shrink-0 rounded border border-hairline px-1.5 py-0.5 text-[11px] font-medium leading-none text-ink-soft">
+              <span data-decision-badge className="shrink-0 rounded border border-hairline px-1.5 py-0.5 text-[11px] font-normal leading-none text-ink-soft">
                 {t('st.decision.badge')}
               </span>
             </span>
@@ -599,7 +599,7 @@ export function DecisionConnectionEditor({
             </span>
           )}
         </span>
-        {dirty ? <span className="shrink-0 text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
+        {dirty ? <span className="shrink-0 text-[11px] font-normal text-amber-ink">{t('st.dirty.badge')}</span> : null}
         {phone ? null : statusBadge}
         <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/provider:rotate-90" />
       </summary>
@@ -846,7 +846,7 @@ export function ProviderDecisionCapabilitiesEditor({
             <div key={protocol} data-decision-capability={protocol} className="space-y-2.5 py-2.5">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="text-[13px] font-medium text-ink">{protocolLabel}</p>
+                  <p className="text-[13px] font-normal text-ink">{protocolLabel}</p>
                   <p className="text-[12px] leading-4 text-ink-faint">
                     {t(`st.decision.presetHint.${protocol === 'system_one' ? 'system_one' : protocol === 'pair_score' ? 'pair_score' : 'openai_decisions'}` as I18nKey)}
                   </p>

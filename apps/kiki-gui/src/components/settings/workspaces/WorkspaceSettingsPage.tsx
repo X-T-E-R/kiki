@@ -466,7 +466,7 @@ function WorkspacePluginRow({ item, pending, failure, busy, onToggle, onRestore,
     >
       <CapabilityIcon icon={item.icon} kind="plugin" size="sm" />
       <div className="min-w-0 flex-1">
-        <p className="min-w-0 truncate text-[13px] font-medium text-ink" title={item.displayName}>{item.displayName}</p>
+        <p className="min-w-0 truncate text-[13px] font-normal text-ink" title={item.displayName}>{item.displayName}</p>
         <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[12px] leading-4 text-ink-faint">
           {state.kind === 'blocked' ? (
             <span data-workspace-plugin-reason={state.reason}>{t(REASON_KEY[state.reason])}</span>

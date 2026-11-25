@@ -186,7 +186,7 @@ export function PortableSpaceDetail({
           <h3
             data-detail-heading
             tabIndex={-1}
-            className="flex min-w-0 items-center gap-2 font-display text-[18px] font-semibold text-ink outline-none"
+            className="flex min-w-0 items-center gap-2 font-display text-[18px] font-bold text-ink outline-none"
           >
             <Icon
               name={source.endpoint.kind === 'url' ? 'web' : source.endpoint.kind === 'git' ? 'branch' : source.format === 'age' ? 'lock' : 'folder'}
@@ -312,7 +312,7 @@ export function PortableSpaceDetail({
                         onClick={() => { toggleDomain(domain); }}
                         className="flex w-full items-baseline justify-between gap-4 py-2.5 text-left outline-none transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
                       >
-                        <span className="inline-flex items-center gap-1.5 text-[13px] font-medium text-ink">
+                        <span className="inline-flex items-center gap-1.5 text-[13px] font-normal text-ink">
                           <DisclosureChevron open={expanded} />
                           <span>{t(PORTABLE_DOMAIN_LABEL_KEY[domain])}</span>
                         </span>

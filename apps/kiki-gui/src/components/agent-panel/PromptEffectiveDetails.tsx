@@ -33,14 +33,14 @@ export function PromptEffectiveDetails({ value, query, unavailable = false, load
     setSourceOpen(false);
   }
   return <details open={defaultOpen || undefined} data-profile-section="prompt" className="min-w-0 py-1">
-    <summary className="cursor-pointer rounded py-1 text-[13px] font-medium text-ink outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
+    <summary className="cursor-pointer rounded py-1 text-[13px] font-normal text-ink outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
       {t('agentPanel.prompt.title')}
     </summary>
     {value === undefined ? <p role="status" className="pt-2 text-[12px] leading-5 text-ink-faint" data-prompt-unavailable>
       {t(loading ? 'diagnostics.loading' : unavailable ? 'agentPanel.prompt.unavailable' : 'agentPanel.prompt.notReported')}
     </p> : <div className="min-w-0 space-y-6 pt-3">
       <div className="space-y-1" data-prompt-identity>
-        <p className="text-[13px] font-medium text-ink">{t(`agentPanel.prompt.identity.${value.identity.delegation_position}`)}</p>
+        <p className="text-[13px] font-normal text-ink">{t(`agentPanel.prompt.identity.${value.identity.delegation_position}`)}</p>
         <p className="break-words text-[12px] text-ink-soft">{[value.identity.profile, value.identity.model_alias, value.identity.executor].filter(Boolean).join(' · ')}</p>
         {value.binding_revision !== undefined ? <p className="break-all text-[11px] text-ink-faint">{t('agentPanel.prompt.bindingRevision')}: <span className="font-mono">{value.binding_revision}</span></p> : null}
         {value.disk_revision !== undefined ? <p className="break-all text-[11px] text-ink-faint">{t('agentPanel.prompt.diskRevision')}: <span className="font-mono">{value.disk_revision}</span></p> : null}
@@ -53,7 +53,7 @@ export function PromptEffectiveDetails({ value, query, unavailable = false, load
         const channels = value.channels.filter((entry) => (group.channels as readonly string[]).includes(entry.channel));
         if (channels.length === 0) return null;
         return <section key={group.id} className="min-w-0 space-y-2" data-prompt-channel-group={group.id}>
-          <h4 className="text-[12px] font-medium text-ink">{t(`agentPanel.prompt.channel.${group.id}`)}</h4>
+          <h4 className="text-[12px] font-normal text-ink">{t(`agentPanel.prompt.channel.${group.id}`)}</h4>
           <div className="space-y-3">
             {channels.map((entry, index) => {
               const hostsSources = sessionQuery !== undefined && `${entry.channel}:${entry.id}` === sourceKey && index === 0;
@@ -82,7 +82,7 @@ export function PromptEffectiveDetails({ value, query, unavailable = false, load
         </section>;
       })}
       <section className="min-w-0 space-y-2" data-prompt-request>
-        <h4 className="text-[12px] font-medium text-ink">{t('agentPanel.prompt.request')}</h4>
+        <h4 className="text-[12px] font-normal text-ink">{t('agentPanel.prompt.request')}</h4>
         {request === undefined ? <p className="text-[12px] leading-5 text-ink-faint">{t('agentPanel.prompt.noRequest')}</p> : <div className="space-y-3 text-[12px]">
           <p className="text-ink-soft">{t(request.anchor_applied === undefined ? 'agentPanel.prompt.anchorUnknown' : request.anchor_applied ? 'agentPanel.prompt.anchorApplied' : 'agentPanel.prompt.anchorNotApplied')}</p>
           {request.anchor_steps !== undefined || request.anchor_scope !== undefined ? <AnchorWindow steps={request.anchor_steps} scope={request.anchor_scope} /> : null}
@@ -111,7 +111,7 @@ function RecipeSteeringDetails({ entry }: { entry: AgentPromptChannel }) {
   const recipe = entry.recipe;
   if (recipe === undefined && entry.state !== 'effective') return null;
   return <div className="space-y-2" data-prompt-recipe-steering>
-    {entry.state === 'effective' ? <p className="font-medium text-ink" data-prompt-steering-applied>{t('agentPanel.prompt.steeringApplied')}</p> : null}
+    {entry.state === 'effective' ? <p className="font-normal text-ink" data-prompt-steering-applied>{t('agentPanel.prompt.steeringApplied')}</p> : null}
     {recipe?.name !== undefined ? <p className="text-ink-soft" data-prompt-recipe-name>{recipe.name}</p> : null}
     {recipe?.content !== undefined ? <div className="space-y-1" data-prompt-recipe-content>
       <p className="text-ink-faint">{t('agentPanel.prompt.recipeContent')}</p>
@@ -143,11 +143,11 @@ function RecipeSources({ binding }: { binding: RecipeModelBinding | undefined })
   const references = binding.references ?? [{ surface: 'model' as const, installation_id: binding.installation_id, revision: binding.revision }];
   const composite = references.length > 1;
   return <div className="space-y-1 pt-1" data-prompt-recipe-sources>
-    <p className="text-[11.5px] font-medium text-ink-soft">{t('agentPanel.prompt.recipeSources')}</p>
+    <p className="text-[11.5px] font-normal text-ink-soft">{t('agentPanel.prompt.recipeSources')}</p>
     <ul className="space-y-0.5">
       {references.map((reference) => <li key={`${reference.surface}:${reference.installation_id}`} className="min-w-0 text-[11px] leading-5 text-ink-faint" data-prompt-recipe-source={reference.surface}>
         <span className="text-ink-soft">{t(`agentPanel.prompt.recipeSurface.${reference.surface}`)}</span>
-        {reference.name === undefined ? null : <><span> · </span><span className="font-medium text-ink">{reference.name}</span></>}
+        {reference.name === undefined ? null : <><span> · </span><span className="font-normal text-ink">{reference.name}</span></>}
         {' · '}
         <span className="break-all font-mono">{reference.installation_id}</span>
         {' · '}

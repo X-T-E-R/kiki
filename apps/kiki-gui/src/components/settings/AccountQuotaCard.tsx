@@ -47,7 +47,7 @@ export function AccountQuotaPanel({ method }: { method: OAuthMethodStatus }) {
 function AccountHeading({ method }: { method: OAuthMethodStatus }) {
   return (
     <p className="flex min-w-0 items-baseline gap-2">
-      <span className="text-[12.5px] font-medium text-ink">{method.label}</span>
+      <span className="text-[12.5px] font-normal text-ink">{method.label}</span>
       {method.account.state === 'known' ? <span className="truncate font-mono text-[11px] text-ink-faint" title={method.account.id}>{compactIdentifier(method.account.id)}</span> : null}
     </p>
   );
@@ -132,12 +132,12 @@ function QuotaBar({ row, first }: { row: UsageRow; first: boolean }) {
   return (
     <li data-quota-row data-quota-near={near ? 'true' : undefined} className="space-y-1.5">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px]">
-        <span className="font-medium text-ink">{name}</span>
+        <span className="font-normal text-ink">{name}</span>
         {window !== null ? <span className="font-mono text-[10.5px] text-ink-faint">{window}</span> : null}
         <span className="ml-auto tabular-nums text-ink-soft">
           {row.limit > 0 ? t('st.quota.usedOf', { used: row.used.toLocaleString(), limit: row.limit.toLocaleString() }) : t('st.quota.usedOnly', { used: row.used.toLocaleString() })}
           {remainingPercent !== null ? (
-            <span className={`ml-2 font-medium ${exhausted ? 'text-danger' : near ? 'text-amber-ink' : 'text-ink'}`}>
+            <span className={`ml-2 font-normal ${exhausted ? 'text-danger' : near ? 'text-amber-ink' : 'text-ink'}`}>
               {t('st.quota.remainingPercent', { n: remainingPercent })}
             </span>
           ) : null}
@@ -174,7 +174,7 @@ function SummaryQuota({ method }: { method: OAuthMethodStatus }) {
       {quota.state === 'known' ? (
         <p className="text-[12px] text-ink-soft">
           <span>{quota.label}</span>
-          <span className="ml-2 font-medium tabular-nums text-ink">
+          <span className="ml-2 font-normal tabular-nums text-ink">
             {quota.unit === 'percent' ? t('st.quota.remainingPercent', { n: quota.remaining }) : t('st.quota.remainingCount', { n: quota.remaining.toLocaleString() })}
           </span>
           {reset !== null ? <span className="ml-2 text-ink-faint">{t('st.quota.resetsAt', { when: reset })}</span> : null}

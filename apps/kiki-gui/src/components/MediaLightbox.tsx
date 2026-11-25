@@ -18,7 +18,7 @@ import { ImageViewportAnnotations, renderAnnotatedImage, scaleAnnotationMarks, t
 import { errorToText } from '@kiki/session-core/util';
 import { pushToast } from '../lib/toasts';
 
-const controlClass = 'rounded-full border border-shell-hairline bg-shell-hover px-3 py-1 text-[11.5px] font-medium text-shell-ink transition-colors hover:bg-shell-hover disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink';
+const controlClass = 'rounded-full border border-shell-hairline bg-shell-hover px-3 py-1 text-[11.5px] font-normal text-shell-ink transition-colors hover:bg-shell-hover disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink';
 const zoomButtonClass = 'flex h-6 w-6 items-center justify-center rounded-full text-shell-ink transition-colors hover:bg-shell-hairline disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink';
 
 /**
@@ -678,7 +678,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
                 data-lightbox-attach-annotated
                 disabled={attaching || src === undefined || loading || failed || sourceFailed}
                 onClick={() => { void attachAnnotatedImage(); }}
-                className={`${controlClass} !border-accent !bg-accent font-semibold !text-on-accent hover:opacity-90`}
+                className={`${controlClass} !border-accent !bg-accent font-normal !text-on-accent hover:opacity-90`}
               >
                 {t('preview.addToChat')}
               </button>
@@ -686,7 +686,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
           </>
         ) : (
           <div role="toolbar" aria-label={t('media.annotationMode')} className="flex max-w-full flex-wrap items-center justify-center gap-2 rounded-full border border-shell-hairline bg-shell/80 px-3 py-1 shadow-lg backdrop-blur-md">
-            <span role="status" aria-live="polite" className="font-medium text-[11.5px] text-accent-ink px-1.5">{t('media.annotationMode')}</span>
+            <span role="status" aria-live="polite" className="font-normal text-[11.5px] text-accent-ink px-1.5">{t('media.annotationMode')}</span>
             <div className="h-3 w-px bg-shell-hairline" />
             {(['select', 'arrow', 'rectangle', 'pen'] as const).map((option) => (
               <button
@@ -731,7 +731,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
                 data-lightbox-attach-annotated
                 disabled={marks.length === 0 || attaching || src === undefined}
                 onClick={() => { void attachAnnotatedImage(); }}
-                className={`${controlClass} !border-accent !bg-accent font-semibold !text-on-accent hover:opacity-90`}
+                className={`${controlClass} !border-accent !bg-accent font-normal !text-on-accent hover:opacity-90`}
               >
                 {t('preview.addToChat')}
               </button>
@@ -739,7 +739,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
             <button
               type="button"
               onClick={finishEdit}
-              className={`${controlClass} !border-shell-hairline bg-shell-hairline/60 font-semibold text-shell-ink hover:bg-shell-hairline`}
+              className={`${controlClass} !border-shell-hairline bg-shell-hairline/60 font-normal text-shell-ink hover:bg-shell-hairline`}
             >
               {t('media.annotationDone')}
             </button>

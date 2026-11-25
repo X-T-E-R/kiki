@@ -83,7 +83,7 @@ function OriginBadgeContext({ config, domain, keyPath = [], label }: {
   }
 
   const chip = (
-    <span className="inline-flex items-center gap-1 rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-medium text-ink-soft">
+    <span className="inline-flex items-center gap-1 rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-4 font-normal text-ink-soft">
       <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-ink-faint" />{t('st.origin.local')}
     </span>
   );

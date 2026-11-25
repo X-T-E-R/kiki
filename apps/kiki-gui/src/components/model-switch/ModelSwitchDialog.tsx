@@ -17,7 +17,7 @@ import type { ModelSwitchMode } from '../../lib/client';
 import { ConfirmDialog } from '../ConfirmDialog';
 
 const MODE_ORDER = ['direct', 'compact', 'fresh'] as const satisfies readonly ModelSwitchMode[];
-const EFFORT_SELECTED_CLASS = 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]';
+const EFFORT_SELECTED_CLASS = 'bg-panel font-normal text-ink shadow-[var(--kiki-sheet-shadow)]';
 const EFFORT_IDLE_CLASS = 'text-ink-soft hover:text-ink';
 
 export interface ModelSwitchChoice {
@@ -180,7 +180,7 @@ export function ModelSwitchDialog({
                 {checked ? <span className="h-1.5 w-1.5 rounded-full bg-selected-ink" /> : null}
               </span>
               <span className="min-w-0">
-                <span className={`block text-[13px] leading-snug ${checked ? 'font-medium text-ink' : 'text-ink'}`}>
+                <span className={`block text-[13px] leading-snug ${checked ? 'text-ink' : 'text-ink'}`}>
                   {t(`modelSwitch.dialog.mode.${entry}`)}
                 </span>
                 <span className="mt-0.5 block text-[12px] leading-snug text-ink-soft">
@@ -278,7 +278,7 @@ export function ModelSwitchDialog({
             data-model-switch-open-settings
             disabled={submitting}
             onClick={onOpenSettings}
-            className="ml-auto shrink-0 rounded-md px-1.5 py-0.5 text-[12px] font-medium text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+            className="ml-auto shrink-0 rounded-md px-1.5 py-0.5 text-[12px] font-normal text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
           >
             {t('modelSwitch.dialog.settings')}
           </button>

@@ -46,7 +46,7 @@ export function UsageExportPreviewBlock({ preview, stale, footer }: {
     <div data-usage-export-preview-block className="space-y-3">
       <div>
         <div className="flex items-center gap-1.5">
-          <h4 className="font-display text-[15px] font-semibold text-ink">{t('usage.export.preview.title')}</h4>
+          <h4 className="font-display text-[15px] font-bold text-ink">{t('usage.export.preview.title')}</h4>
           {!preview.source_complete ? (
             <span
               data-usage-export-preview-incomplete
@@ -120,7 +120,7 @@ export function UsageExportPreviewBlock({ preview, stale, footer }: {
       {sample !== undefined && sample.bucket !== null ? (
         <div>
           <div className="flex flex-wrap items-baseline gap-x-2">
-            <h5 className="text-[12.5px] font-medium text-ink">{t('usage.export.preview.sample')}</h5>
+            <h5 className="text-[12.5px] font-normal text-ink">{t('usage.export.preview.sample')}</h5>
             <p className="text-[12px] text-ink-faint">{t('usage.export.preview.sampleNote')}</p>
             <button
               type="button"
@@ -192,7 +192,7 @@ export function UsageExportConsentFacts({ kind, privateGrant }: { readonly kind:
   ] as const;
   return (
     <div data-usage-export-consent-facts className="space-y-1.5">
-      <p className="text-[12.5px] font-medium text-ink">{t('usage.export.consent.summary')}</p>
+      <p className="text-[12.5px] font-normal text-ink">{t('usage.export.consent.summary')}</p>
       <ul className="list-disc space-y-1 pl-4 text-[12.5px] leading-relaxed text-ink-soft">
         {facts.map((key) => <li key={key}>{t(key)}</li>)}
         {privateGrant ? <li>{t('usage.export.form.privateHint')}</li> : null}

@@ -27,7 +27,7 @@ export function PeerThreadSource({ source }: { source: NonNullable<UserBlock['pe
   const detail = [title, sessionId, entry?.workspace?.name, source.workspaceId ?? session?.workspace_id, source.hostId ?? directory.hostId,
     connection?.meta?.server_home_id, source.senderName].filter((part): part is string => part !== undefined && part !== '').join('\n');
   const attrs = { 'data-peer-thread': sessionId, title: detail, 'aria-label': `${label}\n${detail}` };
-  const className = 'min-w-0 max-w-full truncate text-[12px] font-medium text-ink-soft';
+  const className = 'min-w-0 max-w-full truncate text-[12px] font-normal text-ink-soft';
   if (sessionId === undefined || connection === null || !sameHost || !sameWorkspace) {
     return <span {...attrs} className={className}>{label}</span>;
   }

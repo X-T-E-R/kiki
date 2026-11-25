@@ -56,7 +56,7 @@ function renderFormattedFieldValue(
       );
     case 'badge':
       return (
-        <span className="inline-flex items-center rounded-full border border-hairline bg-paper px-2 py-0.5 font-mono text-[11px] font-medium text-ink-soft">
+        <span className="inline-flex items-center rounded-full border border-hairline bg-paper px-2 py-0.5 font-mono text-[11px] font-normal text-ink-soft">
           {value}
         </span>
       );
@@ -137,7 +137,7 @@ export function PluginToolCardBody({
             const blockFormat = field.format === 'code' || field.format === 'diff';
             return blockFormat ? (
               <div key={key} className="space-y-1">
-                <p className="text-[11.5px] font-medium text-ink-faint">{label}</p>
+                <p className="text-[11.5px] font-normal text-ink-faint">{label}</p>
                 {renderFormattedFieldValue(formatted, field.format)}
               </div>
             ) : (

@@ -224,7 +224,7 @@ function CurrentConnectionContent() {
       >
         {isSsh ? (
           <div className="space-y-1.5 text-[12.5px] text-ink">
-            <p className="font-medium">{t('connect.remoteScope')} · {sshLabel}</p>
+            <p className="font-normal">{t('connect.remoteScope')} · {sshLabel}</p>
             <p className="text-ink-soft">{t('connect.sshRemoteSettings')}</p>
             <button type="button" onClick={activateLocal} className={`${SECONDARY_BUTTON} mt-1`}>
               {t('connect.switchLocal')}
@@ -238,10 +238,10 @@ function CurrentConnectionContent() {
               <SettingField
                 label={
                   <span className="flex flex-col gap-0.5">
-                    <span className="font-medium text-ink" data-conn-hop-heading="local">{hop1Heading}</span>
+                    <span className="font-normal text-ink" data-conn-hop-heading="local">{hop1Heading}</span>
                     <span className="flex flex-wrap items-center gap-2 text-[12px]" data-conn-ws-status={wsStatus}>
                       <span aria-hidden className={`inline-block h-2 w-2 shrink-0 rounded-full ${statusDotClass}`} />
-                      <span className={`font-medium ${statusTextClass}`}>{t(`st.conn.ws.${wsStatus}`)}</span>
+                      <span className={`font-normal ${statusTextClass}`}>{t(`st.conn.ws.${wsStatus}`)}</span>
                       <span className="break-all font-mono text-ink-soft" data-conn-url>
                         {config.url.trim() || (typeof window !== 'undefined' ? window.location.origin : '')}
                       </span>
@@ -314,7 +314,7 @@ function CurrentConnectionContent() {
             onSubmit={(event) => { event.preventDefault(); applyDrafts(); }}
           >
             <div className="space-y-1.5">
-              <label htmlFor="st-conn-url" className="block text-[13px] font-medium text-ink">{t('connect.serverUrl')}</label>
+              <label htmlFor="st-conn-url" className="block text-[13px] font-normal text-ink">{t('connect.serverUrl')}</label>
               <input
                 id="st-conn-url"
                 className={`${INPUT} font-mono`}
@@ -366,7 +366,7 @@ function CurrentConnectionContent() {
               <SettingField
                 label={
                   <span className="flex flex-col gap-0.5">
-                    <span className="font-medium text-ink" data-conn-hop-heading="remote">{hop2Heading}</span>
+                    <span className="font-normal text-ink" data-conn-hop-heading="remote">{hop2Heading}</span>
                     <span className="flex flex-wrap items-center gap-2 text-[12px]">
                       {remoteRecord !== undefined ? (
                         <RemoteStateChip state={remoteRecord.state} />

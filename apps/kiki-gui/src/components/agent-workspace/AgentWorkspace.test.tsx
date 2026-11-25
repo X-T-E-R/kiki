@@ -398,9 +398,9 @@ it('enables running fullscreen composer send, model switch, and stop', async () 
     dock.querySelector<HTMLButtonElement>('[role="option"][data-option-value="fixture/other"]')?.click();
   });
   expect(harness.setAgentModel).toHaveBeenCalledWith('session', 'child', 'fixture/other');
-  // Ordinary busy state is owned by the timeline tail and header; the composer
-  // status line omits duplicate "Working" prose when the draft is empty.
-  expect(dock.querySelector('[data-composer-working]')).toBeNull();
+  // A running child without a pending interaction shows its live working status
+  // in the composer status line just like main.
+  expect(dock.querySelector('[data-composer-working]')).not.toBeNull();
   await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Stop this turn"]')?.click(); });
   expect(harness.stopAgentTask).toHaveBeenCalledWith('session', 'main', 'task-1');
 });
@@ -431,7 +431,7 @@ it.each(['approval', 'question'] as const)('preserves child pending %s state ins
   expect(dock.querySelector('[data-composer-working]')).toBeNull();
 });
 
-it('omits duplicate working prose in child composer status line across running and idle transitions', async () => {
+it('renders working status and last-response time in child composer status line while running', async () => {
   const now = Date.now();
   const child1Time = now - 15_000;
   const child1Iso = new Date(child1Time).toISOString();
@@ -471,7 +471,10 @@ it('omits duplicate working prose in child composer status line across running a
   });
   await settle();
 
-  expect(dock.querySelector('[data-composer-working]')).toBeNull();
+  const workingLine = dock.querySelector('[data-composer-working]');
+  expect(workingLine).not.toBeNull();
+  expect(workingLine?.getAttribute('data-last-response-at')).toBe(String(child1Time));
+  expect(workingLine?.textContent).toContain('Working · last response');
   expect(header.querySelector('header')?.className).toContain('@container/center');
 });
 

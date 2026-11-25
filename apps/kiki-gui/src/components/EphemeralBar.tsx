@@ -20,7 +20,7 @@ import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
-const STRIP_BUTTON = 'inline-flex h-7 shrink-0 items-center rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent pointer-coarse:h-11';
+const STRIP_BUTTON = 'inline-flex h-7 shrink-0 items-center rounded-md px-2 text-[12px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent pointer-coarse:h-11';
 
 export function EphemeralBar({
   session,
@@ -135,7 +135,7 @@ function EndEphemeralDialog({ session, onClose }: { session: Session; onClose: (
   const title = t('ephemeral.endTitle');
   return (
     <Dialog onClose={() => { if (!busy) onClose(); }} ariaLabel={title} overlayId="ephemeral-end">
-      <h2 className="font-display text-[18px] font-semibold text-ink">{title}</h2>
+      <h2 className="font-display text-[18px] font-bold text-ink">{title}</h2>
       <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">{t('ephemeral.endBody')}</p>
       {(check.kind === 'loss' || check.kind === 'clean') && worktree !== undefined ? (
         <fieldset data-ephemeral-end-worktree={check.kind} className="mt-4 rounded-lg border border-hairline px-3 py-2">
@@ -184,7 +184,7 @@ export function TemporaryMark({ className = '' }: { className?: string }) {
   return (
     <span
       data-ephemeral-mark
-      className={`inline-flex h-[18px] shrink-0 items-center rounded-[5px] border border-dashed border-hairline-strong px-1.5 text-[11px] leading-none font-medium text-ink-soft ${className}`}
+      className={`inline-flex h-[18px] shrink-0 items-center rounded-[5px] border border-dashed border-hairline-strong px-1.5 text-[11px] leading-none font-normal text-ink-soft ${className}`}
     >
       {t('ephemeral.badge')}
     </span>

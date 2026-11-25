@@ -71,7 +71,7 @@ export function PendingBadge({ sessions }: { sessions: readonly Session[] }) {
         onClick={() => { setOpen((value) => !value); }}
         aria-expanded={open}
         title={t('pending.badgeTitle')}
-        className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[12px] font-medium transition-colors ${
+        className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[12px] font-normal transition-colors ${
           open ? 'bg-amber-card text-amber-ink' : 'text-amber-ink hover:bg-amber-card/70'
         }`}
       >
@@ -101,7 +101,7 @@ export function PendingBadge({ sessions }: { sessions: readonly Session[] }) {
                 }}
                 className={`anim-enter w-max min-w-[200px] max-w-[280px] max-h-[min(var(--available-height,320px),320px)] overflow-y-auto overscroll-contain p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
               >
-                <p className="px-3 pt-1 pb-0.5 text-[12px] font-medium text-ink-faint">
+                <p className="px-3 pt-1 pb-0.5 text-[12px] font-normal text-ink-faint">
                   {t('pending.popoverTitle')}
                 </p>
                 {pending.map((session) => (
@@ -114,7 +114,7 @@ export function PendingBadge({ sessions }: { sessions: readonly Session[] }) {
                     }}
                     className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left transition-colors hover:bg-paper"
                   >
-                    <span className="shrink-0 text-[11px] font-medium text-amber-ink">
+                    <span className="shrink-0 text-[11px] font-normal text-amber-ink">
                       {session.pending_interaction === 'approval'
                         ? t('pending.kind.approval')
                         : t('pending.kind.question')}

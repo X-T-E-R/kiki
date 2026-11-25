@@ -115,7 +115,7 @@ export function UpdateAvailableDialog({
           <Icon name="arrowUp" size={14} />
         </span>
         <div className="min-w-0 flex-1">
-          <h2 className="font-display text-[18px] font-semibold tracking-tight text-ink">{title}</h2>
+          <h2 className="font-display text-[18px] font-bold text-ink">{title}</h2>
           {update.currentVersion !== '' ? (
             <p className="mt-0.5 font-mono text-[12px] text-ink-faint">
               {t('st.about.updateDialog.fromTo', { from: update.currentVersion, to: update.version })}
@@ -145,7 +145,7 @@ export function UpdateAvailableDialog({
         data-update-notes
         className="mt-3 max-h-[104px] min-h-0 shrink overflow-y-auto overscroll-contain rounded-lg bg-ink/[0.03] px-3 py-2"
       >
-        <p className="text-[11px] font-medium text-ink-faint">{t('st.about.updateDialog.notes')}</p>
+        <p className="text-[11px] font-normal text-ink-faint">{t('st.about.updateDialog.notes')}</p>
         {notes === '' ? (
           <p className="mt-1 text-[12px] leading-relaxed text-ink-faint">
             {t('st.about.updateDialog.noNotes')}

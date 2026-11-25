@@ -52,7 +52,7 @@ export function SpaceCredentialsCard({ client: controlClient, onEnterMain }: {
     <SectionCard id="st-card-space-credentials" title={t('st.spaces.credTitle')} scope="server">
       <div className="space-y-3">
         <div data-space-cred-current={shared ? 'shared' : 'isolated'}>
-          <p className="text-[13px] font-medium text-ink">{t(shared ? 'st.spaces.credShared' : 'st.spaces.credIsolated')}</p>
+          <p className="text-[13px] font-normal text-ink">{t(shared ? 'st.spaces.credShared' : 'st.spaces.credIsolated')}</p>
           <p className="mt-0.5 text-[12px] text-ink-faint">{t(shared ? 'st.spaces.credSharedDesc' : 'st.spaces.credIsolatedDesc')}</p>
         </div>
         <Hint>{t('st.spaces.credChangeFromMain')}</Hint>
@@ -123,7 +123,7 @@ function CopySshHereDialog({ client, onClose, onCopied }: { client: KikiClient; 
   return (
     <Dialog onClose={() => { if (!busy) onClose(); }} ariaLabel={t('st.spaces.copySshHereTitle')} overlayId="space-copy-ssh-here">
       <div data-space-copy-here-dialog>
-        <h2 className="font-display text-[18px] font-semibold text-ink">{t('st.spaces.copySshHereTitle')}</h2>
+        <h2 className="font-display text-[18px] font-bold text-ink">{t('st.spaces.copySshHereTitle')}</h2>
         <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">{t('st.spaces.copySshHereBody')}</p>
         {hosts.isError ? <div className="mt-3"><InlineError error={hosts.error} /></div> : null}
         {hosts.isSuccess && list.length === 0 ? <p className="mt-3 text-[12px] text-ink-faint">{t('st.spaces.copySshNoHosts')}</p> : null}

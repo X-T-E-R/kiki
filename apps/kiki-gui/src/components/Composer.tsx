@@ -128,6 +128,7 @@ import { pastedMediaType } from '../lib/pastedFiles';
 import { pushToast } from '../lib/toasts';
 import { matchesShortcutAction } from '../lib/shortcuts';
 import { useRemoteConnections } from '../lib/remoteConnections';
+import { useDeferSecondaryBootQueries } from '../lib/bootHydrationGate';
 import { useConnection } from '../state/connection';
 import { useProfileFilePreview } from '../lib/profileFilePreview';
 import { resolveProfileIcon } from '../lib/profileIcon';
@@ -396,7 +397,55 @@ function hasSpecialDraftSyntax(draft: string): boolean {
   return draft.includes('/') || draft.includes('@') || draft.includes('[[');
 }
 
-export function Composer({
+/**
+ * During the initial mobile cold-open window before the first transcript row
+ * paints, mount a visually identical lightweight composer shell so SessionView
+ * reaches `view_attach` immediately without paying for 20+ composer hooks and
+ * catalog queries ahead of the conversation's own messages.
+ */
+export function Composer(props: Parameters<typeof ComposerFull>[0]) {
+  const deferSecondaryBoot = useDeferSecondaryBootQueries();
+  const { t } = useI18n();
+  if (
+    deferSecondaryBoot &&
+    props.sessionId !== undefined &&
+    props.needsYou === undefined &&
+    props.value === '' &&
+    props.queueEditing !== true &&
+    props.messageEditing !== true
+  ) {
+    return (
+      <div
+        className="w-full"
+        data-composer-variant={props.variant ?? 'main'}
+        data-composer-boot-shell
+      >
+        {props.header}
+        <div
+          data-composer-card
+          data-run-mode="normal"
+          className="composer-card relative rounded-[18px] bg-panel"
+        >
+          <div data-composer-body>
+            <div className="px-3.5 pt-3 pb-1">
+              <textarea
+                rows={1}
+                readOnly
+                aria-label={t('composer.placeholder')}
+                placeholder={props.disabledPlaceholder ?? t('composer.placeholder')}
+                className="min-h-[28px] w-full resize-none bg-transparent text-[15px] leading-6 text-ink placeholder:text-ink-faint/70 focus:outline-none"
+              />
+            </div>
+            <div data-composer-toolbar className="flex h-10 items-center justify-between gap-2 px-2.5 pb-1.5" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return <ComposerFull {...props} />;
+}
+
+function ComposerFull({
   busy,
   disabled,
   variant = 'main',
@@ -1201,10 +1250,11 @@ export function Composer({
 
   // The effective catalog validates selections without erasing them on an
   // unavailable server or directory; the picker remains a recovery path.
+  const deferSecondaryBoot = useDeferSecondaryBootQueries();
   const agentProfilesQuery = useQuery({
     queryKey: agentProfileCatalogQueryKey(agentProfileCatalogMode),
     queryFn: () => loadAgentProfileCatalog(client, agentProfileCatalogMode),
-    enabled: agentProfileCatalogMode.mode !== 'disabled',
+    enabled: !deferSecondaryBoot && agentProfileCatalogMode.mode !== 'disabled',
     staleTime: 60_000,
     retry: retryCatalog,
     retryDelay: catalogRetryDelay,
@@ -1476,7 +1526,7 @@ export function Composer({
       : workspaceId !== undefined
         ? client.listWorkspaceSkills(workspaceId)
         : client.listDraftSkills(skillCwd),
-    enabled: skillCatalogReady,
+    enabled: !deferSecondaryBoot && skillCatalogReady,
     staleTime: 60_000,
     retry: false,
   });
@@ -3616,7 +3666,7 @@ export function Composer({
           title={`${t(pendingSwitchPrefix)}${pendingSwitchLabel} — ${t('modelSwitch.pendingChipTitle')}`}
           // A narrow composer drops this chip entirely and says the same thing
           // in words above the input instead of clipping it to "fixture/…".
-          className="@max-[30rem]/composer:hidden flex h-7 max-w-56 min-w-0 items-center px-1.5 text-[12px] font-medium text-accent-ink"
+          className="@max-[30rem]/composer:hidden flex h-7 max-w-56 min-w-0 items-center px-1.5 text-[12px] font-normal text-accent-ink"
         >
           {/* The width cap matches the model chip's, so a long target id
               truncates where the model beside it would. */}
@@ -3638,7 +3688,7 @@ export function Composer({
           title={pendingRuntimeControls.model !== undefined || pendingRuntimeControls.thinking !== undefined
             ? t('modelSwitch.pendingChipTitle')
             : t('composer.execution.pendingTitle')}
-          className="flex h-7 max-w-64 min-w-0 items-center gap-1 px-1.5 text-[12px] font-medium text-accent-ink"
+          className="flex h-7 max-w-64 min-w-0 items-center gap-1 px-1.5 text-[12px] font-normal text-accent-ink"
         >
           <span className="min-w-0 truncate">{t('composer.execution.pendingSuffix', { name: label })}</span>
           {onCancelRuntimeControls !== undefined ? (
@@ -3713,7 +3763,7 @@ export function Composer({
             <button
               type="button"
               onClick={modelSwitchError.onRetry}
-              className="shrink-0 rounded-full border border-hairline px-2 py-0.5 font-medium text-ink-soft transition-colors hover:border-accent hover:text-ink pointer-coarse:h-8"
+              className="shrink-0 rounded-full border border-hairline px-2 py-0.5 font-normal text-ink-soft transition-colors hover:border-accent hover:text-ink pointer-coarse:h-8"
             >
               {t('common.retry')}
             </button>
@@ -3810,8 +3860,8 @@ export function Composer({
             className="anim-enter mx-3 mb-1.5 flex min-h-9 w-[calc(100%-1.5rem)] items-center gap-2 rounded-[12px] bg-attention-soft px-3 text-left text-[13px] transition-colors duration-[var(--kiki-motion-quick)] hover:bg-attention-soft/80 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-11"
           >
             <LifeMark markId="composer-needs-you-bar" life="waiting" tone="bg-attention" />
-            <span className="min-w-0 flex-1 truncate font-medium text-attention">{tp('composer.needsYou.banner', needsYouCount)}</span>
-            <span className="flex shrink-0 items-center gap-1 text-[12px] font-medium text-attention">
+            <span className="min-w-0 flex-1 truncate font-normal text-attention">{tp('composer.needsYou.banner', needsYouCount)}</span>
+            <span className="flex shrink-0 items-center gap-1 text-[12px] font-normal text-attention">
               {t('composer.needsYou.bannerAction')}
               <Icon name="arrowRight" size={12} />
             </span>
@@ -3883,7 +3933,7 @@ export function Composer({
                       {tp('composer.needsYou.extras', attachments.length + (annotations?.length ?? 0) + quoteItems.length)}
                     </span>
                   ) : null}
-                  <span className="shrink-0 font-medium text-ink-soft">{t('composer.needsYou.backToInput')}</span>
+                  <span className="shrink-0 font-normal text-ink-soft">{t('composer.needsYou.backToInput')}</span>
                 </>
               ) : (
                 <span className="min-w-0 flex-1">{t('composer.needsYou.backToInput')}</span>
@@ -4105,7 +4155,7 @@ export function Composer({
                   <div
                     role="alert"
                     data-slash-confirm
-                    className="mx-3 mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-amber-card px-3 py-1.5 text-[12px] font-medium text-amber-ink"
+                    className="mx-3 mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-amber-card px-3 py-1.5 text-[12px] font-normal text-amber-ink"
                   >
                     <span>
                       {slashConfirm.reason === 'unknown'
@@ -4443,7 +4493,7 @@ export function Composer({
                   aria-label={queueEditRemoveArmed ? t('composer.queueEditRemoveConfirm') : t('composer.queueEditRemoveAria')}
                   className={`flex h-8 shrink-0 items-center justify-center rounded-full border transition-colors focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none pointer-coarse:h-10 ${
                     queueEditRemoveArmed
-                      ? 'gap-1 border-danger/60 bg-danger/10 px-3 text-[11px] font-medium text-danger hover:bg-danger/20'
+                      ? 'gap-1 border-danger/60 bg-danger/10 px-3 text-[11px] text-danger hover:bg-danger/20'
                       : 'w-8 border-danger/40 text-danger hover:bg-danger/10 pointer-coarse:w-10'
                   }`}
                 >
@@ -4667,10 +4717,10 @@ export function Composer({
             !sendNowDegrades
               ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowHintCmdEnter' : 'composer.sendNowHint')
               : undefined;
-          const showWorkingAction = working !== undefined && (working.queued !== undefined || sendNowHint !== undefined);
+          const showWorkingLine = working !== undefined;
           return (
             <div data-composer-status-line className="@container/statusline mt-1.5 flex min-h-6 min-w-0 items-center gap-2 px-1 [contain:layout_style]">
-              {ssh.resident !== null || hasPluginStatusCapsules || showWorkingAction || statusNotice !== undefined || sessionRemainder !== undefined || (takenOver && busy && onAbort !== undefined) ? (
+              {ssh.resident !== null || hasPluginStatusCapsules || showWorkingLine || statusNotice !== undefined || sessionRemainder !== undefined || (takenOver && busy && onAbort !== undefined) ? (
                 <>
                   {ssh.resident}
                   {hasPluginStatusCapsules ? (
@@ -4681,7 +4731,7 @@ export function Composer({
                       disabled={disabled}
                     />
                   ) : null}
-                  {showWorkingAction ? (
+                  {showWorkingLine ? (
                     <ComposerWorkingLine
                       lastResponseAt={working.lastResponseAt}
                       queued={working.queued}
@@ -4693,7 +4743,7 @@ export function Composer({
                     <SessionRemainder className="shrink" handle={sessionRemainder} />
                   )}
                   {statusNotice === undefined ? null : (
-                    <span data-composer-status-notice className="flex min-w-0 shrink items-center gap-1.5 text-[12px] font-medium text-amber-ink">
+                    <span data-composer-status-notice className="flex min-w-0 shrink items-center gap-1.5 text-[12px] font-normal text-amber-ink">
                       {statusNotice}
                     </span>
                   )}
@@ -4703,7 +4753,7 @@ export function Composer({
                       data-composer-status-stop
                       onClick={onAbort}
                       disabled={abortPending}
-                      className="relative inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] leading-4 font-medium text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-top-1.5 pointer-coarse:after:-bottom-4.5"
+                      className="relative inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] leading-4 font-normal text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-top-1.5 pointer-coarse:after:-bottom-4.5"
                     >
                       <Icon name="stop" size={12} />
                       {abortPending ? t('tasks.stopping') : t('composer.status.stop')}
@@ -4938,7 +4988,7 @@ function SlashMenuBody({
     return (
       <>
         {header !== null ? (
-          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
+          <p className="px-3 pt-1.5 pb-1 text-[12px] font-normal text-ink-faint">
             {header}
           </p>
         ) : null}
@@ -4955,7 +5005,7 @@ function SlashMenuBody({
             item.disabled === true ? 'opacity-50' : ''
           } ${active ? 'bg-paper' : 'hover:bg-paper'}`}
         >
-          <span className={`shrink-0 font-mono text-[12.5px] font-medium ${active ? 'text-selected-ink' : 'text-ink'}`}>
+          <span className={`shrink-0 font-mono text-[12.5px] font-normal ${active ? 'text-selected-ink' : 'text-ink'}`}>
             /{item.name}
           </span>
           {argHint !== undefined ? (
@@ -5048,7 +5098,7 @@ function SkillPreviewCard({ item }: { item: SlashItem }) {
       className="anim-enter pointer-events-none absolute right-0 bottom-full z-40 mb-1 hidden w-72 translate-x-[calc(100%+0.5rem)] rounded-[10px] border border-hairline bg-panel p-3 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)] min-[1360px]:block"
     >
       <div className="flex items-baseline gap-2">
-        <span className="shrink-0 font-mono text-[12px] font-medium text-accent-ink">
+        <span className="shrink-0 font-mono text-[12px] font-normal text-accent-ink">
           /{item.name}
         </span>
         {skill !== undefined ? (
@@ -5246,7 +5296,7 @@ function MentionMenuBody({
           }`}
         >
           <FileGlyph dir={isDir} />
-          <span className={`shrink-0 font-mono text-[12.5px] font-medium ${active ? 'text-selected-ink' : 'text-ink'}`}>
+          <span className={`shrink-0 font-mono text-[12.5px] font-normal ${active ? 'text-selected-ink' : 'text-ink'}`}>
             {row.item.name}
             {isDir ? '/' : ''}
           </span>
@@ -5268,7 +5318,7 @@ function MentionMenuBody({
           </p>
         ) : null}
         {row.groupLabel !== null ? (
-          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
+          <p className="px-3 pt-1.5 pb-1 text-[12px] font-normal text-ink-faint">
             {row.groupLabel}
           </p>
         ) : null}
@@ -5289,7 +5339,7 @@ function MentionMenuBody({
           <span aria-hidden className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-ink-faint">
             <Icon name="thread" size={12} />
           </span>
-          <span className={`shrink-0 text-[12.5px] font-medium ${active && !disabled ? 'text-selected-ink' : 'text-ink'}`}>
+          <span className={`shrink-0 text-[12.5px] font-normal ${active && !disabled ? 'text-selected-ink' : 'text-ink'}`}>
             {candidate.label}
           </span>
           <span className="shrink-0 rounded-full border border-hairline px-1.5 py-px text-[10.5px] text-ink-faint">
@@ -5314,7 +5364,7 @@ function MentionMenuBody({
           {loading ? t('composer.filesSearching') : query === '' ? t('composer.mentionEmpty') : t('composer.mentionNoMatch', { query })}
         </p>
       ) : null}
-      {items.length > 0 ? <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('composer.filesHeader')}</p> : null}
+      {items.length > 0 ? <p className="px-3 pt-1.5 pb-1 text-[12px] font-normal text-ink-faint">{t('composer.filesHeader')}</p> : null}
       <div ref={setListNode} data-mention-file-list className="max-h-64 overflow-y-auto" onScroll={(event) => {
         const node = event.currentTarget;
         if (!loading && !pending && !feed.failed && !feed.exhausted && node.scrollHeight - node.scrollTop - node.clientHeight <= 32) feed.loadMore();
@@ -5453,7 +5503,7 @@ function ExternalModelChoice({ choice, engineLabel, executorResponse, executorRe
         title={t('composer.engineCapabilityRefreshAria')}
         disabled={executorRefreshBusy}
         onClick={onRefreshExecutorModels}
-        className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-ink-soft hover:bg-ink/[0.06] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-wait disabled:opacity-60"
+        className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-normal text-ink-soft hover:bg-ink/[0.06] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-wait disabled:opacity-60"
       >
         {executorRefreshBusy ? t('composer.engineCapabilityRefreshing') : t('composer.engineCapabilityRefresh')}
       </button>
@@ -5641,7 +5691,7 @@ function ModelChip({
       // model came from, plus a way back to the inherited default.
       panelHeader={
         <div data-model-provenance className="flex items-center gap-2 border-b border-hairline px-3 py-2">
-          <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-ink-faint">
+          <span className="min-w-0 flex-1 truncate text-[12px] font-normal text-ink-faint">
             {[executorLabel, t(`composer.modelProvenance.${modelSource}`)].filter(Boolean).join(' · ')}
           </span>
           {executorLabel === undefined && model !== undefined && hasCatalog && !disabled ? (
@@ -5649,7 +5699,7 @@ function ModelChip({
               type="button"
               data-model-reset
               onClick={() => { void Promise.resolve(onChangeModel(undefined)).catch(() => undefined); }}
-              className="shrink-0 rounded-md px-1.5 py-0.5 text-[12px] font-medium text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+              className="shrink-0 rounded-md px-1.5 py-0.5 text-[12px] font-normal text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
             >
               {t('composer.modelResetDefault')}
             </button>
@@ -5660,7 +5710,7 @@ function ModelChip({
         <>
         {showEffort ? (
           <div className="flex items-center gap-2 border-t border-hairline px-3 py-2">
-            <span className="shrink-0 text-[12px] font-medium text-ink-faint">
+            <span className="shrink-0 text-[12px] font-normal text-ink-faint">
               {t('composer.effortHeading')}
             </span>
             <div
@@ -5679,7 +5729,7 @@ function ModelChip({
                   onClick={() => { onChangeEffort(level); }}
                   className={`rounded-[5px] px-2 py-0.5 text-[12px] transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
                     level === effort
-                      ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                      ? 'bg-panel text-ink shadow-[var(--kiki-sheet-shadow)]'
                       : 'text-ink-soft hover:text-ink'
                   }`}
                 >
@@ -5693,7 +5743,7 @@ function ModelChip({
           type="button"
           data-model-configure
           onClick={() => { void navigate('/settings/ai?tab=providers#st-card-providers-add'); }}
-          className="w-full border-t border-hairline px-3 py-2 text-left text-[12px] font-medium text-ink-soft hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+          className="w-full border-t border-hairline px-3 py-2 text-left text-[12px] font-normal text-ink-soft hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
         >
           {t('composer.configureModels')}
         </button> : null}
@@ -5743,10 +5793,9 @@ function EffortGauge({
 }
 
 /**
- * Actionable status line under the composer card while a turn is active:
- * governance admission queue ("Queued" with click popover) and the send-now
- * shortcut hint while typing a draft. Ordinary working status lives in the
- * timeline tail and header rather than repeating below the composer.
+ * Live status line under the composer card while a turn is active: working
+ * status with relative last-response time, governance admission queue
+ * ("Queued" with click popover), and the send-now shortcut hint while typing.
  */
 function ComposerWorkingLine({
   lastResponseAt,
@@ -5761,7 +5810,8 @@ function ComposerWorkingLine({
   };
   readonly sendNowHint: string | undefined;
 }) {
-  const { t } = useI18n();
+  const { t, time } = useI18n();
+  useNow();
   const navigate = useNavigate();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -5801,8 +5851,9 @@ function ComposerWorkingLine({
 
   const isQueued = queued !== undefined;
   const waitedSec = queued !== undefined ? Math.max(1, Math.round(queued.waitedMs / 1000)) : 1;
-
-  if (!isQueued && sendNowHint === undefined) return null;
+  const status = lastResponseAt === undefined
+    ? t('composer.working')
+    : t('composer.workingLastResponse', { ago: time.relativeTime(new Date(lastResponseAt).toISOString()) });
 
   return (
     <div className="relative flex min-w-0 items-center">
@@ -5811,29 +5862,29 @@ function ComposerWorkingLine({
         data-last-response-at={lastResponseAt}
         className="anim-enter flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint"
       >
+        <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
         {isQueued ? (
-          <>
-            <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
-            <span data-composer-queued className="flex shrink-0 items-center gap-1">
-              <button
-                ref={triggerRef}
-                type="button"
-                data-composer-queued-trigger
-                aria-expanded={detailsOpen}
-                onClick={() => { setDetailsOpen((v) => !v); }}
-                className="font-medium text-ink-soft underline decoration-dotted transition-colors hover:text-ink hover:decoration-solid focus-visible:outline-2 focus-visible:outline-selected-ink"
-              >
-                {t('composer.queued')}
-              </button>
-            </span>
-          </>
-        ) : null}
+          <span data-composer-queued className="flex shrink-0 items-center gap-1">
+            <button
+              ref={triggerRef}
+              type="button"
+              data-composer-queued-trigger
+              aria-expanded={detailsOpen}
+              onClick={() => { setDetailsOpen((v) => !v); }}
+              className="font-normal text-ink-soft underline decoration-dotted transition-colors hover:text-ink hover:decoration-solid focus-visible:outline-2 focus-visible:outline-selected-ink"
+            >
+              {t('composer.queued')}
+            </button>
+          </span>
+        ) : (
+          <span className="min-w-0 truncate tabular-nums">{status}</span>
+        )}
         {sendNowHint !== undefined ? (
           <span
             data-composer-send-now-hint
-            className="min-w-0 truncate @max-[360px]/statusline:hidden pointer-coarse:hidden"
+            className="min-w-0 shrink-0 truncate @max-[360px]/statusline:hidden pointer-coarse:hidden"
           >
-            {isQueued ? `· ${sendNowHint}` : sendNowHint}
+            · {sendNowHint}
           </span>
         ) : null}
       </p>
@@ -5869,7 +5920,7 @@ function ComposerWorkingLine({
                 className="anim-enter w-72 max-w-[calc(100vw-24px)] rounded-lg border border-hairline bg-paper p-3 shadow-lg text-[12px] text-ink outline-none"
               >
                 <div className="flex items-center justify-between pb-1.5 border-b border-hairline/60">
-                  <span className="font-semibold">{t('composer.queuedTitle')}</span>
+                  <span className="font-bold">{t('composer.queuedTitle')}</span>
                   <span className="font-mono text-[11px] text-ink-faint tabular-nums">
                     {t('composer.queuedWaited', { seconds: waitedSec })}
                   </span>
@@ -5895,7 +5946,7 @@ function ComposerWorkingLine({
                       setDetailsOpen(false);
                       void navigate('/usage');
                     }}
-                    className="text-[11.5px] font-medium text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+                    className="text-[11.5px] font-normal text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
                   >
                     {t('composer.queuedUsageLink')}
                   </button>

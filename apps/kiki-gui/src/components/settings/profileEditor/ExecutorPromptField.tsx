@@ -154,7 +154,7 @@ function SectionControls({ section, editingOverride, supported, scopeLabel, disa
         onChange={(next) => onPatch({ delivery: next === '' ? undefined : next })} choices={choices} />
     </Field>
     <fieldset className="min-w-0 space-y-2" data-executor-prompt-include>
-      <legend className="mb-1 text-[12px] font-medium text-ink-soft">{t('st.executorPrompt.include')}</legend>
+      <legend className="mb-1 text-[12px] font-normal text-ink-soft">{t('st.executorPrompt.include')}</legend>
       <p className="text-[11.5px] text-ink-faint">{t('st.executorPrompt.groupContext')}</p>
       <div className="grid grid-cols-1 gap-x-2 sm:grid-cols-2">
         {CONTEXT_BLOCKS.map((id) => <Checkbox key={id} dataBlock={id} checked={include.includes(id)} disabled={disabled}
@@ -257,7 +257,7 @@ function PromptPreview({ value, engineId, engineLabel, supported, steer, profile
     data-preview-source={preview === null ? 'plan' : 'server'}
     className="space-y-2 rounded-lg border border-hairline bg-paper px-3 py-3">
     <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-      <p className="text-[12px] font-medium text-ink">{t('st.executorPrompt.preview', { engine: engineLabel })}</p>
+      <p className="text-[12px] font-normal text-ink">{t('st.executorPrompt.preview', { engine: engineLabel })}</p>
       <p className="text-[11.5px] text-ink-faint">{t('st.executorPrompt.previewAs', { delivery: t(`st.executorPrompt.delivery.${actual}`) })}</p>
     </div>
     {downgraded ? <p data-executor-prompt-downgrade className="flex gap-1.5 text-[11.5px] leading-snug text-amber-ink">
@@ -270,7 +270,7 @@ function PromptPreview({ value, engineId, engineLabel, supported, steer, profile
       {parts.map((part, index) => <li key={part.key} data-preview-part={part.key} className="min-w-0 border-l-2 border-hairline pl-3">
         <p className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-[11.5px]">
           <span className="shrink-0 tabular-nums text-ink-faint">{index + 1}</span>
-          <span className={`min-w-0 break-all text-ink-soft ${part.mono === true ? 'font-mono' : 'font-medium'}`}>{part.title}</span>
+          <span className={`min-w-0 break-all text-ink-soft ${part.mono === true ? 'font-mono' : 'font-normal'}`}>{part.title}</span>
           {part.pending === true ? <span className="shrink-0 text-ink-faint">· {t('st.executorPrompt.previewResolved')}</span> : null}
         </p>
         {part.text !== undefined ? <pre className={`mt-0.5 whitespace-pre-wrap break-words font-mono text-[11.5px] leading-[1.55] text-ink-faint ${preview === null ? 'line-clamp-4' : 'max-h-64 overflow-auto'}`}>{part.text}</pre> : null}

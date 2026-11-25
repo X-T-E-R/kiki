@@ -1084,7 +1084,7 @@ function EngineRow({ item, overrides: _overrides, display: _display, fault, disc
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-baseline gap-2">
-            <span className="truncate text-[13px] leading-5 font-normal text-ink">{item.label}</span>
+            <span data-engine-label className="truncate text-[13px] leading-5 font-normal text-ink">{item.label}</span>
           </span>
           <span data-engine-summary className="block truncate text-[12px] leading-4 text-ink-faint">{summaryFacts.join(' · ')}</span>
         </span>

@@ -166,7 +166,7 @@ function NoteBubble({
         data-annotation-bubble-note={noteId}
         aria-label={ariaLabel}
         title={title}
-        className="flex h-7 min-w-0 max-w-full items-center gap-1 rounded-full bg-paper px-2 text-[12px] font-medium text-ink-soft shadow-[var(--kiki-sheet-shadow)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9"
+        className="flex h-7 min-w-0 max-w-full items-center gap-1 rounded-full bg-paper px-2 text-[12px] font-normal text-ink-soft shadow-[var(--kiki-sheet-shadow)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9"
       >
         <span aria-hidden className="flex shrink-0 text-accent-ink/80"><Icon name="edit" size={12} /></span>
         <span className="min-w-0 truncate">{label}</span>
@@ -190,7 +190,7 @@ function NoteBubble({
 }
 
 const ROW_ACTION =
-  'min-h-7 shrink-0 rounded-md px-1.5 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-10';
+  'min-h-7 shrink-0 rounded-md px-1.5 text-[12px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-10';
 
 function SentNoteRow({
   note,
@@ -251,7 +251,7 @@ function SentNoteRow({
             className="min-h-20 min-w-0 flex-1 resize-y rounded-md border border-hairline bg-paper px-2 py-1.5 text-[12.5px] leading-snug text-ink outline-none focus:border-accent focus:ring-2 focus:ring-selected-ink/20"
           />
           <button type="button" data-annotation-bubble-save disabled={!canSave} onClick={commit}
-            className="min-h-8 rounded-md bg-ink/[0.06] px-3 text-[12px] font-semibold text-ink transition-colors hover:bg-ink/[0.1] disabled:cursor-not-allowed disabled:opacity-40">
+            className="min-h-8 rounded-md bg-ink/[0.06] px-3 text-[12px] font-normal text-ink transition-colors hover:bg-ink/[0.1] disabled:cursor-not-allowed disabled:opacity-40">
             {t('annotationTray.save')}
           </button>
           <button type="button" onClick={cancel} className={ROW_ACTION}>

@@ -85,7 +85,7 @@ export function MobileSpaceSheet({
     >
       <div className="kiki-mobile-sheet-grabber" aria-hidden="true" />
       <div className="flex h-11 items-center px-4 pb-1">
-        <h2 className="text-[16px] font-semibold text-ink">{t('mobile.space.switchTitle')}</h2>
+        <h2 className="text-[16px] font-bold text-ink">{t('mobile.space.switchTitle')}</h2>
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto px-4 pb-4">
@@ -99,13 +99,13 @@ export function MobileSpaceSheet({
             <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-ink/[0.06] text-ink">
               <Icon name="web" size={16} />
               {totalWaitingCount > 0 ? (
-                <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-semibold tabular-nums text-primary-foreground">
+                <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-normal tabular-nums text-primary-foreground">
                   {totalWaitingCount}
                 </span>
               ) : null}
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-[15px] font-medium text-ink">{t('mobile.space.all')}</span>
+              <span className="block truncate text-[15px] font-normal text-ink">{t('mobile.space.all')}</span>
               <span className="block truncate text-[12px] text-ink-faint">
                 {totalWaitingCount > 0
                   ? t('mobile.space.allSummary', { online: totalOnlineCount, waiting: totalWaitingCount })
@@ -117,7 +117,7 @@ export function MobileSpaceSheet({
         </div>
 
         <div>
-          <p className="mb-1.5 px-1 text-[11.5px] font-medium uppercase tracking-[0.04em] text-ink-faint">
+          <p className="mb-1.5 px-1 text-[11.5px] font-normal uppercase text-ink-faint">
             {t('mobile.spaces.myComputers')}
           </p>
           <div className="divide-y divide-hairline/70 overflow-hidden rounded-2xl border border-hairline/80 bg-paper">
@@ -130,13 +130,13 @@ export function MobileSpaceSheet({
               <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-ink/[0.06] text-ink">
                 <span className="h-2.5 w-2.5 rounded-full bg-success" aria-hidden="true" />
                 {localWaitingCount > 0 ? (
-                  <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-semibold tabular-nums text-primary-foreground">
+                  <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-normal tabular-nums text-primary-foreground">
                     {localWaitingCount}
                   </span>
                 ) : null}
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[15px] font-medium text-ink">{localTitle}</span>
+                <span className="block truncate text-[15px] font-normal text-ink">{localTitle}</span>
                 <span className="block truncate text-[12px] text-ink-faint">
                   {localRunningCount > 0
                     ? t('mobile.space.runningCount', { count: localRunningCount })
@@ -185,19 +185,19 @@ export function MobileSpaceSheet({
                         aria-hidden="true"
                       />
                       {waiting > 0 ? (
-                        <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-semibold tabular-nums text-primary-foreground">
+                        <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-normal tabular-nums text-primary-foreground">
                           {waiting}
                         </span>
                       ) : null}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[15px] font-medium text-ink">{record.label}</span>
+                      <span className="block truncate text-[15px] font-normal text-ink">{record.label}</span>
                       {subParts.length > 0 ? (
                         <span className="block truncate text-[12px] text-ink-faint">{subParts.join(' · ')}</span>
                       ) : null}
                     </span>
                     {netTag !== null ? (
-                      <span className="shrink-0 rounded-md bg-ink/[0.06] px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-ink-soft">
+                      <span className="shrink-0 rounded-md bg-ink/[0.06] px-1.5 py-0.5 font-mono text-[10.5px] font-normal text-ink-soft">
                         {netTag}
                       </span>
                     ) : !online ? (
@@ -215,7 +215,7 @@ export function MobileSpaceSheet({
                           setRetryingId(record.id);
                           void onRetryRemotes().finally(() => { setRetryingId(null); });
                         }}
-                        className="inline-flex h-11 items-center gap-1.5 rounded-full bg-ink px-4 text-[13px] font-medium text-paper disabled:opacity-55"
+                        className="inline-flex h-11 items-center gap-1.5 rounded-full bg-ink px-4 text-[13px] font-normal text-paper disabled:opacity-55"
                       >
                         <Icon name="refresh" size={12} />
                         <span>{t('mobile.space.retry')}</span>
@@ -226,7 +226,7 @@ export function MobileSpaceSheet({
                           onClose();
                           onPairNew();
                         }}
-                        className="inline-flex h-11 items-center rounded-full border border-hairline bg-panel px-4 text-[13px] font-medium text-ink-soft"
+                        className="inline-flex h-11 items-center rounded-full border border-hairline bg-panel px-4 text-[13px] font-normal text-ink-soft"
                       >
                         {t('mobile.space.repair')}
                       </button>
@@ -248,7 +248,7 @@ export function MobileSpaceSheet({
               <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-ink-soft">
                 <Icon name="plus" size={16} />
               </span>
-              <span className="text-[15px] font-medium">{t('mobile.space.pairNew')}</span>
+              <span className="text-[15px] font-normal">{t('mobile.space.pairNew')}</span>
             </button>
           </div>
         </div>
@@ -261,7 +261,7 @@ export function MobileSpaceSheet({
               onClose();
               onOpenWorkbench();
             }}
-            className="flex h-11 w-full items-center justify-center gap-2 rounded-2xl text-[13px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
+            className="flex h-11 w-full items-center justify-center gap-2 rounded-2xl text-[13px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink"
           >
             <Icon name="external" size={14} />
             <span>{t('mobile.spaces.openWorkbench')}</span>

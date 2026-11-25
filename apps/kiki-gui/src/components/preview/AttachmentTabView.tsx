@@ -568,7 +568,7 @@ export function PreviewAttachmentView({
               onClick={() => { setMode(option); }}
               className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
                 mode === option
-                  ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                  ? 'bg-paper text-ink shadow-[var(--kiki-sheet-shadow)]'
                   : 'text-ink-faint hover:text-ink-soft'
               }`}
             >
@@ -712,7 +712,7 @@ export function PreviewAttachmentView({
                       type="button"
                       data-html-reload
                       onClick={() => { setAttempt((value) => value + 1); }}
-                      className="rounded-full bg-accent px-3 py-1 text-[12px] font-medium text-white shadow-sm transition-opacity hover:opacity-90"
+                      className="rounded-full bg-accent px-3 py-1 text-[12px] font-normal text-white shadow-sm transition-opacity hover:opacity-90"
                     >
                       {t('preview.htmlReload')}
                     </button>

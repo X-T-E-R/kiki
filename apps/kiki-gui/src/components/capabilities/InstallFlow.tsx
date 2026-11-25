@@ -308,7 +308,7 @@ export function InstallFlow({
         {plan !== undefined && phase.kind !== 'done' && phase.kind !== 'enableFailed' ? (
           <>
             <div data-install-contributes>
-              <p className="text-[12px] font-medium text-ink-soft">{t('cap.install.adds')}</p>
+              <p className="text-[12px] font-normal text-ink-soft">{t('cap.install.adds')}</p>
               <ul className="mt-1.5 space-y-1">
                 {planContributionGroups(plan.contributions).map((group) => (
                   <li key={group.kind} className="flex gap-2 text-ink">
@@ -327,7 +327,7 @@ export function InstallFlow({
 
             {hasAnyPermission(permissions) ? (
               <div data-install-permissions>
-                <p className="text-[12px] font-medium text-ink-soft">{t('cap.install.canDo')}</p>
+                <p className="text-[12px] font-normal text-ink-soft">{t('cap.install.canDo')}</p>
                 <PermissionList permissions={permissions!} className="mt-1.5" />
                 <PermissionBoundary className="mt-2" />
               </div>
@@ -337,7 +337,7 @@ export function InstallFlow({
 
             {prerequisites.length > 0 ? (
               <div data-install-prerequisites>
-                <p className="text-[12px] font-medium text-ink-soft">{t('cap.install.needs')}</p>
+                <p className="text-[12px] font-normal text-ink-soft">{t('cap.install.needs')}</p>
                 <ul className="mt-1.5 space-y-1">
                   {prerequisites.map((item) => (
                     <li key={item.id} className="text-ink">
@@ -355,7 +355,7 @@ export function InstallFlow({
             ) : null}
             {plan.changes.length > 0 ? (
               <div data-install-changes>
-                <p className="text-[12px] font-medium text-ink-soft">{t('cap.install.changes')}</p>
+                <p className="text-[12px] font-normal text-ink-soft">{t('cap.install.changes')}</p>
                 <ul className="mt-1.5 space-y-0.5 font-mono text-[12px] text-ink-soft">
                   {plan.changes.map((change) => <li key={change}>{change}</li>)}
                 </ul>
@@ -366,7 +366,7 @@ export function InstallFlow({
                 choice: every switch it had stays exactly as it was. */}
             {!updating ? (
               <fieldset className="pt-4" data-install-scope={choice}>
-                <legend className="text-[12px] font-medium text-ink-soft">{t('cap.install.scope.title')}</legend>
+                <legend className="text-[12px] font-normal text-ink-soft">{t('cap.install.scope.title')}</legend>
                 <div className="mt-2 space-y-1">
                   {scopeOptions.map((option) => (
                     <label

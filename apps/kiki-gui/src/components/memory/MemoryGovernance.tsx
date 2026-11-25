@@ -40,7 +40,7 @@ import { parseMemoryEntry } from './memoryReceipt';
 import { MEMORY_AUTHORITY_QUERY_KEY, useMemoryAuthority, type MemoryStoreKind } from './memoryAuthority';
 import { MemoryUpgradeStatus } from './MemoryUpgrade';
 
-const LABEL = 'text-[12px] font-medium text-ink-soft';
+const LABEL = 'text-[12px] font-normal text-ink-soft';
 const QUIET = 'rounded-sm text-[12px] text-ink-soft underline underline-offset-2 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-60';
 
 /** A v4 id for operation idempotency, without assuming `randomUUID` exists. */
@@ -106,7 +106,7 @@ export function MemoryStoreStatus() {
     <>
       <span data-memory-store={kind} className="flex items-center gap-1.5">
         <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${kind === 'governed' ? 'bg-accent' : kind === 'legacy' ? 'bg-ink-faint' : kind === 'unknown' ? 'border border-ink-faint' : 'bg-amber-ink'}`} />
-        <span className={kind === 'readonly' || kind === 'migrating' ? 'font-medium text-amber-ink' : undefined}>{t(authority.state?.migration?.phase === 'failed' ? 'memory.store.upgradeStopped' : STORE_LABEL[kind])}</span>
+        <span className={kind === 'readonly' || kind === 'migrating' ? 'font-normal text-amber-ink' : undefined}>{t(authority.state?.migration?.phase === 'failed' ? 'memory.store.upgradeStopped' : STORE_LABEL[kind])}</span>
       </span>
       {kind === 'governed' ? (
         <button type="button" data-memory-recover onClick={() => { setConfirm(true); }} className="text-ink-soft hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink">
@@ -221,7 +221,7 @@ export function MemoryGovernancePanel({ target, entry }: { readonly target: Memo
       {provenance.isPending ? <p role="status" className="text-[12px] text-ink-faint">{t('memory.loading')}</p>
         : provenance.isError ? (
           <div role="alert" className="space-y-1">
-            <p className="text-[12px] font-medium text-danger">{t('memory.governance.loadFailed')}</p>
+            <p className="text-[12px] font-normal text-danger">{t('memory.governance.loadFailed')}</p>
             <InlineError error={provenance.error} />
             <button type="button" onClick={() => { void provenance.refetch(); }} className={`mt-1 ${SECONDARY_BUTTON}`}>{t('common.retry')}</button>
           </div>
@@ -266,7 +266,7 @@ function DecisionRow({ decision, current, onOpen }: { readonly decision: MemoryA
   const { t } = useI18n();
   return (
     <li data-memory-decision={decision.kind} data-memory-decision-current={current ? 'true' : undefined} className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px]">
-      <span className={`shrink-0 font-medium ${current ? 'text-ink' : 'text-ink-soft'}`}>{t(`memory.governance.kind.${decision.kind}`)}</span>
+      <span className={`shrink-0 font-normal ${current ? 'text-ink' : 'text-ink-soft'}`}>{t(`memory.governance.kind.${decision.kind}`)}</span>
       {decision.reason !== '' ? <span className="min-w-0 break-words text-ink-soft">{decision.reason}</span> : null}
       <span className="font-mono text-[11px] text-ink-faint" title={decision.revision}>{shortRevision(decision.revision)}{current ? ` · ${t('memory.governance.isCurrent')}` : ''}</span>
       {!current ? (
@@ -292,7 +292,7 @@ function MemoryRevisionDialog({ target, entry, revision, onClose }: {
     <Dialog onClose={onClose} ariaLabel={t('memory.revision.title')} overlayId="memory-revision" panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} flex max-h-[85dvh] flex-col`}>
       <div data-memory-revision-detail={revision} className="min-h-0 flex-1 overflow-y-auto">
         <div className="flex flex-wrap items-baseline gap-x-2">
-          <h3 className="font-display text-[18px] font-semibold text-ink">{t('memory.revision.title')}</h3>
+          <h3 className="font-display text-[18px] font-bold text-ink">{t('memory.revision.title')}</h3>
           <span className="font-mono text-[12px] break-all text-ink-faint">{revision}</span>
         </div>
         <p className="mt-0.5 truncate text-[12px] text-ink-faint">{entry.title}</p>
@@ -379,7 +379,7 @@ export function MemoryForgetDialog({ target, entry, onClose, onForgotten }: {
           <p role="status" className="mt-3 flex items-center gap-2 text-[13px] text-ink-faint"><span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />{t('memory.forget.previewing')}</p>
         ) : preview.isError ? (
           <div role="alert" className="mt-3 space-y-1">
-            <p className="text-[13px] font-medium text-danger">{t('memory.forget.previewFailed')}</p>
+            <p className="text-[13px] font-normal text-danger">{t('memory.forget.previewFailed')}</p>
             <InlineError error={preview.error} />
           </div>
         ) : (

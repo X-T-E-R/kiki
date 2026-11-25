@@ -22,7 +22,6 @@
 
 import { startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 
 import type { RemoteConnection, WorkPresetItem, WorkspaceCatalogEntry } from '@kiki/protocol';
 import {
@@ -40,12 +39,10 @@ import {
 } from 'react-router-dom';
 
 import { ConfirmDialog } from './components/ConfirmDialog';
-import { UpdateAvailableDialog } from './components/UpdateAvailableDialog';
 import { DirtyGuardContext, useDirtyGuardState } from './components/dirtyGuard';
-import { DiscoveryPage, DiscoveryProvider, DiscoveryTourTag } from './components/discovery';
-import { NewSessionPage } from './components/NewSessionPage';
+import { DiscoveryProvider, useDiscovery } from './components/discovery/DiscoveryContext';
 import { NotifyAskBanner } from './components/firstRun/NotifyAskBanner';
-import { ActivityPage, useSessionSeen } from './components/ActivityPage';
+import { useSessionSeen } from './lib/sessionSeen';
 import { AppConnectionBanner } from './components/AppConnectionBanner';
 import { PINNED_SESSIONS_QUERY_KEY, useConversationList } from './lib/useConversationList';
 import { RoomLinkRedirect } from './lib/conversationRoutes';
@@ -54,13 +51,10 @@ import { lazyPage, PageLoadBoundary } from './components/LazyPage';
 import { PageHeader } from './components/PageChrome';
 import { RestartBanner } from './components/RestartBanner';
 import { SessionRouteView, type SidebarBadge } from './components/SessionView';
-import { PersonaDailyRoute } from './components/persona/PersonaDailyRoute';
 import { SpaceViewMemory, SpaceViewState } from './components/SpaceViewState';
 import { readSpaceViewRoute } from './lib/spaceViewState';
-import { Sidebar } from './components/Sidebar';
 import { shouldHideFromSessionGroups } from './components/persona/personaSessionUtils';
 import { usePersonaDirectory } from './components/persona/usePersonaDirectory';
-import { StorageMigrationViewComponent } from './components/storage/StorageMigrationView';
 import { portableSpaceKeys } from './lib/portableSpaces';
 import { useSpaces } from './lib/spaces';
 import { useSubscribeIntentQueue } from './lib/subscribeIntent';
@@ -96,15 +90,11 @@ import { useSidebarUnitsQuery } from './components/sidebar/useSidebarUnitsQuery'
 import {
   encodeConversationRef,
   readLastSessionId,
-  SIDEBAR_DEFAULT_WIDTH,
-  SIDEBAR_MAX_WIDTH,
-  SIDEBAR_MIN_WIDTH,
   writeDesktopPrefs,
   writeLayoutPreferences,
   type SessionPrivateFilter,
 } from '@kiki/session-core/settings';
 import { useLayoutPreferences, useMediaQuery, usePhoneMode, useVisualViewportHeightVar } from './lib/layoutHooks';
-import { persistSidebarPanelWidth } from './lib/panelLayoutStorage';
 import { useLayerHistory } from './lib/layerHistory';
 import { setBackdropDrawerClosed } from './lib/skins/backdrop';
 import { useAppearancePacks } from './lib/skins/useAppearancePacks';
@@ -150,14 +140,30 @@ import { useDesktopUpdateScheduler } from './lib/useDesktopUpdateScheduler';
 import { androidBridge, subscribeAndroidHostEvents } from './lib/androidBridge';
 import { MOBILE_ASSISTANT_PATH, mobileChatPath, normalizeDeepLinkRoute, readDesktopOverride, writeDesktopOverride } from './mobile/mobileShellRoute';
 import { SidebarContext } from './components/sidebarContext';
+import { useDeferSecondaryBootQueries } from './lib/bootHydrationGate';
 import { retryRootReadModelDelay, retryRootReadModelQuery } from './lib/readModelRetry';
 
-// Pages a conversation never shows are downloaded on first visit, so a phone
-// opening a chat does not fetch and parse them before its first frame
-// (components/LazyPage). The conversation path — sidebar, /new, /s/:id, the
-// persona daily route, Work — stays in the first-paint graph. Activity and
-// Discover stay as well: the sidebar and this shell import other exports of
-// those modules, so a lazy import could not move them.
+// Pages and shellchrome a cold `/s/:id` session view never renders initially
+// are downloaded lazily, keeping mobile cold-open transfer and parse small.
+const Sidebar = lazyPage(() => import('./components/Sidebar').then((m) => m.Sidebar));
+const DesktopResizableShell = lazyPage(() =>
+  import('./components/DesktopResizableShell').then((m) => m.DesktopResizableShell),
+);
+const NewSessionPage = lazyPage(() => import('./components/NewSessionPage').then((m) => m.NewSessionPage));
+const ActivityPage = lazyPage(() => import('./components/ActivityPage').then((m) => m.ActivityPage));
+const DiscoveryPage = lazyPage(() => import('./components/discovery/DiscoveryPage').then((m) => m.DiscoveryPage));
+const DiscoveryTourTag = lazyPage(() =>
+  import('./components/discovery/DiscoveryTourTag').then((m) => m.DiscoveryTourTag),
+);
+const PersonaDailyRoute = lazyPage(() =>
+  import('./components/persona/PersonaDailyRoute').then((m) => m.PersonaDailyRoute),
+);
+const StorageMigrationViewComponent = lazyPage(() =>
+  import('./components/storage/StorageMigrationView').then((m) => m.StorageMigrationViewComponent),
+);
+const UpdateAvailableDialog = lazyPage(() =>
+  import('./components/UpdateAvailableDialog').then((m) => m.UpdateAvailableDialog),
+);
 const SettingsPage = lazyPage(() => import('./components/SettingsPage').then((m) => m.SettingsPage));
 const UsagePage = lazyPage(() => import('./components/UsagePage').then((m) => m.UsagePage));
 const MemoryPage = lazyPage(() => import('./components/MemoryPage').then((m) => m.MemoryPage));
@@ -264,10 +270,24 @@ function PlaceOutlet({
   );
 }
 
+function ActiveDiscoveryTourTag() {
+  const { state } = useDiscovery();
+  if (state.lifecycle !== 'active' && state.lifecycle !== 'left') return null;
+  return (
+    <Suspense fallback={null}>
+      <DiscoveryTourTag />
+    </Suspense>
+  );
+}
+
 export function App() {
   const { meta, scopeId } = useConnection();
   if (meta.storage_mode === 'maintenance') {
-    return <StorageMigrationViewComponent onComplete={() => { window.location.reload(); }} />;
+    return (
+      <Suspense fallback={<div className="min-h-0 flex-1" aria-busy="true" />}>
+        <StorageMigrationViewComponent onComplete={() => { window.location.reload(); }} />
+      </Suspense>
+    );
   }
   return (
     <PlaceClientsProvider key={scopeId}>
@@ -350,8 +370,6 @@ function NormalApp() {
         kikiNav: { ...userState.kikiNav, visitId: entry.visitId, scope: entry.scope } } }, '');
     }
   }, [location, navType, scopeId, spaceKey, host.kind, meta.server_home_id, connectionRef, scopeRestore?.transitioningInPlace, needsScopeReload]);
-  const [backgroundReady, setBackgroundReady] = useState(false);
-  useEffect(() => afterPaint(() => { setBackgroundReady(true); }), []);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const closeSidebar = useCallback(() => { setSidebarOpen(false); }, []);
   // Phone keyboard: mirror the visual viewport into the app height chain
@@ -362,6 +380,12 @@ function NormalApp() {
   const drawerStage = useMediaQuery('(max-width: 767px)');
   const wideNoSidebarOverlay = useMediaQuery('(min-width: 1360px)');
   const drawerClosed = drawerStage && !sidebarOpen;
+  const deferSecondaryBoot = useDeferSecondaryBootQueries() && drawerClosed;
+  const [backgroundReady, setBackgroundReady] = useState(false);
+  useEffect(() => {
+    if (deferSecondaryBoot) return;
+    return afterPaint(() => { setBackgroundReady(true); });
+  }, [deferSecondaryBoot]);
   useEffect(() => {
     setBackdropDrawerClosed(drawerClosed);
     return () => { setBackdropDrawerClosed(false); };
@@ -399,7 +423,7 @@ function NormalApp() {
   const openWorkSetup = useCallback((mode: WorkPresetItem) => { setWorkSetup(mode); }, []);
   // One catalog read per client, shared by the Work surface and the setup
   // sheet so a completed setup refreshes both without a second fetch.
-  const workModeCatalog = useWorkModes(client, workPresetsEnabled(meta));
+  const workModeCatalog = useWorkModes(client, workPresetsEnabled(meta) && (!deferSecondaryBoot || backgroundReady));
   const performNavigation = useCallback((target: To | number, options?: NavigateOptions) => {
     if (typeof target === 'number') return rawNavigate(target);
     return rawNavigate(target, options);
@@ -840,6 +864,7 @@ function NormalApp() {
   }, [workspaceFilter, sessions, personaHeadQuery.data, privateFilter]);
   const conversations = useConversationList(sessions, layoutPrefs.sortBy, workspaceOptions, {
     skipLegacyMetaRefresh: sidebarGroupsCapable,
+    enabled: !deferSecondaryBoot || backgroundReady,
   });
   // The one update schedule for the whole app: a check after the first screen,
   // a daily tick for a window left open, and a catch-up when it comes back. A
@@ -855,7 +880,11 @@ function NormalApp() {
   // drawer hides.
   const seen = useSessionSeen();
   const seenV2 = useConversationSeen();
-  const personaDirectoryState = usePersonaDirectory({ sessions: globalSessions, seen });
+  const personaDirectoryState = usePersonaDirectory({
+    sessions: globalSessions,
+    seen,
+    enabled: !deferSecondaryBoot || backgroundReady,
+  });
   const rawPersonaDirectory = personaDirectoryState.data === undefined ? undefined : personaDirectoryState.directory;
   const activeSpaceScope = layoutPrefs.spaceScope ?? ALL_SPACE_SCOPE;
   const multiSpaceSidebarFilter = useMemo(
@@ -1363,51 +1392,65 @@ function NormalApp() {
 
   const wideDockedDesktop = useMediaQuery('(min-width: 1360px)');
   const dockedSidebarSplit = wideDockedDesktop && layoutPrefs.sidebarCollapsed !== true;
-  const sidebarPanelRef = usePanelRef();
-  const latestSidebarPixelsRef = useRef<number | null>(null);
+  const [sidebarMounted, setSidebarMounted] = useState(!deferSecondaryBoot);
+  useEffect(() => {
+    if (!deferSecondaryBoot) setSidebarMounted(true);
+  }, [deferSecondaryBoot]);
 
-  const sidebarNode = (
-    <Sidebar
-      id="app-sidebar"
-      inert={drawerClosed}
-      dockedInPanelGroup={dockedSidebarSplit}
-      temporaryOpen={sidebarOpen && !wideDockedDesktop}
-      className={dockedSidebarSplit ? 'app-sidebar !w-full' : `app-sidebar ${sidebarOpen ? 'open' : ''}`}
-      activeSessionId={activeSessionId}
-      sessions={sessions}
-      personaSessions={globalSessions}
-      rooms={conversations.rooms}
-      sessionGroups={sessionGroups}
-      sidebarUnitBuckets={sidebarUnitBuckets}
-      sidebarGroupsEnabled={sidebarGroupsCapable}
-      sidebarNextCursor={sidebarNextCursor}
-      sidebarQueryGeneration={sidebarQueryGeneration}
-      onLoadMoreGroupMembers={sidebarGroupsCapable ? handleLoadMoreGroupMembers : undefined}
-      loadingGroupIds={sidebarUnits.loadingGroupIds}
-      groupMemberErrors={sidebarUnits.groupMemberErrors}
-      onDetachGroupMember={sidebarGroupsCapable ? sidebarUnits.detachGroupMember : undefined}
-      sessionsQuery={activeSessionsQuery}
-      roomsQuery={conversations.roomsQuery}
-      workspaceOptions={workspaceOptions}
-      filters={listFilters}
-      onFiltersChange={(filters) => { writeLayoutPreferences({ filters }); }}
-      groupBy={layoutPrefs.groupBy}
-      onGroupBy={(groupBy) => { writeLayoutPreferences({ groupBy }); }}
-      sortBy={layoutPrefs.sortBy}
-      onSortBy={(sortBy) => { writeLayoutPreferences({ sortBy }); }}
-      onNewSession={() => { void navigate(newSessionPath); }}
-      onClose={closeSidebar}
-      multiSpaceSources={multiSpace.sources}
-      healthBySpace={multiSpace.healthBySpace}
-      hasMoreBySpace={multiSpace.hasMoreBySpace}
-      nextCursorBySpace={multiSpace.nextCursorBySpace}
-      loadingMoreSpaces={multiSpace.loadingMoreSpaces}
-      onLoadMoreSpaceSessions={multiSpace.loadMoreSpaceSessions}
-      hasMultipleSpaces={multiSpace.hasMultipleSpaces}
-      localSpaceKey={multiSpace.localSpaceKey}
-      onRefreshRemoteSpace={multiSpace.refreshRemoteSpace}
-      inboxTriage={inboxTriage}
-    />
+  const sidebarNode = sidebarMounted || !drawerClosed ? (
+    <Suspense
+      fallback={
+        <aside
+          id="app-sidebar"
+          inert={drawerClosed}
+          className={dockedSidebarSplit ? 'app-sidebar !w-full' : `app-sidebar ${sidebarOpen ? 'open' : ''}`}
+        />
+      }
+    >
+      <Sidebar
+        id="app-sidebar"
+        inert={drawerClosed}
+        dockedInPanelGroup={dockedSidebarSplit}
+        temporaryOpen={sidebarOpen && !wideDockedDesktop}
+        className={dockedSidebarSplit ? 'app-sidebar !w-full' : `app-sidebar ${sidebarOpen ? 'open' : ''}`}
+        activeSessionId={activeSessionId}
+        sessions={sessions}
+        personaSessions={globalSessions}
+        rooms={conversations.rooms}
+        sessionGroups={sessionGroups}
+        sidebarUnitBuckets={sidebarUnitBuckets}
+        sidebarGroupsEnabled={sidebarGroupsCapable}
+        sidebarNextCursor={sidebarNextCursor}
+        sidebarQueryGeneration={sidebarQueryGeneration}
+        onLoadMoreGroupMembers={sidebarGroupsCapable ? handleLoadMoreGroupMembers : undefined}
+        loadingGroupIds={sidebarUnits.loadingGroupIds}
+        groupMemberErrors={sidebarUnits.groupMemberErrors}
+        onDetachGroupMember={sidebarGroupsCapable ? sidebarUnits.detachGroupMember : undefined}
+        sessionsQuery={activeSessionsQuery}
+        roomsQuery={conversations.roomsQuery}
+        workspaceOptions={workspaceOptions}
+        filters={listFilters}
+        onFiltersChange={(filters) => { writeLayoutPreferences({ filters }); }}
+        groupBy={layoutPrefs.groupBy}
+        onGroupBy={(groupBy) => { writeLayoutPreferences({ groupBy }); }}
+        sortBy={layoutPrefs.sortBy}
+        onSortBy={(sortBy) => { writeLayoutPreferences({ sortBy }); }}
+        onNewSession={() => { void navigate(newSessionPath); }}
+        onClose={closeSidebar}
+        multiSpaceSources={multiSpace.sources}
+        healthBySpace={multiSpace.healthBySpace}
+        hasMoreBySpace={multiSpace.hasMoreBySpace}
+        nextCursorBySpace={multiSpace.nextCursorBySpace}
+        loadingMoreSpaces={multiSpace.loadingMoreSpaces}
+        onLoadMoreSpaceSessions={multiSpace.loadMoreSpaceSessions}
+        hasMultipleSpaces={multiSpace.hasMultipleSpaces}
+        localSpaceKey={multiSpace.localSpaceKey}
+        onRefreshRemoteSpace={multiSpace.refreshRemoteSpace}
+        inboxTriage={inboxTriage}
+      />
+    </Suspense>
+  ) : (
+    <aside id="app-sidebar" inert className="app-sidebar" />
   );
 
   const stageNode = (
@@ -1608,60 +1651,21 @@ function NormalApp() {
       >
       <div className="flex h-full overflow-hidden bg-canvas">
       {dockedSidebarSplit ? (
-        <Group
-          orientation="horizontal"
-          id="kiki-shell"
-          className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-canvas"
-          onLayoutChanged={() => {
-            if (latestSidebarPixelsRef.current !== null && latestSidebarPixelsRef.current >= SIDEBAR_MIN_WIDTH) {
-              persistSidebarPanelWidth(latestSidebarPixelsRef.current);
-            }
-          }}
+        <Suspense
+          fallback={(
+            <>
+              {sidebarNode}
+              {stageNode}
+            </>
+          )}
         >
-          <Panel
-            id="sidebar"
-            panelRef={sidebarPanelRef}
-            defaultSize={layoutPrefs.sidebarWidth}
-            minSize={SIDEBAR_MIN_WIDTH}
-            maxSize={SIDEBAR_MAX_WIDTH}
-            onResize={(size) => {
-              if (size.inPixels >= SIDEBAR_MIN_WIDTH) {
-                latestSidebarPixelsRef.current = size.inPixels;
-              }
-            }}
-            className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
-            style={{ overflow: 'hidden' }}
-          >
-            {sidebarNode}
-          </Panel>
-          <Separator
-            id="kiki-shell-resizer"
-            data-sidebar-resizer=""
-            aria-label={t('sidebar.resizeAria')}
-            title={t('sidebar.resizeAria')}
-            className="kiki-panel-separator"
-            onPointerDown={() => {
-              document.body.dataset['paneResizing'] = 'true';
-              const clear = () => {
-                delete document.body.dataset['paneResizing'];
-                window.removeEventListener('pointerup', clear);
-                window.removeEventListener('pointercancel', clear);
-                window.removeEventListener('blur', clear);
-              };
-              window.addEventListener('pointerup', clear);
-              window.addEventListener('pointercancel', clear);
-              window.addEventListener('blur', clear);
-            }}
-            onDoubleClick={() => {
-              sidebarPanelRef.current?.resize(SIDEBAR_DEFAULT_WIDTH);
-              latestSidebarPixelsRef.current = SIDEBAR_DEFAULT_WIDTH;
-              persistSidebarPanelWidth(SIDEBAR_DEFAULT_WIDTH);
-            }}
+          <DesktopResizableShell
+            defaultSidebarWidth={layoutPrefs.sidebarWidth}
+            resizeAriaLabel={t('sidebar.resizeAria')}
+            sidebar={sidebarNode}
+            stage={stageNode}
           />
-          <Panel id="stage" minSize={480} className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden" style={{ overflow: 'hidden' }}>
-            {stageNode}
-          </Panel>
-        </Group>
+        </Suspense>
       ) : (
         <>
           {sidebarNode}
@@ -1757,7 +1761,7 @@ function NormalApp() {
               writeDesktopOverride(false);
               void navigate(activeSessionId !== undefined ? mobileChatPath('local', activeSessionId) : MOBILE_ASSISTANT_PATH);
             }}
-            className="kiki-mobile-glass-pill fixed right-4 bottom-[calc(16px+var(--kiki-safe-bottom-inset))] z-40 inline-flex h-9 items-center gap-1.5 rounded-full px-3.5 text-[12.5px] font-medium text-ink transition-colors hover:bg-panel"
+            className="kiki-mobile-glass-pill fixed right-4 bottom-[calc(16px+var(--kiki-safe-bottom-inset))] z-40 inline-flex h-9 items-center gap-1.5 rounded-full px-3.5 text-[12.5px] font-normal text-ink transition-colors hover:bg-panel"
           >
             <span>{t('mobile.desktop.returnMobile')}</span>
           </button>
@@ -1776,17 +1780,21 @@ function NormalApp() {
         }); }}
         onCancel={cancelNavigation}
       />
-      <UpdateAvailableDialog
-        offer={desktopUpdate.offer}
-        onUpdate={desktopUpdate.onUpdate}
-        onRemindLater={desktopUpdate.onRemindLater}
-        onSkip={desktopUpdate.onSkip}
-        onDismiss={desktopUpdate.onDismiss}
-        installing={desktopUpdate.installing}
-        installError={desktopUpdate.installError}
-        persistError={desktopUpdate.persistError}
-      />
-      <DiscoveryTourTag />
+      {desktopUpdate.offer !== null ? (
+        <Suspense fallback={null}>
+          <UpdateAvailableDialog
+            offer={desktopUpdate.offer}
+            onUpdate={desktopUpdate.onUpdate}
+            onRemindLater={desktopUpdate.onRemindLater}
+            onSkip={desktopUpdate.onSkip}
+            onDismiss={desktopUpdate.onDismiss}
+            installing={desktopUpdate.installing}
+            installError={desktopUpdate.installError}
+            persistError={desktopUpdate.persistError}
+          />
+        </Suspense>
+      ) : null}
+      <ActiveDiscoveryTourTag />
       </DiscoveryProvider>
       </NavHistoryBridge>
     </DirtyGuardContext.Provider>

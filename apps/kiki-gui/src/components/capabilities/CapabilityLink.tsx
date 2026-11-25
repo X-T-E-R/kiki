@@ -25,7 +25,7 @@ export type CapabilityLinkKind = 'plugins' | 'skills' | 'mcp';
  * a second one that happens to sit near it.
  */
 export const LINK_CLASS =
-  'inline-flex min-h-8 items-center gap-1.5 rounded-md bg-ink/[0.06] px-3 text-[13px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.1] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11';
+  'inline-flex min-h-8 items-center gap-1.5 rounded-md bg-ink/[0.06] px-3 text-[13px] font-normal text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.1] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-11';
 
 export function CapabilityLink({ kind, workspaceId }: { readonly kind: CapabilityLinkKind; readonly workspaceId?: string }) {
   const { t, tp } = useI18n();

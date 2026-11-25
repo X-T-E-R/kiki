@@ -5,6 +5,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import type { ExecutorCatalogItem } from '@kiki/protocol';
 import { isNativeExecutor, NATIVE_EXECUTOR, profileExecutor } from '@kiki/session-core/composer';
 
+import { useDeferSecondaryBootQueries } from '../../../lib/bootHydrationGate';
 import type { ExecutorCheckResult, NamedAgentProfile } from '../../../lib/client';
 import { useConnection } from '../../../state/connection';
 
@@ -27,10 +28,11 @@ export function useExecutorCatalog(): readonly ExecutorCatalogItem[] {
 /** The same catalog query with its loading / error state (Settings › Connections). */
 export function useExecutorCatalogQuery() {
   const { client, scopeId, meta } = useConnection();
+  const deferSecondaryBoot = useDeferSecondaryBootQueries();
   return useQuery({
     queryKey: executorCatalogQueryKey(scopeId, meta?.server_id),
     queryFn: () => client.listExecutors(),
-    enabled: typeof client.listExecutors === 'function',
+    enabled: !deferSecondaryBoot && typeof client.listExecutors === 'function',
     staleTime: 60_000,
     retry: false,
   });

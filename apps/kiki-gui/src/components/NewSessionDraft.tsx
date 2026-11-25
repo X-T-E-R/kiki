@@ -1664,7 +1664,7 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
 
   return (
     <div className="flex flex-col gap-2">
-      <p className="text-[12px] font-medium text-ink-soft">
+      <p className="text-[12px] font-normal text-ink-soft">
         {state.sshLabel === null ? t('connect.localScope') : `${t('connect.remoteScope')} · ${state.sshLabel}`}
       </p>
       {state.sshLabel !== null ? <p className="text-[11px] text-ink-soft">{t('connect.sshRemotePathHint')}</p> : null}
@@ -1686,7 +1686,7 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
       ) : null}
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-2">
-          <label htmlFor="new-workspace-select" className="shrink-0 text-[11px] font-medium text-ink-soft">{t('new.workspace')}</label>
+          <label htmlFor="new-workspace-select" className="shrink-0 text-[11px] font-normal text-ink-soft">{t('new.workspace')}</label>
           <div className="min-w-0 flex-1">
             <SearchableSelect
               id="new-workspace-select"
@@ -1745,7 +1745,7 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
       {state.workspacesError !== null ? (
         <div role="alert" className="text-[12px] text-danger">
           <p>{t('new.workspaceLoadFailed', { detail: state.workspacesError })}</p>
-          <button type="button" onClick={state.retryWorkspaces} className="mt-1 rounded px-1 py-0.5 font-medium underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('common.retry')}</button>
+          <button type="button" onClick={state.retryWorkspaces} className="mt-1 rounded px-1 py-0.5 font-normal underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('common.retry')}</button>
         </div>
       ) : null}
       {state.autoWorkspace && !firstRun ? (

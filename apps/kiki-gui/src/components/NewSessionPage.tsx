@@ -171,7 +171,7 @@ function HeroSpaceChip() {
         className="flex min-h-9 w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper"
       >
         <SpaceDot color="var(--color-ink-faint)" />
-        <span className={`min-w-0 flex-1 truncate ${connectionId === null ? 'font-medium' : ''}`}>
+        <span className={`min-w-0 flex-1 truncate`}>
           {t('st.spaces.main')}
         </span>
         {connectionId === null ? <Icon name="check" size={12} className="shrink-0 text-ink-soft" /> : null}
@@ -189,7 +189,7 @@ function HeroSpaceChip() {
             className="flex min-h-9 w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper"
           >
             <SpaceDot color="var(--color-success)" />
-            <span className={`min-w-0 flex-1 truncate ${current ? 'font-medium' : ''}`}>{record.label}</span>
+            <span className={`min-w-0 flex-1 truncate`}>{record.label}</span>
             {current ? <Icon name="check" size={12} className="shrink-0 text-ink-soft" /> : null}
           </button>
         );
@@ -212,7 +212,7 @@ function HeroSpaceChip() {
             return !prev;
           });
         }}
-        className="hero-workspace-chip motion-press flex h-8 max-w-[220px] items-center gap-1.5 rounded-md border border-transparent px-2.5 text-[13px] font-medium text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-60 pointer-coarse:h-11"
+        className="hero-workspace-chip motion-press flex h-8 max-w-[220px] items-center gap-1.5 rounded-md border border-transparent px-2.5 text-[13px] font-normal text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-60 pointer-coarse:h-11"
       >
         <SpaceDot color={activeColor} />
         <span className="truncate">{activeLabel}</span>
@@ -280,7 +280,7 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
         aria-haspopup="dialog"
         aria-expanded={open}
         data-anchor="workspace-picker"
-        className="hero-workspace-chip motion-press flex h-8 max-w-[min(100%,360px)] items-center gap-1.5 rounded-md border border-transparent px-3 text-[13px] font-medium text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
+        className="hero-workspace-chip motion-press flex h-8 max-w-[min(100%,360px)] items-center gap-1.5 rounded-md border border-transparent px-3 text-[13px] font-normal text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
       >
         <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 text-ink-soft">
           <path
@@ -735,7 +735,7 @@ function NewSessionPageContent({
           {state.workspacesError !== null && cwd === '' && !connectFirst ? (
             <div role="alert" data-hero-workspace-failure className="mt-2 text-[12px] text-danger">
               <p>{t('new.workspaceLoadFailed', { detail: state.workspacesError })}</p>
-              <button type="button" data-hero-workspace-retry onClick={state.retryWorkspaces} className="mt-1 rounded px-1 py-0.5 font-medium underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('common.retry')}</button>
+              <button type="button" data-hero-workspace-retry onClick={state.retryWorkspaces} className="mt-1 rounded px-1 py-0.5 font-normal underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('common.retry')}</button>
             </div>
           ) : null}
           {!connectFirst && state.workspaceId !== '' && state.workspaceId !== AUTO_WORKSPACE_ID && cwd === '' && !state.workspacesLoading && state.workspacesError === null && state.effectiveWorkspace === undefined ? (
@@ -746,8 +746,8 @@ function NewSessionPageContent({
               <p>{state.creationNotice}</p>
               {!state.creationPending ? (
                 <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-                  <button type="button" disabled={state.checkingCreation} onClick={() => { void state.retryCreation(); }} className="rounded py-1 font-medium text-ink underline underline-offset-2 disabled:opacity-50">{t('new.recoverCreation')}</button>
-                  {state.createdSessionId !== undefined ? <button type="button" disabled={state.checkingCreation} onClick={() => { void state.openCreatedSession(); }} className="rounded py-1 font-medium text-ink underline underline-offset-2">{t('new.openCreatedSession')}</button> : null}
+                  <button type="button" disabled={state.checkingCreation} onClick={() => { void state.retryCreation(); }} className="rounded py-1 font-normal text-ink underline underline-offset-2 disabled:opacity-50">{t('new.recoverCreation')}</button>
+                  {state.createdSessionId !== undefined ? <button type="button" disabled={state.checkingCreation} onClick={() => { void state.openCreatedSession(); }} className="rounded py-1 font-normal text-ink underline underline-offset-2">{t('new.openCreatedSession')}</button> : null}
                   <button type="button" disabled={state.checkingCreation} onClick={state.startNewCreation} className="rounded py-1 text-ink-soft underline underline-offset-2">{t('new.startAnotherCreation')}</button>
                   <button type="button" disabled={state.checkingCreation} onClick={state.dismissCreationIntent} className="rounded py-1 text-ink-soft underline underline-offset-2">{t('new.dismissCreation')}</button>
                 </div>

@@ -315,7 +315,7 @@ export function PortableCompareTab({
               </span>
               {row.change !== 'unchanged' ? (
                 <span
-                  className={`rounded px-1.5 py-px text-[11px] font-medium ${
+                  className={`rounded px-1.5 py-px text-[11px] font-normal ${
                     isConflict
                       ? 'bg-amber-card text-amber-ink'
                       : row.change === 'deleted'
@@ -344,7 +344,7 @@ export function PortableCompareTab({
                   onClick={() => { setConflictSide(row.id, 'left'); }}
                   className={`rounded px-2 py-0.5 text-[11.5px] transition-colors ${
                     resolvedSide === 'left'
-                      ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)] ring-1 ring-hairline-strong'
+                      ? 'bg-panel text-ink shadow-[var(--kiki-sheet-shadow)] ring-1 ring-hairline-strong'
                       : 'bg-ink/[0.04] text-ink-soft hover:text-ink'
                   }`}
                 >
@@ -358,7 +358,7 @@ export function PortableCompareTab({
                   onClick={() => { setConflictSide(row.id, 'right'); }}
                   className={`rounded px-2 py-0.5 text-[11.5px] transition-colors ${
                     resolvedSide === 'right'
-                      ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)] ring-1 ring-hairline-strong'
+                      ? 'bg-panel text-ink shadow-[var(--kiki-sheet-shadow)] ring-1 ring-hairline-strong'
                       : 'bg-ink/[0.04] text-ink-soft hover:text-ink'
                   }`}
                 >

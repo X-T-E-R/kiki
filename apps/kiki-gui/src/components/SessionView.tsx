@@ -548,7 +548,7 @@ const Header = memo(function Header({
               data-activity-badge={sidebarBadge.total}
               data-activity-badge-tone="needs-you"
               aria-hidden
-              className="pointer-events-none absolute top-1.5 right-1.5 flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-attention px-[3px] text-[10px] leading-none font-semibold tabular-nums text-on-accent ring-2 ring-paper"
+              className="pointer-events-none absolute top-1.5 right-1.5 flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-attention px-[3px] text-[10px] leading-none font-normal tabular-nums text-on-accent ring-2 ring-paper"
             >
               {(() => {
                 const count = sidebarBadge.needsYouCount ?? sidebarBadge.total;
@@ -763,7 +763,7 @@ const Header = memo(function Header({
               (accent), else a quiet running mark with the task count. */}
           {waiting > 0 ? (
             // A bare count, no fill: the tray already carries the loud mark.
-            <span data-rail-toggle-badge className="text-[12px] leading-[18px] font-medium text-accent-ink tabular-nums" aria-label={tp('inspector.waiting', waiting)} title={tp('inspector.waiting', waiting)}>
+            <span data-rail-toggle-badge className="text-[12px] leading-[18px] font-normal text-accent-ink tabular-nums" aria-label={tp('inspector.waiting', waiting)} title={tp('inspector.waiting', waiting)}>
               {waiting}
             </span>
           ) : state.busy || runningTasks > 0 ? (
@@ -904,14 +904,14 @@ export function SessionTitle({
             }
           }}
           onBlur={commit}
-          className="min-w-0 max-w-md flex-1 rounded-md border border-hairline-strong bg-panel px-1.5 py-0.5 font-sans text-[13.5px] font-medium text-ink outline-none focus:border-accent"
+          className="min-w-0 max-w-md flex-1 rounded-md border border-hairline-strong bg-panel px-1.5 py-0.5 font-sans text-[13.5px] font-normal text-ink outline-none focus:border-accent"
         />
       ) : (
         <h1 className="-ml-1.5 min-w-0 max-w-full">
           {phoneMode ? (
             <span
               data-session-title
-              className="block max-w-full truncate px-1.5 py-0.5 font-sans text-[13.5px] leading-5 font-medium text-ink"
+              className="block max-w-full truncate px-1.5 py-0.5 font-sans text-[13.5px] leading-5 font-normal text-ink"
             >
               {shown}
             </span>
@@ -922,7 +922,7 @@ export function SessionTitle({
               onClick={() => { onEditingChange(true); }}
               title={t('sv.renameAria')}
               aria-label={`${shown} — ${t('sv.renameAria')}`}
-              className="block max-w-full truncate rounded-md px-1.5 py-0.5 text-left font-sans text-[13.5px] leading-5 font-medium text-ink transition-colors hover:bg-canvas"
+              className="block max-w-full truncate rounded-md px-1.5 py-0.5 text-left font-sans text-[13.5px] leading-5 font-normal text-ink transition-colors hover:bg-canvas"
             >
               {shown}
             </button>
@@ -1245,7 +1245,7 @@ export function SessionActionsMenu({
                 onToggleTerminal();
               }}
             >
-              <span className={terminalOpen ? 'font-medium' : undefined}>{t('term.menuItem')}</span>
+              <span>{t('term.menuItem')}</span>
             </button>
           ) : null}
         </ActionSheet>
@@ -1338,7 +1338,7 @@ export function SessionActionsMenu({
                 onToggleTerminal();
               }}
             >
-              <span className={terminalOpen ? 'font-medium' : undefined}>{t('term.menuItem')}</span>
+              <span>{t('term.menuItem')}</span>
               {terminalChord !== undefined ? <span className="text-[12px] text-ink-faint pointer-coarse:hidden">{terminalChord}</span> : null}
             </button>
           ) : null}
@@ -6239,7 +6239,7 @@ boundExecution,
             type="button"
             data-archived-session-restore
             onClick={handleRestoreArchivedSession}
-            className="h-7 cursor-pointer rounded-md bg-ink/[0.06] px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.10]"
+            className="h-7 cursor-pointer rounded-md bg-ink/[0.06] px-2.5 text-[12px] font-normal text-ink transition-colors hover:bg-ink/[0.10]"
           >
             {t('archive.restore')}
           </button>

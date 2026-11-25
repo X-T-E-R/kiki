@@ -26,9 +26,10 @@ export function useConversationList(
   sessions: readonly Session[],
   order: SessionSortOrder = 'updated-desc',
   workspaces: readonly ConversationWorkspace[] = [],
-  options?: { readonly skipLegacyMetaRefresh?: boolean },
+  options?: { readonly skipLegacyMetaRefresh?: boolean; readonly enabled?: boolean },
 ) {
   const skipLegacyMetaRefresh = options?.skipLegacyMetaRefresh === true;
+  const enabled = options?.enabled !== false;
   const { client, wsStatus } = useConnection();
   const queryClient = useQueryClient();
   const seen = useSyncExternalStore(subscribeSessionSeen, sessionSeenSnapshot, sessionSeenSnapshot);
@@ -41,7 +42,8 @@ export function useConversationList(
       return rest.rooms.listItems();
     },
     staleTime: 15_000,
-    refetchInterval: wsOpen ? false : 15_000,
+    enabled,
+    refetchInterval: enabled && !wsOpen ? 15_000 : false,
     retry: false,
   });
   const prevWsOpenRef = useRef(wsOpen);

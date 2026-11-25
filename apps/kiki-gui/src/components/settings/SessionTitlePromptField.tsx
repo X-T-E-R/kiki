@@ -118,7 +118,7 @@ export function SessionTitlePromptField({ disabled = false }: { disabled?: boole
 
       {state.defaultPrompt !== undefined ? (
         <figure className="space-y-1 rounded-lg border border-hairline bg-hairline/20 p-3">
-          <figcaption className="flex items-center gap-2 text-[11px] font-medium text-ink-soft">
+          <figcaption className="flex items-center gap-2 text-[11px] font-normal text-ink-soft">
             {t('st.sessionTitlePrompt.defaultTitle')}
             <button
               type="button"

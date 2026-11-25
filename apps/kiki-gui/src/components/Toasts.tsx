@@ -98,7 +98,7 @@ function ToastCard({
             <button
               type="button"
               onClick={handleCopy}
-              className="inline-flex items-center gap-1 rounded-md bg-danger/10 px-2 py-0.5 text-[11px] font-medium text-danger transition-colors hover:bg-danger/15 focus-visible:outline-2 focus-visible:outline-selected-ink"
+              className="inline-flex items-center gap-1 rounded-md bg-danger/10 px-2 py-0.5 text-[11px] font-normal text-danger transition-colors hover:bg-danger/15 focus-visible:outline-2 focus-visible:outline-selected-ink"
               title={copyPayload}
             >
               {copied ? <Icon name="check" size={12} /> : null}
@@ -113,7 +113,7 @@ function ToastCard({
                 dismissToast(toast.id);
                 void toast.action?.run();
               }}
-              className="rounded-md px-2 py-0.5 text-[12px] font-semibold text-selected-ink transition-colors hover:bg-selected-ink/10 focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:py-2"
+              className="rounded-md px-2 py-0.5 text-[12px] font-normal text-selected-ink transition-colors hover:bg-selected-ink/10 focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:py-2"
             >
               {toast.action.label}
             </button>
@@ -126,7 +126,7 @@ function ToastCard({
                 dismissToast(toast.id);
                 void toast.undo?.run();
               }}
-              className="rounded-md px-2 py-0.5 text-[12px] font-semibold text-selected-ink transition-colors hover:bg-selected-ink/10 focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:py-2"
+              className="rounded-md px-2 py-0.5 text-[12px] font-normal text-selected-ink transition-colors hover:bg-selected-ink/10 focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:py-2"
             >
               {toast.undo.label ?? t('toast.undo')}
             </button>
@@ -138,7 +138,7 @@ function ToastCard({
                 dismissToast(toast.id);
                 toast.retry?.run();
               }}
-              className="rounded-md border border-current px-1.5 py-0.5 text-[10px] font-medium transition-opacity hover:opacity-75"
+              className="rounded-md border border-current px-1.5 py-0.5 text-[10px] font-normal transition-opacity hover:opacity-75"
             >
               {toast.retry.label ?? t('common.retry')}
             </button>
@@ -169,7 +169,7 @@ function ToastCard({
           <button
             type="button"
             onClick={() => { setExpanded((v) => !v); }}
-            className="text-[10px] font-medium underline opacity-80 hover:opacity-100"
+            className="text-[10px] font-normal underline opacity-80 hover:opacity-100"
           >
             {expanded ? t('cb.collapse') : t('ia.detail.details')}
           </button>

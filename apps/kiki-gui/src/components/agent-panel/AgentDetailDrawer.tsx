@@ -215,7 +215,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
               <span className="inline-flex items-center gap-1"><Icon name="arrowLeft" size={12} />{t('agentPanel.detailBack')}</span>
             </button>
           ) : null}
-          <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
+          <span className="font-mono text-[11px] font-normal uppercase text-ink-faint">
             {title}
           </span>
           {categoryLabel ? (
@@ -265,7 +265,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             {/* Title & Badges */}
             <div className="border-b border-hairline pb-3">
               <div className="flex items-center justify-between gap-2">
-                <h3 className="font-mono text-[15px] font-semibold text-ink">
+                <h3 className="font-mono text-[15px] font-bold text-ink">
                   {currentTarget.skill.name}
                 </h3>
                 <CapabilityStateBadge state={currentTarget.skill.state} />
@@ -283,7 +283,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             {/* Description */}
             {currentTarget.skill.description ? (
               <div className="space-y-1">
-                <div className="font-mono text-[11px] font-semibold uppercase text-ink-faint">
+                <div className="font-mono text-[11px] font-normal uppercase text-ink-faint">
                   {t('agentPanel.profileDescription')}
                 </div>
                 <p className="text-ink leading-relaxed">{currentTarget.skill.description}</p>
@@ -309,13 +309,13 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
               {currentTarget.skill.disableModelInvocation ? (
                 <div className="flex items-baseline justify-between gap-2 pt-1 border-t border-hairline">
                   <dt className="text-ink-faint">{t('agentPanel.disableModelInvocationBadge')}</dt>
-                  <dd className="text-amber-ink font-semibold">{t('agentPanel.disableModelInvocationBadge')}</dd>
+                  <dd className="text-amber-ink font-normal">{t('agentPanel.disableModelInvocationBadge')}</dd>
                 </div>
               ) : null}
               {currentTarget.skill.promptCommand ? (
                 <div className="flex items-baseline justify-between gap-2 pt-1 border-t border-hairline">
                   <dt className="text-ink-faint">{t('agentPanel.promptCommandBadge')}</dt>
-                  <dd className="font-medium text-accent-ink">{t('agentPanel.promptCommandBadge')}</dd>
+                  <dd className="font-normal text-accent-ink">{t('agentPanel.promptCommandBadge')}</dd>
                 </div>
               ) : null}
               {currentTarget.skill.path ? (
@@ -357,12 +357,12 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             {/* Title & Status */}
             <div className="border-b border-hairline pb-3">
               <div className="flex items-center justify-between gap-2">
-                <h3 className="font-mono text-[15px] font-semibold text-ink">
+                <h3 className="font-mono text-[15px] font-bold text-ink">
                   {currentTarget.target.profile}
                   {currentTarget.target.route ? ` / ${currentTarget.target.route}` : ''}
                 </h3>
                 <span
-                  className={`rounded px-1.5 py-px font-mono text-[11px] font-medium uppercase ${
+                  className={`rounded px-1.5 py-px font-mono text-[11px] font-normal uppercase ${
                     currentTarget.target.launchAllowed !== false && currentTarget.target.defaultsAvailable
                       ? 'bg-success/15 text-success border border-success/30'
                       : 'bg-danger/10 text-danger border border-danger/30'
@@ -386,7 +386,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
               </div>
             ) : (
               <div className="rounded-lg border border-danger/30 bg-danger/5 p-2 text-[11px] text-danger space-y-1">
-                <p className="font-medium">{t('agentPanel.launchBlockedNotice')}</p>
+                <p className="font-normal">{t('agentPanel.launchBlockedNotice')}</p>
                 {launchReason !== undefined ? (
                   <p className="text-[11px]">{launchReason}</p>
                 ) : null}
@@ -403,7 +403,7 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
             <dl className="grid grid-cols-1 gap-2 rounded-lg border border-hairline bg-paper/50 p-2 font-mono text-[11px]">
               <div className="flex items-baseline justify-between gap-2">
                 <dt className="text-ink-faint">{t('agentPanel.label.executor')}</dt>
-                <dd className="font-medium text-ink">{currentTarget.target.executor}</dd>
+                <dd className="font-normal text-ink">{currentTarget.target.executor}</dd>
               </div>
               <div className="flex items-baseline justify-between gap-2">
                 <dt className="text-ink-faint">{t('agentPanel.label.model')}</dt>

@@ -90,7 +90,7 @@ function PersonaSection({
       className="border-t border-hairline pt-5"
     >
       <div className="mb-3 flex items-baseline gap-2">
-        <h3 id={`${id}-title`} className="text-[12px] font-medium text-section-ink">
+        <h3 id={`${id}-title`} className="text-[12px] font-normal text-section-ink">
           {title}
         </h3>
         <ScopeTag scope="server" hidden={pageScope === 'server'} />
@@ -132,7 +132,7 @@ export function PersonaEditor({
   if (!creating && snapshotQuery.isError) {
     return (
       <div className="space-y-1 py-2" data-persona-load-error>
-        <p className="text-[13px] font-medium text-danger">{t('persona.loadFailed')}</p>
+        <p className="text-[13px] font-normal text-danger">{t('persona.loadFailed')}</p>
         <FeedbackLine feedback={{ tone: 'error', text: errorText(locale, snapshotQuery.error) }} />
         <button type="button" onClick={() => { void snapshotQuery.refetch(); }} className="text-[12px] text-ink-faint underline underline-offset-2 hover:text-ink">{t('common.retry')}</button>
       </div>
@@ -371,7 +371,7 @@ function PersonaForm({
             onStageAvatar={creating ? setStagedAvatar : undefined}
           />
           <div className="min-w-0 flex-1 pt-0.5">
-            <h2 className="truncate font-display text-[24px] leading-8 font-semibold tracking-tight text-ink">
+            <h2 className="truncate font-display text-[24px] leading-8 font-bold text-ink">
               {draft.name.trim() === '' ? t('persona.newTitle') : draft.name}
             </h2>
             <p className="mt-0.5 truncate text-[13px] text-ink-soft">
@@ -551,7 +551,7 @@ function PersonaForm({
       {/* ④ 记忆 */}
       <PersonaSection id="persona-card-memory" title={t('persona.section.memory')}>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <span className="inline-flex items-center gap-1.5 text-[13px] font-medium text-ink">
+          <span className="inline-flex items-center gap-1.5 text-[13px] font-normal text-ink">
             {t('persona.memory')}
             <SettingHelp>{t('persona.memoryHint')}</SettingHelp>
           </span>
@@ -571,7 +571,7 @@ function PersonaForm({
               type="button"
               data-persona-memory-open
               onClick={() => { void navigate(`/memory?persona=${encodeURIComponent(snapshot.definition.id)}`); }}
-              className="ml-auto inline-flex items-center gap-1 text-[12px] font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+              className="ml-auto inline-flex items-center gap-1 text-[12px] font-normal text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
             >
               {t('persona.memoryOpen')}
               <Icon name="arrowRight" size={12} />
@@ -602,7 +602,7 @@ function PersonaForm({
                     if (fresh !== undefined) adopt(draftFromDefinition(fresh.definition, workspaces), fresh.revision);
                   });
                 }}
-                className="font-medium underline underline-offset-2"
+                className="font-normal underline underline-offset-2"
               >
                 {t('persona.reload')}
               </button>

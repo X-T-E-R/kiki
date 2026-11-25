@@ -106,7 +106,7 @@ export function SkillMarkdownBody({ skill }: {
   return (
     <section data-skill-md="" className="space-y-2">
       <header className="flex items-center gap-2 border-b border-hairline pb-1.5">
-        <h4 className="font-mono text-[11px] font-semibold uppercase text-ink-faint">
+        <h4 className="font-mono text-[11px] font-normal uppercase text-ink-faint">
           {t('agentPanel.skillMdSource')}
         </h4>
         <div className="ms-auto flex shrink-0 items-center gap-0.5">

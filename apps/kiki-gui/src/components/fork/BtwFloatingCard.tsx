@@ -143,7 +143,7 @@ export const BtwFloatingCard = memo(function BtwFloatingCard({
     >
       <div className="flex items-center gap-2 border-b border-hairline px-3 py-1.5">
         <Icon name="ask" size={14} className="shrink-0 text-ink-faint" />
-        <span className="text-[12px] font-medium text-ink">{t('btw.tabTitle')}</span>
+        <span className="text-[12px] font-normal text-ink">{t('btw.tabTitle')}</span>
         {isBusy ? <Spinner label={t('btw.tabTitle')} size={12} /> : null}
         <div className="ml-auto flex items-center gap-1">
           <button

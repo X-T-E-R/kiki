@@ -206,7 +206,7 @@ function WindowModeCard({ sub }: { sub: boolean }) {
           </SettingField>
           <p className="text-[12px] text-ink-faint" data-space-window-note>
             {prefs.windowMode !== launched
-              ? <span className="font-medium text-amber-ink">{t('st.spaces.windowPending')}</span>
+              ? <span className="font-normal text-amber-ink">{t('st.spaces.windowPending')}</span>
               : t('st.spaces.windowNextLaunch')}
           </p>
         </SettingsBox>
@@ -414,11 +414,11 @@ function SpaceListCard({ sub, client, target, openLocalSpace, onExportSpace }: {
             {desktop ? (
               <button type="button" data-detail-trigger={space.id} onClick={() => { detail.open(space.id); }}
                 title={label}
-                className="min-w-0 shrink truncate rounded text-left text-[13px] font-medium text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
+                className="min-w-0 shrink truncate rounded text-left text-[13px] font-normal text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
                 {label}
               </button>
             ) : (
-              <span className="min-w-0 shrink truncate text-[13px] font-medium text-ink" title={label}>{label}</span>
+              <span className="min-w-0 shrink truncate text-[13px] font-normal text-ink" title={label}>{label}</span>
             )}
             {!isMain ? (
               <span className="shrink-0 text-[12px] text-ink-faint" data-space-cred={space.credentials_shared === false ? 'isolated' : 'shared'}>
@@ -433,11 +433,11 @@ function SpaceListCard({ sub, client, target, openLocalSpace, onExportSpace }: {
               {desktop ? (
                 <button type="button" data-detail-trigger={space.id} onClick={() => { detail.open(space.id); }}
                   title={label}
-                  className="min-w-0 shrink truncate rounded text-left text-[13px] font-medium text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
+                  className="min-w-0 shrink truncate rounded text-left text-[13px] font-normal text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
                   {label}
                 </button>
               ) : (
-                <span className="min-w-0 shrink truncate text-[13px] font-medium text-ink" title={label}>{label}</span>
+                <span className="min-w-0 shrink truncate text-[13px] font-normal text-ink" title={label}>{label}</span>
               )}
               {!isMain ? (
                 <span className="shrink-0 text-[12px] text-ink-faint" data-space-cred={space.credentials_shared === false ? 'isolated' : 'shared'}>
@@ -446,15 +446,15 @@ function SpaceListCard({ sub, client, target, openLocalSpace, onExportSpace }: {
               ) : null}
             </div>
             <p className="truncate text-[11.5px] text-ink-faint" title={space.path}>{space.path}</p>
-            {restartNote?.id === space.id ? <p className="text-[12px] font-medium text-amber-ink" data-space-restart-note>{restartNote.text}</p> : null}
+            {restartNote?.id === space.id ? <p className="text-[12px] font-normal text-amber-ink" data-space-restart-note>{restartNote.text}</p> : null}
           </div>
         )}
         <div className="ml-auto flex shrink-0 items-center gap-2">
           {pending > 0 && run !== 'current' ? (
-            <span data-space-pending className="rounded-full bg-attention-soft px-1.5 text-[11.5px] font-medium tabular-nums text-attention">{tp('st.spaces.pending', pending)}</span>
+            <span data-space-pending className="rounded-full bg-attention-soft px-1.5 text-[11.5px] font-normal tabular-nums text-attention">{tp('st.spaces.pending', pending)}</span>
           ) : null}
           {run === 'current' ? (
-            <span className="text-[12px] font-medium text-ink-soft" data-space-current>{t('st.spaces.current')}</span>
+            <span className="text-[12px] font-normal text-ink-soft" data-space-current>{t('st.spaces.current')}</span>
           ) : desktop ? (
             <>
               {mode === 'switch' ? (
@@ -529,7 +529,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace, onExportSpace }: {
     </div>
     <div className="flex min-w-0 items-start justify-between gap-3">
       <div className="min-w-0">
-        <h3 data-detail-heading tabIndex={-1} className="flex min-w-0 items-center gap-2 font-display text-[18px] font-semibold text-ink outline-none">
+        <h3 data-detail-heading tabIndex={-1} className="flex min-w-0 items-center gap-2 font-display text-[18px] font-bold text-ink outline-none">
           <SpaceDot color={detailSpace.id === MAIN_SPACE_ID ? 'var(--color-ink-faint)' : detailSpace.color} />
           <span className="min-w-0 break-words">{spaceLabel(detailSpace)}</span>
         </h3>

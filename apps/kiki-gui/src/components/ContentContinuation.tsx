@@ -65,7 +65,7 @@ export function contentRefProgress(
 export const CONTINUATION_ROW_CLASS = 'flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] leading-5';
 
 export const CONTINUATION_ACTION_CLASS =
-  'inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-2 font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-80 disabled:hover:no-underline motion-reduce:transition-none';
+  'inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-2 font-normal text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-80 disabled:hover:no-underline motion-reduce:transition-none';
 
 export type ContinuationState = 'idle' | 'loading' | 'error';
 
@@ -252,7 +252,7 @@ export function ContentOriginalDownload({ ref, label, callerAgentId }: { readonl
         disabled={busy}
         aria-busy={busy}
         aria-label={t('transcript.content.originalAria', { field: label })}
-        className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-80 disabled:hover:no-underline motion-reduce:transition-none"
+        className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 font-normal text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-default disabled:opacity-80 disabled:hover:no-underline motion-reduce:transition-none"
       >
         {busy ? <span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" /> : null}
         {transfer === 'failed' ? t('transcript.content.originalRetry')
@@ -264,7 +264,7 @@ export function ContentOriginalDownload({ ref, label, callerAgentId }: { readonl
           type="button"
           data-content-original-cancel
           onClick={cancel}
-          className="inline-flex min-h-7 items-center rounded-md px-2 font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink motion-reduce:transition-none"
+          className="inline-flex min-h-7 items-center rounded-md px-2 font-normal text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink motion-reduce:transition-none"
         >
           {t('transcript.content.originalCancel')}
         </button>

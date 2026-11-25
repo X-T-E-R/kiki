@@ -31,7 +31,7 @@ export function TimelineViewSwitch({
       aria-checked={view === value}
       data-timeline-view-option={value}
       onClick={() => { onChange(value); }}
-      className={`${SEGMENT} ${view === value ? 'bg-panel font-medium text-ink shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.08)]' : 'text-ink-soft hover:text-ink'}`}
+      className={`${SEGMENT} ${view === value ? 'bg-panel text-ink shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.08)]' : 'text-ink-soft hover:text-ink'}`}
     >
       {label}
     </button>
@@ -78,7 +78,7 @@ export function TimelineMenuRows({
     <>
       {showView ? (
         <>
-          <p className="px-3 pt-1.5 pb-0.5 text-[12px] font-medium text-ink-faint phone:px-4 phone:text-[13px]">{t('message.viewSwitchAria')}</p>
+          <p className="px-3 pt-1.5 pb-0.5 text-[12px] font-normal text-ink-faint phone:px-4 phone:text-[13px]">{t('message.viewSwitchAria')}</p>
           {(['message', 'process'] as const).map((value) => (
             <button
               key={value}
@@ -89,14 +89,14 @@ export function TimelineMenuRows({
               className={MENU_ITEM}
               onClick={() => { onView(value); }}
             >
-              <span className={view === value ? 'font-medium' : undefined}>{t(value === 'message' ? 'message.view' : 'message.process')}</span>
+              <span>{t(value === 'message' ? 'message.view' : 'message.process')}</span>
               {mark(view === value)}
             </button>
           ))}
           <div className="my-1 h-px bg-hairline" />
         </>
       ) : null}
-      <p className="px-3 pt-1.5 pb-0.5 text-[12px] font-medium text-ink-faint phone:px-4 phone:text-[13px]">{t('message.deliveryLabel')}</p>
+      <p className="px-3 pt-1.5 pb-0.5 text-[12px] font-normal text-ink-faint phone:px-4 phone:text-[13px]">{t('message.deliveryLabel')}</p>
       {(['message', 'reply'] as const).map((value) => (
         <button
           key={value}
@@ -108,7 +108,7 @@ export function TimelineMenuRows({
           className={MENU_ITEM}
           onClick={() => { onDelivery(value); }}
         >
-          <span className={delivery === value ? 'font-medium' : undefined}>
+          <span>
             {t(value === 'message' ? 'message.messageDelivery' : 'message.replyDelivery')}
           </span>
           {delivery === value && deliveryPending ? (

@@ -107,7 +107,7 @@ export function SpeakerHead({
       <span className={MESSAGE_FACE}>
         <PersonaAvatar persona={persona} size={24} decorative className={`max-sm:!h-5 max-sm:!w-5 ${persona.avatarShape === 'circle' ? '' : '!rounded-[6px]'}`} />
       </span>
-      <span data-message-sender className="min-w-0 truncate text-[13px] leading-5 font-medium text-ink">{persona.name}</span>
+      <span data-message-sender className="min-w-0 truncate text-[13px] leading-5 font-normal text-ink">{persona.name}</span>
       {children}
       {at !== undefined ? (
         <span className="shrink-0 text-[12px] text-ink-faint tabular-nums opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 [@media(hover:none)]:opacity-100">
@@ -295,10 +295,10 @@ function AttachmentCard({
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] leading-none font-medium tracking-wide ${style.badgeClass}`}>
+            <span className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] leading-none font-normal ${style.badgeClass}`}>
               {style.badge}
             </span>
-            <span className="min-w-0 truncate font-mono text-[12.5px] font-medium text-ink" title={origin !== undefined ? origin.path : name}>
+            <span className="min-w-0 truncate font-mono text-[12.5px] font-normal text-ink" title={origin !== undefined ? origin.path : name}>
               {name}
             </span>
           </span>
@@ -314,7 +314,7 @@ function AttachmentCard({
               event.stopPropagation();
               openAttachment();
             }}
-            className="min-h-7 shrink-0 rounded-lg border border-hairline bg-paper px-2.5 py-1 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+            className="min-h-7 shrink-0 rounded-lg border border-hairline bg-paper px-2.5 py-1 text-[11.5px] font-normal text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
           >
             {t('message.openAttachment')}
           </button>
@@ -353,10 +353,10 @@ function WebLinkPreviewCard({ link }: { readonly link: MessageWebLink }) {
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className="shrink-0 rounded border border-hairline-strong bg-ink/[0.05] px-1.5 py-0.5 font-mono text-[10px] leading-none font-medium tracking-wide text-ink-soft">
+            <span className="shrink-0 rounded border border-hairline-strong bg-ink/[0.05] px-1.5 py-0.5 font-mono text-[10px] leading-none font-normal text-ink-soft">
               WEB
             </span>
-            <span className="min-w-0 truncate text-[12.5px] font-medium text-ink" title={link.url}>
+            <span className="min-w-0 truncate text-[12.5px] font-normal text-ink" title={link.url}>
               {link.title}
             </span>
           </span>
@@ -373,7 +373,7 @@ function WebLinkPreviewCard({ link }: { readonly link: MessageWebLink }) {
             event.stopPropagation();
             openExternal();
           }}
-          className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded-lg border border-hairline bg-paper px-2.5 py-1 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+          className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded-lg border border-hairline bg-paper px-2.5 py-1 text-[11.5px] font-normal text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
         >
           <span>{t('message.openAttachment')}</span>
           <Icon name="external" size={12} />

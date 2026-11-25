@@ -25,7 +25,7 @@ export function Field({ label, htmlFor, hint, children, applicability, engine, d
   const ignored = applicability?.state === 'ignored';
   return <div className={`min-w-0 space-y-1.5 ${ignored ? 'opacity-70' : ''}`} data-profile-field={dataField}
     data-field-applicability={applicability?.state}>
-    <label htmlFor={htmlFor} className="block text-[12px] font-medium text-ink-soft">{label}</label>
+    <label htmlFor={htmlFor} className="block text-[12px] font-normal text-ink-soft">{label}</label>
     {children}
     {ignored ? <p className="text-[11.5px] leading-snug text-ink-faint">{applicability.reason ?? t('st.profiles.fieldIgnored', { engine: engine ?? '' })}</p> : null}
     {applicability?.state === 'mapped' ? <p className="text-[11.5px] leading-snug text-ink-faint">{applicability.reason ?? t('st.profiles.fieldMapped', { engine: engine ?? '' })}</p> : null}
@@ -127,7 +127,7 @@ export function Section({ title, summary, defaultOpen = false, children, dataSec
     className="group [&[open]>summary_[data-chevron]]:rotate-90">
     <summary aria-controls={id} className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-2 outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/50 [&::-webkit-details-marker]:hidden">
       <span data-chevron className="flex shrink-0 text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none"><Icon name="chevron" size={12} /></span>
-      <span className="text-[13px] font-medium text-ink">{title}</span>
+      <span className="text-[13px] font-normal text-ink">{title}</span>
       {count !== undefined && count > 0 ? <span className="rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] tabular-nums text-ink-soft">{count}</span> : null}
       {summary !== undefined ? <span className="ml-auto min-w-0 truncate text-[12px] text-ink-faint">{summary}</span> : null}
     </summary>

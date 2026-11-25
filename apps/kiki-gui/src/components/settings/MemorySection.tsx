@@ -15,7 +15,7 @@ export function MemorySection() {
     const failed = authority.state?.migration?.phase === 'failed';
     return (
       <div className="space-y-2 py-2" data-memory-settings-upgrading={failed ? 'failed' : 'running'}>
-        <p className="text-[14px] font-medium text-ink">{t(failed ? 'memory.upgrade.title.failed' : 'memory.upgrade.title.running')}</p>
+        <p className="text-[14px] font-normal text-ink">{t(failed ? 'memory.upgrade.title.failed' : 'memory.upgrade.title.running')}</p>
         <p className="max-w-[62ch] text-[12.5px] leading-5 text-ink-soft">{t(failed ? 'memory.upgrade.failedLead' : 'memory.upgrade.runningLead')}</p>
         <Link to="/memory" className="inline-block text-[12.5px] text-selected-ink hover:underline" data-memory-settings-open-upgrade>
           {t('st.memory.openUpgrade')}

@@ -12,7 +12,7 @@ import {
   type KikiElectronBridge,
 } from './electron';
 import { isDesktopHost } from './host';
-import { resolveHostAdapter } from './index';
+import { resolveHostAdapter } from './resolveHost';
 
 function createMockBridge() {
   const bridge: KikiElectronBridge = {
@@ -499,30 +499,35 @@ describe('Electron host adapter', () => {
     expect(bridge.pluginFocus.ack).toHaveBeenCalledWith('space-a', 7);
   });
 
-  it('binds singleton electronHost to globalThis.__KIKI_ELECTRON__ and selects Electron ahead of Tauri in host/index', async () => {
+  it('binds singleton electronHost to globalThis.__KIKI_ELECTRON__ and selects Electron ahead of Tauri in host/resolveHost', async () => {
     expect(isElectronHost()).toBe(false);
     await expect(electronHost.showMainWindow()).rejects.toThrow('Electron host bridge is unavailable');
 
     const bridge = createMockBridge();
     vi.mocked(bridge.window.showMainWindow).mockResolvedValueOnce(undefined);
-    (globalThis as { isTauri?: unknown }).isTauri = true;
+    const prevTauriInternals = (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     try {
-      expect(resolveHostAdapter().kind).toBe('tauri');
+      expect((await resolveHostAdapter()).kind).toBe('tauri');
 
       (globalThis as { __KIKI_ELECTRON__?: KikiElectronBridge }).__KIKI_ELECTRON__ = bridge;
       expect(isElectronHost()).toBe(true);
-      expect(resolveHostAdapter().kind).toBe('electron');
+      expect((await resolveHostAdapter()).kind).toBe('electron');
       await electronHost.showMainWindow();
       expect(bridge.window.showMainWindow).toHaveBeenCalledOnce();
     } finally {
-      delete (globalThis as { isTauri?: unknown }).isTauri;
+      if (prevTauriInternals === undefined) {
+        delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      } else {
+        (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = prevTauriInternals;
+      }
     }
   });
 
-  it('enforces zero @tauri-apps/* imports in production apps/kiki-gui/src outside src/host/tauri.ts and src/host/index.tsx', async () => {
+  it('enforces zero @tauri-apps/* imports in production apps/kiki-gui/src outside src/host/tauri.ts', async () => {
     const srcRoot = fileURLToPath(new URL('..', import.meta.url));
     const entries = await readdir(srcRoot, { recursive: true, withFileTypes: true });
-    const allowed = new Set(['host/tauri.ts', 'host/index.tsx']);
+    const allowed = new Set(['host/tauri.ts']);
     const candidates = entries
       .filter((entry) => entry.isFile() && /\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(entry.name) && !/\.test\./.test(entry.name))
       .map((entry) => {

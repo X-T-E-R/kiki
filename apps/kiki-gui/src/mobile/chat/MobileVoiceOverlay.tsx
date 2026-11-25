@@ -161,7 +161,7 @@ export function MobileVoiceOverlay({ open, onClose, onSubmitText }: MobileVoiceO
         </div>
         <h2
           data-voice-error={errorKind ?? undefined}
-          className={`font-display text-[26px] font-medium leading-[1.2] ${
+          className={`font-display text-[26px] font-bold leading-[1.2] ${
             errorKind !== null && transcript === '' ? 'text-danger' : 'text-ink'
           }`}
         >

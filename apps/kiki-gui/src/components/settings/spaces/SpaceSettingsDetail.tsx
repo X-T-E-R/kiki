@@ -166,13 +166,13 @@ function SpaceSettingsDetailContext({ target, name, onDetailChange }: SpaceSetti
       <div data-space-groups>{SPACE_GROUP_ORDER.map(groupRow)}</div>
 
       <div className="space-y-0.5" data-space-resource-sources>
-        <p className="text-[12px] font-medium text-ink-faint">{t('st.spaces.resourceSources')}</p>
+        <p className="text-[12px] font-normal text-ink-faint">{t('st.spaces.resourceSources')}</p>
         <p className="pb-1 text-[12px] leading-4 text-ink-faint">{t('st.spaces.resourceSourcesHint')}</p>
         {groupRow(SPACE_RESOURCE_DOMAIN)}
       </div>
 
       <div className="space-y-1" data-space-own-choices>
-        <p className="text-[12px] font-medium text-ink-faint">{t('st.spaces.ownChoices')}</p>
+        <p className="text-[12px] font-normal text-ink-faint">{t('st.spaces.ownChoices')}</p>
         {own.length === 0 ? (
           <p className="text-[12.5px] text-ink-faint" data-space-own-empty>{t('st.spaces.ownChoicesEmpty')}</p>
         ) : (
@@ -213,7 +213,7 @@ function SpaceSettingsDetailContext({ target, name, onDetailChange }: SpaceSetti
 
       {ownsAppearance && authority.deviceConflict ? (
         <div className="space-y-2 pt-4" data-space-device-conflict>
-          <p className="text-[13px] font-medium text-ink">{t('st.spaces.device.title')}</p>
+          <p className="text-[13px] font-normal text-ink">{t('st.spaces.device.title')}</p>
           <p className="text-[12px] leading-4 text-ink-soft">{t('st.spaces.device.body')}</p>
           <div className="flex flex-wrap gap-2">
             <button type="button" data-space-device-keep className={SECONDARY_BUTTON} onClick={() => { if (ownsAppearance && identity !== null) resolveSpaceDeviceConflict(identity); }}>
@@ -242,4 +242,4 @@ function SpaceSettingsDetailContext({ target, name, onDetailChange }: SpaceSetti
   );
 }
 
-const CHANGE_BUTTON = 'shrink-0 rounded px-1 py-0.5 text-[12px] font-medium text-ink-soft outline-none transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink';
+const CHANGE_BUTTON = 'shrink-0 rounded px-1 py-0.5 text-[12px] font-normal text-ink-soft outline-none transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink';

@@ -52,7 +52,7 @@ export function ExtensionsSection({ pluginId }: { readonly pluginId: string | nu
               onClick={() => { selectTab(candidate); }}
               className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors ${
                 active
-                  ? 'border-ink font-medium text-ink'
+                  ? 'border-ink text-ink'
                   : 'border-transparent text-ink-soft hover:text-ink'
               }`}
             >

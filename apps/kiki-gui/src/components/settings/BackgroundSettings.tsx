@@ -163,7 +163,7 @@ function MediaThumb({ slot }: { slot: BackgroundSlot }) {
         ? <video src={url} muted playsInline preload="metadata" className="h-full w-full object-cover" />
         : <img src={url} alt="" className="h-full w-full object-cover" />}
       {slot.media[0]!.kind === 'video' ? (
-        <span data-bg-thumb-video className="absolute right-1 bottom-1 rounded-[3px] bg-ink/70 px-1 text-[10px] leading-4 font-medium text-paper">{t('st.pack.video')}</span>
+        <span data-bg-thumb-video className="absolute right-1 bottom-1 rounded-[3px] bg-ink/70 px-1 text-[10px] leading-4 font-normal text-paper">{t('st.pack.video')}</span>
       ) : null}
     </span>
   );

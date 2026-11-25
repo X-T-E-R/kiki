@@ -175,7 +175,7 @@ export const InspectorNow = memo(function InspectorNow({
                     type="button"
                     data-inspector-review={id}
                     onClick={() => { onReview(item.kind, id); }}
-                    className="h-7 shrink-0 rounded-md px-2 text-[12.5px] font-medium text-attention transition-colors hover:bg-attention-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+                    className="h-7 shrink-0 rounded-md px-2 text-[12.5px] font-normal text-attention transition-colors hover:bg-attention-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
                   >
                     {t('inspector.review')}
                   </button>
@@ -198,7 +198,7 @@ export const InspectorNow = memo(function InspectorNow({
             data-needs-input={subagent !== undefined && subagent.pendingCount > 0 ? '' : undefined}
             data-inspector-step={step !== undefined ? '' : undefined}
             title={summary === '' ? undefined : summary}
-            className={`min-w-0 flex-1 truncate text-[14px] leading-5 font-medium ${quiet ? 'text-ink-soft' : 'text-ink'}`}
+            className={`min-w-0 flex-1 truncate text-[14px] leading-5 font-normal ${quiet ? 'text-ink-soft' : 'text-ink'}`}
           >
             {step !== undefined ? (
               <>

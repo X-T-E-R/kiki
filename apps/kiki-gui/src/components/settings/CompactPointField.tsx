@@ -22,7 +22,7 @@ export function CompactPointField({
   placeholder,
   hint,
   dataAttribute,
-  labelClassName = 'block text-[12px] font-medium text-ink-soft',
+  labelClassName = 'block text-[12px] font-normal text-ink-soft',
   presets,
   presetsLabel,
   disabled = false,

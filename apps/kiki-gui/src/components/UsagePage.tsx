@@ -309,7 +309,7 @@ function SessionsTab({
           onClick={() => void navigate(`/s/${item.id}`)}
           className={`${grid} relative w-full rounded-md px-2 py-2.5 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11`}
         >
-          <span className={`text-right text-[12px] tabular-nums ${rank <= 3 ? 'font-semibold text-ink' : 'text-ink-faint'}`}>
+          <span className={`text-right text-[12px] tabular-nums ${rank <= 3 ? 'text-ink' : 'text-ink-faint'}`}>
             {rank}
           </span>
           <span className="min-w-0">
@@ -348,17 +348,17 @@ function SessionsTab({
           <span className="hidden truncate text-[12px] text-ink-soft sm:block" title={item.workspace_id}>
             {wsDisplay}
           </span>
-          <span data-usage-session-tokens={item.id} className={`${metric === 'tokens' ? 'block text-[13px] font-semibold text-ink' : 'hidden text-[12px] text-ink-soft sm:block'} text-right tabular-nums`}>
+          <span data-usage-session-tokens={item.id} className={`${metric === 'tokens' ? 'block text-[13px] text-ink' : 'hidden text-[12px] text-ink-soft sm:block'} text-right tabular-nums`}>
             {unknownTotal ? '—' : time.formatTokens(itemTokens)}
             {item.usage.tokens_unknown === true && !unknownTotal ? <KnownSubtotalMarker /> : null}
           </span>
-          <span className={`${metric === 'cache' ? 'block text-[13px] font-semibold text-ink' : 'hidden text-[12px] text-ink-soft sm:block'} text-right tabular-nums`}>
+          <span className={`${metric === 'cache' ? 'block text-[13px] text-ink' : 'hidden text-[12px] text-ink-soft sm:block'} text-right tabular-nums`}>
             {unknownTotal ? '—' : formatPercent(cacheHitRateOf(item.usage))}
           </span>
           <span className="hidden text-right text-[12px] text-ink-faint sm:block">
             {updatedLabel}
           </span>
-          <span data-usage-session-cost={item.id} className={`${metric === 'cost' ? 'block text-[13px] font-semibold text-ink' : 'hidden text-[12px] text-ink-soft sm:block'} text-right tabular-nums`}>
+          <span data-usage-session-cost={item.id} className={`${metric === 'cost' ? 'block text-[13px] text-ink' : 'hidden text-[12px] text-ink-soft sm:block'} text-right tabular-nums`}>
             {unpricedZero ? '—' : formatCostUsd(item.usage.cost_usd_estimated)}
             {item.usage.cost_unknown ? (
               <KnownSubtotalMarker label={unpricedZero ? t('usage.reliability.costUnknown') : undefined} />
@@ -1078,7 +1078,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
             data-usage-continue-scan
             disabled={isUsageFetching}
             onClick={() => void refetchUsage()}
-            className="font-medium underline underline-offset-2 hover:text-ink disabled:opacity-50"
+            className="font-normal underline underline-offset-2 hover:text-ink disabled:opacity-50"
           >
             {t(isUsageFetching ? 'usage.loading' : 'usage.continueScan')}
           </button>
@@ -1157,7 +1157,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
               <p data-usage-unsupported role="status" className="py-6 text-[13px] text-ink-soft">{t('usage.unsupported')}</p>
             ) : isUsageError ? (
               <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2 text-[13px] text-danger">
-                <p className="font-medium">{t('usage.loadFailedKeep')}</p>
+                <p className="font-normal">{t('usage.loadFailedKeep')}</p>
                 <button
                   type="button"
                   onClick={() => void refetchUsage()}
@@ -1240,7 +1240,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                               data-usage-grouping={axis}
                               onClick={() => { selectSourceAxisTab(axis); }}
                               className={`-mb-px min-h-9 shrink-0 whitespace-nowrap border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
-                                active ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
+                                active ? 'border-ink text-ink' : 'border-transparent text-ink-soft hover:text-ink'
                               }`}
                             >
                               {t(`usage.sources.grouping.${axis}`)}
@@ -1255,7 +1255,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                           data-usage-tab="sessions"
                           onClick={() => { selectDetailTab('sessions'); }}
                           className={`-mb-px min-h-9 shrink-0 whitespace-nowrap border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
-                            tab === 'sessions' ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
+                            tab === 'sessions' ? 'border-ink text-ink' : 'border-transparent text-ink-soft hover:text-ink'
                           }`}
                         >
                           {t('usage.tab.sessions')}
@@ -1269,7 +1269,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                             data-usage-tab="breakdown"
                             onClick={() => { selectDetailTab('breakdown'); }}
                             className={`-mb-px min-h-9 shrink-0 whitespace-nowrap border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
-                              tab === 'breakdown' ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
+                              tab === 'breakdown' ? 'border-ink text-ink' : 'border-transparent text-ink-soft hover:text-ink'
                             }`}
                           >
                             {t(`usage.dimension.${legacyDimension}`)}
@@ -1292,7 +1292,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
 
                       {tab === 'sessions' && sessionLocator !== undefined ? (
                         <p className="ml-auto flex items-center gap-2 pb-1 text-[12px] text-ink-soft">
-                          <span className="rounded-md bg-ink/[0.05] px-2 py-0.5 font-medium text-ink-soft">
+                          <span className="rounded-md bg-ink/[0.05] px-2 py-0.5 font-normal text-ink-soft">
                             {t('usage.sessions.deepLinkChip')}
                           </span>
                           <button type="button" className="text-ink-faint underline hover:text-ink" onClick={() => { setDismissedLocator(sessionLocator); }}>

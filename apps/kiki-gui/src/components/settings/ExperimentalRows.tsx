@@ -105,7 +105,7 @@ export function ExperimentalRow({ id, override, effective }: { id: string; overr
       }
     >
       <span className="flex shrink-0 flex-wrap items-center gap-2" title={t('st.exp.flagId', { id })}>
-        <span data-experimental-tag className="rounded-[4px] bg-ink/[0.05] px-1.5 py-px text-[11px] font-medium leading-4 text-ink-soft">
+        <span data-experimental-tag className="rounded-[4px] bg-ink/[0.05] px-1.5 py-px text-[11px] font-normal leading-4 text-ink-soft">
           {t('st.exp.tag')}
         </span>
         <SavedTick show={saved} />

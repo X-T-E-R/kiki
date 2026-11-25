@@ -185,7 +185,7 @@ export function DocumentTabView({
     <>
       {!compact ? readyNav : null}
       {wide && state.kind === 'ready' && state.response.kind === 'text' ? (
-        <span className="shrink-0 rounded-[3px] bg-hairline/60 px-1.5 py-0.5 text-[10.5px] font-medium text-ink-soft" data-preview-fidelity="source">
+        <span className="shrink-0 rounded-[3px] bg-hairline/60 px-1.5 py-0.5 text-[10.5px] font-normal text-ink-soft" data-preview-fidelity="source">
           {t('preview.fidelitySource')}
         </span>
       ) : null}
@@ -304,7 +304,7 @@ export function DocumentTabView({
         <>
           {header}
           <div
-            className="min-h-0 flex-1 overflow-auto bg-canvas px-4 py-5"
+            className="min-h-0 flex-1 overflow-auto bg-canvas px-4 py-5 [scrollbar-gutter:stable]"
             data-preview-document
             data-fidelity={response.fidelity}
             data-format={response.format}

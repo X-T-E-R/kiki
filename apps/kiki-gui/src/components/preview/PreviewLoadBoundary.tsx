@@ -162,7 +162,7 @@ export function PreviewPanelLoadFailure({
       style={hidden ? { display: 'none' } : { width }}
     >
       <div className="flex h-11 shrink-0 items-center justify-between border-b border-hairline px-3">
-        <span className="truncate text-[13px] font-medium text-ink">{t('preview.title')}</span>
+        <span className="truncate text-[13px] font-normal text-ink">{t('preview.title')}</span>
         <button
           type="button"
           aria-label={t('common.close')}
@@ -215,7 +215,7 @@ export function LightboxLoadingShell({
           type="button"
           onClick={onClose}
           aria-label={t('common.close')}
-          className="rounded-full border border-shell-hairline bg-shell-hover px-3 py-1 text-[11.5px] font-medium text-shell-ink transition-colors hover:bg-shell-hover"
+          className="rounded-full border border-shell-hairline bg-shell-hover px-3 py-1 text-[11.5px] font-normal text-shell-ink transition-colors hover:bg-shell-hover"
         >
           <Icon name="close" />
         </button>
@@ -246,7 +246,7 @@ export function LightboxLoadFailure({
       panelClassName="anim-enter flex max-h-full w-full max-w-[520px] flex-col items-start gap-3 rounded-2xl border border-hairline bg-panel p-5 outline-none"
     >
       <div role="alert" data-lightbox-load-failed className="flex w-full flex-col items-start gap-3">
-        <p className="text-[13px] font-medium text-ink">{t('preview.loadFailed')}</p>
+        <p className="text-[13px] font-normal text-ink">{t('preview.loadFailed')}</p>
         {error.message !== '' ? (
           <p className="max-w-full break-words font-mono text-[11px] text-ink-faint">{error.message}</p>
         ) : null}

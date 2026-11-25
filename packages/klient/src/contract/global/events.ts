@@ -28,6 +28,7 @@ import type { IOAuthService } from '@kiki/agent-core-v2/app/auth/auth';
 
 import { stringDeltaSchema } from '../helpers.js';
 import type { EventRegistration } from '../types.js';
+import { globalEventDescriptors } from '../eventDescriptors.js';
 import { lazyContract } from '../lazyContract.js';
 
 /** Payload of `event.session.archived` on the global bus. */
@@ -167,97 +168,80 @@ export const antigravityInstallProgressSchema = /* @__PURE__ */ z.discriminatedU
 /** Public event name → source binding + payload schema. */
 export const globalEvents = {
   'usage.settled': /* @__PURE__ */ lazyContract(() => ({
-    kind: 'bus', type: 'event.usage.settled',
+    ...globalEventDescriptors['usage.settled'],
     schema: /* @__PURE__ */ z.object({ sessionId: z.string().optional(), agentId: z.string().optional() }),
   }), 'kind', 'type', 'schema'),
   'room.changed': {
-    kind: 'emitter', service: 'roomService', event: 'onDidChange', schema: roomChangeEventSchema,
+    ...globalEventDescriptors['room.changed'], schema: roomChangeEventSchema,
   },
   'thread.messageDelivery': {
-    kind: 'emitter',
-    service: 'threadCommunicationService',
-    event: 'onDidChangeMessageDelivery',
+    ...globalEventDescriptors['thread.messageDelivery'],
     schema: threadMessageDeliveryPayloadSchema,
   },
   'connections.changed': {
-    kind: 'bus', type: 'event.remote_connections.changed',
+    ...globalEventDescriptors['connections.changed'],
     schema: remoteConnectionsChangedPayloadSchema,
   },
   'remoteConnections.changed': {
-    kind: 'bus', type: 'event.remote_connections.changed',
+    ...globalEventDescriptors['remoteConnections.changed'],
     schema: remoteConnectionsChangedPayloadSchema,
   },
   'portableSpaces.changed': {
-    kind: 'bus', type: 'event.portable_spaces.changed',
+    ...globalEventDescriptors['portableSpaces.changed'],
     schema: portableSpacesChangedPayloadSchema,
   },
   'search.indexStateChanged': {
-    kind: 'bus', type: 'event.search.index_state_changed',
+    ...globalEventDescriptors['search.indexStateChanged'],
     schema: searchIndexStateSchema,
   },
   'executors.antigravityInstallProgress': {
-    kind: 'bus', type: 'event.executor.antigravity_install_progress',
+    ...globalEventDescriptors['executors.antigravityInstallProgress'],
     schema: antigravityInstallProgressSchema,
   },
   'config.changed': {
-    kind: 'emitter',
-    service: 'configService',
-    event: 'onDidChangeConfiguration',
+    ...globalEventDescriptors['config.changed'],
     schema: configChangedSchema,
   },
   'config.sectionChanged': {
-    kind: 'emitter',
-    service: 'configService',
-    event: 'onDidSectionChange',
+    ...globalEventDescriptors['config.sectionChanged'],
     schema: configChangedSchema,
   },
   'kosong.providers.changed': {
-    kind: 'emitter',
-    service: 'providerService',
-    event: 'onDidChangeProviders',
+    ...globalEventDescriptors['kosong.providers.changed'],
     schema: stringDeltaSchema,
   },
   'kosong.models.changed': {
-    kind: 'emitter',
-    service: 'modelService',
-    event: 'onDidChangeModels',
+    ...globalEventDescriptors['kosong.models.changed'],
     schema: stringDeltaSchema,
   },
   'plugins.reloaded': {
-    kind: 'emitter',
-    service: 'pluginService',
-    event: 'onDidReload',
+    ...globalEventDescriptors['plugins.reloaded'],
     schema: reloadSummarySchema,
   },
   'plugins.changed': /* @__PURE__ */ lazyContract(() => ({
-    kind: 'bus', type: 'event.plugin.changed', schema: /* @__PURE__ */ z.object({}).strict(),
+    ...globalEventDescriptors['plugins.changed'], schema: /* @__PURE__ */ z.object({}).strict(),
   }), 'kind', 'type', 'schema'),
   'personas.changed': /* @__PURE__ */ lazyContract(() => ({
-    kind: 'bus', type: 'event.persona.changed', schema: /* @__PURE__ */ z.object({}).strict(),
+    ...globalEventDescriptors['personas.changed'], schema: /* @__PURE__ */ z.object({}).strict(),
   }), 'kind', 'type', 'schema'),
   'session.created': /* @__PURE__ */ lazyContract(() => ({
-    kind: 'bus',
-    type: 'event.session.created',
+    ...globalEventDescriptors['session.created'],
     schema: /* @__PURE__ */ z.object({ sessionId: z.string() }),
   }), 'kind', 'type', 'schema'),
   'session.archived': /* @__PURE__ */ lazyContract(() => ({
-    kind: 'bus',
-    type: 'event.session.archived',
+    ...globalEventDescriptors['session.archived'],
     schema: /* @__PURE__ */ z.object({ sessionId: z.string() }),
   }), 'kind', 'type', 'schema'),
   'session.metaUpdated': {
-    kind: 'bus',
-    type: 'session.meta.updated',
+    ...globalEventDescriptors['session.metaUpdated'],
     schema: sessionMetaUpdatedSchema,
   },
   'session.workChanged': {
-    kind: 'bus',
-    type: 'event.session.work_changed',
+    ...globalEventDescriptors['session.workChanged'],
     schema: sessionWorkChangedSchema,
   },
   'kosong.changed': {
-    kind: 'bus',
-    type: 'event.model_catalog.changed',
+    ...globalEventDescriptors['kosong.changed'],
     schema: catalogChangedSchema,
   },
 } satisfies Record<KlientEventName, EventRegistration>;

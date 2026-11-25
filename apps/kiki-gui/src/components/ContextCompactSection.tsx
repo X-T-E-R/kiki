@@ -230,7 +230,7 @@ export function ContextCompactSection({
   return (
     <div data-context-compact-section data-compact-source={status.source} className="mt-2">
       <div className="flex items-center justify-between gap-2">
-        <p className="shrink-0 whitespace-nowrap text-[12px] font-medium text-ink-soft">{t('context.windowTitle')}</p>
+        <p className="shrink-0 whitespace-nowrap text-[12px] font-normal text-ink-soft">{t('context.windowTitle')}</p>
         <div className="relative min-w-0">
           <button
             ref={menuTriggerRef}
@@ -446,7 +446,7 @@ function CompactSourceMenu({
         return true;
       }}
     >
-      <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('context.compact.menuLabel')}</p>
+      <p className="px-3 pt-1.5 pb-1 text-[12px] font-normal text-ink-faint">{t('context.compact.menuLabel')}</p>
       <button type="button" role="menuitem" data-compact-save="model" className={SOURCE_MENU_ROW} onClick={() => { onSave('model'); }}>
         <span className="truncate">{t('context.compact.saveModel', { model: modelLabel ?? '', value })}</span>
       </button>

@@ -79,7 +79,7 @@ const SECTION = 'border-t border-hairline py-3';
 /** The context meter stays neutral until the overview calls it near; near is amber, never the "needs you" accent. */
 const OVERVIEW_METER = '[&_[data-overview-context]_[role=meter]>div]:!bg-ink-soft/70 [&_[data-overview-context=warn]_[role=meter]>div]:!bg-amber-rule [&_[data-overview-context=danger]_[role=meter]>div]:!bg-amber-rule [&_[data-overview-context]_span.text-danger]:!text-amber-ink';
 /** Cost, tokens and cache as mono figures on one measured row. */
-const OVERVIEW_FIGURES = '[&_[data-overview-fact]>div:first-child]:font-mono [&_[data-overview-fact]>div:first-child]:text-[17px] [&_[data-overview-fact]>div:first-child]:font-normal [&_[data-overview-fact]>div:first-child]:tracking-tight [&_[data-overview-context-figures]]:font-mono';
+const OVERVIEW_FIGURES = '[&_[data-overview-fact]>div:first-child]:font-mono [&_[data-overview-fact]>div:first-child]:text-[17px] [&_[data-overview-fact]>div:first-child]:font-normal [&_[data-overview-context-figures]]:font-mono';
 /** Waiting agents are already listed in Needs you: their roster rows keep only the trailing state word. */
 const ROSTER_QUIET_WAITING = '[&_[data-roster-waiting]]:!bg-transparent';
 
@@ -867,8 +867,8 @@ export const Rail = memo(function Rail({
               const nextEl = event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`[data-rail-tab="${next}"]`);
               nextEl?.focus();
             }}
-            className={`relative flex h-full shrink-0 cursor-pointer items-center gap-1.5 text-[13px] transition-colors outline-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
-              selected ? 'font-medium text-ink' : 'font-normal text-ink-faint hover:text-ink-soft'
+            className={`relative flex h-full shrink-0 cursor-pointer items-center gap-1.5 text-[13px] font-normal transition-colors outline-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+              selected ? 'text-ink' : 'text-ink-faint hover:text-ink-soft'
             }`}
           >
             <span>{t(tab === 'run' ? 'rail.tab.run' : 'rail.tab.config')}</span>
@@ -904,7 +904,7 @@ export const Rail = memo(function Rail({
             const scroller = railScrollRef.current;
             if (scroller !== null) scroller.scrollTop = 0;
           }}
-          className="inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-full bg-attention px-1.5 text-[11px] font-semibold tabular-nums text-on-accent transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+          className="inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-full bg-attention px-1.5 text-[11px] font-normal tabular-nums text-on-accent transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
         >
           <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-on-accent" />
           <span>{sessionPending.length}</span>

@@ -33,7 +33,7 @@ export function RowFrame({ name, subtitle, marks, control, open, onToggle, bodyI
           className="group/row flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40">
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-center gap-2">
-              <span className="min-w-0 truncate text-[13.5px] font-medium text-ink" data-row-name>{name}</span>
+              <span className="min-w-0 truncate text-[13.5px] font-normal text-ink" data-row-name>{name}</span>
               {marks}
             </span>
             {subtitle === undefined || subtitle === null ? null : (

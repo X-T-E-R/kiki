@@ -212,7 +212,7 @@ export class VscodeHostBridge {
       defaultUri: vscode.Uri.file(readString(params, "filename")),
     });
     if (target === undefined) return false;
-    await vscode.workspace.fs.writeFile(target, Uint8Array.from(readNumberArray(params, "bytes")));
+    await vscode.workspace.fs.writeFile(target, readBinaryBytes(params, "bytes"));
     return true;
   }
 
@@ -300,12 +300,14 @@ function readOptionalBoolean(params: Record<string, unknown>, key: string): bool
   return value;
 }
 
-function readNumberArray(params: Record<string, unknown>, key: string): readonly number[] {
+function readBinaryBytes(params: Record<string, unknown>, key: string): Uint8Array {
   const value = params[key];
-  if (!Array.isArray(value) || !value.every((item) => typeof item === "number")) {
-    throw new TypeError(`${key} must be a number array.`);
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (Array.isArray(value) && value.every((item) => typeof item === "number")) {
+    return Uint8Array.from(value);
   }
-  return value;
+  throw new TypeError(`${key} must be a binary buffer or number array.`);
 }
 
 function readSaveChunk(value: unknown): Uint8Array {

@@ -230,7 +230,7 @@ function AccessEditor({ draft, onChange, disabled, idPrefix }: {
                 onClick={() => { onChange({ ...draft, mode: mode.id }); }}
                 className={`min-h-7 rounded-md border px-2.5 text-[12px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                   active
-                    ? 'border-hairline-strong bg-paper font-medium text-ink'
+                    ? 'border-hairline-strong bg-paper text-ink'
                     : 'border-hairline text-ink-soft hover:border-hairline-strong hover:text-ink'
                 }`}>
                 {t(mode.labelKey)}
@@ -246,7 +246,7 @@ function AccessEditor({ draft, onChange, disabled, idPrefix }: {
             onClick={() => { onChange({ ...draft, toolPreset: 'default', tools: EXTERNAL_CLIENT_DEFAULT_TOOLS }); }}
             className={`min-h-7 rounded-md border px-2.5 text-[12px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
               draft.toolPreset === 'default'
-                ? 'border-hairline-strong bg-paper font-medium text-ink'
+                ? 'border-hairline-strong bg-paper text-ink'
                 : 'border-hairline text-ink-soft hover:border-hairline-strong hover:text-ink'
             }`}>
             {t('st.xc.toolsAll')}
@@ -255,7 +255,7 @@ function AccessEditor({ draft, onChange, disabled, idPrefix }: {
             onClick={() => { onChange({ ...draft, toolPreset: 'custom' }); }}
             className={`min-h-7 rounded-md border px-2.5 text-[12px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
               custom
-                ? 'border-hairline-strong bg-paper font-medium text-ink'
+                ? 'border-hairline-strong bg-paper text-ink'
                 : 'border-hairline text-ink-soft hover:border-hairline-strong hover:text-ink'
             }`}>
             {t('st.xc.toolsCustom')}
@@ -273,7 +273,7 @@ function AccessEditor({ draft, onChange, disabled, idPrefix }: {
             ))}
             {toolCatalog.map((group) => (
               <fieldset key={group.pluginId} data-xc-plugin={group.pluginId} className="min-w-0 space-y-1 border-t border-hairline pt-2 mt-2">
-                <legend className="px-1 text-[12px] font-medium text-ink-soft">{group.displayName}</legend>
+                <legend className="px-1 text-[12px] font-normal text-ink-soft">{group.displayName}</legend>
                 {group.tools.map((tool) => (
                   <label key={tool.name} className="flex min-h-7 cursor-pointer items-start gap-2 py-1 text-[12.5px] text-ink">
                     <input type="checkbox" data-xc-tool={tool.name} checked={draft.tools.includes(tool.name)} disabled={disabled}
@@ -347,7 +347,7 @@ function LocalAccess({ connectionId, api }: { connectionId: string; api: Facade 
   const command = query.data === undefined ? undefined : [query.data.command, ...query.data.args].join(' ');
   return (
     <div data-xc-local className="space-y-2">
-      <p className="text-[12px] font-medium text-ink-soft">{t('st.xc.localTitle')}</p>
+      <p className="text-[12px] font-normal text-ink-soft">{t('st.xc.localTitle')}</p>
       <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.xc.localHint')}</p>
       {command !== undefined ? (
         <div className="space-y-1.5" data-xc-local-config>
@@ -378,7 +378,7 @@ function RemoteAccess({ listener }: { listener: ExternalClientListener | undefin
   const mcpUrl = listener?.mcpUrl ?? listener?.publicUrl;
   return (
     <div data-xc-remote className="space-y-2">
-      <p className="text-[12px] font-medium text-ink-soft">{t('st.xc.remoteTitle')}</p>
+      <p className="text-[12px] font-normal text-ink-soft">{t('st.xc.remoteTitle')}</p>
       <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.xc.remoteHint')}</p>
       {mcpUrl !== undefined && mcpUrl !== '' ? (
         <div className="space-y-1.5" data-xc-remote-url>
@@ -394,7 +394,7 @@ function RemoteAccess({ listener }: { listener: ExternalClientListener | undefin
         <a data-xc-remote-help
           href="https://developers.openai.com/api/docs/guides/custom-mcp-server"
           target="_blank" rel="noreferrer noopener"
-          className="inline-flex min-h-7 items-center gap-1 text-[12px] font-medium text-selected-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink">
+          className="inline-flex min-h-7 items-center gap-1 text-[12px] font-normal text-selected-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink">
           {t('st.xc.remoteHelp')}
           <Icon name="arrowUpRight" size={12} />
         </a>
@@ -449,7 +449,7 @@ function ListenerPanel({ listener, api, onChanged }: {
 
   return (
     <div data-xc-listener data-xc-readiness={readiness} className="space-y-2">
-      <p className="text-[12px] font-medium text-ink-soft">{t('st.xc.listenerTitle')}</p>
+      <p className="text-[12px] font-normal text-ink-soft">{t('st.xc.listenerTitle')}</p>
       <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.xc.listenerHint')}</p>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <Toggle id="xc-listener-toggle" layout="row" disabled={busy} checked={listener.enabled}
@@ -518,13 +518,13 @@ function AuthorizationPanel({ requests, api, onChanged }: {
   };
   return (
     <div data-xc-authorizations className="space-y-2">
-      <p className="text-[12px] font-medium text-ink-soft">{t('st.xc.authTitle')}</p>
+      <p className="text-[12px] font-normal text-ink-soft">{t('st.xc.authTitle')}</p>
       <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.xc.authHint')}</p>
       {requests.map((request) => (
         <div key={request.id} data-xc-authorization={request.id}
           className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 pt-2">
           <div className="min-w-0 flex-1">
-            <p className="truncate text-[13px] font-medium text-ink">{request.clientName ?? request.clientId}</p>
+            <p className="truncate text-[13px] font-normal text-ink">{request.clientName ?? request.clientId}</p>
             {request.scopes.length > 0 ? (
               <p className="truncate text-[11.5px] text-ink-faint" data-xc-auth-scopes>
                 {request.scopes.map((scope) => scopeLabel(scope, t)).join(' · ')}
@@ -670,7 +670,7 @@ function ConnectionRow({ connection, api, onChanged }: {
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-baseline gap-2">
-            <span className="truncate text-[13px] font-medium text-ink">{connection.name}</span>
+            <span className="truncate text-[13px] font-normal text-ink">{connection.name}</span>
           </span>
           <span data-xc-summary className="block truncate text-[12px] text-ink-faint">{summaryFacts}</span>
         </span>
@@ -742,7 +742,7 @@ function ConnectionRow({ connection, api, onChanged }: {
             </dl>
             <LocalAccess connectionId={connection.id} api={api} />
             <div className="space-y-1 pt-3">
-              <p className="text-[12px] font-medium text-ink-soft">{t('st.xc.sessions')}</p>
+              <p className="text-[12px] font-normal text-ink-soft">{t('st.xc.sessions')}</p>
               {sessionsQuery.isLoading ? <Hint>{t('st.xc.loading')}</Hint> : null}
               {sessionsQuery.isError ? (
                 <p data-xc-sessions-error className="text-[12px] leading-4 text-danger">
@@ -857,13 +857,13 @@ function CreateConnection({ api, onCreated }: { api: Facade; onCreated: () => vo
         <button type="button" data-xc-access="local" aria-pressed={access === 'local'}
           onClick={() => { setAccess('local'); }}
           className={`min-h-7 rounded-md border px-2.5 text-[12px] transition-colors ${
-            access === 'local' ? 'border-hairline-strong bg-paper font-medium text-ink' : 'border-hairline text-ink-soft hover:border-hairline-strong hover:text-ink'}`}>
+            access === 'local' ? 'border-hairline-strong bg-paper font-normal text-ink' : 'border-hairline text-ink-soft hover:border-hairline-strong hover:text-ink'}`}>
           {t('st.xc.addLocal')}
         </button>
         <button type="button" data-xc-access="remote" aria-pressed={access === 'remote'}
           onClick={() => { setAccess('remote'); }}
           className={`min-h-7 rounded-md border px-2.5 text-[12px] transition-colors ${
-            access === 'remote' ? 'border-hairline-strong bg-paper font-medium text-ink' : 'border-hairline text-ink-soft hover:border-hairline-strong hover:text-ink'}`}>
+            access === 'remote' ? 'border-hairline-strong bg-paper font-normal text-ink' : 'border-hairline text-ink-soft hover:border-hairline-strong hover:text-ink'}`}>
           {t('st.xc.addRemote')}
         </button>
       </div>

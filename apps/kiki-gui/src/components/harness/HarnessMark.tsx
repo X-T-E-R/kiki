@@ -67,7 +67,7 @@ export function HarnessMark({ harness }: { harness: SessionHarness }) {
       <button ref={triggerRef} type="button" aria-expanded={open} aria-controls={panelId} aria-haspopup="dialog"
         title={t('harness.markTitle', { engine: summary })}
         onClick={() => { setOpen((value) => !value); }}
-        className="inline-flex h-[18px] max-w-[14rem] items-center gap-1 rounded-[5px] border border-hairline-strong px-1.5 text-[11px] leading-none font-medium text-ink-soft transition-colors hover:border-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink">
+        className="inline-flex h-[18px] max-w-[14rem] items-center gap-1 rounded-[5px] border border-hairline-strong px-1.5 text-[11px] leading-none font-normal text-ink-soft transition-colors hover:border-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink">
         <Icon name="external" size={12} className="shrink-0 text-ink-faint" />
         <span className="truncate">{harness.label}</span>
         {harness.version !== undefined ? <span className="shrink-0 font-mono text-[10.5px] font-normal text-ink-faint">{harness.version}</span> : null}
@@ -99,7 +99,7 @@ export function HarnessMark({ harness }: { harness: SessionHarness }) {
                 }}
                 className={`anim-enter w-72 max-h-[min(var(--available-height,calc(100dvh-24px)),calc(100dvh-24px))] overflow-y-auto overscroll-contain p-3 outline-none ${POPOVER_SURFACE_CLASS}`}
               >
-          <p className="text-[12.5px] font-medium text-ink">{t('harness.panelTitle', { engine: harness.label })}</p>
+          <p className="text-[12.5px] font-normal text-ink">{t('harness.panelTitle', { engine: harness.label })}</p>
           <p className="mt-0.5 font-mono text-[11px] text-ink-faint">
             {[harness.executorId, harness.protocol, harness.version].filter((part) => part !== undefined && part !== '').join(' · ')}
           </p>
@@ -128,7 +128,7 @@ export function HarnessMark({ harness }: { harness: SessionHarness }) {
           )}
           <p className="mt-2 text-[11.5px] leading-snug text-ink-faint">{t('harness.fromHandshake')}</p>
           <Link to="/settings/ai?tab=providers" onClick={() => { setOpen(false); }}
-            className="mt-1.5 inline-flex min-h-7 items-center text-[12px] font-medium text-selected-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink">
+            className="mt-1.5 inline-flex min-h-7 items-center text-[12px] font-normal text-selected-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink">
             {t('harness.manage')}
           </Link>
               </Popover.Popup>

@@ -164,7 +164,7 @@ export const HistoryLine = memo(function HistoryLine({
             return (
               <div key={item.id} className="min-w-0 space-y-1">
                 {item.header === undefined ? null : <p className="text-[12px] text-ink-faint">{item.header}</p>}
-                <p className="break-words font-medium text-ink-soft">{item.question}</p>
+                <p className="break-words font-normal text-ink-soft">{item.question}</p>
                 {item.body === undefined ? null : <div className="text-ink-soft"><Markdown text={item.body} /></div>}
                 {node.outcome?.kind === 'answered' ? (
                   <p data-question-answer className={`whitespace-pre-wrap break-words ${answer === undefined ? 'text-ink-faint' : 'text-ink'}`}>

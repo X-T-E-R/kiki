@@ -85,7 +85,7 @@ export function TeamView({ rows, models, defaultModelId, onOpen, onNew, newActio
     .filter((entry) => entry.warnings.length > 0);
   const warningCount = attention.reduce((count, entry) => count + entry.warnings.length, 0);
   const newButton = <button type="button" data-profile-new onClick={onNew}
-    className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md bg-accent px-3 text-[12.5px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
+    className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md bg-accent px-3 text-[12.5px] font-normal text-on-accent transition-colors hover:bg-accent-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
     <Icon name="plus" size={12} />{t('st.agentManager.new')}
   </button>;
   const onlyMain = !loading && !view.narrowed && rows.length > 0 && rows.every((row) => row.profile.main);
@@ -95,12 +95,12 @@ export function TeamView({ rows, models, defaultModelId, onOpen, onNew, newActio
       sorts={sorts} showDensity={false} actions={<>{newButton}{newActions}</>} />
     {attention.length > 0 ? (
       <section data-team-warnings aria-label={t('st.attention.count', { count: warningCount })} className="space-y-1">
-        <p className="text-[12px] font-medium text-attention">{t('st.attention.count', { count: warningCount })}</p>
+        <p className="text-[12px] font-normal text-attention">{t('st.attention.count', { count: warningCount })}</p>
         <ul className="divide-y divide-hairline">
           {attention.map(({ row, warnings }) => (
             <li key={row.key} data-team-attention={row.profile.name}
               className="flex flex-wrap items-start gap-x-3 gap-y-1 py-1.5">
-              <span className="w-full shrink-0 truncate text-[13px] font-medium text-ink sm:w-32">{displayName(row.profile, locale)}</span>
+              <span className="w-full shrink-0 truncate text-[13px] font-normal text-ink sm:w-32">{displayName(row.profile, locale)}</span>
               <div className="min-w-0 flex-1"><DiagnosticsList diagnostics={warnings} surface="attention" profile={row.profile} /></div>
               <button type="button" data-team-attention-open={row.profile.name} onClick={() => onOpen(row)}
                 className={`h-7 shrink-0 pointer-coarse:h-10 ${TEXT_BUTTON}`}>
@@ -191,7 +191,7 @@ export function TeamView({ rows, models, defaultModelId, onOpen, onNew, newActio
             size={14}
             className={`shrink-0 ${muted ? 'text-ink-faint' : 'text-ink-soft'}`}
           />
-          <span className={`min-w-0 shrink truncate text-[13px] font-medium group-hover:underline group-hover:decoration-ink-faint group-hover:underline-offset-2 ${shadowed ? 'line-through decoration-ink-faint/60' : muted ? '' : 'text-ink'}`}>{displayName(profile, locale)}</span>
+          <span className={`min-w-0 shrink truncate text-[13px] font-normal group-hover:underline group-hover:decoration-ink-faint group-hover:underline-offset-2 ${shadowed ? 'line-through decoration-ink-faint/60' : muted ? '' : 'text-ink'}`}>{displayName(profile, locale)}</span>
           {warn.length > 0 ? <span data-team-warning className="shrink-0 text-amber-ink">
             <Icon name="warning" size={12} /><span className="sr-only">{t('st.attention.count', { count: warn.length })}</span>
           </span> : null}

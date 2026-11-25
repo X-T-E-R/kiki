@@ -1912,7 +1912,7 @@ function ChildAgentWorkspace({
             data-branch-sealed-bar={agentId}
             innerClassName="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline bg-paper px-3 py-2 text-[12px] text-ink-soft"
           >
-            <span className="min-w-0 truncate font-medium text-ink">
+            <span className="min-w-0 truncate font-normal text-ink">
               {t('transcript.branch.sealed')}
             </span>
             <span className="flex shrink-0 items-center gap-1">
@@ -1922,7 +1922,7 @@ function ChildAgentWorkspace({
                   data-promote-branch-action
                   disabled={promoteAction.pending}
                   onClick={promoteAction.promote}
-                  className="inline-flex h-7 shrink-0 cursor-pointer items-center rounded-md px-2.5 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.06] hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
+                  className="inline-flex h-7 shrink-0 cursor-pointer items-center rounded-md px-2.5 text-[12px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.06] hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint"
                 >
                   {t(promoteAction.pending ? 'agent.promotePending' : 'transcript.branch.promote')}
                 </button>
@@ -1931,7 +1931,7 @@ function ChildAgentWorkspace({
                 type="button"
                 data-branch-sealed-back-to-main
                 onClick={() => { navigation.openSession(); }}
-                className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-md bg-ink/[0.06] px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.10]"
+                className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-md bg-ink/[0.06] px-2.5 text-[12px] font-normal text-ink transition-colors hover:bg-ink/[0.10]"
               >
                 <Icon name="arrowLeft" size={12} />
                 <span>{t('rail.branches.backToMain')}</span>

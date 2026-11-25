@@ -48,7 +48,7 @@ const LIST_LIMIT = 100;
 
 /** Standard primary weight: the one continue action, not a marketing CTA. */
 const CONTINUE_BUTTON =
-  'inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint';
+  'inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12px] font-normal text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint';
 
 /** Codes the resume route documents; each gets wording that says what to do. */
 const RESUME_ERROR_KEYS: Readonly<Record<number, 'localSessions.error.disabled' | 'localSessions.error.locked' | 'localSessions.error.missing' | 'localSessions.error.workspace'>> = {
@@ -113,7 +113,7 @@ function SessionRow({
           selected ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'}`}
       >
         <span className="flex min-w-0 items-baseline gap-2">
-          <span className={`min-w-0 flex-1 truncate text-[13px] ${selected ? 'font-medium text-ink' : 'text-ink'}`}>
+          <span className={`min-w-0 flex-1 truncate text-[13px] ${selected ? 'text-ink' : 'text-ink'}`}>
             {localSessionName(summary)}
           </span>
           <RelativeTime at={summary.updated_at} className="shrink-0 text-[11.5px] text-ink-faint tabular-nums" />
@@ -198,7 +198,7 @@ function Preview({
             if (text === '' && tags.length === 0) return null;
             return (
               <li key={message.id} data-local-message={message.role} className="space-y-0.5">
-                <p className="text-[11.5px] font-medium text-ink-faint">{t(ROLE_KEYS[message.role])}</p>
+                <p className="text-[11.5px] font-normal text-ink-faint">{t(ROLE_KEYS[message.role])}</p>
                 {text !== '' ? (
                   <p className={`line-clamp-6 text-[13px] leading-[1.55] break-words whitespace-pre-wrap ${message.role === 'user' ? 'text-ink' : 'text-ink-soft'}`}>{text}</p>
                 ) : null}

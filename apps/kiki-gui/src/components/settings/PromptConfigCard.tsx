@@ -172,7 +172,7 @@ export function PromptConfigCard() {
           <Hint>{t('st.prompt.hint')}</Hint>
           <fieldset disabled={!ready || saving} className="space-y-4 disabled:opacity-60">
             <fieldset disabled={saving} className="space-y-2 disabled:opacity-60">
-              <legend className="text-[12px] font-medium text-ink">{t('st.prompt.files')}</legend>
+              <legend className="text-[12px] font-normal text-ink">{t('st.prompt.files')}</legend>
               {draft.files.map((row, index) => (
                 <div key={row.id} data-prompt-file-row={row.id} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
                   <input
@@ -191,7 +191,7 @@ export function PromptConfigCard() {
             </fieldset>
 
             <fieldset disabled={saving} className="space-y-2 disabled:opacity-60">
-              <legend className="text-[12px] font-medium text-ink">{t('st.prompt.variables')}</legend>
+              <legend className="text-[12px] font-normal text-ink">{t('st.prompt.variables')}</legend>
               {draft.variables.map((row, index) => (
                 <div key={row.id} data-prompt-variable-row={row.id} className="grid gap-2 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)_auto]">
                   <input className={INPUT} value={row.name} placeholder={t('st.prompt.variableNamePlaceholder')} aria-label={t('st.prompt.variableName')} data-prompt-variable-name onChange={(event) => { update({ ...draft, variables: draft.variables.map((item, rowIndex) => rowIndex === index ? { ...item, name: event.target.value } : item) }); }} />
@@ -205,7 +205,7 @@ export function PromptConfigCard() {
             </fieldset>
 
             <fieldset disabled={saving} className="space-y-2 disabled:opacity-60">
-              <legend className="text-[12px] font-medium text-ink">{t('st.prompt.fields')}</legend>
+              <legend className="text-[12px] font-normal text-ink">{t('st.prompt.fields')}</legend>
               {draft.fields.map((row, index) => (
                 <div key={row.id} data-prompt-field-row={row.id} className="grid gap-2 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)_auto]">
                   <input className={INPUT} value={row.name} placeholder={t('st.prompt.fieldNamePlaceholder')} aria-label={t('st.prompt.fieldName')} onChange={(event) => { update({ ...draft, fields: draft.fields.map((item, rowIndex) => rowIndex === index ? { ...item, name: event.target.value } : item) }); }} />
@@ -227,7 +227,7 @@ export function PromptConfigCard() {
           <AdvancedDetails summary={t('st.prompt.preview')} data-prompt-preview>
             {preview === null ? <p role="status">{t('st.prompt.previewUnavailable')}</p> : (
               <div>
-                <p className="font-medium text-ink">{t('st.prompt.previewFields')}</p>
+                <p className="font-normal text-ink">{t('st.prompt.previewFields')}</p>
                 {Object.entries(preview).length === 0 ? <p>—</p> : Object.entries(preview).map(([name, text]) => <pre key={name} className="mt-1 whitespace-pre-wrap break-words font-mono">{name}: {text}</pre>)}
               </div>
             )}

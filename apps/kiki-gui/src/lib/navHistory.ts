@@ -38,6 +38,7 @@ export interface NavHistoryEntry {
 }
 
 const STORAGE_KEY = 'kiki.navHistory.v1';
+const ENTRY_LIMIT = 200;
 const SNAPSHOT_LIMIT = 100;
 let visitCounter = 0;
 let entries: NavHistoryEntry[] = [];
@@ -45,6 +46,7 @@ let currentIndex = -1;
 let hydrated = false;
 let locationConfirmed = false;
 const snapshots = new Map<string, NavSnapshot>();
+const serializableSnapshotCache = new WeakMap<NavSnapshot, NavSnapshot | null>();
 const listeners = new Set<() => void>();
 let revision = 0;
 
@@ -89,11 +91,36 @@ function isSnapshot(value: unknown): value is NavSnapshot {
     Number.isFinite(value['timestamp']) && (value['ui'] === undefined || isRecord(value['ui']));
 }
 
+function trimEntries(): void {
+  if (entries.length <= ENTRY_LIMIT) return;
+  const excess = entries.length - ENTRY_LIMIT;
+  const dropped = entries.slice(0, excess);
+  entries = entries.slice(excess);
+  currentIndex = Math.max(-1, currentIndex - excess);
+  for (const entry of dropped) {
+    snapshots.delete(entry.visitId);
+  }
+}
+
 function trimSnapshots(): void {
   while (snapshots.size > SNAPSHOT_LIMIT) {
     const oldest = snapshots.keys().next().value;
     if (oldest === undefined) break;
     snapshots.delete(oldest);
+  }
+}
+
+function cachedSerializableSnapshot(snapshot: NavSnapshot): NavSnapshot | null {
+  const cached = serializableSnapshotCache.get(snapshot);
+  if (cached !== undefined) return cached;
+  try {
+    const copy: unknown = JSON.parse(JSON.stringify(snapshot));
+    const validated = isSnapshot(copy) ? copy : null;
+    serializableSnapshotCache.set(snapshot, validated);
+    return validated;
+  } catch {
+    serializableSnapshotCache.set(snapshot, null);
+    return null;
   }
 }
 
@@ -161,14 +188,11 @@ function persist(): void {
   }
   try {
     // An unserializable adapter snapshot must not prevent history metadata saving.
+    // Reuse per-snapshot validated clones so ordinary navigations avoid O(N) deep cloning.
     const serializable: NavSnapshot[] = [];
     for (const snapshot of snapshots.values()) {
-      try {
-        const copy: unknown = JSON.parse(JSON.stringify(snapshot));
-        if (isSnapshot(copy)) serializable.push(copy);
-      } catch {
-        // Keep this snapshot in memory only (for example, a cyclic UI object).
-      }
+      const copy = cachedSerializableSnapshot(snapshot);
+      if (copy !== null) serializable.push(copy);
     }
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
       version: 1,
@@ -267,6 +291,7 @@ export function recordNavigation(params: {
       entries = entries.slice(0, currentIndex + 1);
       entries.push(entry);
       currentIndex = entries.length - 1;
+      trimEntries();
     }
   }
   const snapshot = snapshots.get(entry.visitId);

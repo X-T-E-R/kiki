@@ -30,7 +30,7 @@ export function CapabilitySection({
   return (
     <section id={id} data-capability-section={id} className="min-w-0 scroll-mt-4">
       <div className="flex min-h-8 items-center gap-1.5 border-b border-hairline pb-1.5">
-        <h2 className="text-[13px] font-medium text-ink">{title}</h2>
+        <h2 className="text-[13px] font-bold text-ink">{title}</h2>
         {count !== undefined ? (
           <span className="text-[12px] text-ink-faint tabular-nums">{count}</span>
         ) : null}
@@ -75,7 +75,7 @@ export function CapabilityRow({
       {icon}
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-1.5">
-          <span className={`truncate text-[13px] font-medium ${tone === 'danger' ? 'text-danger' : 'text-ink'}`}>{title}</span>
+          <span className={`truncate text-[13px] font-normal ${tone === 'danger' ? 'text-danger' : 'text-ink'}`}>{title}</span>
           {badge}
         </span>
         {meta !== undefined ? (
@@ -113,7 +113,7 @@ export function Tag({ children, tone = 'faint' }: { readonly children: ReactNode
       : tone === 'warn' ? 'text-amber-ink'
         : tone === 'success' ? 'text-success'
           : 'text-ink-faint';
-  return <span className={`shrink-0 text-[11px] font-medium leading-[14px] ${color}`}>{children}</span>;
+  return <span className={`shrink-0 text-[11px] font-normal leading-[14px] ${color}`}>{children}</span>;
 }
 
 /** Status dot (baseline §7.3): idle is not drawn. */
@@ -203,7 +203,7 @@ export function Segmented<T extends string>({
             onClick={() => { onChange(option.value); }}
             className={`inline-flex min-h-7 items-center rounded-[7px] px-3 text-[13px] whitespace-nowrap transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-10 ${
               active
-                ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                ? 'bg-paper text-ink shadow-[var(--kiki-sheet-shadow)]'
                 : 'text-ink-soft hover:text-ink'
             }`}
           >
@@ -276,7 +276,7 @@ export function Disclosure({
         type="button"
         aria-expanded={open}
         onClick={onToggle}
-        className="flex min-h-8 items-center gap-1.5 rounded-md px-1 text-[13px] font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+        className="flex min-h-8 items-center gap-1.5 rounded-md px-1 text-[13px] font-normal text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
       >
         <span aria-hidden className={`flex text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${open ? 'rotate-90' : ''}`}>
           <Icon name="chevron" size={12} />

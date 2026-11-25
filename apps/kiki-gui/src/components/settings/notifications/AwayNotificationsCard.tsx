@@ -14,7 +14,6 @@ import { useHost } from '../../../host';
 import { isDesktopHost } from '../../../host/host';
 import { browserNotificationPermission } from '../../../host/browser';
 import type { SystemNotificationPermission } from '../../../host/notificationPermission';
-import { tauriNotificationPermission } from '../../../host/tauri';
 import { useI18n } from '../../../i18n';
 import { Toggle } from '../../controls';
 import { SettingField, SettingsBox } from '../fields';
@@ -52,7 +51,8 @@ export function AwayNotificationsCard() {
     let live = true;
     const refreshPermission = () => {
       if (host.kind === 'tauri') {
-        void tauriNotificationPermission()
+        void import('../../../host/tauri')
+          .then(({ tauriNotificationPermission }) => tauriNotificationPermission())
           .then((next) => { if (live) setPermission(next); })
           .catch(() => { if (live) setPermission(undefined); });
         return;
@@ -114,7 +114,7 @@ export function AwayNotificationsCard() {
           </div>
           {enabled ? (
             <fieldset data-notify-away-kinds className="min-w-0 space-y-1">
-              <legend className="px-0 pb-1 text-[13px] font-medium text-ink">{t('st.away.kindsLabel')}</legend>
+              <legend className="px-0 pb-1 text-[13px] font-normal text-ink">{t('st.away.kindsLabel')}</legend>
               <SettingsBox>
                 {KINDS.map(({ kind, labelKey }) => (
                   <div key={kind} data-notify-away-kind={kind}>

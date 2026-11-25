@@ -8,6 +8,7 @@ export interface ActiveTranscriptMediaSnapshot {
   readonly playing: boolean;
   readonly currentTimeSec: number;
   readonly durationSec?: number;
+  readonly element?: HTMLMediaElement;
 }
 
 interface TrackedMediaEntry {
@@ -171,13 +172,14 @@ export function useActiveTranscriptMedia(params: {
       playing: primaryEntry.playing,
       currentTimeSec: safeSeconds(primary.currentTime),
       durationSec: safeDuration(primary.duration),
+      element: primary,
     };
     setActiveMedia((prev) =>
       prev !== null &&
       prev.rowKey === nextSnapshot.rowKey &&
       prev.kind === nextSnapshot.kind &&
       prev.playing === nextSnapshot.playing &&
-      prev.currentTimeSec === nextSnapshot.currentTimeSec &&
+      prev.element === nextSnapshot.element &&
       prev.durationSec === nextSnapshot.durationSec
         ? prev
         : nextSnapshot,
@@ -271,15 +273,23 @@ export function useActiveTranscriptMedia(params: {
       syncState();
     };
 
-    const handleTimeOrMeta = (event: Event) => {
+    const handleLoadedMeta = (event: Event) => {
       if (!isMediaElement(event.target)) return;
       if (event.target !== primaryRef.current) return;
       syncState();
     };
 
+    let scrollRafId: number | null = null;
     const handleScroll = () => {
-      if (primaryRef.current === null) return;
-      syncState();
+      if (primaryRef.current === null || scrollRafId !== null) return;
+      if (typeof requestAnimationFrame === 'function') {
+        scrollRafId = requestAnimationFrame(() => {
+          scrollRafId = null;
+          if (primaryRef.current !== null) syncState();
+        });
+      } else {
+        syncState();
+      }
     };
 
     scrollElement.addEventListener('play', handlePlay, true);
@@ -289,10 +299,10 @@ export function useActiveTranscriptMedia(params: {
     scrollElement.addEventListener('emptied', handleEnded, true);
     scrollElement.addEventListener('error', handleEnded, true);
     scrollElement.addEventListener('abort', handleEnded, true);
-    scrollElement.addEventListener('timeupdate', handleTimeOrMeta, true);
-    scrollElement.addEventListener('loadedmetadata', handleTimeOrMeta, true);
+    scrollElement.addEventListener('loadedmetadata', handleLoadedMeta, true);
     scrollElement.addEventListener('scroll', handleScroll, { passive: true });
     return () => {
+      if (scrollRafId !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(scrollRafId);
       scrollElement.removeEventListener('play', handlePlay, true);
       scrollElement.removeEventListener('playing', handlePlay, true);
       scrollElement.removeEventListener('pause', handlePause, true);
@@ -300,8 +310,7 @@ export function useActiveTranscriptMedia(params: {
       scrollElement.removeEventListener('emptied', handleEnded, true);
       scrollElement.removeEventListener('error', handleEnded, true);
       scrollElement.removeEventListener('abort', handleEnded, true);
-      scrollElement.removeEventListener('timeupdate', handleTimeOrMeta, true);
-      scrollElement.removeEventListener('loadedmetadata', handleTimeOrMeta, true);
+      scrollElement.removeEventListener('loadedmetadata', handleLoadedMeta, true);
       scrollElement.removeEventListener('scroll', handleScroll);
     };
   }, [scrollElement, syncState]);
@@ -377,10 +386,42 @@ export function ActiveTranscriptMediaPill({
   readonly onLocate: (rowKey: string) => void;
   readonly onDismiss: () => void;
 }) {
+  const mediaElement = offscreen ? (media?.element ?? null) : null;
+  const [liveTime, setLiveTime] = useState<{ readonly currentTimeSec: number; readonly durationSec?: number } | null>(null);
+
+  useEffect(() => {
+    if (mediaElement === null) {
+      setLiveTime(null);
+      return;
+    }
+    const syncClock = () => {
+      const nextCurrent = safeSeconds(mediaElement.currentTime);
+      const nextDuration = safeDuration(mediaElement.duration);
+      setLiveTime((prev) =>
+        prev !== null && prev.currentTimeSec === nextCurrent && prev.durationSec === nextDuration
+          ? prev
+          : { currentTimeSec: nextCurrent, durationSec: nextDuration },
+      );
+    };
+    syncClock();
+    mediaElement.addEventListener('timeupdate', syncClock);
+    mediaElement.addEventListener('loadedmetadata', syncClock);
+    mediaElement.addEventListener('durationchange', syncClock);
+    mediaElement.addEventListener('seeked', syncClock);
+    return () => {
+      mediaElement.removeEventListener('timeupdate', syncClock);
+      mediaElement.removeEventListener('loadedmetadata', syncClock);
+      mediaElement.removeEventListener('durationchange', syncClock);
+      mediaElement.removeEventListener('seeked', syncClock);
+    };
+  }, [mediaElement]);
+
   if (media === null || !offscreen) return null;
-  const clock = media.durationSec !== undefined
-    ? `${formatMediaClock(media.currentTimeSec)} / ${formatMediaClock(media.durationSec)}`
-    : formatMediaClock(media.currentTimeSec);
+  const currentTimeSec = liveTime?.currentTimeSec ?? media.currentTimeSec;
+  const durationSec = liveTime?.durationSec ?? media.durationSec;
+  const clock = durationSec !== undefined
+    ? `${formatMediaClock(currentTimeSec)} / ${formatMediaClock(durationSec)}`
+    : formatMediaClock(currentTimeSec);
   return (
     <div className="pointer-events-none absolute top-3 right-6 z-20 flex justify-end">
       <div

@@ -28,10 +28,10 @@ type LoginMethod = 'agent' | 'password' | 'keyFile' | 'keyText';
 type SaveScope = NonNullable<SshCredential['save']>;
 
 const PRIMARY =
-  'inline-flex min-h-8 items-center rounded-md bg-accent px-3 text-[13px] font-medium text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint';
+  'inline-flex min-h-8 items-center rounded-md bg-accent px-3 text-[13px] font-normal text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint';
 const SECONDARY =
-  'inline-flex min-h-8 items-center rounded-md px-3 text-[13px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-60';
-const LABEL = 'block text-[12px] font-medium text-ink-soft';
+  'inline-flex min-h-8 items-center rounded-md px-3 text-[13px] font-normal text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-60';
+const LABEL = 'block text-[12px] font-normal text-ink-soft';
 
 /** "Connect SSH host <name> (<id>)" → { name, id }; other SSH actions → the host id. */
 export function sshHostFromAction(action: string): { name: string; id: string } | undefined {
@@ -99,7 +99,7 @@ export function SshApprovalBody({
     <div data-ssh-approval={kind} data-ssh-host={host?.id}>
       <p className="mt-1 min-w-0 text-[14px] leading-snug text-ink">
         {t(kind === 'host_key' ? 'ia.ssh.hostKeyFor' : kind === 'prompts' ? 'ia.ssh.promptsFor' : 'ia.ssh.connectTo')}{' '}
-        <span className="font-medium">{host?.name ?? ssh.hostname}</span>
+        <span className="font-normal">{host?.name ?? ssh.hostname}</span>
         {host !== undefined && host.name !== host.id ? <span className="font-mono text-[13px] text-ink-faint"> {host.id}</span> : null}
       </p>
       <TargetRows ssh={ssh} />

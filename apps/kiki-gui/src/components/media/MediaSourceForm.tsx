@@ -367,7 +367,7 @@ function SettingField({
     const currentVal = (value as string) ?? '';
     return (
       <div data-media-setting={fieldKey} className="max-w-md space-y-1">
-        <label htmlFor={fieldId} className="block text-[13px] font-medium text-ink">{label}</label>
+        <label htmlFor={fieldId} className="block text-[13px] font-normal text-ink">{label}</label>
         <SettingsSelect
           id={fieldId}
           variant="form"
@@ -390,7 +390,7 @@ function SettingField({
 
   return (
     <div data-media-setting={fieldKey} className="max-w-md space-y-1">
-      <label htmlFor={fieldId} className="block text-[13px] font-medium text-ink">{label}</label>
+      <label htmlFor={fieldId} className="block text-[13px] font-normal text-ink">{label}</label>
       <input
         id={fieldId}
         className={`${INPUT} ${property.type === 'number' ? 'font-mono' : ''} ${issue !== undefined ? 'border-danger' : ''}`}
@@ -452,7 +452,7 @@ function ConnectionSettingField({
 
   return (
     <div data-media-setting={fieldKey} data-media-setting-kind="connection" className="max-w-md space-y-1">
-      <label htmlFor={fieldId} className="block text-[13px] font-medium text-ink">{label}</label>
+      <label htmlFor={fieldId} className="block text-[13px] font-normal text-ink">{label}</label>
       {connections.length === 0 && !query.isPending ? (
         <>
           <p className="text-[12px] text-ink-faint" data-media-connection-empty>{t('cap.media.connection.none')}</p>

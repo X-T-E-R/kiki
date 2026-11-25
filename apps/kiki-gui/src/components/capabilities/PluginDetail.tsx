@@ -177,7 +177,7 @@ export function PluginDetail({
             {update !== undefined ? (
               <>
                 {version !== undefined ? ' · ' : null}
-                <span className="font-medium text-selected-ink" data-plugin-update-state={update.via}>
+                <span className="font-normal text-selected-ink" data-plugin-update-state={update.via}>
                   {update.branch !== undefined && update.version !== undefined
                     ? t('cap.update.branch', { branch: update.branch, version: update.version })
                     : update.version !== undefined ? t('cap.plugins.updateTo', { version: update.version }) : t('cap.detail.updateAvailable')}
@@ -217,7 +217,7 @@ export function PluginDetail({
       <div className="mt-8 grid gap-8 min-[900px]:grid-cols-[minmax(0,1fr)_minmax(0,18rem)]">
         <div className="min-w-0 space-y-8">
           <section data-plugin-contributes>
-            <h2 className="text-[13px] font-medium text-ink">{t('cap.detail.adds')}</h2>
+            <h2 className="text-[13px] font-bold text-ink">{t('cap.detail.adds')}</h2>
             {installed === undefined ? (
               <p className="mt-2 text-[13px] leading-5 text-ink-soft">{t('cap.detail.addsAfterInstall')}</p>
             ) : infoQuery.isPending ? (
@@ -253,7 +253,7 @@ export function PluginDetail({
               manifest decides which one, so the page never names a plugin. */}
           {installed !== undefined && onOpenMedia !== undefined && pluginSurface(manifest) !== undefined ? (
             <section data-plugin-detail-surface>
-              <h2 className="text-[13px] font-medium text-ink">{t('cap.media.title')}</h2>
+              <h2 className="text-[13px] font-bold text-ink">{t('cap.media.title')}</h2>
               <p className="mt-1 max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('cap.media.manageHint')}</p>
               <button
                 type="button"
@@ -268,7 +268,7 @@ export function PluginDetail({
           ) : null}
           {onOpenImport !== undefined && importerIds.length > 0 ? (
             <section data-plugin-detail-import>
-              <h2 className="text-[13px] font-medium text-ink">{t('cap.import.title')}</h2>
+              <h2 className="text-[13px] font-bold text-ink">{t('cap.import.title')}</h2>
               <p className="mt-1 max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('cap.import.manageSourceHint')}</p>
               <button
                 type="button"
@@ -285,7 +285,7 @@ export function PluginDetail({
 
         <aside className="min-w-0 space-y-6">
           <section data-plugin-needs>
-            <h2 className="text-[13px] font-medium text-ink">{t('cap.detail.needs')}</h2>
+            <h2 className="text-[13px] font-bold text-ink">{t('cap.detail.needs')}</h2>
             <div className="mt-2 space-y-3">
               {installed === undefined ? (
                 <p className="text-[13px] text-ink-soft">{t('cap.detail.needsOnPreview')}</p>
@@ -326,13 +326,13 @@ export function PluginDetail({
             />
             {installed !== undefined ? (
               <div className="space-y-2" data-plugin-permissions-detail>
-                <p className="text-[12px] font-medium text-ink-soft">{t('cap.detail.permissionsDeclared')}</p>
+                <p className="text-[12px] font-normal text-ink-soft">{t('cap.detail.permissionsDeclared')}</p>
                 <PermissionList permissions={permissions} />
               </div>
             ) : null}
             {prerequisites.length > 0 ? (
               <div className="space-y-2">
-                <p className="text-[12px] font-medium text-ink-soft">{t('cap.detail.prerequisites')}</p>
+                <p className="text-[12px] font-normal text-ink-soft">{t('cap.detail.prerequisites')}</p>
                 <FactList items={prerequisites.map((item) => ({
                   label: item.id,
                   value: [item.kind, item.version, item.required ? t('cap.detail.required') : t('cap.detail.optional'), item.setting].filter(Boolean).join(' · '),
@@ -343,7 +343,7 @@ export function PluginDetail({
             ) : null}
             {info !== undefined && info.diagnostics.length > 0 ? (
               <div className="space-y-1" data-plugin-diagnostics>
-                <p className="text-[12px] font-medium text-ink-soft">{t('cap.detail.diagnostics')}</p>
+                <p className="text-[12px] font-normal text-ink-soft">{t('cap.detail.diagnostics')}</p>
                 <ul className="space-y-1">
                   {info.diagnostics.map((item, index) => (
                     <li key={index} className={`text-[12px] leading-4 ${item.severity === 'error' ? 'text-danger' : 'text-ink-soft'}`}>{item.message}</li>
@@ -498,7 +498,7 @@ function ContributionList({
     <div className="mt-3 space-y-5">
       {groups.map((group) => (
         <div key={group.key} data-plugin-contribution={group.key}>
-          <p className="flex items-center gap-2 text-[12px] font-medium text-ink-soft">
+          <p className="flex items-center gap-2 text-[12px] font-normal text-ink-soft">
             <span className="text-ink-faint"><CapabilityGlyph kind={group.kind} className="h-3.5 w-3.5" /></span>
             {group.title}
           </p>

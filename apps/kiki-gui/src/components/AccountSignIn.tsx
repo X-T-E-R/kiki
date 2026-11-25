@@ -117,7 +117,7 @@ export function AccountSignIn({
             <li key={method.id} data-oauth-method={method.id} className="px-3 py-2.5">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 <div className="min-w-0 flex-1">
-                  <p className="flex flex-wrap items-center gap-2 text-[13px] font-medium text-ink">
+                  <p className="flex flex-wrap items-center gap-2 text-[13px] font-normal text-ink">
                     {method.label}
                     <AccountStateMark facts={facts} />
                   </p>

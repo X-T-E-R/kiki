@@ -182,7 +182,7 @@ export function ModelBindingSection({
       className="space-y-3 border-t border-hairline pt-4"
     >
       <div>
-        <h3 className="text-[13.5px] font-medium text-ink">{t('st.portable.center.bindingHeading')}</h3>
+        <h3 className="text-[13.5px] font-bold text-ink">{t('st.portable.center.bindingHeading')}</h3>
         <p className="mt-0.5 text-[12px] text-ink-soft">{t('st.portable.center.bindingSubtitle')}</p>
       </div>
 
@@ -216,13 +216,13 @@ export function ModelBindingSection({
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0 flex-1 space-y-0.5">
                   <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                    <span className="font-mono text-[12.5px] font-medium text-ink" data-portable-binding-source>
+                    <span className="font-mono text-[12.5px] font-normal text-ink" data-portable-binding-source>
                       {group.sourceModelId}
                     </span>
                     {group.allDeferred ? (
                       <span
                         data-portable-binding-deferred-badge={group.sourceModelId}
-                        className="text-[11.5px] font-medium text-amber-ink"
+                        className="text-[11.5px] font-normal text-amber-ink"
                       >
                         {t('st.portable.center.bindingUnboundBadge')}
                       </span>
@@ -304,7 +304,7 @@ export function ModelBindingSection({
                           >
                             <div className="min-w-0 flex-1 space-y-0.5">
                               <div className="flex flex-wrap items-baseline gap-x-2">
-                                <span className="text-[12.5px] font-medium text-ink">{entry.slot.itemLabel}</span>
+                                <span className="text-[12.5px] font-normal text-ink">{entry.slot.itemLabel}</span>
                                 <span className="text-[11px] text-ink-faint">
                                   {t(PORTABLE_SUBSCRIPTION_SCOPE_LABEL_KEY[entry.slot.itemScope])} · {entry.slot.location}
                                 </span>

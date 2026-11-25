@@ -166,13 +166,13 @@ export function MediaScriptSourceDialog({
         </div>
 
         <fieldset className="min-w-0" data-media-script-kinds>
-          <legend className="text-[12px] font-medium text-ink-soft">{t('cap.media.script.kinds')}</legend>
+          <legend className="text-[12px] font-normal text-ink-soft">{t('cap.media.script.kinds')}</legend>
           <div className="mt-1.5 flex flex-wrap gap-2">
             {MEDIA_KINDS.map((kind) => (
               <label
                 key={kind}
                 className={`inline-flex min-h-9 cursor-pointer items-center gap-2 rounded-[10px] px-3 text-[13px] transition-colors ${
-                  draft.kinds.has(kind) ? 'bg-ink/[0.08] font-medium text-ink' : 'bg-ink/[0.04] text-ink-soft hover:bg-ink/[0.07]'
+                  draft.kinds.has(kind) ? 'bg-ink/[0.08] text-ink' : 'bg-ink/[0.04] text-ink-soft hover:bg-ink/[0.07]'
                 }`}
               >
                 <input
@@ -324,7 +324,7 @@ function Field({
 }) {
   return (
     <div className="min-w-0 space-y-1">
-      <label htmlFor={id} className="block text-[12px] font-medium text-ink-soft">{label}</label>
+      <label htmlFor={id} className="block text-[12px] font-normal text-ink-soft">{label}</label>
       {children}
       {hint !== undefined ? <p className="text-[12px] leading-4 text-ink-faint">{hint}</p> : null}
     </div>

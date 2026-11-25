@@ -161,14 +161,14 @@ export function SpacesTab({
   return (
     <div data-mobile-screen="spaces" className="flex min-h-0 flex-1 flex-col">
       <header className="mx-auto flex h-12 w-full max-w-[572px] shrink-0 items-center justify-between px-4">
-        <h1 className="font-display text-[22px] font-medium tracking-[-0.015em] text-ink">
+        <h1 className="font-display text-[22px] font-bold text-ink">
           {t('mobile.spaces.title')}
         </h1>
         <button
           type="button"
           data-mobile-scan-qr
           onClick={() => { void handleScanQr(); }}
-          className="inline-flex h-11 items-center gap-1.5 rounded-full bg-ink px-4 text-[13.5px] font-medium text-paper"
+          className="inline-flex h-11 items-center gap-1.5 rounded-full bg-ink px-4 text-[13.5px] font-normal text-paper"
         >
           <Icon name="plus" size={14} />
           <span>{t('mobile.spaces.pairAction')}</span>
@@ -183,7 +183,7 @@ export function SpacesTab({
               className="space-y-3 rounded-2xl border border-hairline bg-panel p-4 shadow-[0_1px_3px_rgb(var(--kiki-shadow-ink)/0.05)]"
             >
               <div className="flex items-center justify-between">
-                <h2 className="text-[15px] font-semibold text-ink">{t('mobile.onboarding.title')}</h2>
+                <h2 className="text-[15px] font-bold text-ink">{t('mobile.onboarding.title')}</h2>
                 <button
                   type="button"
                   onClick={() => { setPairOpen(false); }}
@@ -194,7 +194,7 @@ export function SpacesTab({
               </div>
               <div className="space-y-2.5">
                 <label className="block space-y-1">
-                  <span className="text-[12px] font-medium text-ink-soft">{t('mobile.onboarding.endpointLabel')}</span>
+                  <span className="text-[12px] font-normal text-ink-soft">{t('mobile.onboarding.endpointLabel')}</span>
                   <input
                     type="text"
                     value={endpointInput}
@@ -214,7 +214,7 @@ export function SpacesTab({
                   />
                 </label>
                 <label className="block space-y-1">
-                  <span className="text-[12px] font-medium text-ink-soft">{t('mobile.onboarding.codeLabel')}</span>
+                  <span className="text-[12px] font-normal text-ink-soft">{t('mobile.onboarding.codeLabel')}</span>
                   <input
                     type="text"
                     value={codeInput}
@@ -228,7 +228,7 @@ export function SpacesTab({
                 <button
                   type="button"
                   onClick={() => { void handlePasteLink(); }}
-                  className="flex h-11 flex-1 items-center justify-center rounded-full border border-hairline bg-paper text-[13.5px] font-medium text-ink-soft"
+                  className="flex h-11 flex-1 items-center justify-center rounded-full border border-hairline bg-paper text-[13.5px] font-normal text-ink-soft"
                 >
                   {t('mobile.onboarding.pasteLink')}
                 </button>
@@ -236,7 +236,7 @@ export function SpacesTab({
                   type="button"
                   disabled={pairing || endpointInput.trim() === '' || codeInput.trim() === ''}
                   onClick={() => { void submitPair(); }}
-                  className="flex h-11 flex-1 items-center justify-center rounded-full bg-accent text-[13.5px] font-medium text-primary-foreground disabled:opacity-45"
+                  className="flex h-11 flex-1 items-center justify-center rounded-full bg-accent text-[13.5px] font-normal text-primary-foreground disabled:opacity-45"
                 >
                   {t('mobile.onboarding.connect')}
                 </button>
@@ -245,7 +245,7 @@ export function SpacesTab({
           ) : null}
 
           <section className="space-y-2">
-            <h2 className="px-0.5 text-[12px] font-medium uppercase tracking-[0.05em] text-ink-faint">
+            <h2 className="px-0.5 text-[12px] font-normal uppercase text-ink-faint">
               {t('mobile.spaces.myComputers')}
             </h2>
             <div className="divide-y divide-hairline/70 overflow-hidden rounded-2xl border border-hairline/90 bg-panel">
@@ -256,7 +256,7 @@ export function SpacesTab({
               >
                 <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-success" aria-hidden="true" />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[15px] font-medium text-ink">{localTitle}</span>
+                  <span className="block truncate text-[15px] font-normal text-ink">{localTitle}</span>
                   <span className="block truncate text-[12.5px] text-ink-faint">
                     {localRunningCount > 0
                       ? t('mobile.space.runningCount', { count: localRunningCount })
@@ -291,7 +291,7 @@ export function SpacesTab({
                         aria-hidden="true"
                       />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[15px] font-medium text-ink">{record.label}</span>
+                        <span className="block truncate text-[15px] font-normal text-ink">{record.label}</span>
                         <span className="block truncate text-[12.5px] text-ink-faint">
                           {[
                             platform,
@@ -306,7 +306,7 @@ export function SpacesTab({
                         </span>
                       </span>
                       {online && netBadge !== null ? (
-                        <span className="shrink-0 rounded-md bg-ink/[0.06] px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-ink-soft">
+                        <span className="shrink-0 rounded-md bg-ink/[0.06] px-1.5 py-0.5 font-mono text-[10.5px] font-normal text-ink-soft">
                           {netBadge}
                         </span>
                       ) : !online ? (
@@ -322,7 +322,7 @@ export function SpacesTab({
                           <button
                             type="button"
                             onClick={() => { void onRefreshRemotes(); }}
-                            className="inline-flex h-11 items-center gap-1.5 rounded-full bg-ink px-4 text-[13px] font-medium text-paper"
+                            className="inline-flex h-11 items-center gap-1.5 rounded-full bg-ink px-4 text-[13px] font-normal text-paper"
                           >
                             <Icon name="refresh" size={12} />
                             <span>{t('mobile.space.retry')}</span>
@@ -333,7 +333,7 @@ export function SpacesTab({
                               setEndpointInput(record.endpoint);
                               setPairOpen(true);
                             }}
-                            className="inline-flex h-11 items-center rounded-full border border-hairline bg-panel px-4 text-[13px] font-medium text-ink-soft"
+                            className="inline-flex h-11 items-center rounded-full border border-hairline bg-panel px-4 text-[13px] font-normal text-ink-soft"
                           >
                             {t('mobile.space.repair')}
                           </button>
@@ -347,19 +347,19 @@ export function SpacesTab({
           </section>
 
           <section className="space-y-2">
-            <h2 className="px-0.5 text-[12px] font-medium uppercase tracking-[0.05em] text-ink-faint">
+            <h2 className="px-0.5 text-[12px] font-normal uppercase text-ink-faint">
               {t('mobile.spaces.preferences')}
             </h2>
             <div className="divide-y divide-hairline/70 overflow-hidden rounded-2xl border border-hairline/90 bg-panel">
               <div className="flex items-center justify-between gap-3 py-1.5 pl-4 pr-1.5">
-                <span className="text-[14.5px] font-medium text-ink">{t('mobile.spaces.appearance')}</span>
+                <span className="text-[14.5px] font-normal text-ink">{t('mobile.spaces.appearance')}</span>
                 <div className="flex items-center rounded-full bg-canvas p-0.5">
                   {(['system', 'light', 'dark'] as const).map((mode) => (
                     <button
                       key={mode}
                       type="button"
                       onClick={() => { changeTheme(mode); }}
-                      className={`h-11 min-w-11 rounded-full px-3 text-[13px] font-medium transition-colors ${
+                      className={`h-11 min-w-11 rounded-full px-3 text-[13px] font-normal transition-colors ${
                         themePref === mode ? 'bg-panel text-ink shadow-xs' : 'text-ink-faint'
                       }`}
                     >
@@ -376,14 +376,14 @@ export function SpacesTab({
               </div>
 
               <div className="flex items-center justify-between gap-3 py-1.5 pl-4 pr-1.5">
-                <span className="text-[14.5px] font-medium text-ink">{t('mobile.spaces.language')}</span>
+                <span className="text-[14.5px] font-normal text-ink">{t('mobile.spaces.language')}</span>
                 <div className="flex items-center rounded-full bg-canvas p-0.5">
                   {(['zh', 'en'] as const).map((lang) => (
                     <button
                       key={lang}
                       type="button"
                       onClick={() => { setLocale(lang); }}
-                      className={`h-11 min-w-11 rounded-full px-3.5 text-[13px] font-medium transition-colors ${
+                      className={`h-11 min-w-11 rounded-full px-3.5 text-[13px] font-normal transition-colors ${
                         locale === lang ? 'bg-panel text-ink shadow-xs' : 'text-ink-faint'
                       }`}
                     >
@@ -398,7 +398,7 @@ export function SpacesTab({
                 onClick={onOpenWorkbench}
                 className="flex min-h-[52px] w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-ink/[0.02]"
               >
-                <span className="text-[14.5px] font-medium text-ink">{t('mobile.spaces.openWorkbench')}</span>
+                <span className="text-[14.5px] font-normal text-ink">{t('mobile.spaces.openWorkbench')}</span>
                 <Icon name="external" size={14} className="text-ink-faint" />
               </button>
             </div>

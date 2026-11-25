@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { CallOptions } from '../../core/channel.js';
+import { sessionCommandRoutes, type SessionCommandChannel, type SessionCommandName } from './commandRoutes.js';
 import {
   approvalResolveRequestSchema, approvalResolveResultSchema,
   cancelTaskQuerySchema, cancelTaskResultSchema, taskAlreadyFinishedDataSchema,
@@ -26,32 +26,28 @@ const targetBodyInput = <T extends z.ZodType>(body: T) => z.object({ target, bod
 const agentTargetInput = /* @__PURE__ */ z.object({ target, query: z.object({ agent_id: z.string().min(1).optional() }).optional() });
 
 export const sessionCommandContract = {
-  read: { method: 'GET', suffix: '', input: z.object({}), output: sessionSchema, okCodes: [0] },
-  submit: { method: 'POST', suffix: '/prompts', input: bodyInput(promptSubmissionSchema), output: promptSubmitResultSchema, okCodes: [0], timeoutMs: 0 },
-  edit: { method: 'POST', suffix: '/messages/{target}:edit', input: targetBodyInput(editMessageRequestSchema), output: messageActionResponseSchema, okCodes: [0] },
-  regenerate: { method: 'POST', suffix: '/messages/{target}:regenerate', input: targetBodyInput(regenerateMessageRequestSchema), output: messageActionResponseSchema, okCodes: [0] },
-  fork: { method: 'POST', suffix: ':fork', input: bodyInput(forkSessionRequestSchema), output: sessionSchema, okCodes: [0] },
-  btw: { method: 'POST', suffix: ':btw', input: z.object({}), output: startBtwSessionResponseSchema, okCodes: [0] },
-  branch: { method: 'POST', suffix: ':branch', input: bodyInput(createSessionBranchRequestSchema), output: createSessionBranchResponseSchema, okCodes: [0] },
-  foldBranch: { method: 'POST', suffix: ':fold', input: bodyInput(foldSessionBranchRequestSchema), output: foldSessionBranchResponseSchema, okCodes: [0] },
-  discardBranch: { method: 'POST', suffix: ':discard', input: bodyInput(discardSessionBranchRequestSchema), output: discardSessionBranchResponseSchema, okCodes: [0] },
-  setBranchToolsLock: { method: 'POST', suffix: ':tools-lock', input: bodyInput(setSessionBranchToolsLockRequestSchema), output: setSessionBranchToolsLockResponseSchema, okCodes: [0] },
-  promoteAgent: { method: 'POST', suffix: '/agents/{target}:promote', input: targetBodyInput(promoteAgentRequestSchema), output: sessionSchema, okCodes: [0] },
-  abort: { method: 'POST', suffix: '/prompts/{target}:abort', input: z.object({ target, query: z.object({ agent_id: z.string().min(1).optional(), queued_only: z.literal('true').optional() }).optional() }), output: promptAbortResponseSchema, okCodes: [0, 40903] },
-  abortTurn: { method: 'POST', suffix: '/turns/{target}:abort', input: targetInput, output: turnAbortResponseSchema, okCodes: [0] },
-  move: { method: 'POST', suffix: '/prompts/{target}:move', input: targetBodyInput(promptMoveRequestSchema), output: promptMoveResultSchema, okCodes: [0] },
-  replace: { method: 'POST', suffix: '/prompts/{target}:replace', input: targetBodyInput(promptReplaceRequestSchema), output: promptReplaceResultSchema, okCodes: [0] },
-  timing: { method: 'POST', suffix: '/prompts/{target}:timing', input: targetBodyInput(promptTimingRequestSchema), output: promptTimingResultSchema, okCodes: [0] },
-  hold: { method: 'POST', suffix: '/prompts/{target}:hold', input: targetBodyInput(promptHoldRequestSchema), output: promptHoldResultSchema, okCodes: [0] },
-  steer: { method: 'POST', suffix: '/prompts/{target}:steer', input: agentTargetInput, output: promptSteerResultSchema, okCodes: [0] },
-  approve: { method: 'POST', suffix: '/approvals/{target}', input: targetBodyInput(approvalResolveRequestSchema), output: approvalResolveResultSchema, okCodes: [0] },
-  answer: { method: 'POST', suffix: '/questions/{target}', input: targetBodyInput(questionResolveRequestSchema), output: questionResolveResultSchema, okCodes: [0] },
-  dismiss: { method: 'POST', suffix: '/questions/{target}:dismiss', input: targetInput, output: questionDismissResultSchema, okCodes: [0, 40909] },
-  cancelTask: { method: 'POST', suffix: '/tasks/{target}:cancel', input: z.object({ target, query: cancelTaskQuerySchema.optional() }), output: z.union([cancelTaskResultSchema, taskAlreadyFinishedDataSchema]), okCodes: [0, 40904] },
+  read: { ...sessionCommandRoutes.read, input: z.object({}), output: sessionSchema },
+  submit: { ...sessionCommandRoutes.submit, input: bodyInput(promptSubmissionSchema), output: promptSubmitResultSchema },
+  edit: { ...sessionCommandRoutes.edit, input: targetBodyInput(editMessageRequestSchema), output: messageActionResponseSchema },
+  regenerate: { ...sessionCommandRoutes.regenerate, input: targetBodyInput(regenerateMessageRequestSchema), output: messageActionResponseSchema },
+  fork: { ...sessionCommandRoutes.fork, input: bodyInput(forkSessionRequestSchema), output: sessionSchema },
+  btw: { ...sessionCommandRoutes.btw, input: z.object({}), output: startBtwSessionResponseSchema },
+  branch: { ...sessionCommandRoutes.branch, input: bodyInput(createSessionBranchRequestSchema), output: createSessionBranchResponseSchema },
+  foldBranch: { ...sessionCommandRoutes.foldBranch, input: bodyInput(foldSessionBranchRequestSchema), output: foldSessionBranchResponseSchema },
+  discardBranch: { ...sessionCommandRoutes.discardBranch, input: bodyInput(discardSessionBranchRequestSchema), output: discardSessionBranchResponseSchema },
+  setBranchToolsLock: { ...sessionCommandRoutes.setBranchToolsLock, input: bodyInput(setSessionBranchToolsLockRequestSchema), output: setSessionBranchToolsLockResponseSchema },
+  promoteAgent: { ...sessionCommandRoutes.promoteAgent, input: targetBodyInput(promoteAgentRequestSchema), output: sessionSchema },
+  abort: { ...sessionCommandRoutes.abort, input: z.object({ target, query: z.object({ agent_id: z.string().min(1).optional(), queued_only: z.literal('true').optional() }).optional() }), output: promptAbortResponseSchema },
+  abortTurn: { ...sessionCommandRoutes.abortTurn, input: targetInput, output: turnAbortResponseSchema },
+  move: { ...sessionCommandRoutes.move, input: targetBodyInput(promptMoveRequestSchema), output: promptMoveResultSchema },
+  replace: { ...sessionCommandRoutes.replace, input: targetBodyInput(promptReplaceRequestSchema), output: promptReplaceResultSchema },
+  timing: { ...sessionCommandRoutes.timing, input: targetBodyInput(promptTimingRequestSchema), output: promptTimingResultSchema },
+  hold: { ...sessionCommandRoutes.hold, input: targetBodyInput(promptHoldRequestSchema), output: promptHoldResultSchema },
+  steer: { ...sessionCommandRoutes.steer, input: agentTargetInput, output: promptSteerResultSchema },
+  approve: { ...sessionCommandRoutes.approve, input: targetBodyInput(approvalResolveRequestSchema), output: approvalResolveResultSchema },
+  answer: { ...sessionCommandRoutes.answer, input: targetBodyInput(questionResolveRequestSchema), output: questionResolveResultSchema },
+  dismiss: { ...sessionCommandRoutes.dismiss, input: targetInput, output: questionDismissResultSchema },
+  cancelTask: { ...sessionCommandRoutes.cancelTask, input: z.object({ target, query: cancelTaskQuerySchema.optional() }), output: z.union([cancelTaskResultSchema, taskAlreadyFinishedDataSchema]) },
 } as const;
 
-export type SessionCommandName = keyof typeof sessionCommandContract;
-
-export interface SessionCommandChannel {
-  execute(sessionId: string, command: SessionCommandName, input: unknown, options?: CallOptions): Promise<unknown>;
-}
+export type { SessionCommandChannel, SessionCommandName };

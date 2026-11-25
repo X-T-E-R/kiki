@@ -149,13 +149,13 @@ function UsageRow({
   return (
     <div data-usage-row={field} className="group min-w-0 space-y-1.5">
       <div className="flex min-h-6 items-center justify-between gap-2">
-        <label htmlFor={sharedControl === undefined ? fieldId : undefined} className="text-[12px] font-medium text-ink-soft">{label}</label>
+        <label htmlFor={sharedControl === undefined ? fieldId : undefined} className="text-[12px] font-normal text-ink-soft">{label}</label>
         <button type="button" data-usage-identity-toggle={field}
           data-usage-toggle-quiet={quiet ? '' : undefined}
           {...popover.triggerProps}
           className={`inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11.5px] transition-[color,background-color,opacity] focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:h-9 ${
             overridden.length > 0
-              ? 'bg-selected-ink/10 font-medium text-selected-ink hover:bg-selected-ink/15'
+              ? 'bg-selected-ink/10 text-selected-ink hover:bg-selected-ink/15'
               : 'text-ink-faint hover:bg-ink/[0.04] hover:text-ink'
           } ${quiet ? 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100' : ''}`}>
           <span data-usage-override-marker={overridden.length > 0 ? overridden.join(' ') : undefined}>
@@ -178,7 +178,7 @@ function UsageRow({
       {below}
       <AnchoredPopover {...popover.popoverProps} label={t('st.usagePolicy.perAgentTitle', { field: label })} align="end"
         widthClassName="w-[22rem]" data={{ 'data-usage-identities': field }}>
-        <p className="mb-2 text-[12px] font-medium text-ink-soft">{t('st.usagePolicy.perAgentTitle', { field: label })}</p>
+        <p className="mb-2 text-[12px] font-normal text-ink-soft">{t('st.usagePolicy.perAgentTitle', { field: label })}</p>
         <div className="space-y-2">
           {USAGE_POSITIONS.map((position) => (
             <IdentityLine key={position} field={field} position={position} modelId={modelId} label={label}

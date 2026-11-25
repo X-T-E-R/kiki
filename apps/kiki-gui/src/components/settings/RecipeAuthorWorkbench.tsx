@@ -395,7 +395,7 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
   return (
     <div className="min-w-0 space-y-5" data-recipe-author={detail.summary.installation_id}>
       <header className="space-y-1">
-        <h3 className="font-display text-[28px] leading-9 tracking-tight text-ink" data-recipe-author-name>
+        <h3 className="font-display text-[28px] leading-9 text-ink" data-recipe-author-name>
           {detail.summary.name}
         </h3>
         <p className="font-mono text-[11.5px] text-ink-faint">
@@ -558,7 +558,7 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
           look like a model edit.
         */}
         <button type="button" disabled={!dirty || saveDisabled || parseError !== undefined}
-          className="rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint"
+          className="rounded-md bg-accent px-3 py-1.5 text-[12px] font-normal text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint"
           data-recipe-save-package
           onClick={() => {
             setFailure(null);
@@ -671,7 +671,7 @@ function RecipeHookDeclarations({ hooks }: { hooks: NonNullable<RecipeDeclaratio
   if (hooks.length === 0) return null;
   return (
     <div className="space-y-1.5 rounded-md bg-ink/[0.03] px-3 py-2" data-recipe-author-hooks>
-      <p className="text-[11.5px] font-medium text-ink-soft">{t('st.recipeHook.declared')}</p>
+      <p className="text-[11.5px] font-normal text-ink-soft">{t('st.recipeHook.declared')}</p>
       <ul className="space-y-1.5">
         {hooks.map((hook, index) => (
           <li key={index} className="space-y-0.5" data-recipe-author-hook={index}>
@@ -736,7 +736,7 @@ function SteerSourceSection({ declaration, files, onChange, onInline, onSegments
       <button type="button" aria-expanded={open} onClick={() => { setOpen(!open); }}
         className="flex min-h-7 w-full items-center gap-1.5 rounded-md px-1 text-left outline-none transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40">
         <Chevron open={open} className="text-ink-soft" />
-        <span className="text-[12px] font-medium text-ink-soft">{t('st.recipe.steerSources')}</span>
+        <span className="text-[12px] font-normal text-ink-soft">{t('st.recipe.steerSources')}</span>
         {!open && Object.keys(declared).length > 0 ? (
           <span className="truncate text-[12px] text-ink-faint">
             {t('st.recipe.steerSourcesCount', { count: String(Object.keys(declared).length) })}
@@ -861,7 +861,7 @@ function SteerSourceRow({ source, declaration, files, onMode, onInline, onSegmen
       {mode !== 'custom' ? null : (
         <div className="space-y-2" data-recipe-steer-editor={source}>
           <div className="flex flex-wrap items-center justify-between gap-x-3">
-            <span className="text-[12px] font-medium text-ink-soft" data-recipe-steer-shape-kind={source}>
+            <span className="text-[12px] font-normal text-ink-soft" data-recipe-steer-shape-kind={source}>
               {steerShapeLabel(t, steering)}
             </span>
             {shapeChoice()}
@@ -972,7 +972,7 @@ function ProseSlot({ slot, label, declaration, files, onInline, onSegments, onFi
   if (declared?.kind === 'off') {
     return (
       <div className="space-y-2" data-recipe-prose-slot={slot}>
-        <h4 className="text-[13px] font-medium text-ink">{label}</h4>
+        <h4 className="text-[13px] font-normal text-ink">{label}</h4>
         <p className="text-[12px] leading-5 text-ink-soft" data-recipe-prose-off>{t('st.recipe.slotOff')}</p>
         <button type="button"
           className="text-[12px] text-ink-soft underline decoration-ink/20 underline-offset-4 hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40"
@@ -988,7 +988,7 @@ function ProseSlot({ slot, label, declaration, files, onInline, onSegments, onFi
     return (
       <div className="space-y-1.5" data-recipe-prose-slot={slot}>
         <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-          <h4 className="text-[13px] font-medium text-ink">{label}</h4>
+          <h4 className="text-[13px] font-normal text-ink">{label}</h4>
           <span className="font-mono text-[11px] text-ink-faint">{declared.file}</span>
         </div>
         <textarea rows={8} spellCheck={false} aria-label={`${label}: ${declared.file}`}
@@ -1002,7 +1002,7 @@ function ProseSlot({ slot, label, declaration, files, onInline, onSegments, onFi
   if (declared === undefined) {
     return (
       <div className="space-y-1.5" data-recipe-prose-slot={slot}>
-        <h4 className="text-[13px] font-medium text-ink">{label}</h4>
+        <h4 className="text-[13px] font-normal text-ink">{label}</h4>
         <p className="text-[12px] leading-5 text-ink-faint" data-recipe-prose-inherited>{t('st.recipe.inheritsSlot')}</p>
         <button type="button"
           className="text-[12px] text-ink-soft underline decoration-ink/20 underline-offset-4 hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40"
@@ -1018,7 +1018,7 @@ function ProseSlot({ slot, label, declaration, files, onInline, onSegments, onFi
     return (
       <div className="space-y-3" data-recipe-prose-slot={slot}>
         <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-          <h4 className="text-[13px] font-medium text-ink">{label}</h4>
+          <h4 className="text-[13px] font-normal text-ink">{label}</h4>
           <span className="font-mono text-[11px] text-ink-faint" data-recipe-prose-kind={slot}>
             {t('st.recipe.segmentCount', { count: String(declared.parts.length) })}
           </span>
@@ -1046,7 +1046,7 @@ function ProseSlot({ slot, label, declaration, files, onInline, onSegments, onFi
   return (
     <div className="space-y-1.5" data-recipe-prose-slot={slot}>
       <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-        <h4 className="text-[13px] font-medium text-ink">{label}</h4>
+        <h4 className="text-[13px] font-normal text-ink">{label}</h4>
         <span className="font-mono text-[11px] text-ink-faint" data-recipe-prose-kind={slot}>{t('st.recipe.inlineKind')}</span>
       </div>
       <textarea rows={8} spellCheck={false} aria-label={label}

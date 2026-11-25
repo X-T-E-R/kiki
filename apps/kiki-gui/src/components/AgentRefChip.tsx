@@ -111,7 +111,7 @@ function RejectedBody({ reference, engine, statusText }: { readonly reference: A
         {statusDot('rejected')}
       </span>
       <Icon name={resolveProfileIcon({ profile: reference.profile, executor: reference.executor })} size={12} className="shrink-0 text-ink-faint" />
-      <span className="min-w-0 truncate font-medium text-ink-faint line-through decoration-ink-faint/60">{reference.profile}</span>
+      <span className="min-w-0 truncate font-normal text-ink-faint line-through decoration-ink-faint/60">{reference.profile}</span>
       <span className="shrink-0 text-ink-faint">{engine}</span>
       <span className="shrink-0 text-[11px] text-danger/80">{t('agentRef.rejectedCue')}</span>
       <span className="sr-only">{statusText}</span>
@@ -167,7 +167,7 @@ export function AgentRefChip({
           {statusDot('delegated')}
         </span>
         <Icon name={resolveProfileIcon({ profile: reference.profile, executor: reference.executor })} size={12} className="shrink-0 text-ink-faint" />
-        <span className="min-w-0 truncate font-medium text-ink">{reference.profile}</span>
+        <span className="min-w-0 truncate font-normal text-ink">{reference.profile}</span>
         <span className="shrink-0 text-ink-faint">{engine}</span>
         {runs.length > 1 ? <span className="shrink-0 tabular-nums text-ink-faint">{runsText}</span> : null}
       </>
@@ -226,7 +226,7 @@ export function AgentRefChip({
         {statusDot('pending')}
       </span>
       <Icon name={resolveProfileIcon({ profile: reference.profile, executor: reference.executor })} size={12} className="shrink-0 text-ink-faint" />
-      <span className="min-w-0 truncate font-medium text-ink">{reference.profile}</span>
+      <span className="min-w-0 truncate font-normal text-ink">{reference.profile}</span>
       <span className="shrink-0 text-ink-faint">{engine}</span>
       <span className="sr-only">{statusText}</span>
     </span>

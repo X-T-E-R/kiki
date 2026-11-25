@@ -648,7 +648,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
       <>
         {groupHeader !== undefined ? (
           <p
-            className={`px-3 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-3'}`}
+            className={`px-3 pb-0.5 text-[12px] font-normal text-ink-faint ${index === 0 ? 'pt-1' : 'pt-3'}`}
           >
             {groupHeader}
           </p>
@@ -702,9 +702,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
               </span>
             ) : null}
             <span
-              className={`min-w-0 flex-1 truncate ${option.disabled ? 'text-ink-faint' : 'text-ink'} ${
-                isSelected ? 'font-medium' : ''
-              }`}
+              className={`min-w-0 flex-1 truncate ${option.disabled ? 'text-ink-faint' : 'text-ink'}`}
             >
               {option.label}
             </span>
@@ -729,7 +727,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
                   key={badge.label}
                   className={`rounded-[4px] py-px text-[11px] leading-4 ${
                     badge.accent === true
-                      ? 'font-medium text-accent-ink'
+                      ? 'text-accent-ink'
                       : badge.tone === 'caution'
                         ? 'bg-amber-ink/10 px-1.5 text-amber-ink'
                         : 'bg-ink/[0.05] px-1.5 text-ink-faint'
@@ -1153,12 +1151,12 @@ function CompactOptionRow({
         ) : null}
         <span
           data-option-label
-          className={`min-w-0 flex-1 truncate text-[13px] leading-[18px] ${option.disabled ? 'text-ink-faint' : 'text-ink'} ${selected ? 'font-medium' : ''}`}
+          className={`min-w-0 flex-1 truncate text-[13px] leading-[18px] ${option.disabled ? 'text-ink-faint' : 'text-ink'}`}
         >
           {option.label}
         </span>
         {accents.map((badge) => (
-          <span key={badge.label} className="shrink-0 text-[11.5px] font-medium text-accent-ink">
+          <span key={badge.label} className="shrink-0 text-[11.5px] font-normal text-accent-ink">
             {badge.label}
           </span>
         ))}

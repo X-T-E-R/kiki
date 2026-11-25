@@ -111,7 +111,7 @@ function SubagentModelGovernanceCard() {
         <Hint>{t('st.subagents.hint')}</Hint>
         <fieldset disabled={configQuery.isLoading || saving} className="space-y-4 disabled:opacity-60">
           <div>
-            <span className="block text-[11px] font-medium text-ink-soft mb-1.5">{t('st.subagents.denyModels')}</span>
+            <span className="block text-[11px] font-normal text-ink-soft mb-1.5">{t('st.subagents.denyModels')}</span>
             <AliasChips
               id="subagent-deny-models"
               values={denyList}
@@ -291,15 +291,15 @@ export function NamedAgentProfileRow({
       className={`${embedded ? '' : `rounded-lg border bg-paper px-3 py-2 ${defaultMain ? 'border-hairline-strong' : 'border-hairline'}`} transition-opacity ${profile.disabled && !defaultMain ? 'opacity-60' : ''}`}
     >
       {defaultMain ? <div className="mb-3 border-b border-hairline pb-2">
-        <p className="text-[12px] font-medium text-ink">{t('st.mainAgents.defaultTitle')}</p>
+        <p className="text-[12px] font-normal text-ink">{t('st.mainAgents.defaultTitle')}</p>
         <Hint>{t('st.mainAgents.defaultHint')}</Hint>
       </div> : null}
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="font-mono text-[12.5px] font-medium text-ink">
+          <p className="font-mono text-[12.5px] font-normal text-ink">
             {profile.name}
             {profile.disabled ? (
-              <span className="ml-2 rounded-full border border-hairline bg-panel px-1.5 py-px align-middle text-[11px] font-medium text-ink-faint">
+              <span className="ml-2 rounded-full border border-hairline bg-panel px-1.5 py-px align-middle text-[11px] font-normal text-ink-faint">
                 {t('st.namedAgents.disabledBadge')}
               </span>
             ) : null}
@@ -402,7 +402,7 @@ export function NamedAgentProfileRow({
             <SubagentLeaseList items={subagentLeases} variant="compact" />
           ) : null}
           <details className="mt-2 pt-2" data-technical-details>
-            <summary className="cursor-pointer select-none text-[12px] font-medium text-ink-faint hover:text-ink-soft">
+            <summary className="cursor-pointer select-none text-[12px] font-normal text-ink-faint hover:text-ink-soft">
               {t('st.namedAgents.technicalDetails')}
             </summary>
             <div className="mt-2 space-y-1 break-all font-mono text-[11px] text-ink-faint">
@@ -587,7 +587,7 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
     && !(workspacesQuery.data?.items ?? []).some((workspace) => workspace.id === requestedWorkspaceId);
   const workspaceSelector = (workspacesQuery.data?.items.length ?? 0) > 0 ? (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-      <span className="text-[12px] font-medium text-ink-soft">{t('new.workspace')}</span>
+      <span className="text-[12px] font-normal text-ink-soft">{t('new.workspace')}</span>
       <SettingsSelect
         dataAttr="data-named-agents-workspace"
         ariaLabel={t('new.workspace')}
@@ -754,7 +754,7 @@ export function AgentsSection() {
       {detailOpen ? null : (
         <>
           <section ref={dispatchRef} data-agents-dispatch className="space-y-3">
-            <h2 className="text-[13px] font-semibold tracking-tight text-ink">
+            <h2 className="text-[13px] font-bold text-ink">
               {t('st.agents.dispatch.title')}
             </h2>
             <SubagentsSection />
@@ -765,7 +765,7 @@ export function AgentsSection() {
             open={advancedOpen}
             onToggle={(event) => { setAdvancedOpen(event.currentTarget.open); }}
           >
-            <summary className="flex min-h-8 w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-1 text-[12.5px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 [&::-webkit-details-marker]:hidden">
+            <summary className="flex min-h-8 w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-1 text-[12.5px] font-normal text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 [&::-webkit-details-marker]:hidden">
               <DisclosureChevron open={false} className="text-ink-soft transition-transform group-open:rotate-90" />
               {t('st.agents.advanced.fold')}
             </summary>

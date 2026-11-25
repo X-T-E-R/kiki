@@ -7,6 +7,7 @@ import { useMemo, useEffect, useRef, useContext } from 'react';
 import { QueryClientContext, QueryObserver } from '@tanstack/react-query';
 import { useOptionalConnection } from '../../state/connection';
 import { OutputLayerClient, type OutputLayerStorage } from '../../lib/outputLayerClient';
+import { useDeferSecondaryBootQueries } from '../../lib/bootHydrationGate';
 import type { OutputLayerFacade } from '@kiki/klient/core/facade/output-layer';
 import { outputLayerStore } from './outputLayerStore';
 import type { OutputLayerConfiguration } from './types';
@@ -68,10 +69,11 @@ export function useOutputLayerClient(sessionId?: string): OutputLayerClient | nu
 
   const queryClient = useContext(QueryClientContext);
   const inFlightRef = useRef<Map<string, Promise<OutputLayerConfiguration>>>(new Map());
+  const deferSecondaryBoot = useDeferSecondaryBootQueries();
 
   // Active query observer: refetches on plugin invalidation without polling or fake setQueryData
   useEffect(() => {
-    if (!outputClient) return;
+    if (!outputClient || deferSecondaryBoot) return;
 
     if (queryClient) {
       const queryKey = ['plugin', 'kiki-output-layer', 'configuration', scopeKey, serverId, sessionId ?? '__all__'];
@@ -117,7 +119,7 @@ export function useOutputLayerClient(sessionId?: string): OutputLayerClient | nu
       });
       inFlightRef.current.set(contextKey, promise);
     }
-  }, [outputClient, queryClient, scopeKey, serverId, sessionId, contextKey]);
+  }, [outputClient, queryClient, scopeKey, serverId, sessionId, contextKey, deferSecondaryBoot]);
 
   return outputClient;
 }

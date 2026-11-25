@@ -118,7 +118,7 @@ export function PluginImportArchive({
     >
       <header className="flex shrink-0 items-start gap-3 px-5 pt-4 pb-3">
         <div className="min-w-0 flex-1 space-y-1">
-          <h2 className="truncate font-display text-[18px] font-semibold tracking-tight text-ink" title={title}>{title}</h2>
+          <h2 className="truncate font-display text-[18px] font-bold text-ink" title={title}>{title}</h2>
           <p className="text-[12.5px] leading-5 text-ink-soft">{t('cap.import.archiveIntro')}</p>
         </div>
         <button type="button" onClick={onClose} aria-label={t('common.close')}
@@ -189,7 +189,7 @@ export function PluginImportArchive({
               page restarts its own numbering, which would collide. */}
           {records.map((record, index) => (
             <li key={`${record.id}-${record.part}-${index}`} data-plugin-import-archive-record={record.role} className="min-w-0 space-y-0.5">
-              <p className="text-[11.5px] font-medium text-ink-faint">
+              <p className="text-[11.5px] font-normal text-ink-faint">
                 {t(recordRoleKey(record.role))}
                 {record.toolName !== undefined ? <span className="font-mono"> · {record.toolName}</span> : null}
               </p>

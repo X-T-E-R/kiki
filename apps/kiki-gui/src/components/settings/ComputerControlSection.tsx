@@ -725,7 +725,7 @@ function WindowsMcpRegistrationFold({ scopeId }: { readonly scopeId: string }) {
           event, so a controlled `open` would always swallow the click. The
           shared fold chevron, not the browser's ▶ marker. */}
       <summary
-        className="-ml-1 inline-flex min-h-7 cursor-pointer list-none select-none items-center gap-1 rounded px-1 font-medium text-ink-soft outline-none transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden"
+        className="-ml-1 inline-flex min-h-7 cursor-pointer list-none select-none items-center gap-1 rounded px-1 font-normal text-ink-soft outline-none transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden"
         onClick={(event) => { event.preventDefault(); setOpened((current) => !current); }}
       >
         <Icon name="chevron" size={12} className={`shrink-0 text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] ease-out motion-reduce:transition-none ${opened ? 'rotate-90' : ''}`} />

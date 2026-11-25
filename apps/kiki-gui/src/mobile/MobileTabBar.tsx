@@ -82,7 +82,7 @@ export function MobileTabBar({
                   {showCount ? (
                     <span
                       data-mobile-tab-badge={needsYouCount}
-                      className="absolute -top-1.5 -right-2.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 font-sans text-[10px] font-semibold leading-none tabular-nums text-primary-foreground"
+                      className="absolute -top-1.5 -right-2.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 font-sans text-[10px] font-normal leading-none tabular-nums text-primary-foreground"
                     >
                       {needsYouCount > 99 ? '99+' : needsYouCount}
                     </span>
@@ -94,7 +94,7 @@ export function MobileTabBar({
                     />
                   ) : null}
                 </span>
-                <span className={`text-[10.5px] leading-none ${active ? 'font-semibold text-ink' : 'font-medium'}`}>
+                <span className={`text-[10.5px] leading-none font-normal ${active ? 'text-ink' : ''}`}>
                   {t(item.labelKey)}
                 </span>
               </button>

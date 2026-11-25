@@ -173,19 +173,38 @@ function remarkLocalFileLinks(includeImages = true) {
           const startOffset = child.position?.start?.offset;
           const endOffset = child.position?.end?.offset;
           if (source !== undefined && startOffset !== undefined && endOffset !== undefined) {
-            // CommonMark unescapes \. and \_ in prose; those slashes are real Windows separators.
-            let cursor = 0;
-            for (const original of findFileReferences(source.slice(startOffset, endOffset))) {
-              if (!/^(?:[A-Za-z]:\\|~\\)/.test(original.target)) continue;
-              const interpreted = original.target.replaceAll(/\\([!-/:-@[-`{-~])/g, '$1');
-              const start = value.indexOf(interpreted, cursor);
-              if (start < 0) continue;
-              const end = start + interpreted.length;
-              cursor = end;
-              refs = refs.filter((ref) => ref.end <= start || ref.start >= end);
-              refs.push({ start, end, target: original.target });
+            const rawSlice = source.slice(startOffset, endOffset);
+            if (rawSlice.includes('\\')) {
+              // CommonMark unescapes \. and \_ in prose; those slashes are real Windows separators.
+              const winRefs: Array<{ start: number; end: number; target: string }> = [];
+              let cursor = 0;
+              for (const original of findFileReferences(rawSlice)) {
+                if (!/^(?:[A-Za-z]:\\|~\\)/.test(original.target)) continue;
+                const interpreted = original.target.replaceAll(/\\([!-/:-@[-`{-~])/g, '$1');
+                const start = value.indexOf(interpreted, cursor);
+                if (start < 0) continue;
+                const end = start + interpreted.length;
+                cursor = end;
+                winRefs.push({ start, end, target: original.target });
+              }
+              if (winRefs.length > 0) {
+                const merged: Array<{ start: number; end: number; target: string }> = [];
+                let winIndex = 0;
+                for (const ref of refs) {
+                  while (winIndex < winRefs.length && winRefs[winIndex]!.end <= ref.start) {
+                    merged.push(winRefs[winIndex]!);
+                    winIndex += 1;
+                  }
+                  if (winIndex < winRefs.length && winRefs[winIndex]!.start < ref.end) continue;
+                  merged.push(ref);
+                }
+                while (winIndex < winRefs.length) {
+                  merged.push(winRefs[winIndex]!);
+                  winIndex += 1;
+                }
+                refs = merged;
+              }
             }
-            refs.sort((a, b) => a.start - b.start);
           }
           const nodes: MdastLike[] = [];
           let offset = 0;
@@ -318,11 +337,25 @@ function parsesAsUrl(url: string): boolean {
  * delimiter that the autolink stepped over, and leaving it inside the URL is
  * what made `rehype-harden` reject the href in the first place.
  */
+const MAX_AUTOLINK_PREFIX_SCAN = 2048;
+const MAX_AUTOLINK_URL_PROBES = 64;
+
+function isSkippableAutolinkTailCode(code: number): boolean {
+  // Non-ASCII (e.g. CJK punctuation/prose), whitespace, control chars, or emphasis `*`/`_`.
+  return code <= 0x20 || code >= 0x7f || code === 0x2a || code === 0x5f;
+}
+
 function lastParseablePrefix(url: string): number {
-  for (let end = url.length; end > 0; end -= 1) {
-    const candidate = url.slice(0, end);
-    if (/[*_]$/u.test(candidate)) continue;
-    if (parsesAsUrl(candidate)) return end;
+  let end = Math.min(url.length, MAX_AUTOLINK_PREFIX_SCAN);
+  let probes = 0;
+  while (end > 0 && probes < MAX_AUTOLINK_URL_PROBES) {
+    while (end > 0 && isSkippableAutolinkTailCode(url.charCodeAt(end - 1))) {
+      end -= 1;
+    }
+    if (end <= 0) break;
+    probes += 1;
+    if (parsesAsUrl(url.slice(0, end))) return end;
+    end -= 1;
   }
   return 0;
 }
@@ -491,10 +524,27 @@ const IMAGE_REHYPE_PLUGINS = Object.entries(defaultRehypePlugins).map(([name, pl
   }] as typeof plugin;
 });
 
+// When markdown contains no `<`, mdast-util-to-hast emits zero `raw` HTML nodes,
+// so skipping rehype-raw avoids serializing and re-parsing every block via parse5.
+const IMAGE_REHYPE_PLUGINS_NO_RAW = Object.entries(defaultRehypePlugins)
+  .filter(([name]) => name !== 'raw')
+  .map(([name, plugin]) => {
+    if (name !== 'sanitize' || !Array.isArray(plugin)) return plugin;
+    const schema = plugin[1] as { protocols?: Record<string, string[]> };
+    return [plugin[0], {
+      ...schema,
+      protocols: { ...schema.protocols, src: [...(schema.protocols?.['src'] ?? []), 'data', 'blob', 'kimi-file'] },
+    }] as typeof plugin;
+  });
+
 // Static mode parses children directly. Its unused streaming-block state must
 // stay stable, otherwise a text change schedules a second full-document parse.
 const NO_STREAMING_BLOCKS: string[] = [];
 const staticDocumentBlock = (): string[] => NO_STREAMING_BLOCKS;
+// Settled historical messages rendered in default streaming mode never mutate
+// after mount; returning the single block skips Streamdown's marked.lex pre-pass
+// until a subsequent update proves the block is actively streaming.
+const singleStreamingBlock = (markdown: string): string[] => [markdown];
 const LINK_SAFETY = { enabled: false };
 const CONTROLS = { table: false, code: false, mermaid: false };
 const STREAM_REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), ...REMARK_PLUGINS];
@@ -560,7 +610,22 @@ export const Markdown = memo(function Markdown({
     observer.observe(root, { childList: true, subtree: true });
     return () => { observer.disconnect(); cancelAnimationFrame(frame); };
   }, [documentPath, headingNavigation, mode, text]);
-  const plain = isPlainProse(text) && findFileReferences(text).length === 0;
+  const initialTextRef = useRef(text);
+  const hasStreamedRef = useRef(false);
+  if (text !== initialTextRef.current) {
+    hasStreamedRef.current = true;
+  }
+  const plainParagraphs = useMemo<readonly string[] | null>(() => {
+    if (isPlainProse(text)) return [text];
+    if (!text.includes('\n\n') || text.includes('\r')) return null;
+    const parts = text.split(/\n{2,}/);
+    if (parts.length < 2) return null;
+    for (const part of parts) {
+      if (!isPlainProse(part)) return null;
+    }
+    return parts;
+  }, [text]);
+  const plain = plainParagraphs !== null && findFileReferences(text).length === 0;
   const plugins = useStreamdownPlugins(plain ? null : text, rootRef);
   const className = preserveEdgeMargins ? 'kiki-md kiki-md--edges' : 'kiki-md';
   const sourceVersion = useMemo(
@@ -638,31 +703,39 @@ export const Markdown = memo(function Markdown({
     }
     return next;
   }, [documentDirectory, documentPath]);
-  if (plain) {
+  if (plain && plainParagraphs !== null) {
     return (
       <div ref={rootRef} className={className} data-source-block-id={sourceBlockId} data-source-version={sourceVersion}>
-        <p>
-          {annotationTargets === undefined || annotationTargets.length === 0
-            ? text
-            : projectTextWithAnnotationMarks(text, annotationTargets)}
-        </p>
+        {plainParagraphs.map((paragraph, index) => (
+          <p key={index}>
+            {annotationTargets === undefined || annotationTargets.length === 0
+              ? paragraph
+              : projectTextWithAnnotationMarks(paragraph, annotationTargets)}
+          </p>
+        ))}
       </div>
     );
   }
   const Renderer = mode === 'static' ? StaticDocument : Streamdown;
+  const parseBlocksFn = mode === 'static'
+    ? staticDocumentBlock
+    : hasStreamedRef.current
+      ? undefined
+      : singleStreamingBlock;
+  const rehypePlugins = text.includes('<') ? IMAGE_REHYPE_PLUGINS : IMAGE_REHYPE_PLUGINS_NO_RAW;
   return (
     <div ref={rootRef} className={className} data-source-block-id={sourceBlockId} data-source-version={sourceVersion}>
       <Renderer
         key={renderKey}
         mode={mode}
         parseIncompleteMarkdown={mode === 'streaming'}
-        parseMarkdownIntoBlocksFn={mode === 'static' ? staticDocumentBlock : undefined}
+        parseMarkdownIntoBlocksFn={parseBlocksFn}
         plugins={plugins}
         // The bare remarkPlugins prop REPLACES Streamdown's defaults, so
         // spread them back in — dropping remark-gfm kills GFM tables,
         // strikethrough, task-lists, and autolinks.
         remarkPlugins={documentDirectory === undefined ? STREAM_REMARK_PLUGINS : DOCUMENT_PLUGINS}
-        rehypePlugins={IMAGE_REHYPE_PLUGINS}
+        rehypePlugins={rehypePlugins}
         components={renderers}
         // Streamdown's link safety defaults to ON and blocks any href it
         // cannot open, drawing it as a greyed "Blocked URL" chip that is not a

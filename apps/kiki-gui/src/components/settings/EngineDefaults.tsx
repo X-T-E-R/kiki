@@ -163,7 +163,7 @@ function Field({ label, htmlFor, hint, children }: {
 }) {
   return (
     <div className="min-w-0 space-y-1.5">
-      <label htmlFor={htmlFor} className="block text-[12px] font-medium text-ink-soft">{label}</label>
+      <label htmlFor={htmlFor} className="block text-[12px] font-normal text-ink-soft">{label}</label>
       {children}
       {hint !== undefined ? <p className="text-[11.5px] leading-snug text-ink-faint">{hint}</p> : null}
     </div>
@@ -250,7 +250,7 @@ export function EngineDefaults({ item, saved, quotaSource = '', instances = [], 
 
   return (
     <details data-engine-defaults className="pt-3 [&[open]]:space-y-3">
-      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] font-medium text-ink-soft [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] font-normal text-ink-soft [&::-webkit-details-marker]:hidden">
         <DisclosureChevron open={false} className="text-ink-faint" />
         {t('st.engines.defaults.title')}
       </summary>
@@ -312,7 +312,7 @@ export function EngineDefaults({ item, saved, quotaSource = '', instances = [], 
         </Field>
       </div>
       <div className="space-y-2 pt-3">
-        <p className="text-[12px] font-medium text-ink-soft">{t('st.kikiContext.title')}</p>
+        <p className="text-[12px] font-normal text-ink-soft">{t('st.kikiContext.title')}</p>
         <ul className="space-y-2.5">
           <li data-engine-default-group="subagents" className="space-y-1">
             <Toggle layout="row" label={t('st.profiles.kikiSubagents')} checked={draft.allowKikiSubagents === true} disabled={saving}
@@ -330,7 +330,7 @@ export function EngineDefaults({ item, saved, quotaSource = '', instances = [], 
             <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.kikiContext.hint.hooks', { engine: engineLabel })}</p>
             <p data-engine-default-hook-support={support.level} className="flex flex-wrap items-baseline gap-x-1.5 text-[11.5px] leading-snug">
               <span className="text-ink-soft">{engineLabel}</span>
-              <span className={support.level === 'supported' ? 'font-medium text-ink' : support.level === 'untested' ? 'font-medium text-amber-ink' : 'text-ink-faint'}>
+              <span className={support.level === 'supported' ? 'font-normal text-ink' : support.level === 'untested' ? 'font-normal text-amber-ink' : 'text-ink-faint'}>
                 {t(`st.kikiContext.support.${support.level}` as I18nKey)}
               </span>
             </p>
@@ -338,7 +338,7 @@ export function EngineDefaults({ item, saved, quotaSource = '', instances = [], 
         </ul>
       </div>
       <div className="space-y-2 pt-3">
-        <p className="text-[12px] font-medium text-ink-soft">{t('st.executorPrompt.title')}</p>
+        <p className="text-[12px] font-normal text-ink-soft">{t('st.executorPrompt.title')}</p>
         <Field label={t('st.executorPrompt.delivery')} htmlFor={`${item.id}-default-delivery`}>
           <SettingsSelect id={`${item.id}-default-delivery`} variant="form" className="min-w-0 text-[12px]"
             ariaLabel={t('st.executorPrompt.delivery')} triggerData={{ 'data-engine-default': 'executor_prompt.delivery' }}
@@ -350,7 +350,7 @@ export function EngineDefaults({ item, saved, quotaSource = '', instances = [], 
             ]} />
         </Field>
         <fieldset className="min-w-0 space-y-2">
-          <legend className="mb-1 text-[12px] font-medium text-ink-soft">{t('st.executorPrompt.include')}</legend>
+          <legend className="mb-1 text-[12px] font-normal text-ink-soft">{t('st.executorPrompt.include')}</legend>
           <div className="grid grid-cols-1 gap-x-2 sm:grid-cols-2">
             {CONTEXT_BLOCKS.map((id) => (
               <label key={id} data-engine-default-include={id}

@@ -111,7 +111,7 @@ export function MediaCapabilityList({
   return (
     <section data-media-capabilities={provider} className="min-w-0">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <h2 className="text-[13px] font-medium text-ink">{t('cap.media.detail.capabilities')}</h2>
+        <h2 className="text-[13px] font-bold text-ink">{t('cap.media.detail.capabilities')}</h2>
         {kinds.length > 1 ? (
           <span className="flex items-center gap-0.5 rounded-[9px] bg-ink/[0.04] p-0.5" data-media-capability-kinds>
             {kinds.map((value) => (
@@ -122,7 +122,7 @@ export function MediaCapabilityList({
                 data-media-capability-kind={value}
                 onClick={() => { setKind(value); setAsked(false); }}
                 className={`inline-flex min-h-7 items-center gap-1 rounded-[7px] px-2.5 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink ${
-                  kind === value ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
+                  kind === value ? 'bg-paper text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
                 }`}
               >
                 <MediaKindGlyph kind={value} className="h-3.5 w-3.5" />
@@ -216,7 +216,7 @@ export function MediaVoicePicker({ provider }: { readonly provider: string }) {
   return (
     <section data-media-voices={provider} className="min-w-0">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <h2 className="text-[13px] font-medium text-ink">{t('cap.media.detail.voices')}</h2>
+        <h2 className="text-[13px] font-bold text-ink">{t('cap.media.detail.voices')}</h2>
         <label className="sr-only" htmlFor={`media-voice-language-${provider}`}>{t('cap.media.detail.voiceLanguage')}</label>
         <input
           id={`media-voice-language-${provider}`}

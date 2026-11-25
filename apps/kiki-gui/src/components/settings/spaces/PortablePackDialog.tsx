@@ -112,7 +112,7 @@ export function PortablePackDialog({
         }}
       >
         <div>
-          <h2 className="font-display text-[17px] font-semibold text-ink">{title}</h2>
+          <h2 className="font-display text-[17px] font-bold text-ink">{title}</h2>
           <p className="mt-0.5 truncate font-mono text-[11.5px] text-ink-faint" title={sourcePath}>{sourcePath}</p>
         </div>
 

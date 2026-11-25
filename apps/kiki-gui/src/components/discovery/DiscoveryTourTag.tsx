@@ -8,7 +8,7 @@
  * - Collapsible state, resume banner, and compact keyboard controls (Alt+Shift+G / Escape).
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useI18n } from '../../i18n';
 import { useMediaQuery } from '../../lib/layoutHooks';
@@ -41,33 +41,65 @@ export function DiscoveryTourTag() {
   }, [narrow, collapseDiscovery]);
 
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
+  const anchorElementRef = useRef<HTMLElement | null>(null);
 
-  // Monitor anchor element position for live spotlight highlighting and popover docking
+  // Monitor anchor element position for live spotlight highlighting and popover docking.
+  // Cache the resolved element per station and coalesce scroll/resize reads to one rAF
+  // without churning React state when the rounded rect has not changed.
   useEffect(() => {
+    anchorElementRef.current = null;
     if (state.lifecycle !== 'active' || !view.visible || !view.station?.anchor) {
       setAnchorRect(null);
       return;
     }
 
+    const anchorId = view.station.anchor;
+    let rafId: number | null = null;
+
     const updateRect = () => {
-      const anchor = view.station?.anchor;
-      const el = anchor ? resolveAnchorElement(anchor) : null;
-      if (el) {
+      rafId = null;
+      let el = anchorElementRef.current;
+      if (el === null || !el.isConnected) {
+        el = resolveAnchorElement(anchorId);
+        anchorElementRef.current = el;
+      }
+      if (el !== null) {
         const rect = el.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
-          setAnchorRect(rect);
+          setAnchorRect((prev) => {
+            if (
+              prev !== null &&
+              Math.round(prev.top) === Math.round(rect.top) &&
+              Math.round(prev.left) === Math.round(rect.left) &&
+              Math.round(prev.width) === Math.round(rect.width) &&
+              Math.round(prev.height) === Math.round(rect.height)
+            ) {
+              return prev;
+            }
+            return rect;
+          });
           return;
         }
       }
-      setAnchorRect(null);
+      setAnchorRect((prev) => (prev === null ? prev : null));
+    };
+
+    const scheduleUpdate = () => {
+      if (rafId !== null) return;
+      if (typeof requestAnimationFrame === 'function') {
+        rafId = requestAnimationFrame(updateRect);
+      } else {
+        updateRect();
+      }
     };
 
     updateRect();
-    window.addEventListener('resize', updateRect);
-    window.addEventListener('scroll', updateRect, true);
+    window.addEventListener('resize', scheduleUpdate, { passive: true });
+    window.addEventListener('scroll', scheduleUpdate, { capture: true, passive: true });
     return () => {
-      window.removeEventListener('resize', updateRect);
-      window.removeEventListener('scroll', updateRect, true);
+      if (rafId !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', scheduleUpdate);
+      window.removeEventListener('scroll', scheduleUpdate, true);
     };
   }, [state.lifecycle, view.visible, view.station?.id, view.station?.anchor]);
 
@@ -110,13 +142,13 @@ export function DiscoveryTourTag() {
         data-discovery-resume-tag
         className="fixed top-3 right-4 z-40 flex max-w-[calc(100vw_-_1.5rem)] items-center gap-2 rounded-lg border border-hairline bg-paper/95 px-3 py-1.5 shadow-[var(--kiki-sheet-shadow)] backdrop-blur-sm transition-all"
       >
-        <span className="min-w-0 truncate text-[12px] font-medium text-ink-soft">
+        <span className="min-w-0 truncate text-[12px] font-normal text-ink-soft">
           {t('discovery.title')} · {view.route ? t(view.route.titleKey) : ''}
         </span>
         <button
           type="button"
           onClick={() => { void resumeDiscovery(); }}
-          className="shrink-0 rounded-md bg-accent-soft px-2 py-0.5 text-[12px] font-medium text-accent-ink hover:bg-accent-soft/80"
+          className="shrink-0 rounded-md bg-accent-soft px-2 py-0.5 text-[12px] font-normal text-accent-ink hover:bg-accent-soft/80"
         >
           {t('discovery.continue')}
         </button>
@@ -139,7 +171,7 @@ export function DiscoveryTourTag() {
         className="fixed top-2.5 right-4 z-40 flex max-w-[calc(100vw_-_1.5rem)] items-center gap-2 rounded-lg border border-hairline bg-paper/95 px-2.5 py-1 text-ink shadow-[var(--kiki-sheet-shadow)] backdrop-blur-sm transition-transform"
       >
         <Icon name="compass" size={14} className="shrink-0 text-accent" />
-        <span className="min-w-0 truncate text-[12px] font-medium text-ink">
+        <span className="min-w-0 truncate text-[12px] font-normal text-ink">
           {t(view.route.titleKey)}
         </span>
         <span className="shrink-0 font-mono text-[11px] text-ink-faint">
@@ -221,11 +253,11 @@ export function DiscoveryTourTag() {
           <div className="flex min-w-0 items-center gap-1.5">
             <span
               data-discovery-step-badge
-              className="inline-flex items-center rounded-full bg-accent/15 px-2 py-0.5 font-mono text-[11px] font-medium text-accent"
+              className="inline-flex items-center rounded-full bg-accent/15 px-2 py-0.5 font-mono text-[11px] font-normal text-accent"
             >
               {view.position} / {view.total}
             </span>
-            <span className="truncate text-[12px] font-semibold tracking-tight text-ink">
+            <span className="truncate text-[12px] font-normal text-ink">
               {t(view.route.titleKey)}
             </span>
           </div>
@@ -256,7 +288,7 @@ export function DiscoveryTourTag() {
 
         {/* Station Main Content */}
         <div className="mt-2.5">
-          <h4 className="font-display text-[14px] font-semibold text-ink">
+          <h4 className="font-display text-[14px] font-bold text-ink">
             {t(view.station.titleKey)}
           </h4>
           <p className="mt-1 text-[12px] leading-relaxed text-ink-soft">
@@ -273,7 +305,7 @@ export function DiscoveryTourTag() {
                 type="button"
                 data-discovery-action={action.id}
                 onClick={() => { runAction(action.id); }}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-hairline-strong bg-paper px-2.5 text-[12px] font-medium text-ink transition-colors hover:border-selected-ink/50 hover:bg-ink/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40"
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-hairline-strong bg-paper px-2.5 text-[12px] font-normal text-ink transition-colors hover:border-selected-ink/50 hover:bg-ink/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40"
               >
                 <span>{t(action.labelKey)}</span>
                 {view.progress?.tried ? (

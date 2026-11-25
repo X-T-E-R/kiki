@@ -395,7 +395,7 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
             aria-label={t('st.workspaces.detail.open', { name: displayName })}
             title={workspace.root}
             onClick={onOpenDetail}
-            className="min-w-0 shrink truncate rounded text-left text-[13px] font-medium text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+            className="min-w-0 shrink truncate rounded text-left text-[13px] font-normal text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
           >
             {displayName}
           </button>
@@ -404,7 +404,7 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
           {isTrusted ? (
             <span
               data-workspace-trust-badge={workspace.id}
-              className="inline-flex shrink-0 items-center rounded bg-ink/[0.08] px-1.5 py-0.5 text-[10.5px] font-medium leading-none text-ink"
+              className="inline-flex shrink-0 items-center rounded bg-ink/[0.08] px-1.5 py-0.5 text-[10.5px] font-normal leading-none text-ink"
               title={t('st.workspaces.trustHint')}
             >
               {t('st.workspaces.trusted')}

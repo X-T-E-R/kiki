@@ -253,7 +253,7 @@ export function ImageViewport({
                     data-image-zoom={option}
                     onClick={() => { switchZoom(option === 'fit' ? 'fit' : 100); }}
                     className={`${SEGMENT_CLASS} ${
-                      mode === option ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-faint hover:text-ink-soft'
+                      mode === option ? 'bg-paper text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-faint hover:text-ink-soft'
                     }`}
                   >
                     {option === 'fit' ? t('preview.zoomFit') : t('preview.zoomActual')}

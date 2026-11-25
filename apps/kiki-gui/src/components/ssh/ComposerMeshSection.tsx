@@ -61,7 +61,7 @@ export function ComposerMeshSection({
     <div data-composer-mesh-section className="divide-y divide-hairline/50">
       {hasPinnedTargets ? (
         <div className="pb-1">
-          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
+          <p className="px-3 pt-1.5 pb-1 text-[12px] font-normal text-ink-faint">
             {t('composer.mesh.pinnedHeading')}
           </p>
           <div className="divide-y divide-hairline/40">
@@ -79,7 +79,7 @@ export function ComposerMeshSection({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <Icon name="cpu" size={12} className="text-ink-faint" />
-                      <span className="truncate font-medium text-ink">{node.label}</span>
+                      <span className="truncate font-normal text-ink">{node.label}</span>
                       {node.state === 'offline' ? (
                         <span
                           role="img"
@@ -142,7 +142,7 @@ export function ComposerMeshSection({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <Icon name="agent" size={12} className="text-ink-faint" />
-                      <span className="truncate font-medium text-ink">{seat.label}</span>
+                      <span className="truncate font-normal text-ink">{seat.label}</span>
                       {stateDot !== undefined && stateLabel !== undefined ? (
                         <span
                           role="img"
@@ -186,7 +186,7 @@ export function ComposerMeshSection({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <Icon name="copy" size={12} className="text-ink-faint" />
-                      <span className="truncate font-medium text-ink" title={copy.sourceRoot}>
+                      <span className="truncate font-normal text-ink" title={copy.sourceRoot}>
                         {label}
                       </span>
                       {copy.dirty ? (
@@ -223,7 +223,7 @@ export function ComposerMeshSection({
 
       {hasTunnels ? (
         <div data-composer-mesh-tunnels className="pb-1">
-          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
+          <p className="px-3 pt-1.5 pb-1 text-[12px] font-normal text-ink-faint">
             {t('composer.mesh.tunnelsHeading')}
           </p>
           <div className="divide-y divide-hairline/40">
@@ -244,7 +244,7 @@ export function ComposerMeshSection({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <Icon name="arrowUpRight" size={12} className="text-ink-faint" />
-                      <span className="truncate font-mono font-medium text-ink tabular-nums">
+                      <span className="truncate font-mono font-normal text-ink tabular-nums">
                         {endpoint}
                       </span>
                       {!tunnel.healthy ? (

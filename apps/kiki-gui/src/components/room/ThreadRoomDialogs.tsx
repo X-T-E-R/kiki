@@ -101,7 +101,7 @@ export function NewThreadRoomDialog({
         {blocked ? <div className="mt-1"><CommsOffNotice /></div> : null}
 
         <label className="mt-4 block">
-          <span className="text-[12.5px] font-medium text-ink-soft">{t('room.name')}</span>
+          <span className="text-[12.5px] font-normal text-ink-soft">{t('room.name')}</span>
           <input data-autofocus value={name} maxLength={200} disabled={blocked}
             onChange={(event) => { setName(event.target.value); }}
             className={`${INPUT} mt-1.5 text-[13px]`} />
@@ -109,7 +109,7 @@ export function NewThreadRoomDialog({
 
         <div className="mt-4">
           <div className="flex items-baseline gap-2">
-            <span className="text-[12.5px] font-medium text-ink-soft">{t('room.members')}</span>
+            <span className="text-[12.5px] font-normal text-ink-soft">{t('room.members')}</span>
             <span className="text-[12px] text-ink-faint tabular-nums">{count}/{ROOM_MAX_MEMBERS}</span>
           </div>
           <ul className="mt-2 max-h-56 space-y-px overflow-y-auto rounded-lg border border-hairline p-1">

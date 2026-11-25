@@ -19,7 +19,7 @@ export function PlatformMark({ brand, twoWay, size = 'md' }: { brand: BrandId; t
   const box = size === 'lg' ? 'h-10 w-10 rounded-[10px] text-[12.5px]' : 'h-8 w-8 rounded-[8px] text-[11px]';
   return (
     <span aria-hidden data-channel-mark={brand}
-      className={`flex shrink-0 items-center justify-center font-semibold tracking-[0.02em] ${box} ${
+      className={`flex shrink-0 items-center justify-center font-normal ${box} ${
         twoWay ? 'bg-selected text-selected-ink' : 'bg-ink/[0.05] text-ink-soft ring-1 ring-inset ring-hairline'
       }`}>
       {brand === 'windows' ? <Icon name="bell" size={14} /> : MARK[brand]}
@@ -96,7 +96,7 @@ export function ChannelListRow({ brand, twoWay, name, status, meta, control, ope
           <PlatformMark brand={brand} twoWay={twoWay} />
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-center gap-2">
-              <span className="min-w-0 truncate text-[13.5px] font-medium text-ink" data-channel-name>{name}</span>
+              <span className="min-w-0 truncate text-[13.5px] font-normal text-ink" data-channel-name>{name}</span>
               <CapabilityTag twoWay={twoWay} />
             </span>
             <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px]">

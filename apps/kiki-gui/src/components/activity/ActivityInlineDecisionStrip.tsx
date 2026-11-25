@@ -24,11 +24,11 @@ import {
 } from './activityTriageLimiter';
 
 const PRIMARY_BTN =
-  'inline-flex min-h-7 pointer-coarse:min-h-8 items-center rounded-md bg-accent px-3 text-[12px] font-medium text-primary-foreground transition-colors hover:bg-accent-deep focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:opacity-55';
+  'inline-flex min-h-7 pointer-coarse:min-h-8 items-center rounded-md bg-accent px-3 text-[12px] font-normal text-primary-foreground transition-colors hover:bg-accent-deep focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:opacity-55';
 const SECONDARY_BTN =
-  'inline-flex min-h-7 pointer-coarse:min-h-8 items-center rounded-md border border-hairline bg-paper px-3 text-[12px] font-medium text-ink-soft transition-colors hover:border-ink/25 hover:bg-ink/[0.03] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:opacity-55';
+  'inline-flex min-h-7 pointer-coarse:min-h-8 items-center rounded-md border border-hairline bg-paper px-3 text-[12px] font-normal text-ink-soft transition-colors hover:border-ink/25 hover:bg-ink/[0.03] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:opacity-55';
 const QUIET_BTN =
-  'inline-flex min-h-7 pointer-coarse:min-h-8 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:opacity-55';
+  'inline-flex min-h-7 pointer-coarse:min-h-8 items-center gap-1 rounded-md px-2 text-[12px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:opacity-55';
 
 export interface ActivityThreadTarget {
   readonly agentId?: string;
@@ -95,7 +95,7 @@ function ApprovalDecisionRow({
   return (
     <div data-activity-approval={request.approval_id} className="flex flex-col gap-1.5">
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] leading-4">
-        <span className="inline-flex shrink-0 items-center gap-1 font-medium text-ink">
+        <span className="inline-flex shrink-0 items-center gap-1 font-normal text-ink">
           <Icon name="gate" size={12} className="text-accent-deep" />
           <span>{request.tool_name}</span>
         </span>
@@ -327,7 +327,7 @@ function QuestionDecisionRow({
           <div key={item.id} className="flex flex-col gap-1.5">
             <div className="flex min-w-0 items-start gap-1.5 text-[12.5px] leading-[18px] text-ink">
               <Icon name="ask" size={12} className="mt-[3px] shrink-0 text-accent-deep" />
-              <span className="min-w-0 flex-1 break-words font-medium">{item.question}</span>
+              <span className="min-w-0 flex-1 break-words font-normal">{item.question}</span>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
               {item.options.map((opt) => {

@@ -83,7 +83,7 @@ export function DimensionBreakdown({
           {control ?? <span aria-hidden className="w-5 shrink-0" />}
           <div className="min-w-0">
             <p
-              className={`truncate text-[13px] ${row.key === 'unknown' ? 'text-ink-soft italic' : 'font-medium text-ink'}`}
+              className={`truncate text-[13px] ${row.key === 'unknown' ? 'text-ink-soft italic' : 'font-normal text-ink'}`}
               title={row.key}
             >
               {label}
@@ -113,7 +113,7 @@ export function DimensionBreakdown({
         </span>
         <span
           data-usage-breakdown-cost={row.key}
-          className="text-right text-[13px] font-semibold text-ink tabular-nums"
+          className="text-right text-[13px] font-normal text-ink tabular-nums"
         >
           {formatCostOrDash(row.costUsdEstimated, tokensTotalUnknown(row))}
           {row.costUnknown ? <Icon name="partial" size={12} className="ml-1 inline-block align-[-1px] text-amber-ink" /> : null}

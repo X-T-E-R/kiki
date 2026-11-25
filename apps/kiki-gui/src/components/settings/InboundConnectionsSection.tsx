@@ -106,7 +106,7 @@ function InboundGrantRow({ grant, gateEnabled, threadFact, bridgesAvailable, onO
           <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${tone.dot}`} />
           {t(`st.inbound.status.${grant.status}` as I18nKey)}
           {stale ? (
-            <span className="ml-1 shrink-0 rounded-full bg-amber-rule/10 px-1.5 py-0.5 text-[10.5px] font-medium text-amber-ink" data-inbound-stale="true">{t('st.inbound.stale')}</span>
+            <span className="ml-1 shrink-0 rounded-full bg-amber-rule/10 px-1.5 py-0.5 text-[10.5px] font-normal text-amber-ink" data-inbound-stale="true">{t('st.inbound.stale')}</span>
           ) : null}
         </span>
       )}
@@ -142,7 +142,7 @@ function InboundGrantRow({ grant, gateEnabled, threadFact, bridgesAvailable, onO
               type="button"
               data-inbound-quick-revoke={grant.id}
               onClick={onRevoke}
-              className="h-7 shrink-0 rounded-md px-2 text-[11.5px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/10 hover:text-ink"
+              className="h-7 shrink-0 rounded-md px-2 text-[11.5px] font-normal text-amber-ink transition-colors hover:bg-amber-rule/10 hover:text-ink"
             >
               {t('st.inbound.revokeConfirm')}
             </button>

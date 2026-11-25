@@ -2165,9 +2165,35 @@ async function* readPinned(
   }
 }
 
+/** Pinned cold segment path and integrity metadata for worker-offloaded sequential reads. */
+export interface PinnedColdSegmentDescriptor {
+  readonly path: string;
+  readonly logicalStart: number;
+  readonly logicalEnd: number;
+  readonly uncompressedSha256: string;
+}
+
+/** Pinned local-filesystem descriptor exposed by `openPinnedLogicalRead` for parallel worker scanning. */
+export type PinnedLogicalScanPlan =
+  | {
+      readonly kind: 'sealed';
+      readonly wirePath: string;
+      readonly codec: ColdSealCodec;
+      readonly segmentBytes: number;
+      readonly sealedCut: number;
+      readonly size: number;
+      readonly segments: readonly PinnedColdSegmentDescriptor[];
+    }
+  | {
+      readonly kind: 'dense';
+      readonly wirePath: string;
+      readonly size: number;
+    };
+
 export interface PinnedLogicalRead {
   readonly size: number | undefined;
   readonly sealed: boolean;
+  readonly scanPlan?: PinnedLogicalScanPlan;
   read(range?: StorageReadRange, options?: StorageReadOptions): AsyncIterable<Uint8Array>;
   close(): void;
 }
@@ -2234,9 +2260,52 @@ export async function openPinnedLogicalRead(
       if (!closed) cachedSegment = { key: segmentKey, plain };
     },
   };
+  let scanPlan: PinnedLogicalScanPlan | undefined;
+  const locatedForPlan = locatedJournal(storage, scope, key);
+  if (
+    locatedForPlan !== undefined &&
+    size !== undefined &&
+    storage.readStream === FileStorageService.prototype.readStream
+  ) {
+    if (manifest !== undefined) {
+      const descriptors: PinnedColdSegmentDescriptor[] = [];
+      let allMapped = true;
+      for (const segment of manifest.segments) {
+        const segPath = storage.pathFor(scope, segment.key);
+        if (segPath === undefined || segPath.length === 0) {
+          allMapped = false;
+          break;
+        }
+        descriptors.push({
+          path: segPath,
+          logicalStart: segment.logicalStart,
+          logicalEnd: segment.logicalEnd,
+          uncompressedSha256: segment.uncompressedSha256,
+        });
+      }
+      if (allMapped) {
+        scanPlan = {
+          kind: 'sealed',
+          wirePath: locatedForPlan,
+          codec: manifest.codec,
+          segmentBytes: manifest.segmentBytes,
+          sealedCut: manifest.sealedCut,
+          size,
+          segments: descriptors,
+        };
+      }
+    } else {
+      scanPlan = {
+        kind: 'dense',
+        wirePath: locatedForPlan,
+        size,
+      };
+    }
+  }
   return {
     size,
     sealed: manifest !== undefined,
+    scanPlan,
     read(range, options) {
       if (manifest !== undefined) {
         return readPinned(storage, scope, key, manifest, range, options, segmentCache);

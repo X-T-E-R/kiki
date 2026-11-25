@@ -9,36 +9,13 @@ import type {
   HttpRestRequestOptions,
 } from '../../core/facade/http-rest.js';
 import { personaAvatarForm, personaCardForm } from './persona-form.js';
-import { createOutputLayerFacade } from './output-layer.js';
-import { createRawSubstrateFacade } from './raw-substrate.js';
 import { createConnectionsFacade } from './connections.js';
 import { createMeshFacade } from './mesh.js';
 import { createSyncFacade } from './sync.js';
-import { createWebAccessFacade } from './web-access.js';
 import { createThreadBridgesFacade } from './thread-bridges.js';
-import { createUsageExportFacade } from './usage-export.js';
-import { createProviderQuotaFacade } from './provider-quota.js';
-import { createPortableSpacesFacade } from './portable-spaces.js';
 import { createExternalClientsFacade } from './external-clients.js';
-import { listAgentTasksQuerySchema, listAgentTasksResponseSchema } from '../../contract/session/agent-tasks.js';
-import { sessionMediaPlaybackSchema } from '../../contract/session/media-playback.js';
-import {
-  agentReferenceCandidatesQuerySchema,
-  agentReferenceCandidatesResponseSchema,
-  detachSessionGroupResponseSchema,
-  executorDiscoveryResponseSchema,
-  executorAccountSourcesResponseSchema,
-  executorAccountsResponseSchema,
-  harnessQuotaActionRequestSchema,
-  harnessQuotaActionResponseSchema,
-  harnessQuotaCacheResponseSchema,
-  harnessQuotaReadRequestSchema,
-  pluginModelCatalogSchema,
-  resolveSidebarUnitsRequestSchema,
-  resolveSidebarUnitsResponseSchema,
-  sidebarGroupMembersResponseSchema,
-  sidebarSessionsPageSchema,
-} from '@kiki/protocol';
+import type { HttpChannelValidator } from './validator.js';
+import { MEDIA_PREVIEW_MAX_BYTES } from '@kiki/protocol';
 import type {
   ActivateSkillRequest,
   AuthSummary,
@@ -75,7 +52,22 @@ import type {
   PersonaSnapshot,
   PersonaSummary,
 } from '@kiki/protocol';
-import { decisionConnectionProbeInputSchema, decisionConnectionProbeResultSchema, moveReviewerKeyInputSchema, moveReviewerKeyResultSchema, deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, MEDIA_PREVIEW_MAX_BYTES, memorySettingsResponseSchema, memorySettingsPatchSchema, memoryAdvisorProbeInputSchema, memoryAdvisorProbeResultSchema, memoryAdvisorStatusSchema } from '@kiki/protocol';
+
+function lazyAsyncFacade<T extends object>(load: () => Promise<T>): T {
+  let promise: Promise<T> | undefined;
+  const get = () => (promise ??= load());
+  return new Proxy({} as T, {
+    get(_target, prop) {
+      if (prop === 'then') return undefined;
+      return (...args: unknown[]) =>
+        get().then((facade) => {
+          const fn = (facade as Record<PropertyKey, unknown>)[prop];
+          if (typeof fn !== 'function') throw new TypeError(`REST facade method ${String(prop)} is not a function`);
+          return (fn as (...a: unknown[]) => unknown).apply(facade, args);
+        });
+    },
+  });
+}
 
 export interface HttpRestJsonOptions extends HttpRestRequestOptions {
   readonly method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -102,29 +94,30 @@ export interface HttpRestTransport {
   ): Promise<T>;
 }
 
-export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFacade {
+export function createHttpRestFacade(transport: HttpRestTransport, validator?: HttpChannelValidator): HttpRestFacade {
+  const parse = <T>(raw: unknown, fn: ((value: unknown) => T) | undefined): T => (fn !== undefined ? fn(raw) : (raw as T));
   return {
     decision: {
-      probe: async (body, options) => decisionConnectionProbeResultSchema.parse(await transport.json('/decision/probe', { method: 'POST', body: decisionConnectionProbeInputSchema.parse(body), ...options })),
-      moveReviewerKey: async (body) => moveReviewerKeyResultSchema.parse(await transport.json('/decision/move-reviewer-key', { method: 'POST', body: moveReviewerKeyInputSchema.parse(body) })),
+      probe: async (body, options) => parse(await transport.json('/decision/probe', { method: 'POST', body: parse(body, validator?.decisionProbeInput), ...options }), validator?.decisionProbeOutput),
+      moveReviewerKey: async (body) => parse(await transport.json('/decision/move-reviewer-key', { method: 'POST', body: parse(body, validator?.moveReviewerKeyInput) }), validator?.moveReviewerKeyOutput),
     },
     memory: {
-      settings: async (query) => memorySettingsResponseSchema.parse(await transport.json('/memory/settings', { query })),
-      updateSettings: async (body, query) => memorySettingsResponseSchema.parse(await transport.json('/memory/settings', { method: 'PATCH', body: memorySettingsPatchSchema.parse(body), query })),
-      probe: async (body, options) => memoryAdvisorProbeResultSchema.parse(await transport.json('/memory/advisor/probe', { method: 'POST', body: memoryAdvisorProbeInputSchema.parse(body), ...options })),
-      status: async (query) => memoryAdvisorStatusSchema.nullable().parse(await transport.json('/memory/advisor/status', { query })),
+      settings: async (query) => parse(await transport.json('/memory/settings', { query }), validator?.memorySettingsOutput),
+      updateSettings: async (body, query) => parse(await transport.json('/memory/settings', { method: 'PATCH', body: parse(body, validator?.memorySettingsPatch), query }), validator?.memorySettingsOutput),
+      probe: async (body, options) => parse(await transport.json('/memory/advisor/probe', { method: 'POST', body: parse(body, validator?.memoryAdvisorProbeInput), ...options }), validator?.memoryAdvisorProbeOutput),
+      status: async (query) => parse(await transport.json('/memory/advisor/status', { query }), validator?.memoryAdvisorStatus),
     },
-    outputLayer: createOutputLayerFacade(transport),
+    outputLayer: lazyAsyncFacade(() => import('./output-layer.js').then((m) => m.createOutputLayerFacade(transport))),
     externalClients: createExternalClientsFacade(transport),
-    webAccess: createWebAccessFacade(transport),
+    webAccess: lazyAsyncFacade(() => import('./web-access.js').then((m) => m.createWebAccessFacade(transport))),
     connections: createConnectionsFacade(transport),
     mesh: createMeshFacade(transport),
     sync: createSyncFacade(transport),
     threadBridges: createThreadBridgesFacade(transport),
-    usageExport: createUsageExportFacade(transport),
-    providerQuotas: createProviderQuotaFacade(transport),
-    portableSpaces: createPortableSpacesFacade(transport),
-    raw: createRawSubstrateFacade(transport),
+    usageExport: lazyAsyncFacade(() => import('./usage-export.js').then((m) => m.createUsageExportFacade(transport))),
+    providerQuotas: lazyAsyncFacade(() => import('./provider-quota.js').then((m) => m.createProviderQuotaFacade(transport))),
+    portableSpaces: lazyAsyncFacade(() => import('./portable-spaces.js').then((m) => m.createPortableSpacesFacade(transport))),
+    raw: lazyAsyncFacade(() => import('./raw-substrate.js').then((m) => m.createRawSubstrateFacade(transport))),
     healthz: async (baseUrlOverride) => {
       try {
         const data = await transport.json<{ readonly ok?: boolean } | null>('/healthz', {
@@ -300,17 +293,26 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         { method: 'POST', body },
       ),
       detachGroup: async (sessionId: string, options?: HttpRestRequestOptions) =>
-        detachSessionGroupResponseSchema.parse(
+        parse(
           await transport.json('/sessions/' + encodeURIComponent(sessionId) + ':detach-group', {
             method: 'POST',
             body: {},
             ...options,
           }),
+          validator?.detachGroup,
         ),
-      deleteArchived: async (sessionId: string, options = {}) => deleteArchivedSessionsResponseSchema.parse(await transport.json('/sessions/' + encodeURIComponent(sessionId) + ':delete-archived', {
-        method: 'POST', body: deleteArchivedSessionRequestSchema.parse(options), timeoutMs: 0,
-      })),
-      deleteAllArchived: async () => deleteArchivedSessionsResponseSchema.parse(await transport.json('/sessions:delete-archived', { method: 'POST', body: {}, timeoutMs: 0 })),
+      deleteArchived: async (sessionId: string, options = {}) =>
+        parse(
+          await transport.json('/sessions/' + encodeURIComponent(sessionId) + ':delete-archived', {
+            method: 'POST', body: parse(options, validator?.deleteArchivedInput), timeoutMs: 0,
+          }),
+          validator?.deleteArchivedOutput,
+        ),
+      deleteAllArchived: async () =>
+        parse(
+          await transport.json('/sessions:delete-archived', { method: 'POST', body: {}, timeoutMs: 0 }),
+          validator?.deleteArchivedOutput,
+        ),
       goal: (sessionId: string) => transport.json('/sessions/' + encodeURIComponent(sessionId) + '/goal'),
       listMessages: (sessionId: string, query = {}) => transport.json<PageResponse<Message>>(
         `/sessions/${encodeURIComponent(sessionId)}/messages`,
@@ -347,11 +349,14 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         { query: { status: query?.status, page_size: query?.page_size, offset: query?.offset } },
       ),
       listAgentTasks: async (sessionId, query = {}, options = {}) => {
-        const input = listAgentTasksQuerySchema.parse(query);
-        return listAgentTasksResponseSchema.parse(await transport.json(
-          `/sessions/${encodeURIComponent(sessionId)}/agent-tasks`,
-          { ...options, query: { page_size: input.page_size, page_token: input.page_token } },
-        ));
+        const input = parse(query, validator?.listAgentTasksQuery);
+        return parse(
+          await transport.json(
+            `/sessions/${encodeURIComponent(sessionId)}/agent-tasks`,
+            { ...options, query: { page_size: input.page_size, page_token: input.page_token } },
+          ),
+          validator?.listAgentTasksResponse,
+        );
       },
       listSubagents: (sessionId, query = {}, options = {}) => transport.json<import('@kiki/protocol').SessionSubagentsResponse>(
         `/sessions/${encodeURIComponent(sessionId)}/subagents`,
@@ -395,10 +400,14 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         { method: 'GET', expectBinary: true, signal: options?.signal, timeoutMs: options?.timeoutMs ?? 0, headers: mediaHeaders(options) },
         (response) => consumeMedia(response, sink, options?.signal),
       ),
-      openMediaPlayback: async (sessionId, fileId, options) => sessionMediaPlaybackSchema.parse(await transport.json(
-        `/sessions/${encodeURIComponent(sessionId)}/media-playback`,
-        { method: 'POST', body: { file_id: fileId }, signal: options?.signal, timeoutMs: options?.timeoutMs ?? 15_000 },
-      )),
+      openMediaPlayback: async (sessionId, fileId, options) =>
+        parse(
+          await transport.json(
+            `/sessions/${encodeURIComponent(sessionId)}/media-playback`,
+            { method: 'POST', body: { file_id: fileId }, signal: options?.signal, timeoutMs: options?.timeoutMs ?? 15_000 },
+          ),
+          validator?.mediaPlayback,
+        ),
       closeMediaPlayback: async (previewId, options) => {
         await transport.json<null>(`/sessions/media-playback/${encodeURIComponent(previewId)}`, { method: 'DELETE', signal: options?.signal, timeoutMs: options?.timeoutMs ?? 10_000 });
       },
@@ -418,7 +427,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     sidebar: {
       list: async (query = {}, options) =>
-        sidebarSessionsPageSchema.parse(
+        parse(
           await transport.json('/sidebar/sessions', {
             query: {
               cursor: query.cursor,
@@ -439,9 +448,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
             signal: options?.signal,
             timeoutMs: options?.timeoutMs,
           }),
+          validator?.sidebarList,
         ),
       groupMembers: async (groupId: string, query = {}, options) =>
-        sidebarGroupMembersResponseSchema.parse(
+        parse(
           await transport.json(`/sidebar/groups/${encodeURIComponent(groupId)}/members`, {
             query: {
               cursor: query.cursor,
@@ -460,15 +470,17 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
             signal: options?.signal,
             timeoutMs: options?.timeoutMs,
           }),
+          validator?.sidebarGroupMembers,
         ),
       resolveUnits: async (body, options) =>
-        resolveSidebarUnitsResponseSchema.parse(
+        parse(
           await transport.json('/sidebar/units:resolve', {
             method: 'POST',
-            body: resolveSidebarUnitsRequestSchema.parse(body),
+            body: parse(body, validator?.resolveSidebarUnitsInput),
             signal: options?.signal,
             timeoutMs: options?.timeoutMs,
           }),
+          validator?.resolveSidebarUnitsOutput,
         ),
     },
 
@@ -754,12 +766,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     executors: {
-      discover: async (options) => executorDiscoveryResponseSchema.parse(await transport.json('/executors/discovery', options)),
+      discover: async (options) => parse(await transport.json('/executors/discovery', options), validator?.executorDiscovery),
       list: () => transport.json('/executors'),
-      listAccountSources: async (executorId, options) => executorAccountSourcesResponseSchema.parse(await transport.json(
-        `/executors/${encodeURIComponent(executorId)}/account-sources`, options)),
-      listAccounts: async (executorId, source, options) => executorAccountsResponseSchema.parse(await transport.json(
-        `/executors/${encodeURIComponent(executorId)}/accounts`, { ...options, query: { source } })),
+      listAccountSources: async (executorId, options) => parse(await transport.json(`/executors/${encodeURIComponent(executorId)}/account-sources`, options), validator?.executorAccountSources),
+      listAccounts: async (executorId, source, options) => parse(await transport.json(`/executors/${encodeURIComponent(executorId)}/accounts`, { ...options, query: { source } }), validator?.executorAccounts),
       listInstallations: (options) => transport.json('/executors/installations', options),
       install: (executorId, options) => transport.json(
         `/executors/${encodeURIComponent(executorId)}/install`, { ...options, method: 'POST', body: {} },
@@ -786,19 +796,23 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     harnessQuota: {
-      cached: async (options) => harnessQuotaCacheResponseSchema.parse(await transport.json('/harness-quota', options)),
-      read: async (source, options) => harnessQuotaCacheResponseSchema.parse(await transport.json('/harness-quota/read', {
-        ...options, method: 'POST', body: harnessQuotaReadRequestSchema.parse({ source }),
-      })),
-      performAction: async (sourceId, body, options) => harnessQuotaActionResponseSchema.parse(
+      cached: async (options) => parse(await transport.json('/harness-quota', options), validator?.harnessQuotaCache),
+      read: async (source, options) => parse(await transport.json('/harness-quota/read', {
+        ...options, method: 'POST', body: parse({ source }, validator?.harnessQuotaReadInput),
+      }), validator?.harnessQuotaCache),
+      performAction: async (sourceId, body, options) => parse(
         await transport.json(`/harness-quota/${encodeURIComponent(sourceId)}/action`, {
-          ...options, method: 'POST', body: harnessQuotaActionRequestSchema.parse(body),
+          ...options, method: 'POST', body: parse(body, validator?.harnessQuotaActionInput),
         }),
+        validator?.harnessQuotaActionOutput,
       ),
     },
 
     agents: {
-      referenceCandidates: async (query, options) => agentReferenceCandidatesResponseSchema.parse(await transport.json('/agents/references', { ...options, query: agentReferenceCandidatesQuerySchema.parse(query) })),
+      referenceCandidates: async (query, options) => parse(
+        await transport.json('/agents/references', { ...options, query: parse(query, validator?.agentRefCandidatesQuery) }),
+        validator?.agentRefCandidatesOutput,
+      ),
       list: (query?: string | ListNamedAgentProfilesQuery) => transport.json<ListNamedAgentProfilesResponse>('/agents', {
         query: typeof query === 'string' ? { workspace_id: query } : query,
       }),
@@ -937,7 +951,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     plugins: {
       navigation: () => transport.json('/plugins/navigation'),
-      models: async () => pluginModelCatalogSchema.parse(await transport.json('/plugins/models')),
+      models: async () => parse(await transport.json('/plugins/models'), validator?.pluginModelCatalog),
       usage: (target) => transport.json('/plugins/usage', { query: target }),
       setUsage: (input) => transport.json('/plugins/usage', { method: 'POST', body: input }),
       marketplace: () => transport.json('/plugins/marketplace'),

@@ -339,7 +339,7 @@ function BuiltinProfileDetail({ profile, catalog, onDuplicate }: {
     <div className="space-y-4" data-identity-detail={profile.id}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-[15px] font-medium text-ink">{profile.label}</h3>
+          <h3 className="text-[15px] font-bold text-ink">{profile.label}</h3>
           <Hint>{t('st.identity.readOnly')}</Hint>
         </div>
         {profile.base_preset === 'none' ? null
@@ -437,7 +437,7 @@ function CustomProfileEditor({ profile, catalog, edit, baseline, onPatch, onDisc
     <div className="space-y-4" data-identity-detail={profile.id}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-[15px] font-medium text-ink">{draft.label.trim() === '' ? profile.label : draft.label}</h3>
+          <h3 className="text-[15px] font-bold text-ink">{draft.label.trim() === '' ? profile.label : draft.label}</h3>
           <p className="font-mono text-[11px] text-ink-faint">{profile.id}{profile.duplicated_from === undefined ? '' : ` ← ${profile.duplicated_from}`}</p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -613,7 +613,7 @@ function IdentityPreview({ profileId, basePreset, track, draft }: {
   return (
     <section aria-labelledby={`identity-preview-${profileId}`} className="space-y-2 pt-4" data-identity-preview>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h4 id={`identity-preview-${profileId}`} className="text-[13px] font-medium text-ink">
+        <h4 id={`identity-preview-${profileId}`} className="text-[13px] font-normal text-ink">
           {t(draft === undefined ? 'st.identity.previewTitle' : 'st.identity.previewTitleDraft')}
         </h4>
         <SettingsSegmented<PreviewProtocol> ariaLabel={t('st.identity.previewProtocol')} value={protocol}
@@ -654,7 +654,7 @@ function IdentityPreview({ profileId, basePreset, track, draft }: {
                       </>} />
                   ))}
                   {params.length > 0 ? (
-                    <tr><th scope="rowgroup" colSpan={2} className="pb-1 pt-3 text-left text-[12px] font-medium text-ink-soft">{t('st.identity.paramsLabel')}</th></tr>
+                    <tr><th scope="rowgroup" colSpan={2} className="pb-1 pt-3 text-left text-[12px] font-normal text-ink-soft">{t('st.identity.paramsLabel')}</th></tr>
                   ) : null}
                   {params.map(([name, value]) => (
                     <PreviewRow key={`p:${name}`} name={name} value={String(value)} attr={{ 'data-preview-param': name }} />
@@ -753,7 +753,7 @@ function TrackRow({ track }: { track: RequestIdentityTrack }) {
       {track.candidate !== null ? (
         <div className="flex flex-wrap items-center gap-2 rounded-md bg-attention-soft/60 px-3 py-2" data-track-candidate role="status">
           <span className="mr-auto min-w-0 text-[13px] text-ink">
-            <span className="font-medium text-attention">{t('st.identity.candidate', { version: track.candidate.version, origin: origin(track.candidate.origin) })}</span>
+            <span className="font-normal text-attention">{t('st.identity.candidate', { version: track.candidate.version, origin: origin(track.candidate.origin) })}</span>
             <span className="ml-2 text-[12px] text-ink-faint">{when(locale, track.candidate.at)}{track.candidate.source_detail === undefined ? '' : ` · ${track.candidate.source_detail}`}</span>
             {track.candidate.user_agent !== undefined ? <span className={`block ${MONO_VALUE}`}>User-Agent: {track.candidate.user_agent}</span> : null}
             {(track.candidate.headers ?? []).map((header) => <span key={header.name} className={`block ${MONO_VALUE}`}>{header.name}: {header.value}</span>)}
@@ -867,9 +867,9 @@ function UsageCard({ catalog }: { catalog: RequestIdentityCatalog | undefined })
             <colgroup><col className="w-[34%]" /><col className="w-[30%]" /><col /></colgroup>
             <thead>
               <tr className="text-[12px] text-ink-soft">
-                <th scope="col" className="pb-1.5 pr-4 font-medium">{t('st.identity.usageLayer')}</th>
-                <th scope="col" className="pb-1.5 pr-4 font-medium">{t('st.identity.usageSetting')}</th>
-                <th scope="col" className="pb-1.5 font-medium">{t('st.identity.usageEffective')}</th>
+                <th scope="col" className="pb-1.5 pr-4 font-normal">{t('st.identity.usageLayer')}</th>
+                <th scope="col" className="pb-1.5 pr-4 font-normal">{t('st.identity.usageSetting')}</th>
+                <th scope="col" className="pb-1.5 font-normal">{t('st.identity.usageEffective')}</th>
               </tr>
             </thead>
             <tbody>
@@ -916,7 +916,7 @@ function RecentCard({ catalog }: { catalog: RequestIdentityCatalog | undefined }
           {observations.slice(0, 5).map((entry, index) => (
             <details key={`${entry.at}-${String(index)}`} open={index === 0} data-identity-observation>
               <summary className="flex cursor-pointer select-none flex-wrap items-baseline gap-x-2 text-[13px] text-ink">
-                <span className="font-medium">{catalog?.profiles.find((profile) => profile.id === entry.profile)?.label ?? entry.profile}</span>
+                <span className="font-normal">{catalog?.profiles.find((profile) => profile.id === entry.profile)?.label ?? entry.profile}</span>
                 <span className="text-[12px] text-ink-faint">
                   {t('st.identity.recentMeta', { provider: entry.provider_id, model: entry.model, at: when(locale, entry.at) })} · {protocolLabel(entry.protocol)}
                 </span>

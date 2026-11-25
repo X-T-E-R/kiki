@@ -37,9 +37,8 @@ import {
 
 import type { HostAdapter, HostNotification } from '../host';
 import { browserNotificationPermission, requestBrowserPermission } from '../host/browser';
+import { isVscodeWebview } from '../host/detect';
 import { NotificationPermissionNotAsked, type SystemNotificationPermission } from '../host/notificationPermission';
-import { requestTauriPermission, tauriNotificationPermission } from '../host/tauri';
-import { isVscodeWebview } from '../host/vscode';
 
 export interface AwayNotifierDeps {
   /** True when the window is hidden, minimized or not focused. */
@@ -200,7 +199,7 @@ export type SystemNotificationState = 'granted' | 'notAsked' | 'declined' | 'blo
 
 async function systemPermission(host: HostAdapter): Promise<SystemNotificationPermission | undefined> {
   if (host.notify === undefined) return undefined;
-  if (host.kind === 'tauri') return tauriNotificationPermission();
+  if (host.kind === 'tauri') return (await import('../host/tauri')).tauriNotificationPermission();
   if (host.kind === 'electron') return 'granted';
   // The VS Code webview hands notifications to its extension: nothing to ask.
   if (isVscodeWebview()) return 'granted';
@@ -220,15 +219,15 @@ export async function systemNotificationState(host: HostAdapter): Promise<System
  * thanks"). Asking is their new answer, so the earlier "no" and any pending
  * question are cleared. Resolves to whether notifications are now allowed.
  */
-export function requestSystemNotifications(host: HostAdapter): Promise<boolean> {
+export async function requestSystemNotifications(host: HostAdapter): Promise<boolean> {
   clearFirstRunHint('notifyDeclined');
   markFirstRunHintDone('notifyAsk');
   publishAsk(null);
-  if (host.notify === undefined) return Promise.resolve(false);
-  if (host.kind === 'tauri') return requestTauriPermission();
-  if (host.kind === 'electron') return Promise.resolve(true);
-  if (isVscodeWebview()) return Promise.resolve(true);
-  return browserNotificationPermission() === undefined ? Promise.resolve(false) : requestBrowserPermission();
+  if (host.notify === undefined) return false;
+  if (host.kind === 'tauri') return (await import('../host/tauri')).requestTauriPermission();
+  if (host.kind === 'electron') return true;
+  if (isVscodeWebview()) return true;
+  return browserNotificationPermission() === undefined ? false : requestBrowserPermission();
 }
 
 /** The app's one notifier; `useAwayNotifications` configures it. */

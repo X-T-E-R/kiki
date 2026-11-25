@@ -203,7 +203,7 @@ export function BrowserRuntimeDetails({ id, type, status }: {
       {/* The daemon's own target list. Not connected is a real answer here, not
           an empty one, so the three states stay apart. */}
       <div className="space-y-1" data-browser-tabs-section>
-        <p className="flex items-baseline gap-x-2 font-medium">
+        <p className="flex items-baseline gap-x-2 font-normal">
           {t('st.browser.tabs.title')}
           {opened && tabsQuery.data !== undefined ? (
             <span className="font-mono text-[11px] tabular-nums text-ink-faint" data-browser-tabs-count>{tabsQuery.data.tabs.length}</span>
@@ -235,7 +235,7 @@ export function BrowserRuntimeDetails({ id, type, status }: {
       {/* The managed backend's catalogue. Reading it starts that backend, so it
           waits for a press; schemas wait for a second one. */}
       <div className="space-y-1.5" data-browser-catalog-section>
-        <p className="font-medium">{t('st.browser.catalog.title')}</p>
+        <p className="font-normal">{t('st.browser.catalog.title')}</p>
         {!readCatalog ? (
           <>
             <p className="max-w-[62ch]">{t(type === 'kimi-webbridge' || type === 'webbridge-command' ? 'st.browser.catalog.readHintWebbridge' : live ? 'st.browser.catalog.readHint' : 'st.browser.catalog.readHintIdle')}</p>

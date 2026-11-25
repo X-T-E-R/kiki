@@ -101,12 +101,12 @@ export function OAuthDeviceCard({
   return (
     <div className="anim-enter rounded-xl border border-hairline bg-panel p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-[12px] font-semibold text-ink">{t('st.oauth.title', { provider: label ?? snapshot.provider })}</p>
+        <p className="text-[12px] font-normal text-ink">{t('st.oauth.title', { provider: label ?? snapshot.provider })}</p>
         <p className="font-mono text-[11px] text-ink-faint">{time.timeUntil(snapshot.expires_at)}</p>
       </div>
       <p className="mt-2 text-[11px] text-ink-soft">{t('st.oauth.codeLabel')}</p>
       <div className="mt-1.5 flex flex-wrap items-center gap-2">
-        <code className="rounded-lg border border-hairline bg-panel px-3 py-1.5 font-mono text-[18px] font-semibold tracking-[0.2em] text-ink">
+        <code className="rounded-lg border border-hairline bg-panel px-3 py-1.5 font-mono text-[18px] font-bold tracking-[0.2em] text-ink">
           {snapshot.user_code}
         </code>
         <button type="button" className={SECONDARY_BUTTON} onClick={() => void copyCode()}>

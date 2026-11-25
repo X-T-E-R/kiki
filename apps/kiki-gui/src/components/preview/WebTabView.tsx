@@ -119,7 +119,7 @@ export function PreviewWebView({
         className={
           compact
             ? iconButtonClass
-            : 'shrink-0 inline-flex items-center gap-1 rounded-full border border-hairline bg-paper px-2.5 py-0.5 text-[11px] font-medium text-ink transition-colors hover:border-accent hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
+            : 'shrink-0 inline-flex items-center gap-1 rounded-full border border-hairline bg-paper px-2.5 py-0.5 text-[11px] font-normal text-ink transition-colors hover:border-accent hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
         }
       >
         {compact ? null : <span>{t('message.openInBrowser')}</span>}

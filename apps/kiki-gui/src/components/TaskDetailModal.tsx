@@ -97,7 +97,7 @@ function TaskCommand({ command }: { readonly command: string }) {
   return (
     <section className="mt-3" aria-label={t('tasks.field.command')}>
       <div className="mb-1.5 flex items-center gap-2">
-        <span className="text-[12px] font-medium text-ink-soft">{t('tasks.field.command')}</span>
+        <span className="text-[12px] font-normal text-ink-soft">{t('tasks.field.command')}</span>
         {overflowing || expanded ? (
           <button
             type="button"
@@ -245,7 +245,7 @@ export function TaskDetailModal({
       <div data-task-detail-header className="flex shrink-0 items-center gap-2">
         <span
           data-task-detail-status={live.status}
-          className={`shrink-0 rounded-full px-2 py-px text-[10.5px] font-medium ${detailStatusTone(live.status)}`}
+          className={`shrink-0 rounded-full px-2 py-px text-[10.5px] font-normal ${detailStatusTone(live.status)}`}
         >
           {live.status === 'running' ? (
             <span aria-hidden className="status-dot-busy mr-1 inline-block h-1.5 w-1.5 rounded-full bg-accent" />
@@ -255,7 +255,7 @@ export function TaskDetailModal({
         <span className="shrink-0 rounded-md border border-hairline px-1.5 py-px text-[10px] text-ink-faint">
           {t(`tasks.kind.${live.kind}`)}
         </span>
-        <h3 className="min-w-0 flex-1 truncate text-[14px] font-semibold text-ink" title={live.description}>
+        <h3 className="min-w-0 flex-1 truncate text-[14px] font-bold text-ink" title={live.description}>
           {live.description}
         </h3>
         <button
@@ -295,7 +295,7 @@ export function TaskDetailModal({
 
         <div className="mt-3 flex flex-col overflow-hidden rounded-lg bg-shell">
           <div className="flex shrink-0 items-center gap-2 border-b border-shell-hairline px-3 py-1.5">
-            <span className="font-mono text-[10.5px] tracking-wide text-shell-ink-soft select-none">
+            <span className="font-mono text-[10.5px] text-shell-ink-soft select-none">
               {t('tasks.field.output')}
             </span>
             {pollError !== null ? (
@@ -367,7 +367,7 @@ export function TaskDetailModal({
                 setPollError(error instanceof Error ? error.message : String(error));
               });
             }}
-            className="flex min-h-8 items-center rounded-md border border-danger/40 bg-panel px-3 py-1.5 text-[12px] font-medium text-danger transition-colors hover:bg-danger/5 focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex min-h-8 items-center rounded-md border border-danger/40 bg-panel px-3 py-1.5 text-[12px] font-normal text-danger transition-colors hover:bg-danger/5 focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50"
           >
             {stopping ? t('tasks.stopping') : t('rail.stop')}
           </button>

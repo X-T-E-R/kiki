@@ -160,7 +160,7 @@ export function AssistantSetupView({
         className={`${rowClass} disabled:hover:bg-transparent`}
       >
         <span className="text-[14.5px] text-ink-soft">{t('mobile.assistant.computerLabel')}</span>
-        <span className="inline-flex min-w-0 items-center gap-1.5 text-[14.5px] font-medium text-ink">
+        <span className="inline-flex min-w-0 items-center gap-1.5 text-[14.5px] font-normal text-ink">
           <span className="truncate">{computer.name}</span>
           {computers.length > 1 ? <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" /> : null}
         </span>
@@ -188,7 +188,7 @@ export function AssistantSetupView({
                 <Icon name="profileMain" size={16} className="h-6 w-6" />
               </span>
             ) : null}
-            <h1 className={isPage ? 'font-display text-[30px] font-medium leading-[1.15] tracking-[-0.02em] text-ink' : 'text-[16px] font-semibold text-ink'}>
+            <h1 className={isPage ? 'font-display text-[30px] font-bold leading-[1.15] text-ink' : 'text-[16px] font-bold text-ink'}>
               {title}
             </h1>
           </div>
@@ -205,7 +205,7 @@ export function AssistantSetupView({
                 className={rowClass}
               >
                 <span className="text-[14.5px] text-ink-soft">{t('mobile.assistant.modelLabel')}</span>
-                <span className="inline-flex min-w-0 items-center gap-1.5 text-[14.5px] font-medium text-ink">
+                <span className="inline-flex min-w-0 items-center gap-1.5 text-[14.5px] font-normal text-ink">
                   <span className="truncate">{modelLabel}</span>
                   <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
                 </span>
@@ -232,7 +232,7 @@ export function AssistantSetupView({
                       <span className="flex min-w-0 items-center gap-3">
                         <PersonaAvatar persona={personaAvatarOf({ id: persona.id, name: persona.name })} size={36} />
                         <span className="min-w-0">
-                          <span className="block truncate text-[15px] font-medium text-ink">{persona.name}</span>
+                          <span className="block truncate text-[15px] font-normal text-ink">{persona.name}</span>
                           {persona.title?.trim() || persona.job?.trim() ? (
                             <span className="block truncate text-[12.5px] text-ink-faint">
                               {persona.title?.trim() || persona.job?.trim()}
@@ -261,7 +261,7 @@ export function AssistantSetupView({
                     <span className="flex h-9 w-9 shrink-0 items-center justify-center text-ink-faint">
                       <Icon name="plus" size={16} />
                     </span>
-                    <span className="text-[14.5px] font-medium">{defaultAssistantStored ? t('mobile.assistant.restoreKiki') : t('mobile.assistant.createKiki')}</span>
+                    <span className="text-[14.5px] font-normal">{defaultAssistantStored ? t('mobile.assistant.restoreKiki') : t('mobile.assistant.createKiki')}</span>
                   </button>
                 )}
               </div>
@@ -274,7 +274,7 @@ export function AssistantSetupView({
                 type="button"
                 data-mobile-setup-pair
                 onClick={onPairComputer}
-                className="flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-ink px-6 text-[15px] font-medium text-paper transition-opacity active:opacity-85"
+                className="flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-ink px-6 text-[15px] font-normal text-paper transition-opacity active:opacity-85"
               >
                 <Icon name="plus" size={14} />
                 <span>{t('mobile.assistant.pairComputer')}</span>
@@ -285,7 +285,7 @@ export function AssistantSetupView({
                 data-mobile-setup-start
                 disabled={starting || !personasQuery.isSuccess}
                 onClick={() => { void start(); }}
-                className="flex min-h-12 w-full items-center justify-center rounded-full bg-ink px-6 text-[15px] font-medium text-paper transition-opacity active:opacity-85 disabled:opacity-50"
+                className="flex min-h-12 w-full items-center justify-center rounded-full bg-ink px-6 text-[15px] font-normal text-paper transition-opacity active:opacity-85 disabled:opacity-50"
               >
                 {showDefaultSetup ? t('mobile.assistant.startKiki') : t('mobile.assistant.startChat')}
               </button>
@@ -295,7 +295,7 @@ export function AssistantSetupView({
                 type="button"
                 data-mobile-setup-back
                 onClick={() => { setCreatingDefault(false); }}
-                className="flex min-h-11 w-full items-center justify-center rounded-full px-6 text-[14.5px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.04]"
+                className="flex min-h-11 w-full items-center justify-center rounded-full px-6 text-[14.5px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.04]"
               >
                 {t('mobile.assistant.backToList')}
               </button>
@@ -313,7 +313,7 @@ export function AssistantSetupView({
           sheetClassName="rounded-t-[24px]!"
         >
           <div className="kiki-mobile-sheet-grabber" aria-hidden="true" />
-          <p className="px-4 pb-1 text-[13px] font-medium text-ink-faint">{t('mobile.assistant.chooseComputer')}</p>
+          <p className="px-4 pb-1 text-[13px] font-normal text-ink-faint">{t('mobile.assistant.chooseComputer')}</p>
           {computers.map((entry) => (
             <button
               key={entry.spaceKey}
@@ -345,7 +345,7 @@ export function AssistantSetupView({
           sheetClassName="rounded-t-[24px]!"
         >
           <div className="kiki-mobile-sheet-grabber" aria-hidden="true" />
-          <p className="px-4 pb-1 text-[13px] font-medium text-ink-faint">{t('mobile.assistant.modelLabel')}</p>
+          <p className="px-4 pb-1 text-[13px] font-normal text-ink-faint">{t('mobile.assistant.modelLabel')}</p>
           <button
             type="button"
             role="menuitemradio"

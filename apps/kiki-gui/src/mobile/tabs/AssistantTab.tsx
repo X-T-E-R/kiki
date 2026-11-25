@@ -128,7 +128,7 @@ export function AssistantTab({
           >
             <PersonaAvatar persona={personaAvatarOf({ id: binding.personaId, name: personaName })} size={34} />
             <span className="min-w-0">
-              <span className="flex items-center gap-1 text-[15px] font-semibold leading-tight text-ink">
+              <span className="flex items-center gap-1 text-[15px] font-normal leading-tight text-ink">
                 <span className="truncate">{personaName}</span>
                 <Icon name="chevron" size={12} className="shrink-0 rotate-90 text-ink-faint" />
               </span>

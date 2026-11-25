@@ -266,7 +266,7 @@ export function AppearanceSection() {
                 <span role="status" className="text-[12px] text-ink-soft">{t('st.appearance.restored')}</span>
                 <button
                   type="button"
-                  className="text-[12px] font-medium text-ink-soft underline-offset-2 hover:text-ink hover:underline"
+                  className="text-[12px] font-normal text-ink-soft underline-offset-2 hover:text-ink hover:underline"
                   onClick={() => { writeAppearance(undo); setUndo(null); }}
                 >
                   {t('st.appearance.undo')}

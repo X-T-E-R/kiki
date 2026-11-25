@@ -6,7 +6,7 @@ import { useI18n } from '../../i18n';
 import { DisclosureChevron } from '../icons';
 import { CopyButton } from './ContentCopyButton';
 
-const LINK = 'inline-flex min-h-6 shrink-0 cursor-pointer items-center gap-0.5 rounded-sm px-1 font-medium text-ink-soft underline-offset-2 transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink';
+const LINK = 'inline-flex min-h-6 shrink-0 cursor-pointer items-center gap-0.5 rounded-sm px-1 font-normal text-ink-soft underline-offset-2 transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink';
 
 export function AgentTurnOutcomeLine({ outcome }: { outcome: AgentTurnOutcome | undefined }) {
   const { t } = useI18n();

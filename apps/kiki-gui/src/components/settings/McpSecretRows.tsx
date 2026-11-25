@@ -58,7 +58,7 @@ export function McpSecretRows({
   const title = kind === 'env' ? t('st.mcp.env') : t('st.mcp.headers');
   return (
     <div className="space-y-2" role="group" aria-label={title} data-mcp-secret-rows={kind}>
-      <p className="text-[11px] font-medium text-ink-soft">{title}</p>
+      <p className="text-[11px] font-normal text-ink-soft">{title}</p>
       {kind === 'headers' ? <Hint>{t('st.mcp.headersHint')}</Hint> : null}
       {rows.map((row, index) => {
         const locked = disabledKey !== undefined && row.key.trim().toLowerCase() === disabledKey;
@@ -70,7 +70,7 @@ export function McpSecretRows({
         return (
           <div key={index} data-mcp-secret-row={index}
             className="grid min-w-0 grid-cols-1 gap-2 rounded-lg border border-hairline bg-panel p-2 sm:grid-cols-[minmax(0,11rem)_minmax(0,1fr)_auto] sm:items-start">
-            <label className="min-w-0 space-y-1 text-[11px] font-medium text-ink-soft" htmlFor={`${scope}-key-${index}`}>
+            <label className="min-w-0 space-y-1 text-[11px] font-normal text-ink-soft" htmlFor={`${scope}-key-${index}`}>
               {kind === 'env' ? t('st.secret.envName') : t('st.secret.headerName')}
               <input id={`${scope}-key-${index}`} className={`${INPUT} font-mono`} value={row.key} disabled={locked}
                 aria-label={`${kind === 'env' ? t('st.secret.envName') : t('st.mcp.headerName')} ${index + 1}`}

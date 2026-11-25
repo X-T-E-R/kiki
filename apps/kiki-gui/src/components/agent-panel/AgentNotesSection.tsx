@@ -153,7 +153,7 @@ export const AgentNotesSection = memo(function AgentNotesSection({
           {isError && onRetry !== undefined ? (
             <button
               type="button"
-              className="ml-1.5 font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+              className="ml-1.5 font-normal text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
               onClick={onRetry}
             >
               {t('common.retry')}
@@ -224,7 +224,7 @@ export const AgentNotesSection = memo(function AgentNotesSection({
               {effectiveContentStatus === 'error' && (onRetry !== undefined || beginRead !== undefined) ? (
                 <button
                   type="button"
-                  className="ml-1.5 font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+                  className="ml-1.5 font-normal text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
                   onClick={handleRetry}
                 >
                   {t('common.retry')}
@@ -235,7 +235,7 @@ export const AgentNotesSection = memo(function AgentNotesSection({
           <dl className="max-h-80 min-w-0 space-y-2 overflow-y-auto overscroll-y-contain pr-0.5">
             {present.map((section) => (
               <div key={section} data-agent-notes-part={section}>
-                <dt className="text-[11px] font-medium text-ink-faint">{Object.hasOwn(NOTE_SECTION_LABELS, section)
+                <dt className="text-[11px] font-normal text-ink-faint">{Object.hasOwn(NOTE_SECTION_LABELS, section)
                   ? t(NOTE_SECTION_LABELS[section as keyof typeof NOTE_SECTION_LABELS]) : t('agentPanel.notes.unknown', { field: section })}</dt>
                 <dd className="text-[12.5px] leading-snug text-ink-soft">
                   <p className="break-words whitespace-pre-wrap [overflow-wrap:anywhere]">{notes?.[section] ?? ''}</p>

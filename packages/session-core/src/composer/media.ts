@@ -628,10 +628,6 @@ function codeSpanRanges(text: string): readonly (readonly [number, number])[] {
   return ranges;
 }
 
-function overlapsCodeSpan(start: number, end: number, ranges: readonly (readonly [number, number])[]): boolean {
-  return ranges.some(([spanStart, spanEnd]) => start < spanEnd && end > spanStart);
-}
-
 function trimReferencePunctuation(value: string): { readonly start: number; readonly end: number } {
   let start = 0;
   let end = value.length;
@@ -657,6 +653,7 @@ function isScannableFileReference(target: string): boolean {
 export function findFileReferences(text: string): readonly { start: number; end: number; target: string }[] {
   const references: Array<{ start: number; end: number; target: string }> = [];
   const codeSpans = codeSpanRanges(text);
+  let codeSpanIndex = 0;
   const tokens = /[^\s<>"'()`\u005B\u005D{},;!?]+/gu;
   for (const token of text.matchAll(tokens)) {
     const tokenStart = token.index ?? 0;
@@ -664,7 +661,11 @@ export function findFileReferences(text: string): readonly { start: number; end:
     const trimmed = trimReferencePunctuation(tokenText);
     const start = tokenStart + trimmed.start;
     const end = tokenStart + trimmed.end;
-    if (start >= end || overlapsCodeSpan(start, end, codeSpans)) continue;
+    if (start >= end) continue;
+    while (codeSpanIndex < codeSpans.length && codeSpans[codeSpanIndex]![1] <= start) {
+      codeSpanIndex += 1;
+    }
+    if (codeSpanIndex < codeSpans.length && end > codeSpans[codeSpanIndex]![0]) continue;
     const target = text.slice(start, end);
     if (!isScannableFileReference(target)) continue;
     references.push({ start, end, target });

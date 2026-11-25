@@ -108,7 +108,7 @@ export function BrowserControlSection({ initialTab }: { readonly initialTab?: Br
               onKeyDown={(event) => { onTabKey(event, index); }}
               className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
                 active
-                  ? 'border-ink font-medium text-ink'
+                  ? 'border-ink text-ink'
                   : 'border-transparent text-ink-soft hover:text-ink'
               }`}
             >

@@ -17,7 +17,7 @@ export function InspectorChevron({ open }: { open: boolean }) {
 }
 
 /** Chapter label type: one size and weight for every inspector head. */
-export const INSPECTOR_HEAD = 'shrink-0 text-[12px] font-medium text-ink-soft';
+export const INSPECTOR_HEAD = 'shrink-0 text-[12px] font-normal text-ink-soft';
 
 export function InspectorSection({
   title,

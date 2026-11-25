@@ -134,7 +134,7 @@ export function PortableColabTab({
     <div className="space-y-6" data-portable-colab-tab>
       <div className="space-y-2.5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h4 className="text-[13px] font-medium text-ink">{t('st.portable.colabTitle')}</h4>
+          <h4 className="text-[13px] font-normal text-ink">{t('st.portable.colabTitle')}</h4>
           {overlayCandidates.length > 0 ? (
             <div className="flex items-center gap-2">
               <span className="text-[12px] text-ink-faint">{t('st.portable.colabOverlay')}</span>
@@ -172,7 +172,7 @@ export function PortableColabTab({
 
       {deviceRecipient !== undefined ? (
         <div className="space-y-2 border-t border-hairline pt-5">
-          <p className="text-[13px] font-medium text-ink">{t('st.portable.deviceKeyLabel')}</p>
+          <p className="text-[13px] font-normal text-ink">{t('st.portable.deviceKeyLabel')}</p>
           <div className="flex flex-wrap items-center gap-2">
             <code
               data-portable-device-recipient
@@ -197,7 +197,7 @@ export function PortableColabTab({
       {canRekey ? (
         <div className="space-y-3 border-t border-hairline pt-5" data-portable-rekey-section>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-[13px] font-medium text-ink">{t('st.portable.rekeyTitle')}</p>
+            <p className="text-[13px] font-normal text-ink">{t('st.portable.rekeyTitle')}</p>
             <SettingsSegmented<RekeyMode>
               ariaLabel={t('st.portable.rekeyTitle')}
               dataAttr="data-portable-rekey-mode"

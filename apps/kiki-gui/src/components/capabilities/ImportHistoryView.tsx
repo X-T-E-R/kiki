@@ -471,7 +471,7 @@ export function ImportHistoryView({
                     data-plugin-import-source={`${item.pluginId}:${item.id}`}
                     onClick={() => { setPicked(sourceKey(item.pluginId, item.id)); }}
                     className={`inline-flex min-h-7 items-center rounded-[7px] px-3 text-[13px] whitespace-nowrap transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink pointer-coarse:min-h-10 ${
-                      isSameSource(sourceIdentity, item.pluginId, item.id) ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
+                      isSameSource(sourceIdentity, item.pluginId, item.id) ? 'bg-paper text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-soft hover:text-ink'
                     }`}
                   >
                     {item.label}
@@ -695,7 +695,7 @@ function PathField({
   const { t } = useI18n();
   return (
     <div className="min-w-0">
-      <label htmlFor={id} className="block text-[12px] font-medium text-ink-soft">{label}</label>
+      <label htmlFor={id} className="block text-[12px] font-normal text-ink-soft">{label}</label>
       <div className="mt-1.5 flex gap-2">
         <input
           id={id}
@@ -745,7 +745,7 @@ function WorkDirField({
   const trimmed = value.trim();
   return (
     <div className="min-w-0" data-plugin-import-workdir={trimmed === '' ? 'unset' : trimmed}>
-      <label htmlFor="plugin-import-workdir" className="block text-[12px] font-medium text-ink-soft">
+      <label htmlFor="plugin-import-workdir" className="block text-[12px] font-normal text-ink-soft">
         {t('cap.import.workDirLabel')}
       </label>
       <div className="mt-1.5 flex gap-2">
@@ -823,7 +823,7 @@ function TargetHomeField({
   const { t } = useI18n();
   return (
     <div className="min-w-0" data-plugin-import-target={targetHome ?? 'unknown'}>
-      <p className="text-[12px] font-medium text-ink-soft">{t('cap.import.targetLabel')}</p>
+      <p className="text-[12px] font-normal text-ink-soft">{t('cap.import.targetLabel')}</p>
       <div className="mt-1.5 flex min-h-[34px] items-center gap-2 rounded-lg border border-hairline bg-ink/[0.03] px-3 py-1.5">
         <Icon name="folder" size={14} className="shrink-0 text-ink-faint" />
         {targetHome === undefined ? (
@@ -887,7 +887,7 @@ function DiscoveryList({
   return (
     <div className="min-w-0" data-plugin-import-discovery={sourceKey(pluginId, sourceId)}>
       <div className="flex min-h-8 items-center gap-2">
-        <h3 className="text-[12px] font-medium text-ink-soft">{t('cap.import.filesTitle')}</h3>
+        <h3 className="text-[12px] font-normal text-ink-soft">{t('cap.import.filesTitle')}</h3>
         {entries.length > 0 ? <span className="text-[12px] tabular-nums text-ink-faint">{entries.length}</span> : null}
         <span className="ms-auto flex items-center gap-1">
           {depth > 0 ? (
@@ -1042,7 +1042,7 @@ function ImportPreviewPanel({
       <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
         {/* The title wraps rather than truncates: it is the one thing the
             reader has to recognise, and at 390 the two tags take the row. */}
-        <h2 className="w-full min-w-0 text-[14px] font-medium leading-5 text-ink min-[560px]:w-auto min-[560px]:flex-1">{preview.probe.title || t('cap.import.untitled')}</h2>
+        <h2 className="w-full min-w-0 text-[14px] font-bold leading-5 text-ink min-[560px]:w-auto min-[560px]:flex-1">{preview.probe.title || t('cap.import.untitled')}</h2>
         <Tag tone={preview.probe.status === 'preserved' ? 'success' : preview.probe.status === 'partial' ? 'warn' : 'danger'}>
           {t(probeStateKey(preview.probe.status))}
         </Tag>
@@ -1080,7 +1080,7 @@ function ImportPreviewPanel({
       ) : null}
       {total > 0 ? (
         <div data-plugin-import-losses className="space-y-1">
-          <p className="text-[12px] font-medium text-ink-soft">{t('cap.import.lossesTitle', { count: total })}</p>
+          <p className="text-[12px] font-normal text-ink-soft">{t('cap.import.lossesTitle', { count: total })}</p>
           <ul className="space-y-0.5">
             {losses.map((loss) => (
               <li key={loss.code} data-plugin-import-loss={loss.code} className="flex min-w-0 items-baseline gap-2 text-[12px] leading-4 text-ink-soft">
@@ -1121,7 +1121,7 @@ function PreviewSample({ preview }: { readonly preview: ImportPreview }) {
     <div className="min-w-0" data-plugin-import-sample>
       <button
         type="button"
-        className="flex min-h-8 items-center gap-1.5 rounded-md px-1 text-[12px] font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+        className="flex min-h-8 items-center gap-1.5 rounded-md px-1 text-[12px] font-normal text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
         aria-expanded={open}
         data-plugin-import-sample-toggle
         onClick={() => { setOpen((value) => !value); }}
@@ -1137,7 +1137,7 @@ function PreviewSample({ preview }: { readonly preview: ImportPreview }) {
               several segments. The position in the sample disambiguates. */}
           {sample.map((record, index) => (
             <li key={`${record.id}-${record.part}-${index}`} className="min-w-0 space-y-0.5">
-              <p className="text-[11.5px] font-medium text-ink-faint">
+              <p className="text-[11.5px] font-normal text-ink-faint">
                 {t(recordRoleKey(record.role))}
                 {record.toolName !== undefined ? <span className="font-mono"> · {record.toolName}</span> : null}
               </p>
@@ -1200,7 +1200,7 @@ function JobRow({
   return (
     <li className="min-w-0 py-2.5" data-plugin-import-job={job.id} data-plugin-import-job-state={job.status}>
       <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">{job.title || t('cap.import.untitled')}</span>
+        <span className="min-w-0 flex-1 truncate text-[13px] font-normal text-ink">{job.title || t('cap.import.untitled')}</span>
         <Tag tone={job.status === 'completed' ? 'success' : job.status === 'failed' ? 'danger' : resumable ? 'warn' : active ? 'accent' : 'faint'}>
           {t(jobStateKey(job.status))}
         </Tag>
@@ -1285,7 +1285,7 @@ function ArchiveRow({ archive, onOpen }: { readonly archive: ImportArchive; read
       <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <button
           type="button"
-          className="min-w-0 flex-1 truncate rounded-sm py-0.5 text-left text-[13px] font-medium text-ink transition-colors hover:text-selected-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+          className="min-w-0 flex-1 truncate rounded-sm py-0.5 text-left text-[13px] font-normal text-ink transition-colors hover:text-selected-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
           data-plugin-import-archive-open={archive.id}
           onClick={onOpen}
         >

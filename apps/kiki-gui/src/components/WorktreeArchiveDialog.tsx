@@ -97,7 +97,7 @@ export function WorktreeArchiveDialog({
 
   return (
     <Dialog onClose={() => { if (!busy) onClose(); }} ariaLabel={title} overlayId="sidebar-confirm-archive-worktree">
-      <h2 className="font-display text-[18px] font-semibold text-ink">{title}</h2>
+      <h2 className="font-display text-[18px] font-bold text-ink">{title}</h2>
       <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">{t('worktree.archiveBody')}</p>
       <label data-archive-remove-worktree className="mt-4 flex cursor-pointer items-start gap-2 rounded-lg border border-hairline px-3 py-2 hover:border-hairline-strong">
         <input

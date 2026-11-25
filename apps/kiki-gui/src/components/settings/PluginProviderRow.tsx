@@ -88,11 +88,11 @@ function PluginModelRow({
       <div className="flex min-h-8 min-w-0 flex-1 items-center gap-3 pr-1">
         <span className={`min-w-0 flex-1 ${compact ? 'flex items-baseline gap-2' : ''}`}>
           <span className={`flex min-w-0 items-center gap-2 ${compact ? 'shrink' : ''}`}>
-            <span className="truncate text-[13px] font-medium text-ink">{item.display_name ?? item.id}</span>
+            <span className="truncate text-[13px] font-normal text-ink">{item.display_name ?? item.id}</span>
             {isDefault ? (
               <span
                 data-default-badge
-                className="inline-flex shrink-0 items-center rounded bg-selected-ink/10 px-1.5 py-0.5 text-[11px] font-medium text-selected-ink"
+                className="inline-flex shrink-0 items-center rounded bg-selected-ink/10 px-1.5 py-0.5 text-[11px] font-normal text-selected-ink"
               >
                 {t('st.models.default')}
               </span>
@@ -260,7 +260,7 @@ export function PluginProviderRow({
         <span className="min-w-0 flex-1">
           <span className={`flex min-w-0 items-baseline ${phone ? 'justify-between gap-2' : 'gap-2'}`}>
             <span className="flex min-w-0 items-baseline gap-2">
-              <span className="truncate text-[13px] font-medium text-ink">{displayName}</span>
+              <span className="truncate text-[13px] font-normal text-ink">{displayName}</span>
               {provider.label !== undefined && provider.label !== provider.id ? (
                 <span className="hidden truncate font-mono text-[11px] text-ink-faint sm:inline">{provider.id}</span>
               ) : null}

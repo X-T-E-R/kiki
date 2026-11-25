@@ -57,7 +57,7 @@ export function SshApprovalCard({ block, ssh, originAgentName }: {
   return (
     <div data-ssh-approval-id={approvalId} className="anim-enter border-l-2 border-accent py-2 pr-3 pl-3">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px]">
-        <span className="font-medium text-accent-ink">{t(sshTitleKey(ssh))}</span>
+        <span className="font-normal text-accent-ink">{t(sshTitleKey(ssh))}</span>
         {originAgentName !== undefined ? (
           <span className="text-ink-faint">· {t('ia.fromSubagent', { name: originAgentName })}</span>
         ) : null}
@@ -75,7 +75,7 @@ export function SshApprovalCard({ block, ssh, originAgentName }: {
           onSubmit={submit}
         />
       ) : (
-        <p role="status" data-ssh-answered={answered} className={`mt-2 text-[13px] font-medium ${answered === 'approved' ? 'text-ink-soft' : 'text-danger'}`}>
+        <p role="status" data-ssh-answered={answered} className={`mt-2 text-[13px] font-normal ${answered === 'approved' ? 'text-ink-soft' : 'text-danger'}`}>
           {answered === 'approved' ? t('ia.ssh.sent') : t('ia.resolution.rejected')}
         </p>
       )}

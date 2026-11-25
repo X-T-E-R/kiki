@@ -183,7 +183,7 @@ export function SpaceSwitchSheet(props: SpaceSwitchSheetProps) {
               data-space-back-local
               disabled={busy}
               onClick={onBackToLocal}
-              className="flex min-h-9 w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-ink outline-none transition-colors hover:bg-paper focus-visible:bg-paper disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex min-h-9 w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-normal text-ink outline-none transition-colors hover:bg-paper focus-visible:bg-paper disabled:cursor-not-allowed disabled:opacity-50"
             >
               <span aria-hidden className="flex w-5 shrink-0 items-center justify-center text-ink-soft">←</span>
               <span className="min-w-0 flex-1 truncate">{t('sidebar.space.backToLocal', { space: localSpaceName })}</span>
@@ -205,7 +205,7 @@ export function SpaceSwitchSheet(props: SpaceSwitchSheetProps) {
               <span aria-hidden className="flex w-5 shrink-0 items-center justify-center text-ink-faint">
                 <Icon name="agent" size={14} />
               </span>
-              <span className={`min-w-0 flex-1 truncate ${allComputersActive ? 'font-medium' : ''}`}>
+              <span className={`min-w-0 flex-1 truncate`}>
                 {t('sidebar.space.allSpaces')}
               </span>
               {allComputersActive ? (
@@ -229,7 +229,7 @@ export function SpaceSwitchSheet(props: SpaceSwitchSheetProps) {
               <span aria-hidden className="flex w-5 shrink-0 items-center justify-center">
                 <span className="h-2 w-2 rounded-full bg-success" />
               </span>
-              <span className={`min-w-0 flex-1 truncate ${thisComputerActive ? 'font-medium' : ''}`}>
+              <span className={`min-w-0 flex-1 truncate`}>
                 {t('sidebar.space.thisComputer')}
               </span>
               {thisComputerActive ? (
@@ -245,7 +245,7 @@ export function SpaceSwitchSheet(props: SpaceSwitchSheetProps) {
                 <button
                   type="button"
                   onClick={onRetryRemote}
-                  className="shrink-0 rounded px-2 py-0.5 text-[12px] font-medium text-ink underline decoration-hairline-strong underline-offset-2 hover:text-accent"
+                  className="shrink-0 rounded px-2 py-0.5 text-[12px] font-normal text-ink underline decoration-hairline-strong underline-offset-2 hover:text-accent"
                 >
                   {t('common.retry')}
                 </button>
@@ -282,7 +282,7 @@ export function SpaceSwitchSheet(props: SpaceSwitchSheetProps) {
         {showSpacesGroup ? (
           <>
             {showComputerList ? <div className="mx-1.5 my-1.5 border-t border-hairline" /> : null}
-            <p className="px-2.5 pt-0.5 pb-1 text-[11px] font-medium text-ink-faint" data-space-group-spaces>
+            <p className="px-2.5 pt-0.5 pb-1 text-[11px] font-normal text-ink-faint" data-space-group-spaces>
               {t('sidebar.space.groupSpaces')}
             </p>
             {localLoading && localItems.length === 0 ? (
@@ -296,7 +296,7 @@ export function SpaceSwitchSheet(props: SpaceSwitchSheetProps) {
                 <button
                   type="button"
                   onClick={onRetryLocal}
-                  className="shrink-0 rounded px-2 py-0.5 text-[12px] font-medium text-ink underline decoration-hairline-strong underline-offset-2 hover:text-accent"
+                  className="shrink-0 rounded px-2 py-0.5 text-[12px] font-normal text-ink underline decoration-hairline-strong underline-offset-2 hover:text-accent"
                 >
                   {t('common.retry')}
                 </button>
@@ -337,13 +337,13 @@ export function SpaceSwitchSheet(props: SpaceSwitchSheetProps) {
                       <span aria-hidden className="flex w-5 shrink-0 items-center justify-center">
                         <SpaceDot color={space.id === MAIN_SPACE_ID ? 'var(--color-ink-faint)' : space.color} />
                       </span>
-                      <span className={`min-w-0 flex-1 truncate ${isCurrentSpace ? 'font-medium' : ''}`}>
+                      <span className={`min-w-0 flex-1 truncate`}>
                         {itemName}
                       </span>
                       {count > 0 && !isCurrentSpace ? (
                         <span
                           data-space-local-pending={count}
-                          className="shrink-0 rounded-full bg-attention px-1.5 text-[10.5px] font-semibold tabular-nums leading-[16px] text-on-accent"
+                          className="shrink-0 rounded-full bg-attention px-1.5 text-[10.5px] font-normal tabular-nums leading-[16px] text-on-accent"
                         >
                           {count}
                         </span>
@@ -520,13 +520,13 @@ function RemoteComputerRow({
       <span aria-hidden className="flex w-5 shrink-0 items-center justify-center">
         <span className={`h-2 w-2 rounded-full ${REMOTE_TONE_DOT[tone]}`} />
       </span>
-      <span className={`min-w-0 flex-1 truncate ${focused ? 'font-medium' : ''} ${record.state !== 'online' ? 'text-ink-soft' : ''}`}>
+      <span className={`min-w-0 flex-1 truncate ${record.state !== 'online' ? 'text-ink-soft' : ''}`}>
         {record.label}
       </span>
       {summary !== null && summary.needsYou > 0 ? (
         <span
           data-space-remote-needs={summary.needsYou}
-          className="shrink-0 rounded-full bg-attention px-1.5 text-[10.5px] font-semibold tabular-nums leading-[16px] text-on-accent"
+          className="shrink-0 rounded-full bg-attention px-1.5 text-[10.5px] font-normal tabular-nums leading-[16px] text-on-accent"
         >
           {summary.needsYou}
         </span>
@@ -562,7 +562,7 @@ function InlineRowFailure({
   let actions: ReactNode = null;
 
   const actionButtonClass =
-    'rounded px-1.5 py-0.5 text-[11.5px] font-medium text-ink underline decoration-hairline-strong underline-offset-2 hover:text-accent disabled:opacity-50';
+    'rounded px-1.5 py-0.5 text-[11.5px] font-normal text-ink underline decoration-hairline-strong underline-offset-2 hover:text-accent disabled:opacity-50';
 
   switch (failure.kind) {
     case 'local-start':

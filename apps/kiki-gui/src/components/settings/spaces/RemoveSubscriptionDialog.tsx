@@ -147,7 +147,7 @@ export function RemoveSubscriptionDialog({
               className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-selected-ink)]"
             />
             <span className="min-w-0 flex-1 space-y-0.5">
-              <span className="block text-[13px] font-medium text-ink">
+              <span className="block text-[13px] font-normal text-ink">
                 {t('st.portable.center.removeDetachTitle')}
               </span>
               <span className="block text-[12px] text-ink-soft">
@@ -167,7 +167,7 @@ export function RemoveSubscriptionDialog({
               className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-danger)]"
             />
             <span className="min-w-0 flex-1 space-y-1">
-              <span className="block text-[13px] font-medium text-ink">
+              <span className="block text-[13px] font-normal text-ink">
                 {t('st.portable.center.removePurgeTitle')}
               </span>
               <span className="block text-[12px] text-ink-soft">
@@ -175,7 +175,7 @@ export function RemoveSubscriptionDialog({
               </span>
               {impact !== undefined ? (
                 <ul className="space-y-0.5 pt-1 text-[12px] text-ink-soft" data-portable-remove-impact>
-                  <li className="font-medium text-ink">
+                  <li className="font-normal text-ink">
                     {t('st.portable.center.impactDeleted', { count: impact.deletedIds.length })}
                   </li>
                   {impact.preservedLocalIds.length > 0 ? (

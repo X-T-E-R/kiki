@@ -181,7 +181,7 @@ export function ModelEngineFields({ modelId, value, onChange, issue, part = 'eng
     return (
       <fieldset disabled={disabled} className="min-w-0 space-y-1 disabled:opacity-60" data-model-prompt-structure={modelId}>
       <details data-model-cognition-editor className="pt-2">
-        <summary className="cursor-pointer py-1 text-[13px] font-medium text-ink">{t('st.promptIdentity.cognitionTitle')}</summary>
+        <summary className="cursor-pointer py-1 text-[13px] font-normal text-ink">{t('st.promptIdentity.cognitionTitle')}</summary>
         <div className="space-y-4 pt-3">
           {!value.cognition.rawActive ? <PromptIdentityEditor value={value.cognition.value}
             onChange={(next) => set('cognition', updatePromptTable(value.cognition, next, cognitionBody))}>
@@ -198,7 +198,7 @@ export function ModelEngineFields({ modelId, value, onChange, issue, part = 'eng
         </div>
       </details>
       <details data-model-overrides-editor className="pt-2">
-        <summary className="cursor-pointer py-1 text-[13px] font-medium text-ink">{t('st.promptIdentity.fieldsTitle')}</summary>
+        <summary className="cursor-pointer py-1 text-[13px] font-normal text-ink">{t('st.promptIdentity.fieldsTitle')}</summary>
         <div className="space-y-4 pt-3">
           {!value.promptOverrides.rawActive ? <PromptIdentityEditor value={value.promptOverrides.value}
             onChange={(next) => set('promptOverrides', updatePromptTable(value.promptOverrides, next, promptOverridesBody))}>

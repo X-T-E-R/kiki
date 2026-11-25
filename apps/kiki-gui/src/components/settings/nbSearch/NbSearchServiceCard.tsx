@@ -271,7 +271,7 @@ export function NbSearchServiceCard({
       {showMakeDefault ? (
         <button
           type="button"
-          className="text-[12px] font-medium text-selected-ink transition-colors hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+          className="text-[12px] font-normal text-selected-ink transition-colors hover:underline disabled:cursor-not-allowed disabled:opacity-50"
           disabled={saving}
           data-nb-search-service-make-default={card.id}
           onClick={onMakeDefault}
@@ -282,7 +282,7 @@ export function NbSearchServiceCard({
       {onRemoveService !== undefined ? (
         <button
           type="button"
-          className="text-[12px] font-medium text-danger transition-colors hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+          className="text-[12px] font-normal text-danger transition-colors hover:underline disabled:cursor-not-allowed disabled:opacity-50"
           disabled={saving}
           data-nb-search-service-remove
           onClick={() => { setConfirmRemove(true); }}
@@ -302,7 +302,7 @@ export function NbSearchServiceCard({
       {keyUrl !== undefined ? (
         <p className="text-[12px] leading-snug text-ink-soft" data-nb-search-key-guide>
           {t('st.nbSearch.service.keyGuide')}{' '}
-          <ExternalLink href={keyUrl} className="font-medium text-selected-ink hover:underline">
+          <ExternalLink href={keyUrl} className="font-normal text-selected-ink hover:underline">
             {t('st.nbSearch.service.keyGuideLink')}
           </ExternalLink>
         </p>
@@ -422,7 +422,7 @@ export function NbSearchServiceCard({
             </SettingField>
 
             {info.hasOptions ? (
-              <label className="block text-[12px] font-medium text-ink-soft" data-nb-search-options>
+              <label className="block text-[12px] font-normal text-ink-soft" data-nb-search-options>
                 {t('st.nbSearch.optionsLabel')}
                 <textarea
                   className="mt-1 min-h-16 w-full rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] text-ink outline-none transition-colors placeholder:font-sans placeholder:text-ink-faint focus:border-selected-ink disabled:cursor-not-allowed disabled:opacity-50"

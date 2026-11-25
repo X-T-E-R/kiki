@@ -50,7 +50,7 @@ const REPRESENTATION_ANY = 'any';
 
 function StepNumber({ n }: { n: number }) {
   return (
-    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-hairline/50 font-mono text-[11px] font-semibold text-ink">
+    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-hairline/50 font-mono text-[11px] font-normal text-ink">
       {n}
     </span>
   );
@@ -248,7 +248,7 @@ export function NbSearchRoutingEditor({
       <div className="space-y-2 rounded-lg border border-hairline p-3" data-nb-search-routing-builtin>
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="min-w-0 space-y-0.5">
-            <p className="text-[13px] font-medium text-ink">{t('st.nbSearch.routing.builtinTitle')}</p>
+            <p className="text-[13px] font-normal text-ink">{t('st.nbSearch.routing.builtinTitle')}</p>
             <p className="text-[12px] leading-snug text-ink-faint" data-nb-search-routing-package>
               {view.reported
                 ? t('st.nbSearch.routing.packageMeta', {
@@ -330,7 +330,7 @@ export function NbSearchRoutingEditor({
       {/* The user's own rules, in priority order. */}
       <div className="space-y-2" data-nb-search-routing-rules>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-[12px] font-medium text-ink-soft">{t('st.nbSearch.routing.userTitle')}</span>
+          <span className="text-[12px] font-normal text-ink-soft">{t('st.nbSearch.routing.userTitle')}</span>
           {mode === 'custom' && rules.length < MAX_RULES ? (
             <button
               type="button"
@@ -531,7 +531,7 @@ export function NbSearchRoutingEditor({
                       </p>
                     ) : (
                       <div className="space-y-1" data-nb-search-routing-rule-pipelines>
-                        <p className="text-[12px] font-medium text-ink-soft">{t('st.nbSearch.routing.pipelines')}</p>
+                        <p className="text-[12px] font-normal text-ink-soft">{t('st.nbSearch.routing.pipelines')}</p>
                         {pipelines.map((pipelineId, step) => {
                           const pipeline = pipelineById.get(pipelineId);
                           return (

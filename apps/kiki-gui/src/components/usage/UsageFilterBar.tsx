@@ -679,7 +679,7 @@ export function UsageFilterBar({
               setUnusedOpen(false);
               setActiveIndex(Math.max(0, idx));
             }}
-            className="inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink"
+            className="inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[12px] font-normal text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink"
           >
             <Icon name="arrowLeft" size={12} />
             <span>{facetLabel(selectedFacet)}</span>
@@ -747,9 +747,9 @@ export function UsageFilterBar({
                 }`}
               >
                 <Icon name={FACET_ICON[facet]} size={14} className="shrink-0 text-ink-soft" />
-                <span className="min-w-0 flex-1 font-medium text-ink">{facetLabel(facet)}</span>
+                <span className="min-w-0 flex-1 font-normal text-ink">{facetLabel(facet)}</span>
                 {selectedCount > 0 ? (
-                  <span className="rounded-full bg-selected px-1.5 py-px text-[11px] font-medium text-selected-ink tabular-nums">
+                  <span className="rounded-full bg-selected px-1.5 py-px text-[11px] font-normal text-selected-ink tabular-nums">
                     {selectedCount}
                   </span>
                 ) : activeUsedCount > 0 ? (
@@ -803,7 +803,7 @@ export function UsageFilterBar({
                       <Icon name="check" size={12} />
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className={`block truncate ${checked ? 'font-medium text-ink' : 'text-ink'}`}>
+                      <span className={`block truncate ${checked ? 'text-ink' : 'text-ink'}`}>
                         {option.label}
                       </span>
                       {option.hint !== undefined && option.hint !== option.label ? (
@@ -921,7 +921,7 @@ export function UsageFilterBar({
             type="button"
             data-usage-drilldown-back
             onClick={drilldownBack.onBack}
-            className="inline-flex h-8 items-center gap-1 rounded-lg border border-hairline bg-paper px-2.5 text-[12.5px] font-medium text-ink transition-colors hover:border-hairline-strong hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+            className="inline-flex h-8 items-center gap-1 rounded-lg border border-hairline bg-paper px-2.5 text-[12.5px] font-normal text-ink transition-colors hover:border-hairline-strong hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 pointer-coarse:min-w-11"
           >
             <Icon name="arrowLeft" size={12} />
             <span>{drilldownBack.label}</span>
@@ -944,7 +944,7 @@ export function UsageFilterBar({
                 onClick={() => { selectPresetRange(preset); }}
                 className={`inline-flex h-7 items-center justify-center rounded-md px-2 text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink sm:px-2.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${
                   active
-                    ? 'bg-paper font-medium text-ink shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06)]'
+                    ? 'bg-paper text-ink shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06)]'
                     : 'text-ink-soft hover:text-ink'
                 }`}
               >
@@ -967,14 +967,14 @@ export function UsageFilterBar({
             onClick={() => { setCalendarOpen((open) => !open); }}
             className={`inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-2 text-[12.5px] tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink sm:px-2.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${
               isCustomOrCalendarPreset
-                ? 'bg-paper font-medium text-ink shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06)]'
+                ? 'bg-paper text-ink shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06)]'
                 : 'text-ink-soft hover:text-ink'
             }`}
           >
             <CalendarIcon className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
             <span className={isCustomOrCalendarPreset ? undefined : 'hidden sm:inline'}>{customRangeLabel}</span>
             {comparing ? (
-              <span className="rounded bg-selected px-1 py-px text-[10.5px] font-medium text-selected-ink">
+              <span className="rounded bg-selected px-1 py-px text-[10.5px] font-normal text-selected-ink">
                 {t('usage.compare.short')}
               </span>
             ) : null}
@@ -994,7 +994,7 @@ export function UsageFilterBar({
           }}
           className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink sm:px-2.5 pointer-coarse:min-h-11 ${
             activeScopeCount > 0
-              ? 'border-selected-ink/40 bg-panel font-medium text-ink'
+              ? 'border-selected-ink/40 bg-panel text-ink'
               : 'border-hairline bg-paper text-ink-soft hover:border-hairline-strong hover:text-ink'
           }`}
         >
@@ -1038,7 +1038,7 @@ export function UsageFilterBar({
                   }`}
                 >
                   <span className="text-ink-faint">{locale === 'zh' ? `${chip.label}：` : `${chip.label}:`}</span>
-                  <span className="max-w-44 truncate font-medium text-ink">{chip.valueText}</span>
+                  <span className="max-w-44 truncate font-normal text-ink">{chip.valueText}</span>
                 </button>
                 <button
                   type="button"

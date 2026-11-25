@@ -322,7 +322,7 @@ export function SelectionQuoteButton({
     <div
       ref={popoverRef}
       data-selection-quote
-      className="anim-enter fixed z-50 flex items-center overflow-hidden rounded-full border border-hairline bg-panel text-[12px] font-medium text-ink-soft shadow-[0_8px_24px_-10px_rgba(28,25,23,0.35)]"
+      className="anim-enter fixed z-50 flex items-center overflow-hidden rounded-full border border-hairline bg-panel text-[12px] font-normal text-ink-soft shadow-[0_8px_24px_-10px_rgba(28,25,23,0.35)]"
       style={{ top: target.top, left: target.left }}
       onMouseDown={(event) => { event.preventDefault(); }}
     >

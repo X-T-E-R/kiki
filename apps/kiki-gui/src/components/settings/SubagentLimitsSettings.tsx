@@ -145,7 +145,7 @@ export function SubagentAgentListFieldsCard() {
                 onClick={() => { void updateFields(toggleAgentListField(agentList.fields, item)); }}
                 className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 ${
                   on
-                    ? 'border-hairline-strong bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                    ? 'border-hairline-strong bg-panel text-ink shadow-[var(--kiki-sheet-shadow)]'
                     : 'border-dashed border-hairline text-ink-faint hover:border-hairline-strong hover:text-ink'
                 }`}
               >

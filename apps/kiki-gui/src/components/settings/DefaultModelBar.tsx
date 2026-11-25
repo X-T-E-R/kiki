@@ -133,7 +133,7 @@ export function DefaultModelBar({ tab: _tab }: { tab?: AiSettingsTab } = {}) {
       ) : (
         <div className="space-y-1">
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
-            <p className="min-w-0 text-[13.5px] font-medium text-ink" data-default-model-name>
+            <p className="min-w-0 text-[13.5px] font-normal text-ink" data-default-model-name>
               {defaultSentence}
             </p>
             <div className="flex shrink-0 items-center gap-2">

@@ -80,7 +80,7 @@ function ImSessionRailBody({ sessionId }: { sessionId: string }) {
 
     return (
       <div data-im-rail={sessionId} data-im-rail-on="no" data-im-rail-multi="discoveries" className="min-w-0 space-y-1.5 text-[12px] text-ink-soft">
-        <p className="font-medium text-ink">{t('st.im.sessionSwitch')}</p>
+        <p className="font-normal text-ink">{t('st.im.sessionSwitch')}</p>
         {discoveries.map((item) => {
           const identityText = chatIdentityLabel(item.provider_kind, item.identity, t);
           const identityFullTitle = chatIdentityFullTitle(item.provider_kind, item.identity, t);
@@ -112,7 +112,7 @@ function ImSessionRailBody({ sessionId }: { sessionId: string }) {
 
   return (
     <div data-im-rail={sessionId} data-im-rail-on={bindings.every((binding) => bindingAdmitted(binding, policy)) ? 'yes' : 'no'} data-im-rail-multi={bindings.length > 1 ? 'bindings' : undefined} className="min-w-0 space-y-1 text-[12px] text-ink-soft">
-      <p className="font-medium text-ink">{t('st.im.sessionSwitch')}</p>
+      <p className="font-normal text-ink">{t('st.im.sessionSwitch')}</p>
       {bindings.map((binding) => {
         const on = bindingAdmitted(binding, policy);
         const blocked = !policy.allowed ? 'allowed' : !binding.enabled ? 'disabled' : undefined;

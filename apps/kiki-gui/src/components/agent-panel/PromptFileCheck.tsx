@@ -42,7 +42,7 @@ export function PromptFileCheck({ sessionId, agentId, initialChecks }: {
   const errors = checks?.filter((entry) => entry.status === 'error').length ?? 0;
   return <section className="min-w-0 space-y-2 pt-6" data-prompt-file-check>
     <div className="flex flex-wrap items-baseline justify-between gap-2">
-      <h4 className="text-[12px] font-medium text-ink">{t('agentPanel.prompt.files.title')}</h4>
+      <h4 className="text-[12px] font-normal text-ink">{t('agentPanel.prompt.files.title')}</h4>
       <button type="button" data-prompt-file-check-run disabled={klient === undefined || state.status === 'checking'} onClick={() => void check()}
         className="rounded px-2 py-1 text-[12px] text-ink-soft hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:opacity-50">
         {t(state.status === 'checking' ? 'agentPanel.prompt.files.checking' : 'agentPanel.prompt.files.check')}

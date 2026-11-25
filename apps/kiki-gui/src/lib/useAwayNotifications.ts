@@ -50,6 +50,7 @@ import {
   hasPendingConversationOpen,
 } from './conversationOpen';
 import { activeSpace } from './spaceStorage';
+import { useDeferSecondaryBootQueries } from './bootHydrationGate';
 import type { NavScopeIdentity } from './navHistory';
 import { useThreadTitleResolver } from './threadTitles';
 
@@ -162,8 +163,9 @@ export function useAwayNotifications({ host, sessions, listSessions, unifiedInbo
   // event socket is open, work-change events trigger immediate coalesced reads
   // and the fallback timer backs off so an idle window stays quiet.
   const wsOpen = connection.wsStatus === 'open';
+  const deferSecondaryBoot = useDeferSecondaryBootQueries();
   useEffect(() => {
-    if (host.notify === undefined) return;
+    if (host.notify === undefined || deferSecondaryBoot) return;
     const storage = spaceStorage.capture();
     const key = `kiki.completionObserved.v1:${scopeKey}`;
     const savedRaw = storage.getItem(key);
@@ -225,7 +227,7 @@ export function useAwayNotifications({ host, sessions, listSessions, unifiedInbo
       if (coalesceTimer !== undefined) clearTimeout(coalesceTimer);
       for (const sub of subs) sub.dispose();
     };
-  }, [client, scopeKey, host, wsOpen]);
+  }, [client, scopeKey, host, wsOpen, deferSecondaryBoot]);
 
   // Wire the shared notifier to this host and locale.
   useEffect(() => {

@@ -173,7 +173,7 @@ export function HostSkillInstallDialog({ host, skill = 'kiki-as-subagent', hostN
         {shown !== undefined ? (
           <dl className="space-y-3" data-host-skill-target>
             <div>
-              <dt className="text-[12px] font-medium text-ink-soft">{t('st.hostSkill.file')}</dt>
+              <dt className="text-[12px] font-normal text-ink-soft">{t('st.hostSkill.file')}</dt>
               <dd className="mt-1 break-all rounded-md bg-ink/[0.04] px-3 py-2 font-mono text-[12px] leading-5 text-ink" data-host-skill-path>{shown.path}</dd>
             </div>
             {!stale ? <div>

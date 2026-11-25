@@ -68,6 +68,7 @@ import {
 type LiveSettings = ReturnType<typeof settingsSnapshot>;
 
 import { useI18n } from '../../i18n';
+import { useDeferSecondaryBootQueries } from '../../lib/bootHydrationGate';
 import {
   agentProfileCatalogQueryKey,
   agentProfileCatalogRefetchInterval,
@@ -675,10 +676,11 @@ export function useAgentWorkspaceCore(
             : { mode: 'workspace', workspaceId: profileWorkspaceId, effective: true },
     [mainProfileCatalog !== undefined, profileCwd, profileWorkspaceId],
   );
+  const deferSecondaryBoot = useDeferSecondaryBootQueries();
   const agentProfilesQuery = useQuery({
     queryKey: agentProfileCatalogQueryKey(agentProfileCatalogMode),
     queryFn: () => loadAgentProfileCatalog(client, agentProfileCatalogMode),
-    enabled: mainProfileCatalog !== undefined && agentProfileCatalogMode.mode !== 'disabled',
+    enabled: !deferSecondaryBoot && mainProfileCatalog !== undefined && agentProfileCatalogMode.mode !== 'disabled',
     staleTime: 60_000,
     retry: false,
     refetchInterval: agentProfileCatalogRefetchInterval,

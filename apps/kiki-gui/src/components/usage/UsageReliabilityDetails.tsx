@@ -75,7 +75,7 @@ export function UsageReliabilityDetails({
       >
         <div className="space-y-3 text-[12px] leading-relaxed text-ink-soft">
           <div className="flex items-center justify-between gap-2">
-            <span className="font-medium text-ink">{summaryLabel}</span>
+            <span className="font-normal text-ink">{summaryLabel}</span>
             {models.length > 0 && onOpenPricing !== undefined ? (
               <button
                 type="button"
@@ -84,7 +84,7 @@ export function UsageReliabilityDetails({
                   pop.setOpen(false);
                   onOpenPricing();
                 }}
-                className="text-[11.5px] font-medium text-selected-ink underline-offset-2 hover:underline"
+                className="text-[11.5px] font-normal text-selected-ink underline-offset-2 hover:underline"
               >
                 {t('usage.reliability.setPrices')}
               </button>

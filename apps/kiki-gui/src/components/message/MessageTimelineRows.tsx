@@ -136,7 +136,7 @@ export const ActivitySummaryRow = memo(function ActivitySummaryRow({
               type="button"
               data-activity-summary-process
               onClick={onOpenProcess}
-              className="mt-1 ml-[18px] inline-flex min-h-7 items-center gap-1 rounded-md px-1 text-[12px] font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+              className="mt-1 ml-[18px] inline-flex min-h-7 items-center gap-1 rounded-md px-1 text-[12px] font-normal text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
             >
               {t('message.openProcess')}
               <Icon name="arrowRight" size={12} />

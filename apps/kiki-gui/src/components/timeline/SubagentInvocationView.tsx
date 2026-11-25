@@ -121,7 +121,7 @@ export const SubagentInvocationView = memo(function SubagentInvocationView({ too
   return (
     <div data-invocation-tool={toolBlock.toolCallId} className="space-y-3 text-ink">
       <div>
-        <div className="mb-1 flex items-center justify-between text-[12px] font-medium text-ink-faint">
+        <div className="mb-1 flex items-center justify-between text-[12px] font-normal text-ink-faint">
           <span className="inline-flex min-w-0 items-center gap-2">
             <span>{t('tc.input')}</span>
             {targetProfile !== undefined ? (
@@ -146,7 +146,7 @@ export const SubagentInvocationView = memo(function SubagentInvocationView({ too
         <ContentContinuation source={source} roots={toolBlock.args === undefined ? INPUT_TEXT_ROOTS : INPUT_ROOTS} callerAgentId={callerAgentId} label={t('tc.input')} headingPresent />
       </div>
       <div>
-        <div className="mb-1 flex items-center justify-between text-[12px] font-medium text-ink-faint">
+        <div className="mb-1 flex items-center justify-between text-[12px] font-normal text-ink-faint">
           <span>{t('tc.output')}{toolBlock.isError === true ? t('tc.outputError') : ''}</span>
           {toolBlock.output === undefined ? null : <CopyButton label={t('tc.output')} text={asText(toolBlock.output)} prepare={prepare('output')} />}
         </div>

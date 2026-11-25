@@ -202,7 +202,7 @@ export function OutputPresetModal({
               type="button"
               onClick={() => { void handleDelete(); }}
               disabled={saving}
-              className={`rounded px-2.5 py-1 text-[12px] font-medium text-danger hover:bg-danger/10 ${
+              className={`rounded px-2.5 py-1 text-[12px] font-normal text-danger hover:bg-danger/10 ${
                 saving ? 'opacity-50 cursor-not-allowed' : ''
               }`}
             >
@@ -228,7 +228,7 @@ export function OutputPresetModal({
       <div className="space-y-4">
         {!isEditing && templates.length > 0 ? (
           <div>
-            <label htmlFor={`${overlayId}-template`} className="mb-1 block text-[12px] font-medium text-ink-soft">{t('outputPreset.templateLabel')}</label>
+            <label htmlFor={`${overlayId}-template`} className="mb-1 block text-[12px] font-normal text-ink-soft">{t('outputPreset.templateLabel')}</label>
             <SearchableSelect
               id={`${overlayId}-template`}
               ariaLabel={t('outputPreset.templateLabel')}
@@ -255,7 +255,7 @@ export function OutputPresetModal({
 
         {/* Preset Label */}
         <div>
-          <label htmlFor={`${overlayId}-name`} className="mb-1 block text-[12px] font-medium text-ink-soft">{t('outputPreset.nameLabel')}</label>
+          <label htmlFor={`${overlayId}-name`} className="mb-1 block text-[12px] font-normal text-ink-soft">{t('outputPreset.nameLabel')}</label>
           <input
             id={`${overlayId}-name`}
             type="text"
@@ -269,7 +269,7 @@ export function OutputPresetModal({
         {/* Model Selection */}
         <div>
           <div className="mb-1 flex items-center justify-between">
-            <label className="text-[12px] font-medium text-ink-soft">{t('outputPreset.modelLabel')}</label>
+            <label className="text-[12px] font-normal text-ink-soft">{t('outputPreset.modelLabel')}</label>
             <div className="flex items-center gap-2 text-[11px] text-ink-faint">
               <label className="flex items-center gap-1 cursor-pointer">
                 <input
@@ -334,7 +334,7 @@ export function OutputPresetModal({
 
         {/* System Instruction */}
         <div>
-          <label htmlFor={`${overlayId}-instruction`} className="mb-1 block text-[12px] font-medium text-ink-soft">{t('outputPreset.instructionLabel')}</label>
+          <label htmlFor={`${overlayId}-instruction`} className="mb-1 block text-[12px] font-normal text-ink-soft">{t('outputPreset.instructionLabel')}</label>
           <textarea
             id={`${overlayId}-instruction`}
             rows={3}
@@ -350,7 +350,7 @@ export function OutputPresetModal({
           <button
             type="button"
             onClick={() => setShowAdvanced(!showAdvanced)}
-            className="flex items-center gap-1 text-[12px] font-medium text-ink-faint hover:text-ink"
+            className="flex items-center gap-1 text-[12px] font-normal text-ink-faint hover:text-ink"
           >
             <Icon
               name="chevron"
@@ -364,7 +364,7 @@ export function OutputPresetModal({
             <div className="mt-2.5 space-y-3 rounded-lg border border-hairline bg-paper/60 p-3">
               <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <label htmlFor={`${overlayId}-group-chars`} className="mb-1 block text-[11px] font-medium text-ink-soft">{t('outputPreset.groupCharsLabel')}</label>
+                  <label htmlFor={`${overlayId}-group-chars`} className="mb-1 block text-[11px] font-normal text-ink-soft">{t('outputPreset.groupCharsLabel')}</label>
                   <input
                     id={`${overlayId}-group-chars`}
                     type="number"
@@ -377,7 +377,7 @@ export function OutputPresetModal({
                   <span className="mt-0.5 block text-[10px] text-ink-faint">{t('outputPreset.groupCharsHint')}</span>
                 </div>
                 <div>
-                  <label htmlFor={`${overlayId}-preload-before`} className="mb-1 block text-[11px] font-medium text-ink-soft">{t('outputPreset.preloadBeforeLabel')}</label>
+                  <label htmlFor={`${overlayId}-preload-before`} className="mb-1 block text-[11px] font-normal text-ink-soft">{t('outputPreset.preloadBeforeLabel')}</label>
                   <input
                     id={`${overlayId}-preload-before`}
                     type="number"
@@ -393,7 +393,7 @@ export function OutputPresetModal({
                   <span className="mt-0.5 block text-[10px] text-ink-faint">{t('outputPreset.preloadHint')}</span>
                 </div>
                 <div>
-                  <label htmlFor={`${overlayId}-preload-after`} className="mb-1 block text-[11px] font-medium text-ink-soft">{t('outputPreset.preloadAfterLabel')}</label>
+                  <label htmlFor={`${overlayId}-preload-after`} className="mb-1 block text-[11px] font-normal text-ink-soft">{t('outputPreset.preloadAfterLabel')}</label>
                   <input
                     id={`${overlayId}-preload-after`}
                     type="number"
@@ -412,7 +412,7 @@ export function OutputPresetModal({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label htmlFor={`${overlayId}-max-output`} className="mb-1 block text-[11px] font-medium text-ink-soft">{t('outputPreset.maxOutputLabel')}</label>
+                  <label htmlFor={`${overlayId}-max-output`} className="mb-1 block text-[11px] font-normal text-ink-soft">{t('outputPreset.maxOutputLabel')}</label>
                   <input
                     id={`${overlayId}-max-output`}
                     type="text"
@@ -427,7 +427,7 @@ export function OutputPresetModal({
                   </span>
                 </div>
                 <div>
-                  <label htmlFor={`${overlayId}-history`} className="mb-1 block text-[11px] font-medium text-ink-soft">{t('outputPreset.historyLabel')}</label>
+                  <label htmlFor={`${overlayId}-history`} className="mb-1 block text-[11px] font-normal text-ink-soft">{t('outputPreset.historyLabel')}</label>
                   <input
                     id={`${overlayId}-history`}
                     type="number"

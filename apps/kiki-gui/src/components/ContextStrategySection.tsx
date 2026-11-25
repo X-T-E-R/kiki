@@ -66,7 +66,7 @@ export function ContextStrategySection({ handle, profileName }: ContextStrategyS
   if (status === undefined) {
     return (
       <div data-context-strategy data-strategy-loading className="mt-3 border-t border-hairline pt-3" aria-busy>
-        <p className="text-[12px] font-medium text-ink-soft">{t('context.strategy.title')}</p>
+        <p className="text-[12px] font-normal text-ink-soft">{t('context.strategy.title')}</p>
         <div aria-hidden className="mt-2 h-7 rounded-[9px] bg-ink/[0.04]" />
       </div>
     );
@@ -120,7 +120,7 @@ export function ContextStrategySection({ handle, profileName }: ContextStrategyS
   return (
     <div data-context-strategy data-strategy={status.strategy} data-strategy-source={status.source} className="mt-3 border-t border-hairline pt-3">
       <div className="flex items-center justify-between gap-2">
-        <p id={titleId} className="shrink-0 whitespace-nowrap text-[12px] font-medium text-ink-soft">{t('context.strategy.title')}</p>
+        <p id={titleId} className="shrink-0 whitespace-nowrap text-[12px] font-normal text-ink-soft">{t('context.strategy.title')}</p>
         <div className="relative min-w-0">
           {!hasSourceMenu ? (
             <span data-strategy-source-label className="block truncate px-1.5 text-[12px] text-ink-faint">{sourceLabel(status.source)}</span>
@@ -183,7 +183,7 @@ export function ContextStrategySection({ handle, profileName }: ContextStrategyS
               onClick={() => { pick(strategy); }}
               className={`min-h-7 truncate rounded-[7px] px-2 text-[12px] whitespace-nowrap transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:cursor-default pointer-coarse:min-h-10 ${
                 checked
-                  ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                  ? 'bg-paper text-ink shadow-[var(--kiki-sheet-shadow)]'
                   : 'text-ink-soft enabled:hover:text-ink'
               } ${readOnly && !checked ? 'text-ink-faint' : ''}`}
             >
