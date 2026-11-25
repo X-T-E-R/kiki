@@ -12,6 +12,26 @@ const providers = new Map();
 const asrProviders = new Map();
 const harnessAccountSources = new Map();
 const harnessQuotaSources = new Map();
+const llmProviders = new Map();
+const providerQuotaSources = new Map();
+const llmStreamCalls = new Map();
+const MAX_LLM_REQUEST_BYTES = 128 * 1024 * 1024;
+const MAX_CONCURRENT_LLM_STREAMS = 32;
+const pendingInvalidations = new Map();
+let invalidationTimer;
+function scheduleInvalidation(kind, id) {
+  pendingInvalidations.set(`${kind}:${id}`, { kind, id });
+  if (invalidationTimer !== undefined) return;
+  invalidationTimer = setTimeout(() => {
+    invalidationTimer = undefined;
+    const batch = [...pendingInvalidations.values()];
+    pendingInvalidations.clear();
+    for (const item of batch) {
+      send({ method: 'plugin/invalidateContribution', params: item });
+    }
+  }, 20);
+  invalidationTimer.unref();
+}
 const harnessAccountLeases = new Map();
 const harnessAccountWork = new Set();
 const wireString = (value) => typeof value === 'string' ? value : undefined;
@@ -310,7 +330,7 @@ function listenPanelStreams() {
 
 async function openPanelChannel(message) {
   if (typeof openPanelStream !== 'function' || shuttingDown !== undefined) throw new Error('Plugin has no panel stream backend');
-  const { panelId, stream, args, settings, kikiHome, workspaceId, sessionId } = message.params;
+  const { panelId, stream, args, settings, kikiHome, dataDir, workspaceId, sessionId } = message.params;
   if (typeof stream !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(stream)) throw new Error('Invalid panel stream name');
   const token = randomBytes(32).toString('hex');
   const controller = new AbortController();
@@ -431,7 +451,7 @@ async function openPanelChannel(message) {
   try {
     const port = await listenPanelStreams();
     controller.signal.throwIfAborted();
-    const context = { panelId, sessionId, workspaceId, settings: settings ?? {}, kikiHome, ...modelContext(message.id, controller.signal, false), signal: controller.signal };
+    const context = { panelId, sessionId, workspaceId, settings: settings ?? {}, kikiHome, dataDir, ...modelContext(message.id, controller.signal, false), signal: controller.signal };
     const opened = await openPanelStream(stream, args, handle, context);
     const handlers = opened !== null && typeof opened === 'object' && ['onBinary', 'onText', 'onClose'].some((key) => typeof opened[key] === 'function');
     if (handlers) {
@@ -443,6 +463,226 @@ async function openPanelChannel(message) {
     return { result: handlers ? opened.result : opened, port, token };
   } catch (error) { dispose(String(error)); throw error; }
   finally { pending.delete(message.id); }
+}
+
+async function openLlmProviderStream(message) {
+  if (shuttingDown !== undefined) throw new Error('Plugin host is shutting down');
+  const { providerId, settings, dataDir, kikiHome, totalBytes, chunkCount } = message.params ?? {};
+  const registered = llmProviders.get(providerId);
+  if (registered === undefined) throw new Error('Unknown LLM provider');
+  if (!Number.isSafeInteger(totalBytes) || totalBytes < 2 || totalBytes > MAX_LLM_REQUEST_BYTES) {
+    throw new Error('LLM request exceeds maximum allowed byte size');
+  }
+  if (!Number.isSafeInteger(chunkCount) || chunkCount < 1 || chunkCount > 256) {
+    throw new Error('Invalid LLM request chunk count');
+  }
+  if (llmStreamCalls.size >= MAX_CONCURRENT_LLM_STREAMS) {
+    throw new Error('Too many concurrent LLM streams on plugin host');
+  }
+  const token = randomBytes(32).toString('hex');
+  const controller = new AbortController();
+  let socket;
+  let ended = false;
+  let receivedChunks = 0;
+  let receivedBytes = 0;
+  const uploadChunks = [];
+  let streamStarted = false;
+  let drainWaiter;
+  const resolveDrain = () => {
+    const waiter = drainWaiter;
+    drainWaiter = undefined;
+    waiter?.resolve();
+  };
+  const rejectDrain = (error) => {
+    const waiter = drainWaiter;
+    drainWaiter = undefined;
+    waiter?.reject(error);
+  };
+  const dispose = (why) => {
+    if (ended) return;
+    ended = true;
+    clearTimeout(timer);
+    panelTokens.delete(token);
+    panelStreams.delete(channel);
+    llmStreamCalls.delete(message.id);
+    pending.delete(message.id);
+    uploadChunks.length = 0;
+    controller.abort(why ? new Error(why) : undefined);
+    rejectDrain(new Error(why ?? 'Plugin LLM stream closed'));
+    socket?.destroy();
+  };
+  const writeFrame = async (opcode, payload) => {
+    if (ended || socket === undefined) return false;
+    if (payload.length > PANEL_FRAME_LIMIT) {
+      dispose('Plugin LLM stream frame limit exceeded');
+      return false;
+    }
+    const header = Buffer.allocUnsafe(5);
+    header[0] = opcode;
+    header.writeUInt32BE(payload.length, 1);
+    socket.cork();
+    socket.write(header);
+    const writable = socket.write(payload);
+    socket.uncork();
+    if (!writable && !ended) {
+      await new Promise((resolve, reject) => {
+        drainWaiter = { resolve, reject };
+        socket.once('drain', resolveDrain);
+      });
+    }
+    return !ended;
+  };
+  const finishGracefully = (why) => {
+    if (ended) return;
+    ended = true;
+    clearTimeout(timer);
+    panelTokens.delete(token);
+    panelStreams.delete(channel);
+    llmStreamCalls.delete(message.id);
+    pending.delete(message.id);
+    uploadChunks.length = 0;
+    if (socket !== undefined) {
+      const payload = Buffer.from(why ?? '');
+      const header = Buffer.allocUnsafe(5);
+      header[0] = 8;
+      header.writeUInt32BE(payload.length, 1);
+      socket.cork();
+      socket.write(header);
+      socket.write(payload);
+      socket.uncork();
+      socket.end();
+    }
+  };
+  const startAdapter = async () => {
+    let request;
+    try {
+      const raw = Buffer.concat(uploadChunks, totalBytes).toString('utf8');
+      uploadChunks.length = 0;
+      request = JSON.parse(raw);
+    } catch (error) {
+      await writeFrame(1, Buffer.from(JSON.stringify({
+        type: 'error',
+        failure: { kind: 'invalid_stream', message: `Invalid LLM request payload: ${String(error)}`, retryable: false },
+      }), 'utf8')).catch(() => undefined);
+      finishGracefully('invalid-request');
+      return;
+    }
+    let terminalSent = false;
+    try {
+      const iterable = registered.adapter.stream(request, {
+        signal: controller.signal,
+        settings: settings ?? {},
+        dataDir: dataDir ?? '',
+        kikiHome,
+      });
+      for await (const event of iterable) {
+        if (ended || controller.signal.aborted) break;
+        const ok = await writeFrame(1, Buffer.from(JSON.stringify(event), 'utf8'));
+        if (!ok) break;
+        if (event?.type === 'finish' || event?.type === 'error') {
+          terminalSent = true;
+          break;
+        }
+      }
+      if (!ended && !terminalSent) {
+        const failure = controller.signal.aborted
+          ? { kind: 'cancelled', message: 'LLM stream cancelled', retryable: false }
+          : { kind: 'invalid_stream', message: 'Plugin LLM adapter ended without terminal event', retryable: false };
+        await writeFrame(1, Buffer.from(JSON.stringify({ type: 'error', failure }), 'utf8'));
+      }
+      finishGracefully('done');
+    } catch (error) {
+      if (!ended && !terminalSent) {
+        const aborted = controller.signal.aborted || error?.name === 'AbortError';
+        const failure = aborted
+          ? { kind: 'cancelled', message: error instanceof Error ? error.message : 'LLM stream cancelled', retryable: false }
+          : { kind: 'invalid_stream', message: (error instanceof Error ? error.message : String(error)).slice(0, 4096), retryable: false };
+        await writeFrame(1, Buffer.from(JSON.stringify({ type: 'error', failure }), 'utf8')).catch(() => undefined);
+      }
+      finishGracefully('error');
+    }
+  };
+  const header = Buffer.allocUnsafe(5);
+  let headerBytes = 0;
+  let payload;
+  let payloadBytes = 0;
+  let length = 0;
+  const channel = {
+    dispose,
+    connect(connection) {
+      socket = connection;
+      clearTimeout(timer);
+      socket.on('error', (error) => dispose(error.message));
+      socket.on('close', () => dispose('Plugin LLM stream socket closed'));
+      socket.on('data', (chunk) => {
+        try { channel.receive(chunk); } catch (error) { dispose(String(error)); }
+      });
+    },
+    receive(chunk) {
+      let offset = 0;
+      while (offset < chunk.length && !ended) {
+        if (headerBytes < 5) {
+          const bytes = Math.min(5 - headerBytes, chunk.length - offset);
+          chunk.copy(header, headerBytes, offset, offset + bytes);
+          headerBytes += bytes; offset += bytes;
+          if (headerBytes !== 5) return;
+          length = header.readUInt32BE(1);
+          if (length > PANEL_FRAME_LIMIT || ![1, 2, 8].includes(header[0])) { dispose('Invalid plugin stream frame'); return; }
+        }
+        const bytes = Math.min(length - payloadBytes, chunk.length - offset);
+        let frame;
+        if (payload === undefined && bytes === length) frame = Buffer.from(chunk.subarray(offset, offset + bytes));
+        else {
+          payload ??= Buffer.allocUnsafe(length);
+          chunk.copy(payload, payloadBytes, offset, offset + bytes);
+          payloadBytes += bytes;
+          if (payloadBytes !== length) return;
+          frame = payload;
+        }
+        offset += bytes;
+        const opcode = header[0];
+        headerBytes = 0; payloadBytes = 0; payload = undefined;
+        if (opcode === 8) {
+          dispose(frame.toString('utf8') || 'Plugin LLM stream closed by host');
+          return;
+        }
+        if (opcode !== 2 || streamStarted) {
+          dispose('Unexpected frame on plugin LLM stream');
+          return;
+        }
+        receivedChunks += 1;
+        receivedBytes += frame.length;
+        if (receivedChunks > chunkCount || receivedBytes > totalBytes) {
+          dispose('LLM request upload exceeded declared bounds');
+          return;
+        }
+        uploadChunks.push(frame);
+        if (receivedChunks === chunkCount) {
+          if (receivedBytes !== totalBytes) {
+            dispose('LLM request upload byte count mismatch');
+            return;
+          }
+          streamStarted = true;
+          void startAdapter();
+        }
+      }
+    },
+  };
+  const timer = setTimeout(() => dispose('Plugin LLM stream connect timed out'), 10_000);
+  timer.unref();
+  panelTokens.set(token, channel);
+  panelStreams.add(channel);
+  llmStreamCalls.set(message.id, channel);
+  pending.set(message.id, controller);
+  controller.signal.addEventListener('abort', () => { if (!ended) dispose('Plugin LLM stream cancelled'); }, { once: true });
+  try {
+    const port = await listenPanelStreams();
+    controller.signal.throwIfAborted();
+    return { port, token };
+  } catch (error) {
+    dispose(String(error));
+    throw error;
+  }
 }
 
 function shutdown() {
@@ -537,6 +777,27 @@ for await (const line of input) {
           imAdapters.set(definition.id, { adapter, definition });
           send({ method: 'register-im-adapter', params: { version: 1, definition } });
         },
+        registerLlmProvider(definition, adapter) {
+          if (typeof definition?.id !== 'string' || llmProviders.has(definition.id) ||
+            typeof adapter?.describe !== 'function' || typeof adapter?.stream !== 'function') {
+            throw new Error('Invalid or duplicate LLM provider');
+          }
+          llmProviders.set(definition.id, { definition, adapter });
+          send({
+            method: 'register-llm-provider',
+            params: { version: 1, definition, supportsForceRefreshAuth: typeof adapter.forceRefreshAuth === 'function' },
+          });
+          return { invalidate() { scheduleInvalidation('llm_provider', definition.id); } };
+        },
+        registerProviderQuotaSource(definition, adapter) {
+          if (typeof definition?.id !== 'string' || providerQuotaSources.has(definition.id) ||
+            typeof adapter?.listTargets !== 'function' || typeof adapter?.read !== 'function') {
+            throw new Error('Invalid or duplicate provider quota source');
+          }
+          providerQuotaSources.set(definition.id, { definition, adapter });
+          send({ method: 'register-provider-quota-source', params: { version: 1, definition } });
+          return { invalidate() { scheduleInvalidation('provider_quota', definition.id); } };
+        },
       });
     } catch (error) {
       send({ method: 'register-error', params: { message: String(error) } });
@@ -612,7 +873,76 @@ for await (const line of input) {
     const id = message.params?.id;
     pending.get(id)?.abort();
     panelCalls.get(id)?.dispose('Plugin stream cancelled');
+    llmStreamCalls.get(id)?.dispose('Plugin LLM stream cancelled');
     void releaseHarnessAccount(id).catch(() => undefined);
+    continue;
+  }
+  if (message.method === 'llm-provider-describe') {
+    const { providerId, settings, dataDir, kikiHome } = message.params ?? {};
+    const controller = new AbortController();
+    pending.set(message.id, controller);
+    const registered = shuttingDown === undefined ? llmProviders.get(providerId) : undefined;
+    void Promise.resolve().then(async () => {
+      if (registered === undefined) throw new Error('Unsupported LLM provider');
+      controller.signal.throwIfAborted();
+      return registered.adapter.describe({ signal: controller.signal, settings: settings ?? {}, dataDir: dataDir ?? '', kikiHome });
+    }).then(
+      (result) => send({ id: message.id, result }),
+      (error) => send({ id: message.id, error: { code: -32000, message: error instanceof Error ? error.message : String(error) } }),
+    ).finally(() => pending.delete(message.id));
+    continue;
+  }
+  if (message.method === 'llm-provider-force-refresh-auth') {
+    const { providerId, settings, dataDir, kikiHome } = message.params ?? {};
+    const controller = new AbortController();
+    pending.set(message.id, controller);
+    const registered = shuttingDown === undefined ? llmProviders.get(providerId) : undefined;
+    void Promise.resolve().then(async () => {
+      if (registered === undefined) throw new Error('Unsupported LLM provider');
+      if (typeof registered.adapter.forceRefreshAuth !== 'function') return false;
+      controller.signal.throwIfAborted();
+      return Boolean(await registered.adapter.forceRefreshAuth({ signal: controller.signal, settings: settings ?? {}, dataDir: dataDir ?? '', kikiHome }));
+    }).then(
+      (result) => send({ id: message.id, result }),
+      (error) => send({ id: message.id, error: { code: -32000, message: error instanceof Error ? error.message : String(error) } }),
+    ).finally(() => pending.delete(message.id));
+    continue;
+  }
+  if (message.method === 'llm-provider-stream-open') {
+    void openLlmProviderStream(message).then(
+      (result) => send({ id: message.id, result }),
+      (error) => send({ id: message.id, error: { code: -32000, message: error instanceof Error ? error.message : String(error) } }),
+    );
+    continue;
+  }
+  if (message.method === 'provider-quota-list-targets') {
+    const { sourceId, settings, dataDir, kikiHome } = message.params ?? {};
+    const controller = new AbortController();
+    pending.set(message.id, controller);
+    const registered = shuttingDown === undefined ? providerQuotaSources.get(sourceId) : undefined;
+    void Promise.resolve().then(async () => {
+      if (registered === undefined) throw new Error('Unsupported provider quota source');
+      controller.signal.throwIfAborted();
+      return registered.adapter.listTargets({ signal: controller.signal, settings: settings ?? {}, dataDir: dataDir ?? '', kikiHome });
+    }).then(
+      (result) => send({ id: message.id, result }),
+      (error) => send({ id: message.id, error: { code: -32000, message: error instanceof Error ? error.message : String(error) } }),
+    ).finally(() => pending.delete(message.id));
+    continue;
+  }
+  if (message.method === 'provider-quota-read') {
+    const { sourceId, targetId, settings, dataDir, kikiHome } = message.params ?? {};
+    const controller = new AbortController();
+    pending.set(message.id, controller);
+    const registered = shuttingDown === undefined ? providerQuotaSources.get(sourceId) : undefined;
+    void Promise.resolve().then(async () => {
+      if (registered === undefined) throw new Error('Unsupported provider quota source');
+      controller.signal.throwIfAborted();
+      return registered.adapter.read(targetId, { signal: controller.signal, settings: settings ?? {}, dataDir: dataDir ?? '', kikiHome });
+    }).then(
+      (result) => send({ id: message.id, result }),
+      (error) => send({ id: message.id, error: { code: -32000, message: error instanceof Error ? error.message : String(error) } }),
+    ).finally(() => pending.delete(message.id));
     continue;
   }
   if (message.method === 'harness-account-request') {
@@ -815,7 +1145,7 @@ for await (const line of input) {
     pending.set(message.id, controller);
     Promise.resolve().then(() => {
       if (typeof handlePanelRequest !== 'function') throw new Error('Plugin has no panel backend');
-      return handlePanelRequest(message.params.action, message.params.args, { settings: message.params.settings ?? {}, kikiHome: message.params.kikiHome, workspaceId: message.params.workspaceId, ...modelContext(message.id, controller.signal, false), signal: controller.signal });
+      return handlePanelRequest(message.params.action, message.params.args, { settings: message.params.settings ?? {}, kikiHome: message.params.kikiHome, dataDir: message.params.dataDir, workspaceId: message.params.workspaceId, ...modelContext(message.id, controller.signal, false), signal: controller.signal });
     }).then(
       (result) => send({ id: message.id, result }),
       (error) => send({ id: message.id, error: { code: -32000, message: String(error) } }),

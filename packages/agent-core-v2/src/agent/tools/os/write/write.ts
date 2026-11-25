@@ -16,10 +16,10 @@ export const WriteInputSchema = z.object({
       'Raw full file content to write exactly as provided. This does not use the Read/Edit text view.',
     ),
   mode: z
-    .enum(['overwrite', 'append'])
+    .enum(['overwrite', 'append', 'create'])
     .optional()
     .describe(
-      'Write mode. Defaults to overwrite. append adds content to the end exactly as provided and does not add a newline.',
+      'Write mode. Defaults to overwrite. append adds content to the end exactly as provided and does not add a newline. create creates a new file exclusively and fails atomically if the file already exists.',
     ),
 });
 

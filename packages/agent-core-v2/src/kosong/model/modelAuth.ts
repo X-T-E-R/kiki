@@ -113,6 +113,7 @@ export function effectiveModelConfig(
 const ANTHROPIC_PROFILE_HINT_RE = /claude|opus|sonnet|haiku|fable|mythos/i;
 
 function withAnthropicProfile(model: ModelRecord, providerType?: string): ModelRecord {
+  if (providerType === 'plugin') return model;
   const wireName = model.name ?? model.model;
   if (wireName === undefined || !ANTHROPIC_PROFILE_HINT_RE.test(wireName)) return model;
   const protocol = model.protocol ?? providerType;

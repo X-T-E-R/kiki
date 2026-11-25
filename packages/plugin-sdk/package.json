@@ -35,9 +35,17 @@
       "types": "./dist/im.d.ts",
       "default": "./dist/im.js"
     },
+    "./llm-provider": {
+      "types": "./dist/llm-provider.d.ts",
+      "default": "./dist/llm-provider.js"
+    },
     "./messages": {
       "types": "./dist/messages.d.ts",
       "default": "./dist/messages.js"
+    },
+    "./provider-quota": {
+      "types": "./dist/provider-quota.d.ts",
+      "default": "./dist/provider-quota.js"
     },
     "./session-import": {
       "types": "./dist/session-import.d.ts",

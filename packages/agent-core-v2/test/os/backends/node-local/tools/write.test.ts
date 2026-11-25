@@ -39,6 +39,7 @@ interface WriteFsOptions {
   readText?: (path: string) => Promise<string>;
   writeText?: (path: string, data: string) => Promise<void>;
   appendText?: (path: string, data: string) => Promise<void>;
+  createExclusive?: (path: string, data: Uint8Array) => Promise<boolean>;
   stat?: (path: string) => Promise<HostFileStat>;
   mkdir?: (path: string) => Promise<void>;
 }
@@ -52,12 +53,13 @@ function createWriteFs(options: WriteFsOptions = {}) {
   );
   const writeText = vi.fn(options.writeText ?? (async () => {}));
   const appendText = vi.fn(options.appendText ?? (async () => {}));
+  const createExclusive = vi.fn(options.createExclusive ?? (async () => true));
   const stat = vi.fn(
     options.stat ?? (async () => ({ isFile: false, isDirectory: true, size: 0 })),
   );
   const mkdir = vi.fn(options.mkdir ?? (async () => {}));
-  const fs = { cwd: '/', readText, writeText, appendText, stat, mkdir, realpath: async (path: string) => path } as unknown as IHostFileSystem;
-  return { fs, readText, writeText, appendText, stat, mkdir };
+  const fs = { cwd: '/', readText, writeText, appendText, createExclusive, stat, mkdir, realpath: async (path: string) => path } as unknown as IHostFileSystem;
+  return { fs, readText, writeText, appendText, createExclusive, stat, mkdir };
 }
 
 function makeTool(options: WriteFsOptions = {}, workspace = PERMISSIVE_WORKSPACE) {
@@ -117,7 +119,7 @@ describe('WriteTool', () => {
       properties: {
         content: { type: 'string' },
         mode: {
-          enum: ['overwrite', 'append'],
+          enum: ['overwrite', 'append', 'create'],
         },
       },
     });
@@ -126,6 +128,10 @@ describe('WriteTool', () => {
     );
     expect(
       WriteInputSchema.safeParse({ path: '/tmp/out.txt', content: 'hello', mode: 'append' })
+        .success,
+    ).toBe(true);
+    expect(
+      WriteInputSchema.safeParse({ path: '/tmp/out.txt', content: 'hello', mode: 'create' })
         .success,
     ).toBe(true);
     expect(
@@ -427,5 +433,29 @@ describe('WriteTool', () => {
 
     expect(result.isError).toBeFalsy();
     expect(writeText).toHaveBeenCalledWith('/workspace-sneaky/file.txt', 'content');
+  });
+
+  it('creates a new file exclusively via createExclusive when mode is create', async () => {
+    const { tool, createExclusive, writeText } = makeTool();
+
+    const result = await execute(tool, { path: '/tmp/brand-new.txt', content: 'hello', mode: 'create' });
+
+    expect(result.isError).toBeFalsy();
+    expect(createExclusive).toHaveBeenCalledWith('/tmp/brand-new.txt', Buffer.from('hello', 'utf8'));
+    expect(writeText).not.toHaveBeenCalled();
+    expect(result.output).toContain('Created 5 bytes');
+  });
+
+  it('fails without overwriting when mode is create and target already exists', async () => {
+    const { tool, createExclusive, writeText } = makeTool({
+      createExclusive: async () => false,
+    });
+
+    const result = await execute(tool, { path: '/tmp/existing.txt', content: 'nope', mode: 'create' });
+
+    expect(result.isError).toBe(true);
+    expect(createExclusive).toHaveBeenCalledWith('/tmp/existing.txt', Buffer.from('nope', 'utf8'));
+    expect(writeText).not.toHaveBeenCalled();
+    expect(result.output).toContain('File already exists');
   });
 });

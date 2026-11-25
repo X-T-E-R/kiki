@@ -44,7 +44,9 @@ import { Error2, PluginErrors } from '#/errors';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
 import type { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 
-import { PluginHost } from './host';
+import { PluginHost, type PluginContributionInvalidationEvent } from './host';
+import { IPluginLlmDirectoryService } from './pluginLlmDirectory';
+import { ModelCatalogChanged } from '#/app/kosongConfig/discovery';
 import type { PluginPanelStream } from './panelStream';
 export type { PluginPanelStream } from './panelStream';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
@@ -176,6 +178,8 @@ export class PluginHostService extends Service implements IPluginHostService {
   private readonly knownDependencies = new Map<string, readonly string[]>();
   private readonly extensionRegistrations = new Map<string, DisposableStore>();
   private readonly extensionGenerations = new Map<string, number>();
+  private readonly llmPluginGenerations = new Map<string, number>();
+  private readonly llmActiveControllers = new Map<string, Set<AbortController>>();
   private readonly extensionDiscoveries = new Set<Promise<void>>();
   private readonly dynamicE12Cache = new Map<string, { readonly signature: string; readonly payload: Record<string, unknown> | null }>();
   private readonly e5TimeoutCooldowns = new Map<string, { readonly extensionGeneration: number; readonly slotSignature: string | undefined; readonly until: number; probing: boolean }>();
@@ -277,6 +281,7 @@ export class PluginHostService extends Service implements IPluginHostService {
     @ref(IPluginExtensionPortRegistry) private readonly extensionPorts?: LiveRef<IPluginExtensionPortRegistry>,
     @ref(ISessionIndex) private readonly sessionIndex?: LiveRef<ISessionIndex>,
     @ref(IEventService) private readonly eventService?: LiveRef<IEventService>,
+    @ref(IPluginLlmDirectoryService) private readonly llmDirectory?: LiveRef<IPluginLlmDirectoryService>,
   ) {
     super();
     if (this.usage !== undefined) this._register(this.usage.onDidChange((event) => {
@@ -295,6 +300,20 @@ export class PluginHostService extends Service implements IPluginHostService {
         }
       })());
     }));
+    if (this.llmDirectory !== undefined) {
+      let directorySub: IDisposable | undefined;
+      const bindDirectoryEvents = () => {
+        directorySub?.dispose();
+        directorySub = this.llmDirectory?.current?.onDidChange(() => {
+          this.eventService?.current?.publish(new ModelCatalogChanged({
+            payload: { changed: [], unchanged: [], failed: [] },
+          }));
+        });
+      };
+      bindDirectoryEvents();
+      this._register(this.llmDirectory.onDidChange(bindDirectoryEvents));
+      this._register(toDisposable(() => { directorySub?.dispose(); directorySub = undefined; }));
+    }
     if (this.extensionPorts !== undefined) {
       this._register(this.extensionPorts.onDidChange((registry) => {
         if (registry === undefined) {
@@ -325,6 +344,7 @@ export class PluginHostService extends Service implements IPluginHostService {
         if (reloaded || this.closing) return;
         const affected = this.affectedPlugins(event.affected);
         void Promise.all([
+          this.reconcileLlmProviders(affected),
           this.reconcileExtensionPorts(affected),
           this.reconcileResidents(affected, false, retiredResidents),
         ]).catch((error: unknown) => {
@@ -344,7 +364,8 @@ export class PluginHostService extends Service implements IPluginHostService {
           }
         }
         this.withdrawExtensionPorts(affected);
-        const ids = affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys(), ...this.slotRegistrations.keys(), ...this.extensionGenerations.keys()])];
+        this.withdrawLlmProviders(affected);
+        const ids = affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys(), ...this.slotRegistrations.keys(), ...this.extensionGenerations.keys(), ...this.llmPluginGenerations.keys()])];
         for (const id of ids) {
           this.dynamicE12Cache.delete(id.toLowerCase());
           this.e5TimeoutCooldowns.delete(id.toLowerCase());
@@ -387,6 +408,13 @@ export class PluginHostService extends Service implements IPluginHostService {
         }
         const affected = this.affectedPlugins(event.affected);
         try {
+          await this.reconcileLlmProviders(affected);
+        } catch (error) {
+          this.logger?.current?.warn('plugin LLM provider reconciliation failed after reload', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        try {
           await this.reconcileExtensionPorts(affected);
         } catch (error) {
           this.logger?.current?.warn('plugin extension port reconciliation failed after reload', {
@@ -417,6 +445,7 @@ export class PluginHostService extends Service implements IPluginHostService {
         .filter((id) => !this.ownSettingsWrites.has(id) && JSON.stringify(current?.[id]) !== JSON.stringify(previous?.[id]));
       if (ids.length === 0) return;
       void Promise.allSettled([
+        this.reconcileLlmProviders(ids),
         this.reconcileExtensionPorts(ids),
         this.reconcileResidents(ids, true),
       ]).then((results) => {
@@ -435,6 +464,7 @@ export class PluginHostService extends Service implements IPluginHostService {
       });
     }));
     this.ready = Promise.resolve().then(() => Promise.allSettled([
+      this.reconcileLlmProviders(),
       this.reconcileExtensionPorts(),
       this.reconcileResidents(),
     ]).then((results) => {
@@ -456,6 +486,7 @@ export class PluginHostService extends Service implements IPluginHostService {
 
   private async shutdownHosts(): Promise<void> {
     this.withdrawExtensionPorts();
+    this.withdrawLlmProviders();
     await Promise.allSettled([...this.slotRegistrations.keys()].map(id => this.withdrawSlot(id)));
     await this.imAdaptersSink?.withdraw();
     await Promise.allSettled(this.residentWork);
@@ -467,6 +498,220 @@ export class PluginHostService extends Service implements IPluginHostService {
     this.dynamicE12Cache.clear();
     this.e5TimeoutCooldowns.clear();
     await Promise.allSettled(hosts.map((host) => host.stopAndWait()));
+  }
+
+  private withdrawLlmProviders(affected?: readonly string[]): void {
+    const directory = this.llmDirectory?.current;
+    const ids = affected === undefined
+      ? [...new Set([...this.llmPluginGenerations.keys(), ...this.llmActiveControllers.keys()])]
+      : affected.map((id) => id.toLowerCase());
+    for (const id of ids) {
+      this.llmPluginGenerations.set(id, (this.llmPluginGenerations.get(id) ?? 0) + 1);
+      const controllers = this.llmActiveControllers.get(id);
+      if (controllers !== undefined) {
+        this.llmActiveControllers.delete(id);
+        for (const controller of controllers) controller.abort(new Error(`Plugin ${id} was withdrawn`));
+      }
+      directory?.withdrawPlugin(id);
+    }
+  }
+
+  private trackLlmController(pluginKey: string, signal?: AbortSignal): { readonly controller: AbortController; readonly release: () => void } {
+    const controller = new AbortController();
+    let set = this.llmActiveControllers.get(pluginKey);
+    if (set === undefined) {
+      set = new Set();
+      this.llmActiveControllers.set(pluginKey, set);
+    }
+    set.add(controller);
+    const onAbort = () => controller.abort(signal?.reason);
+    if (signal !== undefined) {
+      if (signal.aborted) controller.abort(signal.reason);
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+    return {
+      controller,
+      release: () => {
+        signal?.removeEventListener('abort', onAbort);
+        const current = this.llmActiveControllers.get(pluginKey);
+        current?.delete(controller);
+        if (current?.size === 0) this.llmActiveControllers.delete(pluginKey);
+      },
+    };
+  }
+
+  private async reconcileLlmProviders(affected?: readonly string[]): Promise<void> {
+    const directory = this.llmDirectory?.current;
+    if (directory === undefined || this.closing) return;
+    const installed = await this.plugins.listPlugins();
+    if (this.llmDirectory?.current !== directory || this.closing) return;
+    const targetFilter = affected === undefined ? undefined : new Set(affected.map((id) => id.toLowerCase()));
+    const installedById = new Map(installed.map((item) => [item.id.toLowerCase(), item]));
+    const existingIds = directory.listProviders().map((entry) => entry.pluginId.toLowerCase())
+      .concat(directory.listQuotaSources().map((entry) => entry.pluginId.toLowerCase()));
+    const candidateIds = targetFilter !== undefined
+      ? [...targetFilter]
+      : [...new Set([...installedById.keys(), ...existingIds])];
+    const infos = await Promise.all(candidateIds.map(async (id) => {
+      const summary = installedById.get(id);
+      if (summary === undefined || !summary.enabled || summary.state !== 'ok') return { id, info: undefined };
+      const info = await this.plugins.getPluginInfo({ id: summary.id }).catch(() => undefined);
+      if (info === undefined || !info.enabled || info.state !== 'ok') return { id, info: undefined };
+      try {
+        await this.checkDependencies(info);
+        return { id, info };
+      } catch {
+        return { id, info: undefined };
+      }
+    }));
+    if (this.llmDirectory?.current !== directory || this.closing) return;
+
+    const describeTasks: Array<() => Promise<void>> = [];
+    for (const { id, info } of infos) {
+      const kiki = info?.manifest?.kiki;
+      const llmDefs = kiki?.llmProviders ?? [];
+      const quotaDefs = kiki?.providerQuotaSources ?? [];
+      if (info === undefined || kiki?.entry === undefined || (llmDefs.length === 0 && quotaDefs.length === 0)) {
+        this.withdrawLlmProviders([id]);
+        continue;
+      }
+      const pluginKey = info.id.toLowerCase();
+      const generation = (this.llmPluginGenerations.get(pluginKey) ?? 0) + 1;
+      this.llmPluginGenerations.set(pluginKey, generation);
+      const dataDir = path.join(this.bootstrap.homeDir, 'plugins', 'data', info.id);
+      const llmProviders = llmDefs.map((definition) => ({
+        definition,
+        runtime: {
+          describe: async (signal?: AbortSignal) => {
+            const tracked = this.trackLlmController(pluginKey, signal);
+            try {
+              const settings = await this.settings.forExecution(info.id);
+              tracked.controller.signal.throwIfAborted();
+              return await this.getHost(info).describeLlmProvider(definition.id, settings, dataDir, tracked.controller.signal);
+            } finally {
+              tracked.release();
+            }
+          },
+          stream: (request: import('@kiki/protocol').PluginLlmStreamRequest, signal?: AbortSignal) => {
+            const self = this;
+            return (async function* () {
+              const tracked = self.trackLlmController(pluginKey, signal);
+              try {
+                const settings = await self.settings.forExecution(info.id);
+                tracked.controller.signal.throwIfAborted();
+                const host = self.getHost(info);
+                for await (const event of host.streamLlmProvider(definition.id, request, settings, dataDir, tracked.controller.signal)) {
+                  yield event;
+                }
+              } finally {
+                tracked.release();
+              }
+            })();
+          },
+          forceRefreshAuth: async (signal?: AbortSignal) => {
+            const tracked = this.trackLlmController(pluginKey, signal);
+            try {
+              const settings = await this.settings.forExecution(info.id);
+              tracked.controller.signal.throwIfAborted();
+              return await this.getHost(info).forceRefreshLlmProviderAuth(definition.id, settings, dataDir, tracked.controller.signal);
+            } finally {
+              tracked.release();
+            }
+          },
+        },
+      }));
+      const quotaSources = quotaDefs.map((definition) => ({
+        definition,
+        runtime: {
+          listTargets: async (signal?: AbortSignal) => {
+            const tracked = this.trackLlmController(pluginKey, signal);
+            try {
+              const settings = await this.settings.forExecution(info.id);
+              tracked.controller.signal.throwIfAborted();
+              return await this.getHost(info).listProviderQuotaTargets(definition.id, settings, dataDir, tracked.controller.signal);
+            } finally {
+              tracked.release();
+            }
+          },
+          read: async (targetId: string, signal?: AbortSignal) => {
+            const tracked = this.trackLlmController(pluginKey, signal);
+            try {
+              const settings = await this.settings.forExecution(info.id);
+              tracked.controller.signal.throwIfAborted();
+              return await this.getHost(info).readProviderQuota(definition.id, targetId, settings, dataDir, tracked.controller.signal);
+            } finally {
+              tracked.release();
+            }
+          },
+        },
+      }));
+      const { acceptedProviders, rejectedProviders } = directory.publishPlugin({
+        pluginId: info.id,
+        generation,
+        llmProviders,
+        quotaSources,
+      });
+      for (const rejected of rejectedProviders) {
+        this.logger?.current?.warn('plugin LLM provider rejected', {
+          pluginId: info.id,
+          providerId: rejected.id,
+          reason: rejected.reason,
+        });
+      }
+      for (const providerId of acceptedProviders) {
+        describeTasks.push(async () => {
+          await directory.ensureProviderDescribed(providerId);
+        });
+      }
+    }
+    directory.markIndexReady();
+    for (const task of describeTasks) {
+      const work = task().catch((error: unknown) => {
+        this.logger?.current?.warn('plugin LLM provider describe failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      this.extensionDiscoveries.add(work);
+      void work.finally(() => {
+        this.extensionDiscoveries.delete(work);
+      });
+    }
+  }
+
+  private handleContributionInvalidated(pluginId: string, event: PluginContributionInvalidationEvent): void {
+    const directory = this.llmDirectory?.current;
+    if (directory === undefined || this.closing) return;
+    const pluginKey = pluginId.toLowerCase();
+    if (event.kind === 'provider_quota') {
+      directory.notifyQuotaChanged(pluginId);
+      return;
+    }
+    const entry = directory.getProvider(event.id);
+    if (entry === undefined || entry.pluginId.toLowerCase() !== pluginKey) return;
+    const generation = entry.generation;
+    const work = entry.runtime.describe().then(
+      (described) => {
+        directory.commitProviderDescription(
+          pluginId,
+          generation,
+          event.id,
+          described.description,
+          described.supportsForceRefreshAuth,
+        );
+      },
+      (error: unknown) => {
+        directory.markProviderDegraded(
+          pluginId,
+          generation,
+          event.id,
+          error instanceof Error ? error.message : String(error),
+        );
+      },
+    );
+    this.extensionDiscoveries.add(work);
+    void work.finally(() => {
+      this.extensionDiscoveries.delete(work);
+    });
   }
 
   private withdrawExtensionPorts(affected?: readonly string[]): void {
@@ -1379,7 +1624,9 @@ export class PluginHostService extends Service implements IPluginHostService {
         },
       }, info.manifest?.kiki?.harnessQuotaSources, () => this.cachedHarnessQuota(), (exit) => {
         if (!this.closing) this.logger?.current?.warn('Plugin host exited unexpectedly', exit);
-      }, info.manifest?.kiki?.asrProviders, asrStringSettings(info));
+      }, info.manifest?.kiki?.asrProviders, asrStringSettings(info), info.manifest?.kiki?.llmProviders, info.manifest?.kiki?.providerQuotaSources, (event) => {
+        this.handleContributionInvalidated(info.id, event);
+      });
       this.hosts.set(info.id, host);
       this.hostSignatures.set(info.id, hostSignature(info));
     }

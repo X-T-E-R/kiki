@@ -2,10 +2,12 @@ import type { Buffer } from 'node:buffer';
 import type { HarnessAccountSourceDefinition, HarnessAccountAdapter } from './harness-account.js';
 import type { HarnessQuotaSourceDefinition, HarnessQuotaAdapter, PluginHarnessQuotaApi } from './harness-quota.js';
 import type { PluginImAdapterDefinition, PluginImAdapter } from './im.js';
+import type { LlmProviderContributionDefinition, LlmProviderAdapter } from './llm-provider.js';
 import type { MediaProviderDefinition, MediaProviderAdapter, PluginMediaApi } from './media.js';
 import type { AsrProviderDefinition, AsrProviderAdapter } from './asr.js';
 import type { PluginMessagesApi } from './messages.js';
 import type { PluginModelsApi, PluginCredentialsApi, PluginPanelContext } from './models.js';
+import type { ProviderQuotaSourceDefinition, ProviderQuotaAdapter } from './provider-quota.js';
 import type { SessionSourceDefinition, ImportProbe, ImportParsePage, ImportDiscoveryPage } from './session-import.js';
 export * from './models.js';
 
@@ -13,9 +15,11 @@ export type * from './cordis.js';
 export * from './harness-account.js';
 export * from './harness-quota.js';
 export * from './im.js';
+export * from './llm-provider.js';
 export * from './media.js';
 export * from './asr.js';
 export * from './messages.js';
+export * from './provider-quota.js';
 export * from './session-import.js';
 
 export interface SessionSourceContext {
@@ -106,6 +110,10 @@ export interface PluginPanelStreamOpened {
 
 export type PluginPanelStreamHandler = (stream: string, args: unknown, session: PluginPanelStreamSession, context: PluginPanelStreamContext) => unknown;
 
+export interface PluginRegistrationHandle {
+  invalidate(): void;
+}
+
 export interface PluginRegistrationApi {
   registerPanelStream?(handler: PluginPanelStreamHandler): void;
   registerTool(definition: PluginToolDefinition, execute: PluginTool['execute']): void;
@@ -115,6 +123,8 @@ export interface PluginRegistrationApi {
   registerHarnessAccountSource(definition: HarnessAccountSourceDefinition, adapter: HarnessAccountAdapter): void;
   registerHarnessQuotaSource(definition: HarnessQuotaSourceDefinition, adapter: HarnessQuotaAdapter): void;
   registerImAdapter(definition: PluginImAdapterDefinition, adapter: PluginImAdapter): void;
+  registerLlmProvider(definition: LlmProviderContributionDefinition, adapter: LlmProviderAdapter): PluginRegistrationHandle;
+  registerProviderQuotaSource(definition: ProviderQuotaSourceDefinition, adapter: ProviderQuotaAdapter): PluginRegistrationHandle;
 }
 
 export type PluginEntryApi = PluginRegistrationApi;

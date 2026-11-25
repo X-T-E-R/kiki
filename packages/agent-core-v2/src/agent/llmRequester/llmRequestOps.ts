@@ -49,8 +49,8 @@ export interface LlmToolsSnapshot extends z.infer<typeof llmToolsSnapshotSchema>
 const llmRequestSchema = z.object({
   kind: z.enum(['loop', 'compaction']),
   provider: z.string(),
-  protocol: z.enum(['anthropic', 'openai', 'openai_responses', 'google-genai']).optional(),
-  protocol_source: z.enum(['model', 'provider', 'vendor']).optional(),
+  protocol: z.enum(['anthropic', 'openai', 'openai_responses', 'google-genai', 'plugin']).optional(),
+  protocol_source: z.enum(['model', 'provider', 'vendor', 'plugin']).optional(),
   model: z.string(),
   modelAlias: z.string().optional(),
   thinkingEffort: z.custom<ThinkingEffort>().optional(),

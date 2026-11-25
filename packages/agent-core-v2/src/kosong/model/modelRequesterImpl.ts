@@ -21,6 +21,7 @@ import type {
   VideoUploadInput,
 } from '#/kosong/contract/provider';
 import { translateProviderError } from '#/kosong/protocol/errors';
+import type { IPluginLlmDirectoryService } from '#/app/plugin/pluginLlmDirectory';
 import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 
 import type { AuthProvider, Model } from './catalog';
@@ -59,13 +60,25 @@ export class ModelRequesterImpl implements ModelRequester {
     readonly model: Model,
     private readonly protocolRegistry: IProtocolAdapterRegistry,
     private readonly admission?: RequestAdmissionPort,
+    private readonly pluginLlm?: IPluginLlmDirectoryService,
   ) {
-    this.adapterBindingKey = protocolRegistry.adapterCacheKey?.(model.protocol, model.providerType);
+    this.adapterBindingKey = this.currentAdapterBindingKey();
+  }
+
+  private currentAdapterBindingKey(): string | undefined {
+    if (this.model.pluginOwner !== undefined) {
+      const live = this.pluginLlm?.getProvider(this.model.pluginOwner.providerId);
+      if (live === undefined || live.pluginId !== this.model.pluginOwner.pluginId) {
+        return 'plugin:withdrawn';
+      }
+      return `plugin:${live.pluginId}:${live.definition.id}:${live.generation}`;
+    }
+    return this.protocolRegistry.adapterCacheKey?.(this.model.protocol, this.model.providerType);
   }
 
   private assertAdapterBinding(): void {
-    const { protocol, providerType, id } = this.model;
-    if (this.protocolRegistry.adapterCacheKey?.(protocol, providerType) !== this.adapterBindingKey) {
+    const { id } = this.model;
+    if (this.currentAdapterBindingKey() !== this.adapterBindingKey) {
       throw new Error2(CONFIG_INVALID_ERROR_CODE, `Model '${id}' adapter generation changed; rebind required.`);
     }
   }
@@ -74,10 +87,19 @@ export class ModelRequesterImpl implements ModelRequester {
     this.assertAdapterBinding();
     const model = this.model;
     if (this.cachedChatProvider !== undefined) return this.cachedChatProvider;
+    if (model.pluginOwner !== undefined) {
+      const created = this.pluginLlm?.createChatProvider(model.pluginOwner.providerId, model.id, model.name);
+      if (created === undefined) {
+        throw new Error2(CONFIG_INVALID_ERROR_CODE, `Plugin provider '${model.pluginOwner.providerId}' is no longer available.`);
+      }
+      this.cachedChatProvider = created;
+      return created;
+    }
     this.cachedChatProvider = this.protocolRegistry.createChatProvider({
       protocol: model.protocol,
       providerType: model.providerType,
       baseUrl: model.baseUrl,
+      modelId: model.id,
       modelName: model.name,
       pricingModel: model.pricingModel,
       apiKey: '',

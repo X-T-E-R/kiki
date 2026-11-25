@@ -37,6 +37,8 @@ import {
 } from '@kiki/oauth';
 import { connectOriginalOAuthRequestSchema, originalOAuthRequestSchema, type ConnectOriginalOAuthRequest, type OriginalOAuthProbe, type OriginalOAuthRequest } from '@kiki/protocol';
 import { parse as parseToml } from 'smol-toml';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { IPluginLlmDirectoryService } from '#/app/plugin/pluginLlmDirectory';
 import { createOriginalOAuthKeyring } from '#/persistence/backends/node-fs/originalOAuthKeyring';
 import { createKimiOAuthKeyring } from '#/persistence/backends/node-fs/kimiOAuthKeyring';
 import type {
@@ -934,6 +936,7 @@ export class AuthSummaryService implements IAuthSummaryService {
     @IConfigService private readonly config: IConfigService,
     @IOAuthService private readonly oauth: IOAuthService,
     @ILogService private readonly log: ILogService,
+    @ref(IPluginLlmDirectoryService) private readonly pluginLlm?: LiveRef<IPluginLlmDirectoryService>,
   ) {}
 
   async summarize(): Promise<readonly AuthStatus[]> {
@@ -963,12 +966,45 @@ export class AuthSummaryService implements IAuthSummaryService {
     await this.config.reload();
     const providers = this.providerService.list();
     const requestedModelId = modelOverride ?? this.modelService.getDefaultModel();
-    const modelId =
+    const directory = this.pluginLlm?.current;
+    let modelId =
       requestedModelId === undefined || requestedModelId === ''
         ? undefined
         : this.modelService.resolveId(requestedModelId);
-    const configured = modelId === undefined ? undefined : this.modelService.get(modelId);
-    if (Object.keys(providers).length === 0 && !isProviderlessModel(configured)) {
+    let configured = modelId === undefined ? undefined : this.modelService.get(modelId);
+    if (configured === undefined && directory !== undefined) {
+      await directory.waitForManifestIndex();
+      if (requestedModelId !== undefined && requestedModelId !== '') {
+        modelId = this.modelService.resolveId(requestedModelId);
+        configured = modelId === undefined ? undefined : this.modelService.get(modelId);
+      }
+    }
+    const pluginLookup = modelId === undefined ? undefined : directory?.getModel(modelId);
+    const hasConfiguredStandaloneTransport = configured !== undefined && (
+      nonEmpty(configured.baseUrl) !== undefined ||
+      (() => {
+        const pid = resolveModelProviderId(configured, this.providerService.getDefaultProvider());
+        return pid !== undefined && Object.hasOwn(providers, pid);
+      })()
+    );
+    if (pluginLookup !== undefined && !hasConfiguredStandaloneTransport && !Object.hasOwn(providers, pluginLookup.provider.definition.id)) {
+      const entry = await directory!.ensureProviderDescribed(pluginLookup.provider.definition.id);
+      if (entry === undefined) {
+        throw new AuthModelNotResolvedError(requestedModelId);
+      }
+      if (entry.readiness === 'ready') return;
+      if (entry.readiness === 'auth_required') {
+        throw new AuthTokenMissingError(entry.definition.id);
+      }
+      throw new Error2(
+        ErrorCodes.PROVIDER_CONNECTION_ERROR,
+        entry.statusText && entry.statusText.trim().length > 0
+          ? entry.statusText
+          : `Plugin provider "${entry.definition.id}" is not ready (${entry.readiness}).`,
+      );
+    }
+    const hasPluginProviders = (directory?.listProviders().length ?? 0) > 0;
+    if (Object.keys(providers).length === 0 && !hasPluginProviders && !isProviderlessModel(configured)) {
       throw new AuthProvisioningRequiredError();
     }
     if (requestedModelId === undefined || requestedModelId === '') {

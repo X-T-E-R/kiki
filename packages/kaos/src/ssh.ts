@@ -919,17 +919,51 @@ export class SSHKaos implements Kaos {
 
   async createExclusive(path: string, data: Buffer): Promise<boolean> {
     const target = this._resolvePath(path);
+    let handle: Buffer;
     try {
-      const stream = this._sftp.createWriteStream(target, { flags: 'wx' });
-      await new Promise<void>((resolve, reject) => {
-        stream.once('error', reject);
-        stream.end(data, (error?: Error) => error ? reject(error) : resolve());
+      handle = await new Promise<Buffer>((resolve, reject) => {
+        this._sftp.open(target, 'wx', (error, fd) => {
+          if (error) reject(error);
+          else resolve(fd);
+        });
       });
-      return true;
     } catch (error) {
-      if (getErrorCode(error) === getSftpStatusCode().FAILURE && await sftpExists(this._sftp, target)) return false;
+      const code = getErrorCode(error);
+      const stringCode = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
+      if (stringCode === 'EEXIST' || (code === getSftpStatusCode().FAILURE && await sftpExists(this._sftp, target))) {
+        return false;
+      }
       throw mapSftpError('createExclusive', error);
     }
+    let writeError: unknown;
+    try {
+      const chunkSize = 32 * 1024;
+      for (let offset = 0; offset < data.length; offset += chunkSize) {
+        const length = Math.min(chunkSize, data.length - offset);
+        await new Promise<void>((resolve, reject) => {
+          this._sftp.write(handle, data, offset, length, offset, (error) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        });
+      }
+    } catch (error) {
+      writeError = error;
+    }
+    let closeError: unknown;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        this._sftp.close(handle, (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    } catch (error) {
+      closeError = error;
+    }
+    if (writeError !== undefined) throw mapSftpError('createExclusive', writeError);
+    if (closeError !== undefined) throw mapSftpError('createExclusive', closeError);
+    return true;
   }
 
   async remove(path: string): Promise<void> {

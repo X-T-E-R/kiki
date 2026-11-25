@@ -335,6 +335,53 @@ describe('StaleGuardService', () => {
     expect(freshness.recordedMtimeMs('/tmp/a.txt')).toBeUndefined();
   });
 
+  it('skips overwrite veto for mode create and records fresh mtime after creation', async () => {
+    activeFs = stubFs({ mtimeMs: 5 });
+    const createCall = toolCallOf('call_create', 'Write', { path: '/tmp/fresh.txt', content: 'x', mode: 'create' });
+
+    const veto = await runBeforeExecute(hooks, {
+      name: 'Write',
+      args: { path: '/tmp/fresh.txt', content: 'x', mode: 'create' },
+      accesses: ToolAccesses.writeFile('/tmp/fresh.txt'),
+      toolCall: createCall,
+    });
+    expect(veto).toBeUndefined();
+
+    activeFs = stubFs({ mtimeMs: 777 });
+    const result = await runDidExecute(hooks, {
+      name: 'Write',
+      accesses: ToolAccesses.writeFile('/tmp/fresh.txt'),
+      toolCall: createCall,
+    });
+
+    expect(result.note).toBeUndefined();
+    expect(freshness.recordedMtimeMs('/tmp/fresh.txt')).toBe(777);
+  });
+
+  it('does not update the freshness ledger when mode create fails', async () => {
+    activeFs = stubFs({ mtimeMs: 5 });
+    const createCall = toolCallOf('call_create_fail', 'Write', { path: '/tmp/existing.txt', content: 'x', mode: 'create' });
+
+    const veto = await runBeforeExecute(hooks, {
+      name: 'Write',
+      args: { path: '/tmp/existing.txt', content: 'x', mode: 'create' },
+      accesses: ToolAccesses.writeFile('/tmp/existing.txt'),
+      toolCall: createCall,
+    });
+    expect(veto).toBeUndefined();
+
+    activeFs = stubFs({ mtimeMs: 888 });
+    await runDidExecute(hooks, {
+      name: 'Write',
+      accesses: ToolAccesses.writeFile('/tmp/existing.txt'),
+      toolCall: createCall,
+      isError: true,
+    });
+
+    expect(freshness.recordedMtimeMs('/tmp/existing.txt')).toBeUndefined();
+    expect(records).toEqual([]);
+  });
+
   it('allows the write when the on-disk mtime matches the last read', async () => {
     activeFs = stubFs({ mtimeMs: 111 });
     await runDidExecute(hooks, { name: 'Read', accesses: ToolAccesses.readFile('/tmp/a.txt') });

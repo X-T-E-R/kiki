@@ -374,15 +374,27 @@ export function ModelDetailSplit({ list, models, providers, ready, providerLabel
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const defaultModel = configQuery.data?.default_model;
   const roles = useModelRoles();
-  const item = detail.selected === null ? undefined : models.find((model) => model.id === detail.selected);
-  // A link to a model that is not there (removed, or never was) lands on the list.
+  const pluginProviderIds = useMemo(
+    () => new Set(providers.filter((provider) => provider.plugin !== undefined).map((provider) => provider.id)),
+    [providers],
+  );
+  const editableModels = useMemo(
+    () => models.filter(
+      (model) => model.protocol_source !== 'plugin'
+        && model.effective_protocol !== 'plugin'
+        && !pluginProviderIds.has(model.provider_id),
+    ),
+    [models, pluginProviderIds],
+  );
+  const item = detail.selected === null ? undefined : editableModels.find((model) => model.id === detail.selected);
+  // A link to a model that is not there (removed, plugin-managed, or never was) lands on the list.
   useEffect(() => {
     if (ready && detail.selected !== null && item === undefined) detail.close();
   }, [ready, detail.selected, item, detail.close]);
 
   const groups = useMemo(() => {
     const byProvider = new Map<string, ModelCatalogItem[]>();
-    for (const model of models) {
+    for (const model of editableModels) {
       const list = byProvider.get(model.provider_id);
       if (list !== undefined) list.push(model);
       else byProvider.set(model.provider_id, [model]);
@@ -391,7 +403,7 @@ export function ModelDetailSplit({ list, models, providers, ready, providerLabel
       id,
       models: providerModels.toSorted((a, b) => (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id)),
     }));
-  }, [models]);
+  }, [editableModels]);
 
   const inheritedImageTypes = useMemo(
     () => (item === undefined ? undefined : providers.find((provider) => provider.id === item.provider_id)?.images?.accepted_types),
@@ -2081,7 +2093,10 @@ function ModelCatalogRowEditor({
 
   // While the stored value inherits, the server's resolved format is the
   // provider's, and the inherit option can name it.
-  const resolvedProtocol: ModelProtocol | undefined = protocolBaseline === 'inherit' ? entity.effective_protocol : undefined;
+  const resolvedProtocol: ModelProtocol | undefined =
+    protocolBaseline === 'inherit' && entity.effective_protocol !== 'plugin'
+      ? entity.effective_protocol
+      : undefined;
 
   const sectionId = (section: EditorSectionName) => `model-editor-${section}-${entity.id}`;
 

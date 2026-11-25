@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
 import { providerQuotaSnapshotSchema, type NbSearchKeyUsageView } from '@kiki/protocol';
-import { Error2, ErrorCodes, IAtomicDocumentStore, IHarnessQuotaService, ILogService, IProviderService, IOAuthService, type Scope } from '@kiki/agent-core-v2';
+import { Error2, ErrorCodes, IAtomicDocumentStore, IHarnessQuotaService, ILogService, IPluginLlmDirectoryService, IProviderService, IOAuthService, type Scope } from '@kiki/agent-core-v2';
 import { INbSearchService } from '@kiki/agent-core-v2/app/nbSearch/nbSearch';
 import { IAgentExecutorRegistry } from '@kiki/agent-core-v2/app/agentExecutor/agentExecutor';
 import { parseQuota, selectQuotaAdapter, quotaHeaders } from '../src/usage/quota/adapters';
@@ -404,5 +404,140 @@ describe('provider quotas', () => {
       expect(invalid.json().code).toBe(40001); expect(invalid.headers['cache-control']).toBe('no-store');
       expect(JSON.stringify(await client.snapshot())).not.toContain('YOUR_API_KEY');
     } finally { await app.close(); }
+  });
+
+  it('projects plugin provider quota targets with open_plugin_panel auth, skips TOML collision, and aborts stale flights on revision change or withdrawal', async () => {
+    let signedIn = false;
+    let currentRevision = 'rev-1';
+    let withdrawn = false;
+    let firstAborted = false;
+    let releaseFirst: (() => void) | undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let unblockFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      unblockFirst = resolve;
+    });
+    let readCalls = 0;
+
+    const pluginSource = {
+      pluginId: 'acme-bridge-plugin',
+      generation: 1,
+      definition: {
+        schemaVersion: 1 as const,
+        id: 'acme-quota',
+        providerId: 'acme-bridge',
+        label: 'Acme Bridge',
+        minRefreshIntervalMs: 30_000,
+      },
+      runtime: {
+        listTargets: async () => {
+          if (withdrawn || !signedIn) return [];
+          return [
+            { id: 'acct-1', label: 'Acme (Alice)', accountLabel: 'alice@example.test', revision: currentRevision, active: true },
+            { id: 'acct-2', label: 'Acme (Bob)', accountLabel: 'bob@example.test', revision: 'rev-b1', active: false },
+          ];
+        },
+        read: async (targetId: string, signal?: AbortSignal) => {
+          readCalls += 1;
+          if (targetId === 'acct-1' && currentRevision === 'rev-1') {
+            releaseFirst?.();
+            signal?.addEventListener('abort', () => { firstAborted = true; }, { once: true });
+            await firstGate;
+            if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+          }
+          return {
+            ok: true as const,
+            meters: [
+              { id: 'model-alpha', label: 'Alpha', unit: 'percent' as const, scope: 'model' as const, used: 25, limit: 100, remaining: 75, status: 'ready' as const },
+              { id: 'win-5h', label: '5h window', unit: 'percent' as const, scope: 'window' as const, used: 10, limit: 100, remaining: 90, status: 'ready' as const },
+            ],
+          };
+        },
+      },
+    };
+
+    const pluginDirectory = {
+      listProviders: () => withdrawn ? [] : [{
+        pluginId: 'acme-bridge-plugin',
+        generation: 1,
+        definition: { schemaVersion: 1, id: 'acme-bridge', label: 'Acme Bridge', panelId: 'accounts' },
+        readiness: signedIn ? 'ready' : 'auth_required',
+        models: [],
+        supportsForceRefreshAuth: true,
+        runtime: {},
+      }],
+      listQuotaSources: () => withdrawn ? [] : [pluginSource],
+      getProvider: (id: string) => withdrawn || id !== 'acme-bridge' ? undefined : {
+        pluginId: 'acme-bridge-plugin',
+        generation: 1,
+        definition: { schemaVersion: 1, id: 'acme-bridge', label: 'Acme Bridge', panelId: 'accounts' },
+      },
+    };
+
+    const services = new Map<unknown, unknown>([
+      [IProviderService, { ready: Promise.resolve(), list: () => ({ 'acme-bridge': { type: 'openai', baseUrl: 'https://api.deepseek.com', apiKey: 'YOUR_API_KEY' } }) }],
+      [IOAuthService, {}],
+      [IAtomicDocumentStore, { get: async () => undefined }],
+      [INbSearchService, { quotaSources: async () => [] }],
+      [IAgentExecutorRegistry, { list: () => [] }],
+      [IPluginLlmDirectoryService, pluginDirectory],
+    ]);
+    const core = { accessor: { get: (token: unknown) => services.get(token) } } as unknown as Scope;
+    const service = createProviderQuotaService(core);
+
+    const signedOutSnap = providerQuotaSnapshotSchema.parse(await service.snapshot());
+    expect(signedOutSnap.sources).toHaveLength(1);
+    expect(signedOutSnap.sources[0]).toMatchObject({
+      id: 'plugin-quota:acme-bridge-plugin/acme-quota:signin',
+      kind: 'provider',
+      provider_id: 'acme-bridge',
+      status: 'unknown',
+      auth: { action: 'open_plugin_panel', provider: 'acme-bridge', plugin_id: 'acme-bridge-plugin', panel_id: 'accounts' },
+    });
+    const signedOutRefreshed = providerQuotaSnapshotSchema.parse(
+      await service.refresh('plugin-quota:acme-bridge-plugin/acme-quota:signin'),
+    );
+    expect(signedOutRefreshed.sources[0]?.status).toBe('auth_required');
+
+    signedIn = true;
+    const signedInSnap = providerQuotaSnapshotSchema.parse(await service.snapshot());
+    expect(signedInSnap.sources.map((s) => s.id)).toEqual([
+      'plugin-quota:acme-bridge-plugin/acme-quota/acct-1',
+      'plugin-quota:acme-bridge-plugin/acme-quota/acct-2',
+    ]);
+    expect(signedInSnap.sources[0]?.revision).toBe('1:rev-1');
+    expect(signedInSnap.sources[0]?.auth).toEqual({
+      action: 'open_plugin_panel',
+      provider: 'acme-bridge',
+      plugin_id: 'acme-bridge-plugin',
+      panel_id: 'accounts',
+    });
+
+    const staleFlight = service.refresh('plugin-quota:acme-bridge-plugin/acme-quota/acct-1');
+    await firstStarted;
+
+    currentRevision = 'rev-2';
+    const freshSnap = providerQuotaSnapshotSchema.parse(
+      await service.refresh('plugin-quota:acme-bridge-plugin/acme-quota/acct-1'),
+    );
+    expect(firstAborted).toBe(true);
+    unblockFirst?.();
+    await staleFlight.catch(() => undefined);
+
+    const refreshed = freshSnap.sources.find((s) => s.id === 'plugin-quota:acme-bridge-plugin/acme-quota/acct-1')!;
+    expect(refreshed.status).toBe('ready');
+    expect(refreshed.revision).toBe('1:rev-2');
+    expect(refreshed.meters).toMatchObject([
+      { id: 'model-alpha', scope: 'model', remaining: 75 },
+      { id: 'win-5h', scope: 'window', remaining: 90 },
+    ]);
+    expect(readCalls).toBeGreaterThanOrEqual(2);
+
+    withdrawn = true;
+    const afterWithdraw = providerQuotaSnapshotSchema.parse(await service.snapshot());
+    expect(afterWithdraw.sources.some((s) => s.id.startsWith('plugin-quota:'))).toBe(false);
+    expect(afterWithdraw.sources.map((s) => s.id)).toEqual(['provider:acme-bridge']);
   });
 });

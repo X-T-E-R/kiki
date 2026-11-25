@@ -6,7 +6,9 @@ import {
 } from '@kiki/protocol';
 
 import { IRequestAdmission, type RequestAdmissionPort } from './requestAdmission';
-import { Disposable } from '#/_base/di/lifecycle';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
+import { IPluginLlmDirectoryService, type PluginLlmProviderEntry, type PluginModelLookup } from '#/app/plugin/pluginLlmDirectory';
 import { applyModelSettings } from './modelSettings';
 import { explainModelProtocol, type ExplainedModelProtocol } from './modelProtocol';
 import type { ProviderAdapterDefinition } from '#/kosong/protocol/extensionRegistry';
@@ -119,6 +121,7 @@ interface CatalogModelOption {
 
 interface ListModelsCacheEntry {
   readonly revision: number;
+  readonly pluginRevision: number;
   readonly modelsRef: Readonly<Record<string, ModelRecord>>;
   readonly providersRef: Readonly<Record<string, ProviderConfig>>;
   readonly defaultProvider: string | undefined;
@@ -145,6 +148,37 @@ interface ProviderListProjection {
 
 const ANTHROPIC_PROFILE_HINT_RE = /claude|opus|sonnet|haiku|fable|mythos/i;
 
+function hasStandaloneConfiguredTransport(
+  record: ModelRecord,
+  providers: Readonly<Record<string, ProviderConfig>>,
+  defaultProvider: string | undefined,
+): boolean {
+  if (nonEmpty(record.baseUrl) !== undefined) return true;
+  const providerId = record.providerId ?? record.provider ?? defaultProvider;
+  return providerId !== undefined && Object.hasOwn(providers, providerId);
+}
+
+function toPluginCatalogProvider(entry: PluginLlmProviderEntry): ProviderCatalogItem {
+  return {
+    id: entry.definition.id,
+    label: entry.definition.label,
+    enabled: true,
+    type: 'plugin',
+    service: 'chat',
+    has_api_key: false,
+    status: entry.readiness === 'ready' ? 'connected' : entry.readiness === 'degraded' ? 'error' : 'unconfigured',
+    models: entry.models.map((item) => item.id),
+    plugin: {
+      plugin_id: entry.pluginId,
+      ...(entry.definition.panelId !== undefined ? { panel_id: entry.definition.panelId } : {}),
+      readiness: entry.readiness,
+      ...(entry.statusText !== undefined ? { status_text: entry.statusText } : {}),
+      ...(entry.accountSummary !== undefined ? { account_summary: entry.accountSummary } : {}),
+      model_count: entry.models.length,
+    },
+  };
+}
+
 export class ModelCatalog extends Disposable implements IModelCatalog {
   declare readonly _serviceBrand: undefined;
 
@@ -152,7 +186,9 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   private catalogRevision = 0;
   private listModelsCache: ListModelsCacheEntry | undefined;
   private nameIndexModelsRef: Readonly<Record<string, ModelRecord>> | undefined;
+  private nameIndexPluginRevision = -1;
   private nameIndex: Map<string, string[]> | undefined;
+  private pluginSubscription: IDisposable | undefined;
 
   constructor(
     @IProviderService private readonly providers: IProviderService,
@@ -162,6 +198,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     private readonly protocolRegistry: IProtocolAdapterRegistry,
     @IHostRequestHeaders private readonly hostRequestHeaders: IHostRequestHeaders,
     @IRequestAdmission private readonly admission: RequestAdmissionPort,
+    @ref(IPluginLlmDirectoryService) private readonly pluginLlm?: LiveRef<IPluginLlmDirectoryService>,
   ) {
     super();
     this._register(this.models.onDidChangeModels(() => this.notifyConfigChanged()));
@@ -169,6 +206,16 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     this._register(this.providers.onDidChangeProviders(() => this.notifyConfigChanged()));
     this._register(this.providers.onDidChangeDefaultProvider(() => { this.notifyConfigChanged(); }));
     this._register(this.providers.onDidChangeTransportDefaults(() => this.notifyConfigChanged()));
+    const bindPluginDirectory = () => {
+      this.pluginSubscription?.dispose();
+      this.pluginSubscription = this.pluginLlm?.current?.onDidChange(() => this.notifyConfigChanged());
+      this.notifyConfigChanged();
+    };
+    if (this.pluginLlm !== undefined) {
+      bindPluginDirectory();
+      this._register(this.pluginLlm.onDidChange(bindPluginDirectory));
+      this._register({ dispose: () => { this.pluginSubscription?.dispose(); this.pluginSubscription = undefined; } });
+    }
   }
 
   notifyConfigChanged(): void {
@@ -213,21 +260,39 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   }
 
   getConnectionRequester(providerId: string, modelName: string, maxContextSize: number): ModelRequester {
-    if (decisionProtocolForProviderType(this.providers.get(providerId)?.type) !== undefined) {
-      throw new Error2(CONFIG_INVALID_ERROR_CODE, 'Decision connections cannot be used for chat');
+    const configured = this.providers.get(providerId);
+    if (configured !== undefined) {
+      if (decisionProtocolForProviderType(configured.type) !== undefined) {
+        throw new Error2(CONFIG_INVALID_ERROR_CODE, 'Decision connections cannot be used for chat');
+      }
+      const built = this.buildModel(`connection:${providerId}/${modelName}`, new ResolutionTraceCollector(), undefined, {
+        provider: providerId, name: modelName, maxContextSize,
+      });
+      return new ModelRequesterImpl(built.model, this.protocolRegistry, this.admission, this.pluginLlm?.current);
     }
-    if (this.providers.get(providerId) === undefined) {
-      throw new Error2(CONFIG_INVALID_ERROR_CODE, `Connection "${providerId}" does not exist`);
+    const pluginProvider = this.pluginLlm?.current?.getProvider(providerId);
+    if (pluginProvider !== undefined) {
+      const descriptor = pluginProvider.models.find((item) => item.wireModel === modelName || item.id === modelName) ?? {
+        id: `connection:${providerId}/${modelName}`,
+        wireModel: modelName,
+        maxContextSize,
+        capabilities: ['tool_use'] as const,
+      };
+      const built = this.buildPluginModel(
+        descriptor.id,
+        { provider: pluginProvider, descriptor },
+        undefined,
+        new ResolutionTraceCollector(),
+      );
+      return new ModelRequesterImpl(built.model, this.protocolRegistry, this.admission, this.pluginLlm?.current);
     }
-    const built = this.buildModel(`connection:${providerId}/${modelName}`, new ResolutionTraceCollector(), undefined, {
-      provider: providerId, name: modelName, maxContextSize,
-    });
-    return new ModelRequesterImpl(built.model, this.protocolRegistry, this.admission);
+    throw new Error2(CONFIG_INVALID_ERROR_CODE, `Connection "${providerId}" does not exist`);
   }
 
   findByName(name: string): readonly string[] {
     const models = this.models.list();
-    if (this.nameIndex === undefined || this.nameIndexModelsRef !== models) {
+    const pluginRev = this.pluginLlm?.current?.revision ?? -1;
+    if (this.nameIndex === undefined || this.nameIndexModelsRef !== models || this.nameIndexPluginRevision !== pluginRev) {
       const index = new Map<string, string[]>();
       const seen = new Set<string>();
       const addKey = (key: string | undefined, id: string): void => {
@@ -238,7 +303,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           list = [];
           index.set(key, list);
         }
-        list.push(id);
+        if (!list.includes(id)) list.push(id);
       };
       for (const [id, m] of Object.entries(models)) {
         seen.clear();
@@ -248,25 +313,40 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           for (const alias of m.aliases) addKey(alias, id);
         }
       }
+      for (const lookup of this.pluginLlm?.current?.listModels() ?? []) {
+        seen.clear();
+        addKey(lookup.descriptor.wireModel, lookup.descriptor.id);
+        addKey(lookup.descriptor.id, lookup.descriptor.id);
+      }
       this.nameIndex = index;
       this.nameIndexModelsRef = models;
+      this.nameIndexPluginRevision = pluginRev;
     }
     const matches = this.nameIndex.get(name);
     return matches === undefined ? [] : [...matches];
+  }
+
+  private adapterCacheKeyForModel(model: Model): string | undefined {
+    if (model.pluginOwner !== undefined) {
+      const live = this.pluginLlm?.current?.getProvider(model.pluginOwner.providerId);
+      if (live === undefined || live.pluginId !== model.pluginOwner.pluginId) return 'plugin:withdrawn';
+      return `plugin:${live.pluginId}:${live.definition.id}:${live.generation}`;
+    }
+    return this.protocolRegistry.adapterCacheKey?.(model.protocol, model.providerType);
   }
 
   private entry(id: string, recipeSettings?: Record<string, unknown>): CatalogEntry {
     const canonicalId = this.models.resolveId(id) ?? id;
     const key = recipeSettings === undefined ? canonicalId : `${canonicalId}\0${JSON.stringify(recipeSettings)}`;
     const cached = this.cache.get(key);
-    if (cached !== undefined && cached.adapterKey === this.protocolRegistry.adapterCacheKey?.(cached.model.protocol, cached.model.providerType)) return cached;
+    if (cached !== undefined && cached.adapterKey === this.adapterCacheKeyForModel(cached.model)) return cached;
     const trace = new ResolutionTraceCollector();
     const built = this.buildModel(canonicalId, trace, recipeSettings);
     const entry: CatalogEntry = {
-      adapterKey: this.protocolRegistry.adapterCacheKey?.(built.model.protocol, built.model.providerType),
+      adapterKey: this.adapterCacheKeyForModel(built.model),
       model: built.model,
       credentials: built.credentials,
-      requester: new ModelRequesterImpl(built.model, this.protocolRegistry, this.admission),
+      requester: new ModelRequesterImpl(built.model, this.protocolRegistry, this.admission, this.pluginLlm?.current),
       trace,
     };
     const cacheMax = resolveCatalogEntryCacheMax();
@@ -302,7 +382,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
             return auth;
           },
         },
-      }, this.protocolRegistry, this.admission);
+      }, this.protocolRegistry, this.admission, this.pluginLlm?.current);
       let text = '';
       let usage: TokenUsage | undefined;
       let finishReason: string | undefined;
@@ -341,6 +421,8 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
 
   async listModels(): Promise<readonly ModelCatalogItem[]> {
     await Promise.all([this.models.ready, this.providers.ready]);
+    const directory = this.pluginLlm?.current;
+    const pluginRevision = directory?.revision ?? -1;
     const models = this.models.list();
     const providers = this.providers.list();
     const defaultProvider = this.providers.getDefaultProvider();
@@ -350,6 +432,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     if (
       cached !== undefined &&
       cached.revision === this.catalogRevision &&
+      cached.pluginRevision === pluginRevision &&
       cached.modelsRef === models &&
       cached.providersRef === providers &&
       cached.defaultProvider === defaultProvider &&
@@ -368,10 +451,14 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
       string,
       { readonly index: number; readonly option: CatalogModelOption }
     >();
+    const emittedIds = new Set<string>();
 
     for (const modelId in models) {
       if (!Object.hasOwn(models, modelId)) continue;
       const record = models[modelId]!;
+      if (directory?.getModel(modelId) !== undefined && !hasStandaloneConfiguredTransport(record, providers, defaultProvider)) {
+        continue;
+      }
       const providerId = record.providerId ?? record.provider ?? defaultProvider;
       const projection = providerId === undefined ? undefined : providerProjections.get(providerId);
       const providerConfig = projection?.providerConfig;
@@ -388,6 +475,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           envKeys,
           capabilityResolvers,
         );
+        emittedIds.add(modelId);
         if (result.managed === undefined) {
           items.push(result.item);
           continue;
@@ -409,13 +497,23 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           items[existing.index] = option.item;
         }
       } catch {
+        emittedIds.add(modelId);
         items.push(toProtocolModelFallback(modelId, record, providerType, providerConfig));
       }
+    }
+
+    for (const lookup of directory?.listModels() ?? []) {
+      if (emittedIds.has(lookup.descriptor.id)) continue;
+      if (Object.hasOwn(providers, lookup.provider.definition.id)) continue;
+      const overrideRecord = Object.hasOwn(models, lookup.descriptor.id) ? models[lookup.descriptor.id] : undefined;
+      items.push(this.projectPluginCatalogModelItem(lookup, overrideRecord));
+      emittedIds.add(lookup.descriptor.id);
     }
 
     const trackedEnvKeys = [...envKeys];
     this.listModelsCache = {
       revision: this.catalogRevision,
+      pluginRevision,
       modelsRef: models,
       providersRef: providers,
       defaultProvider,
@@ -819,21 +917,31 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     const models = this.models.list();
     const modelsByProvider = groupModelIdsByProvider(models);
     const globalDefaultModel = this.models.getDefaultModel();
-    return Promise.all(Object.entries(providers).map(([providerId, provider]) =>
+    const configuredItems = await Promise.all(Object.entries(providers).map(([providerId, provider]) =>
       this.toCatalogProvider(providerId, provider, models, globalDefaultModel, modelsByProvider.get(providerId) ?? [])));
+    const pluginItems: ProviderCatalogItem[] = [];
+    for (const entry of this.pluginLlm?.current?.listProviders() ?? []) {
+      if (Object.hasOwn(providers, entry.definition.id)) continue;
+      pluginItems.push(toPluginCatalogProvider(entry));
+    }
+    return [...configuredItems, ...pluginItems];
   }
 
   async getProvider(providerId: string): Promise<ProviderCatalogItem> {
     const provider = this.providers.get(providerId);
-    if (provider === undefined) {
-      throw new Error2(
-        ModelCatalogErrors.codes.PROVIDER_NOT_FOUND,
-        `provider ${providerId} does not exist`,
-      );
+    if (provider !== undefined) {
+      const models = this.models.list();
+      const globalDefaultModel = this.models.getDefaultModel();
+      return this.toCatalogProvider(providerId, provider, models, globalDefaultModel);
     }
-    const models = this.models.list();
-    const globalDefaultModel = this.models.getDefaultModel();
-    return this.toCatalogProvider(providerId, provider, models, globalDefaultModel);
+    const pluginProvider = this.pluginLlm?.current?.getProvider(providerId);
+    if (pluginProvider !== undefined) {
+      return toPluginCatalogProvider(pluginProvider);
+    }
+    throw new Error2(
+      ModelCatalogErrors.codes.PROVIDER_NOT_FOUND,
+      `provider ${providerId} does not exist`,
+    );
   }
 
   async setDefaultModel(modelId: string): Promise<SetDefaultModelResponse> {
@@ -844,7 +952,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
         `model ${modelId} does not exist`,
       );
     }
-    const record = this.models.get(canonicalId);
+    const record = this.models.get(canonicalId) ?? this.models.getEffective?.(canonicalId);
     if (record === undefined) {
       throw new Error2(
         ModelCatalogErrors.codes.MODEL_NOT_FOUND,
@@ -855,7 +963,12 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     await this.models.setDefaultModel(canonicalId);
     return {
       default_model: canonicalId,
-      model: toProtocolModel(model, record, this.providerTypeOf(record), this.providerConfigOf(record)),
+      model: model.pluginOwner !== undefined
+        ? this.projectPluginCatalogModelItem(
+            this.pluginLlm!.current!.getModel(canonicalId)!,
+            this.models.get(canonicalId),
+          )
+        : toProtocolModel(model, record, this.providerTypeOf(record), this.providerConfigOf(record)),
     };
   }
 
@@ -869,6 +982,171 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     const adapter = provider.type === undefined ? undefined : this.protocolRegistry.providerDefinition?.(provider.type);
     const credential = await resolveProviderCredentialState(providerId, provider, this.oauth, adapter);
     return toProtocolProvider(providerId, provider, models, globalDefaultModel, credential, precomputedModels);
+  }
+
+  private projectPluginCatalogModelItem(
+    lookup: PluginModelLookup,
+    overrideRecord?: ModelRecord,
+  ): ModelCatalogItem {
+    const { provider, descriptor } = lookup;
+    const baseRecord: ModelRecord = {
+      providerId: provider.definition.id,
+      name: descriptor.wireModel,
+      displayName: descriptor.displayName,
+      maxContextSize: descriptor.maxContextSize,
+      maxInputSize: descriptor.maxInputSize,
+      maxOutputSize: descriptor.maxOutputSize,
+      capabilities: [...descriptor.capabilities],
+      supportEfforts: descriptor.supportEfforts === undefined ? undefined : [...descriptor.supportEfforts],
+      defaultEffort: descriptor.defaultEffort,
+    };
+    const merged = overrideRecord === undefined ? baseRecord : { ...baseRecord, ...overrideRecord, providerId: provider.definition.id, name: descriptor.wireModel };
+    const effective = effectiveModelConfig(merged, 'plugin');
+    const declared = new Set((effective.capabilities ?? []).map((item) => item.trim().toLowerCase()));
+    const alwaysThinking = declared.has('always_thinking');
+    const effectiveCapabilities: string[] = [];
+    if (declared.has('image_in')) effectiveCapabilities.push('image_in');
+    if (declared.has('video_in')) effectiveCapabilities.push('video_in');
+    if (declared.has('audio_in')) effectiveCapabilities.push('audio_in');
+    if (declared.has('thinking') || alwaysThinking) effectiveCapabilities.push('thinking');
+    if (declared.has('tool_use')) effectiveCapabilities.push('tool_use');
+    if (alwaysThinking) effectiveCapabilities.push('always_thinking');
+    const generation = resolveGenerationParameters(undefined, merged);
+    const preferredThinkingEffort =
+      generation.sources.thinkingEffort?.detail === '[models.*] legacy generation fields'
+        ? undefined
+        : generation.values.thinkingEffort;
+    const serviceTier = isApiDefault(generation.values.serviceTier)
+      ? undefined
+      : generation.values.serviceTier;
+    const rawRecipe = overrideRecord?.recipe?.trim();
+    const recipe = rawRecipe === undefined || rawRecipe === '' || rawRecipe === 'off' ? undefined : rawRecipe;
+    return {
+      id: descriptor.id,
+      effective_protocol: 'plugin',
+      protocol_source: 'plugin',
+      endpoint_source: 'none',
+      auth_source: 'none',
+      provider_id: provider.definition.id,
+      remote_id: descriptor.wireModel,
+      display_name: effective.displayName ?? descriptor.displayName ?? descriptor.wireModel,
+      max_context_size: effective.maxContextSize ?? descriptor.maxContextSize,
+      auto_compact: effective.autoCompact,
+      context_strategy: effective.contextStrategy,
+      capabilities: effective.capabilities,
+      effective_capabilities: effectiveCapabilities,
+      support_efforts: effective.supportEfforts === undefined ? undefined : [...effective.supportEfforts],
+      default_effort: preferredThinkingEffort ?? overrideRecord?.overrides?.defaultEffort ?? effective.defaultEffort,
+      service_tier: serviceTier,
+      pricing_model: overrideRecord?.pricingModel,
+      parameters: overrideRecord?.parameters === undefined ? undefined : parametersToWire(overrideRecord.parameters),
+      behavior: overrideRecord?.behavior === undefined ? undefined : modelBehaviorToWire(overrideRecord.behavior),
+      recipe,
+      recipe_options: recipe === undefined ? undefined : overrideRecord?.recipeOptions,
+    };
+  }
+
+  private buildPluginModel(
+    id: string,
+    lookup: PluginModelLookup,
+    overrideRecord: ModelRecord | undefined,
+    trace: ResolutionTraceCollector,
+    recipeSettings?: Record<string, unknown>,
+  ): { model: Model; credentials: readonly string[] } {
+    const { provider, descriptor } = lookup;
+    const baseRecord: ModelRecord = {
+      providerId: provider.definition.id,
+      name: descriptor.wireModel,
+      displayName: descriptor.displayName,
+      maxContextSize: descriptor.maxContextSize,
+      maxInputSize: descriptor.maxInputSize,
+      maxOutputSize: descriptor.maxOutputSize,
+      capabilities: [...descriptor.capabilities],
+      supportEfforts: descriptor.supportEfforts === undefined ? undefined : [...descriptor.supportEfforts],
+      defaultEffort: descriptor.defaultEffort,
+    };
+    const mergedRecord: ModelRecord = overrideRecord === undefined
+      ? baseRecord
+      : { ...baseRecord, ...overrideRecord, providerId: provider.definition.id, name: descriptor.wireModel };
+    const configuredModel = applyModelSettings(mergedRecord, recipeSettings);
+    trace.capture(TRACE.configuredModel, configuredModel);
+    trace.record('model.record', { kind: 'builtin', detail: `plugin '${provider.pluginId}' provider '${provider.definition.id}'` });
+    const model = effectiveModelConfig(configuredModel, 'plugin');
+    trace.capture(TRACE.effectiveModel, model);
+    const generation = resolveGenerationParameters(undefined, configuredModel);
+    trace.capture(TRACE.generationParameters, generation);
+    const declared = new Set((model.capabilities ?? []).map((item) => item.trim().toLowerCase()));
+    const maxContextSize = model.maxContextSize ?? descriptor.maxContextSize;
+    const capabilities = resolveModelCapabilities(
+      model.capabilities,
+      UNKNOWN_CAPABILITY,
+      maxContextSize,
+      model.maxInputSize,
+    );
+    const selectedEffort = generation.values.thinkingEffort?.trim().toLowerCase();
+    if (selectedEffort === 'off' && declared.has('always_thinking')) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE, `Model "${id}" requires thinking; thinking_effort=off is unavailable`);
+    }
+    if (selectedEffort !== undefined && selectedEffort !== 'on' && selectedEffort !== 'off'
+      && model.supportEfforts !== undefined && model.supportEfforts.length > 0
+      && !model.supportEfforts.includes(selectedEffort)) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE, `Model "${id}" does not support thinking effort "${selectedEffort}"`);
+    }
+    const authProvider: AuthProvider = {
+      canRefresh: provider.supportsForceRefreshAuth,
+      getAuth: async (options) => {
+        if (options?.force === true && provider.supportsForceRefreshAuth) {
+          await provider.runtime.forceRefreshAuth();
+        }
+        return undefined;
+      },
+    };
+    return {
+      model: {
+        id,
+        name: descriptor.wireModel,
+        pricingModel: configuredModel.pricingModel,
+        aliases: model.aliases ?? [],
+        protocol: 'plugin',
+        protocolSource: 'plugin',
+        pluginOwner: {
+          pluginId: provider.pluginId,
+          providerId: provider.definition.id,
+          generation: provider.generation,
+        },
+        headers: {},
+        capabilities,
+        maxContextSize,
+        maxInputSize: model.maxInputSize,
+        maxOutputSize: model.maxOutputSize,
+        displayName: model.displayName ?? descriptor.displayName,
+        reasoningKey: model.reasoningKey,
+        supportEfforts: model.supportEfforts,
+        defaultEffort: model.defaultEffort,
+        overrides: configuredModel.overrides,
+        contextBudget: model.contextBudget,
+        autoCompact: model.autoCompact,
+        contextStrategy: model.contextStrategy,
+        maxCompletionTokens: generation.values.maxCompletionTokens,
+        requestParams: model.requestParams,
+        serviceTier: isApiDefault(generation.values.serviceTier) ? undefined : generation.values.serviceTier,
+        generationParameters: generation.values,
+        usageParameters: {
+          main: resolveModelUsage(generation, configuredModel, 'main'),
+          sub: resolveModelUsage(generation, configuredModel, 'sub'),
+          independent: resolveModelUsage(generation, configuredModel, 'independent'),
+        },
+        preferredThinkingEffort: generation.sources.thinkingEffort?.detail === '[models.*] legacy generation fields'
+          ? undefined : generation.values.thinkingEffort,
+        alwaysThinking: declared.has('always_thinking'),
+        providerType: 'plugin',
+        providerName: provider.definition.id,
+        imagePolicy: resolveImagePolicy('plugin', undefined, configuredModel.images),
+        authProvider,
+        credentialSource: 'none',
+      },
+      credentials: [],
+    };
   }
 
   private providerTypeOf(record: ModelRecord): string | undefined {
@@ -887,6 +1165,17 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     recipeSettings?: Record<string, unknown>,
     transientRecord?: ModelRecord,
   ): { model: Model; credentials: readonly string[] } {
+    if (transientRecord === undefined) {
+      const pluginLookup = this.pluginLlm?.current?.getModel(id);
+      const existingRecord = this.models.get(id);
+      if (
+        pluginLookup !== undefined &&
+        !Object.hasOwn(this.providers.list(), pluginLookup.provider.definition.id) &&
+        (existingRecord === undefined || !hasStandaloneConfiguredTransport(existingRecord, this.providers.list(), this.providers.getDefaultProvider()))
+      ) {
+        return this.buildPluginModel(id, pluginLookup, existingRecord, trace, recipeSettings);
+      }
+    }
     const savedModel = transientRecord ?? this.models.get(id);
     if (savedModel === undefined) {
       throw new Error2(
@@ -1289,6 +1578,8 @@ function buildProtocolProviderOptions(
     }
     case 'openai_responses':
       if (model.offEffort !== undefined) options.offEffort = model.offEffort;
+      break;
+    case 'plugin':
       break;
     default: {
       const exhaustive: never = protocol;

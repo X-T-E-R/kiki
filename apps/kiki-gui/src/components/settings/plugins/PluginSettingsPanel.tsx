@@ -106,13 +106,25 @@ function usePresentationChanges(onChange: () => void): void {
   }, [onChange]);
 }
 
-export function settingsPanelOf(manifest: unknown): { readonly id: string; readonly label: string } | undefined {
+export function settingsPanelOf(
+  manifest: unknown,
+  requestedPanelId?: string,
+): { readonly id: string; readonly label: string } | undefined {
   if (manifest === null || typeof manifest !== 'object') return undefined;
   const record = manifest as { readonly kiki?: unknown; readonly 'x-kiki'?: unknown };
   const extension = record.kiki ?? record['x-kiki'];
   if (extension === null || typeof extension !== 'object') return undefined;
   const panels = (extension as { readonly panels?: unknown }).panels;
   if (!Array.isArray(panels)) return undefined;
+  if (requestedPanelId !== undefined && requestedPanelId.trim().length > 0) {
+    for (const panel of panels) {
+      if (panel === null || typeof panel !== 'object') continue;
+      const item = panel as { readonly id?: unknown; readonly label?: unknown };
+      if (item.id === requestedPanelId && typeof item.label === 'string') {
+        return { id: item.id, label: item.label };
+      }
+    }
+  }
   for (const panel of panels) {
     if (panel === null || typeof panel !== 'object') continue;
     const item = panel as { readonly slot?: unknown; readonly id?: unknown; readonly label?: unknown };

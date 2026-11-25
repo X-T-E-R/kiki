@@ -49,7 +49,7 @@ export const pluginModelCatalogSchema = z.object({
     display_name: z.string().min(1).optional(),
     max_context_size: z.number().int().min(0),
     effective_capabilities: z.array(z.string()).optional(),
-    effective_protocol: z.enum(['anthropic', 'openai', 'openai_responses', 'google-genai']).optional(),
+    effective_protocol: z.enum(['anthropic', 'openai', 'openai_responses', 'google-genai', 'plugin']).optional(),
   }).strict()),
   connections: z.array(z.object({
     id: z.string().min(1),
@@ -78,6 +78,7 @@ export interface PluginCredentialsApi {
 export interface PluginPanelContext {
   readonly settings: Readonly<Record<string, unknown>>;
   readonly kikiHome?: string;
+  readonly dataDir?: string;
   readonly models: Pick<PluginModelsApi, 'list'>;
   readonly credentials: PluginCredentialsApi;
   /** Aborted when the caller disconnects, the request times out, or the plugin host stops. */

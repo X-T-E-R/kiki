@@ -37,7 +37,7 @@ export function projectProfileModelMenu(
   const profile = options.frozen === true ? input : captureProfileModelMenu(input, (alias) => resolver.resolveId(alias));
   const menu = profile.modelMenuConstraint;
   const declared = menu ?? captureProfileModelMenu({ ...profile, restrictModelsToMenu: false }, (alias) => resolver.resolveId(alias)).modelMenuConstraint!;
-  const nativeModels = native ? models.list() : undefined;
+  const nativeModels = native ? (models.listEffective?.() ?? models.list()) : undefined;
   const candidates = [...new Set([
     ...(nativeModels === undefined
       ? executorModels === undefined ? [...(profile.allowedModels ?? []), ...declared.identities] : [...executorModels]

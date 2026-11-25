@@ -23,10 +23,11 @@ import { connectionNeedsAttention } from './DefaultModelBar';
 import { ExternalEnginesList, ExternalEnginesVisibilitySwitch } from './ExternalEnginesSection';
 import { ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec, type ListSortSpec } from './list';
 import { MODEL_QUERY_PARAM, ModelDetailSplit, ModelMaintenance, ProviderModelList } from './ModelsSection';
+import { PluginProviderRow, pluginProviderPanelHref } from './PluginProviderRow';
 import { SectionCard, SettingsCardMountContext } from './SectionCard';
 import { SettingsLoadFailure, SettingsLoading, TEXT_BUTTON } from './SettingsPrimitives';
 
-const KIND_ORDER: readonly ConnectionKind[] = ['api', 'account', 'local', 'decision'];
+const KIND_ORDER: readonly ConnectionKind[] = ['api', 'account', 'plugin', 'local', 'decision'];
 const EMPTY_MODELS: readonly ModelCatalogItem[] = [];
 
 export function OAuthAccountCard({
@@ -77,8 +78,8 @@ export function ProvidersSection() {
   const [focusKeyRequest, setFocusKeyRequest] = useState<{ providerId: string; nonce: number } | null>(null);
   const [openRowRequest, setOpenRowRequest] = useState<string | null>(null);
 
-  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
-  const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
+  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 10_000 });
+  const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 10_000 });
   const methodsQuery = useQuery({ queryKey: OAUTH_METHODS_QUERY_KEY, queryFn: () => client.listOAuthMethods(), staleTime: 10_000 });
 
   const refreshProviderData = useCallback(async () => {
@@ -135,7 +136,7 @@ export function ProvidersSection() {
   const keyOf = useCallback((provider: ProviderCatalogItem) => provider.id, []);
   const textOf = useCallback(
     (provider: ProviderCatalogItem) => [
-      provider.id, methodFor(provider.id)?.label, provider.base_url, provider.default_model,
+      provider.id, provider.label, provider.plugin?.plugin_id, methodFor(provider.id)?.label, provider.base_url, provider.default_model,
       decisionProtocolOf(provider),
       ...(modelsByProvider.get(provider.id) ?? EMPTY_MODELS)
         .flatMap((model) => [model.id, model.remote_id, model.display_name]),
@@ -163,6 +164,20 @@ export function ProvidersSection() {
   const view = useListView({ listId: 'connections', items: providerItems, keyOf, textOf, filters, sorts });
 
   const renderProvider = (provider: ProviderCatalogItem) => {
+    if (provider.plugin !== undefined) {
+      const providerModels = modelsByProvider.get(provider.id) ?? EMPTY_MODELS;
+      const modelRequested = requestedModel !== null
+        && providerModels.some((model) => model.id === requestedModel);
+      return (
+        <PluginProviderRow
+          provider={provider}
+          plugin={provider.plugin}
+          models={providerModels}
+          defaultOpen={modelRequested || openRowRequest === provider.id}
+          density={view.density}
+        />
+      );
+    }
     if (isDecisionConnection(provider)) {
       return (
         <DecisionConnectionEditor
@@ -302,26 +317,31 @@ export function ProvidersSection() {
           <ul className="divide-y divide-hairline border-y border-hairline">
             {attentionItems.map((provider) => {
               const method = methodFor(provider.id);
+              const pluginInfo = provider.plugin;
               const kind = connectionKind(provider, accountProviders);
-              const count = modelCount(provider.id);
+              const count = modelCount(provider.id) || pluginInfo?.model_count || 0;
               const isDecision = kind === 'decision';
               const envMissing = isDecision && provider.api_key_env !== undefined && !provider.has_api_key;
               const needsDecisionModel = isDecision && (provider.default_model ?? '') === '';
-              const needsKey = kind === 'api' && !isLocalBaseUrl(provider.base_url)
+              const needsKey = pluginInfo === undefined && kind === 'api' && !isLocalBaseUrl(provider.base_url)
                 && !provider.has_api_key && provider.api_key_env === undefined;
               const accountFacts = method === undefined ? null : accountState(method, undefined);
-              const statusWord = accountFacts !== null
-                ? t(accountStateKey(accountFacts))
-                : provider.status === 'error'
-                  ? t('st.connections.statusError')
-                  : envMissing
-                    ? t('st.decision.status.envMissing', { name: provider.api_key_env ?? '' })
-                    : needsDecisionModel
-                      ? t('st.decision.status.needsModel')
-                      : needsKey
-                        ? t('st.connections.statusNeedsKey')
-                        : t('st.connections.statusSetup');
-              const displayName = method?.label ?? (isDecision ? provider.id : vendorLabelFor(provider.base_url) ?? provider.id);
+              const statusWord = pluginInfo !== undefined
+                ? (pluginInfo.readiness === 'auth_required'
+                    ? t('st.connections.plugin.authRequired')
+                    : (pluginInfo.status_text ?? t('st.connections.statusError')))
+                : accountFacts !== null
+                  ? t(accountStateKey(accountFacts))
+                  : provider.status === 'error'
+                    ? t('st.connections.statusError')
+                    : envMissing
+                      ? t('st.decision.status.envMissing', { name: provider.api_key_env ?? '' })
+                      : needsDecisionModel
+                        ? t('st.decision.status.needsModel')
+                        : needsKey
+                          ? t('st.connections.statusNeedsKey')
+                          : t('st.connections.statusSetup');
+              const displayName = provider.label ?? method?.label ?? (isDecision ? provider.id : vendorLabelFor(provider.base_url) ?? provider.id);
 
               return (
                 <li
@@ -339,7 +359,17 @@ export function ProvidersSection() {
                   <span className={`shrink-0 text-[12px] ${provider.status === 'error' ? 'text-danger' : 'text-amber-ink'}`}>
                     {statusWord}
                   </span>
-                  {needsKey ? (
+                  {pluginInfo !== undefined ? (
+                    <Link
+                      to={pluginProviderPanelHref(pluginInfo)}
+                      data-attention-fix={provider.id}
+                      className={`inline-flex min-h-7 shrink-0 items-center px-1 pointer-coarse:min-h-10 ${TEXT_BUTTON}`}
+                    >
+                      {pluginInfo.readiness === 'auth_required'
+                        ? t('st.connections.plugin.signIn')
+                        : t('st.connections.plugin.manage')}
+                    </Link>
+                  ) : needsKey ? (
                     <button
                       type="button"
                       data-attention-fix={provider.id}

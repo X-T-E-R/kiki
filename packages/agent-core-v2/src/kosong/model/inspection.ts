@@ -26,7 +26,7 @@ export interface InspectedAuth {
 
 export interface InspectedResolvedModel {
   readonly protocol: Protocol;
-  readonly protocolSource?: 'model' | 'provider' | 'vendor';
+  readonly protocolSource?: 'model' | 'provider' | 'vendor' | 'plugin';
   readonly providerType?: string;
   readonly providerName: string;
   readonly baseUrl?: string;

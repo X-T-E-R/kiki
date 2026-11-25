@@ -514,6 +514,9 @@ export function quotaEngineScopeOf(config: { readonly raw?: unknown } | undefine
  * the same id the quota row shows.
  */
 export function quotaSettingsHref(source: ProviderQuotaSource, provider?: ProviderCatalogItem): string {
+  if (source.auth.action === 'open_plugin_panel') {
+    return `/settings/plugins?plugin=${encodeURIComponent(source.auth.plugin_id)}&panel=${encodeURIComponent(source.auth.panel_id)}`;
+  }
   if (source.kind === 'external_service' || source.auth.action === 'external_service_settings') return '/settings/search#st-card-search-providers';
   if (source.kind === 'executor' || source.auth.action === 'executor_login') return '/settings/ai#st-card-engines';
   if (provider?.oauth !== undefined || source.auth.action === 'oauth_login') return '/settings/ai?tab=providers';

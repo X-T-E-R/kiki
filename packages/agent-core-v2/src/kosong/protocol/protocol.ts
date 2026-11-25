@@ -1,4 +1,4 @@
-import { modelProtocolSchema, type ModelProtocol } from '@kiki/protocol';
+import { effectiveModelProtocolSchema, modelProtocolSchema, type EffectiveModelProtocol, type ModelProtocol } from '@kiki/protocol';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ModelCapability } from '#/kosong/contract/capability';
@@ -12,8 +12,10 @@ import type { ProtocolBaseId, ResolvedAdapterIdentity } from './protocolBase';
 import type { IDynamicProtocolExtensionRegistry, ProviderAdapterDefinition } from './extensionRegistry';
 
 export const ProtocolSchema = modelProtocolSchema;
+export const EffectiveProtocolSchema = effectiveModelProtocolSchema;
 
-export type Protocol = ModelProtocol;
+export type BuiltinProtocol = ModelProtocol;
+export type Protocol = EffectiveModelProtocol;
 
 export interface ProtocolProviderOptions {
   readonly reasoningKey?: string;
@@ -33,6 +35,7 @@ export interface ProtocolAdapterConfig {
   readonly protocol: Protocol;
   readonly providerType?: string;
   readonly baseUrl?: string;
+  readonly modelId?: string;
   readonly modelName: string;
   readonly pricingModel?: string;
   readonly apiKey?: string;

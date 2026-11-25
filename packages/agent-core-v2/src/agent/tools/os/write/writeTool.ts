@@ -104,14 +104,22 @@ export class WriteTool implements IWriteTool {
 
     try {
       const mode = args.mode ?? 'overwrite';
+      const bytesWritten = Buffer.byteLength(args.content, 'utf8');
       if (mode === 'append') {
         await fs.appendText(safePath, args.content);
+      } else if (mode === 'create') {
+        const created = await fs.createExclusive(safePath, Buffer.from(args.content, 'utf8'));
+        if (!created) {
+          return {
+            isError: true,
+            output: `File already exists: ${args.path}. Use mode="overwrite" to replace it or mode="append" to append.`,
+          };
+        }
       } else {
         await fs.writeText(safePath, args.content);
       }
-      const bytesWritten = Buffer.byteLength(args.content, 'utf8');
       return {
-        output: `${mode === 'append' ? 'Appended' : 'Wrote'} ${String(bytesWritten)} bytes to ${args.path}`,
+        output: `${mode === 'append' ? 'Appended' : mode === 'create' ? 'Created' : 'Wrote'} ${String(bytesWritten)} bytes to ${args.path}`,
       };
     } catch (error) {
       const code = (unwrapErrorCause(error) as { code?: unknown } | null)?.code;

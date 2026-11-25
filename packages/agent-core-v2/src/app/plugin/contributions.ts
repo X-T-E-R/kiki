@@ -2,8 +2,8 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
-  asrProviderDefinitionSchema, harnessAccountSourceDefinitionSchema, harnessQuotaSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginGuiSlotDeclarationSchema, pluginHttpRouteDeclarationSchema, pluginImAdapterDefinitionSchema, sessionSourceDefinitionSchema, skinFileSchema,
-  type AsrProviderDefinition, type HarnessAccountSourceDefinition, type HarnessQuotaSourceDefinition, type MediaProviderDefinition, type PluginGuiSlotContribution, type PluginHttpRouteDescriptor, type PluginImAdapterDefinition, type SessionSourceDefinition, type SkinFile,
+  asrProviderDefinitionSchema, harnessAccountSourceDefinitionSchema, harnessQuotaSourceDefinitionSchema, llmProviderContributionDefinitionSchema, mediaProviderDefinitionSchema, pluginGuiSlotDeclarationSchema, pluginHttpRouteDeclarationSchema, pluginImAdapterDefinitionSchema, providerQuotaSourceDefinitionSchema, sessionSourceDefinitionSchema, skinFileSchema,
+  type AsrProviderDefinition, type HarnessAccountSourceDefinition, type HarnessQuotaSourceDefinition, type LlmProviderContributionDefinition, type MediaProviderDefinition, type PluginGuiSlotContribution, type PluginHttpRouteDescriptor, type PluginImAdapterDefinition, type ProviderQuotaSourceDefinition, type SessionSourceDefinition, type SkinFile,
 } from '@kiki/protocol';
 import { satisfies, validRange } from 'semver';
 import { z } from 'zod';
@@ -15,7 +15,7 @@ import type { ExtensionSlotId } from '#/app/plugin/extensionSlots';
 
 import type { PluginDiagnostic } from './types';
 
-export const KIKI_PLUGIN_ENGINE_VERSION = '0.4.3';
+export const KIKI_PLUGIN_ENGINE_VERSION = '0.4.4';
 export const PLUGIN_EXTENSION_VERSION = 1;
 
 function checkAborted(signal?: AbortSignal): void {
@@ -288,6 +288,8 @@ export interface PluginExtension {
   readonly harnessAccountSources?: readonly HarnessAccountSourceDefinition[];
   readonly harnessQuotaSources?: readonly HarnessQuotaSourceDefinition[];
   readonly imAdapters?: readonly PluginImAdapterDefinition[];
+  readonly llmProviders?: readonly LlmProviderContributionDefinition[];
+  readonly providerQuotaSources?: readonly ProviderQuotaSourceDefinition[];
   readonly dependencies?: Readonly<Record<string, string>>;
   readonly mediaSources?: readonly PluginMediaSourceGroup[];
   readonly mediaScriptProvider?: string;
@@ -333,6 +335,8 @@ export async function parsePluginExtension(
     harnessAccountSources: z.array(harnessAccountSourceDefinitionSchema).max(20).optional(),
     harnessQuotaSources: z.array(harnessQuotaSourceDefinitionSchema).max(20).optional(),
     imAdapters: z.array(pluginImAdapterDefinitionSchema).max(20).optional(),
+    llmProviders: z.array(llmProviderContributionDefinitionSchema).max(20).optional(),
+    providerQuotaSources: z.array(providerQuotaSourceDefinitionSchema).max(20).optional(),
     dependencies: z.record(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/), z.string().refine((range) => validRange(range) !== null)).optional(),
     mediaSources: z.array(mediaSourceGroupSchema).max(1000).optional(),
     mediaScriptProvider: slug.optional(),
@@ -354,7 +358,7 @@ export async function parsePluginExtension(
   }
   const value = envelope.data;
   const hasOtherKikiContributions = value.themes !== undefined || value.providerPresets !== undefined ||
-    value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.asrProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.dependencies !== undefined || value.panels !== undefined || value.guiSlots !== undefined || value.routes !== undefined || value.promptContext !== undefined || value.commands !== undefined ||
+    value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.asrProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.llmProviders !== undefined || value.providerQuotaSources !== undefined || value.dependencies !== undefined || value.panels !== undefined || value.guiSlots !== undefined || value.routes !== undefined || value.promptContext !== undefined || value.commands !== undefined ||
     value.slots !== undefined || value.entry !== undefined || value.requestProjection !== undefined || value.mediaSurface !== undefined;
   const hasContributions = hasOtherKikiContributions || value.settings !== undefined;
   if (hasContributions && value.engines === undefined) {
@@ -383,10 +387,10 @@ export async function parsePluginExtension(
   }
   const hasManifestRoutes = (value.routes?.length ?? 0) > 0;
   const hasPromptContext = value.promptContext === true;
-  if ((value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.asrProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.slots !== undefined || value.activation !== undefined || hasManifestRoutes || hasPromptContext) && value.entry === undefined) {
+  if ((value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.asrProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || (value.llmProviders?.length ?? 0) > 0 || (value.providerQuotaSources?.length ?? 0) > 0 || value.slots !== undefined || value.activation !== undefined || hasManifestRoutes || hasPromptContext) && value.entry === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.entry is required for executable contributions' });
   }
-  for (const definitions of [value.sessionSources, value.mediaProviders, value.asrProviders, value.harnessAccountSources, value.harnessQuotaSources, value.imAdapters]) {
+  for (const definitions of [value.sessionSources, value.mediaProviders, value.asrProviders, value.harnessAccountSources, value.harnessQuotaSources, value.imAdapters, value.llmProviders, value.providerQuotaSources]) {
     if (new Set(definitions?.map((item) => item.id)).size !== (definitions?.length ?? 0)) {
       diagnostics.push({ severity: 'error', message: 'Duplicate executable contribution id' });
     }
@@ -479,6 +483,16 @@ export async function parsePluginExtension(
     checkAborted(signal);
     panels.push({ ...panel, file, assetFiles });
   }
+  for (const provider of value.llmProviders ?? []) {
+    if (provider.panelId !== undefined && !panels.some((panel) => panel.id === provider.panelId)) {
+      diagnostics.push({ severity: 'error', message: `LLM provider ${provider.id} references unknown panel ${provider.panelId}` });
+    }
+  }
+  for (const quotaSource of value.providerQuotaSources ?? []) {
+    if (quotaSource.panelId !== undefined && !panels.some((panel) => panel.id === quotaSource.panelId)) {
+      diagnostics.push({ severity: 'error', message: `Provider quota source ${quotaSource.id} references unknown panel ${quotaSource.panelId}` });
+    }
+  }
   const ownerId = pluginId?.trim() || path.basename(root).toLowerCase();
   const guiSlots: PluginGuiSlotContribution[] = [];
   const seenGuiSlotKeys = new Set<string>();
@@ -560,6 +574,8 @@ export async function parsePluginExtension(
     harnessAccountSources: value.harnessAccountSources,
     harnessQuotaSources: value.harnessQuotaSources,
     imAdapters: value.imAdapters,
+    llmProviders: value.llmProviders,
+    providerQuotaSources: value.providerQuotaSources,
     dependencies: value.dependencies,
     mediaSources: value.mediaSources,
     mediaScriptProvider: value.mediaScriptProvider,

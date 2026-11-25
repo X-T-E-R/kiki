@@ -487,3 +487,83 @@ describe('SSHKaos.create()', () => {
     expect(yielded).toEqual(['publickey', 'password']);
   });
 });
+
+describe('SSHKaos.createExclusive()', () => {
+  it('distinguishes exclusive-open collision from post-open write or close failure', async () => {
+    const files = new Map<string, Buffer>();
+    let failWriteWithFailure = false;
+    let failCloseWithDestroyed = false;
+    let closedHandles = 0;
+    const sftp = {
+      realpath(path: string, callback: (err: Error | undefined, absPath: string) => void): void {
+        callback(undefined, path === '.' ? '/home/tester' : path);
+      },
+      exists(path: string, callback: (exists: boolean) => void): void {
+        callback(files.has(path));
+      },
+      stat(path: string, callback: (err: Error | undefined, stats: SFTPStats) => void): void {
+        if (path === '/home/tester') { callback(undefined, makeStats(true)); return; }
+        const existing = files.get(path);
+        if (existing === undefined) {
+          callback(Object.assign(new Error('No such file'), { code: 2 }), undefined as unknown as SFTPStats);
+          return;
+        }
+        callback(undefined, { ...makeStats(false), size: existing.length });
+      },
+      open(path: string, flags: string, callback: (err: Error | undefined, handle: Buffer) => void): void {
+        if (flags === 'wx' && files.has(path)) {
+          callback(Object.assign(new Error('Failure'), { code: 4 }), undefined as unknown as Buffer);
+          return;
+        }
+        files.set(path, Buffer.alloc(0));
+        callback(undefined, Buffer.from(path));
+      },
+      write(handle: Buffer, data: Buffer, offset: number, length: number, position: number, callback: (err?: Error) => void): void {
+        if (failWriteWithFailure) {
+          files.set(handle.toString('utf8'), Buffer.from('same!!'));
+          callback(Object.assign(new Error('Write failed'), { code: 4 }));
+          return;
+        }
+        const path = handle.toString('utf8');
+        const current = files.get(path) ?? Buffer.alloc(0);
+        const next = Buffer.alloc(Math.max(current.length, position + length));
+        current.copy(next);
+        data.copy(next, position, offset, offset + length);
+        files.set(path, next);
+        callback(undefined);
+      },
+      close(_handle: Buffer, callback: (err?: Error) => void): void {
+        closedHandles += 1;
+        if (failCloseWithDestroyed) {
+          callback(Object.assign(new Error('Cannot call end after a stream was destroyed'), { code: 'ERR_STREAM_DESTROYED' }));
+          return;
+        }
+        callback(undefined);
+      },
+      end(): void {},
+    } as unknown as SFTPWrapper;
+
+    const { SSHKaos } = await loadSSHModule({ sftp });
+    const ssh = await SSHKaos.create({ host: 'example.test', username: 'tester' });
+
+    expect(await ssh.createExclusive('/home/tester/zero.txt', Buffer.alloc(0))).toBe(true);
+    expect(await ssh.createExclusive('/home/tester/zero.txt', Buffer.alloc(0))).toBe(false);
+
+    const [a, b] = await Promise.all([
+      ssh.createExclusive('/home/tester/race.txt', Buffer.from('winner')),
+      ssh.createExclusive('/home/tester/race.txt', Buffer.from('loser!')),
+    ]);
+    expect([a, b].sort()).toEqual([false, true]);
+    expect(files.get('/home/tester/race.txt')?.toString('utf8')).toBe('winner');
+
+    failWriteWithFailure = true;
+    await expect(ssh.createExclusive('/home/tester/fail-write.txt', Buffer.from('secret'))).rejects.toThrow(/createExclusive failed/);
+    failWriteWithFailure = false;
+
+    failCloseWithDestroyed = true;
+    await expect(ssh.createExclusive('/home/tester/fail-close.txt', Buffer.from('123456'))).rejects.toThrow(/createExclusive failed/);
+    failCloseWithDestroyed = false;
+
+    expect(closedHandles).toBe(4);
+  });
+});

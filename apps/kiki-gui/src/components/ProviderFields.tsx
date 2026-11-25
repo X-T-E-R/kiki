@@ -150,8 +150,8 @@ function configuredCatalogChoice(model: ModelCatalogItem): ProviderModelCatalogC
     capabilities: model.capabilities ?? [],
     supportEfforts: model.support_efforts ?? [],
     protocol: model.protocol,
-    effectiveProtocol: model.effective_protocol,
-    protocolSource: model.protocol_source,
+    effectiveProtocol: model.effective_protocol === 'plugin' ? undefined : model.effective_protocol,
+    protocolSource: model.protocol_source === 'plugin' ? undefined : model.protocol_source,
     endpointSource: model.endpoint_source,
     authSource: model.auth_source,
     endpointEnv: model.endpoint_env,
@@ -1725,9 +1725,11 @@ export function ProviderEditor({
     <span data-connection-status={healthTone}
       title={checkedAgo === undefined ? undefined : t('st.connections.testedAgo', { time: checkedAgo })}
       className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] ${
-      healthTone === 'error' ? 'text-danger' : healthTone === 'setup' ? 'text-amber-ink' : 'text-ink-faint'}`}>
-      <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
-        healthTone === 'error' ? 'bg-danger' : healthTone === 'setup' ? 'bg-amber-rule' : 'bg-success'}`} />
+      healthTone === 'error' ? 'text-danger' : healthTone === 'setup' ? 'text-amber-ink' : 'text-ink-soft'}`}>
+      {healthTone === 'error' || healthTone === 'setup' ? (
+        <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
+          healthTone === 'error' ? 'bg-danger' : 'bg-amber-rule'}`} />
+      ) : null}
       <span>{statusText}</span>
     </span>
   );

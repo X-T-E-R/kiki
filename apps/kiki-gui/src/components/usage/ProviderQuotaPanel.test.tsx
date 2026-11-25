@@ -1111,4 +1111,74 @@ describe('ProviderQuotaPanel', () => {
     await click(container, '[data-quota-account-action="toggle_pause"][data-quota-account-action-target="acc-2"]');
     expect(harnessQuotaPerformAction).toHaveBeenCalledWith('plugin:magpie/agy', { action: 'toggle_pause', account_id: 'acc-2' });
   });
+
+  it('links open_plugin_panel auth actions directly to the plugin settings panel and renders model/window meters', async () => {
+    show([
+      source({
+        id: 'plugin-quota:acme-bridge-plugin/acme-quota/acct-1',
+        provider_id: 'acme-bridge',
+        label: 'Acme Bridge (Alice)',
+        account_label: 'alice@example.test',
+        revision: '1:rev-1',
+        kind: 'provider',
+        status: 'ready',
+        auth: {
+          action: 'open_plugin_panel',
+          provider: 'acme-bridge',
+          plugin_id: 'acme-bridge-plugin',
+          panel_id: 'accounts',
+        },
+        meters: [
+          {
+            id: 'model-alpha',
+            label: 'Alpha 1',
+            unit: 'percent',
+            unit_label: '%',
+            scope: 'model',
+            used: 20,
+            limit: 100,
+            remaining: 80,
+            status: 'ready',
+          },
+          {
+            id: 'win-5h',
+            label: '5h window',
+            unit: 'percent',
+            unit_label: '%',
+            scope: 'window',
+            used: 35,
+            limit: 100,
+            remaining: 65,
+            status: 'ready',
+          },
+        ],
+      }),
+      source({
+        id: 'plugin-quota:acme-auth-plugin/acme-quota:signin',
+        provider_id: 'acme-auth',
+        label: 'Acme Sign-In',
+        account_label: 'Not signed in',
+        revision: '1:empty',
+        kind: 'provider',
+        status: 'auth_required',
+        auth: {
+          action: 'open_plugin_panel',
+          provider: 'acme-auth',
+          plugin_id: 'acme-auth-plugin',
+          panel_id: 'login',
+        },
+        meters: [],
+      }),
+    ]);
+
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+    expect(container.textContent).toContain('Alpha 1');
+    expect(container.textContent).toContain('5h window');
+    const authLink = container.querySelector<HTMLAnchorElement>(
+      'a[href="/settings/plugins?plugin=acme-auth-plugin&panel=login"]',
+    );
+    expect(authLink).not.toBeNull();
+  });
 });

@@ -120,7 +120,7 @@ export function vendorLabelFor(baseUrl: string | undefined): string | undefined 
  * an account sign-in (OAuth-managed), a server on this machine, a hosted API
  * reached with a key, or a standalone decision service.
  */
-export type ConnectionKind = 'account' | 'local' | 'api' | 'decision';
+export type ConnectionKind = 'account' | 'local' | 'api' | 'plugin' | 'decision';
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '[::1]', '::1']);
 
@@ -135,9 +135,16 @@ export function isLocalBaseUrl(baseUrl: string | undefined): boolean {
 }
 
 export function connectionKind(
-  provider: { readonly id: string; readonly type?: string; readonly service?: 'chat' | 'decision'; readonly base_url?: string },
+  provider: {
+    readonly id: string;
+    readonly type?: string;
+    readonly service?: 'chat' | 'decision';
+    readonly base_url?: string;
+    readonly plugin?: unknown;
+  },
   accountProviders: ReadonlySet<string>,
 ): ConnectionKind {
+  if (provider.plugin !== undefined) return 'plugin';
   if (provider.type !== undefined && isDecisionConnection({ type: provider.type as never, service: provider.service })) {
     return 'decision';
   }

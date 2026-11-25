@@ -1,6 +1,7 @@
 import { createConnection, type Socket } from 'node:net';
 
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+export const MAX_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
 
 export interface PluginPanelStream {
   readonly result: unknown;
@@ -55,6 +56,60 @@ export class PanelStream implements PluginPanelStream {
   }
 
   sendText(text: string): boolean { return this.send(1, Buffer.from(text)); }
+
+  async sendBinaryAsync(chunk: Uint8Array | ArrayBuffer, signal?: AbortSignal): Promise<void> {
+    const buffer = chunk instanceof ArrayBuffer
+      ? Buffer.from(chunk)
+      : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    await this.sendAsync(2, buffer, signal);
+  }
+
+  async sendTextAsync(text: string, signal?: AbortSignal): Promise<void> {
+    await this.sendAsync(1, Buffer.from(text, 'utf8'), signal);
+  }
+
+  private async sendAsync(opcode: number, payload: Buffer, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    if (this.ended) throw new Error(this.reason ?? 'Plugin stream closed');
+    if (payload.length > MAX_FRAME_BYTES) {
+      this.destroy('Plugin stream frame limit exceeded');
+      throw new Error('Plugin stream frame limit exceeded');
+    }
+    if (this.socket.writableLength > MAX_UPLOAD_CHUNK_BYTES) {
+      await this.waitDrain(signal);
+    }
+    signal?.throwIfAborted();
+    if (this.ended) throw new Error(this.reason ?? 'Plugin stream closed');
+    const header = Buffer.allocUnsafe(5);
+    header[0] = opcode;
+    header.writeUInt32BE(payload.length, 1);
+    this.socket.cork();
+    this.socket.write(header);
+    const writable = this.socket.write(payload);
+    this.socket.uncork();
+    if (!writable) await this.waitDrain(signal);
+  }
+
+  private waitDrain(signal?: AbortSignal): Promise<void> {
+    if (this.ended) return Promise.reject(new Error(this.reason ?? 'Plugin stream closed'));
+    if (signal?.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error('Aborted'));
+    return new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        this.socket.off('drain', onDrain);
+        this.closed.delete(onClose);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const onDrain = () => { cleanup(); resolve(); };
+      const onClose = (why?: string) => { cleanup(); reject(new Error(why ?? 'Plugin stream closed')); };
+      const onAbort = () => {
+        cleanup();
+        reject(signal?.reason instanceof Error ? signal.reason : Object.assign(new Error('Aborted'), { name: 'AbortError' }));
+      };
+      this.socket.once('drain', onDrain);
+      this.closed.add(onClose);
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  }
 
   private send(opcode: number, payload: Buffer): boolean {
     if (this.ended) return false;

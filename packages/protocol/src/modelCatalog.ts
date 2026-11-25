@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { pluginLlmProviderReadinessSchema } from '@kiki/plugin-sdk/llm-provider';
 import { contextStrategySchema } from './contextStrategy';
 import { decisionProtocolSchema, decisionProtocolForProviderType } from './decision';
 import { recipeModelBindingSchema, recipeOptionValuesSchema } from './recipe';
@@ -10,7 +11,10 @@ export * from './questionGuard';
 export const modelProtocolSchema = /* @__PURE__ */ z.enum(['anthropic', 'openai', 'openai_responses', 'google-genai']);
 export type ModelProtocol = z.infer<typeof modelProtocolSchema>;
 
-export const modelProtocolSourceSchema = /* @__PURE__ */ z.enum(['model', 'provider', 'vendor']);
+export const effectiveModelProtocolSchema = /* @__PURE__ */ z.enum(['anthropic', 'openai', 'openai_responses', 'google-genai', 'plugin']);
+export type EffectiveModelProtocol = z.infer<typeof effectiveModelProtocolSchema>;
+
+export const modelProtocolSourceSchema = /* @__PURE__ */ z.enum(['model', 'provider', 'vendor', 'plugin']);
 export type ModelProtocolSource = z.infer<typeof modelProtocolSourceSchema>;
 
 /** Where an effective endpoint or credential came from. Values are names, never the URL or the key. */
@@ -258,7 +262,7 @@ export const modelCatalogItemSchema = /* @__PURE__ */ z.object({
   capabilities: z.array(z.string()).optional(),
   effective_capabilities: z.array(z.string()).optional(),
   protocol: modelProtocolSchema.optional(),
-  effective_protocol: modelProtocolSchema.optional(),
+  effective_protocol: effectiveModelProtocolSchema.optional(),
   protocol_source: modelProtocolSourceSchema.optional(),
   endpoint_source: bindingOriginSchema.optional(),
   endpoint_env: z.string().min(1).optional(),
@@ -302,8 +306,19 @@ export const decisionCapabilitiesPatchSchema = /* @__PURE__ */ z.object({
 }).strict();
 export type DecisionCapabilitiesPatch = z.infer<typeof decisionCapabilitiesPatchSchema>;
 
+export const providerPluginInfoSchema = /* @__PURE__ */ z.object({
+  plugin_id: z.string().min(1),
+  panel_id: z.string().min(1).optional(),
+  readiness: pluginLlmProviderReadinessSchema,
+  status_text: z.string().optional(),
+  account_summary: z.string().optional(),
+  model_count: z.number().int().min(0),
+}).strict();
+export type ProviderPluginInfo = z.infer<typeof providerPluginInfoSchema>;
+
 export const providerCatalogItemSchema = /* @__PURE__ */ z.object({
   id: z.string().min(1),
+  label: z.string().min(1).optional(),
   enabled: z.boolean().optional(),
   type: z.string().min(1),
   service: z.enum(['chat', 'decision']).optional(),
@@ -329,6 +344,7 @@ export const providerCatalogItemSchema = /* @__PURE__ */ z.object({
   custom_header_keys: z.array(z.string()).optional(),
   env_keys: z.array(z.string()).optional(),
   oauth: z.object({ storage: z.enum(['file', 'keyring']), signed_in: z.boolean() }).optional(),
+  plugin: providerPluginInfoSchema.optional(),
 });
 export type ProviderCatalogItem = z.infer<typeof providerCatalogItemSchema>;
 
@@ -542,7 +558,7 @@ export const modelEntitySchema = /* @__PURE__ */ z.object({
   prompt_overrides: modelPromptOverridesSchema.optional(),
   overrides: modelOverridesSchema.optional(),
   protocol: modelProtocolSchema.optional(),
-  effective_protocol: modelProtocolSchema.optional(),
+  effective_protocol: effectiveModelProtocolSchema.optional(),
   protocol_source: modelProtocolSourceSchema.optional(),
   endpoint_source: bindingOriginSchema.optional(),
   endpoint_env: z.string().min(1).optional(),

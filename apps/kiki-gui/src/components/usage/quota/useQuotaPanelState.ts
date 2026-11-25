@@ -209,6 +209,7 @@ export function useQuotaPanelState() {
     }
   }, [clearFeedback, client, locale, queryClient]);
 
+  const seenTargetRevisionsRef = useRef<Map<string, string>>(new Map());
   const pluginCatalogEnabled = client.klient?.rest?.harnessQuota !== undefined && !isPeerConnectionSource(connectionSource);
   const initialCacheReady =
     !quotas.loading &&
@@ -220,25 +221,39 @@ export function useQuotaPanelState() {
   useEffect(() => {
     if (!initialCacheReady) return;
     const scopeKey = `${scopeId}:${meta?.server_id ?? ''}`;
-    if (autoRefreshedScopeRef.current === scopeKey) return;
-    autoRefreshedScopeRef.current = scopeKey;
+    const isInitialScope = autoRefreshedScopeRef.current !== scopeKey;
+    if (isInitialScope) {
+      autoRefreshedScopeRef.current = scopeKey;
+      seenTargetRevisionsRef.current.clear();
+    }
 
-    const nativeTargets = [
-      ...arranged.live.filter((source) => isNativeQuotaNeverFetched(source, signedOut)),
-      ...arranged.engines.filter(
-        (engine) => engineQuotaSourceOf(configRaw, engine.provider_id) === '' && isNativeQuotaNeverFetched(engine, signedOut),
-      ),
-    ];
+    const revisionChangedTargets = arranged.live.filter((source) => {
+      if (source.revision === undefined) return false;
+      const prev = seenTargetRevisionsRef.current.get(source.id);
+      if (prev === source.revision) return false;
+      seenTargetRevisionsRef.current.set(source.id, source.revision);
+      return !isInitialScope && isSourceRefreshable(source) && !signedOut.has(source.provider_id);
+    });
+    const nativeTargets = isInitialScope
+      ? [
+          ...arranged.live.filter((source) => isNativeQuotaNeverFetched(source, signedOut)),
+          ...arranged.engines.filter(
+            (engine) => engineQuotaSourceOf(configRaw, engine.provider_id) === '' && isNativeQuotaNeverFetched(engine, signedOut),
+          ),
+        ]
+      : revisionChangedTargets;
     const pluginTargets = new Set<string>();
-    for (const engine of arranged.engines) {
-      const selected = engineQuotaSourceOf(configRaw, engine.provider_id);
-      if (selected === '') continue;
-      const snap = pluginQuotaSources.find((s) => s.id === selected && s.engineIds.includes(engine.provider_id));
-      if (
-        snap !== undefined &&
-        pluginQuotaSnapshotStatus(snap, engine.provider_id, pluginErrors[selected], Date.now(), pluginCatalogError !== undefined) === 'unqueried'
-      ) {
-        pluginTargets.add(selected);
+    if (isInitialScope) {
+      for (const engine of arranged.engines) {
+        const selected = engineQuotaSourceOf(configRaw, engine.provider_id);
+        if (selected === '') continue;
+        const snap = pluginQuotaSources.find((s) => s.id === selected && s.engineIds.includes(engine.provider_id));
+        if (
+          snap !== undefined &&
+          pluginQuotaSnapshotStatus(snap, engine.provider_id, pluginErrors[selected], Date.now(), pluginCatalogError !== undefined) === 'unqueried'
+        ) {
+          pluginTargets.add(selected);
+        }
       }
     }
     if (nativeTargets.length === 0 && pluginTargets.size === 0) return;

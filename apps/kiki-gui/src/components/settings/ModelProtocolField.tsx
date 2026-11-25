@@ -22,6 +22,7 @@ const PROTOCOL_SOURCE_LABEL = {
   model: 'st.modelProtocol.source.model',
   provider: 'st.modelProtocol.source.provider',
   vendor: 'st.modelProtocol.source.vendor',
+  plugin: 'st.modelProtocol.source.provider',
 } as const;
 
 const ORIGIN_LABEL = {

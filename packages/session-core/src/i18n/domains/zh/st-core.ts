@@ -163,7 +163,7 @@ export const stCoreZh = {
   'st.ai.tab.models': '模型',
   'st.ai.tab.providers': '连接服务',
   'st.ai.tab.providersAccounts': '服务与账号',
-  'st.ai.tab.recipes': 'Recipe',
+  'st.ai.tab.recipes': '配方',
   'st.antigravity.account': '账号类型',
   'st.antigravity.activate': '使用此版本',
   'st.antigravity.activating': '切换中…',

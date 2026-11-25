@@ -1,9 +1,8 @@
 import type { PromptOverrides } from '@kiki/agent-profiles/promptOverrides';
-import type { ModelBehaviorConfig } from '@kiki/protocol';
+import type { ModelBehaviorConfig, ModelProtocol } from '@kiki/protocol';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Event, IWaitUntil } from '#/_base/event';
-import type { Protocol } from '#/kosong/protocol/protocol';
 import type { ServiceTier } from '#/kosong/contract/provider';
 import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
@@ -76,7 +75,7 @@ export interface ModelRecord extends ModelParameterDefaults {
   apiKey?: string;
   oauth?: OAuthRef;
 
-  protocol?: Protocol;
+  protocol?: ModelProtocol;
 
   name?: string;
   aliases?: string[];
@@ -131,7 +130,9 @@ export interface IModelService {
   readonly onDidChangeDefaultModel: Event<DefaultModelChangedEvent & IWaitUntil>;
   resolveId(id: string): string | undefined;
   get(id: string): ModelRecord | undefined;
+  getEffective?(id: string): ModelRecord | undefined;
   list(): Readonly<Record<string, ModelRecord>>;
+  listEffective?(): Readonly<Record<string, ModelRecord>>;
   getDefaultModel(): string | undefined;
   set(id: string, model: ModelRecord): Promise<void>;
   delete(id: string): Promise<void>;

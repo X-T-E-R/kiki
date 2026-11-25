@@ -13,7 +13,7 @@
 
 import { useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 import type { PluginUsageResponse } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
@@ -142,12 +142,14 @@ function cachedWorkspaceUsages(queryClient: QueryClient, pluginId: string): read
  */
 function PluginEffectiveScope({ plugin }: { readonly plugin: PluginSummary }) {
   const { t, locale } = useI18n();
+  const { search } = useLocation();
+  const requestedPanelId = new URLSearchParams(search).get('panel') ?? undefined;
   const { client } = useConnection();
   const queryClient = useQueryClient();
   const invalidate = useInvalidatePlugins();
   const guard = useDirtyGuard();
   const info = usePluginInfo(plugin.id);
-  const hasDedicatedEditor = settingsPanelOf(info.data?.manifest) !== undefined;
+  const hasDedicatedEditor = settingsPanelOf(info.data?.manifest, requestedPanelId) !== undefined;
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<unknown>(null);
   const usageCacheToken = useWorkspaceUsageCacheToken(plugin.id);
@@ -244,6 +246,8 @@ function PluginEffectiveScope({ plugin }: { readonly plugin: PluginSummary }) {
 /** A declared panel stays the editor, including when it needs enabling or a retry. */
 function PluginSettingsBody({ plugin }: { readonly plugin: PluginSummary }) {
   const { t } = useI18n();
+  const { search } = useLocation();
+  const requestedPanelId = new URLSearchParams(search).get('panel') ?? undefined;
   const info = usePluginInfo(plugin.id);
   if (info.isPending) {
     return <p className="py-2 text-[13px] text-ink-faint" role="status" data-plugin-settings-panel-loading>{t('cap.loading')}</p>;
@@ -256,7 +260,7 @@ function PluginSettingsBody({ plugin }: { readonly plugin: PluginSummary }) {
       </div>
     );
   }
-  const panel = settingsPanelOf(info.data.manifest);
+  const panel = settingsPanelOf(info.data.manifest, requestedPanelId);
   if (panel === undefined) {
     const workspaces = pluginContributions(plugin.id, info.data.manifest).panels.filter((item) => item.slot === 'workspace');
     return (

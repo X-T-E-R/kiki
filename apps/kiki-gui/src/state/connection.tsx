@@ -119,12 +119,19 @@ export function handleGlobalConnectionFrame(
     void queryClient.invalidateQueries({ queryKey: threadBridgeKeys.all });
     return true;
   }
+  if (frame.type === 'event.plugin.changed') {
+    void queryClient.invalidateQueries({ queryKey: ['models'] });
+    void queryClient.invalidateQueries({ queryKey: ['providers'] });
+    void queryClient.invalidateQueries({ queryKey: ['provider-quotas'] });
+    return true;
+  }
   if (frame.type !== 'event.model_catalog.changed') return false;
   void queryClient.invalidateQueries({ queryKey: ['models'] });
   void queryClient.invalidateQueries({ queryKey: ['providers'] });
   void queryClient.invalidateQueries({ queryKey: ['model-entity'] });
   void queryClient.invalidateQueries({ queryKey: ['provider-entity'] });
   void queryClient.invalidateQueries({ queryKey: ['discovered-models'] });
+  void queryClient.invalidateQueries({ queryKey: ['provider-quotas'] });
   return true;
 }
 
