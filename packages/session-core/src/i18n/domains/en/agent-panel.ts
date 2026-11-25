@@ -793,6 +793,8 @@ export const agentPanelEn = {
   'rail.ownerMain': 'Main agent',
   'rail.ownerOverview': 'Overview',
   'rail.panelOf': 'Panel of {name}',
+  'rail.persona.edit': 'Edit',
+  'rail.persona.memory': 'Memory',
   'rail.plugins.addHere': 'Add',
   'rail.plugins.addSource': 'From a source',
   'rail.plugins.appService': 'Shared home service',

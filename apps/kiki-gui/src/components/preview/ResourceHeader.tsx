@@ -28,6 +28,7 @@ import { saveMediaToDisk } from '../imageActions';
 import { safeImagePreviewName } from '../imagePreviewName';
 import { useActiveDraftKey } from '../mediaParts';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
+import type { PreviewWidthTier } from './PreviewHeaderSlot';
 import {
   downloadHostFile,
   HEADER_ACTION_CLASS,
@@ -249,6 +250,9 @@ export function HeaderFileActions({
   onToggleRenderedMode,
   onFindInFile,
   onReload,
+  onEdit,
+  suppressPrimaryDownload = false,
+  widthTier: widthTierProp,
 }: {
   readonly path: string;
   readonly name: string;
@@ -265,6 +269,9 @@ export function HeaderFileActions({
   readonly onToggleRenderedMode?: (mode: 'rendered' | 'source') => void;
   readonly onFindInFile?: () => void;
   readonly onReload?: () => void;
+  readonly onEdit?: () => void;
+  readonly suppressPrimaryDownload?: boolean;
+  readonly widthTier?: PreviewWidthTier;
 }) {
   const host = useHost();
   const { t } = useI18n();
@@ -274,6 +281,9 @@ export function HeaderFileActions({
   const environment = usePreviewEnvironment(sessionId);
   const localKikiComputer = environment.isKikiComputer;
   const phoneForm = environment.phoneForm === true;
+  const effectiveTier: PreviewWidthTier = phoneForm ? 'compact' : (widthTierProp ?? 'wide');
+  const isWide = !phoneForm && effectiveTier === 'wide';
+  const isCompact = phoneForm || effectiveTier === 'compact';
   const openers = useFileOpeners();
   const [moreAnchor, setMoreAnchor] = useState<{ x: number; y: number } | null>(null);
 
@@ -305,17 +315,42 @@ export function HeaderFileActions({
     [failureReason, losslessUtf8, readFailed, truncated],
   );
 
+  const inlineDownload = canDownload && !readFailed && (isWide || (isCompact && !suppressPrimaryDownload));
+  const inlineReload = isWide && onReload !== undefined;
+  const showOpenersInline = isWide && (!readFailed || failureReason === 'folder' || failureReason === 'unsupported');
+
   const moreEntries = useMemo<readonly MiniMenuEntry[]>(() => {
     const actions = resourceActions(resource, environment, readState);
     const trustedPath = resolveHostPath(path, workspaceRoot);
     const list: MiniMenuEntry[] = [];
+    if (isCompact && onEdit !== undefined) {
+      list.push({
+        key: 'edit',
+        label: t('preview.edit'),
+        run: onEdit,
+      });
+    }
     for (const action of actions) {
-      if (action.id === 'rendered-source' && phoneForm && renderedMode !== undefined && onToggleRenderedMode !== undefined) {
+      if (action.id === 'rendered-source' && isCompact && renderedMode !== undefined && onToggleRenderedMode !== undefined) {
         const nextMode = renderedMode === 'rendered' ? 'source' : 'rendered';
         list.push({
           key: 'rendered-source',
           label: nextMode === 'source' ? t('preview.switchToSource') : t('preview.switchToRendered'),
           run: () => { onToggleRenderedMode(nextMode); },
+        });
+      } else if (action.id === 'download' && canDownload && !readFailed && !inlineDownload) {
+        list.push({
+          key: 'download',
+          label: t('media.download'),
+          run: () => {
+            if (client !== undefined) {
+              return downloadHostFile(host, client, path, name, t, {
+                sessionId,
+                workspaceRoot,
+                localKikiComputer,
+              });
+            }
+          },
         });
       } else if (action.id === 'find-in-file' && onFindInFile !== undefined) {
         list.push({
@@ -350,19 +385,19 @@ export function HeaderFileActions({
           label: relativePath !== trustedPath ? t('file.copyAbsolutePath') : t('file.copyPath'),
           run: () => copyTextToClipboard(trustedPath),
         });
-      } else if (action.id === 'show-on-this-computer' && phoneForm && host.revealPath !== undefined) {
+      } else if (action.id === 'show-on-this-computer' && !showOpenersInline && host.revealPath !== undefined) {
         list.push({
           key: 'show-in-folder',
           label: t('file.showInFolder'),
           run: () => { runToastAction(t('file.showInFolder'), () => host.revealPath!(trustedPath)); },
         });
-      } else if (action.id === 'open-with-default-app' && phoneForm && host.openPath !== undefined) {
+      } else if (action.id === 'open-with-default-app' && !showOpenersInline && failureReason !== 'folder' && host.openPath !== undefined) {
         list.push({
           key: 'open-default-app',
           label: t('file.openDefaultApp'),
           run: () => { runToastAction(t('file.openDefaultApp'), () => host.openPath!(trustedPath)); },
         });
-      } else if (action.id === 'reload' && phoneForm && onReload !== undefined) {
+      } else if (action.id === 'reload' && !inlineReload && onReload !== undefined) {
         list.push({
           key: 'reload',
           label: t('preview.reloadFile'),
@@ -373,27 +408,39 @@ export function HeaderFileActions({
     return list;
   }, [
     activeDraftKey,
+    canDownload,
+    client,
     contentText,
     environment,
-    host.openPath,
-    host.revealPath,
+    failureReason,
+    host,
+    inlineDownload,
+    inlineReload,
+    isCompact,
+    localKikiComputer,
+    name,
+    onEdit,
     onFindInFile,
     onReload,
     onToggleRenderedMode,
     path,
-    phoneForm,
+    readFailed,
     readState,
     renderedMode,
     resource,
     sessionId,
+    showOpenersInline,
     t,
     workspaceRoot,
   ]);
 
-  const showOpeners = !phoneForm && (!readFailed || failureReason === 'folder' || failureReason === 'unsupported');
+  const iconButtonClass = phoneForm
+    ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
+    : 'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11';
+
   return (
     <>
-      {!phoneForm && onReload !== undefined ? (
+      {inlineReload ? (
         <button
           type="button"
           title={t('preview.reloadFile')}
@@ -405,7 +452,7 @@ export function HeaderFileActions({
           <Icon name="refresh" size={12} />
         </button>
       ) : null}
-      {canDownload && !readFailed ? (
+      {inlineDownload ? (
         <button
           type="button"
           title={t('media.download')}
@@ -420,12 +467,12 @@ export function HeaderFileActions({
               });
             }
           }}
-          className={phoneForm ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink' : HEADER_ACTION_CLASS}
+          className={isCompact ? iconButtonClass : HEADER_ACTION_CLASS}
         >
           <Icon name="arrowDown" size={phoneForm ? 16 : 12} />
         </button>
       ) : null}
-      {showOpeners && failureReason !== 'folder' && openers?.open !== undefined ? (
+      {showOpenersInline && failureReason !== 'folder' && openers?.open !== undefined ? (
         <button
           type="button"
           title={t('file.openDefaultApp')}
@@ -436,7 +483,7 @@ export function HeaderFileActions({
           {t('file.open')}
         </button>
       ) : null}
-      {showOpeners && openers?.reveal !== undefined ? (
+      {showOpenersInline && openers?.reveal !== undefined ? (
         <button
           type="button"
           title={t('file.showInFolder')}
@@ -448,7 +495,7 @@ export function HeaderFileActions({
           <Icon name="folder" size={12} />
         </button>
       ) : null}
-      {phoneForm && moreEntries.length > 0 ? (
+      {moreEntries.length > 0 ? (
         <button
           type="button"
           title={t('preview.moreActions')}
@@ -458,9 +505,9 @@ export function HeaderFileActions({
             const rect = event.currentTarget.getBoundingClientRect();
             setMoreAnchor({ x: rect.right, y: rect.bottom + 4 });
           }}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+          className={iconButtonClass}
         >
-          <Icon name="more" size={16} />
+          <Icon name="more" size={phoneForm ? 16 : 14} />
         </button>
       ) : null}
       {moreAnchor !== null ? (

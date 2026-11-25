@@ -22,6 +22,8 @@ const { opened, fixture } = vi.hoisted(() => ({
   opened: [] as string[],
   fixture: {
     session: undefined as Session | undefined,
+    blocks: [] as import('@kiki/session-core/session').SessionViewState['blocks'],
+    notify: () => {},
     partialPrompts: false,
     readMediaPreview: vi.fn(),
     loadEditAttachments: undefined as import('./Transcript').TranscriptRowActions['loadEditAttachments'],
@@ -64,24 +66,37 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
   ]);
   class StubSessionController {
     readonly sessionId: string;
-    readonly subscribe = () => () => {};
+    private readonly listeners = new Set<() => void>();
+    readonly subscribe = (listener: () => void) => {
+      this.listeners.add(listener);
+      return () => { this.listeners.delete(listener); };
+    };
     readonly subscribeInterruptedPrompt = () => () => {};
     readonly subscribeAgent = () => () => {};
     readonly getState: () => ReturnType<typeof actual.createViewState>;
     readonly getAgentState: () => ReturnType<typeof actual.createViewState>;
+    private state: ReturnType<typeof actual.createViewState>;
     constructor(_sessions: unknown, _view: unknown, sessionId: string) {
       this.sessionId = sessionId;
-      const state = { ...actual.createViewState(sessionId), session: fixture.session };
-      if (fixture.partialPrompts) {
-        state.globalCoverage = {
-          version: 1,
-          tasks: { returned: 0, total: 0, hasMore: false },
-          attachments: { returned: 0, total: 0, hasMore: false },
-          prompts: { returned: 5, total: 34, hasMore: true },
-        };
-      }
-      this.getState = () => state;
-      this.getAgentState = () => state;
+      const buildState = () => {
+        const next = { ...actual.createViewState(sessionId), session: fixture.session, blocks: fixture.blocks };
+        if (fixture.partialPrompts) {
+          next.globalCoverage = {
+            version: 1,
+            tasks: { returned: 0, total: 0, hasMore: false },
+            attachments: { returned: 0, total: 0, hasMore: false },
+            prompts: { returned: 5, total: 34, hasMore: true },
+          };
+        }
+        return next;
+      };
+      this.state = buildState();
+      fixture.notify = () => {
+        this.state = buildState();
+        for (const listener of this.listeners) listener();
+      };
+      this.getState = () => this.state;
+      this.getAgentState = () => this.state;
     }
     setFocusedAgent() {}
     refreshSession() { return Promise.resolve(); }
@@ -165,7 +180,7 @@ type MediaChangeListener = (event: MediaQueryListEvent) => void;
 const mediaListeners = new Set<{ query: string; listener: MediaChangeListener }>();
 
 function matchesBandQuery(query: string): boolean {
-  if (query.includes('min-width: 1024px') && query.includes('max-width: 1359px')) {
+  if (query.includes('min-width: 1024px') && (query.includes('max-width: 1599px') || query.includes('max-width: 1359px'))) {
     return viewportBand === 'priority';
   }
   if (query.includes('max-width: 1023px') || query.includes('max-width: 639px')) {
@@ -462,16 +477,16 @@ describe('right rail responsive layout', () => {
     }
   });
 
-  it('swaps docked Preview and Inspector inline at 1024–1359px with zero scrim and restores Preview on close', async () => {
+  it('swaps docked Preview and Inspector inline at 1024–1599px (incl. 1440px) with zero scrim, restores Preview on close, and coexists at >=1600px', async () => {
     togglePreviewPanelCalls = 0;
     fixture.session = { id: 'session-a', title: 'Priority band', workspace_id: 'ws_a', agent_config: {}, metadata: {} } as Session;
     const view = await mountAt('priority', true);
     try {
-      // Without an open preview, docked rail stays inline at 1024–1359px.
+      // Without an open preview, docked rail stays inline at 1024–1599px.
       expect(view.rail()).not.toBeNull();
       expect(view.toggle()?.getAttribute('aria-expanded')).toBe('true');
 
-      // Opening docked preview at 1024–1359px yields the docked rail without mutating layoutPrefs.
+      // Opening docked preview at 1024–1599px yields the docked rail without mutating layoutPrefs.
       fixture.previewPresentation = { open: true, maximized: false };
       await view.rerender();
       expect(view.rail()).toBeNull();
@@ -496,7 +511,17 @@ describe('right rail responsive layout', () => {
       expect(view.rail()).toBeNull();
       expect(view.toggle()?.getAttribute('aria-expanded')).toBe('false');
 
-      // Widening to >=1360px restores the docked rail inline alongside Preview with zero scrim.
+      // Explicit swap to Inspector followed by a new explicit Preview open: Preview wins and clears swap restore.
+      await act(async () => { view.toggle()!.click(); });
+      expect(togglePreviewPanelCalls).toBe(3);
+      await view.rerender();
+      expect(view.rail()).not.toBeNull();
+      fixture.previewPresentation = { open: true, maximized: false };
+      await view.rerender();
+      expect(view.rail()).toBeNull();
+      expect(localStorage.getItem('kiki.layout')).toBeNull();
+
+      // Widening to >=1600px restores the docked rail inline alongside Preview with zero scrim.
       await resizeTo('wide');
       expect(view.rail()).not.toBeNull();
       expect(slots['rail']?.querySelector('[data-rail-backdrop]')).toBeNull();
@@ -507,7 +532,52 @@ describe('right rail responsive layout', () => {
     }
   });
 
-  it('yields docked rail when preview maximizes at >=1360px, resets transient overlay across regimes, and restores docked rail on unmaximize', async () => {
+  it('keeps accessible attention count on the Inspector toggle while Preview owns the right pane at 1024–1599px without stealing focus', async () => {
+    fixture.session = { id: 'session-a', title: 'Attention swap', workspace_id: 'ws_a', agent_config: {}, metadata: {} } as Session;
+    const view = await mountAt('priority', true);
+    try {
+      fixture.previewPresentation = { open: true, maximized: false };
+      await view.rerender();
+      expect(view.rail()).toBeNull();
+
+      const focusTarget = document.createElement('button');
+      document.body.append(focusTarget);
+      focusTarget.focus();
+      expect(document.activeElement).toBe(focusTarget);
+
+      fixture.blocks = [{
+        kind: 'approval',
+        id: 'app-1',
+        request: {
+          approval_id: 'app-1',
+          session_id: 'session-a',
+          tool_call_id: 'call-1',
+          tool_name: 'Bash',
+          action: 'Run test',
+          tool_input_display: 'pnpm test',
+          created_at: '2026-01-01T00:00:00.000Z',
+          expires_at: '2026-01-02T00:00:00.000Z',
+        },
+        resolution: undefined,
+      }];
+      await act(async () => { fixture.notify(); });
+      await view.rerender();
+
+      expect(view.rail()).toBeNull();
+      expect(document.activeElement).toBe(focusTarget);
+      const toggle = view.toggle()!;
+      expect(toggle.dataset['railHint']).toBe('needs-you');
+      expect(toggle.querySelector('[data-rail-toggle-badge]')?.textContent).toBe('1');
+      expect(toggle.getAttribute('aria-label')).toContain('1');
+      focusTarget.remove();
+    } finally {
+      fixture.blocks = [];
+      await view.unmount();
+      fixture.session = undefined;
+    }
+  });
+
+  it('yields docked rail when preview maximizes at >=1600px, resets transient overlay across regimes, and restores docked rail on unmaximize', async () => {
     fixture.session = { id: 'session-a', title: 'Maximized choreography', workspace_id: 'ws_a', agent_config: {}, metadata: {} } as Session;
     const view = await mountAt('wide', true);
     try {

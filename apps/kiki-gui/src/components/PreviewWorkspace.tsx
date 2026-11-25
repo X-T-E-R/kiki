@@ -53,6 +53,11 @@ import {
   usePreviewReadingScroll,
 } from './preview/shared';
 import { PreviewPluginView } from './preview/PluginTabView';
+import {
+  PreviewHeaderSlotProvider,
+  previewWidthTier,
+  type PreviewHeaderSlotContextValue,
+} from './preview/PreviewHeaderSlot';
 import { PreviewSkillView } from './preview/SkillTabView';
 import { PreviewTabStrip } from './preview/TabStrip';
 import { isHtmlPreviewPath, TextTabView } from './preview/TextTabView';
@@ -153,6 +158,11 @@ export function PreviewWorkspace({
 }: PreviewWorkspaceProps) {
   const { t } = useI18n();
   const workspaceRef = useRef<HTMLElement | null>(null);
+  const [actionsSlot, setActionsSlot] = useState<HTMLElement | null>(null);
+  const actionsSlotRef = useCallback((node: HTMLElement | null) => {
+    setActionsSlot(node);
+  }, []);
+  const [measuredPaneWidth, setMeasuredPaneWidth] = useState<number | null>(null);
   const [menu, setMenu] = useState<{ tab: PreviewTabModel; x: number; y: number } | null>(null);
   const [uncontrolledFullscreen, setUncontrolledFullscreen] = useState(false);
   const isFullscreen = controlledFullscreen ?? uncontrolledFullscreen;
@@ -197,6 +207,54 @@ export function PreviewWorkspace({
     const canonical = previewTabKey(active, cwd);
     return normalizedTabs.some((tab) => previewTabKey(tab, cwd) === canonical) ? canonical : active;
   }, [active, cwd, normalizedTabs]);
+
+  useEffect(() => {
+    const el = workspaceRef.current;
+    if (el === null || hidden) return undefined;
+    const measure = () => {
+      const zoom = cssZoomFactor();
+      const raw = el.getBoundingClientRect().width || el.clientWidth;
+      if (raw > 0) {
+        const cssWidth = Math.round(raw / zoom);
+        setMeasuredPaneWidth((previous) => (previous === cssWidth ? previous : cssWidth));
+      }
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => { observer.disconnect(); };
+  }, [hidden, isFullscreen, width, normalizedTabs.length]);
+
+  const effectivePaneWidth =
+    measuredPaneWidth !== null && measuredPaneWidth > 0
+      ? measuredPaneWidth
+      : isFullscreen
+        ? unzoomedViewport().width
+        : width;
+  const widthTier = previewWidthTier(effectivePaneWidth, phoneMode);
+  const activeTabModel = useMemo(
+    () => normalizedTabs.find((tab) => previewTabKey(tab, cwd) === resolvedActive) ?? normalizedTabs[0],
+    [normalizedTabs, cwd, resolvedActive],
+  );
+  const isOrdinaryActiveTab =
+    activeTabModel !== undefined &&
+    activeTabModel.kind !== 'panel' &&
+    !(
+      activeTabModel.kind === 'resource' &&
+      activeTabModel.resource.source.kind === 'host-file' &&
+      (activeTabModel.resource.type === 'video' || activeTabModel.resource.type === 'audio')
+    );
+  const unifiedHead = isOrdinaryActiveTab && (widthTier === 'compact' || normalizedTabs.length === 1);
+  const headerSlotValue = useMemo<PreviewHeaderSlotContextValue>(
+    () => ({
+      unifiedHead,
+      paneWidth: effectivePaneWidth,
+      widthTier,
+      actionsSlot: unifiedHead ? actionsSlot : null,
+    }),
+    [unifiedHead, effectivePaneWidth, widthTier, actionsSlot],
+  );
 
   const openTabKeys = useMemo(
     () => new Set(normalizedTabs.map((tab) => previewTabKey(tab, cwd))),
@@ -335,6 +393,7 @@ export function PreviewWorkspace({
     <aside
       ref={workspaceRef}
       data-preview-workspace
+      data-preview-width-tier={widthTier}
       data-preview-fullscreen={isFullscreen ? '' : undefined}
       hidden={hidden}
       aria-label={t('preview.title')}
@@ -363,6 +422,9 @@ export function PreviewWorkspace({
         cwd={cwd}
         sessionId={sessionId}
         phoneMode={phoneMode}
+        widthTier={widthTier}
+        unifiedHead={unifiedHead}
+        actionsSlotRef={actionsSlotRef}
         isFullscreen={isFullscreen}
         onToggleFullscreen={toggleFullscreen}
         railOpen={sharedRail?.open}
@@ -373,6 +435,7 @@ export function PreviewWorkspace({
         onMove={onMove}
         onOpenContextMenu={(tab, x, y) => { setMenu({ tab, x, y }); }}
       />
+      <PreviewHeaderSlotProvider value={headerSlotValue}>
       {normalizedTabs.map((tab) => {
         const key = previewTabKey(tab, cwd);
         const isTabActive = key === resolvedActive;
@@ -498,6 +561,7 @@ export function PreviewWorkspace({
           />
         );
       })}
+      </PreviewHeaderSlotProvider>
       {menu !== null ? (
         <TabContextMenu
           menu={menu}
@@ -786,6 +850,7 @@ function HostFileResourceTabView({
           path={filePath}
           sessionId={sessionId}
           workspaceRoot={workspaceRoot}
+          visible={visible}
         />
       ) : (
         <TextTabView

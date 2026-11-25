@@ -15,6 +15,7 @@ import { Icon } from '../icons';
 import { ImageViewport } from '../ImageViewport';
 import { useMessageImageMenu } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
+import { PreviewHeaderActionsPortal, usePreviewHeaderSlot } from './PreviewHeaderSlot';
 import { HeaderFileActions } from './ResourceHeader';
 import {
   CAPTION_ACTION_CLASS,
@@ -50,6 +51,9 @@ export function ImageTabView({
   const host = useHost();
   const { t } = useI18n();
   const phoneMode = usePhoneMode();
+  const headerSlot = usePreviewHeaderSlot();
+  const useUnifiedHead = visible && headerSlot.unifiedHead && headerSlot.actionsSlot !== null;
+  const compact = phoneMode || headerSlot.widthTier === 'compact';
   const connection = useOptionalConnection();
   const client = connection?.client;
   const mediaPreview = useMediaPreview();
@@ -156,37 +160,45 @@ export function ImageTabView({
   if (state.status !== 'ready') {
     const readFailed = state.status === 'error';
     const failureReason = state.status === 'error' ? state.reason : undefined;
+    const pendingControls = compact ? (
+      <HeaderFileActions
+        path={path}
+        name={name}
+        sessionId={sessionId}
+        workspaceRoot={workspaceRoot}
+        resourceType="image"
+        canDownload={false}
+        readFailed={readFailed}
+        failureReason={failureReason}
+        onReload={reload}
+        widthTier={headerSlot.widthTier}
+      />
+    ) : (
+      <button
+        type="button"
+        title={t('preview.reloadFile')}
+        aria-label={t('preview.reloadFile')}
+        data-header-reload
+        onClick={reload}
+        className={CAPTION_ACTION_CLASS}
+      >
+        <Icon name="refresh" size={12} />
+      </button>
+    );
     return (
       <>
-        <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
-            {name}
-          </span>
-          {phoneMode ? (
-            <HeaderFileActions
-              path={path}
-              name={name}
-              sessionId={sessionId}
-              workspaceRoot={workspaceRoot}
-              resourceType="image"
-              canDownload={false}
-              readFailed={readFailed}
-              failureReason={failureReason}
-              onReload={reload}
-            />
-          ) : (
-            <button
-              type="button"
-              title={t('preview.reloadFile')}
-              aria-label={t('preview.reloadFile')}
-              data-header-reload
-              onClick={reload}
-              className={CAPTION_ACTION_CLASS}
-            >
-              <Icon name="refresh" size={12} />
-            </button>
-          )}
-        </div>
+        {useUnifiedHead ? (
+          <PreviewHeaderActionsPortal active={visible}>
+            {pendingControls}
+          </PreviewHeaderActionsPortal>
+        ) : (
+          <div data-preview-secondary-bar className="flex h-9 shrink-0 items-center gap-2 border-b border-hairline px-3">
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
+              {name}
+            </span>
+            {pendingControls}
+          </div>
+        )}
         <div className="flex min-h-0 flex-1 flex-col overflow-auto">
           {state.status === 'loading' ? (
             <DelayedReadingNotice active />
@@ -216,29 +228,45 @@ export function ImageTabView({
 
   return (
     <>
-      {phoneMode ? (
-        <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
-            {name}
-          </span>
-          <HeaderFileActions
-            path={path}
-            name={name}
-            sessionId={sessionId}
-            workspaceRoot={workspaceRoot}
-            resourceType="image"
-            canDownload
-            onReload={reload}
-          />
-        </div>
+      {compact ? (
+        useUnifiedHead ? (
+          <PreviewHeaderActionsPortal active={visible}>
+            <HeaderFileActions
+              path={path}
+              name={name}
+              sessionId={sessionId}
+              workspaceRoot={workspaceRoot}
+              resourceType="image"
+              canDownload
+              onReload={reload}
+              widthTier={headerSlot.widthTier}
+            />
+          </PreviewHeaderActionsPortal>
+        ) : (
+          <div data-preview-secondary-bar className="flex h-9 shrink-0 items-center gap-2 border-b border-hairline px-3">
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
+              {name}
+            </span>
+            <HeaderFileActions
+              path={path}
+              name={name}
+              sessionId={sessionId}
+              workspaceRoot={workspaceRoot}
+              resourceType="image"
+              canDownload
+              onReload={reload}
+              widthTier={headerSlot.widthTier}
+            />
+          </div>
+        )
       ) : null}
       {changedOnDisk ? <ChangedOnDiskStrip onReload={reload} /> : null}
       <ImageViewport
         src={state.url}
         alt={name}
-        caption={<span title={path}>{name}</span>}
+        caption={useUnifiedHead ? undefined : <span title={path}>{name}</span>}
         meta={formatBytes(state.size)}
-        showHeader={!phoneMode}
+        showHeader={!compact}
         onContextMenu={imageMenu.openMenu}
         onError={() => { setState({ status: 'error', reason: 'corrupted' }); }}
         actions={

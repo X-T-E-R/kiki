@@ -19,6 +19,7 @@ import { previewTabKey, type PreviewTab as PreviewTabModel } from '#/state/previ
 import { Icon, resolvePluginSlotIconName, type IconName } from '../icons';
 import { useActiveDraftKey } from '../mediaParts';
 import { ActionSheet } from '../overlays/ActionSheet';
+import type { PreviewWidthTier } from './PreviewHeaderSlot';
 import { mentionTokenFor, webUrlDisplayLabel } from './shared';
 
 function tabDisplayInfo(
@@ -86,6 +87,9 @@ export interface PreviewTabStripProps {
   readonly cwd?: string;
   readonly sessionId?: string;
   readonly phoneMode: boolean;
+  readonly widthTier: PreviewWidthTier;
+  readonly unifiedHead: boolean;
+  readonly actionsSlotRef?: (node: HTMLElement | null) => void;
   readonly isFullscreen: boolean;
   readonly onToggleFullscreen: () => void;
   readonly railOpen?: boolean;
@@ -106,6 +110,9 @@ export function PreviewTabStrip({
   cwd,
   sessionId,
   phoneMode,
+  widthTier,
+  unifiedHead,
+  actionsSlotRef,
   isFullscreen,
   onToggleFullscreen,
   railOpen,
@@ -135,8 +142,10 @@ export function PreviewTabStrip({
     );
   }, []);
 
+  const compactHead = phoneMode || widthTier === 'compact';
+
   useEffect(() => {
-    if (phoneMode || active === null) return;
+    if (compactHead || active === null) return;
     const scroller = tabListRef.current;
     if (scroller === null) return;
     const activeChip = [...scroller.querySelectorAll<HTMLElement>('[data-preview-tab-key]')].find(
@@ -144,10 +153,10 @@ export function PreviewTabStrip({
     );
     activeChip?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
     updateOverflow();
-  }, [active, phoneMode, tabs.length, updateOverflow]);
+  }, [active, compactHead, tabs.length, updateOverflow]);
 
   useEffect(() => {
-    if (phoneMode) return undefined;
+    if (compactHead) return undefined;
     updateOverflow();
     const scroller = tabListRef.current;
     if (scroller === null || typeof ResizeObserver === 'undefined') return undefined;
@@ -158,17 +167,24 @@ export function PreviewTabStrip({
     return () => {
       observer.disconnect();
     };
-  }, [phoneMode, tabs.length, updateOverflow]);
+  }, [compactHead, tabs.length, updateOverflow]);
 
-  if (phoneMode) {
+  if (compactHead) {
     const activeTab = tabs.find((tab) => previewTabKey(tab, cwd) === active) ?? tabs[0];
     const activeInfo =
       activeTab === undefined
         ? { label: t('preview.title'), icon: 'file' as const, isCopy: false }
         : tabDisplayInfo(activeTab, agentForest, t('media.attachment'));
+    const activeHostPath =
+      activeTab?.kind === 'resource' && activeTab.resource.source.kind === 'host-file'
+        ? activeTab.resource.source.path
+        : undefined;
+    const activeDirty = activeHostPath !== undefined && dirtyPaths.has(activeHostPath);
     return (
       <div
-        className="flex min-h-11 shrink-0 items-center gap-1 border-b border-hairline pl-2 pr-1"
+        data-preview-tab-strip
+        data-preview-head-mode="compact"
+        className="grid min-h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 border-b border-hairline pl-2 pr-1"
         data-preview-phone-title-row
       >
         <button
@@ -178,8 +194,15 @@ export function PreviewTabStrip({
           aria-haspopup="menu"
           aria-label={t('preview.tabPickerAria', { name: activeInfo.label, count: tabs.length })}
           onClick={() => { setSheetOpen(true); }}
-          className="flex min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 text-left text-[13px] font-medium text-ink transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+          className="flex min-h-11 min-w-0 w-full items-center gap-1.5 rounded-md px-2 text-left text-[13px] font-medium text-ink transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
         >
+          {activeDirty ? (
+            <span
+              aria-label={t('preview.unsaved')}
+              title={t('preview.unsaved')}
+              className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+            />
+          ) : null}
           <span className="min-w-0 truncate" data-preview-phone-active-name>
             {activeInfo.label}
           </span>
@@ -195,28 +218,37 @@ export function PreviewTabStrip({
             ▾ · {tabs.length}
           </span>
         </button>
-        {isFullscreen ? (
+        <div className="flex shrink-0 items-center gap-0.5">
+          {unifiedHead ? (
+            <div ref={actionsSlotRef} data-preview-head-actions className="flex shrink-0 items-center gap-0.5 empty:hidden" />
+          ) : null}
+          {isFullscreen || !phoneMode ? (
+            <button
+              type="button"
+              onClick={onToggleFullscreen}
+              title={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
+              aria-label={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
+              data-preview-fullscreen-toggle
+              className={`flex shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+                phoneMode ? 'h-11 w-11' : 'h-8 w-8 pointer-coarse:h-11 pointer-coarse:w-11'
+              }`}
+            >
+              <Icon name={isFullscreen ? 'collapse' : 'expand'} />
+            </button>
+          ) : null}
           <button
             type="button"
-            onClick={onToggleFullscreen}
-            title={t('preview.exitFullscreen')}
-            aria-label={t('preview.exitFullscreen')}
-            data-preview-fullscreen-toggle
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            onClick={onCollapse}
+            title={t('preview.collapse')}
+            aria-label={t('preview.collapse')}
+            data-preview-collapse
+            className={`flex shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+              phoneMode ? 'h-11 w-11' : 'h-8 w-8 pointer-coarse:h-11 pointer-coarse:w-11'
+            }`}
           >
-            <Icon name="collapse" />
+            »
           </button>
-        ) : null}
-        <button
-          type="button"
-          onClick={onCollapse}
-          title={t('preview.collapse')}
-          aria-label={t('preview.collapse')}
-          data-preview-collapse
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-        >
-          »
-        </button>
+        </div>
         {sheetOpen ? (
           <ActionSheet
             ariaLabel={t('preview.openTabsTitle')}
@@ -291,16 +323,24 @@ export function PreviewTabStrip({
     );
   }
 
+  const singleHead = unifiedHead && tabs.length === 1;
+  const showInlineMention = widthTier === 'wide';
+
   return (
     <div
       data-preview-tab-strip
+      data-preview-head-mode={singleHead ? 'single' : 'tabs'}
       onDoubleClick={(event) => {
         const target = event.target;
         if (!(target instanceof Element)) return;
         if (target.closest('button, [role="tab"], a, input, select, textarea') !== null) return;
         onToggleFullscreen();
       }}
-      className="flex h-11 shrink-0 items-center gap-1 border-b border-hairline pl-2 pr-1 lg:h-9"
+      className={
+        singleHead
+          ? 'grid h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-hairline pl-3 pr-1.5'
+          : 'flex h-12 shrink-0 items-center gap-1 border-b border-hairline pl-2 pr-1.5'
+      }
     >
       <div className="relative flex min-w-0 flex-1 items-center">
         <div
@@ -309,7 +349,11 @@ export function PreviewTabStrip({
           onScroll={updateOverflow}
           data-overflow-left={overflowState.left ? 'true' : undefined}
           data-overflow-right={overflowState.right ? 'true' : undefined}
-          className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pr-2"
+          className={
+            singleHead
+              ? 'flex min-w-0 flex-1 items-center'
+              : 'flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pr-2'
+          }
         >
           {tabs.map((tab, index) => {
             const key = previewTabKey(tab, cwd);
@@ -326,6 +370,8 @@ export function PreviewTabStrip({
                 dirtyPaths={dirtyPaths}
                 readFailed={readFailed}
                 active={isTabActive}
+                singleMode={singleHead}
+                showInlineMention={showInlineMention}
                 onActivate={() => { onActivate(key); }}
                 onClose={() => { onClose(key); }}
                 onContextMenu={(x, y) => { onOpenContextMenu(tab, x, y); }}
@@ -343,6 +389,7 @@ export function PreviewTabStrip({
                 url={tab.url}
                 title={tab.title}
                 active={isTabActive}
+                singleMode={singleHead}
                 onActivate={() => { onActivate(key); }}
                 onClose={() => { onClose(key); }}
                 onContextMenu={(x, y) => { onOpenContextMenu(tab, x, y); }}
@@ -359,6 +406,7 @@ export function PreviewTabStrip({
                 tabKey={key}
                 name={tab.name}
                 active={isTabActive}
+                singleMode={singleHead}
                 onActivate={() => { onActivate(key); }}
                 onClose={() => { onClose(key); }}
                 onContextMenu={(x, y) => { onOpenContextMenu(tab, x, y); }}
@@ -375,6 +423,7 @@ export function PreviewTabStrip({
                 tabKey={key}
                 tab={tab}
                 active={isTabActive}
+                singleMode={singleHead}
                 onActivate={() => { onActivate(key); }}
                 onClose={() => { onClose(key); }}
                 onContextMenu={(x, y) => { onOpenContextMenu(tab, x, y); }}
@@ -405,7 +454,7 @@ export function PreviewTabStrip({
             );
           })}
         </div>
-        {overflowState.right ? (
+        {!singleHead && overflowState.right ? (
           <div
             aria-hidden
             data-preview-tabs-overflow-cue
@@ -413,44 +462,49 @@ export function PreviewTabStrip({
           />
         ) : null}
       </div>
-      <div className="flex shrink-0 items-center gap-0.5 border-l border-hairline/70 pl-1">
-        {onToggleRail !== undefined ? (
+      <div className="flex shrink-0 items-center gap-1">
+        {singleHead ? (
+          <div ref={actionsSlotRef} data-preview-head-actions className="flex shrink-0 items-center gap-1 empty:hidden" />
+        ) : null}
+        <div className="flex shrink-0 items-center gap-0.5 border-l border-hairline/70 pl-1">
+          {onToggleRail !== undefined ? (
+            <button
+              type="button"
+              onClick={onToggleRail}
+              title={railOpen ? t('sv.hidePanel') : t('sv.showPanel')}
+              aria-label={t('sv.togglePanelAria')}
+              aria-expanded={Boolean(railOpen)}
+              data-preview-toggle-rail
+              className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 lg:w-8 ${
+                railOpen
+                  ? 'bg-canvas text-ink'
+                  : 'text-ink-faint hover:bg-canvas hover:text-ink'
+              }`}
+            >
+              <Icon name="panel" />
+            </button>
+          ) : null}
           <button
             type="button"
-            onClick={onToggleRail}
-            title={railOpen ? t('sv.hidePanel') : t('sv.showPanel')}
-            aria-label={t('sv.togglePanelAria')}
-            aria-expanded={Boolean(railOpen)}
-            data-preview-toggle-rail
-            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7 ${
-              railOpen
-                ? 'bg-canvas text-ink'
-                : 'text-ink-faint hover:bg-canvas hover:text-ink'
-            }`}
+            onClick={onToggleFullscreen}
+            title={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
+            aria-label={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
+            data-preview-fullscreen-toggle
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 lg:w-8"
           >
-            <Icon name="panel" />
+            <Icon name={isFullscreen ? 'collapse' : 'expand'} />
           </button>
-        ) : null}
-        <button
-          type="button"
-          onClick={onToggleFullscreen}
-          title={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
-          aria-label={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
-          data-preview-fullscreen-toggle
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7"
-        >
-          <Icon name={isFullscreen ? 'collapse' : 'expand'} />
-        </button>
-        <button
-          type="button"
-          onClick={onCollapse}
-          title={t('preview.collapse')}
-          aria-label={t('preview.collapse')}
-          data-preview-collapse
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 lg:w-7"
-        >
-          »
-        </button>
+          <button
+            type="button"
+            onClick={onCollapse}
+            title={t('preview.collapse')}
+            aria-label={t('preview.collapse')}
+            data-preview-collapse
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[12px] text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 lg:w-8"
+          >
+            »
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -464,6 +518,8 @@ function PreviewResourceTabChip({
   dirtyPaths,
   readFailed,
   active,
+  singleMode = false,
+  showInlineMention = true,
   onActivate,
   onClose,
   onContextMenu,
@@ -477,6 +533,8 @@ function PreviewResourceTabChip({
   readonly dirtyPaths: ReadonlySet<string>;
   readonly readFailed: boolean;
   readonly active: boolean;
+  readonly singleMode?: boolean;
+  readonly showInlineMention?: boolean;
   readonly onActivate: () => void;
   readonly onClose: () => void;
   readonly onContextMenu: (x: number, y: number) => void;
@@ -499,6 +557,12 @@ function PreviewResourceTabChip({
       : source.kind === 'session-copy'
         ? basenameOf(source.fileId)
         : t('media.attachment'));
+  const icon: IconName =
+    resource.type === 'html'
+      ? 'web'
+      : resource.type === 'markdown' || resource.type === 'pdf' || resource.type === 'office'
+        ? 'read'
+        : 'file';
   const dataTabId =
     source.kind === 'host-file'
       ? source.path
@@ -507,7 +571,7 @@ function PreviewResourceTabChip({
         : source.url || name;
   const dirty = hostPath !== undefined && dirtyPaths.has(hostPath);
   const targetDraftKey = activeDraftKey ?? sessionId;
-  const canMention = targetDraftKey !== undefined && trustedPath !== undefined && !readFailed;
+  const canMention = showInlineMention && targetDraftKey !== undefined && trustedPath !== undefined && !readFailed;
 
   return (
     <div
@@ -543,12 +607,17 @@ function PreviewResourceTabChip({
         event.preventDefault();
         onContextMenu(event.clientX, event.clientY);
       }}
-      className={`group flex h-7 ${isCopy ? 'max-w-52' : 'max-w-40'} min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
-        active
-          ? 'border-hairline bg-paper font-medium text-ink'
-          : 'border-transparent text-ink-faint hover:text-ink-soft'
-      }`}
+      className={
+        singleMode
+          ? 'group flex h-8 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1 text-[13px] font-medium text-ink select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
+          : `group flex h-8 ${isCopy ? 'max-w-52' : 'max-w-44'} min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-md border px-2 text-[12px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+              active
+                ? 'border-hairline bg-paper font-medium text-ink'
+                : 'border-transparent text-ink-faint hover:text-ink-soft'
+            }`
+      }
     >
+      {singleMode ? <Icon name={icon} size={14} className="shrink-0 text-ink-faint" /> : null}
       {dirty ? (
         <span
           aria-label={t('preview.unsaved')}
@@ -605,6 +674,7 @@ function PreviewSkillTab({
   tabKey,
   name,
   active,
+  singleMode = false,
   onActivate,
   onClose,
   onContextMenu,
@@ -614,6 +684,7 @@ function PreviewSkillTab({
   readonly tabKey: string;
   readonly name: string;
   readonly active: boolean;
+  readonly singleMode?: boolean;
   readonly onActivate: () => void;
   readonly onClose: () => void;
   readonly onContextMenu: (x: number, y: number) => void;
@@ -655,12 +726,17 @@ function PreviewSkillTab({
         event.preventDefault();
         onContextMenu(event.clientX, event.clientY);
       }}
-      className={`group flex h-7 max-w-48 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
-        active ? 'border-hairline bg-paper font-medium text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
-      }`}
+      className={
+        singleMode
+          ? 'group flex h-8 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1 text-[13px] font-medium text-ink select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
+          : `group flex h-8 max-w-48 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-md border px-2 text-[12px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+              active ? 'border-hairline bg-paper font-medium text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
+            }`
+      }
     >
+      {singleMode ? <Icon name="skill" size={14} className="shrink-0 text-ink-faint" /> : null}
       <span className="min-w-0 truncate">SKILL.md</span>
-      <span className="min-w-0 truncate text-[11px] text-ink-faint">{name}</span>
+      <span className="min-w-0 truncate text-[11.5px] font-normal text-ink-faint">{name}</span>
       <button
         type="button"
         aria-label={`${t('common.close')} ${name} SKILL.md`}
@@ -680,6 +756,7 @@ function PreviewWebTab({
   url,
   title,
   active,
+  singleMode = false,
   onActivate,
   onClose,
   onContextMenu,
@@ -690,6 +767,7 @@ function PreviewWebTab({
   readonly url: string;
   readonly title?: string;
   readonly active: boolean;
+  readonly singleMode?: boolean;
   readonly onActivate: () => void;
   readonly onClose: () => void;
   readonly onContextMenu: (x: number, y: number) => void;
@@ -732,11 +810,15 @@ function PreviewWebTab({
         event.preventDefault();
         onContextMenu(event.clientX, event.clientY);
       }}
-      className={`group flex h-7 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
-        active ? 'border-hairline bg-paper font-medium text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
-      }`}
+      className={
+        singleMode
+          ? 'group flex h-8 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1 text-[13px] font-medium text-ink select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
+          : `group flex h-8 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-md border px-2 text-[12px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+              active ? 'border-hairline bg-paper font-medium text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
+            }`
+      }
     >
-      <Icon name="compass" size={12} className="shrink-0 text-ink-faint" />
+      <Icon name="compass" size={singleMode ? 14 : 12} className="shrink-0 text-ink-faint" />
       <span className="min-w-0 truncate">{label}</span>
       <button
         type="button"
@@ -845,6 +927,7 @@ function PreviewPluginTab({
   tabKey,
   tab,
   active,
+  singleMode = false,
   onActivate,
   onClose,
   onContextMenu,
@@ -854,6 +937,7 @@ function PreviewPluginTab({
   readonly tabKey: string;
   readonly tab: Extract<PreviewTabModel, { kind: 'plugin' }>;
   readonly active: boolean;
+  readonly singleMode?: boolean;
   readonly onActivate: () => void;
   readonly onClose: () => void;
   readonly onContextMenu: (x: number, y: number) => void;
@@ -902,16 +986,21 @@ function PreviewPluginTab({
         event.preventDefault();
         onContextMenu(event.clientX, event.clientY);
       }}
-      className={`group flex h-11 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-7 ${
-        active
-          ? 'border-hairline bg-paper font-medium text-ink'
-          : 'border-transparent text-ink-faint hover:text-ink-soft'
-      }`}
+      className={
+        singleMode
+          ? 'group flex h-8 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1 text-[13px] font-medium text-ink select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
+          : `group flex h-11 max-w-44 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-[12px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink lg:h-8 ${
+              active
+                ? 'border-hairline bg-paper font-medium text-ink'
+                : 'border-transparent text-ink-faint hover:text-ink-soft'
+            }`
+      }
     >
-      <Icon name={iconName} size={12} className="shrink-0 text-ink-faint" />
+      <Icon name={iconName} size={singleMode ? 14 : 12} className="shrink-0 text-ink-faint" />
       <span className="min-w-0 truncate">{label}</span>
       <button
         type="button"
+        data-plugin-panel-close={singleMode ? '' : undefined}
         aria-label={`${t('common.close')} ${label}`}
         onClick={(event) => {
           event.stopPropagation();

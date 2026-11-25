@@ -720,12 +720,28 @@ const Header = memo(function Header({
         <span className="flex-1" />
       )}
       <PreviewToggleButton sessionId={session?.id} workspaceId={session?.workspace_id} />
-      {railAvailable && railToggleVisible ? (
+      {railAvailable && railToggleVisible ? (() => {
+        const attentionLabel = waiting > 0
+          ? tp('inspector.waiting', waiting)
+          : runningTasks > 0
+            ? tp('inspector.tasks', runningTasks)
+            : state.busy
+              ? t('inspector.running')
+              : undefined;
+        const toggleTitle = railOpen
+          ? t('sv.hidePanel')
+          : attentionLabel !== undefined
+            ? `${t('sv.showPanel')} · ${attentionLabel}`
+            : t('sv.showPanel');
+        const toggleAriaLabel = attentionLabel !== undefined
+          ? `${t('sv.togglePanelAria')} · ${attentionLabel}`
+          : t('sv.togglePanelAria');
+        return (
         <button
           type="button"
           onClick={onToggleRail}
-          title={railOpen ? t('sv.hidePanel') : t('sv.showPanel')}
-          aria-label={t('sv.togglePanelAria')}
+          title={toggleTitle}
+          aria-label={toggleAriaLabel}
           aria-expanded={railOpen}
           data-rail-toggle
           data-rail-hint={waiting > 0 ? 'needs-you' : state.busy || runningTasks > 0 ? 'running' : undefined}
@@ -750,7 +766,8 @@ const Header = memo(function Header({
             </span>
           ) : null}
         </button>
-      ) : null}
+        );
+      })() : null}
     </WorkspaceHeader>
   );
 });
@@ -2375,7 +2392,7 @@ export function SessionView({
   // external engine is run as it is, so an untouched mode is not sent.
   const permissionTouchedRef = useRef(false);
   const isNarrowScreen = useMediaQuery('(max-width: 1023px)');
-  const isPreviewPriorityBand = useMediaQuery('(min-width: 1024px) and (max-width: 1359px)');
+  const isPreviewPriorityBand = useMediaQuery('(min-width: 1024px) and (max-width: 1599px)');
 
   // The inline rail (lg and up) keeps the user's last open/closed choice in
   // the layout preferences, like the sidebar's collapse and the rail's width:
@@ -2392,9 +2409,10 @@ export function SessionView({
   const previewRef = useRef<MediaPreviewApi | null>(null);
   const previewOpen = previewPresentation?.open === true;
   const previewMaximized = previewPresentation?.maximized === true;
-  // Maximized preview keeps the inspector as a row overlay. In the 1024–1359px
-  // preview-priority band, Preview and Inspector share the docked right
-  // secondary stage instead of layering a scrim over the conversation.
+  // Maximized preview keeps the inspector as a row overlay. In the 1024–1599px
+  // preview-priority band (including 1440px), Preview and Inspector share the
+  // docked right secondary stage instead of cramping into four panes or
+  // layering a scrim over the conversation.
   const maximizedRailYielded = !isNarrowScreen && previewMaximized;
   const priorityBandSwap = !isNarrowScreen && !previewMaximized && isPreviewPriorityBand;
   const dockedRailYielded = maximizedRailYielded || (priorityBandSwap && previewOpen);

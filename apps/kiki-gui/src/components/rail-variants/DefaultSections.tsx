@@ -6,6 +6,7 @@
  */
 
 import { memo, useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import { MAIN_AGENT_ID, type AgentForest, type Block, type NoticeBlock, type SessionViewState } from '@kiki/session-core/session';
@@ -29,6 +30,7 @@ import { Icon } from '../icons';
 import { resolveProfileIcon } from '../../lib/profileIcon';
 import { ExecutorAuthStatus } from '../harness/ExecutorAuthStatus';
 import { ApprovalSubject } from '../Interactions';
+import { PersonaAvatar } from '../persona/PersonaAvatar';
 import { age, decidable, pendingId, pendingSubject, useNow, type PendingItem } from './model';
 import { FOCUS_RING, StateMark, useDecide } from './shell';
 
@@ -263,6 +265,11 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
     hasFile: identity.profileSource === 'profile-file',
     description: profile?.description,
   });
+  const boundPersona = agentId === MAIN_AGENT_ID ? state?.session?.agent_config?.persona : undefined;
+  const boundPersonaId = boundPersona?.id !== undefined && boundPersona.id.trim() !== '' ? boundPersona.id.trim() : undefined;
+  const boundPersonaMemoryRoute = boundPersonaId === undefined
+    ? undefined
+    : `/memory?persona=${encodeURIComponent(boundPersonaId)}${workspaceId === undefined || workspaceId === '' ? '' : `&workspace=${encodeURIComponent(workspaceId)}`}`;
   return (
     <div data-rail-profile-head className="min-w-0">
       <div className="flex min-w-0 items-center gap-1.5">
@@ -283,6 +290,31 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
       {modelLine !== '' ? (
         <p data-rail-profile-model data-rail-driver={externalDriver === undefined ? undefined : 'external'}
           className="truncate text-[12.5px] leading-5 text-ink-faint" title={modelLine}>{modelLine}</p>
+      ) : null}
+      {boundPersona !== undefined && boundPersonaId !== undefined && boundPersonaMemoryRoute !== undefined ? (
+        <div
+          data-rail-persona-binding={boundPersonaId}
+          className="mt-1.5 flex min-w-0 items-center gap-2 text-[12px] text-ink-soft"
+        >
+          <PersonaAvatar persona={boundPersona} size={18} />
+          <span className="min-w-0 flex-1 truncate font-medium text-ink" title={boundPersona.name}>
+            {boundPersona.name}
+          </span>
+          <Link
+            to={`/personas?persona=${encodeURIComponent(boundPersonaId)}&view=settings`}
+            data-rail-persona-edit
+            className={`shrink-0 rounded px-1 py-0.5 text-[11.5px] text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`}
+          >
+            {t('rail.persona.edit')}
+          </Link>
+          <Link
+            to={boundPersonaMemoryRoute}
+            data-rail-persona-memory
+            className={`shrink-0 rounded px-1 py-0.5 text-[11.5px] text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`}
+          >
+            {t('rail.persona.memory')}
+          </Link>
+        </div>
       ) : null}
       {/* The usage below is Kiki's own: what its sub agents really cost. It is
           labelled here so a driven session's figures are never read as the
@@ -586,15 +618,17 @@ export function SessionEnvironmentControls({ sessionId }: { sessionId: string })
         <h4 className={`${INSPECTOR_HEAD} pb-1`}>{t('rail.capabilities.systemTitle')}</h4>
         <OptionalCapabilityRows sessionId={sessionId} />
       </div>
-      <div className="border-t border-hairline pt-3" data-rail-control-group="plugins">
-        <div className="-mx-2">
-          <SessionPluginsPanel
-            sessionId={sessionId}
-            showStoreActions={false}
-            headerTitle={t('inspector.cap.plugins')}
-          />
-        </div>
-      </div>
+      <SessionPluginsPanel
+        sessionId={sessionId}
+        showStoreActions={false}
+        headerTitle={t('inspector.cap.plugins')}
+        hideWhenEmpty
+        renderWrapper={(content) => (
+          <div className="border-t border-hairline pt-3" data-rail-control-group="plugins">
+            <div className="-mx-2">{content}</div>
+          </div>
+        )}
+      />
       <SessionMcpRail sessionId={sessionId} />
     </div>
   );
@@ -616,12 +650,19 @@ export function EnvironmentBlock({ sessionId }: { sessionId: string }) {
       />
       {open ? (
         <div className="pt-1 space-y-4">
-          <div className="-mx-2" data-rail-control-group="plugins">
-            <h4 className="flex items-baseline gap-1.5 px-2 pb-0.5 text-[11px] font-medium text-ink-faint">
-              {t('inspector.cap.plugins')}
-            </h4>
-            <SessionPluginsPanel sessionId={sessionId} showStoreActions={false} />
-          </div>
+          <SessionPluginsPanel
+            sessionId={sessionId}
+            showStoreActions={false}
+            hideWhenEmpty
+            renderWrapper={(content) => (
+              <div className="-mx-2" data-rail-control-group="plugins">
+                <h4 className="flex items-baseline gap-1.5 px-2 pb-0.5 text-[11px] font-medium text-ink-faint">
+                  {t('inspector.cap.plugins')}
+                </h4>
+                {content}
+              </div>
+            )}
+          />
           <div data-rail-control-group="system">
             <h4 className="pb-0.5 text-[11px] font-medium text-ink-faint">{t('rail.capabilities.systemTitle')}</h4>
             <OptionalCapabilityRows sessionId={sessionId} />

@@ -11,6 +11,7 @@ import { useOptionalConnection } from '#/state/connection';
 import { Icon } from '../icons';
 import { Markdown } from '../Markdown';
 import { MiniContextMenu } from '../MiniContextMenu';
+import { PreviewHeaderActionsPortal, usePreviewHeaderSlot } from './PreviewHeaderSlot';
 import { usePreviewReadingScroll, type PreviewScrollPosition } from './shared';
 
 export function PreviewSkillView({
@@ -28,6 +29,10 @@ export function PreviewSkillView({
 }) {
   const { t } = useI18n();
   const phoneMode = usePhoneMode();
+  const headerSlot = usePreviewHeaderSlot();
+  const useUnifiedHead = visible && headerSlot.unifiedHead && headerSlot.actionsSlot !== null;
+  const compact = phoneMode || headerSlot.widthTier === 'compact';
+  const wide = !compact && headerSlot.widthTier === 'wide';
   const client = useOptionalConnection()?.client;
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
   const [attempt, setAttempt] = useState(0);
@@ -56,6 +61,62 @@ export function PreviewSkillView({
   const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition);
   useEffect(() => { if (state.status === 'ready') onReadingReady(); }, [state.status, mode, onReadingReady]);
 
+  const iconButtonClass = phoneMode
+    ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
+    : 'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11';
+
+  const toolbarControls = compact ? (
+    <button
+      type="button"
+      title={t('preview.moreActions')}
+      aria-label={t('preview.moreActions')}
+      data-header-more
+      onClick={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        setMoreAnchor({ x: rect.right, y: rect.bottom + 4 });
+      }}
+      className={iconButtonClass}
+    >
+      <Icon name="more" size={phoneMode ? 16 : 14} />
+    </button>
+  ) : (
+    <>
+      {wide ? (
+        <span className="shrink-0 text-[11px] text-ink-faint">{t('preview.builtinSkillReadOnly')}</span>
+      ) : null}
+      <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
+        {(['rendered', 'source'] as const).map((option) => (
+          <button
+            key={option}
+            type="button"
+            data-md-mode={option}
+            onClick={() => { setMode(option); }}
+            className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
+              mode === option ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-faint hover:text-ink-soft'
+            }`}
+          >
+            {t(option === 'rendered' ? 'preview.rendered' : 'preview.source')}
+          </button>
+        ))}
+      </span>
+      {state.status === 'ready' ? (
+        <button
+          type="button"
+          title={t('preview.moreActions')}
+          aria-label={t('preview.moreActions')}
+          data-header-more
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            setMoreAnchor({ x: rect.right, y: rect.bottom + 4 });
+          }}
+          className={iconButtonClass}
+        >
+          <Icon name="more" size={14} />
+        </button>
+      ) : null}
+    </>
+  );
+
   return (
     <div
       ref={panelRef}
@@ -64,45 +125,18 @@ export function PreviewSkillView({
       className={`min-h-0 flex-1 flex-col ${visible ? 'flex' : 'hidden'}`}
       data-preview-tabpanel={tabKey}
     >
-      <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint">
-          {phoneMode ? `${name} / SKILL.md` : `${t('cap.source.builtin')} · ${name} / SKILL.md`}
-        </span>
-        {phoneMode ? (
-          <button
-            type="button"
-            title={t('preview.moreActions')}
-            aria-label={t('preview.moreActions')}
-            data-header-more
-            onClick={(event) => {
-              const rect = event.currentTarget.getBoundingClientRect();
-              setMoreAnchor({ x: rect.right, y: rect.bottom + 4 });
-            }}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-          >
-            <Icon name="more" size={16} />
-          </button>
-        ) : (
-          <>
-            <span className="shrink-0 text-[11px] text-ink-faint">{t('preview.builtinSkillReadOnly')}</span>
-            <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
-              {(['rendered', 'source'] as const).map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  data-md-mode={option}
-                  onClick={() => { setMode(option); }}
-                  className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
-                    mode === option ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-faint hover:text-ink-soft'
-                  }`}
-                >
-                  {t(option === 'rendered' ? 'preview.rendered' : 'preview.source')}
-                </button>
-              ))}
-            </span>
-          </>
-        )}
-      </div>
+      {useUnifiedHead ? (
+        <PreviewHeaderActionsPortal active={visible}>
+          {toolbarControls}
+        </PreviewHeaderActionsPortal>
+      ) : (
+        <div data-preview-secondary-bar className="flex h-9 shrink-0 items-center gap-2 border-b border-hairline px-3">
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint">
+            {compact ? `${name} / SKILL.md` : `${t('cap.source.builtin')} · ${name} / SKILL.md`}
+          </span>
+          {toolbarControls}
+        </div>
+      )}
       {moreAnchor !== null ? (
         <MiniContextMenu
           x={moreAnchor.x}

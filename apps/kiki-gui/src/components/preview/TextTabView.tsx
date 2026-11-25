@@ -21,6 +21,7 @@ import {
 import { CodeEditor } from '../CodeEditor';
 import { Icon } from '../icons';
 import { Markdown } from '../Markdown';
+import { PreviewHeaderActionsPortal, usePreviewHeaderSlot } from './PreviewHeaderSlot';
 import { HeaderFileActions } from './ResourceHeader';
 import {
   buildFileTabResource,
@@ -466,104 +467,136 @@ export function TextTabView({
   };
 
   const showOversizedNotice = snap.status === 'ready' && snap.oversized && fullText === undefined && !html;
+  const headerSlot = usePreviewHeaderSlot();
+  const useUnifiedHead = visible && headerSlot.unifiedHead && headerSlot.actionsSlot !== null;
+  const compact = phoneMode || headerSlot.widthTier === 'compact';
+  const wide = !compact && headerSlot.widthTier === 'wide';
+  const startEdit = useCallback(() => {
+    if (controller?.beginEdit() === true && hasRenderedMode) {
+      setMode('source');
+    }
+  }, [controller, hasRenderedMode]);
+  const showCompactSave = compact && editable && editing && snap.dirty && snap.status === 'ready';
+
+  const toolbarControls = (
+    <>
+      {!compact && hasRenderedMode && !textReadFailed ? (
+        <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
+          {(['rendered', 'source'] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              data-preview-mode={option}
+              data-md-mode={option}
+              data-html-mode={html ? option : undefined}
+              aria-pressed={mode === option}
+              onClick={() => { setMode(option); }}
+              className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
+                mode === option
+                  ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                  : 'text-ink-faint hover:text-ink-soft'
+              }`}
+            >
+              {option === 'rendered' ? t('preview.rendered') : t('preview.source')}
+            </button>
+          ))}
+        </span>
+      ) : null}
+      {!compact && snap.status === 'ready' && (wide || snap.saving || snap.dirty) ? (
+        <span className="shrink-0 text-[11px] text-ink-faint" data-save-status>
+          {snap.saving
+            ? t('preview.saving')
+            : snap.dirty
+              ? <span className="inline-flex items-center gap-1"><Icon name="dot" size={12} className="text-amber-rule" />{t('preview.unsaved')}</span>
+              : snap.lastSavedAt !== undefined
+                ? t('preview.saved')
+                : ''}
+        </span>
+      ) : null}
+      {showCompactSave ? (
+        <button
+          type="button"
+          data-save-button
+          disabled={snap.saving}
+          onClick={() => { void controller?.saveNow(); }}
+          className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink transition-colors hover:border-hairline-strong disabled:cursor-default disabled:opacity-40"
+        >
+          {t('preview.save')}
+        </button>
+      ) : !compact && editable && snap.status === 'ready' ? (
+        editing ? (
+          <button
+            type="button"
+            data-save-button
+            disabled={!snap.dirty || snap.saving}
+            onClick={() => { void controller?.saveNow(); }}
+            className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-ink-soft"
+          >
+            {t('preview.save')}
+          </button>
+        ) : (
+          <button
+            type="button"
+            data-edit-button
+            onClick={startEdit}
+            className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+          >
+            {t('preview.edit')}
+          </button>
+        )
+      ) : !compact && readOnlyReason !== undefined ? (
+        <span
+          data-readonly-reason
+          title={readOnlyReason}
+          className="max-w-[180px] shrink-0 truncate text-[11px] text-ink-faint"
+        >
+          {readOnlyReason}
+        </span>
+      ) : null}
+      <HeaderFileActions
+        path={path}
+        name={name}
+        sessionId={sessionId}
+        workspaceRoot={workspaceRoot}
+        resourceType={html ? 'html' : markdown ? 'markdown' : undefined}
+        canDownload={!textReadFailed && snap.status === 'ready'}
+        readFailed={textReadFailed}
+        failureReason={snap.failureReason}
+        truncated={snap.oversized}
+        losslessUtf8={snap.lossless}
+        contentText={snap.status === 'ready' ? (fullText ?? snap.draft) : undefined}
+        renderedMode={hasRenderedMode && !textReadFailed ? mode : undefined}
+        onToggleRenderedMode={hasRenderedMode && !textReadFailed ? setMode : undefined}
+        onFindInFile={
+          snap.status === 'ready' && !html
+            ? () => {
+                if (hasRenderedMode && mode !== 'source') setMode('source');
+                setSearchNonce((n) => n + 1);
+              }
+            : undefined
+        }
+        onReload={reloadTab}
+        onEdit={compact && editable && !editing && snap.status === 'ready' ? startEdit : undefined}
+        suppressPrimaryDownload={showCompactSave}
+        widthTier={headerSlot.widthTier}
+      />
+    </>
+  );
 
   return (
     <>
-      <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
-          {phoneMode ? name : path}
-        </span>
-        {!phoneMode && hasRenderedMode && !textReadFailed ? (
-          <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
-            {(['rendered', 'source'] as const).map((option) => (
-              <button
-                key={option}
-                type="button"
-                data-preview-mode={option}
-                data-md-mode={option}
-                data-html-mode={html ? option : undefined}
-                aria-pressed={mode === option}
-                onClick={() => { setMode(option); }}
-                className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
-                  mode === option
-                    ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
-                    : 'text-ink-faint hover:text-ink-soft'
-                }`}
-              >
-                {option === 'rendered' ? t('preview.rendered') : t('preview.source')}
-              </button>
-            ))}
+      {useUnifiedHead ? (
+        <PreviewHeaderActionsPortal active={visible}>
+          {toolbarControls}
+        </PreviewHeaderActionsPortal>
+      ) : (
+        <div data-preview-secondary-bar className="flex h-9 shrink-0 items-center gap-2 border-b border-hairline px-3">
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
+            {compact ? name : path}
           </span>
-        ) : null}
-        {!phoneMode && snap.status === 'ready' ? (
-          <span className="shrink-0 text-[11px] text-ink-faint" data-save-status>
-            {snap.saving
-              ? t('preview.saving')
-              : snap.dirty
-                ? <span className="inline-flex items-center gap-1"><Icon name="dot" size={12} className="text-amber-rule" />{t('preview.unsaved')}</span>
-                : snap.lastSavedAt !== undefined
-                  ? t('preview.saved')
-                  : ''}
-          </span>
-        ) : null}
-        {!phoneMode && editable && snap.status === 'ready' ? (
-          editing ? (
-            <button
-              type="button"
-              data-save-button
-              disabled={!snap.dirty || snap.saving}
-              onClick={() => { void controller?.saveNow(); }}
-              className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-ink-soft"
-            >
-              {t('preview.save')}
-            </button>
-          ) : (
-            <button
-              type="button"
-              data-edit-button
-              onClick={() => {
-                if (controller?.beginEdit() === true && hasRenderedMode) {
-                  setMode('source');
-                }
-              }}
-              className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
-            >
-              {t('preview.edit')}
-            </button>
-          )
-        ) : !phoneMode && readOnlyReason !== undefined ? (
-          <span
-            data-readonly-reason
-            className="shrink-0 text-[11px] text-ink-faint"
-          >
-            {readOnlyReason}
-          </span>
-        ) : null}
-        <HeaderFileActions
-          path={path}
-          name={name}
-          sessionId={sessionId}
-          workspaceRoot={workspaceRoot}
-          resourceType={html ? 'html' : markdown ? 'markdown' : undefined}
-          canDownload={!textReadFailed && snap.status === 'ready'}
-          readFailed={textReadFailed}
-          failureReason={snap.failureReason}
-          truncated={snap.oversized}
-          losslessUtf8={snap.lossless}
-          contentText={snap.status === 'ready' ? (fullText ?? snap.draft) : undefined}
-          renderedMode={hasRenderedMode && !textReadFailed ? mode : undefined}
-          onToggleRenderedMode={hasRenderedMode && !textReadFailed ? setMode : undefined}
-          onFindInFile={
-            snap.status === 'ready' && !html
-              ? () => {
-                  if (hasRenderedMode && mode !== 'source') setMode('source');
-                  setSearchNonce((n) => n + 1);
-                }
-              : undefined
-          }
-          onReload={reloadTab}
-        />
-      </div>
+          {toolbarControls}
+        </div>
+      )}
       {snap.conflict ? (
         <div
           data-conflict-banner

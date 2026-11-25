@@ -29,7 +29,7 @@
  *   instead of implying that switching it off here stops that service.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { Link, useLocation } from 'react-router-dom';
 
@@ -136,10 +136,14 @@ export function SessionPluginsPanel({
   sessionId,
   showStoreActions = true,
   headerTitle,
+  hideWhenEmpty = false,
+  renderWrapper,
 }: {
   readonly sessionId: string;
   readonly showStoreActions?: boolean;
   readonly headerTitle?: string;
+  readonly hideWhenEmpty?: boolean;
+  readonly renderWrapper?: (content: ReactNode) => ReactNode;
 }) {
   const { t, locale } = useI18n();
   const location = useLocation();
@@ -311,6 +315,19 @@ export function SessionPluginsPanel({
 
   if (unsupported) return null;
 
+  const hasApplyStatus =
+    read.data?.apply_state === 'pending' ||
+    (read.data?.apply_state === 'failed' && (read.data?.errors?.length ?? 0) > 0);
+  const omitEmptySection =
+    hideWhenEmpty &&
+    !showStoreActions &&
+    read.isSuccess &&
+    !read.isError &&
+    !read.isPending &&
+    items.length === 0 &&
+    !hasApplyStatus;
+  if (omitEmptySection) return null;
+
   const hasEnabledOverflow = !filtering && primaryItems.length > ENABLED_VISIBLE_LIMIT;
   const visiblePrimaryItems = hasEnabledOverflow && !showAllEnabled
     ? primaryItems.slice(0, ENABLED_VISIBLE_LIMIT)
@@ -352,7 +369,7 @@ export function SessionPluginsPanel({
     </button>
   ) : null;
 
-  return (
+  const body = (
     <>
       {/* The control block owns the fold and heading; this component owns the
           plugin rows and their read/write states. */}
@@ -529,6 +546,8 @@ export function SessionPluginsPanel({
       ) : null}
     </>
   );
+
+  return renderWrapper === undefined ? body : <>{renderWrapper(body)}</>;
 }
 
 /** The scope line: the server's own name for this workspace, plus entry points. */

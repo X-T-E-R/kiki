@@ -55,6 +55,8 @@ export const transcriptEn = {
   'message.deliverySwitchFailed': 'Delivery was not switched: {detail}',
   'message.deliveryUnconfirmed': 'Delivery not confirmed · View process',
   'message.failed': 'Message not sent · View process',
+  'message.failure.mediaUnsupported': 'No enabled channel supports this media type',
+  'message.failure.mediaUnsupportedKind': 'No enabled channel supports sending {kind}',
   'message.handoff': '{from} → {to}: {text}',
   'message.internal': 'Internal',
   'message.internalPartial': 'Partially received here',

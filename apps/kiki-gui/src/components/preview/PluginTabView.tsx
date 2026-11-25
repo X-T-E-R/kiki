@@ -13,6 +13,7 @@ import { useI18n } from '#/i18n';
 import { usePhoneMode } from '#/lib/layoutHooks';
 import { PluginPanelHost } from '../capabilities/PluginPanelHost';
 import { Icon, resolvePluginSlotIconName } from '../icons';
+import { PreviewHeaderActionsPortal, usePreviewHeaderSlot } from './PreviewHeaderSlot';
 import { CAPTION_ACTION_CLASS, HEADER_ACTION_CLASS } from './shared';
 
 export function PreviewPluginView({
@@ -42,6 +43,9 @@ export function PreviewPluginView({
 }) {
   const { t } = useI18n();
   const phoneMode = usePhoneMode();
+  const headerSlot = usePreviewHeaderSlot();
+  const useUnifiedHead = visible && headerSlot.unifiedHead && headerSlot.actionsSlot !== null;
+  const compact = phoneMode || headerSlot.widthTier === 'compact';
   const queryClient = useQueryClient();
   const [reloadKey, setReloadKey] = useState(0);
   const displayTitle = title !== undefined && title.trim() !== '' ? title.trim() : `${pluginId} · ${panelId}`;
@@ -58,6 +62,25 @@ export function PreviewPluginView({
     if (externalReloadNonce !== undefined && externalReloadNonce > 0) reload();
   }, [externalReloadNonce, reload]);
 
+  const reloadButton = (
+    <button
+      type="button"
+      title={t('preview.reloadFile')}
+      aria-label={t('preview.reloadFile')}
+      data-plugin-panel-reload
+      onClick={reload}
+      className={
+        phoneMode
+          ? 'flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
+          : useUnifiedHead
+            ? 'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11'
+            : HEADER_ACTION_CLASS
+      }
+    >
+      <Icon name="refresh" size={phoneMode ? 16 : 12} />
+    </button>
+  );
+
   return (
     <div
       role="tabpanel"
@@ -66,62 +89,55 @@ export function PreviewPluginView({
       data-preview-tabpanel={tabKey}
       data-preview-plugin-panel={`${pluginId}:${panelId}`}
     >
-      <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
-        <Icon name={iconName} size={12} className="shrink-0 text-ink-faint" />
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-soft" title={`${pluginId}:${panelId}`}>
-          {phoneMode ? displayTitle : `${pluginId} · ${panelId}`}
-        </span>
-        <button
-          type="button"
-          title={t('preview.reloadFile')}
-          aria-label={t('preview.reloadFile')}
-          data-plugin-panel-reload
-          onClick={reload}
-          className={
-            phoneMode
-              ? 'flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink'
-              : HEADER_ACTION_CLASS
-          }
-        >
-          <Icon name="refresh" size={phoneMode ? 14 : 12} />
-        </button>
-        {phoneMode && onToggleFullscreen !== undefined ? (
-          <button
-            type="button"
-            title={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
-            aria-label={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
-            data-plugin-panel-fullscreen
-            onClick={onToggleFullscreen}
-            className={CAPTION_ACTION_CLASS}
-          >
-            <Icon name={isFullscreen ? 'collapse' : 'expand'} size={12} />
-          </button>
-        ) : null}
-        {phoneMode && onCollapse !== undefined ? (
-          <button
-            type="button"
-            title={t('preview.collapse')}
-            aria-label={t('preview.collapse')}
-            data-plugin-panel-collapse
-            onClick={onCollapse}
-            className={CAPTION_ACTION_CLASS}
-          >
-            <span aria-hidden className="text-[12px] leading-none">»</span>
-          </button>
-        ) : null}
-        {onCloseTab !== undefined ? (
-          <button
-            type="button"
-            title={`${t('common.close')} ${displayTitle}`}
-            aria-label={`${t('common.close')} ${displayTitle}`}
-            data-plugin-panel-close
-            onClick={onCloseTab}
-            className={`${CAPTION_ACTION_CLASS} hover:text-danger`}
-          >
-            <Icon name="close" size={12} />
-          </button>
-        ) : null}
-      </div>
+      {useUnifiedHead ? (
+        <PreviewHeaderActionsPortal active={visible}>
+          {reloadButton}
+        </PreviewHeaderActionsPortal>
+      ) : (
+        <div data-preview-secondary-bar className="flex h-9 shrink-0 items-center gap-2 border-b border-hairline px-3">
+          <Icon name={iconName} size={12} className="shrink-0 text-ink-faint" />
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-soft" title={`${pluginId}:${panelId}`}>
+            {compact ? displayTitle : `${pluginId} · ${panelId}`}
+          </span>
+          {reloadButton}
+          {phoneMode && onToggleFullscreen !== undefined ? (
+            <button
+              type="button"
+              title={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
+              aria-label={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
+              data-plugin-panel-fullscreen
+              onClick={onToggleFullscreen}
+              className={CAPTION_ACTION_CLASS}
+            >
+              <Icon name={isFullscreen ? 'collapse' : 'expand'} size={12} />
+            </button>
+          ) : null}
+          {phoneMode && onCollapse !== undefined ? (
+            <button
+              type="button"
+              title={t('preview.collapse')}
+              aria-label={t('preview.collapse')}
+              data-plugin-panel-collapse
+              onClick={onCollapse}
+              className={CAPTION_ACTION_CLASS}
+            >
+              <span aria-hidden className="text-[12px] leading-none">»</span>
+            </button>
+          ) : null}
+          {onCloseTab !== undefined ? (
+            <button
+              type="button"
+              title={`${t('common.close')} ${displayTitle}`}
+              aria-label={`${t('common.close')} ${displayTitle}`}
+              data-plugin-panel-close
+              onClick={onCloseTab}
+              className={`${CAPTION_ACTION_CLASS} hover:text-danger`}
+            >
+              <Icon name="close" size={12} />
+            </button>
+          ) : null}
+        </div>
+      )}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-paper">
         <PluginPanelHost
           key={`${pluginId}:${panelId}:${reloadKey}`}
