@@ -397,7 +397,7 @@ describe('SessionController suspend / resume', () => {
     const stepId = baseTurn.steps[0]!.stepId;
     const frameId = baseTurn.steps[0]!.frames[0]!.frameId;
     const reset = resetEvent('main', initial, 9);
-    const epoch = reset.type === 'transcript.reset' ? reset.cursor.epoch : 'epoch-1';
+    const epoch = (reset.type === 'transcript.reset' ? reset.cursor.epoch : undefined) ?? 'epoch-1';
 
     vi.mocked(catchUp).mockResolvedValueOnce({
       session_id: 'session_test',
