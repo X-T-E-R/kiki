@@ -40,7 +40,6 @@ import {
 } from './markdown/domAnnotationMarks';
 import { useStreamdownPlugins } from './markdown/streamdown-plugins';
 import { StaticDocument } from './markdown/staticDocument';
-import { canFastRenderMarkdown, renderFastMarkdown } from './markdown/fastMarkdown';
 import './markdown/markdown.css';
 import { isOnKikiComputer } from './imageActions';
 import { buildResourceMenuEntries, useActiveDraftKey } from './mediaParts';
@@ -627,13 +626,7 @@ export const Markdown = memo(function Markdown({
     return parts;
   }, [text]);
   const plain = plainParagraphs !== null && findFileReferences(text).length === 0;
-  const canUseFast = !plain
-    && mode !== 'static'
-    && documentDirectory === undefined
-    && documentPath === undefined
-    && (annotationTargets === undefined || annotationTargets.length === 0)
-    && canFastRenderMarkdown(text);
-  const plugins = useStreamdownPlugins(plain || canUseFast ? null : text, rootRef);
+  const plugins = useStreamdownPlugins(plain ? null : text, rootRef);
   const className = preserveEdgeMargins ? 'kiki-md kiki-md--edges' : 'kiki-md';
   const sourceVersion = useMemo(
     () => (sourceBlockId === undefined ? undefined : sourceTextVersion(text)),
@@ -722,20 +715,6 @@ export const Markdown = memo(function Markdown({
         ))}
       </div>
     );
-  }
-  if (canUseFast) {
-    const fastNodes = renderFastMarkdown(text, (href, children, key) => (
-      <MarkdownAnchor key={key} href={href} documentDirectory={documentDirectory} documentPath={documentPath} rootRef={rootRef}>
-        {children}
-      </MarkdownAnchor>
-    ));
-    if (fastNodes !== null) {
-      return (
-        <div ref={rootRef} className={className} data-source-block-id={sourceBlockId} data-source-version={sourceVersion}>
-          {fastNodes}
-        </div>
-      );
-    }
   }
   const Renderer = mode === 'static' ? StaticDocument : Streamdown;
   const parseBlocksFn = mode === 'static'
