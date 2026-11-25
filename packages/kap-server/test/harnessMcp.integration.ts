@@ -272,7 +272,7 @@ describe('native harness tool parity', () => {
       child.accessor.get(IAgentPermissionModeService).setMode('yolo');
       const registry = child.accessor.get(IAgentToolRegistryService);
       const registrations = ['plugin', 'mcp'].map((source) => registry.register({
-        name: `${source}_fixture`, description: `${source} fixture`, parameters: { type: 'object', properties: {} },
+        name: `${source}_fixture`, foregroundPolicy: 'instant', description: `${source} fixture`, parameters: { type: 'object', properties: {} },
         resolveExecution: () => ({ approvalRule: `${source}_fixture`, accesses: ToolAccesses.all(),
           execute: async () => ({ output: `${child.id}:${source}` }) }),
       }, { source: source as 'plugin' | 'mcp' }));
@@ -292,7 +292,7 @@ describe('native harness tool parity', () => {
       const notified = await client.callTool({ name: 'kiki_AgentNotify', arguments: { message: 'The parent must change the integration route.' } });
       expect(notified.isError, JSON.stringify(notified)).not.toBe(true);
       expect((await client.callTool({ name: 'kiki_AgentNotify', arguments: {} })).isError).toBe(true);
-      registry.register({ name: 'plugin_media_fixture', description: 'Media fixture',
+      registry.register({ name: 'plugin_media_fixture', foregroundPolicy: 'instant', description: 'Media fixture',
         parameters: { type: 'object', properties: {} }, resolveExecution: () => ({
           approvalRule: 'plugin_media_fixture', accesses: ToolAccesses.none(), execute: async () => ({ output: [
             { type: 'text', text: 'Exact media bytes' }, { type: 'image_url', imageUrl: { url: 'data:image/png;base64,cGl4ZWxz' } },
@@ -338,11 +338,11 @@ describe('native harness tool parity', () => {
       child.accessor.get(IAgentPermissionModeService).setMode('manual');
       const interaction = session.accessor.get(ISessionInteractionService);
       interaction.acquireConsumer('child-bridge-test');
-      registry.register({ name: 'plugin_approval_fixture', description: 'Approval fixture',
+      registry.register({ name: 'plugin_approval_fixture', foregroundPolicy: 'instant', description: 'Approval fixture',
         parameters: { type: 'object', properties: {} }, resolveExecution: () => ({
           approvalRule: 'plugin_approval_fixture', accesses: ToolAccesses.all(), execute: async () => ({ output: 'approved' }),
         }) }, { source: 'plugin' });
-      registry.register({ name: 'plugin_approval_revoke_fixture', description: 'Approval revoke fixture',
+      registry.register({ name: 'plugin_approval_revoke_fixture', foregroundPolicy: 'instant', description: 'Approval revoke fixture',
         parameters: { type: 'object', properties: {} }, resolveExecution: () => ({
           approvalRule: 'plugin_approval_revoke_fixture', accesses: ToolAccesses.all(), execute: async () => ({ output: 'approved' }),
         }) }, { source: 'plugin' });
