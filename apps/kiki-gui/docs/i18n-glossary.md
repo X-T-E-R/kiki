@@ -38,7 +38,7 @@ copy rules.
 | 指令 | instructions | 智能体的常驻指令正文：`st.agentManager.instructions` 指令，`st.agentManager.prompt` = "Instructions (prompt body)" / 指令正文。不要用「说明」译 instructions，也不要和 prompt 互换。 |
 | 上下文 | context | 上下文窗口 context window；重建上下文 rebuild context（`persona.rebuild`）。 |
 | 提示 / 帮助 | hint / help | `*.hint`、`*.help` 是设置卡里的帮助文本：一句话说清「做什么 + 默认值」，优先级、环境变量、内部细节放 AdvancedDetails，zh 不留英文。 |
-| worktree | worktree | zh 保留原词不译（`st.worktrees.title` 两边都是 'Worktrees'）。分支 = branch，检出目录 = checkout。 |
+| worktree | worktree | 正文与操作提示中保留 worktree 原词，卡片标题 `st.worktrees.title` 在中文界面译为「Git 工作树」。分支 = branch，检出目录 = checkout。 |
 | MCP 服务器 | MCP server | 保留 MCP 不译（`st.plugins.contrib.mcp`）。 |
 | 复刻 | fork | 从一个会话或一条消息复制出新会话（`menu.fork`、`transcript.fork`）。统一「复刻」，不要「分叉」。 |
 | 导览 | tour | 首次启动后唯一的引导形式：可选的一分钟导览（`firstRun.tour.*`、`discovery.hub.*`）。「引导」「向导」不作为产品词。 |

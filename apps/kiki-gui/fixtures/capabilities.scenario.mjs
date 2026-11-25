@@ -71,6 +71,7 @@ const summary = (id, overrides = {}) => ({
   id,
   displayName: id,
   enabled: true,
+  globalEnabled: true,
   state: 'ok',
   skillCount: 0,
   mcpServerCount: 0,

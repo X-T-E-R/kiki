@@ -14,6 +14,7 @@ import {
   Error2,
   getLiveSessionById,
 } from '@kiki/agent-core-v2';
+import { IContentAddressedStore } from '@kiki/agent-core-v2/persistence/interface/contentAddressedStore';
 import { describe, expect, it, vi } from 'vitest';
 import { type RunningServer } from '../src/start';
 import { PROMPT_BODY_LIMIT_BYTES } from '../src/routes/prompts';
@@ -413,9 +414,11 @@ describe('server-v2 /api prompts', () => {
     const media = session.accessor.get(ISessionMediaStore);
     const mediaScope = session.accessor.get(ISessionContext).scope('media');
     const storage = fixture.server!.core.accessor.get(IFileSystemStorageService);
+    const cas = fixture.server!.core.accessor.get(IContentAddressedStore);
     const documents = fixture.server!.core.accessor.get(IAtomicDocumentStore);
     const files = fixture.server!.core.accessor.get(IFileService);
     const writeStream = storage.writeStream.bind(storage);
+    const linkAlias = cas.linkAlias.bind(cas);
     const set = documents.set.bind(documents);
     const materialize = media.materialize.bind(media);
     let failing = true;
@@ -423,6 +426,10 @@ describe('server-v2 /api prompts', () => {
     const writeSpy = vi.spyOn(storage, 'writeStream').mockImplementation(async (...args) => {
       if (failing && fault === 'blob' && args[0] === mediaScope) throw failure;
       return writeStream(...args);
+    });
+    const linkAliasSpy = vi.spyOn(cas, 'linkAlias').mockImplementation(async (...args) => {
+      if (failing && fault === 'blob' && args[1] === mediaScope) throw failure;
+      return linkAlias(...args);
     });
     const metadataSpy = vi.spyOn(documents, 'set').mockImplementation(async (...args) => {
       if (failing && fault === 'metadata' && args[0] === mediaScope) throw failure;
@@ -459,6 +466,7 @@ describe('server-v2 /api prompts', () => {
       expect((await media.read(uploaded.id))?.data).toEqual(image);
     } finally {
       writeSpy.mockRestore();
+      linkAliasSpy.mockRestore();
       metadataSpy.mockRestore();
       materializeSpy.mockRestore();
       await client.close();

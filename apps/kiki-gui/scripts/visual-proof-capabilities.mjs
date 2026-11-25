@@ -39,7 +39,7 @@ export function createCapabilitiesWalker({ page, shot, setProofTheme, webUrl, fi
     if (officeIcon !== 'image') throw new Error(`official catalog icon must render as an image, saw ${officeIcon}`);
     await expectNoOverflow(`market ${tag}`);
     await shot(`cap-market-${tag}`);
-    await page.locator('#plugins-shelf-coding').scrollIntoViewIfNeeded();
+    await page.locator('#plugins-shelf-community').scrollIntoViewIfNeeded();
     await shot(`cap-market-shelves-${tag}`);
     await page.locator('[data-catalog-more="kiki-office"]').click();
     await page.waitForSelector('[data-plugin-card-menu]', { timeout: 5000 });
@@ -50,8 +50,8 @@ export function createCapabilitiesWalker({ page, shot, setProofTheme, webUrl, fi
     await page.waitForTimeout(250);
     await page.locator('[data-plugins-advanced]').scrollIntoViewIfNeeded();
     await shot(`cap-market-advanced-${tag}`);
-    await page.locator('[data-plugins-shelf-more="coding"]').click();
-    await page.waitForSelector('[data-plugins-view="shelf"]', { timeout: 5000 });
+    await page.locator('[data-plugins-shelf-jump="plugins-shelf-community"]').click();
+    await page.waitForSelector('#plugins-shelf-community [data-catalog-row]', { timeout: 5000 });
     await shot(`cap-market-shelf-${tag}`);
 
     // Installed: one list, origin labels, an update, an off plugin, a broken one.

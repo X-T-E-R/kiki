@@ -11,7 +11,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IInstantiationService, ref, type LiveRef, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { IPluginHostService } from '#/app/plugin/pluginHostService';
+import { IPluginHostService, type PluginMediaProviderRegistration } from '#/app/plugin/pluginHostService';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IBlobStore } from '#/persistence/interface/blobStore';
 import { IContentAddressedStore } from '#/persistence/interface/contentAddressedStore';

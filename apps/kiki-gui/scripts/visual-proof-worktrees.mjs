@@ -61,7 +61,7 @@ export function createWorktreesWalker({ page, shot, resizeViewport, setProofThem
     await page.locator('[data-new-worktree-toggle]').focus();
     await shot(name('new-on', theme, width));
     // Plain folder: the switch is simply not offered.
-    await open(`/new?workspace=wd_fixture_000000000001`, 'textarea[data-composer]');
+    await open(`/new?workspace=wd_fixture_000000000001`, '[data-composer]');
     await expectCount('[data-new-worktree]', 0, 'not-git hides the switch');
     await shot(name('new-not-git', theme, width));
   }
@@ -73,8 +73,8 @@ export function createWorktreesWalker({ page, shot, resizeViewport, setProofThem
     await page.waitForSelector('[role="alertdialog"]', { timeout: 10_000 });
     await page.locator('[role="alertdialog"] button[data-confirm-action="confirm"]').click();
     await page.waitForSelector('[role="alertdialog"]', { state: 'detached', timeout: 10_000 });
-    await page.fill('textarea[data-composer]', 'Draft the migration plan');
-    await page.press('textarea[data-composer]', 'Control+Enter');
+    await page.fill('[data-composer]', 'Draft the migration plan');
+    await page.press('[data-composer]', 'Control+Enter');
     await page.waitForURL(/\/s\/session_/, { timeout: 15_000 });
     await page.waitForSelector('header [data-worktree-mark]', { timeout: 15_000 });
   }

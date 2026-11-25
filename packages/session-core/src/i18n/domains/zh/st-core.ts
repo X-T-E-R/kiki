@@ -2222,7 +2222,7 @@ export const stCoreZh = {
   'st.worktrees.state.orphaned': '孤立',
   'st.worktrees.state.ready': '就绪',
   'st.worktrees.state.removing': '移除中',
-  'st.worktrees.title': 'Worktrees',
+  'st.worktrees.title': 'Git 工作树',
   'st.worktrees.unpushed.one': '1 个未推送的提交',
   'st.worktrees.unpushed.other': '{count} 个未推送的提交',
   'st.xs.childUsage': '在 Kiki 中运行的子智能体',
