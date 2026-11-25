@@ -450,7 +450,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         if (queuedOnly === true) {
           await resolved.prompt.abortQueued(promptId);
         } else {
-          resolved.prompt.abort(promptId);
+          await resolved.prompt.abortDurably(promptId);
         }
       } catch (error) {
         if (!isError2(error) || error.code !== ErrorCodes.PROMPT_ALREADY_COMPLETED) throw error;
@@ -1311,7 +1311,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
             reply.send(okEnvelope({ aborted }, req.id));
             return;
           }
-          const aborted = resolved.prompt.abort(parsed.id);
+          const aborted = await resolved.prompt.abortDurably(parsed.id);
           if (!aborted) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, `prompt ${parsed.id} already settled`);
           await resolved.accessor.get(IEventDispatcher).flush();
           requestLog(req)?.info({ session_id, prompt_id: parsed.id }, 'prompt aborted');
