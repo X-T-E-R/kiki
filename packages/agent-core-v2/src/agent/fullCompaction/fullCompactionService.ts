@@ -58,6 +58,7 @@ import {
   isRetryableMalformedFunctionCallError,
 } from '#/kosong/contract/errors';
 import { createUserMessage, isToolCall, isToolCallPart, type Message } from '#/kosong/contract/message';
+import type { ToolChoice } from '#/kosong/contract/provider';
 import type { Tool } from '#/kosong/contract/tool';
 import { inputTotal, type TokenUsage } from '#/kosong/contract/usage';
 import { IEventBus } from '#/app/event/eventBus';
@@ -933,6 +934,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     options?: {
       readonly active?: ActiveCompaction;
       readonly droppedCount?: number;
+      readonly toolChoice?: ToolChoice;
       readonly cacheInheritance?: LLMRequestCacheInheritanceOptions;
     },
   ): Promise<{ readonly finish: AgentLLMRequestFinish; readonly sawStreamToolCall: boolean }> {
@@ -942,9 +944,17 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     let sawFilterMarkerA = false;
     let sawFilterMarkerB = false;
     let sawStreamToolCall = false;
+    const streamAbort = new AbortController();
+    const onParentAbort = () => streamAbort.abort(signal.reason);
+    if (signal.aborted) {
+      streamAbort.abort(signal.reason);
+    } else {
+      signal.addEventListener('abort', onParentAbort, { once: true });
+    }
     const request = this.llmRequester.start({
       messages,
       maxOutputSize,
+      toolChoice: options?.toolChoice,
       cacheInheritance: options?.cacheInheritance,
       source: {
         type: 'operation',
@@ -963,6 +973,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     }, (part) => {
       if (isToolCall(part) || isToolCallPart(part)) {
         sawStreamToolCall = true;
+        streamAbort.abort();
         return;
       }
       if (part.type !== 'text' || part.text.length === 0) return;
@@ -970,14 +981,14 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       if (!sawFilterMarkerA && combined.includes("This request was blocked by Gemini's filters.")) sawFilterMarkerA = true;
       if (!sawFilterMarkerB && combined.includes('generative-ai/use-policy')) sawFilterMarkerB = true;
       rollingText = combined.length > 512 ? combined.slice(-512) : combined;
-    }, signal);
+    }, streamAbort.signal);
     if (active !== undefined) active.trace = request.trace;
     try {
       const finish = await request.result;
       return { finish, sawStreamToolCall };
     } catch (error) {
-      if (sawStreamToolCall || isRetryableMalformedFunctionCallError(error)) {
-        throw new CompactionToolOutputError('Compaction summary emitted a tool call or malformed function call.');
+      if (!signal.aborted && (sawStreamToolCall || isRetryableMalformedFunctionCallError(error))) {
+        throw new CompactionToolOutputError('Compaction summary attempted to call tools instead of returning text only.');
       }
       if (sawFilterMarkerA && sawFilterMarkerB && typeof error === 'object' && error !== null) {
         attachErrorDetails(error, { compaction_stream_filtered: true });
@@ -987,6 +998,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         }
       }
       throw error;
+    } finally {
+      signal.removeEventListener('abort', onParentAbort);
     }
   }
 
@@ -1115,6 +1128,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const estimatedTokens = this.requestTokens(messages);
       try {
         const result = await this.runSummaryRequest(messages, input.maxOutputSize, input.signal, {
+          toolChoice: toolCorrectionCount > 0 ? 'none' : undefined,
           cacheInheritance: {
             mode: input.inheritanceMode,
             allowWarmEnvelope: input.allowWarmEnvelope,
@@ -1413,6 +1427,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
           const result = await this.runSummaryRequest(messages, compactionMaxOutputSize, signal, {
             active,
             droppedCount,
+            toolChoice: toolCorrectionCount > 0 ? 'none' : undefined,
             cacheInheritance: {
               mode: 'last_turn_envelope_exclusive',
               allowWarmEnvelope: true,
@@ -1486,10 +1501,10 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         }
       }
       } catch (error) {
-        if (error instanceof CompactionToolOutputError || error instanceof CompactionPersistError || isAbortError(error) || signal.aborted) throw error;
+        if (error instanceof CompactionPersistError || isAbortError(error) || signal.aborted) throw error;
         const filteredFailure = compactionFailureKind(error) === 'filtered';
         const overflowFailure = this.shouldRecoverFromContextOverflow(error);
-        const rescueableFailure = overflowFailure || isRetryableCompactionError(error, this.effectiveMaxRetryAfterMs(error)) || error instanceof CompactionTruncatedError || filteredFailure;
+        const rescueableFailure = overflowFailure || isRetryableCompactionError(error, this.effectiveMaxRetryAfterMs(error)) || error instanceof CompactionTruncatedError || error instanceof CompactionToolOutputError || filteredFailure;
         const allowAutoEmergencyRelay = data.source === 'auto' && requested !== 'summarize' && rescueableFailure;
         if ((choice.strategy === 'summarize' && !allowAutoEmergencyRelay) || customInstruction || !rescueableFailure) throw error;
         if (!historySafeToCompact(this.context.get(), originalHistory)) throw error;

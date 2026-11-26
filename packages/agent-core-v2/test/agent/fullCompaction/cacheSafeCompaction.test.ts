@@ -102,6 +102,7 @@ describe('cache-safe A2 compaction and TurnCacheEnvelope contracts', () => {
     );
     ctx.mockNextResponse({ type: 'text', text: 'Clean text-only summary on round 2.' });
 
+    const startSpy = vi.spyOn(requester, 'start');
     const compaction = ctx.get(IAgentFullCompactionService);
     const okSummary = await compaction.prepareSummary({
       authorizedHistory: context.get(),
@@ -110,6 +111,9 @@ describe('cache-safe A2 compaction and TurnCacheEnvelope contracts', () => {
     }, new AbortController().signal);
     expect(okSummary).toContain('Clean text-only summary on round 2.');
     expect(ctx.llmCalls).toHaveLength(3);
+    expect(startSpy).toHaveBeenCalledTimes(2);
+    expect(startSpy.mock.calls[0]![0]?.toolChoice).toBeUndefined();
+    expect(startSpy.mock.calls[1]![0]?.toolChoice).toBe('none');
     const round1 = ctx.llmCalls[1]!;
     const round2 = ctx.llmCalls[2]!;
     expect(round2.tools).toEqual(round1.tools);
