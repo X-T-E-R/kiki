@@ -129,6 +129,9 @@ export interface InstanceIdentityInput {
   readonly baseAppId: string;
   readonly startupHome: string;
   readonly mainHome: string;
+  readonly defaultHome?: string;
+  readonly explicitHomePassed?: boolean;
+  readonly registeredInMain?: boolean;
   readonly windowMode: SpaceWindowMode;
   readonly spaceHomeId?: string;
   readonly preset?: string;
@@ -148,28 +151,57 @@ export function resolveInstanceIdentity(input: InstanceIdentityInput): ResolvedI
   const startupKey = canonicalHomeKey(input.startupHome, platform);
   const mainKey = canonicalHomeKey(input.mainHome, platform);
   const isChildHome = startupKey !== mainKey;
-  const effectiveWindowMode: SpaceWindowMode =
-    input.remoteConnection !== undefined || input.preset !== undefined || isChildHome
-      ? 'windows'
-      : input.windowMode;
+  const registeredInMain = input.registeredInMain ?? true;
 
   let appId = input.baseAppId;
   const segments: string[] = [];
+  let effectiveWindowMode: SpaceWindowMode;
 
-  if (effectiveWindowMode === 'windows' && isChildHome) {
-    const spaceTag = input.spaceHomeId ?? stableHashHex(startupKey);
-    appId = `${appId}.space.${spaceTag}`;
-    segments.push(`space-${spaceTag}`);
+  if (isChildHome) {
+    const dedicatedSpaceWindow =
+      input.remoteConnection !== undefined ||
+      input.preset !== undefined ||
+      input.windowMode === 'windows' ||
+      !registeredInMain;
+    if (dedicatedSpaceWindow) {
+      effectiveWindowMode = 'windows';
+      const spaceTag =
+        input.spaceHomeId !== undefined && input.spaceHomeId.trim() !== ''
+          ? input.spaceHomeId
+          : `home-${stableHashHex(startupKey)}`;
+      appId = `${appId}.space.${spaceTag}`;
+      segments.push(`space-${spaceTag}`);
+    } else {
+      effectiveWindowMode = 'switch';
+    }
+  } else {
+    const isStandaloneCustomHome =
+      input.explicitHomePassed === true &&
+      (input.defaultHome === undefined ||
+        startupKey !== canonicalHomeKey(input.defaultHome, platform));
+    if (isStandaloneCustomHome) {
+      effectiveWindowMode = 'windows';
+      const homeHash = stableHashHex(startupKey);
+      appId = `${appId}.home.${homeHash}`;
+      segments.push(`home-${homeHash}`);
+    } else {
+      effectiveWindowMode =
+        input.remoteConnection !== undefined || input.preset !== undefined
+          ? 'windows'
+          : input.windowMode;
+    }
   }
 
   if (input.remoteConnection !== undefined) {
     const compactId = input.remoteConnection.replaceAll('-', '');
     const homeHash = stableHashHex(startupKey);
-    appId = `${appId}.remote.${homeHash}.${compactId}`;
+    appId = `${appId}.remote.${homeHash}-${compactId}`;
     segments.push(`remote-${homeHash}-${compactId}`);
   }
 
-  const descriptor = resolveWindowModeDescriptor(input.startupHome, input.preset ?? 'kiki', platform);
+  const descriptorHome =
+    isChildHome && effectiveWindowMode === 'switch' ? input.mainHome : input.startupHome;
+  const descriptor = resolveWindowModeDescriptor(descriptorHome, input.preset ?? 'kiki', platform);
   if (input.preset !== undefined) {
     appId = `${appId}.mode.${descriptor.windowId}`;
     segments.push(`mode-${descriptor.windowId}`);

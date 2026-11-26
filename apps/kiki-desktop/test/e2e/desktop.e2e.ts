@@ -127,9 +127,9 @@ afterEach(async () => {
 
 describe('kiki-desktop real unpacked binary E2E (Layer 2)', () => {
   beforeAll(() => {
-    const { exe } = resolveUnpackedPaths();
-    if (existsSync(exe)) {
-      execFileSync(exe, ['-e', ''], {
+    const { exe, serverEntry } = resolveUnpackedPaths();
+    if (existsSync(exe) && existsSync(serverEntry)) {
+      execFileSync(exe, [serverEntry, '--version'], {
         env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
         stdio: 'ignore',
       });
@@ -208,8 +208,21 @@ describe('kiki-desktop real unpacked binary E2E (Layer 2)', () => {
     expect(coldBootMs).toBeLessThan(5_000);
     for (const r of readInstanceReceipts(mainHome)) trackedPids.add(r.pid);
 
-    // 1. Verify fixed kiki-app://localhost origin, SPA fallback, traversal block, and renderer sandbox.
-    const originAndSandbox = await page.evaluate(async () => {
+    // 1. Verify fixed kiki-app://localhost origin, SPA fallback (including ?path=../foo and dotted /s/v0.7.0), Range 206/416, CSP, .woff2, traversal block, and renderer sandbox.
+    const webDir = join(
+      dirname(exe),
+      'resources',
+      'app.asar.unpacked',
+      'dist',
+      'server',
+      'web',
+      'assets',
+    );
+    const woff2Asset = existsSync(webDir)
+      ? readdirSync(webDir).find((f) => f.endsWith('.woff2'))
+      : undefined;
+
+    const originAndSandbox = await page.evaluate(async (woff2File) => {
       const w = window as unknown as Record<string, unknown>;
       const normalizedTraversal = await fetch('kiki-app://localhost/%2e%2e/package.json')
         .then((r) => r.status)
@@ -217,25 +230,59 @@ describe('kiki-desktop real unpacked binary E2E (Layer 2)', () => {
       const backslashTraversal = await fetch('kiki-app://localhost/%5c../package.json')
         .then((r) => r.status)
         .catch(() => -1);
-      const spaFallback = await fetch('kiki-app://localhost/s/nonexistent-deep-route').then(async (r) => ({
+      const queryDotsAllowed = await fetch('kiki-app://localhost/s/123?path=../foo').then(async (r) => ({
         status: r.status,
         hasRoot: (await r.text()).includes('id="root"'),
       }));
+      const dottedSpaFallback = await fetch('kiki-app://localhost/s/v0.7.0').then(async (r) => ({
+        status: r.status,
+        csp: r.headers.get('content-security-policy') ?? '',
+        hasRoot: (await r.text()).includes('id="root"'),
+      }));
+      const rangeOk = await fetch('kiki-app://localhost/index.html', {
+        headers: { Range: 'bytes=0-3' },
+      }).then(async (r) => ({
+        status: r.status,
+        contentRange: r.headers.get('content-range') ?? '',
+        slice: await r.text(),
+      }));
+      const rangeBad = await fetch('kiki-app://localhost/index.html', {
+        headers: { Range: 'bytes=9999999-99999999' },
+      }).then((r) => r.status);
+      const woff2Mime = woff2File
+        ? await fetch(`kiki-app://localhost/assets/${woff2File}`).then(
+            (r) => `${r.status}:${r.headers.get('content-type') ?? ''}`,
+          )
+        : 'skipped';
       return {
         origin: window.location.origin,
         hasProcess: typeof w['process'] !== 'undefined',
         hasRequire: typeof w['require'] !== 'undefined',
         normalizedTraversal,
         backslashTraversal,
-        spaFallback,
+        queryDotsAllowed,
+        dottedSpaFallback,
+        rangeOk,
+        rangeBad,
+        woff2Mime,
       };
-    });
+    }, woff2Asset ?? null);
     expect(originAndSandbox.origin).toBe('kiki-app://localhost');
     expect(originAndSandbox.hasProcess).toBe(false);
     expect(originAndSandbox.hasRequire).toBe(false);
     expect(originAndSandbox.normalizedTraversal).toBe(404);
     expect(originAndSandbox.backslashTraversal).toBe(403);
-    expect(originAndSandbox.spaFallback).toEqual({ status: 200, hasRoot: true });
+    expect(originAndSandbox.queryDotsAllowed).toEqual({ status: 200, hasRoot: true });
+    expect(originAndSandbox.dottedSpaFallback.status).toBe(200);
+    expect(originAndSandbox.dottedSpaFallback.hasRoot).toBe(true);
+    expect(originAndSandbox.dottedSpaFallback.csp).toContain("default-src 'self' kiki-app:");
+    expect(originAndSandbox.rangeOk.status).toBe(206);
+    expect(originAndSandbox.rangeOk.contentRange).toMatch(/^bytes 0-3\/\d+$/);
+    expect(originAndSandbox.rangeOk.slice.toLowerCase()).toBe('<!do');
+    expect(originAndSandbox.rangeBad).toBe(416);
+    if (woff2Asset !== undefined) {
+      expect(originAndSandbox.woff2Mime).toBe('200:font/woff2');
+    }
 
     // 2. Verify localStorage survives daemon port rotation via desktop.restartServer().
     const activeSpaceSummary = await page.evaluate(async () => {
@@ -315,11 +362,11 @@ describe('kiki-desktop real unpacked binary E2E (Layer 2)', () => {
       win?.show();
     });
 
-    // 5. Multi-space: register sibling space, start sibling server, verify per-home server.local-owner & isolated restartSpace.
+    // 5. Multi-space: register isolated sibling space (`[inherit] credentials = "isolated"`), start sibling server, verify per-home server.local-owner & isolated restartSpace.
     mkdirSync(siblingHome, { recursive: true });
     writeFileSync(
       join(siblingHome, 'home.toml'),
-      `schema = 1\nid = "h-work"\nname = "Work Space"\nbase = ${JSON.stringify(mainHome)}\n`,
+      `schema = 1\nid = "h-work"\nname = "Work Space"\nbase = ${JSON.stringify(mainHome)}\n\n[inherit]\ncredentials = "isolated"\n`,
       'utf8',
     );
     writeFileSync(
@@ -435,7 +482,12 @@ describe('kiki-desktop real unpacked binary E2E (Layer 2)', () => {
         pathname: window.location.pathname,
         handoffConsumed: window.sessionStorage.getItem('kiki.navScopeHandoff.v1') === null,
         stored: window.localStorage.getItem('kiki-070-origin-test'),
-        active: (await bridge.desktop.activeSpace()) as { homeId: string; isPrimary: boolean },
+        active: (await bridge.desktop.activeSpace()) as {
+          homeId: string;
+          isPrimary: boolean;
+          credentialsShared: boolean;
+        },
+        prefs: await bridge.desktop.readPrefs(),
       };
     });
     expect(switchedState.origin).toBe('kiki-app://localhost');
@@ -443,8 +495,13 @@ describe('kiki-desktop real unpacked binary E2E (Layer 2)', () => {
     expect(switchedState.handoffConsumed).toBe(true);
     expect(switchedState.stored).toBe('persisted-value-42');
     expect(switchedState.active).toEqual(
-      expect.objectContaining({ homeId: 'h-work', isPrimary: false }),
+      expect.objectContaining({
+        homeId: 'h-work',
+        isPrimary: false,
+        credentialsShared: false,
+      }),
     );
+    expect(switchedState.prefs?.compatibility).toEqual({ homeKind: 'kiki' });
 
     // Switch back to main before cleanup.
     const switchBackLoad = page.waitForEvent('load', { timeout: 15_000 });
@@ -464,6 +521,7 @@ describe('kiki-desktop real unpacked binary E2E (Layer 2)', () => {
           if (!bridge || window.location.origin !== 'kiki-app://localhost') return null;
           const space = (await bridge.desktop.activeSpace()) as { homeId: string };
           const env = await bridge.discoverConnection();
+          if (env === null) return null;
           const config =
             'ok' in env ? (env.ok ? env.connection.config : null) : env.config;
           return config ? { homeId: space.homeId, config } : null;
@@ -476,6 +534,62 @@ describe('kiki-desktop real unpacked binary E2E (Layer 2)', () => {
       await delay(80);
     }
     expect(restoredMainConn?.url).toBe(nextConn.url);
+
+    // Verify `switch`-mode second-instance routing: launching a 2nd packaged `kiki-desktop.exe --home <siblingHome>`
+    // with a `kiki://subscribe` deep link reuses the main single-instance lock, exits 0 immediately, switches the
+    // existing window to `h-work`, and delivers the subscribe intent!
+    const secondLoad = page.waitForEvent('load', { timeout: 15_000 });
+    const secondInstanceExit = await new Promise<number | null>((resolveExit) => {
+      const secondProc = spawn(
+        exe,
+        [
+          '--no-proxy-server',
+          '--no-release-redirect',
+          '--home',
+          siblingHome,
+          'kiki://subscribe?url=https%3A%2F%2Fexample.com%2Fsub.json&name=SwitchFeed',
+        ],
+        {
+          env: cleanGuiEnv({
+            KIKI_HOME: mainHome,
+            KIKI_DESKTOP_USER_DATA_DIR: userDataDir,
+            KIKI_CACHE_DIR: cacheDir,
+          }),
+          stdio: 'ignore',
+          windowsHide: true,
+        },
+      );
+      if (secondProc.pid) trackedPids.add(secondProc.pid);
+      secondProc.once('exit', (code) => resolveExit(code));
+      secondProc.once('error', () => resolveExit(-1));
+    });
+    expect(secondInstanceExit).toBe(0);
+    await secondLoad;
+    await waitForLiveConnection(page, 15_000);
+
+    const afterSecondInstance = await page.evaluate(async () => {
+      const bridge = (window as unknown as { __KIKI_ELECTRON__: ElectronBridge }).__KIKI_ELECTRON__;
+      const active = (await bridge.desktop.activeSpace()) as { homeId: string };
+      const sub = await bridge.desktop.peekSubscribeIntent();
+      if (sub) await bridge.desktop.ackSubscribeIntent(sub.id);
+      return { homeId: active.homeId, sub };
+    });
+    expect(afterSecondInstance.homeId).toBe('h-work');
+    expect(afterSecondInstance.sub).toMatchObject({
+      url: 'https://example.com/sub.json',
+      name: 'SwitchFeed',
+    });
+
+    // Switch back to main before cleanup.
+    const finalSwitchBack = page.waitForEvent('load', { timeout: 15_000 });
+    await page
+      .evaluate(async () => {
+        const bridge = (window as unknown as { __KIKI_ELECTRON__: ElectronBridge }).__KIKI_ELECTRON__;
+        await bridge.desktop.switchSpace('main');
+      })
+      .catch(() => undefined);
+    await finalSwitchBack;
+    await waitForLiveConnection(page, 15_000);
 
     // Stop sibling server via its own server.local-owner and wait for exit before closing main app
     // so inherited Windows child handles close before Playwright awaits EOF.
@@ -691,5 +805,136 @@ describe('kiki-desktop real unpacked binary E2E (Layer 2)', () => {
     for (const r of recoveredReceipts) {
       expect(await waitForPidExit(r.pid, 12_000)).toBe(true);
     }
+  });
+
+  it('hides windows immediately, tree-kills a hung daemon + grandchild process within <= 6s, and exits 0 on Quit (t1026 regression)', async () => {
+    const { exe } = resolveUnpackedPaths();
+    const scratch = mkdtempSync(join(tmpdir(), 'kiki-e2e-hung-quit-'));
+    const hungHome = join(scratch, 'hung-home');
+    const hungUserData = join(scratch, 'hung-userdata');
+    const cacheDir = join(scratch, 'cache');
+    const grandchildPidFile = join(scratch, 'grandchild.pid');
+    const hungServerEntry = join(scratch, 'hung-server.mjs');
+    mkdirSync(hungHome, { recursive: true });
+
+    writeFileSync(
+      hungServerEntry,
+      [
+        "import { spawn } from 'node:child_process';",
+        "import { mkdirSync, writeFileSync } from 'node:fs';",
+        "import { createServer } from 'node:http';",
+        "import { join } from 'node:path';",
+        'const home = process.env.KIKI_HOME;',
+        'const token = "a".repeat(43);',
+        'const serverId = "srv-hung-e2e";',
+        'mkdirSync(join(home, "server", "instances"), { recursive: true });',
+        'writeFileSync(join(home, "server.local-owner"), token, "utf8");',
+        `const sub = spawn(process.execPath, ['-e', 'setInterval(() => {}, 10000)'], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: 'ignore', windowsHide: true });`,
+        `writeFileSync(${JSON.stringify(grandchildPidFile)}, String(sub.pid), 'utf8');`,
+        'const srv = createServer((req, res) => {',
+        '  res.setHeader("Content-Type", "application/json");',
+        '  if (req.url === "/api/healthz") { res.end(JSON.stringify({ ok: true })); return; }',
+        '  if (req.url === "/api/meta") {',
+        '    res.end(JSON.stringify({ code: 0, data: { server_id: serverId, current_space_id: "main", desktop_managed: true } }));',
+        '    return;',
+        '  }',
+        '  if (req.url === "/api/desktop-lifecycle" && req.method === "GET") {',
+        '    res.end(JSON.stringify({ code: 0, data: { server_id: serverId, home_id: "main", managed: true, draining: false, work_pending: [] } }));',
+        '    return;',
+        '  }',
+        '  if (req.url === "/api/desktop-lifecycle" && req.method === "POST") {',
+        '    res.end(JSON.stringify({ code: 0, data: { ok: true } }));',
+        '    return;',
+        '  }',
+        '  res.end(JSON.stringify({ code: 0, data: { spaces: [], statuses: [] } }));',
+        '});',
+        'srv.listen(0, "127.0.0.1", () => {',
+        '  const addr = srv.address();',
+        '  writeFileSync(join(home, "server", "instances", "hung.json"), JSON.stringify({ pid: process.pid, port: addr.port, host: "127.0.0.1", server_id: serverId, started_at: Date.now(), heartbeat_at: Date.now() }), "utf8");',
+        '});',
+        'setInterval(() => {}, 60000);',
+      ].join('\n'),
+      'utf8',
+    );
+
+    let hungApp: ElectronApplication | undefined;
+    const pidsToReap = new Set<number>();
+
+    cleanupCallbacks.push(async () => {
+      await hungApp?.close().catch(() => undefined);
+      for (const pid of pidsToReap) {
+        if (isPidAlive(pid)) {
+          try {
+            process.kill(pid);
+          } catch {
+            // Exited.
+          }
+        }
+      }
+      await delay(250);
+      rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+    });
+
+    hungApp = await electron.launch({
+      executablePath: exe,
+      args: ['--no-proxy-server', '--no-release-redirect', '--home', hungHome],
+      env: cleanGuiEnv({
+        KIKI_HOME: hungHome,
+        KIKI_DESKTOP_USER_DATA_DIR: hungUserData,
+        KIKI_CACHE_DIR: cacheDir,
+        KIKI_DESKTOP_SERVER_ENTRY: hungServerEntry,
+      }),
+    });
+    const guiProc = hungApp.process();
+    if (guiProc.pid) pidsToReap.add(guiProc.pid);
+
+    const hungPage = await hungApp.firstWindow();
+    await waitForLiveConnection(hungPage, 15_000);
+
+    const receipts = readInstanceReceipts(hungHome);
+    expect(receipts.length).toBe(1);
+    const hungDaemonPid = receipts[0]!.pid;
+    pidsToReap.add(hungDaemonPid);
+
+    const grandchildPid = Number(readFileSync(grandchildPidFile, 'utf8').trim());
+    expect(grandchildPid).toBeGreaterThan(0);
+    pidsToReap.add(grandchildPid);
+    expect(isPidAlive(hungDaemonPid)).toBe(true);
+    expect(isPidAlive(grandchildPid)).toBe(true);
+
+    // Block beforeunload in renderer too — app.exit(0) must still terminate cleanly!
+    await hungPage.evaluate(() => {
+      window.addEventListener('beforeunload', (e) => {
+        e.preventDefault();
+        e.returnValue = '';
+      });
+    });
+
+    const exitPromise = new Promise<number | null>((resolveExit) => {
+      guiProc.once('exit', (code) => resolveExit(code));
+    });
+
+    const quitStart = performance.now();
+    await hungApp.evaluate(({ app }) => {
+      app.quit();
+    });
+
+    // Window must hide immediately (< 1s) while background grace + tree-kill completes!
+    await delay(250);
+    const visibleDuringGrace = await hungApp
+      .evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((w) => w.isVisible()))
+      .catch(() => false);
+    expect(visibleDuringGrace).toBe(false);
+
+    const exitCode = await exitPromise;
+    const quitElapsedMs = Math.round(performance.now() - quitStart);
+    console.log(`[Layer 2] Hung-backend Quit completed in ${quitElapsedMs}ms with exitCode=${String(exitCode)}`);
+    hungApp = undefined;
+
+    expect(exitCode).toBe(0);
+    expect(quitElapsedMs).toBeLessThan(6_500);
+    expect(await waitForPidExit(hungDaemonPid, 1_500)).toBe(true);
+    expect(await waitForPidExit(grandchildPid, 1_500)).toBe(true);
+    expect(readInstanceReceipts(hungHome)).toEqual([]);
   });
 });

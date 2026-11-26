@@ -15,7 +15,8 @@ export function quotePosixShellArg(arg: string): string {
  * Quote a single argument for Windows `cmd.exe` command lines.
  */
 export function quoteCmdShellArg(arg: string): string {
-  return `"${arg.replaceAll('"', '\\"')}"`;
+  const escaped = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1');
+  return `"${escaped}"`;
 }
 
 /**

@@ -1586,6 +1586,7 @@ function Select-InstalledRelease([string]$ReleaseId, [string]$BuildId, [string]$
             'native-addons.json' = @{ sha256 = $nativeAddons.Hash; bytes = $nativeAddons.Length }
         }
         Write-AtomicUtf8Json (Join-Path $runtime 'current.json') $manifestObj
+        Publish-ElectronCliShim $runtime $ReleaseId $v2.ServerEntryRel | Out-Host
         if ($RequireActiveSync) {
             Sync-ActiveRelease $runtime $ReleaseId $BuildId $desktop $null -SchemaVersion 2 -ExpectedServerEntry $serverEntry -ExpectedNativeAddons $nativeAddons | Out-Null
         } else {

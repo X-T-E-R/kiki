@@ -43,6 +43,7 @@ import {
   createDefaultWindowsRegistryRunner,
   PrefsAndUpdateService,
   readDesktopSpaceToml,
+  resolveDesktopOauthHome,
   type UpdaterFeedAdapter,
 } from '#/main/prefsAndUpdateService';
 import { registerDesktopIpc } from '#/main/registerIpc';
@@ -51,7 +52,7 @@ import {
   resolveLaunchExecutable,
 } from '#/main/releaseRedirect';
 import { OVERLAY_SIZE, renderPendingBadgeRgba, rgbaToBgraBitmap } from '#/main/spaceBadge';
-import { SpaceCatalog } from '#/main/spaceCatalog';
+import { isSpaceRegisteredInMain, SpaceCatalog } from '#/main/spaceCatalog';
 import {
   extractSubscribeIntentsFromArgs,
   parseSubscribeIntent,
@@ -67,6 +68,7 @@ import {
 } from '#/main/trayService';
 import {
   isAllowedRendererNavigation,
+  resolveWindowBackgroundColor,
   shouldBlockRendererAccelerator,
   tryValidateExternalForNavigation,
   WindowService,
@@ -74,7 +76,12 @@ import {
 } from '#/main/windowService';
 import { readWindowState, rescueWindowBounds, writeWindowState } from '#/main/windowState';
 import { IPC_EVENTS } from '#/shared/ipcChannels';
-import type { DesktopUpdateOffer, LocalSpaceSummary, UpdateChannel } from '#/shared/types';
+import type {
+  DesktopSpace,
+  DesktopUpdateOffer,
+  LocalSpaceSummary,
+  UpdateChannel,
+} from '#/shared/types';
 
 declare const __KIKI_DESKTOP_BUILD_ID__: string | undefined;
 declare const __KIKI_DESKTOP_CHANNEL__: string | undefined;
@@ -109,8 +116,9 @@ if (explicitUserDataDir !== undefined && explicitUserDataDir !== '') {
 }
 
 const launchArgs = parseLaunchArgs(process.argv);
-const defaultHome = join(homedir(), '.kiki');
-const startupHome = launchArgs.home ?? process.env['KIKI_HOME']?.trim() ?? defaultHome;
+const defaultHome = process.env['KIKI_HOME']?.trim() || join(homedir(), '.kiki');
+const kimiHome = process.env['KIMI_HOME']?.trim() || join(homedir(), '.kimi');
+const startupHome = launchArgs.home ?? defaultHome;
 const startupSpace = await readDesktopSpaceToml(startupHome).catch(() => null);
 const mainHome = startupSpace?.baseHome ?? startupHome;
 
@@ -119,12 +127,25 @@ const preBootPrefsService = new PrefsAndUpdateService({
   getActiveHome: () => startupHome,
   resolveLaunchExecutable: () => resolveLaunchExecutable(process.execPath),
 });
-const initialPrefs = await preBootPrefsService.readPrefs(mainHome);
+const [initialPrefs, initialActivePrefs, initialTheme] = await Promise.all([
+  preBootPrefsService.readPrefs(mainHome),
+  preBootPrefsService.readPrefs(startupHome),
+  preBootPrefsService.readWindowTheme(),
+]);
+nativeTheme.themeSource = initialTheme;
+
+const registeredInMain =
+  startupSpace !== null && canonicalHomeKey(startupHome) !== canonicalHomeKey(mainHome)
+    ? await isSpaceRegisteredInMain(mainHome, startupSpace.homeId, startupHome)
+    : true;
 
 const instanceIdentity = resolveInstanceIdentity({
   baseAppId: BASE_APP_ID,
   startupHome,
   mainHome,
+  defaultHome,
+  explicitHomePassed: launchArgs.home !== undefined,
+  registeredInMain,
   windowMode: initialPrefs.windowMode,
   spaceHomeId: startupSpace?.homeId,
   preset: launchArgs.preset,
@@ -161,6 +182,7 @@ if (!singleInstanceLock) {
   let lastTrayTooltip = '';
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let quitReleased = false;
+  let installingUpdate = false;
   let quitInFlight: Promise<void> | null = null;
   let activeBrowserWindow: BrowserWindow | null = null;
 
@@ -208,16 +230,25 @@ if (!singleInstanceLock) {
       ? __KIKI_DESKTOP_DISTRIBUTION__
       : undefined) ?? process.env['KIKI_DESKTOP_DISTRIBUTION']?.trim();
 
+  const initialOauthHome = await resolveDesktopOauthHome({
+    homeDir: startupHome,
+    prefs: initialActivePrefs,
+    kimiHome,
+    space: startupSpace,
+  }).catch(() => kimiHome);
+
   const daemon = new DaemonSupervisor(
     {
       electronBinary: resolveLaunchExecutable(process.execPath),
       serverEntry,
       homeDir: startupHome,
-      oauthHomeDir: mainHome,
+      oauthHomeDir: initialOauthHome,
       ...(bakedBuildId ? { buildId: bakedBuildId } : {}),
       ...(bakedChannel ? { buildChannel: bakedChannel } : {}),
-      logLevel: initialPrefs.logLevel ?? 'warn',
-      idleExit: instanceIdentity.effectiveWindowMode === 'switch' && startupHome !== mainHome,
+      logLevel: initialActivePrefs.logLevel ?? 'warn',
+      idleExit:
+        instanceIdentity.effectiveWindowMode === 'switch' &&
+        canonicalHomeKey(startupHome) !== canonicalHomeKey(mainHome),
     },
     {
       autoRecoverManagedExit: true,
@@ -258,8 +289,7 @@ if (!singleInstanceLock) {
     });
   };
 
-  const releaseAppQuit = (): void => {
-    quitReleased = true;
+  const cleanupGlobalUiHandles = (): void => {
     if (pollTimer !== null) {
       clearInterval(pollTimer);
       pollTimer = null;
@@ -268,7 +298,12 @@ if (!singleInstanceLock) {
     tray?.destroy();
     tray = null;
     trayActive = false;
-    app.quit();
+  };
+
+  const releaseAppQuit = (): void => {
+    quitReleased = true;
+    cleanupGlobalUiHandles();
+    app.exit(0);
   };
 
   const wrapBrowserWindow = (win: BrowserWindow): ManagedWindowLike => ({
@@ -280,6 +315,9 @@ if (!singleInstanceLock) {
     restore: () => {
       win.restore();
     },
+    minimize: () => {
+      win.minimize();
+    },
     show: () => {
       win.show();
     },
@@ -288,6 +326,9 @@ if (!singleInstanceLock) {
     },
     hide: () => {
       win.hide();
+    },
+    setBackgroundColor: (bg) => {
+      win.setBackgroundColor(bg);
     },
     setFullScreen: (flag) => {
       win.setFullScreen(flag);
@@ -309,8 +350,8 @@ if (!singleInstanceLock) {
     },
   });
 
-  let closeToTrayCached = initialPrefs.closeToTray;
-  let activeLocaleCached = initialPrefs.locale;
+  let closeToTrayCached = initialActivePrefs.closeToTray;
+  let activeLocaleCached = initialActivePrefs.locale;
   let notificationsRef: NotificationService | null = null;
 
   const persistCurrentWindowBounds = (win: BrowserWindow): void => {
@@ -347,6 +388,7 @@ if (!singleInstanceLock) {
     setNativeTheme: (theme) => {
       nativeTheme.themeSource = theme;
     },
+    isDarkTheme: () => nativeTheme.shouldUseDarkColors,
     resolveLaunchExecutable: () => resolveLaunchExecutable(process.execPath),
     createBrowserWindow: async (initialUrl) => {
       const savedBounds = await readWindowState(userDataDir);
@@ -363,6 +405,7 @@ if (!singleInstanceLock) {
         minWidth: 960,
         minHeight: 640,
         show: false,
+        backgroundColor: resolveWindowBackgroundColor(nativeTheme.shouldUseDarkColors),
         autoHideMenuBar: true,
         title: APP_NAME,
         webPreferences: {
@@ -430,6 +473,14 @@ if (!singleInstanceLock) {
       }
       return wrapped;
     },
+  });
+
+  nativeTheme.on('updated', () => {
+    if (activeBrowserWindow !== null && !activeBrowserWindow.isDestroyed()) {
+      activeBrowserWindow.setBackgroundColor(
+        resolveWindowBackgroundColor(nativeTheme.shouldUseDarkColors),
+      );
+    }
   });
 
   const notifications = new NotificationService({
@@ -599,16 +650,27 @@ if (!singleInstanceLock) {
     return response.response === 1;
   };
 
+  const beginImmediateQuitUi = (): void => {
+    if (activeBrowserWindow !== null && !activeBrowserWindow.isDestroyed()) {
+      persistCurrentWindowBounds(activeBrowserWindow);
+    }
+    windows.hideAllForQuit();
+    daemon.markShuttingDown();
+    cleanupGlobalUiHandles();
+  };
+
   const requestConfirmedQuit = (): Promise<void> => {
     if (quitInFlight !== null) return quitInFlight;
     quitInFlight = executeTrayQuit({
-      stopManagedDaemon: (opts) => daemon.stopManagedDaemon(opts),
+      collectPendingWork: () => daemon.collectManagedQuitPendingWork(),
+      beginImmediateQuitUi,
+      stopManagedDaemon: ({ interruptWork }) =>
+        daemon.shutdownAllManagedDaemons({ interruptWork }),
       confirmInterruptPendingWork: (pending) => confirmShutdownDialog('Quitting Kiki', pending),
       detachDesktop: () => {
         daemon.detachDesktop();
       },
       releaseQuit: () => {
-        windows.markQuitting();
         releaseAppQuit();
       },
     })
@@ -648,21 +710,39 @@ if (!singleInstanceLock) {
     distribution,
     updaterAdapter: electronUpdaterAdapter,
     confirmShutdownForUpdate: async () => {
-      const state = await daemon.readLifecycleState();
-      if (state === null || !state.managed || state.work_pending.length === 0) return true;
-      return confirmShutdownDialog('Installing the update', state.work_pending);
+      const pending = await daemon.collectManagedQuitPendingWork();
+      if (pending.length === 0) return true;
+      return confirmShutdownDialog('Installing the update', pending);
     },
     prepareDaemonForUpdate: async () => {
-      await daemon.stopManagedDaemon({ action: 'update', interruptWork: true });
+      await daemon.shutdownAllManagedDaemons({ interruptWork: true });
+    },
+    markInstallingUpdate: (flag) => {
+      installingUpdate = flag;
+      if (flag) {
+        beginImmediateQuitUi();
+      }
     },
     onPrefsChanged: (nextPrefs, changedHomeDir) => {
+      const activeSpace = spaces.getActiveSpace();
       const changedKey = canonicalHomeKey(changedHomeDir);
       if (
-        changedKey === canonicalHomeKey(spaces.getActiveSpace().path) ||
+        changedKey === canonicalHomeKey(activeSpace.path) ||
         changedKey === canonicalHomeKey(mainHome)
       ) {
         closeToTrayCached = nextPrefs.closeToTray;
         activeLocaleCached = nextPrefs.locale;
+        daemon.setLogLevel(nextPrefs.logLevel ?? 'warn');
+        void resolveDesktopOauthHome({
+          homeDir: activeSpace.path,
+          prefs: nextPrefs,
+          kimiHome,
+          space: activeSpace,
+        })
+          .then((nextOauthHome) => {
+            daemon.setOauthHomeDir(nextOauthHome);
+          })
+          .catch(() => undefined);
       }
       void refreshTrayMenu(true);
     },
@@ -693,11 +773,27 @@ if (!singleInstanceLock) {
     subscribeQueue,
     spaces,
     spaceWindowMode: instanceIdentity.effectiveWindowMode,
+    kimiHome,
     openLogDirectory: async (dirPath) => {
       await mkdir(dirPath, { recursive: true });
       await files.openPath(dirPath);
     },
   });
+
+  const switchToSpaceInCurrentWindow = async (space: DesktopSpace): Promise<void> => {
+    const targetPrefs = await prefsAndUpdates.readPrefs(space.path);
+    const oauthHomeDir = await resolveDesktopOauthHome({
+      homeDir: space.path,
+      prefs: targetPrefs,
+      kimiHome,
+      space,
+    });
+    daemon.setLogLevel(targetPrefs.logLevel ?? 'warn');
+    daemon.setTargetHome(space.path, oauthHomeDir);
+    spaces.setActiveSpace(space);
+    await windows.reloadForSwitchedSpace();
+    await refreshTrayMenu(true);
+  };
 
   // Start the detached backend daemon in parallel with Chromium app.whenReady() + BrowserWindow creation.
   const earlyDaemonBoot = !launchArgs.startTrayOnly
@@ -732,7 +828,13 @@ if (!singleInstanceLock) {
       try {
         const listed = await daemon.listSpacesAndStatuses(activeSpace.homeId);
         localSpaces = listed.spaces;
-        notifications.setBackgroundSpaceStatuses(listed.statuses);
+        await notifications.reconcileBackgroundSpaceAttention({
+          statuses: listed.statuses,
+          spaces: listed.spaces,
+          spaceWindowMode: instanceIdentity.effectiveWindowMode,
+          notificationsEnabled: prefs.notifications,
+          zh,
+        });
       } catch {
         localSpaces = [];
       }
@@ -781,27 +883,41 @@ if (!singleInstanceLock) {
           });
         },
         onOpenSpace: (homeId) => {
-          void spaces.findSpace(homeId).then((space) => {
-            if (instanceIdentity.effectiveWindowMode === 'switch') {
-              daemon.setTargetHome(space.path);
-              spaces.setActiveSpace(space);
-              return windows.reloadForSwitchedSpace().then(() => refreshTrayMenu(true));
-            }
-            windows.openSpaceWindow(space.path);
-            return undefined;
-          });
+          void spaces
+            .findSpace(homeId)
+            .then((space) => {
+              if (instanceIdentity.effectiveWindowMode === 'switch') {
+                return switchToSpaceInCurrentWindow(space);
+              }
+              windows.openSpaceWindow(space.path);
+              return undefined;
+            })
+            .catch((error: unknown) => {
+              dialog.showErrorBox(
+                APP_NAME,
+                error instanceof Error ? error.message : String(error),
+              );
+            });
         },
         onStopSpace: (homeId) => {
-          void spaces.findSpace(homeId).then(async (space) => {
-            await executeStopBackgroundSpace({
-              spaceName: space.name,
-              spacePath: space.path,
-              confirmStopSpace: (name) => confirmStopSpaceDialog(name, prefs.locale === 'zh'),
-              stopManagedDaemonForHome: (homeDir, opts) =>
-                daemon.stopManagedDaemonForHome(homeDir, opts),
+          void spaces
+            .findSpace(homeId)
+            .then(async (space) => {
+              await executeStopBackgroundSpace({
+                spaceName: space.name,
+                spacePath: space.path,
+                confirmStopSpace: (name) => confirmStopSpaceDialog(name, prefs.locale === 'zh'),
+                stopManagedDaemonForHome: (homeDir, opts) =>
+                  daemon.stopManagedDaemonForHome(homeDir, opts),
+              });
+              await refreshTrayMenu(true);
+            })
+            .catch((error: unknown) => {
+              dialog.showErrorBox(
+                APP_NAME,
+                error instanceof Error ? error.message : String(error),
+              );
             });
-            await refreshTrayMenu(true);
-          });
         },
         onToggleAutostart: (enabled) => {
           try {
@@ -859,12 +975,7 @@ if (!singleInstanceLock) {
         ) {
           void readDesktopSpaceToml(secondArgs.home)
             .then((targetSpace) => spaces.findSpace(targetSpace?.homeId ?? 'main'))
-            .then(async (space) => {
-              daemon.setTargetHome(space.path);
-              spaces.setActiveSpace(space);
-              await windows.reloadForSwitchedSpace();
-              await refreshTrayMenu(true);
-            })
+            .then((space) => switchToSpaceInCurrentWindow(space))
             .catch(() => windows.showMainWindow());
         } else {
           void windows.showMainWindow();
@@ -882,13 +993,13 @@ if (!singleInstanceLock) {
   });
 
   app.on('window-all-closed', () => {
-    if (windows.shouldPreventQuitOnAllWindowsClosed()) return;
+    if (installingUpdate || windows.shouldPreventQuitOnAllWindowsClosed()) return;
     daemon.detachDesktop();
     releaseAppQuit();
   });
 
   app.on('before-quit', (event: ElectronEvent) => {
-    if (quitReleased) return;
+    if (quitReleased || installingUpdate) return;
     event.preventDefault();
     void requestConfirmedQuit();
   });
@@ -912,7 +1023,11 @@ if (!singleInstanceLock) {
       prefsAndUpdates.refreshAutostartIfEnabled(),
     ]);
 
-    if (startupHome === mainHome && instanceIdentity.effectiveWindowMode === 'switch') {
+    const isDefaultSwitchInstance =
+      instanceIdentity.effectiveWindowMode === 'switch' &&
+      instanceIdentity.userDataSuffix === 'default';
+
+    if (isDefaultSwitchInstance) {
       if (process.defaultApp && process.argv.length >= 2) {
         app.setAsDefaultProtocolClient('kiki', process.execPath, [resolve(process.argv[1]!)]);
       } else {
@@ -940,7 +1055,7 @@ if (!singleInstanceLock) {
       await windows.showMainWindow();
     }
 
-    if (startupHome === mainHome && instanceIdentity.effectiveWindowMode === 'switch') {
+    if (isDefaultSwitchInstance) {
       try {
         globalShortcut.register('CommandOrControl+Shift+K', () => {
           const win = windows.currentWindow;

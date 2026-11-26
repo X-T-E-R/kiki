@@ -49,6 +49,10 @@
     "./ssh-connection": {
       "types": "./src/ssh-connection.ts",
       "default": "./src/ssh-connection.ts"
+    },
+    "./space-home": {
+      "types": "./src/space-home.ts",
+      "default": "./src/space-home.ts"
     }
   },
   "scripts": {
@@ -60,10 +64,13 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@kiki/protocol": "workspace:^",
     "@kiki/shell-quoting": "workspace:^",
     "lru-cache": "^11.3.3",
     "pathe": "^2.0.3",
-    "ssh2": "^1.17.0"
+    "smol-toml": "^1.9.0",
+    "ssh2": "^1.17.0",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/ssh2": "^1.15.5"

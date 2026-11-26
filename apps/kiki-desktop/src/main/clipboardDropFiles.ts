@@ -2,6 +2,17 @@ import { isAbsolute } from 'pathe';
 
 const DROPFILES_HEADER_BYTES = 20;
 
+function decodeNarrowAnsiSlice(bytes: Uint8Array): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    try {
+      return new TextDecoder('gb18030', { fatal: false }).decode(bytes);
+    } catch {
+      return new TextDecoder('windows-1252', { fatal: false }).decode(bytes);
+    }
+  }
+}
 function isAbsoluteForPlatform(filePath: string, platform: NodeJS.Platform): boolean {
   if (platform === 'win32') {
     return /^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('\\\\');
@@ -40,7 +51,6 @@ export function parseWindowsCfHdropBuffer(buffer: Uint8Array): string[] | null {
       cursor = end + 2;
     }
   } else {
-    const decoder = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true });
     let cursor = 0;
     while (cursor < payload.byteLength) {
       let end = cursor;
@@ -48,7 +58,7 @@ export function parseWindowsCfHdropBuffer(buffer: Uint8Array): string[] | null {
         end += 1;
       }
       if (end === cursor) break;
-      const decoded = decoder.decode(payload.subarray(cursor, end));
+      const decoded = decodeNarrowAnsiSlice(payload.subarray(cursor, end));
       if (!isAbsoluteForPlatform(decoded, 'win32')) return null;
       paths.push(decoded);
       cursor = end + 1;

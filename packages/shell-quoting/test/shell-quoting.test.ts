@@ -34,9 +34,10 @@ describe('quotePosixShellArg', () => {
 });
 
 describe('quoteCmdShellArg', () => {
-  it('wraps values in double quotes and escapes embedded double quotes', () => {
+  it('wraps values in double quotes and escapes embedded double quotes and trailing backslashes', () => {
     expect(quoteCmdShellArg('')).toBe('""');
     expect(quoteCmdShellArg('C:\\Program Files\\kiki')).toBe('"C:\\Program Files\\kiki"');
+    expect(quoteCmdShellArg('C:\\Program Files\\kiki\\')).toBe('"C:\\Program Files\\kiki\\\\"');
     expect(quoteCmdShellArg('say "hi"')).toBe('"say \\"hi\\""');
   });
 });

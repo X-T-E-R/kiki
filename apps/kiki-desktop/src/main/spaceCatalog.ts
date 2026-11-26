@@ -10,6 +10,27 @@ const homesJsonEntrySchema = z.object({
   path: z.string().min(1),
 });
 
+export async function isSpaceRegisteredInMain(
+  mainHome: string,
+  spaceHomeId: string,
+  spacePath: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
+  try {
+    const raw = await readFile(join(mainHome, 'homes.json'), 'utf8');
+    const parsed = z.array(homesJsonEntrySchema).parse(JSON.parse(raw));
+    const targetKey = canonicalHomeKey(spacePath, platform);
+    return parsed.some(
+      (entry) =>
+        entry.id === spaceHomeId &&
+        isAbsolute(entry.path) &&
+        canonicalHomeKey(entry.path, platform) === targetKey,
+    );
+  } catch {
+    return false;
+  }
+}
+
 export class SpaceCatalog {
   private activeSpace: DesktopSpace;
 

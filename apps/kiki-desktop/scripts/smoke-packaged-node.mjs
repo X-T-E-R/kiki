@@ -312,6 +312,19 @@ try {
     assert.match(promoteOut, /Promoted Kiki release/);
     assert.ok(existsSync(join(tempRuntimeRoot, 'active', 'kiki-desktop.exe')));
     assert.ok(existsSync(join(tempRuntimeRoot, 'active', 'resources', 'app.asar')));
+    assert.ok(!existsSync(join(tempRuntimeRoot, 'cli', 'kiki.exe')), 'Stale v1 cli\\kiki.exe must be absent');
+    const publishedCliCmd = join(tempRuntimeRoot, 'cli', 'kiki.cmd');
+    assert.ok(existsSync(publishedCliCmd), 'Promoted v2 runtime must publish cli\\kiki.cmd');
+    const cliVersionOut = execFileSync(
+      'cmd.exe',
+      ['/d', '/s', '/c', `""${publishedCliCmd}" --version"`],
+      {
+        encoding: 'utf8',
+        windowsVerbatimArguments: true,
+        env: { ...process.env, KIKI_HOME: promotedHome, KIKI_CACHE_DIR: tempCache },
+      },
+    ).trim();
+    assert.match(cliVersionOut, /\d+\.\d+\.\d+/, `Unexpected cli\\kiki.cmd --version output: ${cliVersionOut}`);
     assert.ok(
       existsSync(
         join(

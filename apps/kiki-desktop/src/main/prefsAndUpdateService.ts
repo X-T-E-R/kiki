@@ -1,8 +1,9 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { atomicWriteJson } from '@kiki/kaos/atomic-fs';
-import { basename, dirname, isAbsolute, join } from 'pathe';
-import { parse as parseToml } from 'smol-toml';
+import { readSpaceHome } from '@kiki/kaos/space-home';
+import { quoteShellArg } from '@kiki/shell-quoting';
+import { dirname, isAbsolute, join } from 'pathe';
 import { z } from 'zod';
 import {
   cleanupStaleWindowsElectronRunEntries,
@@ -19,7 +20,6 @@ import {
 import { desktopPrefsPatchSchema } from '#/shared/ipcChannels';
 import type {
   DesktopAutostartStatus,
-  DesktopLogLevel,
   DesktopNativePrefs,
   DesktopSpace,
   DesktopUpdateMutation,
@@ -31,7 +31,11 @@ import type {
   UpdateChannel,
 } from '#/shared/types';
 
+export type DesktopWindowTheme = 'light' | 'dark' | 'system';
+
 const UPDATE_CHECK_CACHE_TTL_MS = 30_000;
+const logLevelSchema = z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']);
+const windowThemeSchema = z.enum(['light', 'dark', 'system']);
 
 export const DEFAULT_DESKTOP_PREFS: DesktopNativePrefs = {
   notifications: true,
@@ -43,126 +47,154 @@ export const DEFAULT_DESKTOP_PREFS: DesktopNativePrefs = {
   windowMode: 'switch',
 };
 
-const homeTomlSchema = z.object({
-  schema: z.number().int().optional(),
-  id: z.string().min(1).optional(),
-  home_id: z.string().min(1).optional(),
-  name: z.string().min(1).optional(),
-  color: z.string().nullable().optional(),
-  preset: z.string().nullable().optional(),
-  base: z.string().min(1).nullable().optional(),
-  base_home: z.string().min(1).nullable().optional(),
-  credentials_shared: z.boolean().optional(),
-});
+const nonEmptyStringListSchema = z
+  .array(z.unknown())
+  .transform((items) =>
+    items.filter((item): item is string => typeof item === 'string' && item.trim() !== ''),
+  );
 
-function normalizeUpdateState(raw: unknown): DesktopUpdateState | undefined {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
-  const record = raw as Record<string, unknown>;
-  const cleanList = (value: unknown): string[] | undefined => {
-    if (!Array.isArray(value)) return undefined;
-    return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
-  };
-  let skipped: DesktopUpdateState['skipped'];
-  if (typeof record['skipped'] === 'object' && record['skipped'] !== null && !Array.isArray(record['skipped'])) {
-    const skippedObj = record['skipped'] as Record<string, unknown>;
-    const stable = cleanList(skippedObj['stable']);
-    const beta = cleanList(skippedObj['beta']);
-    if (stable !== undefined || beta !== undefined) {
-      skipped = {
-        ...(stable !== undefined ? { stable } : {}),
-        ...(beta !== undefined ? { beta } : {}),
-      };
+const desktopUpdateStateParsedSchema = z
+  .object({
+    skipped: z
+      .object({
+        stable: nonEmptyStringListSchema.optional().catch(undefined),
+        beta: nonEmptyStringListSchema.optional().catch(undefined),
+      })
+      .optional()
+      .catch(undefined),
+    snoozedUntil: z.number().finite().nonnegative().optional().catch(undefined),
+    lastCheckedAt: z.number().finite().nonnegative().optional().catch(undefined),
+  })
+  .transform((record): DesktopUpdateState | undefined => {
+    const skipped =
+      record.skipped?.stable !== undefined || record.skipped?.beta !== undefined
+        ? {
+            ...(record.skipped.stable !== undefined ? { stable: record.skipped.stable } : {}),
+            ...(record.skipped.beta !== undefined ? { beta: record.skipped.beta } : {}),
+          }
+        : undefined;
+    if (
+      skipped === undefined &&
+      record.snoozedUntil === undefined &&
+      record.lastCheckedAt === undefined
+    ) {
+      return undefined;
     }
-  }
-  const readEpoch = (key: string): number | undefined => {
-    const val = record[key];
-    return typeof val === 'number' && Number.isFinite(val) && val >= 0 ? val : undefined;
-  };
-  const snoozedUntil = readEpoch('snoozedUntil');
-  const lastCheckedAt = readEpoch('lastCheckedAt');
-  if (skipped === undefined && snoozedUntil === undefined && lastCheckedAt === undefined) {
-    return undefined;
-  }
-  return {
-    ...(skipped !== undefined ? { skipped } : {}),
-    ...(snoozedUntil !== undefined ? { snoozedUntil } : {}),
-    ...(lastCheckedAt !== undefined ? { lastCheckedAt } : {}),
-  };
-}
+    return {
+      ...(skipped !== undefined ? { skipped } : {}),
+      ...(record.snoozedUntil !== undefined ? { snoozedUntil: record.snoozedUntil } : {}),
+      ...(record.lastCheckedAt !== undefined ? { lastCheckedAt: record.lastCheckedAt } : {}),
+    };
+  })
+  .catch(undefined);
 
-function parseDesktopPrefsRecord(raw: unknown): DesktopNativePrefs {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    return { ...DEFAULT_DESKTOP_PREFS };
-  }
-  const record = raw as Record<string, unknown>;
-  const windowModeRaw = record['windowMode'] ?? record['window_mode'];
-  const windowMode: SpaceWindowMode = windowModeRaw === 'windows' ? 'windows' : 'switch';
-  const updateChannel: UpdateChannel = record['updateChannel'] === 'beta' ? 'beta' : 'stable';
-  const autoUpdate =
-    record['autoUpdate'] === 'off' || record['autoUpdate'] === 'install'
-      ? record['autoUpdate']
-      : 'notify';
-  const logLevelValues = new Set<DesktopLogLevel>([
-    'fatal',
-    'error',
-    'warn',
-    'info',
-    'debug',
-    'trace',
-    'silent',
-  ]);
-  const logLevel: DesktopLogLevel =
-    typeof record['logLevel'] === 'string' && logLevelValues.has(record['logLevel'] as DesktopLogLevel)
-      ? (record['logLevel'] as DesktopLogLevel)
-      : 'warn';
-  const compatRaw = record['compatibility'];
-  const compatibility =
-    typeof compatRaw === 'object' && compatRaw !== null && !Array.isArray(compatRaw)
-      ? {
-          homeKind:
-            (compatRaw as Record<string, unknown>)['homeKind'] === 'custom'
-              ? ('custom' as const)
-              : ('kimi' as const),
-          ...(typeof (compatRaw as Record<string, unknown>)['customHome'] === 'string'
-            ? { customHome: (compatRaw as Record<string, unknown>)['customHome'] as string }
-            : {}),
-        }
-      : { homeKind: 'kimi' as const };
-  const updateState = normalizeUpdateState(record['updateState']);
-  return {
-    notifications: typeof record['notifications'] === 'boolean' ? record['notifications'] : true,
-    closeToTray: typeof record['closeToTray'] === 'boolean' ? record['closeToTray'] : true,
-    ...(typeof record['locale'] === 'string' ? { locale: record['locale'] } : {}),
-    updateChannel,
-    autoUpdate,
-    ...(updateState !== undefined ? { updateState } : {}),
-    logLevel,
-    compatibility,
-    windowMode,
-  };
-}
+const compatibilityParsedSchema = z
+  .object({
+    homeKind: z.enum(['kimi', 'kiki', 'custom']).catch('kimi'),
+    customHome: z.string().optional().catch(undefined),
+  })
+  .transform((compat) => ({
+    homeKind: compat.homeKind,
+    ...(compat.customHome !== undefined && compat.customHome.trim() !== ''
+      ? { customHome: compat.customHome }
+      : {}),
+  }))
+  .catch({ homeKind: 'kimi' as const });
+
+const mainPrefsRecordSchema = z
+  .object({
+    notifications: z.boolean().catch(DEFAULT_DESKTOP_PREFS.notifications),
+    closeToTray: z.boolean().catch(DEFAULT_DESKTOP_PREFS.closeToTray),
+    locale: z.string().optional().catch(undefined),
+    updateChannel: z.enum(['stable', 'beta']).catch(DEFAULT_DESKTOP_PREFS.updateChannel),
+    autoUpdate: z.enum(['off', 'notify', 'install']).catch(DEFAULT_DESKTOP_PREFS.autoUpdate),
+    updateState: z.unknown().transform((val) => desktopUpdateStateParsedSchema.parse(val)),
+    logLevel: logLevelSchema.catch('warn'),
+    compatibility: z.unknown().transform((val) => compatibilityParsedSchema.parse(val)),
+    windowMode: z.enum(['switch', 'windows']).optional().catch(undefined),
+    window_mode: z.enum(['switch', 'windows']).optional().catch(undefined),
+  })
+  .transform(
+    (record): DesktopNativePrefs => ({
+      notifications: record.notifications,
+      closeToTray: record.closeToTray,
+      ...(record.locale !== undefined ? { locale: record.locale } : {}),
+      updateChannel: record.updateChannel,
+      autoUpdate: record.autoUpdate,
+      ...(record.updateState !== undefined ? { updateState: record.updateState } : {}),
+      logLevel: record.logLevel,
+      compatibility: record.compatibility,
+      windowMode: record.windowMode ?? record.window_mode ?? DEFAULT_DESKTOP_PREFS.windowMode,
+    }),
+  )
+  .catch({ ...DEFAULT_DESKTOP_PREFS });
+
+const childPrefsOverrideSchema = z
+  .object({
+    notifications: z.boolean().optional().catch(undefined),
+    closeToTray: z.boolean().optional().catch(undefined),
+    locale: z.string().optional().catch(undefined),
+    logLevel: logLevelSchema.optional().catch(undefined),
+    compatibility: z
+      .object({
+        homeKind: z.enum(['kimi', 'kiki', 'custom']),
+        customHome: z.string().optional(),
+      })
+      .transform((compat) => ({
+        homeKind: compat.homeKind,
+        ...(compat.customHome !== undefined && compat.customHome.trim() !== ''
+          ? { customHome: compat.customHome }
+          : {}),
+      }))
+      .optional()
+      .catch(undefined),
+  })
+  .catch({});
 
 export async function readDesktopSpaceToml(homeDir: string): Promise<DesktopSpace | null> {
-  const tomlPath = join(homeDir, 'home.toml');
-  let raw: string;
-  try {
-    raw = await readFile(tomlPath, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
+  const { space, diagnostic } = readSpaceHome(homeDir);
+  if (diagnostic !== undefined) {
+    throw new Error(diagnostic);
   }
-  const parsed = homeTomlSchema.parse(parseToml(raw));
-  const homeId = parsed.id ?? parsed.home_id ?? 'main';
+  if (space === undefined) return null;
   return {
-    homeId,
-    name: parsed.name ?? basename(homeDir) ?? 'Main space',
-    color: parsed.color ?? null,
-    preset: parsed.preset ?? null,
+    homeId: space.id,
+    name: space.name,
+    color: space.color ?? null,
+    preset: space.preset ?? null,
     path: homeDir,
-    baseHome: parsed.base ?? parsed.base_home ?? null,
-    credentialsShared: parsed.credentials_shared ?? true,
-    isPrimary: homeId === 'main',
+    baseHome: space.baseHomeDir ?? null,
+    credentialsShared: space.inherit.credentials !== 'isolated',
+    isPrimary: space.id === 'main',
   };
+}
+
+export async function resolveDesktopOauthHome(params: {
+  readonly homeDir: string;
+  readonly prefs: DesktopNativePrefs;
+  readonly kimiHome: string;
+  readonly space?: DesktopSpace | null;
+}): Promise<string> {
+  const space =
+    params.space === undefined
+      ? await readDesktopSpaceToml(params.homeDir).catch(() => null)
+      : params.space;
+  if (space !== null && !space.credentialsShared && space.baseHome !== null) {
+    return space.path;
+  }
+  const compatibilityKikiHome = space?.baseHome ?? params.homeDir;
+  const { compatibility } = params.prefs;
+  if (compatibility.homeKind === 'custom') {
+    const customHome = compatibility.customHome?.trim() ?? '';
+    if (customHome === '' || !isAbsolute(customHome)) {
+      throw new Error('Custom compatibility Home must be an absolute path');
+    }
+    return customHome;
+  }
+  if (compatibility.homeKind === 'kiki') {
+    return compatibilityKikiHome;
+  }
+  return params.kimiHome;
 }
 
 export function formatSpaceShortcutFileName(name: string, homeId: string): string {
@@ -178,7 +210,9 @@ export function formatSpaceShortcutFileName(name: string, homeId: string): strin
 export function formatSpaceHomeArguments(
   spaceHomePath: string,
   platform: NodeJS.Platform = process.platform,
-): { readonly ok: true; readonly args: string } | { readonly ok: false; readonly code: SpaceShortcutErrorCode; readonly message: string } {
+):
+  | { readonly ok: true; readonly args: string }
+  | { readonly ok: false; readonly code: SpaceShortcutErrorCode; readonly message: string } {
   const winAbs = /^[A-Za-z]:[\\/]/.test(spaceHomePath);
   const abs = platform === 'win32' ? winAbs : isAbsolute(spaceHomePath);
   if (!abs || spaceHomePath.includes('"') || /[\u0000-\u001F\u007F]/.test(spaceHomePath)) {
@@ -188,13 +222,9 @@ export function formatSpaceHomeArguments(
       message: 'Space path is not a valid absolute directory',
     };
   }
-  let trailingBackslashes = 0;
-  for (let i = spaceHomePath.length - 1; i >= 0 && spaceHomePath[i] === '\\'; i -= 1) {
-    trailingBackslashes += 1;
-  }
   return {
     ok: true,
-    args: `--home "${spaceHomePath}${'\\'.repeat(trailingBackslashes)}"`,
+    args: `--home ${quoteShellArg(spaceHomePath, platform)}`,
   };
 }
 
@@ -243,6 +273,7 @@ export interface PrefsAndUpdateServiceDeps {
   readonly confirmShutdownForUpdate?: () => Promise<boolean>;
   readonly prepareDaemonForUpdate?: () => Promise<void>;
   readonly releaseUpdateLocks?: () => void;
+  readonly markInstallingUpdate?: (installing: boolean) => void;
   readonly onLocaleChanged?: (locale: string | undefined) => void;
   readonly onPrefsChanged?: (prefs: DesktopNativePrefs, homeDir: string) => void;
   readonly platform?: NodeJS.Platform;
@@ -288,18 +319,59 @@ export class PrefsAndUpdateService {
     }
   }
 
-  async readPrefs(homeDir: string = this.deps.getActiveHome()): Promise<DesktopNativePrefs> {
-    const localRaw = await this.readRawPrefsObject(homeDir);
-    const localPrefs = parseDesktopPrefsRecord(localRaw);
-    if (homeDir === this.deps.mainHome) return localPrefs;
-
-    const mainRaw = await this.readRawPrefsObject(this.deps.mainHome);
-    const mainPrefs = parseDesktopPrefsRecord(mainRaw);
+  private preservedMainMeta(raw: Record<string, unknown> | null): {
+    readonly autostart?: boolean;
+    readonly theme?: DesktopWindowTheme;
+  } {
+    const autostart = typeof raw?.['autostart'] === 'boolean' ? raw['autostart'] : undefined;
+    const parsedTheme = windowThemeSchema.safeParse(raw?.['theme']);
     return {
-      ...localPrefs,
+      ...(autostart !== undefined ? { autostart } : {}),
+      ...(parsedTheme.success ? { theme: parsedTheme.data } : {}),
+    };
+  }
+
+  async readWindowTheme(): Promise<DesktopWindowTheme> {
+    const raw = await this.readRawPrefsObject(this.deps.mainHome);
+    const parsed = windowThemeSchema.safeParse(raw?.['theme']);
+    return parsed.success ? parsed.data : 'system';
+  }
+
+  async writeWindowTheme(theme: DesktopWindowTheme): Promise<void> {
+    const validated = windowThemeSchema.parse(theme);
+    await this.enqueueWrite(async () => {
+      const raw = (await this.readRawPrefsObject(this.deps.mainHome)) ?? {};
+      await atomicWriteJson(
+        this.prefsFilePath(this.deps.mainHome),
+        { ...raw, theme: validated },
+        { indent: 2, preserveDestinationOnError: true },
+      );
+    });
+  }
+
+  async readPrefs(homeDir: string = this.deps.getActiveHome()): Promise<DesktopNativePrefs> {
+    const mainRaw = await this.readRawPrefsObject(this.deps.mainHome);
+    const mainPrefs = mainPrefsRecordSchema.parse(mainRaw ?? {});
+    if (homeDir === this.deps.mainHome) return mainPrefs;
+
+    const childRaw = await this.readRawPrefsObject(homeDir);
+    const overrides = childPrefsOverrideSchema.parse(childRaw ?? {});
+    const space = await readDesktopSpaceToml(homeDir).catch(() => null);
+    const mergedLocale = overrides.locale ?? mainPrefs.locale;
+    const compatibility =
+      space !== null && !space.credentialsShared
+        ? ({ homeKind: 'kiki' } as const)
+        : (overrides.compatibility ?? mainPrefs.compatibility);
+
+    return {
+      notifications: overrides.notifications ?? mainPrefs.notifications,
+      closeToTray: overrides.closeToTray ?? mainPrefs.closeToTray,
+      ...(mergedLocale !== undefined ? { locale: mergedLocale } : {}),
       updateChannel: mainPrefs.updateChannel,
       autoUpdate: mainPrefs.autoUpdate,
       ...(mainPrefs.updateState !== undefined ? { updateState: mainPrefs.updateState } : {}),
+      logLevel: overrides.logLevel ?? mainPrefs.logLevel,
+      compatibility,
       windowMode: mainPrefs.windowMode,
     };
   }
@@ -310,7 +382,6 @@ export class PrefsAndUpdateService {
   ): Promise<void> {
     const parsedPatch = desktopPrefsPatchSchema.parse(patchInput);
     await this.enqueueWrite(async () => {
-      const existingRaw = await this.readRawPrefsObject(homeDir);
       const current = await this.readPrefs(homeDir);
       const nextWindowMode = parsedPatch.windowMode ?? parsedPatch.window_mode ?? current.windowMode;
       const nextCompat = parsedPatch.compatibility ?? current.compatibility;
@@ -326,7 +397,7 @@ export class PrefsAndUpdateService {
         space.baseHome !== null &&
         !space.credentialsShared &&
         parsedPatch.compatibility !== undefined &&
-        nextCompat.homeKind !== 'kimi'
+        nextCompat.homeKind !== 'kiki'
       ) {
         throw new Error('Isolated spaces must use their own OAuth home');
       }
@@ -336,57 +407,85 @@ export class PrefsAndUpdateService {
         nextUpdateState =
           parsedPatch.updateState === null || parsedPatch.updateState === undefined
             ? undefined
-            : normalizeUpdateState(parsedPatch.updateState);
+            : desktopUpdateStateParsedSchema.parse(parsedPatch.updateState);
       }
 
-      const next: DesktopNativePrefs = {
-        notifications: parsedPatch.notifications ?? current.notifications,
-        closeToTray: parsedPatch.closeToTray ?? current.closeToTray,
-        ...(parsedPatch.locale !== undefined
-          ? { locale: parsedPatch.locale }
-          : current.locale !== undefined
-            ? { locale: current.locale }
-            : {}),
-        updateChannel: parsedPatch.updateChannel ?? current.updateChannel,
-        autoUpdate: parsedPatch.autoUpdate ?? current.autoUpdate,
-        ...(nextUpdateState !== undefined ? { updateState: nextUpdateState } : {}),
-        logLevel: parsedPatch.logLevel ?? current.logLevel,
-        compatibility: nextCompat,
-        windowMode: nextWindowMode,
-      };
+      if (homeDir === this.deps.mainHome) {
+        const existingRaw = await this.readRawPrefsObject(this.deps.mainHome);
+        const next: DesktopNativePrefs = {
+          notifications: parsedPatch.notifications ?? current.notifications,
+          closeToTray: parsedPatch.closeToTray ?? current.closeToTray,
+          ...(parsedPatch.locale !== undefined
+            ? { locale: parsedPatch.locale }
+            : current.locale !== undefined
+              ? { locale: current.locale }
+              : {}),
+          updateChannel: parsedPatch.updateChannel ?? current.updateChannel,
+          autoUpdate: parsedPatch.autoUpdate ?? current.autoUpdate,
+          ...(nextUpdateState !== undefined ? { updateState: nextUpdateState } : {}),
+          logLevel: parsedPatch.logLevel ?? current.logLevel,
+          compatibility: nextCompat,
+          windowMode: nextWindowMode,
+        };
+        await atomicWriteJson(
+          this.prefsFilePath(this.deps.mainHome),
+          {
+            ...this.preservedMainMeta(existingRaw),
+            ...next,
+            window_mode: next.windowMode,
+          },
+          { indent: 2, preserveDestinationOnError: true },
+        );
+        this.deps.onPrefsChanged?.(next, homeDir);
+        if (parsedPatch.locale !== undefined && parsedPatch.locale !== current.locale) {
+          this.deps.onLocaleChanged?.(parsedPatch.locale);
+        }
+        return;
+      }
 
-      const persisted = {
-        ...(typeof existingRaw?.['autostart'] === 'boolean' ? { autostart: existingRaw['autostart'] } : {}),
-        ...next,
-        window_mode: next.windowMode,
-      };
-      await atomicWriteJson(this.prefsFilePath(homeDir), persisted, {
-        indent: 2,
-        preserveDestinationOnError: true,
-      });
+      const hasChildPatch =
+        parsedPatch.notifications !== undefined ||
+        parsedPatch.closeToTray !== undefined ||
+        parsedPatch.locale !== undefined ||
+        parsedPatch.compatibility !== undefined ||
+        parsedPatch.logLevel !== undefined;
 
-      if (
-        homeDir !== this.deps.mainHome &&
-        (parsedPatch.updateChannel !== undefined ||
-          parsedPatch.autoUpdate !== undefined ||
-          parsedPatch.windowMode !== undefined ||
-          parsedPatch.window_mode !== undefined ||
-          Object.hasOwn(parsedPatch, 'updateState'))
-      ) {
+      if (hasChildPatch) {
+        const childRaw = (await this.readRawPrefsObject(homeDir)) ?? {};
+        const childNext: Record<string, unknown> = { ...childRaw };
+        if (parsedPatch.notifications !== undefined) childNext['notifications'] = parsedPatch.notifications;
+        if (parsedPatch.closeToTray !== undefined) childNext['closeToTray'] = parsedPatch.closeToTray;
+        if (parsedPatch.locale !== undefined) childNext['locale'] = parsedPatch.locale;
+        if (parsedPatch.compatibility !== undefined) childNext['compatibility'] = nextCompat;
+        if (parsedPatch.logLevel !== undefined) childNext['logLevel'] = parsedPatch.logLevel;
+        await atomicWriteJson(this.prefsFilePath(homeDir), childNext, {
+          indent: 2,
+          preserveDestinationOnError: true,
+        });
+      }
+
+      const hasMainPatch =
+        parsedPatch.updateChannel !== undefined ||
+        parsedPatch.autoUpdate !== undefined ||
+        parsedPatch.windowMode !== undefined ||
+        parsedPatch.window_mode !== undefined ||
+        Object.hasOwn(parsedPatch, 'updateState');
+
+      if (hasMainPatch) {
         const mainRaw = await this.readRawPrefsObject(this.deps.mainHome);
         const mainCurrent = await this.readPrefs(this.deps.mainHome);
         const mainNext: DesktopNativePrefs = {
           ...mainCurrent,
-          updateChannel: next.updateChannel,
-          autoUpdate: next.autoUpdate,
+          updateChannel: parsedPatch.updateChannel ?? mainCurrent.updateChannel,
+          autoUpdate: parsedPatch.autoUpdate ?? mainCurrent.autoUpdate,
           ...(nextUpdateState !== undefined ? { updateState: nextUpdateState } : {}),
-          windowMode: next.windowMode,
+          windowMode: nextWindowMode,
         };
         if (nextUpdateState === undefined) delete mainNext.updateState;
         await atomicWriteJson(
           this.prefsFilePath(this.deps.mainHome),
           {
-            ...(typeof mainRaw?.['autostart'] === 'boolean' ? { autostart: mainRaw['autostart'] } : {}),
+            ...this.preservedMainMeta(mainRaw),
             ...mainNext,
             window_mode: mainNext.windowMode,
           },
@@ -394,7 +493,8 @@ export class PrefsAndUpdateService {
         );
       }
 
-      this.deps.onPrefsChanged?.(next, homeDir);
+      const effective = await this.readPrefs(homeDir);
+      this.deps.onPrefsChanged?.(effective, homeDir);
       if (parsedPatch.locale !== undefined && parsedPatch.locale !== current.locale) {
         this.deps.onLocaleChanged?.(parsedPatch.locale);
       }
@@ -460,7 +560,7 @@ export class PrefsAndUpdateService {
       await atomicWriteJson(
         this.prefsFilePath(this.deps.mainHome),
         {
-          ...(typeof mainRaw?.['autostart'] === 'boolean' ? { autostart: mainRaw['autostart'] } : {}),
+          ...this.preservedMainMeta(mainRaw),
           ...persisted,
           window_mode: persisted.windowMode,
         },
@@ -684,7 +784,14 @@ export class PrefsAndUpdateService {
         throw new Error('Desktop update selection changed; check for updates again');
       }
       await this.deps.prepareDaemonForUpdate?.();
-      await this.deps.updaterAdapter.downloadAndInstall(channel, offer.version);
+      this.deps.markInstallingUpdate?.(true);
+      this.deps.releaseUpdateLocks?.();
+      try {
+        await this.deps.updaterAdapter.downloadAndInstall(channel, offer.version);
+      } catch (error) {
+        this.deps.markInstallingUpdate?.(false);
+        throw error;
+      }
     } finally {
       this.deps.releaseUpdateLocks?.();
       this.installInFlight = false;

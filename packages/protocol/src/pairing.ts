@@ -252,6 +252,21 @@ export function isValidTargetHostname(hostname: string): boolean {
   return true;
 }
 
+export function isLoopbackHost(
+  hostname: string,
+  options?: { readonly allowSubdomains?: boolean },
+): boolean {
+  const trimmed = hostname.trim();
+  if (trimmed === '') return false;
+  const bare =
+    trimmed.startsWith('[') && trimmed.endsWith(']') ? trimmed.slice(1, -1) : trimmed;
+  const lower = bare.toLowerCase();
+  if (lower === 'localhost' || lower === '::1') return true;
+  if (options?.allowSubdomains === true && lower.endsWith('.localhost')) return true;
+  const ipv4 = parseIpv4Octets(lower);
+  return ipv4 !== undefined && ipv4[0] === 127;
+}
+
 export function isDirectConnectionHost(hostname: string): boolean {
   const bare = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
   const name = bare.toLowerCase();

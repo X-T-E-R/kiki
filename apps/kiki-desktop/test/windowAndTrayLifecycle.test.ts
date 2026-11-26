@@ -149,6 +149,46 @@ describe('launchArgs and single-instance identity', () => {
     expect(new Set([main.userDataSuffix, remote1.userDataSuffix, remote2.userDataSuffix, presetWork.userDataSuffix]).size).toBe(4);
     expect(remote1.effectiveWindowMode).toBe('windows');
     expect(presetWork.descriptor.presetId).toBe('work');
+
+    // Switch-mode registered child space reuses main single-instance lock ('default'),
+    // whereas unregistered child space, windows-mode child space, and standalone --home get distinct locks!
+    const switchRegisteredChild = resolveInstanceIdentity({
+      baseAppId: 'com.kiki.desktop',
+      startupHome: '/home/user/.kiki/spaces/work',
+      mainHome: '/home/user/.kiki',
+      defaultHome: '/home/user/.kiki',
+      registeredInMain: true,
+      windowMode: 'switch',
+      spaceHomeId: 'work',
+      platform: 'linux',
+    });
+    expect(switchRegisteredChild.effectiveWindowMode).toBe('switch');
+    expect(switchRegisteredChild.userDataSuffix).toBe('default');
+
+    const switchUnregisteredChild = resolveInstanceIdentity({
+      baseAppId: 'com.kiki.desktop',
+      startupHome: '/home/user/.kiki/spaces/orphan',
+      mainHome: '/home/user/.kiki',
+      defaultHome: '/home/user/.kiki',
+      registeredInMain: false,
+      windowMode: 'switch',
+      spaceHomeId: 'orphan',
+      platform: 'linux',
+    });
+    expect(switchUnregisteredChild.effectiveWindowMode).toBe('windows');
+    expect(switchUnregisteredChild.userDataSuffix).toBe('space-orphan');
+
+    const standaloneExplicitHome = resolveInstanceIdentity({
+      baseAppId: 'com.kiki.desktop',
+      startupHome: '/opt/custom-kiki-home',
+      mainHome: '/opt/custom-kiki-home',
+      defaultHome: '/home/user/.kiki',
+      explicitHomePassed: true,
+      windowMode: 'switch',
+      platform: 'linux',
+    });
+    expect(standaloneExplicitHome.effectiveWindowMode).toBe('windows');
+    expect(standaloneExplicitHome.userDataSuffix).toMatch(/^home-[0-9a-f]{16}$/);
   });
 });
 
@@ -231,7 +271,7 @@ describe('WindowService and TrayService', () => {
     expect(service.isQuitting).toBe(true);
   });
 
-  it('forwards light, dark, and system themes to Electron nativeTheme', () => {
+  it('forwards light, dark, and system themes to Electron nativeTheme', async () => {
     const appliedThemes: Array<'light' | 'dark' | 'system'> = [];
     const service = new WindowService({
       platform: 'win32',
@@ -255,6 +295,39 @@ describe('WindowService and TrayService', () => {
     service.setTheme('dark');
     service.setTheme('system');
     expect(appliedThemes).toEqual(['light', 'dark', 'system']);
+
+    // Linux closeToTray minimizes instead of hiding so GNOME desktops without AppIndicator keep the window reachable
+    let linuxMinimized = false;
+    const linuxWin = {
+      ...createFakeWindow(),
+      minimize: () => {
+        linuxMinimized = true;
+      },
+    };
+    const linuxService = new WindowService({
+      platform: 'linux',
+      windowMode: { presetId: 'kiki', windowId: 'w-linux' },
+      spaceWindowMode: 'switch',
+      startWindowless: false,
+      getCloseToTray: () => true,
+      isTrayActive: () => false,
+      createBrowserWindow: async () => linuxWin,
+      getDaemonOrigin: () => null,
+      ensureDaemonOrigin: async () => 'http://127.0.0.1:41234',
+      detachDesktop: () => undefined,
+      releaseAppQuit: () => undefined,
+      resolveLaunchExecutable: () => '/usr/bin/kiki-desktop',
+    });
+    await linuxService.showMainWindow();
+    let linuxClosePrevented = false;
+    linuxService.onWindowClose({
+      preventDefault: () => {
+        linuxClosePrevented = true;
+      },
+    });
+    expect(linuxClosePrevented).toBe(true);
+    expect(linuxMinimized).toBe(true);
+    expect(linuxService.isQuitting).toBe(false);
   });
 
   it('retries Windows tray creation and reveals fallback window if all logon retries fail', async () => {
@@ -294,7 +367,7 @@ describe('WindowService and TrayService', () => {
   it('enforces loopback-only navigation guard and blocks browser reload/print accelerators', () => {
     expect(isAllowedRendererNavigation('kiki-app://localhost/s/abc', null)).toBe(true);
     expect(isAllowedRendererNavigation('http://127.0.0.1:41234/s/abc', 'http://127.0.0.1:41234')).toBe(true);
-    expect(isAllowedRendererNavigation('data:text/html;charset=utf-8,hi', null)).toBe(true);
+    expect(isAllowedRendererNavigation('data:text/html;charset=utf-8,hi', null)).toBe(false);
     expect(isAllowedRendererNavigation('file:///C:/Windows/win.ini', 'http://127.0.0.1:41234')).toBe(false);
     expect(isAllowedRendererNavigation('https://evil.example.test', 'http://127.0.0.1:41234')).toBe(false);
 

@@ -111,17 +111,11 @@ function resolveGitCommit() {
 }
 
 async function listFilesRecursive(root) {
-  const files = [];
-  async function walk(dir) {
-    const entries = await readdir(dir, { withFileTypes: true });
-    for (const entry of entries.toSorted((a, b) => a.name.localeCompare(b.name))) {
-      const fullPath = join(dir, entry.name);
-      if (entry.isDirectory()) await walk(fullPath);
-      else if (entry.isFile()) files.push(fullPath);
-    }
-  }
-  await walk(root);
-  return files;
+  const entries = await readdir(root, { recursive: true, withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath, entry.name))
+    .toSorted((a, b) => a.localeCompare(b));
 }
 
 function resolveFileCandidate(filePath) {

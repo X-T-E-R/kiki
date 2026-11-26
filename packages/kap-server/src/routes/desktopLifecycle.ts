@@ -40,7 +40,7 @@ export function registerDesktopLifecycleRoutes(app: {
   get: (path: string, options: object, handler: (...args: never[]) => unknown) => unknown;
   post: (path: string, options: object, handler: (...args: never[]) => unknown) => unknown;
   addHook: (name: 'onRequest' | 'preHandler', handler: (...args: never[]) => unknown) => unknown;
-}, core: Scope, opts: { serverId: string; onShutdown: () => void; pathPrefix?: string; explicitExitPath: string; pid: number; startedAt: number }): void {
+}, core: Scope, opts: { serverId: string; onShutdown: (reason?: 'shutdown' | 'desktop-lifecycle') => void; pathPrefix?: string; explicitExitPath: string; pid: number; startedAt: number }): void {
   const bootstrap = core.accessor.get(IBootstrapService);
   const admission = core.accessor.get(IWorkAdmissionService);
   const prepareOperationId = `desktop-prepare:${opts.serverId}`;
@@ -104,7 +104,7 @@ export function registerDesktopLifecycleRoutes(app: {
       return;
     }
     reply.send(okEnvelope({ ok: true }, req.id));
-    setImmediate(opts.onShutdown);
+    setImmediate(() => opts.onShutdown('desktop-lifecycle'));
   });
   app.post(mutate.path, mutate.options, mutate.handler as never);
 }

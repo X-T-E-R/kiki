@@ -142,7 +142,7 @@ export const desktopPrefsPatchSchema = z
     logLevel: logLevelSchema.optional(),
     compatibility: z
       .object({
-        homeKind: z.enum(['kimi', 'custom']),
+        homeKind: z.enum(['kimi', 'kiki', 'custom']),
         customHome: z.string().optional(),
       })
       .optional(),

@@ -38,9 +38,9 @@
     "@kiki/node-sdk": "workspace:^",
     "@kiki/protocol": "workspace:^",
     "@kiki/session-core": "workspace:^",
+    "@kiki/shell-quoting": "workspace:^",
     "electron-updater": "6.8.11",
     "pathe": "^2.0.3",
-    "smol-toml": "^1.9.0",
     "zod": "catalog:"
   },
   "devDependencies": {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* eslint-disable no-console -- Layer 3 real-binary sanitized KIKI_HOME traversal & @2x visual proof runner. */
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -196,6 +197,11 @@ try {
   console.log(`[smoke:home] Captured ${shotQuota}`);
 
   await navigateSpa('/settings');
+  await page.locator('#st-card-desktop').waitFor({ state: 'visible', timeout: 10_000 });
+  await page.evaluate(() => {
+    document.querySelector('#st-card-desktop')?.scrollIntoView({ block: 'start' });
+  });
+  await delay(500);
   const shotSettings = join(proofDir, '05-settings-desktop-2x.png');
   await page.screenshot({ path: shotSettings });
   console.log(`[smoke:home] Captured ${shotSettings}`);
@@ -205,9 +211,70 @@ try {
   assert.deepEqual(pageErrors, [], `Unexpected renderer pageerrors: ${JSON.stringify(pageErrors)}`);
   assert.deepEqual(badApiResponses, [], `Unexpected 401/403/404/5xx responses: ${JSON.stringify(badApiResponses)}`);
 
+  // Return to the session workspace so kiki.viewRoute persists `/s/${sessionA}` across cold restart,
+  // then persist dark window theme to desktop.json AND kiki.settings, close, and cold-relaunch to prove
+  // pre-window nativeTheme.themeSource === 'dark' + dark anti-flash backgroundColor + @2x dark render!
+  await navigateSpa(`/s/${sessionA}`);
+  await page.waitForSelector('[data-composer-body]', { timeout: 15_000 });
   await page.evaluate(async () => {
+    const rawSettings = JSON.parse(window.localStorage.getItem('kiki.settings') ?? '{}');
+    window.localStorage.setItem(
+      'kiki.settings',
+      JSON.stringify({ ...rawSettings, theme: 'dark' }),
+    );
+    await window.__KIKI_ELECTRON__.window.setTheme('dark');
     await window.__KIKI_ELECTRON__.desktop.writePrefs({ closeToTray: false });
   });
+  await delay(300);
+  await electronApp.close();
+  electronApp = undefined;
+
+  console.log('[smoke:home] Relaunching cold in dark mode to verify nativeTheme + backgroundColor...');
+  electronApp = await electron.launch({
+    executablePath: exe,
+    args: [
+      '--no-proxy-server',
+      '--no-release-redirect',
+      '--force-device-scale-factor=2',
+      '--home',
+      sanitizedHome,
+    ],
+    env: cleanEnv,
+  });
+  const darkPage = await electronApp.firstWindow();
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win) {
+      win.setBounds({ x: 60, y: 40, width: 1440, height: 920 });
+    }
+  });
+  const darkNativeCheck = await electronApp.evaluate(({ BrowserWindow, nativeTheme }) => ({
+    themeSource: nativeTheme.themeSource,
+    shouldUseDarkColors: nativeTheme.shouldUseDarkColors,
+    backgroundColor: BrowserWindow.getAllWindows()[0]?.getBackgroundColor?.() ?? '',
+  }));
+  assert.equal(darkNativeCheck.themeSource, 'dark');
+  assert.equal(darkNativeCheck.shouldUseDarkColors, true);
+  assert.equal(darkNativeCheck.backgroundColor.toLowerCase(), '#1b2226');
+  await darkPage.waitForSelector('[data-composer-body]', { timeout: 20_000 });
+  const darkRendererCheck = await darkPage.evaluate(() => ({
+    pathname: window.location.pathname,
+    theme: document.documentElement.dataset.theme ?? '',
+  }));
+  assert.equal(darkRendererCheck.pathname, `/s/${sessionA}`);
+  assert.equal(darkRendererCheck.theme, 'dark');
+  await delay(1000);
+  if (existsSync(instancesDir)) {
+    for (const file of readdirSync(instancesDir)) {
+      if (!file.endsWith('.json')) continue;
+      const parsed = JSON.parse(readFileSync(join(instancesDir, file), 'utf8'));
+      if (typeof parsed.pid === 'number') serverPids.add(parsed.pid);
+    }
+  }
+  const shotDark = join(proofDir, '06-dark-mode-2x.png');
+  await darkPage.screenshot({ path: shotDark });
+  console.log(`[smoke:home] Captured ${shotDark}`);
+
   await electronApp.close();
   electronApp = undefined;
 
@@ -217,7 +284,25 @@ try {
     await electronApp.close().catch(() => undefined);
   }
   for (const pid of serverPids) {
-    const deadline = Date.now() + 8_000;
+    if (process.platform === 'win32') {
+      const taskkill = join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'taskkill.exe');
+      try {
+        execFileSync(taskkill, ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+      } catch {
+        try {
+          process.kill(pid);
+        } catch {
+          // Already exited.
+        }
+      }
+    } else {
+      try {
+        process.kill(pid);
+      } catch {
+        // Already exited.
+      }
+    }
+    const deadline = Date.now() + 5_000;
     while (Date.now() < deadline) {
       try {
         process.kill(pid, 0);
@@ -225,11 +310,6 @@ try {
       } catch {
         break;
       }
-    }
-    try {
-      process.kill(pid);
-    } catch {
-      // Already exited.
     }
   }
   await delay(300);

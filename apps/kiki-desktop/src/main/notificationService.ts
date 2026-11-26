@@ -5,8 +5,10 @@ import { combineSpaceAttentionTotal } from '#/main/spaceBadge';
 import type {
   DesktopSpaceStatus,
   HostNotification,
+  LocalSpaceSummary,
   NavScopeIdentity,
   NotificationNavigationIntent,
+  SpaceWindowMode,
 } from '#/shared/types';
 
 export interface NativeNotificationHandle {
@@ -66,6 +68,7 @@ export class NotificationService extends EventEmitter {
     { readonly count: number; readonly sessionIds: ReadonlySet<string> }
   >();
   private backgroundStatuses: readonly DesktopSpaceStatus[] = [];
+  private readonly previousBackgroundPendingByHome = new Map<string, ReadonlySet<string>>();
   private persistChain: Promise<void> = Promise.resolve();
   private lastReportedBadgeTotal = -1;
 
@@ -283,6 +286,55 @@ export class NotificationService extends EventEmitter {
   setBackgroundSpaceStatuses(statuses: readonly DesktopSpaceStatus[]): number {
     this.backgroundStatuses = statuses;
     return this.recomputeAndPublishBadge(false);
+  }
+
+  async reconcileBackgroundSpaceAttention(options: {
+    readonly statuses: readonly DesktopSpaceStatus[];
+    readonly spaces: readonly LocalSpaceSummary[];
+    readonly spaceWindowMode: SpaceWindowMode;
+    readonly notificationsEnabled: boolean;
+    readonly zh: boolean;
+  }): Promise<number> {
+    const total = this.setBackgroundSpaceStatuses(options.statuses);
+    const nameByHomeId = new Map(options.spaces.map((space) => [space.homeId, space.name]));
+
+    for (const status of options.statuses) {
+      if (status.active) {
+        continue;
+      }
+      const currentIds = new Set<string>(
+        status.needsYouSessionIds !== undefined
+          ? status.needsYouSessionIds
+          : Array.from({ length: Math.max(0, status.pendingCount) }, (_, idx) => `__count_${idx}`),
+      );
+      const previous = this.previousBackgroundPendingByHome.get(status.homeId);
+      this.previousBackgroundPendingByHome.set(status.homeId, currentIds);
+
+      let newlyPending = 0;
+      for (const id of currentIds) {
+        if (previous === undefined || !previous.has(id)) {
+          newlyPending += 1;
+        }
+      }
+
+      if (
+        options.spaceWindowMode === 'switch' &&
+        options.notificationsEnabled &&
+        newlyPending > 0
+      ) {
+        const spaceName = nameByHomeId.get(status.homeId) ?? status.homeId;
+        await this.send({
+          title: `Kiki · ${spaceName}`,
+          body: options.zh
+            ? `${newlyPending} 个会话需要你的输入`
+            : `${newlyPending} session(s) need your input`,
+          route: '/activity',
+          homeId: status.homeId,
+        });
+      }
+    }
+
+    return total;
   }
 
   currentBadgeTotal(): number {

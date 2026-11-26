@@ -993,6 +993,12 @@ if (Test-Path -LiteralPath (Join-Path $activeDir 'kiki-server.exe')) {
         Assert-True (Test-Path -LiteralPath (Join-Path $activeDir $relCheck) -PathType Leaf) "Synced active\ missing unpacked artifact $relCheck"
     }
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $activeDir 'kiki-server.exe'))) 'Unpacked v2 active\ still had stale kiki-server.exe.'
+    $cliDir = Join-Path $runtimeRoot 'cli'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $cliDir 'kiki.exe'))) 'Unpacked v2 Promote left stale v1 cli\kiki.exe on PATH.'
+    Assert-True (Test-Path -LiteralPath (Join-Path $cliDir 'kiki.cmd') -PathType Leaf) 'Unpacked v2 Promote did not publish cli\kiki.cmd.'
+    Assert-True (Test-Path -LiteralPath (Join-Path $cliDir 'kiki') -PathType Leaf) 'Unpacked v2 Promote did not publish POSIX cli\kiki.'
+    $cliCmdText = Get-Content -LiteralPath (Join-Path $cliDir 'kiki.cmd') -Raw
+    Assert-True ($cliCmdText.Contains('ELECTRON_RUN_AS_NODE=1') -and $cliCmdText.Contains('resources\app.asar.unpacked\dist\server\server-entry.mjs')) 'cli\kiki.cmd did not point at unpacked v2 server-entry.mjs.'
 
     $v2UnpackedSwitchRunner = Join-Path $testRoot 'v2-unpacked-switch-unit.ps1'
     [IO.File]::WriteAllText($v2UnpackedSwitchRunner, @'
@@ -1095,11 +1101,21 @@ foreach ($mustBeGone in @('resources', 'locales', 'ffmpeg.dll', 'icudtl.dat')) {
         throw "Unpacked v2 -> v1 rollback left stale '$mustBeGone' in active\."
     }
 }
+$cliDirInner = Join-Path $runtime 'cli'
+if (-not (Test-Path -LiteralPath (Join-Path $cliDirInner 'kiki.exe') -PathType Leaf)) {
+    throw 'Unpacked v2 -> v1 rollback did not restore cli\kiki.exe.'
+}
+if ((Test-Path -LiteralPath (Join-Path $cliDirInner 'kiki.cmd')) -or (Test-Path -LiteralPath (Join-Path $cliDirInner 'kiki'))) {
+    throw 'Unpacked v2 -> v1 rollback left v2 cli\kiki.cmd or cli\kiki shim.'
+}
 
 # Switch v1 -> unpacked v2 must restore full unpacked tree and purge kiki-server.exe.
 Select-InstalledRelease $UnpackedV2ReleaseId $Commit 'Target' -RequireActiveSync
 if (Test-Path -LiteralPath (Join-Path $activeDir 'kiki-server.exe')) {
     throw 'v1 -> unpacked v2 switch left stale kiki-server.exe.'
+}
+if ((Test-Path -LiteralPath (Join-Path $cliDirInner 'kiki.exe')) -or -not (Test-Path -LiteralPath (Join-Path $cliDirInner 'kiki.cmd') -PathType Leaf)) {
+    throw 'v1 -> unpacked v2 switch did not replace cli\kiki.exe with cli\kiki.cmd.'
 }
 foreach ($mustExist in @(
     'ffmpeg.dll',

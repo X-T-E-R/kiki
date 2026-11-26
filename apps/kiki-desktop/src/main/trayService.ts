@@ -247,6 +247,8 @@ export function buildTrayMenuTemplate(input: {
 }
 
 export interface TrayQuitDeps {
+  readonly collectPendingWork?: () => Promise<readonly string[]>;
+  readonly beginImmediateQuitUi?: () => void;
   readonly stopManagedDaemon: (options: {
     readonly action: 'quit';
     readonly interruptWork: boolean;
@@ -258,16 +260,31 @@ export interface TrayQuitDeps {
 
 export async function executeTrayQuit(deps: TrayQuitDeps): Promise<{ readonly quit: boolean }> {
   try {
-    const first = await deps.stopManagedDaemon({ action: 'quit', interruptWork: false });
-    if (first.reason === 'pending-work') {
-      const confirmed = await deps.confirmInterruptPendingWork(first.pendingWork ?? []);
-      if (!confirmed) {
-        return { quit: false };
+    if (deps.collectPendingWork !== undefined) {
+      const pending = await deps.collectPendingWork().catch(() => []);
+      if (pending.length > 0) {
+        const confirmed = await deps.confirmInterruptPendingWork(pending);
+        if (!confirmed) {
+          return { quit: false };
+        }
       }
+      deps.beginImmediateQuitUi?.();
       await deps.stopManagedDaemon({ action: 'quit', interruptWork: true });
+    } else {
+      const first = await deps.stopManagedDaemon({ action: 'quit', interruptWork: false });
+      if (first.reason === 'pending-work') {
+        const confirmed = await deps.confirmInterruptPendingWork(first.pendingWork ?? []);
+        if (!confirmed) {
+          return { quit: false };
+        }
+        deps.beginImmediateQuitUi?.();
+        await deps.stopManagedDaemon({ action: 'quit', interruptWork: true });
+      } else {
+        deps.beginImmediateQuitUi?.();
+      }
     }
   } catch {
-    // Never trap the user in an unquittable window if the daemon is unreachable during quit.
+    deps.beginImmediateQuitUi?.();
   }
   deps.detachDesktop();
   deps.releaseQuit();

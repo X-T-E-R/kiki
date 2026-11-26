@@ -284,7 +284,7 @@ export interface DesktopNativePrefs {
   windowMode: SpaceWindowMode;
 }
 
-export type CompatibilityHomeKind = 'kimi' | 'custom';
+export type CompatibilityHomeKind = 'kimi' | 'kiki' | 'custom';
 export type SpaceWindowMode = 'switch' | 'windows';
 
 export interface CompatibilitySettings {
@@ -841,7 +841,7 @@ export function readDesktopPrefs(): DesktopNativePrefs {
     updateState: parseDesktopUpdateState(stored.updateState),
     logLevel: DESKTOP_LOG_LEVELS.includes(stored.logLevel as DesktopLogLevel) ? stored.logLevel : 'warn',
     compatibility: {
-      homeKind: homeKind === 'kimi' || homeKind === 'custom'
+      homeKind: homeKind === 'kimi' || homeKind === 'kiki' || homeKind === 'custom'
         ? homeKind
         : DESKTOP_PREFS_DEFAULTS.compatibility.homeKind,
       customHome:

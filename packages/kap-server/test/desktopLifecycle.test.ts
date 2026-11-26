@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { createConnection } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { ProcessTask } from '@kiki/agent-core-v2/agent/tools/os/bash/process-task';
 import { MessageStepRequest } from '@kiki/agent-core-v2/agent/loop/stepRequest';
 import { IHostProcessService, type IHostProcess } from '@kiki/agent-core-v2/os/interface/hostProcess';
@@ -380,6 +382,79 @@ describe('desktop-managed shared lifecycle', () => {
       expect((await call(server, '/api/meta')).code).toBe(0);
     } finally {
       delivery.abort();
+      await server?.close();
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('bounds desktop-lifecycle quit when a session close or half-open websocket stalls', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-lifecycle-bounded-'));
+    let server: RunningServer | undefined;
+    let rawWs: ReturnType<typeof createConnection> | undefined;
+    let restoreClose: (() => void) | undefined;
+    try {
+      vi.stubEnv('KIKI_DESKTOP_SHUTDOWN_TIMEOUT_MS', '400');
+      vi.stubEnv('KIKI_SEARCH_DISABLED', '1');
+      server = await startServer({
+        hostIdentity: TEST_HOST_IDENTITY,
+        host: '127.0.0.1',
+        port: 0,
+        homeDir: root,
+        env: { ...process.env, KIKI_DESKTOP_BUNDLED: '1' },
+        logLevel: 'silent',
+      });
+      const created = await call(server, '/api/sessions', { metadata: { cwd: root } });
+      expect(created.code).toBe(0);
+      const sessionManager = server.core.accessor.get(ISessionManager) as ISessionManager & { close: (id: string) => Promise<void> };
+      const originalClose = sessionManager.close.bind(sessionManager);
+      let releaseClose!: () => void;
+      const hungClose = new Promise<void>((resolve) => {
+        releaseClose = resolve;
+      });
+      sessionManager.close = async () => {
+        await hungClose;
+      };
+      restoreClose = () => {
+        sessionManager.close = originalClose;
+        releaseClose();
+      };
+      rawWs = createConnection({ host: '127.0.0.1', port: server.port });
+      await new Promise<void>((resolve, reject) => {
+        const key = randomBytes(16).toString('base64');
+        let headers = '';
+        rawWs!.once('error', reject);
+        rawWs!.on('data', (chunk) => {
+          headers += chunk.toString('latin1');
+          if (headers.includes('\r\n\r\n')) resolve();
+        });
+        rawWs!.once('connect', () => {
+          rawWs!.write(
+            `GET /api/ws?token=${encodeURIComponent(server!.authToken ?? '')} HTTP/1.1\r\n` +
+            `Host: 127.0.0.1:${server!.port}\r\n` +
+            'Upgrade: websocket\r\n' +
+            'Connection: Upgrade\r\n' +
+            `Sec-WebSocket-Key: ${key}\r\n` +
+            'Sec-WebSocket-Version: 13\r\n\r\n',
+          );
+        });
+      });
+
+      const state = desktopLifecycleStateSchema.parse((await call(server, '/api/desktop-lifecycle')).data);
+      const startedAt = Date.now();
+      const res = await call(server, '/api/desktop-lifecycle', {
+        action: 'quit',
+        server_id: state.server_id,
+        consent: true,
+        interrupt_work: true,
+      });
+      expect(res.code).toBe(0);
+      await server.closed;
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+      const instances = await readdir(join(root, 'server', 'instances')).catch(() => []);
+      expect(instances.filter((entry) => entry.endsWith('.json'))).toEqual([]);
+    } finally {
+      rawWs?.destroy();
+      restoreClose?.();
       await server?.close();
       await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }

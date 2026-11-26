@@ -193,6 +193,7 @@ describe('DaemonSupervisor', () => {
       },
       {
         isPidAlive: (pid) => pid === 777,
+        shutdownGraceMs: 10,
         fetchFn: async (input, init) => {
           const url = requestUrlString(input);
           if (url.endsWith('/api/meta')) {
@@ -292,6 +293,7 @@ describe('DaemonSupervisor', () => {
       },
       {
         isPidAlive: (pid) => pid === 101 || pid === 202,
+        shutdownGraceMs: 10,
         fetchFn: async (input, init) => {
           const url = new URL(requestUrlString(input));
           const port = Number(url.port);
@@ -597,5 +599,104 @@ describe('DaemonSupervisor', () => {
     const nextConn = await supervisor.discoverConnection();
     expect(nextConn.config.url).toBe('http://127.0.0.1:42002');
     await staleRejected;
+  });
+
+  it('force-kills hung managed daemons across all tracked spaces on Quit, hides UI immediately, and blocks health recovery', async () => {
+    const mainHome = makeTempHome();
+    const childHome = makeTempHome();
+    mkdirSync(join(mainHome, 'server', 'instances'), { recursive: true });
+    mkdirSync(join(childHome, 'server', 'instances'), { recursive: true });
+    writeFileSync(join(mainHome, 'server.local-owner'), 'tok-main');
+    writeFileSync(join(childHome, 'server.local-owner'), 'tok-child');
+    writeFileSync(
+      join(mainHome, 'server', 'instances', 'm.json'),
+      JSON.stringify({ server_id: 'srv-main', pid: 5101, port: 51001, started_at: 1000 }),
+    );
+    writeFileSync(
+      join(childHome, 'server', 'instances', 'c.json'),
+      JSON.stringify({ server_id: 'srv-child', pid: 5202, port: 52002, started_at: 2000 }),
+    );
+
+    const alivePids = new Set<number>([5101, 5202]);
+    const treeKilledPids: number[] = [];
+    const events: string[] = [];
+
+    const supervisor = new DaemonSupervisor(
+      {
+        electronBinary: '/opt/kiki/kiki-desktop',
+        serverEntry: '/opt/kiki/server-entry.mjs',
+        homeDir: mainHome,
+      },
+      {
+        isPidAlive: (pid) => alivePids.has(pid),
+        forceKillPidTree: async (pid) => {
+          treeKilledPids.push(pid);
+          alivePids.delete(pid);
+          events.push(`tree-kill:${pid}`);
+        },
+        pollIntervalMs: 10,
+        quitProbeTimeoutMs: 50,
+        shutdownGraceMs: 30,
+        fetchFn: async (input, init) => {
+          const url = new URL(requestUrlString(input));
+          const port = Number(url.port);
+          if (url.pathname === '/api/meta') {
+            return jsonResponse({
+              code: 0,
+              data: {
+                server_id: port === 51001 ? 'srv-main' : 'srv-child',
+                home_id: port === 51001 ? 'main' : 'child',
+                desktop_managed: true,
+              },
+            });
+          }
+          if (url.pathname === '/api/desktop-lifecycle' && (!init?.method || init.method === 'GET')) {
+            return jsonResponse({
+              code: 0,
+              data: {
+                server_id: port === 51001 ? 'srv-main' : 'srv-child',
+                home_id: port === 51001 ? 'main' : 'child',
+                managed: true,
+                draining: false,
+                work_pending: [],
+              },
+            });
+          }
+          if (url.pathname === '/api/desktop-lifecycle' && init?.method === 'POST') {
+            events.push(`post:${port}`);
+            // Simulate t1026: kap-server replies 200 ok BEFORE setImmediate(onShutdown), then hangs forever!
+            return jsonResponse({ code: 0, data: { ok: true } });
+          }
+          return jsonResponse({ code: 1 }, 404);
+        },
+      },
+    );
+
+    await supervisor.discoverConnection();
+    supervisor.setTargetHome(childHome, childHome);
+    await supervisor.discoverConnection();
+
+    await executeTrayQuit({
+      collectPendingWork: () => supervisor.collectManagedQuitPendingWork(),
+      beginImmediateQuitUi: () => {
+        events.push('hide-windows-immediately');
+        supervisor.markShuttingDown();
+      },
+      stopManagedDaemon: ({ interruptWork }) =>
+        supervisor.shutdownAllManagedDaemons({ interruptWork }),
+      confirmInterruptPendingWork: async () => true,
+      detachDesktop: () => supervisor.detachDesktop(),
+      releaseQuit: () => {
+        events.push('app-exit-0');
+      },
+    });
+
+    // Window hides BEFORE waiting on daemon shutdown, both hung PIDs are tree-killed, and stale instance records are cleaned!
+    expect(events[0]).toBe('hide-windows-immediately');
+    expect(events.at(-1)).toBe('app-exit-0');
+    expect(treeKilledPids.toSorted()).toEqual([5101, 5202]);
+    expect(supervisor.isShuttingDown).toBe(true);
+    await supervisor.checkHealthAndRecoverIfNeeded();
+    await expect(supervisor.discoverConnection()).rejects.toThrow(/shutting down/i);
   });
 });

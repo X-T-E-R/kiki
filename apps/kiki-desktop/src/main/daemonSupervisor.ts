@@ -1,9 +1,10 @@
-import { spawn, type SpawnOptions } from 'node:child_process';
+import { execFile, spawn, type SpawnOptions } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { closeSync, existsSync } from 'node:fs';
 import { mkdir, open, readdir, readFile, stat, unlink } from 'node:fs/promises';
 import { totalmem } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
+import { promisify } from 'node:util';
 import { join } from 'pathe';
 import { z } from 'zod';
 import { removeInjectedHeapOption } from '@kiki/node-sdk/worker-heap-policy';
@@ -13,6 +14,7 @@ import {
   desktopSshConnectResponseSchema,
   desktopSshProfilesResponseSchema,
   desktopSshResumeResponseSchema,
+  isLoopbackHost,
   type DesktopSshResolvedConnection,
 } from '@kiki/protocol';
 import { canonicalHomeKey } from '#/main/launchArgs';
@@ -37,15 +39,17 @@ import type {
   SshResolvedConnection,
 } from '#/shared/types';
 
+const execFileAsync = promisify(execFile);
+
 const DEFAULT_STARTUP_TIMEOUT_MS = 120_000;
 const DEFAULT_POLL_INTERVAL_MS = 200;
 const DEFAULT_HTTP_TIMEOUT_MS = 10_000;
+const DEFAULT_QUIT_PROBE_TIMEOUT_MS = 1_200;
+const DEFAULT_SHUTDOWN_GRACE_MS = 3_000;
 const HEARTBEAT_FRESHNESS_MS = 60_000;
 const ENSURE_LOCK_STALE_MS = 30_000;
 const RECOVERY_MAX_ATTEMPTS = 3;
 const RECOVERY_STABLE_WINDOW_MS = 60_000;
-
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
 const instanceRecordSchema = z.object({
   pid: z.number().int().positive(),
@@ -116,6 +120,7 @@ export interface DaemonSupervisorDeps {
   readonly fetchFn?: typeof fetch;
   readonly spawnFn?: (command: string, args: readonly string[], options: SpawnOptions) => SpawnedDaemonChild;
   readonly isPidAlive?: (pid: number) => boolean;
+  readonly forceKillPidTree?: (pid: number) => Promise<void>;
   readonly openLogFd?: (homeDir: string) => { readonly path: string; readonly fd: number };
   readonly closeFd?: (fd: number) => void;
   readonly readLogTail?: (homeDir: string) => Promise<readonly string[]>;
@@ -124,6 +129,8 @@ export interface DaemonSupervisorDeps {
   readonly totalMemoryBytes?: () => number;
   readonly startupTimeoutMs?: number;
   readonly pollIntervalMs?: number;
+  readonly quitProbeTimeoutMs?: number;
+  readonly shutdownGraceMs?: number;
   readonly baseEnv?: NodeJS.ProcessEnv;
   readonly autoRecoverManagedExit?: boolean;
 }
@@ -139,8 +146,28 @@ interface EnsureLease {
   retain(): void;
 }
 
+const EXPLICIT_HEAP_FLAG_RE = /(?:^|\s)--max[-_]old[-_]space[-_]size(?:=|\s+)(\d+)(?=\s|$)/i;
+
 export function computeDaemonHeapMb(totalMemoryBytes: number): number {
   return Math.max(8192, Math.floor(totalMemoryBytes / 1_048_576 / 4));
+}
+
+export function resolveDaemonHeapCliArg(
+  existingNodeOptions: string,
+  totalMemoryBytes: number = totalmem(),
+): { readonly cliHeapArg: string; readonly injectedHeapOption: string } {
+  const match = EXPLICIT_HEAP_FLAG_RE.exec(existingNodeOptions);
+  if (match !== null && match[1] !== undefined) {
+    return {
+      cliHeapArg: `--max-old-space-size=${match[1]}`,
+      injectedHeapOption: '',
+    };
+  }
+  const heapOption = `--max-old-space-size=${computeDaemonHeapMb(totalMemoryBytes)}`;
+  return {
+    cliHeapArg: heapOption,
+    injectedHeapOption: heapOption,
+  };
 }
 
 export function buildDaemonNodeOptions(
@@ -163,19 +190,33 @@ export function buildDaemonSpawnEnv(
   descriptor: DaemonRuntimeDescriptor,
   baseEnv: NodeJS.ProcessEnv = process.env,
   totalMemoryBytes: number = totalmem(),
+  options?: { readonly heapPassedViaArgv?: boolean },
 ): NodeJS.ProcessEnv {
   const cleanEnv = filterGuiChildEnv(baseEnv);
   removeInjectedHeapOption(cleanEnv);
-  const { nodeOptions, injectedHeapOption } = buildDaemonNodeOptions(
-    cleanEnv['NODE_OPTIONS'] ?? '',
-    totalMemoryBytes,
-  );
+  const rawNodeOptions = cleanEnv['NODE_OPTIONS'] ?? '';
+  let injectedHeapOption = '';
+  if (options?.heapPassedViaArgv === true) {
+    const resolved = resolveDaemonHeapCliArg(rawNodeOptions, totalMemoryBytes);
+    injectedHeapOption = resolved.injectedHeapOption;
+    const stripped = rawNodeOptions
+      .replace(/(?:^|\s)--max[-_]old[-_]space[-_]size(?:=|\s+)\d+(?=\s|$)/gi, ' ')
+      .trim();
+    if (stripped === '') {
+      delete cleanEnv['NODE_OPTIONS'];
+    } else {
+      cleanEnv['NODE_OPTIONS'] = stripped;
+    }
+  } else {
+    const built = buildDaemonNodeOptions(rawNodeOptions, totalMemoryBytes);
+    cleanEnv['NODE_OPTIONS'] = built.nodeOptions;
+    injectedHeapOption = built.injectedHeapOption;
+  }
   const threadpoolSize = cleanEnv['UV_THREADPOOL_SIZE']?.trim() || '32';
 
   cleanEnv[ELECTRON_RUN_AS_NODE_ENV] = '1';
   cleanEnv['KIKI_HOME'] = descriptor.homeDir;
   cleanEnv['KIKI_DESKTOP_BUNDLED'] = '1';
-  cleanEnv['NODE_OPTIONS'] = nodeOptions;
   cleanEnv['UV_THREADPOOL_SIZE'] = threadpoolSize;
   if (injectedHeapOption !== '') {
     cleanEnv['KIKI_INJECTED_HEAP_OPTION'] = injectedHeapOption;
@@ -201,8 +242,40 @@ function defaultIsPidAlive(pid: number): boolean {
   }
 }
 
-function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return delay(ms, undefined, { signal });
+export async function defaultForceKillPidTree(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return;
+  if (platform === 'win32') {
+    const systemRoot = process.env['SystemRoot'] ?? 'C:\\Windows';
+    const taskkill = join(systemRoot, 'System32', 'taskkill.exe');
+    try {
+      await execFileAsync(taskkill, ['/PID', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        timeout: 4_000,
+      });
+      return;
+    } catch {
+      // Fall back to direct kill if taskkill fails or process already exited.
+    }
+    try {
+      process.kill(pid);
+    } catch {
+      // Process already exited.
+    }
+    return;
+  }
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    // Ignore if pid is not a process group leader.
+  }
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // Process already exited.
+  }
 }
 
 interface VerifiedBackend {
@@ -210,12 +283,23 @@ interface VerifiedBackend {
   readonly serverId: string;
   readonly homeId: string;
   readonly managed: boolean;
+  readonly pid?: number;
+  readonly startedAt?: number;
+}
+
+interface ManagedHomeRecord {
+  readonly homeDir: string;
+  pid?: number;
+  serverId?: string;
+  startedAt?: number;
+  spawnedByThisShell: boolean;
 }
 
 export class DaemonSupervisor extends EventEmitter {
   private readonly fetchFn: typeof fetch;
   private readonly spawnFn: NonNullable<DaemonSupervisorDeps['spawnFn']>;
   private readonly isPidAlive: (pid: number) => boolean;
+  private readonly forceKillPidTree: NonNullable<DaemonSupervisorDeps['forceKillPidTree']>;
   private readonly openLogFd: NonNullable<DaemonSupervisorDeps['openLogFd']>;
   private readonly closeFd: (fd: number) => void;
   private readonly readLogTail: NonNullable<DaemonSupervisorDeps['readLogTail']>;
@@ -224,6 +308,8 @@ export class DaemonSupervisor extends EventEmitter {
   private readonly totalMemoryBytes: () => number;
   private readonly startupTimeoutMs: number;
   private readonly pollIntervalMs: number;
+  private readonly quitProbeTimeoutMs: number;
+  private readonly shutdownGraceMs: number;
   private readonly baseEnv: NodeJS.ProcessEnv;
   private readonly autoRecoverManagedExit: boolean;
 
@@ -233,9 +319,11 @@ export class DaemonSupervisor extends EventEmitter {
   private startupAbort: AbortController | null = null;
   private preReadyChild: SpawnedDaemonChild | null = null;
   private readonly cancelledChildren = new WeakSet<SpawnedDaemonChild>();
+  private readonly managedHomes = new Map<string, ManagedHomeRecord>();
   private stagedScopeHandoff: { profile: SshProfile; connection: SshResolvedConnection } | null = null;
   private intentionalStopCount = 0;
   private detachedFromUi = false;
+  private shuttingDown = false;
   private recoveryAttempts = 0;
   private lastReadyAt = 0;
   private recoveryInFlight: Promise<void> | null = null;
@@ -246,16 +334,27 @@ export class DaemonSupervisor extends EventEmitter {
     this.fetchFn = deps.fetchFn ?? fetch;
     this.spawnFn = deps.spawnFn ?? ((cmd, args, opts) => spawn(cmd, [...args], opts));
     this.isPidAlive = deps.isPidAlive ?? defaultIsPidAlive;
+    this.forceKillPidTree =
+      deps.forceKillPidTree ??
+      (deps.isPidAlive !== undefined
+        ? async () => undefined
+        : (pid) => defaultForceKillPidTree(pid));
     this.openLogFd = deps.openLogFd ?? openDetachedBackendLogFd;
     this.closeFd = deps.closeFd ?? closeSync;
     this.readLogTail = deps.readLogTail ?? ((homeDir) => readBackendLogTail(homeDir, 100));
     this.now = deps.now ?? Date.now;
-    this.sleep = deps.sleep ?? defaultSleep;
+    this.sleep = deps.sleep ?? ((ms, signal) => delay(ms, undefined, { signal }));
     this.totalMemoryBytes = deps.totalMemoryBytes ?? totalmem;
     this.startupTimeoutMs = deps.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
     this.pollIntervalMs = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    this.quitProbeTimeoutMs = deps.quitProbeTimeoutMs ?? DEFAULT_QUIT_PROBE_TIMEOUT_MS;
+    this.shutdownGraceMs = deps.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
     this.baseEnv = deps.baseEnv ?? process.env;
     this.autoRecoverManagedExit = deps.autoRecoverManagedExit ?? false;
+    this.managedHomes.set(canonicalHomeKey(descriptor.homeDir), {
+      homeDir: descriptor.homeDir,
+      spawnedByThisShell: false,
+    });
   }
 
   get activeHomeDir(): string {
@@ -270,12 +369,70 @@ export class DaemonSupervisor extends EventEmitter {
     return this.attached?.managed === true;
   }
 
+  get isShuttingDown(): boolean {
+    return this.shuttingDown;
+  }
+
   private isActiveHome(homeDir: string): boolean {
     return canonicalHomeKey(homeDir) === canonicalHomeKey(this.descriptor.homeDir);
   }
 
+  private recordManagedHome(
+    homeDir: string,
+    update: {
+      readonly pid?: number;
+      readonly serverId?: string;
+      readonly startedAt?: number;
+      readonly spawnedByThisShell?: boolean;
+    },
+  ): void {
+    const key = canonicalHomeKey(homeDir);
+    const existing = this.managedHomes.get(key);
+    this.managedHomes.set(key, {
+      homeDir: existing?.homeDir ?? homeDir,
+      pid: update.pid ?? existing?.pid,
+      serverId: update.serverId ?? existing?.serverId,
+      startedAt: update.startedAt ?? existing?.startedAt,
+      spawnedByThisShell: update.spawnedByThisShell ?? existing?.spawnedByThisShell ?? false,
+    });
+  }
+
+  private clearManagedHomeRuntime(homeDir: string, pid?: number): void {
+    const key = canonicalHomeKey(homeDir);
+    const existing = this.managedHomes.get(key);
+    if (existing === undefined) return;
+    if (pid !== undefined && existing.pid !== undefined && existing.pid !== pid) return;
+    this.managedHomes.set(key, {
+      homeDir: existing.homeDir,
+      spawnedByThisShell: false,
+    });
+  }
+  setOauthHomeDir(oauthHomeDir: string): void {
+    this.descriptor = {
+      ...this.descriptor,
+      oauthHomeDir,
+    };
+  }
+
+  setLogLevel(logLevel: DesktopLogLevel): void {
+    this.descriptor = {
+      ...this.descriptor,
+      logLevel,
+    };
+  }
+
+  markShuttingDown(): void {
+    this.shuttingDown = true;
+    this.startupAbort?.abort(new Error('Desktop is shutting down'));
+  }
+
   setTargetHome(homeDir: string, oauthHomeDir?: string): void {
-    if (this.isActiveHome(homeDir)) return;
+    if (this.isActiveHome(homeDir)) {
+      if (oauthHomeDir !== undefined && oauthHomeDir !== this.descriptor.oauthHomeDir) {
+        this.descriptor = { ...this.descriptor, oauthHomeDir };
+      }
+      return;
+    }
     this.discoveryFlight?.catch(() => undefined);
     this.startupAbort?.abort(new Error('A newer space switch replaced this request'));
     this.startupAbort = null;
@@ -285,6 +442,7 @@ export class DaemonSupervisor extends EventEmitter {
       homeDir,
       oauthHomeDir: oauthHomeDir ?? this.descriptor.oauthHomeDir,
     };
+    this.recordManagedHome(homeDir, {});
     this.attached = null;
     this.recoveryAttempts = 0;
     this.lastReadyAt = 0;
@@ -331,7 +489,10 @@ export class DaemonSupervisor extends EventEmitter {
     }
   }
 
-  private async readLiveInstanceRecords(homeDir: string): Promise<Array<z.infer<typeof instanceRecordSchema>>> {
+  private async readLiveInstanceRecords(
+    homeDir: string,
+    options?: { readonly ignoreHeartbeatStaleness?: boolean },
+  ): Promise<Array<z.infer<typeof instanceRecordSchema> & { readonly filePath: string }>> {
     const dir = join(homeDir, 'server', 'instances');
     let entries: string[];
     try {
@@ -339,22 +500,27 @@ export class DaemonSupervisor extends EventEmitter {
     } catch {
       return [];
     }
-    const records: Array<z.infer<typeof instanceRecordSchema>> = [];
+    const records: Array<z.infer<typeof instanceRecordSchema> & { readonly filePath: string }> = [];
     const nowMs = this.now();
     for (const entry of entries) {
       if (!entry.endsWith('.json')) continue;
+      const filePath = join(dir, entry);
       try {
-        const raw = await readFile(join(dir, entry), 'utf8');
+        const raw = await readFile(filePath, 'utf8');
         const parsed = instanceRecordSchema.safeParse(JSON.parse(raw));
         if (!parsed.success) continue;
         const record = parsed.data;
-        if (record.host !== undefined && !LOOPBACK_HOSTS.has(record.host.toLowerCase())) continue;
+        if (record.host !== undefined && !isLoopbackHost(record.host)) continue;
         if (!this.isPidAlive(record.pid)) continue;
         const heartbeatAt = record.heartbeat_at ?? record.heartbeatAt;
-        if (heartbeatAt !== undefined && nowMs - heartbeatAt > HEARTBEAT_FRESHNESS_MS) {
+        if (
+          options?.ignoreHeartbeatStaleness !== true &&
+          heartbeatAt !== undefined &&
+          nowMs - heartbeatAt > HEARTBEAT_FRESHNESS_MS
+        ) {
           continue;
         }
-        records.push(record);
+        records.push({ ...record, filePath });
       } catch {
         continue;
       }
@@ -366,9 +532,10 @@ export class DaemonSupervisor extends EventEmitter {
     port: number,
     token: string,
     signal?: AbortSignal,
+    timeoutMs: number = DEFAULT_HTTP_TIMEOUT_MS,
   ): Promise<VerifiedBackend | null> {
     const url = `http://127.0.0.1:${port}`;
-    const timeoutSignal = AbortSignal.timeout(DEFAULT_HTTP_TIMEOUT_MS);
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
     const combinedSignal =
       signal !== undefined ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     try {
@@ -403,17 +570,23 @@ export class DaemonSupervisor extends EventEmitter {
   private async discoverVerifiedForHome(
     homeDir: string,
     signal?: AbortSignal,
+    timeoutMs: number = DEFAULT_HTTP_TIMEOUT_MS,
   ): Promise<VerifiedBackend | null> {
     if (this.isActiveHome(homeDir) && this.attached !== null) {
       const parsedUrl = URL.parse(this.attached.config.url);
       const port = parsedUrl !== null ? Number(parsedUrl.port) : 0;
       if (port > 0) {
-        const verified = await this.verifyEndpoint(port, this.attached.config.token, signal);
+        const verified = await this.verifyEndpoint(port, this.attached.config.token, signal, timeoutMs);
         if (verified !== null) {
+          const enriched: VerifiedBackend = {
+            ...verified,
+            ...(this.attached.pid !== undefined ? { pid: this.attached.pid } : {}),
+            ...(this.attached.startedAt !== undefined ? { startedAt: this.attached.startedAt } : {}),
+          };
           if (this.isActiveHome(homeDir)) {
-            this.attached = verified;
+            this.attached = enriched;
           }
-          return verified;
+          return enriched;
         }
       }
       if (this.isActiveHome(homeDir)) {
@@ -423,16 +596,33 @@ export class DaemonSupervisor extends EventEmitter {
     const token = await this.readOwnerToken(homeDir);
     if (token === null) return null;
     const records = await this.readLiveInstanceRecords(homeDir);
-    for (const record of records) {
-      const verified = await this.verifyEndpoint(record.port, token, signal);
-      if (verified !== null) {
-        if (this.isActiveHome(homeDir)) {
-          this.attached = verified;
-        }
-        return verified;
+    if (records.length === 0) return null;
+    const probes = await Promise.all(
+      records.map(async (record) => {
+        const verified = await this.verifyEndpoint(record.port, token, signal, timeoutMs);
+        if (verified === null) return null;
+        const startedAt = record.started_at ?? record.startedAt;
+        return {
+          ...verified,
+          pid: record.pid,
+          ...(startedAt !== undefined ? { startedAt } : {}),
+        } satisfies VerifiedBackend;
+      }),
+    );
+    const matched = probes.find((item): item is NonNullable<typeof item> => item !== null) ?? null;
+    if (matched !== null) {
+      if (matched.managed) {
+        this.recordManagedHome(homeDir, {
+          pid: matched.pid,
+          serverId: matched.serverId,
+          startedAt: matched.startedAt,
+        });
+      }
+      if (this.isActiveHome(homeDir)) {
+        this.attached = matched;
       }
     }
-    return null;
+    return matched;
   }
 
   private async withEnsureLock<T>(
@@ -554,6 +744,10 @@ export class DaemonSupervisor extends EventEmitter {
       exitPromise,
       this.sleep(Math.min(2_000, this.pollIntervalMs * 10)).then(() => !this.isPidAlive(child.pid!)),
     ]);
+    if (!exited && this.isPidAlive(child.pid)) {
+      await this.forceKillPidTree(child.pid);
+      return !this.isPidAlive(child.pid);
+    }
     return exited;
   }
 
@@ -566,6 +760,9 @@ export class DaemonSupervisor extends EventEmitter {
   }
 
   async discoverConnection(): Promise<LocalConnection> {
+    if (this.shuttingDown) {
+      throw new Error('Desktop is shutting down');
+    }
     if (this.discoveryFlight !== null) return this.discoveryFlight;
     this.detachedFromUi = false;
     const abort = new AbortController();
@@ -615,6 +812,7 @@ export class DaemonSupervisor extends EventEmitter {
     options: {
       readonly active: boolean;
       readonly signal: AbortSignal;
+      readonly oauthHomeDir?: string;
     },
   ): Promise<LocalConnection> {
     const { active, signal } = options;
@@ -674,14 +872,20 @@ export class DaemonSupervisor extends EventEmitter {
             : {
                 ...this.descriptor,
                 homeDir,
+                ...(options.oauthHomeDir !== undefined
+                  ? { oauthHomeDir: options.oauthHomeDir }
+                  : {}),
                 idleExit: true,
               };
           const logLevel = targetDescriptor.logLevel ?? 'warn';
           const idleExit = targetDescriptor.idleExit === true ? '30m' : '0ms';
           const totalMem = this.totalMemoryBytes();
-          const heapArg = `--max-old-space-size=${computeDaemonHeapMb(totalMem)}`;
+          const { cliHeapArg } = resolveDaemonHeapCliArg(
+            this.baseEnv['NODE_OPTIONS'] ?? '',
+            totalMem,
+          );
           const args = [
-            heapArg,
+            cliHeapArg,
             targetDescriptor.serverEntry,
             'serve',
             '--port',
@@ -691,7 +895,9 @@ export class DaemonSupervisor extends EventEmitter {
             '--idle-exit',
             idleExit,
           ];
-          const env = buildDaemonSpawnEnv(targetDescriptor, this.baseEnv, totalMem);
+          const env = buildDaemonSpawnEnv(targetDescriptor, this.baseEnv, totalMem, {
+            heapPassedViaArgv: true,
+          });
 
           let logFd: number | undefined;
           try {
@@ -766,10 +972,22 @@ export class DaemonSupervisor extends EventEmitter {
                       this.preReadyChild = null;
                     }
                     child.unref();
+                    const startedAt = record.started_at ?? record.startedAt;
+                    const enriched: VerifiedBackend = {
+                      ...candidate,
+                      pid: child.pid ?? record.pid,
+                      ...(startedAt !== undefined ? { startedAt } : {}),
+                    };
+                    this.recordManagedHome(homeDir, {
+                      pid: enriched.pid,
+                      serverId: enriched.serverId,
+                      startedAt: enriched.startedAt,
+                      spawnedByThisShell: true,
+                    });
                     if (active && this.autoRecoverManagedExit) {
-                      this.attachRuntimeExitWatcher(child, homeDir, candidate.serverId);
+                      this.attachRuntimeExitWatcher(child, homeDir, enriched.serverId);
                     }
-                    return candidate;
+                    return enriched;
                   }
                 }
               }
@@ -833,7 +1051,7 @@ export class DaemonSupervisor extends EventEmitter {
     serverId: string,
   ): void {
     child.on('exit', () => {
-      if (this.detachedFromUi || this.intentionalStopCount > 0) return;
+      if (this.shuttingDown || this.detachedFromUi || this.intentionalStopCount > 0) return;
       if (!this.isActiveHome(homeDir)) return;
       if (this.attached !== null && this.attached.serverId !== serverId) return;
       this.attached = null;
@@ -842,14 +1060,26 @@ export class DaemonSupervisor extends EventEmitter {
   }
 
   async checkHealthAndRecoverIfNeeded(): Promise<void> {
-    if (this.detachedFromUi || this.intentionalStopCount > 0 || this.discoveryFlight !== null) return;
+    if (
+      this.shuttingDown ||
+      this.detachedFromUi ||
+      this.intentionalStopCount > 0 ||
+      this.discoveryFlight !== null
+    ) {
+      return;
+    }
     if (this.attached === null || !this.attached.managed) return;
     const parsedUrl = URL.parse(this.attached.config.url);
     const port = parsedUrl !== null ? Number(parsedUrl.port) : 0;
     if (port <= 0) return;
     const healthy = await this.verifyEndpoint(port, this.attached.config.token);
+    if (this.shuttingDown || this.detachedFromUi || this.intentionalStopCount > 0) return;
     if (healthy !== null) {
-      this.attached = healthy;
+      this.attached = {
+        ...healthy,
+        ...(this.attached?.pid !== undefined ? { pid: this.attached.pid } : {}),
+        ...(this.attached?.startedAt !== undefined ? { startedAt: this.attached.startedAt } : {}),
+      };
       if (this.lastReadyAt > 0 && this.now() - this.lastReadyAt >= RECOVERY_STABLE_WINDOW_MS) {
         this.recoveryAttempts = 0;
       }
@@ -860,8 +1090,10 @@ export class DaemonSupervisor extends EventEmitter {
   }
 
   private async triggerManagedRecovery(reason: string): Promise<void> {
+    if (this.shuttingDown || this.detachedFromUi || this.intentionalStopCount > 0) return;
     if (this.recoveryInFlight !== null) return this.recoveryInFlight;
     const run = (async () => {
+      if (this.shuttingDown || this.detachedFromUi || this.intentionalStopCount > 0) return;
       if (this.lastReadyAt > 0 && this.now() - this.lastReadyAt >= RECOVERY_STABLE_WINDOW_MS) {
         this.recoveryAttempts = 0;
       }
@@ -934,27 +1166,169 @@ export class DaemonSupervisor extends EventEmitter {
     }
   }
 
-  async readLifecycleStateForHome(homeDir: string): Promise<{
+  async readLifecycleStateForHome(
+    homeDir: string,
+    timeoutMs: number = DEFAULT_HTTP_TIMEOUT_MS,
+  ): Promise<{
     readonly backend: VerifiedBackend;
     readonly state: DaemonLifecycleState;
   } | null> {
-    const backend = await this.discoverVerifiedForHome(homeDir);
+    const backend = await this.discoverVerifiedForHome(homeDir, undefined, timeoutMs);
     if (backend === null) return null;
-    const response = await this.fetchFn(`${backend.config.url}/api/desktop-lifecycle`, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${backend.config.token}` },
-      signal: AbortSignal.timeout(DEFAULT_HTTP_TIMEOUT_MS),
-    });
-    if (!response.ok) return null;
-    const payload = (await response.json()) as { code?: number; data?: unknown };
-    if (payload.code !== 0) return null;
-    const parsed = lifecycleStateSchema.safeParse(payload.data);
-    return parsed.success ? { backend, state: parsed.data } : null;
+    try {
+      const response = await this.fetchFn(`${backend.config.url}/api/desktop-lifecycle`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${backend.config.token}` },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!response.ok) return null;
+      const payload = (await response.json()) as { code?: number; data?: unknown };
+      if (payload.code !== 0) return null;
+      const parsed = lifecycleStateSchema.safeParse(payload.data);
+      return parsed.success ? { backend, state: parsed.data } : null;
+    } catch {
+      return null;
+    }
   }
 
-  async readLifecycleState(): Promise<DaemonLifecycleState | null> {
-    const resolved = await this.readLifecycleStateForHome(this.descriptor.homeDir);
+  async readLifecycleState(timeoutMs: number = DEFAULT_HTTP_TIMEOUT_MS): Promise<DaemonLifecycleState | null> {
+    const resolved = await this.readLifecycleStateForHome(this.descriptor.homeDir, timeoutMs);
     return resolved?.state ?? null;
+  }
+
+  private async cleanupStaleRuntimeArtifactsForPid(
+    homeDir: string,
+    pid: number,
+    serverId?: string,
+  ): Promise<void> {
+    if (this.isPidAlive(pid)) return;
+    const instancesDir = join(homeDir, 'server', 'instances');
+    const entries = await readdir(instancesDir).catch(() => [] as string[]);
+    for (const entry of entries) {
+      if (!entry.endsWith('.json')) continue;
+      const filePath = join(instancesDir, entry);
+      try {
+        const raw = await readFile(filePath, 'utf8');
+        const parsed = instanceRecordSchema.safeParse(JSON.parse(raw));
+        if (!parsed.success) continue;
+        const recordServerId = parsed.data.server_id ?? parsed.data.serverId;
+        if (
+          parsed.data.pid === pid &&
+          (serverId === undefined || recordServerId === undefined || recordServerId === serverId)
+        ) {
+          await unlink(filePath).catch(() => undefined);
+        }
+      } catch {
+        continue;
+      }
+    }
+    const lockPath = join(homeDir, 'server', 'ensure.lock');
+    const lockOwner = (await readFile(lockPath, 'utf8').catch(() => '')).trim();
+    if (lockOwner === String(pid)) {
+      await unlink(lockPath).catch(() => undefined);
+    }
+  }
+
+  private async verifyTargetStillOwnedBeforeKill(
+    homeDir: string,
+    pid: number,
+    expectedServerId?: string,
+    expectedStartedAt?: number,
+  ): Promise<boolean> {
+    if (!this.isPidAlive(pid)) return false;
+    const managedEntry = this.managedHomes.get(canonicalHomeKey(homeDir));
+    const records = await this.readLiveInstanceRecords(homeDir, { ignoreHeartbeatStaleness: true });
+    for (const record of records) {
+      const recordServerId = record.server_id ?? record.serverId;
+      const recordStartedAt = record.started_at ?? record.startedAt;
+      if (record.pid !== pid) {
+        if (expectedServerId !== undefined && recordServerId !== undefined && recordServerId !== expectedServerId) {
+          return false;
+        }
+        continue;
+      }
+      if (expectedServerId !== undefined && recordServerId !== undefined && recordServerId !== expectedServerId) {
+        return false;
+      }
+      if (
+        expectedStartedAt !== undefined &&
+        recordStartedAt !== undefined &&
+        recordStartedAt !== expectedStartedAt
+      ) {
+        return false;
+      }
+      return true;
+    }
+    if (managedEntry?.pid === pid && (expectedServerId === undefined || managedEntry.serverId === expectedServerId)) {
+      return true;
+    }
+    const lockPath = join(homeDir, 'server', 'ensure.lock');
+    const lockOwner = (await readFile(lockPath, 'utf8').catch(() => '')).trim();
+    return lockOwner === String(pid);
+  }
+
+  private async waitForExitOrForceKill(
+    homeDir: string,
+    target: {
+      readonly pid?: number;
+      readonly serverId?: string;
+      readonly startedAt?: number;
+    },
+    graceMs: number,
+  ): Promise<void> {
+    const { pid, serverId, startedAt } = target;
+    if (pid === undefined || pid <= 0) return;
+
+    const deadline = this.now() + Math.max(0, graceMs);
+    const stepMs = Math.min(100, this.pollIntervalMs);
+    while (this.now() < deadline) {
+      if (!this.isPidAlive(pid)) {
+        this.clearManagedHomeRuntime(homeDir, pid);
+        await this.cleanupStaleRuntimeArtifactsForPid(homeDir, pid, serverId);
+        return;
+      }
+      await this.sleep(stepMs);
+    }
+
+    if (await this.verifyTargetStillOwnedBeforeKill(homeDir, pid, serverId, startedAt)) {
+      await this.forceKillPidTree(pid);
+    }
+    this.clearManagedHomeRuntime(homeDir, pid);
+    await this.cleanupStaleRuntimeArtifactsForPid(homeDir, pid, serverId);
+  }
+
+  private async findWedgedManagedTarget(homeDir: string): Promise<{
+    readonly pid: number;
+    readonly serverId?: string;
+    readonly startedAt?: number;
+  } | null> {
+    const managedEntry = this.managedHomes.get(canonicalHomeKey(homeDir));
+    const records = await this.readLiveInstanceRecords(homeDir, { ignoreHeartbeatStaleness: true });
+    for (const record of records) {
+      const recordServerId = record.server_id ?? record.serverId;
+      const recordStartedAt = record.started_at ?? record.startedAt;
+      if (
+        (managedEntry !== undefined &&
+          (managedEntry.pid === record.pid ||
+            (managedEntry.serverId !== undefined && managedEntry.serverId === recordServerId))) ||
+        (await readFile(join(homeDir, 'server', 'ensure.lock'), 'utf8').catch(() => '')).trim() ===
+          String(record.pid)
+      ) {
+        return {
+          pid: record.pid,
+          ...(recordServerId !== undefined ? { serverId: recordServerId } : {}),
+          ...(recordStartedAt !== undefined ? { startedAt: recordStartedAt } : {}),
+        };
+      }
+    }
+    if (managedEntry?.pid !== undefined && this.isPidAlive(managedEntry.pid)) {
+      return {
+        pid: managedEntry.pid,
+        ...(managedEntry.serverId !== undefined ? { serverId: managedEntry.serverId } : {}),
+        ...(managedEntry.startedAt !== undefined ? { startedAt: managedEntry.startedAt } : {}),
+      };
+    }
+    return null;
   }
 
   /**
@@ -967,14 +1341,32 @@ export class DaemonSupervisor extends EventEmitter {
     options: {
       readonly action: 'quit' | 'restart' | 'update';
       readonly interruptWork?: boolean;
+      readonly probeTimeoutMs?: number;
+      readonly graceMs?: number;
     },
   ): Promise<StopManagedDaemonResult> {
+    const probeTimeoutMs =
+      options.probeTimeoutMs ??
+      (options.action === 'quit' ? this.quitProbeTimeoutMs : DEFAULT_HTTP_TIMEOUT_MS);
+    const graceMs = options.graceMs ?? this.shutdownGraceMs;
+
     this.intentionalStopCount += 1;
     try {
-      const resolved = await this.readLifecycleStateForHome(homeDir);
+      const resolved = await this.readLifecycleStateForHome(homeDir, probeTimeoutMs);
       if (resolved === null) {
+        if (options.action === 'quit' || options.interruptWork === true) {
+          const wedged = await this.findWedgedManagedTarget(homeDir);
+          if (wedged !== null) {
+            await this.waitForExitOrForceKill(homeDir, wedged, 0);
+            if (this.isActiveHome(homeDir)) {
+              this.attached = null;
+            }
+            return { stopped: true, reason: 'stopped' };
+          }
+        }
         return { stopped: false, reason: 'not-running' };
       }
+
       const { backend, state } = resolved;
       if (!state.managed) {
         return { stopped: false, reason: 'external' };
@@ -987,27 +1379,57 @@ export class DaemonSupervisor extends EventEmitter {
         };
       }
 
-      const response = await this.fetchFn(`${backend.config.url}/api/desktop-lifecycle`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${backend.config.token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          action: options.action,
-          server_id: state.server_id,
-          consent: true,
-          interrupt_work: options.interruptWork === true,
-        }),
-        signal: AbortSignal.timeout(DEFAULT_HTTP_TIMEOUT_MS),
+      const allRecords = await this.readLiveInstanceRecords(homeDir, {
+        ignoreHeartbeatStaleness: true,
       });
-      const payload = (await response.json()) as { code?: number; msg?: string };
-      if (!response.ok || payload.code !== 0) {
-        throw new Error(payload.msg ?? 'Failed to stop managed Kiki daemon');
+      const matchingRecord = allRecords.find(
+        (rec) => (rec.server_id ?? rec.serverId) === state.server_id || rec.pid === backend.pid,
+      );
+      const targetPid = matchingRecord?.pid ?? backend.pid;
+      const targetStartedAt =
+        matchingRecord?.started_at ?? matchingRecord?.startedAt ?? backend.startedAt;
+
+      let postTimedOutOrFailed = false;
+      try {
+        const response = await this.fetchFn(`${backend.config.url}/api/desktop-lifecycle`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${backend.config.token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            action: options.action,
+            server_id: state.server_id,
+            consent: true,
+            interrupt_work: options.interruptWork === true,
+          }),
+          signal: AbortSignal.timeout(probeTimeoutMs),
+        });
+        const payload = (await response.json()) as { code?: number; msg?: string };
+        if (!response.ok || payload.code !== 0) {
+          throw new Error(payload.msg ?? 'Failed to stop managed Kiki daemon');
+        }
+      } catch (error) {
+        if (options.action !== 'quit' && options.interruptWork !== true) {
+          throw error;
+        }
+        postTimedOutOrFailed = true;
       }
+
       if (this.isActiveHome(homeDir)) {
         this.attached = null;
       }
+
+      await this.waitForExitOrForceKill(
+        homeDir,
+        {
+          pid: targetPid,
+          serverId: state.server_id,
+          startedAt: targetStartedAt,
+        },
+        postTimedOutOrFailed ? 0 : graceMs,
+      );
+
       return { stopped: true, reason: 'stopped' };
     } finally {
       this.intentionalStopCount = Math.max(0, this.intentionalStopCount - 1);
@@ -1017,8 +1439,65 @@ export class DaemonSupervisor extends EventEmitter {
   async stopManagedDaemon(options: {
     readonly action: 'quit' | 'restart' | 'update';
     readonly interruptWork?: boolean;
+    readonly probeTimeoutMs?: number;
+    readonly graceMs?: number;
   }): Promise<StopManagedDaemonResult> {
     return this.stopManagedDaemonForHome(this.descriptor.homeDir, options);
+  }
+
+  private getTrackedManagedHomes(): string[] {
+    const byKey = new Map<string, string>();
+    for (const [key, entry] of this.managedHomes) {
+      byKey.set(key, entry.homeDir);
+    }
+    byKey.set(canonicalHomeKey(this.descriptor.homeDir), this.descriptor.homeDir);
+    return [...byKey.values()];
+  }
+
+  async collectManagedQuitPendingWork(
+    probeTimeoutMs: number = this.quitProbeTimeoutMs,
+  ): Promise<string[]> {
+    const homes = this.getTrackedManagedHomes();
+    const results = await Promise.all(
+      homes.map((homeDir) => this.readLifecycleStateForHome(homeDir, probeTimeoutMs)),
+    );
+    const pending = new Set<string>();
+    for (const resolved of results) {
+      if (resolved === null || !resolved.state.managed) continue;
+      for (const sessionId of resolved.state.work_pending) {
+        pending.add(sessionId);
+      }
+    }
+    return [...pending];
+  }
+
+  async shutdownAllManagedDaemons(options: {
+    readonly interruptWork: boolean;
+    readonly probeTimeoutMs?: number;
+    readonly graceMs?: number;
+  }): Promise<StopManagedDaemonResult> {
+    this.markShuttingDown();
+    const preReady = this.preReadyChild;
+    this.preReadyChild = null;
+    if (preReady !== null) {
+      await this.stopUnreadyChild(preReady);
+    }
+    const homes = this.getTrackedManagedHomes();
+    const results = await Promise.all(
+      homes.map((homeDir) =>
+        this.stopManagedDaemonForHome(homeDir, {
+          action: 'quit',
+          interruptWork: options.interruptWork,
+          probeTimeoutMs: options.probeTimeoutMs ?? this.quitProbeTimeoutMs,
+          graceMs: options.graceMs ?? this.shutdownGraceMs,
+        }).catch((): StopManagedDaemonResult => ({ stopped: false, reason: 'not-running' })),
+      ),
+    );
+    const anyStopped = results.some((item) => item.stopped);
+    return {
+      stopped: anyStopped,
+      reason: anyStopped ? 'stopped' : 'not-running',
+    };
   }
 
   async restartServer(interruptWork = false): Promise<LocalConnection> {
@@ -1041,7 +1520,11 @@ export class DaemonSupervisor extends EventEmitter {
    * Restarts ONLY `homeDir`'s daemon. When `homeDir` is a background sibling space,
    * the active window's `descriptor.homeDir` and `attached` connection remain untouched.
    */
-  async restartSpace(homeDir: string, interruptWork = false): Promise<LocalConnection> {
+  async restartSpace(
+    homeDir: string,
+    interruptWork = false,
+    oauthHomeDir?: string,
+  ): Promise<LocalConnection> {
     if (this.isActiveHome(homeDir)) {
       return this.restartServer(interruptWork);
     }
@@ -1063,6 +1546,7 @@ export class DaemonSupervisor extends EventEmitter {
     return this.ensureDaemonForHome(homeDir, {
       active: false,
       signal: abort.signal,
+      ...(oauthHomeDir !== undefined ? { oauthHomeDir } : {}),
     });
   }
 

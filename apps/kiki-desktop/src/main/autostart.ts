@@ -18,6 +18,11 @@ export interface WindowsRegistryRunner {
   deleteValue(key: string, valueName: string): void;
 }
 
+/**
+ * Manage `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Kiki` explicitly so
+ * `0.6.1` Tauri -> `0.7.0` Electron upgrades and `desktop-release.ps1` share one canonical
+ * registry value name while cleaning stale `electron.app.*` entries.
+ */
 export function createDefaultWindowsRegistryRunner(): WindowsRegistryRunner {
   const regExe = join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'reg.exe');
   return {
@@ -27,8 +32,9 @@ export function createDefaultWindowsRegistryRunner(): WindowsRegistryRunner {
         windowsHide: true,
       });
       if (res.status !== 0) return null;
+      const pattern = new RegExp(`^\\s*${RegExp.escape(valueName)}\\s+REG_\\w+\\s+(.*)$`, 'i');
       for (const line of res.stdout.split(/\r?\n/)) {
-        const match = new RegExp(`^\\s*${valueName}\\s+REG_\\w+\\s+(.*)$`, 'i').exec(line);
+        const match = pattern.exec(line);
         if (match !== null) {
           const val = match[1]?.trim() ?? '';
           return val === '' ? null : val;

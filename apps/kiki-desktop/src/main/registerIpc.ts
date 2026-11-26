@@ -1,9 +1,11 @@
+import { homedir } from 'node:os';
+import { join } from 'pathe';
 import { isValidRemoteConnectionId } from '#/main/launchArgs';
+import { resolveDesktopOauthHome, type PrefsAndUpdateService } from '#/main/prefsAndUpdateService';
 import { buildDesktopLogInfo } from '#/main/rotatingLog';
 import type { DaemonSupervisor } from '#/main/daemonSupervisor';
 import type { FileAndClipboardService } from '#/main/fileAndClipboardService';
 import type { NotificationService } from '#/main/notificationService';
-import type { PrefsAndUpdateService } from '#/main/prefsAndUpdateService';
 import type { SpaceCatalog } from '#/main/spaceCatalog';
 import type { SubscribeIntentQueue } from '#/main/subscribeIntent';
 import type { WindowService } from '#/main/windowService';
@@ -24,6 +26,7 @@ export interface DesktopServices {
   readonly subscribeQueue: SubscribeIntentQueue;
   readonly spaces: SpaceCatalog;
   readonly spaceWindowMode: SpaceWindowMode;
+  readonly kimiHome?: string;
   readonly openLogDirectory: (dirPath: string) => Promise<void>;
 }
 
@@ -35,10 +38,19 @@ export type IpcHandlerMap = Readonly<Record<IpcChannel, (payload: unknown) => un
 
 export function createIpcHandlers(services: DesktopServices): IpcHandlerMap {
   const { daemon, windows, notifications, files, prefsAndUpdates, subscribeQueue, spaces } = services;
+  const kimiHome = services.kimiHome ?? (process.env['KIMI_HOME']?.trim() || join(homedir(), '.kimi'));
 
   const prepareTargetSpace = async (homeId: string): Promise<{ readonly homeId: string }> => {
     const space = await spaces.findSpace(homeId);
-    daemon.setTargetHome(space.path);
+    const targetPrefs = await prefsAndUpdates.readPrefs(space.path);
+    const oauthHomeDir = await resolveDesktopOauthHome({
+      homeDir: space.path,
+      prefs: targetPrefs,
+      kimiHome,
+      space,
+    });
+    daemon.setLogLevel(targetPrefs.logLevel ?? 'warn');
+    daemon.setTargetHome(space.path, oauthHomeDir);
     await daemon.discoverConnection();
     spaces.setActiveSpace(space);
     return { homeId: space.homeId };
@@ -117,6 +129,7 @@ export function createIpcHandlers(services: DesktopServices): IpcHandlerMap {
     [IPC_CHANNELS.windowSetTheme]: (payload) => {
       const { theme } = validateIpcPayload(IPC_SCHEMAS[IPC_CHANNELS.windowSetTheme], payload);
       windows.setTheme(theme);
+      void prefsAndUpdates.writeWindowTheme(theme).catch(() => undefined);
     },
     [IPC_CHANNELS.windowSetZoom]: (payload) => {
       const { factor } = validateIpcPayload(IPC_SCHEMAS[IPC_CHANNELS.windowSetZoom], payload);
@@ -335,7 +348,14 @@ export function createIpcHandlers(services: DesktopServices): IpcHandlerMap {
     [IPC_CHANNELS.desktopRestartSpace]: async (payload) => {
       const { homeId } = validateIpcPayload(IPC_SCHEMAS[IPC_CHANNELS.desktopRestartSpace], payload);
       const space = await spaces.findSpace(homeId);
-      await daemon.restartSpace(space.path);
+      const targetPrefs = await prefsAndUpdates.readPrefs(space.path);
+      const oauthHomeDir = await resolveDesktopOauthHome({
+        homeDir: space.path,
+        prefs: targetPrefs,
+        kimiHome,
+        space,
+      });
+      await daemon.restartSpace(space.path, false, oauthHomeDir);
     },
     [IPC_CHANNELS.desktopRestartServer]: async (payload) => {
       validateIpcPayload(IPC_SCHEMAS[IPC_CHANNELS.desktopRestartServer], payload);

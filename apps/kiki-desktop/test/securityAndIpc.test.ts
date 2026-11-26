@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FuseState, FuseV1Options } from '@electron/fuses';
-import { resolveKikiAppAssetPath } from '#/main/appProtocol';
+import {
+  createKikiAppProtocolHandler,
+  KIKI_APP_CSP,
+  resolveKikiAppAssetPath,
+} from '#/main/appProtocol';
 import { parseWindowsCfHdropBuffer } from '#/main/clipboardDropFiles';
 import { DaemonSupervisor } from '#/main/daemonSupervisor';
 import {
@@ -14,7 +18,11 @@ import {
   validateHostPath,
 } from '#/main/fileAndClipboardService';
 import { NotificationService, type NativeNotificationHandle } from '#/main/notificationService';
-import { PrefsAndUpdateService } from '#/main/prefsAndUpdateService';
+import {
+  PrefsAndUpdateService,
+  readDesktopSpaceToml,
+  resolveDesktopOauthHome,
+} from '#/main/prefsAndUpdateService';
 import { createIpcHandlers } from '#/main/registerIpc';
 import { SpaceCatalog } from '#/main/spaceCatalog';
 import { combineSpaceAttentionTotal, OVERLAY_SIZE, renderPendingBadgeRgba } from '#/main/spaceBadge';
@@ -96,28 +104,87 @@ describe('host path and URL safety', () => {
     expect(winDecoded).toEqual(['C:\\Users\\demo\\hello world.png']);
   });
 
-  it('serves kiki-app://localhost static files with SPA fallback and blocks path traversal', async () => {
+  it('serves kiki-app://localhost static files with SPA fallback, Range, CSP, .woff2, and symlink/traversal guards', async () => {
     const webDir = makeTempDir();
+    const outsideDir = makeTempDir();
+    writeFileSync(join(outsideDir, 'secret.txt'), 'TOP_SECRET');
     writeFileSync(join(webDir, 'index.html'), '<!doctype html><title>Kiki</title>');
     const assetsDir = join(webDir, 'assets');
     writeFileSync(join(webDir, 'favicon.svg'), '<svg/>');
     await import('node:fs/promises').then((fs) => fs.mkdir(assetsDir, { recursive: true }));
     writeFileSync(join(assetsDir, 'app.js'), 'console.log(1);');
+    writeFileSync(join(assetsDir, 'font.woff2'), 'WOFF2DATA0123456789');
 
-    expect(await resolveKikiAppAssetPath(webDir, 'kiki-app://localhost/assets/app.js')).toEqual({
+    expect(await resolveKikiAppAssetPath(webDir, 'kiki-app://localhost/assets/app.js')).toMatchObject({
       status: 200,
       filePath: join(assetsDir, 'app.js'),
     });
-    expect(await resolveKikiAppAssetPath(webDir, 'kiki-app://localhost/s/session-123?panel=config')).toEqual({
+    expect(await resolveKikiAppAssetPath(webDir, 'kiki-app://localhost/s/session-123?panel=config')).toMatchObject({
+      status: 200,
+      filePath: join(webDir, 'index.html'),
+    });
+    // Query params containing ../ must NOT trigger pathname traversal 403
+    expect(await resolveKikiAppAssetPath(webDir, 'kiki-app://localhost/s/123?path=../foo')).toMatchObject({
+      status: 200,
+      filePath: join(webDir, 'index.html'),
+    });
+    // Dotted SPA routes fall back to index.html while missing static assets stay 404
+    expect(await resolveKikiAppAssetPath(webDir, 'kiki-app://localhost/s/v0.7.0')).toMatchObject({
       status: 200,
       filePath: join(webDir, 'index.html'),
     });
     expect(await resolveKikiAppAssetPath(webDir, 'kiki-app://localhost/assets/missing.js')).toEqual({
       status: 404,
     });
+    expect(await resolveKikiAppAssetPath(webDir, 'kiki-app://localhost/missing.woff2')).toEqual({
+      status: 404,
+    });
     expect(await resolveKikiAppAssetPath(webDir, 'kiki-app://localhost/%2e%2e/secret.txt')).toEqual({
       status: 403,
     });
+
+    // Symlink/junction escaping webRootDir is blocked by realpath containment
+    const fsPromises = await import('node:fs/promises');
+    const escapedLink = join(webDir, 'escaped-dir');
+    await fsPromises
+      .symlink(outsideDir, escapedLink, process.platform === 'win32' ? 'junction' : 'dir')
+      .catch(() => undefined);
+    if (await fsPromises.stat(escapedLink).then(() => true, () => false)) {
+      expect(await resolveKikiAppAssetPath(webDir, 'kiki-app://localhost/escaped-dir/secret.txt')).toEqual({
+        status: 403,
+      });
+    }
+
+    const handler = createKikiAppProtocolHandler(webDir, async (fileUrl) => {
+      const { fileURLToPath } = await import('node:url');
+      const body = await fsPromises.readFile(fileURLToPath(fileUrl));
+      return new Response(body, { status: 200 });
+    });
+
+    const spaRes = await handler(new Request('kiki-app://localhost/s/v0.7.0?path=../foo'));
+    expect(spaRes.status).toBe(200);
+    expect(spaRes.headers.get('Content-Security-Policy')).toBe(KIKI_APP_CSP);
+
+    const woffRes = await handler(new Request('kiki-app://localhost/assets/font.woff2'));
+    expect(woffRes.status).toBe(200);
+    expect(woffRes.headers.get('Content-Type')).toBe('font/woff2');
+
+    const rangeRes = await handler(
+      new Request('kiki-app://localhost/assets/font.woff2', {
+        headers: { Range: 'bytes=0-3' },
+      }),
+    );
+    expect(rangeRes.status).toBe(206);
+    expect(rangeRes.headers.get('Content-Range')).toBe('bytes 0-3/19');
+    expect(await rangeRes.text()).toBe('WOFF');
+
+    const badRangeRes = await handler(
+      new Request('kiki-app://localhost/assets/font.woff2', {
+        headers: { Range: 'bytes=999-1000' },
+      }),
+    );
+    expect(badRangeRes.status).toBe(416);
+    expect(badRangeRes.headers.get('Content-Range')).toBe('bytes */19');
   });
 
   it('parses multi-file Unicode Windows CF_HDROP buffers and classifies audio/video/image via pastedMediaType', async () => {
@@ -135,6 +202,18 @@ describe('host path and URL safety', () => {
 
     const parsedPaths = parseWindowsCfHdropBuffer(cfHdrop);
     expect(parsedPaths).toEqual([audioFile, docFile]);
+
+    // Narrow ANSI (fWide=0) GBK/GB18030 CJK path fallback
+    const narrowHeader = Buffer.alloc(20);
+    narrowHeader.writeUInt32LE(20, 0);
+    narrowHeader.writeInt32LE(0, 16);
+    // "C:\测试\a.txt" in GBK: 43 3a 5c b2 e2 ca d4 5c 61 2e 74 78 74
+    const gbkBytes = Buffer.from([
+      0x43, 0x3a, 0x5c, 0xb2, 0xe2, 0xca, 0xd4, 0x5c, 0x61, 0x2e, 0x74, 0x78, 0x74, 0x00, 0x00,
+    ]);
+    expect(parseWindowsCfHdropBuffer(new Uint8Array(Buffer.concat([narrowHeader, gbkBytes])))).toEqual([
+      'C:\\测试\\a.txt',
+    ]);
 
     const service = new FileAndClipboardService({
       platform: 'win32',
@@ -307,15 +386,72 @@ describe('save sink, notifications, prefs, updates, IPC Zod validation, and Elec
     const afterSkip = await service.mutateUpdateState({ kind: 'skip', channel: 'beta', version: '0.7.2-beta.1' });
     expect(afterSkip.skipped?.beta).toEqual(['0.7.2-beta.1']);
 
-    // Isolated space refuses non-kiki OAuth home
-    await service.writePrefs({ notifications: true }, childHome);
+    // Child space inherits mainPrefs keys unless explicitly overridden in child desktop.json
+    await service.writePrefs({
+      notifications: false,
+      closeToTray: false,
+      locale: 'zh',
+      logLevel: 'info',
+    });
+    await service.writePrefs({ logLevel: 'debug' }, childHome);
+    const inheritedChildPrefs = await service.readPrefs(childHome);
+    expect(inheritedChildPrefs).toMatchObject({
+      notifications: false,
+      closeToTray: false,
+      locale: 'zh',
+      logLevel: 'debug',
+      windowMode: 'windows',
+    });
+
+    // Canonical [inherit] credentials = "isolated" home.toml forces isolated space OAuth home
     writeFileSync(
       join(childHome, 'home.toml'),
-      `id = "child"\nname = "Child"\nbase_home = ${JSON.stringify(mainHome)}\ncredentials_shared = false\n`,
+      `schema = 1\nid = "h-child"\nname = "Child"\nbase = ${JSON.stringify(mainHome)}\n\n[inherit]\ncredentials = "isolated"\n`,
     );
+    const parsedIsolated = await readDesktopSpaceToml(childHome);
+    expect(parsedIsolated?.credentialsShared).toBe(false);
+    const isolatedPrefs = await service.readPrefs(childHome);
+    expect(isolatedPrefs.compatibility).toEqual({ homeKind: 'kiki' });
+    expect(
+      await resolveDesktopOauthHome({
+        homeDir: childHome,
+        prefs: isolatedPrefs,
+        kimiHome: '/home/user/.kimi',
+        space: parsedIsolated,
+      }),
+    ).toBe(childHome);
     await expect(
       service.writePrefs({ compatibility: { homeKind: 'custom', customHome: '/tmp/other' } }, childHome),
     ).rejects.toThrow(/Isolated spaces must use their own OAuth home/);
+
+    // Shared child space honors compatibility homeKind ('kimi' vs 'custom')
+    const sharedChildHome = join(root, 'shared-child');
+    await import('node:fs/promises').then((fs) => fs.mkdir(sharedChildHome, { recursive: true }));
+    writeFileSync(
+      join(sharedChildHome, 'home.toml'),
+      `schema = 1\nid = "h-shared"\nname = "Shared"\nbase = ${JSON.stringify(mainHome)}\n\n[inherit]\ncredentials = "shared"\n`,
+    );
+    const parsedShared = await readDesktopSpaceToml(sharedChildHome);
+    expect(parsedShared?.credentialsShared).toBe(true);
+    expect(
+      await resolveDesktopOauthHome({
+        homeDir: sharedChildHome,
+        prefs: { ...(await service.readPrefs(sharedChildHome)), compatibility: { homeKind: 'kimi' } },
+        kimiHome: '/home/user/.kimi',
+        space: parsedShared,
+      }),
+    ).toBe('/home/user/.kimi');
+    expect(
+      await resolveDesktopOauthHome({
+        homeDir: sharedChildHome,
+        prefs: {
+          ...(await service.readPrefs(sharedChildHome)),
+          compatibility: { homeKind: 'custom', customHome: join(root, 'custom-oauth') },
+        },
+        kimiHome: '/home/user/.kimi',
+        space: parsedShared,
+      }),
+    ).toBe(join(root, 'custom-oauth'));
 
     // Autostart uses Electron loginItemController (and Windows registry when configured)
     expect(service.setAutostart(true).enabled).toBe(true);
@@ -361,6 +497,53 @@ describe('save sink, notifications, prefs, updates, IPC Zod validation, and Elec
     await expect(service.installUpdate('stable', '0.7.1')).rejects.toThrow(
       /Update cancelled; running sessions continue/,
     );
+
+    // Verified quitAndInstall bypass: markInstallingUpdate(true) fires BEFORE downloadAndInstall
+    // so before-quit lets autoUpdater.quitAndInstall() exit cleanly without preventDefault().
+    const events: string[] = [];
+    let installingFlag = false;
+    let quitPrevented = false;
+    const installSvc = new PrefsAndUpdateService({
+      mainHome,
+      getActiveHome: () => mainHome,
+      resolveLaunchExecutable: () => 'C:/Kiki/active/kiki-desktop.exe',
+      distribution: 'github',
+      confirmShutdownForUpdate: async () => {
+        events.push('confirm');
+        return true;
+      },
+      prepareDaemonForUpdate: async () => {
+        events.push('prepare-daemon');
+      },
+      markInstallingUpdate: (flag) => {
+        installingFlag = flag;
+        events.push(`installing:${String(flag)}`);
+      },
+      releaseUpdateLocks: () => {
+        events.push('release-locks');
+      },
+      updaterAdapter: {
+        checkForUpdate: async () => ({ currentVersion: '0.7.0', version: '0.7.1' }),
+        downloadAndInstall: async () => {
+          events.push('download-and-quitAndInstall');
+          // Simulate Electron before-quit firing inside autoUpdater.quitAndInstall()
+          if (!installingFlag) {
+            quitPrevented = true;
+          }
+        },
+      },
+    });
+    await installSvc.installUpdate('stable', '0.7.1');
+    expect(quitPrevented).toBe(false);
+    expect(installingFlag).toBe(true);
+    expect(events).toEqual([
+      'confirm',
+      'prepare-daemon',
+      'installing:true',
+      'release-locks',
+      'download-and-quitAndInstall',
+      'release-locks',
+    ]);
   });
 
   it('validates every IPC handler payload with Zod before executing service methods', async () => {

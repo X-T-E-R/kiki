@@ -399,6 +399,13 @@ describe('settings persistence and validation', () => {
       customHome: 'C:\\compat-home',
     });
     localStorage.setItem('kiki.desktopPrefs', JSON.stringify({
+      compatibility: { homeKind: 'kiki' },
+    }));
+    expect(readDesktopPrefs().compatibility).toEqual({
+      homeKind: 'kiki',
+      customHome: undefined,
+    });
+    localStorage.setItem('kiki.desktopPrefs', JSON.stringify({
       compatibility: { homeKind: 'sessions' },
     }));
     expect(readDesktopPrefs().compatibility.homeKind).toBe('kimi');

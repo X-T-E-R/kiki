@@ -78,6 +78,8 @@ describe('isOriginAllowed', () => {
 
   it('still treats full dotted-quad 127/8 literals as loopback', () => {
     expect(isOriginAllowed('http://127.7.7.7:5175', 'localhost:58627', [])).toBe(true);
+    expect(isOriginAllowed('http://localhost:5175', '127.999.0.1:58627', [])).toBe(false);
+    expect(isOriginAllowed('kiki-app://localhost', '127.999.0.1:58627', [])).toBe(false);
   });
 
   it('allows fixed desktop app origins (kiki-app://localhost and tauri) only against loopback hosts', () => {

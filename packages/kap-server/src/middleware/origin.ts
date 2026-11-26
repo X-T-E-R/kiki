@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
+import { isLoopbackHost } from '@kiki/protocol';
 import { stripPort } from './hostnames';
 
 const CORS_ALLOW_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
@@ -36,11 +37,7 @@ export function originHost(origin: string | undefined): string | undefined {
   if (origin === undefined) {
     return undefined;
   }
-  try {
-    return new URL(origin).host;
-  } catch {
-    return undefined;
-  }
+  return URL.parse(origin)?.host;
 }
 
 /**
@@ -57,7 +54,7 @@ export function isOriginAllowed(
 ): boolean {
   if (origin === 'null' || isHtmlDocumentOrigin(origin)) return false;
   if (isDesktopAppOrigin(origin)) {
-    return host !== undefined && isLoopbackHost(stripPort(host));
+    return host !== undefined && isLoopbackHost(stripPort(host), { allowSubdomains: true });
   }
   const oh = originHost(origin);
   if (oh === undefined) {
@@ -69,7 +66,7 @@ export function isOriginAllowed(
     if (ohStripped === hostStripped) {
       return true;
     }
-    if (isLoopbackHost(ohStripped) && isLoopbackHost(hostStripped)) {
+    if (isLoopbackHost(ohStripped, { allowSubdomains: true }) && isLoopbackHost(hostStripped, { allowSubdomains: true })) {
       return true;
     }
   }
@@ -90,19 +87,6 @@ function isDesktopAppOrigin(origin: string | undefined): boolean {
 function isHtmlDocumentOrigin(origin: string | undefined): boolean {
   const host = originHost(origin);
   return host !== undefined && stripPort(host).endsWith('.kiki-document.localhost');
-}
-
-function isLoopbackHost(h: string): boolean {
-  if (h === 'localhost' || h === '::1' || h === '[::1]' || h.endsWith('.localhost')) {
-    return true;
-  }
-  return isDottedQuadLoopbackLiteral(h);
-}
-
-const DOTTED_QUAD_LOOPBACK_PATTERN = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
-
-function isDottedQuadLoopbackLiteral(h: string): boolean {
-  return DOTTED_QUAD_LOOPBACK_PATTERN.test(h);
 }
 
 /**

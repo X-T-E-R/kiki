@@ -121,15 +121,15 @@ importers:
       '@kiki/session-core':
         specifier: workspace:^
         version: link:../../packages/session-core
+      '@kiki/shell-quoting':
+        specifier: workspace:^
+        version: link:../../packages/shell-quoting
       electron-updater:
         specifier: 6.8.11
         version: 6.8.11
       pathe:
         specifier: ^2.0.3
         version: 2.0.3
-      smol-toml:
-        specifier: ^1.9.0
-        version: 1.9.1
       zod:
         specifier: 'catalog:'
         version: 4.3.6
@@ -748,6 +748,9 @@ importers:
 
   packages/kaos:
     dependencies:
+      '@kiki/protocol':
+        specifier: workspace:^
+        version: link:../protocol
       '@kiki/shell-quoting':
         specifier: workspace:^
         version: link:../shell-quoting
@@ -757,9 +760,15 @@ importers:
       pathe:
         specifier: ^2.0.3
         version: 2.0.3
+      smol-toml:
+        specifier: ^1.9.0
+        version: 1.9.1
       ssh2:
         specifier: ^1.17.0
         version: 1.17.0
+      zod:
+        specifier: 'catalog:'
+        version: 4.3.6
     devDependencies:
       '@types/ssh2':
         specifier: ^1.15.5

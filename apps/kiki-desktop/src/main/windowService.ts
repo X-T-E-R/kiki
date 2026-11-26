@@ -1,8 +1,16 @@
 import { spawn, type SpawnOptions } from 'node:child_process';
+import { isLoopbackHost } from '@kiki/protocol';
 import { KIKI_APP_ORIGIN } from '#/main/appProtocol';
 import { validateExternalUrl } from '#/main/fileAndClipboardService';
 import { filterGuiChildEnv, resolveChildWorkingDir } from '#/main/releaseRedirect';
 import type { DesktopWindowMode, SpaceWindowMode } from '#/shared/types';
+
+export const WINDOW_BG_LIGHT = '#fbfaf6';
+export const WINDOW_BG_DARK = '#1b2226';
+
+export function resolveWindowBackgroundColor(isDark: boolean): string {
+  return isDark ? WINDOW_BG_DARK : WINDOW_BG_LIGHT;
+}
 
 export interface WindowCloseEventLike {
   preventDefault(): void;
@@ -15,9 +23,11 @@ export interface ManagedWindowLike {
   isMinimized(): boolean;
   isFullScreen(): boolean;
   restore(): void;
+  minimize?(): void;
   show(): void;
   focus(): void;
   hide(): void;
+  setBackgroundColor?(backgroundColor: string): void;
   setFullScreen(flag: boolean): void;
   once(event: 'leave-full-screen', listener: () => void): unknown;
   reload(): void;
@@ -43,6 +53,7 @@ export interface WindowServiceDeps {
   readonly releaseAppQuit: () => void;
   readonly setDockVisible?: (visible: boolean) => void;
   readonly setNativeTheme?: (theme: 'light' | 'dark' | 'system') => void;
+  readonly isDarkTheme?: () => boolean;
   readonly resolveLaunchExecutable: () => string;
   readonly currentExe?: string;
   readonly currentDir?: string;
@@ -55,7 +66,6 @@ export interface WindowServiceDeps {
 }
 
 export function isAllowedRendererNavigation(targetUrl: string, daemonOrigin: string | null): boolean {
-  if (targetUrl.startsWith('data:text/html')) return true;
   const parsedTarget = URL.parse(targetUrl);
   if (parsedTarget === null) return false;
   if (parsedTarget.protocol.toLowerCase() === 'kiki-app:' && parsedTarget.hostname.toLowerCase() === 'localhost') {
@@ -169,7 +179,7 @@ export class WindowService {
     if (
       parsed === null ||
       (parsed.protocol !== 'http:' && parsed.protocol !== 'kiki-app:') ||
-      (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost')
+      !isLoopbackHost(parsed.hostname)
     ) {
       throw new Error(`Refusing non-loopback daemon origin: ${origin}`);
     }
@@ -216,9 +226,13 @@ export class WindowService {
 
   onWindowClose(event: WindowCloseEventLike): void {
     if (this.quitting || this.closingKeepTray) return;
-    if (this.deps.getCloseToTray() && this.deps.isTrayActive()) {
+    if (this.deps.getCloseToTray() && (this.platform === 'linux' || this.deps.isTrayActive())) {
       event.preventDefault();
-      this.hideMainWindow();
+      if (this.platform === 'linux') {
+        this.currentWindow?.minimize?.();
+      } else {
+        this.hideMainWindow();
+      }
       return;
     }
     this.quitting = true;
@@ -236,6 +250,18 @@ export class WindowService {
     this.quitting = true;
   }
 
+  hideAllForQuit(): void {
+    this.quitting = true;
+    const win = this.currentWindow;
+    if (win !== null && !win.isDestroyed()) {
+      try {
+        win.hide();
+      } catch {
+        // Ignore already-closing window during quit.
+      }
+    }
+  }
+
   isVisibleAndFocused(): boolean {
     const win = this.currentWindow;
     if (win === null) return false;
@@ -244,6 +270,9 @@ export class WindowService {
 
   setTheme(theme: 'light' | 'dark' | 'system'): void {
     this.deps.setNativeTheme?.(theme);
+    if (this.deps.isDarkTheme !== undefined) {
+      this.currentWindow?.setBackgroundColor?.(resolveWindowBackgroundColor(this.deps.isDarkTheme()));
+    }
   }
 
   setZoom(factor: number): boolean {

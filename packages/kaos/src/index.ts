@@ -38,6 +38,14 @@ export {
   type AtomicWriteOptions,
   type Win32MoveFileReplace,
 } from './atomic-fs';
+export {
+  findSpacePreset,
+  listSpacePresets,
+  readSpaceHome,
+  spacePresetDefaults,
+  type SpaceHome,
+  type SpaceSourceSelections,
+} from './space-home';
 export { LocalKaos } from './local';
 export {
   chdir,

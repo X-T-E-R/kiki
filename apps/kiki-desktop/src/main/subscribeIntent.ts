@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { isLoopbackHost } from '@kiki/protocol';
 import type { HostSubscribeIntent } from '#/shared/types';
 
 const MAX_SUBSCRIBE_URL_CHARS = 2048;
@@ -10,11 +11,6 @@ export interface ParsedSubscribeIntent {
   readonly url: string;
   readonly name?: string;
   readonly mode?: 'auto' | 'manual' | 'once';
-}
-
-function isLoopbackHost(hostname: string): boolean {
-  const lower = hostname.toLowerCase();
-  return lower === 'localhost' || lower === '127.0.0.1' || lower === '::1' || lower === '[::1]';
 }
 
 function sanitizeSubscribeName(raw: string): string | undefined {

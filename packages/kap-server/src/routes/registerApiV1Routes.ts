@@ -128,7 +128,7 @@ export interface RegisterApiV1RoutesOptions {
   readonly providerQuota?: ProviderQuotaService;
   /** Directory holding user theme/skin files; `<homeDir>/themes` in production. */
   readonly themesDir: string;
-  readonly onShutdown: () => void;
+  readonly onShutdown: (reason?: 'shutdown' | 'desktop-lifecycle') => void;
   readonly explicitExitPath: string;
   readonly pid: number;
   readonly shutdownSignal?: AbortSignal;

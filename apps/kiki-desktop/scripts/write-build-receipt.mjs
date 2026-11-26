@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
@@ -26,9 +27,7 @@ async function sha256File(filePath) {
     throw new Error(`Build artifact is missing or empty: ${filePath}`);
   }
   const hash = createHash('sha256');
-  for await (const chunk of createReadStream(filePath)) {
-    hash.update(chunk);
-  }
+  await pipeline(createReadStream(filePath), hash);
   return {
     sha256: hash.digest('hex').toLowerCase(),
     bytes: st.size,

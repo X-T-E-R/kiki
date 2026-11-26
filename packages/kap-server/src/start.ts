@@ -916,7 +916,35 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   };
   const completedCleanup = new Set<number>();
   let startupComplete = false;
+  let desktopLifecycleShutdown = false;
   let appendLogStore: IAppendLogStore | undefined;
+  const resolveDesktopStepBudgetMs = (defaultMs: number): number | undefined => {
+    if (!desktopLifecycleShutdown) return undefined;
+    const raw = Number(process.env['KIKI_DESKTOP_SHUTDOWN_TIMEOUT_MS']);
+    return Number.isFinite(raw) && raw > 0 ? Math.min(defaultMs, Math.floor(raw)) : defaultMs;
+  };
+  const withBoundedShutdownStep = async <T>(
+    work: () => Promise<T> | T,
+    timeoutMs: number | undefined,
+    onExpire?: () => void,
+  ): Promise<{ timedOut: boolean; value?: T }> => {
+    if (timeoutMs === undefined) return { timedOut: false, value: await work() };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(work).then((value) => ({ timedOut: false, value })),
+        new Promise<{ timedOut: true }>((resolve) => {
+          timer = setTimeout(() => {
+            onExpire?.();
+            resolve({ timedOut: true });
+          }, timeoutMs);
+          timer.unref();
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
   const doClose = async (): Promise<void> => {
     shutdownController.abort();
     if (idleTimer !== undefined) clearInterval(idleTimer);
@@ -929,38 +957,60 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       { run: () => externalClients.close() },
       { run: () => leaseRegistry.dispose() },
       { run: () => closePeerBridgeSockets() },
-      { run: () => app.close() },
+      { run: () => withBoundedShutdownStep(
+        () => app.close(),
+        resolveDesktopStepBudgetMs(1_000),
+        () => {
+          app.server.closeIdleConnections?.();
+          app.server.closeAllConnections?.();
+        },
+      ) },
       { run: async () => {
         if (imSessionTimer !== undefined) clearInterval(imSessionTimer);
-        try { await imPreparation; }
-        catch (error) {
-          if (error instanceof StorageStartupCleanupError && !imFactoryCleanupReported) {
-            imFactoryCleanupReported = true;
-            throw error.cleanupError;
+        await withBoundedShutdownStep(async () => {
+          try { await imPreparation; }
+          catch (error) {
+            if (error instanceof StorageStartupCleanupError && !imFactoryCleanupReported) {
+              imFactoryCleanupReported = true;
+              throw error.cleanupError;
+            }
           }
-        }
-        await imCleanup?.();
+          await imCleanup?.();
+        }, resolveDesktopStepBudgetMs(1_000));
       } },
-      { run: () => notifications?.close() },
-      { run: () => core.accessor.get(IThreadCommunicationService).shutdown() },
+      { run: () => withBoundedShutdownStep(() => notifications?.close(), resolveDesktopStepBudgetMs(800)) },
+      { run: () => withBoundedShutdownStep(() => core.accessor.get(IThreadCommunicationService).shutdown(), resolveDesktopStepBudgetMs(800)) },
       {
         run: async () => {
           const sessionManager = core.accessor.get(ISessionManager);
-          const failures = await cleanupServerSessions({
-            listSessions: () => sessionManager.list(),
-            isEphemeral: (sessionId) => sessionManager.isEphemeral(sessionId),
-            readWorktreeId: async (sessionId) => {
-              const session = sessionManager.get(sessionId);
-              return session === undefined
-                ? undefined
-                : (await session.accessor.get(ISessionMetadata).read().catch(() => undefined))?.worktree?.worktreeId;
-            },
-            closeSession: (sessionId) => sessionManager.close(sessionId),
-            removeWorktree: async (worktreeId) => {
-              const { outcome } = await core.accessor.get(IWorktreeService).remove(worktreeId);
-              if (outcome !== 'removed') logger.warn({ worktreeId, outcome }, 'temporary session worktree retained on shutdown');
-            },
-          });
+          const outcome = await withBoundedShutdownStep(
+            () => cleanupServerSessions({
+              listSessions: () => sessionManager.list(),
+              isEphemeral: (sessionId) => sessionManager.isEphemeral(sessionId),
+              readWorktreeId: async (sessionId) => {
+                const session = sessionManager.get(sessionId);
+                return session === undefined
+                  ? undefined
+                  : (await session.accessor.get(ISessionMetadata).read().catch(() => undefined))?.worktree?.worktreeId;
+              },
+              closeSession: async (sessionId) => {
+                const closed = await withBoundedShutdownStep(() => sessionManager.close(sessionId), resolveDesktopStepBudgetMs(2_500));
+                if (closed.timedOut) {
+                  logger.warn({ event_type: 'desktop_session_close_timed_out', sessionId }, 'desktop session close timed out before deadline');
+                }
+              },
+              removeWorktree: async (worktreeId) => {
+                const { outcome: rmOutcome } = await core.accessor.get(IWorktreeService).remove(worktreeId);
+                if (rmOutcome !== 'removed') logger.warn({ worktreeId, outcome: rmOutcome }, 'temporary session worktree retained on shutdown');
+              },
+            }),
+            resolveDesktopStepBudgetMs(3_000),
+          );
+          if (outcome.timedOut) {
+            logger.warn({ event_type: 'desktop_session_cleanup_timed_out' }, 'desktop session cleanup timed out before deadline');
+            return;
+          }
+          const failures = outcome.value ?? [];
           if (failures.length > 0) throw new AggregateError(failures.map((failure) => failure.error), 'session cleanup failed');
         },
       },
@@ -983,8 +1033,8 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       { run: () => locator?.close() },
       { run: () => drainSessionMetadataWrites(), durable: true },
       { run: () => core.accessor.get(ISessionIndexMirror).drain(), durable: true },
-      { run: () => core.accessor.get(IMcpOAuthService).shutdown() },
-      { run: () => core.accessor.get(IPluginHostService).stopAll() },
+      { run: () => withBoundedShutdownStep(() => core.accessor.get(IMcpOAuthService).shutdown(), resolveDesktopStepBudgetMs(800)) },
+      { run: () => withBoundedShutdownStep(() => core.accessor.get(IPluginHostService).stopAll(), resolveDesktopStepBudgetMs(1_000)) },
       { run: () => fsWatchBridge.dispose() },
     );
     steps.push({
@@ -1296,7 +1346,8 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
         configUrl: core.accessor.get(IConfigService).get<{ marketplaceUrl?: string }>('plugins')
           ?.marketplaceUrl,
       }),
-    onShutdown: () => {
+    onShutdown: (reason) => {
+      if (reason === 'desktop-lifecycle') desktopLifecycleShutdown = true;
       void close().catch(() => logger.error({ event_type: 'server_close_failed' }, 'server close failed'));
     },
     explicitExitPath: opts.explicitExitPath ?? join(homeDir, 'server', 'explicit-exit.json'),
@@ -1924,7 +1975,21 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
 
   app.addHook('onClose', async () => {
     connectionRegistry.closeAll('server shutting down');
-    wssV1.close();
+    const forceTerminateTimer = setTimeout(() => {
+      for (const socket of wssV1.clients) {
+        try {
+          socket.terminate();
+        } catch {
+          continue;
+        }
+      }
+    }, 250);
+    forceTerminateTimer.unref();
+    try {
+      await new Promise<void>((resolve) => wssV1.close(() => resolve()));
+    } finally {
+      clearTimeout(forceTerminateTimer);
+    }
     await broadcaster.close();
   });
 

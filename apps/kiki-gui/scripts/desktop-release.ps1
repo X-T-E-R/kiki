@@ -1159,6 +1159,9 @@ function Invoke-Promotion([string]$Root, [object]$Verified) {
     if ($schemaVersion -eq 1) {
         Publish-CliExecutable $rootPath $sidecarDestination $sidecarSource
     }
+    elseif ($null -ne $v2Layout) {
+        Publish-ElectronCliShim $rootPath $releaseId $v2Layout.ServerEntryRel
+    }
 
     $current = Read-CurrentManifest $rootPath -AllowMissing
     if ($null -ne $current -and $current.releaseId -ceq $releaseId -and (Get-ManifestSchemaVersion $current) -eq $schemaVersion) {
@@ -1242,6 +1245,12 @@ function Publish-CliExecutable([string]$Root, [string]$SourcePath, [object]$Side
     $cliDirectory = Join-Path $Root 'cli'
     $cliPath = Join-Path $cliDirectory 'kiki.exe'
     [IO.Directory]::CreateDirectory($cliDirectory) | Out-Null
+    foreach ($shimName in @('kiki.cmd', 'kiki')) {
+        $shimPath = Join-Path $cliDirectory $shimName
+        if (Test-Path -LiteralPath $shimPath -PathType Leaf) {
+            Remove-Item -LiteralPath $shimPath -Force -ErrorAction SilentlyContinue
+        }
+    }
     if (Test-Path -LiteralPath $cliPath -PathType Leaf) {
         $existing = Get-ArtifactInfo $cliPath 'Published Kiki CLI'
         if ($existing.Hash -eq $Sidecar.Hash -and $existing.Length -eq $Sidecar.Length) {
@@ -1253,6 +1262,56 @@ function Publish-CliExecutable([string]$Root, [string]$SourcePath, [object]$Side
     Assert-ArtifactMatches $Sidecar $cliPath 'Published Kiki CLI'
     Write-Output "Published Kiki CLI: $cliPath"
     Write-Output "Add '$cliDirectory' to PATH to run 'kiki' from any terminal (the Kiki installer does this automatically)."
+}
+
+function Publish-ElectronCliShim([string]$Root, [string]$ReleaseId, [string]$ServerEntryRel) {
+    $cliDirectory = Join-Path $Root 'cli'
+    [IO.Directory]::CreateDirectory($cliDirectory) | Out-Null
+    $staleExe = Join-Path $cliDirectory 'kiki.exe'
+    if (Test-Path -LiteralPath $staleExe -PathType Leaf) {
+        try {
+            Remove-Item -LiteralPath $staleExe -Force -ErrorAction Stop
+        }
+        catch {
+            $retiredExe = Join-Path $cliDirectory ("kiki.exe.v1-old-" + [Guid]::NewGuid().ToString('N'))
+            try {
+                Move-Item -LiteralPath $staleExe -Destination $retiredExe -Force -ErrorAction Stop
+                Remove-Item -LiteralPath $retiredExe -Force -ErrorAction SilentlyContinue
+            }
+            catch {
+                Write-Warning "Could not remove locked legacy CLI binary at '$staleExe'; it will be retired on next promote."
+            }
+        }
+    }
+    $winRel = ($ServerEntryRel -replace '/', '\')
+    $posixRel = ($ServerEntryRel -replace '\\', '/')
+    $cmdPath = Join-Path $cliDirectory 'kiki.cmd'
+    $shPath = Join-Path $cliDirectory 'kiki'
+    $cmdText = @(
+        '@echo off',
+        'setlocal',
+        'set "ELECTRON_RUN_AS_NODE=1"',
+        'set "_KIKI_RUNTIME=%~dp0.."',
+        ('if exist "%_KIKI_RUNTIME%\active\kiki-desktop.exe" if exist "%_KIKI_RUNTIME%\active\{0}" (' -f $winRel),
+        ('  "%_KIKI_RUNTIME%\active\kiki-desktop.exe" --max-old-space-size=8192 "%_KIKI_RUNTIME%\active\{0}" %*' -f $winRel),
+        '  exit /b %ERRORLEVEL%',
+        ')',
+        ('"%_KIKI_RUNTIME%\releases\{0}\kiki-desktop.exe" --max-old-space-size=8192 "%_KIKI_RUNTIME%\releases\{0}\{1}" %*' -f $ReleaseId, $winRel),
+        'exit /b %ERRORLEVEL%'
+    ) -join "`r`n"
+    $shText = @(
+        '#!/usr/bin/env sh',
+        'RUNTIME_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"',
+        ('if [ -f "$RUNTIME_DIR/active/kiki-desktop.exe" ] && [ -f "$RUNTIME_DIR/active/{0}" ]; then' -f $posixRel),
+        ('  ELECTRON_RUN_AS_NODE=1 exec "$RUNTIME_DIR/active/kiki-desktop.exe" --max-old-space-size=8192 "$RUNTIME_DIR/active/{0}" "$@"' -f $posixRel),
+        'fi',
+        ('ELECTRON_RUN_AS_NODE=1 exec "$RUNTIME_DIR/releases/{0}/kiki-desktop.exe" --max-old-space-size=8192 "$RUNTIME_DIR/releases/{0}/{1}" "$@"' -f $ReleaseId, $posixRel),
+        ''
+    ) -join "`n"
+    $utf8NoBom = New-Object Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($cmdPath, "$cmdText`r`n", $utf8NoBom)
+    [IO.File]::WriteAllText($shPath, $shText, $utf8NoBom)
+    Write-Output "Published Kiki CLI shim: $cmdPath"
 }
 
 function Resolve-LaunchTarget([string]$Root) {

@@ -5,9 +5,9 @@ Electron 44 desktop shell (`@kiki/desktop`, `0.7.0`) supervising a detached sing
 ## Hard Invariants & Platform Pitfalls
 
 1. **Fixed `kiki-app://localhost` renderer origin (`src/main/appProtocol.ts`)**:
-   - Packaged renderer windows always load `kiki-app://localhost` via Electron 44 `protocol.handle('kiki-app', ...)` + `net.fetch(pathToFileURL(...))`, with path-traversal rejection and SPA `index.html` fallback for extensionless routes.
+   - Packaged renderer windows always load `kiki-app://localhost` via Electron 44 `protocol.handle('kiki-app', ...)` + `net.fetch(pathToFileURL(...))`, with pathname-only traversal rejection, `realpath` root containment, HTTP `206`/`416` `Range` slicing, `.woff2` `font/woff2` typing, HTML `Content-Security-Policy`, and SPA `index.html` fallback for non-asset routes (including dotted session paths).
    - Never serve the packaged UI from `http://127.0.0.1:<ephemeral_port>` (which wipes `localStorage` across daemon restarts) and never enable the `GrantFileProtocolExtraPrivileges` fuse.
-   - `packages/kap-server/src/middleware/origin.ts` admits `kiki-app://localhost` against loopback `Host` headers.
+   - `packages/kap-server/src/middleware/origin.ts` admits `kiki-app://localhost` against loopback `Host` headers via shared `@kiki/protocol` `isLoopbackHost`.
 
 2. **Packaged fuses & single-PID daemon heap (`scripts/after-pack.mjs`, `scripts/verify-fuses.mjs`, `src/main/daemonSupervisor.ts`)**:
    - `after-pack.mjs` invokes `@electron/fuses` `flipFuses` with `RunAsNode: true`, `GrantFileProtocolExtraPrivileges: false`, and `OnlyLoadAppFromAsar: true` (verified by `verify-fuses.mjs --packaged`), while `@electron/fuses` V1 wire defaults set `EnableNodeOptionsEnvironmentVariable: false` and `EnableNodeCliInspectArguments: false` on the packaged executable.
@@ -18,11 +18,12 @@ Electron 44 desktop shell (`@kiki/desktop`, `0.7.0`) supervising a detached sing
    - `module-hook.ts` hooks both CommonJS `Module._load` and Node 24 synchronous `module.registerHooks({ resolve })` so dynamic `await import('node-pty')` in ESM bundles resolves the staged Electron-ABI addon with `{ useConptyDll: true }` on Windows.
    - `tsdown.config.ts` bundles all JS dependencies into `dist/main/index.js` and `dist/preload/index.cjs`; `package.json` `build.files` excludes `!node_modules/**` to keep `resources/app.asar` compact (~10 MiB).
 
-4. **Multi-space & subprocess hygiene**:
+4. **Multi-space, Quit & subprocess hygiene**:
    - Read per-space `<spaceHome>/server.local-owner` tokens when probing or stopping sibling spaces; never reuse the primary space's owner token for another home.
-   - `readDesktopSpaceToml` (`src/main/prefsAndUpdateService.ts`) reads `<spaceHome>/home.toml` (`base` or legacy `base_home`).
+   - `readDesktopSpaceToml` (`src/main/prefsAndUpdateService.ts`) delegates to single-source `@kiki/kaos/space-home` (`readSpaceHome`, `[inherit] credentials = "isolated"`), and `resolveDesktopOauthHome` isolates child OAuth homes (`space.path`) while honoring `compatibility` (`kimi` / `kiki` / `custom`) on shared spaces.
+   - Confirmed Quit hides windows immediately, sets sticky `shuttingDown` to block health recovery, drains all shell-managed spaces in parallel with a 3s grace period + verified PID process-tree kill (`taskkill /PID <pid> /T /F` on Windows), and terminates via `app.exit(0)` (bypassed only while `installingUpdate === true` so `autoUpdater.quitAndInstall()` launches the installer unimpeded).
    - `window-state.json` (`src/main/windowState.ts`) lives under each instance's `app.getPath('userData')` and rescues off-screen coordinates onto visible `screen.getAllDisplays()` `workArea`s before showing the window.
-   - Windows release/hot-switch scripts (`apps/kiki-gui/scripts/desktop-release.ps1` and `desktop-hot-switch.ps1`) mirror the full unpacked Electron v2 directory tree on `Promote` / `Sync-ActiveRelease` and filter `--type=*`, `sqlite-indexer.mjs`, and `hostRunner.mjs` subprocesses out of `Find-ShellEntries`.
+   - Windows release/hot-switch scripts (`apps/kiki-gui/scripts/desktop-release.ps1` and `desktop-hot-switch.ps1`) mirror the full unpacked Electron v2 directory tree on `Promote` / `Sync-ActiveRelease`, publish `cli\kiki.cmd` + `cli\kiki` shims (removing stale v1 `cli\kiki.exe`), and filter `--type=*`, `sqlite-indexer.mjs`, and `hostRunner.mjs` subprocesses out of `Find-ShellEntries`.
 
 ## Verification Lanes
 
