@@ -82,12 +82,12 @@ export function resolveHookEnvOverrides(
     for (const root of bundledWindowsToolchainCandidates(mergedLookup, execPath)) {
       const gitCmd = path.win32.join(root, 'git', 'cmd');
       if (pathExists(path.win32.join(gitCmd, 'git.exe'))) appendIfMissing(gitCmd);
-      const mingwBin = path.win32.join(root, 'git', 'mingw64', 'bin');
-      if (pathExists(path.win32.join(mingwBin, 'git.exe')) || pathExists(path.win32.join(mingwBin, 'curl.exe'))) {
-        appendIfMissing(mingwBin);
+      for (const sysPrefix of ['ucrt64', 'mingw64', 'clang64', 'clangarm64']) {
+        const sysBin = path.win32.join(root, 'git', sysPrefix, 'bin');
+        if (pathExists(path.win32.join(sysBin, 'git.exe')) || pathExists(path.win32.join(sysBin, 'curl.exe'))) {
+          appendIfMissing(sysBin);
+        }
       }
-      const armBin = path.win32.join(root, 'git', 'clangarm64', 'bin');
-      if (pathExists(path.win32.join(armBin, 'git.exe'))) appendIfMissing(armBin);
       const usrBin = path.win32.join(root, 'git', 'usr', 'bin');
       if (pathExists(path.win32.join(usrBin, 'bash.exe'))) appendIfMissing(usrBin);
       const toolBin = path.win32.join(root, 'bin');

@@ -177,7 +177,15 @@ export async function applyBundledWindowsToolchainPath(
       markers: ['git.exe'],
     },
     {
+      dir: nodePath.win32.join(toolchainRoot, 'git', 'ucrt64', 'bin'),
+      markers: ['git.exe', 'curl.exe'],
+    },
+    {
       dir: nodePath.win32.join(toolchainRoot, 'git', 'mingw64', 'bin'),
+      markers: ['git.exe', 'curl.exe'],
+    },
+    {
+      dir: nodePath.win32.join(toolchainRoot, 'git', 'clang64', 'bin'),
       markers: ['git.exe', 'curl.exe'],
     },
     {

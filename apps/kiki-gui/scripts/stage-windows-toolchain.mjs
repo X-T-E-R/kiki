@@ -145,14 +145,14 @@ const OPTIONAL_USR_BIN_TOOLS = [
 const GIT_CORE_REQUIRED_BINARIES = [
   'git.exe',
   'git-remote-https.exe',
-  'git-remote-http.exe',
   'git-http-fetch.exe',
   'git-http-push.exe',
   'git-credential-wincred.exe',
-  'git-sh-i18n--envsubst.exe',
 ];
 
 const GIT_CORE_OPTIONAL_ITEMS = [
+  'git-remote-http.exe',
+  'git-sh-i18n--envsubst.exe',
   'headless-git.exe',
   'git-difftool--helper',
   'git-filter-branch',
@@ -323,7 +323,7 @@ export function sanitizeGitConfig(rawText) {
 
 export function rewriteMsystemDefault(rawText, defaultMsystem) {
   return rawText.replace(
-    /export\s+MSYSTEM="\$\{MSYSTEM:-MSYS\}"/,
+    /export\s+MSYSTEM="\$\{MSYSTEM:-[A-Z0-9_]+\}"/,
     `export MSYSTEM="\${MSYSTEM:-${defaultMsystem}}"`,
   );
 }
@@ -447,17 +447,33 @@ function resolveGitForWindowsRoot(explicitRoot, env = process.env) {
   );
 }
 
-function detectSysPrefix(gitRoot, target) {
-  if (target.startsWith('aarch64-') && existsSync(join(gitRoot, 'clangarm64', 'bin', 'git.exe'))) {
-    return { sysPrefix: 'clangarm64', msystem: 'CLANGARM64' };
+export function detectSysPrefix(gitRoot, target) {
+  const hasPrefixGit = (prefix) =>
+    existsSync(join(gitRoot, prefix, 'bin', 'git.exe')) ||
+    existsSync(join(gitRoot, prefix, 'libexec', 'git-core', 'git.exe'));
+
+  const order = target.startsWith('aarch64-')
+    ? [
+        { sysPrefix: 'clangarm64', msystem: 'CLANGARM64' },
+        { sysPrefix: 'ucrt64', msystem: 'UCRT64' },
+        { sysPrefix: 'mingw64', msystem: 'MINGW64' },
+        { sysPrefix: 'clang64', msystem: 'CLANG64' },
+      ]
+    : [
+        { sysPrefix: 'ucrt64', msystem: 'UCRT64' },
+        { sysPrefix: 'mingw64', msystem: 'MINGW64' },
+        { sysPrefix: 'clang64', msystem: 'CLANG64' },
+        { sysPrefix: 'clangarm64', msystem: 'CLANGARM64' },
+      ];
+
+  for (const candidate of order) {
+    if (hasPrefixGit(candidate.sysPrefix)) {
+      return candidate;
+    }
   }
-  if (existsSync(join(gitRoot, 'mingw64', 'bin', 'git.exe'))) {
-    return { sysPrefix: 'mingw64', msystem: 'MINGW64' };
-  }
-  if (existsSync(join(gitRoot, 'clangarm64', 'bin', 'git.exe'))) {
-    return { sysPrefix: 'clangarm64', msystem: 'CLANGARM64' };
-  }
-  throw new Error(`Unsupported Git for Windows layout under ${gitRoot}: missing mingw64/clangarm64 git.exe.`);
+  throw new Error(
+    `Unsupported Git for Windows layout under ${gitRoot}: missing ucrt64/mingw64/clang64/clangarm64 git.exe.`,
+  );
 }
 
 function buildCaseInsensitiveDirMap(dirPath) {
@@ -692,7 +708,7 @@ export async function stageWindowsToolchain({
     stageGitBinary('bin/sh.exe', true);
     stageGitBinary('bin/git.exe', false);
 
-    stageGitBinary(`${sysPrefix}/bin/git.exe`, true);
+    stageGitBinary(`${sysPrefix}/bin/git.exe`, false);
     stageGitBinary(`${sysPrefix}/bin/git-receive-pack.exe`, false);
     stageGitBinary(`${sysPrefix}/bin/git-upload-archive.exe`, false);
     stageGitBinary(`${sysPrefix}/bin/git-upload-pack.exe`, false);

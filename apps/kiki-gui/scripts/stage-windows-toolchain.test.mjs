@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -8,6 +8,7 @@ import { describe, it } from 'node:test';
 import {
   createToolchainNodeCmd,
   createToolchainNodePosixWrapper,
+  detectSysPrefix,
   parsePeImports,
   rewriteMsystemDefault,
   sanitizeGitConfig,
@@ -91,10 +92,32 @@ describe('stage-windows-toolchain helpers', () => {
     assert.ok(cleaned.includes('sslBackend = schannel'));
   });
 
-  it('rewrites msystem default and strips winpty loop from aliases.sh', () => {
+  it('rewrites msystem default and detects ucrt64/mingw64/clang64/clangarm64 layouts (Git for Windows 2.56+)', () => {
     const msys = 'export MSYSTEM="${MSYSTEM:-MSYS}"\n';
+    assert.equal(rewriteMsystemDefault(msys, 'UCRT64'), 'export MSYSTEM="${MSYSTEM:-UCRT64}"\n');
     assert.equal(rewriteMsystemDefault(msys, 'MINGW64'), 'export MSYSTEM="${MSYSTEM:-MINGW64}"\n');
     assert.equal(rewriteMsystemDefault(msys, 'CLANGARM64'), 'export MSYSTEM="${MSYSTEM:-CLANGARM64}"\n');
+
+    const root = mkdtempSync(join(tmpdir(), 'kiki-git-layout-'));
+    try {
+      const ucrtCore = join(root, 'ucrt64', 'libexec', 'git-core');
+      mkdirSync(ucrtCore, { recursive: true });
+      writeFileSync(join(ucrtCore, 'git.exe'), 'MZ');
+      assert.deepEqual(detectSysPrefix(root, 'x86_64-pc-windows-msvc'), {
+        sysPrefix: 'ucrt64',
+        msystem: 'UCRT64',
+      });
+
+      const armBin = join(root, 'clangarm64', 'bin');
+      mkdirSync(armBin, { recursive: true });
+      writeFileSync(join(armBin, 'git.exe'), 'MZ');
+      assert.deepEqual(detectSysPrefix(root, 'aarch64-pc-windows-msvc'), {
+        sysPrefix: 'clangarm64',
+        msystem: 'CLANGARM64',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
 
     const aliases = "alias ls='ls -F'\ncase \"$TERM\" in\nxterm*)\n  alias node=\"winpty node.exe\"\n;;\nesac\n";
     const stripped = sanitizeProfileAliases(aliases);
