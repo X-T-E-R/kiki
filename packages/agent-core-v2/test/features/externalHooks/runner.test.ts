@@ -542,5 +542,43 @@ describe('buildHookSpawnOptions (Windows console-window regression)', () => {
       FOO: 'bar',
       Path: 'C:\\Windows\\System32;C:\\Program Files\\nodejs',
     });
+
+    const virginWinSea = resolveHookEnvOverrides(undefined, {
+      baseEnv: {
+        Path: 'C:\\Windows\\System32',
+        KIKI_PLUGIN_ROOT: 'C:\\Users\\example\\.kiki\\plugins\\argon-error-recovery',
+      },
+      platform: 'win32',
+      execPath: 'C:\\Users\\example\\AppData\\Local\\Programs\\Kiki\\kiki-server.exe',
+      homeDir: 'C:\\Users\\example',
+      pathExists: (candidate) =>
+        candidate === 'C:\\Users\\example\\AppData\\Local\\Programs\\Kiki\\toolchain\\git\\cmd\\git.exe' ||
+        candidate === 'C:\\Users\\example\\AppData\\Local\\Programs\\Kiki\\toolchain\\git\\usr\\bin\\bash.exe' ||
+        candidate === 'C:\\Users\\example\\AppData\\Local\\Programs\\Kiki\\toolchain\\bin\\node.cmd',
+    });
+    expect(virginWinSea).toEqual({
+      Path:
+        'C:\\Windows\\System32;' +
+        'C:\\Users\\example\\AppData\\Local\\Programs\\Kiki\\toolchain\\git\\cmd;' +
+        'C:\\Users\\example\\AppData\\Local\\Programs\\Kiki\\toolchain\\git\\usr\\bin;' +
+        'C:\\Users\\example\\AppData\\Local\\Programs\\Kiki\\toolchain\\bin',
+      KIKI_SEA_EXEC: 'C:\\Users\\example\\AppData\\Local\\Programs\\Kiki\\kiki-server.exe',
+      CLAUDE_PLUGIN_ROOT: 'C:\\Users\\example\\.kiki\\plugins\\argon-error-recovery',
+    });
+
+    const virginWinSeaWithoutBundledNode = resolveHookEnvOverrides(undefined, {
+      baseEnv: {
+        Path: 'C:\\Windows\\System32',
+      },
+      platform: 'win32',
+      execPath: 'C:\\Standalone\\kiki.exe',
+      homeDir: 'C:\\Users\\example',
+      pathExists: () => false,
+      ensureNodeShimDir: (kikiHome) => `${kikiHome}\\bin\\node-shim`,
+    });
+    expect(virginWinSeaWithoutBundledNode).toEqual({
+      Path: 'C:\\Windows\\System32;C:\\Users\\example\\.kiki\\bin\\node-shim',
+      KIKI_SEA_EXEC: 'C:\\Standalone\\kiki.exe',
+    });
   });
 });

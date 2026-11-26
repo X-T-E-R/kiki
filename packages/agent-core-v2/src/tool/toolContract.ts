@@ -130,6 +130,7 @@ export interface ExecutableToolContext {
   readonly metadata?: unknown;
   readonly signal: AbortSignal;
   readonly steerSignal?: AbortSignal;
+  readonly skipUnstartedToolsOnInput?: boolean;
   readonly foregroundStartedAt?: number;
   readonly onUpdate?: ((update: ToolUpdate) => void) | undefined;
   readonly onForegroundTaskStart?: ((taskId: string, options?: { readonly steerDetachable?: boolean }) => void) | undefined;
@@ -160,6 +161,8 @@ export interface RunnableToolExecution {
   readonly isError?: false | undefined;
   /** Optional per-invocation override when a mixed-action tool resolves a different foreground class after argument normalization. */
   readonly foregroundPolicy?: ToolForegroundPolicy;
+  /** Optional explicit autonomous foreground deadline in milliseconds for bounded tools with user-configured flow timeouts. */
+  readonly foregroundTimeoutMs?: number;
   readonly accesses?: ToolAccesses | undefined;
   /** Override scheduling conflicts without changing permission admission or approval accesses. */
   readonly schedulingAccesses?: ToolAccesses;

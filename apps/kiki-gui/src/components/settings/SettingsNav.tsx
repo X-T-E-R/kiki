@@ -289,7 +289,7 @@ export function SettingsNavTree({
         onFocus={() => { preloadSettingsSection(id); }}
         onClick={() => { onNavigate(id as SectionId); onAfterNavigate?.(); }}
         className={`row-interactive flex h-7 items-center gap-2 px-2.5 text-left text-[13px] leading-5 font-normal pointer-coarse:h-11 pointer-coarse:px-3 pointer-coarse:text-[15px] ${
-          isCurrent ? 'text-ink' : 'text-ink-soft hover:text-ink'
+          isCurrent ? 'bg-ink/[0.06] text-ink' : 'text-ink-soft hover:text-ink'
         }`}
       >
         <span className="min-w-0 flex-1 truncate">{t(labelKey)}</span>
@@ -310,10 +310,10 @@ export function SettingsNavTree({
   );
 
   return (
-    <div className="mt-2.5 flex flex-col gap-2.5 pointer-coarse:mt-4 pointer-coarse:gap-4" data-settings-nav-tree>
+    <div className="mt-3 flex flex-col gap-3 pointer-coarse:mt-4 pointer-coarse:gap-4" data-settings-nav-tree>
       {showAttention && attention.length > 0 ? (
         <div data-settings-attention>
-          <p className="flex h-[22px] items-center px-2.5 text-[12px] leading-4 font-normal text-attention pointer-coarse:h-7">
+          <p className="px-2.5 pb-1 text-[11px] leading-4 font-bold text-attention select-none pointer-coarse:px-3 pointer-coarse:text-[12px]">
             {t('st.nav.needsAttention')}
           </p>
           <div className="flex flex-col gap-0 pointer-coarse:gap-0.5">
@@ -342,8 +342,8 @@ export function SettingsNavTree({
         </div>
       ) : null}
       {groups.map((node) => (
-        <div key={node.id} data-settings-nav-group={node.id}>
-          <p className="flex h-[22px] items-center px-2.5 text-[12px] leading-4 font-normal text-ink-faint pointer-coarse:h-7">
+        <div key={node.id} data-settings-nav-group={node.id} className="border-t border-hairline/65 pt-3 first:border-t-0 first:pt-0">
+          <p className="px-2.5 pb-1 text-[11px] leading-4 font-bold text-ink-faint select-none pointer-coarse:px-3 pointer-coarse:text-[12px]">
             {t(node.labelKey)}
           </p>
           <div className="flex flex-col gap-0 pointer-coarse:gap-0.5">

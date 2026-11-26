@@ -109,12 +109,14 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
       }),
     );
   }
-  private cancel(): void {
+  private cancel(clearAdvice = true): void {
     this.controller?.abort('aborted');
     this.controller = undefined;
     this.pending = undefined;
-    this.completed = undefined;
-    this.snapshot.setAdvice?.(undefined);
+    if (clearAdvice) {
+      this.completed = undefined;
+      this.snapshot.setAdvice?.(undefined);
+    }
   }
   private reset(): void {
     this.epoch++;
@@ -222,7 +224,7 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
       described.destination,
     ]);
     if (fingerprint !== this.fingerprint) {
-      this.cancel();
+      this.cancel(false);
       this.fingerprint = fingerprint;
       if (
         this.calls >= config.max_calls_per_turn ||
@@ -325,7 +327,7 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
     if (configured.advisor?.mode === 'off') return advisorStatus('off');
     if (configured.advisor === undefined || (configured.advisor.source === undefined && configured.advisor.selector === undefined))
       return advisorStatus('unconfigured', { reason: 'unconfigured' });
-    if (this.completed === undefined)
+    if (this.completed === undefined || this.completed.fingerprint !== this.fingerprint)
       return this.currentStatus.state === 'unconfigured'
         ? this.selector.describe(configured.advisor, this.session.workspaceId)
         : this.currentStatus;
@@ -348,7 +350,9 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
       Math.min(1_000, settings.budget),
       Date.now(),
       undefined,
-      resolveMemoryHostId((name) => this.bootstrap.getEnv(name), this.bootstrap.homeDir),
+      this.bootstrap === undefined
+        ? undefined
+        : resolveMemoryHostId((name) => this.bootstrap.getEnv(name), this.bootstrap.homeDir),
     );
     const delivered = new Set(view.workset?.entries.map(memoryAdviceKey));
     return {

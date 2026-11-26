@@ -30,7 +30,7 @@ import {
 } from '../spaceAuthority';
 import type { SkinTweaks } from './apply';
 import { DEFAULT_SKIN_ID, RETIRED_BUILTIN_SKIN_IDS, findBuiltinSkin } from './builtin';
-import { spaceStorage } from '../spaceStorage';
+import { onDidChangeSpaceStorage, spaceStorage } from '../spaceStorage';
 
 /**
  * `user` covers everything the server's `/skins` route lists: skin files in
@@ -240,6 +240,16 @@ function publishStored(next: SkinPrefs): void {
 export function writeSkinPrefs(patch: Partial<SkinPrefs>): void {
   const raw = { ...skinPrefsSnapshot(), ...patch };
   const next = spacePreferenceEnabled() ? normalizeSpaceSkinPrefs(raw) : normalizeSkinPrefs(raw);
+  // Keep the local paint cache warm immediately when selecting a loaded user
+  // skin, so an immediate reload after selection never waits on `/skins`.
+  if (next.selection.source === 'user') {
+    const live = userSkins.find((skin) => skin.id === next.selection.id);
+    if (live !== undefined) {
+      selectedCache = live;
+      selectedCacheLoaded = true;
+      writeSelectedCache(live);
+    }
+  }
   // A space that carries its own preferences owns them: the edit is a space
   // change, and the device key is left alone so it keeps meaning "this machine".
   if (spacePreferenceEnabled()) {
@@ -322,26 +332,89 @@ function writeSelectedCache(skin: SkinFile | null): void {
   }
 }
 
+export interface SkinCatalogSettleOptions {
+  readonly allDetails?: boolean;
+  readonly listedIds?: readonly string[];
+  readonly queriedIds?: readonly string[];
+}
+
 let userSkins: readonly SkinFile[] = [];
 let userSkinsDirectory: string | null = null;
+let userSkinsSettled = false;
+let allUserSkinsSettled = false;
+let listedUserSkinIds: Set<string> | null = null;
+let settledUserSkinIds = new Set<string>();
 let selectedCache: SkinFile | null = null;
 let selectedCacheLoaded = false;
 
-export function setUserSkins(skins: readonly SkinFile[], directory: string | null): void {
-  // Notify only on a real change: the catalog query re-runs on focus and
-  // refetch, and re-publishing an identical list would churn every subscriber.
-  const changed =
-    directory !== userSkinsDirectory
-    || JSON.stringify(skins) !== JSON.stringify(userSkins);
-  userSkins = skins;
-  userSkinsDirectory = directory;
-
-  // Refresh the paint cache from what the server actually serves. A selected
-  // skin that is gone clears the cache, so the next reload shows it missing
-  // instead of resurrecting a deleted file forever.
-  const selection = effectiveSkinPrefs().selection;
+export function isSkinSelectionSettled(selection: SkinSelection): boolean {
+  if (selection.source === 'builtin') return true;
   if (selection.source === 'user') {
-    const live = skins.find((skin) => skin.id === selection.id) ?? null;
+    if (!userSkinsSettled) return false;
+    if (allUserSkinsSettled) return true;
+    if (listedUserSkinIds !== null && !listedUserSkinIds.has(selection.id)) return true;
+    return settledUserSkinIds.has(selection.id);
+  }
+  if (!packSkinsSettled) return false;
+  if (allPackSkinsSettled) return true;
+  if (listedPackSkinIds !== null && !listedPackSkinIds.has(selection.id)) return true;
+  return settledPackSkinIds.has(selection.id);
+}
+
+function skinIdsOf(skins: readonly SkinFile[]): string[] {
+  return skins.map((skin) => skin.id).filter((id): id is string => typeof id === 'string' && id !== '');
+}
+
+export function setUserSkins(
+  skins: readonly SkinFile[],
+  directory: string | null,
+  options?: SkinCatalogSettleOptions,
+): void {
+  const fullCatalog = options === undefined || options.allDetails === true;
+  const previousSettled = userSkinsSettled;
+  const previousAllSettled = allUserSkinsSettled;
+  const previousSettledSize = settledUserSkinIds.size;
+
+  let nextSkins: readonly SkinFile[];
+  if (fullCatalog) {
+    nextSkins = skins;
+    allUserSkinsSettled = true;
+    listedUserSkinIds = new Set(skinIdsOf(skins));
+    settledUserSkinIds = new Set(skinIdsOf(skins));
+  } else {
+    if (options.listedIds !== undefined) {
+      listedUserSkinIds = new Set(options.listedIds);
+    }
+    const queried = new Set(options.queriedIds ?? skinIdsOf(skins));
+    for (const id of queried) settledUserSkinIds.add(id);
+    const byId = new Map<string, SkinFile>();
+    for (const existing of userSkins) {
+      if (typeof existing.id !== 'string' || existing.id === '') continue;
+      if (queried.has(existing.id)) continue;
+      if (listedUserSkinIds !== null && !listedUserSkinIds.has(existing.id)) continue;
+      byId.set(existing.id, existing);
+    }
+    for (const fresh of skins) {
+      if (typeof fresh.id === 'string' && fresh.id !== '') byId.set(fresh.id, fresh);
+    }
+    nextSkins = [...byId.values()];
+  }
+
+  const changed =
+    !previousSettled
+    || fullCatalog !== previousAllSettled
+    || settledUserSkinIds.size !== previousSettledSize
+    || directory !== userSkinsDirectory
+    || JSON.stringify(nextSkins) !== JSON.stringify(userSkins);
+  userSkins = nextSkins;
+  userSkinsDirectory = directory;
+  userSkinsSettled = true;
+
+  // Refresh the paint cache only once the active user skin's own existence/detail
+  // is settled, so a list-only pre-hydration pass never wipes `kiki.skin.cache`.
+  const selection = effectiveSkinPrefs().selection;
+  if (selection.source === 'user' && isSkinSelectionSettled(selection)) {
+    const live = nextSkins.find((skin) => skin.id === selection.id) ?? null;
     selectedCache = live;
     selectedCacheLoaded = true;
     writeSelectedCache(live);
@@ -357,12 +430,23 @@ export function getUserSkinsDirectory(): string | null {
   return userSkinsDirectory;
 }
 
+export function isUserSkinsSettled(): boolean {
+  const selection = effectiveSkinPrefs().selection;
+  if (selection.source === 'user') return isSkinSelectionSettled(selection);
+  return userSkinsSettled;
+}
+
 /**
  * Colors of installed appearance packs, as skins. A pack selection is applied
  * by the pack controller, which also sets the pack's background; this list
  * only lets the palette resolve on the first frame and after a theme flip.
  */
-let packSkins: readonly SkinFile[] = readPackSkinCache();
+let packSkins: readonly SkinFile[] = [];
+let packSkinsLoaded = false;
+let packSkinsSettled = false;
+let allPackSkinsSettled = false;
+let listedPackSkinIds: Set<string> | null = null;
+let settledPackSkinIds = new Set<string>();
 const PACK_SKIN_CACHE_KEY = 'kiki.skin.packCache';
 
 function readPackSkinCache(): readonly SkinFile[] {
@@ -378,23 +462,106 @@ function readPackSkinCache(): readonly SkinFile[] {
   }
 }
 
-export function setPackSkins(skins: readonly SkinFile[]): void {
-  if (JSON.stringify(skins) === JSON.stringify(packSkins)) return;
-  packSkins = skins;
+function ensurePackSkinsLoaded(): readonly SkinFile[] {
+  if (!packSkinsLoaded) {
+    packSkins = readPackSkinCache();
+    packSkinsLoaded = true;
+  }
+  return packSkins;
+}
+
+export function setPackSkins(
+  skins: readonly SkinFile[],
+  options?: SkinCatalogSettleOptions,
+): void {
+  const current = ensurePackSkinsLoaded();
+  const fullCatalog = options === undefined || options.allDetails === true;
+  const previousSettled = packSkinsSettled;
+  const previousAllSettled = allPackSkinsSettled;
+  const previousSettledSize = settledPackSkinIds.size;
+
+  let nextSkins: readonly SkinFile[];
+  if (fullCatalog) {
+    nextSkins = skins;
+    allPackSkinsSettled = true;
+    listedPackSkinIds = new Set(skinIdsOf(skins));
+    settledPackSkinIds = new Set(skinIdsOf(skins));
+  } else {
+    if (options.listedIds !== undefined) {
+      listedPackSkinIds = new Set(options.listedIds);
+    }
+    const queried = new Set(options.queriedIds ?? skinIdsOf(skins));
+    for (const id of queried) settledPackSkinIds.add(id);
+    const byId = new Map<string, SkinFile>();
+    for (const existing of current) {
+      if (typeof existing.id !== 'string' || existing.id === '') continue;
+      if (queried.has(existing.id)) continue;
+      if (listedPackSkinIds !== null && !listedPackSkinIds.has(existing.id)) continue;
+      byId.set(existing.id, existing);
+    }
+    for (const fresh of skins) {
+      if (typeof fresh.id === 'string' && fresh.id !== '') byId.set(fresh.id, fresh);
+    }
+    nextSkins = [...byId.values()];
+  }
+
+  const changed =
+    !previousSettled
+    || fullCatalog !== previousAllSettled
+    || settledPackSkinIds.size !== previousSettledSize
+    || JSON.stringify(nextSkins) !== JSON.stringify(current);
+  packSkins = nextSkins;
+  packSkinsLoaded = true;
+  packSkinsSettled = true;
   try {
-    spaceStorage.setItem(PACK_SKIN_CACHE_KEY, JSON.stringify(skins));
+    spaceStorage.setItem(PACK_SKIN_CACHE_KEY, JSON.stringify(nextSkins));
   } catch {
     // Cache is optional.
   }
-  notify();
+  if (changed) notify();
+}
+
+export function isPackSkinsSettled(): boolean {
+  const selection = effectiveSkinPrefs().selection;
+  if (selection.source === 'pack') return isSkinSelectionSettled(selection);
+  return packSkinsSettled;
 }
 
 /** Drop the cached copy of the selected user skin (test teardown). */
 export function clearSelectedSkinCache(): void {
+  userSkinsSettled = false;
+  allUserSkinsSettled = false;
+  listedUserSkinIds = null;
+  settledUserSkinIds = new Set();
   selectedCache = null;
   selectedCacheLoaded = false;
+  packSkins = [];
+  packSkinsLoaded = false;
+  packSkinsSettled = false;
+  allPackSkinsSettled = false;
+  listedPackSkinIds = null;
+  settledPackSkinIds = new Set();
   writeSelectedCache(null);
 }
+
+onDidChangeSpaceStorage(() => {
+  snapshotCache = undefined;
+  userSkins = [];
+  userSkinsDirectory = null;
+  userSkinsSettled = false;
+  allUserSkinsSettled = false;
+  listedUserSkinIds = null;
+  settledUserSkinIds = new Set();
+  selectedCache = null;
+  selectedCacheLoaded = false;
+  packSkins = [];
+  packSkinsLoaded = false;
+  packSkinsSettled = false;
+  allPackSkinsSettled = false;
+  listedPackSkinIds = null;
+  settledPackSkinIds = new Set();
+  notify();
+});
 
 /**
  * Resolve a selection to a skin.
@@ -406,7 +573,9 @@ export function clearSelectedSkinCache(): void {
  */
 export function resolveSkin(selection: SkinSelection): SkinFile | null {
   if (selection.source === 'builtin') return findBuiltinSkin(selection.id) ?? null;
-  if (selection.source === 'pack') return packSkins.find((skin) => skin.id === selection.id) ?? null;
+  if (selection.source === 'pack') {
+    return ensurePackSkinsLoaded().find((skin) => skin.id === selection.id) ?? null;
+  }
   const live = userSkins.find((skin) => skin.id === selection.id);
   if (live !== undefined) return live;
   if (!selectedCacheLoaded) {

@@ -13,6 +13,10 @@ import { executeSidebarGroupMembers, executeSidebarPage, executeSidebarResolveUn
 
 import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
 import { warnIfWorkerHeapLimit } from '#/_base/node/workerHeapPolicy';
+import {
+  QUERY_STORE_MAX_VALUE_BYTES,
+  QueryStoreValueTooLargeError,
+} from '#/persistence/interface/queryStoreLimits';
 
 warnIfWorkerHeapLimit(RESOURCE_DEFAULTS.workerHeapMb);
 const port = parentPort;
@@ -72,7 +76,9 @@ function open(): DatabaseSync {
     connection.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-8192; PRAGMA temp_store=FILE; PRAGMA journal_size_limit=67108864');
     db = {
       connection,
-      get: connection.prepare('SELECT json FROM rows WHERE collection=? AND key=?'),
+      get: connection.prepare(
+        `SELECT CASE WHEN length(CAST(json AS BLOB)) <= ${QUERY_STORE_MAX_VALUE_BYTES} THEN json ELSE NULL END AS json, length(CAST(json AS BLOB)) AS bytes FROM rows WHERE collection=? AND key=?`,
+      ),
       put: connection.prepare('INSERT INTO rows VALUES(?,?,?) ON CONFLICT(collection,key) DO UPDATE SET json=excluded.json'),
       remove: connection.prepare('DELETE FROM rows WHERE collection=? AND key=?'),
       clearColumns: connection.prepare('DELETE FROM columns WHERE collection=? AND key=?'),
@@ -94,6 +100,9 @@ function batch(ops: readonly WriteOp[], conditions?: readonly WriteCondition[], 
     const { get, put, remove, clearColumns, column } = db!;
     for (const condition of conditions ?? []) {
       const row = get.get(condition.collection, Buffer.from(condition.key));
+      if (row !== undefined && row['json'] === null) {
+        throw new QueryStoreValueTooLargeError(condition.collection, Number(row['bytes']));
+      }
       const current: unknown = row === undefined ? undefined : JSON.parse(String(row['json']));
       const expected: unknown = condition.value === undefined ? undefined : JSON.parse(JSON.stringify(condition.value));
       if (!isDeepStrictEqual(current, expected)) return false;
@@ -114,6 +123,10 @@ function batch(ops: readonly WriteOp[], conditions?: readonly WriteCondition[], 
       if (op.kind === 'delete') { remove.run(op.collection, key); continue; }
       const json = JSON.stringify(op.value);
       if (json === undefined) throw new TypeError('Query store values must be JSON serializable');
+      const byteLength = Buffer.byteLength(json, 'utf8');
+      if (byteLength > QUERY_STORE_MAX_VALUE_BYTES) {
+        throw new QueryStoreValueTooLargeError(op.collection, byteLength);
+      }
       put.run(op.collection, key, json);
       clearColumns.run(op.collection, key);
       for (const [name, value] of Object.entries(op.columns ?? {})) {
@@ -228,7 +241,7 @@ async function query(input: ReadQuery): Promise<{ items: unknown[]; nextCursor?:
   const parameters: SQLInputValue[] = input.column === undefined ? [] : [input.collection];
   let from = 'rows r';
   let order = 'r.key ASC';
-  let selected = 'r.key,r.json';
+  let selected = `r.key,CASE WHEN length(CAST(r.json AS BLOB)) <= ${QUERY_STORE_MAX_VALUE_BYTES} THEN r.json ELSE NULL END AS json,length(CAST(r.json AS BLOB)) AS json_bytes`;
   let orderedValue: string | undefined;
   let descending = input.columnOrder === 'desc';
   if (input.column !== undefined) {
@@ -269,6 +282,9 @@ async function query(input: ReadQuery): Promise<{ items: unknown[]; nextCursor?:
   try {
     for (const row of iterator) {
       check();
+      if (row['json'] === null) {
+        throw new QueryStoreValueTooLargeError(input.collection, Number(row['json_bytes']));
+      }
       const doc: unknown = JSON.parse(String(row['json']));
       if (matches(doc, input.filter ?? {})) rows.push({ key: row['key'] as Uint8Array, value: row['value'] as number | string | undefined, doc });
       if (limit !== undefined && rows.length > limit) break;
@@ -324,7 +340,16 @@ async function execute(operation: StoreOperation): Promise<unknown> {
     const rows: Array<[string, unknown]> = [];
     connection.exec('BEGIN');
     try {
-      for (const key of operation.keys) { check(); const row = get.get(operation.collection, Buffer.from(key)); if (row !== undefined) rows.push([key, JSON.parse(String(row['json']))]); }
+      for (const key of operation.keys) {
+        check();
+        const row = get.get(operation.collection, Buffer.from(key));
+        if (row !== undefined) {
+          if (row['json'] === null) {
+            throw new QueryStoreValueTooLargeError(operation.collection, Number(row['bytes']));
+          }
+          rows.push([key, JSON.parse(String(row['json']))]);
+        }
+      }
       connection.exec('COMMIT');
     } catch (error) { rollbackQuietly(connection); throw error; }
     return rows;

@@ -613,6 +613,7 @@ confirm = false
 | `max_attempts_per_step` | `integer` | `5` | 单步失败后的最大总尝试次数（含首次尝试） |
 | `thinking_only_continuation` | `boolean` | `true` | 模型正常结束且只有非空思考时，显式发送一次 `Continue.` User 消息 |
 | `zero_output_continuation` | `boolean` | `false` | 正常结束且没有思考文本、可见正文和工具调用时，显式发送一次 `Continue.` User 消息 |
+| `skip_unstarted_tools_on_input` | `boolean` | `false` | 步内收到新消息时，跳过当前批次尚未开始的工具调用 |
 | `reserved_context_size` | `integer` | `50000` | 自动压缩点以上为模型输出预留的 token 数 |
 | `auto_compact` | `string` | — | 全局默认自动压缩点，按模型可用窗口写百分比，如 `"85%"`。全局不接受 token 数；模型、profile、会话用正整数 token |
 | `context_strategy` | `string` | `"summarize"` | 主 Agent 的全局默认压缩策略：`auto`、`summarize` 或 `fresh` |
@@ -634,6 +635,8 @@ confirm = false
 `SendMessage` 确认送达用户后，主 Agent 的工具结果续步若正常完成且只有思考或没有输出，可以静默结束本轮。Kiki 保留思考，不再发起恢复请求；符合条件的干净空响应或 thinking-only 供应商错误也会结束本轮。子 Agent、部分响应中断，以及没有可用 token 的 Google `CONTINUATION` 响应不适用这条规则。
 
 未配置或设为 `false` 时，`zero_output_continuation` 保持关闭。设为 `[loop_control] zero_output_continuation = true` 后，供应商确认正常结束，且思考文本、可见回答和工具调用都为空时，Kiki 会在同一轮发送一条 `Continue.` User 消息。附在空思考上的签名不是思考内容，并保留在对话里。非空的 redacted 思考数据算输出。非空思考文本仍走 `thinking_only_continuation`。子 Agent 使用同一规则；开关关闭时，没有内容的子任务完成仍失败，第二次仍为空也会停止本轮。token 用量不参与判断。该选择从下一个 step 边界起生效。这次续接是同一轮里的一次模型请求，不按连接错误或限流重试。取消、供应商错误，以及没有正常停止终态的流，仍走原有路径。
+
+`skip_unstarted_tools_on_input` 默认为 `false`：单步执行期间收到新消息（立即发送或 steer）时，Kiki 会先执行完当前批次已发出的工具调用（`Bash`、`AgentRun` 等可后台化任务会转入后台继续运行，`TaskWait` 等纯前台等待会提前释放），再在 step 边界投递新消息；显式停止或取消仍会立即中止。设为 `[loop_control] skip_unstarted_tools_on_input = true` 后，会跳过当前批次中尚未开始的工具调用（并允许同步 `WebSearch` / `FetchURL` 因新消息提前结束），让 Agent 先阅读新消息再决定是否执行。该选择从下一批工具调用起生效。
 
 ### 连续性提醒设置
 

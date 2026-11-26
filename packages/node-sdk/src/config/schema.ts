@@ -160,6 +160,7 @@ export const LoopControlSchema = z.object({
   compactionMaxAttempts: z.number().int().min(1).optional(),
   compactionSoftContextSize: z.number().int().min(0).optional(),
   zeroOutputContinuation: z.boolean().optional(),
+  skipUnstartedToolsOnInput: z.boolean().optional(),
 });
 
 export type LoopControl = z.infer<typeof LoopControlSchema>;

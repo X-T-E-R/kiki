@@ -25,6 +25,7 @@ export interface ToolExecutorExecuteOptions {
   readonly executionWaits?: Readonly<Record<string, import('#/tool/toolContract').ExecutionTaskWait>>;
   readonly taskOwnerSignal?: AbortSignal;
   readonly steerSignal?: AbortSignal;
+  readonly skipUnstartedToolsOnInput?: boolean;
   readonly turnId: number;
   readonly step?: number;
   readonly deduplicationKey?: string;

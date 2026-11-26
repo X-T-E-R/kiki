@@ -17,7 +17,7 @@ import type { LifeState } from '../../lib/motion';
 import { Icon } from '../icons';
 import { RelativeTime } from '../RelativeTime';
 import { ThreadTitle } from '../ThreadTitle';
-import { SidebarRowDot } from './SidebarRowSignal';
+import { SidebarRowDot, sidebarDotKindFromLife } from './SidebarRowSignal';
 import { SidebarSnoozePopover } from './SidebarSnoozePopover';
 
 export type InboxRowBucket = 'active' | 'working' | 'snoozed' | 'archived';
@@ -163,7 +163,7 @@ export function SidebarTriageRow({
         }`}
       >
         <span data-inbox-status={life} className="shrink-0">
-          <SidebarRowDot signal={hasSignal} label={stateWord} />
+          <SidebarRowDot signal={hasSignal} kind={sidebarDotKindFromLife(life, { needsYou: item.needsYou })} label={stateWord} />
         </span>
         <span className="min-w-0 flex-1">
           <span

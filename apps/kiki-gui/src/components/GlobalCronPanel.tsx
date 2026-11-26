@@ -294,7 +294,7 @@ function CronNextCheckTimeline({
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-          <h2 className="text-[12px] leading-4 font-normal text-section-ink">{t('cron.timeline.heading')}</h2>
+          <h2 className="text-[12px] leading-4 font-bold text-section-ink">{t('cron.timeline.heading')}</h2>
           <span className="text-[12px] leading-4 text-ink-faint">{t('cron.timeline.nextOnly')}</span>
           <span className="text-[12px] leading-4 text-ink-faint tabular-nums" data-cron-timeline-in-window>
             · {tp('cron.timeline.inWindow', projection.inWindow.length)}
@@ -1141,7 +1141,7 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
   const section = (key: 'active' | 'paused', rows: readonly CronTask[]) => (rows.length === 0 ? null : (
     <section data-cron-section={key} aria-labelledby={`cron-section-${key}`}>
       <div className="mb-2 flex items-baseline justify-between gap-2">
-        <h2 id={`cron-section-${key}`} className="flex items-baseline gap-2 text-[12px] leading-4 font-normal text-section-ink">
+        <h2 id={`cron-section-${key}`} className="flex items-baseline gap-2 text-[12px] leading-4 font-bold text-section-ink">
           {t(key === 'active' ? 'cron.section.active' : 'cron.section.paused')}
           <span className="text-ink-faint tabular-nums">{rows.length}</span>
         </h2>

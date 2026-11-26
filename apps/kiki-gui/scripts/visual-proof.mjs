@@ -5787,6 +5787,7 @@ async function scenarioAnnotationSavePerformance() {
         measure.startedAt = performance.now();
         const done = () => {
           const target = document.querySelector(args.selector);
+          if (args.mode === 'detached') return target === null;
           if (target === null) return false;
           if (args.mode === 'disabled') return target.disabled;
           if (args.mode === 'includes') return target.textContent.includes(args.expected);
@@ -5926,13 +5927,11 @@ async function scenarioAnnotationSavePerformance() {
   await measureSave(
     'draft-mark',
     annotationPanel.locator('[data-annotation-panel-save]'),
-    '[data-annotation-panel-save]',
+    '[data-annotation-panel]',
     '',
-    'disabled',
+    'detached',
   );
   await shot('annotation-save-draft-mark');
-  await page.keyboard.press('Escape');
-  await annotationPanel.waitFor({ state: 'detached', timeout: 5000 });
 
   await selectFragment('Second draft target');
   await page.click('[data-selection-annotate-action]');

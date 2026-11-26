@@ -3,6 +3,7 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../../i18n';
 import {
   compactQuotaMeterLabel,
+  effectiveEngineQuotaSourceOf,
   effectiveQuotaStatus,
   formatQuotaPercentNumber,
   formatQuotaResetDuration,
@@ -18,7 +19,6 @@ import {
 } from '../../../lib/providerQuota';
 import { FeedbackLine, type Feedback } from '../../controls';
 import { DisclosureChevron, Icon } from '../../icons';
-import { engineQuotaSourceOf } from '../../settings/ExternalEnginesSection';
 import { QuotaCalibrationDial, QuotaFuelMicroBar, resolveQuotaArcStroke } from './QuotaArcGauge';
 import {
   computeRemainingPace,
@@ -204,7 +204,8 @@ export function buildQuotaOverviewPlan(params: {
 
   for (const source of engineSources) {
     const engineId = source.provider_id;
-    const selectedSourceId = engineQuotaSourceOf(configRaw, engineId);
+    const matchingPlugins = pluginQuotaSources.filter((entry) => entry.engineIds.includes(engineId));
+    const selectedSourceId = effectiveEngineQuotaSourceOf(configRaw, source, matchingPlugins);
     if (selectedSourceId !== '') {
       const snapshot = pluginQuotaSources.find((entry) => entry.id === selectedSourceId);
       const pStatus = pluginQuotaSnapshotStatus(
@@ -214,7 +215,7 @@ export function buildQuotaOverviewPlan(params: {
         nowMs,
         pluginCatalogError !== undefined,
       );
-      if (pStatus !== 'ready' || snapshot === undefined || snapshot.readings === undefined) continue;
+      if ((pStatus !== 'ready' && pStatus !== 'expired') || snapshot === undefined || snapshot.readings === undefined) continue;
       const accountGroups = groupHarnessQuotaReadings(snapshot.readings);
       if (accountGroups.length === 0) continue;
       const fleetHealth = summarizePoolHealth(accountGroups, defaultPoolLabel, nowMs);
@@ -461,43 +462,43 @@ function ProviderDialCard({
       </div>
 
       <div className="flex justify-center py-0.5">
-        <QuotaCalibrationDial
-          outerPercent={outerMeter.remainingPercent}
-          outerPace={outerMeter.pace}
-          innerPercent={innerMeter?.remainingPercent}
-          innerPace={innerMeter?.pace}
-          muted={muted}
-          ariaLabel={`${source.label}: ${formatQuotaPercentNumber(outerMeter.remainingPercent)}%`}
-          centerContent={(() => {
-            const m = outerMeter.meter;
-            const outerDisplayPct = formatQuotaPercentNumber(outerMeter.remainingPercent);
-            if (m.unit === 'money' && m.remaining !== null && innerMeter === undefined) {
-              const cur = (m.currency ?? m.unit_label ?? '').toUpperCase();
-              const amt = Number.isInteger(m.remaining) ? m.remaining.toFixed(0) : m.remaining.toFixed(2);
-              const headline = cur === 'USD' ? `$${amt}` : cur ? `${amt} ${cur}` : amt;
-              return (
-                <>
-                  <span className="max-w-[96px] truncate font-sans text-[18px] leading-[26px] font-bold tabular-nums text-ink">
-                    {headline}
-                  </span>
-                  <span className="mt-0.5 max-w-[92px] truncate font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)] tabular-nums">
-                    {outerDisplayPct}% · {normalizedOuter.display}
-                  </span>
-                </>
-              );
-            }
-            return (
-              <>
-                <span className="font-sans text-[20px] leading-7 font-bold tabular-nums text-ink">
-                  {`${outerDisplayPct}%`}
+        {(() => {
+          const m = outerMeter.meter;
+          const outerDisplayPct = formatQuotaPercentNumber(outerMeter.remainingPercent);
+          const isMoneyHeadline = m.unit === 'money' && m.remaining !== null && innerMeter === undefined;
+          const headline = (() => {
+            if (!isMoneyHeadline || m.remaining === null) return `${outerDisplayPct}%`;
+            const cur = (m.currency ?? m.unit_label ?? '').toUpperCase();
+            const amt = Number.isInteger(m.remaining) ? m.remaining.toFixed(0) : m.remaining.toFixed(2);
+            return cur === 'USD' ? `$${amt}` : cur ? `${amt} ${cur}` : amt;
+          })();
+          const subtitleText = isMoneyHeadline
+            ? `${outerDisplayPct}% · ${normalizedOuter.display}`
+            : normalizedOuter.display;
+          return (
+            <QuotaCalibrationDial
+              outerPercent={outerMeter.remainingPercent}
+              outerPace={outerMeter.pace}
+              innerPercent={innerMeter?.remainingPercent}
+              innerPace={innerMeter?.pace}
+              muted={muted}
+              ariaLabel={`${source.label}: ${outerDisplayPct}%`}
+              centerContent={(
+                <span className={isMoneyHeadline
+                  ? 'max-w-[80px] truncate font-sans text-[18px] leading-[26px] font-bold tabular-nums text-ink'
+                  : 'font-sans text-[22px] leading-7 font-bold tabular-nums text-ink'}
+                >
+                  {headline}
                 </span>
-                <span className="mt-0.5 max-w-[92px] truncate font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)]">
-                  {normalizedOuter.display}
+              )}
+              subtitle={(
+                <span className="truncate tabular-nums" title={normalizedOuter.rawTitle ?? subtitleText}>
+                  {subtitleText}
                 </span>
-              </>
-            );
-          })()}
-        />
+              )}
+            />
+          );
+        })()}
       </div>
 
       <div className="space-y-1.5">
@@ -586,23 +587,22 @@ function EnginePluginDialCard({
           innerPace={innerWindow?.pace}
           ariaLabel={`${source.label}: ${outerWindow.pool.label} ${formatQuotaPercentNumber(outerWindow.remainingPercent)}%`}
           centerContent={isMultiSeat ? (
-            <>
-              <span className="font-sans text-[20px] leading-7 font-bold tabular-nums text-ink">
-                {readySeats}/{totalSeats}
-              </span>
-              <span className="mt-0.5 font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)]">
-                {t('usage.quota.fleetSeatsLabel')}
-              </span>
-            </>
+            <span className="font-sans text-[22px] leading-7 font-bold tabular-nums text-ink">
+              {readySeats}/{totalSeats}
+            </span>
           ) : (
-            <>
-              <span className="font-sans text-[20px] leading-7 font-bold tabular-nums text-ink">
-                {formatQuotaPercentNumber(outerWindow.remainingPercent)}%
-              </span>
-              <span className="mt-0.5 max-w-[92px] truncate font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)]">
-                {outerWindow.pool.label}
-              </span>
-            </>
+            <span className="font-sans text-[22px] leading-7 font-bold tabular-nums text-ink">
+              {formatQuotaPercentNumber(outerWindow.remainingPercent)}%
+            </span>
+          )}
+          subtitle={isMultiSeat ? (
+            <span className="truncate">
+              {t('usage.quota.fleetSeatsLabel')}
+            </span>
+          ) : (
+            <span className="truncate" title={outerWindow.pool.label}>
+              {outerWindow.pool.label}
+            </span>
           )}
         />
       </div>
@@ -678,14 +678,14 @@ function EngineNativeDialCard({
           muted={muted}
           ariaLabel={`${source.label}: ${formatQuotaPercentNumber(outerMeter.remainingPercent)}%`}
           centerContent={(
-            <>
-              <span className="font-sans text-[20px] leading-7 font-bold tabular-nums text-ink">
-                {formatQuotaPercentNumber(outerMeter.remainingPercent)}%
-              </span>
-              <span className="mt-0.5 max-w-[92px] truncate font-sans tracking-normal text-[12px] leading-4 text-[var(--kiki-chart-label)]">
-                {normalizedOuter.display}
-              </span>
-            </>
+            <span className="font-sans text-[22px] leading-7 font-bold tabular-nums text-ink">
+              {formatQuotaPercentNumber(outerMeter.remainingPercent)}%
+            </span>
+          )}
+          subtitle={(
+            <span className="truncate" title={normalizedOuter.rawTitle ?? normalizedOuter.display}>
+              {normalizedOuter.display}
+            </span>
           )}
         />
       </div>

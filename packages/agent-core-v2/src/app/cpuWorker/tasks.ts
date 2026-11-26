@@ -11,6 +11,12 @@ import type {
 } from '#/agent/media/image-compress';
 import { LocalLineReader, type LineRangeOptions, type TailRangeOptions } from '#/os/backends/node-local/lineReader';
 import { decodeWireInput, projectWireInput } from './wireTask';
+import {
+  executeWireParseJournalSlice,
+  executeWireParseJournalStream,
+  type WireParseJournalSliceOperation,
+  type WireParseJournalStreamOperation,
+} from './wireJournalTask';
 import { executeWireGoalScan, type WireGoalScanOperation } from './goalScanTask';
 import { parseThreadTurnRecord } from '#/app/threadCommunication/threadTurnRecord';
 import { readCheckpointStatesFromPath } from '#/session/replayCheckpointArchive';
@@ -33,6 +39,8 @@ export type CpuOperation =
   | ({ readonly type: 'image.dimensions' } & ImageDimensionsWorkerInput)
   | ({ readonly type: 'image.toPng' } & ImageToPngWorkerInput)
   | { readonly type: 'wire.context'; readonly input: MessagePort; readonly scope: string; readonly key: string; readonly omitTranscript?: boolean }
+  | WireParseJournalSliceOperation
+  | WireParseJournalStreamOperation
   | { readonly type: 'wire.threadTurnRecord'; readonly input: MessagePort }
   | WireGoalScanOperation
   | { readonly type: 'checkpoint.read'; readonly path: string; readonly names: readonly string[] }
@@ -65,7 +73,7 @@ export async function executeCpuOperation(operation: CpuOperation, signal?: Abor
     case 'workspace.trigram.update':
     case 'workspace.trigram.finish':
     case 'workspace.trigram.query': return executeWorkspaceTrigram(operation, signal);
-    case 'image.decode': return decodeImageVerdict(new Uint8Array(operation.bytes), operation.mimeType);
+    case 'image.decode': return decodeImageVerdict(new Uint8Array(operation.bytes), operation.mimeType, signal);
     case 'image.compress': {
       const { executeImageCompress } = await import('#/agent/media/image-compress');
       signal?.throwIfAborted();
@@ -92,6 +100,8 @@ export async function executeCpuOperation(operation: CpuOperation, signal?: Abor
       return executeImageToPng(operation, signal);
     }
     case 'wire.context': return projectWireInput(operation.input, operation.scope, operation.key, operation.omitTranscript === true, signal);
+    case 'wire.parseJournalSlice': return executeWireParseJournalSlice(operation, signal);
+    case 'wire.parseJournalStream': return executeWireParseJournalStream(operation, signal);
     case 'wire.goalScan': return executeWireGoalScan(operation, signal);
     case 'checkpoint.read': return readCheckpointStatesFromFile(operation.path, operation.names, signal);
     case 'wire.threadTurnRecord': {

@@ -22,6 +22,7 @@ import { nbSearchConfigIssues, nbSearchConfigRevision, resolveNbSearchCapturedCo
 import { resolve, relative, isAbsolute, sep } from 'node:path';
 import { INbSearchService, type NbSearchCapabilities, type NbSearchReadiness, type NbSearchTestStatus } from './nbSearch';
 import { INbSearchSourceStore, type NbSearchSource } from './sourceStore';
+import { fetchRawGatewayKeyUsage, isNbSearchBalanceSupported, parseRawGatewayRoute } from './rawGatewayQuota';
 import { describeCapabilities, formatManagedCredentialMismatchHint } from './toolDescriptions';
 
 export class NbSearchService implements INbSearchService {
@@ -144,17 +145,28 @@ export class NbSearchService implements INbSearchService {
     if (runtime === undefined) throw configurationError(status);
   }
 
-  async quotaSources(): Promise<readonly { id: string; provider_id: string; enabled: boolean; revision: string }[]> {
+  async quotaSources(): Promise<readonly { id: string; provider_id: string; enabled: boolean; revision: string; base_url?: string; balance_supported?: boolean }[]> {
     await this.config.ready;
     const config = this.config.get<NbSearchConfig | undefined>(NB_SEARCH_SECTION);
     const reuse = this.config.get<NbSearchSourceConfig | undefined>(NB_SEARCH_SOURCE_SECTION)?.reuse_local_config ?? true;
     return this.sources.withSource(reuse, config, (source) => {
       if (source.status.availability === 'unavailable') return [];
       const effective = capturedSource(source, config).config;
+      const localInstances = source.config?.provider_instances ?? {};
+      const kikiInstances = config?.provider_instances ?? {};
       return Object.entries(effective.provider_instances).map(([id, instance]) => {
         const slot = instance.credential_slot_id === undefined ? undefined : effective.credential_slots[instance.credential_slot_id];
-        return { id, provider_id: instance.provider_id, enabled: instance.enabled,
-          revision: stableFingerprint([instance, slot === undefined ? null : source.env[slot.env] ?? null]) };
+        const rawKeys = slot === undefined ? [] : (source.env[slot.env] ?? '').split(',').map((key) => key.trim()).filter((key) => key !== '');
+        const hasCredential = slot === undefined || rawKeys.length > 0;
+        const explicitlyConfigured = Object.hasOwn(localInstances, id) || Object.hasOwn(kikiInstances, id) || source.resolved !== undefined;
+        return {
+          id,
+          provider_id: instance.provider_id,
+          enabled: instance.enabled && (explicitlyConfigured || hasCredential),
+          revision: stableFingerprint([instance, slot === undefined ? null : source.env[slot.env] ?? null]),
+          ...(instance.base_url !== undefined ? { base_url: instance.base_url } : {}),
+          balance_supported: isNbSearchBalanceSupported(instance.provider_id, instance.base_url, rawKeys),
+        };
       });
     });
   }
@@ -168,14 +180,32 @@ export class NbSearchService implements INbSearchService {
       const effective = capturedSource(source, config).config;
       const instance = effective.provider_instances[instanceId];
       if (instance === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Unknown nb-search provider instance.');
-      const balanceSupported = instance.provider_id === 'tavily' || instance.provider_id === 'firecrawl' || instance.provider_id === 'zhihu';
+      const balanceSupported = isNbSearchBalanceSupported(instance.provider_id, instance.base_url);
       if (!instance.enabled) return { provider_instance_id: instanceId, provider_id: instance.provider_id, balance_supported: balanceSupported, keys: [] };
+      const slot = instance.credential_slot_id === undefined ? undefined : effective.credential_slots[instance.credential_slot_id];
+      const rawKeys = slot === undefined ? [] : (source.env[slot.env] ?? '').split(',').map((key) => key.trim()).filter((key) => key !== '');
+      const count = rawKeys.length;
+      if (!balanceSupported) {
+        return nbSearchKeyUsageViewSchema.parse({
+          provider_instance_id: instanceId,
+          provider_id: instance.provider_id,
+          balance_supported: false,
+          keys: Array.from({ length: count }, (_, index) => ({ key_index: index + 1, state: 'unknown' })),
+        });
+      }
+      const rawGatewayRoute = parseRawGatewayRoute(instance.base_url);
+      if (rawGatewayRoute !== undefined) {
+        return fetchRawGatewayKeyUsage({
+          instanceId,
+          providerId: instance.provider_id,
+          route: rawGatewayRoute,
+          keys: rawKeys,
+        });
+      }
       const runtime = await this.#sharedRuntime(source, config, this.#generation);
       if (runtime === undefined) throw configurationError(source.status);
       const local = runtime as import('@nb-corp/nb-search').LocalNbSearchRuntime;
       const entries = await local.keyUsage({ provider_instance_id: instanceId, refresh });
-      const slot = instance.credential_slot_id === undefined ? undefined : effective.credential_slots[instance.credential_slot_id];
-      const count = slot === undefined ? 0 : (source.env[slot.env] ?? '').split(',').filter((key) => key.trim() !== '').length;
       const keys = entries.map((entry) => ({
         key_index: entry.key_index, state: entry.state, cooldown_until: entry.cooldown_until,
         usage: entry.usage, usage_error: entry.usage_error,

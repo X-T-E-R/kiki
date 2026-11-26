@@ -4,9 +4,11 @@ import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import { mergeConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
 import { readBundledPluginCatalog } from '@kiki/agent-core-v2/app/plugin/defaultCatalog';
+import { isBlockedIp, isExplicitLoopbackHost, isFakeIpAddress, stripHostBrackets } from '@kiki/agent-core-v2/app/plugin/networkSafety';
 import type { PortableSpaceDomain, PortableSpaceExcludedItem } from '@kiki/protocol';
 import { sameUnit, type VerifiedBase } from './mergeEngine';
-import { encodeToml, object, parseToml, PLAIN, type Data, type Units } from './treeProjection';
+import { encodeToml, domainForFile, hasBundledPluginManifest, isPortablePluginId, object, parseToml, PLAIN, type Data, type Units } from './treeProjection';
+import { safePortablePath } from './tarArchive';
 import { RECIPE_INSTALLATIONS, readRecipeInstallations, installBytes } from './recipeStore';
 
 type SubscriptionUnit = Units extends Map<string, infer U> ? U : never;
@@ -14,7 +16,16 @@ type SubscriptionUnit = Units extends Map<string, infer U> ? U : never;
 const MAX_ARCHIVE_BYTES = 16 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
 const FETCH_TIMEOUT_MS = 30_000;
+const DIRECT_FALLBACK_TIMEOUT_MS = 8_000;
+const DOH_TIMEOUT_MS = 4_000;
+const DOH_MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_ETAG_LENGTH = 512;
+
+const DOH_ENDPOINTS: readonly { readonly host: string; readonly path: string; readonly budgetMs: number }[] = [
+  { host: '223.5.5.5', path: '/resolve', budgetMs: 1_500 },
+  { host: '1.12.12.12', path: '/resolve', budgetMs: 1_200 },
+  { host: '1.1.1.1', path: '/dns-query', budgetMs: 1_300 },
+];
 
 const BLOCKED_CONFIG_SECTIONS = ['hooks', 'agent_executors', 'agent_executor_instances'] as const;
 const ALLOWED_REMOTE_MCP_SECRET_KEYS = new Set(['headers', 'token', 'bearerToken', 'apiKey']);
@@ -53,12 +64,28 @@ const USER_KEEP_DOMAINS = new Set<PortableSpaceDomain>([
 export interface UrlSafetyOptions {
   readonly allowLoopback?: boolean;
   readonly lookupFn?: (hostname: string) => Promise<readonly { readonly address: string; readonly family?: number }[]>;
+  readonly dohResolveFn?: (
+    hostname: string,
+    signal?: AbortSignal,
+  ) => Promise<readonly { readonly address: string; readonly family?: number }[]>;
+}
+
+export interface PinnedHttpResponse {
+  readonly status: number;
+  readonly etag?: string;
+  readonly location?: string;
+  readonly bytes: Buffer;
 }
 
 export interface UrlFetchOptions extends UrlSafetyOptions {
   readonly ifNoneMatch?: string;
   readonly ifNoneMatchOrigin?: string;
   readonly fetchFn?: typeof fetch;
+  readonly pinnedFetchFn?: (
+    target: { readonly url: URL; readonly address: string; readonly family: 4 | 6 },
+    headers: Record<string, string>,
+    signal: AbortSignal,
+  ) => Promise<PinnedHttpResponse>;
   readonly signal?: AbortSignal;
 }
 
@@ -75,64 +102,162 @@ export interface SubscriptionMergeResult {
   readonly skippedIds: string[];
 }
 
+interface ResolvedIpTarget {
+  readonly address: string;
+  readonly family: 4 | 6;
+}
+
 interface SafeSubscriptionTarget {
   readonly url: URL;
   readonly address: string;
   readonly family: 4 | 6;
   readonly isLoopback: boolean;
+  readonly dohVerified?: boolean;
+  readonly fallbackAddresses?: readonly ResolvedIpTarget[];
 }
 
 function stripBrackets(hostname: string): string {
-  return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+  return stripHostBrackets(hostname);
 }
 
-function isExplicitLoopbackHost(hostname: string): boolean {
-  const bare = stripBrackets(hostname).toLowerCase();
-  return bare === 'localhost' || bare === '127.0.0.1' || bare === '::1';
+interface DohJsonResponse {
+  readonly Status?: unknown;
+  readonly Answer?: unknown;
 }
 
-function isBlockedIpv4(ip: string): boolean {
-  const parts = ip.split('.').map((part) => Number(part));
-  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
-  const [a, b, c] = parts as [number, number, number, number];
-  if (a === 0) return true;
-  if (a === 10) return true;
-  if (a === 127) return true;
-  if (a === 100 && b >= 64 && b <= 127) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 192 && b === 0 && (c === 0 || c === 2)) return true;
-  if (a === 198 && (b === 18 || b === 19)) return true;
-  if (a >= 224) return true;
-  return false;
+function queryDohRecord(
+  endpoint: { readonly host: string; readonly path: string },
+  hostname: string,
+  recordType: 'A' | 'AAAA',
+  signal: AbortSignal,
+): Promise<{ readonly status: number; readonly addresses: ResolvedIpTarget[] }> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    if (signal.aborted) {
+      rejectPromise(signal.reason instanceof Error ? signal.reason : new Error('DoH lookup aborted'));
+      return;
+    }
+    const queryPath = `${endpoint.path}?name=${encodeURIComponent(hostname)}&type=${recordType}`;
+    const req = httpsRequest(
+      {
+        host: endpoint.host,
+        port: 443,
+        path: queryPath,
+        method: 'GET',
+        headers: { accept: 'application/dns-json' },
+        signal,
+      },
+      (res) => {
+        const statusCode = res.statusCode ?? 0;
+        if (statusCode < 200 || statusCode >= 300) {
+          res.resume();
+          rejectPromise(new Error(`DoH HTTP ${statusCode}`));
+          return;
+        }
+        const chunks: Buffer[] = [];
+        let total = 0;
+        res.on('data', (chunk: Buffer) => {
+          total += chunk.byteLength;
+          if (total > DOH_MAX_RESPONSE_BYTES) {
+            res.destroy();
+            rejectPromise(new Error('DoH response exceeds size limit'));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on('error', (error) => rejectPromise(error));
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(Buffer.concat(chunks, total).toString('utf8')) as DohJsonResponse;
+            const dnsStatus = typeof parsed.Status === 'number' ? parsed.Status : -1;
+            const expectedType = recordType === 'A' ? 1 : 28;
+            const expectedFamily: 4 | 6 = recordType === 'A' ? 4 : 6;
+            const addresses: ResolvedIpTarget[] = [];
+            if (Array.isArray(parsed.Answer)) {
+              for (const rawEntry of parsed.Answer) {
+                if (rawEntry === null || typeof rawEntry !== 'object') continue;
+                const entry = rawEntry as { readonly type?: unknown; readonly data?: unknown };
+                if (entry.type !== expectedType || typeof entry.data !== 'string') continue;
+                const clean = stripBrackets(entry.data.trim());
+                if (isIP(clean) === expectedFamily) {
+                  addresses.push({ address: clean, family: expectedFamily });
+                }
+              }
+            }
+            resolvePromise({ status: dnsStatus, addresses });
+          } catch (error) {
+            rejectPromise(error instanceof Error ? error : new Error('Invalid DoH JSON'));
+          }
+        });
+      },
+    );
+    req.on('error', (error) => rejectPromise(error));
+    req.end();
+  });
 }
 
-function parseMappedIpv4(bare: string): string | undefined {
-  const dotted = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(bare);
-  if (dotted !== null) return dotted[1];
-  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(bare);
-  if (hex !== null) {
-    const hi = Number.parseInt(hex[1]!, 16);
-    const lo = Number.parseInt(hex[2]!, 16);
-    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+async function resolvePublicHostViaDoH(hostname: string, outerSignal?: AbortSignal): Promise<readonly ResolvedIpTarget[]> {
+  const overall = overallSignal(outerSignal, DOH_TIMEOUT_MS);
+  const deadline = Date.now() + DOH_TIMEOUT_MS;
+  for (const endpoint of DOH_ENDPOINTS) {
+    if (overall.aborted) break;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 50) break;
+    const stepSignal = AbortSignal.any([overall, AbortSignal.timeout(Math.min(endpoint.budgetMs, remainingMs))]);
+    const [aResult, aaaaResult] = await Promise.allSettled([
+      queryDohRecord(endpoint, hostname, 'A', stepSignal),
+      queryDohRecord(endpoint, hostname, 'AAAA', stepSignal),
+    ]);
+    if (aResult.status !== 'fulfilled' || aaaaResult.status !== 'fulfilled') continue;
+    const aStatus = aResult.value.status;
+    const aaaaStatus = aaaaResult.value.status;
+    if ((aStatus !== 0 && aStatus !== 3) || (aaaaStatus !== 0 && aaaaStatus !== 3)) continue;
+    const dedup = new Map<string, ResolvedIpTarget>();
+    for (const item of [...aResult.value.addresses, ...aaaaResult.value.addresses]) {
+      if (!dedup.has(item.address)) dedup.set(item.address, item);
+    }
+    return [...dedup.values()];
   }
-  return undefined;
+  return [];
 }
 
-function isBlockedIp(rawIp: string): boolean {
-  const bare = stripBrackets(rawIp).split('%')[0]!.toLowerCase();
-  const kind = isIP(bare);
-  if (kind === 4) return isBlockedIpv4(bare);
-  if (kind !== 6) return true;
-  if (bare === '::' || bare === '::1' || /^0{0,4}(?::0{0,4})*:0{0,3}[01]$/.test(bare)) return true;
-  const mapped = parseMappedIpv4(bare);
-  if (mapped !== undefined) return isBlockedIpv4(mapped);
-  const first = bare.split(':')[0] ?? '';
-  if (/^f[cd][0-9a-f]{0,2}$/.test(first)) return true;
-  if (/^fe[89ab][0-9a-f]?$/.test(first)) return true;
-  if (/^ff[0-9a-f]{0,2}$/.test(first)) return true;
-  return false;
+function parseNoProxyHost(entry: string): { readonly host: string; readonly port?: string } {
+  let host = entry;
+  let port: string | undefined;
+  if (entry.startsWith('[')) {
+    const close = entry.indexOf(']');
+    if (close > 0) {
+      host = entry.slice(1, close);
+      const rest = entry.slice(close + 1);
+      if (rest.startsWith(':')) port = rest.slice(1);
+    }
+  } else {
+    const colon = entry.indexOf(':');
+    if (colon !== -1 && colon === entry.lastIndexOf(':') && /^\d+$/.test(entry.slice(colon + 1))) {
+      host = entry.slice(0, colon);
+      port = entry.slice(colon + 1);
+    }
+  }
+  if (host.startsWith('*.')) host = host.slice(2);
+  else if (host.startsWith('.')) host = host.slice(1);
+  return port === undefined ? { host } : { host, port };
+}
+
+function hasConfiguredProxyForUrl(targetUrl: URL, env: NodeJS.ProcessEnv = process.env): boolean {
+  const proxyRaw = targetUrl.protocol === 'https:'
+    ? env['HTTPS_PROXY'] ?? env['https_proxy'] ?? env['ALL_PROXY'] ?? env['all_proxy']
+    : env['HTTP_PROXY'] ?? env['http_proxy'] ?? env['ALL_PROXY'] ?? env['all_proxy'];
+  if (proxyRaw === undefined || proxyRaw.trim().length === 0) return false;
+  const noProxyRaw = env['NO_PROXY'] ?? env['no_proxy'] ?? '';
+  const entries = noProxyRaw.split(',').map((item) => item.trim().toLowerCase()).filter((item) => item.length > 0);
+  if (entries.includes('*')) return false;
+  const host = stripBrackets(targetUrl.hostname).toLowerCase();
+  const port = targetUrl.port || (targetUrl.protocol === 'https:' ? '443' : '80');
+  for (const entry of entries) {
+    const parsed = parseNoProxyHost(entry);
+    if (parsed.port !== undefined && parsed.port !== port) continue;
+    if (host === parsed.host || host.endsWith(`.${parsed.host}`)) return false;
+  }
+  return true;
 }
 
 /** Sanitizes an HTTP ETag validator value, stripping unsafe header characters and bounding length. */
@@ -147,6 +272,7 @@ export function sanitizeEtag(raw: string | null | undefined): string | undefined
 async function resolveSafeSubscriptionTarget(
   rawUrl: string,
   options: UrlSafetyOptions = {},
+  signal?: AbortSignal,
 ): Promise<SafeSubscriptionTarget> {
   if (!URL.canParse(rawUrl)) throw new Error('Invalid subscription URL');
   const parsed = new URL(rawUrl);
@@ -175,10 +301,50 @@ async function resolveSafeSubscriptionTarget(
   const resolver = options.lookupFn ?? ((host: string) => lookup(host, { all: true }));
   const records = await resolver(bare);
   if (records.length === 0) throw new Error('Subscription URL host could not be resolved');
+  const fakeIpRecords: ResolvedIpTarget[] = [];
   for (const record of records) {
     if (isBlockedIp(record.address)) {
+      if (isFakeIpAddress(record.address)) {
+        const clean = stripBrackets(record.address);
+        const fam: 4 | 6 = record.family === 6 || isIP(clean) === 6 ? 6 : 4;
+        fakeIpRecords.push({ address: clean, family: fam });
+        continue;
+      }
       throw new Error('Subscription URL resolved to a blocked private address');
     }
+  }
+  if (fakeIpRecords.length > 0) {
+    if (options.lookupFn !== undefined && options.dohResolveFn === undefined) {
+      throw new Error('Subscription URL resolved to a blocked private address');
+    }
+    const dohResolver = options.dohResolveFn ?? resolvePublicHostViaDoH;
+    let verifiedRecords: readonly { readonly address: string; readonly family?: number }[];
+    try {
+      verifiedRecords = await dohResolver(bare, signal);
+    } catch {
+      throw new Error('Subscription URL resolved to a blocked private address');
+    }
+    if (verifiedRecords.length === 0) {
+      throw new Error('Subscription URL resolved to a blocked private address');
+    }
+    const publicTargets: ResolvedIpTarget[] = [];
+    for (const record of verifiedRecords) {
+      const clean = stripBrackets(record.address);
+      const kind = isIP(clean);
+      if (kind === 0 || isBlockedIp(clean)) {
+        throw new Error('Subscription URL resolved to a blocked private address');
+      }
+      publicTargets.push({ address: clean, family: kind === 6 ? 6 : 4 });
+    }
+    const primary = publicTargets[0]!;
+    return {
+      url: parsed,
+      address: primary.address,
+      family: primary.family,
+      isLoopback: false,
+      dohVerified: true,
+      fallbackAddresses: [...publicTargets.slice(1), ...fakeIpRecords],
+    };
   }
   const first = records[0]!;
   const family: 4 | 6 = first.family === 6 || isIP(stripBrackets(first.address)) === 6 ? 6 : 4;
@@ -231,15 +397,8 @@ async function readBoundedResponse(response: Response): Promise<Buffer> {
   return Buffer.concat(chunks, total);
 }
 
-interface PinnedHttpResponse {
-  readonly status: number;
-  readonly etag?: string;
-  readonly location?: string;
-  readonly bytes: Buffer;
-}
-
 function fetchPinnedTarget(
-  target: SafeSubscriptionTarget,
+  target: Pick<SafeSubscriptionTarget, 'url' | 'address' | 'family'>,
   headers: Record<string, string>,
   signal: AbortSignal,
 ): Promise<PinnedHttpResponse> {
@@ -314,6 +473,67 @@ function fetchPinnedTarget(
   });
 }
 
+function isNonRetryableFetchError(error: unknown): boolean {
+  return error instanceof Error && error.message === 'Subscription archive exceeds maximum size limit';
+}
+
+async function fetchPinnedTargetWithFallback(
+  target: SafeSubscriptionTarget,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+  pinnedFetch: (
+    target: { readonly url: URL; readonly address: string; readonly family: 4 | 6 },
+    headers: Record<string, string>,
+    signal: AbortSignal,
+  ) => Promise<PinnedHttpResponse> = fetchPinnedTarget,
+): Promise<PinnedHttpResponse> {
+  const candidates: ResolvedIpTarget[] = [
+    { address: target.address, family: target.family },
+    ...(target.fallbackAddresses ?? []),
+  ];
+  const allowProxyFallback = target.dohVerified === true
+    && !target.isLoopback
+    && target.url.protocol === 'https:'
+    && isIP(stripBrackets(target.url.hostname)) === 0
+    && hasConfiguredProxyForUrl(target.url);
+  let lastError: unknown;
+  for (let i = 0; i < candidates.length; i++) {
+    throwIfAborted(signal);
+    const candidate = candidates[i]!;
+    const hasMoreAttempts = i < candidates.length - 1 || allowProxyFallback;
+    const attemptSignal = hasMoreAttempts
+      ? AbortSignal.any([signal, AbortSignal.timeout(DIRECT_FALLBACK_TIMEOUT_MS)])
+      : signal;
+    try {
+      return await pinnedFetch(
+        { url: target.url, address: candidate.address, family: candidate.family },
+        headers,
+        attemptSignal,
+      );
+    } catch (error) {
+      if (signal.aborted || isNonRetryableFetchError(error)) throw error;
+      lastError = error;
+    }
+  }
+  if (allowProxyFallback) {
+    throwIfAborted(signal);
+    const response = await fetch(target.url.toString(), {
+      method: 'GET',
+      headers,
+      redirect: 'manual',
+      signal,
+    });
+    const status = response.status;
+    const etag = sanitizeEtag(response.headers.get('etag'));
+    const location = response.headers.get('location') ?? undefined;
+    const bytes = status === 304 || (status >= 300 && status < 400) || !response.ok
+      ? Buffer.alloc(0)
+      : await readBoundedResponse(response);
+    return { status, etag, location, bytes };
+  }
+  throw lastError instanceof Error ? lastError : new Error('Subscription fetch failed');
+}
+
 function overallSignal(outer: AbortSignal | undefined, deadlineMs = FETCH_TIMEOUT_MS): AbortSignal {
   const timeout = AbortSignal.timeout(deadlineMs);
   return outer === undefined ? timeout : AbortSignal.any([outer, timeout]);
@@ -329,7 +549,7 @@ function throwIfAborted(signal: AbortSignal): void {
 export async function fetchSubscriptionArchive(rawUrl: string, options: UrlFetchOptions = {}): Promise<UrlFetchResult> {
   const signal = overallSignal(options.signal);
   throwIfAborted(signal);
-  const initialTarget = await resolveSafeSubscriptionTarget(rawUrl, options);
+  const initialTarget = await resolveSafeSubscriptionTarget(rawUrl, options, signal);
   throwIfAborted(signal);
   const redirectAllowLoopback = options.allowLoopback === true && initialTarget.isLoopback;
   let currentTarget = initialTarget;
@@ -368,7 +588,12 @@ export async function fetchSubscriptionArchive(rawUrl: string, options: UrlFetch
         bytes = Buffer.alloc(0);
       }
     } else {
-      const pinned = await fetchPinnedTarget(currentTarget, headers, signal);
+      const pinned = await fetchPinnedTargetWithFallback(
+        currentTarget,
+        headers,
+        signal,
+        options.pinnedFetchFn,
+      );
       status = pinned.status;
       etag = pinned.etag;
       location = pinned.location;
@@ -388,7 +613,8 @@ export async function fetchSubscriptionArchive(rawUrl: string, options: UrlFetch
       currentTarget = await resolveSafeSubscriptionTarget(nextUrl, {
         allowLoopback: redirectAllowLoopback,
         lookupFn: options.lookupFn,
-      });
+        dohResolveFn: options.dohResolveFn,
+      }, signal);
       continue;
     }
     if (status < 200 || status >= 300) {
@@ -444,14 +670,135 @@ export function findBundledOfficialPlugin(id: string): OfficialCatalogPlugin | u
   return cachedOfficialPlugins.get(id);
 }
 
+function isSameOriginPinnedPluginZip(
+  rawSource: unknown,
+  rawSha256: unknown,
+  subscriptionOrigin: string | undefined,
+): { readonly source: string; readonly sha256: string } | undefined {
+  if (typeof rawSource !== 'string' || typeof rawSha256 !== 'string' || subscriptionOrigin === undefined) {
+    return undefined;
+  }
+  const source = rawSource.trim();
+  const sha256 = rawSha256.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(sha256) || !URL.canParse(source)) return undefined;
+  const parsed = new URL(source);
+  if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') return undefined;
+  if (!/\.zip$/i.test(parsed.pathname)) return undefined;
+  let expectedOrigin: string;
+  try {
+    expectedOrigin = new URL(subscriptionOrigin).origin.toLowerCase();
+  } catch {
+    return undefined;
+  }
+  if (!expectedOrigin.startsWith('https://') || parsed.origin.toLowerCase() !== expectedOrigin) {
+    return undefined;
+  }
+  return { source, sha256 };
+}
+
+function validateBundledPluginManifestName(
+  pluginId: string,
+  files: ReadonlyMap<string, Buffer>,
+): string | undefined {
+  for (const manifestFile of [`plugins/${pluginId}/kimi.plugin.json`, `plugins/${pluginId}/package.json`]) {
+    const rawBytes = files.get(manifestFile);
+    if (rawBytes === undefined) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawBytes.toString('utf8'));
+    } catch {
+      return `Invalid JSON in ${manifestFile}`;
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return `Invalid manifest object in ${manifestFile}`;
+    }
+    const rawName = (parsed as Record<string, unknown>)['name'];
+    if (typeof rawName === 'string' && rawName.trim().length > 0) {
+      const normalized = rawName.trim().toLowerCase().replace(/^@[^/]+\//, '');
+      if (normalized !== pluginId) {
+        return `Bundled plugin manifest name "${rawName}" does not match directory "${pluginId}"`;
+      }
+    }
+  }
+  return undefined;
+}
+
 /** Strips executable hooks, cron scripts, agent executors, recipe hooks, stdio MCP settings, and untrusted extensions from remote URL packs. */
-export function sanitizeRemoteSubscriptionFiles(files: ReadonlyMap<string, Buffer>): {
+export function sanitizeRemoteSubscriptionFiles(
+  files: ReadonlyMap<string, Buffer>,
+  subscriptionOrigin?: string,
+): {
   readonly files: Map<string, Buffer>;
   readonly excluded: PortableSpaceExcludedItem[];
 } {
   const sanitized = new Map<string, Buffer>();
   const excluded: PortableSpaceExcludedItem[] = [];
   const allowedRemoteMcpNames = new Set<string>();
+  const candidateBundledPluginPaths = new Map<string, Set<string>>();
+  for (const rawPath of files.keys()) {
+    if (!/^plugins(?:\/|$)/i.test(rawPath)) continue;
+    let canonical: string;
+    try {
+      canonical = safePortablePath(rawPath);
+    } catch {
+      excluded.push({
+        id: `plugins:${rawPath.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+        domain: 'plugins',
+        path: rawPath.slice(0, 512),
+        reason: 'Blocked unsafe bundled plugin path from remote URL subscription',
+      });
+      continue;
+    }
+    const parts = canonical.split('/');
+    const pluginId = parts[1];
+    if (parts.length < 3 || pluginId === undefined || !isPortablePluginId(pluginId) || domainForFile(canonical) !== 'plugins') {
+      excluded.push({
+        id: `plugins:${canonical.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+        domain: 'plugins',
+        path: canonical.slice(0, 512),
+        reason: 'Blocked invalid or disallowed bundled plugin file from remote URL subscription',
+      });
+      continue;
+    }
+    let set = candidateBundledPluginPaths.get(pluginId);
+    if (set === undefined) {
+      set = new Set<string>();
+      candidateBundledPluginPaths.set(pluginId, set);
+    }
+    set.add(canonical);
+  }
+  const validBundledPluginIds = new Set<string>();
+  for (const [pluginId, group] of candidateBundledPluginPaths) {
+    if (findBundledOfficialPlugin(pluginId) !== undefined) {
+      excluded.push({
+        id: `plugins:plugins.${pluginId.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+        domain: 'plugins',
+        path: `plugins/${pluginId}`.slice(0, 512),
+        reason: `Blocked bundled plugin "${pluginId}" shadowing compiled-in official catalog plugin`,
+      });
+      continue;
+    }
+    if (!hasBundledPluginManifest(pluginId, group)) {
+      excluded.push({
+        id: `plugins:plugins.${pluginId.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+        domain: 'plugins',
+        path: `plugins/${pluginId}`.slice(0, 512),
+        reason: `Bundled plugin "${pluginId}" is missing required kimi.plugin.json or package.json`,
+      });
+      continue;
+    }
+    const manifestIssue = validateBundledPluginManifestName(pluginId, files);
+    if (manifestIssue !== undefined) {
+      excluded.push({
+        id: `plugins:plugins.${pluginId.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+        domain: 'plugins',
+        path: `plugins/${pluginId}`.slice(0, 512),
+        reason: manifestIssue,
+      });
+      continue;
+    }
+    validBundledPluginIds.add(pluginId);
+  }
 
   const rawMcp = files.get('mcp.json');
   if (rawMcp !== undefined) {
@@ -591,21 +938,60 @@ export function sanitizeRemoteSubscriptionFiles(files: ReadonlyMap<string, Buffe
         for (const rawEntry of data['plugins']) {
           const entry = object(rawEntry);
           const id = typeof entry['id'] === 'string' ? entry['id'].trim() : '';
-          if (id.length === 0 || findBundledOfficialPlugin(id) === undefined) {
+          if (id.length === 0 || !isPortablePluginId(id)) {
             excluded.push({
               id: `plugins:plugins.${(id || 'unknown').replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
               domain: 'plugins',
               path: `plugins.${id || 'unknown'}`.slice(0, 512),
-              reason: 'Blocked non-official plugin from remote URL subscription',
+              reason: 'Blocked invalid plugin declaration from remote URL subscription',
             });
             continue;
           }
-          if (seenPluginIds.has(id)) continue;
-          seenPluginIds.add(id);
-          keptPlugins.push({
-            id,
-            enabled: entry['enabled'] !== false,
+          if (findBundledOfficialPlugin(id) !== undefined) {
+            if (!seenPluginIds.has(id)) {
+              seenPluginIds.add(id);
+              keptPlugins.push({
+                id,
+                enabled: entry['enabled'] !== false,
+              });
+            }
+            continue;
+          }
+          if (validBundledPluginIds.has(id)) {
+            if (!seenPluginIds.has(id)) {
+              seenPluginIds.add(id);
+              keptPlugins.push({
+                id,
+                enabled: entry['enabled'] !== false,
+              });
+            }
+            continue;
+          }
+          const sameOriginZip = isSameOriginPinnedPluginZip(entry['source'], entry['sha256'], subscriptionOrigin);
+          if (sameOriginZip !== undefined) {
+            if (!seenPluginIds.has(id)) {
+              seenPluginIds.add(id);
+              keptPlugins.push({
+                id,
+                enabled: entry['enabled'] !== false,
+                source: sameOriginZip.source,
+                sha256: sameOriginZip.sha256,
+              });
+            }
+            continue;
+          }
+          excluded.push({
+            id: `plugins:plugins.${id.replaceAll('%', '%25').replaceAll('.', '%2E')}`.slice(0, 512),
+            domain: 'plugins',
+            path: `plugins.${id}`.slice(0, 512),
+            reason: 'Blocked non-official plugin from remote URL subscription',
           });
+        }
+      }
+      for (const bundledId of validBundledPluginIds) {
+        if (!seenPluginIds.has(bundledId)) {
+          seenPluginIds.add(bundledId);
+          keptPlugins.push({ id: bundledId, enabled: true });
         }
       }
       if (keptPlugins.length > 0) {
@@ -630,6 +1016,21 @@ export function sanitizeRemoteSubscriptionFiles(files: ReadonlyMap<string, Buffe
         }
       }
       sanitized.set(path, mutated ? installBytes(records) : bytes);
+      continue;
+    }
+
+    if (/^plugins(?:\/|$)/i.test(path)) {
+      let canonical: string | undefined;
+      try {
+        canonical = safePortablePath(path);
+      } catch {
+        canonical = undefined;
+      }
+      const parts = canonical?.split('/');
+      const pluginId = parts?.[1];
+      if (canonical !== undefined && pluginId !== undefined && validBundledPluginIds.has(pluginId) && domainForFile(canonical) === 'plugins') {
+        sanitized.set(canonical, bytes);
+      }
       continue;
     }
 
@@ -688,6 +1089,15 @@ export function sanitizeRemoteSubscriptionFiles(files: ReadonlyMap<string, Buffe
     }
 
     sanitized.set(path, bytes);
+  }
+
+  if (!files.has('extensions.toml') && validBundledPluginIds.size > 0) {
+    sanitized.set(
+      'extensions.toml',
+      encodeToml({
+        plugins: [...validBundledPluginIds].sort().map((id) => ({ id, enabled: true })),
+      }),
+    );
   }
 
   return { files: sanitized, excluded };

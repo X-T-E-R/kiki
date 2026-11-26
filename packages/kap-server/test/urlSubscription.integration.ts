@@ -20,7 +20,7 @@ import {
   portableSpaceSubscriptionSyncResultSchema,
 } from '@kiki/protocol';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { reconcileOfficialPlugins } from '../src/services/portableSpace/liveSpace';
+import { reconcileOfficialPlugins, reconcilePortablePlugins } from '../src/services/portableSpace/liveSpace';
 import { PortableSpaceService } from '../src/services/portableSpace/portableSpaceService';
 import { packTarGz, unpackTarGz } from '../src/services/portableSpace/tarArchive';
 import {
@@ -320,6 +320,15 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     await expect(assertSafeSubscriptionUrl('https://10.0.0.1/pack.tgz')).rejects.toThrow(/blocked/i);
     await expect(assertSafeSubscriptionUrl('https://172.16.0.10/pack.tgz')).rejects.toThrow(/blocked/i);
     await expect(assertSafeSubscriptionUrl('https://169.254.169.254/latest/meta-data')).rejects.toThrow(/blocked/i);
+    await expect(assertSafeSubscriptionUrl('https://198.18.0.1/pack.tgz')).rejects.toThrow(/blocked/i);
+    await expect(assertSafeSubscriptionUrl('https://[::ffff:198.18.0.1]/pack.tgz')).rejects.toThrow(/blocked/i);
+    await expect(assertSafeSubscriptionUrl('https://[64:ff9b::10.0.0.1]/pack.tgz')).rejects.toThrow(/blocked/i);
+    await expect(assertSafeSubscriptionUrl('https://[64:ff9b:1::1]/pack.tgz')).rejects.toThrow(/blocked/i);
+    await expect(assertSafeSubscriptionUrl('https://[2002:a00:1::]/pack.tgz')).rejects.toThrow(/blocked/i);
+    await expect(assertSafeSubscriptionUrl('https://[2001:0:4136:e378:8000:63bf:f5ff:fffe]/pack.tgz')).rejects.toThrow(/blocked/i);
+    await expect(
+      assertSafeSubscriptionUrl('https://nat64-rebind.example.test/pack.tgz', async () => [{ address: '64:ff9b::a00:1', family: 6 }]),
+    ).rejects.toThrow(/blocked/i);
     await expect(assertSafeSubscriptionUrl('https://user:pass@example.com/pack.tgz')).rejects.toThrow(/credentials/i);
     await expect(
       assertSafeSubscriptionUrl('https://rebind.example.test/pack.tgz', async () => [{ address: '10.1.2.3' }]),
@@ -327,6 +336,45 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     await expect(
       assertSafeSubscriptionUrl('https://loopback-rebind.example.test/pack.tgz', async () => [{ address: '127.0.0.1' }]),
     ).rejects.toThrow(/private/i);
+    await expect(
+      assertSafeSubscriptionUrl('https://fakeip-no-doh.example.test/pack.tgz', async () => [{ address: '198.18.104.218', family: 4 }]),
+    ).rejects.toThrow(/private/i);
+    await expect(
+      assertSafeSubscriptionUrl('https://fakeip-rebind-loopback.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '198.18.104.218', family: 4 }],
+        dohResolveFn: async () => [{ address: '127.0.0.1', family: 4 }],
+      }),
+    ).rejects.toThrow(/private/i);
+    await expect(
+      assertSafeSubscriptionUrl('https://fakeip-rebind-fakeip.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '198.18.104.218', family: 4 }],
+        dohResolveFn: async () => [{ address: '198.18.0.1', family: 4 }],
+      }),
+    ).rejects.toThrow(/private/i);
+    await expect(
+      assertSafeSubscriptionUrl('https://fakeip-empty-doh.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '198.18.104.218', family: 4 }],
+        dohResolveFn: async () => [],
+      }),
+    ).rejects.toThrow(/private/i);
+    await expect(
+      assertSafeSubscriptionUrl('https://fakeip-mixed-private.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '198.18.104.218', family: 4 }, { address: '127.0.0.1', family: 4 }],
+        dohResolveFn: async () => [{ address: '123.206.117.151', family: 4 }],
+      }),
+    ).rejects.toThrow(/private/i);
+    await expect(
+      assertSafeSubscriptionUrl('https://fakeip-public.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '198.18.104.218', family: 4 }],
+        dohResolveFn: async () => [{ address: '123.206.117.151', family: 4 }],
+      }),
+    ).resolves.toBeInstanceOf(URL);
+    await expect(
+      assertSafeSubscriptionUrl('https://fakeip-mapped-v6.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '::ffff:198.19.0.42', family: 6 }],
+        dohResolveFn: async () => [{ address: '123.206.117.151', family: 4 }],
+      }),
+    ).resolves.toBeInstanceOf(URL);
     await expect(
       fetchSubscriptionArchive('https://public.example.test/pack.tgz', {
         allowLoopback: true,
@@ -341,6 +389,49 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     expect(pinnedFetched.status).toBe('ok');
     if (pinnedFetched.status === 'ok') {
       expect(pinnedFetched.bytes.byteLength).toBeGreaterThan(0);
+    }
+
+    const prevHttpsProxy = process.env['HTTPS_PROXY'];
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    process.env['HTTPS_PROXY'] = 'http://127.0.0.1:7890';
+    try {
+      await expect(
+        fetchSubscriptionArchive('https://ordinary-pinned.example.test/pack.tgz', {
+          lookupFn: async () => [{ address: '93.184.216.34', family: 4 }],
+          pinnedFetchFn: async () => { throw new Error('direct pinned connect failed'); },
+        }),
+      ).rejects.toThrow('direct pinned connect failed');
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      const triedAddresses: string[] = [];
+      const tunFallback = await fetchSubscriptionArchive('https://fakeip-tun.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '198.18.104.218', family: 4 }],
+        dohResolveFn: async () => [
+          { address: '123.206.117.151', family: 4 },
+          { address: '123.206.117.152', family: 4 },
+        ],
+        pinnedFetchFn: async (target) => {
+          triedAddresses.push(target.address);
+          if (target.address !== '198.18.104.218') throw new Error('direct reset');
+          return { status: 200, etag: '"tun-v1"', bytes: Buffer.from('tun-ok') };
+        },
+      });
+      expect(triedAddresses).toEqual(['123.206.117.151', '123.206.117.152', '198.18.104.218']);
+      expect(tunFallback).toEqual({ status: 'ok', bytes: Buffer.from('tun-ok'), etag: '"tun-v1"', finalOrigin: 'https://fakeip-tun.example.test' });
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      fetchSpy.mockResolvedValueOnce(new Response('proxy-ok', { status: 200, headers: { etag: '"proxy-v1"' } }));
+      const proxyFallback = await fetchSubscriptionArchive('https://fakeip-proxy.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '198.18.104.218', family: 4 }],
+        dohResolveFn: async () => [{ address: '123.206.117.151', family: 4 }],
+        pinnedFetchFn: async () => { throw new Error('all pinned attempts failed'); },
+      });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(proxyFallback).toEqual({ status: 'ok', bytes: Buffer.from('proxy-ok'), etag: '"proxy-v1"', finalOrigin: 'https://fakeip-proxy.example.test' });
+    } finally {
+      fetchSpy.mockRestore();
+      if (prevHttpsProxy === undefined) delete process.env['HTTPS_PROXY'];
+      else process.env['HTTPS_PROXY'] = prevHttpsProxy;
     }
   });
 
@@ -502,6 +593,81 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     expect(offlineRes.errors).toEqual([{ id: 'kiki-office', message: 'offline ECONNREFUSED' }]);
     expect(failingInstall).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('enforces reconcilePortablePlugins guards: blocks github overwrite, skips disabled bundled installs, and holds new/tampered plugins when allowInstall is false', async () => {
+    const warn = vi.fn();
+    const installPlugin = vi.fn(async () => ({ id: 'demo-plug', enabled: true }) as never);
+    const setPluginEnabled = vi.fn(async () => undefined);
+    const bundledFiles = new Map<string, Buffer>([
+      ['kimi.plugin.json', Buffer.from(JSON.stringify({ name: 'demo-plug', version: '1.0.0' }))],
+      ['index.mjs', Buffer.from('export function activate() {}\n')],
+    ]);
+
+    const githubZipGuard = await reconcilePortablePlugins(
+      {
+        plugins: {
+          listPlugins: vi.fn(async () => [{ id: 'community-plug', enabled: true, source: 'github', originalSource: 'https://github.com/acme/community-plug' }] as never),
+          installPlugin,
+          setPluginEnabled,
+        } as never,
+        log: { warn },
+      },
+      [{
+        id: 'community-plug',
+        enabled: true,
+        source: 'https://cdn.example.test/community-plug.zip',
+        sha256: 'a'.repeat(64),
+      }],
+    );
+    expect(githubZipGuard.skippedIds).toEqual(['community-plug']);
+    expect(installPlugin).not.toHaveBeenCalled();
+
+    const githubBundledGuard = await reconcilePortablePlugins(
+      {
+        plugins: {
+          listPlugins: vi.fn(async () => [{ id: 'demo-plug', enabled: true, source: 'github', originalSource: 'https://github.com/acme/demo-plug' }] as never),
+          installPlugin,
+          setPluginEnabled,
+        } as never,
+        log: { warn },
+      },
+      [{ id: 'demo-plug', enabled: true, bundledFiles }],
+    );
+    expect(githubBundledGuard.skippedIds).toEqual(['demo-plug']);
+    expect(installPlugin).not.toHaveBeenCalled();
+
+    const disabledBundledRes = await reconcilePortablePlugins(
+      {
+        plugins: {
+          listPlugins: vi.fn(async () => []),
+          installPlugin,
+          setPluginEnabled,
+        } as never,
+        log: { warn },
+      },
+      [{ id: 'demo-plug', enabled: false, bundledFiles }],
+    );
+    expect(disabledBundledRes.installedIds).toEqual([]);
+    expect(disabledBundledRes.reconciledIds).toEqual([]);
+    expect(installPlugin).not.toHaveBeenCalled();
+    expect(setPluginEnabled).not.toHaveBeenCalled();
+
+    const heldNewRes = await reconcilePortablePlugins(
+      {
+        plugins: {
+          listPlugins: vi.fn(async () => []),
+          installPlugin,
+          setPluginEnabled,
+        } as never,
+        log: { warn },
+      },
+      [{ id: 'demo-plug', enabled: true, bundledFiles }],
+      undefined,
+      { allowInstall: false },
+    );
+    expect(heldNewRes.heldIds).toEqual(['demo-plug']);
+    expect(installPlugin).not.toHaveBeenCalled();
   });
 
   it('enforces remote security invariants for skills/sessions/memories, model base_url retargeting, telemetry opt-out, narrow permission merge, and origin-bound ETag/labels', async () => {

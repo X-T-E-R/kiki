@@ -5,6 +5,7 @@ import { useI18n } from '../../../i18n';
 import { isPeerConnectionSource } from '../../../lib/peerAccess';
 import {
   arrangeQuotaSources,
+  effectiveEngineQuotaSourceOf,
   HARNESS_QUOTA_UNAVAILABLE_MESSAGE,
   harnessQuotaQueryKey,
   isNativeQuotaNeverFetched,
@@ -23,7 +24,6 @@ import {
 } from '../../../lib/providerQuota';
 import { useConnection } from '../../../state/connection';
 import type { Feedback } from '../../controls';
-import { engineQuotaSourceOf } from '../../settings/ExternalEnginesSection';
 import { asConfigRecord, EXECUTORS_QUERY_KEY, useExecutorCatalogQuery } from '../../settings/profileEditor/engines';
 import { runInQuotaScopeRefreshSlot } from './quotaModel';
 
@@ -62,8 +62,13 @@ export function useQuotaPanelState() {
   const sources = normalizeQuotaSources(quotas.snapshot);
   const providers = providersQuery.data?.items;
   const signedOut = useMemo(() => signedOutProviderIds(providers), [providers]);
+  const pluginCatalogEnabled = client.klient?.rest?.harnessQuota !== undefined && !isPeerConnectionSource(connectionSource);
   const engineScope = configQuery.isPending ? 'pending' as const : configQuery.isError ? null : quotaEngineScopeOf(configQuery.data);
-  const arranged = arrangeQuotaSources(sources, engineScope, signedOut);
+  const arranged = arrangeQuotaSources(sources, engineScope, signedOut, {
+    configRaw,
+    pluginQuotaSources,
+    pluginCatalogPending: pluginCatalogEnabled && harnessQuotaQuery.isPending,
+  });
   const providerById = (id: string) => providers?.find((provider) => provider.id === id);
 
   const [sourceFeedbacks, setSourceFeedbacks] = useState<Record<string, Feedback>>({});
@@ -224,9 +229,14 @@ export function useQuotaPanelState() {
   const handleSelectEngineQuotaSource = useCallback(async (engineId: string, nextSourceId: string) => {
     setSavingEngineSourceIds((prev) => new Set(prev).add(engineId));
     clearFeedback(`executor:${engineId}`);
+    const engine = sources.find((entry) => entry.kind === 'executor' && entry.provider_id === engineId);
+    const hasMatchingPlugin = pluginQuotaSources.some((entry) => entry.engineIds.includes(engineId));
+    const persistedValue = nextSourceId === ''
+      ? (hasMatchingPlugin && engine?.supported !== true ? 'native' : null)
+      : nextSourceId;
     try {
       await client.patchConfig({
-        agent_executor_overrides: { [engineId]: { quota_source: nextSourceId === '' ? null : nextSourceId } },
+        agent_executor_overrides: { [engineId]: { quota_source: persistedValue } },
       });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['config'] }),
@@ -244,10 +254,9 @@ export function useQuotaPanelState() {
         return next;
       });
     }
-  }, [clearFeedback, client, locale, queryClient]);
+  }, [clearFeedback, client, locale, pluginQuotaSources, queryClient, sources]);
 
   const seenTargetRevisionsRef = useRef<Map<string, string>>(new Map());
-  const pluginCatalogEnabled = client.klient?.rest?.harnessQuota !== undefined && !isPeerConnectionSource(connectionSource);
   const initialCacheReady =
     !quotas.loading &&
     quotas.snapshot !== undefined &&
@@ -271,24 +280,30 @@ export function useQuotaPanelState() {
       seenTargetRevisionsRef.current.set(source.id, source.revision);
       return !isInitialScope && isSourceRefreshable(source) && !signedOut.has(source.provider_id);
     });
+    const effectiveForEngine = (engine: (typeof arranged.engines)[number]): string =>
+      effectiveEngineQuotaSourceOf(
+        configRaw,
+        engine,
+        pluginQuotaSources.filter((s) => s.engineIds.includes(engine.provider_id)),
+      );
     const nativeTargets = isInitialScope
       ? [
           ...arranged.live.filter((source) => isNativeQuotaNeverFetched(source, signedOut)),
           ...arranged.engines.filter(
-            (engine) => engineQuotaSourceOf(configRaw, engine.provider_id) === '' && isNativeQuotaNeverFetched(engine, signedOut),
+            (engine) => effectiveForEngine(engine) === '' && isNativeQuotaNeverFetched(engine, signedOut),
           ),
         ]
       : revisionChangedTargets;
     const pluginTargets = new Set<string>();
     if (isInitialScope) {
       for (const engine of arranged.engines) {
-        const selected = engineQuotaSourceOf(configRaw, engine.provider_id);
+        const selected = effectiveForEngine(engine);
         if (selected === '') continue;
         const snap = pluginQuotaSources.find((s) => s.id === selected && s.engineIds.includes(engine.provider_id));
-        if (
-          snap !== undefined &&
-          pluginQuotaSnapshotStatus(snap, engine.provider_id, pluginErrors[selected], Date.now(), pluginCatalogError !== undefined) === 'unqueried'
-        ) {
+        const pStatus = snap !== undefined
+          ? pluginQuotaSnapshotStatus(snap, engine.provider_id, pluginErrors[selected], Date.now(), pluginCatalogError !== undefined)
+          : undefined;
+        if (pStatus === 'unqueried' || pStatus === 'expired') {
           pluginTargets.add(selected);
         }
       }
@@ -333,14 +348,20 @@ export function useQuotaPanelState() {
 
   const handleHeaderRefresh = async () => {
     if (quotas.loading || quotas.isRefetching || refreshingAll) return;
+    const effectiveForEngine = (engine: (typeof arranged.engines)[number]): string =>
+      effectiveEngineQuotaSourceOf(
+        configRaw,
+        engine,
+        pluginQuotaSources.filter((s) => s.engineIds.includes(engine.provider_id)),
+      );
     const liveTargets = arranged.live.filter((source) => isSourceRefreshable(source) && !signedOut.has(source.provider_id));
     const nativeEngineTargets = arranged.engines.filter(
-      (engine) => engineQuotaSourceOf(configRaw, engine.provider_id) === '' && isSourceRefreshable(engine),
+      (engine) => effectiveForEngine(engine) === '' && isSourceRefreshable(engine),
     );
     const targets = [...liveTargets, ...nativeEngineTargets];
     const pluginTargets = new Set<string>();
     for (const engine of arranged.engines) {
-      const selected = engineQuotaSourceOf(configRaw, engine.provider_id);
+      const selected = effectiveForEngine(engine);
       if (selected !== '' && pluginQuotaSources.some((s) => s.id === selected && s.engineIds.includes(engine.provider_id))) {
         pluginTargets.add(selected);
       }

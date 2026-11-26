@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import nativeConfig from '../../../tsdown.native.config';
 
 import { resolvePnpmInvocation } from '../../../scripts/native/01-bundle.mjs';
+import { checkBundle } from '../../../scripts/native/check-bundle.mjs';
 
 describe('resolvePnpmInvocation', () => {
   it('runs the package-manager script through the active Node executable', () => {
@@ -247,6 +248,32 @@ export async function load() {
       expect(output).toMatch(/require\(["']node-pty["']\)/);
       expect(output).not.toMatch(/import\(["']node-pty["']\)/);
       expect(output).not.toContain('class WindowsTerminal');
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('rejects CJS const/let require TDZ self-references in checkBundle while allowing renamed createRequire', async () => {
+    mkdirSync(resolve('.tmp'), { recursive: true });
+    const dir = mkdtempSync(resolve('.tmp', 'tdz-require-bundle-'));
+    try {
+      const badEntry = join(dir, 'bad.ts');
+      const goodEntry = join(dir, 'good.ts');
+      writeFileSync(
+        badEntry,
+        "import { createRequire } from 'node:module';\nexport function load() { const require = createRequire(import.meta.url); const resolved = require.resolve('node:path'); return require(resolved); }\n",
+      );
+      writeFileSync(
+        goodEntry,
+        "import { createRequire } from 'node:module';\nexport const DOC = 'const require = createRequire(require(\"url\"))';\nexport function load() { const req = createRequire(import.meta.url); const resolved = req.resolve('node:path'); return req(resolved); }\n",
+      );
+      await build({ ...nativeConfig, config: false, entry: [badEntry], outDir: join(dir, 'bad-out') });
+      const badErrors = checkBundle(join(dir, 'bad-out/main.cjs'));
+      expect(badErrors.some((err) => err.includes('TDZ self-referencing require declaration'))).toBe(true);
+
+      await build({ ...nativeConfig, config: false, entry: [goodEntry], outDir: join(dir, 'good-out') });
+      const goodErrors = checkBundle(join(dir, 'good-out/main.cjs'));
+      expect(goodErrors).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }

@@ -229,9 +229,45 @@ async function prepareToolResult(id, result, signal) {
   return { output, isError: result.isError, truncated };
 }
 const pending = new Map();
-const rpcWrite = process.stdout.write.bind(process.stdout);
-const send = (message) => rpcWrite(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
-process.stdout.write = (chunk, encoding, callback) => process.stderr.write(chunk, encoding, callback);
+const BROKEN_PIPE_CODES = new Set(['EPIPE', 'ECONNRESET', 'EOF', 'ERR_STREAM_DESTROYED']);
+const isBrokenPipeError = (error) => typeof error?.code === 'string' && BROKEN_PIPE_CODES.has(error.code);
+const rpcStream = process.stdout;
+const rpcWrite = rpcStream.write.bind(rpcStream);
+rpcStream.on('error', (error) => {
+  if (isBrokenPipeError(error)) stopWithOwner();
+});
+process.stderr.on('error', (error) => {
+  if (!isBrokenPipeError(error) && process.stderr.listenerCount('error') <= 1) throw error;
+});
+const isStreamOpen = (stream) =>
+  stream.writable &&
+  !stream.destroyed &&
+  !stream.writableEnded &&
+  (stream.errored === undefined || stream.errored === null) &&
+  (stream.writableErrored === undefined || stream.writableErrored === null);
+const send = (message) => {
+  if (!isStreamOpen(rpcStream)) {
+    stopWithOwner();
+    return false;
+  }
+  try {
+    return rpcWrite(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
+  } catch (error) {
+    if (isBrokenPipeError(error)) {
+      stopWithOwner();
+      return false;
+    }
+    throw error;
+  }
+};
+process.stdout.write = (chunk, encoding, callback) => {
+  try {
+    return process.stderr.write(chunk, encoding, callback);
+  } catch (error) {
+    if (isBrokenPipeError(error)) return false;
+    throw error;
+  }
+};
 for (const method of ['log', 'info', 'debug', 'warn']) console[method] = (...args) => console.error(...args);
 
 let started = false;
@@ -371,16 +407,31 @@ async function openPanelChannel(message) {
       queuedBytes += header.length + payload.length;
       return true;
     }
-    socket.cork(); socket.write(header);
-    const writable = socket.write(payload);
-    socket.uncork();
-    return writable;
+    if (!isStreamOpen(socket)) {
+      dispose('Plugin stream closed');
+      return false;
+    }
+    try {
+      socket.cork(); socket.write(header);
+      const writable = socket.write(payload);
+      socket.uncork();
+      return writable;
+    } catch (error) {
+      if (!socket.destroyed) { try { socket.uncork(); } catch {} }
+      if (isBrokenPipeError(error)) {
+        dispose(error instanceof Error ? error.message : String(error));
+        return false;
+      }
+      throw error;
+    }
   };
   const close = (why) => {
     if (ended) return;
     write(8, Buffer.from(why ?? ''));
     finish(why);
-    if (socket !== undefined) socket.end();
+    if (socket !== undefined && !socket.destroyed) {
+      try { socket.end(); } catch { socket.destroy(); }
+    }
   };
   const header = Buffer.allocUnsafe(5);
   let headerBytes = 0;
@@ -397,9 +448,20 @@ async function openPanelChannel(message) {
       socket.on('data', (chunk) => {
         try { channel.receive(chunk); } catch (error) { dispose(String(error)); }
       });
-      for (const chunk of queued) socket.write(chunk);
+      try {
+        for (const chunk of queued) socket.write(chunk);
+      } catch (error) {
+        queued.length = 0; queuedBytes = 0;
+        if (isBrokenPipeError(error)) {
+          dispose(error instanceof Error ? error.message : String(error));
+          return;
+        }
+        throw error;
+      }
       queued.length = 0; queuedBytes = 0;
-      if (ended) socket.end();
+      if (ended && !socket.destroyed) {
+        try { socket.end(); } catch { socket.destroy(); }
+      }
     },
     receive(chunk) {
       let offset = 0;
@@ -517,13 +579,27 @@ async function openLlmProviderStream(message) {
       dispose('Plugin LLM stream frame limit exceeded');
       return false;
     }
+    if (!isStreamOpen(socket)) {
+      dispose('Plugin LLM stream closed');
+      return false;
+    }
     const header = Buffer.allocUnsafe(5);
     header[0] = opcode;
     header.writeUInt32BE(payload.length, 1);
-    socket.cork();
-    socket.write(header);
-    const writable = socket.write(payload);
-    socket.uncork();
+    let writable;
+    try {
+      socket.cork();
+      socket.write(header);
+      writable = socket.write(payload);
+      socket.uncork();
+    } catch (error) {
+      if (!socket.destroyed) { try { socket.uncork(); } catch {} }
+      if (isBrokenPipeError(error)) {
+        dispose(error instanceof Error ? error.message : String(error));
+        return false;
+      }
+      throw error;
+    }
     if (!writable && !ended) {
       await new Promise((resolve, reject) => {
         drainWaiter = { resolve, reject };
@@ -541,16 +617,22 @@ async function openLlmProviderStream(message) {
     llmStreamCalls.delete(message.id);
     pending.delete(message.id);
     uploadChunks.length = 0;
-    if (socket !== undefined) {
+    if (socket !== undefined && !socket.destroyed) {
       const payload = Buffer.from(why ?? '');
       const header = Buffer.allocUnsafe(5);
       header[0] = 8;
       header.writeUInt32BE(payload.length, 1);
-      socket.cork();
-      socket.write(header);
-      socket.write(payload);
-      socket.uncork();
-      socket.end();
+      try {
+        socket.cork();
+        socket.write(header);
+        socket.write(payload);
+        socket.uncork();
+        socket.end();
+      } catch (error) {
+        if (!socket.destroyed) { try { socket.uncork(); } catch {} }
+        if (isBrokenPipeError(error)) socket.destroy();
+        else throw error;
+      }
     }
   };
   const startAdapter = async () => {

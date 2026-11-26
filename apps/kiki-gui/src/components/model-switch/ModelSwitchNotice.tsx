@@ -82,6 +82,37 @@ export const ModelSwitchNotice = memo(function ModelSwitchNotice({
   const isEpoch = info.state === 'completed' && (!sameModel || info.mode === 'fresh' || info.mode === 'compact');
 
   if (info.state === 'failed') {
+    const rawDetailParts = [
+      info.error?.code !== undefined ? `code=${info.error.code}` : undefined,
+      `operationId=${info.operationId}`,
+      `mode=${info.mode}`,
+      `from=${info.from}`,
+      `to=${info.to}`,
+    ].filter((part): part is string => part !== undefined);
+    const rawDetailText = rawDetailParts.join('\n');
+    if (superseded) {
+      return (
+        <div data-model-switch-notice="failed" data-model-switch-operation={info.operationId}>
+          <ActivityRow
+            glyph={<Icon name="warning" size={12} />}
+            tone="plain"
+            label={primary}
+            detail={info.error?.message}
+            title={[time.absoluteTime(block.createdAt), rawIdsLine].filter(Boolean).join('\n')}
+            expanded={techOpen}
+            onToggle={() => { setTechOpen((value) => !value); }}
+            attrs={{ 'data-notice-key': 'transcript.marker.modelSwitch', 'data-notice-superseded': 'true' }}
+          >
+            {techOpen ? (
+              <div data-model-switch-tech className="flex items-start gap-2 border-l border-hairline pl-3 text-[12px] leading-[16px] text-ink-faint">
+                <span className="min-w-0 flex-1 select-text font-mono whitespace-pre-wrap [overflow-wrap:anywhere]">{rawDetailText}</span>
+                <CopyButton text={rawDetailText} label={primary} />
+              </div>
+            ) : undefined}
+          </ActivityRow>
+        </div>
+      );
+    }
     const errorActions: TimelineErrorAction[] = [];
     if (actions?.retry !== undefined) {
       errorActions.push({
@@ -114,13 +145,6 @@ export const ModelSwitchNotice = memo(function ModelSwitchNotice({
         dataAttr: 'data-model-switch-action',
       });
     }
-    const rawDetailParts = [
-      info.error?.code !== undefined ? `code=${info.error.code}` : undefined,
-      `operationId=${info.operationId}`,
-      `mode=${info.mode}`,
-      `from=${info.from}`,
-      `to=${info.to}`,
-    ].filter((part): part is string => part !== undefined);
     return (
       <div data-model-switch-notice="failed" data-model-switch-operation={info.operationId}>
         <TimelineErrorCallout
@@ -128,9 +152,9 @@ export const ModelSwitchNotice = memo(function ModelSwitchNotice({
           severity="error"
           title={primary}
           message={info.error?.message}
-          errorDetails={rawDetailParts.join('\n')}
+          errorDetails={rawDetailText}
           createdAt={block.createdAt}
-          superseded={superseded}
+          superseded={false}
           actions={errorActions}
           attrs={{ 'data-notice-key': 'transcript.marker.modelSwitch' }}
         />

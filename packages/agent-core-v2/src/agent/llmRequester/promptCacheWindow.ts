@@ -58,13 +58,14 @@ export class PromptCacheWindow {
       const previousText = this.extension.current;
       this.extension.current = text;
       const index = messages.at(-1)?.partial === true ? messages.length - 1 : messages.length;
-      const message: Message = {
+      const message: Message & { readonly origin?: { readonly kind: 'injection'; readonly variant: string } } = {
         role: 'user',
         content: [{
           type: 'text',
           text: wrapSystemReminder(`Extension prompt sections updated; use this state instead of the previous extension prompt sections.\n\n${text || 'No extension prompt sections are active.'}`),
         }],
         toolCalls: [],
+        origin: { kind: 'injection', variant: 'extension_prompt_sections' },
       };
       const last = this.extensionUpdates.at(-1);
       if (last !== undefined && last.index === index) {

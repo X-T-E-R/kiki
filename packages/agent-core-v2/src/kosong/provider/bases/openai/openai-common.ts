@@ -5,7 +5,7 @@ import {
   OpenAIError,
 } from 'openai';
 
-import { BugIndicatingError } from '#/_base/errors/errors';
+import { attachErrorDetails, BugIndicatingError } from '#/_base/errors/errors';
 import {
   APIConnectionError,
   ambiguousRequestDelivery,
@@ -125,10 +125,29 @@ export function convertOpenAIError(
   convertErrorHook?: (error: unknown) => ChatProviderError | undefined,
 ): ChatProviderError {
   throwIfAbortError(error);
-  if (isAmbiguousRequestDelivery(error)) return ambiguousRequestDelivery(error);
+  if (isAmbiguousRequestDelivery(error)) {
+    if (error instanceof ChatProviderError) {
+      if (error.cause !== undefined && !(error.cause instanceof ChatProviderError)) {
+        const converted = convertOpenAISdkError(error.cause, convertErrorHook);
+        if (error.details !== undefined) {
+          attachErrorDetails(converted, { ...error.details, ...converted.details });
+        }
+        return ambiguousRequestDelivery(converted);
+      }
+      return ambiguousRequestDelivery(error);
+    }
+    return ambiguousRequestDelivery(convertOpenAISdkError(error, convertErrorHook));
+  }
   if (error instanceof ChatProviderError) {
     return error;
   }
+  return convertOpenAISdkError(error, convertErrorHook);
+}
+
+function convertOpenAISdkError(
+  error: unknown,
+  convertErrorHook?: (error: unknown) => ChatProviderError | undefined,
+): ChatProviderError {
   const hooked = convertErrorHook?.(error);
   if (hooked !== undefined) {
     return error instanceof OpenAIAPIError ? noteExplicitUpstreamRetryDenial(hooked, error.error, error.headers) : hooked;

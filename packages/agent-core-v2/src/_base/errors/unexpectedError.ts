@@ -1,7 +1,14 @@
 export type UnexpectedErrorHandler = (err: unknown) => void;
 
+function safeConsoleError(...args: unknown[]): void {
+  try {
+    console.error(...args);
+  } catch {
+  }
+}
+
 const defaultHandler: UnexpectedErrorHandler = (err) => {
-  console.error('[unexpected]', err);
+  safeConsoleError('[unexpected]', err);
 };
 
 let currentHandler: UnexpectedErrorHandler = defaultHandler;
@@ -27,9 +34,9 @@ export function onUnexpectedError(err: unknown): void {
   try {
     currentHandler(err);
   } catch (handlerErr) {
-    console.error('[unexpected] handler threw', handlerErr, 'while reporting', err);
+    safeConsoleError('[unexpected] handler threw', handlerErr, 'while reporting', err);
   }
-  for (const listener of [...listeners]) {
+  for (const listener of Array.from(listeners)) {
     try {
       listener(err);
     } catch {

@@ -26,7 +26,7 @@ import { ContentContinuation } from '../ContentContinuation';
 import { Markdown } from '../Markdown';
 import { AssistantOutputContent } from '../output-layer';
 import { Icon } from '../icons';
-import { ActivityRow, ACTIVITY_GUTTER } from './ActivityRow';
+import { ActivityRow, ACTIVITY_BODY_INDENT } from './ActivityRow';
 import { RelativeTime } from '../RelativeTime';
 
 const KIND_KEY = {
@@ -68,7 +68,7 @@ export const ExternalTextRow = memo(function ExternalTextRow({
         buttonAttrs={{ 'data-xs-external-text-toggle': true }}
       />
       {open ? (
-        <div data-xs-external-text-body className={`${ACTIVITY_GUTTER} mt-1 space-y-1.5`}>
+        <div data-xs-external-text-body className={`${ACTIVITY_BODY_INDENT} mt-1 space-y-1.5`}>
           <p className="text-[12px] text-ink-faint">
             {t('st.xs.savedByClient', { client: note.source.clientName })}
             {note.sourceUrl === undefined ? null : (

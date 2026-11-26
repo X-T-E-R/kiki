@@ -24,11 +24,9 @@ export function rosterFromTranscriptAgents(
     const status: AgentRosterDescriptor['status'] =
       agent.agentId === MAIN_AGENT_ID
         ? undefined
-        : agent.branchSealed === true
-          ? 'completed'
-          : agent.isBranch === true
-            ? 'idle'
-            : 'unknown';
+        : agent.isBranch === true || agent.branchSealed === true
+          ? 'idle'
+          : 'unknown';
     return {
       agentId: agent.agentId,
       parentAgentId: agent.parentAgentId ?? parentFromDelegator,
@@ -103,11 +101,9 @@ export function rosterFromTranscriptResponse(
     response.agent_id === MAIN_AGENT_ID && projectedStatus === 'unknown'
       ? undefined
       : projectedStatus === 'unknown' && existing !== undefined
-        ? existing.branchSealed === true
-          ? 'completed'
-          : existing.isBranch === true
-            ? 'idle'
-            : projectedStatus
+        ? existing.isBranch === true || existing.branchSealed === true
+          ? 'idle'
+          : projectedStatus
         : projectedStatus;
   const statusFields = {
     model: meta.model,
@@ -315,10 +311,18 @@ export function overlayLiveSourcesWithSnapshotSubagents(
       : mergeKnown(source.toolCallCountKnown, snapshot.toolCallCountKnown);
     const snapshotRuntimeActive = snapshot.statusSource === 'runtime' &&
       (snapshot.status === 'running' || snapshot.status === 'suspended' || snapshot.status === 'background');
+    const sourceActive = source.status === 'running' || source.status === 'suspended' || source.status === 'background';
     const sourceTerminal = source.status === 'completed' || source.status === 'failed' || source.status === 'cancelled';
+    const snapshotTerminal = snapshot.status === 'completed' || snapshot.status === 'failed' || snapshot.status === 'cancelled';
     const runtimeRestarted = snapshotRuntimeActive && sourceTerminal;
-    const snapshotRuntimeTerminal = snapshot.statusSource === 'runtime' &&
-      (snapshot.status === 'completed' || snapshot.status === 'failed' || snapshot.status === 'cancelled');
+    const sourceStartedMs = Date.parse(source.startedAt ?? '');
+    const snapshotEndedMs = Date.parse(snapshot.endedAt ?? snapshot.startedAt ?? '');
+    const sourceRestartedOverSnapshot =
+      sourceActive &&
+      snapshotTerminal &&
+      (!Number.isFinite(snapshotEndedMs) || (Number.isFinite(sourceStartedMs) && sourceStartedMs > snapshotEndedMs));
+    const snapshotRuntimeTerminal = snapshot.statusSource === 'runtime' && snapshotTerminal && !sourceRestartedOverSnapshot;
+    const clearStaleTerminal = runtimeRestarted || sourceRestartedOverSnapshot;
     return {
       ...source,
       createdAt: presentSnapshotText(source.createdAt) ?? snapshot.createdAt,
@@ -331,17 +335,17 @@ export function overlayLiveSourcesWithSnapshotSubagents(
       thinkingEffortExplicit: source.thinkingEffortExplicit ?? snapshot.thinkingEffortExplicit,
       executorId: source.executorId ?? snapshot.executorId,
       executorProtocol: source.executorProtocol ?? snapshot.executorProtocol,
-      status: snapshot.statusSource === 'runtime'
+      status: snapshot.statusSource === 'runtime' && !sourceRestartedOverSnapshot
         ? snapshot.status ?? source.status
         : source.status === 'unknown' ? snapshot.status ?? source.status : source.status,
       disposedAt: source.disposedAt ?? snapshot.disposedAt,
       description: source.description ?? snapshot.description,
-      summary: runtimeRestarted ? undefined : (source.summary ?? snapshot.summary),
-      error: runtimeRestarted ? undefined : (source.error ?? snapshot.error),
+      summary: clearStaleTerminal ? undefined : (source.summary ?? snapshot.summary),
+      error: clearStaleTerminal ? undefined : (source.error ?? snapshot.error),
       startedAt: runtimeRestarted
         ? (presentSnapshotText(snapshot.startedAt) ?? presentSnapshotText(source.startedAt))
         : (presentSnapshotText(source.startedAt) ?? snapshot.startedAt),
-      endedAt: runtimeRestarted
+      endedAt: clearStaleTerminal
         ? undefined
         : snapshotRuntimeTerminal
           ? (snapshot.endedAt ?? source.endedAt)
@@ -825,7 +829,8 @@ export function sessionAgentForestFromAgentSnapshots(
       const inactiveAt = Date.parse(row?.completed_at ?? row?.started_at ?? '');
       if ((status === 'running' || status === 'suspended') && Number.isFinite(activeAt) &&
           (!Number.isFinite(inactiveAt) || activeAt > inactiveAt)) {
-        node = { ...node, status, busy: true, statusSource: 'runtime', endedAt: undefined };
+        const activeStartedIso = new Date(activeAt).toISOString();
+        node = { ...node, status, busy: true, statusSource: 'runtime', startedAt: activeStartedIso, endedAt: undefined };
         byId[agentId] = node;
       }
     }
@@ -848,7 +853,11 @@ export function sessionAgentForestFromAgentSnapshots(
   for (const agentId of coldEvidence) {
     const node = byId[agentId];
     if (node === undefined || liveIds.has(agentId)) continue;
-    const coldFallback = node.branchSealed === true ? 'completed' : node.isBranch === true ? 'idle' : 'unknown';
+    const coldFallback = node.turnOutcome?.state === 'cancelled' || node.turnOutcome?.state === 'failed'
+      ? node.turnOutcome.state
+      : node.isBranch === true || node.branchSealed === true
+        ? 'idle'
+        : 'unknown';
     byId[agentId] = {
       ...node,
       busy: false,
@@ -857,7 +866,7 @@ export function sessionAgentForestFromAgentSnapshots(
   }
   for (const [agentId, node] of Object.entries(byId)) {
     if (node.status === 'unknown' && (node.branchSealed === true || node.isBranch === true)) {
-      byId[agentId] = { ...node, status: node.branchSealed === true ? 'completed' : 'idle' };
+      byId[agentId] = { ...node, status: 'idle' };
     }
   }
   return { byId, roots: forest.roots.map((node) => byId[node.agentId]!) };

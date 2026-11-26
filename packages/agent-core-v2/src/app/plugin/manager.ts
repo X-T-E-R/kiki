@@ -13,7 +13,7 @@ import type { McpServerConfig } from '#/mcpCore/config-schema';
 
 import { downloadZip, extractZip } from './archive';
 import { loadPluginCommand } from './commands';
-import { buildInstallPlan, fingerprintDirectory, type PluginInstallPlan } from './installPlan';
+import { buildInstallPlan, fingerprintDirectory, isSkippedPluginEntryName, type PluginInstallPlan } from './installPlan';
 import { resolveGithubCommitSha, resolveGithubSource } from './github-resolver';
 import { parseManifest, type ParsedManifestResult } from './manifest';
 import { resolvePluginPrerequisites } from './prerequisites';
@@ -1006,12 +1006,35 @@ async function clearDirectoryContents(directory: string): Promise<void> {
   }
 }
 
+function isSkippedPluginCopyPath(root: string, candidate: string): boolean {
+  const rel = path.relative(root, candidate);
+  if (rel === '' || rel.startsWith('..')) return false;
+  return rel.split(/[\\/]/).some(isSkippedPluginEntryName);
+}
+
+async function stripSkippedPluginEntries(directory: string): Promise<void> {
+  const entries = await readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  for (const entry of entries) {
+    const child = path.join(directory, entry.name);
+    if (isSkippedPluginEntryName(entry.name)) {
+      await rm(child, { recursive: true, force: true }).catch(() => undefined);
+    } else if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      await stripSkippedPluginEntries(child);
+    }
+  }
+}
+
 async function syncDirectoryInPlace(sourceDir: string, targetDir: string): Promise<void> {
   await mkdir(targetDir, { recursive: true });
-  const [sourceEntries, targetEntries] = await Promise.all([
+  const [rawSourceEntries, rawTargetEntries] = await Promise.all([
     readdir(sourceDir, { withFileTypes: true }),
     readdir(targetDir, { withFileTypes: true }),
   ]);
+  const sourceEntries = rawSourceEntries.filter((entry) => !isSkippedPluginEntryName(entry.name));
+  const targetEntries = rawTargetEntries.filter((entry) => !isSkippedPluginEntryName(entry.name));
   const sourceByName = new Map(sourceEntries.map((entry) => [entry.name, entry]));
   for (const targetEntry of targetEntries) {
     const matching = sourceByName.get(targetEntry.name);
@@ -1054,12 +1077,17 @@ async function copyPluginToManagedRoot(
   try {
     if (moveOwnedSource) {
       await rm(stagingRoot, { recursive: true, force: true });
+      let renamedSource = true;
       await rename(sourceRoot, stagingRoot).catch(async (error: NodeJS.ErrnoException) => {
         if (error.code !== 'EXDEV' && error.code !== 'EPERM' && error.code !== 'EBUSY') throw error;
-        await cp(sourceRoot, stagingRoot, { recursive: true });
+        renamedSource = false;
+        await cp(sourceRoot, stagingRoot, { recursive: true, filter: (src) => !isSkippedPluginCopyPath(sourceRoot, src) });
       });
+      if (renamedSource) {
+        await stripSkippedPluginEntries(stagingRoot);
+      }
     } else {
-      await cp(sourceRoot, stagingRoot, { recursive: true });
+      await cp(sourceRoot, stagingRoot, { recursive: true, filter: (src) => !isSkippedPluginCopyPath(sourceRoot, src) });
     }
     if (expectedFingerprint !== undefined && await fingerprintDirectory(stagingRoot) !== expectedFingerprint) {
       throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Plugin changed since installation preview');
@@ -1070,7 +1098,7 @@ async function copyPluginToManagedRoot(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       } else if (isWindowsLockError(error)) {
-        await cp(managedRoot, previousRoot, { recursive: true });
+        await cp(managedRoot, previousRoot, { recursive: true, filter: (src) => !isSkippedPluginCopyPath(managedRoot, src) });
         copiedPreviousRoot = true;
       } else {
         throw error;

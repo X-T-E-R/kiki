@@ -3412,7 +3412,7 @@ interface PromptOutcomeContext {
   /** Start of the oldest loaded turn; anything settled before it is history. */
   readonly windowStartMs: number | undefined;
   /** promptId / message id → the turn it opened. */
-  readonly turns: ReadonlyMap<string, { readonly turnId: string; readonly error?: string; readonly errorDetails?: string }>;
+  readonly turns: ReadonlyMap<string, { readonly turnId: string; readonly promptId?: string; readonly state?: string; readonly endedAt?: string; readonly error?: string; readonly errorDetails?: string }>;
   /** Message ids recorded in canonical conversation history (`message.delivery` / turn). */
   readonly historyIds: ReadonlySet<string>;
 }
@@ -3421,7 +3421,7 @@ function promptOutcomeContext(
   blocks: readonly Block[],
   items: AgentTranscriptProjectionSource['items'],
 ): PromptOutcomeContext {
-  const turns = new Map<string, { turnId: string; error?: string; errorDetails?: string }>();
+  const turns = new Map<string, { turnId: string; promptId?: string; state?: string; endedAt?: string; error?: string; errorDetails?: string }>();
   const historyIds = new Set<string>();
   let windowStartMs: number | undefined;
   for (const item of items as readonly { readonly kind: string }[]) {
@@ -3439,16 +3439,25 @@ function promptOutcomeContext(
     if (item.kind !== 'turn') continue;
     const turn = item as unknown as {
       readonly turnId: string;
+      readonly state?: string;
       readonly promptId?: string;
       readonly error?: string;
       readonly errorDetails?: string;
       readonly startedAt?: string;
+      readonly endedAt?: string;
       readonly origin?: PromptOriginLike;
     };
     const started = timestampMs(turn.startedAt);
     if (started !== undefined && (windowStartMs === undefined || started < windowStartMs)) windowStartMs = started;
     const identity = identityFromTurnOrigin(turn.origin);
-    const entry = { turnId: turn.turnId, error: turn.error, errorDetails: turn.errorDetails };
+    const entry = {
+      turnId: turn.turnId,
+      promptId: turn.promptId ?? identity.promptId,
+      state: turn.state,
+      endedAt: turn.endedAt,
+      error: turn.error,
+      errorDetails: turn.errorDetails,
+    };
     for (const key of [turn.promptId, identity.promptId, identity.userMessageId, turnMessageId(turn)]) {
       if (key !== undefined) {
         turns.set(key, entry);
@@ -3588,6 +3597,52 @@ function earlierPromptOutcomesBlock(prompts: readonly TerminalPrompt[]): NoticeB
   };
 }
 
+function normalizeStaleRunningPrompt(
+  raw: TranscriptPrompt,
+  context: PromptOutcomeContext,
+  previousUser: UserBlock | undefined,
+): TranscriptPrompt {
+  if (raw.status !== 'running') return raw;
+  if (isRegeneratingJournalUser(previousUser, raw)) return raw;
+  const byPromptId = context.turns.get(raw.promptId);
+  const byMessageId = raw.userMessageId === undefined ? undefined : context.turns.get(raw.userMessageId);
+  const ownerTurn =
+    byPromptId ??
+    (byMessageId !== undefined && (byMessageId.promptId === undefined || byMessageId.promptId === raw.promptId)
+      ? byMessageId
+      : undefined);
+  if (ownerTurn !== undefined) {
+    if (ownerTurn.state === undefined || ownerTurn.state === 'running') return raw;
+    const status: TranscriptPrompt['status'] =
+      ownerTurn.state === 'completed'
+        ? 'completed'
+        : ownerTurn.state === 'failed'
+          ? 'failed'
+          : ownerTurn.state === 'blocked'
+            ? 'blocked'
+            : 'aborted';
+    return {
+      ...raw,
+      status,
+      finishedAt: raw.finishedAt ?? ownerTurn.endedAt,
+      error: raw.error ?? ownerTurn.error,
+      errorDetails: raw.errorDetails ?? ownerTurn.errorDetails,
+    };
+  }
+  const hasPreviousPending =
+    previousUser?.promptStatus === 'queued' || previousUser?.promptStatus === 'running';
+  const createdMs = timestampMs(raw.createdAt);
+  if (
+    !hasPreviousPending &&
+    createdMs !== undefined &&
+    context.windowStartMs !== undefined &&
+    createdMs < context.windowStartMs
+  ) {
+    return { ...raw, status: 'aborted' };
+  }
+  return raw;
+}
+
 function mergeTranscriptPromptBlocks(
   blocks: Block[],
   prompts: readonly TranscriptPrompt[],
@@ -3597,7 +3652,6 @@ function mergeTranscriptPromptBlocks(
 ): Block[] {
   if (prompts.length === 0) return blocks;
   const context = promptOutcomeContext(blocks, items);
-  const latestByUserMessage = buildLatestPromptSettlementMap(prompts);
   const previousUserByPrompt = new Map<string, UserBlock>();
   const previousUserByMessage = new Map<string, UserBlock>();
   for (const candidate of previous) {
@@ -3613,6 +3667,8 @@ function mergeTranscriptPromptBlocks(
     previousUserByPrompt.get(prompt.promptId) ??
     previousUserByMessage.get(prompt.promptId) ??
     (prompt.userMessageId === undefined ? undefined : previousUserByMessage.get(prompt.userMessageId));
+  const effectivePrompts = prompts.map((prompt) => normalizeStaleRunningPrompt(prompt, context, findPreviousUser(prompt)));
+  const latestByUserMessage = buildLatestPromptSettlementMap(effectivePrompts);
 
   let index = buildUserPromptIndex(blocks);
   const flushIndex = (): Block[] => {
@@ -3624,7 +3680,7 @@ function mergeTranscriptPromptBlocks(
   const timelineInsertions: Block[] = [];
   const earlier: TerminalPrompt[] = [];
 
-  for (const prompt of prompts) {
+  for (const prompt of effectivePrompts) {
     if (prompt.originKind === 'cron_job') continue;
     if (prompt.status === 'completed') {
       settleCompletedPromptInIndex(index, prompt);

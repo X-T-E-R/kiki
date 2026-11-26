@@ -196,8 +196,10 @@ vi.mock('../Transcript', async () => {
       data-message-view-internal={messageView.internalProse ? 'true' : 'false'}>
       {state.blocks.filter((block) => block.kind === 'user').map((block, index) =>
         <span key={index} data-timeline-user={block.text} data-timeline-optimistic={block.optimisticStatus} />)}
-      {state.blocks.filter((block) => block.kind === 'assistant' && typeof block.text === 'string').map((block, index) =>
-        <p key={`assistant-${block.id ?? index}`} data-quote-source={block.id ?? `assistant-${index}`}>{block.text}</p>)}
+      {state.blocks.filter((block) => block.kind === 'assistant' && typeof block.text === 'string').map((block, index) => {
+        const blockId = block.id ?? `assistant-${index}`;
+        return <p key={`assistant-${blockId}`} data-quote-source={blockId} data-source-block-id={blockId}>{block.text}</p>;
+      })}
     </div>;
   }) };
 });
@@ -473,8 +475,10 @@ it('renders working status and last-response time in child composer status line 
 
   const workingLine = dock.querySelector('[data-composer-working]');
   expect(workingLine).not.toBeNull();
+  expect(workingLine?.getAttribute('data-turn-started-at')).toBe(String(child1Time - 50_000));
   expect(workingLine?.getAttribute('data-last-response-at')).toBe(String(child1Time));
-  expect(workingLine?.textContent).toContain('Working · last response');
+  expect(workingLine?.textContent).toContain('Working · 1m 5s');
+  expect(workingLine?.textContent).toContain('last response 15s ago');
   expect(header.querySelector('header')?.className).toContain('@container/center');
 });
 
@@ -3615,11 +3619,16 @@ it('keeps a merged branch chat live and offers to split it into its own thread',
   await settle();
 
   const sealedBar = dock.querySelector('[data-branch-sealed-bar]');
-  expect(sealedBar?.textContent).toContain(translate('en', 'transcript.branch.sealed'));
+  expect(sealedBar?.textContent).toContain(translate('en', 'transcript.branch.sealedContinuable'));
   expect(header.querySelector('[data-branch-fold-action]')).toBeNull();
   const textarea = composerInput(dock);
   expect(textarea.disabled).toBe(false);
   expect(textarea.placeholder).not.toBe(translate('en', 'subagent.composerUnavailable'));
+
+  const promote = sealedBar?.querySelector<HTMLButtonElement>('[data-promote-branch-action]');
+  expect(promote?.textContent).toBe(translate('en', 'transcript.branch.promote'));
+  await act(async () => { promote?.click(); });
+  expect(harness.promoteAgent).toHaveBeenCalledExactlyOnceWith('session', 'branch-merged');
 
   await typeText(textarea, 'Pick this back up');
   await act(async () => {
@@ -3629,11 +3638,35 @@ it('keeps a merged branch chat live and offers to split it into its own thread',
   expect(harness.sendAgentMessage).toHaveBeenCalledWith(
     'session', 'branch-merged', 'Pick this back up', [{ type: 'text', text: 'Pick this back up' }], expect.any(String), undefined,
   );
+  expect(dock.querySelector('[data-branch-sealed-bar]')).toBeNull();
+});
 
-  const promote = sealedBar?.querySelector<HTMLButtonElement>('[data-promote-branch-action]');
-  expect(promote?.textContent).toBe(translate('en', 'transcript.branch.promote'));
-  await act(async () => { promote?.click(); });
-  expect(harness.promoteAgent).toHaveBeenCalledExactlyOnceWith('session', 'branch-merged');
+it('never shows Merged dock banner while a previously merged branch is busy, restores Fold into main, and keeps Open as thread available', async () => {
+  harness.promoteAvailable = true;
+  const busyBranch: AgentTreeNode = {
+    agentId: 'branch-continuing', parentAgentId: 'main', name: 'agent', label: 'Continuing branch',
+    status: 'running', busy: true, isBranch: true, branchSealed: true, branchSeed: 'fresh',
+    executorId: 'native', toolCallCount: 3, childIds: [],
+  };
+  const mainNode: AgentTreeNode = {
+    agentId: 'main', name: 'main', label: 'Main session', status: 'running', busy: true,
+    toolCallCount: 0, childIds: ['branch-continuing'],
+  };
+  const forest: AgentForest = { roots: [mainNode], byId: { main: mainNode, 'branch-continuing': busyBranch } };
+  await renderWorkspace({
+    target: { sessionId: 'session', agentId: 'branch-continuing' },
+    forest,
+    controller: controllerStub({
+      forest,
+      agentStates: { 'branch-continuing': { ...createViewState('session'), busy: true, loaded: true, transcriptReady: true } },
+    }),
+  });
+  await settle();
+
+  expect(dock.querySelector('[data-branch-sealed-bar]')).toBeNull();
+  expect(header.querySelector('[data-branch-fold-action]')?.textContent).toBe(translate('en', 'transcript.branch.foldAction'));
+  expect(header.querySelector('[data-promote-branch-action]')?.textContent).toBe(translate('en', 'transcript.branch.promote'));
+  expect(header.textContent).toContain(translate('en', 'transcript.branch.previousMerged'));
 });
 
 it.each([

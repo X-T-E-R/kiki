@@ -18,6 +18,8 @@ import {
 } from './image-format-policy';
 import { isAnimatedWebp } from './webp-decode';
 import { decodeToJimp, tryFastDecodePng, trySniffPngSize } from './imageDecode';
+import { abortable } from '#/_base/utils/abort';
+import { CpuWorkerError } from '#/app/cpuWorker/host';
 import type { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { hasRegisteredCpuPool, runCpuTask } from '#/app/cpuWorker/runtime';
 
@@ -55,6 +57,7 @@ const RECODABLE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/
 export interface ImageWorkerOptions {
   readonly cpuWorker?: ICpuWorkerService;
   readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
 }
 
 export interface CompressImageOptions extends ImageWorkerOptions {
@@ -339,10 +342,26 @@ const DECODABLE_IMAGE_MIMES = new Set([
 ]);
 
 const DECODE_VERDICT_LIMIT = 1024;
+export const IMAGE_DECODE_TIMEOUT_MS = 10_000;
 const decodeVerdicts = new Map<string, boolean>();
-const decodingImages = new Map<string, Promise<boolean>>();
+interface DecodingImageFlight {
+  readonly controller: AbortController;
+  readonly promise: Promise<boolean>;
+  waiters: number;
+  settled: boolean;
+}
+const decodingImages = new Map<string, DecodingImageFlight>();
 
-async function decodesAsImage(bytes: Buffer, mimeType: string): Promise<boolean> {
+function rememberDecodeVerdict(key: string, verdict: boolean): void {
+  decodeVerdicts.delete(key);
+  decodeVerdicts.set(key, verdict);
+  if (decodeVerdicts.size > DECODE_VERDICT_LIMIT) {
+    decodeVerdicts.delete(decodeVerdicts.keys().next().value!);
+  }
+}
+
+async function decodesAsImage(bytes: Buffer, mimeType: string, signal?: AbortSignal): Promise<boolean> {
+  signal?.throwIfAborted();
   const key = `${mimeType}:${createHash('sha256').update(bytes).digest('base64')}`;
   const known = decodeVerdicts.get(key);
   if (known !== undefined) {
@@ -350,29 +369,76 @@ async function decodesAsImage(bytes: Buffer, mimeType: string): Promise<boolean>
     decodeVerdicts.set(key, known);
     return known;
   }
-  const active = decodingImages.get(key);
-  if (active !== undefined) return active;
-  const copy = Uint8Array.from(bytes).buffer;
-  const decoding = runCpuTask<boolean>({ type: 'image.decode', bytes: copy, mimeType }, { transferList: [copy], priority: 'high' });
-  decodingImages.set(key, decoding);
+  let flight = decodingImages.get(key);
+  if (flight === undefined || flight.controller.signal.aborted) {
+    const controller = new AbortController();
+    const copy = Uint8Array.from(bytes).buffer;
+    let created!: DecodingImageFlight;
+    const promise = runCpuTask<boolean>(
+      { type: 'image.decode', bytes: copy, mimeType },
+      {
+        signal: controller.signal,
+        timeoutMs: IMAGE_DECODE_TIMEOUT_MS,
+        transferList: [copy],
+        bytes: copy.byteLength,
+        priority: 'high',
+      },
+    )
+      .then(
+        (verdict) => {
+          rememberDecodeVerdict(key, verdict);
+          return verdict;
+        },
+        (error: unknown) => {
+          if (error instanceof CpuWorkerError && error.code === 'CPU_TIMEOUT') {
+            rememberDecodeVerdict(key, false);
+            return false;
+          }
+          throw error;
+        },
+      )
+      .finally(() => {
+        created.settled = true;
+        if (decodingImages.get(key) === created) decodingImages.delete(key);
+      });
+    void promise.catch(() => {});
+    created = { controller, promise, waiters: 0, settled: false };
+    flight = created;
+    decodingImages.set(key, flight);
+  }
+  flight.waiters += 1;
+  const active = flight;
+  const onAbort = (): void => {
+    if (active.waiters <= 1 && !active.settled) {
+      active.controller.abort(signal?.reason);
+    }
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
   try {
-    const verdict = await decoding;
-    decodeVerdicts.set(key, verdict);
-    if (decodeVerdicts.size > DECODE_VERDICT_LIMIT) decodeVerdicts.delete(decodeVerdicts.keys().next().value!);
-    return verdict;
-  } finally { decodingImages.delete(key); }
+    return signal === undefined ? await active.promise : await abortable(active.promise, signal);
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    active.waiters -= 1;
+    if (active.waiters === 0 && !active.settled && signal?.aborted) {
+      active.controller.abort(signal.reason);
+    }
+  }
 }
 
 /** Proves a complete image data URL decodes as an image. The decode verdict is remembered by
  *  content digest, so history images revalidated on every model step decode once per process. */
-export async function validateImageDataUrl(url: string): Promise<ValidatedImageDataUrl | null> {
+export async function validateImageDataUrl(
+  url: string,
+  signal?: AbortSignal,
+): Promise<ValidatedImageDataUrl | null> {
+  signal?.throwIfAborted();
   const parsed = parseCompleteImageDataUrl(url);
   if (parsed === null) return null;
   const bytes = Buffer.from(parsed.base64, 'base64');
   if (bytes.length === 0) return null;
   const mimeType = normalizeImageMime(parsed.mimeType);
   if (DECODABLE_IMAGE_MIMES.has(mimeType)) {
-    if (!(await decodesAsImage(bytes, mimeType))) return null;
+    if (!(await decodesAsImage(bytes, mimeType, signal))) return null;
   } else if (sniffMediaFromMagic(bytes)?.kind !== 'image') {
     return null;
   }
@@ -837,7 +903,15 @@ function encodeFilteredPngBuffer(filtered: Buffer, width: number, height: number
   ]);
 }
 
-function encodeFastResizedOpaquePng(src: Uint8Array, srcW: number, srcH: number, targetW: number, targetH: number): Buffer {
+function encodeFastResizedOpaquePng(
+  src: Uint8Array,
+  srcW: number,
+  srcH: number,
+  targetW: number,
+  targetH: number,
+  signal?: AbortSignal,
+): Buffer {
+  signal?.throwIfAborted();
   const x0Table = new Int32Array(targetW);
   const x1Table = new Int32Array(targetW);
   const wxFixedTable = new Int32Array(targetW);
@@ -854,6 +928,7 @@ function encodeFastResizedOpaquePng(src: Uint8Array, srcW: number, srcH: number,
   const dstStride = targetW * 3;
   const filtered = Buffer.allocUnsafe(targetH * (dstStride + 1));
   for (let y = 0; y < targetH; y += 1) {
+    if ((y & 31) === 0) signal?.throwIfAborted();
     const sy = y * scaleY;
     const y0 = Math.floor(sy);
     const y1 = Math.min(y0 + 1, srcH - 1);
@@ -894,11 +969,19 @@ function encodeFastResizedOpaquePng(src: Uint8Array, srcW: number, srcH: number,
   return encodeFilteredPngBuffer(filtered, targetW, targetH, true);
 }
 
-function encodeFastPng(rgba: Uint8Array, width: number, height: number, knownOpaque = false): Buffer {
+function encodeFastPng(
+  rgba: Uint8Array,
+  width: number,
+  height: number,
+  knownOpaque = false,
+  signal?: AbortSignal,
+): Buffer {
+  signal?.throwIfAborted();
   let opaque = knownOpaque;
   if (!opaque) {
     opaque = true;
     for (let i = 3; i < rgba.length; i += 4) {
+      if ((i & 65535) === 3) signal?.throwIfAborted();
       if (rgba[i] !== 255) {
         opaque = false;
         break;
@@ -910,6 +993,7 @@ function encodeFastPng(rgba: Uint8Array, width: number, height: number, knownOpa
   const filtered = Buffer.allocUnsafe(height * (stride + 1));
   if (opaque) {
     for (let y = 0; y < height; y += 1) {
+      if ((y & 31) === 0) signal?.throwIfAborted();
       let srcOff = y * width * 4;
       const dstOff = y * (stride + 1);
       filtered[dstOff] = 1;
@@ -933,6 +1017,7 @@ function encodeFastPng(rgba: Uint8Array, width: number, height: number, knownOpa
     }
   } else {
     for (let y = 0; y < height; y += 1) {
+      if ((y & 31) === 0) signal?.throwIfAborted();
       const srcOff = y * stride;
       const dstOff = y * (stride + 1);
       filtered[dstOff] = 1;
@@ -1204,6 +1289,7 @@ function dispatchCpuImageTask<T>(
   if (options?.cpuWorker !== undefined) {
     return options.cpuWorker.request<T>(operation, {
       signal: options.signal,
+      timeoutMs: options.timeoutMs,
       transferList: [transfer],
       bytes: transfer.byteLength,
       priority: 'high',
@@ -1212,6 +1298,7 @@ function dispatchCpuImageTask<T>(
   if (hasRegisteredCpuPool()) {
     return runCpuTask<T>(operation, {
       signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
       transferList: [transfer],
       bytes: transfer.byteLength,
       priority: 'high',
@@ -1253,7 +1340,7 @@ export async function executeImageCompress(
     if (input.normalizedMime === 'image/png' && outputMimes.has('image/png')) {
       const sniffed = trySniffPngSize(inputBytes);
       if (sniffed !== undefined && Math.max(sniffed.width, sniffed.height) > input.maxEdge) {
-        const fast = tryFastDecodePng(inputBytes);
+        const fast = tryFastDecodePng(inputBytes, signal);
         if (fast !== undefined && Math.max(fast.width, fast.height) > input.maxEdge) {
           const originalWidth = fast.width;
           const originalHeight = fast.height;
@@ -1264,7 +1351,7 @@ export async function executeImageCompress(
             const factor = input.maxEdge / longest;
             const targetW = Math.max(1, Math.round(fast.width * factor));
             const targetH = Math.max(1, Math.round(fast.height * factor));
-            const png = encodeFastResizedOpaquePng(fast.data, fast.width, fast.height, targetW, targetH);
+            const png = encodeFastResizedOpaquePng(fast.data, fast.width, fast.height, targetW, targetH, signal);
             if (png.length <= input.byteBudget) {
               const outBuffer = png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength) as ArrayBuffer;
               return {
@@ -1280,7 +1367,7 @@ export async function executeImageCompress(
           }
           fitBitmapWithinEdge(fast, input.maxEdge);
           signal?.throwIfAborted();
-          const png = encodeFastPng(fast.data, fast.width, fast.height, fast.opaque);
+          const png = encodeFastPng(fast.data, fast.width, fast.height, fast.opaque, signal);
           if (png.length <= input.byteBudget) {
             const outBuffer = png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength) as ArrayBuffer;
             return {
@@ -1316,7 +1403,7 @@ export async function executeImageCompress(
       originalWidth = fastResized.originalWidth;
       originalHeight = fastResized.originalHeight;
     } else {
-      image = await decodeToJimp(inputBytes, input.normalizedMime);
+      image = await decodeToJimp(inputBytes, input.normalizedMime, signal);
       signal?.throwIfAborted();
       originalWidth = image.width;
       originalHeight = image.height;

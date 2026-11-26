@@ -490,9 +490,10 @@ export function trackReaderWorkerThread(worker: Worker, journalPath?: string): v
   });
 }
 
-/** Removes dead or corrupted session locks only when no live watch protects them. */
-export async function cleanupExpiredSessionLocks(homeDir: string): Promise<number> {
-  const directory = join(homeDir, SESSION_LOCK_SCOPE);
+const STALE_LOCK_TMP_MAX_AGE_MS = 60_000;
+
+/** Sweeps orphaned `.lock.tmp-*` sidecars and dead-owner `.lock.watch-*` sidecars in `directory`. */
+export async function sweepLockDirectorySidecars(directory: string): Promise<number> {
   let entries: string[];
   try {
     entries = await readdir(directory);
@@ -501,6 +502,84 @@ export async function cleanupExpiredSessionLocks(homeDir: string): Promise<numbe
     throw error;
   }
   let removed = 0;
+  const now = Date.now();
+  for (const entry of entries) {
+    const tmpIdx = entry.indexOf('.lock.tmp-');
+    if (tmpIdx >= 0) {
+      const sidecarPath = join(directory, entry);
+      const pidToken = entry.slice(tmpIdx + '.lock.tmp-'.length).split('-')[0];
+      const namedPid = Number(pidToken);
+      const deadOwner = !Number.isSafeInteger(namedPid) || namedPid <= 0 || !pidAlive(namedPid);
+      let stale = deadOwner;
+      if (!stale) {
+        const info = await stat(sidecarPath).catch(() => undefined);
+        if (info !== undefined && now - info.mtimeMs >= STALE_LOCK_TMP_MAX_AGE_MS) {
+          stale = true;
+        }
+      }
+      if (stale) {
+        try {
+          await unlink(sidecarPath);
+          removed += 1;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== 'ENOENT' && code !== 'EACCES' && code !== 'EPERM') throw error;
+        }
+      }
+      continue;
+    }
+    const watchIdx = entry.indexOf('.lock.watch-');
+    if (watchIdx >= 0) {
+      const watchPath = join(directory, entry);
+      let active = false;
+      try {
+        const raw = await readFile(watchPath, 'utf8');
+        let payload: FileLockPayload | undefined;
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          if (isPayload(parsed)) payload = parsed;
+        } catch {}
+        if (payload !== undefined) {
+          active = await ownerProcessAlive(payload);
+        } else {
+          const pidToken = entry.slice(watchIdx + '.lock.watch-'.length).split('-')[0];
+          const namedPid = Number(pidToken);
+          const info = await stat(watchPath);
+          active =
+            Number.isSafeInteger(namedPid) &&
+            namedPid > 0 &&
+            pidAlive(namedPid) &&
+            now - info.mtimeMs < DEFAULT_LEASE_MS;
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        active = false;
+      }
+      if (!active) {
+        try {
+          await unlink(watchPath);
+          removed += 1;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== 'ENOENT' && code !== 'EACCES' && code !== 'EPERM') throw error;
+        }
+      }
+    }
+  }
+  return removed;
+}
+
+/** Removes dead or corrupted session locks only when no live watch protects them. */
+export async function cleanupExpiredSessionLocks(homeDir: string): Promise<number> {
+  const directory = join(homeDir, SESSION_LOCK_SCOPE);
+  let removed = await sweepLockDirectorySidecars(directory);
+  let entries: string[];
+  try {
+    entries = await readdir(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return removed;
+    throw error;
+  }
   for (const entry of entries) {
     if (!entry.endsWith('.lock')) continue;
     const lock = new FileLock(join(directory, entry), {}, {});

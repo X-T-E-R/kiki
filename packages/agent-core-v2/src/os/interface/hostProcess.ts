@@ -15,6 +15,7 @@ export interface HostProcessOptions {
   readonly timeout?: number;
   readonly ownedProcessTree?: boolean;
   readonly ownedProcessLifetime?: 'process' | 'owner';
+  readonly signal?: AbortSignal;
 }
 
 export interface IHostProcess {

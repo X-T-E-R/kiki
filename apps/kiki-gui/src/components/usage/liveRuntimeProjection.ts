@@ -21,7 +21,7 @@ export interface FormattedModelLabel {
 
 /**
  * Format a wire model ID into a human-readable catalog display name without
- * exposing raw provider prefixes (`axon-message/...`) as default titles.
+ * exposing raw provider prefixes (`gateway/model-pro`) as default titles.
  */
 export function formatRuntimeModelLabel(
   modelId: string | null | undefined,
@@ -56,6 +56,7 @@ export interface LiveConcurrencyBucketRow {
   readonly technical?: string;
   readonly active: number;
   readonly queued: number;
+  readonly activeAgents?: number;
   readonly limit?: number;
   readonly ruleId?: string;
   readonly subDetail?: string;
@@ -88,6 +89,7 @@ export interface LivePendingRow {
   readonly runningAgentCount: number;
   readonly activeRequests: number;
   readonly startedAtMs?: number;
+  readonly executionState?: ExecutionControlState;
 }
 
 export interface LiveSessionAgentLink {
@@ -367,6 +369,22 @@ export function projectLiveConcurrency({
 
   const reqDims = (requestSnapshot?.dimensions ?? []).filter((d) => d.dimension !== 'session' && (d.active > 0 || d.queued > 0));
 
+  const activeAgentsByModel = new Map<string, number>();
+  const activeAgentsByProvider = new Map<string, number>();
+  let activeMainAgents = 0;
+  let activeSubAgents = 0;
+  for (const agent of agentSnapshot?.agents ?? []) {
+    if (agent.phase !== 'running' && agent.phase !== 'tool_waiting') continue;
+    if (agent.modelId !== undefined && agent.modelId !== '') {
+      activeAgentsByModel.set(agent.modelId, (activeAgentsByModel.get(agent.modelId) ?? 0) + 1);
+    }
+    if (agent.providerId !== undefined && agent.providerId !== '') {
+      activeAgentsByProvider.set(agent.providerId, (activeAgentsByProvider.get(agent.providerId) ?? 0) + 1);
+    }
+    if (agent.role === 'subagent') activeSubAgents += 1;
+    else if (agent.role === 'main') activeMainAgents += 1;
+  }
+
   const buildReqDimensionRows = (dim: 'model' | 'provider' | 'role'): LiveConcurrencyBucketRow[] =>
     reqDims
       .filter((d) => d.dimension === dim)
@@ -383,6 +401,7 @@ export function projectLiveConcurrency({
             technical: m.technical,
             active: d.active,
             queued: d.queued,
+            activeAgents: activeAgentsByModel.get(d.id),
             limit: cap?.limit,
             ruleId: cap?.ruleId,
           };
@@ -396,6 +415,9 @@ export function projectLiveConcurrency({
             display,
             active: d.active,
             queued: d.queued,
+            activeAgents: d.id === 'subagent'
+              ? (activeSubAgents || undefined)
+              : (activeMainAgents || undefined),
             limit: cap?.limit,
             ruleId: cap?.ruleId,
           };
@@ -408,6 +430,7 @@ export function projectLiveConcurrency({
           technical: d.id,
           active: d.active,
           queued: d.queued,
+          activeAgents: activeAgentsByProvider.get(d.id),
           limit: cap?.limit,
           ruleId: cap?.ruleId,
         };
@@ -590,12 +613,14 @@ export function projectLiveRuntime({
       runningAgentCount: sessionAgents.length,
       activeRequests: reqCounts?.active ?? 0,
       startedAtMs: earliestAgentStart ?? parseTimestamp(item.at),
+      executionState: item.roomId === undefined ? executionStates[item.sessionId] : undefined,
     };
   });
 
   // 2. Active, queued-waiting, and held/recovery sessions (never folded)
   const candidateIds = new Set<string>();
   for (const id of agentsBySession.keys()) candidateIds.add(id);
+  for (const id of sessionRequestCounts.keys()) candidateIds.add(id);
   for (const id of requestWaitersBySession.keys()) candidateIds.add(id);
   for (const id of agentWaitersBySession.keys()) candidateIds.add(id);
   for (const [id, state] of Object.entries(executionStates)) {

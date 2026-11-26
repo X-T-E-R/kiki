@@ -449,20 +449,55 @@ export function isEngineInQuotaScope(engineId: string, scope: QuotaEngineScope):
 export interface ArrangedQuotaSources {
   /** Enabled sources with an official quota API (attention items first). */
   readonly live: readonly ProviderQuotaSource[];
-  /** Subset of `live` whose effective status is `auth_required` or `error`. */
+  /** Subset of primary AI `provider` sources whose effective status is `auth_required` or `error`. */
   readonly attention: readonly ProviderQuotaSource[];
-  /** Subset of `live` that is healthy, cached, or not queried yet. */
+  /** Subset of primary AI `provider` sources that is healthy, cached, or not queried yet. */
   readonly ledger: readonly ProviderQuotaSource[];
-  /** Turned-on external engines; their quota stays inside each engine. */
+  /** Auxiliary `external_service` keys (search/scraping APIs), rendered quietly below engines. */
+  readonly externalServices: readonly ProviderQuotaSource[];
+  /** Turned-on external engines with native or plugin quota capability. */
   readonly engines: readonly ProviderQuotaSource[];
   /** Registered engines left out because they are not turned on. Never deleted, only not listed. */
   readonly hiddenEngines: number;
   /** True while the engine scope is still loading: engines are held back rather than flashed. */
   readonly enginesPending: boolean;
-  /** Enabled connections with no official quota API. */
+  /** Enabled connections and engines with no official or plugin quota query. */
   readonly unsupported: readonly ProviderQuotaSource[];
   /** Provider and service sources whose quota check is off. */
   readonly off: readonly ProviderQuotaSource[];
+}
+
+export function rawEngineQuotaSourceOf(
+  raw: Readonly<Record<string, unknown>> | undefined,
+  executorId: string,
+): string | undefined {
+  const overrides = raw?.['agent_executor_overrides'];
+  if (typeof overrides !== 'object' || overrides === null) return undefined;
+  const entry = (overrides as Record<string, unknown>)[executorId];
+  if (typeof entry !== 'object' || entry === null) return undefined;
+  const source = (entry as Record<string, unknown>)['quota_source'];
+  return typeof source === 'string' && source.trim() !== '' ? source.trim() : undefined;
+}
+
+export function effectiveEngineQuotaSourceOf(
+  raw: Readonly<Record<string, unknown>> | undefined,
+  engine: { readonly provider_id: string; readonly supported: boolean },
+  matchingPluginSources: readonly { readonly id: string }[],
+): string {
+  const explicit = rawEngineQuotaSourceOf(raw, engine.provider_id);
+  if (explicit !== undefined) {
+    return explicit === 'native' ? '' : explicit;
+  }
+  if (!engine.supported && matchingPluginSources.length > 0) {
+    return matchingPluginSources[0]!.id;
+  }
+  return '';
+}
+
+export interface ArrangeQuotaOptions {
+  readonly configRaw?: Readonly<Record<string, unknown>>;
+  readonly pluginQuotaSources?: readonly PluginHarnessQuotaSnapshot[];
+  readonly pluginCatalogPending?: boolean;
 }
 
 /**
@@ -485,29 +520,54 @@ export function arrangeQuotaSources(
   sources: readonly ProviderQuotaSource[],
   scope: QuotaEngineScope | null | 'pending',
   signedOut: ReadonlySet<string> = new Set(),
+  options?: ArrangeQuotaOptions,
 ): ArrangedQuotaSources {
-  const live: ProviderQuotaSource[] = [];
   const attention: ProviderQuotaSource[] = [];
   const ledger: ProviderQuotaSource[] = [];
+  const externalAttention: ProviderQuotaSource[] = [];
+  const externalHealthy: ProviderQuotaSource[] = [];
   const engines: ProviderQuotaSource[] = [];
   const unsupported: ProviderQuotaSource[] = [];
   const off: ProviderQuotaSource[] = [];
+  const pluginSources = options?.pluginQuotaSources ?? [];
   let hiddenEngines = 0;
   for (const source of sources) {
     if (source.kind === 'executor') {
       if (scope === 'pending') continue;
-      if (scope === null || isEngineInQuotaScope(source.provider_id, scope)) engines.push(source);
-      else hiddenEngines += 1;
+      if (scope === null || isEngineInQuotaScope(source.provider_id, scope)) {
+        const matchingPlugins = pluginSources.filter((entry) => entry.engineIds.includes(source.provider_id));
+        const effectiveSelected = effectiveEngineQuotaSourceOf(options?.configRaw, source, matchingPlugins);
+        if (options?.pluginCatalogPending !== true && !source.supported && matchingPlugins.length === 0 && effectiveSelected === '') {
+          unsupported.push(source);
+        } else {
+          engines.push(source);
+        }
+      } else {
+        hiddenEngines += 1;
+      }
     } else if (!source.enabled) off.push(source);
     else if (!source.supported) unsupported.push(source);
-    else {
-      live.push(source);
+    else if (source.kind === 'external_service') {
+      if (ATTENTION.has(effectiveQuotaStatus(source, signedOut))) externalAttention.push(source);
+      else externalHealthy.push(source);
+    } else {
       if (ATTENTION.has(effectiveQuotaStatus(source, signedOut))) attention.push(source);
       else ledger.push(source);
     }
   }
-  const ordered = [...attention, ...ledger];
-  return { live: ordered, attention, ledger, engines, hiddenEngines, enginesPending: scope === 'pending', unsupported, off };
+  const externalServices = [...externalAttention, ...externalHealthy];
+  const ordered = [...attention, ...ledger, ...externalServices];
+  return {
+    live: ordered,
+    attention,
+    ledger,
+    externalServices,
+    engines,
+    hiddenEngines,
+    enginesPending: scope === 'pending',
+    unsupported,
+    off,
+  };
 }
 
 /** Provider ids whose OAuth sign-in the provider catalog reports as gone. */

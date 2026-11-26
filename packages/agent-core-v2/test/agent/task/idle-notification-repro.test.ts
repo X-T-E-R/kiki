@@ -5,6 +5,7 @@ import { Readable } from 'node:stream';
 import { createControlledPromise } from '@antfu/utils';
 import type { IHostProcess } from '#/os/interface/hostProcess';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
+import { SyncDescriptor } from '#/_base/di/descriptors';
 import { Emitter, Event } from '#/_base/event';
 import { IAgentLifecycleService, type AgentWillSealTranscriptEvent } from '#/session/agentLifecycle/agentLifecycle';
 import { COLLABORATION_LATEST_TASK_LABEL } from '#/session/agentCollaboration/registry';
@@ -14,8 +15,9 @@ import { ISessionStateService } from '#/session/state/sessionState';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { autonomousReceiptsKey } from '#/session/subagent/autonomousReceiptOps';
 import { AgentBranchGuardService, IAgentBranchGuardService } from '#/features/btw/agentBranchGuardService';
-import { AgentBranchSealed, BranchTurnMerged } from '#/features/btw/branchOps';
+import { AgentBranchSealed, BranchTurnMerged, branchSealedKey } from '#/features/btw/branchOps';
 import { ISessionBranchService } from '#/features/btw/btw';
+import { SessionBranchService } from '#/features/btw/btwService';
 import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { AgentTaskPersistence } from '#/agent/task/persist';
@@ -44,6 +46,7 @@ import { escapeXml } from '#/_base/utils/xml-escape';
 import { runAgentTurn } from '#/session/subagent/runAgentTurn';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentPromptService, reservePrompt } from '#/agent/prompt/prompt';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { GoalUpdate } from '#/agent/goal/goalOps';
@@ -363,6 +366,180 @@ describe('autonomous child receipt return', () => {
       await dispose();
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it.each([true, false])(
+    'admits same-turn post-Merge input and tool checks, publishes a second Merge without duplicate receipt (%s), or delivers uncovered fallback receipt',
+    async (publishSecondMerge) => {
+      const creating = new Emitter<IAgentScopeHandle>();
+      const created = new Emitter<IAgentScopeHandle>();
+      const sealing = new Emitter<AgentWillSealTranscriptEvent>();
+      const handles = new Map<string, IAgentScopeHandle>();
+      const pendingMail = new Set<string>();
+      const pendingChanged = new Emitter<{ sessionId: string; agentId: string }>();
+      const mailbox = sessionService(IAgentCollaborationMessageStore, {
+        _serviceBrand: undefined,
+        onDidChangePending: pendingChanged.event,
+        listPendingAgents: async () => [...pendingMail],
+        nextQueued: async () => undefined,
+        accept: async () => { throw new Error('unused'); },
+        markDelivered: async () => true,
+        discardPending: async () => ({ discarded: 0 }),
+      });
+      const lifecycleStub = sessionService(IAgentLifecycleService, {
+        _serviceBrand: undefined,
+        onWillCreate: creating.event,
+        onDidCreate: created.event,
+        onDidDispose: Event.None as Event<string>,
+        onWillSealTranscript: sealing.event,
+        get: (id: string) => handles.get(id),
+        list: () => [...handles.values()],
+        create: async () => { throw new Error('unused'); },
+        commitCreate: () => {},
+        discard: async () => {},
+        fork: async () => { throw new Error('unused'); },
+        broadcastPermissionMode: () => {},
+        countPendingBackgroundTasks: () => 0,
+        drainBackgroundTasks: async () => {},
+        remove: async () => {},
+      });
+      const parent = createTestAgent(
+        mailbox,
+        lifecycleStub,
+        sessionService(ISessionBranchService, new SyncDescriptor(SessionBranchService)),
+      );
+      const metadata = parent.get(ISessionMetadata);
+      const branchService = parent.get(ISessionBranchService);
+      const child = createTestAgent(
+        mailbox,
+        lifecycleStub,
+        sessionService(ISessionBranchService, branchService),
+        sessionService(ISessionMetadata, metadata),
+        sessionService(ISessionSubagentService, parent.get(ISessionSubagentService)),
+        agentService(IAgentScopeContext, makeAgentScopeContext({
+          agentId: 'agent-branch',
+          parentAgentId: 'main',
+          agentScope: 'agents/agent-branch',
+          isBranch: true,
+        })),
+      );
+      const parentHandle: IAgentScopeHandle = { kind: 'agent', id: 'main', accessor: { get: (id) => parent.get(id) }, dispose: () => {} };
+      const childHandle: IAgentScopeHandle = { kind: 'agent', id: 'agent-branch', accessor: { get: (id) => child.get(id) }, dispose: () => {} };
+      handles.set('main', parentHandle);
+      handles.set('agent-branch', childHandle);
+      await metadata.registerAgent('agent-branch', {
+        type: 'sub',
+        parentAgentId: 'main',
+        userLabel: 'Verify port check',
+        labels: { branch: 'true', branchInitiator: 'agent', autonomousReceiptPolicy: 'local' },
+      });
+      creating.fire(parentHandle);
+      creating.fire(childHandle);
+      created.fire(parentHandle);
+      created.fire(childHandle);
+
+      try {
+        await child.ready;
+        await parent.ready;
+        child.get(IAgentBranchGuardService);
+        let steerPromise: Promise<unknown> | undefined;
+        child.get(IAgentToolExecutorService).hooks.onDidExecuteTool.register('test.inject-steer-after-merge', async (event, next) => {
+          if (event.toolCall.id === 'call-merge-1') {
+            expect(event.result.isError).not.toBe(true);
+            expect(child.get(IAgentStateService).get(branchSealedKey)).toBe(true);
+            const prompts = child.get(IAgentPromptService);
+            steerPromise = (async () => {
+              const queued = await prompts.enqueue({
+                message: {
+                  role: 'user',
+                  content: [{ type: 'text', text: 'One more check: confirm retry cap in TodoList.' }],
+                  toolCalls: [],
+                  origin: {
+                    kind: 'agent_message',
+                    messageId: 'mail-step2',
+                    senderAgentId: 'main',
+                    senderTaskName: 'main',
+                  },
+                },
+                waitForLaunch: false,
+              });
+              return prompts.steer([queued.id]);
+            })();
+          } else if (event.toolCall.id === 'call-check-after-merge') {
+            expect(event.result.isError).not.toBe(true);
+          } else if (event.toolCall.id === 'call-merge-2') {
+            expect(event.result.isError).not.toBe(true);
+          }
+          await next();
+        });
+        let stepCount = 0;
+        child.get(IAgentLoopService).hooks.onWillBeginStep.register('test.verify-midturn-steer', async (_step, next) => {
+          stepCount += 1;
+          if (stepCount === 2) {
+            expect(await steerPromise).toHaveLength(1);
+            await child.get(IAgentBranchGuardService).revived();
+            expect(child.get(IAgentStateService).get(branchSealedKey)).toBe(false);
+          }
+          await next();
+        });
+
+        parent.mockNextResponse({ type: 'text', text: 'Parent noted first checkpoint.' });
+        parent.mockNextResponse({ type: 'text', text: 'Parent noted second outcome.' });
+
+        child.mockNextResponse({
+          type: 'function',
+          id: 'call-merge-1',
+          name: 'Merge',
+          arguments: JSON.stringify({ summary: 'Initial branch checkpoint.', done: true }),
+        });
+        child.mockNextResponse({
+          type: 'function',
+          id: 'call-check-after-merge',
+          name: 'TodoList',
+          arguments: '{}',
+        });
+        if (publishSecondMerge) {
+          child.mockNextResponse({
+            type: 'function',
+            id: 'call-merge-2',
+            name: 'Merge',
+            arguments: JSON.stringify({ summary: 'Amended checkpoint after post-Merge check.', done: true }),
+          });
+          child.mockNextResponse({ type: 'text', text: 'Second checkpoint published.' });
+        } else {
+          child.mockNextResponse({ type: 'text', text: 'Amended conclusion without calling Merge again.' });
+        }
+
+        const prompt = await child.get(IAgentPromptService).enqueue({
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'Investigate and fold back.' }],
+            toolCalls: [],
+            origin: { kind: 'user' },
+          },
+        });
+        expect((await prompt.completion).state).toBe('completed');
+        await child.get(IAgentLoopService).settled();
+        await parent.get(IAgentLoopService).settled();
+        await vi.waitFor(() => expect(child.get(IAgentStateService).get(autonomousReceiptsKey).pending).toEqual({}));
+
+        const parentTasks = parent.get(IAgentTaskService).list(false);
+        if (publishSecondMerge) {
+          expect(parentTasks).toHaveLength(0);
+          expect(child.get(IAgentStateService).get(branchSealedKey)).toBe(true);
+        } else {
+          expect(parentTasks).toHaveLength(1);
+          expect(await parent.get(IAgentTaskService).readOutput(parentTasks[0]!.taskId)).toContain(
+            'Amended conclusion without calling Merge again.',
+          );
+          expect(child.get(IAgentStateService).get(branchSealedKey)).toBe(false);
+        }
+      } finally {
+        await child.dispose();
+        await parent.dispose();
+      }
+    },
+    PARALLEL_WORKER_CONTENTION_TIMEOUT_MS,
+  );
 
   it('waits for post-merge branch revival before deciding whether to deliver a revived branch receipt', async () => {
     const { parent, child, metadata, dispose } = await receiptPair();

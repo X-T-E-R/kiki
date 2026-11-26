@@ -739,9 +739,9 @@ foreach ($hName in $helperNames) {
     if ($null -eq $fnAst) { throw "Missing expected helper function $hName in desktop-hot-switch.ps1" }
     Invoke-Expression $fnAst.Extent.Text
 }
-$inferredCtf = Get-InferredHomeFromChildArgs '__search-indexer D:\666\KikiSpaces\ctf\search-index-v2\index.sqlite'
-if ($inferredCtf -ine 'D:\666\KikiSpaces\ctf') {
-    throw "Expected D:\666\KikiSpaces\ctf from __search-indexer, saw '$inferredCtf'."
+$inferredDemo = Get-InferredHomeFromChildArgs '__search-indexer D:\Projects\KikiSpaces\demo\search-index-v2\index.sqlite'
+if ($inferredDemo -ine 'D:\Projects\KikiSpaces\demo') {
+    throw "Expected D:\Projects\KikiSpaces\demo from __search-indexer, saw '$inferredDemo'."
 }
 $inferredQuoted = Get-InferredHomeFromChildArgs '__search-indexer "D:\My Spaces\ctf\search-index-v2\index.sqlite"'
 if ($inferredQuoted -ine 'D:\My Spaces\ctf') {

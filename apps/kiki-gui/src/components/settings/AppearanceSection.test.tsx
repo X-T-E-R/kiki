@@ -16,6 +16,7 @@ import { readSettings, writeSettings } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../../i18n';
 import {
+  clearSelectedSkinCache,
   readSkinPrefs,
   resetBackgroundPrefsCache,
   startSkinSync,
@@ -31,12 +32,20 @@ const listSkinsMock = vi.hoisted(() => vi.fn());
 const getSkinMock = vi.hoisted(() => vi.fn());
 
 const appearanceConnection = vi.hoisted(() => ({
+  url: 'http://127.0.0.1:1',
+  token: 'test-token',
+  scopeId: 'local',
+  spaceKey: 'main',
+  wsStatus: 'open' as 'open' | 'connecting' | 'closed',
   meta: null as { server_id: string; current_space_id?: string } | null,
 }));
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
-    config: { url: 'http://127.0.0.1:1', token: 'test-token' },
+    config: { url: appearanceConnection.url, token: appearanceConnection.token },
+    scopeId: appearanceConnection.scopeId,
+    spaceKey: appearanceConnection.spaceKey,
+    wsStatus: appearanceConnection.wsStatus,
     meta: appearanceConnection.meta,
     client: {
       listSkins: listSkinsMock,
@@ -83,6 +92,11 @@ const PACK = {
 };
 
 beforeEach(async () => {
+  appearanceConnection.url = 'http://127.0.0.1:1';
+  appearanceConnection.token = 'test-token';
+  appearanceConnection.scopeId = 'local';
+  appearanceConnection.spaceKey = 'main';
+  appearanceConnection.wsStatus = 'open';
   appearanceConnection.meta = null;
   listSkinsMock.mockReset().mockResolvedValue({ items: [], directory: '/home/fixture/.kiki/themes', skipped: [] });
   getSkinMock.mockReset();
@@ -195,31 +209,31 @@ describe('AppearanceSection', () => {
   });
 
   it('steps conversation text size, code size, and reading width, mirrors them onto <html>, and folds into Restore defaults + Undo', async () => {
-    expect(container.querySelector('[data-prose-size-value]')?.textContent).toBe('16px');
-    expect(container.querySelector('[data-code-size-value]')?.textContent).toBe('13px');
+    expect(container.querySelector('[data-prose-size-value]')?.textContent).toBe('14.5px');
+    expect(container.querySelector('[data-code-size-value]')?.textContent).toBe('12.5px');
     expect(document.documentElement.dataset['kikiChatWidth']).toBe('standard');
     expect(document.documentElement.style.getPropertyValue('--kiki-prose-font-size')).toBe('');
     expect(document.documentElement.style.getPropertyValue('--kiki-code-font-size')).toBe('');
 
     await act(async () => { button('[data-prose-size-in]').click(); });
     await act(async () => { button('[data-prose-size-in]').click(); });
-    expect(readSettings().proseFontSize).toBe(18);
-    expect(container.querySelector('[data-prose-size-value]')?.textContent).toBe('18px');
-    expect(document.documentElement.style.getPropertyValue('--kiki-prose-font-size')).toBe('18px');
+    expect(readSettings().proseFontSize).toBe(15.5);
+    expect(container.querySelector('[data-prose-size-value]')?.textContent).toBe('15.5px');
+    expect(document.documentElement.style.getPropertyValue('--kiki-prose-font-size')).toBe('15.5px');
 
     await act(async () => { button('[data-code-size-in]').click(); });
     await act(async () => { button('[data-code-size-in]').click(); });
-    expect(readSettings().codeFontSize).toBe(15);
-    expect(container.querySelector('[data-code-size-value]')?.textContent).toBe('15px');
-    expect(document.documentElement.style.getPropertyValue('--kiki-code-font-size')).toBe('15px');
+    expect(readSettings().codeFontSize).toBe(14);
+    expect(container.querySelector('[data-code-size-value]')?.textContent).toBe('14px');
+    expect(document.documentElement.style.getPropertyValue('--kiki-code-font-size')).toBe('14px');
 
     await act(async () => { button('[data-chat-width-choice="wide"]').click(); });
     expect(readSettings().chatWidth).toBe('wide');
     expect(document.documentElement.dataset['kikiChatWidth']).toBe('wide');
 
     await act(async () => { button('[data-appearance-restore]').click(); });
-    expect(readSettings().proseFontSize).toBe(16);
-    expect(readSettings().codeFontSize).toBe(13);
+    expect(readSettings().proseFontSize).toBe(14.5);
+    expect(readSettings().codeFontSize).toBe(12.5);
     expect(readSettings().chatWidth).toBe('standard');
     expect(document.documentElement.dataset['kikiChatWidth']).toBe('standard');
     expect(document.documentElement.style.getPropertyValue('--kiki-prose-font-size')).toBe('');
@@ -227,17 +241,17 @@ describe('AppearanceSection', () => {
 
     const undo = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Undo')!;
     await act(async () => { undo.click(); });
-    expect(readSettings().proseFontSize).toBe(18);
-    expect(readSettings().codeFontSize).toBe(15);
+    expect(readSettings().proseFontSize).toBe(15.5);
+    expect(readSettings().codeFontSize).toBe(14);
     expect(readSettings().chatWidth).toBe('wide');
     expect(document.documentElement.dataset['kikiChatWidth']).toBe('wide');
-    expect(document.documentElement.style.getPropertyValue('--kiki-prose-font-size')).toBe('18px');
-    expect(document.documentElement.style.getPropertyValue('--kiki-code-font-size')).toBe('15px');
+    expect(document.documentElement.style.getPropertyValue('--kiki-prose-font-size')).toBe('15.5px');
+    expect(document.documentElement.style.getPropertyValue('--kiki-code-font-size')).toBe('14px');
 
     await act(async () => { button('[data-prose-size-reset]').click(); });
     await act(async () => { button('[data-code-size-reset]').click(); });
-    expect(readSettings().proseFontSize).toBe(16);
-    expect(readSettings().codeFontSize).toBe(13);
+    expect(readSettings().proseFontSize).toBe(14.5);
+    expect(readSettings().codeFontSize).toBe(12.5);
   });
 
   it('applies motion and prose choices at once and mirrors them onto <html>', async () => {
@@ -496,5 +510,100 @@ describe('AppearanceSection', () => {
     }
     expect(container.querySelector('[data-pack="dusk-harbor"]')).not.toBeNull();
     expect(container.querySelector('[data-pack="rain-cedar"]')).not.toBeNull();
+  });
+
+  it('refetches user skins when connection/space identity changes and preserves cached skin on transient errors', async () => {
+    await act(async () => { root.unmount(); });
+    const freshClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const skinA = {
+      kind: 'kiki-skin' as const,
+      version: 1 as const,
+      id: 'space-a-skin',
+      name: 'Space A',
+      variants: { light: { colors: { paper: '#E8F3EC' } } },
+    };
+    const skinB = {
+      kind: 'kiki-skin' as const,
+      version: 1 as const,
+      id: 'space-b-skin',
+      name: 'Space B',
+      variants: { light: { colors: { paper: '#F3E8F0' } } },
+    };
+
+    // Seed cached user skin before a transient detail fetch failure.
+    writeSkinPrefs({ selection: { source: 'user', id: 'space-a-skin' }, tweaks: {} });
+    localStorage.setItem('kiki.skin.cache', JSON.stringify(skinA));
+    clearSelectedSkinCache();
+    localStorage.setItem('kiki.skin.cache', JSON.stringify(skinA));
+
+    let failDetail = true;
+    listSkinsMock.mockReset().mockImplementation(async () => ({
+      items: appearanceConnection.spaceKey === 'main'
+        ? [{ id: 'space-a-skin', name: 'Space A' }]
+        : [{ id: 'space-b-skin', name: 'Space B' }],
+      directory: '/themes',
+      skipped: [],
+    }));
+    getSkinMock.mockReset().mockImplementation(async (id: string) => {
+      if (id === 'space-a-skin' && failDetail) {
+        throw Object.assign(new Error('503 Service Unavailable'), { status: 503 });
+      }
+      return { skin: id === 'space-a-skin' ? skinA : skinB };
+    });
+
+    appearanceConnection.wsStatus = 'connecting';
+
+    function Probe() {
+      useUserSkins();
+      return null;
+    }
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={freshClient}>
+          <Probe />
+        </QueryClientProvider>,
+      );
+    });
+    for (let i = 0; i < 4; i += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
+
+    // Transient 503 must NOT wipe the local paint cache.
+    expect(localStorage.getItem('kiki.skin.cache')).not.toBeNull();
+    expect(JSON.parse(localStorage.getItem('kiki.skin.cache')!).id).toBe('space-a-skin');
+
+    // Reconnecting wsStatus='open' recovers and loads the live skin.
+    failDetail = false;
+    appearanceConnection.wsStatus = 'open';
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={freshClient}>
+          <Probe />
+        </QueryClientProvider>,
+      );
+    });
+    for (let i = 0; i < 4; i += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
+    expect(getSkinMock).toHaveBeenCalledWith('space-a-skin');
+
+    // Switching spaceKey must trigger a fresh listSkins call (not serve stale cache).
+    const listCallsBeforeSwitch = listSkinsMock.mock.calls.length;
+    appearanceConnection.spaceKey = 'work-space';
+    writeSkinPrefs({ selection: { source: 'user', id: 'space-b-skin' }, tweaks: {} });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={freshClient}>
+          <Probe />
+        </QueryClientProvider>,
+      );
+    });
+    for (let i = 0; i < 4; i += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
+    expect(listSkinsMock.mock.calls.length).toBeGreaterThan(listCallsBeforeSwitch);
+    expect(getSkinMock).toHaveBeenCalledWith('space-b-skin');
   });
 });

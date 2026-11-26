@@ -56,6 +56,7 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { OrderedHookSlot } from '#/hooks';
 import { IAgentToolResultTruncationService } from '#/agent/toolResultTruncation/toolResultTruncation';
 import { BeforeToolExecuteEmitter } from './beforeToolExecuteEvent';
+import { resolveAutonomousForegroundTimeoutMs } from '#/agent/task/foregroundPolicy';
 import {
   IAgentToolExecutorService,
   type MissingToolDescriber,
@@ -332,6 +333,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         continue;
       }
       if (
+        options.skipUnstartedToolsOnInput === true &&
         !options.signal.aborted &&
         options.steerSignal?.aborted === true &&
         options.executionWaits?.[call.toolCall.id] === undefined
@@ -495,9 +497,10 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       }, undefined, options, signal, call.tool.foregroundPolicy, foregroundStartedAt) } };
     }
 
-    const admissionSignal = options.steerSignal === undefined
-      ? options.signal
-      : AbortSignal.any([options.signal, options.steerSignal]);
+    const skipUnstartedOnInput = options.skipUnstartedToolsOnInput === true;
+    const admissionSignal = skipUnstartedOnInput && options.steerSignal !== undefined
+      ? AbortSignal.any([options.signal, options.steerSignal])
+      : options.signal;
 
     const extensions = this.extensions?.current;
     let validation = validateExecutableToolArgs(call.tool, call.args);
@@ -513,11 +516,11 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         }), admissionSignal);
       } catch (error) {
         if (options.signal.aborted) return settleError(call.args, abortedToolOutput(call.toolName, options.signal), 'aborted');
-        if (options.steerSignal?.aborted === true) return this.prepareSteerSkippedToolCall(call, options);
+        if (skipUnstartedOnInput && options.steerSignal?.aborted === true) return this.prepareSteerSkippedToolCall(call, options);
         throw error;
       }
       if (options.signal.aborted) return settleError(call.args, abortedToolOutput(call.toolName, options.signal), 'aborted');
-      if (options.steerSignal?.aborted === true) return this.prepareSteerSkippedToolCall(call, options);
+      if (skipUnstartedOnInput && options.steerSignal?.aborted === true) return this.prepareSteerSkippedToolCall(call, options);
     }
     if (proposal?.veto !== undefined) return settleSynthetic(call.args, proposal.veto, 'vetoed');
     if (proposal !== undefined) validation = validateExecutableToolArgs(call.tool, proposal.args);
@@ -550,7 +553,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       execution = await awaitToolPreparation(() => call.tool.resolveExecution(call.args), admissionSignal);
     } catch (error) {
       if (options.signal.aborted) return settleError(call.args, abortedToolOutput(call.toolName, options.signal), 'aborted');
-      if (options.steerSignal?.aborted === true) return this.prepareSteerSkippedToolCall(call, options);
+      if (skipUnstartedOnInput && options.steerSignal?.aborted === true) return this.prepareSteerSkippedToolCall(call, options);
       const output =
         error instanceof PathSecurityError
           ? error.message
@@ -571,7 +574,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       );
     }
 
-    if (isSignalAborted(options.steerSignal)) {
+    if (skipUnstartedOnInput && isSignalAborted(options.steerSignal)) {
       return this.prepareSteerSkippedToolCall(call, options);
     }
 
@@ -649,7 +652,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       if (options.signal.aborted) {
         return settleError(call.args, abortedToolOutput(call.toolName, options.signal), 'aborted', displayFields);
       }
-      if (isSignalAborted(options.steerSignal)) {
+      if (skipUnstartedOnInput && isSignalAborted(options.steerSignal)) {
         return this.prepareSteerSkippedToolCall(call, options);
       }
       throw error;
@@ -786,7 +789,9 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       };
     }
 
+    const skipUnstartedOnInput = options.skipUnstartedToolsOnInput === true;
     if (
+      skipUnstartedOnInput &&
       options.steerSignal?.aborted === true &&
       options.executionWaits?.[call.toolCall.id] === undefined
     ) {
@@ -823,19 +828,41 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     if (foregroundPolicy === 'detachable_task' && steerSignal !== undefined) {
       steerSignal.addEventListener('abort', detachRegisteredTaskOnSteer, { once: true });
     }
+    const autonomousTimeoutMs = resolveAutonomousForegroundTimeoutMs(
+      foregroundPolicy,
+      execution.foregroundTimeoutMs,
+    );
+    const watchdogController = autonomousTimeoutMs === undefined ? undefined : new AbortController();
+    let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+    if (watchdogController !== undefined && autonomousTimeoutMs !== undefined) {
+      watchdogTimer = setTimeout(() => {
+        watchdogController.abort(
+          new DOMException(
+            timedOutToolOutput(call.toolName, autonomousTimeoutMs),
+            'TimeoutError',
+          ),
+        );
+      }, autonomousTimeoutMs);
+      watchdogTimer.unref?.();
+    }
+    const effectiveSignal =
+      watchdogController === undefined
+        ? signal
+        : AbortSignal.any([signal, watchdogController.signal]);
+
     const wrapperPreBodyController =
-      steerSignal !== undefined && options.executionWaits?.[call.toolCall.id] === undefined
+      skipUnstartedOnInput && steerSignal !== undefined && options.executionWaits?.[call.toolCall.id] === undefined
         ? new AbortController()
         : undefined;
     const abortWrapperOnSignal = (): void => {
-      wrapperPreBodyController?.abort(signal.reason);
+      wrapperPreBodyController?.abort(effectiveSignal.reason);
     };
     const abortWrapperOnSteer = (): void => {
       if (!bodyStarted) wrapperPreBodyController?.abort(steerSignal?.reason);
     };
     if (wrapperPreBodyController !== undefined) {
-      if (signal.aborted) abortWrapperOnSignal();
-      else signal.addEventListener('abort', abortWrapperOnSignal, { once: true });
+      if (effectiveSignal.aborted) abortWrapperOnSignal();
+      else effectiveSignal.addEventListener('abort', abortWrapperOnSignal, { once: true });
       if (steerSignal!.aborted) abortWrapperOnSteer();
       else steerSignal!.addEventListener('abort', abortWrapperOnSteer, { once: true });
     }
@@ -846,14 +873,15 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         toolCallId: call.toolCall.id,
         trace: options.trace,
         metadata,
-        signal,
+        signal: effectiveSignal,
         taskOwnerSignal: options.taskOwnerSignal,
         executionPauseSignal: options.executionPauseSignal,
         executionWait: options.executionWaits?.[call.toolCall.id],
         steerSignal,
+        skipUnstartedToolsOnInput: options.skipUnstartedToolsOnInput,
         foregroundStartedAt,
         onUpdate: (update) => {
-          if (signal.aborted) return;
+          if (effectiveSignal.aborted) return;
           this.dispatchToolProgress(call, update, options);
         },
         onForegroundTaskStart: foregroundPolicy === 'detachable_task'
@@ -867,6 +895,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       const terminal = (executionSignal: AbortSignal): Promise<ExecutableToolResult> => {
         executionSignal.throwIfAborted();
         if (
+          skipUnstartedOnInput &&
           steerSignal?.aborted === true &&
           options.executionWaits?.[call.toolCall.id] === undefined
         ) {
@@ -879,7 +908,8 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         bodyStarted = true;
         steerSignal?.removeEventListener('abort', abortWrapperOnSteer);
         options.onToolBodyStart?.();
-        const bodySignal = executionSignal === wrapperPreBodyController?.signal ? signal : executionSignal;
+        const bodySignal =
+          executionSignal === wrapperPreBodyController?.signal ? effectiveSignal : executionSignal;
         return execution.execute({ ...execContext, signal: bodySignal });
       };
       const extensions = this.extensions?.current;
@@ -888,21 +918,43 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
           sessionId: this.session!.current!.sessionId, agentId: this.agent!.current!.agentId,
           turnId: options.turnId, step: options.step, toolCallId: call.toolCall.id,
           toolName: call.toolName, approvedArgs: frozenExtensionSnapshot(call.args),
-          execContext: { ...execContext, signal: wrapperPreBodyController?.signal ?? signal, metadata: undefined },
+          execContext: { ...execContext, signal: wrapperPreBodyController?.signal ?? effectiveSignal, metadata: undefined },
         }, terminal);
         if (wrapperPreBodyController !== undefined) {
           void wrapperPromise.catch(() => {});
-          rawResult = await abortable(wrapperPromise, wrapperPreBodyController.signal);
+          rawResult = await raceWithAbortGrace(
+            abortable(wrapperPromise, wrapperPreBodyController.signal),
+            effectiveSignal,
+            call.toolName,
+            signal,
+            watchdogController?.signal,
+            autonomousTimeoutMs,
+          );
         } else {
-          rawResult = await wrapperPromise;
+          rawResult = await raceWithAbortGrace(
+            wrapperPromise,
+            effectiveSignal,
+            call.toolName,
+            signal,
+            watchdogController?.signal,
+            autonomousTimeoutMs,
+          );
         }
       } else {
-        rawResult = await raceWithAbortGrace(terminal(signal), signal, call.toolName);
+        rawResult = await raceWithAbortGrace(
+          terminal(effectiveSignal),
+          effectiveSignal,
+          call.toolName,
+          signal,
+          watchdogController?.signal,
+          autonomousTimeoutMs,
+        );
       }
     } catch (error) {
       if (
+        skipUnstartedOnInput &&
         !bodyStarted &&
-        !signal.aborted &&
+        !effectiveSignal.aborted &&
         steerSignal?.aborted === true &&
         options.executionWaits?.[call.toolCall.id] === undefined
       ) {
@@ -920,7 +972,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       }
       if (
         foregroundPolicy === 'steerable_wait' &&
-        !signal.aborted &&
+        !effectiveSignal.aborted &&
         steerSignal?.aborted === true &&
         isAbortError(error)
       ) {
@@ -936,6 +988,20 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
           outcome: 'executed',
         };
       }
+      const timedOut =
+        !signal.aborted &&
+        watchdogController?.signal.aborted === true &&
+        autonomousTimeoutMs !== undefined;
+      if (timedOut) {
+        return {
+          result: makeErrorToolResult(
+            call,
+            call.args,
+            timedOutToolOutput(call.toolName, autonomousTimeoutMs),
+          ).result,
+          outcome: 'executed',
+        };
+      }
       const aborted = isAbortError(error) || signal.aborted;
       const output = aborted
         ? abortedToolOutput(call.toolName, signal)
@@ -945,7 +1011,8 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         outcome: 'executed',
       };
     } finally {
-      signal.removeEventListener('abort', abortWrapperOnSignal);
+      if (watchdogTimer !== undefined) clearTimeout(watchdogTimer);
+      effectiveSignal.removeEventListener('abort', abortWrapperOnSignal);
       steerSignal?.removeEventListener('abort', abortWrapperOnSteer);
       if (foregroundPolicy === 'detachable_task' && steerSignal !== undefined) {
         steerSignal.removeEventListener('abort', detachRegisteredTaskOnSteer);
@@ -1382,6 +1449,11 @@ function isMediaContentPart(part: ContentPart): boolean {
   return part.type === 'image_url' || part.type === 'audio_url' || part.type === 'video_url';
 }
 
+function timedOutToolOutput(toolName: string, timeoutMs: number): string {
+  const seconds = timeoutMs >= 1_000 ? `${Math.round(timeoutMs / 100) / 10}s` : `${timeoutMs}ms`;
+  return `Tool "${toolName}" timed out after ${seconds}`;
+}
+
 function abortedToolOutput(toolName: string, signal: AbortSignal): string {
   if (isUserCancellation(signal.reason)) {
     return `The user manually interrupted "${toolName}" (and anything else running at the same time). This was a deliberate user action, not a system error, timeout, or capacity limit. Do not retry automatically or guess at the cause — wait for the user's next instruction.`;
@@ -1408,18 +1480,30 @@ async function raceWithAbortGrace<Result>(
   executePromise: Promise<Result>,
   signal: AbortSignal,
   toolName: string,
+  callerSignal: AbortSignal = signal,
+  watchdogSignal?: AbortSignal,
+  watchdogTimeoutMs?: number,
 ): Promise<Result> {
   let graceTimer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
 
+  void executePromise.catch(() => {});
+
   const graceSentinel: Promise<Result> = new Promise((resolve) => {
     const armTimer = (): void => {
       graceTimer = setTimeout(() => {
+        const timedOut =
+          !callerSignal.aborted &&
+          watchdogSignal?.aborted === true &&
+          watchdogTimeoutMs !== undefined;
         resolve({
-          output: abortedToolOutput(toolName, signal),
+          output: timedOut
+            ? timedOutToolOutput(toolName, watchdogTimeoutMs)
+            : abortedToolOutput(toolName, callerSignal),
           isError: true,
         } as unknown as Result);
       }, ABORT_GRACE_MS);
+      graceTimer.unref?.();
     };
     if (signal.aborted) {
       armTimer();

@@ -1402,7 +1402,7 @@ function normalizeConfinedPromptOverridePath(rawPath: string): string | undefine
     return undefined;
   }
   const top = parts[0];
-  if (top === 'prompt') return validated;
+  if (top === 'prompt' || top === 'prompts') return validated;
   if (top === 'agents' && parts[1]?.toLowerCase() !== 'builtin') return validated;
   return undefined;
 }

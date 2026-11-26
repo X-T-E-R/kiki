@@ -84,6 +84,7 @@ export function useSubscribeIntentQueue(
   const localQueueRef = useRef<readonly PendingSubscribeIntent[]>([]);
   const mountedRef = useRef(true);
   const settlingRef = useRef(false);
+  const consumedQueryKeyRef = useRef<string | null>(null);
 
   activeRef.current = activeIntent;
   localQueueRef.current = localQueue;
@@ -129,7 +130,13 @@ export function useSubscribeIntentQueue(
   // Scrub `?subscribe=` immediately and enqueue into the local FIFO.
   useEffect(() => {
     const extracted = extractSubscribeQuery(location);
-    if (extracted === null) return;
+    if (extracted === null) {
+      consumedQueryKeyRef.current = null;
+      return;
+    }
+    const queryKey = `${location.pathname}${location.search}`;
+    if (consumedQueryKeyRef.current === queryKey) return;
+    consumedQueryKeyRef.current = queryKey;
     void navigate(extracted.scrubbedTarget, { replace: true });
     if (activeRef.current === null) {
       activeRef.current = extracted.intent;

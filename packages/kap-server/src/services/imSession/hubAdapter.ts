@@ -25,6 +25,7 @@ import {
 
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
 import { ImSendError, mimeAllowed, type ImAdapterFactory, type ImInboundEvent, type ImInboundIdentity, type ImMediaReceipt, type ImOutboundFile, type ImOutboundMedia, type ImOutboundText, type ImSessionAdapter } from './adapter';
+import { resolveOutboundFilename } from './outboundFilename';
 import { segmentText } from './segment';
 import { oneBotIdentityTransport } from './oneBotIdentity';
 import { wechatEndpointAllowed } from './wechatLogin';
@@ -309,10 +310,11 @@ export class HubSessionAdapter implements ImSessionAdapter {
   async sendFile(message: ImOutboundFile): Promise<{ messageId: string; deliveredAs: 'file' | 'image' | 'voice' }> {
     await this.useReplies();
     const kind = message.asVoice ? 'voice' : message.asImage ? 'image' : 'file';
+    const fileFallback = (message as { readonly path?: string }).path ?? kind;
     const sent = await this.dispatch({
       type: 'media',
       target: this.target(message.identity),
-      media: { kind, filename: message.name, mime: message.mediaType, bytes: message.bytes },
+      media: { kind, filename: resolveOutboundFilename(message.name, fileFallback, message.mediaType), mime: message.mediaType, bytes: message.bytes },
     }, message.identity, message.signal);
     if (message.asVoice && sent.error_kind === 'bad_format') throw new Error('bad_format');
     if (sent.error_kind === 'unsupported') throw new Error('unsupported_file');
@@ -334,9 +336,10 @@ export class HubSessionAdapter implements ImSessionAdapter {
     if (!isSessionMediaKind(message.kind)) return { status: 'unsupported', unsupported: [message.kind] };
     await this.useReplies();
     try {
+      const mediaFallback = (message as { readonly path?: string }).path ?? message.kind;
       const sent = await this.dispatch({
         type: 'media', target: this.target(message.identity),
-        media: { kind: message.kind, filename: message.name, mime: message.mediaType, bytes: message.bytes },
+        media: { kind: message.kind, filename: resolveOutboundFilename(message.name, mediaFallback, message.mediaType), mime: message.mediaType, bytes: message.bytes },
       }, message.identity, message.signal);
       return {
         status: sent.status === 'accepted' ? 'delivered' : sent.error_kind === 'unsupported' ? 'unsupported' : sent.status === 'unknown' ? 'unknown' : 'failed',

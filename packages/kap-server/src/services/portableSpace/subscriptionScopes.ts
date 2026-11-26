@@ -15,7 +15,7 @@ export interface SelectableEntity {
   readonly path: string;
   readonly memberUnitIds: readonly string[];
   readonly anchorUnit: SpaceUnit;
-  readonly packageKind: 'single' | 'persona_dir' | 'agent_dir' | 'recipe_dir' | 'recipe_installation';
+  readonly packageKind: 'single' | 'persona_dir' | 'agent_dir' | 'recipe_dir' | 'recipe_installation' | 'plugin_dir';
   readonly packageName?: string;
 }
 
@@ -100,9 +100,21 @@ export function groupUnitsIntoSelectableEntities(units: Units): {
   const agentFolders = new Map<string, [string, SpaceUnit][]>();
   const recipeFolders = new Map<string, [string, SpaceUnit][]>();
   const storeRecipeFolders = new Map<string, [string, SpaceUnit][]>();
+  const pluginFolders = new Map<string, [string, SpaceUnit][]>();
 
   for (const [id, unit] of units) {
-    if (unit.domain === 'personas') {
+    if (unit.domain === 'plugins' && Buffer.isBuffer(unit.value)) {
+      const parts = unit.path.split('/');
+      if (parts.length >= 3 && parts[0] === 'plugins') {
+        const folder = parts[1]!;
+        let list = pluginFolders.get(folder);
+        if (list === undefined) {
+          list = [];
+          pluginFolders.set(folder, list);
+        }
+        list.push([id, unit]);
+      }
+    } else if (unit.domain === 'personas') {
       const parts = unit.path.split('/');
       if (parts.length >= 3 && parts[0] === 'personas') {
         const folder = parts[1]!;
@@ -241,6 +253,26 @@ export function groupUnitsIntoSelectableEntities(units: Units): {
     if (claimed.has(id)) continue;
     const scope = scopeForUnit(unit);
     if (scope === undefined) continue;
+    if (unit.domain === 'plugins' && unit.key[0] === 'plugins' && unit.key[1] !== undefined) {
+      const pluginId = unit.key[1];
+      const bundledMembers = pluginFolders.get(pluginId) ?? [];
+      for (const [memberId] of bundledMembers) claimed.add(memberId);
+      claimed.add(id);
+      const memberUnitIds = [id, ...bundledMembers.map(([memberId]) => memberId)].sort();
+      for (const memberId of memberUnitIds) entityIdByMemberUnitId.set(memberId, id);
+      entities.push({
+        id,
+        scope: 'extensions_search',
+        domain: 'plugins',
+        label: labelForUnit(unit),
+        path: unit.path,
+        memberUnitIds,
+        anchorUnit: unit,
+        packageKind: bundledMembers.length > 0 ? 'plugin_dir' : 'single',
+        ...(bundledMembers.length > 0 ? { packageName: pluginId } : {}),
+      });
+      continue;
+    }
     if (unit.domain === 'recipes' && unit.key[0] === 'installation' && unit.key[1] !== undefined) {
       const installId = unit.key[1];
       const storeMembers = storeRecipeFolders.get(installId) ?? [];

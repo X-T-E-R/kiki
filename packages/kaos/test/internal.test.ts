@@ -127,6 +127,47 @@ describe('BufferedReadable', () => {
 
     expect(source.destroyed).toBe(true);
   });
+
+  it('ends async iteration cleanly without ERR_STREAM_PREMATURE_CLOSE when disposed mid-stream or before iteration', async () => {
+    const rejections: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const source = new PassThrough();
+      const buffered = new BufferedReadable(source);
+      const outputPromise = collectBytes(buffered).then((output) => output.toString('utf8'));
+
+      await defer();
+      source.write('partial');
+      await defer();
+      buffered.destroy();
+
+      await expect(withTimeout(outputPromise, 250)).resolves.toBe('partial');
+
+      const preDisposedSource = new PassThrough();
+      const preDisposed = new BufferedReadable(preDisposedSource);
+      preDisposed.destroy();
+      await expect(withTimeout(collectBytes(preDisposed), 250)).resolves.toEqual(Buffer.alloc(0));
+      await defer();
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  it('still rejects async iteration when destroyed with an explicit error', async () => {
+    const source = new PassThrough();
+    const buffered = new BufferedReadable(source);
+    const boom = new Error('explicit destroy failure');
+    const outputPromise = collectBytes(buffered);
+
+    await defer();
+    buffered.destroy(boom);
+
+    await expect(withTimeout(outputPromise, 250)).rejects.toBe(boom);
+  });
 });
 
 describe('decodeTextWithErrors', () => {

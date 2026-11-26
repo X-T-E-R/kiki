@@ -118,8 +118,15 @@ describe('native WebSearch zero-configuration contract', () => {
     expect(result.output).toMatch(/Title: .+\n(?:.*\n)*URL: https?:\/\//);
   }, 35_000);
 
-  it('releases sync WebSearch immediately when steerSignal aborts', async () => {
-    const searchSpy = vi.spyOn(ix.get(INbSearchService), 'search').mockImplementation((_input, options) => new Promise((_resolve, reject) => {
+  it('completes sync WebSearch on steerSignal by default and releases early only when skipUnstartedToolsOnInput is true', async () => {
+    let resolveDefault!: (value: Awaited<ReturnType<INbSearchService['search']>>) => void;
+    let defaultSignalAborted = false;
+    const searchSpy = vi.spyOn(ix.get(INbSearchService), 'search').mockImplementationOnce((_input, options) => new Promise((resolve) => {
+      resolveDefault = resolve;
+      options?.signal?.addEventListener('abort', () => {
+        defaultSignalAborted = true;
+      }, { once: true });
+    })).mockImplementationOnce((_input, options) => new Promise((_resolve, reject) => {
       options?.signal?.addEventListener('abort', () => {
         const error = new Error('steered');
         error.name = 'AbortError';
@@ -127,6 +134,35 @@ describe('native WebSearch zero-configuration contract', () => {
       }, { once: true });
     }));
     try {
+      const defaultSteer = new AbortController();
+      const defaultExec = await ix.get(IWebSearchTool).resolveExecution({ query: 'finish search' });
+      if (defaultExec.isError) throw new Error(String(defaultExec.output));
+      const defaultPending = defaultExec.execute({
+        turnId: 0,
+        toolCallId: 'search-default-steer',
+        signal: new AbortController().signal,
+        steerSignal: defaultSteer.signal,
+      });
+      defaultSteer.abort(new Error('send now'));
+      await Promise.resolve();
+      expect(defaultSignalAborted).toBe(false);
+      resolveDefault({
+        schema: 'nb-search.search-envelope@1',
+        action: 'run',
+        execution: 'sync',
+        status: 'succeeded',
+        output: {
+          schema: 'nb-search.results@1',
+          channel: 'results',
+          results: [{ title: 'Completed Result', url: 'https://example.test/result', snippet: 'done' }],
+          lane_outcomes: [],
+        },
+      } as unknown as Awaited<ReturnType<INbSearchService['search']>>);
+      expect(await defaultPending).toMatchObject({
+        isError: false,
+        output: expect.stringContaining('Completed Result'),
+      });
+
       const steer = new AbortController();
       const execution = await ix.get(IWebSearchTool).resolveExecution({ query: 'slow search' });
       if (execution.isError) throw new Error(String(execution.output));
@@ -135,6 +171,7 @@ describe('native WebSearch zero-configuration contract', () => {
         toolCallId: 'search-steer',
         signal: new AbortController().signal,
         steerSignal: steer.signal,
+        skipUnstartedToolsOnInput: true,
       });
       steer.abort(new Error('send now'));
       expect(await pending).toMatchObject({

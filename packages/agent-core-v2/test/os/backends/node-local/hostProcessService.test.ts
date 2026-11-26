@@ -1293,4 +1293,32 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
       await new Promise<void>((resolveClose) => { server.close(() => { resolveClose(); }); });
     }
   });
+
+  it('aborts or times out Windows helper pipe handshake when a helper stalls before ready', async () => {
+    const missingPipe = `kiki-never-opens-${randomUUID()}`;
+    await expect(
+      connectWindowsHelperPipe(missingPipe, { pid: process.pid, exitCode: null, signalCode: null }, 60),
+    ).rejects.toThrow(/timed out/i);
+
+    const abortController = new AbortController();
+    const pendingPipe = connectWindowsHelperPipe(
+      `kiki-abort-pipe-${randomUUID()}`,
+      { pid: process.pid, exitCode: null, signalCode: null },
+      10_000,
+      undefined,
+      abortController.signal,
+    );
+    abortController.abort(new DOMException('helper handshake cancelled', 'AbortError'));
+    await expect(pendingPipe).rejects.toThrow(/cancelled|aborted/i);
+
+    const launchAbort = new AbortController();
+    vi.stubEnv('KIKI_WINDOWS_PROCESS_HELPER', process.execPath);
+    const stalledLaunch = spawnOwned(
+      process.execPath,
+      ['-e', 'setTimeout(()=>{}, 30000)'],
+      { ownedProcessLifetime: 'owner', signal: launchAbort.signal },
+    );
+    setTimeout(() => { launchAbort.abort(new DOMException('stalled helper launch aborted', 'AbortError')); }, 40);
+    await expect(stalledLaunch).rejects.toMatchObject({ code: 'os.process.spawn_failed' });
+  });
 });

@@ -152,4 +152,61 @@ describe('installErrorHandler (catch-all)', () => {
     expect(env.code).toBe(ErrorCode.INTERNAL_ERROR);
     expect(env.details).toBeUndefined();
   });
+
+  it('skips mutating headers or sending a duplicate response when reply is already sent or destroyed, and logs DOMException names instead of numeric codes', () => {
+    type HandlerFn = Parameters<Parameters<typeof installErrorHandler>[0]['setErrorHandler']>[0];
+    let handler: HandlerFn | undefined;
+    installErrorHandler({
+      setErrorHandler(fn) {
+        handler = fn;
+      },
+    });
+    expect(handler).toBeDefined();
+
+    for (const finalized of [
+      { sent: true, raw: { destroyed: false, writableEnded: false, headersSent: true } },
+      { sent: false, raw: { destroyed: false, writableEnded: true, headersSent: true } },
+      { sent: false, raw: { destroyed: true, writableEnded: true, headersSent: true } },
+    ]) {
+      const errorLogs: Array<{ meta: unknown; msg?: string }> = [];
+      let sendCalls = 0;
+      let headerMutations = 0;
+      handler!(
+        new DOMException('operation timed out', 'TimeoutError') as unknown as Parameters<HandlerFn>[0],
+        {
+          id: 'req-finalized',
+          log: {
+            error: (meta, msg) => errorLogs.push({ meta, msg }),
+            debug: () => {},
+          },
+        },
+        {
+          ...finalized,
+          type() {
+            headerMutations += 1;
+            return this;
+          },
+          serializer() {
+            return this;
+          },
+          removeHeader() {
+            headerMutations += 1;
+            return this;
+          },
+          status() {
+            return this;
+          },
+          send() {
+            sendCalls += 1;
+            throw new Error('Reply was already sent');
+          },
+        } as unknown as Parameters<HandlerFn>[2],
+      );
+      expect(sendCalls).toBe(0);
+      expect(headerMutations).toBe(0);
+      expect(errorLogs).toEqual([
+        { meta: { error_type: 'TimeoutError', request_id: 'req-finalized' }, msg: 'unhandled error' },
+      ]);
+    }
+  });
 });

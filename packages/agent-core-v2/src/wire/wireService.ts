@@ -1,15 +1,20 @@
 import { createHash, randomUUID, type Hash } from 'node:crypto';
 
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
+import { abortable } from '#/_base/utils/abort';
 import { Service } from '#/_base/di/service';
 import { ILogService } from '#/_base/log/log';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
+import { CpuWorkerError } from '#/app/cpuWorker/host';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { ContentPart } from '#/kosong/contract/message';
 import {
+  AppendLogCorruptedError,
   type AppendLogTruncation,
   type AppendLogSourceRevision,
   IAppendLogStore,
@@ -17,9 +22,21 @@ import {
 import { coldManifestKey, logicalByteSize, readLogicalBytes } from '#/persistence/coldSegmentLog';
 import { IFileSystemStorageService, StorageError, StorageErrors, type StorageReadRange } from '#/persistence/interface/storage';
 
-import { IWireService, JOURNAL_BOUNDARY_HASH_BYTES, JOURNAL_HEAD_HASH_BYTES, JournalTailUnreadableError, type WireJournalIdentity, type WireJournalReadOptions } from './wire';
+import {
+  IWireService,
+  JOURNAL_BOUNDARY_HASH_BYTES,
+  JOURNAL_HEAD_HASH_BYTES,
+  JournalTailUnreadableError,
+  type WireJournalIdentity,
+  type WireJournalProgress,
+  type WireJournalReadOptions,
+} from './wire';
 import { WireError, WireErrors } from './errors';
 import { repairWireJournal } from './repair';
+import {
+  readWorkerJournalBatches,
+  WORKER_JOURNAL_REPLAY_MIN_BYTES,
+} from './workerJournalReader';
 import {
   WIRE_PROTOCOL_VERSION,
   isNewerWireVersion,
@@ -105,6 +122,7 @@ export class WireService extends Service implements IWireService {
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @ILogService private readonly logger: ILogService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
+    @ref(ICpuWorkerService) private readonly cpuWorkers?: LiveRef<ICpuWorkerService>,
   ) {
     super();
     this.wireScope = scopeContext.scope();
@@ -211,8 +229,21 @@ export class WireService extends Service implements IWireService {
       if (this.transcriptEpoch?.state !== 'open') throw new Error('Transcript epoch is not open');
     }
     const reanchor = digest === undefined && await this.appendedRegionMatches();
-    digest ??= await this.readUnverifiedTail();
-    if (digest === undefined) throw new Error('Transcript wire changed while sealing its epoch');
+    for (let attempt = 0; attempt < 3 && digest === undefined; attempt += 1) {
+      if (attempt > 0) await this.flush();
+      if (this.transcriptEpoch?.state !== 'open') throw new Error('Transcript epoch is not open');
+      digest = await this.readUnverifiedTail();
+    }
+    if (digest === undefined) {
+      this.verifiedAcceptedRecords = -1;
+      if (this.transcriptEpoch?.state === 'open') {
+        this.transcriptEpoch = { ...this.transcriptEpoch, state: 'sealed', trusted: false };
+      }
+      this.logger.warn('Transcript wire changed while sealing its epoch; skipping sealed receipt', {
+        scope: this.wireScope,
+      });
+      return;
+    }
     const open = this.transcriptEpoch;
     if (open?.state !== 'open') throw new Error('Transcript epoch is not open');
     const certified = open.trusted && !reanchor && this.transcriptDigestMatches(digest.state, this.epochAcceptedRecords);
@@ -316,33 +347,27 @@ export class WireService extends Service implements IWireService {
 
   async *readJournal(options?: WireJournalReadOptions): AsyncIterable<WireRecord> {
     const signal = options?.signal;
+    const onProgress = options?.onProgress;
     signal?.throwIfAborted();
     if (options?.startByte !== undefined && options.startByte > 0) {
-      for await (const record of this.readJournalTail(options.startByte)) {
+      for await (const record of this.readJournalTail(options.startByte, signal, onProgress)) {
         signal?.throwIfAborted();
         yield record;
       }
       return;
     }
     let truncation: AppendLogTruncation | undefined;
-    const source = this.log.read<WireRecord>(this.wireScope, AGENT_WIRE_RECORD_KEY, {
-      signal,
-      onTruncate: (info) => {
-        truncation = info;
-      },
-    });
     let migrations: readonly WireMigration[] = [];
     let rewrittenRecords: WireRecord[] | undefined;
     let newerWireVersion = false;
     let recordIndex = 0;
     let hasRecords = false;
 
-    for await (const candidate of source) {
-      const sourceRecord: unknown = candidate;
+    const acceptSourceRecord = (sourceRecord: unknown): WireRecord | undefined => {
       if (!isWireRecord(sourceRecord)) {
         this.reportSkippedRecord(undefined, recordIndex, true);
         recordIndex++;
-        continue;
+        return undefined;
       }
       if (!hasRecords) {
         hasRecords = true;
@@ -364,16 +389,111 @@ export class WireService extends Service implements IWireService {
           }
         }
       }
-
       const migratedRecord = migrateWireRecord(sourceRecord, migrations);
       const record =
         !newerWireVersion && migratedRecord.type === 'metadata'
           ? { ...migratedRecord, protocol_version: WIRE_PROTOCOL_VERSION }
           : migratedRecord;
       rewrittenRecords?.push(record);
-      yield record;
       if (record.type !== 'metadata') {
         recordIndex++;
+      }
+      return record;
+    };
+
+    const workers = this.cpuWorkers?.current;
+    let usedWorker = false;
+    if (workers !== undefined) {
+      const flushChain = (this.persistQueue ?? Promise.resolve()).then(() =>
+        this.log.flush(this.wireScope, AGENT_WIRE_RECORD_KEY),
+      );
+      await (signal === undefined ? flushChain : abortable(flushChain, signal));
+      signal?.throwIfAborted();
+      const size = (await this.journalSize()) ?? 0;
+      if (size >= WORKER_JOURNAL_REPLAY_MIN_BYTES) {
+        usedWorker = true;
+        try {
+          for await (const batch of readWorkerJournalBatches(
+            (op, opts) => workers.request(op, opts),
+            this.storage,
+            this.wireScope,
+            AGENT_WIRE_RECORD_KEY,
+            0,
+            size,
+            {
+              requireTrailingNewline: false,
+              canCompactPayloads: () => hasRecords && rewrittenRecords === undefined && !newerWireVersion,
+              onFailure: (failure) => {
+                truncation = failure.unterminatedEof
+                  ? { lineNumber: failure.lineNumber, reason: 'truncated' }
+                  : {
+                      lineNumber: failure.lineNumber,
+                      reason: 'corrupted',
+                      cause: new AppendLogCorruptedError(
+                        this.wireScope,
+                        AGENT_WIRE_RECORD_KEY,
+                        failure.lineNumber,
+                        new SyntaxError(failure.message),
+                      ),
+                    };
+              },
+            },
+            signal,
+          )) {
+            for (const entry of batch.entries) {
+              signal?.throwIfAborted();
+              const record = acceptSourceRecord(entry.record);
+              const progress: WireJournalProgress = {
+                byteOffset: entry.endByteOffset,
+                canCheckpoint:
+                  entry.newlineTerminated &&
+                  hasRecords &&
+                  rewrittenRecords === undefined &&
+                  truncation === undefined,
+              };
+              onProgress?.(progress);
+              if (record !== undefined) {
+                yield record;
+              }
+            }
+          }
+        } catch (error) {
+          if (
+            !hasRecords &&
+            error instanceof CpuWorkerError &&
+            (error.code === 'CPU_POOL_CLOSED' || error.code === 'CPU_QUEUE_FULL')
+          ) {
+            usedWorker = false;
+          } else {
+            throw error;
+          }
+        }
+      }
+    }
+
+    if (!usedWorker) {
+      let currentOffset = 0;
+      const source = this.log.read<WireRecord>(this.wireScope, AGENT_WIRE_RECORD_KEY, {
+        signal,
+        onPosition: (pos) => {
+          currentOffset = pos;
+        },
+        onTruncate: (info) => {
+          truncation = info;
+        },
+      });
+      for await (const candidate of source) {
+        const record = acceptSourceRecord(candidate);
+        onProgress?.({
+          byteOffset: currentOffset,
+          canCheckpoint:
+            hasRecords &&
+            rewrittenRecords === undefined &&
+            truncation === undefined,
+        });
+        if (record !== undefined) {
+          yield record;
+        }
       }
     }
 
@@ -646,7 +766,11 @@ export class WireService extends Service implements IWireService {
     for (const listener of this.appendListeners) listener(0);
   }
 
-  private async *readJournalTail(startByte: number): AsyncIterable<WireRecord> {
+  private async *readJournalTail(
+    startByte: number,
+    signal?: AbortSignal,
+    onProgress?: (progress: WireJournalProgress) => void,
+  ): AsyncIterable<WireRecord> {
     if (!Number.isSafeInteger(startByte) || startByte <= 0) throw new JournalTailUnreadableError();
     const size = await this.journalSize() ?? 0;
     if (startByte > size) throw new JournalTailUnreadableError();
@@ -659,8 +783,52 @@ export class WireService extends Service implements IWireService {
     }
     if (marker !== 0x0a) throw new JournalTailUnreadableError();
     if (startByte === size) return;
+    const workers = this.cpuWorkers?.current;
+    if (workers !== undefined && size - startByte >= WORKER_JOURNAL_REPLAY_MIN_BYTES) {
+      let failed = false;
+      let yieldedAny = false;
+      try {
+        for await (const batch of readWorkerJournalBatches(
+          (op, opts) => workers.request(op, opts),
+          this.storage,
+          this.wireScope,
+          AGENT_WIRE_RECORD_KEY,
+          startByte,
+          size,
+          {
+            requireTrailingNewline: true,
+            canCompactPayloads: () => true,
+            onFailure: () => {
+              failed = true;
+            },
+          },
+          signal,
+        )) {
+          for (const entry of batch.entries) {
+            signal?.throwIfAborted();
+            if (!isWireRecord(entry.record)) throw new JournalTailUnreadableError();
+            yieldedAny = true;
+            onProgress?.({ byteOffset: entry.endByteOffset, canCheckpoint: entry.newlineTerminated });
+            yield entry.record;
+          }
+        }
+        if (failed) throw new JournalTailUnreadableError();
+        return;
+      } catch (error) {
+        if (
+          !yieldedAny &&
+          error instanceof CpuWorkerError &&
+          (error.code === 'CPU_POOL_CLOSED' || error.code === 'CPU_QUEUE_FULL')
+        ) {
+          // oxlint-disable-next-line no-empty
+        } else {
+          throw error;
+        }
+      }
+    }
     let pendingChunks: Uint8Array[] = [];
     let pendingBytes = 0;
+    let byteOffset = startByte;
     const parseWireLine = (line: string): WireRecord => {
       let parsed: unknown;
       try {
@@ -685,25 +853,33 @@ export class WireService extends Service implements IWireService {
           continue;
         }
         const head = chunk.subarray(0, firstNewline);
+        const consumed = pendingBytes + head.byteLength + 1;
         pendingChunks.push(head);
         const merged = Buffer.concat(pendingChunks, pendingBytes + head.byteLength);
         pendingChunks = [];
         pendingBytes = 0;
         cursor = firstNewline + 1;
+        byteOffset += consumed;
         const trimEnd = merged.byteLength > 0 && merged[merged.byteLength - 1] === 0x0d ? merged.byteLength - 1 : merged.byteLength;
         if (trimEnd > 0) {
-          yield parseWireLine(merged.toString('utf8', 0, trimEnd));
+          const parsed = parseWireLine(merged.toString('utf8', 0, trimEnd));
+          onProgress?.({ byteOffset, canCheckpoint: true });
+          yield parsed;
         }
       }
       let newline = chunk.indexOf(0x0a, cursor);
       while (newline !== -1) {
+        const consumed = newline - cursor + 1;
         const trimEnd = newline > cursor && chunk[newline - 1] === 0x0d ? newline - 1 : newline;
         const lineLen = trimEnd - cursor;
         const lineStart = cursor;
         cursor = newline + 1;
+        byteOffset += consumed;
         if (lineLen > 0) {
           const lineBuf = Buffer.from(chunk.buffer, chunk.byteOffset + lineStart, lineLen);
-          yield parseWireLine(lineBuf.toString('utf8'));
+          const parsed = parseWireLine(lineBuf.toString('utf8'));
+          onProgress?.({ byteOffset, canCheckpoint: true });
+          yield parsed;
         }
         newline = chunk.indexOf(0x0a, cursor);
       }

@@ -1,95 +1,53 @@
 /**
- * SelectionQuoteButton — one floating annotation entry above a transcript text
- * selection. Activating it immediately creates a sourced composer item with an
- * empty comment, then opens the comment editor. Enter, Escape and light dismiss
- * only close that editor: the item and every keystroke already belong to the
- * composer, so ignoring the input never cancels the reference.
+ * SelectionQuoteButton — floating `@base-ui/react/popover` annotation trigger &
+ * shared multiline editor above a transcript text selection.
  *
- * Behavior contract (mirrors aionui's SelectionReplyButton, minus Shadow DOM
- * concerns — this app is a plain DOM tree):
- *   - Shows on mouseup when the selection is non-empty and fully inside the
- *     transcript container.
- *   - Hides on selection collapse, scroll, Escape, or a mousedown anywhere else.
- *   - Never renders on coarse-pointer (touch) devices.
- *   - The entry pill never steals the selection: its mousedown is prevented,
- *     while the comment input keeps the default mousedown so the caret works.
+ * Activating the entry pill immediately creates a sourced composer annotation
+ * item with an empty comment, then opens the shared `AnnotationEditorPopover`
+ * (multiline auto-wrapping `<textarea>`, focus-expand / blur-compress, and
+ * explicit `删除` + `保存` actions).
  */
 
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { Popover } from '@base-ui/react/popover';
 
 import {
   isCoarsePointer,
   selectionAnchorRect,
-  selectionTextWithin,
+  selectionQuotableTextWithin,
   selectionSourceAnchor,
   type SelectionSourceAnchor,
 } from '@kiki/session-core/composer';
 import { useI18n } from '../i18n';
+import { floatingSurfaceZIndex } from '../lib/uiBusy';
 import { unzoomedRect, unzoomedViewport } from '../lib/uiZoom';
+import { AnnotationEditorPopover, type AnnotationAnchorRect } from './AnnotationPopover';
 import { Icon } from './icons';
-
-const PILL_HEIGHT = 32;
-const PILL_WIDTH = 112;
-const INPUT_WIDTH = 288;
-const INPUT_HEIGHT = 104;
-const GAP = 6;
-const VIEWPORT_MARGIN = 8;
-const MAX_TEXTAREA_HEIGHT = 120;
-
-interface AnchorRect {
-  readonly top: number;
-  readonly bottom: number;
-  readonly left: number;
-  readonly right: number;
-}
 
 type Target = {
   readonly text: string;
   readonly source: SelectionSourceAnchor | null;
-  readonly anchor: AnchorRect;
-  readonly top: number;
-  readonly left: number;
+  readonly anchor: AnnotationAnchorRect;
 };
 type Mode = 'actions' | 'annotate';
 
-function clampPopoverPosition(
-  anchor: AnchorRect,
-  boxWidth: number,
-  boxHeight: number,
-  viewport: { readonly width: number; readonly height: number },
-): { readonly top: number; readonly left: number } {
-  const maxAvailableWidth = Math.max(0, viewport.width - VIEWPORT_MARGIN * 2);
-  const effectiveWidth = Math.min(boxWidth, maxAvailableWidth);
-  const maxLeft = Math.max(VIEWPORT_MARGIN, viewport.width - effectiveWidth - VIEWPORT_MARGIN);
-  const left = Math.min(Math.max(anchor.left, VIEWPORT_MARGIN), maxLeft);
-
-  const maxTop = Math.max(VIEWPORT_MARGIN, viewport.height - boxHeight - VIEWPORT_MARGIN);
-  const aboveTop = anchor.top - boxHeight - GAP;
-  const belowTop = anchor.bottom + GAP;
-  let top: number;
-  if (aboveTop >= VIEWPORT_MARGIN) {
-    top = aboveTop;
-  } else if (belowTop + boxHeight <= viewport.height - VIEWPORT_MARGIN) {
-    top = belowTop;
-  } else {
-    const roomAbove = anchor.top - VIEWPORT_MARGIN;
-    const roomBelow = viewport.height - VIEWPORT_MARGIN - anchor.bottom;
-    top = roomBelow >= roomAbove ? belowTop : aboveTop;
-  }
-  top = Math.min(Math.max(top, VIEWPORT_MARGIN), maxTop);
-  return { top, left };
-}
+const ANNOTATE_POPUP_ATTRS = {
+  'data-selection-quote': '',
+  'data-selection-annotate': '',
+} as const;
 
 export function SelectionQuoteButton({
   containerRef,
   onAnnotate,
   onUpdateAnnotation,
+  onRemoveAnnotation,
 }: {
   /** The transcript container; a selection must live fully inside it. */
   containerRef: RefObject<HTMLElement | null>;
   /** Create the item immediately and return its stable id for comment updates. */
   onAnnotate: (text: string, comment: string, source?: SelectionSourceAnchor | null) => string;
   onUpdateAnnotation: (id: string, comment: string) => void;
+  onRemoveAnnotation?: (id: string) => void;
 }) {
   const { t } = useI18n();
   const [coarse] = useState(() => isCoarsePointer());
@@ -101,20 +59,19 @@ export function SelectionQuoteButton({
   targetRef.current = target;
   const modeRef = useRef(mode);
   modeRef.current = mode;
-  const composingRef = useRef(false);
+  const lastSyncedCommentRef = useRef('');
   const annotationIdRef = useRef<string | null>(null);
   const anchorRangeRef = useRef<Range | null>(null);
-  const popoverRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const pillPopupRef = useRef<HTMLDivElement | null>(null);
 
   const close = () => {
     setVisible(false);
     setTarget(null);
     setMode('actions');
     setComment('');
+    lastSyncedCommentRef.current = '';
     annotationIdRef.current = null;
     anchorRangeRef.current = null;
-    composingRef.current = false;
   };
   const closeRef = useRef(close);
   closeRef.current = close;
@@ -125,36 +82,41 @@ export function SelectionQuoteButton({
       if (modeRef.current === 'annotate') return;
       const container = containerRef.current;
       const selection = window.getSelection();
-      const text = container === null || selection === null ? null : selectionTextWithin(container, selection);
+      const text = container === null || selection === null ? null : selectionQuotableTextWithin(container, selection);
       const rawRect = text === null || selection === null ? null : selectionAnchorRect(selection);
       if (text === null || rawRect === null || selection === null) {
         closeRef.current();
         return;
       }
       const rect = unzoomedRect(rawRect);
-      const anchor: AnchorRect = {
-        top: rect.top,
-        bottom: rect.bottom,
-        left: rect.left,
-        right: rect.right,
-      };
       const viewport = unzoomedViewport();
-      const pos = clampPopoverPosition(anchor, PILL_WIDTH, PILL_HEIGHT, viewport);
+      if (rect.bottom < 0 || rect.top > viewport.height) {
+        closeRef.current();
+        return;
+      }
+      const clampedTop = Math.max(12, Math.min(viewport.height - 12, rect.top));
+      const clampedBottom = Math.max(clampedTop, Math.min(viewport.height - 12, rect.bottom));
+      const clampedLeft = Math.max(12, Math.min(viewport.width - 12, rect.left));
+      const clampedRight = Math.max(clampedLeft, Math.min(viewport.width - 12, rect.right));
+      const anchor: AnnotationAnchorRect = {
+        top: clampedTop,
+        bottom: clampedBottom,
+        left: clampedLeft,
+        right: clampedRight,
+      };
       anchorRangeRef.current = selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null;
       setTarget({
         text,
         source: selectionSourceAnchor(selection),
         anchor,
-        top: pos.top,
-        left: pos.left,
       });
       setVisible(true);
     };
-    const repositionAnnotate = () => {
+
+    const refreshAnnotateAnchor = () => {
       const current = targetRef.current;
       if (current === null) return;
       const viewport = unzoomedViewport();
-      let anchor = current.anchor;
       const range = anchorRangeRef.current;
       if (range !== null && range.startContainer.isConnected && typeof range.getBoundingClientRect === 'function') {
         const rawRect = range.getBoundingClientRect();
@@ -164,28 +126,28 @@ export function SelectionQuoteButton({
             closeRef.current();
             return;
           }
-          anchor = { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
+          const nextAnchor: AnnotationAnchorRect = {
+            top: rect.top,
+            bottom: rect.bottom,
+            left: rect.left,
+            right: rect.right,
+          };
+          setTarget((previous) => {
+            if (previous === null) return null;
+            if (
+              previous.anchor.top === nextAnchor.top &&
+              previous.anchor.bottom === nextAnchor.bottom &&
+              previous.anchor.left === nextAnchor.left &&
+              previous.anchor.right === nextAnchor.right
+            ) {
+              return previous;
+            }
+            return { ...previous, anchor: nextAnchor };
+          });
         }
       }
-      const box = popoverRef.current?.getBoundingClientRect();
-      const width = box !== undefined && box.width > 0 ? unzoomedRect(box).width : INPUT_WIDTH;
-      const height = box !== undefined && box.height > 0 ? unzoomedRect(box).height : INPUT_HEIGHT;
-      const pos = clampPopoverPosition(anchor, width, height, viewport);
-      setTarget((previous) => {
-        if (previous === null) return null;
-        if (
-          previous.top === pos.top &&
-          previous.left === pos.left &&
-          previous.anchor.top === anchor.top &&
-          previous.anchor.bottom === anchor.bottom &&
-          previous.anchor.left === anchor.left &&
-          previous.anchor.right === anchor.right
-        ) {
-          return previous;
-        }
-        return { ...previous, anchor, top: pos.top, left: pos.left };
-      });
     };
+
     const onMouseUp = () => { evaluate(); };
     const onSelectionChange = () => {
       if (modeRef.current === 'annotate') return;
@@ -193,8 +155,9 @@ export function SelectionQuoteButton({
       if (selection === null || selection.isCollapsed) closeRef.current();
     };
     const onMouseDown = (event: MouseEvent) => {
-      const popover = popoverRef.current;
-      if (popover !== null && event.target instanceof Node && popover.contains(event.target)) return;
+      if (modeRef.current === 'annotate') return;
+      const pill = pillPopupRef.current;
+      if (pill !== null && event.target instanceof Node && pill.contains(event.target)) return;
       if (targetRef.current !== null) closeRef.current();
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -203,9 +166,10 @@ export function SelectionQuoteButton({
       closeRef.current();
     };
     const onScroll = (event: Event) => {
-      const popover = popoverRef.current;
-      if (popover !== null && event.target instanceof Node && popover.contains(event.target)) return;
       const scrollTarget = event.target;
+      if (scrollTarget instanceof HTMLElement && scrollTarget.closest('[data-annotation-panel]') !== null) {
+        return;
+      }
       const container = containerRef.current;
       if (
         scrollTarget !== window &&
@@ -221,10 +185,10 @@ export function SelectionQuoteButton({
         closeRef.current();
         return;
       }
-      repositionAnnotate();
+      refreshAnnotateAnchor();
     };
     const onResize = () => {
-      if (modeRef.current === 'annotate') repositionAnnotate();
+      if (modeRef.current === 'annotate') refreshAnnotateAnchor();
       else if (targetRef.current !== null) closeRef.current();
     };
     document.addEventListener('mouseup', onMouseUp);
@@ -243,110 +207,107 @@ export function SelectionQuoteButton({
     };
   }, [coarse, containerRef]);
 
-  useEffect(() => {
-    if (mode === 'annotate' && visible) inputRef.current?.focus();
-  }, [mode, visible]);
-
-  useLayoutEffect(() => {
-    if (mode !== 'annotate' || !visible) return;
-    const area = inputRef.current;
-    if (area !== null) {
-      area.style.height = 'auto';
-      if (area.scrollHeight > 0) {
-        area.style.height = `${Math.min(area.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
-      }
-    }
-    const popover = popoverRef.current;
-    const current = targetRef.current;
-    if (popover === null || current === null) return;
-    const rawBox = popover.getBoundingClientRect();
-    if (rawBox.width <= 0 || rawBox.height <= 0) return;
-    const box = unzoomedRect(rawBox);
-    const pos = clampPopoverPosition(current.anchor, box.width, box.height, unzoomedViewport());
-    if (pos.top !== current.top || pos.left !== current.left) {
-      setTarget((previous) => (previous === null ? null : { ...previous, top: pos.top, left: pos.left }));
-    }
-  }, [mode, visible, comment]);
+  const anchor = target?.anchor;
+  const virtualAnchor = useMemo(
+    () => ({
+      getBoundingClientRect: () => ({
+        x: anchor?.left ?? 0,
+        y: anchor?.top ?? 0,
+        top: anchor?.top ?? 0,
+        left: anchor?.left ?? 0,
+        bottom: anchor?.bottom ?? 0,
+        right: anchor?.right ?? 0,
+        width: Math.max(1, (anchor?.right ?? 0) - (anchor?.left ?? 0)),
+        height: Math.max(1, (anchor?.bottom ?? 0) - (anchor?.top ?? 0)),
+        toJSON: () => ({}),
+      }),
+    }),
+    [anchor?.bottom, anchor?.left, anchor?.right, anchor?.top],
+  );
 
   if (target === null || !visible) return null;
 
   if (mode === 'annotate') {
     return (
-      <div
-        ref={popoverRef}
-        data-selection-quote
-        data-selection-annotate
-        className="anim-enter fixed z-50 w-[min(18rem,calc(100%-16px))] rounded-xl border border-hairline bg-panel p-2 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.35)]"
-        style={{ top: target.top, left: target.left }}
-        onMouseDown={(event) => {
-          if (event.target !== inputRef.current) event.preventDefault();
+      <AnnotationEditorPopover
+        anchor={target.anchor}
+        side="top"
+        quote={target.text}
+        comment={comment}
+        placeholder={t('composer.annotationPlaceholder')}
+        panelAriaLabel={t('transcript.annotation.panelAria')}
+        inputAriaLabel={t('composer.annotateSelection')}
+        alwaysEnableSave
+        selectionInputAttr
+        popupDataAttrs={ANNOTATE_POPUP_ATTRS}
+        onLiveChange={(nextComment) => {
+          setComment(nextComment);
+          const id = annotationIdRef.current;
+          if (id !== null) {
+            lastSyncedCommentRef.current = nextComment;
+            onUpdateAnnotation(id, nextComment);
+          }
         }}
-      >
-        <p className="mb-1.5 max-h-8 overflow-hidden border-l-2 border-accent/60 pl-1.5 text-[11px] leading-snug whitespace-pre-wrap text-ink-soft">
-          {target.text}
-        </p>
-        <textarea
-          ref={inputRef}
-          rows={1}
-          data-selection-annotate-input
-          value={comment}
-          placeholder={t('composer.annotationPlaceholder')}
-          aria-label={t('composer.annotateSelection')}
-          onChange={(event) => {
-            const nextComment = event.target.value;
-            setComment(nextComment);
-            const id = annotationIdRef.current;
-            if (id !== null) onUpdateAnnotation(id, nextComment);
-          }}
-          onCompositionStart={() => { composingRef.current = true; }}
-          onCompositionEnd={() => { composingRef.current = false; }}
-          onKeyDown={(event) => {
-            event.stopPropagation();
-            const nativeEvent = event.nativeEvent;
-            const imeActive = composingRef.current || nativeEvent.isComposing || nativeEvent.keyCode === 229;
-            if ((event.key === 'Enter' || event.key === 'Escape') && imeActive) return;
-            if (event.key === 'Enter' && event.shiftKey) return;
-            if (event.key === 'Enter' || event.key === 'Escape') {
-              event.preventDefault();
-              window.getSelection()?.removeAllRanges();
-              close();
-            }
-          }}
-          className="min-h-9 max-h-[120px] w-full resize-none overflow-y-auto rounded-md border border-hairline bg-paper px-2 py-1.5 text-[12px] leading-snug text-ink outline-none placeholder:text-ink-faint focus:border-accent focus:ring-2 focus:ring-selected-ink/20"
-        />
-      </div>
+        onSave={(trimmed) => {
+          const id = annotationIdRef.current;
+          if (id !== null && trimmed !== lastSyncedCommentRef.current) {
+            lastSyncedCommentRef.current = trimmed;
+            onUpdateAnnotation(id, trimmed);
+          }
+        }}
+        onRemove={() => {
+          const id = annotationIdRef.current;
+          if (id !== null) onRemoveAnnotation?.(id);
+        }}
+        onClose={() => {
+          window.getSelection()?.removeAllRanges();
+          close();
+        }}
+      />
     );
   }
 
+  const zIndex = floatingSurfaceZIndex(null);
+
   return (
-    <div
-      ref={popoverRef}
-      data-selection-quote
-      className="anim-enter fixed z-50 flex items-center overflow-hidden rounded-full border border-hairline bg-panel text-[12px] font-normal text-ink-soft shadow-[0_8px_24px_-10px_rgba(28,25,23,0.35)]"
-      style={{ top: target.top, left: target.left }}
-      onMouseDown={(event) => { event.preventDefault(); }}
-    >
-      <button
-        type="button"
-        data-selection-annotate-action
-        className="flex min-h-8 items-center gap-1.5 px-3 py-1 transition-colors hover:text-amber-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-        onClick={() => {
-          const id = onAnnotate(target.text, '', target.source);
-          annotationIdRef.current = id;
-          setComment('');
-          const pos = clampPopoverPosition(target.anchor, INPUT_WIDTH, INPUT_HEIGHT, unzoomedViewport());
-          setTarget({
-            ...target,
-            top: pos.top,
-            left: pos.left,
-          });
-          setMode('annotate');
-          window.getSelection()?.removeAllRanges();
-        }}
-      >
-        <Icon name="edit" className="text-amber-ink" />
-        {t('composer.annotateSelection')}
-      </button>
-    </div>
+    <Popover.Root open modal={false}>
+      <Popover.Portal>
+        <Popover.Positioner
+          anchor={virtualAnchor}
+          side="top"
+          align="start"
+          sideOffset={6}
+          collisionPadding={12}
+          positionMethod="fixed"
+          style={{ zIndex }}
+        >
+          <Popover.Popup
+            ref={pillPopupRef}
+            initialFocus={false}
+            finalFocus={false}
+            data-selection-quote=""
+            className="anim-enter flex items-center overflow-hidden rounded-full border border-hairline bg-panel text-[12px] font-normal text-ink-soft shadow-lg outline-none"
+            onMouseDown={(event) => { event.preventDefault(); }}
+          >
+            <button
+              type="button"
+              data-selection-annotate-action=""
+              className="flex min-h-8 cursor-pointer items-center gap-1.5 px-3 py-1 transition-colors hover:text-amber-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+              onClick={() => {
+                const id = onAnnotate(target.text, '', target.source);
+                annotationIdRef.current = id;
+                lastSyncedCommentRef.current = '';
+                setComment('');
+                setMode('annotate');
+                window.getSelection()?.removeAllRanges();
+              }}
+            >
+              <Icon name="edit" className="text-amber-ink" />
+              {t('composer.annotateSelection')}
+            </button>
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }

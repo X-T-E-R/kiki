@@ -977,15 +977,19 @@ export function visibleReplyMessages<T extends ReplySelectorMessage>(messages: r
   return selected;
 }
 
+import { resolveOutboundFilename } from './outboundFilename';
+export { resolveOutboundFilename };
+
 async function mediaBytes(part: ContentPart, store: ISessionMediaStore): Promise<ImVisibleMedia | undefined> {
   if (part.type !== 'image_url' && part.type !== 'audio_url' && part.type !== 'video_url') return undefined;
   const ref = part.type === 'image_url' ? part.imageUrl : part.type === 'audio_url' ? part.audioUrl : part.videoUrl;
   const kind = part.type === 'image_url' ? 'image' : part.type === 'audio_url' ? 'audio' : 'file';
   const data = /^data:([^;]+);base64,([\s\S]*)$/u.exec(ref.url);
-  if (data !== null) return { kind, name: ref.name ?? kind, mediaType: data[1]!, bytes: Buffer.from(data[2]!, 'base64') };
+  if (data !== null) return { kind, name: resolveOutboundFilename(ref.name, kind, data[1]!), mediaType: data[1]!, bytes: Buffer.from(data[2]!, 'base64') };
   const daemon = /^kimi-file:\/\/([^?]*)/u.exec(ref.url);
   if (daemon === null) return undefined;
   const file = await store.read(decodeURIComponent(daemon[1] ?? ''));
   if (file === undefined) return undefined;
-  return { kind, name: ref.name ?? file.name, mediaType: ref.mimeType ?? 'application/octet-stream', bytes: file.data };
+  const mediaType = ref.mimeType ?? 'application/octet-stream';
+  return { kind, name: resolveOutboundFilename(ref.name, file.name, mediaType), mediaType, bytes: file.data };
 }

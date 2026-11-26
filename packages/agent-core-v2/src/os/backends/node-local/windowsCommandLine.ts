@@ -98,6 +98,23 @@ export function prepareWindowsSpawn(command: string, args: readonly string[], op
     return { command: shell, args: cmd ? ['/d', '/s', '/c', `"${text}"`] : ['-c', text], options: { ...options, shell: false, windowsVerbatimArguments: cmd } };
   }
   const executable = resolveExecutable(command, cwd, env);
+  if (/(?:^|[\\/])(?:powershell|pwsh)(?:\.exe)?$/i.test(executable) && args.length === 2 && args[0] === '-c') {
+    const wrapped = /^cd '((?:[^']|'\\'')*)' && ([\s\S]*)$/u.exec(args[1] ?? '');
+    if (wrapped !== null) {
+      const targetCwd = wrapped[1]!.replaceAll("'\\''", "'");
+      const script = wrapped[2]!;
+      return {
+        command: executable,
+        args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+        options: { ...options, cwd: targetCwd },
+      };
+    }
+    return {
+      command: executable,
+      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', args[1] ?? ''],
+      options,
+    };
+  }
   if (!/\.(?:cmd|bat)$/i.test(executable)) return { command: executable, args, options };
   const argumentIndex = args.findIndex((arg) => /[\0\r\n]/.test(arg));
   if (argumentIndex !== -1) {

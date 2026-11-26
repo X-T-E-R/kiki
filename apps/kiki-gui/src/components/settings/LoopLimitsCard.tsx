@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useI18n } from '../../i18n';
 import type { KikiConfigPatch } from '../../lib/client';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, SaveStatus } from '../controls';
+import { FeedbackLine, Hint, InlineError, SaveStatus, Toggle } from '../controls';
 import { SectionCard } from './SectionCard';
 import { SettingField, SettingsBox } from './fields';
 import { CommitInput, SettingsSelect } from './SettingsPrimitives';
@@ -12,17 +12,24 @@ import { useInstantSave } from './useInstantSave';
 type ContextStrategy = 'summarize' | 'auto' | 'fresh';
 
 /** The config echo keeps loop_control's inner keys camelCase or snake_case depending on the path. */
-function readLoopLimits(value: unknown): { maxSteps?: number; maxAttempts?: number; subagentStrategy?: ContextStrategy } {
+function readLoopLimits(value: unknown): {
+  maxSteps?: number;
+  maxAttempts?: number;
+  subagentStrategy?: ContextStrategy;
+  skipUnstartedToolsOnInput?: boolean;
+} {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
   const record = value as Record<string, unknown>;
   const pick = (camel: string, snake: string) => record[camel] ?? record[snake];
   const steps = pick('maxStepsPerTurn', 'max_steps_per_turn');
   const attempts = pick('maxAttemptsPerStep', 'max_attempts_per_step');
   const strategy = pick('subagentContextStrategy', 'subagent_context_strategy');
+  const skipUnstarted = pick('skipUnstartedToolsOnInput', 'skip_unstarted_tools_on_input');
   return {
     maxSteps: typeof steps === 'number' ? steps : undefined,
     maxAttempts: typeof attempts === 'number' ? attempts : undefined,
     subagentStrategy: strategy === 'summarize' || strategy === 'auto' || strategy === 'fresh' ? strategy : undefined,
+    skipUnstartedToolsOnInput: typeof skipUnstarted === 'boolean' ? skipUnstarted : undefined,
   };
 }
 
@@ -45,6 +52,7 @@ export function LoopLimitsCard() {
   const queryClient = useQueryClient();
   const steps = useInstantSave();
   const strategy = useInstantSave();
+  const skipUnstarted = useInstantSave();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
   if (configQuery.data === undefined) {
@@ -97,6 +105,18 @@ export function LoopLimitsCard() {
           />
         </SettingField>
         <FeedbackLine feedback={strategy.error} />
+        <SettingField label={t('st.loopLimits.skipUnstartedTools')} help={t('st.loopLimits.skipUnstartedToolsHelp')}>
+          <SaveStatus saving={skipUnstarted.saving} saved={skipUnstarted.saved} />
+          <Toggle
+            layout="bare"
+            dataAttr="data-loop-skip-unstarted-tools"
+            label={t('st.loopLimits.skipUnstartedTools')}
+            checked={loop.skipUnstartedToolsOnInput === true}
+            disabled={skipUnstarted.saving}
+            onChange={(checked) => void skipUnstarted.run(write({ skip_unstarted_tools_on_input: checked }))}
+          />
+        </SettingField>
+        <FeedbackLine feedback={skipUnstarted.error} />
       </SettingsBox>
     </SectionCard>
   );

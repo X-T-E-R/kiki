@@ -1782,45 +1782,89 @@ describe('BashTool background mode', () => {
     });
   });
 
-  it('releases a foreground command queued for a saturated local slot on steer without spawning it', async () => {
+  it('releases a foreground command queued for a saturated local slot on steer without spawning when skipUnstartedToolsOnInput is true, and spawns detached by default', async () => {
     const maxSlots = Math.max(4, Math.min(6, Math.floor(availableParallelism() / 3)));
-    const holders = Array.from({ length: maxSlots }, () => pendingProcess());
-    let spawnCount = 0;
-    const runner: IHostProcessService = {
+    const skipHolders = Array.from({ length: maxSlots }, () => pendingProcess());
+    let skipSpawnCount = 0;
+    const skipRunner: IHostProcessService = {
       _serviceBrand: undefined,
       spawn: vi.fn(async () => {
-        const next = holders[spawnCount];
-        spawnCount += 1;
+        const next = skipHolders[skipSpawnCount];
+        skipSpawnCount += 1;
         return next?.proc ?? pendingProcess().proc;
       }),
     };
-    const { service } = createFakeTaskService();
-    const tool = bashTool(runner, createTestEnv(), createTestCtx(), service);
+    const { service: skipService } = createFakeTaskService();
+    const skipTool = bashTool(
+      skipRunner,
+      createTestEnv(),
+      createTestCtx(),
+      skipService,
+      stubToolPolicy(),
+      stubConfig({ loopControl: { skipUnstartedToolsOnInput: true } }),
+    );
 
-    const activeRuns = holders.map((_, index) =>
-      executeTool(tool, context({ command: `sleep 3${String(index)}`, timeout: 60 })),
+    const skipActiveRuns = skipHolders.map((_, index) =>
+      executeTool(skipTool, context({ command: `sleep 3${String(index)}`, timeout: 60 })),
     );
     await vi.waitFor(() => {
-      expect(spawnCount).toBe(maxSlots);
-      expect(service.list(false)).toHaveLength(maxSlots);
+      expect(skipSpawnCount).toBe(maxSlots);
+      expect(skipService.list(false)).toHaveLength(maxSlots);
     });
 
-    const steer = new AbortController();
-    const queuedRun = executeTool(tool, context({ command: 'echo queued', timeout: 60 }, undefined, undefined, steer.signal));
+    const skipSteer = new AbortController();
+    const skipQueuedRun = executeTool(skipTool, context({ command: 'echo queued', timeout: 60 }, undefined, undefined, skipSteer.signal));
     await Promise.resolve();
-    expect(spawnCount).toBe(maxSlots);
+    expect(skipSpawnCount).toBe(maxSlots);
 
-    steer.abort(new Error('new input'));
-    const queuedResult = await queuedRun;
-    expect(queuedResult.isError).toBe(false);
-    expect(queuedResult.output).toContain('New input arrived before this command started');
-    expect(spawnCount).toBe(maxSlots);
+    skipSteer.abort(new Error('new input'));
+    const skipQueuedResult = await skipQueuedRun;
+    expect(skipQueuedResult.isError).toBe(false);
+    expect(skipQueuedResult.output).toContain('New input arrived before this command started');
+    expect(skipSpawnCount).toBe(maxSlots);
 
-    for (const holder of holders) holder.finish(0);
-    await Promise.all(activeRuns);
+    for (const holder of skipHolders) holder.finish(0);
+    await Promise.all(skipActiveRuns);
+
+    const defaultHolders = Array.from({ length: maxSlots }, () => pendingProcess());
+    const detachedHolder = pendingProcess();
+    let defaultSpawnCount = 0;
+    const defaultRunner: IHostProcessService = {
+      _serviceBrand: undefined,
+      spawn: vi.fn(async () => {
+        const next = defaultHolders[defaultSpawnCount] ?? detachedHolder;
+        defaultSpawnCount += 1;
+        return next.proc;
+      }),
+    };
+    const { service: defaultService } = createFakeTaskService();
+    const defaultTool = bashTool(defaultRunner, createTestEnv(), createTestCtx(), defaultService);
+
+    const defaultActiveRuns = defaultHolders.map((_, index) =>
+      executeTool(defaultTool, context({ command: `sleep 5${String(index)}`, timeout: 60 })),
+    );
+    await vi.waitFor(() => {
+      expect(defaultSpawnCount).toBe(maxSlots);
+      expect(defaultService.list(false)).toHaveLength(maxSlots);
+    });
+
+    const defaultSteer = new AbortController();
+    const defaultQueuedRun = executeTool(defaultTool, context({ command: 'echo queued-default', timeout: 60 }, undefined, undefined, defaultSteer.signal));
+    await Promise.resolve();
+    expect(defaultSpawnCount).toBe(maxSlots);
+
+    defaultSteer.abort(new Error('new input'));
+    const defaultQueuedResult = await defaultQueuedRun;
+    expect(defaultQueuedResult.isError).toBeFalsy();
+    expect(String(defaultQueuedResult.output)).not.toContain('New input arrived before this command started');
+    expect(defaultSpawnCount).toBe(maxSlots + 1);
+
+    detachedHolder.finish(0);
+    for (const holder of defaultHolders) holder.finish(0);
+    await Promise.all(defaultActiveRuns);
   });
 
-  it('skips spawning and releases the slot when steer arrives during local slot handoff', async () => {
+  it('skips spawning on slot handoff when skipUnstartedToolsOnInput is true, and releases the foreground slot while spawning detached by default', async () => {
     const maxSlots = Math.max(4, Math.min(6, Math.floor(availableParallelism() / 3)));
     const holders = Array.from({ length: maxSlots }, () => pendingProcess());
     let spawnCount = 0;
@@ -1833,7 +1877,14 @@ describe('BashTool background mode', () => {
       }),
     };
     const { service } = createFakeTaskService();
-    const tool = bashTool(runner, createTestEnv(), createTestCtx(), service);
+    const tool = bashTool(
+      runner,
+      createTestEnv(),
+      createTestCtx(),
+      service,
+      stubToolPolicy(),
+      stubConfig({ loopControl: { skipUnstartedToolsOnInput: true } }),
+    );
 
     const activeRuns = holders.map((_, index) =>
       executeTool(tool, context({ command: `sleep 4${String(index)}`, timeout: 60 })),
@@ -1963,29 +2014,56 @@ describe('BashTool background mode', () => {
     }
   });
 
-  it('skips prepareToolRuntime when steerSignal is already aborted before a foreground command starts', async () => {
+  it('skips prepareToolRuntime on pre-aborted steerSignal only when skipUnstartedToolsOnInput is true, otherwise spawns detached', async () => {
     const { proc } = pendingProcess();
     const { runner } = createTestRunner(proc);
     const { service } = createFakeTaskService();
     const prepareFor = vi.fn(async () => {
       throw new Error('prepareFor should not run after steer');
     });
-    const tool = bashTool(runner, createTestEnv(), createTestCtx(), service, stubToolPolicy(), stubConfig(), {
-      prepareFor,
-    });
+    const skipTool = bashTool(
+      runner,
+      createTestEnv(),
+      createTestCtx(),
+      service,
+      stubToolPolicy(),
+      stubConfig({ loopControl: { skipUnstartedToolsOnInput: true } }),
+      { prepareFor },
+    );
     const steer = new AbortController();
     steer.abort(new Error('new input'));
-    const execution = await tool.resolveExecution({ command: 'echo skipped', timeout: 60 });
-    expect('execute' in execution).toBe(true);
+    const skipExecution = await skipTool.resolveExecution({ command: 'echo skipped', timeout: 60 });
+    expect('execute' in skipExecution).toBe(true);
     prepareFor.mockClear();
-    const result = await ('execute' in execution
-      ? execution.execute({ turnId: 0, toolCallId: 'call_pre_steered', signal: new AbortController().signal, steerSignal: steer.signal })
-      : execution);
+    const skipResult = await ('execute' in skipExecution
+      ? skipExecution.execute({ turnId: 0, toolCallId: 'call_pre_steered', signal: new AbortController().signal, steerSignal: steer.signal })
+      : skipExecution);
     expect(prepareFor).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
+    expect(skipResult).toMatchObject({
       isError: false,
       output: expect.stringContaining('New input arrived before this command started'),
     });
+
+    const { proc: defaultProc, finish } = pendingProcess();
+    const { runner: defaultRunner, exec } = createTestRunner(defaultProc);
+    const { service: defaultService } = createFakeTaskService();
+    const defaultTool = bashTool(
+      defaultRunner,
+      createTestEnv(),
+      createTestCtx(),
+      defaultService,
+      stubToolPolicy(),
+      stubConfig(),
+    );
+    const defaultExecution = await defaultTool.resolveExecution({ command: 'echo ran', timeout: 60 });
+    expect('execute' in defaultExecution).toBe(true);
+    const defaultResult = await ('execute' in defaultExecution
+      ? defaultExecution.execute({ turnId: 0, toolCallId: 'call_default_steered', signal: new AbortController().signal, steerSignal: steer.signal })
+      : defaultExecution);
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(defaultResult.isError).toBeFalsy();
+    expect(String(defaultResult.output)).not.toContain('New input arrived before this command started');
+    finish(0);
   });
 
   it('notifies when a foreground command registers its background task', async () => {
@@ -2655,5 +2733,78 @@ describe('orphan grandchild cleanup after early root exit (process-task.ts:122)'
       await service.dispose();
       await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     }
+  });
+
+  it('bounds local foreground slot wait for non-auto-detach subagents and kills late-arriving spawns after timeout', async () => {
+    const subagentScope: IAgentScopeContext = {
+      _serviceBrand: undefined,
+      agentId: 'child-1',
+      parentAgentId: 'main',
+      scope: (sub?: string) => (sub ? `agent/child-1/${sub}` : 'agent/child-1'),
+    };
+
+    const holderAborts = Array.from({ length: 6 }, () => new AbortController());
+    const holderRuns = holderAborts.map((abortController) => {
+      const blockerProc = processWithOpenStreamsThatExitOnKill();
+      const { runner: blockerRunner } = createTestRunner(blockerProc);
+      const mainTool = bashTool(blockerRunner);
+      return executeTool(
+        mainTool,
+        context({ command: 'sleep 999', timeout: 30 }, abortController.signal),
+      );
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    try {
+      const childProc = processWithOutput({ stdout: 'ok\n', exitCode: 0 });
+      const { runner: childRunner, exec: childExec } = createTestRunner(childProc);
+      const childTool = bashTool(
+        childRunner,
+        posixEnv,
+        createTestCtx('/tmp'),
+        createFakeTaskService().service,
+        stubToolPolicy(),
+        stubConfig(),
+        { scope: subagentScope },
+      );
+      const slotTimedOut = await executeTool(
+        childTool,
+        context({ command: 'echo blocked', timeout: 0.05 }),
+      );
+      expect(slotTimedOut.isError).toBe(true);
+      expect(slotTimedOut.output).toContain('Timed out waiting for a local foreground Bash slot');
+      expect(childExec).not.toHaveBeenCalled();
+    } finally {
+      for (const abortController of holderAborts) abortController.abort(userCancellationReason());
+      await Promise.all(holderRuns.map((run) => run.catch(() => undefined)));
+    }
+
+    let resolveLateSpawn!: (proc: IHostProcess) => void;
+    const lateProc = processWithOutput({ stdout: 'late\n', exitCode: 0 });
+    const slowSpawn = vi.fn(
+      () =>
+        new Promise<IHostProcess>((resolve) => {
+          resolveLateSpawn = resolve;
+        }),
+    );
+    const { runner: slowRunner } = createTestRunner(slowSpawn);
+    const slowChildTool = bashTool(
+      slowRunner,
+      posixEnv,
+      createTestCtx('/tmp'),
+      createFakeTaskService().service,
+      stubToolPolicy(),
+      stubConfig(),
+      { scope: subagentScope },
+    );
+    const spawnTimedOut = await executeTool(
+      slowChildTool,
+      context({ command: 'echo wedged-spawn', timeout: 0.05 }),
+    );
+    expect(spawnTimedOut.isError).toBe(true);
+    expect(spawnTimedOut.output).toContain('Command failed to start process within');
+    resolveLateSpawn(lateProc);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(lateProc.kill).toHaveBeenCalled();
   });
 });

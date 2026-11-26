@@ -9,7 +9,7 @@ import type { SidebarSessionGroupEntry } from '@kiki/session-core/sessions';
 import { useI18n } from '../../i18n';
 import type { LifeState } from '../../lib/motion';
 import { RelativeTime } from '../RelativeTime';
-import { SidebarRowDot } from './SidebarRowSignal';
+import { SidebarRowDot, sidebarDotKindFromLife } from './SidebarRowSignal';
 import { DisclosureChevron, Icon, Spinner } from '../icons';
 
 export interface SessionGroupHeaderRowProps {
@@ -93,7 +93,7 @@ export const SessionGroupHeaderRow = memo(function SessionGroupHeaderRow({
           </span>
           {hasSignal ? (
             <span data-sidebar-unit-group-life-dot={collapsedLife} className="flex shrink-0 items-center">
-              <SidebarRowDot signal />
+              <SidebarRowDot signal kind={sidebarDotKindFromLife(collapsedLife)} />
             </span>
           ) : null}
         </span>

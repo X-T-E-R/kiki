@@ -36,6 +36,10 @@ export class WebSearchTool implements IWebSearchTool {
       const subject = input.action === 'run' ? (Array.isArray(input.query) ? input.query.join('\n') : input.query) : `${input.action} ${input.job_id}`;
       return {
         accesses: ToolAccesses.none(),
+        foregroundTimeoutMs:
+          input.action === 'run' && input.timeout_ms !== undefined
+            ? input.timeout_ms + 5_000
+            : undefined,
         description: `Search: ${sliceUtf16(subject, 0, 80)}`,
         display: { kind: 'search', query: subject },
         approvalRule: literalRulePattern(this.name, subject),
@@ -49,9 +53,9 @@ export class WebSearchTool implements IWebSearchTool {
 
   private async execution(
     args: SearchInput,
-    { toolCallId, signal, steerSignal }: ExecutableToolContext,
+    { toolCallId, signal, steerSignal, skipUnstartedToolsOnInput }: ExecutableToolContext,
   ): Promise<ExecutableToolResult> {
-    const steer = args.action === 'run' && args.execution !== 'async' ? steerSignal : undefined;
+    const steer = args.action === 'run' && args.execution !== 'async' && skipUnstartedToolsOnInput === true ? steerSignal : undefined;
     if (!signal.aborted && steer?.aborted === true) {
       return {
         isError: false,

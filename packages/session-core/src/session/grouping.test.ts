@@ -20,7 +20,7 @@ import {
   type SubagentGroup,
   type ToolGroup,
 } from './grouping';
-import type { AssistantBlock, Block, QuestionBlock, ShellBlock, SubagentBlock, SystemBlock, ThinkingBlock, ToolBlock, UserBlock } from './transcript';
+import { splitSystemReminders, type AssistantBlock, type Block, type QuestionBlock, type ShellBlock, type SubagentBlock, type SystemBlock, type ThinkingBlock, type ToolBlock, type UserBlock } from './transcript';
 
 let counter = 0;
 function tool(
@@ -600,7 +600,7 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     });
   });
 
-  it('keeps failed background command notifications and settled questions independent from adjacent Worked folds', () => {
+  it('folds routine failed background command notifications into Worked folds with failed count while keeping settled questions independent', () => {
     const settledQ: QuestionBlock = {
       kind: 'question',
       id: 'q-done',
@@ -641,9 +641,10 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
       'history-fold',
       'question',
       'history-fold',
-      'system',
       'assistant',
     ]);
+    const secondFold = nodes[2];
+    expect(secondFold?.kind === 'history-fold' ? secondFold.failed : 0).toBe(1);
   });
 
   it('fuses live forest status so completed, idle, and lost subagents dissolve SubagentGroup and fold into HistoryFold without polluting older runs', () => {
@@ -754,13 +755,55 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
 
     const loneSystemNote: Block[] = [
       inTurn(text('user'), 't4'),
-      { kind: 'system', id: 'sys-1', turnId: 't4', variant: 'injection', source: 'recipe', text: 'Recipe', createdAt: undefined },
+      { kind: 'system', id: 'sys-1', turnId: 't4', variant: 'system', text: 'System note', createdAt: undefined },
       inTurn(text('assistant'), 't4'),
     ];
     expect(foldHistory(loneSystemNote, undefined, { foldSingleProcess: true }).map((n) => n.kind)).toEqual([
       'user',
       'system',
       'assistant',
+    ]);
+
+    const unifiedSettledFold: Block[] = [
+      inTurn(text('user'), 't5'),
+      { kind: 'system-reminder', id: 'rem-1', turnId: 't5', variant: 'runtime_snapshot', text: 'Host runtime snapshot rev 284.', createdAt: '2026-01-01T00:00:01.000Z' },
+      {
+        kind: 'system',
+        id: 'task-fail-1',
+        turnId: 't5',
+        variant: 'task',
+        createdAt: '2026-01-01T00:00:02.000Z',
+        text: 'Title: Background command failed\nSeverity: error\nExit code: 1',
+        taskNotification: { type: 'task.failed', status: 'failed', severity: 'error', exitCode: 1 },
+      },
+      { kind: 'system', id: 'steer-1', turnId: 't5', variant: 'injection', originVariant: 'model_steering', text: 'Model Steer guidance', createdAt: '2026-01-01T00:00:03.000Z' },
+      inTurn(text('assistant'), 't5'),
+    ];
+    const unifiedOut = foldHistory(unifiedSettledFold, undefined);
+    expect(unifiedOut.map((n) => n.kind)).toEqual([
+      'user',
+      'history-fold',
+      'assistant',
+    ]);
+    expect(unifiedOut[1]?.kind === 'history-fold' ? unifiedOut[1].failed : 0).toBe(1);
+
+    const liveBoilerplate: Block[] = [
+      inTurn(text('user'), 't6'),
+      { kind: 'system-reminder', id: 'rem-live', turnId: 't6', variant: 'runtime_snapshot', text: 'Host runtime snapshot rev 285.', createdAt: '2026-01-01T00:00:04.000Z' },
+      { kind: 'system', id: 'steer-live', turnId: 't6', variant: 'injection', originVariant: 'model_steering', text: 'Model Steer guidance', createdAt: '2026-01-01T00:00:05.000Z' },
+    ];
+    expect(foldHistory(liveBoilerplate, 't6').map((n) => n.kind)).toEqual([
+      'user',
+      'history-fold',
+    ]);
+
+    const imageCompressionReminder: Block[] = [
+      inTurn(text('user'), 't7'),
+      { kind: 'system-reminder', id: 'img-cap', turnId: 't7', variant: 'image_compression', text: 'Image compressed', createdAt: '2026-01-01T00:00:06.000Z' },
+    ];
+    expect(foldHistory(imageCompressionReminder, undefined).map((n) => n.kind)).toEqual([
+      'user',
+      'system-reminder',
     ]);
   });
 
@@ -848,5 +891,36 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
       'history-fold',
       'assistant',
     ]);
+  });
+
+  it('folds truncated <system-reminder>, system injection, hook_result, and unanchored boilerplate even in live turns or keepOpen', () => {
+    const truncated = splitSystemReminders('<system-reminder>\nHost runtime snapshot rev 1 with truncated tail', true);
+    expect(truncated).toEqual({
+      text: '',
+      reminders: ['Host runtime snapshot rev 1 with truncated tail'],
+    });
+
+    const unanchoredInjection: SystemBlock = {
+      kind: 'system',
+      id: 'sys-inj-unanchored',
+      text: 'Host runtime snapshot',
+      createdAt: undefined,
+      turnId: undefined,
+      variant: 'injection',
+    };
+    const liveHookResult: SystemBlock = {
+      kind: 'system',
+      id: 'sys-hook-live',
+      text: 'SessionStart hook output',
+      createdAt: undefined,
+      turnId: 't-live',
+      variant: 'hook_result',
+    };
+    const folded = foldHistory(
+      [text('user'), unanchoredInjection, inTurn(text('user'), 't-live'), liveHookResult],
+      't-live',
+      { keepOpen: new Set(['sys-inj-unanchored', 'sys-hook-live']) },
+    );
+    expect(folded.map((n) => n.kind)).toEqual(['user', 'history-fold', 'user', 'history-fold']);
   });
 });

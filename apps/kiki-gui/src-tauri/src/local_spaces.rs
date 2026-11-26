@@ -173,7 +173,7 @@ pub(crate) fn extract_explicit_home(cmd: &str) -> Option<PathBuf> {
 }
 
 /// Infer the Kiki space home directory from child worker arguments such as:
-/// - `kiki-server.exe __search-indexer D:\666\KikiSpaces\ctf\search-index-v2\index.sqlite`
+/// - `kiki-server.exe __search-indexer D:\Projects\KikiSpaces\demo\search-index-v2\index.sqlite`
 /// - `kiki-server.exe __plugin_run_node ... C:\Users\x\.kiki\plugins\managed\foo\entry.mjs`
 pub(crate) fn extract_inferred_home_from_server_child(cmd: &str) -> Option<PathBuf> {
     let tokens = split_command_tokens(cmd);
@@ -1113,8 +1113,8 @@ mod tests {
     #[test]
     fn extracts_home_from_explicit_args_and_child_workers() {
         assert_eq!(
-            extract_explicit_home(r#""C:\Kiki\kiki-desktop.exe" --home "D:\666\KikiSpaces\ctf""#),
-            Some(normalize_home_path(Path::new(r"D:\666\KikiSpaces\ctf")))
+            extract_explicit_home(r#""C:\Kiki\kiki-desktop.exe" --home "D:\Projects\KikiSpaces\demo""#),
+            Some(normalize_home_path(Path::new(r"D:\Projects\KikiSpaces\demo")))
         );
         assert_eq!(
             extract_explicit_home(r#"kiki-server.exe serve --home=D:\Space\One --port 0"#),
@@ -1122,9 +1122,9 @@ mod tests {
         );
         assert_eq!(
             extract_inferred_home_from_server_child(
-                r#"C:\Users\x\active\kiki-server.exe __search-indexer D:\666\KikiSpaces\ctf\search-index-v2\index.sqlite"#
+                r#"C:\Users\x\active\kiki-server.exe __search-indexer D:\Projects\KikiSpaces\demo\search-index-v2\index.sqlite"#
             ),
-            Some(normalize_home_path(Path::new(r"D:\666\KikiSpaces\ctf")))
+            Some(normalize_home_path(Path::new(r"D:\Projects\KikiSpaces\demo")))
         );
         assert_eq!(
             extract_inferred_home_from_server_child(
@@ -1136,11 +1136,11 @@ mod tests {
 
     #[test]
     fn parses_kiki_home_from_windows_peb_env_block() {
-        let env_str = "PATH=C:\\Windows\0kiki_home=D:\\666\\KikiSpaces\\ctf\0TEMP=C:\\Temp\0\0";
+        let env_str = "PATH=C:\\Windows\0kiki_home=D:\\Projects\\KikiSpaces\\demo\0TEMP=C:\\Temp\0\0";
         let units: Vec<u16> = env_str.encode_utf16().collect();
         assert_eq!(
             parse_kiki_home_from_env_block(&units).as_deref(),
-            Some(r"D:\666\KikiSpaces\ctf")
+            Some(r"D:\Projects\KikiSpaces\demo")
         );
     }
 

@@ -61,6 +61,18 @@ describe('quotaModel', () => {
     expect(depleting?.state).toBe('depleting');
     expect(depleting?.willExhaustBeforeReset).toBe(true);
     expect(depleting?.etaSeconds).not.toBeNull();
+
+    // 0% remaining (already exhausted) -> state 'exhausted', never 'depleting' with bogus ETA
+    const exhausted = computeRemainingPace({ remainingPercent: 0, durationSeconds: 604_800, resetAtMs: now + 100_800_000, nowMs: now });
+    expect(exhausted?.state).toBe('exhausted');
+    expect(exhausted?.willExhaustBeforeReset).toBe(false);
+    expect(exhausted?.etaSeconds).toBeNull();
+
+    // 100% remaining (0% used) -> on_track with no depletion warning
+    const unused = computeRemainingPace({ remainingPercent: 100, durationSeconds: 604_800, resetAtMs: now + 100_800_000, nowMs: now });
+    expect(unused?.state).toBe('on_track');
+    expect(unused?.willExhaustBeforeReset).toBe(false);
+    expect(unused?.etaSeconds).toBeNull();
   });
 
   it('formats money/credits amount-first and hides bars on pure balances without limits', () => {

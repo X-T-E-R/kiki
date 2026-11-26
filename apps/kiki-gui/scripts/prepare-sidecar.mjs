@@ -23,6 +23,7 @@ import { dirname, extname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { verifySidecarReceipt } from '../../kimi-code/scripts/native/release-receipt.mjs';
+import { stageWindowsToolchain } from './stage-windows-toolchain.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const GUI_ROOT = resolve(SCRIPT_DIR, '..');
@@ -221,16 +222,36 @@ export function stageSidecar({
   return { target, source, destination, manifestPath, ...manifest };
 }
 
-function main() {
+export async function prepareDesktopResources(options = {}) {
+  const result = stageSidecar(options);
+  const env = options.env ?? process.env;
+  if (result.target.includes('windows') && env['KIKI_SKIP_WINDOWS_TOOLCHAIN'] !== '1') {
+    const toolchain = await stageWindowsToolchain({
+      target: result.target,
+      env,
+    });
+    return { ...result, toolchain };
+  }
+  return result;
+}
+
+async function main() {
   try {
-    const result = stageSidecar();
+    const result = await prepareDesktopResources();
     process.stdout.write(
       `[kiki desktop] staged ${result.bytes} bytes for ${result.target}: ${result.destination}\n`,
     );
+    if (result.toolchain && !result.toolchain.skipped) {
+      const mb = (result.toolchain.bytes / (1024 * 1024)).toFixed(1);
+      const mode = result.toolchain.reused ? 'reused cached' : 'staged';
+      process.stdout.write(
+        `[kiki desktop] ${mode} Windows toolchain (${result.toolchain.files} files, ${mb} MiB): ${result.toolchain.outputDir}\n`,
+      );
+    }
   } catch (error) {
     process.stderr.write(`[kiki desktop] ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) main();
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) void main();

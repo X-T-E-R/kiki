@@ -20,8 +20,7 @@ function clock(intervalMs: number) {
   const start = () => {
     if (timer !== undefined || listeners.size === 0) return;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-    const now = Date.now();
-    if (now - current >= intervalMs || now < current) current = now;
+    current = Date.now();
     timer = setInterval(tick, intervalMs);
   };
   const onVisibility = () => {
@@ -58,13 +57,17 @@ const secondsSnapshot = (): number => seconds.getSnapshot();
 const minutesSubscribe = (listener: () => void): (() => void) => minutes.subscribe(listener);
 const minutesSnapshot = (): number => minutes.getSnapshot();
 
-/** Shared second clock for live elapsed-duration and countdown displays. */
-export function useNow(): number {
-  return useSyncExternalStore(secondsSubscribe, secondsSnapshot, secondsSnapshot);
-}
-
 const idleSubscribe = (): (() => void) => () => {};
 const idleSnapshot = (): number => 0;
+
+/** Shared second clock for live elapsed-duration and countdown displays. */
+export function useNow(enabled = true): number {
+  return useSyncExternalStore(
+    enabled ? secondsSubscribe : idleSubscribe,
+    secondsSnapshot,
+    secondsSnapshot,
+  );
+}
 
 /**
  * Live milliseconds since `anchor`, ticking once a second. Only a caller with

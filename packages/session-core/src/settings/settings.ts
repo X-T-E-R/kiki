@@ -80,18 +80,18 @@ export function stepUiZoom(current: number, direction: 1 | -1): UiZoomPercent {
   return UI_ZOOM_STEPS[nextIndex]!;
 }
 
-/** Device-local conversation prose font size steps in CSS pixels (`16` is the default). */
-export const PROSE_FONT_SIZE_STEPS = [14, 15, 15.5, 16, 17, 18, 20] as const;
+/** Device-local conversation prose font size steps in CSS pixels (`14.5` is the default). */
+export const PROSE_FONT_SIZE_STEPS = [13.5, 14, 14.5, 15, 15.5, 16, 17, 18, 20] as const;
 export type ProseFontSizePx = (typeof PROSE_FONT_SIZE_STEPS)[number];
-export const DEFAULT_PROSE_FONT_SIZE: ProseFontSizePx = 16;
-export const MIN_PROSE_FONT_SIZE: ProseFontSizePx = 14;
+export const DEFAULT_PROSE_FONT_SIZE: ProseFontSizePx = 14.5;
+export const MIN_PROSE_FONT_SIZE: ProseFontSizePx = 13.5;
 export const MAX_PROSE_FONT_SIZE: ProseFontSizePx = 20;
 
 export function isProseFontSize(value: unknown): value is ProseFontSizePx {
   return typeof value === 'number' && (PROSE_FONT_SIZE_STEPS as readonly number[]).includes(value);
 }
 
-/** Snap any finite pixel value to the nearest conversation prose step; non-finite values fall back to 16px. */
+/** Snap any finite pixel value to the nearest conversation prose step; non-finite values fall back to 14.5px. */
 export function normalizeProseFontSize(value: unknown): ProseFontSizePx {
   if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_PROSE_FONT_SIZE;
   if (isProseFontSize(value)) return value;
@@ -108,10 +108,10 @@ export function stepProseFontSize(current: number, direction: 1 | -1): ProseFont
   return PROSE_FONT_SIZE_STEPS[nextIndex]!;
 }
 
-/** Device-local code & terminal font size steps in CSS pixels (`13` is the default). */
+/** Device-local code & terminal font size steps in CSS pixels (`12.5` is the default). */
 export const CODE_FONT_SIZE_STEPS = [11, 12, 12.5, 13, 14, 15, 16] as const;
 export type CodeFontSizePx = (typeof CODE_FONT_SIZE_STEPS)[number];
-export const DEFAULT_CODE_FONT_SIZE: CodeFontSizePx = 13;
+export const DEFAULT_CODE_FONT_SIZE: CodeFontSizePx = 12.5;
 export const MIN_CODE_FONT_SIZE: CodeFontSizePx = 11;
 export const MAX_CODE_FONT_SIZE: CodeFontSizePx = 16;
 
@@ -119,7 +119,7 @@ export function isCodeFontSize(value: unknown): value is CodeFontSizePx {
   return typeof value === 'number' && (CODE_FONT_SIZE_STEPS as readonly number[]).includes(value);
 }
 
-/** Snap any finite pixel value to the nearest code/terminal step; non-finite values fall back to 13px. */
+/** Snap any finite pixel value to the nearest code/terminal step; non-finite values fall back to 12.5px. */
 export function normalizeCodeFontSize(value: unknown): CodeFontSizePx {
   if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_CODE_FONT_SIZE;
   if (isCodeFontSize(value)) return value;
@@ -192,9 +192,9 @@ export interface DesktopSettings {
   proseFont: ProseFontPreference;
   /** Device-local interface zoom in percent (`100` is 1:1). */
   uiZoom: UiZoomPercent;
-  /** Device-local conversation prose font size in CSS pixels (`16` is default). */
+  /** Device-local conversation prose font size in CSS pixels (`14.5` is default). */
   proseFontSize: ProseFontSizePx;
-  /** Device-local code & terminal font size in CSS pixels (`13` is default). */
+  /** Device-local code & terminal font size in CSS pixels (`12.5` is default). */
   codeFontSize: CodeFontSizePx;
   /** Device-local conversation column measure (`standard` is default). */
   chatWidth: ChatWidthPreference;
@@ -2743,7 +2743,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'developer', tab: 'identity', cardId: 'st-card-identity-recent', titleKey: 'st.identity.recentTitle', keywordKeys: ['st.identity.recentEmpty'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint', 'st.thinking.keep'], synonyms: ['thinking keep', '保留思考'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-auto-compact', titleKey: 'st.compact.globalTitle', keywordKeys: ['st.compact.globalLabel', 'st.compact.reserveLabel'], synonyms: ['auto compact', 'autocompact', 'compaction', '自动压缩', '压缩点', 'context window', '上下文窗口'] },
-  { section: 'ai', tab: 'defaults', cardId: 'st-card-loop-limits', titleKey: 'st.loopLimits.title', keywordKeys: ['st.loopLimits.maxSteps', 'st.loopLimits.subagentStrategy'], synonyms: ['max steps', 'max_steps_per_turn', 'max_attempts_per_step', 'subagent_context_strategy', 'loop control', '步数上限', '尝试次数'] },
+  { section: 'ai', tab: 'defaults', cardId: 'st-card-loop-limits', titleKey: 'st.loopLimits.title', keywordKeys: ['st.loopLimits.maxSteps', 'st.loopLimits.subagentStrategy', 'st.loopLimits.skipUnstartedTools'], synonyms: ['max steps', 'max_steps_per_turn', 'max_attempts_per_step', 'subagent_context_strategy', 'skip_unstarted_tools_on_input', 'loop control', '步数上限', '尝试次数', '跳过未开始的工具'] },
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['connect.serverUrl', 'connect.token', 'st.conn.version', 'st.conn.reconnect'], synonyms: ['server connection', '服务器连接', 'connection & remote', '连接与远程'] },
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-timeout', titleKey: 'st.conn.timeoutTitle', keywordKeys: ['st.conn.timeoutLabel', 'st.conn.timeoutHint'], synonyms: ['request timeout', '请求超时'] },
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-owned', titleKey: 'st.conn.ownedTitle', keywordKeys: ['st.conn.ownedBody', 'st.conn.restart'] },

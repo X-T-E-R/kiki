@@ -224,7 +224,7 @@ export function OutcomeLine({
   const danger = notice.tone === 'danger';
   const noReply = notice.reasonCodes?.includes('message.no_reply') === true;
 
-  if (danger) {
+  if (danger && !superseded) {
     const actions: TimelineErrorAction[] = onOpenProcess === undefined ? [] : [{
       id: 'open-process',
       label: t('room.openProcess'),

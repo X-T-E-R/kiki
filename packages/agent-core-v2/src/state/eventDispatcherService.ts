@@ -26,7 +26,13 @@ import {
   cleanupColdCheckpointArchives,
   readArchivedReplayCheckpointEnvelope,
 } from '#/session/replayCheckpointArchive';
-import { IWireService, JOURNAL_HEAD_HASH_BYTES, JournalTailUnreadableError } from '#/wire/wire';
+import {
+  IWireService,
+  JOURNAL_HEAD_HASH_BYTES,
+  JournalTailUnreadableError,
+  type WireJournalIdentity,
+  type WireJournalProgress,
+} from '#/wire/wire';
 import { WireError, WireErrors } from '#/wire/errors';
 import type { PartsTransformer } from '#/wire/record';
 
@@ -60,6 +66,8 @@ const HISTORY_TAIL = 500;
 const REPLAY_CHECKPOINT_SCOPE = 'replay-checkpoints';
 const REPLAY_CHECKPOINT_KEY = 'engine-v1';
 export const REPLAY_CHECKPOINT_GROWTH_BYTES = 8 * 1024 * 1024;
+export const REPLAY_INCREMENTAL_CHECKPOINT_BYTES = 256 * 1024 * 1024;
+export const REPLAY_INCREMENTAL_CHECKPOINT_INTERVAL_MS = 8_000;
 const REPLAY_CHECKPOINT_GROWTH_DELAY_MS = 1_000;
 export { REPLAY_ABI_VERSION, type ReplayCheckpointWire };
 
@@ -159,6 +167,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
 
   private restorePhase: RestorePhase = 'new';
   private checkpointSave: Promise<boolean> | undefined;
+  incrementalCheckpointBytes = REPLAY_INCREMENTAL_CHECKPOINT_BYTES;
   private savedCheckpoint: { readonly revision: number; readonly wire: ReplayCheckpointEnvelope['wire'] } | undefined;
   private growthCheckpointTimer: ReturnType<typeof setTimeout> | undefined;
   private growthCheckpointBaseline = 0;
@@ -764,7 +773,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
           }
           checkpointRestored = undefined;
           this.resetReplayableState();
-          await phase('journal_replay', () => this.replayJournal());
+          await phase('journal_replay', () => this.replayJournal(undefined, false));
           await phase('state_rehydrate', () => this.rehydrateStates(false));
         }
       }
@@ -794,10 +803,138 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     }
   }
 
-  private async replayJournal(startByte?: number): Promise<void> {
+  private async saveIncrementalReplayCheckpoint(
+    byteOffset: number,
+    initialWire: WireJournalIdentity,
+  ): Promise<boolean> {
+    if (this.checkpointSave !== undefined) return false;
+    const generation = this.checkpointGeneration;
+    const checkpointScope = this.checkpointScope();
+    const docs = this.docs.current;
+    if (
+      !this.isCheckpointGenerationCurrent(generation) ||
+      this.restorePhase !== 'restoring' ||
+      docs === undefined ||
+      checkpointScope === undefined ||
+      this.wire.journalIdentity === undefined ||
+      this.wire.journalBoundarySha256 === undefined ||
+      byteOffset < JOURNAL_HEAD_HASH_BYTES ||
+      byteOffset >= initialWire.size
+    ) {
+      return false;
+    }
+    const save = (async (): Promise<boolean> => {
+      try {
+        const currentWire = await this.wire.journalIdentity!();
+        if (
+          !this.isCheckpointGenerationCurrent(generation) ||
+          this.restorePhase !== 'restoring' ||
+          currentWire.headHash !== initialWire.headHash ||
+          currentWire.storeGeneration !== initialWire.storeGeneration ||
+          currentWire.size < byteOffset
+        ) {
+          return false;
+        }
+        const boundarySha256 = await this.wire.journalBoundarySha256!(byteOffset);
+        if (
+          !isSha256(boundarySha256) ||
+          !this.isCheckpointGenerationCurrent(generation) ||
+          this.restorePhase !== 'restoring'
+        ) {
+          return false;
+        }
+        const keys = this.agentState.replayableKeys()
+          .filter((key) => key.replayable.durable)
+          .toSorted((left, right) => left.name.localeCompare(right.name));
+        const offloadTransform: PartsTransformer = (parts) =>
+          this.blobService.offloadParts(parts as readonly ContentPart[]) as Promise<readonly unknown[]>;
+        const serializedStates: ReplayCheckpointPayload['states'][number][] = [];
+        for (const key of keys) {
+          const meta = this.ensureMeta(key);
+          const rawValue = this.agentState.get(key);
+          const dehydrateState = key.replayable.blobs?.dehydrateState;
+          const value = dehydrateState === undefined
+            ? rawValue
+            : await dehydrateState(rawValue, offloadTransform);
+          if (!this.isCheckpointGenerationCurrent(generation) || this.restorePhase !== 'restoring') {
+            return false;
+          }
+          serializedStates.push({
+            name: key.name,
+            value,
+            meta: keepsUndoCheckpoints(key) || meta.checkpoints.length > 0
+              ? meta
+              : { history: [], checkpoints: [], nextPatchId: meta.nextPatchId },
+          });
+        }
+        const graph = await encodeReplayCheckpointGraphAsync({ states: serializedStates });
+        if (!this.isCheckpointGenerationCurrent(generation) || this.restorePhase !== 'restoring') {
+          return false;
+        }
+        const checkpointWire: ReplayCheckpointWire = {
+          size: byteOffset,
+          mtimeMs: currentWire.mtimeMs,
+          headHash: currentWire.headHash,
+          storeGeneration: currentWire.storeGeneration,
+          boundarySha256,
+        };
+        const envelope: ReplayCheckpointEnvelope = {
+          format: 1,
+          replayAbi: REPLAY_ABI_VERSION,
+          wire: checkpointWire,
+          stateNames: keys.map((key) => key.name),
+          pluginInterpretation: this.checkpointPluginInterpretation(),
+          graph,
+        };
+        await docs.set(checkpointScope, REPLAY_CHECKPOINT_KEY, envelope, { cooperative: true });
+        return true;
+      } catch (error) {
+        this.log.current?.warn('incremental replay checkpoint failed; continuing replay', {
+          agentId: this.scope.current?.agentId,
+          byteOffset,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+    })();
+    this.checkpointSave = save;
+    try {
+      return await save;
+    } finally {
+      if (this.checkpointSave === save) this.checkpointSave = undefined;
+    }
+  }
+
+  private async replayJournal(startByte?: number, allowIncrementalCheckpoint = true): Promise<void> {
     let recordIndex = 0;
     const signal = restoreSignal();
-    const source = this.wire.readJournal({ startByte, signal });
+    const minCheckpointAdvance = Math.max(
+      JOURNAL_HEAD_HASH_BYTES,
+      Math.min(REPLAY_CHECKPOINT_GROWTH_BYTES, this.incrementalCheckpointBytes),
+    );
+    const initialWire =
+      allowIncrementalCheckpoint &&
+      this.docs.current !== undefined &&
+      this.checkpointScope() !== undefined &&
+      this.wire.journalIdentity !== undefined &&
+      this.wire.journalBoundarySha256 !== undefined
+        ? await this.wire.journalIdentity().catch(() => undefined)
+        : undefined;
+    const incrementalEligible =
+      initialWire !== undefined &&
+      initialWire.size - (startByte ?? 0) >= minCheckpointAdvance;
+    let pendingProgress: WireJournalProgress | undefined;
+    let lastCheckpointedByte = startByte ?? 0;
+    let lastCheckpointTime = performance.now();
+    const source = this.wire.readJournal({
+      startByte,
+      signal,
+      onProgress: incrementalEligible
+        ? (progress) => {
+            pendingProgress = progress;
+          }
+        : undefined,
+    });
     let deadline = performance.now() + 4;
     for await (const record of source) {
       signal?.throwIfAborted();
@@ -805,21 +942,49 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         await yieldToEventLoop(undefined, { signal });
         deadline = performance.now() + 4;
       }
-      if (record.type === 'metadata') continue;
-      const cls = this.folded.events.get(record.type);
-      if (cls === undefined) {
-        this.reportSkippedRecord(record.type, recordIndex, false);
-        recordIndex++;
-        continue;
+      if (record.type !== 'metadata') {
+        const cls = this.folded.events.get(record.type);
+        if (cls === undefined) {
+          this.reportSkippedRecord(record.type, recordIndex, false);
+          recordIndex++;
+        } else {
+          const event = event2FromRecord(cls, record);
+          if (event === undefined) {
+            this.reportSkippedRecord(record.type, recordIndex, true);
+            recordIndex++;
+          } else {
+            this.executeEvent(event, true);
+            recordIndex++;
+          }
+        }
       }
-      const event = event2FromRecord(cls, record);
-      if (event === undefined) {
-        this.reportSkippedRecord(record.type, recordIndex, true);
-        recordIndex++;
-        continue;
+      if (
+        incrementalEligible &&
+        pendingProgress !== undefined &&
+        pendingProgress.canCheckpoint &&
+        pendingProgress.byteOffset >= JOURNAL_HEAD_HASH_BYTES &&
+        pendingProgress.byteOffset < initialWire.size
+      ) {
+        const bytesAdvanced = pendingProgress.byteOffset - lastCheckpointedByte;
+        const now = performance.now();
+        if (
+          bytesAdvanced >= this.incrementalCheckpointBytes ||
+          (bytesAdvanced >= minCheckpointAdvance &&
+            now - lastCheckpointTime >= REPLAY_INCREMENTAL_CHECKPOINT_INTERVAL_MS)
+        ) {
+          signal?.throwIfAborted();
+          const saved = await this.saveIncrementalReplayCheckpoint(
+            pendingProgress.byteOffset,
+            initialWire,
+          );
+          lastCheckpointTime = performance.now();
+          if (saved) {
+            lastCheckpointedByte = pendingProgress.byteOffset;
+          }
+          signal?.throwIfAborted();
+          deadline = performance.now() + 4;
+        }
       }
-      this.executeEvent(event, true);
-      recordIndex++;
     }
     for (const key of this.folded.states) {
       if (key.replayable.directSilentFold === true) {

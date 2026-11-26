@@ -649,6 +649,7 @@ export const usageZh = {
   'usage.quota.off.summary': '{n} 个连接已关闭额度检查',
   'usage.quota.off.title': '已关闭额度检查',
   'usage.quota.pace.depleting': '将在重置前用完 · 约 {eta}',
+  'usage.quota.pace.exhausted': '已耗尽',
   'usage.quota.pace.fast': '偏快',
   'usage.quota.queryNow': '查询',
   'usage.quota.refresh': '刷新额度',

@@ -593,4 +593,32 @@ describe('CPU worker image operations', () => {
 
     await expect(workers.request<number>({ type: 'echo', bytes: 9 })).resolves.toBe(9);
   });
+
+  it('retires a booting warmup worker that never reports ready so pump does not deadlock', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cpu-pool-boot-stall-'));
+    dirs.push(dir);
+    const entry = join(dir, 'stall-boot.mjs');
+    await writeFile(
+      entry,
+      `import { parentPort, workerData } from 'node:worker_threads';
+setInterval(() => {}, 1000);
+parentPort.on('message', ({ id, operation }) => {
+  parentPort.postMessage({ id, result: operation });
+});`,
+    );
+    const workers = new CpuWorkerPool(pathToFileURL(entry), {
+      maxWorkers: 2,
+      warmWorkers: 0,
+      bootTimeoutMs: 60,
+      closeTimeoutMs: 250,
+    });
+    pools.push(workers);
+    workers.warm(1);
+    expect(workers.liveWorkerCount).toBe(1);
+    await vi.waitFor(() => {
+      expect(workers.liveWorkerCount).toBe(0);
+    }, { timeout: 2_000 });
+    await expect(workers.request<string>('recovered-after-boot-stall')).resolves.toBe('recovered-after-boot-stall');
+    await workers.close();
+  });
 });

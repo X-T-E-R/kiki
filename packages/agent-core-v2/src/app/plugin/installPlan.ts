@@ -20,6 +20,10 @@ export interface PluginInstallPlan {
   readonly unsupported: readonly string[];
 }
 
+export function isSkippedPluginEntryName(name: string): boolean {
+  return name === '.git' || name === '.tmp';
+}
+
 export async function fingerprintDirectory(root: string, signal?: AbortSignal): Promise<string> {
   signal?.throwIfAborted();
   const digest = createHash('sha256');
@@ -29,6 +33,7 @@ export async function fingerprintDirectory(root: string, signal?: AbortSignal): 
     signal?.throwIfAborted();
     for (const entry of entries.toSorted((a, b) => a.name.localeCompare(b.name))) {
       signal?.throwIfAborted();
+      if (isSkippedPluginEntryName(entry.name) || entry.name === 'node_modules') continue;
       if (entry.isSymbolicLink()) throw new Error(`Plugin file is a symbolic link: ${entry.name}`);
       const file = path.join(directory, entry.name);
       if (entry.isDirectory()) yield* walk(file);

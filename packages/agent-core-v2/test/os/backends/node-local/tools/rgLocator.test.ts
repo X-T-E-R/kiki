@@ -12,10 +12,12 @@ import {
   ensureRgPath,
   extractRgFromZip,
   findExistingRg,
+  getVendorRgPath,
   rgUnavailableMessage,
   verifyArchiveChecksum,
   type RgProbe,
 } from '#/os/backends/node-local/tools/rgLocator';
+import { ensureRgPath as ensureWorkspaceRgPath } from '#/workspace/workspaceFs/internal/rgLocator';
 
 vi.mock('tar', () => ({ extract: vi.fn() }));
 
@@ -48,11 +50,14 @@ function deferred<T>(): {
 describe('findExistingRg', () => {
   let fakeShare: string;
   let savedPath: string | undefined;
+  let savedToolchainDir: string | undefined;
   beforeEach(() => {
     fakeShare = createTestTempDirSync();
     mkdirSync(join(fakeShare, 'bin'), { recursive: true });
     savedPath = process.env['PATH'];
+    savedToolchainDir = process.env['KIKI_TOOLCHAIN_DIR'];
     process.env['PATH'] = '';
+    delete process.env['KIKI_TOOLCHAIN_DIR'];
   });
   afterEach(() => {
     rmSync(fakeShare, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
@@ -61,11 +66,40 @@ describe('findExistingRg', () => {
     } else {
       process.env['PATH'] = savedPath;
     }
+    if (savedToolchainDir === undefined) {
+      delete process.env['KIKI_TOOLCHAIN_DIR'];
+    } else {
+      process.env['KIKI_TOOLCHAIN_DIR'] = savedToolchainDir;
+    }
   });
 
   it('returns undefined when no rg anywhere', async () => {
     const result = await findExistingRg(noRgProbe(), fakeShare);
     expect(result).toBeUndefined();
+  });
+
+  it('resolves bundled vendor rg offline without network fetch when system PATH has no rg', async () => {
+    const toolchainRoot = join(fakeShare, 'toolchain');
+    const toolchainBin = join(toolchainRoot, 'bin');
+    mkdirSync(toolchainBin, { recursive: true });
+    const bundledRg = join(toolchainBin, process.platform === 'win32' ? 'rg.exe' : 'rg');
+    writeFileSync(bundledRg, 'fake bundled rg');
+    process.env['KIKI_TOOLCHAIN_DIR'] = toolchainRoot;
+
+    expect(getVendorRgPath()).toBe(bundledRg);
+    const probe = noRgProbe();
+    const result = await findExistingRg(probe, fakeShare);
+    expect(result).toEqual({ path: bundledRg, source: 'vendor' });
+    expect(probe.exec).not.toHaveBeenCalled();
+
+    const workspaceResult = await ensureWorkspaceRgPath(
+      probeWith((args) => (args[0] === bundledRg ? 0 : -1)),
+      {
+        shareDir: join(fakeShare, 'empty-cache'),
+        allowCachedFallback: true,
+      },
+    );
+    expect(workspaceResult).toEqual({ path: bundledRg, source: 'vendor' });
   });
 
   it('resolves from share-dir when cached', async () => {

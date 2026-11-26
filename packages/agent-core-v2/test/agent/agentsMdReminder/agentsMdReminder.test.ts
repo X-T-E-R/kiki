@@ -741,6 +741,71 @@ describe('agentsMdReminder duplicate calls', () => {
     expect(h.reminders).toHaveLength(2);
   });
 
+  it('silently deduplicates identical AGENTS.md across sibling directories without vetoing writes, and emits a 1-line alias on ancestor override inversion', async () => {
+    const wt1 = join(workDir, 'wt-1');
+    const wt2 = join(workDir, 'wt-2');
+    const sharedRule = 'shared monorepo rule across worktrees';
+    const wt1Agents = await writeAgentsMd(wt1, sharedRule);
+    await writeAgentsMd(wt2, sharedRule);
+
+    const h = createHarness({ withRealExecutor: true });
+    const readExecute = vi.fn(async () => ({ output: 'read ok' }));
+    const writeExecute = vi.fn(async () => ({ output: 'written' }));
+    h.ix.get(IAgentToolRegistryService).register({
+      name: 'Read',
+      foregroundPolicy: 'instant',
+      description: 'Reads file',
+      parameters: { type: 'object' },
+      resolveExecution: (args: unknown) => ({
+        accesses: ToolAccesses.readFile((args as { path: string }).path),
+        approvalRule: 'Read',
+        execute: readExecute,
+      }),
+    });
+    h.ix.get(IAgentToolRegistryService).register({
+      name: 'Write',
+      foregroundPolicy: 'instant',
+      description: 'Writes file',
+      parameters: { type: 'object' },
+      resolveExecution: (args: unknown) => ({
+        accesses: ToolAccesses.writeFile((args as { path: string }).path),
+        approvalRule: 'Write',
+        execute: writeExecute,
+      }),
+    });
+    h.ix.get(IAgentToolExecutorService).onBeforeExecuteTool((event) => {
+      event.allow();
+    });
+    const runReal = async (id: string, name: string, path: string) => {
+      for await (const _item of h.ix.get(IAgentToolExecutorService).execute(
+        [{ id, type: 'function', name, arguments: JSON.stringify({ path }) }],
+        { turnId: 1, signal: new AbortController().signal },
+      )) {
+      }
+      await h.reminder.flushStepHead();
+    };
+
+    await runReal('r-wt1', 'Read', join(wt1, 'a.ts'));
+    expect(h.reminders).toHaveLength(1);
+    expect(h.reminders[0]?.content).toContain(wt1Agents);
+
+    await runReal('w-wt2', 'Write', join(wt2, 'b.ts'));
+    expect(writeExecute).toHaveBeenCalledTimes(1);
+    expect(h.reminders).toHaveLength(1);
+
+    const wt2Sub = join(wt2, 'sub');
+    await writeAgentsMd(wt2Sub, sharedRule);
+    await writeAgentsMd(wt2, 'modified wt-2 root rule overriding shared rule');
+    h.ix.get(IAgentsMdDiscoveryService).invalidate(h.ix.get(IAgentRuntimeService).inspect(), wt2);
+    h.ix.get(IAgentsMdDiscoveryService).invalidate(h.ix.get(IAgentRuntimeService).inspect(), wt2Sub);
+    await runReal('r-wt2-sub', 'Read', join(wt2Sub, 'c.ts'));
+    expect(h.reminders).toHaveLength(2);
+    expect(h.reminders[1]?.content).toContain('modified wt-2 root rule overriding shared rule');
+    expect(h.reminders[1]?.content).toContain(
+      `(Identical to ${wt1Agents} already in context above; overrides parent directory instructions within this scope.)`,
+    );
+  });
+
   it('does not publish an in-flight disclosure collected before restore', async () => {
     const h = createHarness();
     const subDir = join(workDir, 'packages', 'example');

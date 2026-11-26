@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from 'react';
+import { act, StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
@@ -499,6 +499,31 @@ describe('FIFO Deep-Link Queue (cold, warm gap, reload before ACK, consecutive i
       'https://sub.example.test/secr…7890.tgz',
     );
   });
+
+  it('deduplicates ?subscribe= extraction under React.StrictMode double-effect invocation', async () => {
+    const host = { kind: 'browser' as const } as unknown as HostAdapter;
+    (globalThis as { __testHost?: HostAdapter }).__testHost = host;
+    const latestQueue: { current?: ReturnType<typeof useSubscribeIntentQueue> } = {};
+
+    await renderNode(
+      <StrictMode>
+        <QueueHarness onReady={(api) => { latestQueue.current = api; }} />
+      </StrictMode>,
+      {
+        host,
+        entries: ['/settings/spaces?subscribe=https%3A%2F%2Fsub.example.test%2Fstrict-pack.tgz&name=StrictPack&mode=auto'],
+      },
+    );
+
+    expect(document.querySelector('[data-active-url]')?.textContent).toBe('https://sub.example.test/strict-pack.tgz');
+    expect(document.querySelector('[data-location]')?.textContent).toBe('/settings/spaces');
+    expect(latestQueue.current?.queuedCount).toBe(0);
+
+    // Settling the single extracted intent clears the queue completely (no duplicate second copy).
+    await click('[data-settle]');
+    expect(document.querySelector('[data-active-id]')?.textContent).toBe('none');
+    expect(latestQueue.current?.queuedCount).toBe(0);
+  });
 });
 
 describe('SubscribeModal: 6 scopes, tri-state, ModelPicker binding + explicit defer, 0 network on toggles', () => {
@@ -874,5 +899,61 @@ describe('1,000-item preindexed client reducer benchmark', () => {
       `[bench:subscription-reducer] items=1000 samples=${samples.length} p50=${p50.toFixed(3)}ms p95=${p95.toFixed(3)}ms max=${max.toFixed(3)}ms`,
     );
     expect(p95).toBeLessThan(1.0);
+  });
+
+  it('surfaces executable-code badges on scopes and plugin items in SubscribeModal preview', async () => {
+    const base = makeRichManifest({ bindingSlots: [] });
+    apiMocks.previewSubscribe.mockResolvedValueOnce({
+      ...base,
+      items: [
+        ...base.items,
+        {
+          id: 'plugins:plugins/custom-runner',
+          scope: 'extensions_search',
+          domain: 'plugins',
+          label: 'custom-runner',
+          path: 'plugins/custom-runner/index.js',
+          memberUnitIds: ['plugins:plugins/custom-runner'],
+          dependsOnIds: [],
+          softDependsOnIds: [],
+          referencedByIds: [],
+          dependencyEdges: [],
+          coupledCredentialIds: [],
+          liveSatisfiedIds: [],
+          blockedDependencyIds: [],
+          status: 'will_write',
+          selectable: true,
+          selected: true,
+        },
+      ],
+    });
+
+    await renderNode(
+      <SubscribeModal
+        client={fakeClient}
+        spaces={SPACES}
+        mode={{
+          kind: 'new',
+          initialIntent: {
+            id: 'dl-plugins',
+            url: 'https://sub.lab.example.test/pack.tgz',
+            name: 'Plugin Pack',
+            mode: 'auto',
+            origin: 'native',
+          },
+        }}
+        onClose={() => {}}
+        onDone={() => {}}
+      />,
+    );
+    await click('[data-portable-fetch-preview]');
+
+    const scopeBadge = document.querySelector('[data-portable-executable-scope-badge="extensions_search"]');
+    expect(scopeBadge?.textContent).toBeTruthy();
+    expect(document.querySelector('[data-portable-executable-scope-badge="models_providers"]')).toBeNull();
+
+    const itemBadge = document.querySelector('[data-portable-executable-plugin-tag="plugins:plugins/custom-runner"]');
+    expect(itemBadge?.textContent).toBe(scopeBadge?.textContent);
+    expect(document.querySelector('[data-portable-executable-plugin-tag="mcp:zotero"]')).toBeNull();
   });
 });

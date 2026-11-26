@@ -98,12 +98,16 @@ describe('POST /sessions/:session_id/recover', () => {
     readonly lastRecoveredAt?: number;
     readonly enqueueDelayMs?: number;
     readonly branchUnfinishedTurn?: boolean;
+    readonly recoveryHold?: { readonly reason: 'recovery'; readonly count: number };
+    readonly pendingPromptIds?: readonly string[];
+    readonly branchRecoveryHold?: { readonly reason: 'recovery'; readonly count: number };
   }) {
     const enqueued: unknown[] = [];
     const branchEnqueued: unknown[] = [];
     const metadataPatches: unknown[] = [];
     const publishedEvents: unknown[] = [];
     const resumedQueues: number[] = [];
+    const branchResumedQueues: number[] = [];
     let currentMeta: Record<string, unknown> = {
       id: 'session-1',
       createdAt: 1,
@@ -134,7 +138,12 @@ describe('POST /sessions/:session_id/recover', () => {
       [
         IAgentPromptService,
         {
-          list: () => ({ active: undefined, launching: undefined, pending: [] }),
+          list: () => ({
+            active: undefined,
+            launching: undefined,
+            pending: (options.pendingPromptIds ?? []).map((id) => ({ id })),
+            hold: options.recoveryHold,
+          }),
           resumeRecoveredQueue: () => { resumedQueues.push(1); },
           enqueue: async (input: unknown) => {
             if (options.enqueueDelayMs !== undefined) {
@@ -189,8 +198,13 @@ describe('POST /sessions/:session_id/recover', () => {
       [
         IAgentPromptService,
         {
-          list: () => ({ active: undefined, launching: undefined, pending: [] }),
-          resumeRecoveredQueue: () => {},
+          list: () => ({
+            active: undefined,
+            launching: undefined,
+            pending: [],
+            hold: options.branchRecoveryHold,
+          }),
+          resumeRecoveredQueue: () => { branchResumedQueues.push(1); },
           enqueue: async (input: unknown) => {
             branchEnqueued.push(input);
             return { id: `branch-prompt-recovery-${branchEnqueued.length}` };
@@ -283,6 +297,8 @@ describe('POST /sessions/:session_id/recover', () => {
       branchEnqueued,
       metadataPatches,
       publishedEvents,
+      resumedQueues,
+      branchResumedQueues,
     };
   }
 
@@ -369,5 +385,42 @@ describe('POST /sessions/:session_id/recover', () => {
     });
     expect(harness.enqueued).toHaveLength(0);
     expect(harness.branchEnqueued).toHaveLength(1);
+  });
+
+  it('releases held prompt queue in one click when recovering an interrupted turn without injecting a duplicate prompt', async () => {
+    const harness = setupRoute({
+      unfinishedTurn: true,
+      lostTask: true,
+      recoveryHold: { reason: 'recovery', count: 1 },
+      pendingPromptIds: ['prompt-queued-1'],
+      branchUnfinishedTurn: true,
+      branchRecoveryHold: { reason: 'recovery', count: 1 },
+    });
+    const res = await harness.invoke({});
+    expect(res.code).toBe(0);
+    expect(res.data).toMatchObject({
+      session_id: 'session-1',
+      agent_id: 'main',
+      status: 'recovered',
+      prompt_id: 'prompt-queued-1',
+    });
+    expect(harness.resumedQueues).toHaveLength(1);
+    expect(harness.branchResumedQueues).toHaveLength(1);
+    expect(harness.enqueued).toHaveLength(0);
+    expect(harness.metadataPatches).toContainEqual(expect.objectContaining({ interruptedWork: undefined }));
+  });
+
+  it('releases a model-switch-only recoveryHold without injecting a spurious interruption_recovery prompt', async () => {
+    const harness = setupRoute({
+      unfinishedTurn: false,
+      lostTask: false,
+      recoveryHold: { reason: 'recovery', count: 1 },
+      pendingPromptIds: [],
+    });
+    const res = await harness.invoke({});
+    expect(res.code).toBe(0);
+    expect(res.data).toMatchObject({ status: 'recovered' });
+    expect(harness.resumedQueues).toHaveLength(1);
+    expect(harness.enqueued).toHaveLength(0);
   });
 });

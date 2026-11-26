@@ -237,6 +237,7 @@ export class SpaceEndpoints {
     options: LoadOptions,
     untrusted = false,
     etag?: string,
+    subscriptionOrigin?: string,
   ): Promise<LoadedSpaceTree> {
     const files = new Map(rawFiles);
     let effectiveEncryption = encryptionMode;
@@ -254,7 +255,7 @@ export class SpaceEndpoints {
       }
       files.delete(SEALED);
     }
-    const sanitized = untrusted ? sanitizeRemoteSubscriptionFiles(files) : { files, excluded: [] };
+    const sanitized = untrusted ? sanitizeRemoteSubscriptionFiles(files, subscriptionOrigin) : { files, excluded: [] };
     const { units, excluded: projectedExcluded } = toUnitsWithExcluded(sanitized.files, this.live.registry);
     const excluded = [...sanitized.excluded, ...projectedExcluded];
     for (const [id, item] of units) if (item.domain === 'memories' && options.includeMemories === false || item.domain === 'credentials' && options.includeCredentials === false) units.delete(id);
@@ -304,6 +305,7 @@ export class SpaceEndpoints {
       options,
       true,
       fetched.etag,
+      fetched.finalOrigin,
     );
     return { status: 'ok', tree, etag: fetched.etag, finalOrigin: fetched.finalOrigin };
   }

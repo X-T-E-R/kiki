@@ -1292,11 +1292,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (mode === 'preserve-pending') {
       for (const agent of agents) agent.accessor.get(IAgentPromptService).preservePendingForClose();
     }
-    for (const agent of agents) {
-      try {
-        await agentLifecycle.remove(agent.id, mode);
-      } catch (error) {
-        failures.push(error);
+    const outcomes = await Promise.allSettled(
+      agents.map((agent) => agentLifecycle.remove(agent.id, mode)),
+    );
+    for (const outcome of outcomes) {
+      if (outcome.status === 'rejected') {
+        failures.push(outcome.reason);
       }
     }
     if (failures.length === 1) throw failures[0];
@@ -1633,8 +1634,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           } else {
             const sourceAgent: AgentMeta = sourceAgents[agentId] ?? { type: 'sub' };
             const sliced = sliceSettledAgentRecords(rawRecords);
-            const isUnsealedBranch = sourceAgent.labels?.['branch'] === 'true' &&
-              (sourceAgent.labels['branchSealed'] !== 'true' || sliced.wasOpen === true);
             const taskDocuments = turnSlice === undefined
               ? (cachedTaskDocs ?? await this.readPromotedTaskDocuments(sourceAgentDir, agentId, descendantIdSet))
               : undefined;
@@ -1642,7 +1641,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
               sourceRootAgentId: MAIN_AGENT_ID,
               targetAgentId: agentId,
               isDescendant: true,
-              isUnsealedBranch,
               fallbackTime: Math.max(mainSettleTime, sourceAgent.createdAt ?? 0, sourceAgent.completedAt ?? 0),
               taskDocuments,
             });
@@ -2055,8 +2053,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         const sourceDescHome = descendant.agentMeta.homedir ?? sourceDescDir;
         const targetDescDir = join(targetSessionDir, 'agents', descendant.agentId);
         await this.copyPromotedAgentDirs(sourceDescDir, targetDescDir, descendant.agentId);
-        const isUnsealedBranch = descendant.agentMeta.labels?.['branch'] === 'true' &&
-          (descendant.agentMeta.labels['branchSealed'] !== 'true' || descendant.wasOpen === true);
         const fallbackTime = Math.max(
           settledMain.settleTime,
           descendant.agentMeta.createdAt ?? 0,
@@ -2066,7 +2062,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           sourceRootAgentId: source.agentId,
           targetAgentId: descendant.agentId,
           isDescendant: true,
-          isUnsealedBranch,
           fallbackTime,
           taskDocuments: await this.readPromotedTaskDocuments(sourceDescDir, descendant.agentId, descendantIdSet),
         });

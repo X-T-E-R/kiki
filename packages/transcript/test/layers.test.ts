@@ -5810,3 +5810,163 @@ it('reuses an uncompleted compaction marker on repeated full_compaction.begin in
   expect(compactionMarkers).toHaveLength(1);
   expect(compactionMarkers[0]).toMatchObject({ payload: { phase: 'completed', summary: 'compact ok' } });
 });
+
+it('settles superseded running prompts when a distinct turn.prompt opens (including hidden peer_thread) without aborting mid-turn skill injects, merged batch launches, or tail running prompts on finish', () => {
+  const transcript = new AgentTranscript('main');
+  const reducer = new TranscriptFactReducer(transcript);
+  const adapter = new TranscriptWireAdapter('main');
+  reducer.apply(adapter.add({
+    type: 'prompt.enqueued',
+    promptId: 'p-crashed',
+    userMessageId: 'p-crashed',
+    createdAt: '2026-01-01T00:00:01.000Z',
+    message: { role: 'user', id: 'p-crashed', origin: { kind: 'user' }, content: [{ type: 'text', text: 'day-old prompt' }] },
+    time: 1000,
+  }));
+  reducer.apply(adapter.add({
+    type: 'prompt.launch_committed',
+    promptId: 'p-crashed',
+    committedAt: '2026-01-01T00:00:02.000Z',
+    time: 2000,
+  }));
+  reducer.apply(adapter.add({
+    type: 'turn.prompt',
+    turnId: 13,
+    promptId: 'p-crashed',
+    input: [{ type: 'text', text: 'day-old prompt' }],
+    origin: { kind: 'user' },
+    managed: true,
+    time: 2100,
+  }));
+  reducer.apply(adapter.add({
+    type: 'prompt.enqueued',
+    promptId: 'p-skill-inject',
+    userMessageId: 'p-skill-inject',
+    createdAt: '2026-01-01T00:00:03.000Z',
+    message: { role: 'user', id: 'p-skill-inject', origin: { kind: 'skill_activation', trigger: 'user-slash' }, content: [{ type: 'text', text: '/review' }] },
+    time: 3000,
+  }));
+  reducer.apply(adapter.add({
+    type: 'prompt.launch_committed',
+    promptId: 'p-skill-inject',
+    committedAt: '2026-01-01T00:00:03.100Z',
+    time: 3100,
+  }));
+  expect(transcript.getPrompts().get('p-crashed')).toMatchObject({ status: 'running' });
+
+  reducer.apply(adapter.add({
+    type: 'prompt.enqueued',
+    promptId: 'p-peer-wake',
+    userMessageId: 'p-peer-wake',
+    createdAt: '2026-01-01T02:00:00.000Z',
+    message: { role: 'user', id: 'p-peer-wake', origin: { kind: 'peer_thread' }, content: [{ type: 'text', text: 'wake after restart' }] },
+    time: 7_200_000,
+  }));
+  reducer.apply(adapter.add({
+    type: 'prompt.launch_committed',
+    promptId: 'p-peer-wake',
+    committedAt: '2026-01-01T02:00:01.000Z',
+    time: 7_201_000,
+  }));
+  reducer.apply(adapter.add({
+    type: 'turn.prompt',
+    turnId: 14,
+    promptId: 'p-peer-wake',
+    input: [{ type: 'text', text: 'wake after restart' }],
+    origin: { kind: 'peer_thread' },
+    managed: true,
+    time: 7_201_100,
+  }));
+  expect(transcript.getTurn('t13')?.state).toBe('running');
+  expect(transcript.getPrompts().get('p-crashed')).toMatchObject({
+    status: 'aborted',
+    finishedAt: '1970-01-01T02:00:01.000Z',
+  });
+
+  reducer.apply(adapter.add({
+    type: 'prompt.enqueued',
+    promptId: 'p-completed-no-receipt',
+    userMessageId: 'p-completed-no-receipt',
+    createdAt: '2026-01-01T02:30:00.000Z',
+    message: { role: 'user', id: 'p-completed-no-receipt', origin: { kind: 'user' }, content: [{ type: 'text', text: 'completed turn' }] },
+    time: 9_000_000,
+  }));
+  reducer.apply(adapter.add({
+    type: 'prompt.launch_committed',
+    promptId: 'p-completed-no-receipt',
+    committedAt: '2026-01-01T02:30:01.000Z',
+    time: 9_001_000,
+  }));
+  reducer.apply(adapter.add({
+    type: 'turn.prompt',
+    turnId: 15,
+    promptId: 'p-completed-no-receipt',
+    input: [{ type: 'text', text: 'completed turn' }],
+    origin: { kind: 'user' },
+    managed: true,
+    time: 9_001_100,
+  }));
+  reducer.apply(adapter.add({
+    type: 'turn.ended',
+    turnId: 15,
+    reason: 'completed',
+    time: 9_005_000,
+  }));
+  reducer.apply(adapter.add({
+    type: 'prompt.enqueued',
+    promptId: 'p-batch-head',
+    userMessageId: 'p-batch-head',
+    createdAt: '2026-01-01T03:00:00.000Z',
+    message: { role: 'user', id: 'p-batch-head', origin: { kind: 'user' }, content: [{ type: 'text', text: 'batch head' }] },
+    time: 10_800_000,
+  }));
+  reducer.apply(adapter.add({
+    type: 'prompt.enqueued',
+    promptId: 'p-batch-tail',
+    userMessageId: 'p-batch-tail',
+    createdAt: '2026-01-01T03:00:00.500Z',
+    message: { role: 'user', id: 'p-batch-tail', origin: { kind: 'user' }, content: [{ type: 'text', text: 'batch tail' }] },
+    time: 10_800_500,
+  }));
+  reducer.apply(adapter.add({
+    type: 'prompt.launch_committed',
+    promptId: 'p-batch-head',
+    committedAt: '2026-01-01T03:00:01.000Z',
+    time: 10_801_000,
+  }));
+  reducer.apply(adapter.add({
+    type: 'prompt.launch_committed',
+    promptId: 'p-batch-tail',
+    committedAt: '2026-01-01T03:00:01.001Z',
+    time: 10_801_001,
+  }));
+  expect(transcript.getPrompts().get('p-batch-head')).toMatchObject({ status: 'running' });
+  reducer.apply(adapter.add({
+    type: 'turn.prompt',
+    turnId: 16,
+    promptId: 'p-batch-head',
+    input: [{ type: 'text', text: 'batch head' }],
+    origin: { kind: 'user' },
+    managed: true,
+    time: 10_801_100,
+  }));
+  reducer.apply(adapter.add({
+    type: 'prompt.steered',
+    activePromptId: 'p-batch-head',
+    promptIds: ['p-batch-tail'],
+    content: [{ type: 'text', text: 'batch tail' }],
+    steeredAt: '2026-01-01T03:00:01.200Z',
+    time: 10_801_200,
+  }));
+  expect(transcript.getPrompts().get('p-completed-no-receipt')).toMatchObject({
+    status: 'completed',
+    finishedAt: '1970-01-01T02:30:05.000Z',
+  });
+  expect(transcript.getPrompts().get('p-batch-head')).toMatchObject({ status: 'running' });
+  expect(transcript.getPrompts().get('p-batch-tail')).toMatchObject({ status: 'completed' });
+
+  reducer.apply(adapter.finish());
+  expect(transcript.getTurn('t13')).toMatchObject({ state: 'cancelled', cancellation: 'recovery' });
+  expect(transcript.getPrompts().get('p-batch-head')).toMatchObject({ status: 'running' });
+});
+

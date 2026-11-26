@@ -215,7 +215,12 @@ export function AttentionQuotaRow({
     catch (error) { setLocalFeedback({ tone: 'error', text: errorText(locale, error) }); }
   };
 
-  const message = signedOut ? t('usage.quota.signedOut') : source.message ?? source.reason;
+  const suppressRedundantPartialWrapper = source.reason === 'partial_data' && source.meters.length > 0;
+  const message = signedOut
+    ? t('usage.quota.signedOut')
+    : suppressRedundantPartialWrapper
+      ? undefined
+      : (source.message ?? source.reason);
   const canRefresh = source.supported && source.enabled && !signedOut;
   const statusTextTone = status === 'auth_required'
     ? 'text-[var(--kiki-chart-warn-text)]'
@@ -325,6 +330,7 @@ export function LedgerQuotaRow({
   readonly onToggleEnabled: (enabled: boolean) => Promise<unknown>;
 }) {
   const { t, locale } = useI18n();
+  const navigate = useNavigate();
   const [localFeedback, setLocalFeedback] = useState<Feedback>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const feedback = localFeedback ?? externalFeedback ?? null;
@@ -341,13 +347,18 @@ export function LedgerQuotaRow({
   };
 
   const canRefresh = source.supported && source.enabled && !signedOut;
+  const isFaultStatus = status === 'error' || status === 'auth_required';
   const hasBeenQueried = status !== 'ready' ? (status !== 'unknown' || source.checked_at !== undefined || source.data_as_of !== undefined) : true;
   const unqueried = !hasBeenQueried && source.meters.length === 0;
-  const emptyStatusMessage = source.message ?? source.reason;
-  const keepActionsVisible = isRefreshing || isLocked || menuOpen;
+  const suppressRedundantPartialWrapper = source.reason === 'partial_data' && source.meters.length > 0;
+  const emptyStatusMessage = suppressRedundantPartialWrapper ? undefined : (source.message ?? source.reason);
+  const keepActionsVisible = isRefreshing || isLocked || menuOpen || isFaultStatus;
+  const statusToneClass = status === 'error'
+    ? 'text-[var(--kiki-chart-danger-text)]'
+    : 'text-amber-ink';
 
   return (
-    <section data-quota-item={source.id} className="group space-y-2 py-3.5">
+    <section data-quota-item={source.id} className="group space-y-2 py-3">
       <div className={QUOTA_ROW_GRID}>
         <div className="min-w-0">
           <div className="flex items-baseline gap-2">
@@ -355,7 +366,7 @@ export function LedgerQuotaRow({
             <KindTag kind={source.kind} />
             {status !== 'ready' && !unqueried ? (
               <span
-                className="shrink-0 text-[12px] leading-4 font-normal text-amber-ink"
+                className={`shrink-0 text-[12px] leading-4 font-normal ${statusToneClass}`}
                 data-quota-status={status}
                 title={[t(badge.labelKey as I18nKey), source.message, source.reason].filter(Boolean).join(' · ')}
               >
@@ -365,12 +376,12 @@ export function LedgerQuotaRow({
               <span className="sr-only" data-quota-status={status}>{t(badge.labelKey as I18nKey)}</span>
             )}
           </div>
-          <SourceAccountSubtitle source={source} settingsHref={settingsHref} />
+          <SourceAccountSubtitle source={source} settingsHref={settingsHref} showSettingsLink={isFaultStatus} />
         </div>
 
         <div className="min-w-0 max-md:col-span-2 max-md:order-3">
           {source.meters.length > 0 ? (
-            <div className="space-y-2.5">
+            <div className="space-y-2">
               {source.meters.map((meter) => <QuotaWindowMeter key={meter.id} meter={meter} sourceStatus={status} />)}
             </div>
           ) : unqueried ? (
@@ -392,22 +403,35 @@ export function LedgerQuotaRow({
               ) : null}
             </div>
           ) : (
-            <p className="py-0.5 text-[12px] leading-4 text-ink-soft" data-quota-no-meters={source.id}>
+            <p className="truncate py-0.5 text-[12px] leading-4 text-ink-soft" data-quota-no-meters={source.id} title={emptyStatusMessage}>
               {emptyStatusMessage ?? t(status === 'ready' || status === 'stale' ? 'st.quota.none' : 'usage.quota.status.unknown')}
             </p>
           )}
-          {status !== 'stale' && source.message && source.meters.length > 0 ? <p className="mt-1 text-[12px] leading-4 text-ink-soft">{source.message}</p> : null}
-          {status !== 'stale' && source.reason && !source.message && source.meters.length > 0 ? <p className="mt-1 text-[12px] leading-4 text-ink-faint">{source.reason}</p> : null}
+          {status !== 'stale' && !suppressRedundantPartialWrapper && source.message && source.meters.length > 0 ? (
+            <p className="mt-1 text-[12px] leading-4 text-ink-soft">{source.message}</p>
+          ) : null}
+          {status !== 'stale' && !suppressRedundantPartialWrapper && source.reason && !source.message && source.meters.length > 0 ? (
+            <p className="mt-1 text-[12px] leading-4 text-ink-faint">{source.reason}</p>
+          ) : null}
         </div>
 
         <div
-          className={`flex shrink-0 items-center justify-end gap-0.5 max-md:order-2 transition-opacity ${
+          className={`flex shrink-0 items-center justify-end gap-1 max-md:order-2 transition-opacity ${
             keepActionsVisible
               ? 'opacity-100'
               : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100'
           }`}
         >
-          {canRefresh ? (
+          {status === 'auth_required' ? (
+            <button
+              type="button"
+              data-quota-auth-action={source.id}
+              onClick={() => { void navigate(settingsHref); }}
+              className={QUOTA_SMALL_BUTTON}
+            >
+              {t('usage.quota.action.settings')}
+            </button>
+          ) : canRefresh ? (
             <button
               type="button"
               data-quota-source-refresh={source.id}
@@ -425,6 +449,7 @@ export function LedgerQuotaRow({
             source={source}
             settingsHref={settingsHref}
             localUsageHref={localUsageHref}
+            onRefresh={status === 'auth_required' && canRefresh ? () => runAction(onRefresh) : undefined}
             onDisable={() => runAction(() => onToggleEnabled(false))}
             onOpenChange={setMenuOpen}
           />

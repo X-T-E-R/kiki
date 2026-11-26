@@ -41,6 +41,22 @@ describe('loop control TOML adapter', () => {
     }
   });
 
+  it('defaults skip-unstarted-tools-on-input off and round-trips an explicit choice', () => {
+    expect(registry.defaultValue(LOOP_CONTROL_SECTION)).toMatchObject({
+      skipUnstartedToolsOnInput: false,
+    });
+    const omitted = load('[loop_control]\n');
+    expect(omitted.skipUnstartedToolsOnInput).toBeUndefined();
+    for (const enabled of [false, true]) {
+      const value = load(`[loop_control]\nskip_unstarted_tools_on_input = ${enabled}\n`);
+      expect(value.skipUnstartedToolsOnInput).toBe(enabled);
+      const raw: Record<string, unknown> = {};
+      applySectionToToml(raw, LOOP_CONTROL_SECTION, value, registry);
+      expect(raw['loop_control']).toMatchObject({ skip_unstarted_tools_on_input: enabled });
+      expect(load(stringify(raw))).toEqual(value);
+    }
+  });
+
   it('round-trips every cadence field and adjacent loop settings in their real TOML shape', () => {
     const value = load('[loop_control]\nmax_steps_per_turn = 0\nmax_attempts_per_step = 3\nmax_ralph_iterations = -1\nreserved_context_size = 2048\ncontext_strategy = "fresh"\nsubagent_context_strategy = "auto"\nrelay_shadow = false\nauto_compact = "85%"\ncompaction_trigger_ratio = 0.8\ncompaction_max_attempts = 2\ncompaction_soft_context_size = 4096\n[loop_control.continuity_cadence]\nage_human_turns = 7\ncooldown_human_turns = 9\nlong_task_steps = 25\nmemory_maintenance = false\n[loop_control.directive_cues]\ninstructions = ["retain_rules"]\nhistory = ["review_history"]\n');
     expect(value.continuityCadence).toEqual({ ageHumanTurns: 7, cooldownHumanTurns: 9, longTaskSteps: 25, memoryMaintenance: false });

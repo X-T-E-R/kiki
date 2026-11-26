@@ -10,7 +10,7 @@ import {
   type ProviderQuotaMeter,
 } from '../../../lib/providerQuota';
 
-export type RemainingPaceState = 'on_track' | 'fast' | 'depleting';
+export type RemainingPaceState = 'on_track' | 'fast' | 'depleting' | 'exhausted';
 
 export interface RemainingPace {
   readonly state: RemainingPaceState;
@@ -80,6 +80,15 @@ export function computeRemainingPace(input: ComputeRemainingPaceInput): Remainin
   const expectedRemainingPct = Math.max(0, Math.min(100, (1 - elapsedRatio) * 100));
   const delta = remainingPercent - expectedRemainingPct;
   const deficitPct = Math.max(0, -delta);
+  if (remainingPercent <= 0) {
+    return {
+      state: 'exhausted',
+      expectedRemainingPct,
+      deficitPct,
+      etaSeconds: null,
+      willExhaustBeforeReset: false,
+    };
+  }
   const usedPct = Math.max(0, 100 - remainingPercent);
   const burnRatePerSec = usedPct / elapsedSeconds;
   const etaSeconds = burnRatePerSec > 0 ? remainingPercent / burnRatePerSec : null;
@@ -88,8 +97,9 @@ export function computeRemainingPace(input: ComputeRemainingPaceInput): Remainin
 
   let state: RemainingPaceState = 'on_track';
   if (
-    remainingPercent <= 0 ||
-    (willExhaustBeforeReset && deficitPct >= 10 && (remainingPercent <= 25 || (etaSeconds !== null && etaSeconds <= 3_600)))
+    willExhaustBeforeReset &&
+    deficitPct >= 10 &&
+    (remainingPercent <= 25 || (etaSeconds !== null && etaSeconds <= 3_600))
   ) {
     state = 'depleting';
   } else if (deficitPct >= 8) {
@@ -105,9 +115,9 @@ export function computeRemainingPace(input: ComputeRemainingPaceInput): Remainin
   };
 }
 
-export function formatPaceEta(seconds: number | null, locale: Locale): string {
+export function formatPaceEta(seconds: number | null, _locale: Locale): string {
   if (seconds === null || !Number.isFinite(seconds) || seconds <= 0) {
-    return locale === 'zh' ? '即将耗尽' : 'soon';
+    return '<1m';
   }
   const totalMinutes = Math.max(1, Math.round(seconds / 60));
   const days = Math.floor(totalMinutes / 1_440);

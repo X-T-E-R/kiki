@@ -276,7 +276,7 @@ function foldable(
       return true;
     case 'system':
       if (node.variant === 'compaction_summary') return false;
-      if ((node.variant === 'task' || node.variant === 'thread_watch') && isFailedTaskSystemBlock(node)) return false;
+      if (node.variant === 'thread_watch' && isFailedTaskSystemBlock(node)) return false;
       return true;
     case 'notice':
       return classifyNoticePlacement(node, noticePlacementContext) === 'foldable';
@@ -298,6 +298,7 @@ function nodeFailed(
   if (node.kind === 'tool') return node.status === 'error' || node.isError === true;
   if (node.kind === 'shell') return node.isError === true;
   if (node.kind === 'subagent') return subagentFailed(node, forest, latestCardIdByAgent);
+  if (node.kind === 'system' && node.variant === 'task') return isFailedTaskSystemBlock(node);
   return false;
 }
 
@@ -756,6 +757,32 @@ function gatherRows(
 }
 
 /**
+ * True for internal harness plumbing frames (`system-reminder` other than
+ * image-compression notices, `system` `injection`, `hook_result`, and
+ * `model_steering` rows) that must always fold into process history rather than
+ * sitting exposed on the user-facing timeline or held open by scroll anchoring.
+ */
+export function isInternalHarnessBoilerplate(node: {
+  readonly kind: string;
+  readonly variant?: string;
+  readonly originVariant?: string;
+  readonly source?: string;
+}): boolean {
+  if (node.kind === 'system-reminder') {
+    return node.variant !== 'image_compression';
+  }
+  if (node.kind === 'system') {
+    return (
+      node.variant === 'injection' ||
+      node.variant === 'hook_result' ||
+      node.originVariant === 'model_steering' ||
+      node.source === 'model_steering'
+    );
+  }
+  return false;
+}
+
+/**
  * Fold settled process: each run of ≥2 consecutive process rows of one turn
  * (tools, including ordinary memory tools, read runs, shell, thinking,
  * settled subagents, reminders, settled decisions, engine notes), or a single
@@ -806,6 +833,7 @@ export function foldHistory(
     const shouldFold =
       run.length >= HISTORY_FOLD_MIN ||
       run.some((node) => node.kind === 'shell') ||
+      (run.length === 1 && isInternalHarnessBoilerplate(run[0]!)) ||
       (foldSingleProcess && run.length === 1 && isSingleFoldableProcess(run[0]!));
     if (shouldFold) out.push(buildFold(run, runTurn, forest, latestCardIdByAgent));
     else out.push(...run);
@@ -824,10 +852,13 @@ export function foldHistory(
       continue;
     }
     const turn = normTurn(foldTurnId(node));
+    const boilerplate = isInternalHarnessBoilerplate(node);
     const heldByNewest =
-      node.id === newest && !(foldSingleProcess && node.kind === 'thinking' && !node.streaming);
-    const held = turn === live && (heldByNewest || keepOpen?.has(node.id) === true);
-    const eligible = turn !== undefined && !held && foldable(node, forest, latestCardIdByAgent, noticePlacementContext);
+      node.id === newest &&
+      !boilerplate &&
+      !(foldSingleProcess && node.kind === 'thinking' && !node.streaming);
+    const held = turn === live && !boilerplate && (heldByNewest || keepOpen?.has(node.id) === true);
+    const eligible = (turn !== undefined || boilerplate) && !held && foldable(node, forest, latestCardIdByAgent, noticePlacementContext);
     if (!eligible || (run.length > 0 && turn !== runTurn)) flush();
     if (eligible) {
       run.push(node);

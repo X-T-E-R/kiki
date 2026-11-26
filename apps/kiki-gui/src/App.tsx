@@ -100,6 +100,8 @@ import { setBackdropDrawerClosed } from './lib/skins/backdrop';
 import { useAppearancePacks } from './lib/skins/useAppearancePacks';
 import { afterPaint } from './lib/afterPaint';
 import { useUserSkins } from './lib/skins/useUserSkins';
+import { useSpacePreferencesFrame } from './lib/spacePreferences';
+import { spaceSettingsTargetOf } from './lib/spaceSettings';
 import { pushToast } from './lib/toasts';
 import { browserOwnsShortcut, isEditableTarget, isImeKeyEvent, matchesShortcutAction, shortcutRecordingActive } from './lib/shortcuts';
 import { applyUiZoomAction, desktopZoomShortcut } from './lib/uiZoom';
@@ -296,9 +298,15 @@ export function App() {
   );
 }
 
-function ShellCatalogSync() {
+function ShellAppearanceSync() {
+  const { client, meta } = useConnection();
+  useSpacePreferencesFrame(spaceSettingsTargetOf(client, meta));
   useUserSkins();
   useAppearancePacks();
+  return null;
+}
+
+function ShellCatalogSync() {
   useShortcutPreferencesSync();
   return null;
 }
@@ -1455,6 +1463,7 @@ function NormalApp() {
 
   const stageNode = (
     <div className="app-stage">
+      <ShellAppearanceSync />
       {backgroundReady ? <ShellCatalogSync /> : null}
       {wsStatus !== 'open' && !isSettingsRoute ? (
         <AppConnectionBanner wsStatus={wsStatus} suppressInitialConnecting={wsBannerSuppressed} recovery={recovery} onReconnect={() => { if (nudge !== undefined) nudge(); else socket.nudge(); }} onOpenConnectionSettings={() => { void navigate(recovery?.failure?.kind === 'identity' ? '/settings/spaces' : '/settings/connection'); }} />

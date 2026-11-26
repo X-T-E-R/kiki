@@ -102,6 +102,41 @@ describe('provider quotas', () => {
       used: 3, limit: 10, remaining: 7, data_as_of: usage.checked_at, status: 'ready',
     })));
   });
+
+  it('marks custom-proxy Tavily instances as unsupported while keeping official api.tavily.com errors intact', async () => {
+    const keyUsage = vi.fn(async (instanceId: string): Promise<NbSearchKeyUsageView> => ({
+      provider_instance_id: instanceId,
+      provider_id: 'tavily',
+      balance_supported: true,
+      keys: [{ key_index: 1, state: 'invalid' }],
+    }));
+    const services = new Map<unknown, unknown>([
+      [IProviderService, { ready: Promise.resolve(), list: () => ({}) }],
+      [IOAuthService, {}],
+      [IAtomicDocumentStore, { get: async () => undefined }],
+      [INbSearchService, {
+        quotaSources: async () => [
+          { id: 'tavily.raw-disabled', provider_id: 'tavily', revision: 'proxy-rev', enabled: true, base_url: 'https://api.example.test/raw/69', balance_supported: false },
+          { id: 'tavily.raw-enabled', provider_id: 'tavily', revision: 'raw-rev', enabled: true, base_url: 'https://api.example.test/raw/69' },
+          { id: 'tavily.proxy-implicit', provider_id: 'tavily', revision: 'proxy-rev-2', enabled: true, base_url: 'https://proxy.example.test/tavily' },
+          { id: 'tavily.default', provider_id: 'tavily', revision: 'official-rev', enabled: true, base_url: 'https://api.tavily.com', balance_supported: true },
+        ],
+        keyUsage,
+      }],
+      [IAgentExecutorRegistry, { list: () => [] }],
+    ]);
+    const core = { accessor: { get: (token: unknown) => services.get(token) } } as unknown as Scope;
+    const service = createProviderQuotaService(core);
+    const snap = providerQuotaSnapshotSchema.parse(await service.snapshot());
+    expect(snap.sources.find((s) => s.id === 'service:tavily.raw-disabled')).toMatchObject({ supported: false, status: 'unsupported', reason: 'no_official_quota_api' });
+    expect(snap.sources.find((s) => s.id === 'service:tavily.raw-enabled')).toMatchObject({ supported: true, status: 'unknown', source: { label: 'tavily 网关凭据池额度' } });
+    expect(snap.sources.find((s) => s.id === 'service:tavily.proxy-implicit')).toMatchObject({ supported: false, status: 'unsupported' });
+    expect(snap.sources.find((s) => s.id === 'service:tavily.default')).toMatchObject({ supported: true, status: 'unknown' });
+    await service.refresh('service:tavily.raw-disabled');
+    expect(keyUsage).not.toHaveBeenCalled();
+    const officialRefreshed = providerQuotaSnapshotSchema.parse(await service.refresh('service:tavily.default'));
+    expect(officialRefreshed.sources.find((s) => s.id === 'service:tavily.default')).toMatchObject({ status: 'auth_required' });
+  });
   it('does not fetch on reads, enable, off refresh, unsupported or disconnected targets', async () => {
     const f = fixture();
     expect((await f.service.snapshot()).sources[0]!.status).toBe('unknown');
@@ -363,17 +398,17 @@ describe('provider quotas', () => {
       await app.close();
     }
   });
-  it('selects official hosts only and prevents OAuth credentials from API-key balance calls', () => {
-    for (const url of ['http://api.deepseek.com', 'https://api.deepseek.com.evil.test', 'https://proxy.example.test', 'https://secret@api.deepseek.com', 'https://api.deepseek.com:444', 'https://api.deepseek.com?x=1']) expect(selectQuotaAdapter(url, false)).toBeUndefined();
+  it('selects official and HTTPS gateway hosts safely while preventing OAuth credentials from API-key balance calls', () => {
+    for (const url of ['http://api.deepseek.com', 'https://api.deepseek.com.evil.test', 'https://secret@api.deepseek.com', 'https://api.deepseek.com:444', 'https://api.deepseek.com?x=1']) expect(selectQuotaAdapter(url, false)).toBeUndefined();
     expect(selectQuotaAdapter('https://api.deepseek.com', true)).toBeUndefined();
     const zai = selectQuotaAdapter('https://api.z.ai/api/paas/v4', false)!;
     expect(quotaHeaders(zai, 'YOUR_API_KEY')['Authorization']).toBe('YOUR_API_KEY');
-    for (const url of ['http://api.zjuam.art/v1', 'https://api.zjuam.art.evil.test/v1', 'https://api.zjuam.art:8443/v1', 'https://api.zjuam.art/v1?x=1']) {
+    for (const url of ['http://gateway.example.test/v1', 'https://127.0.0.1:8443/v1', 'https://gateway.example.test/v1?x=1']) {
       expect(selectQuotaAdapter(url, false)).toBeUndefined();
     }
-    expect(selectQuotaAdapter('https://api.zjuam.art/v1', true)).toBeUndefined();
-    expect(selectQuotaAdapter('https://api.zjuam.art/v1', false)).toMatchObject({ id: 'kiki-quota', url: 'https://api.zjuam.art/v1/kiki/quota', oauth: false });
-    expect(selectQuotaAdapter('https://api.zjuam.art', false)).toMatchObject({ id: 'kiki-quota', url: 'https://api.zjuam.art/v1/kiki/quota', oauth: false });
+    expect(selectQuotaAdapter('https://gateway.example.test/v1', true)).toBeUndefined();
+    expect(selectQuotaAdapter('https://gateway.example.test/v1', false)).toMatchObject({ id: 'kiki-quota', url: 'https://gateway.example.test/v1/kiki/quota', secondaryUrl: 'https://gateway.example.test/v1/usage', oauth: false });
+    expect(selectQuotaAdapter('https://gateway.example.test', false)).toMatchObject({ id: 'kiki-quota', url: 'https://gateway.example.test/v1/kiki/quota', secondaryUrl: 'https://gateway.example.test/v1/usage', oauth: false });
   });
   it('parses kiki.key_quota pool windows and personal usage with group tags', () => {
     const payload = {
@@ -822,5 +857,97 @@ describe('provider quotas', () => {
     const afterWithdraw = providerQuotaSnapshotSchema.parse(await service.snapshot());
     expect(afterWithdraw.sources.some((s) => s.id.startsWith('plugin-quota:'))).toBe(false);
     expect(afterWithdraw.sources.map((s) => s.id)).toEqual(['provider:acme-bridge']);
+  });
+
+  it('renders one deduplicated pool row for /raw/<id> multi-key search instances including prefixed paths', async () => {
+    const keyUsage = vi.fn(async (instanceId: string): Promise<NbSearchKeyUsageView> => ({
+      provider_instance_id: instanceId,
+      provider_id: 'tavily',
+      balance_supported: true,
+      keys: [
+        {
+          key_index: 1,
+          state: 'ready',
+          usage: {
+            scope: 'team',
+            unit: 'credits',
+            used: 10,
+            limit: 100,
+            remaining: 90,
+            checked_at: '2026-11-26T00:00:00Z',
+            meters: [{ id: 'channel-69-total', label: 'Search Pool · 渠道池额度', unit: 'credits', used: 10, limit: 100, remaining: 90 }],
+          },
+        },
+        {
+          key_index: 2,
+          state: 'ready',
+          usage: {
+            scope: 'team',
+            unit: 'credits',
+            used: 10,
+            limit: 100,
+            remaining: 90,
+            checked_at: '2026-11-26T00:00:00Z',
+            meters: [{ id: 'channel-69-total', label: 'Search Pool · 渠道池额度', unit: 'credits', used: 10, limit: 100, remaining: 90 }],
+          },
+        },
+      ],
+    }));
+    const services = new Map<unknown, unknown>([
+      [IProviderService, { ready: Promise.resolve(), list: () => ({}) }],
+      [IOAuthService, {}],
+      [IAtomicDocumentStore, { get: async () => undefined }],
+      [INbSearchService, {
+        quotaSources: async () => [
+          { id: 'tavily.prefixed-raw', provider_id: 'tavily', revision: 'raw-rev-1', enabled: true, base_url: 'https://api.example.test/prefix/raw/69' },
+        ],
+        keyUsage,
+      }],
+      [IAgentExecutorRegistry, { list: () => [] }],
+    ]);
+    const core = { accessor: { get: (token: unknown) => services.get(token) } } as unknown as Scope;
+    const service = createProviderQuotaService(core);
+    const snap = providerQuotaSnapshotSchema.parse(await service.refresh('service:tavily.prefixed-raw'));
+    const source = snap.sources.find((s) => s.id === 'service:tavily.prefixed-raw')!;
+    expect(source.supported).toBe(true);
+    expect(source.account_label).toBe('网关渠道池共享额度');
+    expect(source.meters).toHaveLength(1);
+    expect(source.meters[0]).toMatchObject({
+      id: 'pool-channel-69-total',
+      label: 'Search Pool · 渠道池额度',
+      scope: 'team',
+      remaining: 90,
+    });
+  });
+
+  it('recognizes LLM gateway 403 key_quota_exposure_disabled as managed state instead of auth_required', async () => {
+    const { clearGatewayQuotaUnsupportedCache } = await import('../src/usage/quota/adapters');
+    clearGatewayQuotaUnsupportedCache();
+    try {
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+        error: { code: 'key_quota_exposure_disabled', message: 'quota exposure disabled by admin' },
+      }), { status: 403, headers: { 'content-type': 'application/json' } }));
+      const services = new Map<unknown, unknown>([
+        [IProviderService, {
+          ready: Promise.resolve(),
+          list: () => ({
+            managedgw: { type: 'openai', baseUrl: 'https://managed-gw.example.test/v1', apiKey: 'sk-managed' },
+          }),
+        }],
+        [IOAuthService, {}],
+        [IAtomicDocumentStore, { get: async () => undefined }],
+        [INbSearchService, { quotaSources: async () => [] }],
+        [IAgentExecutorRegistry, { list: () => [] }],
+      ]);
+      const core = { accessor: { get: (token: unknown) => services.get(token) } } as unknown as Scope;
+      const service = createProviderQuotaService(core, fetchMock as typeof fetch);
+      const snap = providerQuotaSnapshotSchema.parse(await service.refresh('provider:managedgw'));
+      const source = snap.sources.find((s) => s.id === 'provider:managedgw')!;
+      expect(source.status).toBe('unsupported');
+      expect(source.reason).toBe('key_quota_exposure_disabled');
+      expect(source.status).not.toBe('auth_required');
+    } finally {
+      clearGatewayQuotaUnsupportedCache();
+    }
   });
 });

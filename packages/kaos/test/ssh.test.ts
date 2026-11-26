@@ -11,7 +11,7 @@ import {
   SSHKaos,
 } from '#/ssh';
 import type { StatResult } from '#/types';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, test } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, test, vi } from 'vitest';
 
 // Environment variable configuration for SSH connection
 const SSH_SMOKE = process.env['KAOS_SSH_SMOKE'] === '1';
@@ -1538,5 +1538,133 @@ describe('SSHKaos.close lifecycle', () => {
     expect(instance.normpath('/c/kiki-e2e/space dir/file.txt')).toBe('C:/kiki-e2e/space dir/file.txt');
     expect(instance.normpath('/C:/kiki-e2e/file.txt')).toBe('C:/kiki-e2e/file.txt');
     expect(instance.normpath('/cygdrive/d/work/notes.md')).toBe('D:/work/notes.md');
+  });
+
+  it('bounds SSHKaos.close() at 5_000ms and calls client.destroy() on a half-open transport', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = Object.assign(new EventEmitter(), {
+        end: vi.fn(),
+        destroy: vi.fn(),
+      });
+      const instance = uninitializedSsh();
+      const internals = instance as unknown as {
+        _client: typeof client;
+        _sftp: { end(): void };
+        _activity: { count: number; closed: boolean };
+      };
+      internals._client = client;
+      internals._sftp = { end: vi.fn() };
+      internals._activity = { count: 0, closed: false };
+
+      let resolved = false;
+      const closing = instance.close().then(() => { resolved = true; });
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(resolved).toBe(false);
+      expect(client.destroy).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      await closing;
+      expect(resolved).toBe(true);
+      expect(client.destroy).toHaveBeenCalledOnce();
+      expect(internals._activity.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects hanging SFTP and exec callbacks on operation timeout and AbortSignal', async () => {
+    const client = Object.assign(new EventEmitter(), {
+      exec: vi.fn((_command: string, _cb: unknown) => {}),
+      end: vi.fn(),
+      destroy: vi.fn(),
+    });
+    const sftp = {
+      stat: vi.fn((_path: string, _cb: unknown) => {}),
+      exists: vi.fn((_path: string, _cb: unknown) => {}),
+      end: vi.fn(),
+    };
+    const instance = uninitializedSsh();
+    const internals = instance as unknown as {
+      _client: typeof client;
+      _sftp: typeof sftp;
+      _home: string;
+      _cwd: string;
+      _envLayers: readonly Record<string, string>[];
+      _activity: { count: number; closed: boolean };
+      _operationTimeoutMs: number;
+    };
+    internals._client = client;
+    internals._sftp = sftp;
+    internals._home = '/home/tester';
+    internals._cwd = '/home/tester';
+    internals._envLayers = [];
+    internals._activity = { count: 0, closed: false };
+    internals._operationTimeoutMs = 40;
+
+    const controller = new AbortController();
+    const abortedStat = instance.stat('/home/tester/file.txt', { signal: controller.signal, timeoutMs: 5_000 });
+    controller.abort(new Error('cancelled by caller'));
+    await expect(abortedStat).rejects.toThrow('cancelled by caller');
+    expect(client.destroy).not.toHaveBeenCalled();
+
+    const abortedExec = instance.execWithEnv(['echo', 'hi'], undefined, { signal: controller.signal, timeoutMs: 5_000 });
+    await expect(abortedExec).rejects.toThrow('cancelled by caller');
+    expect(instance.activeProcesses).toBe(0);
+
+    await expect(instance.stat('/home/tester/stuck.txt')).rejects.toBeInstanceOf(KaosConnectionError);
+    expect(client.destroy).toHaveBeenCalled();
+
+    client.destroy.mockClear();
+    await expect(instance.exec('sleep', '999')).rejects.toBeInstanceOf(KaosConnectionError);
+    expect(client.destroy).toHaveBeenCalledOnce();
+    expect(instance.activeProcesses).toBe(0);
+  });
+
+  it('absorbs premature close during _probe without floating an unhandledRejection', async () => {
+    const { PassThrough } = await import('node:stream');
+    const rejections: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { rejections.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const client = Object.assign(new EventEmitter(), {
+        exec: vi.fn((_command: string, cb: (err: Error | undefined, channel: unknown) => void) => {
+          const channel = Object.assign(new PassThrough(), {
+            stderr: new PassThrough(),
+            signal: vi.fn(),
+          });
+          cb(undefined, channel);
+          setTimeout(() => {
+            channel.destroy();
+            channel.emit('close', 1);
+          }, 10);
+        }),
+        end: vi.fn(),
+        destroy: vi.fn(),
+      });
+      const instance = uninitializedSsh();
+      const internals = instance as unknown as {
+        _client: typeof client;
+        _sftp: { end(): void };
+        _home: string;
+        _cwd: string;
+        _envLayers: readonly Record<string, string>[];
+        _activity: { count: number; closed: boolean };
+        _probe(command: string): Promise<string | undefined>;
+      };
+      internals._client = client;
+      internals._sftp = { end: vi.fn() };
+      internals._home = '/home/tester';
+      internals._cwd = '/home/tester';
+      internals._envLayers = [];
+      internals._activity = { count: 0, closed: false };
+
+      await expect(internals._probe('uname -s')).resolves.toBeUndefined();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(rejections).toEqual([]);
+      expect(instance.activeProcesses).toBe(0);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 });

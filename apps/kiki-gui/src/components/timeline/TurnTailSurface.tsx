@@ -162,12 +162,31 @@ export const TurnTailSurface = memo(function TurnTailSurface({
     );
 
     if (canMutate) {
+      const canSwitchModel = (category === 'capacity' || category === 'rate_limit' || category === 'quota') && onOpenModelPicker !== undefined;
+      const canOpenProvider = category === 'auth' && onOpenProviderSettings !== undefined;
+      const canCompact = category === 'context_limit' && onCompactContext !== undefined;
+      const primaryActionId = canOpenProvider
+        ? 'provider-settings'
+        : canCompact
+          ? 'compact-context'
+          : (category === 'capacity' || category === 'quota') && canSwitchModel
+            ? 'switch-model'
+            : failedHasWork && onContinueFailed !== undefined
+              ? 'continue'
+              : canRetryNow && onRetryFailed !== undefined
+                ? 'retry'
+                : hasDraftRestore && onRestoreDraft !== undefined
+                  ? 'restore-draft'
+                  : canSwitchModel
+                    ? 'switch-model'
+                    : undefined;
+
       if (failedHasWork && onContinueFailed !== undefined) {
         actions.push({
           id: 'continue',
           label: t('transcript.error.continue'),
           onClick: onContinueFailed,
-          primary: true,
+          primary: primaryActionId === 'continue',
           dataAttr: 'data-turn-tail-continue',
         });
       }
@@ -176,7 +195,7 @@ export const TurnTailSurface = memo(function TurnTailSurface({
           id: 'retry',
           label: t('transcript.error.retry'),
           onClick: () => { onRetryFailed(failedTurnUserBlock); },
-          primary: !failedHasWork && category !== 'auth' && category !== 'quota',
+          primary: primaryActionId === 'retry',
           dataAttr: 'data-turn-tail-retry-now',
         });
       } else if (hasDraftRestore && onRestoreDraft !== undefined) {
@@ -184,34 +203,34 @@ export const TurnTailSurface = memo(function TurnTailSurface({
           id: 'restore-draft',
           label: t('transcript.error.restoreDraft'),
           onClick: onRestoreDraft,
-          primary: !failedHasWork,
+          primary: primaryActionId === 'restore-draft',
           dataAttr: 'data-turn-tail-retry',
         });
       }
-      if ((category === 'capacity' || category === 'rate_limit' || category === 'quota') && onOpenModelPicker !== undefined) {
+      if (canSwitchModel) {
         actions.push({
           id: 'switch-model',
           label: t('transcript.error.switchModel'),
           onClick: onOpenModelPicker,
-          primary: category === 'capacity' || category === 'quota',
+          primary: primaryActionId === 'switch-model',
           dataAttr: 'data-turn-tail-switch-model',
         });
       }
-      if (category === 'auth' && onOpenProviderSettings !== undefined) {
+      if (canOpenProvider) {
         actions.push({
           id: 'provider-settings',
           label: t('transcript.error.providerSettings'),
           onClick: onOpenProviderSettings,
-          primary: true,
+          primary: primaryActionId === 'provider-settings',
           dataAttr: 'data-turn-tail-provider-settings',
         });
       }
-      if (category === 'context_limit' && onCompactContext !== undefined) {
+      if (canCompact) {
         actions.push({
           id: 'compact-context',
           label: t('transcript.error.compactContext'),
           onClick: onCompactContext,
-          primary: true,
+          primary: primaryActionId === 'compact-context',
           dataAttr: 'data-turn-tail-compact',
         });
       }

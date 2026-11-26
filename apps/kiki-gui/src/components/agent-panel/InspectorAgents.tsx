@@ -26,6 +26,7 @@ import type { LifeState } from '../../lib/motion';
 import { DisclosureChevron, Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
+import { useNow } from '../RelativeTime';
 import { buildRoster, ROSTER_BUCKETS, type RosterAgentRow, type RosterBucket, type RosterRow } from './agentRoster';
 import { plainFailure } from './failureText';
 
@@ -187,12 +188,14 @@ function shortModel(model: string | undefined): string | undefined {
   return model.split('/').pop();
 }
 
-/** "3m", "1h 4m": elapsed for a running row, coarse on purpose. */
+/** "12s", "3m", "1h 4m": live elapsed for a running row. */
 function coarseElapsed(since: string | undefined, now: number): string | undefined {
   if (since === undefined) return undefined;
   const start = Date.parse(since);
-  if (!Number.isFinite(start) || now - start < 60_000) return undefined;
-  const minutes = Math.floor((now - start) / 60_000);
+  if (!Number.isFinite(start) || start > now + 5_000) return undefined;
+  const elapsedMs = Math.max(0, now - start);
+  if (elapsedMs < 60_000) return `${Math.max(1, Math.floor(elapsedMs / 1_000))}s`;
+  const minutes = Math.floor(elapsedMs / 60_000);
   return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
@@ -502,7 +505,7 @@ export const AgentRoster = memo(function AgentRoster({
   useEffect(() => {
     if (activeFilter !== filter) setFilter('all');
   }, [activeFilter, filter]);
-  const now = useMinuteClock(model.counts.running > 0);
+  const now = useNow(model.counts.running > 0);
   const toggle = useCallback((agentId: string) => {
     setExpanded((previous) => {
       const next = new Set(previous);
@@ -659,18 +662,3 @@ export const AgentRoster = memo(function AgentRoster({
     </div>
   );
 });
-
-/** Wall clock at minute granularity: only ticks while running agents exist and the document is visible. */
-function useMinuteClock(enabled: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!enabled) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-      setNow(Date.now());
-    }, 30_000);
-    return () => { window.clearInterval(timer); };
-  }, [enabled]);
-  return now;
-}

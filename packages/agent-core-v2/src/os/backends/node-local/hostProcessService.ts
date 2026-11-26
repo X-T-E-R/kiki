@@ -35,18 +35,32 @@ function buildSpawnOptions(options: HostProcessOptions, defaults: Readonly<Recor
   return spawnOptions;
 }
 
-function waitForSpawn(child: ChildProcess): Promise<void> {
+function waitForSpawn(child: ChildProcess, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted === true) {
+    return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  }
   return new Promise((resolve, reject) => {
-    const onSpawn = (): void => {
+    const cleanup = (): void => {
+      child.off('spawn', onSpawn);
       child.off('error', onError);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onSpawn = (): void => {
+      cleanup();
       resolve();
     };
     const onError = (err: Error): void => {
-      child.off('spawn', onSpawn);
+      cleanup();
       reject(err);
+    };
+    const onAbort = (): void => {
+      cleanup();
+      try { child.kill(); } catch { }
+      reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
     };
     child.once('spawn', onSpawn);
     child.once('error', onError);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -227,6 +241,7 @@ export class HostProcessService implements IHostProcessService {
     options: HostProcessOptions = {},
   ): Promise<IHostProcess> {
     if (this.closing) throw new HostProcessError(HostProcessErrorCode.SpawnFailed, 'Host process service is shutting down.', { details: { command, phase: 'owner' } });
+    options.signal?.throwIfAborted();
     const ownerLifetime = options.ownedProcessLifetime === 'owner';
     if (ownerLifetime && (!isWindows || options.ownedProcessTree !== true)) {
       throw new HostProcessError(HostProcessErrorCode.SpawnFailed, 'Owner lifetime requires an owned Windows process tree.', { details: { command, phase: 'owner' } });
@@ -236,8 +251,12 @@ export class HostProcessService implements IHostProcessService {
     const spawnOptions = launch.options;
     await this.paceSpawn();
     if (this.closing) throw new HostProcessError(HostProcessErrorCode.SpawnFailed, 'Host process service is shutting down.', { details: { command, phase: 'owner' } });
+    options.signal?.throwIfAborted();
     if (isWindows && options.ownedProcessTree === true) {
-      const pending = spawnWindowsProcessTree(launch.command, launch.args, spawnOptions, options.mergeStderr ?? false, ownerLifetime);
+      const treeOptions: SpawnOptions = options.signal === undefined
+        ? spawnOptions
+        : { ...spawnOptions, signal: options.signal };
+      const pending = spawnWindowsProcessTree(launch.command, launch.args, treeOptions, options.mergeStderr ?? false, ownerLifetime);
       if (!ownerLifetime) return pending;
       this.pendingTrees.add(pending);
       try {
@@ -258,7 +277,7 @@ export class HostProcessService implements IHostProcessService {
     const processHandle = new HostProcess(child, options.mergeStderr ?? false, spawnOptions.detached === true);
     const observedExit = processHandle.wait().catch(() => undefined);
     try {
-      await waitForSpawn(child);
+      await waitForSpawn(child, options.signal);
     } catch (error) {
       await observedExit;
       processHandle.dispose();

@@ -60,7 +60,7 @@ async function fixture(options: { readonly hooks?: readonly HookDef[]; readonly 
   const local = createTestAgent(
     externalHookServices(runner), permissionModeServices('yolo'),
     options.create === undefined ? [] : appService(IProtocolAdapterRegistry, new FixtureRegistry()),
-    { initialConfig: options.config },
+    { initialConfig: options.config ?? { retry: { maxAttempts: 1 } } },
   );
   return {
     local, trigger,

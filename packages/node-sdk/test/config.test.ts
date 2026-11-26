@@ -553,6 +553,9 @@ maxRunningTasks = 2
     expect(parseConfigString('[loop_control]\nzero_output_continuation = true\n').loopControl?.zeroOutputContinuation).toBe(true);
     expect(parseConfigString('[loop_control]\nzero_output_continuation = false\n').loopControl?.zeroOutputContinuation).toBe(false);
     expect(parseConfigString('[loop_control]\nmax_steps_per_turn = 3\n').loopControl?.zeroOutputContinuation).toBeUndefined();
+    expect(parseConfigString('[loop_control]\nskip_unstarted_tools_on_input = true\n').loopControl?.skipUnstartedToolsOnInput).toBe(true);
+    expect(parseConfigString('[loop_control]\nskip_unstarted_tools_on_input = false\n').loopControl?.skipUnstartedToolsOnInput).toBe(false);
+    expect(parseConfigString('[loop_control]\nmax_steps_per_turn = 3\n').loopControl?.skipUnstartedToolsOnInput).toBeUndefined();
   });
 });
 
@@ -690,7 +693,7 @@ describe('KimiHarness config API', () => {
       nbSearchSource: { reuse_local_config: true },
       mergeAllAvailableSkills: true,
       extraSkillDirs: [],
-      loopControl: { compactionSoftContextSize: 0, thinkingOnlyContinuation: true, zeroOutputContinuation: false },
+      loopControl: { compactionSoftContextSize: 0, thinkingOnlyContinuation: true, zeroOutputContinuation: false, skipUnstartedToolsOnInput: false },
       background: {},
       subagent: { timeoutMs: 7_200_000, maxDirectChildren: 16, maxTotalSubagents: 0, defaultProfile: 'general', allowedTools: [] },
       mcp: {},

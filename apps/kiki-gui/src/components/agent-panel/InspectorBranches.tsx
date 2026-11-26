@@ -43,10 +43,11 @@ export function isSessionBranchNode(node: AgentTreeNode | undefined): node is Ag
 }
 
 export function branchLifecycleState(node: AgentTreeNode, waiting: ReadonlySet<string>): BranchLifecycleState {
-  if (node.branchSealed === true) return 'merged';
   if (waiting.has(node.agentId) || node.status === 'suspended') return 'waiting';
   if (node.status === 'running' || node.status === 'background' || node.busy) return 'running';
   if (node.status === 'failed') return 'failed';
+  if (node.status === 'cancelled') return 'open';
+  if (node.branchSealed === true) return 'merged';
   return 'open';
 }
 

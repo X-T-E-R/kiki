@@ -189,6 +189,7 @@ export class TranscriptWireAdapter {
   #recordPosition: TranscriptWireRecordPosition | undefined;
   #legacyTurnOrdinal = 0;
   #lastRecordTime: number | undefined;
+  #previousRecordTime: number | undefined;
   #currentTurnId: string | undefined;
   #currentPromptId: string | undefined;
   #modelAlias: string | undefined;
@@ -333,6 +334,7 @@ export class TranscriptWireAdapter {
     this.#recordOrdinal = checkpoint.recordOrdinal;
     this.#legacyTurnOrdinal = checkpoint.legacyTurnOrdinal;
     this.#lastRecordTime = checkpoint.lastRecordTime;
+    this.#previousRecordTime = checkpoint.lastRecordTime;
     this.#currentTurnId = checkpoint.currentTurnId;
     this.#currentPromptId = checkpoint.currentPromptId;
     this.#modelAlias = checkpoint.modelAlias;
@@ -372,6 +374,7 @@ export class TranscriptWireAdapter {
     this.#recordPosition = position;
     const ordinal = position?.ordinal ?? this.#recordOrdinal;
     this.#recordOrdinal = ordinal + 1;
+    this.#previousRecordTime = this.#lastRecordTime;
     if (record.time !== undefined) this.#lastRecordTime = record.time;
     const operations = this.operations(record, ordinal);
     if (operations.length === 0) return [];
@@ -419,23 +422,23 @@ export class TranscriptWireAdapter {
     }
   }
 
-  finish(): TranscriptFact[] {
+  finish(preserveOpenTurnIds?: ReadonlySet<string>): TranscriptFact[] {
     const operations: TranscriptOperation[] = this.#compaction.finish();
     const endedAt = isoOf(this.#lastRecordTime);
     for (const [toolCallId, hit] of this.#tools) {
-      if (hit.frame.state !== 'running') continue;
+      if (hit.frame.state !== 'running' || preserveOpenTurnIds?.has(hit.turnId)) continue;
       const frame: ToolCallFrame = { ...hit.frame, state: 'interrupted', endedAt };
       this.storeTool(toolCallId, { ...hit, frame });
       operations.push({ op: 'frame.upsert', turnId: hit.turnId, stepId: hit.stepId, frame });
     }
     for (const [stepId, previous] of this.#stepHeaders) {
-      if (previous.state !== 'running') continue;
+      if (previous.state !== 'running' || preserveOpenTurnIds?.has(previous.turnId)) continue;
       const step: StepHeader = { ...previous, state: 'interrupted', endedAt };
       this.storeStep(stepId, step);
       operations.push({ op: 'step.upsert', turnId: step.turnId, step });
     }
     for (const [turnId, previous] of this.#turnHeaders) {
-      if (previous.state !== 'running') continue;
+      if (previous.state !== 'running' || preserveOpenTurnIds?.has(turnId)) continue;
       const turn: TurnHeader = {
         ...previous,
         state: 'cancelled',
@@ -915,6 +918,57 @@ export class TranscriptWireAdapter {
   private storePrompt(prompt: TranscriptPrompt): TranscriptOperation {
     this.#prompts.set(prompt.promptId, prompt);
     return { op: 'prompt.upsert', prompt };
+  }
+
+  private settleSupersededRunningPrompts(
+    turnId: string,
+    activePromptId: string | undefined,
+    finishedAt: string | undefined,
+    matchUserMessageId = false,
+  ): TranscriptOperation[] {
+    const operations: TranscriptOperation[] = [];
+    for (const [id, prior] of this.#prompts) {
+      if (prior.status !== 'running') continue;
+      if (activePromptId !== undefined) {
+        if (id === activePromptId) continue;
+        if (matchUserMessageId && prior.userMessageId === activePromptId) continue;
+      }
+      let ownerTurn: TurnHeader | undefined;
+      for (const candidate of this.#turnHeaders.values()) {
+        if (candidate.promptId === id) {
+          ownerTurn = candidate;
+          break;
+        }
+        if (
+          candidate.promptId === undefined &&
+          (candidate.message?.messageId === id ||
+            (prior.userMessageId !== undefined && candidate.message?.messageId === prior.userMessageId))
+        ) {
+          ownerTurn = candidate;
+        }
+      }
+      if (ownerTurn?.turnId === turnId) continue;
+      if (activePromptId === undefined && ownerTurn === undefined) continue;
+      const status: TranscriptPrompt['status'] =
+        ownerTurn?.state === 'completed'
+          ? 'completed'
+          : ownerTurn?.state === 'failed'
+            ? 'failed'
+            : 'aborted';
+      this.#openBlockedBatchIds.delete(id);
+      this.removeQueueSlot(id);
+      operations.push(
+        this.storePrompt({
+          ...prior,
+          status,
+          queuePosition: undefined,
+          finishedAt: ownerTurn?.endedAt ?? finishedAt ?? prior.finishedAt,
+          error: ownerTurn?.error ?? prior.error,
+          errorDetails: ownerTurn?.errorDetails ?? prior.errorDetails,
+        }),
+      );
+    }
+    return operations;
   }
 
   private supplemental(record: TranscriptWireRecord, ordinal: number): TranscriptOperation[] {
@@ -1584,7 +1638,8 @@ export class TranscriptWireAdapter {
     const turnId = `t${turnOrdinal}`;
     this.#canonicalTurns.add(turnId);
     this.trackTurn(turnId);
-    const promptId = stringOf(record['promptId']) ?? stringOf(record['messageId']);
+    const explicitPromptId = stringOf(record['promptId']);
+    const promptId = explicitPromptId ?? stringOf(record['messageId']);
     const messageId = promptId === undefined
       ? undefined
       : this.#prompts.get(promptId)?.userMessageId ?? this.#promptUserMessageIds.get(promptId) ?? promptId;
@@ -1600,23 +1655,27 @@ export class TranscriptWireAdapter {
     const activations = headerOnly ? [] : bundledSkillActivations(record['origin']);
     const openingInput = input.slice(activations.length);
     const prompt = openingInput.map(textOfPart).join('');
+    const priorEndedAt = isoOf(this.#previousRecordTime ?? record.time);
     this.#currentTurnId = turnId;
     this.#currentPromptId = promptId;
     const attachmentIds: string[] = [];
-    const operations: TranscriptOperation[] = activations.map((activation, index) => ({
-      op: 'marker.upsert',
-      item: {
-        kind: 'marker',
-        markerId: `wire:v2:skill:${activation.activationId}`,
-        marker: 'skill',
-        payload: {
-          text: textOfPart(input[index]),
-          origin: { kind: 'skill_activation', trigger: 'user-slash', ...activation },
+    const operations: TranscriptOperation[] = [
+      ...this.settleSupersededRunningPrompts(turnId, promptId, priorEndedAt, explicitPromptId === undefined),
+      ...activations.map((activation, index): TranscriptOperation => ({
+        op: 'marker.upsert',
+        item: {
+          kind: 'marker',
+          markerId: `wire:v2:skill:${activation.activationId}`,
+          marker: 'skill',
+          payload: {
+            text: textOfPart(input[index]),
+            origin: { kind: 'skill_activation', trigger: 'user-slash', ...activation },
+          },
+          at: isoOf(record.time),
         },
-        at: isoOf(record.time),
-      },
-      beforeTurn: turnOrdinal,
-    }));
+        beforeTurn: turnOrdinal,
+      })),
+    ];
     if (activations.length > 0) {
       this.#turnOwnedItemIds.set(
         turnId,

@@ -6,6 +6,8 @@ import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
 
 const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
 const HARD_TERMINATE_GRACE_MS = 5_000;
+const DEFAULT_BOOT_TIMEOUT_MS = 15_000;
+const DEFAULT_CLOSE_TIMEOUT_MS = 3_000;
 const WARM_WORKER_FLOOR = 1;
 
 export interface CpuPoolOptions {
@@ -15,6 +17,8 @@ export interface CpuPoolOptions {
   readonly timeoutMs?: number;
   readonly idleTimeoutMs?: number;
   readonly cancelGraceMs?: number;
+  readonly bootTimeoutMs?: number;
+  readonly closeTimeoutMs?: number;
   readonly warmWorkers?: number;
 }
 
@@ -72,6 +76,7 @@ interface Slot {
   retiring?: Promise<number>;
   exited?: Promise<void>;
   idleTimer?: ReturnType<typeof setTimeout>;
+  bootTimer?: ReturnType<typeof setTimeout>;
 }
 
 export class CpuWorkerPool {
@@ -90,6 +95,8 @@ export class CpuWorkerPool {
   private readonly timeoutMs: number;
   private readonly idleTimeoutMs: number;
   private readonly cancelGraceMs: number;
+  private readonly bootTimeoutMs: number;
+  private readonly closeTimeoutMs: number;
   private readonly warmWorkerFloor: number;
   private queuedBytes = 0;
   private serial = 0;
@@ -105,6 +112,8 @@ export class CpuWorkerPool {
     this.timeoutMs = positiveInteger(options.timeoutMs ?? 30_000, 'timeoutMs');
     this.idleTimeoutMs = positiveInteger(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, 'idleTimeoutMs');
     this.cancelGraceMs = positiveInteger(options.cancelGraceMs ?? HARD_TERMINATE_GRACE_MS, 'cancelGraceMs');
+    this.bootTimeoutMs = positiveInteger(options.bootTimeoutMs ?? DEFAULT_BOOT_TIMEOUT_MS, 'bootTimeoutMs');
+    this.closeTimeoutMs = positiveInteger(options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS, 'closeTimeoutMs');
     const requestedWarm = options.warmWorkers === undefined ? WARM_WORKER_FLOOR : Math.max(0, Math.floor(options.warmWorkers));
     this.warmWorkerFloor = Math.min(this.size, requestedWarm);
   }
@@ -290,6 +299,13 @@ export class CpuWorkerPool {
     }
   }
 
+  private clearBootTimer(slot: Slot): void {
+    if (slot.bootTimer !== undefined) {
+      clearTimeout(slot.bootTimer);
+      slot.bootTimer = undefined;
+    }
+  }
+
   private clearDrainingCancel(slot: Slot): void {
     if (slot.drainingCancel !== undefined) {
       if (slot.drainingCancel.timer !== undefined) {
@@ -443,12 +459,23 @@ export class CpuWorkerPool {
     });
     slot.worker = worker;
     slot.ready = undefined;
+    this.clearBootTimer(slot);
+    if (slot.active === undefined) {
+      slot.bootTimer = setTimeout(() => {
+        slot.bootTimer = undefined;
+        if (slot.worker !== worker || slot.ready === true || slot.active !== undefined || slot.retiring !== undefined) return;
+        void this.retire(slot);
+        this.pump();
+      }, this.bootTimeoutMs);
+      slot.bootTimer.unref?.();
+    }
     slot.exited = new Promise<void>((resolve) => {
       worker.once('exit', () => { resolve(); });
     });
     worker.on('message', (response: CpuResponse) => {
       if (!('id' in response)) {
         if (slot.worker === worker && slot.retiring === undefined) {
+          this.clearBootTimer(slot);
           slot.ready = true;
           if (slot.active === undefined && slot.drainingCancel === undefined) {
             worker.unref();
@@ -498,6 +525,7 @@ export class CpuWorkerPool {
         return;
       }
       if (slot.worker !== worker) return;
+      this.clearBootTimer(slot);
       this.clearDrainingCancel(slot);
       if (slot.active !== undefined) this.settle(slot.active, new CpuWorkerError('CPU_WORKER_EXIT', 'CPU worker failed', { cause }));
       slot.active = undefined;
@@ -514,6 +542,7 @@ export class CpuWorkerPool {
       }
       if (slot.worker !== worker) return;
       this.clearIdleTimer(slot);
+      this.clearBootTimer(slot);
       this.clearDrainingCancel(slot);
       if (slot.active !== undefined) this.settle(slot.active, new CpuWorkerError('CPU_WORKER_EXIT', `CPU worker exited (${code})`));
       slot.active = undefined;
@@ -561,6 +590,7 @@ export class CpuWorkerPool {
 
   private retire(slot: Slot): Promise<number> | undefined {
     this.clearIdleTimer(slot);
+    this.clearBootTimer(slot);
     this.clearDrainingCancel(slot);
     if (slot.worker === undefined || slot.retiring !== undefined) return slot.retiring;
     this.trackRetiringExit(slot.exited);
@@ -615,7 +645,19 @@ export class CpuWorkerPool {
         this.beginDrainingCancel(slot, slot.drainingCancel.id, true, slot.drainingCancel.priority, Date.now() + this.cancelGraceMs);
       }
     }
-    this.closing = Promise.all(exits).then(() => {});
+    const waitBudgetMs = this.cancelGraceMs + this.closeTimeoutMs;
+    this.closing = new Promise<void>((resolve) => {
+      let settled = false;
+      const done = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(done, waitBudgetMs);
+      timer.unref?.();
+      void Promise.allSettled(exits).then(done);
+    });
     return this.closing;
   }
 }

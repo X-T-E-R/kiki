@@ -880,6 +880,8 @@ export const stCoreZh = {
   'st.loopLimits.maxAttemptsHelp': '失败的步骤最多尝试几次，含第一次。在下方重试卡片中修改。',
   'st.loopLimits.maxSteps': '每轮步数上限',
   'st.loopLimits.maxStepsHelp': '一轮达到这么多模型步骤后停止。留空表示不限制。',
+  'st.loopLimits.skipUnstartedTools': '收到新消息时跳过未开始的工具',
+  'st.loopLimits.skipUnstartedToolsHelp': '关闭时先跑完当前批次已发出的工具调用，再在下一步处理新消息。',
   'st.loopLimits.subagentStrategy': '子智能体上下文满时',
   'st.loopLimits.subagentStrategyHelp': '子智能体的上下文用满后如何继续。默认生成摘要。',
   'st.loopLimits.title': '轮次限制',

@@ -24,8 +24,13 @@ import type { ReactNode } from 'react';
 
 import { DisclosureChevron } from '../icons';
 
-/** Glyph column + gap: the one measurement every activity row shares. */
-export const ACTIVITY_GUTTER = 'pl-6';
+/**
+ * Top-level activity rows align flush with the conversation column's left edge
+ * so Assistant prose, subagent markers, and `> 已处理` folds share one crisp
+ * keyline; expanded bodies indent under the 18px glyph + 8px gap (`26px`).
+ */
+export const ACTIVITY_GUTTER = 'pl-0';
+export const ACTIVITY_BODY_INDENT = 'pl-[26px]';
 
 export type ActivityTone = 'plain' | 'danger' | 'warn' | 'accent';
 
@@ -195,15 +200,14 @@ export function ActivityRow({
       )}
     </>
   );
-  // Top-level rows bleed 8px past the content column on both sides (34px
-  // back over the 26px gutter on the left, 8px out on the right) so the
-  // row's last column ends on the column edge with the prose and bubbles;
-  // a row with trailing controls keeps them inside the column instead.
+  // Top-level rows bleed 8px past the content column on both sides so the
+  // row's glyph starts on the column keyline and its last column ends with
+  // the prose and bubbles; a row with trailing controls keeps them inside.
   // A nested row sits on the read-run spine instead: its wash starts one
   // pixel right of the spine and never crosses it.
   const bleed = shrinkLabel && aside !== undefined
-    ? `${nested ? '-ml-[17px] pl-[17px]' : '-ml-[34px] pl-[34px]'} flex-1`
-    : `${nested ? '-ml-[17px] w-[calc(100%+25px)] pl-[17px]' : '-ml-[34px] w-[calc(100%+42px)] pl-[34px]'}${aside === undefined ? ' -mr-2' : ''}`;
+    ? `${nested ? '-ml-[17px] pl-[17px]' : '-ml-2 pl-2'} flex-1`
+    : `${nested ? '-ml-[17px] w-[calc(100%+25px)] pl-[17px]' : '-ml-2 w-[calc(100%+16px)] pl-2'}${aside === undefined ? ' -mr-2' : ''}`;
   const shell = `group/act flex min-h-[26px] pointer-coarse:min-h-11 min-w-0 items-center gap-2 rounded-md py-0.5 text-left transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${ROW_TONE[tone]} ${bleed} pr-2`;
   return (
     <div data-activity-row data-activity-layout={layout} title={title} className={`anim-enter ${className}`} {...attrs}>

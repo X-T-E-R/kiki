@@ -22,6 +22,7 @@ export interface TimelineErrorAction {
   readonly dataAttr?: string;
   readonly attrs?: Record<string, string | undefined>;
   readonly navigation?: boolean;
+  readonly keepWhenSuperseded?: boolean;
   readonly confirmMessage?: string;
   readonly confirmLabel?: string;
 }
@@ -124,8 +125,14 @@ export const TimelineErrorCallout = memo(function TimelineErrorCallout({
       ? 'text-amber-ink'
       : 'text-danger';
 
-  const visibleActions = superseded ? actions.filter((action) => action.navigation === true) : actions;
+  const visibleActions = superseded
+    ? actions.filter((action) => action.navigation === true || action.keepWhenSuperseded === true)
+    : actions;
   const confirmAction = confirmActionId === null ? undefined : visibleActions.find((action) => action.id === confirmActionId);
+  const messageLineCount = displayMessage.split('\n').length;
+  const hasLongHeadlineBody = messageLineCount > 2 || displayMessage.length > 220;
+  const effectiveRawText = diagnostic.rawEnvelope ?? (hasLongHeadlineBody ? displayMessage : undefined);
+  const showRawDisclosure = effectiveRawText !== undefined && (diagnostic.hasDistinctRaw || hasLongHeadlineBody);
 
   if (superseded && !expandedSuperseded) {
     return (
@@ -243,7 +250,9 @@ export const TimelineErrorCallout = memo(function TimelineErrorCallout({
       <div id={bodyPanelId} className="mt-1 space-y-1.5">
         <p
           data-error-message
-          className="select-text font-sans text-[13px] leading-[20px] font-normal whitespace-pre-wrap [overflow-wrap:anywhere] text-ink"
+          className={`select-text font-sans text-[13px] leading-[20px] font-normal whitespace-pre-wrap [overflow-wrap:anywhere] text-ink ${
+            hasLongHeadlineBody && !rawOpen ? 'line-clamp-2' : ''
+          }`.trimEnd()}
         >
           {displayMessage}
         </p>
@@ -265,7 +274,7 @@ export const TimelineErrorCallout = memo(function TimelineErrorCallout({
           </div>
         ) : null}
 
-        {visibleActions.length > 0 || diagnostic.hasDistinctRaw ? (
+        {visibleActions.length > 0 || showRawDisclosure ? (
           <div data-error-actions className="flex flex-wrap items-center gap-2 pt-0.5">
             {visibleActions.map((action) => (
               <button
@@ -290,7 +299,7 @@ export const TimelineErrorCallout = memo(function TimelineErrorCallout({
                 {action.label}
               </button>
             ))}
-            {diagnostic.hasDistinctRaw ? (
+            {showRawDisclosure ? (
               <button
                 type="button"
                 data-error-raw-toggle
@@ -334,13 +343,13 @@ export const TimelineErrorCallout = memo(function TimelineErrorCallout({
           </div>
         ) : null}
 
-        {diagnostic.hasDistinctRaw && rawOpen && diagnostic.rawEnvelope !== undefined ? (
+        {showRawDisclosure && rawOpen && effectiveRawText !== undefined ? (
           <pre
             id={rawPanelId}
             data-error-raw-details
             className="max-h-64 overflow-auto rounded-[4px] border border-hairline bg-panel px-2.5 py-2 select-text font-mono text-[12px] leading-[16px] font-normal whitespace-pre-wrap [overflow-wrap:anywhere] text-ink-soft"
           >
-            {diagnostic.rawEnvelope}
+            {effectiveRawText}
           </pre>
         ) : null}
       </div>

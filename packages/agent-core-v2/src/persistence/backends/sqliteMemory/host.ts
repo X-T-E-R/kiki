@@ -1,12 +1,16 @@
 import { Worker } from 'node:worker_threads';
 import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
+import { closeWorkerWithTimeout, WORKER_CLOSE_TIMEOUT_MS } from '#/_base/node/workerClose';
 import { resolveWorkerEntry } from '#/_base/node/workerEntry';
 import { memoryWorkerEntry, type MemoryOperation, type MemoryRequest, type MemoryResponse } from './protocol';
+
+export const MEMORY_WORKER_REQUEST_TIMEOUT_MS = 30_000;
 
 interface Pending {
   readonly operation: MemoryOperation;
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: Error) => void;
+  watchdog?: ReturnType<typeof setTimeout>;
 }
 export class MemoryWorker {
   private readonly worker: Worker;
@@ -16,8 +20,10 @@ export class MemoryWorker {
   private stopped = false;
   private closing?: Promise<void>;
   private readonly exited: Promise<void>;
+  private readonly requestTimeoutMs: number;
   get isStopped(): boolean { return this.stopped; }
-  constructor(database: string) {
+  constructor(database: string, requestTimeoutMs = MEMORY_WORKER_REQUEST_TIMEOUT_MS) {
+    this.requestTimeoutMs = requestTimeoutMs;
     const entry = resolveWorkerEntry(import.meta.url, './entry.ts', 'memory-worker.mjs', {
       configuredEntry: memoryWorkerEntry(),
       unavailableMessage: 'Memory SQLite worker asset is unavailable',
@@ -29,6 +35,7 @@ export class MemoryWorker {
       const pending = this.active;
       if (pending === undefined || response.id !== this.serial) return;
       this.active = undefined;
+      if (pending.watchdog !== undefined) clearTimeout(pending.watchdog);
       if ('error' in response) pending.reject(Object.assign(new Error(response.error.message), { code: response.error.code, committed: response.error.committed }));
       else pending.resolve(response.result);
       this.pump();
@@ -50,19 +57,32 @@ export class MemoryWorker {
     if (pending === undefined) { if (this.closing === undefined) this.worker.unref(); return; }
     this.active = pending;
     this.worker.ref();
+    if (pending.operation.type !== 'close' && Number.isFinite(this.requestTimeoutMs) && this.requestTimeoutMs > 0) {
+      pending.watchdog = setTimeout(() => {
+        if (this.active === pending) {
+          this.fail(new Error(`Memory worker request timed out after ${this.requestTimeoutMs}ms (${pending.operation.type})`));
+        }
+      }, this.requestTimeoutMs);
+      pending.watchdog.unref?.();
+    }
     try { this.worker.postMessage({ id: ++this.serial, operation: pending.operation } satisfies MemoryRequest, []); }
     catch (error) { this.fail(error instanceof Error ? error : new Error(String(error))); }
   }
-  close(): Promise<void> {
+  close(timeoutMs = WORKER_CLOSE_TIMEOUT_MS): Promise<void> {
     if (this.closing !== undefined) return this.closing;
     if (this.stopped) return this.exited;
     const drain = this.enqueue<void>({ type: 'close' });
-    this.closing = (async () => { try { await drain; } finally { await this.exited; } })();
+    this.closing = closeWorkerWithTimeout(this.worker, drain, this.exited, timeoutMs);
     return this.closing;
   }
   private fail(error: Error): void {
     this.stopped = true;
-    for (const pending of [this.active, ...this.waiting]) if (pending !== undefined) pending.reject(Object.assign(new Error(`${error.message}; ${pending === this.active ? 'outcome unknown; reopen and read the persisted operation receipt' : 'request was not dispatched'}`, { cause: error }), { committed: pending === this.active ? undefined : false }));
+    for (const pending of [this.active, ...this.waiting]) {
+      if (pending !== undefined) {
+        if (pending.watchdog !== undefined) clearTimeout(pending.watchdog);
+        pending.reject(Object.assign(new Error(`${error.message}; ${pending === this.active ? 'outcome unknown; reopen and read the persisted operation receipt' : 'request was not dispatched'}`, { cause: error }), { committed: pending === this.active ? undefined : false }));
+      }
+    }
     this.active = undefined;
     this.waiting.length = 0;
     void this.worker.terminate();

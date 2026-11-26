@@ -20,6 +20,7 @@ import { clearToasts, getToasts } from '../lib/toasts';
 import { PERMISSION_MODES } from '../lib/permissionModes';
 import { composerInputOf as registeredComposerInputOf } from '../lib/composerInput';
 import { Composer } from './Composer';
+import { useComposerWorking, type ComposerWorkingInput, type ComposerWorkingTiming } from './composerWorking';
 import { composerInput, setComposerInputValue, type ComposerInputElement } from './composerInputTestUtils';
 import { LazyMediaLightbox } from './preview/PreviewLoadBoundary';
 import { activateSkillWithConditionalClear, canAbortActiveTurn } from './SessionView';
@@ -1758,7 +1759,7 @@ describe('Composer permission chip', () => {
 
   it('shows the current mode and lists every wire mode with its hint', async () => {
     const { container } = await renderComposer({ permissionMode: 'auto' });
-    expect(trigger(container).getAttribute('aria-label')).toBe('Approvals');
+    expect(trigger(container).getAttribute('aria-label')).toBe('Approvals: Auto');
     expect(trigger(container).textContent).toContain('Auto');
     expect(trigger(container).getAttribute('aria-haspopup')).toBe('listbox');
     expect(rows(container)).toHaveLength(0);
@@ -1833,7 +1834,7 @@ describe('Composer run mode (Normal / Plan / Goal)', () => {
     for (let index = 0; index < 5; index += 1) await settle();
     const labels = [...container.querySelectorAll<HTMLElement>('[data-composer-toolbar] button')]
       .map((button) => button.getAttribute('aria-label'));
-    expect(labels).toEqual(['Add and actions', 'Model', 'Approvals', 'Send message']);
+    expect(labels).toEqual(['Add and actions', 'Model', 'Approvals: Ask every time', 'Send message']);
     expect(container.querySelector('[data-run-mode-chip]')).toBeNull();
   });
 
@@ -5491,6 +5492,8 @@ describe('Canonical 4-Layer Composer Slot Standard (Max-Loaded State)', () => {
     try {
       const { container } = await renderComposer({
         sessionId: 'session-max-loaded',
+        busy: true,
+        working: { lastResponseAt: Date.now() - 1_500 },
         value: 'Check the attached screenshot and file',
         quotes: [{ id: 'q1', quote: 'Quoted snippet from earlier turn' }],
         attachments: [
@@ -5514,6 +5517,7 @@ describe('Canonical 4-Layer Composer Slot Standard (Max-Loaded State)', () => {
       const editor = container.querySelector<HTMLElement>('[data-composer-editor]');
       const toolbar = container.querySelector<HTMLElement>('[data-composer-toolbar]');
       const statusLine = container.querySelector<HTMLElement>('[data-composer-status-line]');
+      const workingLine = statusLine?.querySelector<HTMLElement>('[data-composer-working]') ?? null;
       const sshStrip = statusLine?.querySelector<HTMLElement>('[data-composer-ssh-strip]') ?? null;
 
       expect(card).not.toBeNull();
@@ -5522,7 +5526,9 @@ describe('Canonical 4-Layer Composer Slot Standard (Max-Loaded State)', () => {
       expect(editor).not.toBeNull();
       expect(toolbar).not.toBeNull();
       expect(statusLine).not.toBeNull();
+      expect(workingLine).not.toBeNull();
       expect(sshStrip).not.toBeNull();
+      expect(Boolean(workingLine!.compareDocumentPosition(sshStrip!) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
 
       // Subtraction-first invariants: zero env-strip, zero plugin slots, zero SSH chips inside card!
       expect(container.querySelector('[data-composer-env-strip]')).toBeNull();
@@ -5637,5 +5643,177 @@ describe('Composer 10,000-model & 1,000+ skill virtualization scale', () => {
     const narrowedRows = menu.querySelectorAll('[role="option"]');
     expect(narrowedRows).toHaveLength(1);
     expect(narrowedRows[0]?.textContent).toContain('/skill-1199');
+  });
+});
+
+describe('Composer working timer', () => {
+  it('ticks live working elapsed duration from 0s during TTFT and surfaces quiet age accurately', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    const t0 = new Date('2026-11-26T10:00:00.000Z').getTime();
+    vi.setSystemTime(t0);
+    try {
+      const { container, rerender } = await renderComposer({
+        value: '',
+        busy: true,
+        working: { startedAt: t0, lastResponseAt: undefined },
+      });
+      const line = () => container.querySelector('[data-composer-working]');
+      expect(line()?.getAttribute('data-turn-started-at')).toBe(String(t0));
+      expect(line()?.textContent).toContain('Working · 0s');
+
+      await act(async () => { vi.advanceTimersByTime(8_000); });
+      expect(line()?.textContent).toContain('Working · 8s');
+
+      // Recent activity (<10s ago) stays clean without redundant "just now" noise.
+      await rerender({
+        value: '',
+        busy: true,
+        working: { startedAt: t0, lastResponseAt: t0 + 6_000 },
+      });
+      expect(line()?.textContent).toContain('Working · 8s');
+      expect(line()?.textContent).not.toContain('last response');
+
+      // Once quiet for >= 10s after output, show both elapsed duration and quiet age.
+      await act(async () => { vi.advanceTimersByTime(12_000); });
+      expect(line()?.textContent).toContain('Working · 20s · last response 14s ago');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('isolates current-turn timing across async hydration, session switches, and settled prior turns', async () => {
+    const now = new Date('2026-11-26T12:00:00.000Z').getTime();
+    const sixHoursAgo = now - 6 * 3_600_000;
+    const eightMinAgo = now - 8 * 60_000;
+    const twoMinAgo = now - 2 * 60_000;
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    vi.setSystemTime(now);
+
+    let latest: ComposerWorkingTiming = { startedAt: undefined, lastResponseAt: undefined };
+    function Harness(props: ComposerWorkingInput) {
+      latest = useComposerWorking(props);
+      return null;
+    }
+
+    const host = document.createElement('div');
+    document.body.append(host);
+    const localRoot = createRoot(host);
+    try {
+      // 1) Async hydration: busy arrives before blocks load -> loading historical
+      // stalled blocks must seed their real timestamp, never Date.now().
+      await act(async () => {
+        localRoot.render(
+          <Harness
+            busy
+            scopeKey="session-stalled"
+            loaded={false}
+            blocks={[]}
+            turnStartedAt={undefined}
+          />,
+        );
+      });
+      expect(latest.lastResponseAt).toBeUndefined();
+
+      await act(async () => {
+        localRoot.render(
+          <Harness
+            busy
+            scopeKey="session-stalled"
+            loaded
+            blocks={[
+              { id: 'u1', kind: 'user', text: 'run long job', createdAt: new Date(eightMinAgo).toISOString() },
+              { id: 't1', kind: 'tool', toolCallId: 'c1', name: 'Bash', argsText: '', args: {}, display: undefined, description: undefined, status: 'done', output: undefined, isError: false, startedAt: twoMinAgo - 15_000, durationMs: 15_000, durationSource: 'frame', progressText: undefined },
+            ] as never}
+            turnStartedAt={eightMinAgo}
+          />,
+        );
+      });
+      expect(latest.startedAt).toBe(eightMinAgo);
+      expect(latest.lastResponseAt).toBe(twoMinAgo);
+
+      // 2) Switching scopeKey to another busy session whose prior turn was 6h ago
+      // (with real settled `promptStatus: undefined`) and whose new turn has
+      // turnStartedAt=undefined must NOT leak 6h ago or Date.now().
+      await act(async () => {
+        localRoot.render(
+          <Harness
+            busy
+            scopeKey="session-new-turn"
+            loaded
+            blocks={[
+              { id: 'u-old', kind: 'user', text: 'old prompt', createdAt: new Date(sixHoursAgo).toISOString(), promptStatus: undefined },
+              { id: 'a-old', kind: 'assistant', text: 'old reply', createdAt: new Date(sixHoursAgo + 10_000).toISOString(), streaming: false },
+              { id: 'u-cur', kind: 'user', text: 'new prompt', createdAt: new Date(now - 3_000).toISOString(), promptStatus: 'running' },
+            ] as never}
+            turnStartedAt={undefined}
+          />,
+        );
+      });
+      expect(latest.startedAt).toBe(now - 3_000);
+      expect(latest.lastResponseAt).toBeUndefined();
+
+      // 3) Settled prior turn (`promptStatus: undefined`) with no new user block yet must NOT leak 6h ago either.
+      await act(async () => {
+        localRoot.render(
+          <Harness
+            busy
+            scopeKey="session-settled-prior"
+            loaded
+            blocks={[
+              { id: 'u-old', kind: 'user', text: 'old prompt', createdAt: new Date(sixHoursAgo).toISOString(), promptStatus: undefined },
+              { id: 'a-old', kind: 'assistant', text: 'old reply', createdAt: new Date(sixHoursAgo + 10_000).toISOString(), streaming: false },
+            ] as never}
+            turnStartedAt={undefined}
+          />,
+        );
+      });
+      expect(latest.startedAt).toBe(now);
+      expect(latest.lastResponseAt).toBeUndefined();
+
+      // 4) Live output arriving during this turn (including parallel subagent progress) advances lastResponseAt cleanly.
+      await act(async () => { vi.advanceTimersByTime(4_000); });
+      await act(async () => {
+        localRoot.render(
+          <Harness
+            busy
+            scopeKey="session-settled-prior"
+            loaded
+            blocks={[
+              { id: 'u-old', kind: 'user', text: 'old prompt', createdAt: new Date(sixHoursAgo).toISOString(), promptStatus: undefined },
+              { id: 'a-old', kind: 'assistant', text: 'old reply', createdAt: new Date(sixHoursAgo + 10_000).toISOString(), streaming: false },
+              { id: 'u-cur', kind: 'user', text: 'new prompt', createdAt: new Date(now).toISOString(), promptStatus: 'running' },
+              { id: 's-bg', kind: 'subagent', subagentId: 'sub-1', name: 'worker', status: 'running', toolCallCount: 1, startedAt: new Date(now + 1_000).toISOString() },
+              { id: 'a-cur', kind: 'assistant', text: 'hello', createdAt: new Date(now + 4_000).toISOString(), streaming: true },
+            ] as never}
+            turnStartedAt={now}
+          />,
+        );
+      });
+      expect(latest.lastResponseAt).toBe(now + 4_000);
+
+      await act(async () => { vi.advanceTimersByTime(5_000); });
+      await act(async () => {
+        localRoot.render(
+          <Harness
+            busy
+            scopeKey="session-settled-prior"
+            loaded
+            blocks={[
+              { id: 'u-old', kind: 'user', text: 'old prompt', createdAt: new Date(sixHoursAgo).toISOString(), promptStatus: undefined },
+              { id: 'a-old', kind: 'assistant', text: 'old reply', createdAt: new Date(sixHoursAgo + 10_000).toISOString(), streaming: false },
+              { id: 'u-cur', kind: 'user', text: 'new prompt', createdAt: new Date(now).toISOString(), promptStatus: 'running' },
+              { id: 's-bg', kind: 'subagent', subagentId: 'sub-1', name: 'worker', status: 'running', toolCallCount: 2, startedAt: new Date(now + 1_000).toISOString() },
+              { id: 'a-cur', kind: 'assistant', text: 'hello', createdAt: new Date(now + 4_000).toISOString(), streaming: true },
+            ] as never}
+            turnStartedAt={now}
+          />,
+        );
+      });
+      expect(latest.lastResponseAt).toBe(now + 9_000);
+    } finally {
+      await act(async () => { localRoot.unmount(); });
+      host.remove();
+      vi.useRealTimers();
+    }
   });
 });

@@ -737,7 +737,7 @@ function isRetryableProviderFailure(error: unknown, mode: 'generation' | 'interr
   return false;
 }
 
-const NETWORK_RE = /network|connection|connect|disconnect|terminated|ECONNRESET|EPIPE|socket hang up|unexpected EOF/i;
+const NETWORK_RE = /network|connection|connect|disconnect|fetch failed|other side closed|premature close|terminated|ECONNRESET|EPIPE|socket hang up|unexpected EOF/i;
 const TIMEOUT_RE = /timed?\s*out|timeout|deadline/i;
 
 export function classifyBaseApiError(message: string): ChatProviderError {

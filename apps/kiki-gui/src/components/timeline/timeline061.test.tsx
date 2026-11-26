@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Block, SessionViewState, TurnTailInfo, UserBlock } from '@kiki/session-core/session';
 import { I18nProvider } from '../../i18n';
+import { sanitizeDisplayTitle } from '../../lib/threadTitles';
 import { MobileTranscript } from '../../mobile/chat/MobileTranscript';
 import {
   buildDiagnosticClipboardText,
@@ -16,6 +17,7 @@ import {
 import { ModelSwitchActionsContext } from '../model-switch/ModelSwitchNotice';
 import { SubagentEndedRow } from './FoldRows';
 import { ModelDisplayProvider } from './ModelDisplayContext';
+import { PromptOutcomeLine } from './PromptOutcome';
 import { TimelineErrorCallout } from './TimelineErrorCallout';
 import { TurnFootnote } from './TurnFootnote';
 import { canFaithfullyRetryUserBlock, TurnTailSurface } from './TurnTailSurface';
@@ -56,10 +58,10 @@ afterEach(() => {
 
 describe('0.6.1 failureText & TimelineErrorCallout (Release Gate 2)', () => {
   it('decodes gateway capacity error, double-encoded JSON, validation arrays, and never misclassifies Request ID digits', () => {
-    const gatewayRaw = 'Anthropic error: gateway_stream_terminal_error: No capacity available for model gemini-4-carbon-20260401';
+    const gatewayRaw = 'Upstream error: gateway_stream_terminal_error: No capacity available for model model-pro-20260401';
     const decoded = decodeFullDiagnostic(gatewayRaw);
     expect(decoded.category).toBe('capacity');
-    expect(decoded.decodedMessage).toContain('No capacity available for model gemini-4-carbon-20260401');
+    expect(decoded.decodedMessage).toContain('No capacity available for model model-pro-20260401');
 
     const reqIdOnly = 'Unknown failure (request_id: req_401_403_429_503_abc)';
     expect(classifyDiagnosticCategory({ message: reqIdOnly })).toBe('unknown');
@@ -92,11 +94,11 @@ describe('0.6.1 failureText & TimelineErrorCallout (Release Gate 2)', () => {
       },
     });
 
-    const rawMessage = 'Anthropic error: gateway_stream_terminal_error: No capacity available for model gemini-4-carbon';
+    const rawMessage = 'Upstream error: gateway_stream_terminal_error: No capacity available for model model-pro';
     const rawDetails = JSON.stringify({
       error: {
         type: 'gateway_stream_terminal_error',
-        message: 'No capacity available for model gemini-4-carbon',
+        message: 'No capacity available for model model-pro',
         request_id: 'req_cap_001',
         status: 503,
       },
@@ -116,7 +118,7 @@ describe('0.6.1 failureText & TimelineErrorCallout (Release Gate 2)', () => {
 
     expect(container.querySelector('[data-error-title]')?.textContent).toBe('模型容量暂时不足');
     const msgEl = container.querySelector('[data-error-message]')!;
-    expect(msgEl.textContent).toContain('No capacity available for model gemini-4-carbon');
+    expect(msgEl.textContent).toContain('No capacity available for model model-pro');
     expect(msgEl.className).not.toContain('truncate');
     expect(msgEl.className).not.toContain('line-clamp');
 
@@ -184,7 +186,7 @@ describe('0.6.1 failureText & TimelineErrorCallout (Release Gate 2)', () => {
 });
 
 describe('0.6.1 TurnFootnote & TurnTailSurface (Release Gate 3)', () => {
-  it('renders all 4 timing facts without flanking horizontal rules', () => {
+  it('renders all 4 timing facts inside centered horizontal hairline rules', () => {
     const tail: TurnTailInfo = {
       turnId: 't1',
       state: 'completed',
@@ -199,7 +201,16 @@ describe('0.6.1 TurnFootnote & TurnTailSurface (Release Gate 3)', () => {
     expect(text).toContain('用时 2分16秒');
     expect(text).toContain('首 token 29 秒');
     expect(text).toContain('10 token/秒');
-    expect(container.querySelector('[data-timeline-divider]')).toBeNull();
+    expect(container.querySelector('[data-turn-tail-rule="left"]')).not.toBeNull();
+    expect(container.querySelector('[data-turn-tail-rule="right"]')).not.toBeNull();
+  });
+
+  it('does not extract bare integer exit codes as API error codes', () => {
+    const diag = decodeFullDiagnostic(
+      'Restore @nb-corp/nb-im package and run full nb-hub pnpm check suite · 退出码 1',
+      'Command: pnpm check\nExit code: 1.',
+    );
+    expect(diag.code).toBeUndefined();
   });
 
   it('shows ONE recovery callout for completed + 6 recoverable tasks, and footnote ONLY for stale zero counts', () => {
@@ -372,18 +383,18 @@ describe('0.6.1 MobileTranscript parity (Reply & Message modes)', () => {
     const onOpenProviderSettings = vi.fn();
     const catalog = [
       {
-        id: 'axon-message/gemini-4-carbon',
-        remote_id: 'gemini-4-carbon',
-        provider_id: 'axon-message',
-        display_name: 'Gemini 4 Carbon',
-        provider_display_name: 'Axon',
+        id: 'gateway/model-pro',
+        remote_id: 'model-pro',
+        provider_id: 'cloud-gateway',
+        display_name: 'Model Pro',
+        provider_display_name: 'Gateway',
       },
       {
-        id: 'axon/gpt-6-luna',
-        remote_id: 'gpt-6-luna',
-        provider_id: 'axon',
-        display_name: 'GPT-6 Luna',
-        provider_display_name: 'Axon',
+        id: 'gateway/model-lite',
+        remote_id: 'model-lite',
+        provider_id: 'gateway',
+        display_name: 'Model Lite',
+        provider_display_name: 'Gateway',
       },
     ];
     const blocks: Block[] = [
@@ -397,8 +408,8 @@ describe('0.6.1 MobileTranscript parity (Reply & Message modes)', () => {
           operationId: 'sw-op-1',
           state: 'failed',
           mode: 'compact',
-          from: 'axon/gpt-6-luna',
-          to: 'axon-message/gemini-4-carbon',
+          from: 'gateway/model-lite',
+          to: 'gateway/model-pro',
           error: { code: 'compact_failed', message: 'Compaction failed before switch' },
         },
       },
@@ -475,12 +486,12 @@ describe('0.6.1 MobileTranscript parity (Reply & Message modes)', () => {
       </ModelSwitchActionsContext.Provider>,
     );
 
-    expect(container.textContent).toContain('GPT-6 Luna');
+    expect(container.textContent).toContain('Model Lite');
     expect(container.textContent).not.toContain('模型名称未知');
     const rawToggle = container.querySelector<HTMLButtonElement>('[data-model-switch-notice="failed"] [data-error-raw-toggle]');
     expect(rawToggle).not.toBeNull();
     act(() => { rawToggle?.click(); });
-    expect(container.textContent).toContain('axon-message/gemini-4-carbon');
+    expect(container.textContent).toContain('gateway/model-pro');
 
     const retrySwitchBtn = container.querySelector<HTMLButtonElement>('[data-model-switch-notice="failed"] [data-error-action="retry"]');
     expect(retrySwitchBtn).not.toBeNull();
@@ -528,8 +539,8 @@ describe('0.6.1 MobileTranscript parity (Reply & Message modes)', () => {
             dispatchOnPage: false,
           }}
           name="audit_worker"
-          model="Gemini 4 Neon"
-          modelRawId="axon-message/gemini-4-neon"
+          model="Model Fast"
+          modelRawId="gateway/model-fast"
           summary={undefined}
           elapsed="12s"
           renderReceipt={(text) => <span>{text}</span>}
@@ -539,7 +550,97 @@ describe('0.6.1 MobileTranscript parity (Reply & Message modes)', () => {
     const toggle = container.querySelector<HTMLButtonElement>('[data-subagent-ended="agent-child-1"] button');
     expect(toggle).not.toBeNull();
     act(() => { toggle?.click(); });
-    expect(container.querySelector('[data-subagent-model-raw]')?.textContent).toBe('axon-message/gemini-4-neon');
+    expect(container.querySelector('[data-subagent-model-raw]')?.textContent).toBe('gateway/model-fast');
     expect(container.querySelector('[data-subagent-model-details] [data-copy-state]')).not.toBeNull();
+  });
+
+  it('keeps restore-draft reachable on superseded undelivered PromptOutcome, clamps multi-line error traces, enforces <=1 primary button, and preserves human <Component> titles', () => {
+    expect(sanitizeDisplayTitle('<Composer> layout fix')).toBe('<Composer> layout fix');
+    expect(sanitizeDisplayTitle('<user_request>fix bug</user_request>')).toBeUndefined();
+    expect(sanitizeDisplayTitle('<task-notification>done</task-notification>')).toBeUndefined();
+
+    const onRetryUndelivered = vi.fn();
+    const supersededOutcome = mount(
+      <PromptOutcomeLine
+        outcome={{ status: 'failed', delivered: false, error: 'WebSocket closed', at: '2026-11-25T07:00:00Z' }}
+        superseded
+        onRetry={onRetryUndelivered}
+      />,
+    );
+    const retryBtn = supersededOutcome.querySelector<HTMLButtonElement>('[data-prompt-outcome-retry]');
+    expect(retryBtn).not.toBeNull();
+    act(() => { retryBtn?.click(); });
+    expect(onRetryUndelivered).toHaveBeenCalledTimes(1);
+
+    const multilineError = mount(
+      <TimelineErrorCallout
+        incidentId="inc-multiline"
+        message={'Upstream failed\n  at Router.dispatch (router.ts:42)\n  at Server.handle (server.ts:91)\n  at Socket.onData (net.ts:12)'}
+      />,
+    );
+    expect(multilineError.querySelector('[data-error-message]')?.className).toContain('line-clamp-2');
+    const rawToggle = multilineError.querySelector<HTMLButtonElement>('[data-error-raw-toggle]');
+    expect(rawToggle).not.toBeNull();
+    act(() => { rawToggle?.click(); });
+    expect(multilineError.querySelector('[data-error-raw-details]')?.textContent).toContain('Router.dispatch');
+
+    const singlePrimaryTail = mount(
+      <TurnTailSurface
+        agentId="main"
+        tail={{
+          turnId: 't-cap',
+          state: 'failed',
+          error: 'No capacity available for model model-pro (503)',
+          endedAt: '2026-11-25T07:05:00Z',
+          durationMs: undefined,
+          ttftMs: undefined,
+          usage: undefined,
+          tokensPerSecond: undefined,
+        }}
+        failedHasWork
+        hasOriginalRetry
+        onContinueFailed={() => undefined}
+        onRetryFailed={() => undefined}
+        onOpenModelPicker={() => undefined}
+      />,
+    );
+    const actionBtns = [...singlePrimaryTail.querySelectorAll<HTMLButtonElement>('[data-error-actions] [data-error-action]')];
+    const primaryBtns = actionBtns.filter((btn) => btn.className.includes('bg-ink/[0.06]'));
+    expect(primaryBtns).toHaveLength(1);
+    expect(primaryBtns[0]?.getAttribute('data-error-action')).toBe('switch-model');
+
+    const steerBlock = {
+      kind: 'user' as const,
+      id: 'u-send-now',
+      promptId: 'p-send-now',
+      userMessageId: 'um-send-now',
+      text: '顺手核对第 48 帧高光',
+      createdAt: '2026-11-25T07:06:00Z',
+      steerStatus: 'waiting' as const,
+    };
+    const mobileSteer = mount(
+      <MobileTranscript
+        blocks={[steerBlock]}
+        state={{
+          blocks: [steerBlock],
+          session: { id: 's-mob-steer', executor_id: 'native' } as SessionViewState['session'],
+        } as unknown as SessionViewState}
+        loaded
+        hasMoreHistory={false}
+        loadingOlder={false}
+        busy
+        messageMode={false}
+        onLoadOlder={async () => false}
+        onOpenHood={() => undefined}
+        onResolveApproval={async () => undefined}
+        onAnswerQuestion={async () => undefined}
+        onDismissQuestion={async () => undefined}
+        onOpenWorkbench={() => undefined}
+      />,
+    );
+    const mobileSteerBubble = mobileSteer.querySelector('[data-steer-status="waiting"]');
+    expect(mobileSteerBubble?.className).toContain('steer-bubble-pending');
+    expect(mobileSteerBubble?.className).toContain('border-dashed');
+    expect(mobileSteerBubble?.className).not.toContain('bg-bubble-user');
   });
 });

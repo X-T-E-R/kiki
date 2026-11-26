@@ -405,6 +405,8 @@ export const composerZh = {
   'composer.status.stop': '停止',
   'composer.unknown': '未知',
   'composer.working': '正在工作',
+  'composer.workingElapsed': '正在工作 · {elapsed}',
+  'composer.workingElapsedLastResponse': '正在工作 · {elapsed} · 最近响应 {ago}',
   'composer.workingLastResponse': '正在工作 · 最近响应 {ago}',
   'ia.alwaysAllow': '以后总是允许',
   'ia.alwaysAllow.failed': '规则没存上，所以这次也未批准。可以改为只批准这一次，或重试。',

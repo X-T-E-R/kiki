@@ -82,13 +82,13 @@ export async function readTree(root: string, live: boolean, include: (path: stri
       if (!include(path) || (path.startsWith('store/') && path !== 'store/recipes' && !path.startsWith(RECIPE_STORE))) continue;
       const candidate = join(directory, dirent.name);
       if (dirent.name.startsWith('.') && ![FORK, RECIPIENTS].includes(path) || dirent.name === 'node_modules') continue;
-      if (path === 'agents/builtin' || (live && path === 'credentials') || path.startsWith('credentials/') && ![PLAIN, SEALED].includes(path)) continue;
+      if (path === 'agents/builtin' || (live && (path === 'credentials' || path === 'plugins')) || path.startsWith('credentials/') && ![PLAIN, SEALED].includes(path)) continue;
       if (!dirent.isDirectory() && !dirent.isSymbolicLink() && !managed(path)) continue;
-      if (!prefix && dirent.isDirectory() && path !== 'credentials' && path !== 'store' && !domainForFile(`${path}/_`)) continue;
+      if (!prefix && dirent.isDirectory() && path !== 'credentials' && path !== 'store' && path !== 'plugins' && !domainForFile(`${path}/_`)) continue;
       let current = candidate;
       if (dirent.isSymbolicLink()) {
         if (!live) {
-          if (managed(path) || domainForFile(`${path}/_`)) throw new Error(`Symbolic links are not allowed in portable directories: ${path}`);
+          if (managed(path) || path === 'plugins' || domainForFile(`${path}/_`)) throw new Error(`Symbolic links are not allowed in portable directories: ${path}`);
           continue;
         }
         if (!managed(path) && !domainForFile(`${path}/_`)) continue;
@@ -103,7 +103,7 @@ export async function readTree(root: string, live: boolean, include: (path: stri
       const info = await lstat(current);
       if (info.isDirectory()) {
         if (trail.includes(current)) throw new Error(`Portable Space symlink cycle: ${path}`);
-        if (path !== 'credentials' && path !== 'store' && !domainForFile(`${path}/_`)) continue;
+        if (path !== 'credentials' && path !== 'store' && path !== 'plugins' && !domainForFile(`${path}/_`)) continue;
         await walk(current, path, [...trail, current]);
       } else if (info.isFile() && managed(path)) {
         const canonical = safePortablePath(path);

@@ -649,6 +649,7 @@ export const usageEn = {
   'usage.quota.off.summary': '{n} connections with quota checks turned off',
   'usage.quota.off.title': 'Quota checks turned off',
   'usage.quota.pace.depleting': 'Runs out before reset · ~{eta}',
+  'usage.quota.pace.exhausted': 'Exhausted',
   'usage.quota.pace.fast': 'Burning fast',
   'usage.quota.queryNow': 'Query',
   'usage.quota.refresh': 'Refresh quotas',

@@ -2099,7 +2099,74 @@ describe('truncation pipeline', () => {
     expect(result?.truncated).toBeUndefined();
   });
 
-  it('skips queued and unprepared tools in a multi-tool batch once steerSignal aborts', async () => {
+  it('executes the full multi-tool batch on steerSignal by default and only skips unstarted tools when skipUnstartedToolsOnInput is true', async () => {
+    const defaultSteer = new AbortController();
+    const d1Started = deferred();
+    const d1Release = deferred();
+    const d1 = new TestTool('d_first', {
+      accesses: ToolAccesses.all(),
+      execute: async () => {
+        d1Started.resolve();
+        await d1Release.promise;
+        return { output: 'd_first done' };
+      },
+    });
+    const d2 = new TestTool('d_second', { accesses: ToolAccesses.all(), result: { output: 'd_second done' } });
+    const d3 = new TestTool('d_third', { accesses: ToolAccesses.all(), result: { output: 'd_third done' } });
+    registry.register(d1);
+    registry.register(d2);
+    registry.register(d3);
+
+    const defaultResults: ToolResult[] = [];
+    const defaultRunning = (async () => {
+      for await (const item of executor.execute(
+        [toolCall('dc1', 'd_first', {}), toolCall('dc2', 'd_second', {}), toolCall('dc3', 'd_third', {})],
+        { turnId: 0, signal: new AbortController().signal, steerSignal: defaultSteer.signal },
+      )) {
+        defaultResults.push(item.result);
+      }
+    })();
+
+    await d1Started.promise;
+    defaultSteer.abort(new Error('send now'));
+    d1Release.resolve();
+    await defaultRunning;
+
+    expect(d1.calls).toHaveLength(1);
+    expect(d2.calls).toHaveLength(1);
+    expect(d3.calls).toHaveLength(1);
+    expect(defaultResults.map((r) => r.output)).toEqual(['d_first done', 'd_second done', 'd_third done']);
+
+    const hardCancel = new AbortController();
+    const h1Started = deferred();
+    const h1 = new TestTool('h_first', {
+      accesses: ToolAccesses.all(),
+      execute: async (ctx) => {
+        h1Started.resolve();
+        await new Promise<void>((resolve) => {
+          ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        return { isError: true, output: 'aborted' };
+      },
+    });
+    const h2 = new TestTool('h_second', { accesses: ToolAccesses.all() });
+    registry.register(h1);
+    registry.register(h2);
+    const hardResults: ToolResult[] = [];
+    const hardRunning = (async () => {
+      for await (const item of executor.execute(
+        [toolCall('hc1', 'h_first', {}), toolCall('hc2', 'h_second', {})],
+        { turnId: 0, signal: hardCancel.signal, steerSignal: defaultSteer.signal },
+      )) {
+        hardResults.push(item.result);
+      }
+    })();
+    await h1Started.promise;
+    hardCancel.abort(new Error('user stop'));
+    await hardRunning;
+    expect(h2.calls).toHaveLength(0);
+    expect(hardResults.every((r) => r.isError === true)).toBe(true);
+
     const steer = new AbortController();
     const t1Started = deferred();
     const t1Release = deferred();
@@ -2123,7 +2190,7 @@ describe('truncation pipeline', () => {
     const running = (async () => {
       for await (const item of executor.execute(
         [toolCall('c1', 'first', {}), toolCall('c2', 'second', {})],
-        { turnId: 0, signal: new AbortController().signal, steerSignal: steer.signal },
+        { turnId: 0, signal: new AbortController().signal, steerSignal: steer.signal, skipUnstartedToolsOnInput: true },
       )) {
         results.push(item.result);
       }
@@ -2144,7 +2211,7 @@ describe('truncation pipeline', () => {
     const preSkipped: ToolResult[] = [];
     for await (const item of executor.execute(
       [toolCall('c3', 'second', {})],
-      { turnId: 0, signal: new AbortController().signal, steerSignal: steer.signal },
+      { turnId: 0, signal: new AbortController().signal, steerSignal: steer.signal, skipUnstartedToolsOnInput: true },
     )) {
       preSkipped.push(item.result);
     }
@@ -2154,7 +2221,41 @@ describe('truncation pipeline', () => {
     expect(preSkipped[0]?.output).toContain('Tool skipped because new input arrived before it started');
   });
 
-  it('cancels unstarted tool admission waiting in beforeExecute when steerSignal aborts', async () => {
+  it('cancels unstarted tool admission waiting in beforeExecute when steerSignal aborts only if skipUnstartedToolsOnInput is true', async () => {
+    const defaultSteer = new AbortController();
+    const defaultEntered = deferred();
+    const defaultRelease = deferred();
+    let defaultAdmissionAborted = false;
+    const defaultSub = executor.onBeforeExecuteTool(async (event) => {
+      defaultEntered.resolve();
+      event.signal.addEventListener('abort', () => {
+        defaultAdmissionAborted = true;
+      }, { once: true });
+      await defaultRelease.promise;
+    });
+    const defaultGated = new TestTool('gated_default', { accesses: ToolAccesses.all(), result: { output: 'ran gated' } });
+    registry.register(defaultGated);
+
+    const defaultResults: ToolResult[] = [];
+    const defaultRun = (async () => {
+      for await (const item of executor.execute(
+        [toolCall('c_gate_default', 'gated_default', {})],
+        { turnId: 0, signal: new AbortController().signal, steerSignal: defaultSteer.signal },
+      )) {
+        defaultResults.push(item.result);
+      }
+    })();
+
+    await defaultEntered.promise;
+    defaultSteer.abort(new Error('send now during approval'));
+    await Promise.resolve();
+    expect(defaultAdmissionAborted).toBe(false);
+    defaultRelease.resolve();
+    await defaultRun;
+    defaultSub.dispose();
+    expect(defaultGated.calls).toHaveLength(1);
+    expect(defaultResults[0]?.output).toBe('ran gated');
+
     const steer = new AbortController();
     const enteredAdmission = deferred();
     let observedAdmissionAborted = false;
@@ -2174,7 +2275,7 @@ describe('truncation pipeline', () => {
     const running = (async () => {
       for await (const item of executor.execute(
         [toolCall('c_gate', 'gated', {})],
-        { turnId: 0, signal: new AbortController().signal, steerSignal: steer.signal },
+        { turnId: 0, signal: new AbortController().signal, steerSignal: steer.signal, skipUnstartedToolsOnInput: true },
       )) {
         results.push(item.result);
       }
@@ -2251,6 +2352,7 @@ describe('truncation pipeline', () => {
         turnId: 0,
         signal: new AbortController().signal,
         steerSignal: preSteer.signal,
+        skipUnstartedToolsOnInput: true,
       })) {
         preResults.push(item.result);
       }
@@ -2281,6 +2383,7 @@ describe('truncation pipeline', () => {
         turnId: 1,
         signal: new AbortController().signal,
         steerSignal: wrapSteer.signal,
+        skipUnstartedToolsOnInput: true,
         onToolBodyStart: bodyStarted,
       })) {
         wrapResults.push(item.result);
@@ -2365,6 +2468,105 @@ describe('truncation pipeline', () => {
     await detachRun;
     expect(observedStartedAt).toEqual(expect.any(Number));
     expect(detachedTaskIds).toEqual(['task-kernel-1']);
+  });
+
+  it('detaches from a wedged tool ignoring ctx.signal within post-abort grace for both direct and wrapped execution', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const wedgedEntered = deferred<void>();
+      const wedgedTool: ExecutableTool = {
+        name: 'WedgedTool',
+        foregroundPolicy: 'bounded_io',
+        description: 'Ignores abort signal forever',
+        parameters: { type: 'object', properties: {} },
+        resolveExecution: () => ({
+          approvalRule: 'WedgedTool',
+          execute: () => {
+            wedgedEntered.resolve();
+            return new Promise<ExecutableToolResult>(() => {});
+          },
+        }),
+      };
+      registry.register(wedgedTool);
+
+      const directController = new AbortController();
+      const directResults: ToolResult[] = [];
+      const directRun = (async () => {
+        for await (const item of executor.execute([toolCall('c_wedged_direct', 'WedgedTool', {})], {
+          turnId: 10,
+          signal: directController.signal,
+        })) {
+          directResults.push(item.result);
+        }
+      })();
+      await wedgedEntered.promise;
+      directController.abort(new Error('user_cancelled'));
+      await vi.advanceTimersByTimeAsync(2_100);
+      await directRun;
+      expect(directResults).toHaveLength(1);
+      expect(directResults[0]?.isError).toBe(true);
+      expect(directResults[0]?.output).toContain('aborted');
+
+      const wrappedEntered = deferred<void>();
+      ix.stub(ISessionContext, { sessionId: 'session-extension' });
+      const wrapSub = extensions.registerApprovedToolExecutionWrapper('plugin-wedged-wrap', () => {
+        wrappedEntered.resolve();
+        return new Promise<ExecutableToolResult>(() => {});
+      });
+      try {
+        const wrappedController = new AbortController();
+        const wrappedResults: ToolResult[] = [];
+        const wrappedRun = (async () => {
+          for await (const item of executor.execute([toolCall('c_wedged_wrapped', 'WedgedTool', {})], {
+            turnId: 11,
+            signal: wrappedController.signal,
+          })) {
+            wrappedResults.push(item.result);
+          }
+        })();
+        await wrappedEntered.promise;
+        wrappedController.abort(new Error('user_cancelled'));
+        await vi.advanceTimersByTimeAsync(2_100);
+        await wrappedRun;
+        expect(wrappedResults).toHaveLength(1);
+        expect(wrappedResults[0]?.isError).toBe(true);
+        expect(wrappedResults[0]?.output).toContain('aborted');
+      } finally {
+        wrapSub.dispose();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('autonomously aborts wedged foreground tools via foregroundTimeoutMs without caller signal abort', async () => {
+    let sawAbort = false;
+    registry.register(
+      new TestTool('WedgedRead', {
+        foregroundTimeoutMs: 40,
+        execute: async (ctx) => {
+          await new Promise<void>((_resolve, reject) => {
+            ctx.signal.addEventListener(
+              'abort',
+              () => {
+                sawAbort = true;
+                reject(ctx.signal.reason ?? new DOMException('aborted', 'AbortError'));
+              },
+              { once: true },
+            );
+          });
+          return { output: 'unreachable' };
+        },
+      }),
+    );
+
+    const caller = new AbortController();
+    const results = await execute([toolCall('call-wedged', 'WedgedRead', {})], caller.signal);
+    expect(caller.signal.aborted).toBe(false);
+    expect(sawAbort).toBe(true);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.isError).toBe(true);
+    expect(results[0]?.output).toContain('timed out after');
   });
 });
 
@@ -2458,6 +2660,7 @@ class TestTool implements ExecutableTool<Record<string, unknown>> {
       readonly stopBatchAfterThis?: boolean;
       readonly description?: string;
       readonly display?: ToolInputDisplay;
+      readonly foregroundTimeoutMs?: number;
       readonly result?: ExecutableToolResult;
       readonly execute?: (
         ctx: ExecutableToolContext,
@@ -2476,6 +2679,7 @@ class TestTool implements ExecutableTool<Record<string, unknown>> {
       stopBatchAfterThis: this.options.stopBatchAfterThis,
       description: this.options.description,
       display: this.options.display,
+      foregroundTimeoutMs: this.options.foregroundTimeoutMs,
       execute: async (ctx) => {
         this.calls.push({ ...ctx, args });
         if (this.options.execute !== undefined) {

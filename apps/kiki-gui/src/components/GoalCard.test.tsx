@@ -558,4 +558,40 @@ describe('RecoveryHoldBar', () => {
     expect(container.querySelector('[data-recovery-hold]')).not.toBeNull();
     expect(container.querySelector('[data-recovery-hold-compact]')).toBeNull();
   });
+
+  it('offers an optional secondary clear-queue action and disables it while pending', async () => {
+    const onConfirm = vi.fn();
+    const onClear = vi.fn();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <I18nProvider>
+            <RecoveryHoldBar count={2} pending={false} onConfirm={onConfirm} onClear={onClear} />
+          </I18nProvider>,
+        );
+      });
+      const clearButton = container.querySelector<HTMLButtonElement>('[data-recovery-hold-clear]')!;
+      expect(clearButton).not.toBeNull();
+      expect(clearButton.textContent).toBe('Clear queue');
+      expect(clearButton.disabled).toBe(false);
+      await click(clearButton);
+      expect(onClear).toHaveBeenCalledTimes(1);
+      expect(onConfirm).not.toHaveBeenCalled();
+
+      await act(async () => {
+        root.render(
+          <I18nProvider>
+            <RecoveryHoldBar count={2} pending onConfirm={onConfirm} onClear={onClear} />
+          </I18nProvider>,
+        );
+      });
+      expect(container.querySelector<HTMLButtonElement>('[data-recovery-hold-clear]')!.disabled).toBe(true);
+    } finally {
+      await act(async () => { root.unmount(); });
+      container.remove();
+    }
+  });
 });

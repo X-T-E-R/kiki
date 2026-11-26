@@ -147,6 +147,7 @@ import { ComposerInput, type ComposerReferenceLabel, type ComposerSkillSpan } fr
 import { normalizeComposerText, type ComposerInputHandle } from '../lib/composerInput';
 import { Icon, resolvePluginSlotIconName } from './icons';
 import { useElapsedSince, useNow } from './RelativeTime';
+import { WORKING_QUIET_THRESHOLD_MS, formatWorkingDuration, formatWorkingQuietAgo } from './composerWorking';
 import { useComposerSsh } from './ssh/ComposerSsh';
 import { roomRefFetcher, useRoomRefDirectory } from '../lib/roomRefs';
 import { useThreadRefDirectory } from '../lib/threadRefs';
@@ -779,6 +780,7 @@ function ComposerFull({
    * `queued` holds details if a model request is waiting on governance admission.
    */
   working?: {
+    readonly startedAt?: number | undefined;
     readonly lastResponseAt: number | undefined;
     readonly queued?: {
       readonly waitedMs: number;
@@ -4702,9 +4704,8 @@ function ComposerFull({
           </div>
         </div>
         {/* External bare ContextStrip below the composer card:
-            Left: SSH summary trigger (`>_ GPU box +2 ▾` opening upward), active
-            plugin status capsules, and actionable queue/send-now line (ordinary
-            working state is already owned by the timeline tail and header).
+            Left: working/queue status line first, followed by SSH summary trigger
+            (`>_ GPU box +2 ▾` opening upward) and active plugin status capsules.
             Right: SessionRemainder, statusNotice, or takenOver Stop. */}
         {(() => {
           const sendNowHint =
@@ -4722,6 +4723,14 @@ function ComposerFull({
             <div data-composer-status-line className="@container/statusline mt-1.5 flex min-h-6 min-w-0 items-center gap-2 px-1 [contain:layout_style]">
               {ssh.resident !== null || hasPluginStatusCapsules || showWorkingLine || statusNotice !== undefined || sessionRemainder !== undefined || (takenOver && busy && onAbort !== undefined) ? (
                 <>
+                  {showWorkingLine ? (
+                    <ComposerWorkingLine
+                      startedAt={working.startedAt}
+                      lastResponseAt={working.lastResponseAt}
+                      queued={working.queued}
+                      sendNowHint={sendNowHint}
+                    />
+                  ) : null}
                   {ssh.resident}
                   {hasPluginStatusCapsules ? (
                     <PluginStatusCapsules
@@ -4729,13 +4738,6 @@ function ComposerFull({
                       sessionId={sessionId}
                       workspaceId={workspaceId}
                       disabled={disabled}
-                    />
-                  ) : null}
-                  {showWorkingLine ? (
-                    <ComposerWorkingLine
-                      lastResponseAt={working.lastResponseAt}
-                      queued={working.queued}
-                      sendNowHint={sendNowHint}
                     />
                   ) : null}
                   <span className="flex-1" />
@@ -5798,10 +5800,12 @@ function EffortGauge({
  * ("Queued" with click popover), and the send-now shortcut hint while typing.
  */
 function ComposerWorkingLine({
+  startedAt,
   lastResponseAt,
   queued,
   sendNowHint,
 }: {
+  readonly startedAt?: number | undefined;
   readonly lastResponseAt: number | undefined;
   readonly queued?: {
     readonly waitedMs: number;
@@ -5810,8 +5814,8 @@ function ComposerWorkingLine({
   };
   readonly sendNowHint: string | undefined;
 }) {
-  const { t, time } = useI18n();
-  useNow();
+  const { t } = useI18n();
+  const now = useNow();
   const navigate = useNavigate();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -5851,14 +5855,24 @@ function ComposerWorkingLine({
 
   const isQueued = queued !== undefined;
   const waitedSec = queued !== undefined ? Math.max(1, Math.round(queued.waitedMs / 1000)) : 1;
-  const status = lastResponseAt === undefined
-    ? t('composer.working')
-    : t('composer.workingLastResponse', { ago: time.relativeTime(new Date(lastResponseAt).toISOString()) });
+  const elapsedMs = startedAt === undefined ? undefined : Math.max(0, now - startedAt);
+  const quietMs = lastResponseAt === undefined ? undefined : Math.max(0, now - lastResponseAt);
+  const status = elapsedMs !== undefined
+    ? quietMs !== undefined && quietMs >= WORKING_QUIET_THRESHOLD_MS
+      ? t('composer.workingElapsedLastResponse', {
+          elapsed: formatWorkingDuration(elapsedMs, t),
+          ago: formatWorkingQuietAgo(quietMs, t),
+        })
+      : t('composer.workingElapsed', { elapsed: formatWorkingDuration(elapsedMs, t) })
+    : quietMs !== undefined
+      ? t('composer.workingLastResponse', { ago: formatWorkingQuietAgo(quietMs, t) })
+      : t('composer.working');
 
   return (
     <div className="relative flex min-w-0 items-center">
       <p
         data-composer-working
+        data-turn-started-at={startedAt}
         data-last-response-at={lastResponseAt}
         className="anim-enter flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint"
       >

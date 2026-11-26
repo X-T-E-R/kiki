@@ -876,10 +876,45 @@ describe('NbSearchService', () => {
     ix.get(IConfigService).get = ((domain: string) => domain === NB_SEARCH_SECTION ? { provider_instances: { 'tavily.default': { provider_id: 'tavily', enabled: false } } } : domain === NB_SEARCH_SOURCE_SECTION ? { reuse_local_config: false } : undefined) as IConfigService['get'];
     const service = ix.get(INbSearchService);
     const sources = await service.quotaSources();
-    expect(sources.find((source) => source.id === 'tavily.default')).toMatchObject({ provider_id: 'tavily', enabled: false, revision: expect.any(String) });
+    expect(sources.find((source) => source.id === 'tavily.default')).toMatchObject({ provider_id: 'tavily', enabled: false, balance_supported: true, revision: expect.any(String) });
     expect(await service.keyUsage('tavily.default', true)).toEqual({ provider_instance_id: 'tavily.default', provider_id: 'tavily', balance_supported: true, keys: [] });
     expect(createRuntimeMock).not.toHaveBeenCalled();
     expect(JSON.stringify(sources)).not.toMatch(/api_key|access_token/);
+  });
+
+  it('marks non-raw custom-proxy Tavily instances as balance_supported=false while supporting /raw/<id> gateway pools', async () => {
+    ix.get(IConfigService).get = ((domain: string) => domain === NB_SEARCH_SECTION ? {
+      provider_instances: {
+        'tavily.proxy': { provider_id: 'tavily', enabled: true, base_url: 'https://proxy.example.test/tavily', credential_slot_id: 'tavily.proxy', options: {} },
+        'tavily.gateway': { provider_id: 'tavily', enabled: true, base_url: 'https://api.example.test/raw/69', credential_slot_id: 'tavily.gateway', options: {} },
+      },
+      credential_slots: {
+        'tavily.proxy': { provider_id: 'tavily', env: 'NB_SEARCH_TAVILY_PROXY_API_KEY' },
+        'tavily.gateway': { provider_id: 'tavily', env: 'NB_SEARCH_TAVILY_GATEWAY_API_KEY' },
+      },
+    } : domain === NB_SEARCH_SOURCE_SECTION ? { reuse_local_config: false } : undefined) as IConfigService['get'];
+    const service = ix.get(INbSearchService);
+    const sources = await service.quotaSources();
+    expect(sources.find((source) => source.id === 'tavily.proxy')).toMatchObject({
+      provider_id: 'tavily',
+      enabled: true,
+      base_url: 'https://proxy.example.test/tavily',
+      balance_supported: false,
+    });
+    expect(sources.find((source) => source.id === 'tavily.gateway')).toMatchObject({
+      provider_id: 'tavily',
+      enabled: true,
+      base_url: 'https://api.example.test/raw/69',
+      balance_supported: true,
+    });
+    const usage = await service.keyUsage('tavily.proxy', true);
+    expect(usage).toEqual({
+      provider_instance_id: 'tavily.proxy',
+      provider_id: 'tavily',
+      balance_supported: false,
+      keys: [],
+    });
+    expect(createRuntimeMock).not.toHaveBeenCalled();
   });
 
   it.each([true, false])('preserves generic usage meters and recognizes Zhihu balance support with enabled=%s', async (enabled) => {
@@ -1738,23 +1773,23 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     await rm(fixture, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
-  it('inherits same-origin provider/credential key for exa.axon and tavily.axon without leaking to third-party origins', async () => {
+  it('inherits same-origin provider/credential key for exa.gateway and tavily.gateway without leaking to third-party origins', async () => {
     const kikiConfigData: Record<string, unknown> = {
       providers: {
-        axon: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', credentialId: 'axon' },
+        gateway: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', credentialId: 'gateway' },
       },
       credentials: {
-        axon: { kind: 'api_key', apiKey: 'sk-axon-shared-key-123' },
+        gateway: { kind: 'api_key', apiKey: 'sk-gateway-shared-key-123' },
       },
     };
     const nbPatch = {
       credential_slots: {
-        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY' },
-        'tavily.axon': { provider_id: 'tavily', env: 'NB_SEARCH_TAVILY_AXON_API_KEY' },
+        'exa.gateway': { provider_id: 'exa', env: 'NB_SEARCH_EXA_GATEWAY_API_KEY' },
+        'tavily.gateway': { provider_id: 'tavily', env: 'NB_SEARCH_TAVILY_GATEWAY_API_KEY' },
       },
       provider_instances: {
-        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.axon', options: {} },
-        'tavily.axon': { provider_id: 'tavily', enabled: true, base_url: 'https://api.example.test/raw/69', credential_slot_id: 'tavily.axon', options: {} },
+        'exa.gateway': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.gateway', options: {} },
+        'tavily.gateway': { provider_id: 'tavily', enabled: true, base_url: 'https://api.example.test/raw/69', credential_slot_id: 'tavily.gateway', options: {} },
       },
     } as never;
 
@@ -1779,17 +1814,17 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     const store = ix.get(INbSearchSourceStore);
     const source = await store.withSource(false, nbPatch, (value) => value);
 
-    expect(source.env['NB_SEARCH_EXA_AXON_API_KEY']).toBe('sk-axon-shared-key-123');
-    expect(source.env['NB_SEARCH_TAVILY_AXON_API_KEY']).toBe('sk-axon-shared-key-123');
+    expect(source.env['NB_SEARCH_EXA_GATEWAY_API_KEY']).toBe('sk-gateway-shared-key-123');
+    expect(source.env['NB_SEARCH_TAVILY_GATEWAY_API_KEY']).toBe('sk-gateway-shared-key-123');
     expect(source.env['NB_SEARCH_EXA_API_KEY']).toBeUndefined();
     expect(source.status.credential_source).toBe('environment+managed');
 
-    const exaView = await store.readManaged(source, 'exa.axon', true);
+    const exaView = await store.readManaged(source, 'exa.gateway', true);
     expect(exaView.active).toBe(true);
     expect(exaView.source).toBe('managed');
     expect(exaView.value).toBeUndefined();
 
-    const tavilyView = await store.readManaged(source, 'tavily.axon', false);
+    const tavilyView = await store.readManaged(source, 'tavily.gateway', false);
     expect(tavilyView.active).toBe(true);
     expect(tavilyView.source).toBe('managed');
     expect(tavilyView.value).toBeUndefined();
@@ -1800,7 +1835,7 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
   });
 
   it('prefers explicit nb_search env or managed override over inherited provider key', async () => {
-    vi.stubEnv('NB_SEARCH_EXA_AXON_API_KEY', 'explicit-env-exa-key');
+    vi.stubEnv('NB_SEARCH_EXA_GATEWAY_API_KEY', 'explicit-env-exa-key');
     const ix = createServices(disposables, {
       additionalServices: (reg) => {
         reg.definePartialInstance(IHostFileSystem, new HostFileSystem());
@@ -1814,7 +1849,7 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
           ready: Promise.resolve(),
           onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
           get: ((domain: string) => domain === 'providers'
-            ? { axon: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', apiKey: 'sk-axon-shared-key-123' } }
+            ? { gateway: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', apiKey: 'sk-gateway-shared-key-123' } }
             : undefined) as IConfigService['get'],
         });
         reg.define(INbSearchSourceStore, NbSearchSourceStore);
@@ -1822,16 +1857,16 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     });
     const nbPatch = {
       credential_slots: {
-        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY' },
+        'exa.gateway': { provider_id: 'exa', env: 'NB_SEARCH_EXA_GATEWAY_API_KEY' },
       },
       provider_instances: {
-        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.axon', options: {} },
+        'exa.gateway': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.gateway', options: {} },
       },
     } as never;
     const store = ix.get(INbSearchSourceStore);
     const source = await store.withSource(false, nbPatch, (value) => value);
-    expect(source.env['NB_SEARCH_EXA_AXON_API_KEY']).toBe('explicit-env-exa-key');
-    const view = await store.readManaged(source, 'exa.axon', true);
+    expect(source.env['NB_SEARCH_EXA_GATEWAY_API_KEY']).toBe('explicit-env-exa-key');
+    const view = await store.readManaged(source, 'exa.gateway', true);
     expect(view.source).toBe('environment');
     expect(view.value).toBe('explicit-env-exa-key');
   });
@@ -1850,7 +1885,7 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
           ready: Promise.resolve(),
           onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
           get: ((domain: string) => domain === 'providers'
-            ? { axon: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', apiKey: 'sk-axon-shared-key-123' } }
+            ? { gateway: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', apiKey: 'sk-gateway-shared-key-123' } }
             : undefined) as IConfigService['get'],
         });
         reg.define(INbSearchSourceStore, NbSearchSourceStore);
@@ -1862,7 +1897,7 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
         'exa.no_origin': { provider_id: 'exa', env: 'NB_SEARCH_NO_ORIGIN_KEY' },
       },
       provider_instances: {
-        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.shared', options: {} },
+        'exa.gateway': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.shared', options: {} },
         'exa.other': { provider_id: 'exa', enabled: true, base_url: 'https://api.other.test/v1', credential_slot_id: 'exa.shared', options: {} },
         'exa.unknown': { provider_id: 'exa', enabled: true, credential_slot_id: 'exa.no_origin', options: {} },
       },
@@ -1887,7 +1922,7 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
           ready: Promise.resolve(),
           onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
           get: ((domain: string) => domain === 'providers'
-            ? { axon: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', apiKey: 'sk-axon-alias-secret' } }
+            ? { gateway: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', apiKey: 'sk-gateway-alias-secret' } }
             : undefined) as IConfigService['get'],
         });
         reg.define(INbSearchSourceStore, NbSearchSourceStore);
@@ -1895,18 +1930,18 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     });
     const nbPatch = {
       credential_slots: {
-        'exa.slotA': { provider_id: 'exa', env: 'NB_SEARCH_AXON_ALIAS_KEY' },
-        'tavily.slotB': { provider_id: 'tavily', env: 'NB_SEARCH_AXON_ALIAS_KEY' },
+        'exa.slotA': { provider_id: 'exa', env: 'NB_SEARCH_GATEWAY_ALIAS_KEY' },
+        'tavily.slotB': { provider_id: 'tavily', env: 'NB_SEARCH_GATEWAY_ALIAS_KEY' },
       },
       provider_instances: {
-        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.slotA', options: {} },
-        'tavily.axon': { provider_id: 'tavily', enabled: true, base_url: 'https://api.example.test/raw/69', credential_slot_id: 'tavily.slotB', options: {} },
+        'exa.gateway': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.slotA', options: {} },
+        'tavily.gateway': { provider_id: 'tavily', enabled: true, base_url: 'https://api.example.test/raw/69', credential_slot_id: 'tavily.slotB', options: {} },
       },
     } as never;
     const store = ix.get(INbSearchSourceStore);
     const source = await store.withSource(false, nbPatch, (value) => value);
-    expect(source.env['NB_SEARCH_AXON_ALIAS_KEY']).toBe('sk-axon-alias-secret');
-    const aliasView = await store.readManaged(source, 'tavily.axon', true);
+    expect(source.env['NB_SEARCH_GATEWAY_ALIAS_KEY']).toBe('sk-gateway-alias-secret');
+    const aliasView = await store.readManaged(source, 'tavily.gateway', true);
     expect(aliasView.active).toBe(true);
     expect(aliasView.source).toBe('managed');
     expect(aliasView.value).toBeUndefined();
@@ -1927,7 +1962,7 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
           onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
           get: ((domain: string) => domain === 'providers'
             ? {
-                axon: { type: 'anthropic', baseUrl: 'https://api.example.test/v1' },
+                gateway: { type: 'anthropic', baseUrl: 'https://api.example.test/v1' },
                 sibling: { type: 'anthropic', baseUrl: 'https://api.example.test/v1', apiKey: 'sk-sibling-secret-do-not-steal' },
               }
             : undefined) as IConfigService['get'],
@@ -1937,17 +1972,17 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     });
     const nbPatch = {
       credential_slots: {
-        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY' },
+        'exa.gateway': { provider_id: 'exa', env: 'NB_SEARCH_EXA_GATEWAY_API_KEY' },
         'exa.missing': { provider_id: 'exa', env: 'NB_SEARCH_EXA_MISSING_API_KEY' },
       },
       provider_instances: {
-        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.axon', options: {} },
+        'exa.gateway': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.gateway', options: {} },
         'exa.missing': { provider_id: 'exa', enabled: true, base_url: 'https://api.example.test/raw/68', credential_slot_id: 'exa.missing', options: {} },
       },
     } as never;
     const store = ix.get(INbSearchSourceStore);
     const source = await store.withSource(false, nbPatch, (value) => value);
-    expect(source.env['NB_SEARCH_EXA_AXON_API_KEY']).toBeUndefined();
+    expect(source.env['NB_SEARCH_EXA_GATEWAY_API_KEY']).toBeUndefined();
     expect(source.env['NB_SEARCH_EXA_MISSING_API_KEY']).toBeUndefined();
   });
 
@@ -1956,7 +1991,7 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     const staleDoc = Buffer.from(JSON.stringify({
       schema_version: '1',
       slots: {
-        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY', binding: 'stale-old-base-url-fingerprint', value: storedSecret },
+        'exa.gateway': { provider_id: 'exa', env: 'NB_SEARCH_EXA_GATEWAY_API_KEY', binding: 'stale-old-base-url-fingerprint', value: storedSecret },
         'exa.standalone': { provider_id: 'exa', env: 'NB_SEARCH_EXA_STANDALONE_API_KEY', binding: 'stale-standalone-fingerprint', value: storedSecret },
       },
     }), 'utf8');
@@ -1973,7 +2008,7 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
           ready: Promise.resolve(),
           onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
           get: ((domain: string) => domain === 'providers'
-            ? { axon: { type: 'anthropic', baseUrl: 'https://direct.example.test/v1', apiKey: 'sk-live-axon-key' } }
+            ? { gateway: { type: 'anthropic', baseUrl: 'https://direct.example.test/v1', apiKey: 'sk-live-gateway-key' } }
             : undefined) as IConfigService['get'],
         });
         reg.define(INbSearchSourceStore, NbSearchSourceStore);
@@ -1981,19 +2016,19 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
     });
     const nbPatch = {
       credential_slots: {
-        'exa.axon': { provider_id: 'exa', env: 'NB_SEARCH_EXA_AXON_API_KEY' },
+        'exa.gateway': { provider_id: 'exa', env: 'NB_SEARCH_EXA_GATEWAY_API_KEY' },
         'exa.standalone': { provider_id: 'exa', env: 'NB_SEARCH_EXA_STANDALONE_API_KEY' },
       },
       provider_instances: {
-        'exa.axon': { provider_id: 'exa', enabled: true, base_url: 'https://direct.example.test/raw/68', credential_slot_id: 'exa.axon', options: {} },
+        'exa.gateway': { provider_id: 'exa', enabled: true, base_url: 'https://direct.example.test/raw/68', credential_slot_id: 'exa.gateway', options: {} },
         'exa.standalone': { provider_id: 'exa', enabled: true, base_url: 'https://other.example.test/raw/99', credential_slot_id: 'exa.standalone', options: {} },
       },
     } as never;
     const store = ix.get(INbSearchSourceStore);
     const source = await store.withSource(false, nbPatch, (value) => value);
-    expect(source.env['NB_SEARCH_EXA_AXON_API_KEY']).toBe('sk-live-axon-key');
+    expect(source.env['NB_SEARCH_EXA_GATEWAY_API_KEY']).toBe('sk-live-gateway-key');
     expect(source.env['NB_SEARCH_EXA_STANDALONE_API_KEY']).toBeUndefined();
-    expect(source.status.issues).not.toContain('MANAGED_CREDENTIALS_MISMATCH:exa.axon');
+    expect(source.status.issues).not.toContain('MANAGED_CREDENTIALS_MISMATCH:exa.gateway');
     expect(source.status.issues).toContain('MANAGED_CREDENTIALS_MISMATCH:exa.standalone');
 
     const { describeCapabilities } = await import('#/app/nbSearch/toolDescriptions');
@@ -2007,9 +2042,9 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
       jobs: { result_ttl_seconds: 60, cancel_supported: true },
     });
     expect(described.search).toContain('exa.standalone');
-    expect(described.search).not.toContain('exa.axon');
+    expect(described.search).not.toContain('exa.gateway');
     expect(described.search).not.toContain(storedSecret);
-    expect(described.search).not.toContain('sk-live-axon-key');
+    expect(described.search).not.toContain('sk-live-gateway-key');
   });
 
   it('surfaces managed credential mismatch hints on PRESET_UNAVAILABLE and in test() readiness issues', async () => {
@@ -2066,5 +2101,92 @@ describe('NbSearchSourceStore single-key provider inheritance', () => {
       expect(result.error.message).toContain('exa.default');
       expect(result.error.message).not.toContain('sk-stale-secret');
     }
+  });
+});
+
+describe('rawGatewayQuota pool deduplication and channel matching', () => {
+  afterEach(async () => {
+    const { clearRawGatewayQuotaUnsupportedCache } = await import('#/app/nbSearch/rawGatewayQuota');
+    clearRawGatewayQuotaUnsupportedCache();
+  });
+
+  it('issues one pool query across multiple downstream keys and returns one pool entry', async () => {
+    const { fetchRawGatewayKeyUsage, parseRawGatewayRoute } = await import('#/app/nbSearch/rawGatewayQuota');
+    const route = parseRawGatewayRoute('https://api.example.test/prefix/raw/69');
+    expect(route).toEqual({ origin: 'https://api.example.test', channelId: '69' });
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      object: 'list',
+      generated_at: '2026-11-26T00:00:00Z',
+      data: [{
+        channel_id: 69,
+        channel_name: 'Search Pool',
+        quota_summary: { total_used: 25, total_limit: 100, total_remaining: 75, currency: 'credits' },
+      }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+    const result = await fetchRawGatewayKeyUsage({
+      instanceId: 'tavily.gateway',
+      providerId: 'tavily',
+      route: route!,
+      keys: ['sk-key-1', 'sk-key-2', 'sk-key-3'],
+      fetchImpl: fetchMock as typeof fetch,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.balance_supported).toBe(true);
+    expect(result.keys).toHaveLength(1);
+    expect(result.keys[0]?.usage?.remaining).toBe(75);
+  });
+
+  it('does not fall back to data[0] when gateway ignores channel_id filter', async () => {
+    const { fetchRawGatewayKeyUsage, parseRawGatewayRoute } = await import('#/app/nbSearch/rawGatewayQuota');
+    const route = parseRawGatewayRoute('https://api.example.test/raw/69')!;
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      object: 'list',
+      generated_at: '2026-11-26T00:00:00Z',
+      data: [{
+        channel_id: 42,
+        channel_name: 'Wrong Channel',
+        quota_summary: { total_used: 1, total_limit: 999, total_remaining: 998, currency: 'credits' },
+      }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+    const result = await fetchRawGatewayKeyUsage({
+      instanceId: 'tavily.gateway',
+      providerId: 'tavily',
+      route,
+      keys: ['sk-key-1'],
+      fetchImpl: fetchMock as typeof fetch,
+    });
+
+    expect(result.keys).toHaveLength(1);
+    expect(result.keys[0]?.usage).toBeUndefined();
+    expect(result.keys[0]?.usage_error).toBe('unavailable');
+  });
+
+  it('falls back to a later valid key when the first key returns 401 and stops once pool quota succeeds', async () => {
+    const { fetchRawGatewayKeyUsage, parseRawGatewayRoute } = await import('#/app/nbSearch/rawGatewayQuota');
+    const route = parseRawGatewayRoute('https://api.example.test/raw/69')!;
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'invalid_api_key' } }), { status: 401, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        object: 'list',
+        data: [{ channel_id: 69, quota_summary: { total_used: 10, total_limit: 50, total_remaining: 40 } }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+    const result = await fetchRawGatewayKeyUsage({
+      instanceId: 'exa.gateway',
+      providerId: 'exa',
+      route,
+      keys: ['sk-dead', 'sk-good', 'sk-unused'],
+      fetchImpl: fetchMock as typeof fetch,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.keys).toHaveLength(1);
+    expect(result.keys[0]?.usage?.remaining).toBe(40);
   });
 });

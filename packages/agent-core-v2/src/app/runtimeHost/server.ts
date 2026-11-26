@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Server, Socket } from 'node:net';
 import { createServer } from 'node:net';
 
+import { isBrokenPipeError, isWritableStreamOpen } from '#/_base/errors/brokenPipe';
 import { toErrorPayload, type ErrorPayload } from '#/_base/errors/serialize';
 
 import { createFrameDecoder, encodeFrame, type FrameDecoder } from './codec';
@@ -156,7 +157,7 @@ export function createRuntimeServer(
   const maxOutboundBytes = Math.max(frameLimit * 4, 4 * 1024 * 1024);
 
   const write = (socket: Socket, frame: RuntimeOutboundFrame): boolean => {
-    if (!socket.writable || socket.destroyed) return false;
+    if (!isWritableStreamOpen(socket)) return false;
     let encoded = encodeFrame(frame);
     let byteLength = Buffer.byteLength(encoded, 'utf8');
     if (byteLength > frameLimit) {
@@ -185,7 +186,16 @@ export function createRuntimeServer(
       teardown(socket, new HomeRuntimeError('runtime.frame_overflow', 'runtime outbound buffer exceeded'));
       return false;
     }
-    const flushed = socket.write(encoded);
+    let flushed: boolean;
+    try {
+      flushed = socket.write(encoded);
+    } catch (error) {
+      if (isBrokenPipeError(error)) {
+        teardown(socket, new HomeRuntimeError('runtime.detached', 'runtime socket write failed', { cause: error }));
+        return false;
+      }
+      throw error;
+    }
     if (!flushed && !socket.destroyed && !socket.isPaused()) {
       socket.pause();
       socket.once('drain', () => {
@@ -203,8 +213,13 @@ export function createRuntimeServer(
 
   const rejectSocket = (socket: Socket, payload: ErrorPayload): void => {
     write(socket, { type: 'reject', reject: { code: payload.code, message: payload.message } });
-    socket.end();
-    socket.destroy();
+    if (!socket.destroyed) {
+      try {
+        socket.end();
+      } catch {
+      }
+      socket.destroy();
+    }
   };
 
   const callError = (socket: Socket, requestId: string, epoch: number, payload: ErrorPayload): void => {

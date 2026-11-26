@@ -31,7 +31,7 @@ import { useGuardedNavigate } from '../dirtyGuard';
 import { DisclosureChevron, Icon } from '../icons';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
 import { useSessionContextMenu } from '../sessionContextMenu';
-import { SidebarRowDot } from '../sidebar/SidebarRowSignal';
+import { SidebarRowDot, sidebarDotKindFromLife } from '../sidebar/SidebarRowSignal';
 import { sanitizeDisplayTitle } from '../../lib/threadTitles';
 import { CreateRoomDialog } from '../room/CreateRoomDialog';
 import { PersonaAvatar, personaAvatarOf } from './PersonaAvatar';
@@ -797,13 +797,13 @@ export function SidebarPersonaSection({
             aria-expanded={!collapsed}
             aria-label={collapsed ? t('persona.expandSection') : t('persona.collapseSection')}
             onClick={() => { setSidebarPersonaSectionCollapsed(!collapsed); }}
-            className="row-interactive flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-left text-[12px] leading-4 font-normal text-section-ink transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
+            className="row-interactive flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 text-left text-[12px] leading-4 font-bold text-section-ink transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
           >
             <DisclosureChevron open={!collapsed} size={12} className="shrink-0 text-ink-faint" />
             <span className="min-w-0 truncate">{t('persona.groupTitle')}</span>
             {collapsed && (collapsedLife !== 'idle' || collapsedUnreadTotal > 0) ? (
               <span data-sidebar-personas-attention className="ml-0.5 flex shrink-0 items-center gap-1">
-                <SidebarRowDot signal />
+                <SidebarRowDot signal kind={sidebarDotKindFromLife(collapsedLife) ?? 'unread'} />
                 {collapsedUnreadTotal > 0 ? (
                   <span
                     data-sidebar-personas-collapsed-unread={collapsedUnreadTotal}
@@ -994,7 +994,7 @@ export function SidebarPersonaSection({
                         }}
                         className="flex h-full min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
                       >
-                        <SidebarRowDot signal={hasSignal} />
+                        <SidebarRowDot signal={hasSignal} kind={sidebarDotKindFromLife(effectiveLife) ?? 'unread'} />
                         <PersonaAvatar persona={personaAvatarOf(persona)} size={20} decorative />
                         <span className={`min-w-0 flex-1 truncate text-[13px] leading-5 font-normal ${
                           hasSignal ? 'text-ink' : 'text-ink-soft group-hover:text-ink'
@@ -1098,7 +1098,7 @@ export function SidebarPersonaSection({
                                   onClick={() => { void navigate(thread.targetUrl); }}
                                   className="flex h-full min-w-0 flex-1 items-center gap-2 text-left text-[13px] leading-5 font-normal focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
                                 >
-                                  <SidebarRowDot signal={subSignal} />
+                                  <SidebarRowDot signal={subSignal} kind={sidebarDotKindFromLife(thread.life, { needsYou: thread.needsYou })} />
                                   {thread.kind === 'room' ? (
                                     <span aria-hidden className="shrink-0 font-mono text-[12px] text-ink-faint">#</span>
                                   ) : null}

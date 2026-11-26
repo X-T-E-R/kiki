@@ -168,8 +168,10 @@ export function buildRoster(input: RosterInput): RosterModel {
 
   // Single post-order pass: bucket, subtree urgency, waiting descendants, and
   // iterative subtree latest timestamp (no Math.max(...children) stack spread).
-  const visit = (node: AgentTreeNode): void => {
-    const bucket = rosterBucket(node, waiting);
+  const visit = (node: AgentTreeNode, ancestorEnded = false): void => {
+    const rawBucket = rosterBucket(node, waiting);
+    const bucket: RosterBucket = ancestorEnded && rawBucket === 'unknown' ? 'ended' : rawBucket;
+    const nextAncestorEnded = ancestorEnded || bucket === 'ended';
     bucketOf.set(node.agentId, bucket);
     counts[bucket] += 1;
     const children: AgentTreeNode[] = [];
@@ -183,9 +185,11 @@ export function buildRoster(input: RosterInput): RosterModel {
     let below = 0;
     let maxTime = Math.max(timeOf(node.endedAt), timeOf(node.startedAt));
     for (const child of children) {
-      visit(child);
+      visit(child, nextAncestorEnded);
       const childRank = subtreeRank.get(child.agentId)!;
-      if (childRank < rank) rank = childRank;
+      if (childRank < rank && !(bucket === 'ended' && childRank >= RANK.unknown)) {
+        rank = childRank;
+      }
       below += waitingBelow.get(child.agentId)! + (bucketOf.get(child.agentId) === 'waiting' ? 1 : 0);
       const childTime = updatedAt.get(child.agentId)!;
       if (childTime > maxTime) maxTime = childTime;
@@ -311,12 +315,19 @@ export function buildRoster(input: RosterInput): RosterModel {
     for (const child of byUrgency(kids.get(node.agentId) ?? [])) emit(child, depth + 1);
   };
   // More than three is the existing handful. Fewer stay rows unless server
-  // counts report additional unhydrated settled/unknown subagents.
-  const foldWhenMany = (nodes: readonly AgentTreeNode[], bucket: 'unknown' | 'ended', open: boolean): void => {
+  // counts report additional unhydrated settled/unknown subagents, or when
+  // settled itself already folds (never sandwich inline unknown rows above a
+  // folded "N finished" group).
+  const foldWhenMany = (
+    nodes: readonly AgentTreeNode[],
+    bucket: 'unknown' | 'ended',
+    open: boolean,
+    forceFold = false,
+  ): void => {
     const serverCount = useServerCounts ? effectiveCounts[bucket] : 0;
     const groupCount = Math.max(nodes.length, serverCount);
     if (groupCount === 0) return;
-    if (groupCount <= 3) {
+    if (!forceFold && groupCount <= 3) {
       for (const node of nodes) emit(node, 0);
       return;
     }
@@ -337,8 +348,9 @@ export function buildRoster(input: RosterInput): RosterModel {
   const active = ordered.filter((node) => subtreeRank.get(node.agentId)! < RANK.unknown);
   const historicalUnknown = ordered.filter((node) => subtreeRank.get(node.agentId)! === RANK.unknown);
   const settled = ordered.filter((node) => subtreeRank.get(node.agentId)! === RANK.ended);
+  const settledGroupCount = Math.max(settled.length, useServerCounts ? effectiveCounts.ended : 0);
   for (const node of active) emit(node, 0);
-  foldWhenMany(historicalUnknown, 'unknown', unknownOpen);
+  foldWhenMany(historicalUnknown, 'unknown', unknownOpen, settledGroupCount > 3);
   foldWhenMany(settled, 'ended', doneOpen);
   return {
     counts: effectiveCounts,

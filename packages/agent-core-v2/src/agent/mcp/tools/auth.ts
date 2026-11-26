@@ -126,6 +126,7 @@ export function createMcpAuthTool(options: CreateMcpAuthToolOptions): Executable
     resolveExecution: () => {
       return {
         description: `Authenticating ${serverName}`,
+        foregroundTimeoutMs: (timeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS) + 30_000,
         approvalRule: name,
         execute,
       };

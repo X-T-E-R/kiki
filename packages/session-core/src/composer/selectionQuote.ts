@@ -299,6 +299,9 @@ export function buildAnnotationsPrefix(
   return annotations.map((annotation) => buildAnnotationBlock(annotation)).join('');
 }
 
+const NON_QUOTABLE_ANCESTOR_SELECTOR =
+  '[data-history-fold], [data-system-reminder], [data-system-message], [data-hook-row], [data-tool-row], [data-thinking-row], [data-composer-root]';
+
 /**
  * The selection's trimmed text when it lives entirely inside `container`
  * (both anchor and focus), else null. Collapsed/whitespace-only selections
@@ -311,6 +314,36 @@ export function selectionTextWithin(container: Node, selection: Selection): stri
   if (!container.contains(anchorNode) || !container.contains(focusNode)) return null;
   const text = selection.toString().trim();
   return text === '' ? null : text;
+}
+
+/**
+ * Trimmed selection text when both endpoints live inside a single user or
+ * assistant `[data-source-block-id]` message body within `container` and
+ * outside internal system/process/fold chrome.
+ */
+export function selectionQuotableTextWithin(container: Node, selection: Selection): string | null {
+  const text = selectionTextWithin(container, selection);
+  if (text === null || selection.rangeCount !== 1) return null;
+  const range = selection.getRangeAt(0);
+  const startEl = range.startContainer.nodeType === 1
+    ? range.startContainer as Element
+    : range.startContainer.parentElement;
+  const endEl = range.endContainer.nodeType === 1
+    ? range.endContainer as Element
+    : range.endContainer.parentElement;
+  if (startEl === null || endEl === null) return null;
+  const startSource = startEl.closest<HTMLElement>('[data-source-block-id]');
+  const endSource = endEl.closest<HTMLElement>('[data-source-block-id]');
+  if (startSource === null || startSource !== endSource || !container.contains(startSource)) return null;
+  const blockId = startSource.dataset['sourceBlockId'];
+  if (blockId === undefined || blockId === '') return null;
+  if (
+    startEl.closest(NON_QUOTABLE_ANCESTOR_SELECTOR) !== null ||
+    endEl.closest(NON_QUOTABLE_ANCESTOR_SELECTOR) !== null
+  ) {
+    return null;
+  }
+  return text;
 }
 
 /**

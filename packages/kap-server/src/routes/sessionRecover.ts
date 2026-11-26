@@ -178,7 +178,7 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
         if (targetAgentId === MAIN_AGENT_ID) {
           for (const [id, agentMeta] of Object.entries(meta.agents ?? {})) {
             if (id === MAIN_AGENT_ID) continue;
-            if (agentMeta.labels?.['branch'] !== 'true' || agentMeta.labels?.['branchSealed'] === 'true') continue;
+            if (agentMeta.labels?.['branch'] !== 'true') continue;
             if (lifecycle.get(id) !== undefined) continue;
             if (staleBoot || staleRunAgents.has(id) || persistedTargetIds.has(id) || agentMeta.branchTurn?.outcome === 'cancelled') {
               await ensureSessionAgent(core, session, id).catch(() => undefined);
@@ -283,7 +283,7 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
         if (targetAgentId === MAIN_AGENT_ID) {
           for (const [id, agentMeta] of Object.entries(meta.agents ?? {})) {
             if (id === MAIN_AGENT_ID) continue;
-            if (agentMeta.labels?.['branch'] !== 'true' || agentMeta.labels?.['branchSealed'] === 'true') continue;
+            if (agentMeta.labels?.['branch'] !== 'true') continue;
             const branchLost = lostByOwner.get(id) ?? 0;
             const branchCancelled =
               agentMeta.branchTurn?.outcome === 'cancelled' && agentMeta.branchTurn.endedAt >= recoveryWatermark;
@@ -310,7 +310,7 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
             if (targetAgentId !== MAIN_AGENT_ID && persisted.agentId !== targetAgentId) continue;
             if (persisted.kind === 'branch' && !interruptedBranchIds.includes(persisted.agentId)) {
               const branchMeta = meta.agents?.[persisted.agentId];
-              if (branchMeta?.labels?.['branch'] === 'true' && branchMeta.labels?.['branchSealed'] !== 'true') {
+              if (branchMeta?.labels?.['branch'] === 'true') {
                 interruptedBranchIds.push(persisted.agentId);
               }
             }
@@ -390,10 +390,11 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
             }
             const branchLostTasks = lostTasks.filter((task) => task.ownerAgentId === branchId);
             const branchHold = branchQueue.hold?.reason === 'recovery';
+            const branchHasHeldItems = branchHold && (branchQueue.pending.length > 0 || (branchQueue.hold?.count ?? 0) > 0);
             if (branchHold) {
               branchPrompts.resumeRecoveredQueue();
             }
-            if (branchHold && branchQueue.pending.length > 0) {
+            if (branchHasHeldItems) {
               promptId ??= branchQueue.pending[0]?.id;
               wokeAny = true;
             } else {
@@ -427,10 +428,21 @@ export function registerSessionRecoverRoute(app: RecoverRouteHost, core: Scope):
             return;
           }
         } else {
+          const hasHeldItems = hasRecoveryHold && (queue.pending.length > 0 || (queue.hold?.count ?? 0) > 0);
           if (hasRecoveryHold) {
             prompts.resumeRecoveredQueue();
           }
-          if (hasRecoveryHold && queue.pending.length > 0) {
+          if (targetAgentId === MAIN_AGENT_ID && interruptedBranchIds.length > 0) {
+            for (const branchId of interruptedBranchIds) {
+              const branchHandle = lifecycle.get(branchId);
+              if (branchHandle === undefined) continue;
+              const branchPrompts = branchHandle.accessor.get(IAgentPromptService);
+              if (branchPrompts.list().hold?.reason === 'recovery') {
+                branchPrompts.resumeRecoveredQueue();
+              }
+            }
+          }
+          if (hasHeldItems) {
             promptId = queue.pending[0]?.id;
           } else {
             const reminderBody = buildRecoveryReminderBody(targetAgentId, targets, lostTasks);

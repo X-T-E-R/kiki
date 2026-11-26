@@ -2574,16 +2574,20 @@ describe('Sidebar grouping', () => {
     expect(container.querySelector('[data-session-row="blocked"] [data-session-needs-you]')?.textContent).toBe('Awaiting approval');
   });
 
-  it('keeps row dots still with strict 2-state grammar and draws nothing for a caught-up row', async () => {
+  it('distinguishes needs_you, working, and unread row dots while drawing nothing for a caught-up row', async () => {
     resetSessionSeen();
+    const needsYou = { ...session('blocked_dot'), pending_interaction: 'approval' as const, last_seq: 2 };
     const running = { ...session('run'), busy: true, executing: true, last_seq: 2 };
+    const unread = { ...session('unread_done'), last_seq: 2 };
     const read = { ...session('read'), last_seq: 2 };
     markSessionSeen('read', 2);
-    const items = [running, read];
+    const items = [needsYou, running, unread, read];
     const { container } = await mount({ sessions: items, sessionGroups: [{ key: 'today', label: 'Today', items }] });
-    const runDot = container.querySelector('[data-session-row="run"] [data-sidebar-signal]');
-    expect(runDot?.getAttribute('data-sidebar-signal')).toBe('active');
+    expect(container.querySelector('[data-session-row="blocked_dot"] [data-sidebar-dot="needs_you"] span')?.className).toContain('bg-attention');
+    expect(container.querySelector('[data-session-row="run"] [data-sidebar-dot="working"] span')?.className).toContain('status-dot-busy');
+    expect(container.querySelector('[data-session-row="unread_done"] [data-sidebar-dot="unread"] span')?.className).toContain('border-ink-soft');
     expect(container.querySelector('[data-session-row="read"] [data-sidebar-signal]')?.getAttribute('data-sidebar-signal')).toBe('normal');
+    expect(container.querySelector('[data-session-row="read"] [data-sidebar-dot]')).toBeNull();
     // The header's running count is the one mark allowed to breathe.
     expect(container.querySelector('[data-activity-summary] [data-life]')?.hasAttribute('data-life-still')).toBe(false);
   });

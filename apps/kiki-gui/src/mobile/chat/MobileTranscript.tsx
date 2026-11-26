@@ -6,10 +6,8 @@ import { isNativeExecutor } from '@kiki/session-core/composer';
 import type { CatalogModelLike } from '@kiki/session-core/settings';
 import {
   buildNoticePlacementContext,
+  buildSupersededIncidentState,
   classifyNoticePlacement,
-  hasConfirmedSubsequentSuccess,
-  hasSubsequentCompactionResolution,
-  hasSubsequentModelSwitchResolution,
   latestUnresolvedCompactionId,
   resolveInjectionHeading,
   turnReplyGap,
@@ -21,6 +19,7 @@ import {
   type NoticePlacementContext,
   type SessionViewState,
   type SkillBlock,
+  type SupersededIncidentState,
   type SystemBlock,
   type SystemReminderBlock,
   type ToolBlock,
@@ -88,6 +87,7 @@ type RenderEntry =
       readonly id: string;
       readonly turnId?: string;
       readonly count: number;
+      readonly onlyInjections?: boolean;
       readonly running?: ToolBlock;
       readonly single?: ToolBlock;
       readonly injections: readonly MobileFoldedDetailItem[];
@@ -124,6 +124,7 @@ function groupReplyBlocks(
       id: `grp-${firstId}`,
       turnId: pendingTurn,
       count: pendingTools.length + pendingThinking + pendingInjections.length,
+      onlyInjections: pendingTools.length === 0 && pendingThinking === 0 && pendingInjections.length > 0,
       running: pendingTools.find((tool) => tool.status === 'running'),
       single:
         pendingTools.length === 1 && pendingThinking === 0 && pendingInjections.length === 0
@@ -232,17 +233,15 @@ const GOAL_CHANGE_KEY: Record<string, I18nKey> = {
 
 function MobileNoticeRow({
   block,
-  blocks,
   placementContext,
-  turnTerminals,
+  supersededIncidents,
   latestFailedCompactionId,
   readOnly,
   onRetryCompaction,
 }: {
   readonly block: NoticeBlock;
-  readonly blocks: readonly Block[];
   readonly placementContext: NoticePlacementContext;
-  readonly turnTerminals?: Readonly<Record<string, TurnTailInfo>>;
+  readonly supersededIncidents: SupersededIncidentState;
   readonly latestFailedCompactionId?: string;
   readonly readOnly: boolean;
   readonly onRetryCompaction?: (strategy: 'summarize' | 'relay') => void;
@@ -257,7 +256,7 @@ function MobileNoticeRow({
     return <EarlierPromptOutcomesRow block={block} />;
   }
   if (block.modelSwitch !== undefined) {
-    const superseded = block.modelSwitch.state === 'failed' && hasSubsequentModelSwitchResolution(blocks, block.id);
+    const superseded = block.modelSwitch.state === 'failed' && supersededIncidents.isModelSwitchSuperseded(block.id);
     return <ModelSwitchNotice block={block} superseded={superseded} />;
   }
   if (block.executor !== undefined) {
@@ -289,11 +288,36 @@ function MobileNoticeRow({
 
   if (placement === 'error') {
     const superseded = isCompactionError
-      ? hasSubsequentCompactionResolution(blocks, block.id)
-      : hasConfirmedSubsequentSuccess(block.turnId, blocks, turnTerminals);
+      ? supersededIncidents.isCompactionSuperseded(block.id)
+      : supersededIncidents.isTurnSuperseded(block.turnId);
     const isInterrupted = block.compactionPhase === 'interrupted';
+    const rawMsg = isCompactionError
+      ? (block.compactionFailure ?? (isInterrupted ? t('transcript.error.compactionInterruptedDefault') : fullText))
+      : (block.text !== '' && block.text !== 'compaction' ? block.text : fullText);
+    if (superseded) {
+      const hasBody = block.errorDetails !== undefined && block.errorDetails !== '';
+      return (
+        <ActivityRow
+          glyph={<Icon name="warning" size={12} />}
+          tone="plain"
+          label={isCompactionError ? fullText : rawMsg}
+          detail={isCompactionError && rawMsg !== fullText ? rawMsg : undefined}
+          meta={block.createdAt !== undefined ? <RelativeTime at={block.createdAt} /> : undefined}
+          expanded={hasBody ? open : undefined}
+          onToggle={hasBody ? () => { setOpen((value) => !value); } : undefined}
+          attrs={{ 'data-notice-key': block.i18n?.key, 'data-notice-superseded': 'true' }}
+        >
+          {open && hasBody ? (
+            <div id={detailsId} className="flex items-start gap-2 border-l border-hairline pl-3 text-[12px] leading-[16px] text-ink-faint">
+              <p className="min-w-0 flex-1 select-text font-mono whitespace-pre-wrap [overflow-wrap:anywhere]">{block.errorDetails}</p>
+              <CopyButton text={block.errorDetails!} label={fullText} />
+            </div>
+          ) : undefined}
+        </ActivityRow>
+      );
+    }
     const actions: TimelineErrorAction[] = [];
-    if (isCompactionError && !readOnly && !superseded && onRetryCompaction !== undefined && latestFailedCompactionId === block.id) {
+    if (isCompactionError && !readOnly && onRetryCompaction !== undefined && latestFailedCompactionId === block.id) {
       actions.push({
         id: 'retry-compaction',
         label: t('transcript.error.retryCompaction'),
@@ -310,9 +334,6 @@ function MobileNoticeRow({
         dataAttr: 'data-compaction-retry-fresh',
       });
     }
-    const rawMsg = isCompactionError
-      ? (block.compactionFailure ?? (isInterrupted ? t('transcript.error.compactionInterruptedDefault') : fullText))
-      : (block.text !== '' && block.text !== 'compaction' ? block.text : fullText);
     return (
       <TimelineErrorCallout
         incidentId={`mobile-notice-${block.id}`}
@@ -321,7 +342,7 @@ function MobileNoticeRow({
         message={rawMsg}
         errorDetails={block.errorDetails}
         createdAt={block.createdAt}
-        superseded={superseded}
+        superseded={false}
         actions={actions}
         attrs={{ 'data-notice-key': block.i18n?.key }}
       />
@@ -604,37 +625,23 @@ export function MobileTranscript({
 
   const turnTail = state?.turnTail;
   const turnTerminals = state?.turnTerminals;
+  const supersededIncidents = useMemo(
+    () => buildSupersededIncidentState(blocks, turnTerminals),
+    [blocks, turnTerminals],
+  );
   const replyGap = useMemo(
     () => (state === undefined ? undefined : turnReplyGap(state, { connected })),
     [state, connected],
   );
-  const completedTurnFootnotes = useMemo(() => {
-    const map = new Map<string, TurnTailInfo>();
-    if (turnTerminals !== undefined) {
-      for (const [id, info] of Object.entries(turnTerminals)) {
-        if (info.state === 'completed') {
-          const norm = normTurn(id);
-          if (norm !== undefined) map.set(norm, info);
-        }
-      }
-    }
-    if (turnTail?.state === 'completed') {
-      const norm = normTurn(turnTail.turnId);
-      if (norm !== undefined) map.set(norm, turnTail);
-    }
-    return map;
-  }, [turnTerminals, turnTail]);
-  const latestCompletedTurnId = !busy && turnTail?.state === 'completed' ? normTurn(turnTail.turnId) : undefined;
-  const latestCompletedAttachedInline = useMemo(
-    () => latestCompletedTurnId !== undefined && entries.some((entry) => entry.turnId === latestCompletedTurnId),
-    [entries, latestCompletedTurnId],
-  );
-
   const failedTailTurnId = !busy && turnTail?.state === 'failed' ? normTurn(turnTail.turnId) : undefined;
   const failedTurnUserBlock = useMemo(() => {
     if (failedTailTurnId === undefined) return undefined;
     return blocks.findLast((block): block is UserBlock => block.kind === 'user' && normTurn(block.turnId) === failedTailTurnId);
   }, [blocks, failedTailTurnId]);
+  const failedTailHandledByUndeliveredUserOutcome =
+    failedTurnUserBlock !== undefined &&
+    (failedTurnUserBlock.promptStatus === 'blocked' ||
+      (failedTurnUserBlock.promptOutcome !== undefined && failedTurnUserBlock.promptOutcome.delivered === false));
   const failedTurnHasWork = useMemo(
     () =>
       failedTailTurnId !== undefined &&
@@ -665,13 +672,45 @@ export function MobileTranscript({
 
   const renderBlock = (block: Block) => {
     if (block.kind === 'user') {
-      const superseded = hasConfirmedSubsequentSuccess(block.turnId, blocks, turnTerminals);
+      const superseded = supersededIncidents.isTurnSuperseded(block.turnId);
+      const isDeliveredFailedTailDuplicate =
+        failedTailTurnId !== undefined &&
+        normTurn(block.turnId) === failedTailTurnId &&
+        block.promptStatus !== 'blocked' &&
+        block.promptOutcome?.status === 'failed' &&
+        block.promptOutcome.delivered === true;
+      const showPromptOutcome =
+        !isDeliveredFailedTailDuplicate &&
+        (block.promptOutcome !== undefined || block.promptStatus === 'blocked');
       return (
         <div key={block.id} data-mobile-msg="user" className="flex flex-col items-end">
-          <div className="kiki-user-text max-w-[84%] rounded-[20px] rounded-br-[6px] bg-bubble-user px-4 py-2.5 leading-[1.7] text-ink whitespace-pre-wrap break-words">
+          <div
+            data-steer-status={block.steerStatus}
+            className={`kiki-user-text max-w-[84%] rounded-[20px] rounded-br-[6px] px-4 py-2.5 leading-[1.7] text-ink whitespace-pre-wrap break-words steer-bubble ${
+              block.steerStatus === undefined ? 'bg-bubble-user' : 'steer-bubble-pending border-dashed'
+            }`}
+          >
             {block.text}
           </div>
-          {block.promptOutcome !== undefined || block.promptStatus === 'blocked' ? (
+          {block.steerStatus !== undefined ? (
+            <span role="status" data-steer-line={block.steerStatus} className="mt-1 mr-1 flex items-center gap-1.5 text-[11.5px] leading-4 text-ink-soft">
+              <span aria-hidden className="steer-mark" />
+              <span>
+                {t(
+                  block.steerStatus === 'waiting'
+                    ? 'transcript.steerWaiting'
+                    : block.steerStatus === 'unconfirmed'
+                      ? 'transcript.steerUnconfirmed'
+                      : block.steerStatus === 'preparing'
+                        ? 'transcript.steerPreparing'
+                        : block.steerStatus === 'held'
+                          ? 'transcript.admission.held'
+                          : 'transcript.steerSending',
+                )}
+              </span>
+            </span>
+          ) : null}
+          {showPromptOutcome ? (
             <PromptOutcomeLine
               outcome={block.promptOutcome ?? { status: 'blocked', delivered: false, at: block.createdAt }}
               superseded={superseded}
@@ -697,9 +736,8 @@ export function MobileTranscript({
         <MobileNoticeRow
           key={block.id}
           block={block}
-          blocks={blocks}
           placementContext={placementContext}
-          turnTerminals={turnTerminals}
+          supersededIncidents={supersededIncidents}
           latestFailedCompactionId={latestFailedCompactionId}
           readOnly={readOnly}
           onRetryCompaction={onRetryCompaction}
@@ -799,21 +837,18 @@ export function MobileTranscript({
               <p className="font-sans text-[18px] leading-[26px] font-normal text-ink-soft">{t('mobile.chat.emptyHint')}</p>
             </div>
           ) : (
-            entries.map((entry, index) => {
-              const nextEntry = entries[index + 1];
-              const isTurnTail = entry.turnId !== undefined && (nextEntry === undefined || nextEntry.turnId !== entry.turnId);
-              const footnoteTail = isTurnTail && entry.turnId !== undefined ? completedTurnFootnotes.get(entry.turnId) : undefined;
-              const isLatestCompleted = entry.turnId !== undefined && entry.turnId === latestCompletedTurnId;
-
+            entries.map((entry) => {
               const node = entry.kind === 'steps' ? (() => {
                 const label =
                   entry.running !== undefined
                     ? toolLabel(entry.running)
                     : entry.single !== undefined
                       ? toolLabel(entry.single)
-                      : entry.count === 1
-                        ? t('mobile.chat.thinking')
-                        : t('mobile.chat.toolSteps', { count: entry.count });
+                      : entry.onlyInjections === true
+                        ? t('transcript.systemReminder')
+                        : entry.count === 1
+                          ? t('mobile.chat.thinking')
+                          : t('mobile.chat.toolSteps', { count: entry.count });
                 const hasInjections = entry.injections.length > 0;
                 const openInjections = expandedStepsId === entry.id;
                 return (
@@ -851,17 +886,10 @@ export function MobileTranscript({
                 );
               })() : renderBlock(entry.block);
 
-              if (node === null && footnoteTail === undefined) return null;
+              if (node === null) return null;
               return (
                 <div key={entry.kind === 'steps' ? entry.id : entry.block.id} className="flex flex-col gap-1.5">
                   {node}
-                  {footnoteTail !== undefined ? (
-                    <TurnFootnote
-                      tail={footnoteTail}
-                      gap={isLatestCompleted ? replyGap : undefined}
-                      onRetryGap={isLatestCompleted && !readOnly && failedTurnUserBlock !== undefined && onRetryFailedTurn !== undefined ? () => { onRetryFailedTurn(failedTurnUserBlock); } : undefined}
-                    />
-                  ) : null}
                 </div>
               );
             })
@@ -870,13 +898,13 @@ export function MobileTranscript({
           {loaded && !busy ? (
             <TurnTailSurface
               agentId="main"
-              tail={turnTail}
+              tail={failedTailHandledByUndeliveredUserOutcome ? undefined : turnTail}
               gap={replyGap}
               interruptedWork={interruptedWork}
               promptQueueHold={state?.promptQueueHold}
               readOnly={readOnly}
               busy={busy}
-              footnoteAttachedInline={latestCompletedAttachedInline}
+              footnoteAttachedInline={false}
               failedTurnUserBlock={failedTurnUserBlock}
               failedHasWork={failedTurnHasWork}
               hasOriginalRetry={canFaithfullyRetryUserBlock(failedTurnUserBlock, true)}

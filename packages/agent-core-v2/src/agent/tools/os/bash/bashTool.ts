@@ -9,6 +9,7 @@ import {
   resolveForegroundCallerPolicy,
 } from '#/agent/task/foregroundPolicy';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { LOOP_CONTROL_SECTION, type LoopControl } from '#/agent/loop/configSection';
 import { resolveAgentTaskConfig } from '#/agent/task/configSection';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
@@ -37,7 +38,7 @@ import {
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { matchesBashRuleSubject } from '#/tool/bash-rule-match';
 import { renderPrompt } from '#/_base/utils/render-prompt';
-import { userCancellationReason } from '#/_base/utils/abort';
+import { abortable, userCancellationReason } from '#/_base/utils/abort';
 import bashDescriptionTemplate from './bash.md?raw';
 import { ProcessTask } from './process-task';
 import { bashFileToolHint } from './bashFileToolHints';
@@ -53,6 +54,7 @@ import {
 } from './bash';
 
 const MS_PER_SECOND = 1000;
+export const BASH_SPAWN_HANDSHAKE_TIMEOUT_MS = 30_000;
 
 const SHELL_TIMEOUT_VARS = {
   DEFAULT_TIMEOUT_S,
@@ -113,35 +115,62 @@ function releaseLocalForegroundBashCount(): void {
   }
 }
 
-async function acquireLocalForegroundBashSlot(signal: AbortSignal): Promise<(() => void) | undefined> {
-  if (signal.aborted) return undefined;
+type LocalForegroundBashSlotResult =
+  | { readonly kind: 'acquired'; readonly release: () => void }
+  | { readonly kind: 'aborted' }
+  | { readonly kind: 'timed_out' };
+
+async function acquireLocalForegroundBashSlot(
+  signal: AbortSignal,
+  timeoutMs?: number,
+): Promise<LocalForegroundBashSlotResult> {
+  if (signal.aborted) return { kind: 'aborted' };
   if (activeLocalForegroundBash >= MAX_CONCURRENT_LOCAL_FOREGROUND_BASH) {
-    const acquired = await new Promise<boolean>((resolve) => {
-      const onWake = (): void => {
+    const outcome = await new Promise<'acquired' | 'aborted' | 'timed_out'>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = (): void => {
+        if (timer !== undefined) clearTimeout(timer);
         signal.removeEventListener('abort', onAbort);
-        resolve(true);
+      };
+      const onWake = (): void => {
+        cleanup();
+        resolve('acquired');
       };
       const onAbort = (): void => {
+        cleanup();
         const idx = localForegroundBashWaitQueue.indexOf(onWake);
         if (idx !== -1) localForegroundBashWaitQueue.splice(idx, 1);
-        resolve(false);
+        resolve('aborted');
+      };
+      const onTimeout = (): void => {
+        cleanup();
+        const idx = localForegroundBashWaitQueue.indexOf(onWake);
+        if (idx !== -1) localForegroundBashWaitQueue.splice(idx, 1);
+        resolve('timed_out');
       };
       localForegroundBashWaitQueue.push(onWake);
       signal.addEventListener('abort', onAbort, { once: true });
+      if (timeoutMs !== undefined && timeoutMs > 0) {
+        timer = setTimeout(onTimeout, timeoutMs);
+        timer.unref?.();
+      }
     });
-    if (!acquired) return undefined;
+    if (outcome !== 'acquired') return { kind: outcome };
     if (signal.aborted) {
       releaseLocalForegroundBashCount();
-      return undefined;
+      return { kind: 'aborted' };
     }
   } else {
     activeLocalForegroundBash += 1;
   }
   let released = false;
-  return (): void => {
-    if (released) return;
-    released = true;
-    releaseLocalForegroundBashCount();
+  return {
+    kind: 'acquired',
+    release: (): void => {
+      if (released) return;
+      released = true;
+      releaseLocalForegroundBashCount();
+    },
   };
 }
 
@@ -176,6 +205,10 @@ export class BashTool implements IBashTool {
 
   private autoBackgroundOnTimeout(): boolean {
     return resolveAgentTaskConfig(this.config)?.bashAutoBackgroundOnTimeout ?? true;
+  }
+
+  private skipUnstartedToolsOnInputEnabled(): boolean {
+    return this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.skipUnstartedToolsOnInput === true;
   }
 
   private detachTimeoutMs(): number {
@@ -228,8 +261,8 @@ export class BashTool implements IBashTool {
       sessionApprovalRule: JSON.stringify(['Bash', shellContext.runtimeId, cwd, args.command]),
       shellContext,
       matchesRule: (ruleArgs, mode = 'all') => matchesBashRuleSubject(ruleArgs, args.command, mode),
-      execute: async ({ signal, steerSignal, onUpdate, onForegroundTaskStart, callerKind, foregroundStartedAt }) => {
-        const result = await this.execution(input, signal, steerSignal, onUpdate, onForegroundTaskStart, callerKind, foregroundStartedAt);
+      execute: async ({ signal, steerSignal, skipUnstartedToolsOnInput, onUpdate, onForegroundTaskStart, callerKind, foregroundStartedAt }) => {
+        const result = await this.execution(input, signal, steerSignal, onUpdate, onForegroundTaskStart, callerKind, foregroundStartedAt, skipUnstartedToolsOnInput);
         const enabled = resolveAgentTaskConfig(this.config)?.bashFileToolHints === true;
         const hint = target.host === undefined && !this.runtime.inspect().identity.runtimeId.startsWith('ssh:')
           ? bashFileToolHint(args.command, this.ctx, enabled) : undefined;
@@ -251,9 +284,14 @@ export class BashTool implements IBashTool {
     effectiveCwd: string,
     command: string,
     local: boolean,
+    signal?: AbortSignal,
   ): Promise<IHostProcess> {
     if (!local && env.shellName === 'powershell') {
-      return processService.spawn(env.shellPath, ['-Command', command], { cwd: effectiveCwd, env: { NO_COLOR: '1', TERM: 'dumb' } });
+      return processService.spawn(env.shellPath, ['-Command', command], {
+        cwd: effectiveCwd,
+        env: { NO_COLOR: '1', TERM: 'dumb' },
+        signal,
+      });
     }
     const shellCwd = getShellPathBridge(env).toShellPath(effectiveCwd);
     const shellCommand = `cd ${shellQuote(shellCwd)} && ${command}`;
@@ -268,6 +306,7 @@ export class BashTool implements IBashTool {
       env: noninteractiveEnv,
       ownedProcessTree: env.osKind === 'Windows',
       ownedProcessLifetime: local && env.osKind === 'Windows' ? 'owner' : undefined,
+      signal,
     });
   }
 
@@ -279,6 +318,7 @@ export class BashTool implements IBashTool {
     onForegroundTaskStart?: (taskId: string, options?: { readonly steerDetachable?: boolean }) => void,
     callerKind?: 'model' | 'user_shell',
     foregroundStartedAt?: number,
+    skipUnstartedToolsOnInput?: boolean,
   ): Promise<ExecutableToolResult> {
     const callStartedAt = foregroundStartedAt ?? Date.now();
     const validationError = this.validateRunRequest(args, signal);
@@ -286,7 +326,8 @@ export class BashTool implements IBashTool {
 
     const startsInBackground = args.run_in_background === true;
     const steer = !startsInBackground && this.allowBackground() ? steerSignal : undefined;
-    if (!startsInBackground && !signal.aborted && steer?.aborted === true) {
+    const skipUnstartedOnInput = skipUnstartedToolsOnInput ?? this.skipUnstartedToolsOnInputEnabled();
+    if (skipUnstartedOnInput && !startsInBackground && !signal.aborted && steer?.aborted === true) {
       return {
         isError: false,
         output: 'New input arrived before this command started; it was not started. Read the new input before deciding whether to run it.',
@@ -313,31 +354,77 @@ export class BashTool implements IBashTool {
       : effectiveForegroundTimeoutMs;
 
     const builder = new ToolOutputAccumulator();
-    await prepareToolRuntime(this.runtime, args.host);
+    try {
+      await abortable(
+        prepareToolRuntime(this.runtime, args.host),
+        AbortSignal.any([signal, AbortSignal.timeout(BASH_SPAWN_HANDSHAKE_TIMEOUT_MS)]),
+      );
+    } catch (error) {
+      if (signal.aborted) {
+        return { isError: true, output: 'Aborted before command started' };
+      }
+      return {
+        isError: true,
+        output:
+          error instanceof Error && error.name === 'TimeoutError'
+            ? `Command failed to prepare execution runtime within ${Math.ceil(BASH_SPAWN_HANDSHAKE_TIMEOUT_MS / MS_PER_SECOND)}s`
+            : error instanceof Error
+              ? error.message
+              : String(error),
+      };
+    }
+    if (signal.aborted) {
+      return { isError: true, output: 'Aborted before command started' };
+    }
     const lease = args.host === undefined
       ? this.runtime.acquire(['process']) : acquireToolRuntime(this.runtime, args.host, ['process']);
     const isLocalForeground = !startsInBackground && lease.runtime.identity.runtimeId === 'local';
+    const canAutoDetachWait = !startsInBackground && autoBackgroundEnabled && callerPolicy.autoBackgroundMainWait;
     let releaseBashSlot: () => void = () => {};
+    let autoDetachedOnSlotWait = false;
     if (isLocalForeground) {
       const slotSignal = steer === undefined ? signal : AbortSignal.any([signal, steer]);
-      const acquired = await acquireLocalForegroundBashSlot(slotSignal);
-      if (acquired === undefined) {
-        lease.dispose();
-        if (!signal.aborted && steer?.aborted === true) {
+      const slotWaitBudgetMs = Math.max(
+        1,
+        effectiveForegroundTimeoutMs - Math.max(0, Date.now() - callStartedAt),
+      );
+      const acquired = await acquireLocalForegroundBashSlot(slotSignal, slotWaitBudgetMs);
+      if (acquired.kind === 'timed_out') {
+        if (canAutoDetachWait) {
+          autoDetachedOnSlotWait = true;
+        } else {
+          lease.dispose();
+          const timeoutLabel = formatTimeoutLabel(effectiveForegroundTimeoutMs);
+          return {
+            isError: true,
+            output: `Timed out waiting for a local foreground Bash slot (${timeoutLabel})`,
+          };
+        }
+      } else if (acquired.kind !== 'acquired') {
+        if (signal.aborted) {
+          lease.dispose();
+          return { isError: true, output: 'Aborted before command started' };
+        }
+        if (skipUnstartedOnInput && steer?.aborted === true) {
+          lease.dispose();
           return {
             isError: false,
             output: 'New input arrived before this command started; it was not started. Read the new input before deciding whether to run it.',
           };
         }
-        return { isError: true, output: 'Aborted before command started' };
+        if (steer?.aborted !== true) {
+          lease.dispose();
+          return { isError: true, output: 'Aborted before command started' };
+        }
+      } else {
+        releaseBashSlot = acquired.release;
       }
-      releaseBashSlot = acquired;
       if (signal.aborted) {
         releaseBashSlot();
         lease.dispose();
         return { isError: true, output: 'Aborted before command started' };
       }
-      if (steer?.aborted === true) {
+      if (skipUnstartedOnInput && steer?.aborted === true) {
         releaseBashSlot();
         lease.dispose();
         return {
@@ -345,7 +432,11 @@ export class BashTool implements IBashTool {
           output: 'New input arrived before this command started; it was not started. Read the new input before deciding whether to run it.',
         };
       }
-    } else if (!startsInBackground && !signal.aborted && steer?.aborted === true) {
+      if (steer?.aborted === true) {
+        releaseBashSlot();
+        releaseBashSlot = () => {};
+      }
+    } else if (skipUnstartedOnInput && !startsInBackground && !signal.aborted && steer?.aborted === true) {
       lease.dispose();
       return {
         isError: false,
@@ -355,20 +446,67 @@ export class BashTool implements IBashTool {
     let proc: IHostProcess;
     let command: string;
     let isReadOnlyBash = false;
+    const spawnBudgetMs =
+      startsInBackground || canAutoDetachWait
+        ? BASH_SPAWN_HANDSHAKE_TIMEOUT_MS
+        : Math.min(
+            BASH_SPAWN_HANDSHAKE_TIMEOUT_MS,
+            Math.max(1, effectiveForegroundTimeoutMs - Math.max(0, Date.now() - callStartedAt)),
+          );
+    const spawnDeadline = new AbortController();
+    let spawnTimedOut = false;
+    const spawnTimer = setTimeout(() => {
+      spawnTimedOut = true;
+      spawnDeadline.abort(
+        new DOMException(
+          `Command failed to start process within ${formatTimeoutLabel(spawnBudgetMs)}`,
+          'TimeoutError',
+        ),
+      );
+    }, spawnBudgetMs);
+    spawnTimer.unref?.();
     try {
       const view = new RuntimeWorkspaceView(lease.runtime, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
       const env = lease.runtime.environment;
       isReadOnlyBash = env.shellName === 'bash' && isConcurrencySafeBash(args.command);
       command = env.osKind === 'Windows' && env.shellName === 'bash' ? rewriteWindowsNullRedirect(args.command) : args.command;
       const effectiveCwd = view.resolve(args.cwd ?? view.workDir, view.workDir, this.permissionMode.mode === 'yolo');
-      proc = lease.track(await this.spawn(lease.runtime.process!, env, effectiveCwd, command, lease.runtime.identity.runtimeId === 'local'));
+      const spawnSignal = AbortSignal.any([signal, spawnDeadline.signal]);
+      const spawnPromise = this.spawn(
+        lease.runtime.process!,
+        env,
+        effectiveCwd,
+        command,
+        lease.runtime.identity.runtimeId === 'local',
+        spawnSignal,
+      );
+      void spawnPromise.then(
+        (spawned) => {
+          if (spawnTimedOut || signal.aborted) {
+            void killSpawnedProcess(spawned);
+          }
+        },
+        () => undefined,
+      );
+      proc = lease.track(await abortable(spawnPromise, spawnSignal));
     } catch (error) {
       releaseBashSlot();
       lease.dispose();
+      if (signal.aborted) {
+        return { isError: true, output: 'Aborted before command started' };
+      }
+      if (spawnTimedOut) {
+        return {
+          isError: true,
+          output: `Command failed to start process within ${formatTimeoutLabel(spawnBudgetMs)}`,
+        };
+      }
       return {
         isError: true,
         output: error instanceof Error ? error.message : String(error),
       };
+    } finally {
+      clearTimeout(spawnTimer);
     }
     closeProcessStdin(proc);
 
@@ -406,11 +544,12 @@ export class BashTool implements IBashTool {
     const steeredAfterSpawn = !startsInBackground && !signal.aborted && steer?.aborted === true;
     const remainingFgTimeoutMs = effectiveForegroundTimeoutMs - preRegisterElapsedMs;
     const autoDetachedBeforeRegister =
-      !startsInBackground &&
-      !signal.aborted &&
-      autoBackgroundEnabled &&
-      callerPolicy.autoBackgroundMainWait &&
-      remainingFgTimeoutMs <= 0;
+      autoDetachedOnSlotWait ||
+      (!startsInBackground &&
+        !signal.aborted &&
+        autoBackgroundEnabled &&
+        callerPolicy.autoBackgroundMainWait &&
+        remainingFgTimeoutMs <= 0);
     const startDetached = startsInBackground || steeredAfterSpawn || autoDetachedBeforeRegister;
     const registeredTimeoutMs = startDetached
       ? (startsInBackground ? timeoutMs : this.detachTimeoutMs())
@@ -454,6 +593,7 @@ export class BashTool implements IBashTool {
 
     if (startDetached) {
       collectForegroundOutput = false;
+      releaseBashSlot();
       const labels = startsInBackground
         ? {
             title: 'Background task started',

@@ -94,8 +94,17 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+const TRANSIENT_ADMISSION_REASONS = new Set([
+  'event_transport_closed',
+  'event_transport_failed',
+  'event_transport_timeout',
+  'event_transport_rejected',
+  'summary_unavailable',
+]);
+
 function isImmediateFailureError(error: unknown): boolean {
-  return error instanceof AdmissionError;
+  return error instanceof AdmissionError
+    && !(error.status >= 500 && TRANSIENT_ADMISSION_REASONS.has(error.reason));
 }
 export class PairingBridgeRetirementError extends AdmissionError {
   constructor() { super(500, 'connection_stored_bridge_retirement_failed'); }
@@ -119,6 +128,7 @@ export const BROKER_BODY_BYTES = 4 * 1024 * 1024;
 export const BROKER_FS_READ_BODY_BYTES = 16 * 1024 * 1024;
 export const BROKER_WS_MESSAGE_BYTES = 128 * 1024;
 export const BROKER_WS_BUFFER_BYTES = 256 * 1024;
+export const BROKER_WS_VIEW_BUFFER_BYTES = 16 * 1024 * 1024;
 export class RemoteConnectionManager {
   private records: RemoteConnection[] = [];
   private readonly active = new Map<string, Set<AbortController>>();

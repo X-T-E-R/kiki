@@ -102,6 +102,7 @@ export function ProviderQuotaPanel() {
 
   const hasDialsOrLedger =
     overviewPlan.dials.length > 0 || overviewPlan.remainingLedgerSources.length > 0;
+  const hasExternalServices = state.arranged.externalServices.length > 0;
 
   return (
     <div ref={panelRef} className="@container/quotas space-y-4" data-provider-quota-panel>
@@ -190,7 +191,7 @@ export function ProviderQuotaPanel() {
                 </section>
               ) : null}
 
-              {hasDialsOrLedger || state.showEngineSection ? (
+              {hasDialsOrLedger || state.showEngineSection || hasExternalServices ? (
                 <div className="divide-y divide-hairline border-y border-hairline">
                   {hasDialsOrLedger ? (
                     <section className="divide-y divide-hairline" data-quota-ledger>
@@ -266,6 +267,33 @@ export function ProviderQuotaPanel() {
                     expandedEngineIds={expandedEngineIds}
                     onToggleEngineExpand={toggleEngineExpand}
                   />
+
+                  {hasExternalServices ? (
+                    <section className="divide-y divide-hairline" data-quota-external-services>
+                      {state.arranged.externalServices.map((source) => {
+                        const provider = state.providerById(source.provider_id);
+                        return (
+                          <LedgerQuotaRow
+                            key={source.id}
+                            source={source}
+                            status={effectiveQuotaStatus(source, state.signedOut)}
+                            signedOut={false}
+                            settingsHref={quotaSettingsHref(source, provider)}
+                            localUsageHref={quotaLocalUsageHref(source, provider)}
+                            isRefreshing={
+                              state.refreshingSourceId === source.id ||
+                              source.refreshing ||
+                              state.activeRefreshSourceIds.includes(source.id)
+                            }
+                            feedback={state.sourceFeedbacks[source.id]}
+                            onClearExternalFeedback={() => state.clearFeedback(source.id)}
+                            onRefresh={() => state.refreshSource(source.id)}
+                            onToggleEnabled={(enabled) => state.setSourceEnabled(source.id, enabled)}
+                          />
+                        );
+                      })}
+                    </section>
+                  ) : null}
                 </div>
               ) : null}
             </div>

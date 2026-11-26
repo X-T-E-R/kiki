@@ -1043,6 +1043,26 @@ describe('AgentLifecycleService', () => {
     expect(promptDrain).toHaveBeenCalledWith(expect.any(Error), 'cancel');
   });
 
+  it('bounds hung loop.settled during removal so session exit still flushes and disposes', async () => {
+    const { setAgentExitDrainTimeoutForTesting } = await import('#/session/agentLifecycle/agentLifecycleService');
+    const prevTimeout = setAgentExitDrainTimeoutForTesting(50);
+    try {
+      const lifecycle = ix.get(IAgentLifecycleService);
+      const handle = await lifecycle.create({ agentId: 'main' });
+      loopSettled.mockImplementation(() => new Promise<void>(() => {}));
+      const flushSpy = vi.spyOn(handle.accessor.get(IEventDispatcher), 'flush');
+      const disposeSpy = vi.spyOn(handle, 'dispose');
+      const startedAt = Date.now();
+      await expect(lifecycle.remove('main', 'preserve-pending')).rejects.toThrow(/timed out at stage "loop_settled"/);
+      expect(Date.now() - startedAt).toBeLessThan(1_500);
+      expect(flushSpy).toHaveBeenCalledTimes(1);
+      expect(disposeSpy).toHaveBeenCalledTimes(1);
+      expect(lifecycle.get('main')).toBeUndefined();
+    } finally {
+      setAgentExitDrainTimeoutForTesting(prevTimeout);
+    }
+  });
+
   it('fires removal synchronously and drains Cordis before the final flush and transcript seal', async () => {
     const svc = ix.get(IAgentLifecycleService);
     const metadata = ix.get(ISessionMetadata);

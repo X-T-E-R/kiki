@@ -44,4 +44,32 @@ describe('stdioGuard', () => {
     }) as typeof broken.write;
     expect(() => safeWriteStream(broken, 'broken pipe write')).not.toThrow();
   });
+
+  it('installStdioEpipeGuard wraps stream.write to absorb synchronous EPIPE, EOF, and ERR_STREAM_DESTROYED while rethrowing non-benign errors', async () => {
+    for (const code of ['EPIPE', 'EOF', 'ERR_STREAM_DESTROYED'] as const) {
+      const broken = new PassThrough();
+      broken.write = (() => {
+        throw codedError(code);
+      }) as typeof broken.write;
+      installStdioEpipeGuard([broken]);
+      installStdioEpipeGuard([broken]);
+
+      let callbackError: Error | null | undefined = new Error('unset');
+      expect(() => {
+        const ok = broken.write('sync broken write', (err) => {
+          callbackError = err;
+        });
+        expect(ok).toBe(false);
+      }).not.toThrow();
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      expect(callbackError).toBeNull();
+    }
+
+    const denied = new PassThrough();
+    denied.write = (() => {
+      throw codedError('EACCES');
+    }) as typeof denied.write;
+    installStdioEpipeGuard([denied]);
+    expect(() => denied.write('permission denied')).toThrow('EACCES');
+  });
 });

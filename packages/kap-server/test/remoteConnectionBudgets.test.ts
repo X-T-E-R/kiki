@@ -355,4 +355,26 @@ describe('broker budgets against explicit adversarial transport fixtures', () =>
     releaseCompact();
     await pendingCompact;
   });
+
+  it('keeps an online connection online across a single 4008 or transient WS drop and only marks offline after 3 strikes', async () => {
+    const f = await fixture();
+    const { sourceUrl, record } = await f.start();
+    const client = new WebSocket(sourceUrl.replace('http:', 'ws:') + `/api/remote-connections/${record.id}/events`);
+    cleanups.push(async () => { client.terminate(); });
+    await once(client, 'open');
+    await expect.poll(() => f.events.clients.size).toBe(1);
+    const remote = [...f.events.clients][0]!;
+    const closed = once(client, 'close');
+    remote.close(4008, 'slow consumer; reload current window');
+    await closed;
+    expect(f.manager.get(record.id).state).toBe('online');
+
+    f.failHandshake(503);
+    f.manager.recordTransportStrike(record.id, new AdmissionError(502, 'event_transport_closed'));
+    expect(f.manager.get(record.id).state).toBe('online');
+    f.manager.recordTransportStrike(record.id, new AdmissionError(502, 'event_transport_closed'));
+    expect(f.manager.get(record.id).state).toBe('online');
+    f.manager.recordTransportStrike(record.id, new AdmissionError(502, 'event_transport_closed'));
+    expect(f.manager.get(record.id).state).toBe('offline');
+  });
 });

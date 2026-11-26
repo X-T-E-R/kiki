@@ -326,3 +326,41 @@ without any warranty or condition, and no contributor
 will be liable to anyone for any damages related to this
 software or this license, under any kind of legal claim.***
 ```
+
+## Git for Windows and MSYS2 Runtime Utilities (Windows Desktop Installer)
+
+The Kiki Windows NSIS desktop installer aggregates unmodified standalone command-line executables from [Git for Windows](https://gitforwindows.org/) (<https://github.com/git-for-windows/git>) and [MSYS2](https://www.msys2.org/) (<https://github.com/msys2/MSYS2-packages>) under `toolchain/git/` (`git.exe`, `bash.exe`, `sh.exe`, `msys-2.0.dll`, and standard POSIX coreutils/OpenSSH/curl helper binaries) so Windows users without a pre-installed developer environment can run local Git and shell commands out of the box.
+
+- Kiki communicates with these tools exclusively as separate child processes over standard OS pipes/exit codes ("mere aggregation" under Section 2 of the GNU General Public License v2.0); Kiki does not link against GPL libraries.
+- Git and the bundled MSYS2/GNU utilities are licensed under the **GNU General Public License v2.0** (with portions under GPL-3.0, LGPL-2.1, MIT, BSD, curl, and OpenSSH licenses as detailed in the bundled `toolchain/git/LICENSE.txt`).
+- Complete corresponding source code for the bundled Git for Windows and MSYS2 packages is available from the official upstream repositories at <https://github.com/git-for-windows/git>, <https://github.com/git-for-windows/build-extra>, and <https://github.com/msys2/MSYS2-packages>, and the full license text accompanies every Windows installation at `toolchain/git/LICENSE.txt` (<https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt>).
+
+## ripgrep (Windows Desktop Installer & Bundled Search Tool)
+
+Source: [BurntSushi/ripgrep](https://github.com/BurntSushi/ripgrep) (`ripgrep 15.0.0`, staged at `toolchain/bin/rg.exe` in the Windows desktop installer).
+
+`ripgrep` is dual-licensed under the Unlicense or the MIT License. The upstream [`LICENSE-MIT`](https://github.com/BurntSushi/ripgrep/blob/15.0.0/LICENSE-MIT) is reproduced verbatim:
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2015 Andrew Gallant
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```

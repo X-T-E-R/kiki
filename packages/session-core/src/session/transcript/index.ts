@@ -136,6 +136,7 @@ export { isSteerSettled, newSteerPromptId, steerBlock, withPendingSteers, type P
 export { resolveInjectionHeading, type ResolvedInjectionHeading } from './injectionLabels';
 export {
   buildNoticePlacementContext,
+  buildSupersededIncidentState,
   classifyNoticePlacement,
   collectOrderedTurnIds,
   hasConfirmedSubsequentSuccess,
@@ -145,5 +146,6 @@ export {
   resolveRecoverableInterruption,
   type NoticePlacementContext,
   type RecoverableInterruptionSummary,
+  type SupersededIncidentState,
   type TimelinePlacement,
 } from './timelinePlacement';

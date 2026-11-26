@@ -1525,7 +1525,11 @@ describe('bindSessionTranscript', () => {
     const store = new TranscriptStore('s1');
     const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents));
     const replayOps: TranscriptOperation[] = [];
-    const receipts = (snapshot: AgentTranscriptSnapshot) => normalizedBlocks(snapshot).filter((block) => block['kind'] === 'system' && block['variant'] === 'task');
+    const receipts = (snapshot: AgentTranscriptSnapshot) => normalizedBlocks(snapshot).filter((block) =>
+      question ? block['kind'] === 'question' : block['kind'] === 'system' && block['variant'] === 'task',
+    );
+    const rawTaskNotices = (snapshot: AgentTranscriptSnapshot) =>
+      normalizedBlocks(snapshot).filter((block) => block['kind'] === 'system' && block['variant'] === 'task');
     for (const [index, record] of records.entries()) {
       const facts = adapter.add(record);
       replayOps.push(...facts.flatMap((fact) => fact.operations));
@@ -1538,10 +1542,13 @@ describe('bindSessionTranscript', () => {
     }
     const live = store.getAgent('main')!;
     expect(receipts(live.snapshot())).toHaveLength(question ? 2 : 1);
-    expect(receipts(live.snapshot())[0]?.['text']).toContain(result);
     if (question) {
-      expect(receipts(live.snapshot()).map((block) => block['taskId'])).toEqual(['question-1', 'question-2']);
-      expect(receipts(live.snapshot())[1]?.['text']).toContain('<answer>\n{"answers":{"Which database?":"SQLite"}}\n</answer>');
+      expect(rawTaskNotices(live.snapshot())).toHaveLength(0);
+      expect(receipts(live.snapshot()).map((block) => (block['request'] as Record<string, unknown>)?.['question_id'])).toEqual(['question-1', 'question-2']);
+      expect(receipts(live.snapshot())[0]?.['outcome']).toMatchObject({ kind: 'answered', answers: { q_0: 'Postgres' } });
+      expect(receipts(live.snapshot())[1]?.['outcome']).toMatchObject({ kind: 'answered', answers: { q_0: 'SQLite' } });
+    } else {
+      expect(receipts(live.snapshot())[0]?.['text']).toContain(result);
     }
     expect(receipts(live.snapshot())).toEqual(receipts(cold.snapshot()));
     const reconnect = new AgentTranscript('main');

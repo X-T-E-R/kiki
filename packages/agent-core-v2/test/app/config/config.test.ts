@@ -984,6 +984,7 @@ describe('loopControl config section', () => {
       compactionSoftContextSize: DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE,
       thinkingOnlyContinuation: true,
       zeroOutputContinuation: false,
+      skipUnstartedToolsOnInput: false,
     });
 
     expect(registry.validate(LOOP_CONTROL_SECTION, {})).toEqual({});
@@ -1026,6 +1027,7 @@ describe('loopControl config section', () => {
       compactionSoftContextSize: DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE,
       thinkingOnlyContinuation: true,
       zeroOutputContinuation: false,
+      skipUnstartedToolsOnInput: false,
     });
 
     env[LOOP_MAX_STEPS_PER_TURN_ENV] = 'abc';
@@ -1035,6 +1037,7 @@ describe('loopControl config section', () => {
       compactionSoftContextSize: DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE,
       thinkingOnlyContinuation: true,
       zeroOutputContinuation: false,
+      skipUnstartedToolsOnInput: false,
     });
 
     env[LOOP_MAX_STEPS_PER_TURN_ENV] = '100';
@@ -1046,6 +1049,7 @@ describe('loopControl config section', () => {
       compactionSoftContextSize: 512_000,
       thinkingOnlyContinuation: true,
       zeroOutputContinuation: false,
+      skipUnstartedToolsOnInput: false,
     });
 
     env[LOOP_MAX_STEPS_PER_TURN_ENV] = '50';

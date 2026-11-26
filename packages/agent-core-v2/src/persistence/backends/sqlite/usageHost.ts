@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
+import { closeWorkerWithTimeout, WORKER_CLOSE_TIMEOUT_MS } from '#/_base/node/workerClose';
 import { resolveWorkerEntry } from '#/_base/node/workerEntry';
 import { usageReadModelWorkerEntry, type UsageStoreOperation, type UsageStoreRequest, type UsageStoreResponse } from './usageProtocol';
 
@@ -12,9 +13,11 @@ interface Pending {
   readonly cancellation?: Int32Array;
   readonly abort?: () => void;
   watchdog?: ReturnType<typeof setTimeout>;
+  requestWatchdog?: ReturnType<typeof setTimeout>;
 }
 
 const MAX_PRIORITY_BURST = 4;
+const USAGE_WORKER_REQUEST_TIMEOUT_MS = 30_000;
 
 function isPriorityOperation(operation: UsageStoreOperation): boolean {
   return operation.type === 'setSessionPrivacy' || operation.type === 'isPrivateSession' || operation.type === 'privateSessions';
@@ -30,8 +33,16 @@ export class UsageReadModelWorker {
   private stopped = false;
   private closing?: Promise<void>;
   private readonly exited: Promise<void>;
+  private readonly writable: boolean;
+  private readonly requestTimeoutMs: number;
 
-  constructor(database: string, private readonly writable: boolean) {
+  constructor(
+    database: string,
+    writable: boolean,
+    requestTimeoutMs = USAGE_WORKER_REQUEST_TIMEOUT_MS,
+  ) {
+    this.writable = writable;
+    this.requestTimeoutMs = requestTimeoutMs;
     const entry = resolveWorkerEntry(import.meta.url, './usageEntry.ts', 'usage-read-model-worker.mjs', {
       configuredEntry: usageReadModelWorkerEntry(),
       unavailableMessage: 'Usage read-model worker asset is unavailable',
@@ -81,6 +92,7 @@ export class UsageReadModelWorker {
   private release(pending: Pending): void {
     if (pending.abort !== undefined) pending.signal?.removeEventListener('abort', pending.abort);
     if (pending.watchdog !== undefined) clearTimeout(pending.watchdog);
+    if (pending.requestWatchdog !== undefined) clearTimeout(pending.requestWatchdog);
   }
   private pump(): void {
     if (this.stopped || this.active !== undefined) return;
@@ -91,14 +103,22 @@ export class UsageReadModelWorker {
     this.priorityStreak = pending.priority ? this.priorityStreak + 1 : 0;
     this.active = pending;
     this.worker.ref();
+    if (pending.operation.type !== 'close' && Number.isFinite(this.requestTimeoutMs) && this.requestTimeoutMs > 0) {
+      pending.requestWatchdog = setTimeout(() => {
+        if (this.active === pending) {
+          this.fail(new Error(`Usage worker request timed out after ${this.requestTimeoutMs}ms (${pending.operation.type})`));
+        }
+      }, this.requestTimeoutMs);
+      pending.requestWatchdog.unref?.();
+    }
     try { this.worker.postMessage({ id: ++this.serial, operation: pending.operation, cancellation: pending.cancellation?.buffer as SharedArrayBuffer | undefined } satisfies UsageStoreRequest); }
     catch (error) { this.fail(error); }
   }
-  close(): Promise<void> {
+  close(timeoutMs = WORKER_CLOSE_TIMEOUT_MS): Promise<void> {
     if (this.closing !== undefined) return this.closing;
     if (this.stopped) return this.exited;
     const drain = this.enqueue<void>({ type: 'close' });
-    this.closing = (async () => { try { await drain; } finally { await this.exited; } })();
+    this.closing = closeWorkerWithTimeout(this.worker, drain, this.exited, timeoutMs);
     return this.closing;
   }
   private fail(error: unknown): void {

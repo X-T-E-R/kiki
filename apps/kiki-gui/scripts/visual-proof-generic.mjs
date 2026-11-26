@@ -493,7 +493,11 @@ export async function runGenericVisualProof({ argv = process.argv.slice(2), cwd 
     for (const view of views) {
       const viewport = DEFAULT_VIEWPORTS[view.viewport];
       for (const route of config.routes) {
-        const context = await browser.newContext({ viewport, reducedMotion: 'reduce' });
+        const context = await browser.newContext({
+          viewport,
+          deviceScaleFactor: Number(route.deviceScaleFactor ?? config.deviceScaleFactor ?? 1),
+          reducedMotion: 'reduce',
+        });
         try {
           await context.addInitScript(({ locale, theme }) => {
             try {

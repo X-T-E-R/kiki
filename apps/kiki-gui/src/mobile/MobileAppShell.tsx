@@ -36,6 +36,10 @@ import {
   spaceScopeToKey,
   useMultiSpaceSessions,
 } from '../lib/useMultiSpaceSessions';
+import { useAppearancePacks } from '../lib/skins/useAppearancePacks';
+import { useUserSkins } from '../lib/skins/useUserSkins';
+import { useSpacePreferencesFrame } from '../lib/spacePreferences';
+import { spaceSettingsTargetOf } from '../lib/spaceSettings';
 import { useConnection } from '../state/connection';
 
 import { MobileChatScreen } from './chat/MobileChatScreen';
@@ -177,7 +181,10 @@ export function MobileAppShell() {
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { client } = useConnection();
+  const { client, meta } = useConnection();
+  useSpacePreferencesFrame(spaceSettingsTargetOf(client, meta));
+  useUserSkins();
+  useAppearancePacks();
   const layoutPrefs = useLayoutPreferences();
   const seenMap = useConversationSeen();
   const resolveClient = useMobileClientResolver();

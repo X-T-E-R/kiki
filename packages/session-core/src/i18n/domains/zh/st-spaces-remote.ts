@@ -223,6 +223,7 @@ export const stSpacesRemoteZh = {
   'st.portable.center.editTitle': '编辑同步范围 · {name}',
   'st.portable.center.emptyHint': '粘贴订阅链接或拖入 .kiki.tgz / .kiki.age 配置包开始，也支持导出或关联本地目录与 Git 仓库。',
   'st.portable.center.excludedSummary': '已自动拦截 {count} 项不可信内容（不会导入）',
+  'st.portable.center.executablePluginTag': '含可执行代码',
   'st.portable.center.fetchPreview': '获取预览',
   'st.portable.center.fetchingPreview': '正在获取预览…',
   'st.portable.center.hardBlockerGate': '请先解决 {count} 项缺失的硬依赖后再确认。',

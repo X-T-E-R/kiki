@@ -45,7 +45,7 @@ function isIdentChar(code) {
   );
 }
 
-function stripComments(text) {
+function stripComments(text, { maskLiterals = false } = {}) {
   const out = [];
   const length = text.length;
   // Track template literal `${ ... }` brace nesting so closing `}` resumes template scanning.
@@ -104,7 +104,7 @@ function stripComments(text) {
         index += 1;
         if (cur === quote || cur === '\n') break;
       }
-      out.push(text.slice(start, index));
+      out.push(maskLiterals ? `${quote}${quote}` : text.slice(start, index));
       lastTokenKind = 'value';
       lastWord = '';
       continue;
@@ -138,7 +138,13 @@ function stripComments(text) {
         }
         index += 1;
       }
-      out.push(text.slice(start, index));
+      if (maskLiterals) {
+        const rawSlice = text.slice(start, index);
+        const newlines = rawSlice.replace(/[^\n]/g, '');
+        out.push(`${ch}${newlines}${enteredExpr ? '${' : '`'}`);
+      } else {
+        out.push(text.slice(start, index));
+      }
       lastTokenKind = enteredExpr ? 'punct' : 'value';
       lastWord = '';
       continue;
@@ -165,7 +171,7 @@ function stripComments(text) {
         }
         index += 1;
       }
-      out.push(text.slice(start, index));
+      out.push(maskLiterals ? '/x/' : text.slice(start, index));
       lastTokenKind = 'value';
       lastWord = '';
       continue;
@@ -259,6 +265,14 @@ export function checkBundle(bundlePath, { worker = false } = {}) {
       if (sideEffect) checkSpecifier(sideEffect[1], 'import');
     }
   }
+
+  const maskedCode = stripComments(text, { maskLiterals: true });
+  for (const match of maskedCode.matchAll(/(?<![.\w$])(?:const|let)\s+require\s*=[^;{}]*(?<![.\w$])require\s*\(/g)) {
+    const lineNo = maskedCode.slice(0, match.index ?? 0).split('\n').length;
+    const snippet = match[0].replace(/\s+/g, ' ').trim();
+    errors.push(`TDZ self-referencing require declaration at line ${lineNo}: ${snippet}`);
+  }
+
   return errors;
 }
 

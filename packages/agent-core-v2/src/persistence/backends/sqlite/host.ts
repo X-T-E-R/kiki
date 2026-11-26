@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
+import { closeWorkerWithTimeout, WORKER_CLOSE_TIMEOUT_MS } from '#/_base/node/workerClose';
 import { resolveWorkerEntry } from '#/_base/node/workerEntry';
 import { queryStoreWorkerEntry, type StoreOperation, type StoreRequest, type StoreResponse } from './protocol';
 import { QueryStoreBusyError } from '#/persistence/interface/queryStore';
@@ -12,9 +13,11 @@ interface Pending {
   readonly signal?: AbortSignal;
   readonly cancellation?: Int32Array;
   readonly abort?: () => void;
+  watchdog?: ReturnType<typeof setTimeout>;
 }
 
 const MAX_PRIORITY_BURST = 4;
+export const SQLITE_WORKER_REQUEST_TIMEOUT_MS = 30_000;
 
 function isPriorityRead(operation: StoreOperation): boolean {
   return operation.type === 'get' && operation.priority === true;
@@ -30,8 +33,10 @@ export class QueryStoreWorker {
   private stopped = false;
   private closing?: Promise<void>;
   private readonly exited: Promise<void>;
+  private readonly requestTimeoutMs: number;
 
-  constructor(database: string) {
+  constructor(database: string, requestTimeoutMs = SQLITE_WORKER_REQUEST_TIMEOUT_MS) {
+    this.requestTimeoutMs = requestTimeoutMs;
     const entry = resolveWorkerEntry(import.meta.url, './entry.ts', 'query-store-worker.mjs', {
       configuredEntry: queryStoreWorkerEntry(),
       unavailableMessage: 'Query-store SQLite worker asset is unavailable',
@@ -47,7 +52,7 @@ export class QueryStoreWorker {
       const pending = this.active;
       if (pending === undefined || response.id !== this.serial) return;
       this.active = undefined;
-      if (pending.abort !== undefined) pending.signal?.removeEventListener('abort', pending.abort);
+      this.release(pending);
       if ('error' in response) pending.reject(Object.assign(new Error(response.error.message), { code: response.error.code, errcode: response.error.errcode, committed: response.error.committed }));
       else pending.resolve(response.result);
       this.pump();
@@ -76,7 +81,7 @@ export class QueryStoreWorker {
       const cancellation = signal === undefined ? undefined : new Int32Array(new SharedArrayBuffer(4));
       const abort = signal === undefined ? undefined : (): void => {
         const index = queue.indexOf(pending);
-        if (index >= 0) { queue.splice(index, 1); signal.removeEventListener('abort', abort!); reject(signal.reason); }
+        if (index >= 0) { queue.splice(index, 1); this.release(pending); reject(signal.reason); }
         else if (this.active === pending) Atomics.store(cancellation!, 0, 1);
       };
       const pending: Pending = { operation, priority, signal, cancellation, abort, resolve: (value) => resolve(value as T), reject };
@@ -84,6 +89,14 @@ export class QueryStoreWorker {
       queue.push(pending);
       this.pump();
     });
+  }
+
+  private release(pending: Pending): void {
+    if (pending.abort !== undefined) pending.signal?.removeEventListener('abort', pending.abort);
+    if (pending.watchdog !== undefined) {
+      clearTimeout(pending.watchdog);
+      pending.watchdog = undefined;
+    }
   }
 
   private pump(): void {
@@ -95,15 +108,23 @@ export class QueryStoreWorker {
     this.priorityStreak = pending.priority ? this.priorityStreak + 1 : 0;
     this.active = pending;
     this.worker.ref();
+    if (pending.operation.type !== 'close' && Number.isFinite(this.requestTimeoutMs) && this.requestTimeoutMs > 0) {
+      pending.watchdog = setTimeout(() => {
+        if (this.active === pending) {
+          this.fail(new Error(`Query store worker request timed out after ${this.requestTimeoutMs}ms (${pending.operation.type})`));
+        }
+      }, this.requestTimeoutMs);
+      pending.watchdog.unref?.();
+    }
     try { this.worker.postMessage({ id: ++this.serial, operation: pending.operation, cancellation: pending.cancellation?.buffer as SharedArrayBuffer | undefined } satisfies StoreRequest); }
     catch (error) { this.fail(error instanceof Error ? error : new Error(String(error))); }
   }
 
-  close(): Promise<void> {
+  close(timeoutMs = WORKER_CLOSE_TIMEOUT_MS): Promise<void> {
     if (this.closing !== undefined) return this.closing;
     if (this.stopped) return this.exited;
     const drain = this.enqueue<void>({ type: 'close' });
-    this.closing = (async () => { try { await drain; } finally { await this.exited; } })();
+    this.closing = closeWorkerWithTimeout(this.worker, drain, this.exited, timeoutMs);
     return this.closing;
   }
 
@@ -111,7 +132,7 @@ export class QueryStoreWorker {
     this.stopped = true;
     for (const pending of [this.active, ...this.priorityWaiting, ...this.waiting]) {
       if (pending === undefined) continue;
-      if (pending.abort !== undefined) pending.signal?.removeEventListener('abort', pending.abort);
+      this.release(pending);
       const writing = pending.operation.type === 'batch' || pending.operation.type === 'drop' || pending.operation.type === 'index';
       pending.reject(writing ? Object.assign(new Error(`${error.message}${pending === this.active ? '; write outcome must be reconciled from source' : '; write was not dispatched'}`, { cause: error }), { committed: pending === this.active ? undefined : false }) : error);
     }

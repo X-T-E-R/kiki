@@ -1,5 +1,5 @@
 import * as fs from 'node:fs';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ZipFile } from 'yazl';
@@ -14,6 +14,8 @@ import {
   MAX_ZIP_SINGLE_ENTRY_BYTES,
   MAX_ZIP_UNCOMPRESSED_BYTES,
 } from '#/app/plugin/archive';
+import { fingerprintDirectory } from '#/app/plugin/installPlan';
+import { isBlockedIp } from '#/app/plugin/networkSafety';
 
 vi.mock('node:fs', async (original) => {
   const actual = await original<typeof import('node:fs')>();
@@ -173,5 +175,68 @@ describe('plugin archive extraction', () => {
     await expect(extractZip(bounded, join(dir, 'over-uncompressed'), undefined, {
       maxUncompressedBytes: totalUncompressed - 1,
     })).rejects.toMatchObject({ code: 'plugin.load_failed' });
+  });
+
+  it('blocks NAT64, 6to4, and Teredo private IPv4 embeddings in isBlockedIp while allowing public IPv6', () => {
+    expect(isBlockedIp('64:ff9b::10.0.0.1')).toBe(true);
+    expect(isBlockedIp('64:ff9b::a00:1')).toBe(true);
+    expect(isBlockedIp('64:ff9b::7f00:1')).toBe(true);
+    expect(isBlockedIp('64:ff9b:1::1')).toBe(true);
+    expect(isBlockedIp('64:ff9b:1::8.8.8.8')).toBe(true);
+    expect(isBlockedIp('2002:a00:1::')).toBe(true);
+    expect(isBlockedIp('2002:7f00:1::')).toBe(true);
+    expect(isBlockedIp('2002:c0a8:101::')).toBe(true);
+    expect(isBlockedIp('2001:0:4136:e378:8000:63bf:f5ff:fffe')).toBe(true);
+    expect(isBlockedIp('2001:0000::1')).toBe(true);
+    expect(isBlockedIp('2606:4700:4700::1111')).toBe(false);
+    expect(isBlockedIp('64:ff9b::1.1.1.1')).toBe(false);
+    expect(isBlockedIp('2002:0101:0101::')).toBe(false);
+  });
+
+  it('validates every redirect hop and pins resolved DNS addresses in downloadZip', async () => {
+    const pinnedCalls: Array<{ url: string; address: string; family: 4 | 6 }> = [];
+    const lookupFn = vi.fn(async (hostname: string) => {
+      if (hostname === 'evil-private.example') return [{ address: '64:ff9b::a00:1', family: 6 }];
+      return [{ address: '93.184.216.34', family: 4 }];
+    });
+
+    await expect(downloadZip('https://evil-private.example/plugin.zip', undefined, { lookupFn }))
+      .rejects.toMatchObject({ code: 'plugin.load_failed' });
+
+    const redirectToLoopback = vi.fn(async (target: { readonly url: URL; readonly address: string; readonly family: 4 | 6 }) => {
+      pinnedCalls.push({ url: target.url.toString(), address: target.address, family: target.family });
+      return { status: 302, statusText: 'Found', location: 'http://127.0.0.1:8080/internal.zip', bytes: Buffer.alloc(0) };
+    });
+    await expect(downloadZip('https://cdn.example/start.zip', undefined, { lookupFn, pinnedFetchFn: redirectToLoopback }))
+      .rejects.toMatchObject({ code: 'plugin.load_failed' });
+    expect(pinnedCalls).toEqual([{ url: 'https://cdn.example/start.zip', address: '93.184.216.34', family: 4 }]);
+
+    const redirectToNat64 = vi.fn(async () => ({
+      status: 302,
+      statusText: 'Found',
+      location: 'https://[64:ff9b::10.0.0.1]/secret.zip',
+      bytes: Buffer.alloc(0),
+    }));
+    await expect(downloadZip('https://cdn.example/start.zip', undefined, { lookupFn, pinnedFetchFn: redirectToNat64 }))
+      .rejects.toMatchObject({ code: 'plugin.load_failed' });
+
+    const validRedirect = vi.fn()
+      .mockResolvedValueOnce({ status: 302, statusText: 'Found', location: 'https://files.example/final.zip', bytes: Buffer.alloc(0) })
+      .mockResolvedValueOnce({ status: 200, statusText: 'OK', bytes: Buffer.from('PK-zip-bytes') });
+    const bytes = await downloadZip('https://cdn.example/start.zip', undefined, { lookupFn, pinnedFetchFn: validRedirect });
+    expect(bytes.toString('utf8')).toBe('PK-zip-bytes');
+    expect(validRedirect).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips node_modules in fingerprintDirectory so managed installs match staged fingerprints', async () => {
+    const cleanDir = join(dir, 'fp-clean');
+    const withDepsDir = join(dir, 'fp-with-deps');
+    await mkdir(cleanDir, { recursive: true });
+    await mkdir(join(withDepsDir, 'node_modules', 'dep-a'), { recursive: true });
+    await writeFile(join(cleanDir, 'kimi.plugin.json'), '{"name":"fp-demo"}');
+    await writeFile(join(withDepsDir, 'kimi.plugin.json'), '{"name":"fp-demo"}');
+    await writeFile(join(withDepsDir, 'node_modules', 'dep-a', 'index.js'), 'export const x = 1;');
+
+    expect(await fingerprintDirectory(withDepsDir)).toBe(await fingerprintDirectory(cleanDir));
   });
 });

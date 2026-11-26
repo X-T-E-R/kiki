@@ -32,8 +32,6 @@ import {
   useRemoteConnections,
 } from '../../lib/remoteConnections';
 import { useSpaceLocation } from '../../lib/spaceLocation';
-import { useSpacePreferencesFrame } from '../../lib/spacePreferences';
-import { spaceSettingsTargetOf } from '../../lib/spaceSettings';
 import {
   MAIN_SPACE_ID,
   currentSpace,
@@ -121,7 +119,6 @@ export function SpaceScopeControl({ healthBySpace }: SpaceScopeControlProps = {}
     poll: open || spaceScope === ALL_SPACE_SCOPE,
   });
 
-  useSpacePreferencesFrame(spaceSettingsTargetOf(client, meta));
   const statuses = useSpaceStatuses(host);
   const mode = launchWindowMode(readDesktopPrefs().windowMode);
   const here = currentSpace();

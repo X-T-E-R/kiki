@@ -570,6 +570,7 @@ advertise_as_kimi_code = false
 # max_attempts_per_step: integer
 thinking_only_continuation = true
 zero_output_continuation = false
+skip_unstarted_tools_on_input = false
 # max_ralph_iterations: integer
 # reserved_context_size: integer
 # context_strategy: "summarize" | "auto" | "fresh"

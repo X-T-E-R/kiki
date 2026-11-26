@@ -303,11 +303,11 @@ function readAgentStatus(agent: HistoryDirectoryAgent, read: RosterRead): Pick<H
   const storedReason = meta?.branchTurn?.outcome ?? meta?.status ?? (agent.kind === 'main' ? read.metadata?.lastTurnReason : undefined);
   const storedEnd = meta?.branchTurn?.endedAt ?? meta?.completedAt;
   const lastTurnReason = lastTurn !== undefined && (storedEnd === undefined || lastTurn.at >= storedEnd) ? lastTurn.reason : storedReason;
-  const status = agent.sealed === true && agent.kind === 'branch' ? 'merged'
-    : loop?.persistenceFailure !== undefined || execution?.state === 'broken' ? 'failed'
+  const status = loop?.persistenceFailure !== undefined || execution?.state === 'broken' ? 'failed'
     : execution?.state === 'starting' || execution?.state === 'running' || execution?.state === 'cancelling' || loop?.state === 'running' || activity?.turn !== undefined ? 'running'
     : lastTurnReason === 'failed' || lastTurnReason === 'blocked' ? 'failed'
     : lastTurnReason === 'cancelled' ? 'interrupted'
+    : agent.sealed === true && agent.kind === 'branch' ? 'merged'
     : agent.kind === 'subagent' && lastTurnReason === 'completed' ? 'completed' : 'idle';
   const changedAt = Math.max(meta?.completedAt ?? -1, storedEnd ?? -1, lastTurn?.at ?? -1,
     view?.telemetry().lastActivityAt ?? -1, activity?.turn?.since ?? -1, execution?.startedAt ?? -1, meta?.createdAt ?? -1,

@@ -17,6 +17,7 @@ import { configureSpaceStorage } from '@kiki/session-core/storage';
 import {
   BUILTIN_SKINS,
   DEFAULT_SKIN_ID,
+  SKIN_BOOT_STORAGE_KEY,
   allSkinVariables,
   applyCurrentSkin,
   applySkinVariables,
@@ -30,6 +31,7 @@ import {
   normalizeSkinPrefs,
   readSkinPrefs,
   resolveSkin,
+  setPackSkins,
   setSkinPreview,
   setUserSkins,
   skinVariablesFor,
@@ -458,6 +460,98 @@ describe('startSkinSync', () => {
     applyCurrentSkin();
     expect(document.documentElement.dataset['skin']).toBeUndefined();
   });
+
+  it('persists compact boot payload for non-default skins, skips live previews, and clears on revert to default', () => {
+    writeSettings({ theme: 'light', proseFont: 'sans', motion: 'system' });
+    writeSkinPrefs({ selection: { source: 'builtin', id: 'celadon' }, tweaks: {} });
+    const stop = startSkinSync();
+    try {
+      const boot = JSON.parse(localStorage.getItem(SKIN_BOOT_STORAGE_KEY)!);
+      expect(boot.skinId).toBe('celadon');
+      expect(boot.light['--color-paper']).toBe('#F2F7EF');
+      expect(boot.dark['--color-paper']).toBe('#1A2925');
+
+      // Live preview must never overwrite the persisted boot payload.
+      setSkinPreview({ selection: { source: 'builtin', id: 'iris' }, tweaks: {} });
+      expect(JSON.parse(localStorage.getItem(SKIN_BOOT_STORAGE_KEY)!).skinId).toBe('celadon');
+      setSkinPreview(null);
+
+      // Reverting to default untweaked skin clears kiki.skin.boot cleanly.
+      writeSkinPrefs({ selection: { source: 'builtin', id: DEFAULT_SKIN_ID }, tweaks: {} });
+      expect(localStorage.getItem(SKIN_BOOT_STORAGE_KEY)).toBeNull();
+    } finally {
+      stop();
+    }
+  });
+
+  it('preserves pre-painted user and pack skins while catalog is pending and updates once settled', () => {
+    writeSettings({ theme: 'dark', proseFont: 'sans', motion: 'system' });
+    writeSkinPrefs({ selection: { source: 'user', id: 'midnight-ocean' }, tweaks: {} });
+    localStorage.setItem(SKIN_BOOT_STORAGE_KEY, JSON.stringify({
+      v: 1,
+      theme: 'dark',
+      skinId: 'midnight-ocean',
+      light: { '--color-paper': '#F0F4F8' },
+      dark: { '--color-paper': '#0A192F' },
+    }));
+    // Simulate public/theme-boot.js pre-paint before JS bundle starts sync.
+    document.documentElement.dataset['skin'] = 'midnight-ocean';
+    document.documentElement.style.setProperty('--color-paper', '#0A192F');
+    clearSelectedSkinCache();
+
+    const stop = startSkinSync();
+    try {
+      // While /skins is still pending, pre-painted tokens and boot payload stay intact.
+      expect(document.documentElement.dataset['skin']).toBe('midnight-ocean');
+      expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('#0A192F');
+      expect(localStorage.getItem(SKIN_BOOT_STORAGE_KEY)).not.toBeNull();
+
+      // Once live /skins resolves with an updated palette, DOM and boot cache update seamlessly.
+      setUserSkins([{
+        kind: 'kiki-skin',
+        version: 1,
+        id: 'midnight-ocean',
+        name: 'Midnight Ocean',
+        variants: { dark: { colors: { paper: '#0B203B' } } },
+      }], '/themes');
+      expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('#0B203B');
+      expect(JSON.parse(localStorage.getItem(SKIN_BOOT_STORAGE_KEY)!).dark['--color-paper']).toBe('#0B203B');
+
+      // When server authoritatively confirms deletion, revert cleanly and clear boot payload.
+      setUserSkins([], '/themes');
+      expect(document.documentElement.dataset['skin']).toBeUndefined();
+      expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('');
+      expect(localStorage.getItem(SKIN_BOOT_STORAGE_KEY)).toBeNull();
+    } finally {
+      stop();
+    }
+  });
+
+  it('warms selected user skin paint cache immediately on writeSkinPrefs', () => {
+    const ocean = {
+      kind: 'kiki-skin' as const,
+      version: 1 as const,
+      id: 'ocean-warm',
+      name: 'Ocean Warm',
+      variants: { dark: { colors: { paper: '#002233' } } },
+    };
+    setUserSkins([ocean], '/themes');
+    writeSkinPrefs({ selection: { source: 'user', id: 'ocean-warm' }, tweaks: {} });
+    expect(JSON.parse(localStorage.getItem('kiki.skin.cache')!).id).toBe('ocean-warm');
+  });
+
+  it('isolates pack skin cache per active space', () => {
+    setPackSkins([{
+      kind: 'kiki-skin',
+      version: 1,
+      id: 'dusk-pack',
+      name: 'Dusk',
+      variants: { light: { colors: { paper: '#FAF0E6' } } },
+    }]);
+    expect(resolveSkin({ source: 'pack', id: 'dusk-pack' })?.name).toBe('Dusk');
+    configureSpaceStorage({ homeId: 'other-space' });
+    expect(resolveSkin({ source: 'pack', id: 'dusk-pack' })).toBeNull();
+  });
 });
 
 describe('buildSkinExport', () => {
@@ -568,6 +662,44 @@ describe('server spacing consumption', () => {
     }
     for (const spacing of [0.19, 0.22, 0.25, 0.29, 0.33]) {
       expect(normalizeSkinPrefs({ tweaks: { spacing } }).tweaks.spacing).toBe(spacing);
+    }
+  });
+
+  it('preserves packCache and kiki.skin.boot across pre-hydration list-only passes before spaceAuthority settles', () => {
+    const sakuraPackSkin = {
+      kind: 'kiki-skin' as const,
+      version: 1 as const,
+      id: 'sakura-pack',
+      name: 'Sakura Pack',
+      variants: { dark: { colors: { paper: '#1D1522' } } },
+    };
+    setPackSkins([sakuraPackSkin]);
+    localStorage.setItem(SKIN_BOOT_STORAGE_KEY, JSON.stringify({
+      v: 1,
+      theme: 'dark',
+      skinId: 'sakura-pack',
+      light: {},
+      dark: { '--color-paper': '#1D1522' },
+    }));
+    document.documentElement.dataset['skin'] = 'sakura-pack';
+    document.documentElement.style.setProperty('--color-paper', '#1D1522');
+
+    // Simulate useAppearancePacks running while selectedId === null (before spaceAuthority hydrates):
+    // targetSummaries is [] while listedIds still contains 'sakura-pack'.
+    setPackSkins([], { allDetails: false, listedIds: ['sakura-pack'], queriedIds: [] });
+    expect(JSON.parse(localStorage.getItem('kiki.skin.packCache')!)).toHaveLength(1);
+
+    const stop = startSkinSync();
+    try {
+      configureSpaceAuthority(identity, {
+        ...detail(),
+        preferences: { ...DEFAULT_SPACE_PREFERENCES, theme: 'dark', skin: { source: 'pack', id: 'sakura-pack' } },
+      });
+      expect(document.documentElement.dataset['skin']).toBe('sakura-pack');
+      expect(document.documentElement.style.getPropertyValue('--color-paper')).toBe('#1D1522');
+      expect(localStorage.getItem(SKIN_BOOT_STORAGE_KEY)).not.toBeNull();
+    } finally {
+      stop();
     }
   });
 });

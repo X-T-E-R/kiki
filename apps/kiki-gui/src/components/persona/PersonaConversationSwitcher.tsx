@@ -27,7 +27,7 @@ import { useI18n } from '../../i18n';
 import { sanitizeDisplayTitle } from '../../lib/threadTitles';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
-import { SidebarRowDot } from '../sidebar/SidebarRowSignal';
+import { SidebarRowDot, sidebarDotKindFromLife } from '../sidebar/SidebarRowSignal';
 import { AnchoredPopover } from '../overlays';
 import { RelativeTime } from '../RelativeTime';
 import { useSessionContextMenu } from '../sessionContextMenu';
@@ -312,7 +312,10 @@ export function PersonaConversationSwitcher({
                 }}
                 className="row-interactive flex w-full items-start gap-2 py-1.5 pr-1 pl-2 text-left"
               >
-                <SidebarRowDot signal={item.needsYou || item.life === 'working' || item.life === 'done'} />
+                <SidebarRowDot
+                  signal={item.needsYou || item.life === 'working' || item.life === 'done'}
+                  kind={sidebarDotKindFromLife(item.life, { needsYou: item.needsYou })}
+                />
                 <span className="flex min-w-0 flex-1 flex-col">
                   <span className="flex items-center gap-1 text-[13px] leading-5">
                     {item.kind === 'room' ? (

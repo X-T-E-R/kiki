@@ -213,12 +213,17 @@
   padding: 0.625rem 1rem;
   color: var(--color-ink);
   font-family: var(--font-sans);
-  font-size: var(--kiki-prose-font-size, 16px);
-  line-height: 1.75;
+  font-size: var(--kiki-prose-font-size, 14.5px);
+  line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   pointer-events: none;
   transition: opacity var(--kiki-motion-quick) var(--kiki-ease-out);
+}
+@media (pointer: coarse) {
+  .kiki-handoff-ghost {
+    font-size: var(--kiki-prose-font-size, 15.5px);
+  }
 }
 .kiki-handoff-ghost[data-retiring] {
   opacity: 0;
