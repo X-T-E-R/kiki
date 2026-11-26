@@ -454,6 +454,7 @@ function AgentWorkspaceHeader({
   showHistoryBack,
   isBranch = false,
   branchSealed = false,
+  hasPriorFinalFold = false,
   branchSeedLabel,
   branchSeamLabel,
   branchToolsLocked = false,
@@ -490,6 +491,7 @@ function AgentWorkspaceHeader({
   showHistoryBack: boolean;
   isBranch?: boolean;
   branchSealed?: boolean;
+  hasPriorFinalFold?: boolean;
   branchSeedLabel?: string;
   branchSeamLabel?: string;
   branchToolsLocked?: boolean;
@@ -521,9 +523,9 @@ function AgentWorkspaceHeader({
     }
     return count;
   }, [forest, target.agentId]);
-  const canUnlockInMenu = isBranch && !branchSealed && branchToolsLocked && onUnlockBranchTools !== undefined;
+  const canUnlockInMenu = isBranch && branchToolsLocked && onUnlockBranchTools !== undefined;
   const hasActionsMenu = freshContextAvailable || onLocateSpawn !== undefined || promote !== undefined || canUnlockInMenu;
-  const hasDesktopMenuActions = freshContextAvailable || onLocateSpawn !== undefined || canUnlockInMenu || (promote !== undefined && !(isBranch && !branchSealed));
+  const hasDesktopMenuActions = freshContextAvailable || onLocateSpawn !== undefined || canUnlockInMenu || (promote !== undefined && !isBranch);
   useEffect(() => {
     if (!menuOpen) return;
     const unregister = registerOverlay('agent-actions-menu');
@@ -613,10 +615,18 @@ function AgentWorkspaceHeader({
             {branchSeedLabel}
           </span>
         ) : null}
+        {isBranch && !branchSealed && hasPriorFinalFold ? (
+          <span
+            data-branch-previous-merged
+            className="hidden h-5 shrink-0 items-center rounded bg-ink/[0.04] px-1.5 text-[12px] leading-4 text-ink-soft @[560px]/center:inline-flex"
+          >
+            {t('transcript.branch.previousMerged')}
+          </span>
+        ) : null}
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
-        {isBranch && !branchSealed && promote !== undefined ? (
+        {isBranch && promote !== undefined ? (
           <button
             type="button"
             data-promote-branch-action
@@ -699,7 +709,7 @@ function AgentWorkspaceHeader({
                     role="menuitem"
                     data-agent-promote
                     disabled={promote.pending}
-                    className={`${isBranch && !branchSealed ? 'flex @[560px]/center:hidden' : 'flex'} h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper disabled:text-ink-faint disabled:hover:bg-transparent`}
+                    className={`${isBranch ? 'flex @[560px]/center:hidden' : 'flex'} h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper disabled:text-ink-faint disabled:hover:bg-transparent`}
                     onClick={() => { setMenuOpen(false); promote.promote(); }}
                   >
                     {t(promote.pending ? 'agent.promotePending' : (isBranch ? 'transcript.branch.promote' : 'agent.promote'))}
@@ -903,6 +913,7 @@ function ChildAgentWorkspace({
   const parentModel = nestedParentId !== undefined ? parentAgentState.model : sessionState.model;
   const parentThinkingEffort = nestedParentId !== undefined ? parentAgentState.thinkingEffort : sessionState.thinkingEffort;
   const parentPermissionMode = nestedParentId !== undefined ? parentAgentState.permissionMode : sessionState.permissionMode;
+  const executorCatalog = useExecutorCatalog();
   const canSteerChildNow =
     controller !== null && typeof controller.sendPromptNow === 'function';
 
@@ -959,6 +970,8 @@ function ChildAgentWorkspace({
         (liveIsBranch ? (normalizeSelectableModelAlias(parentModel) ?? configuredDefault) : undefined);
       const execId = reportedExecutorId ?? (liveIsBranch ? 'native' : undefined) ?? (executorBindingQuery.isSuccess ? executorBindingQuery.data ?? 'native' : undefined);
       const isExternal = execId !== undefined && !isNativeExecutor(execId);
+      const catalogExecutor = isExternal ? executorCatalog.find((entry) => entry.id === execId) : undefined;
+      const externalDeniesSteering = catalogExecutor?.capabilities?.negotiated?.native_steering === false;
       const resolvedModel = model !== undefined ? resolveCatalogModel(models ?? [], model) : undefined;
       const canonicalModel = model === undefined
         ? undefined
@@ -985,7 +998,7 @@ function ChildAgentWorkspace({
           running: busy,
         },
         busy,
-        canSteerNow: canSteerChildNow,
+        canSteerNow: canSteerChildNow && !externalDeniesSteering,
         externalBindingSetting: isExternal ? externalBindingSetting : undefined,
         sendTimingDefault: isExternal ? undefined : liveSettings.defaultAppendTiming,
         sessionRecord: sessionState.session,
@@ -1113,14 +1126,35 @@ function ChildAgentWorkspace({
   const childExecution: ExecutionChoice | undefined = executorId === undefined ? undefined : {
     executor: executorId, profile: undefined, overrides: displayModel === undefined ? undefined : { model: displayModel },
   };
-  const branchSealed = selectedNode?.branchSealed === true
-    || (selectedNode === undefined && (capabilitiesOwner?.branch_sealed === true || branchFoldBlock !== undefined));
+  const rawBranchSealed = selectedNode !== undefined
+    ? selectedNode.branchSealed === true
+    : capabilitiesOwner?.branch_sealed === true;
+  const hasPendingBranchInput =
+    submissionInFlight ||
+    sendEcho?.scope === sendScope ||
+    (agentLiveState.queuedPromptIds?.length ?? 0) > 0 ||
+    capturedBlocks.some((block) => block.kind === 'user' && (block.promptStatus === 'queued' || block.promptStatus === 'running'));
+  const branchSealed =
+    isBranch &&
+    rawBranchSealed &&
+    !headerBusy &&
+    !hasPendingBranchInput &&
+    selectedStatus !== 'failed' &&
+    selectedStatus !== 'cancelled';
+  const hasPriorFinalFold =
+    isBranch &&
+    (rawBranchSealed || (branchFoldBlock?.kind === 'user' && branchFoldBlock.branchFold?.done !== false));
   const branchToolsLocked = selectedNode?.toolsLocked === true
     || (selectedNode === undefined && capabilitiesOwner?.tools_locked === true);
   const branchSeed = selectedNode?.branchSeed ?? capabilitiesOwner?.branch_seed ?? branchBaseMarker?.seedMode;
   const [branchFolding, setBranchFolding] = useState(false);
   const [branchFoldPending, setBranchFoldPending] = useState(false);
   const branchFoldSawBusyRef = useRef(false);
+  const branchFoldCountAtRequestRef = useRef(0);
+  const currentBranchFoldCount = useMemo(
+    () => sessionState.blocks.filter((block) => block.kind === 'user' && block.branchFold?.branchId === agentId).length,
+    [sessionState.blocks, agentId],
+  );
   const [branchUnlocking, setBranchUnlocking] = useState(false);
   useEffect(() => {
     setBranchFoldPending(false);
@@ -1133,13 +1167,18 @@ function ChildAgentWorkspace({
       return;
     }
     if (!branchFoldPending) return;
+    if (currentBranchFoldCount > branchFoldCountAtRequestRef.current) {
+      setBranchFoldPending(false);
+      branchFoldSawBusyRef.current = false;
+      return;
+    }
     if (headerBusy) {
       branchFoldSawBusyRef.current = true;
     } else if (branchFoldSawBusyRef.current) {
       setBranchFoldPending(false);
       branchFoldSawBusyRef.current = false;
     }
-  }, [branchSealed, branchFoldPending, headerBusy]);
+  }, [branchSealed, branchFoldPending, currentBranchFoldCount, headerBusy]);
   const branchSeamLabel = useMemo(() => {
     if (!isBranch) return undefined;
     const effectiveParentId = selectedNode?.parentAgentId ?? capabilitiesOwner?.parent_agent_id ?? branchBaseMarker?.sourceAgentId;
@@ -1151,9 +1190,10 @@ function ChildAgentWorkspace({
       parts.push(t(`transcript.branch.seed.${branchSeed}` as I18nKey));
     }
     if (branchSealed) parts.push(t('transcript.branch.sealed'));
-    else if (branchToolsLocked) parts.push(t('transcript.branch.toolsLocked'));
+    else if (headerBusy && hasPriorFinalFold) parts.push(t('transcript.branch.previousMerged'));
+    if (branchToolsLocked) parts.push(t('transcript.branch.toolsLocked'));
     return parts.join(' · ');
-  }, [isBranch, selectedNode?.parentAgentId, capabilitiesOwner?.parent_agent_id, branchBaseMarker?.sourceAgentId, forest.byId, t, branchSeed, branchSealed, branchToolsLocked]);
+  }, [isBranch, selectedNode?.parentAgentId, capabilitiesOwner?.parent_agent_id, branchBaseMarker?.sourceAgentId, forest.byId, t, branchSeed, branchSealed, headerBusy, hasPriorFinalFold, branchToolsLocked]);
 
   const handleUnlockBranchTools = useCallback(() => {
     if (branchUnlocking || typeof client.setBranchToolsLock !== 'function') return;
@@ -1169,24 +1209,26 @@ function ChildAgentWorkspace({
   const handleFoldBranch = useCallback(() => {
     if (branchFolding || branchFoldPending || typeof client.foldBranch !== 'function') return;
     setBranchFolding(true);
+    branchFoldCountAtRequestRef.current = currentBranchFoldCount;
     void client.foldBranch(sessionId, {
       branch_id: agentId,
       summary: undefined,
       done: true,
     })
       .then(async (res) => {
-        if (!res.sealed && composerOwnerActive.current) {
+        const deliveredFinalFold = res.status === 'merged' && res.done;
+        if (!deliveredFinalFold && composerOwnerActive.current) {
           setBranchFoldPending(true);
           branchFoldSawBusyRef.current = headerBusy;
           pushToast({
             tone: 'info',
             text: locale === 'zh'
-              ? '已通知分支总结并合回主线'
-              : 'Asked the branch to summarize and merge back to main.',
+              ? '已请求分支生成摘要并合回主线'
+              : 'Requested branch summary to merge back to main.',
           });
         }
         await controller?.resync();
-        if (res.sealed && composerOwnerActive.current && transcriptVisibleRef.current) {
+        if (deliveredFinalFold && composerOwnerActive.current && transcriptVisibleRef.current) {
           navigation.openSession();
         }
       })
@@ -1196,7 +1238,7 @@ function ChildAgentWorkspace({
       .finally(() => {
         if (composerOwnerActive.current) setBranchFolding(false);
       });
-  }, [agentId, branchFoldPending, branchFolding, client, composerOwnerActive, controller, headerBusy, locale, navigation, sessionId]);
+  }, [agentId, branchFoldPending, branchFolding, client, composerOwnerActive, controller, currentBranchFoldCount, headerBusy, locale, navigation, sessionId]);
 
   const composerDisabled = !agentKnown || executorId === undefined;
   const handleComposerSend = async (
@@ -1874,6 +1916,7 @@ function ChildAgentWorkspace({
         promote={promoteAction}
         isBranch={isBranch}
         branchSealed={branchSealed}
+        hasPriorFinalFold={hasPriorFinalFold}
         branchSeedLabel={branchSeed === 'fresh' || branchSeed === 'compact' || branchSeed === 'verbatim'
           ? t(`transcript.branch.seed.${branchSeed}` as I18nKey)
           : undefined}
@@ -1919,7 +1962,7 @@ function ChildAgentWorkspace({
             innerClassName="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline bg-paper px-3 py-2 text-[12px] text-ink-soft"
           >
             <span className="min-w-0 truncate font-normal text-ink">
-              {t('transcript.branch.sealed')}
+              {t('transcript.branch.sealedContinuable')}
             </span>
             <span className="flex shrink-0 items-center gap-1">
               {promoteAction !== undefined ? (

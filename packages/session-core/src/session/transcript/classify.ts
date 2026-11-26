@@ -19,7 +19,7 @@ function unescapeSystemReminderClose(text: string): string {
 export function splitSystemReminders(text: string, generated = false): SplitSystemRemindersResult {
   if (!generated) return { text, reminders: [] };
   const trimmed = text.trim();
-  if (!/^<system-reminder>/i.test(trimmed) || !/<\/system-reminder>$/i.test(trimmed)) {
+  if (!/^<system-reminder>/i.test(trimmed)) {
     return { text, reminders: [] };
   }
   const reminders: string[] = [];
@@ -31,7 +31,16 @@ export function splitSystemReminders(text: string, generated = false): SplitSyst
     reminders.push(unescapeSystemReminderClose(match[1]!).trim());
     cursor = match.index + match[0].length;
   }
-  if (reminders.length === 0 || trimmed.slice(cursor).trim() !== '') {
+  const remainder = trimmed.slice(cursor).trim();
+  if (remainder !== '') {
+    if (/^<system-reminder>/i.test(remainder) && !/<\/system-reminder>/i.test(remainder)) {
+      const body = unescapeSystemReminderClose(remainder.replace(/^<system-reminder>\s*/i, '')).trim();
+      if (body !== '') reminders.push(body);
+      return reminders.length > 0 ? { text: '', reminders } : { text, reminders: [] };
+    }
+    return { text, reminders: [] };
+  }
+  if (reminders.length === 0) {
     return { text, reminders: [] };
   }
   return { text: '', reminders };

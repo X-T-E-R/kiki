@@ -865,7 +865,7 @@ export function useAgentWorkspaceCore(
     execution.busy &&
     execution.canSteerNow === true &&
     modelSwitches.dependency === undefined &&
-    pendingSendRef.current === null &&
+    !submissionInFlight &&
     execution.steerBusyBlocked !== true;
 
   const pendingModelSwitch = useMemo(

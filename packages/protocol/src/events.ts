@@ -630,7 +630,8 @@ export interface AgentDisposedEvent {
 export interface AgentBranchSealedEvent {
   readonly type: 'agent.branch_sealed';
   readonly sealed: boolean;
-  readonly foldId: string;
+  readonly foldId?: string;
+  readonly workSeq?: number;
   readonly time?: number;
 }
 
@@ -1930,7 +1931,8 @@ export const agentDisposedEventSchema = z.object({
 export const agentBranchSealedEventSchema = z.object({
   type: z.literal('agent.branch_sealed'),
   sealed: z.boolean(),
-  foldId: z.string(),
+  foldId: z.string().optional(),
+  workSeq: z.number().int().nonnegative().optional(),
   time: z.number().optional(),
 }) satisfies z.ZodType<AgentBranchSealedEvent>;
 

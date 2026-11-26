@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 20 keys · Agent: 126 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 20 keys · Agent: 127 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -72,6 +72,7 @@
 //     agentsMdReminder.known                          src/agent/agentsMdReminder/agentsMdReminderService.ts
 //     agentsMdReminder.seeded                         src/agent/agentsMdReminder/agentsMdReminderService.ts
 //     autoCompactOverride                             src/agent/fullCompaction/autoCompactOps.ts
+//     branch.coverage                                 src/features/btw/branchOps.ts
 //     branch.sealed                                   src/features/btw/branchOps.ts
 //     branch.toolsLocked                              src/features/btw/branchOps.ts
 //     contextMemory                                   src/agent/contextMemory/contextOps.ts
@@ -5281,6 +5282,7 @@ export interface AgentStateSnapshot {
             readonly timeout?: number;
             readonly ownedProcessTree?: boolean;
             readonly ownedProcessLifetime?: 'owner' | 'process';
+            readonly signal?: AbortSignal;
           }) => Promise</* IHostProcess — packages/agent-core-v2/src/os/interface/hostProcess.ts */ {
             readonly _serviceBrand: undefined;
             readonly pid: number;
@@ -9824,6 +9826,19 @@ export interface AgentStateSnapshot {
     readonly inherit?: boolean;
   }>;
   // src/features/btw/branchOps.ts
+  // replayable · durable — folds: BranchBase, TurnPrompt, TurnStarted, PromptSteered, ContextAppendMessage, ContextAppendLoopEvent, ContextUndo, ContextClear, TurnEnded, BranchTurnMerged, AgentBranchSealed
+  'branch.coverage': {
+    turnId: number;
+    workSeq: number;
+    remainingSeedMessages?: number;
+    hasStartedTurn?: boolean;
+    coveredTurnId?: number;
+    coveredWorkSeq?: number;
+    throughTurnId?: number;
+    lastFoldId?: string;
+    lastFoldDone?: boolean;
+    completedFoldIds?: string[];
+  };
   // replayable · durable — folds: AgentBranchSealed
   'branch.sealed': boolean;
   // replayable · durable — folds: AgentToolLockChanged
@@ -9932,24 +9947,29 @@ export interface AgentStateSnapshot {
     readonly response?: unknown;
   }>;
   // src/session/subagent/autonomousReceiptOps.ts
-  // replayable · durable — folds: TurnPrompt, TurnStarted, ContextAppendLoopEvent, ContextAppendMessage, TurnEnded, BranchTurnMerged, AutonomousReceiptDelivered
+  // replayable · durable — folds: TurnPrompt, TurnStarted, PromptSteered, ContextAppendLoopEvent, ContextAppendMessage, TurnEnded, BranchTurnMerged, AutonomousReceiptDelivered
   'subagent.autonomousReceipts': {
     pending: Record<string, {
       turnId: number;
       startedAt: number;
       endedAt: number;
       summary: string;
+      workSeq?: number;
       outcome?: 'cancelled' | 'failed';
       error?: string;
       userPrompt?: true;
     }>;
+    workTurnId?: number;
+    workSeq?: number;
     active?: {
       turnId: number;
       startedAt: number;
       summary: string;
+      workSeq?: number;
       userPrompt?: true;
     };
     mergedThrough?: number;
+    mergedWorkSeq?: number;
   };
   // src/session/todo/continuityState.ts
   // replayable · durable — folds: TurnPrompt, TurnSteer, ContextAppendLoopEvent, ContextAppendMessage, ToolsUpdateStore

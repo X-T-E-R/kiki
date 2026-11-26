@@ -10,7 +10,7 @@ export const MergeInputSchema = z.object({
   summary: z.string().trim().min(1).max(32_000).optional().describe('Concise, self-contained handoff authored directly for the main conversation: key conclusion, decisions, changed paths, verification, and remaining risks. Alias of context.'),
   context: z.string().trim().min(1).max(32_000).optional().describe('Alias of summary: model-authored context block inserted into the main conversation.'),
   asks: z.array(z.string().trim().min(1).max(2_000)).max(20).optional().describe('Optional open questions or decisions that main or the user still needs to resolve.'),
-  done: z.boolean().default(true).describe('When true (default), seals this branch after delivering the merge and hands any unconsumed queued user prompts back to main. Set false for an interim checkpoint while keeping the branch open.'),
+  done: z.boolean().default(true).describe('When true (default), publishes a completed checkpoint for this branch’s current work; the branch remains continuable if follow-up input or checks arrive. Set false for an interim checkpoint while continuing work here.'),
 }).strict().refine((value) => value.summary !== undefined || value.context !== undefined, {
   message: 'Provide summary or context.',
 });
@@ -20,9 +20,9 @@ export type MergeInput = z.infer<typeof MergeInputSchema>;
 export const IMergeTool = createDecorator<AgentTool<MergeInput>>('mergeTool');
 
 const MERGE_DESCRIPTION = [
-  'Fold this branch’s authored conclusion back into the main conversation.',
+  'Publish a checkpoint of this branch’s authored conclusion back into the main conversation.',
   'Write a crisp, high-signal summary/context with the outcome, decisive reasons, and concrete artifacts; do not paste raw logs or exhaustive command transcripts — main automatically receives a one-line HistoryList/HistoryRead pointer with this branch’s agent_id for on-demand inspection.',
-  'Pass done=true (default) when this branch’s objective is complete to seal the branch cleanly, or done=false to send an interim update while continuing work here.',
+  'Pass done=true (default) when this branch’s objective is complete through this checkpoint (follow-ups can still continue and publish an updated checkpoint), or done=false to send an interim update while continuing work here.',
 ].join(' ');
 
 export class MergeTool implements AgentTool<MergeInput> {
@@ -45,7 +45,7 @@ export class MergeTool implements AgentTool<MergeInput> {
       approvalRule: this.name,
       stopBatchAfterThis: input.done !== false,
       accesses: ToolAccesses.none(),
-      execute: async () => {
+      execute: async (context) => {
         if (this.scope.isBranch !== true) {
           return {
             isError: true,
@@ -59,6 +59,7 @@ export class MergeTool implements AgentTool<MergeInput> {
           asks: input.asks,
           done: input.done,
           fromTool: true,
+          operationId: context.toolCallId,
         });
         return {
           output: JSON.stringify({

@@ -1596,6 +1596,7 @@ describe('live agent snapshot availability', () => {
 
   it('surfaces prominent concurrency counters, capped active/limit meters, uncapped N concurrent rows, per-session concurrency, and quiet idle collapse', async () => {
     vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
     localStorage.setItem('kiki.locale', 'zh');
     connection.wsStatus = 'open';
     mockLiveAgent.mockReturnValue({
@@ -1621,7 +1622,7 @@ describe('live agent snapshot availability', () => {
           { sessionId: 's_fast', agentId: 'main', role: 'main', phase: 'running', modelId: 'gateway/model-fast', startedAt: '2026-01-01T11:55:00Z' },
           { sessionId: 's_fast', agentId: 'sub-1', role: 'subagent', phase: 'running', modelId: 'gateway/model-fast', startedAt: '2026-01-01T11:56:00Z' },
           { sessionId: 's_fast', agentId: 'sub-2', role: 'subagent', phase: 'tool_waiting', modelId: 'gateway/model-fast', startedAt: '2026-01-01T11:57:00Z' },
-          { sessionId: 's_pro', agentId: 'sub-3', role: 'subagent', phase: 'running', modelId: 'gateway/model-pro', startedAt: '2026-01-01T11:50:00Z' },
+          { sessionId: 's_pro', agentId: 'sub-3', role: 'subagent', phase: 'running', modelId: 'gateway/model-pro', startedAt: '2026-01-01T07:39:00Z' },
         ],
         waiting: [],
       },
@@ -1722,11 +1723,15 @@ describe('live agent snapshot availability', () => {
     expect(extraRule).not.toBeNull();
     expect(extraRule.textContent).toContain('3 / 4');
 
-    // 3. Per-session concurrency in `当前会话` (`2 并发 · Model Fast · 3 个智能体`)
+    // 3. Per-session concurrency in `当前会话` (`2 并发 · Model Fast · 3 个智能体`) + unified duration format (<1h & >=1h)
     const fastSession = container.querySelector<HTMLElement>('[data-execution-session="s_fast"]')!;
     expect(fastSession.querySelector('[data-governance-session-concurrency="2"]')?.textContent).toBe('2 并发');
     expect(fastSession.textContent).toContain('Model Fast');
     expect(fastSession.textContent).toContain('3 个智能体');
+    expect(fastSession.textContent).toMatch(/5分\d+秒/);
+    expect(fastSession.textContent).not.toMatch(/\b5:\d{2}\b/);
+    const proSession = container.querySelector<HTMLElement>('[data-execution-session="s_pro"]')!;
+    expect(proSession.textContent).toContain('4 小时 21 分');
 
     // Clicking the rule chip on the Pro row opens ConcurrencyRulesEditor focused on `model-pro-cap`
     expect(container.querySelector('[data-governance-rules]')).toBeNull();

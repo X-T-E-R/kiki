@@ -20,7 +20,7 @@ import {
   type SubagentGroup,
   type ToolGroup,
 } from './grouping';
-import type { AssistantBlock, Block, QuestionBlock, ShellBlock, SubagentBlock, SystemBlock, ThinkingBlock, ToolBlock, UserBlock } from './transcript';
+import { splitSystemReminders, type AssistantBlock, type Block, type QuestionBlock, type ShellBlock, type SubagentBlock, type SystemBlock, type ThinkingBlock, type ToolBlock, type UserBlock } from './transcript';
 
 let counter = 0;
 function tool(
@@ -755,7 +755,7 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
 
     const loneSystemNote: Block[] = [
       inTurn(text('user'), 't4'),
-      { kind: 'system', id: 'sys-1', turnId: 't4', variant: 'injection', source: 'recipe', text: 'Recipe', createdAt: undefined },
+      { kind: 'system', id: 'sys-1', turnId: 't4', variant: 'system', text: 'System note', createdAt: undefined },
       inTurn(text('assistant'), 't4'),
     ];
     expect(foldHistory(loneSystemNote, undefined, { foldSingleProcess: true }).map((n) => n.kind)).toEqual([
@@ -891,5 +891,36 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
       'history-fold',
       'assistant',
     ]);
+  });
+
+  it('folds truncated <system-reminder>, system injection, hook_result, and unanchored boilerplate even in live turns or keepOpen', () => {
+    const truncated = splitSystemReminders('<system-reminder>\nHost runtime snapshot rev 1 with truncated tail', true);
+    expect(truncated).toEqual({
+      text: '',
+      reminders: ['Host runtime snapshot rev 1 with truncated tail'],
+    });
+
+    const unanchoredInjection: SystemBlock = {
+      kind: 'system',
+      id: 'sys-inj-unanchored',
+      text: 'Host runtime snapshot',
+      createdAt: undefined,
+      turnId: undefined,
+      variant: 'injection',
+    };
+    const liveHookResult: SystemBlock = {
+      kind: 'system',
+      id: 'sys-hook-live',
+      text: 'SessionStart hook output',
+      createdAt: undefined,
+      turnId: 't-live',
+      variant: 'hook_result',
+    };
+    const folded = foldHistory(
+      [text('user'), unanchoredInjection, inTurn(text('user'), 't-live'), liveHookResult],
+      't-live',
+      { keepOpen: new Set(['sys-inj-unanchored', 'sys-hook-live']) },
+    );
+    expect(folded.map((n) => n.kind)).toEqual(['user', 'history-fold', 'user', 'history-fold']);
   });
 });

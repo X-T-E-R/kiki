@@ -453,7 +453,7 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
     let interruptedBranches = 0;
     for (const [agentId, agentMeta] of Object.entries(meta.agents ?? {})) {
       if (agentId === MAIN_AGENT_ID) continue;
-      if (agentMeta.labels?.['branch'] !== 'true' || agentMeta.labels?.['branchSealed'] === 'true') continue;
+      if (agentMeta.labels?.['branch'] !== 'true') continue;
       const branchLost = lostByOwner.get(agentId) ?? 0;
       const branchCancelled =
         agentMeta.branchTurn?.outcome === 'cancelled' && agentMeta.branchTurn.endedAt >= recoveryWatermark;

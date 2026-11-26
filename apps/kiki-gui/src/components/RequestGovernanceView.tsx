@@ -24,7 +24,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ModelCatalogItem, RequestGovernanceSnapshot, RoomListItem, Session } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
-import { buildConversationInbox, formatElapsedClock, type InboxReason } from '@kiki/session-core/sessions';
+import { buildConversationInbox, type InboxReason } from '@kiki/session-core/sessions';
+import { formatWorkingDuration } from './composerWorking';
 
 import { useI18n } from '../i18n';
 import {
@@ -120,7 +121,7 @@ function formatLiveElapsed(
   startedAtMs: number | undefined,
   waitedMs: number | undefined,
   nowMs: number,
-  formatDuration: (ms: number) => string,
+  t: (key: I18nKey, params?: Record<string, string | number>) => string,
 ): string | undefined {
   const elapsed = startedAtMs !== undefined
     ? Math.max(0, nowMs - startedAtMs)
@@ -128,8 +129,7 @@ function formatLiveElapsed(
       ? Math.max(0, waitedMs)
       : undefined;
   if (elapsed === undefined) return undefined;
-  if (elapsed < 3_600_000) return formatElapsedClock(elapsed);
-  return formatDuration(elapsed);
+  return formatWorkingDuration(elapsed, t);
 }
 
 export function RequestGovernanceView({ view = 'realtime' }: { view?: 'realtime' | 'limits' } = {}) {
@@ -1017,7 +1017,7 @@ function ActiveRuntimeSessionRow({
   const navigate = useNavigate();
   const [agentsExpanded, setAgentsExpanded] = useState(false);
 
-  const elapsed = formatLiveElapsed(row.startedAtMs, row.waitedMs, nowMs, time.formatDuration);
+  const elapsed = formatLiveElapsed(row.startedAtMs, row.waitedMs, nowMs, t);
   const name = sessionLabelText(row.label);
   const phaseTone = row.phaseKind === 'failed'
     ? 'text-danger'

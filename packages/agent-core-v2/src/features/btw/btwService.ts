@@ -1,7 +1,7 @@
 import { ulid } from 'ulid';
 
 import type { IAgentScopeHandle } from '#/_base/di/scope';
-import { IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
+import { IInstantiationService, ref, type LiveRef, type ServicesAccessor } from '#/_base/di/instantiation';
 import { Emitter } from '#/_base/event';
 import {
   PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
@@ -30,6 +30,7 @@ import { BRANCH_CONFIG_SECTION, type BranchConfig } from '#/app/branch/configSec
 import { IConfigService } from '#/app/config/config';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { Error2, ErrorCodes } from '#/errors';
+import { IAgentCollaborationMessageStore } from '#/session/agentCollaboration/messageMailbox';
 import { COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -43,8 +44,10 @@ import {
   AgentBranchSealed,
   BranchTurnMerged,
   AgentToolLockChanged,
+  branchCoverageKey,
   branchSealedKey,
   branchToolLockKey,
+  isBranchWorkCovered,
 } from './branchOps';
 import {
   type CreateSessionBranchInput,
@@ -65,12 +68,19 @@ import { buildBranchSeedMessages } from './seedBuilder';
 const FOLD_PROMPT_MESSAGE =
   'Summarize the key findings, decisions, and outcomes of this branch, then call the Merge tool with `done: true` so the main conversation receives a clean handoff.';
 
+interface FoldOperationRecord {
+  readonly foldId: string;
+  readonly capturedWorkSeq: number;
+  parentEnqueued: boolean;
+  completed?: FoldSessionBranchResult;
+}
+
 export class SessionBranchService extends Service implements ISessionBranchService {
   declare readonly _serviceBrand: undefined;
   private readonly profileHost: { readonly accessor: ServicesAccessor };
   private readonly foldTails = new Map<string, Promise<unknown>>();
-  private readonly sealingBranches = new Set<string>();
   private readonly foldingBranches = new Map<string, number>();
+  private readonly foldOperations = new Map<string, FoldOperationRecord>();
   private readonly foldSettled = this._register(new Emitter<string>());
   readonly onDidSettleFold = this.foldSettled.event;
   private readonly lifetime = new AbortController();
@@ -82,6 +92,7 @@ export class SessionBranchService extends Service implements ISessionBranchServi
     @ISessionContext private readonly session: ISessionContext,
     @IConfigService private readonly configService: IConfigService,
     @IOptionalCapabilityPolicy private readonly capabilities?: IOptionalCapabilityPolicy,
+    @ref(IAgentCollaborationMessageStore) private readonly mailboxRef?: LiveRef<IAgentCollaborationMessageStore>,
   ) {
     super();
     this.profileHost = { accessor: { get: (id) => instantiation.invokeFunction((accessor) => accessor.get(id)) } };
@@ -106,7 +117,12 @@ export class SessionBranchService extends Service implements ISessionBranchServi
   isSealed(agentId: string): boolean {
     const handle = this.lifecycle.get(agentId);
     if (handle !== undefined) {
-      return handle.accessor.get(IAgentStateService).get(branchSealedKey) === true;
+      const states = handle.accessor.get(IAgentStateService);
+      if (states.get(branchSealedKey) !== true) return false;
+      const coverage = readBranchCoverage(states);
+      if (coverage !== undefined && !isBranchWorkCovered(coverage)) return false;
+      if (hasPendingBranchPrompts(handle)) return false;
+      return true;
     }
     const agent = this.metadata.peekAgent !== undefined ? this.metadata.peekAgent(agentId) : this.metadata.snapshot().agents?.[agentId];
     return agent?.labels?.['branchSealed'] === 'true';
@@ -423,13 +439,6 @@ export class SessionBranchService extends Service implements ISessionBranchServi
       const branchHandle = await this.ensureLiveAgent(branchId);
       await branchHandle.accessor.get(IAgentBranchGuardService)?.revived();
       const branchStates = branchHandle.accessor.get(IAgentStateService);
-      const effectiveBranchMeta = branchMeta.labels?.['branchSealed'] === 'true' && branchStates.get(branchSealedKey) !== true
-        ? (await this.metadata.read()).agents?.[branchId] ?? branchMeta
-        : branchMeta;
-      const alreadySealed =
-        branchStates.get(branchSealedKey) === true ||
-        effectiveBranchMeta.labels?.['branchSealed'] === 'true' ||
-        this.sealingBranches.has(branchId);
       const turnState = branchStates.get(turnKey);
       const throughTurnId = Math.max(0, (turnState?.nextTurnId ?? 0) - 1);
       const hasTurns = (turnState?.nextTurnId ?? 0) > 0;
@@ -438,9 +447,6 @@ export class SessionBranchService extends Service implements ISessionBranchServi
       if (authoredBody === undefined) {
         if (input.fromTool === true) {
           throw new Error2(ErrorCodes.REQUEST_INVALID, 'Merge requires a non-empty summary or context.');
-        }
-        if (alreadySealed) {
-          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Branch is already sealed; provide an explicit summary note if you want to fold again.');
         }
         await branchHandle.accessor.get(IAgentPromptService).enqueue({
           message: {
@@ -463,14 +469,34 @@ export class SessionBranchService extends Service implements ISessionBranchServi
       }
 
       const done = input.done !== false;
-      if (alreadySealed && (done || input.fromTool === true)) {
-        throw new Error2(
-          ErrorCodes.REQUEST_INVALID,
-          'Branch is already sealed; only non-sealing explicit summary notes can fold again.',
-        );
+      const cleanOperationId = normalizeNonBlank(input.operationId)?.replaceAll(/[^A-Za-z0-9._:-]/g, '_');
+      const opKey = cleanOperationId !== undefined ? `${branchId}:${cleanOperationId}` : undefined;
+      const existingOp = opKey !== undefined ? this.foldOperations.get(opKey) : undefined;
+      if (existingOp?.completed !== undefined) {
+        return existingOp.completed;
       }
 
-      const foldId = `fold_${ulid()}`;
+      const initialCoverage = readBranchCoverage(branchStates);
+      const foldId = existingOp?.foldId
+        ?? (cleanOperationId !== undefined ? `fold_${branchId}_${cleanOperationId}` : `fold_${ulid()}`);
+      if (initialCoverage?.completedFoldIds?.includes(foldId)) {
+        const alreadyCompleted: FoldSessionBranchResult = {
+          branchId,
+          foldId,
+          status: 'merged',
+          done,
+          sealed: this.isSealed(branchId),
+          handedBackCount: 0,
+          throughTurnId: initialCoverage.throughTurnId ?? throughTurnId,
+        };
+        return alreadyCompleted;
+      }
+
+      const capturedWorkSeq = existingOp?.capturedWorkSeq ?? (initialCoverage?.workSeq ?? 0);
+      const opRecord: FoldOperationRecord | undefined = opKey !== undefined
+        ? (existingOp ?? this.rememberFoldOperation(opKey, { foldId, capturedWorkSeq, parentEnqueued: false }))
+        : undefined;
+
       const branchTitle = branchMeta.userLabel ?? branchMeta.displayName;
       const asks = input.asks?.map((item) => item.trim()).filter((item) => item.length > 0);
       const targetAgentId = branchMeta.parentAgentId ?? MAIN_AGENT_ID;
@@ -504,15 +530,23 @@ export class SessionBranchService extends Service implements ISessionBranchServi
         origin,
       };
 
-      let sealed = alreadySealed;
-      let handedBackCount = 0;
-      if (done) this.sealingBranches.add(branchId);
-      try {
+      if (opRecord?.parentEnqueued !== true) {
         await targetHandle.accessor.get(IAgentPromptService).enqueue({ id: foldId, message: foldMessage, waitForLaunch: false });
+        if (opRecord !== undefined) opRecord.parentEnqueued = true;
+      }
 
-        if (hasTurns) await branchHandle.accessor.get(IEventDispatcher).dispatchDurably(new BranchTurnMerged({ turnId: throughTurnId }));
+      if (hasTurns) {
+        await branchHandle.accessor.get(IEventDispatcher).dispatchDurably(
+          new BranchTurnMerged({ turnId: throughTurnId, foldId, done, workSeq: capturedWorkSeq }),
+        );
+      }
 
-        if (done) {
+      let sealed = false;
+      if (done) {
+        const postCoverage = readBranchCoverage(branchStates);
+        const covered = postCoverage === undefined || isBranchWorkCovered(postCoverage);
+        const pendingInput = await this.hasPendingBranchInput(branchId, branchHandle);
+        if (covered && !pendingInput) {
           await this.metadata.updateAgent(branchId, (current) => ({
             ...current,
             completedAt: current?.completedAt ?? Date.now(),
@@ -524,50 +558,41 @@ export class SessionBranchService extends Service implements ISessionBranchServi
           await branchHandle.accessor.get(IEventDispatcher).dispatch(new AgentBranchSealed({
             sealed: true,
             foldId,
+            workSeq: capturedWorkSeq,
           }));
           sealed = true;
-          handedBackCount = await this.handBackQueuedPrompts(branchHandle, targetHandle);
         }
-      } finally {
-        if (done) this.sealingBranches.delete(branchId);
       }
 
-      return {
+      const result: FoldSessionBranchResult = {
         branchId,
         foldId,
         status: 'merged',
         done,
         sealed,
-        handedBackCount,
+        handedBackCount: 0,
         throughTurnId,
       };
+      if (opRecord !== undefined) opRecord.completed = result;
+      return result;
     });
   }
 
-  private async handBackQueuedPrompts(
-    branchHandle: IAgentScopeHandle,
-    targetHandle: IAgentScopeHandle,
-  ): Promise<number> {
-    const branchPrompts = branchHandle.accessor.get(IAgentPromptService);
-    const snapshot = branchPrompts.list();
-    if (snapshot.pending.length === 0) return 0;
-    const targetPrompts = targetHandle.accessor.get(IAgentPromptService);
-    let count = 0;
-    for (const item of snapshot.pending) {
-      const aborted = await branchPrompts.abortQueued(item.id);
-      if (!aborted) continue;
-      if (item.message.origin?.kind !== 'user' && item.message.origin !== undefined) continue;
-      await targetPrompts.enqueue({
-        message: {
-          ...item.message,
-          id: newMessageId(),
-        },
-        appendTiming: item.appendTiming,
-        waitForLaunch: false,
-      });
-      count++;
+  private rememberFoldOperation(key: string, record: FoldOperationRecord): FoldOperationRecord {
+    if (this.foldOperations.size >= 128) {
+      const oldest = this.foldOperations.keys().next().value;
+      if (oldest !== undefined) this.foldOperations.delete(oldest);
     }
-    return count;
+    this.foldOperations.set(key, record);
+    return record;
+  }
+
+  private async hasPendingBranchInput(branchId: string, branchHandle: IAgentScopeHandle): Promise<boolean> {
+    if (hasPendingBranchPrompts(branchHandle)) return true;
+    const mailbox = this.mailboxRef?.current;
+    if (mailbox === undefined) return false;
+    const pending = await mailbox.listPendingAgents(this.session.sessionId);
+    return pending.includes(branchId);
   }
 
   async discardBranch(input: DiscardSessionBranchInput): Promise<DiscardSessionBranchResult> {
@@ -647,12 +672,30 @@ export class SessionBtwService extends Service implements ISessionBtwService {
     if (executor !== undefined) {
       this._register(
         executor.onBeforeExecuteTool((event) => {
+          if (event.toolCall.name === 'Merge') return;
           const reason = approval?.formatDenyMessage(TOOL_CALL_DISABLED_MESSAGE) ?? TOOL_CALL_DISABLED_MESSAGE;
           event.veto(denyToolExecution(reason));
         }),
       );
     }
     return child.id;
+  }
+}
+
+function readBranchCoverage(states: IAgentStateService | undefined): ReturnType<typeof branchCoverageKey.initial> extends infer T
+  ? { readonly [K in keyof T]: T[K] extends Array<infer U> | undefined ? ReadonlyArray<U> | undefined : T[K] } | undefined
+  : never {
+  if (states === undefined) return undefined;
+  if (typeof states.has === 'function' && !states.has(branchCoverageKey)) return undefined;
+  return states.get(branchCoverageKey);
+}
+
+function hasPendingBranchPrompts(branchHandle: IAgentScopeHandle): boolean {
+  try {
+    const prompts = branchHandle.accessor.get(IAgentPromptService)?.list();
+    return (prompts?.pending.length ?? 0) > 0 || prompts?.launching !== undefined;
+  } catch {
+    return false;
   }
 }
 

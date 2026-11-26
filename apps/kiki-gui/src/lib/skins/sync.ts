@@ -34,8 +34,7 @@ import {
 } from './apply';
 import {
   effectiveSkinPrefs,
-  isPackSkinsSettled,
-  isUserSkinsSettled,
+  isSkinSelectionSettled,
   resolveSkin,
   skinPreview,
   subscribeSkinPrefs,
@@ -87,11 +86,8 @@ function persistSkinBootPayload(prefs: SkinPrefs, settings: DesktopSettings): vo
   // Never persist an unsaved live preview from Settings → Appearance.
   if (skinPreview() !== null) return;
   const skin = resolveSkin(prefs.selection);
-  const unresolvedRemote =
-    skin === null
-    && ((prefs.selection.source === 'user' && !isUserSkinsSettled())
-      || (prefs.selection.source === 'pack' && !isPackSkinsSettled()));
-  // If a user or pack skin is selected and its catalog has not settled yet,
+  const unresolvedRemote = skin === null && !isSkinSelectionSettled(prefs.selection);
+  // If a user or pack skin is selected and its target entry has not settled yet,
   // keep any existing pre-paint boot payload intact instead of erasing it.
   if (unresolvedRemote) return;
 
@@ -154,12 +150,12 @@ export function applyCurrentSkin(): void {
   const unresolvedRemote =
     skin === null
     && skinPreview() === null
-    && ((prefs.selection.source === 'user' && !isUserSkinsSettled())
-      || (prefs.selection.source === 'pack' && !isPackSkinsSettled()));
+    && !isSkinSelectionSettled(prefs.selection);
 
   const preservePrePaint =
     unresolvedRemote
-    && document.documentElement.dataset['skin'] === prefs.selection.id;
+    && (document.documentElement.dataset['skin'] === prefs.selection.id
+      || document.documentElement.style.getPropertyValue('--color-paper') !== '');
 
   if (!preservePrePaint) {
     const vars = skinVariablesFor(prefs, theme);

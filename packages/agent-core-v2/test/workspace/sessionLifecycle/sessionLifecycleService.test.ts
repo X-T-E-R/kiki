@@ -1531,7 +1531,7 @@ describe('SessionLifecycleService fork cron ownership', () => {
             seed: 'verbatim',
           }),
         },
-      }));
+      }), { allowReservedGroupWrite: false });
       expect((update.mock.calls[0]?.[0] as { custom?: Record<string, unknown> } | undefined)?.custom?.['externalClient']).toBeUndefined();
     } finally {
       materialize.mockRestore();
@@ -1774,7 +1774,7 @@ describe('SessionLifecycleService active-turn fork', () => {
       expect(update).toHaveBeenCalledWith(expect.objectContaining({
         forkedFrom: 'session-1',
         lastTurnReason: 'cancelled',
-      }));
+      }), { allowReservedGroupWrite: false });
       expect(remove).toHaveBeenCalled();
     } finally {
       materialize.mockRestore();
@@ -2008,7 +2008,10 @@ describe('SessionLifecycleService active-turn fork', () => {
       });
       expect(JSON.stringify(copied)).not.toContain('live-thread-9');
       expect(remove).toHaveBeenCalledWith('/home/workspace-1/mid-fork/agents/main/tasks');
-      expect(update).toHaveBeenCalledWith(expect.objectContaining({ lastTurnReason: 'cancelled' }));
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({ lastTurnReason: 'cancelled' }),
+        { allowReservedGroupWrite: false },
+      );
     } finally {
       materialize.mockRestore();
       announce.mockRestore();
@@ -2357,7 +2360,10 @@ describe('SessionLifecycleService subagent promotion', () => {
       const copied = p.rewrite.mock.calls[0]![2] as Array<Record<string, unknown>>;
       expect(copied.some((record) => ['agent.branch_sealed', 'agent.branch_turn_merged', 'agent.tool_lock_changed', 'branch.base'].includes(String(record['type'])))).toBe(false);
       expect(copied.some((record) => record['type'] === 'executor.session.updated')).toBe(true);
-      expect(p.update).toHaveBeenCalledWith(expect.objectContaining({ title: 'BTW', titleKind: 'generated' }));
+      expect(p.update).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'BTW', titleKind: 'generated' }),
+        { allowReservedGroupWrite: false },
+      );
     } finally {
       p.materialize.mockRestore();
       p.announce.mockRestore();
@@ -2365,7 +2371,7 @@ describe('SessionLifecycleService subagent promotion', () => {
     }
   });
 
-  it('re-seals a revived descendant branch in wire when promoting its ancestor', async () => {
+  it('settles a revived unmerged descendant branch without fabricating branch_sealed', async () => {
     const p = promotionFixture({
       main: { type: 'main' },
       'agent-3': agentMeta,
@@ -2399,7 +2405,15 @@ describe('SessionLifecycleService subagent promotion', () => {
       );
       const branchWritten = writtenByScope.get('workspace-1/promoted/agents/agent-branch')!;
       const sealRecords = branchWritten.filter((record) => record['type'] === 'agent.branch_sealed');
-      expect(sealRecords.at(-1)).toMatchObject({ type: 'agent.branch_sealed', sealed: true });
+      expect(sealRecords.at(-1)).toMatchObject({ type: 'agent.branch_sealed', sealed: false });
+      const registered = new Map(
+        p.registerAgent.mock.calls.map((call) => {
+          const [id, meta] = call as unknown as [string, AgentMeta];
+          return [id, meta] as const;
+        }),
+      );
+      expect(registered.get('agent-branch')?.labels?.['branchSealed']).toBeUndefined();
+      expect(registered.get('agent-branch')?.status).toBe('cancelled');
     } finally {
       p.materialize.mockRestore();
       p.announce.mockRestore();
@@ -2449,7 +2463,7 @@ describe('SessionLifecycleService subagent promotion', () => {
         forkedFrom: 'session-1',
         lastTurnReason: 'completed',
         promotedFrom: expect.objectContaining({ sessionId: 'session-1', agentId: 'agent-3', agentName: 'Researcher', profile: 'coder' }),
-      }));
+      }), { allowReservedGroupWrite: false });
       expect(p.announce).toHaveBeenCalledOnce();
     } finally {
       p.materialize.mockRestore();
@@ -2686,7 +2700,7 @@ describe('SessionLifecycleService subagent promotion', () => {
           byModel: { 'model-b': { inputOther: 10, output: 5, inputCacheRead: 0, inputCacheCreation: 0 } },
           wireComplete: true,
         },
-      }));
+      }), { allowReservedGroupWrite: false });
     } finally {
       p.materialize.mockRestore();
       p.announce.mockRestore();

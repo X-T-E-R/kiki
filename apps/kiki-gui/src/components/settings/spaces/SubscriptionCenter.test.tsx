@@ -900,4 +900,60 @@ describe('1,000-item preindexed client reducer benchmark', () => {
     );
     expect(p95).toBeLessThan(1.0);
   });
+
+  it('surfaces executable-code badges on scopes and plugin items in SubscribeModal preview', async () => {
+    const base = makeRichManifest({ bindingSlots: [] });
+    apiMocks.previewSubscribe.mockResolvedValueOnce({
+      ...base,
+      items: [
+        ...base.items,
+        {
+          id: 'plugins:plugins/custom-runner',
+          scope: 'extensions_search',
+          domain: 'plugins',
+          label: 'custom-runner',
+          path: 'plugins/custom-runner/index.js',
+          memberUnitIds: ['plugins:plugins/custom-runner'],
+          dependsOnIds: [],
+          softDependsOnIds: [],
+          referencedByIds: [],
+          dependencyEdges: [],
+          coupledCredentialIds: [],
+          liveSatisfiedIds: [],
+          blockedDependencyIds: [],
+          status: 'will_write',
+          selectable: true,
+          selected: true,
+        },
+      ],
+    });
+
+    await renderNode(
+      <SubscribeModal
+        client={fakeClient}
+        spaces={SPACES}
+        mode={{
+          kind: 'new',
+          initialIntent: {
+            id: 'dl-plugins',
+            url: 'https://sub.lab.example.test/pack.tgz',
+            name: 'Plugin Pack',
+            mode: 'auto',
+            origin: 'native',
+          },
+        }}
+        onClose={() => {}}
+        onDone={() => {}}
+      />,
+    );
+    await click('[data-portable-fetch-preview]');
+
+    const scopeBadge = document.querySelector('[data-portable-executable-scope-badge="extensions_search"]');
+    expect(scopeBadge?.textContent).toBeTruthy();
+    expect(document.querySelector('[data-portable-executable-scope-badge="models_providers"]')).toBeNull();
+
+    const itemBadge = document.querySelector('[data-portable-executable-plugin-tag="plugins:plugins/custom-runner"]');
+    expect(itemBadge?.textContent).toBe(scopeBadge?.textContent);
+    expect(document.querySelector('[data-portable-executable-plugin-tag="mcp:zotero"]')).toBeNull();
+  });
 });

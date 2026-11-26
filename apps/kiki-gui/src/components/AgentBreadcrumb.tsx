@@ -83,11 +83,21 @@ function isBranchNode(node: AgentTreeNode): boolean {
   return node.isBranch === true || node.branchSealed === true;
 }
 
+function isBranchQuietlyMerged(node: Pick<AgentTreeNode, 'branchSealed' | 'status' | 'busy'>): boolean {
+  if (node.branchSealed !== true) return false;
+  if (node.busy || node.status === 'running' || node.status === 'background' || node.status === 'suspended') {
+    return false;
+  }
+  if (node.status === 'failed' || node.status === 'cancelled') return false;
+  return true;
+}
+
 function branchStateI18nKey(node: AgentTreeNode): I18nKey {
-  if (node.branchSealed === true) return 'rail.branches.status.merged';
   if (node.status === 'suspended') return 'rail.branches.status.waiting';
   if (node.status === 'running' || node.status === 'background' || node.busy) return 'rail.branches.status.running';
   if (node.status === 'failed') return 'rail.branches.status.failed';
+  if (node.status === 'cancelled') return 'rail.branches.status.open';
+  if (node.branchSealed === true) return 'rail.branches.status.merged';
   return 'rail.branches.status.open';
 }
 
@@ -119,12 +129,13 @@ export const AgentBreadcrumb = memo(function AgentBreadcrumb({
         {ancestors.map((crumb, index) => {
           const last = !omitLeaf && index === ancestors.length - 1;
           const branch = isBranchNode(crumb);
+          const mergedCrumb = isBranchQuietlyMerged(crumb);
           return (
             <li key={crumb.agentId} className="flex min-w-0 items-center gap-1">
               <span aria-hidden className="shrink-0">/</span>
               {last ? (
                 <span
-                  data-branch-crumb={branch ? (crumb.branchSealed === true ? 'merged' : 'open') : undefined}
+                  data-branch-crumb={branch ? (mergedCrumb ? 'merged' : 'open') : undefined}
                   className="inline-flex min-w-0 items-center gap-1 truncate font-normal text-ink"
                   aria-current="page"
                 >
@@ -132,7 +143,7 @@ export const AgentBreadcrumb = memo(function AgentBreadcrumb({
                     <Icon
                       name="branch"
                       size={12}
-                      className={`shrink-0 ${crumb.branchSealed === true ? 'text-ink-faint' : 'text-accent'}`}
+                      className={`shrink-0 ${mergedCrumb ? 'text-ink-faint' : 'text-accent'}`}
                     />
                   ) : null}
                   <span className="truncate">{crumb.label}</span>
@@ -140,7 +151,7 @@ export const AgentBreadcrumb = memo(function AgentBreadcrumb({
               ) : (
                 <button
                   type="button"
-                  data-branch-crumb={branch ? (crumb.branchSealed === true ? 'merged' : 'open') : undefined}
+                  data-branch-crumb={branch ? (mergedCrumb ? 'merged' : 'open') : undefined}
                   onClick={() => { onOpenAgent(crumb.agentId); }}
                   className="inline-flex min-w-0 max-w-[10rem] items-center gap-1 truncate rounded px-0.5 text-ink-faint transition-colors hover:text-ink"
                 >
@@ -148,7 +159,7 @@ export const AgentBreadcrumb = memo(function AgentBreadcrumb({
                     <Icon
                       name="branch"
                       size={12}
-                      className={`shrink-0 ${crumb.branchSealed === true ? 'text-ink-faint' : 'text-accent'}`}
+                      className={`shrink-0 ${mergedCrumb ? 'text-ink-faint' : 'text-accent'}`}
                     />
                   ) : null}
                   <span className="truncate">{crumb.label}</span>
@@ -819,7 +830,7 @@ export const AgentFamilyPopover = memo(function AgentFamilyPopover({
 
   const renderNodeRow = (node: AgentTreeNode, section: 'parent' | 'child' | 'sibling') => {
     const branch = isBranchNode(node);
-    const sealed = node.branchSealed === true;
+    const sealed = isBranchQuietlyMerged(node);
     return (
       <button
         type="button"

@@ -757,6 +757,32 @@ function gatherRows(
 }
 
 /**
+ * True for internal harness plumbing frames (`system-reminder` other than
+ * image-compression notices, `system` `injection`, `hook_result`, and
+ * `model_steering` rows) that must always fold into process history rather than
+ * sitting exposed on the user-facing timeline or held open by scroll anchoring.
+ */
+export function isInternalHarnessBoilerplate(node: {
+  readonly kind: string;
+  readonly variant?: string;
+  readonly originVariant?: string;
+  readonly source?: string;
+}): boolean {
+  if (node.kind === 'system-reminder') {
+    return node.variant !== 'image_compression';
+  }
+  if (node.kind === 'system') {
+    return (
+      node.variant === 'injection' ||
+      node.variant === 'hook_result' ||
+      node.originVariant === 'model_steering' ||
+      node.source === 'model_steering'
+    );
+  }
+  return false;
+}
+
+/**
  * Fold settled process: each run of ≥2 consecutive process rows of one turn
  * (tools, including ordinary memory tools, read runs, shell, thinking,
  * settled subagents, reminders, settled decisions, engine notes), or a single
@@ -800,9 +826,6 @@ export function foldHistory(
     node.kind === 'tool' ||
     node.kind === 'tool-group' ||
     node.kind === 'subagent';
-  const isInternalHarnessBoilerplate = (node: Row): boolean =>
-    (node.kind === 'system-reminder' && node.variant !== 'image_compression') ||
-    (node.kind === 'system' && (node.originVariant === 'model_steering' || node.source === 'model_steering'));
   const out: DisplayNode[] = [];
   let run: Row[] = [];
   let runTurn: string | undefined;
@@ -829,12 +852,13 @@ export function foldHistory(
       continue;
     }
     const turn = normTurn(foldTurnId(node));
+    const boilerplate = isInternalHarnessBoilerplate(node);
     const heldByNewest =
       node.id === newest &&
-      !isInternalHarnessBoilerplate(node) &&
+      !boilerplate &&
       !(foldSingleProcess && node.kind === 'thinking' && !node.streaming);
-    const held = turn === live && (heldByNewest || keepOpen?.has(node.id) === true);
-    const eligible = turn !== undefined && !held && foldable(node, forest, latestCardIdByAgent, noticePlacementContext);
+    const held = turn === live && !boilerplate && (heldByNewest || keepOpen?.has(node.id) === true);
+    const eligible = (turn !== undefined || boilerplate) && !held && foldable(node, forest, latestCardIdByAgent, noticePlacementContext);
     if (!eligible || (run.length > 0 && turn !== runTurn)) flush();
     if (eligible) {
       run.push(node);

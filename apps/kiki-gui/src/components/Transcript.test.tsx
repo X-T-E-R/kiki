@@ -11241,6 +11241,8 @@ describe('Kiki hook injections', () => {
 
   it('says who and when on the row, and reveals the labelled parts on expand', async () => {
     const container = await renderTranscript(hookBlocks('kiki:claude:SessionStart', hookText));
+    expect(container.querySelector('[data-kiki-hook="claude:SessionStart"]')).toBeNull();
+    await act(async () => { click(container.querySelector('[data-history-fold] [data-activity-toggle]')!); });
     const row = container.querySelector('[data-kiki-hook="claude:SessionStart"]')!;
     expect(row.getAttribute('data-hook-outcome')).toBe('injected');
     expect(row.textContent).toContain('Kiki added context for Claude Code');
@@ -11258,6 +11260,8 @@ describe('Kiki hook injections', () => {
   it('shows PreCompact as prepared, never as delivered', async () => {
     const container = await renderTranscript(hookBlocks('kiki:codex:PreCompact',
       `[Handoff prepared; not injected by this hook]\n[Kiki handoff]\nPreserve the current goal.`));
+    expect(container.querySelector('[data-kiki-hook="codex:PreCompact"]')).toBeNull();
+    await act(async () => { click(container.querySelector('[data-history-fold] [data-activity-toggle]')!); });
     const row = container.querySelector('[data-kiki-hook="codex:PreCompact"]')!;
     expect(row.getAttribute('data-hook-outcome')).toBe('prepared');
     expect(row.querySelector('[data-hook-prepared]')?.textContent).toBe('Prepared, not injected');
@@ -11270,6 +11274,8 @@ describe('Kiki hook injections', () => {
 
   it('leaves a non-Kiki hook result on the generic row', async () => {
     const container = await renderTranscript(hookBlocks('UserPromptSubmit', 'lint passed'));
+    expect(container.querySelector('[data-system="hook_result"]')).toBeNull();
+    await act(async () => { click(container.querySelector('[data-history-fold] [data-activity-toggle]')!); });
     expect(container.querySelector('[data-kiki-hook]')).toBeNull();
     expect(container.querySelector('[data-system="hook_result"]')?.textContent).toContain('Hook result');
   });
@@ -11285,6 +11291,8 @@ describe('injected context reading [m_20261002_4e0a323584]', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
     };
     const container = await renderTranscript([injectedBlock]);
+    expect(container.querySelector('[data-system="injection"]')).toBeNull();
+    await act(async () => { click(container.querySelector('[data-history-fold] [data-activity-toggle]')!); });
     const row = container.querySelector('[data-system="injection"]')!;
     expect(row).not.toBeNull();
     expect(row.textContent).toContain('System reminder');
@@ -12495,6 +12503,8 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
         onRecoverInterruption={vi.fn()}
       />,
     );
+    expect(container.querySelector('[data-reminder-variant="model_steering"]')).toBeNull();
+    await act(async () => { click(container.querySelector('[data-history-fold] [data-activity-toggle]')!); });
     const steerRow = container.querySelector('[data-reminder-variant="model_steering"]');
     expect(steerRow).not.toBeNull();
     expect(steerRow?.textContent).toContain('Model Steer');

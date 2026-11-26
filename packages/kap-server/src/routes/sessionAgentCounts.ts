@@ -9,6 +9,7 @@ export function sessionAgentCounts(
   for (const [id, meta] of Object.entries(agents ?? {})) {
     if (id === 'main') continue;
     if (meta.status !== undefined) statuses.set(id, meta.status);
+    else if (meta.branchTurn?.outcome === 'failed' || meta.branchTurn?.outcome === 'cancelled') statuses.set(id, meta.branchTurn.outcome);
     else if (meta.labels?.['branchSealed'] === 'true') statuses.set(id, 'completed');
     else if (meta.labels?.['branch'] === 'true') statuses.set(id, 'idle');
     else statuses.set(id, undefined);

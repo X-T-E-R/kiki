@@ -2,6 +2,7 @@ import { setImmediate } from 'node:timers/promises';
 import { produce } from 'immer';
 import { ContextAppendLoopEvent, ContextAppendMessage } from '#/agent/contextMemory/contextEvents';
 import { TurnEnded } from '#/agent/loop/turnOps';
+import { PromptSteered } from '#/agent/prompt/promptService';
 import { event2FromRecord } from '#/app/event/event2';
 import type { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import type { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -24,6 +25,7 @@ const TRIGGER_SUBSTRINGS = [
 const ACTIVE_ONLY_EVENT_TYPES = new Set<string>([
   ContextAppendLoopEvent.type,
   ContextAppendMessage.type,
+  PromptSteered.type,
   TurnEnded.type,
 ]);
 

@@ -77,6 +77,7 @@ import {
   hasConfirmedSubsequentSuccess,
   hasSubsequentCompactionResolution,
   hasSubsequentModelSwitchResolution,
+  isInternalHarnessBoilerplate,
   isMediaTool,
   latestFinalAssistantBlockId,
   latestUnresolvedCompactionId,
@@ -8256,7 +8257,15 @@ export const Transcript = memo(function Transcript({
     const keys = new Set<string>();
     if (liveTurnId === undefined) return keys;
     for (const node of groupedNodes) {
-      if (node.kind === 'history-fold' || node.kind === 'user' || node.kind === 'assistant' || node.kind === 'turn-gap') continue;
+      if (
+        node.kind === 'history-fold' ||
+        node.kind === 'user' ||
+        node.kind === 'assistant' ||
+        node.kind === 'turn-gap' ||
+        isInternalHarnessBoilerplate(node)
+      ) {
+        continue;
+      }
       if (normalizeTurnId(displayNodeTurnId(node) ?? '') === liveTurnId) keys.add(node.id);
     }
     return keys;

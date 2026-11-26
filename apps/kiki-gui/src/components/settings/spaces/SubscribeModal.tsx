@@ -275,9 +275,14 @@ export function SubscribeModal({
     setSubmitError(null);
     setPreviewError(null);
     setPassphrase('');
-    // Expand the first nonempty scope (or any scope with blockers/new items) by default.
+    // Expand the first nonempty scope plus any scope containing executable plugins by default.
+    const initialExpanded = new Set<PortableSubscriptionScope>();
     const firstNonEmpty = loaded.items.find((item) => item.selectable)?.scope;
-    setExpandedScopes(firstNonEmpty !== undefined ? new Set([firstNonEmpty]) : new Set());
+    if (firstNonEmpty !== undefined) initialExpanded.add(firstNonEmpty);
+    for (const item of loaded.items) {
+      if (item.domain === 'plugins') initialExpanded.add(item.scope);
+    }
+    setExpandedScopes(initialExpanded);
     setExpandedDiffs(new Set());
     setStage('preview');
   }, [mode.kind, initialIntent?.mode, labelDraft]);
@@ -1153,6 +1158,7 @@ export function SubscribeModal({
                       // Hide zero-item scopes per Frame Audit §1.
                       if (summary.totalCount === 0) return null;
                       const scopeItems = manifestIndex.itemsByScope.get(summary.scope) ?? [];
+                      const hasExecutablePlugins = scopeItems.some((item) => item.domain === 'plugins');
                       const expanded = expandedScopes.has(summary.scope);
                       const scopeTitle = t(PORTABLE_SUBSCRIPTION_SCOPE_LABEL_KEY[summary.scope]);
                       const checkboxId = `portable-scope-${summary.scope}`;
@@ -1184,6 +1190,14 @@ export function SubscribeModal({
                               <span className="inline-flex min-w-0 items-center gap-1.5 text-[13px] leading-5 font-normal text-ink">
                                 <DisclosureChevron open={expanded} className="shrink-0 text-ink-faint" />
                                 <span className="truncate">{scopeTitle}</span>
+                                {hasExecutablePlugins ? (
+                                  <span
+                                    data-portable-executable-scope-badge={summary.scope}
+                                    className="shrink-0 rounded-sm bg-attention/12 px-1.5 py-0.5 text-[11px] leading-3.5 font-medium text-amber-ink"
+                                  >
+                                    {t('st.portable.center.executablePluginTag')}
+                                  </span>
+                                ) : null}
                               </span>
                               <span className="shrink-0 text-[12px] leading-4 tabular-nums text-ink-soft" data-portable-scope-count={summary.scope}>
                                 {t('st.portable.center.scopeCount', {
@@ -1242,6 +1256,14 @@ export function SubscribeModal({
                                               {item.label}
                                             </span>
                                             <span className="truncate font-mono text-[12px] leading-4 text-ink-faint">{item.path}</span>
+                                            {item.domain === 'plugins' ? (
+                                              <span
+                                                data-portable-executable-plugin-tag={item.id}
+                                                className="shrink-0 rounded-sm bg-attention/12 px-1.5 py-0.5 text-[11px] leading-3.5 font-medium text-amber-ink"
+                                              >
+                                                {t('st.portable.center.executablePluginTag')}
+                                              </span>
+                                            ) : null}
                                             {modelReqPrompt ? (
                                               <span className="text-[12px] leading-4 font-normal text-selected-ink" data-portable-model-required-tag={item.id}>
                                                 {t('st.portable.center.modelRequiredTag')}

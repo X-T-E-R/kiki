@@ -18,11 +18,38 @@ function finiteTimestamp(value: number | undefined): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function isSettledUserPrompt(block: UserBlock): boolean {
+function isInFlightAgentBlock(block: Block): boolean {
+  switch (block.kind) {
+    case 'assistant':
+    case 'thinking':
+      return block.streaming === true;
+    case 'tool':
+      return block.status === 'running';
+    case 'shell':
+      return !block.done;
+    case 'subagent':
+      return block.status === 'running' || block.status === 'suspended';
+    default:
+      return false;
+  }
+}
+
+function isSettledUserPrompt(block: UserBlock, trailingBlocks: readonly Block[]): boolean {
   if (block.promptOutcome !== undefined) return true;
-  return block.promptStatus !== undefined
-    && block.promptStatus !== 'running'
-    && block.promptStatus !== 'queued';
+  if (block.promptStatus !== undefined) {
+    return block.promptStatus !== 'running' && block.promptStatus !== 'queued';
+  }
+  let sawSettledAgentReply = false;
+  for (const next of trailingBlocks) {
+    if (isInFlightAgentBlock(next)) return false;
+    if (block.turnId !== undefined && 'turnId' in next && next.turnId !== undefined && next.turnId !== block.turnId) {
+      return true;
+    }
+    if (isAgentBlock(next)) {
+      sawSettledAgentReply = true;
+    }
+  }
+  return sawSettledAgentReply;
 }
 
 /**
@@ -53,6 +80,8 @@ export function blockActivityTimestamp(block: Block): number | undefined {
       return finiteTimestamp(block.startedAt);
     case 'subagent':
       return parseIsoMs(block.endedAt) ?? parseIsoMs(block.startedAt);
+    case 'system':
+      return block.variant === 'task' ? parseIsoMs(block.createdAt) : undefined;
     default:
       return undefined;
   }
@@ -63,7 +92,8 @@ function isAgentBlock(block: Block): boolean {
     || block.kind === 'thinking'
     || block.kind === 'tool'
     || block.kind === 'shell'
-    || block.kind === 'subagent';
+    || block.kind === 'subagent'
+    || (block.kind === 'system' && block.variant === 'task');
 }
 
 export interface CurrentTurnScope {
@@ -111,7 +141,7 @@ export function currentTurnScope(
       if (block.steerStatus !== undefined) continue;
       // A settled prior user prompt means the new turn's prompt has not landed
       // in `blocks` yet — never scan back into that completed turn.
-      if (isSettledUserPrompt(block)) {
+      if (isSettledUserPrompt(block, blocks.slice(index + 1))) {
         return { userBlock: undefined, agentBlocks: [] };
       }
       boundaryIndex = index;
@@ -154,23 +184,43 @@ export function currentTurnScope(
  * stays put for the user's own rows (a queued prompt, an approval answer).
  */
 export function agentOutputSignature(blocks: readonly Block[]): string | undefined {
-  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+  const parts: string[] = [];
+  for (let index = 0; index < blocks.length; index += 1) {
     const block = blocks[index]!;
     switch (block.kind) {
       case 'assistant':
       case 'thinking':
-        return `${block.id}:${block.text.length}:${block.streaming ? 1 : 0}`;
-      case 'tool':
-        return `${block.id}:${block.status}:${block.progressText ?? ''}`;
+        parts.push(`${block.id}:${block.text.length}:${block.streaming ? 1 : 0}`);
+        break;
+      case 'tool': {
+        const outLen = typeof block.output === 'string'
+          ? block.output.length
+          : Array.isArray(block.output)
+            ? block.output.length
+            : 0;
+        parts.push(
+          `${block.id}:${block.status}:${block.argsText.length}:${outLen}:${block.progressText ?? ''}`,
+        );
+        break;
+      }
       case 'shell':
-        return `${block.id}:${block.output.length}:${block.done ? 1 : 0}`;
+        parts.push(`${block.id}:${block.output.length}:${block.done ? 1 : 0}`);
+        break;
       case 'subagent':
-        return `${block.id}:${block.status}:${block.toolCallCount}`;
+        parts.push(
+          `${block.id}:${block.status}:${block.toolCallCount}:${block.endedAt ?? ''}:${(block.summary ?? '').length}`,
+        );
+        break;
+      case 'system':
+        if (block.variant === 'task') {
+          parts.push(`${block.id}:${block.text.length}`);
+        }
+        break;
       default:
         break;
     }
   }
-  return undefined;
+  return parts.length > 0 ? parts.join('|') : undefined;
 }
 
 /** Epoch ms of the newest agent output within the active turn whose timestamp is known. */

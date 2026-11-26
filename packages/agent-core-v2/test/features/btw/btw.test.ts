@@ -49,7 +49,6 @@ import {
   branchToolLockKey,
 } from '#/features/btw/branchOps';
 import {
-  BRANCH_SEALED_MESSAGE,
   ISessionBranchService,
   ISessionBtwService,
   SIDE_QUESTION_SYSTEM_REMINDER,
@@ -429,7 +428,7 @@ describe('SessionBranchService completion metadata', () => {
     }
   });
 
-  it('serializes concurrent foldBranch calls on the same branch so only one seals and emits branch_fold', async () => {
+  it('deduplicates retries with the same operationId and allows distinct follow-up checkpoints', async () => {
     const harness = createBranchFoldHarness(ix, { parentAgentId: 'main' });
     let releaseFirstMetadataRead: () => void = () => {};
     const firstReadGate = new Promise<void>((resolveGate) => {
@@ -450,25 +449,32 @@ describe('SessionBranchService completion metadata', () => {
       summary: 'First merge',
       done: true,
       fromTool: true,
+      operationId: 'call_merge_1',
     });
-    const second = harness.service.foldBranch({
+    const duplicate = harness.service.foldBranch({
       branchId: 'branch-1',
-      summary: 'Concurrent duplicate merge',
+      summary: 'First merge',
       done: true,
       fromTool: true,
+      operationId: 'call_merge_1',
+    });
+    const amendment = harness.service.foldBranch({
+      branchId: 'branch-1',
+      summary: 'Amended checkpoint after extra check',
+      done: true,
+      fromTool: true,
+      operationId: 'call_merge_2',
     });
 
     await Promise.resolve();
     releaseFirstMetadataRead();
 
-    const [firstOutcome, secondOutcome] = await Promise.allSettled([first, second]);
-    expect(firstOutcome.status).toBe('fulfilled');
-    expect(secondOutcome.status).toBe('rejected');
-    if (secondOutcome.status === 'rejected') {
-      expect(secondOutcome.reason).toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
-    }
-    expect(harness.prompt).toHaveBeenCalledTimes(1);
-    expect(harness.updateAgent).toHaveBeenCalledTimes(1);
+    const [firstOut, dupOut, amendOut] = await Promise.all([first, duplicate, amendment]);
+    expect(firstOut).toMatchObject({ status: 'merged', done: true, sealed: true });
+    expect(dupOut.foldId).toBe(firstOut.foldId);
+    expect(amendOut).toMatchObject({ status: 'merged', done: true, sealed: true });
+    expect(amendOut.foldId).not.toBe(firstOut.foldId);
+    expect(harness.prompt).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -721,6 +727,16 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
       await first.dispatcher.dispatch(new AgentBranchSealed({ sealed: true, foldId: 'fold_1' }));
       await first.dispatcher.flush();
 
+      const sealedBash = await executorEvents.fireBeforeExecute({
+        turnId: 0,
+        signal: new AbortController().signal,
+        toolCall: bashCall,
+        toolCalls: [bashCall],
+        args: {},
+        execution: { approvalRule: 'Bash', execute: async () => ({ output: 'ok' }) },
+      });
+      expect(sealedBash).toBeUndefined();
+
       const sealedMerge = await executorEvents.fireBeforeExecute({
         turnId: 0,
         signal: new AbortController().signal,
@@ -729,7 +745,7 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
         args: {},
         execution: { approvalRule: 'Merge', execute: async () => ({ output: 'ok' }) },
       });
-      expect(sealedMerge?.veto?.output).toBe(BRANCH_SEALED_MESSAGE);
+      expect(sealedMerge).toBeUndefined();
 
       const replayed = buildWireHost();
       const replayedExecutorEvents = stubToolExecutorEvents();
@@ -1143,13 +1159,15 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
         branch_id: 'branch-side-1',
         status: 'merged',
         done: true,
-        sealed: true,
-        handed_back_prompts: 1,
+        sealed: false,
+        handed_back_prompts: 0,
         through_turn: 2,
       });
+      expect(branchPendingPrompts).toHaveLength(1);
+      expect(branchPendingPrompts[0]?.id).toBe('queued-1');
 
       expect(dispatchedBranchEvents.filter((event) => event instanceof BranchTurnMerged)).toEqual([
-        expect.objectContaining({ turnId: 2 }),
+        expect.objectContaining({ turnId: 2, done: true }),
       ]);
       const queuedFold = mainPromptEnqueued[0] as { id: string; message: ContextMessage };
       expect(queuedFold.id).toBe(parsedReceipt.fold_id);
@@ -1173,6 +1191,22 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
       expect(textBody).toContain('Branch history: HistoryList({ agent_id: "branch-side-1" }) · HistoryRead({ agent_id: "branch-side-1", turn: 2 })');
       expect(textBody).not.toContain('Edited files:');
       expect(textBody).not.toContain('Commands run:');
+      expect(mainPromptEnqueued).toHaveLength(1);
+
+      branchPendingPrompts.splice(0, branchPendingPrompts.length);
+      const secondMergeOut = await mergeExec.execute({
+        signal: new AbortController().signal,
+        turnId: 2,
+        toolCallId: 'merge-call-2',
+      });
+      expect(JSON.parse(secondMergeOut.output as string)).toMatchObject({
+        branch_id: 'branch-side-1',
+        status: 'merged',
+        done: true,
+        sealed: true,
+        handed_back_prompts: 0,
+        through_turn: 2,
+      });
       expect(mainPromptEnqueued).toHaveLength(2);
 
       const undoCutAfterMerge = computeUndoCut(mainMessages, 1);

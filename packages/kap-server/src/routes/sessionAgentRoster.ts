@@ -65,7 +65,7 @@ export function sessionAgentRoster(
       : profile ? 'profile' : row?.description && row.description !== id ? 'task' : 'unreported';
     const isBranchLabel = labels?.['branch'] === 'true';
     const isBranch = isBranchLabel ? true : row?.is_branch;
-    const branchSealed = isBranchLabel
+    const rawBranchSealed = isBranchLabel
       ? labels['branchSealed'] === 'true'
       : row?.branch_sealed;
     const outcomeAt = registration?.completedAt;
@@ -83,16 +83,26 @@ export function sessionAgentRoster(
     const activityTerminalAt = activityOutcome === undefined ? undefined : activity?.lastTurn?.at;
     const activityNewerThanOutcome = activityOutcome !== undefined &&
       (outcomeAt === undefined || (activityTerminalAt !== undefined && activityTerminalAt > outcomeAt));
-    const terminalOutcome = activityNewerThanOutcome
-      ? activityOutcome
-      : outcome ?? trackedOutcome ?? activityOutcome ?? (branchSealed === true ? 'completed' : undefined);
     const current = activity?.lifecycle === 'ready';
     const phaseOpen = row !== undefined && (row.subagent_phase === 'working' || row.subagent_phase === 'queued' || row.subagent_phase === 'suspended');
     const taskOpen = row?.status === 'running';
-    const trackedActive = row !== undefined && row.live === true && row.refreshing !== true && terminalOutcome === undefined && (phaseOpen || taskOpen);
     const loopOpen = activity !== undefined && (activity.turn !== undefined || activity.background.length > 0);
-    const status = terminalOutcome ?? row?.status ?? 'running';
     const persistenceFailure = current ? activity.persistenceFailure : undefined;
+    const explicitOutcome = activityNewerThanOutcome
+      ? activityOutcome
+      : outcome ?? trackedOutcome ?? activityOutcome;
+    const trackedActive = row !== undefined && row.live === true && row.refreshing !== true && explicitOutcome === undefined && (phaseOpen || taskOpen);
+    const branchOpenOrFailed =
+      persistenceFailure !== undefined ||
+      (current && (activity.turn !== undefined || loopOpen)) ||
+      trackedActive ||
+      explicitOutcome === 'failed' ||
+      explicitOutcome === 'cancelled';
+    const branchSealed = isBranch === true
+      ? rawBranchSealed === true && !branchOpenOrFailed
+      : rawBranchSealed;
+    const terminalOutcome = explicitOutcome ?? (branchSealed === true ? 'completed' : undefined);
+    const status = terminalOutcome ?? row?.status ?? 'running';
     const activityStatus: SnapshotSubagent['activity_status'] = persistenceFailure !== undefined ? 'failed'
       : current && activity?.turn !== undefined
       ? activity.turn.pendingApprovals.length > 0 ? 'suspended' : 'running'

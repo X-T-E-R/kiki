@@ -5732,7 +5732,8 @@ describe('Composer working timer', () => {
       expect(latest.lastResponseAt).toBe(twoMinAgo);
 
       // 2) Switching scopeKey to another busy session whose prior turn was 6h ago
-      // and whose new turn has turnStartedAt=undefined must NOT leak 6h ago or Date.now().
+      // (with real settled `promptStatus: undefined`) and whose new turn has
+      // turnStartedAt=undefined must NOT leak 6h ago or Date.now().
       await act(async () => {
         localRoot.render(
           <Harness
@@ -5740,7 +5741,7 @@ describe('Composer working timer', () => {
             scopeKey="session-new-turn"
             loaded
             blocks={[
-              { id: 'u-old', kind: 'user', text: 'old prompt', createdAt: new Date(sixHoursAgo).toISOString(), promptStatus: 'completed' },
+              { id: 'u-old', kind: 'user', text: 'old prompt', createdAt: new Date(sixHoursAgo).toISOString(), promptStatus: undefined },
               { id: 'a-old', kind: 'assistant', text: 'old reply', createdAt: new Date(sixHoursAgo + 10_000).toISOString(), streaming: false },
               { id: 'u-cur', kind: 'user', text: 'new prompt', createdAt: new Date(now - 3_000).toISOString(), promptStatus: 'running' },
             ] as never}
@@ -5751,7 +5752,7 @@ describe('Composer working timer', () => {
       expect(latest.startedAt).toBe(now - 3_000);
       expect(latest.lastResponseAt).toBeUndefined();
 
-      // 3) Settled prior turn with no new user block yet must NOT leak 6h ago either.
+      // 3) Settled prior turn (`promptStatus: undefined`) with no new user block yet must NOT leak 6h ago either.
       await act(async () => {
         localRoot.render(
           <Harness
@@ -5759,7 +5760,7 @@ describe('Composer working timer', () => {
             scopeKey="session-settled-prior"
             loaded
             blocks={[
-              { id: 'u-old', kind: 'user', text: 'old prompt', createdAt: new Date(sixHoursAgo).toISOString(), promptStatus: 'completed' },
+              { id: 'u-old', kind: 'user', text: 'old prompt', createdAt: new Date(sixHoursAgo).toISOString(), promptStatus: undefined },
               { id: 'a-old', kind: 'assistant', text: 'old reply', createdAt: new Date(sixHoursAgo + 10_000).toISOString(), streaming: false },
             ] as never}
             turnStartedAt={undefined}
@@ -5769,7 +5770,7 @@ describe('Composer working timer', () => {
       expect(latest.startedAt).toBe(now);
       expect(latest.lastResponseAt).toBeUndefined();
 
-      // 4) Live output arriving during this turn advances lastResponseAt cleanly.
+      // 4) Live output arriving during this turn (including parallel subagent progress) advances lastResponseAt cleanly.
       await act(async () => { vi.advanceTimersByTime(4_000); });
       await act(async () => {
         localRoot.render(
@@ -5778,9 +5779,10 @@ describe('Composer working timer', () => {
             scopeKey="session-settled-prior"
             loaded
             blocks={[
-              { id: 'u-old', kind: 'user', text: 'old prompt', createdAt: new Date(sixHoursAgo).toISOString(), promptStatus: 'completed' },
+              { id: 'u-old', kind: 'user', text: 'old prompt', createdAt: new Date(sixHoursAgo).toISOString(), promptStatus: undefined },
               { id: 'a-old', kind: 'assistant', text: 'old reply', createdAt: new Date(sixHoursAgo + 10_000).toISOString(), streaming: false },
               { id: 'u-cur', kind: 'user', text: 'new prompt', createdAt: new Date(now).toISOString(), promptStatus: 'running' },
+              { id: 's-bg', kind: 'subagent', subagentId: 'sub-1', name: 'worker', status: 'running', toolCallCount: 1, startedAt: new Date(now + 1_000).toISOString() },
               { id: 'a-cur', kind: 'assistant', text: 'hello', createdAt: new Date(now + 4_000).toISOString(), streaming: true },
             ] as never}
             turnStartedAt={now}
@@ -5788,6 +5790,26 @@ describe('Composer working timer', () => {
         );
       });
       expect(latest.lastResponseAt).toBe(now + 4_000);
+
+      await act(async () => { vi.advanceTimersByTime(5_000); });
+      await act(async () => {
+        localRoot.render(
+          <Harness
+            busy
+            scopeKey="session-settled-prior"
+            loaded
+            blocks={[
+              { id: 'u-old', kind: 'user', text: 'old prompt', createdAt: new Date(sixHoursAgo).toISOString(), promptStatus: undefined },
+              { id: 'a-old', kind: 'assistant', text: 'old reply', createdAt: new Date(sixHoursAgo + 10_000).toISOString(), streaming: false },
+              { id: 'u-cur', kind: 'user', text: 'new prompt', createdAt: new Date(now).toISOString(), promptStatus: 'running' },
+              { id: 's-bg', kind: 'subagent', subagentId: 'sub-1', name: 'worker', status: 'running', toolCallCount: 2, startedAt: new Date(now + 1_000).toISOString() },
+              { id: 'a-cur', kind: 'assistant', text: 'hello', createdAt: new Date(now + 4_000).toISOString(), streaming: true },
+            ] as never}
+            turnStartedAt={now}
+          />,
+        );
+      });
+      expect(latest.lastResponseAt).toBe(now + 9_000);
     } finally {
       await act(async () => { localRoot.unmount(); });
       host.remove();
