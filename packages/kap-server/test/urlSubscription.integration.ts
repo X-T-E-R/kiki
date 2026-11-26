@@ -360,19 +360,19 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     await expect(
       assertSafeSubscriptionUrl('https://fakeip-mixed-private.example.test/pack.tgz', {
         lookupFn: async () => [{ address: '198.18.104.218', family: 4 }, { address: '127.0.0.1', family: 4 }],
-        dohResolveFn: async () => [{ address: '123.206.117.151', family: 4 }],
+        dohResolveFn: async () => [{ address: '93.184.216.34', family: 4 }],
       }),
     ).rejects.toThrow(/private/i);
     await expect(
       assertSafeSubscriptionUrl('https://fakeip-public.example.test/pack.tgz', {
         lookupFn: async () => [{ address: '198.18.104.218', family: 4 }],
-        dohResolveFn: async () => [{ address: '123.206.117.151', family: 4 }],
+        dohResolveFn: async () => [{ address: '93.184.216.34', family: 4 }],
       }),
     ).resolves.toBeInstanceOf(URL);
     await expect(
       assertSafeSubscriptionUrl('https://fakeip-mapped-v6.example.test/pack.tgz', {
         lookupFn: async () => [{ address: '::ffff:198.19.0.42', family: 6 }],
-        dohResolveFn: async () => [{ address: '123.206.117.151', family: 4 }],
+        dohResolveFn: async () => [{ address: '93.184.216.34', family: 4 }],
       }),
     ).resolves.toBeInstanceOf(URL);
     await expect(
@@ -407,8 +407,8 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
       const tunFallback = await fetchSubscriptionArchive('https://fakeip-tun.example.test/pack.tgz', {
         lookupFn: async () => [{ address: '198.18.104.218', family: 4 }],
         dohResolveFn: async () => [
-          { address: '123.206.117.151', family: 4 },
-          { address: '123.206.117.152', family: 4 },
+          { address: '93.184.216.34', family: 4 },
+          { address: '93.184.216.35', family: 4 },
         ],
         pinnedFetchFn: async (target) => {
           triedAddresses.push(target.address);
@@ -416,14 +416,14 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
           return { status: 200, etag: '"tun-v1"', bytes: Buffer.from('tun-ok') };
         },
       });
-      expect(triedAddresses).toEqual(['123.206.117.151', '123.206.117.152', '198.18.104.218']);
+      expect(triedAddresses).toEqual(['93.184.216.34', '93.184.216.35', '198.18.104.218']);
       expect(tunFallback).toEqual({ status: 'ok', bytes: Buffer.from('tun-ok'), etag: '"tun-v1"', finalOrigin: 'https://fakeip-tun.example.test' });
       expect(fetchSpy).not.toHaveBeenCalled();
 
       fetchSpy.mockResolvedValueOnce(new Response('proxy-ok', { status: 200, headers: { etag: '"proxy-v1"' } }));
       const proxyFallback = await fetchSubscriptionArchive('https://fakeip-proxy.example.test/pack.tgz', {
         lookupFn: async () => [{ address: '198.18.104.218', family: 4 }],
-        dohResolveFn: async () => [{ address: '123.206.117.151', family: 4 }],
+        dohResolveFn: async () => [{ address: '93.184.216.34', family: 4 }],
         pinnedFetchFn: async () => { throw new Error('all pinned attempts failed'); },
       });
       expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -849,9 +849,6 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
       /gpt-6\.2-astra/i,
       /swe-2-flash/i,
       /cmd\/deepseek/i,
-      /xxoy/i,
-      /nailong/i,
-      /krhougs/i,
       /vaultwarden/i,
       /subtext/i,
       /nb-hub/i,

@@ -113,7 +113,7 @@ describe('cache-safe A2 compaction and TurnCacheEnvelope contracts', () => {
     expect(ctx.llmCalls).toHaveLength(3);
     expect(startSpy).toHaveBeenCalledTimes(2);
     expect(startSpy.mock.calls[0]![0]?.toolChoice).toBeUndefined();
-    expect(startSpy.mock.calls[1]![0]?.toolChoice).toBe('none');
+    expect(startSpy.mock.calls[1]![0]?.toolChoice).toBeUndefined();
     const round1 = ctx.llmCalls[1]!;
     const round2 = ctx.llmCalls[2]!;
     expect(round2.tools).toEqual(round1.tools);
@@ -139,6 +139,49 @@ describe('cache-safe A2 compaction and TurnCacheEnvelope contracts', () => {
       disposition: 'replace_window',
     }, new AbortController().signal)).rejects.toMatchObject({ code: 'compaction_tool_output' });
     expect(context.get()).toEqual(historyBefore);
+  });
+
+  it('escalates compactionRound toolChoice along undefined -> undefined -> none across 3 rounds', async () => {
+    ctx = createTestAgent([], { initialConfig: { worktree: { cleanup: { auto: false } } } });
+    await ctx.ready;
+    ctx.configure({ tools: ['Read'] });
+    const context = ctx.get(IAgentContextMemoryService);
+    context.append(
+      { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Exchange 1 user' }], toolCalls: [] },
+      { role: 'assistant', content: [{ type: 'text', text: 'Exchange 1 assistant' }], toolCalls: [] },
+      { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Exchange 2 user' }], toolCalls: [] },
+    );
+    ctx.mockNextResponse({ type: 'text', text: 'Exchange 2 settled assistant.' });
+    const requester = ctx.get(IAgentLLMRequesterService);
+    const turnResult = await requester.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    context.append({ role: 'assistant', content: turnResult.message.content, toolCalls: [] });
+    context.append({ role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Kept tail user' }], toolCalls: [] });
+
+    ctx.mockNextResponse(
+      { type: 'text', text: 'Round 1 mixed violation' },
+      { type: 'function', id: 'cr-tc-1', name: 'Read', arguments: '{"path":"a.ts"}' },
+    );
+    ctx.mockNextResponse(
+      { type: 'text', text: 'Round 2 mixed violation' },
+      { type: 'function', id: 'cr-tc-2', name: 'Read', arguments: '{"path":"b.ts"}' },
+    );
+    ctx.mockNextResponse({ type: 'text', text: 'Clean round 3 summary after escalating toolChoice to none.' });
+
+    const startSpy = vi.spyOn(requester, 'start');
+    const compaction = ctx.get(IAgentFullCompactionService);
+    expect(compaction.begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
+    const commitResult = await compaction.compacting?.promise;
+    expect(commitResult?.compactedCount).toBeGreaterThan(0);
+    expect(startSpy).toHaveBeenCalledTimes(3);
+    expect(startSpy.mock.calls.map((call) => call[0]?.toolChoice)).toEqual([undefined, undefined, 'none']);
+    expect(ctx.llmCalls[2]!.history.at(-1)?.content[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('Correction: Your previous compaction attempt invoked a tool'),
+    });
+    expect(ctx.llmCalls[3]!.history.at(-1)?.content[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('Correction: Your previous compaction attempt invoked a tool'),
+    });
   });
 
   it('rejects forced tool_choice pre-flight without silently rewriting tool_choice to none', async () => {

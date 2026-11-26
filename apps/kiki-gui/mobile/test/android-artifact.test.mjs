@@ -76,10 +76,9 @@ function write(path, value) {
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'kiki-android-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  for (const path of ['apps/kiki-gui/package.json', 'apps/kimi-code/package.json', 'apps/kiki-gui/src-tauri/tauri.conf.json']) {
+  for (const path of ['apps/kiki-gui/package.json', 'apps/kimi-code/package.json', 'apps/kiki-desktop/package.json']) {
     write(join(root, path), JSON.stringify({ version: VERSION.versionName }));
   }
-  write(join(root, 'apps/kiki-gui/src-tauri/Cargo.toml'), `[package]\nversion = "${VERSION.versionName}"\n`);
   write(join(root, 'system.yaml'), `system:\n  version: ${VERSION.versionName}\n`);
   write(join(root, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n');
   write(join(root, 'apps/kiki-gui/mobile/package-lock.json'), '{"lockfileVersion":3}\n');

@@ -118,7 +118,7 @@ test('buildBundleCodesignPlan signs inside-out without --deep and preserves SEA 
     appPath: '/build/Kiki.app',
     identity: 'Developer ID Application: Example Corp (TEAM123456)',
     entitlementsPath: '/repo/apps/kimi-code/scripts/native/entitlements.plist',
-    appEntitlementsPath: '/repo/apps/kiki-gui/src-tauri/entitlements.plist',
+    appEntitlementsPath: '/repo/apps/kiki-desktop/build/entitlements.mac.plist',
     keychainPath: '/tmp/sign.keychain-db',
     nestedBinaries: ['/build/Kiki.app/Contents/Resources/libfoo.dylib'],
   });
@@ -137,7 +137,7 @@ test('buildBundleCodesignPlan signs inside-out without --deep and preserves SEA 
 
   assert.ok(plan[1].args.includes('--entitlements'));
   assert.ok(plan[1].args.includes('/repo/apps/kimi-code/scripts/native/entitlements.plist'));
-  assert.ok(plan[2].args.includes('/repo/apps/kiki-gui/src-tauri/entitlements.plist'));
+  assert.ok(plan[2].args.includes('/repo/apps/kiki-desktop/build/entitlements.mac.plist'));
 });
 
 test('buildSingleCodesignArgs retains entitlements in ad-hoc mode for local SEA execution', () => {

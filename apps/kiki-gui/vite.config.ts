@@ -131,8 +131,12 @@ export default defineConfig({
   ],
   define: {
     __KIKI_PROXY_TARGET__: JSON.stringify(serverTarget),
-    'import.meta.env.VITE_APP_VERSION': JSON.stringify(packageJson.version),
-    'import.meta.env.VITE_BUILD_SHA': JSON.stringify(process.env['KIKI_BUILD_SHA'] ?? ''),
+    'import.meta.env.VITE_APP_VERSION': JSON.stringify(
+      process.env['VITE_APP_VERSION']?.trim() || packageJson.version,
+    ),
+    'import.meta.env.VITE_BUILD_SHA': JSON.stringify(
+      process.env['VITE_BUILD_SHA']?.trim() || process.env['KIKI_BUILD_SHA']?.trim() || '',
+    ),
     'import.meta.env.VITE_UPDATE_CHANNEL': JSON.stringify(process.env['KIKI_UPDATE_CHANNEL'] ?? 'stable'),
   },
   server: {
@@ -140,11 +144,10 @@ export default defineConfig({
     // Windows, and Chromium then hangs resolving localhost to 127.0.0.1.
     host: '127.0.0.1',
     port: webPort,
-    // `tauri dev` runs this dev server as its beforeDevCommand while cargo
-    // links into src-tauri/target; watching those trees crashes the watcher
-    // (EBUSY on the in-flight exe) and kills the whole desktop launch.
+    // Ignore build output trees so rebuilding dist/ does not trigger recursive
+    // watcher churn during local GUI proof or dev runs.
     watch: {
-      ignored: ['**/src-tauri/target/**', '**/src-tauri/binaries/**', '**/dist/**'],
+      ignored: ['**/dist/**'],
     },
     // An explicitly demanded port (the proof sets KIKI_GUI_PORT) must bind or
     // fail loudly — never slide to a neighbouring port while a zombie serves

@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/kiki-desktop-*.yml'
+      - 'apps/kiki-desktop/**'
       - 'apps/kiki-gui/**'
       - 'apps/kimi-code/scripts/native/**'
       - 'packages/**'
@@ -38,24 +39,21 @@ jobs:
       - name: Test desktop release scripts
         shell: pwsh
         run: |
-          pnpm --filter @kiki/gui run desktop:prepare:test
-          node --test apps/kiki-gui/scripts/desktop-version.test.mjs apps/kiki-gui/scripts/desktop-release-manifest.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs
+          node --test apps/kiki-gui/scripts/desktop-version.test.mjs apps/kiki-gui/scripts/desktop-release-manifest.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs apps/kiki-gui/scripts/verify-updater-signature.test.mjs
           pnpm --filter @kiki/gui run desktop:version:check
           pnpm --filter @kiki/gui run desktop:release:test
 
-      - name: Test GUI
+      - name: Test GUI and Electron desktop shell
         run: |
           pnpm --filter @kiki/gui run typecheck
           pnpm --filter @kiki/gui run test
+          pnpm --filter @kiki/desktop run typecheck
+          pnpm --filter @kiki/desktop run test:fast
 
-      - name: Build and smoke-test Windows x64 sidecar
+      - name: Package and smoke-test Windows x64 Electron desktop
         run: |
-          pnpm --filter @kiki/cli run build:native:sea
-          pnpm --filter @kiki/cli run test:native:smoke
-          pnpm --filter @kiki/gui run desktop:prepare -- --target x86_64-pc-windows-msvc
-
-      - name: Test Rust desktop crate
-        run: cargo test --manifest-path apps/kiki-gui/src-tauri/Cargo.toml
+          pnpm --filter @kiki/desktop run package:dir
+          pnpm --filter @kiki/desktop run smoke:node
 
       - name: Generate temporary updater key
         shell: pwsh
@@ -73,23 +71,15 @@ jobs:
 
       - name: Build NSIS updater artifact
         env:
-          KIKI_DISTRIBUTION: github
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          KIKI_DESKTOP_DISTRIBUTION: github
         shell: pwsh
         run: |
-          $config = @{
-            bundle = @{
-              createUpdaterArtifacts = $true
-              resources = @('../THIRD_PARTY_NOTICES.md')
-            }
-            plugins = @{
-              updater = @{
-                pubkey = $env:KIKI_UPDATER_PUBLIC_KEY
-              }
-            }
-          } | ConvertTo-Json -Compress -Depth 4
-          pnpm --filter @kiki/gui exec tauri build --ci --target x86_64-pc-windows-msvc --bundles nsis --config $config
-          $installers = @(Get-ChildItem 'apps/kiki-gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter '*-setup.exe')
+          pnpm --filter @kiki/desktop exec electron-builder --win nsis --x64 --publish never
+          $installers = @(Get-ChildItem 'apps/kiki-desktop/out' -Filter '*-setup.exe')
           if ($installers.Count -ne 1) { throw "Expected one NSIS installer, found $($installers.Count)." }
+          pnpm --filter @kiki/gui exec tauri signer sign $installers[0].FullName
           if (-not (Test-Path -LiteralPath "$($installers[0].FullName).sig" -PathType Leaf)) {
-            throw 'Tauri did not create the updater signature.'
+            throw 'Updater signer did not create the installer signature.'
           }
+          node apps/kiki-gui/scripts/verify-updater-signature.mjs --installer $installers[0].FullName --signature "$($installers[0].FullName).sig" --public-key $env:KIKI_UPDATER_PUBLIC_KEY

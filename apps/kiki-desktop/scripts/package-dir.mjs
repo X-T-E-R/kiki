@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* eslint-disable no-console -- Unpacked Electron packaging driver with local electronDist and fuse/receipt verification. */
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -15,6 +15,19 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = resolve(scriptDir, '..');
 process.chdir(desktopRoot);
 const requireFromDesktop = createRequire(pathToFileURL(join(desktopRoot, 'package.json')));
+const desktopPkg = JSON.parse(readFileSync(join(desktopRoot, 'package.json'), 'utf8'));
+const desktopVersion = String(desktopPkg.version ?? '').trim();
+if (!desktopVersion) {
+  throw new Error('apps/kiki-desktop/package.json is missing a valid version');
+}
+const buildSha =
+  process.env['VITE_BUILD_SHA']?.trim() ||
+  process.env['KIKI_BUILD_SHA']?.trim() ||
+  execFileSync('git', ['rev-parse', 'HEAD'], { cwd: desktopRoot, encoding: 'utf8' }).trim();
+
+process.env['VITE_APP_VERSION'] = desktopVersion;
+process.env['VITE_BUILD_SHA'] = buildSha;
+process.env['KIKI_BUILD_SHA'] = buildSha;
 
 const { values } = parseArgs({
   args: process.argv.slice(2).filter((arg) => arg !== '--'),
@@ -25,7 +38,15 @@ const { values } = parseArgs({
 });
 
 if (!values['skip-stage-server']) {
-  await stageDesktopServer({ skipGuiBuild: Boolean(values['skip-gui-build']) });
+  await stageDesktopServer({
+    skipGuiBuild: Boolean(values['skip-gui-build']),
+    env: {
+      ...process.env,
+      VITE_APP_VERSION: desktopVersion,
+      VITE_BUILD_SHA: buildSha,
+      KIKI_BUILD_SHA: buildSha,
+    },
+  });
 }
 
 console.log('[package-dir] Building Electron main and preload bundles...');

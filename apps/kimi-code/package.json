@@ -1,6 +1,6 @@
 {
   "name": "@kiki/cli",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "Kiki (kiki-agent) — Multi-Model AI Agent Workbench (Desktop GUI, TUI, and Web UI on one shared local daemon)",
   "license": "MIT",
   "author": "Moonshot AI",

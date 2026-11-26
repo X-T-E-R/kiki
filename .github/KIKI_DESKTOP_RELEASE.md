@@ -1,6 +1,6 @@
 # Kiki desktop release setup
 
-The `kiki-v*` release workflow targets the public repository `X-T-E-R/kiki`. It publishes a unified Windows x64 NSIS installer (desktop and CLI), Linux x64 AppImage/deb, macOS Apple Silicon and Intel dmg, standalone Linux/macOS CLI executables, and two npm packages. Only the Windows NSIS installer uses the signed application updater; macOS bundles sign and notarize with Apple Developer ID when `KIKI_SIGN_MACOS=true` and Apple signing secrets are configured, and otherwise fall back cleanly to ad-hoc signing while still enforcing SEA entitlements on the bundled `kiki-server` sidecar. Windows updater signing and Authenticode publisher identity are separate systems.
+The `kiki-v*` release workflow targets the public repository `X-T-E-R/kiki`. It publishes a unified Windows x64 NSIS installer (Electron 44 desktop and CLI), Linux x64 AppImage/deb, macOS Apple Silicon and Intel dmg, standalone Linux/macOS CLI executables, and two npm packages. Windows NSIS releases publish both `electron-updater` metadata (`latest.yml` / `beta.yml` + `.blockmap`) and the signed minisign updater manifest (`latest.json` + `.sig`) for seamless upgrades; macOS bundles sign and notarize with Apple Developer ID when `KIKI_SIGN_MACOS=true` and Apple signing secrets are configured, and otherwise fall back cleanly to ad-hoc signing while still enforcing V8 Hardened Runtime entitlements (`apps/kiki-desktop/build/entitlements.mac.plist`). Windows updater signing and Authenticode publisher identity are separate systems.
 
 ## One-time GitHub setup
 
@@ -18,7 +18,7 @@ The `kiki-v*` release workflow targets the public repository `X-T-E-R/kiki`. It 
 7. Set repository secret `NPM_TOKEN` with publish access to `kiki-agent-lite` and `kiki-agent` on the public npm registry. The local npm registry may be a mirror, but the workflow explicitly publishes to `https://registry.npmjs.org/`. Do not copy npm credentials into the repository.
 8. To enable signed and notarized macOS releases (both standalone `kiki` SEA binaries and `Kiki.app` / `.dmg`), set repository variable `KIKI_SIGN_MACOS=true` and configure five repository secrets: `APPLE_CERTIFICATE_P12` (base64 `.p12` containing the `Developer ID Application` certificate and private key), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_NOTARIZATION_KEY_P8` (base64 App Store Connect API `.p8` key), `APPLE_NOTARIZATION_KEY_ID`, and `APPLE_NOTARIZATION_ISSUER_ID`.
    - Local macOS signing and notarization uses `pnpm --filter @kiki/gui run desktop:sign:mac -- --app <Kiki.app> --dmg <Kiki.dmg> --notarize` with `APPLE_SIGNING_IDENTITY` and either App Store Connect API key variables (`APPLE_API_KEY`, `APPLE_API_ISSUER`, `APPLE_API_KEY_PATH`) or a local `notarytool` keychain profile (`--keychain-profile` / `APPLE_NOTARY_KEYCHAIN_PROFILE`).
-   - Both CI and local signing apply Hardened Runtime SEA entitlements (`com.apple.security.cs.allow-jit`, `com.apple.security.cs.allow-unsigned-executable-memory`, `com.apple.security.cs.disable-executable-page-protection`, `com.apple.security.cs.disable-library-validation`) to `Kiki.app/Contents/MacOS/kiki-server`, verify them with `codesign -d --entitlements :-`, staple the notarization ticket with `xcrun stapler staple`, and run `codesign --verify --deep --strict` plus `spctl`.
+   - Both CI and local signing apply Hardened Runtime V8 JIT entitlements (`com.apple.security.cs.allow-jit`, `com.apple.security.cs.allow-unsigned-executable-memory`, `com.apple.security.cs.disable-executable-page-protection`, `com.apple.security.cs.disable-library-validation`) from `apps/kiki-desktop/build/entitlements.mac.plist` to `Kiki.app`, verify them with `codesign -d --entitlements :-`, staple the notarization ticket with `xcrun stapler staple`, and run `codesign --verify --deep --strict` plus `spctl`.
 
 The pull-request CI generates an ephemeral updater key and never reads the production private key. The release prepare job freezes `KIKI_UPDATER_PUBLIC_KEY` and its minisign key-packet identity in the input receipt. The Windows build embeds that frozen key and records its identity in the target receipt; the publish job verifies that identity and uses the same frozen key to check signatures. It reads the production private key only when a new NSIS installer signature is needed. Before the validated GitHub Release is published, the same job runs a pack-and-install smoke test; after publication it publishes both npm packages.
 
@@ -26,14 +26,14 @@ The pull-request CI generates an ephemeral updater key and never reads the produ
 
 Changesets target the workspace package `@kiki/cli` for versioning and changelog entries. The `kiki-v*` workflow uses that version to stage `kiki-agent-lite` (CLI/TUI) and `kiki-agent` (CLI/TUI plus desktop); it publishes only those two distributions, not `@kiki/cli`. The root `pnpm publish` script is a separate workspace-package channel using `changeset publish`, including `@kiki/cli`; it does not stage desktop distributions and must not replace the tag workflow.
 
-1. Confirm the chosen release version and update the CLI changelog and curated notes. If the version is already set, keep it. To set a different approved version, including a beta, use `pnpm --filter @kiki/gui run desktop:version:set -- <version>` (which also synchronizes `apps/kiki-gui/src-tauri/Cargo.lock`). Then check:
+1. Confirm the chosen release version and update the CLI changelog and curated notes. If the version is already set, keep it. To set a different approved version, including a beta, use `pnpm --filter @kiki/gui run desktop:version:set -- <version>` (which synchronizes `apps/kiki-gui/package.json`, `apps/kimi-code/package.json`, `apps/kiki-desktop/package.json`, and `system.yaml`). Then check:
 
    ```powershell
    pnpm --filter @kiki/gui run desktop:version:check
    pnpm install --frozen-lockfile
    ```
 
-   The CLI, GUI, Tauri, Cargo and `system.yaml` versions must match before tagging; the frozen input receipt checks all five. The repository retains historical unconsumed changesets. Use `pnpm version:release` only after reconciling that backlog against published versions and selecting the entries for this release; running it over the whole backlog can bump an already prepared version again. Preserve unknown entries for later reconciliation.
+   The CLI, GUI, Electron desktop (`@kiki/desktop`), and `system.yaml` versions must match before tagging; the frozen input receipt checks all four. The repository retains historical unconsumed changesets. Use `pnpm version:release` only after reconciling that backlog against published versions and selecting the entries for this release; running it over the whole backlog can bump an already prepared version again. Preserve unknown entries for later reconciliation.
 
 2. Land the version change on the commit to release.
 3. Create and push a tag matching the checked version, for example if it is `0.1.0-beta.1`:
@@ -70,7 +70,7 @@ Both reused and newly generated Windows updater signatures are verified against 
 
 If npm publication was interrupted, rerun the failed publish job. A registry `E404` publishes the missing version. An existing version is accepted only when its registry integrity matches the locally staged package; different integrity stops the run. Other registry query errors stop the run with their error details; fix registry access or connectivity before retrying. Release publication still precedes npm publication.
 
-Standalone calls to `_native-build.yml` keep their original per-target build behavior when no prepare artifact is supplied. Local default and explicit `KIKI_SIDECAR_SOURCE` paths retain their existing staging contract. Release-only byte reuse requires explicit `KIKI_SIDECAR_RELEASE_MODE=verified-prebuilt` plus matching native/input receipts and catalog; setting a source path alone does not enable it.
+Standalone calls to `_native-build.yml` keep their original per-target CLI build behavior when no prepare artifact is supplied; desktop release builds require an immutable prepare artifact receipt.
 
 ## First-release limitations
 

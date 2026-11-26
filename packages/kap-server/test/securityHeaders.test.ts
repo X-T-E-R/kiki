@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { KIKI_APP_CSP } from '@kiki/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { createSecurityHeadersHook } from '../src/middleware/securityHeaders';
@@ -81,14 +81,13 @@ describe('createSecurityHeadersHook', () => {
     expect(apiDirectives.get('img-src')).toEqual(["'self'", 'data:', 'blob:']);
   });
 
-  it('keeps the Desktop script policy strict while allowing website frames and PDF workers', async () => {
-    const config = JSON.parse(await readFile(new URL('../../../apps/kiki-gui/src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
-    const directives = parseCsp(config.app.security.csp);
-    expect(directives.get('frame-src')).toEqual(["'self'", 'http://*.kiki-document.localhost:*', 'https:', 'http:', 'blob:']);
-    expect(directives.get('worker-src')).toEqual(["'self'", 'blob:']);
-    expect(directives.get('connect-src')).toEqual(["'self'", 'ipc:', 'http://ipc.localhost', 'https:', 'http:', 'ws:', 'wss:', 'data:', 'blob:']);
-    expect(directives.get('media-src')).toEqual(["'self'", 'blob:', 'data:', 'https:', 'http:']);
-    expect(directives.get('script-src')).toEqual(["'self'"]);
+  it('keeps the Desktop script policy strict while allowing website frames and PDF workers', () => {
+    const directives = parseCsp(KIKI_APP_CSP);
+    expect(directives.get('frame-src')).toEqual(["'self'", 'kiki-app:', 'http://*.kiki-document.localhost:*', 'https:', 'http:', 'blob:']);
+    expect(directives.get('worker-src')).toEqual(["'self'", 'kiki-app:', 'blob:']);
+    expect(directives.get('connect-src')).toEqual(["'self'", 'kiki-app:', 'https:', 'http:', 'ws:', 'wss:', 'data:', 'blob:']);
+    expect(directives.get('media-src')).toEqual(["'self'", 'kiki-app:', 'blob:', 'data:', 'https:', 'http:']);
+    expect(directives.get('script-src')).toEqual(["'self'", 'kiki-app:']);
   });
 
   it('does not replace an isolated document policy even when the route also marks GUI assets', async () => {

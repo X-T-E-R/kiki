@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act } from 'react';
-import tauriConfig from '../../src-tauri/tauri.conf.json';
+import { KIKI_APP_CSP } from '@kiki/protocol';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { I18nKey } from '@kiki/session-core/i18n';
@@ -182,7 +182,7 @@ describe('copyImageBitmap', () => {
   });
 
   it('allows displayed memory images to be fetched under the packaged desktop CSP', () => {
-    const directives = tauriConfig.app.security.csp.split(';').map((part: string) => part.trim().split(/\s+/));
+    const directives = KIKI_APP_CSP.split(';').map((part: string) => part.trim().split(/\s+/));
     const connect = directives.find((parts: string[]) => parts[0] === 'connect-src');
     expect(connect).toEqual(expect.arrayContaining(['data:', 'blob:']));
   });

@@ -1,6 +1,5 @@
 export const NON_NPM_SURFACES = [
   'apps/kiki-android',
-  'apps/kiki-gui/src-tauri',
   'apps/kiki-gui/mobile',
 ];
 
@@ -167,6 +166,7 @@ export const BOUNDARY_RULES = [
     id: 'kiki-desktop',
     root: 'apps/kiki-desktop',
     forbiddenInternal: new Set(['@kiki/agent-core-v2', '@kiki/kap-server', '@kiki/gui']),
+    allowedRelativeEscapePatterns: [/^scripts\/ccp-chaos\//],
     forbiddenExternal: [
       /^react(?:$|\/)/,
       /^react-dom(?:$|\/)/,

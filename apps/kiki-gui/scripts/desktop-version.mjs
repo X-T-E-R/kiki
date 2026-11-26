@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -12,17 +12,9 @@ const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[
 const FILES = {
   package: resolve(GUI_ROOT, 'package.json'),
   cli: resolve(REPO_ROOT, 'apps', 'kimi-code', 'package.json'),
-  tauri: resolve(GUI_ROOT, 'src-tauri', 'tauri.conf.json'),
-  cargo: resolve(GUI_ROOT, 'src-tauri', 'Cargo.toml'),
-  cargoLock: resolve(GUI_ROOT, 'src-tauri', 'Cargo.lock'),
+  desktop: resolve(REPO_ROOT, 'apps', 'kiki-desktop', 'package.json'),
   system: resolve(REPO_ROOT, 'system.yaml'),
 };
-
-function parseCargoVersion(text) {
-  const match = text.match(/^version = "([^"]+)"$/m);
-  if (match === null) throw new Error('Cargo.toml package version is missing');
-  return match[1];
-}
 
 function parseSystemVersion(text) {
   const match = text.match(/^  version: (\S+)$/m);
@@ -31,11 +23,11 @@ function parseSystemVersion(text) {
 }
 
 export function readDesktopVersions(files = FILES) {
+  const pkgVersion = JSON.parse(readFileSync(files.package, 'utf8')).version;
   return {
-    package: JSON.parse(readFileSync(files.package, 'utf8')).version,
-    cli: files.cli ? JSON.parse(readFileSync(files.cli, 'utf8')).version : JSON.parse(readFileSync(files.package, 'utf8')).version,
-    tauri: JSON.parse(readFileSync(files.tauri, 'utf8')).version,
-    cargo: parseCargoVersion(readFileSync(files.cargo, 'utf8')),
+    package: pkgVersion,
+    cli: files.cli ? JSON.parse(readFileSync(files.cli, 'utf8')).version : pkgVersion,
+    desktop: files.desktop ? JSON.parse(readFileSync(files.desktop, 'utf8')).version : pkgVersion,
     system: parseSystemVersion(readFileSync(files.system, 'utf8')),
   };
 }
@@ -59,24 +51,10 @@ export function assertDesktopVersions(versions, tag = process.env['GITHUB_REF_NA
 export function setDesktopVersion(version, files = FILES) {
   if (!SEMVER.test(version)) throw new Error(`Invalid semantic version: ${version}`);
 
-  for (const path of [files.package, files.cli, files.tauri].filter(Boolean)) {
+  for (const path of [files.package, files.cli, files.desktop].filter(Boolean)) {
     const parsed = JSON.parse(readFileSync(path, 'utf8'));
     parsed.version = version;
     writeFileSync(path, `${JSON.stringify(parsed, null, 2)}\n`);
-  }
-
-  const cargo = readFileSync(files.cargo, 'utf8').replace(
-    /^version = "[^"]+"$/m,
-    `version = "${version}"`,
-  );
-  writeFileSync(files.cargo, cargo);
-
-  if (files.cargoLock && existsSync(files.cargoLock)) {
-    const lock = readFileSync(files.cargoLock, 'utf8').replace(
-      /(name = "kiki-desktop"\r?\nversion = )"[^"]+"/,
-      `$1"${version}"`,
-    );
-    writeFileSync(files.cargoLock, lock);
   }
 
   const system = readFileSync(files.system, 'utf8').replace(

@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 
-import { stageSidecar } from '../../../kiki-gui/scripts/prepare-sidecar.mjs';
 import { updaterPublicKeyIdentity } from '../../../kiki-gui/scripts/verify-updater-signature.mjs';
 import {
   NATIVE_RECEIPT_NAME,
@@ -51,8 +50,7 @@ function fixture() {
   write(join(root, 'pnpm-lock.yaml'), 'lockfileVersion: test\n');
   write(join(root, 'apps/kimi-code/package.json'), JSON.stringify({ version: '1.2.3' }));
   write(join(root, 'apps/kiki-gui/package.json'), JSON.stringify({ version: '1.2.3' }));
-  write(join(root, 'apps/kiki-gui/src-tauri/tauri.conf.json'), JSON.stringify({ version: '1.2.3' }));
-  write(join(root, 'apps/kiki-gui/src-tauri/Cargo.toml'), '[package]\nversion = "1.2.3"\n');
+  write(join(root, 'apps/kiki-desktop/package.json'), JSON.stringify({ version: '1.2.3' }));
   write(join(root, 'system.yaml'), 'system:\n  version: 1.2.3\n');
   const catalog = join(root, 'input/built-in-catalog.json');
   write(catalog, '{"example":{"models":{}}}');
@@ -154,14 +152,14 @@ test('prepare identity binds catalog, source, environment, profile inputs, and p
   }
 });
 
-test('prepare and verification bind all five current version authorities', () => {
+test('prepare and verification bind all four current version authorities', () => {
   for (const [path, changed] of [
-    ['apps/kiki-gui/src-tauri/Cargo.toml', '[package]\nversion = "1.2.4"\n'],
+    ['apps/kiki-desktop/package.json', JSON.stringify({ version: '1.2.4' })],
     ['system.yaml', 'system:\n  version: 1.2.4\n'],
   ]) {
     const state = fixture();
     try {
-      assert.deepEqual(state.prepare.versions, { cli: '1.2.3', gui: '1.2.3', tauri: '1.2.3', cargo: '1.2.3', system: '1.2.3' });
+      assert.deepEqual(state.prepare.versions, { cli: '1.2.3', gui: '1.2.3', desktop: '1.2.3', system: '1.2.3' });
       write(join(state.root, path), changed);
       assert.throws(() => verifyPrepareReceipt({ receiptPath: state.preparePath, catalogPath: state.catalog, expected: expected(), root: state.root }), /release version mismatch/);
       assert.throws(() => createPrepareReceipt({ root: state.root, catalogPath: state.catalog, ...expected(), pnpmVersion: '10.33.0', updaterPublicKey: UPDATER_KEY_A }), /does not match release version/);
@@ -308,42 +306,6 @@ test('artifact selection resumes with each target latest successful attempt with
     () => selectTargetArtifactIds({ artifacts: [...artifacts, { id: 101, name: 'kiki-release-target-77-linux-x64-3' }], runId: '77', currentAttempt: '2' }),
     /future attempt/,
   );
-});
-
-test('desktop staging consumes the verified native bytes and rejects a changed source or target', () => {
-  const state = fixture();
-  try {
-    stageAll(state);
-    const source = join(state.root, 'apps/kimi-code/dist-native/bin/win32-x64/kiki.exe');
-    const candidate = join(state.root, 'sidecar-candidate');
-    stageNativeCandidate({
-      root: state.root, outputDir: candidate, target: 'win32-x64', rustTarget: 'x86_64-pc-windows-msvc',
-      prepareReceiptPath: state.preparePath, catalogPath: state.catalog, prepareArtifactId: '9001',
-      expected: expected('2'), nodeVersion: '24.22.1', pnpmVersion: '10.33.0', rustVersion: 'rustc fixture', signingMode: 'unsigned',
-      updaterPublicKey: UPDATER_KEY_A,
-    });
-    const env = {
-      KIKI_SIDECAR_SOURCE: source, KIKI_SIDECAR_RELEASE_MODE: 'verified-prebuilt',
-      KIKI_SIDECAR_RECEIPT: join(candidate, NATIVE_RECEIPT_NAME), KIKI_RELEASE_INPUT_RECEIPT: state.preparePath,
-      KIKI_BUILT_IN_CATALOG_FILE: state.catalog, KIKI_RELEASE_REPOSITORY: 'example/kiki', KIKI_BUILD_SHA: SHA,
-      KIKI_RELEASE_TAG: 'kiki-v1.2.3', KIKI_VERSION: '1.2.3', KIKI_UPDATE_CHANNEL: 'stable',
-      KIKI_RELEASE_RUN_ID: '77', KIKI_RELEASE_PREPARE_ATTEMPT: '1', KIKI_RELEASE_CANDIDATE_ATTEMPT: '2',
-      KIKI_RELEASE_PREPARE_ARTIFACT_ID: '9001',
-    };
-    const stage = (target = 'x86_64-pc-windows-msvc') => stageSidecar({
-      argv: ['--target', target], env, binariesDir: join(state.root, 'binaries'),
-      packageJsonPath: join(state.root, 'apps/kimi-code/package.json'), root: state.root,
-    });
-    const staged = stage();
-    assert.equal(readFileSync(staged.destination, 'utf8'), 'native-win32-x64');
-    assert.deepEqual(staged.releaseSource, { sourceSha: SHA, prepareIdentity: receiptIdentity(state.prepare), prepareArtifactId: '9001', producerAttempt: '2' });
-    assert.throws(() => stage('aarch64-pc-windows-msvc'), /sidecar Rust target mismatch/);
-    write(source, 'changed-native-bytes');
-    assert.throws(() => stage(), /sidecar source (bytes|digest) mismatch/);
-    assert.equal(readFileSync(staged.destination, 'utf8'), 'native-win32-x64');
-  } finally {
-    rmSync(state.root, { recursive: true, force: true });
-  }
 });
 
 test('candidate assembly accepts exactly six receipts sharing one prepare identity', () => {

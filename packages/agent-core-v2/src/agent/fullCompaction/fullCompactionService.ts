@@ -1128,7 +1128,6 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const estimatedTokens = this.requestTokens(messages);
       try {
         const result = await this.runSummaryRequest(messages, input.maxOutputSize, input.signal, {
-          toolChoice: toolCorrectionCount > 0 ? 'none' : undefined,
           cacheInheritance: {
             mode: input.inheritanceMode,
             allowWarmEnvelope: input.allowWarmEnvelope,
@@ -1427,7 +1426,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
           const result = await this.runSummaryRequest(messages, compactionMaxOutputSize, signal, {
             active,
             droppedCount,
-            toolChoice: toolCorrectionCount > 0 ? 'none' : undefined,
+            toolChoice: toolCorrectionCount >= 2 ? 'none' : undefined,
             cacheInheritance: {
               mode: 'last_turn_envelope_exclusive',
               allowWarmEnvelope: true,
@@ -1442,8 +1441,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         } catch (error) {
           if (isAbortError(error) || signal.aborted) throw error;
           if (error instanceof CompactionToolOutputError) {
-            if (toolCorrectionCount === 0) {
-              toolCorrectionCount = 1;
+            if (toolCorrectionCount < 2) {
+              toolCorrectionCount += 1;
               forceFullIncremental = true;
               requestAttempts -= 1;
               continue;

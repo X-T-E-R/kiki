@@ -111,6 +111,19 @@ function resolveGitCommit() {
   }
 }
 
+function resolveFullGitSha() {
+  const fromEnv = process.env['VITE_BUILD_SHA']?.trim() || process.env['KIKI_BUILD_SHA']?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
 async function listFilesRecursive(root) {
   const entries = await readdir(root, { recursive: true, withFileTypes: true });
   return entries
@@ -281,8 +294,8 @@ async function rebuildNodePtyForElectron({ sourceNodePtyRoot, target, electronVe
   return { root: cacheDir, files: [...new Set(files)].sort((a, b) => a.localeCompare(b)) };
 }
 
-export async function stageDesktopServer({ skipGuiBuild = false } = {}) {
-  const target = process.env['KIKI_BUILD_TARGET'] ?? `${process.platform}-${process.arch}`;
+export async function stageDesktopServer({ skipGuiBuild = false, env = process.env } = {}) {
+  const target = env['KIKI_BUILD_TARGET'] ?? `${process.platform}-${process.arch}`;
   const arch = target.split('-')[1] ?? process.arch;
   const pnpm = resolvePnpmInvocation();
 
@@ -292,18 +305,33 @@ export async function stageDesktopServer({ skipGuiBuild = false } = {}) {
   const kimiPkg = JSON.parse(readFileSync(join(kimiCodeRoot, 'package.json'), 'utf8'));
   const desktopPkg = JSON.parse(readFileSync(join(desktopRoot, 'package.json'), 'utf8'));
   const commit = resolveGitCommit();
-  const channel = process.env['KIKI_CHANNEL'] ?? 'desktop';
+  const buildSha = env['VITE_BUILD_SHA']?.trim() || env['KIKI_BUILD_SHA']?.trim() || resolveFullGitSha();
+  const appVersion = env['VITE_APP_VERSION']?.trim() || String(desktopPkg.version || kimiPkg.version);
+  const channel = env['KIKI_CHANNEL'] ?? 'desktop';
 
   const authPrebuild = resolve(repoRoot, 'packages/auth-native/prebuilds', target, 'auth-native.node');
   if (!existsSync(authPrebuild)) {
     console.log(`[stage-server] Building @kiki/auth-native for ${target}...`);
-    runChecked(pnpm.command, [...pnpm.args, '--filter', '@kiki/auth-native', 'build'], { cwd: repoRoot });
+    runChecked(pnpm.command, [...pnpm.args, '--filter', '@kiki/auth-native', 'build'], {
+      cwd: repoRoot,
+      env,
+    });
   }
 
   const guiDistIndex = resolve(guiRoot, 'dist/index.html');
   if (!skipGuiBuild || !existsSync(guiDistIndex)) {
-    console.log('[stage-server] Building @kiki/gui static web bundle...');
-    runChecked(pnpm.command, [...pnpm.args, '--filter', '@kiki/gui', 'build'], { cwd: repoRoot });
+    console.log(
+      `[stage-server] Building @kiki/gui static web bundle (version=${appVersion}, sha=${buildSha.slice(0, 12)})...`,
+    );
+    runChecked(pnpm.command, [...pnpm.args, '--filter', '@kiki/gui', 'build'], {
+      cwd: repoRoot,
+      env: {
+        ...env,
+        VITE_APP_VERSION: appVersion,
+        VITE_BUILD_SHA: buildSha,
+        KIKI_BUILD_SHA: buildSha,
+      },
+    });
   }
 
   await rm(serverOutDir, { recursive: true, force: true });

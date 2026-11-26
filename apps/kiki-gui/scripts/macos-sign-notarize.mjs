@@ -36,9 +36,11 @@ export const DEFAULT_SEA_ENTITLEMENTS_PATH = resolve(
   'entitlements.plist',
 );
 export const DEFAULT_APP_ENTITLEMENTS_PATH = resolve(
-  GUI_ROOT,
-  'src-tauri',
-  'entitlements.plist',
+  KIKI_ROOT,
+  'apps',
+  'kiki-desktop',
+  'build',
+  'entitlements.mac.plist',
 );
 
 const NESTED_BINARY_EXTENSIONS = new Set(['.dylib', '.so', '.node']);
@@ -204,6 +206,22 @@ export function discoverNestedBinaries(appPath) {
   return results;
 }
 
+export function discoverNestedBundles(appPath) {
+  const frameworksDir = join(appPath, 'Contents', 'Frameworks');
+  if (!existsSync(frameworksDir)) return [];
+  const helpers = [];
+  const frameworks = [];
+  for (const entry of readdirSync(frameworksDir, { withFileTypes: true })) {
+    if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+    const fullPath = join(frameworksDir, entry.name);
+    if (entry.name.endsWith('.app')) helpers.push(fullPath);
+    else if (entry.name.endsWith('.framework')) frameworks.push(fullPath);
+  }
+  helpers.sort();
+  frameworks.sort();
+  return [...helpers, ...frameworks];
+}
+
 export function buildBundleCodesignPlan({
   appPath,
   identity,
@@ -211,6 +229,8 @@ export function buildBundleCodesignPlan({
   appEntitlementsPath = entitlementsPath,
   keychainPath = null,
   nestedBinaries = [],
+  nestedBundles = [],
+  includeSidecar = true,
 }) {
   const sidecarPath = join(appPath, 'Contents', 'MacOS', 'kiki-server');
   const plan = [];
@@ -230,18 +250,35 @@ export function buildBundleCodesignPlan({
     });
   }
 
-  plan.push({
-    label: 'sidecar:kiki-server',
-    targetPath: sidecarPath,
-    args: buildSingleCodesignArgs({
-      identity,
+  for (const bundle of nestedBundles) {
+    plan.push({
+      label: `framework:${basename(bundle)}`,
+      targetPath: bundle,
+      args: buildSingleCodesignArgs({
+        identity,
+        targetPath: bundle,
+        entitlementsPath: bundle.endsWith('.app') ? appEntitlementsPath : null,
+        keychainPath,
+        hardenedRuntime: true,
+        timestamp: true,
+      }),
+    });
+  }
+
+  if (includeSidecar) {
+    plan.push({
+      label: 'sidecar:kiki-server',
       targetPath: sidecarPath,
-      entitlementsPath,
-      keychainPath,
-      hardenedRuntime: true,
-      timestamp: true,
-    }),
-  });
+      args: buildSingleCodesignArgs({
+        identity,
+        targetPath: sidecarPath,
+        entitlementsPath,
+        keychainPath,
+        hardenedRuntime: true,
+        timestamp: true,
+      }),
+    });
+  }
 
   plan.push({
     label: 'bundle:Kiki.app',
@@ -293,23 +330,29 @@ async function runCommand(cmd, args, { capture = false } = {}) {
 }
 
 export async function verifySidecarEntitlements(appPath, execRunner = runCommand) {
-  const sidecarPath = join(appPath, 'Contents', 'MacOS', 'kiki-server');
-  if (!existsSync(sidecarPath)) {
-    throw new Error(`Bundled sidecar missing at ${sidecarPath}`);
+  const macosDir = join(appPath, 'Contents', 'MacOS');
+  const candidates = [
+    join(macosDir, 'kiki-server'),
+    join(macosDir, 'Kiki'),
+    join(macosDir, 'kiki-desktop'),
+  ];
+  const targetBinary = candidates.find((candidate) => existsSync(candidate));
+  if (!targetBinary) {
+    throw new Error(`Bundled macOS executable missing under ${macosDir}`);
   }
   const result = await execRunner(
     'codesign',
-    ['-d', '--entitlements', ':-', sidecarPath],
+    ['-d', '--entitlements', ':-', targetBinary],
     { capture: true },
   );
   if (result.exitCode !== 0) {
     throw new Error(
-      `Failed to read entitlements from ${sidecarPath}: ${result.stderr || result.stdout}`,
+      `Failed to read entitlements from ${targetBinary}: ${result.stderr || result.stdout}`,
     );
   }
-  assertSeaEntitlements(result.stdout, sidecarPath);
+  assertSeaEntitlements(result.stdout, targetBinary);
   return {
-    sidecarPath,
+    sidecarPath: targetBinary,
     verifiedEntitlements: [...REQUIRED_SEA_ENTITLEMENTS],
   };
 }
@@ -470,6 +513,8 @@ export async function signAndNotarizeMacosDesktop(options = {}, env = process.en
 
   const signing = resolveSigningConfig(options, env);
   const nestedBinaries = discoverNestedBinaries(appPath);
+  const nestedBundles = discoverNestedBundles(appPath);
+  const includeSidecar = existsSync(join(appPath, 'Contents', 'MacOS', 'kiki-server'));
   const plan = buildBundleCodesignPlan({
     appPath,
     identity: signing.identity,
@@ -477,6 +522,8 @@ export async function signAndNotarizeMacosDesktop(options = {}, env = process.en
     appEntitlementsPath: signing.appEntitlementsPath,
     keychainPath: signing.keychainPath,
     nestedBinaries,
+    nestedBundles,
+    includeSidecar,
   });
 
   console.log(

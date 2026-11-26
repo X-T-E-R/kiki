@@ -1,6 +1,6 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
-import { isLoopbackHost } from '@kiki/protocol';
+import { KIKI_APP_ORIGIN, isLoopbackHost } from '@kiki/protocol';
 import { stripPort } from './hostnames';
 
 const CORS_ALLOW_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
@@ -74,7 +74,7 @@ export function isOriginAllowed(
 }
 
 const DESKTOP_APP_ORIGINS = new Set([
-  'kiki-app://localhost',
+  KIKI_APP_ORIGIN,
   'tauri://localhost',
   'http://tauri.localhost',
   'https://tauri.localhost',

@@ -125,12 +125,6 @@ jobs:
         with:
           ref: ${{ inputs.release-source-sha || github.sha }}
 
-      - name: Install Tauri Linux dependencies
-        if: inputs.build-desktop && matrix.desktop-name != '' && runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev
-
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
 
@@ -280,11 +274,6 @@ jobs:
             --pnpm "$(pnpm --version)" \
             --signing "$signing_mode" \
             --updater-public-key "$KIKI_UPDATER_PUBLIC_KEY"
-          {
-            echo "KIKI_SIDECAR_SOURCE=$GITHUB_WORKSPACE/apps/kimi-code/dist-native/bin/${{ matrix.target }}/kiki${{ matrix.extension }}"
-            echo 'KIKI_SIDECAR_RELEASE_MODE=verified-prebuilt'
-            echo "KIKI_SIDECAR_RECEIPT=$output/release-receipt.json"
-          } >> "$GITHUB_ENV"
 
       - name: Test release scripts
         if: inputs.build-desktop && matrix.desktop-name != ''
@@ -292,7 +281,7 @@ jobs:
         run: |
           node --test apps/kiki-gui/scripts/desktop-version.test.mjs apps/kiki-gui/scripts/desktop-release-manifest.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs apps/kiki-gui/scripts/verify-updater-signature.test.mjs apps/kiki-gui/scripts/macos-sign-notarize.test.mjs
           pnpm --filter @kiki/gui run desktop:version:check
-          pnpm --filter @kiki/gui run desktop:prepare:test
+          pnpm --filter @kiki/desktop run typecheck
 
       - name: Generate temporary updater key (Windows)
         if: inputs.build-desktop && matrix.desktop-name != '' && runner.os == 'Windows'
@@ -313,9 +302,10 @@ jobs:
       - name: Build and stage desktop bundles
         if: inputs.build-desktop && matrix.desktop-name != ''
         env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          VITE_APP_VERSION: ${{ inputs.release-version }}
+          VITE_BUILD_SHA: ${{ inputs.release-source-sha }}
           KIKI_BUILD_SHA: ${{ inputs.release-source-sha }}
-          KIKI_TAURI_CONFIG_PATH: ${{ runner.temp }}/kiki-tauri-release-config.json
-          KIKI_RUST_TARGET: ${{ matrix.rust-target }}
           KIKI_BUNDLES: ${{ matrix.bundles }}
           APPLE_NOTARIZATION_KEY_P8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
           APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
@@ -324,50 +314,52 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$RUNNER_OS" = 'Windows' ]; then
-            export KIKI_DISTRIBUTION=github
+            export KIKI_DESKTOP_DISTRIBUTION=github
             if [ -z "$KIKI_UPDATER_PUBLIC_KEY" ]; then
               echo 'KIKI_UPDATER_PUBLIC_KEY repository variable is required.' >&2
               exit 1
             fi
           else
-            export KIKI_DISTRIBUTION=manual
+            export KIKI_DESKTOP_DISTRIBUTION=local
             unset KIKI_UPDATER_PUBLIC_KEY
           fi
-          node -e '
-            const fs = require("node:fs");
-            const windows = process.env.RUNNER_OS === "Windows";
-            const config = {
-              version: process.env.KIKI_VERSION,
-              bundle: {
-                createUpdaterArtifacts: windows,
-                resources: ["../THIRD_PARTY_NOTICES.md"],
-              },
-            };
-            if (windows) config.plugins = { updater: { pubkey: process.env.KIKI_UPDATER_PUBLIC_KEY } };
-            fs.writeFileSync(process.env.KIKI_TAURI_CONFIG_PATH, JSON.stringify(config));
-          '
-          pnpm --filter @kiki/gui exec tauri build --ci --target "$KIKI_RUST_TARGET" --bundles "$KIKI_BUNDLES" --config "$KIKI_TAURI_CONFIG_PATH"
-          if [ "$RUNNER_OS" = 'Windows' ]; then
-            echo "KIKI_EMBEDDED_UPDATER_PUBLIC_KEY=$KIKI_UPDATER_PUBLIC_KEY" >> "$GITHUB_ENV"
-          fi
 
-          bundle_dir="apps/kiki-gui/src-tauri/target/$KIKI_RUST_TARGET/release/bundle"
+          pnpm --filter @kiki/desktop run stage:server
+          pnpm --filter @kiki/desktop run build
+
+          bundle_dir="apps/kiki-desktop/out"
+          rm -rf "$bundle_dir"
           stage="$RUNNER_TEMP/kiki-release-candidate"
           rm -rf "$stage"
           mkdir -p "$stage"
           shopt -s nullglob
           case "$RUNNER_OS" in
             Windows)
-              bundles=("$bundle_dir"/nsis/*-setup.exe)
-              if [ "${#bundles[@]}" -ne 1 ] || [ ! -f "${bundles[0]}.sig" ]; then
+              pnpm --filter @kiki/desktop exec electron-builder --win nsis --x64 --publish never
+              bundles=("$bundle_dir"/*-setup.exe)
+              if [ "${#bundles[@]}" -ne 1 ]; then
+                echo 'Expected one NSIS installer.' >&2
+                exit 1
+              fi
+              pnpm --filter @kiki/gui exec tauri signer sign "${bundles[0]}"
+              if [ ! -f "${bundles[0]}.sig" ]; then
                 echo 'Expected one NSIS installer and temporary updater signature.' >&2
                 exit 1
               fi
+              node apps/kiki-gui/scripts/verify-updater-signature.mjs \
+                --installer "${bundles[0]}" \
+                --signature "${bundles[0]}.sig" \
+                --public-key "$KIKI_UPDATER_PUBLIC_KEY"
+              echo "KIKI_EMBEDDED_UPDATER_PUBLIC_KEY=$KIKI_UPDATER_PUBLIC_KEY" >> "$GITHUB_ENV"
               cp "${bundles[0]}" "$stage/"
+              for meta in "$bundle_dir"/*.yml "$bundle_dir"/*.blockmap; do
+                cp "$meta" "$stage/"
+              done
               ;;
             Linux)
-              appimages=("$bundle_dir"/appimage/*.AppImage)
-              debs=("$bundle_dir"/deb/*.deb)
+              pnpm --filter @kiki/desktop exec electron-builder --linux AppImage deb --x64 --publish never
+              appimages=("$bundle_dir"/*.AppImage)
+              debs=("$bundle_dir"/*.deb)
               if [ "${#appimages[@]}" -ne 1 ] || [ "${#debs[@]}" -ne 1 ]; then
                 echo 'Expected one AppImage and one deb bundle.' >&2
                 exit 1
@@ -375,8 +367,16 @@ jobs:
               bundles=("${appimages[0]}" "${debs[0]}")
               ;;
             macOS)
-              apps=("$bundle_dir"/macos/*.app)
-              bundles=("$bundle_dir"/dmg/*.dmg)
+              if [ "${{ matrix.target }}" = 'darwin-arm64' ]; then
+                eb_arch='arm64'
+                dmg_arch='aarch64'
+              else
+                eb_arch='x64'
+                dmg_arch='x64'
+              fi
+              pnpm --filter @kiki/desktop exec electron-builder --mac dmg dir "--$eb_arch" -c.dmg.artifactName="Kiki_${KIKI_VERSION}_${dmg_arch}.dmg" --publish never
+              apps=("$bundle_dir"/mac*/*.app)
+              bundles=("$bundle_dir"/*.dmg)
               if [ "${#apps[@]}" -ne 1 ] || [ "${#bundles[@]}" -ne 1 ]; then
                 echo 'Expected one macOS .app bundle and one .dmg bundle.' >&2
                 exit 1

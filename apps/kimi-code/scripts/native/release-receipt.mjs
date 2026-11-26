@@ -22,8 +22,7 @@ function releaseVersions(root) {
   const { package: gui, ...versions } = readDesktopVersions({
     package: join(root, 'apps/kiki-gui/package.json'),
     cli: join(root, 'apps/kimi-code/package.json'),
-    tauri: join(root, 'apps/kiki-gui/src-tauri/tauri.conf.json'),
-    cargo: join(root, 'apps/kiki-gui/src-tauri/Cargo.toml'),
+    desktop: join(root, 'apps/kiki-desktop/package.json'),
     system: join(root, 'system.yaml'),
   });
   return { ...versions, gui };
@@ -394,26 +393,6 @@ function verifyCandidateReceipt({ receipt, candidateRoot, prepare, prepareArtifa
     fail(`Desktop candidate set is incorrect for ${receipt.target.sea}.`);
   }
   if (expected.candidateAttempt !== undefined) assertEqual(receipt.workflow.producerAttempt, expected.candidateAttempt, 'candidate attempt');
-  return receipt;
-}
-
-export function verifySidecarReceipt({ receiptPath, sourcePath, rustTarget, expected, prepareReceiptPath, catalogPath, root = REPO_ROOT }) {
-  const receipt = readJson(receiptPath, 'native release receipt');
-  const prepareArtifactId = integerString(expected.prepareArtifactId, 'expected prepare artifact ID');
-  const prepare = verifyPrepareReceipt({ receiptPath: prepareReceiptPath, catalogPath, expected, root });
-  verifyCandidateReceipt({
-    receipt,
-    candidateRoot: dirname(receiptPath),
-    prepare,
-    prepareArtifactId,
-    expected,
-    allowPendingDesktop: true,
-  });
-  assertEqual(receipt.target.rust, rustTarget, 'sidecar Rust target');
-  const native = receipt.files.find((file) => file.role === 'native-executable');
-  const source = describeFile(sourcePath);
-  assertEqual(source.bytes, native.bytes, 'sidecar source bytes');
-  assertEqual(source.sha256, native.sha256, 'sidecar source digest');
   return receipt;
 }
 

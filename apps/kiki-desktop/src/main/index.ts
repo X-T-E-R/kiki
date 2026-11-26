@@ -821,7 +821,7 @@ if (!singleInstanceLock) {
   const loadTrayIcon = (): Electron.NativeImage => {
     const candidates = [
       join(process.resourcesPath, 'icons', '32x32.png'),
-      resolve(MAIN_DIR, '../../../kiki-gui/src-tauri/icons/32x32.png'),
+      resolve(MAIN_DIR, '../../icons/32x32.png'),
     ];
     const existing = candidates.find((candidate) => existsSync(candidate));
     const image = existing !== undefined ? nativeImage.createFromPath(existing) : nativeImage.createEmpty();

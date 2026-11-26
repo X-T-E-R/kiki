@@ -113,3 +113,17 @@ export const desktopSshTunnelRunningResponseSchema = /* @__PURE__ */ z.object({
 export const desktopSshDisconnectResponseSchema = /* @__PURE__ */ z.object({
   disconnected: z.literal(true),
 });
+
+export const KIKI_APP_SCHEME = 'kiki-app';
+export const KIKI_APP_ORIGIN = 'kiki-app://localhost';
+
+export const KIKI_APP_CSP =
+  "default-src 'self' kiki-app:; " +
+  "connect-src 'self' kiki-app: https: http: ws: wss: data: blob:; " +
+  "img-src 'self' kiki-app: data: blob: https: http:; " +
+  "media-src 'self' kiki-app: blob: data: https: http:; " +
+  "font-src 'self' kiki-app: data:; " +
+  "style-src 'self' kiki-app: 'unsafe-inline'; " +
+  "script-src 'self' kiki-app:; " +
+  "frame-src 'self' kiki-app: http://*.kiki-document.localhost:* https: http: blob:; " +
+  "worker-src 'self' kiki-app: blob:";

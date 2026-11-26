@@ -8,7 +8,7 @@ This file records evidenced origins and selected resolved runtime dependencies.
 It does not relicense third-party material, replace upstream license texts, or
 certify that a particular release's complete distribution notice set is ready.
 Exact dependency graphs are in pnpm-lock.yaml and
-apps/kiki-gui/src-tauri/Cargo.lock. Bundled assets and optional platform packages
+packages/auth-native/Cargo.lock. Bundled assets and optional platform packages
 vary by build target. Keep the original licenses and notices with shipped copies.
 
 Vendored and adapted source

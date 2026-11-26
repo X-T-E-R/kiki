@@ -87,7 +87,7 @@ export const SHORTCUT_CATALOG: readonly (ShortcutDefinition | FixedShortcutDefin
   { id: 'file-mention', context: 'composer', labelKey: 'shortcuts.fileMention', defaults: [chord('@')], desktopOnly: false, source: 'Composer.tsx (text trigger)', managedBy: 'interaction' },
   { id: 'history-previous', context: 'composer', labelKey: 'composer.history.previous', defaults: [chord('ArrowUp')], desktopOnly: false, source: 'Composer.tsx (menu closed/history cursor)', managedBy: 'interaction' },
   { id: 'history-next', context: 'composer', labelKey: 'composer.history.next', defaults: [chord('ArrowDown')], desktopOnly: false, source: 'Composer.tsx (menu closed/history cursor)', managedBy: 'interaction' },
-  { id: 'desktop-show-hide', context: 'global', labelKey: 'shortcuts.showHide', defaults: [chord('k', 'ctrl', true)], desktopOnly: true, source: 'src-tauri/src/lib.rs', managedBy: 'desktop' },
+  { id: 'desktop-show-hide', context: 'global', labelKey: 'shortcuts.showHide', defaults: [chord('k', 'ctrl', true)], desktopOnly: true, source: 'apps/kiki-desktop/src/main/index.ts', managedBy: 'desktop' },
   { id: 'desktop-zoom-in', context: 'global', labelKey: 'shortcuts.zoomIn', defaults: [chord('=', 'mod')], desktopOnly: true, source: 'App.tsx (desktop zoom)', managedBy: 'desktop' },
   { id: 'desktop-zoom-out', context: 'global', labelKey: 'shortcuts.zoomOut', defaults: [chord('-', 'mod')], desktopOnly: true, source: 'App.tsx (desktop zoom)', managedBy: 'desktop' },
   { id: 'desktop-zoom-reset', context: 'global', labelKey: 'shortcuts.zoomReset', defaults: [chord('0', 'mod')], desktopOnly: true, source: 'App.tsx (desktop zoom)', managedBy: 'desktop' },

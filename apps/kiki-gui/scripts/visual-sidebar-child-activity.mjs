@@ -14,7 +14,7 @@ const fixture = await startFixtureServer({ port: 0, scenario: 'sidebar-child-act
 const fixtureUrl = `http://127.0.0.1:${fixture.http.address().port}`;
 process.env.KIKI_SERVER_URL = fixtureUrl;
 const vite = await createServer({ root, cacheDir: join(out, 'vite-cache'), optimizeDeps: { entries: ['index.html'] },
-  server: { middlewareMode: true, hmr: false, watch: { ignored: ['**/src-tauri/**', '**/.tmp/**'] } }, logLevel: 'error' });
+  server: { middlewareMode: true, hmr: false, watch: { ignored: ['**/.tmp/**'] } }, logLevel: 'error' });
 const http = createHttpServer(vite.middlewares);
 await new Promise((resolve) => http.listen(0, '127.0.0.1', resolve));
 const web = `http://127.0.0.1:${http.address().port}`;

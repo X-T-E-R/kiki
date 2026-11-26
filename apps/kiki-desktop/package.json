@@ -77,7 +77,7 @@
     ],
     "extraResources": [
       {
-        "from": "../kiki-gui/src-tauri/icons",
+        "from": "icons",
         "to": "icons",
         "filter": [
           "**/*"
@@ -101,12 +101,17 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "icon": "../kiki-gui/src-tauri/icons/icon.icns",
+      "icon": "icons/icon.icns",
       "hardenedRuntime": true,
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "dmg": {
+      "artifactName": "${productName}_${version}_${arch}.${ext}"
     },
     "win": {
-      "icon": "../kiki-gui/src-tauri/icons/icon.ico",
+      "icon": "icons/icon.ico",
       "target": [
         "nsis",
         "dir"
@@ -125,13 +130,26 @@
         }
       ]
     },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh",
+      "artifactName": "${productName}_${version}_${arch}-setup.${ext}"
+    },
     "linux": {
       "category": "Development",
-      "icon": "../kiki-gui/src-tauri/icons/icon.png",
+      "icon": "icons/icon.png",
       "target": [
         "AppImage",
         "deb"
       ]
+    },
+    "appImage": {
+      "artifactName": "${productName}_${version}_amd64.${ext}"
+    },
+    "deb": {
+      "artifactName": "${productName}_${version}_amd64.${ext}"
     }
   }
 }

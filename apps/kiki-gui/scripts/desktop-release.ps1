@@ -960,7 +960,7 @@ function Convert-ReceiptBytes($Value) {
 }
 
 function Read-BuildReceipt([string]$Candidate) {
-    # Name matches desktop-build-source.mjs RECEIPT_FILE_NAME.
+    # Name matches desktop-receipt-contract.mjs RECEIPT_FILE_NAME.
     $path = Join-Path $Candidate 'desktop-build-receipt.json'
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Kiki build receipt is missing: $path. The runtime was not changed."
@@ -1840,12 +1840,9 @@ function Resolve-CandidateRoot {
         }
         throw "Kiki desktop settings are invalid: $settingsPath. Reinstall the desktop shortcuts."
     }
-    # Only Tauri's production build embeds frontendDist. A plain `cargo build`
-    # under target/debug resolves build.devUrl instead, so promoting it would
-    # launch an app that waits for the Vite development server and never calls
-    # desktop_connection. Both desktop:build:artifacts and desktop:build emit
-    # the self-contained executable and adjacent sidecar here.
-    return Join-Path (Split-Path -Parent $PSScriptRoot) 'src-tauri\target\release'
+    # Default to the unpacked Electron 44 production candidate emitted by
+    # `pnpm --filter @kiki/desktop run package:dir` (`apps/kiki-desktop/out/win-unpacked`).
+    return Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'kiki-desktop\out\win-unpacked'
 }
 
 function Show-LaunchError([string]$Message) {

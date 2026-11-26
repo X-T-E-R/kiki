@@ -1,6 +1,6 @@
 # Kiki desktop third-party notices
 
-Kiki desktop is built from open-source components. The exact JavaScript and Rust dependency versions shipped by a release are recorded in the repository's `pnpm-lock.yaml` and `apps/kiki-gui/src-tauri/Cargo.lock` at the matching `kiki-v<version>` tag. License identifiers below link to the applicable project license or standard license text.
+Kiki desktop is built from open-source components. The exact JavaScript and native Rust addon dependency versions shipped by a release are recorded in the repository's `pnpm-lock.yaml` and `packages/auth-native/Cargo.lock` at the matching `kiki-v<version>` tag. License identifiers below link to the applicable project license or standard license text.
 
 This static notice covers the bundled sidecar and embedded mobile runtime bundle, major direct client runtime dependencies, and source adapted from recorded donors. Separate mobile host shells (for example Android APKs packaging Termux Bionic Node.js LTS, PRoot subprocess sandboxes, or scrcpy-derived device inspection helpers) carry their own native binary and license notices alongside the embedded Kiki bundle. Release owners must review this notice when either lockfile, a bundled runtime, or adapted source changes.
 
@@ -10,7 +10,7 @@ This static notice covers the bundled sidecar and embedded mobile runtime bundle
 | --- | --- | --- |
 | [Kimi Code](https://github.com/MoonshotAI/kimi-code) | Bundled `kiki-server.exe` sidecar | MIT |
 | [agent-browser 0.38.2](https://github.com/vercel-labs/agent-browser/tree/39a74c70d7759d5a6de7a22c04570bb626bbd081), Kiki `kiki-no-replay-r1` / `kiki-stdio-r1` derivative | Managed browser MCP execution resource embedded in the Windows sidecar; modified transport does not replay indeterminate operations, and Windows MCP output capture follows the CLI's exit rather than inherited background writers. LICENSE, NOTICE, build metadata and patch accompany the extracted resource. | Apache-2.0 |
-| [Tauri](https://github.com/tauri-apps/tauri), updater, dialog, filesystem, notification, and window-state plugins | Windows desktop runtime, NSIS packaging, native integration, and signed updates | Apache-2.0 OR MIT |
+| [Electron](https://github.com/electron/electron), `electron-builder`, and `electron-updater` | Desktop runtime (`@kiki/desktop`), single-binary `ELECTRON_RUN_AS_NODE=1` daemon supervision, NSIS/AppImage/deb/dmg packaging, and signed updates | MIT |
 | [React](https://github.com/facebook/react) and React DOM | Desktop user interface runtime | MIT |
 | [React Router](https://github.com/remix-run/react-router) | Desktop client routing | MIT |
 | [CodeMirror](https://github.com/codemirror) packages | Text and code editing | MIT |

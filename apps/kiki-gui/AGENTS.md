@@ -13,7 +13,7 @@
    - Plugin panels live only in top-right `WorkspacePanelsControl` + `/` completion: `<= 4` `open_plugin_panel` slots render as direct 1-click header buttons (`<= 2` slots expand `@[680px]/center` text labels; `3–4` slots stay compact icon-only with per-plugin corner status dot, folding into `Popover` `<460px`), overflowing `> 4` into a searchable `Popover` (`data-workspace-panels-trigger` / `data-workspace-panels-search`), alongside `[预览]` (`data-preview-toggle`).
    - Working status (`[data-composer-working]`), resident SSH (`[data-composer-ssh-strip]`), and `<PluginStatusCapsules />` (`<= 3` inline, overflowing into a compact `+N` upward `Popover`) sit in `[data-composer-status-line]` below the card.
 
-## Desktop Shell Freeze (`src-tauri`)
+## Desktop Shell Boundary (`apps/kiki-desktop`)
 
-- `apps/kiki-gui/src-tauri` is **frozen against new business logic, state machines, or RPC protocols** (`0.6.1+`). Only security, crash, or critical OS-regression fixes may touch `src-tauri`.
-- Put new shared capabilities (SSH profiles/tunnels, local space metadata, preferences, sync, preview coordination) in TypeScript (`@kiki/kap-server` / `@kiki/agent-core-v2` / `@kiki/session-core`) behind HTTP/WS or the narrow `src/host/host.ts` `HostAdapter` contract so Web, CLI, and the `0.7.0` TypeScript/Electron desktop shell share a single implementation without Rust translation debt.
+- `apps/kiki-desktop` (Electron 44) is the sole desktop shell wrapping `apps/kiki-gui` via the typed preload bridge (`window.__KIKI_ELECTRON__`) and `src/host/host.ts` `HostAdapter` contract.
+- Put shared product capabilities (SSH profiles/tunnels, local space metadata, preferences, sync, preview coordination) in TypeScript (`@kiki/kap-server` / `@kiki/agent-core-v2` / `@kiki/session-core`) behind HTTP/WS or the narrow `HostAdapter` boundary so Web, CLI, and Electron Desktop share one implementation.

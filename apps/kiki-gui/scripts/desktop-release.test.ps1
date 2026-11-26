@@ -404,9 +404,9 @@ if ($hashReads[$desktop] -ne 1 -or $hashReads[$server] -ne 1) { throw 'Candidate
         '-ExpectedCommit', $expectedCommit
     ) | Out-Null
     $defaultSettings = Get-Content -LiteralPath (Join-Path $defaultRuntime 'controller/settings.json') -Raw | ConvertFrom-Json
-    $expectedDefaultCandidate = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $PSScriptRoot) 'src-tauri\target\release'))
-    Assert-Equal $expectedDefaultCandidate ([string]$defaultSettings.candidateRoot) 'Default promotion did not select the self-contained Tauri production artifact.'
-    Assert-True (-not ([string]$defaultSettings.candidateRoot -match 'target[\\/]debug')) 'Default promotion still accepts the Vite-dependent Cargo debug artifact.'
+    $expectedDefaultCandidate = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'kiki-desktop\out\win-unpacked'))
+    Assert-Equal $expectedDefaultCandidate ([string]$defaultSettings.candidateRoot) 'Default promotion did not select the unpacked Electron production artifact.'
+    Assert-True (-not ([string]$defaultSettings.candidateRoot -match 'target[\\/]debug')) 'Default promotion still accepts a debug artifact.'
     Assert-Equal $expectedCommit ([string]$defaultSettings.expectedCommit) 'Default shortcut installation dropped ExpectedCommit.'
 
     $manifestBytesBeforeOmitted = [IO.File]::ReadAllBytes($manifestPath)
@@ -1131,7 +1131,235 @@ foreach ($mustExist in @(
 '@, (New-Object Text.UTF8Encoding($false)))
     Invoke-Controller @('-HotSwitchPath', $hotSwitchPath, '-ControllerPath', $controller, '-RuntimePath', $runtimeRoot, '-V1ReleaseId', $secondReleaseId, '-UnpackedV2ReleaseId', $unpackedReleaseId, '-Commit', $expectedCommit) 0 $v2UnpackedSwitchRunner | Out-Null
 
-    Write-Output 'desktop-release tests passed: initial, repeated, fail-closed, verification, cli-publish, installed-controller, production-default, shortcut, main-runtime-shortcut, receipt, legacy-launch, hot-switch-guard, child-home-inference, autostart-sync, flat-v2, and unpacked-electron-v2 rollback/subprocess cases.'
+    # --- Foreground Self-Termination Guard & -CanaryOnly verification ---
+    $guardUnitRunner = Join-Path $testRoot 'hot-switch-guard-unit.ps1'
+    [IO.File]::WriteAllText($guardUnitRunner, @'
+param([string]$HotSwitchPath, [string]$ControllerPath, [string]$RuntimePath)
+$ErrorActionPreference = 'Stop'
+. $ControllerPath -Action Launch
+$runtime = [IO.Path]::GetFullPath($RuntimePath)
+$callerDesktopBundled = $false
+$callerRuntimeManaged = $false
+$ast = [Management.Automation.Language.Parser]::ParseFile($HotSwitchPath, [ref]$null, [ref]$null)
+$fnNames = @('Get-ProcessAncestorChain', 'Assert-NotForegroundSelfTermination')
+foreach ($definition in $ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $fnNames }, $false)) {
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
+
+$activeDesktop = Join-Path (Join-Path $runtime 'active') 'kiki-desktop.exe'
+$procTable = @(
+    [pscustomobject]@{ ProcessId = 10; ParentProcessId = 4; Name = 'explorer.exe'; ExecutablePath = 'C:\Windows\explorer.exe'; CommandLine = 'explorer.exe' },
+    [pscustomobject]@{ ProcessId = 200; ParentProcessId = 10; Name = 'kiki-desktop.exe'; ExecutablePath = $activeDesktop; CommandLine = "`"$activeDesktop`"" },
+    [pscustomobject]@{ ProcessId = 201; ParentProcessId = 200; Name = 'kiki-desktop.exe'; ExecutablePath = $activeDesktop; CommandLine = "`"$activeDesktop`" server-entry.mjs serve" },
+    [pscustomobject]@{ ProcessId = 202; ParentProcessId = 201; Name = 'bash.exe'; ExecutablePath = 'C:\Program Files\Git\bin\bash.exe'; CommandLine = 'bash.exe' },
+    [pscustomobject]@{ ProcessId = 203; ParentProcessId = 202; Name = 'powershell.exe'; ExecutablePath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'; CommandLine = 'powershell.exe desktop-hot-switch.ps1' },
+    [pscustomobject]@{ ProcessId = 300; ParentProcessId = 10; Name = 'pwsh.exe'; ExecutablePath = 'C:\Program Files\PowerShell\7\pwsh.exe'; CommandLine = 'pwsh.exe' },
+    [pscustomobject]@{ ProcessId = 400; ParentProcessId = 401; Name = 'cycle-a.exe'; ExecutablePath = 'C:\cycle-a.exe'; CommandLine = 'cycle-a' },
+    [pscustomobject]@{ ProcessId = 401; ParentProcessId = 400; Name = 'cycle-b.exe'; ExecutablePath = 'C:\cycle-b.exe'; CommandLine = 'cycle-b' }
+)
+
+# 1. External terminal outside Kiki must pass cleanly.
+Assert-NotForegroundSelfTermination -TargetPids @(200, 201) -DesktopBundledEnv $false -RuntimeManagedEnv $false -CurrentPid 300 -RuntimeDir $runtime -ProcessTable $procTable
+
+# 2. Cycle in Win32_Process parent table must terminate without infinite loop.
+$cycleChain = @(Get-ProcessAncestorChain -LeafPid 400 -ProcessTable $procTable)
+if ($cycleChain.Count -ne 1 -or [int]$cycleChain[0].ProcessId -ne 401) {
+    throw "Expected cycle-safe ancestor walk of length 1, got $($cycleChain.Count)."
+}
+
+# 3. Descendant of target server/desktop PID must fail closed instructing -Detach.
+$threwAncestorTarget = $false
+try {
+    Assert-NotForegroundSelfTermination -TargetPids @(999, 201) -DesktopBundledEnv $false -RuntimeManagedEnv $false -CurrentPid 203 -RuntimeDir 'C:\UnrelatedRuntime' -ProcessTable $procTable
+} catch {
+    $threwAncestorTarget = $_.Exception.Message.Contains('-Detach') -and $_.Exception.Message.Contains('PID 201')
+}
+if (-not $threwAncestorTarget) { throw 'Guard did not reject descendant of target server PID 201.' }
+
+# 4. Descendant of active\ executable (even before target PIDs are discovered) must fail closed.
+$threwRuntimePath = $false
+try {
+    Assert-NotForegroundSelfTermination -TargetPids @() -DesktopBundledEnv $false -RuntimeManagedEnv $false -CurrentPid 203 -RuntimeDir $runtime -ProcessTable $procTable
+} catch {
+    $threwRuntimePath = $_.Exception.Message.Contains('-Detach') -and $_.Exception.Message.Contains('kiki-desktop.exe')
+}
+if (-not $threwRuntimePath) { throw 'Guard did not reject descendant of runtime active\ executable.' }
+
+# 5. Bundled / runtime-managed caller env must fail closed even if parent tree was detached.
+foreach ($envPair in @(@($true, $false), @($false, $true))) {
+    $threwEnv = $false
+    try {
+        Assert-NotForegroundSelfTermination -TargetPids @() -DesktopBundledEnv $envPair[0] -RuntimeManagedEnv $envPair[1] -CurrentPid 300 -RuntimeDir $runtime -ProcessTable $procTable
+    } catch {
+        $threwEnv = $_.Exception.Message.Contains('-Detach')
+    }
+    if (-not $threwEnv) { throw "Guard did not reject managed caller env ($($envPair -join ','))." }
+}
+'@, (New-Object Text.UTF8Encoding($false)))
+    Invoke-Controller @('-HotSwitchPath', $hotSwitchPath, '-ControllerPath', $controller, '-RuntimePath', $runtimeRoot) 0 $guardUnitRunner | Out-Null
+
+    # End-to-end process test for foreground env guard + -CanaryOnly (both passing and failing canary executables).
+    $canaryMockExe = Join-Path $testRoot 'mock-canary-server.exe'
+    $canaryMockCs = @"
+using System;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Diagnostics;
+using System.Text;
+using System.Threading;
+
+public static class Program {
+    public static int Main(string[] args) {
+        string joined = string.Join(" ", args);
+        if (Environment.GetEnvironmentVariable("MOCK_CANARY_FAIL") == "1") {
+            return 42;
+        }
+        string home = Environment.GetEnvironmentVariable("KIKI_HOME");
+        if (string.IsNullOrEmpty(home) || !joined.Contains("serve")) {
+            return 3;
+        }
+        if (Environment.GetEnvironmentVariable("ELECTRON_RUN_AS_NODE") == "1" && !joined.Contains("--max-old-space-size=8192")) {
+            Console.Error.WriteLine("Missing --max-old-space-size=8192 on CLI argv");
+            return 4;
+        }
+        string buildId = Environment.GetEnvironmentVariable("KIKI_BUILD_ID") ?? "";
+        string token = File.ReadAllText(Path.Combine(home, "server.local-owner")).Trim();
+        TcpListener probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+
+        HttpListener listener = new HttpListener();
+        listener.Prefixes.Add("http://127.0.0.1:" + port + "/");
+        listener.Start();
+
+        string instDir = Path.Combine(home, "server", "instances");
+        Directory.CreateDirectory(instDir);
+        int pid = Process.GetCurrentProcess().Id;
+        string instJson = "{\"pid\":" + pid + ",\"host\":\"127.0.0.1\",\"port\":" + port + ",\"server_id\":\"canary-srv-1\"}";
+        File.WriteAllText(Path.Combine(instDir, "canary.json"), instJson, new UTF8Encoding(false));
+
+        DateTime deadline = DateTime.UtcNow.AddSeconds(15);
+        IAsyncResult pending = null;
+        while (DateTime.UtcNow < deadline) {
+            if (pending == null) {
+                pending = listener.BeginGetContext(null, null);
+            }
+            if (!pending.AsyncWaitHandle.WaitOne(200)) continue;
+            HttpListenerContext ctx = listener.EndGetContext(pending);
+            pending = null;
+            string auth = ctx.Request.Headers["Authorization"] ?? "";
+            if (auth != "Bearer " + token) {
+                ctx.Response.StatusCode = 401;
+                ctx.Response.ContentLength64 = 0;
+                ctx.Response.Close();
+                continue;
+            }
+            string path = ctx.Request.Url.AbsolutePath;
+            string body = "{\"code\":404,\"msg\":\"not found\"}";
+            if (path == "/api/meta") {
+                body = "{\"code\":0,\"msg\":\"ok\",\"data\":{\"protocol_version\":\"1\",\"server_version\":\"0.7.0\",\"build_id\":\"" + buildId + "\",\"server_id\":\"canary-srv-1\",\"server_home_id\":\"00000000-0000-4000-8000-000000000001\",\"current_space_id\":\"main\"}}";
+            } else if (path == "/api/healthz") {
+                body = "{\"code\":0,\"msg\":\"ok\",\"data\":{\"ok\":true}}";
+            } else if ((path == "/api/shutdown" || path == "/api/desktop-lifecycle") && ctx.Request.HttpMethod == "POST") {
+                body = "{\"code\":0,\"msg\":\"ok\",\"data\":{\"accepted\":true}}";
+                byte[] respStop = Encoding.UTF8.GetBytes(body);
+                ctx.Response.StatusCode = 200;
+                ctx.Response.ContentType = "application/json; charset=utf-8";
+                ctx.Response.ContentLength64 = respStop.Length;
+                using (Stream outStop = ctx.Response.OutputStream) outStop.Write(respStop, 0, respStop.Length);
+                listener.Stop();
+                return 0;
+            }
+            byte[] buf = Encoding.UTF8.GetBytes(body);
+            ctx.Response.StatusCode = 200;
+            ctx.Response.ContentType = "application/json; charset=utf-8";
+            ctx.Response.ContentLength64 = buf.Length;
+            using (Stream outStream = ctx.Response.OutputStream) outStream.Write(buf, 0, buf.Length);
+        }
+        listener.Stop();
+        return 0;
+    }
+}
+"@
+    Add-Type -TypeDefinition $canaryMockCs -OutputAssembly $canaryMockExe -OutputType ConsoleApplication -ReferencedAssemblies 'System.dll', 'System.Net.dll'
+
+    $canaryV2Candidate = Join-Path $testRoot 'canary-v2-candidate'
+    $canaryV2UnpackedEntryDir = Join-Path $canaryV2Candidate 'resources\app.asar.unpacked\dist\server'
+    [IO.Directory]::CreateDirectory($canaryV2UnpackedEntryDir) | Out-Null
+    [IO.Directory]::CreateDirectory((Join-Path $canaryV2Candidate 'resources')) | Out-Null
+    Copy-Item -LiteralPath $canaryMockExe -Destination (Join-Path $canaryV2Candidate 'kiki-desktop.exe') -Force
+    [IO.File]::WriteAllText((Join-Path $canaryV2Candidate 'resources\app.asar'), 'asar-canary', (New-Object Text.UTF8Encoding($false)))
+    $canaryEntryPath = Join-Path $canaryV2UnpackedEntryDir 'server-entry.mjs'
+    [IO.File]::WriteAllText($canaryEntryPath, 'export {};', (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $canaryV2UnpackedEntryDir 'native-addons.json'), '{"format":1,"packages":[]}', (New-Object Text.UTF8Encoding($false)))
+    $canaryCommit = 'c' * 40
+    $canaryReceiptOut = & node $receiptWriter --candidate-dir $canaryV2Candidate --source-commit $canaryCommit 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        throw "write-build-receipt.mjs failed for canary candidate:`n$canaryReceiptOut"
+    }
+    $canaryReceiptParsed = Get-Content -LiteralPath (Join-Path $canaryV2Candidate 'desktop-build-receipt.json') -Raw | ConvertFrom-Json
+    $canaryExeSha = [string]$canaryReceiptParsed.files.'kiki-desktop.exe'.sha256
+    $canaryEntrySha = [string]$canaryReceiptParsed.files.'server-entry.mjs'.sha256
+    $canaryRelId = '{0}-{1}' -f $canaryExeSha.Substring(0, 24), $canaryEntrySha.Substring(0, 24)
+
+    $guardRt = Join-Path $testRoot 'guard-e2e-runtime'
+    $guardHome = Join-Path $testRoot 'guard-e2e-home'
+    [IO.Directory]::CreateDirectory($guardHome) | Out-Null
+    $prevBundled = $env:KIKI_DESKTOP_BUNDLED
+    $prevManaged = $env:KIKI_RUNTIME_MANAGED
+    $prevMockFail = $env:MOCK_CANARY_FAIL
+    try {
+        $env:KIKI_DESKTOP_BUNDLED = '1'
+        $env:KIKI_RUNTIME_MANAGED = '1'
+        Remove-Item Env:MOCK_CANARY_FAIL -ErrorAction SilentlyContinue
+
+        # Foreground invocation inside a managed Kiki session MUST fail closed before creating hot-switch.json or lock mutations.
+        $fgGuardOut = Invoke-Controller @(
+            '-RuntimeRoot', $guardRt,
+            '-KikiHome', $guardHome,
+            '-CandidateRoot', $canaryV2Candidate,
+            '-ExpectedCommit', $canaryCommit
+        ) 1 $hotSwitchPath
+        Assert-True ($fgGuardOut.Contains('Refusing foreground hot-switch') -and $fgGuardOut.Contains('-Detach')) "Foreground self-termination guard did not reject managed session.`n$fgGuardOut"
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $guardRt 'hot-switch.json'))) 'Foreground guard wrote hot-switch.json before rejecting.'
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $guardRt 'current.json'))) 'Foreground guard promoted current.json before rejecting.'
+
+        # -CanaryOnly MUST succeed even from inside a managed Kiki session, emit JSON receipt, and NOT promote or write hot-switch.json!
+        $canaryOkRaw = Invoke-Controller @(
+            '-RuntimeRoot', $guardRt,
+            '-KikiHome', $guardHome,
+            '-CandidateRoot', $canaryV2Candidate,
+            '-CanaryOnly',
+            '-CanaryTimeoutSeconds', '15'
+        ) 0 $hotSwitchPath
+        $canaryOkObj = $canaryOkRaw | ConvertFrom-Json
+        Assert-Equal 'canary_only' ([string]$canaryOkObj.mode) '-CanaryOnly did not report canary_only mode.'
+        Assert-Equal $true ([bool]$canaryOkObj.passed) '-CanaryOnly did not report passed=true.'
+        Assert-Equal $canaryRelId ([string]$canaryOkObj.releaseId) '-CanaryOnly reported wrong releaseId.'
+        Assert-Equal $canaryCommit ([string]$canaryOkObj.canary.build_id) '-CanaryOnly did not verify canary build_id.'
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $guardRt 'hot-switch.json'))) '-CanaryOnly created hot-switch.json.'
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $guardRt 'current.json'))) '-CanaryOnly promoted current.json.'
+
+        # Failing canary with -CanaryOnly MUST exit non-zero cleanly without modifying runtime.
+        $env:MOCK_CANARY_FAIL = '1'
+        $canaryFailOut = Invoke-Controller @(
+            '-RuntimeRoot', $guardRt,
+            '-KikiHome', $guardHome,
+            '-CandidateRoot', $canaryV2Candidate,
+            '-CanaryOnly',
+            '-CanaryTimeoutSeconds', '10'
+        ) 1 $hotSwitchPath
+        Assert-True ($canaryFailOut.Contains('Canary check failed; live desktop was not modified')) "-CanaryOnly failure did not report clean non-modification.`n$canaryFailOut"
+    }
+    finally {
+        if ($null -eq $prevBundled) { Remove-Item Env:KIKI_DESKTOP_BUNDLED -ErrorAction SilentlyContinue } else { $env:KIKI_DESKTOP_BUNDLED = $prevBundled }
+        if ($null -eq $prevManaged) { Remove-Item Env:KIKI_RUNTIME_MANAGED -ErrorAction SilentlyContinue } else { $env:KIKI_RUNTIME_MANAGED = $prevManaged }
+        if ($null -eq $prevMockFail) { Remove-Item Env:MOCK_CANARY_FAIL -ErrorAction SilentlyContinue } else { $env:MOCK_CANARY_FAIL = $prevMockFail }
+    }
+
+    Write-Output 'desktop-release tests passed: initial, repeated, fail-closed, verification, cli-publish, installed-controller, production-default, shortcut, main-runtime-shortcut, receipt, legacy-launch, hot-switch-guard, child-home-inference, autostart-sync, flat-v2, unpacked-electron-v2 rollback/subprocess, foreground-self-termination-guard, and canary-only cases.'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot) {

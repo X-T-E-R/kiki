@@ -3,7 +3,7 @@
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- Bundled kiki-server is a Node.js SEA; V8 requires JIT pages under Hardened Runtime -->
+  <!-- Electron renderer/utility processes and ELECTRON_RUN_AS_NODE=1 kiki-server require V8 JIT under Hardened Runtime -->
   <key>com.apple.security.cs.allow-jit</key>
   <true/>
 
@@ -11,11 +11,11 @@
   <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
   <true/>
 
-  <!-- Node.js SEA V8 requires executable page protection disabled under Hardened Runtime -->
+  <!-- V8 requires executable page protection disabled under Hardened Runtime -->
   <key>com.apple.security.cs.disable-executable-page-protection</key>
   <true/>
 
-  <!-- Bundled native addons (.node) may be signed outside our Team -->
+  <!-- Unpacked native addons (.node) may be signed outside our Team -->
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
 

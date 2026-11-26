@@ -526,7 +526,7 @@ jobs:
             'cli-native/install.sh.sha256'
           )
           shopt -s nullglob
-          for asset in release-candidate/*.AppImage release-candidate/*.AppImage.sha256 release-candidate/*.deb release-candidate/*.deb.sha256 release-candidate/*.dmg release-candidate/*.dmg.sha256 cli-native/kiki-linux-* cli-native/kiki-darwin-* android-candidate/*; do
+          for asset in release-candidate/*.yml release-candidate/*.blockmap release-candidate/*.AppImage release-candidate/*.AppImage.sha256 release-candidate/*.deb release-candidate/*.deb.sha256 release-candidate/*.dmg release-candidate/*.dmg.sha256 cli-native/kiki-linux-* cli-native/kiki-darwin-* android-candidate/*; do
             assets+=("$asset")
           done
           shopt -u nullglob
@@ -593,7 +593,7 @@ jobs:
           # Compare every desktop bundle, CLI executable, and adjacent checksum
           # with the exact bytes validated before the draft was created.
           shopt -s nullglob
-          for asset in release-candidate/*.AppImage release-candidate/*.AppImage.sha256 release-candidate/*.deb release-candidate/*.deb.sha256 release-candidate/*.dmg release-candidate/*.dmg.sha256 cli-native/kiki-linux-* cli-native/kiki-darwin-* android-candidate/*; do
+          for asset in release-candidate/*.yml release-candidate/*.blockmap release-candidate/*.AppImage release-candidate/*.AppImage.sha256 release-candidate/*.deb release-candidate/*.deb.sha256 release-candidate/*.dmg release-candidate/*.dmg.sha256 cli-native/kiki-linux-* cli-native/kiki-darwin-* android-candidate/*; do
             name="$(basename "$asset")"
             if [ ! -f "$download/$name" ] || ! cmp -s "$asset" "$download/$name"; then
               echo "Draft asset is missing or differs: $name" >&2

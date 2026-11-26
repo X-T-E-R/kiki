@@ -11,6 +11,7 @@ param(
     [switch]$InspectOnly,
     [switch]$AppScopeOnly,
     [switch]$CanaryCheck,
+    [switch]$CanaryOnly,
     [ValidateRange(0, 86400)][int]$CanaryTimeoutSeconds = 0,
     [ValidateRange(0, 300)][int]$DetachDelaySeconds = 5,
     [ValidateRange(1, 86400)][int]$SettleSeconds = 600,
@@ -25,10 +26,15 @@ param(
 if ($Rollback -and -not $Recover) {
     throw '-Rollback can only be used together with -Recover.'
 }
-if ($InspectOnly -and ($Recover -or $Detach)) {
-    throw '-InspectOnly cannot be combined with -Recover or -Detach.'
+if ($InspectOnly -and ($Recover -or $Detach -or $CanaryOnly)) {
+    throw '-InspectOnly cannot be combined with -Recover, -Detach, or -CanaryOnly.'
+}
+if ($CanaryOnly -and ($Recover -or $Detach)) {
+    throw '-CanaryOnly cannot be combined with -Recover or -Detach.'
 }
 
+$callerDesktopBundled = ($env:KIKI_DESKTOP_BUNDLED -eq '1')
+$callerRuntimeManaged = ($env:KIKI_RUNTIME_MANAGED -eq '1')
 $runtime = [IO.Path]::GetFullPath($RuntimeRoot)
 $homePath = [IO.Path]::GetFullPath($KikiHome)
 $candidate = $CandidateRoot
@@ -1074,7 +1080,7 @@ function Invoke-CanaryCheck([string]$ServerExePath, [string]$ExpectedBuildId = '
         $psi = New-Object Diagnostics.ProcessStartInfo
         $psi.FileName = $ServerExePath
         $psi.Arguments = if (-not [string]::IsNullOrWhiteSpace($ServerEntryPath)) {
-            ('{0} serve --port 0 --idle-exit 2m' -f (Format-WindowsProcessArgument $ServerEntryPath))
+            ('--max-old-space-size=8192 {0} serve --port 0 --idle-exit 2m' -f (Format-WindowsProcessArgument $ServerEntryPath))
         } else {
             'serve --port 0 --idle-exit 2m'
         }
@@ -1869,6 +1875,131 @@ function Start-AllSpaces([object[]]$SpaceStates) {
     return $launchers
 }
 
+function Resolve-HotSwitchCandidateSpec([string]$ExplicitCandidate, [string]$ExplicitCommit) {
+    $resolvedCand = $ExplicitCandidate
+    $resolvedCommit = $ExplicitCommit
+    if ([string]::IsNullOrWhiteSpace($resolvedCand)) {
+        $controllerSettingsPath = Join-Path $PSScriptRoot 'settings.json'
+        if (Test-Path -LiteralPath $controllerSettingsPath -PathType Leaf) {
+            $controllerSettings = Get-Content -LiteralPath $controllerSettingsPath -Raw | ConvertFrom-Json
+            if ($controllerSettings.schemaVersion -eq 1 -and -not [string]::IsNullOrWhiteSpace($controllerSettings.candidateRoot)) {
+                $resolvedCand = [string]$controllerSettings.candidateRoot
+                if ([string]::IsNullOrWhiteSpace($resolvedCommit) -and -not [string]::IsNullOrWhiteSpace($controllerSettings.expectedCommit)) {
+                    $resolvedCommit = [string]$controllerSettings.expectedCommit
+                }
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedCand)) {
+        $defaultElectronUnpacked = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'kiki-desktop\out\win-unpacked'
+        if (Test-Path -LiteralPath (Join-Path $defaultElectronUnpacked 'desktop-build-receipt.json') -PathType Leaf) {
+            $resolvedCand = $defaultElectronUnpacked
+        }
+    }
+    return [pscustomobject]@{
+        CandidateRoot = $resolvedCand
+        ExpectedCommit = $resolvedCommit
+    }
+}
+
+function Get-ProcessAncestorChain([int]$LeafPid = $PID, [object[]]$ProcessTable = $null) {
+    $rows = if ($null -ne $ProcessTable) {
+        @($ProcessTable)
+    } else {
+        @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    }
+    $byPid = @{}
+    foreach ($row in $rows) {
+        if ($null -eq $row) { continue }
+        $procId = [int](Get-ObjectProperty $row 'ProcessId')
+        if ($procId -gt 0 -and -not $byPid.ContainsKey($procId)) {
+            $byPid[$procId] = $row
+        }
+    }
+    $visited = New-Object 'System.Collections.Generic.HashSet[int]'
+    $ancestors = New-Object 'System.Collections.Generic.List[object]'
+    $curPid = $LeafPid
+    while ($curPid -gt 0 -and $visited.Add($curPid)) {
+        if (-not $byPid.ContainsKey($curPid)) { break }
+        $curRow = $byPid[$curPid]
+        $parentPid = [int](Get-ObjectProperty $curRow 'ParentProcessId')
+        if ($parentPid -le 0 -or $parentPid -eq $curPid -or $visited.Contains($parentPid)) { break }
+        if ($byPid.ContainsKey($parentPid)) {
+            $parentRow = $byPid[$parentPid]
+            $ancestors.Add([pscustomobject]@{
+                ProcessId = $parentPid
+                ParentProcessId = [int](Get-ObjectProperty $parentRow 'ParentProcessId')
+                Name = [string](Get-ObjectProperty $parentRow 'Name')
+                ExecutablePath = [string](Get-ObjectProperty $parentRow 'ExecutablePath')
+                CommandLine = [string](Get-ObjectProperty $parentRow 'CommandLine')
+            })
+        } else {
+            $ancestors.Add([pscustomobject]@{
+                ProcessId = $parentPid
+                ParentProcessId = 0
+                Name = ''
+                ExecutablePath = ''
+                CommandLine = ''
+            })
+            break
+        }
+        $curPid = $parentPid
+    }
+    return @($ancestors.ToArray())
+}
+
+function Assert-NotForegroundSelfTermination(
+    [int[]]$TargetPids = @(),
+    [bool]$DesktopBundledEnv = $callerDesktopBundled,
+    [bool]$RuntimeManagedEnv = $callerRuntimeManaged,
+    [int]$CurrentPid = $PID,
+    [string]$RuntimeDir = $runtime,
+    [object[]]$ProcessTable = $null
+) {
+    $reasons = New-Object 'System.Collections.Generic.List[string]'
+    if ($DesktopBundledEnv) {
+        $reasons.Add('KIKI_DESKTOP_BUNDLED=1 in caller environment')
+    }
+    if ($RuntimeManagedEnv) {
+        $reasons.Add('KIKI_RUNTIME_MANAGED=1 in caller environment')
+    }
+
+    $targetSet = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($tp in @($TargetPids)) {
+        if ($tp -gt 0) { $null = $targetSet.Add([int]$tp) }
+    }
+
+    $activePrefix = ''
+    $releasesPrefix = ''
+    if (-not [string]::IsNullOrWhiteSpace($RuntimeDir)) {
+        $rtFull = [IO.Path]::GetFullPath($RuntimeDir).TrimEnd('\', '/')
+        $activePrefix = $rtFull + '\active\'
+        $releasesPrefix = $rtFull + '\releases\'
+    }
+
+    $ancestors = @(Get-ProcessAncestorChain $CurrentPid $ProcessTable)
+    foreach ($anc in $ancestors) {
+        $ancPid = [int]$anc.ProcessId
+        $ancLabel = if (-not [string]::IsNullOrWhiteSpace($anc.Name)) { "{0} (PID {1})" -f $anc.Name, $ancPid } else { "PID $ancPid" }
+        if ($targetSet.Contains($ancPid)) {
+            $reasons.Add("ancestor $ancLabel is a target Kiki process")
+            continue
+        }
+        $exePath = [string]$anc.ExecutablePath
+        if (-not [string]::IsNullOrWhiteSpace($exePath)) {
+            $normExe = $exePath.Replace('/', '\')
+            if ((-not [string]::IsNullOrWhiteSpace($activePrefix) -and $normExe.StartsWith($activePrefix, [StringComparison]::OrdinalIgnoreCase)) -or
+                (-not [string]::IsNullOrWhiteSpace($releasesPrefix) -and $normExe.StartsWith($releasesPrefix, [StringComparison]::OrdinalIgnoreCase))) {
+                $reasons.Add("ancestor $ancLabel is running from $RuntimeDir")
+            }
+        }
+    }
+
+    if ($reasons.Count -gt 0) {
+        throw ("Refusing foreground hot-switch ({0}): stopping Kiki in the foreground would terminate this process mid-switch before the new release starts. Re-run with -Detach (or use -CanaryOnly / -InspectOnly for read-only verification)." -f ($reasons -join '; '))
+    }
+}
+
 if ($InspectOnly) {
     $discoveredSpaces = @(Discover-RuntimeSpaces -AllowMissingTokens)
     $primarySpace = $discoveredSpaces[0]
@@ -1968,6 +2099,82 @@ if ($InspectOnly) {
     Write-Output ($inspectOutput | ConvertTo-Json -Depth 10)
     if ($inspectFailed) { exit 1 }
     return
+}
+
+if ($CanaryOnly) {
+    $resolvedSpec = Resolve-HotSwitchCandidateSpec $candidate $commit
+    $candPath = $resolvedSpec.CandidateRoot
+    $candCommit = $resolvedSpec.ExpectedCommit
+    $targetKind = $null
+    $targetPath = $null
+    $releaseId = $null
+    $sourceCommit = $null
+    $canaryExe = $null
+    $canaryEntry = ''
+
+    if (-not [string]::IsNullOrWhiteSpace($candPath)) {
+        $candFull = Get-FullPath $candPath
+        $receiptObj = Read-BuildReceipt $candFull
+        $checkCommit = if (-not [string]::IsNullOrWhiteSpace($candCommit)) { $candCommit } else { [string](Get-ObjectProperty $receiptObj 'sourceCommit') }
+        $verifiedCand = Read-PromotionCandidate $candFull $checkCommit
+        $targetKind = 'candidate'
+        $targetPath = $verifiedCand.Path
+        $releaseId = [string]$verifiedCand.ReleaseId
+        $sourceCommit = [string]$verifiedCand.GitSha
+        $canaryExe = if ($verifiedCand.SchemaVersion -eq 2) { $verifiedCand.Desktop.Path } else { $verifiedCand.Sidecar.Path }
+        $canaryEntry = if ($verifiedCand.SchemaVersion -eq 2) { $verifiedCand.ServerEntry.Path } else { '' }
+    } else {
+        $currentManifest = Read-CurrentManifest $runtime -AllowMissing
+        if ($null -eq $currentManifest -or [string]::IsNullOrWhiteSpace([string]$currentManifest.releaseId)) {
+            throw 'Pass -CandidateRoot with the verified desktop build directory (or stage a release in current.json first).'
+        }
+        $stagedDir = Join-Path (Join-Path $runtime 'releases') ([string]$currentManifest.releaseId)
+        if (-not (Test-Path -LiteralPath $stagedDir -PathType Container)) {
+            throw ("Staged release directory does not exist: {0}" -f $stagedDir)
+        }
+        $relManifest = Read-ReleaseManifest $stagedDir
+        if (-not [string]::IsNullOrWhiteSpace($candCommit) -and [string]$relManifest.gitSha -cne $candCommit) {
+            throw ("Staged release {0} commit {1} does not match ExpectedCommit {2}." -f $relManifest.releaseId, $relManifest.gitSha, $candCommit)
+        }
+        $targetKind = 'staged'
+        $targetPath = $stagedDir
+        $releaseId = [string]$relManifest.releaseId
+        $sourceCommit = [string]$relManifest.gitSha
+        if ([int]$relManifest.schemaVersion -eq 2) {
+            $canaryExe = Join-Path $stagedDir ([string]$relManifest.desktop.file)
+            $entryRel = [string](Get-ObjectProperty $relManifest.serverEntry 'file')
+            $canaryEntry = Join-Path $stagedDir ($entryRel.Replace('/', '\'))
+        } else {
+            $canaryExe = Join-Path $stagedDir ([string]$relManifest.sidecar.file)
+            $canaryEntry = ''
+        }
+    }
+
+    try {
+        $canaryResult = Invoke-CanaryCheck $canaryExe $sourceCommit $CanaryTimeoutSeconds $canaryEntry
+    } catch {
+        throw ("Canary check failed; live desktop was not modified: {0}" -f $_.Exception.Message)
+    }
+
+    $canaryReceipt = [ordered]@{
+        schemaVersion = 1
+        mode = 'canary_only'
+        checkedAtUtc = [DateTime]::UtcNow.ToString('o')
+        runtimeRoot = $runtime
+        kikiHome = $homePath
+        targetKind = $targetKind
+        targetPath = $targetPath
+        releaseId = $releaseId
+        sourceCommit = $sourceCommit
+        passed = $true
+        canary = $canaryResult
+    }
+    Write-Output ($canaryReceipt | ConvertTo-Json -Depth 10)
+    exit 0
+}
+
+if (-not $Detach -and -not $Recover) {
+    Assert-NotForegroundSelfTermination
 }
 
 [IO.Directory]::CreateDirectory($runtime) | Out-Null
@@ -2201,18 +2408,9 @@ try {
         return
     }
 
-    if (!$candidate) {
-        $controllerSettingsPath = Join-Path $PSScriptRoot 'settings.json'
-        if (Test-Path -LiteralPath $controllerSettingsPath -PathType Leaf) {
-            $controllerSettings = Get-Content -LiteralPath $controllerSettingsPath -Raw | ConvertFrom-Json
-            if ($controllerSettings.schemaVersion -eq 1 -and -not [string]::IsNullOrWhiteSpace($controllerSettings.candidateRoot)) {
-                $candidate = [string]$controllerSettings.candidateRoot
-                if ([string]::IsNullOrWhiteSpace($commit) -and -not [string]::IsNullOrWhiteSpace($controllerSettings.expectedCommit)) {
-                    $commit = [string]$controllerSettings.expectedCommit
-                }
-            }
-        }
-    }
+    $resolvedSwitchSpec = Resolve-HotSwitchCandidateSpec $candidate $commit
+    $candidate = $resolvedSwitchSpec.CandidateRoot
+    $commit = $resolvedSwitchSpec.ExpectedCommit
     if (!$candidate) { throw 'Pass -CandidateRoot with the verified desktop build directory.' }
     $verified = Read-PromotionCandidate $candidate $commit
     $expectedBuildId = [string]$verified.GitSha
@@ -2265,6 +2463,14 @@ try {
     }
 
     $allShells = @($spacePlans | ForEach-Object { $_.shells } | Where-Object { $null -ne $_ })
+    if (-not $Detach) {
+        $foregroundTargetPids = @(
+            @($spacePlans | ForEach-Object { [int]$_.server.process.Id }) +
+            @($spacePlans | ForEach-Object { [int](Get-ObjectProperty $_ 'launcherPid') } | Where-Object { $_ -gt 0 }) +
+            @($allShells | ForEach-Object { [int]$_.Id })
+        )
+        Assert-NotForegroundSelfTermination $foregroundTargetPids
+    }
     $primaryPreSnapshot = Get-LiveInspectionSnapshot $old $primarySpace.shells
     $script:report = [ordered]@{
         schemaVersion = 1

@@ -12,10 +12,9 @@ needs review.
    and product checks pass. Draft `.github/release-notes/kiki-<version>.md` for
    readers; include changed setup steps and known limitations.
 2. Run `node apps/kiki-gui/scripts/desktop-version.mjs set <version>` to keep
-   the CLI, GUI, Tauri, Cargo, and `system.yaml` versions together. Update the
-   local `kiki-desktop` entry in `apps/kiki-gui/src-tauri/Cargo.lock`, then run
-   `pnpm --filter @kiki/gui run desktop:version:check` and confirm
-   `pnpm install --frozen-lockfile` accepts the current lockfile.
+   the CLI, GUI, Electron desktop (`@kiki/desktop`), and `system.yaml` versions
+   together, then run `pnpm --filter @kiki/gui run desktop:version:check` and
+   confirm `pnpm install --frozen-lockfile` accepts the current lockfile.
 3. Commit and push the version and notes to `kiki`. Wait for the branch build
    to pass, then tag that exact commit `kiki-v<version>`. Never reuse an
    existing release tag or overwrite a published release.

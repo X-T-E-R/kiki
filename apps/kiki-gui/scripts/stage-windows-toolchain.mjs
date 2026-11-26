@@ -4,7 +4,7 @@
  * Kiki NSIS desktop installer so Virgin Windows hosts without Git for Windows,
  * ripgrep, or Node.js work out of the box with zero external downloads.
  *
- * Layout staged under `<outputDir>` (`apps/kiki-gui/src-tauri/toolchain`):
+ * Layout staged under `<outputDir>` (`apps/kiki-desktop/dist/toolchain`):
  *   - `git/`          Relocatable Git + MSYS2 Bash + essential POSIX coreutils
  *                     with PE Import + Delay-Load DLL closure verified
  *   - `bin/rg.exe`    Pinned ripgrep 15.0.0 MSVC binary (SHA-256 verified)
@@ -36,7 +36,7 @@ import { unzipSync } from 'fflate';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const GUI_ROOT = resolve(SCRIPT_DIR, '..');
-const DEFAULT_OUTPUT_DIR = resolve(GUI_ROOT, 'src-tauri', 'toolchain');
+const DEFAULT_OUTPUT_DIR = resolve(GUI_ROOT, '..', 'kiki-desktop', 'dist', 'toolchain');
 const DEFAULT_CACHE_DIR = resolve(tmpdir(), 'kiki-windows-toolchain-cache');
 const TOOLCHAIN_MANIFEST_SCHEMA = 1;
 

@@ -1,8 +1,11 @@
 !include "WinMessages.nsh"
-SetDatablockOptimize on
 
 !ifndef KIKI_PATH_REG_SUBKEY
   !define KIKI_PATH_REG_SUBKEY "Environment"
+!endif
+
+!ifndef KIKI_URL_REG_SUBKEY
+  !define KIKI_URL_REG_SUBKEY "Software\Classes\kiki"
 !endif
 
 !macro KIKI_UPDATE_USER_PATH ACTION
@@ -96,7 +99,9 @@ SetDatablockOptimize on
   System::Call 'kernel32::SetEnvironmentVariable(t "KIKI_CLI_PATH_TARGET", p 0) i .r3'
   Delete "$1"
   StrCmp $0 "0" 0 kiki_path_done_${ACTION}
-  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+!ifndef KIKI_SKIP_WM_BROADCAST
+  System::Call 'user32::SendMessageTimeoutW(p 0xffff, i ${WM_SETTINGCHANGE}, p 0, w "Environment", i 2, i 1000, *p .r3)'
+!endif
   Goto kiki_path_done_${ACTION}
 
   kiki_path_cleanup_${ACTION}:
@@ -109,38 +114,68 @@ SetDatablockOptimize on
   Pop $0
 !macroend
 
+!macro KIKI_WRITE_CLI_SHIMS
+  Push $0
+  ClearErrors
+  CreateDirectory "$INSTDIR\cli"
+  Delete "$INSTDIR\cli\kiki.exe"
+
+  FileOpen $0 "$INSTDIR\cli\kiki.cmd" w
+  IfErrors kiki_shims_abort
+  FileWrite $0 "@echo off$\r$\n"
+  FileWrite $0 "setlocal$\r$\n"
+  FileWrite $0 "set $\"ELECTRON_RUN_AS_NODE=1$\"$\r$\n"
+  FileWrite $0 "$\"%~dp0..\kiki-desktop.exe$\" $\"%~dp0..\resources\app.asar.unpacked\dist\server\server-entry.mjs$\" %*$\r$\n"
+  FileWrite $0 "exit /b %ERRORLEVEL%$\r$\n"
+  FileClose $0
+  IfErrors kiki_shims_abort
+
+  FileOpen $0 "$INSTDIR\cli\kiki" w
+  IfErrors kiki_shims_abort
+  FileWrite $0 "#!/usr/bin/env sh$\n"
+  FileWrite $0 "DIR=$\"$$(CDPATH= cd -- $\"$$(dirname -- $\"$$0$\")/..$\" && pwd)$\"$\n"
+  FileWrite $0 "ELECTRON_RUN_AS_NODE=1 exec $\"$$DIR/kiki-desktop.exe$\" $\"$$DIR/resources/app.asar.unpacked/dist/server/server-entry.mjs$\" $\"$$@$\"$\n"
+  FileClose $0
+  IfErrors kiki_shims_abort
+  Pop $0
+  Goto kiki_shims_done
+
+  kiki_shims_abort:
+  Pop $0
+  Abort "Could not install the Kiki CLI shims."
+
+  kiki_shims_done:
+!macroend
+
 !macro KIKI_REGISTER_URL_PROTOCOL
-  WriteRegStr HKCU "Software\Classes\kiki" "" "URL:Kiki Protocol"
-  WriteRegStr HKCU "Software\Classes\kiki" "URL Protocol" ""
-  WriteRegStr HKCU "Software\Classes\kiki\DefaultIcon" "" "$\"$INSTDIR\kiki-desktop.exe$\",0"
-  WriteRegStr HKCU "Software\Classes\kiki\shell\open\command" "" "$\"$INSTDIR\kiki-desktop.exe$\" $\"%1$\""
+  WriteRegStr HKCU "${KIKI_URL_REG_SUBKEY}" "" "URL:Kiki Protocol"
+  WriteRegStr HKCU "${KIKI_URL_REG_SUBKEY}" "URL Protocol" ""
+  WriteRegStr HKCU "${KIKI_URL_REG_SUBKEY}\DefaultIcon" "" "$\"$INSTDIR\kiki-desktop.exe$\",0"
+  WriteRegStr HKCU "${KIKI_URL_REG_SUBKEY}\shell\open\command" "" "$\"$INSTDIR\kiki-desktop.exe$\" $\"%1$\""
 !macroend
 
 !macro KIKI_UNREGISTER_URL_PROTOCOL
-  DeleteRegKey HKCU "Software\Classes\kiki"
+  DeleteRegKey HKCU "${KIKI_URL_REG_SUBKEY}"
 !macroend
 
-!macro NSIS_HOOK_POSTINSTALL
-  ClearErrors
-  CreateDirectory "$INSTDIR\cli"
-  CopyFiles /SILENT "$INSTDIR\kiki-server.exe" "$INSTDIR\cli\kiki.exe"
-  IfErrors 0 +2
-    Abort "Could not install the Kiki CLI executable."
-!ifdef PRODUCTNAME
-  !if /FileExists "${__FILEDIR__}\..\toolchain\bin\rg.exe"
-    SetOutPath "$INSTDIR\toolchain"
-    File /r "${__FILEDIR__}\..\toolchain\*"
-    SetOutPath "$INSTDIR"
-  !endif
-!endif
+!macro customInstall
+  !insertmacro KIKI_WRITE_CLI_SHIMS
   !insertmacro KIKI_UPDATE_USER_PATH "add"
   !insertmacro KIKI_REGISTER_URL_PROTOCOL
 !macroend
 
-!macro NSIS_HOOK_PREUNINSTALL
+!macro customUnInstall
+!ifdef isUpdated
+  ${ifNot} ${isUpdated}
+    !insertmacro KIKI_UNREGISTER_URL_PROTOCOL
+    !insertmacro KIKI_UPDATE_USER_PATH "remove"
+  ${endIf}
+!else
   !insertmacro KIKI_UNREGISTER_URL_PROTOCOL
   !insertmacro KIKI_UPDATE_USER_PATH "remove"
-!ifdef PRODUCTNAME
-  RMDir /r "$INSTDIR\toolchain"
 !endif
+  Delete "$INSTDIR\cli\kiki.cmd"
+  Delete "$INSTDIR\cli\kiki"
+  Delete "$INSTDIR\cli\kiki.exe"
+  RMDir "$INSTDIR\cli"
 !macroend
