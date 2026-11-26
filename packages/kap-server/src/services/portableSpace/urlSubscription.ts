@@ -68,10 +68,22 @@ export interface UrlSafetyOptions {
   ) => Promise<readonly { readonly address: string; readonly family?: number }[]>;
 }
 
+export interface PinnedHttpResponse {
+  readonly status: number;
+  readonly etag?: string;
+  readonly location?: string;
+  readonly bytes: Buffer;
+}
+
 export interface UrlFetchOptions extends UrlSafetyOptions {
   readonly ifNoneMatch?: string;
   readonly ifNoneMatchOrigin?: string;
   readonly fetchFn?: typeof fetch;
+  readonly pinnedFetchFn?: (
+    target: { readonly url: URL; readonly address: string; readonly family: 4 | 6 },
+    headers: Record<string, string>,
+    signal: AbortSignal,
+  ) => Promise<PinnedHttpResponse>;
   readonly signal?: AbortSignal;
 }
 
@@ -98,6 +110,7 @@ interface SafeSubscriptionTarget {
   readonly address: string;
   readonly family: 4 | 6;
   readonly isLoopback: boolean;
+  readonly dohVerified?: boolean;
   readonly fallbackAddresses?: readonly ResolvedIpTarget[];
 }
 
@@ -392,6 +405,7 @@ async function resolveSafeSubscriptionTarget(
       address: primary.address,
       family: primary.family,
       isLoopback: false,
+      dohVerified: true,
       fallbackAddresses: [...publicTargets.slice(1), ...fakeIpRecords],
     };
   }
@@ -446,15 +460,8 @@ async function readBoundedResponse(response: Response): Promise<Buffer> {
   return Buffer.concat(chunks, total);
 }
 
-interface PinnedHttpResponse {
-  readonly status: number;
-  readonly etag?: string;
-  readonly location?: string;
-  readonly bytes: Buffer;
-}
-
 function fetchPinnedTarget(
-  target: SafeSubscriptionTarget,
+  target: Pick<SafeSubscriptionTarget, 'url' | 'address' | 'family'>,
   headers: Record<string, string>,
   signal: AbortSignal,
 ): Promise<PinnedHttpResponse> {
@@ -537,12 +544,18 @@ async function fetchPinnedTargetWithFallback(
   target: SafeSubscriptionTarget,
   headers: Record<string, string>,
   signal: AbortSignal,
+  pinnedFetch: (
+    target: { readonly url: URL; readonly address: string; readonly family: 4 | 6 },
+    headers: Record<string, string>,
+    signal: AbortSignal,
+  ) => Promise<PinnedHttpResponse> = fetchPinnedTarget,
 ): Promise<PinnedHttpResponse> {
   const candidates: ResolvedIpTarget[] = [
     { address: target.address, family: target.family },
     ...(target.fallbackAddresses ?? []),
   ];
-  const allowProxyFallback = !target.isLoopback
+  const allowProxyFallback = target.dohVerified === true
+    && !target.isLoopback
     && target.url.protocol === 'https:'
     && isIP(stripBrackets(target.url.hostname)) === 0
     && hasConfiguredProxyForUrl(target.url);
@@ -555,8 +568,8 @@ async function fetchPinnedTargetWithFallback(
       ? AbortSignal.any([signal, AbortSignal.timeout(DIRECT_FALLBACK_TIMEOUT_MS)])
       : signal;
     try {
-      return await fetchPinnedTarget(
-        { ...target, address: candidate.address, family: candidate.family },
+      return await pinnedFetch(
+        { url: target.url, address: candidate.address, family: candidate.family },
         headers,
         attemptSignal,
       );
@@ -638,7 +651,12 @@ export async function fetchSubscriptionArchive(rawUrl: string, options: UrlFetch
         bytes = Buffer.alloc(0);
       }
     } else {
-      const pinned = await fetchPinnedTargetWithFallback(currentTarget, headers, signal);
+      const pinned = await fetchPinnedTargetWithFallback(
+        currentTarget,
+        headers,
+        signal,
+        options.pinnedFetchFn,
+      );
       status = pinned.status;
       etag = pinned.etag;
       location = pinned.location;

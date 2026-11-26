@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ImSendError, type ImInboundIdentity } from '../../../src/services/imSession/adapter';
 import { ImSessionBridge } from '../../../src/services/imSession/bridge';
 import { FakeImAdapter, fakeAdapterFactory } from '../../../src/services/imSession/fakeAdapter';
+import { resolveOutboundFilename } from '../../../src/services/imSession/host';
 import { HubSessionAdapter } from '../../../src/services/imSession/hubAdapter';
 import { parseImPaste } from '../../../src/services/imSession/paste';
 import type { ImPendingApproval, ImPendingQuestion, ImSessionPorts, ImSubmitResult, ImVisibleReply } from '../../../src/services/imSession/ports';
@@ -2354,5 +2355,16 @@ describe('IM group wake and reply routing', () => {
     } finally {
       await bridge.close();
     }
+  });
+
+  it('preserves or infers file extensions on IM outbound filenames without being fooled by dots in titles', () => {
+    expect(resolveOutboundFilename('中文标题', 'foo.html', 'text/html')).toBe('中文标题.html');
+    expect(resolveOutboundFilename('Kiki v0.6.1 简报', 'note.md', 'text/markdown')).toBe('Kiki v0.6.1 简报.md');
+    expect(resolveOutboundFilename('Kiki v0.6.1', 'note.md', 'text/markdown')).toBe('Kiki v0.6.1.md');
+    expect(resolveOutboundFilename('report.html', 'foo.html', 'text/html')).toBe('report.html');
+    expect(resolveOutboundFilename('备份包', 'release.tar.gz', 'application/gzip')).toBe('备份包.tar.gz');
+    expect(resolveOutboundFilename('dir/bad\\name\0', 'brief.pdf', 'application/pdf')).toBe('dirbadname.pdf');
+    expect(resolveOutboundFilename('截图', undefined, 'image/png; charset=utf-8')).toBe('截图.png');
+    expect(resolveOutboundFilename(undefined, 'clip.mp4', 'video/mp4')).toBe('clip.mp4');
   });
 });

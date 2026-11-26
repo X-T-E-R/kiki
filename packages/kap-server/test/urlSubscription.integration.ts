@@ -383,6 +383,49 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
     if (pinnedFetched.status === 'ok') {
       expect(pinnedFetched.bytes.byteLength).toBeGreaterThan(0);
     }
+
+    const prevHttpsProxy = process.env['HTTPS_PROXY'];
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    process.env['HTTPS_PROXY'] = 'http://127.0.0.1:7890';
+    try {
+      await expect(
+        fetchSubscriptionArchive('https://ordinary-pinned.example.test/pack.tgz', {
+          lookupFn: async () => [{ address: '93.184.216.34', family: 4 }],
+          pinnedFetchFn: async () => { throw new Error('direct pinned connect failed'); },
+        }),
+      ).rejects.toThrow('direct pinned connect failed');
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      const triedAddresses: string[] = [];
+      const tunFallback = await fetchSubscriptionArchive('https://fakeip-tun.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '198.18.104.218', family: 4 }],
+        dohResolveFn: async () => [
+          { address: '123.206.117.151', family: 4 },
+          { address: '123.206.117.152', family: 4 },
+        ],
+        pinnedFetchFn: async (target) => {
+          triedAddresses.push(target.address);
+          if (target.address !== '198.18.104.218') throw new Error('direct reset');
+          return { status: 200, etag: '"tun-v1"', bytes: Buffer.from('tun-ok') };
+        },
+      });
+      expect(triedAddresses).toEqual(['123.206.117.151', '123.206.117.152', '198.18.104.218']);
+      expect(tunFallback).toEqual({ status: 'ok', bytes: Buffer.from('tun-ok'), etag: '"tun-v1"', finalOrigin: 'https://fakeip-tun.example.test' });
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      fetchSpy.mockResolvedValueOnce(new Response('proxy-ok', { status: 200, headers: { etag: '"proxy-v1"' } }));
+      const proxyFallback = await fetchSubscriptionArchive('https://fakeip-proxy.example.test/pack.tgz', {
+        lookupFn: async () => [{ address: '198.18.104.218', family: 4 }],
+        dohResolveFn: async () => [{ address: '123.206.117.151', family: 4 }],
+        pinnedFetchFn: async () => { throw new Error('all pinned attempts failed'); },
+      });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(proxyFallback).toEqual({ status: 'ok', bytes: Buffer.from('proxy-ok'), etag: '"proxy-v1"', finalOrigin: 'https://fakeip-proxy.example.test' });
+    } finally {
+      fetchSpy.mockRestore();
+      if (prevHttpsProxy === undefined) delete process.env['HTTPS_PROXY'];
+      else process.env['HTTPS_PROXY'] = prevHttpsProxy;
+    }
   });
 
   it('strips hooks, cron.scripts, agent_executors, agent_executor_instances, recipe [[hooks]], and stdio MCP on url endpoints', async () => {

@@ -977,15 +977,62 @@ export function visibleReplyMessages<T extends ReplySelectorMessage>(messages: r
   return selected;
 }
 
+const OUTBOUND_MEDIA_EXTENSIONS: Readonly<Record<string, string>> = {
+  'text/html': '.html',
+  'text/markdown': '.md',
+  'text/plain': '.txt',
+  'text/csv': '.csv',
+  'application/json': '.json',
+  'application/pdf': '.pdf',
+  'application/zip': '.zip',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
+  'image/svg+xml': '.svg',
+  'audio/mpeg': '.mp3',
+  'audio/wav': '.wav',
+  'audio/ogg': '.ogg',
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+};
+
+const SOURCE_EXTENSION_RE = /(?=\.[A-Za-z0-9]*[A-Za-z])(\.(?:tar\.(?:gz|bz2|xz|zst)|[A-Za-z0-9]{1,12}))$/u;
+const HAS_REAL_EXTENSION_RE = /\.(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{1,12}$/u;
+
+function sanitizeOutboundName(raw: string | undefined): string {
+  return (raw ?? '').replaceAll(/[/\\\0]/gu, '').trim();
+}
+
+/** Resolves an IM outbound attachment filename, preserving or inferring the file extension when a display title omits it. */
+export function resolveOutboundFilename(
+  preferred: string | undefined,
+  fallbackFilename: string | undefined,
+  mediaType: string,
+): string {
+  const safePreferred = sanitizeOutboundName(preferred);
+  const safeFallback = sanitizeOutboundName(fallbackFilename);
+  const base = safePreferred || safeFallback || 'file';
+  if (HAS_REAL_EXTENSION_RE.test(base)) return base;
+  const sourceMatch = SOURCE_EXTENSION_RE.exec(safeFallback);
+  const normalizedMime = mediaType.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+  const ext = sourceMatch?.[1] ?? OUTBOUND_MEDIA_EXTENSIONS[normalizedMime];
+  return ext !== undefined ? `${base}${ext}` : base;
+}
+
 async function mediaBytes(part: ContentPart, store: ISessionMediaStore): Promise<ImVisibleMedia | undefined> {
   if (part.type !== 'image_url' && part.type !== 'audio_url' && part.type !== 'video_url') return undefined;
   const ref = part.type === 'image_url' ? part.imageUrl : part.type === 'audio_url' ? part.audioUrl : part.videoUrl;
   const kind = part.type === 'image_url' ? 'image' : part.type === 'audio_url' ? 'audio' : 'file';
   const data = /^data:([^;]+);base64,([\s\S]*)$/u.exec(ref.url);
-  if (data !== null) return { kind, name: ref.name ?? kind, mediaType: data[1]!, bytes: Buffer.from(data[2]!, 'base64') };
+  if (data !== null) return { kind, name: resolveOutboundFilename(ref.name, kind, data[1]!), mediaType: data[1]!, bytes: Buffer.from(data[2]!, 'base64') };
   const daemon = /^kimi-file:\/\/([^?]*)/u.exec(ref.url);
   if (daemon === null) return undefined;
   const file = await store.read(decodeURIComponent(daemon[1] ?? ''));
   if (file === undefined) return undefined;
-  return { kind, name: ref.name ?? file.name, mediaType: ref.mimeType ?? 'application/octet-stream', bytes: file.data };
+  const mediaType = ref.mimeType ?? 'application/octet-stream';
+  return { kind, name: resolveOutboundFilename(ref.name, file.name, mediaType), mediaType, bytes: file.data };
 }
