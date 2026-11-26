@@ -118,6 +118,49 @@ async function awaitRestoreOperation<T>(promise: Promise<T>, attempt: RestoreAtt
   }
 }
 
+function restoreFailureDiagnostics(error: unknown): LogContext | undefined {
+  if (error === null || typeof error !== 'object') return undefined;
+  const candidate = error as {
+    readonly code?: unknown;
+    readonly message?: unknown;
+    readonly details?: unknown;
+  };
+  const extra: Record<string, unknown> = {};
+  if (typeof candidate.code === 'string' && candidate.code.length > 0) {
+    extra['errorCode'] = candidate.code;
+  }
+  if (
+    candidate.details !== null &&
+    typeof candidate.details === 'object' &&
+    !Array.isArray(candidate.details)
+  ) {
+    const details = candidate.details as Record<string, unknown>;
+    if (typeof details['pid'] === 'number' && Number.isSafeInteger(details['pid'])) {
+      extra['lockOwnerPid'] = details['pid'];
+    }
+    if (typeof details['processStartedAt'] === 'number' && Number.isFinite(details['processStartedAt'])) {
+      extra['lockOwnerStartedAt'] = new Date(details['processStartedAt']).toISOString();
+    }
+    if (typeof details['acquiredAt'] === 'number' && Number.isFinite(details['acquiredAt'])) {
+      extra['lockAcquiredAt'] = new Date(details['acquiredAt']).toISOString();
+    }
+    if (
+      details['owner'] !== null &&
+      typeof details['owner'] === 'object' &&
+      !Array.isArray(details['owner'])
+    ) {
+      const owner = details['owner'] as Record<string, unknown>;
+      if (typeof owner['kind'] === 'string' && owner['kind'].length > 0) {
+        extra['lockOwnerKind'] = owner['kind'];
+      }
+      if (typeof owner['sessionId'] === 'string' && owner['sessionId'].length > 0) {
+        extra['lockOwnerSessionId'] = owner['sessionId'];
+      }
+    }
+  }
+  return Object.keys(extra).length > 0 ? extra : undefined;
+}
+
 export async function timeRestorePhase<T>(log: ILogger | undefined, context: LogContext, phase: string, action: () => Promise<T>): Promise<T> {
   throwIfRestoreAborted();
   const started = performance.now();
@@ -127,7 +170,7 @@ export async function timeRestorePhase<T>(log: ILogger | undefined, context: Log
   const reportProgress = () => observers.getStore()?.({ phase: [...(attempt?.phases.values() ?? [phase])].at(-1) ?? phase,
     startedAt: new Date(attempt?.startedAt ?? Date.now()).toISOString(), elapsedMs: attempt === undefined ? Math.round(performance.now() - started) : Date.now() - attempt.startedAt });
   reportProgress();
-  const report = (status: string) => log?.info('agent restore phase', { ...context, phase, status, elapsedMs: Math.round(performance.now() - started) });
+  const report = (status: string, extra?: LogContext) => log?.info('agent restore phase', { ...context, phase, status, elapsedMs: Math.round(performance.now() - started), ...extra });
   const pending = setTimeout(() => report('pending'), 1000);
   pending.unref?.();
   try {
@@ -137,7 +180,7 @@ export async function timeRestorePhase<T>(log: ILogger | undefined, context: Log
     report('completed');
     return result;
   } catch (error) {
-    report('failed');
+    report('failed', restoreFailureDiagnostics(error));
     throw error;
   } finally {
     clearTimeout(pending);

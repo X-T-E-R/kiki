@@ -581,23 +581,30 @@ const HOST_AUTO_INJECTION_VARIANTS = new Set<string>([
   'room_left',
   'room_joined',
   'compaction_elision',
+  'ssh_hosts',
+  'mesh_context',
+  'extension_recovery',
+  'extension_prompt_sections',
+  'shell_command_backgrounded',
+  'image_compression',
 ]);
 
 function isHostAutoInjectionVariant(variant: string | undefined): boolean {
   if (variant === undefined) return false;
   if (HOST_AUTO_INJECTION_VARIANTS.has(variant)) return true;
-  return variant.startsWith('hook_rule/');
+  return variant.startsWith('hook_rule/') || variant.startsWith('plugin_extension/') || variant.startsWith('hook/');
 }
 
 function isHostAutoInjectionOrigin(origin: PromptOrigin | undefined): boolean {
   if (origin === undefined) return false;
   switch (origin.kind) {
     case 'injection':
-      return origin.ownerPromptId === undefined && isHostAutoInjectionVariant(origin.variant);
+      return (origin.ownerPromptId === undefined || origin.variant === 'image_compression') && isHostAutoInjectionVariant(origin.variant);
     case 'skill_activation':
       return origin.trigger === 'model-tool' || origin.trigger === 'nested-skill';
     case 'task':
     case 'cron_missed':
+    case 'hook_result':
       return true;
     case 'merged':
       return origin.origins.length > 0 && origin.origins.every(isHostAutoInjectionOrigin);

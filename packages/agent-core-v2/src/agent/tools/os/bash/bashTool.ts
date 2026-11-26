@@ -38,7 +38,7 @@ import {
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { matchesBashRuleSubject } from '#/tool/bash-rule-match';
 import { renderPrompt } from '#/_base/utils/render-prompt';
-import { userCancellationReason } from '#/_base/utils/abort';
+import { abortable, userCancellationReason } from '#/_base/utils/abort';
 import bashDescriptionTemplate from './bash.md?raw';
 import { ProcessTask } from './process-task';
 import { bashFileToolHint } from './bashFileToolHints';
@@ -54,6 +54,7 @@ import {
 } from './bash';
 
 const MS_PER_SECOND = 1000;
+export const BASH_SPAWN_HANDSHAKE_TIMEOUT_MS = 30_000;
 
 const SHELL_TIMEOUT_VARS = {
   DEFAULT_TIMEOUT_S,
@@ -353,7 +354,25 @@ export class BashTool implements IBashTool {
       : effectiveForegroundTimeoutMs;
 
     const builder = new ToolOutputAccumulator();
-    await prepareToolRuntime(this.runtime, args.host);
+    try {
+      await abortable(
+        prepareToolRuntime(this.runtime, args.host),
+        AbortSignal.any([signal, AbortSignal.timeout(BASH_SPAWN_HANDSHAKE_TIMEOUT_MS)]),
+      );
+    } catch (error) {
+      if (signal.aborted) {
+        return { isError: true, output: 'Aborted before command started' };
+      }
+      return {
+        isError: true,
+        output:
+          error instanceof Error && error.name === 'TimeoutError'
+            ? `Command failed to prepare execution runtime within ${Math.ceil(BASH_SPAWN_HANDSHAKE_TIMEOUT_MS / MS_PER_SECOND)}s`
+            : error instanceof Error
+              ? error.message
+              : String(error),
+      };
+    }
     if (signal.aborted) {
       return { isError: true, output: 'Aborted before command started' };
     }
@@ -365,12 +384,22 @@ export class BashTool implements IBashTool {
     let autoDetachedOnSlotWait = false;
     if (isLocalForeground) {
       const slotSignal = steer === undefined ? signal : AbortSignal.any([signal, steer]);
-      const slotWaitBudgetMs = canAutoDetachWait
-        ? Math.max(1, effectiveForegroundTimeoutMs - Math.max(0, Date.now() - callStartedAt))
-        : undefined;
+      const slotWaitBudgetMs = Math.max(
+        1,
+        effectiveForegroundTimeoutMs - Math.max(0, Date.now() - callStartedAt),
+      );
       const acquired = await acquireLocalForegroundBashSlot(slotSignal, slotWaitBudgetMs);
       if (acquired.kind === 'timed_out') {
-        autoDetachedOnSlotWait = true;
+        if (canAutoDetachWait) {
+          autoDetachedOnSlotWait = true;
+        } else {
+          lease.dispose();
+          const timeoutLabel = formatTimeoutLabel(effectiveForegroundTimeoutMs);
+          return {
+            isError: true,
+            output: `Timed out waiting for a local foreground Bash slot (${timeoutLabel})`,
+          };
+        }
       } else if (acquired.kind !== 'acquired') {
         if (signal.aborted) {
           lease.dispose();
@@ -417,32 +446,67 @@ export class BashTool implements IBashTool {
     let proc: IHostProcess;
     let command: string;
     let isReadOnlyBash = false;
+    const spawnBudgetMs =
+      startsInBackground || canAutoDetachWait
+        ? BASH_SPAWN_HANDSHAKE_TIMEOUT_MS
+        : Math.min(
+            BASH_SPAWN_HANDSHAKE_TIMEOUT_MS,
+            Math.max(1, effectiveForegroundTimeoutMs - Math.max(0, Date.now() - callStartedAt)),
+          );
+    const spawnDeadline = new AbortController();
+    let spawnTimedOut = false;
+    const spawnTimer = setTimeout(() => {
+      spawnTimedOut = true;
+      spawnDeadline.abort(
+        new DOMException(
+          `Command failed to start process within ${formatTimeoutLabel(spawnBudgetMs)}`,
+          'TimeoutError',
+        ),
+      );
+    }, spawnBudgetMs);
+    spawnTimer.unref?.();
     try {
       const view = new RuntimeWorkspaceView(lease.runtime, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
       const env = lease.runtime.environment;
       isReadOnlyBash = env.shellName === 'bash' && isConcurrencySafeBash(args.command);
       command = env.osKind === 'Windows' && env.shellName === 'bash' ? rewriteWindowsNullRedirect(args.command) : args.command;
       const effectiveCwd = view.resolve(args.cwd ?? view.workDir, view.workDir, this.permissionMode.mode === 'yolo');
-      proc = lease.track(
-        await this.spawn(
-          lease.runtime.process!,
-          env,
-          effectiveCwd,
-          command,
-          lease.runtime.identity.runtimeId === 'local',
-          signal,
-        ),
+      const spawnSignal = AbortSignal.any([signal, spawnDeadline.signal]);
+      const spawnPromise = this.spawn(
+        lease.runtime.process!,
+        env,
+        effectiveCwd,
+        command,
+        lease.runtime.identity.runtimeId === 'local',
+        spawnSignal,
       );
+      void spawnPromise.then(
+        (spawned) => {
+          if (spawnTimedOut || signal.aborted) {
+            void killSpawnedProcess(spawned);
+          }
+        },
+        () => undefined,
+      );
+      proc = lease.track(await abortable(spawnPromise, spawnSignal));
     } catch (error) {
       releaseBashSlot();
       lease.dispose();
       if (signal.aborted) {
         return { isError: true, output: 'Aborted before command started' };
       }
+      if (spawnTimedOut) {
+        return {
+          isError: true,
+          output: `Command failed to start process within ${formatTimeoutLabel(spawnBudgetMs)}`,
+        };
+      }
       return {
         isError: true,
         output: error instanceof Error ? error.message : String(error),
       };
+    } finally {
+      clearTimeout(spawnTimer);
     }
     closeProcessStdin(proc);
 

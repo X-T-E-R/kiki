@@ -100,6 +100,7 @@ export async function readCachedColdSessionMeta(
   })().finally(() => {
     if (cache.inflight.get(inflightKey) === load) cache.inflight.delete(inflightKey);
   });
+  void load.catch(() => {});
   cache.inflight.set(inflightKey, load);
   return load;
 }

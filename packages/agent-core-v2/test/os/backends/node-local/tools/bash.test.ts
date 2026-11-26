@@ -2734,4 +2734,77 @@ describe('orphan grandchild cleanup after early root exit (process-task.ts:122)'
       await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     }
   });
+
+  it('bounds local foreground slot wait for non-auto-detach subagents and kills late-arriving spawns after timeout', async () => {
+    const subagentScope: IAgentScopeContext = {
+      _serviceBrand: undefined,
+      agentId: 'child-1',
+      parentAgentId: 'main',
+      scope: (sub?: string) => (sub ? `agent/child-1/${sub}` : 'agent/child-1'),
+    };
+
+    const holderAborts = Array.from({ length: 6 }, () => new AbortController());
+    const holderRuns = holderAborts.map((abortController) => {
+      const blockerProc = processWithOpenStreamsThatExitOnKill();
+      const { runner: blockerRunner } = createTestRunner(blockerProc);
+      const mainTool = bashTool(blockerRunner);
+      return executeTool(
+        mainTool,
+        context({ command: 'sleep 999', timeout: 30 }, abortController.signal),
+      );
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    try {
+      const childProc = processWithOutput({ stdout: 'ok\n', exitCode: 0 });
+      const { runner: childRunner, exec: childExec } = createTestRunner(childProc);
+      const childTool = bashTool(
+        childRunner,
+        posixEnv,
+        createTestCtx('/tmp'),
+        createFakeTaskService().service,
+        stubToolPolicy(),
+        stubConfig(),
+        { scope: subagentScope },
+      );
+      const slotTimedOut = await executeTool(
+        childTool,
+        context({ command: 'echo blocked', timeout: 0.05 }),
+      );
+      expect(slotTimedOut.isError).toBe(true);
+      expect(slotTimedOut.output).toContain('Timed out waiting for a local foreground Bash slot');
+      expect(childExec).not.toHaveBeenCalled();
+    } finally {
+      for (const abortController of holderAborts) abortController.abort(userCancellationReason());
+      await Promise.all(holderRuns.map((run) => run.catch(() => undefined)));
+    }
+
+    let resolveLateSpawn!: (proc: IHostProcess) => void;
+    const lateProc = processWithOutput({ stdout: 'late\n', exitCode: 0 });
+    const slowSpawn = vi.fn(
+      () =>
+        new Promise<IHostProcess>((resolve) => {
+          resolveLateSpawn = resolve;
+        }),
+    );
+    const { runner: slowRunner } = createTestRunner(slowSpawn);
+    const slowChildTool = bashTool(
+      slowRunner,
+      posixEnv,
+      createTestCtx('/tmp'),
+      createFakeTaskService().service,
+      stubToolPolicy(),
+      stubConfig(),
+      { scope: subagentScope },
+    );
+    const spawnTimedOut = await executeTool(
+      slowChildTool,
+      context({ command: 'echo wedged-spawn', timeout: 0.05 }),
+    );
+    expect(spawnTimedOut.isError).toBe(true);
+    expect(spawnTimedOut.output).toContain('Command failed to start process within');
+    resolveLateSpawn(lateProc);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(lateProc.kill).toHaveBeenCalled();
+  });
 });

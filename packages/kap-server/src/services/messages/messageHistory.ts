@@ -17,6 +17,7 @@ import {
   IWireService,
   createContextTranscriptReducer,
   followSessionLifecycles,
+  isQueryStoreValueTooLarge,
   type ContextMessage,
   type ContextTranscript,
   type IAgentScopeHandle,
@@ -37,8 +38,9 @@ import { toProtocolMessage } from './messageProjection';
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
 const MESSAGE_HISTORY_CACHE_CAPACITY = 128;
-export const MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES = 8 << 20;
+export const MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES = 2 << 20;
 export const MESSAGE_HISTORY_CACHE_MAX_TOTAL_BYTES = 64 << 20;
+export const MESSAGE_HISTORY_SPILL_MAX_BYTES = 4 << 20;
 const MESSAGE_HISTORY_ESTIMATE_MESSAGE_OVERHEAD_BYTES = 256;
 const MESSAGE_HISTORY_ESTIMATE_PART_OVERHEAD_BYTES = 32;
 const MESSAGE_HISTORY_ESTIMATE_TOOL_CALL_BYTES = 128;
@@ -590,8 +592,9 @@ async function loadSpilledMessageHistory(
   core: Scope,
   sessionId: string,
 ): Promise<MessageHistoryCacheEntry | undefined> {
+  let store: IQueryStore | undefined;
   try {
-    const store = core.accessor.get(IQueryStore);
+    store = core.accessor.get(IQueryStore);
     const value = await store.get<{
       readonly messages: ContextMessage[];
       readonly createdAtMs: number[];
@@ -603,8 +606,15 @@ async function loadSpilledMessageHistory(
       readonly bytes: number;
     }>(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId);
     if (value === undefined) return undefined;
+    if (value.bytes > MESSAGE_HISTORY_SPILL_MAX_BYTES) {
+      await store.delete(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId).catch(() => undefined);
+      return undefined;
+    }
     return { ...value, explicitIndexes: new Map(value.explicitIndexes) };
-  } catch {
+  } catch (error) {
+    if (isQueryStoreValueTooLarge(error)) {
+      await store?.delete(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId).catch(() => undefined);
+    }
     return undefined;
   }
 }
@@ -616,11 +626,12 @@ async function persistSpilledMessageHistory(
   spill: boolean,
 ): Promise<void> {
   const store = core.accessor.get(IQueryStore);
-  if (!spill) {
+  const estimatedBytes = entry.bytes > 0 ? entry.bytes : estimateMessageHistoryEntryBytes(entry);
+  if (!spill || estimatedBytes > MESSAGE_HISTORY_SPILL_MAX_BYTES) {
     await store.delete(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId).catch(() => undefined);
     return;
   }
-  await store.put(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId, {
+  const payload = {
     messages: entry.messages,
     createdAtMs: entry.createdAtMs,
     explicitIndexes: [...entry.explicitIndexes],
@@ -628,8 +639,19 @@ async function persistSpilledMessageHistory(
     scope: entry.scope,
     coldMtimeMs: entry.coldMtimeMs,
     offset: entry.offset,
-    bytes: entry.bytes,
-  }).catch(() => undefined);
+    bytes: estimatedBytes,
+  };
+  let encodedBytes = 0;
+  try {
+    encodedBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  } catch {
+    return;
+  }
+  if (encodedBytes > MESSAGE_HISTORY_SPILL_MAX_BYTES) {
+    await store.delete(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId).catch(() => undefined);
+    return;
+  }
+  await store.put(MESSAGE_HISTORY_SPILL_COLLECTION, sessionId, payload).catch(() => undefined);
 }
 
 function estimateMessageHistoryEntryBytes(entry: MessageHistoryCacheEntry): number {

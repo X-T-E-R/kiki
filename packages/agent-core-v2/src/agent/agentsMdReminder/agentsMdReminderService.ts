@@ -24,7 +24,15 @@ import type { RuntimeLease } from '#/runtime/runtime';
 import { IAgentAgentsMdReminderService } from './agentsMdReminder';
 import { IAgentsMdDiscoveryService } from './agentsMdDiscoveryService';
 import { extractBashTargetDirs } from './bashTargets';
-import { coveredInstructions, instructionKey, instructionVersion, type InstructionFile } from './instructionCoverage';
+import {
+  analyzeInstructionCoverage,
+  classifyDiscoveredChain,
+  instructionKey,
+  instructionVersion,
+  type DiscoveredChainAction,
+  type InstructionAliasFile,
+  type InstructionFile,
+} from './instructionCoverage';
 
 export const agentsMdReminderKnownKey = defineState<Set<string>>('agentsMdReminder.known', () => new Set());
 export const agentsMdReminderCwdKey = defineState<string | undefined>('agentsMdReminder.cwd', () => undefined);
@@ -70,9 +78,9 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
     this._register(toolExecutor.onWillExecuteTool((event) => {
       if (!event.execution.accesses?.some((access) => access.kind === 'file' && access.workspaceRoot !== true && (access.operation === 'write' || access.operation === 'readwrite'))) return;
       event.waitUntil((async () => {
-        const missing = await this.discoverFor(event.execution.accesses ?? [], event.args);
-        if (missing.length === 0) return;
-        this.queue(missing);
+        const actions = await this.discoverActionsFor(event.execution.accesses ?? [], event.args);
+        if (!actions.some((action) => action.kind === 'full')) return;
+        this.queue(actions.map((action) => action.item));
         event.veto({ isError: true, output: 'No files were changed. Applicable directory instructions have not yet been disclosed in this context. The host will disclose them before the next step; review them and retry this operation.' });
       })());
     }));
@@ -103,10 +111,29 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
       } finally { lease.dispose(); }
       if (generation !== this.pendingGeneration) return;
     }
-    const missing = candidates.filter((item) => !this.covered(item));
-    if (missing.length === 0) { this.pending.clear(); return; }
-    this.reminders.appendSystemReminder(`Applicable directory instructions (complete current versions; apply within each stated directory scope):\n\n${missing.map((item) => `<!-- From: ${item.sourcePath} -->\nHost: ${item.file.runtimeId}; scope: ${item.file.scope}\n${item.content}`).join('\n\n')}`, {
-      kind: 'injection', variant: 'agents_md', disclosure: { mode: 'add', files: missing.map((item) => item.file) },
+    const actions = this.classifyChains(candidates);
+    if (actions.length === 0) { this.pending.clear(); return; }
+    const fullFiles: InstructionFile[] = [];
+    const aliasFiles: InstructionAliasFile[] = [];
+    const blocks: string[] = [];
+    for (const action of actions) {
+      const { item } = action;
+      if (action.kind === 'full') {
+        fullFiles.push(item.file);
+        blocks.push(`<!-- From: ${item.sourcePath} -->\nHost: ${item.file.runtimeId}; scope: ${item.file.scope}\n${item.content}`);
+      } else {
+        aliasFiles.push({ ...item.file, canonicalSourcePath: action.canonicalSourcePath });
+        blocks.push(`<!-- From: ${item.sourcePath} -->\nHost: ${item.file.runtimeId}; scope: ${item.file.scope}\n(Identical to ${action.canonicalSourcePath} already in context above; overrides parent directory instructions within this scope.)`);
+      }
+    }
+    this.reminders.appendSystemReminder(`Applicable directory instructions (complete current versions; apply within each stated directory scope):\n\n${blocks.join('\n\n')}`, {
+      kind: 'injection',
+      variant: 'agents_md',
+      disclosure: {
+        mode: 'add',
+        files: fullFiles,
+        ...(aliasFiles.length > 0 ? { aliases: aliasFiles } : {}),
+      },
     });
     this.pending.clear();
   }
@@ -115,15 +142,54 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
     return this.runtime.acquireFor === undefined || host === undefined ? this.runtime.acquire(['fs']) : this.runtime.acquireFor(host, ['fs']);
   }
 
-  private covered(item: PendingInstruction): boolean {
-    const key = instructionKey(item.file, item.pathClass);
+  private systemFilesFor(candidates: readonly PendingInstruction[], pathClass: 'posix' | 'win32'): InstructionFile[] {
     const profile = this.states.get(profileKey);
     const files = this.states.get(dynamicPromptKey)?.context.agentsMdFiles ?? [];
-    const trusted = files.some((file) => instructionKey(file, item.pathClass) === key && file.version === item.file.version) ||
-      (item.file.runtimeId === this.runtime.inspect().identity.runtimeId &&
-        (profile.agentsMdPaths ?? []).some((path) => instructionKey({ path, runtimeId: item.file.runtimeId, scope: item.file.scope }, item.pathClass) === key));
-    const systemFiles = trusted && profile.systemPrompt.includes(`<!-- From: ${item.sourcePath} -->\n${item.content}`) ? [item.file] : [];
-    return coveredInstructions(this.context.get(), item.pathClass, systemFiles).has(`${key}:${item.file.version}`);
+    const out: InstructionFile[] = [];
+    for (const item of candidates) {
+      if (item.pathClass !== pathClass) continue;
+      const key = instructionKey(item.file, pathClass);
+      const trusted = files.some((file) => instructionKey(file, pathClass) === key && file.version === item.file.version) ||
+        (item.file.runtimeId === this.runtime.inspect().identity.runtimeId &&
+          (profile.agentsMdPaths ?? []).some((path) => instructionKey({ path, runtimeId: item.file.runtimeId, scope: item.file.scope }, pathClass) === key));
+      if (trusted && profile.systemPrompt.includes(`<!-- From: ${item.sourcePath} -->\n${item.content}`)) {
+        out.push(item.file);
+      }
+    }
+    return out;
+  }
+
+  private classifyChains(candidates: readonly PendingInstruction[]): DiscoveredChainAction<PendingInstruction>[] {
+    if (candidates.length === 0) return [];
+    const history = this.context.get();
+    const byClass = new Map<'posix' | 'win32', PendingInstruction[]>();
+    for (const item of candidates) {
+      const list = byClass.get(item.pathClass) ?? [];
+      list.push(item);
+      byClass.set(item.pathClass, list);
+    }
+    const actions = new Map<string, DiscoveredChainAction<PendingInstruction>>();
+    for (const [pathClass, items] of byClass) {
+      const coverage = analyzeInstructionCoverage(history, pathClass, this.systemFilesFor(items, pathClass));
+      const sorted = [...items].sort((a, b) => a.file.scope.length - b.file.scope.length);
+      for (const item of sorted) {
+        const normScope = pathClass === 'win32' ? normalize(item.file.scope).toLowerCase() : normalize(item.file.scope);
+        const chain = sorted.filter((anc) => {
+          if (anc.file.runtimeId !== item.file.runtimeId) return false;
+          const ancScope = pathClass === 'win32' ? normalize(anc.file.scope).toLowerCase() : normalize(anc.file.scope);
+          const prefix = ancScope.endsWith('/') ? ancScope : `${ancScope}/`;
+          return normScope === ancScope || normScope.startsWith(prefix);
+        });
+        for (const action of classifyDiscoveredChain(chain, coverage)) {
+          const key = instructionKey(action.item.file, pathClass);
+          const prev = actions.get(key);
+          if (prev === undefined || (prev.kind === 'alias' && action.kind === 'full')) {
+            actions.set(key, action);
+          }
+        }
+      }
+    }
+    return [...actions.values()];
   }
 
   private queue(items: readonly PendingInstruction[]): void {
@@ -247,7 +313,7 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
     return trusted;
   }
 
-  private async discoverFor(accesses: readonly import('#/tool/toolContract').ToolResourceAccess[], args: unknown): Promise<PendingInstruction[]> {
+  private async discoverActionsFor(accesses: readonly import('#/tool/toolContract').ToolResourceAccess[], args: unknown): Promise<DiscoveredChainAction<PendingInstruction>[]> {
     const dirs = [...new Set(accesses.flatMap((access) => access.kind === 'file' && access.workspaceRoot !== true ? [access.operation === 'search' || access.recursive ? access.path : dirname(access.path)] : []))];
     if (dirs.length === 0) return [];
     const host = stringArg(args, 'host');
@@ -255,8 +321,12 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
     try {
       const paths = [...new Set((await Promise.all(dirs.map((dir) => this.discoverDir(lease, dir)))).flat())];
       const loaded = await Promise.all(paths.map((path) => this.load(lease, path)));
-      return preferredInstructions(loaded).filter((item) => !this.covered(item));
+      return this.classifyChains(preferredInstructions(loaded));
     } finally { lease.dispose(); }
+  }
+
+  private async discoverFor(accesses: readonly import('#/tool/toolContract').ToolResourceAccess[], args: unknown): Promise<PendingInstruction[]> {
+    return (await this.discoverActionsFor(accesses, args)).map((action) => action.item);
   }
 
   private async afterTool(ctx: ToolDidExecuteContext): Promise<void> {
@@ -294,7 +364,7 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
         if (stringArg(ctx.args, 'cwd') !== undefined && !dirs.includes(cwd)) dirs.unshift(cwd);
         const paths = [...new Set((await Promise.all(dirs.map((dir) => this.discoverDir(lease, shellPath(dir))))).flat())];
         const loaded = await Promise.all(paths.map((path) => this.load(lease, path)));
-        missing = [...missing, ...preferredInstructions(loaded).filter((item) => !this.covered(item))];
+        missing = [...missing, ...this.classifyChains(preferredInstructions(loaded)).map((action) => action.item)];
       } finally { lease.dispose(); }
     }
     this.queue(missing);

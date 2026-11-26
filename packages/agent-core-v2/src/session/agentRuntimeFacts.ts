@@ -1,4 +1,5 @@
 import { produce } from 'immer';
+import { abortable } from '#/_base/utils/abort';
 import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -101,7 +102,13 @@ export async function readPersistedAgentRuntimeFacts(
   if (size === undefined) return fallback;
   let cache = caches.get(host);
   if (cache === undefined) { cache = new Map(); caches.set(host, cache); }
-  const wait = (promise: Promise<PersistedAgentRuntimeFacts>) => promise.then(facts => { signal?.throwIfAborted(); return facts; });
+  const wait = (promise: Promise<PersistedAgentRuntimeFacts>) => {
+    void promise.catch(() => {});
+    return (signal === undefined ? promise : abortable(promise, signal)).then(facts => {
+      signal?.throwIfAborted();
+      return facts;
+    });
+  };
   const includeStatus = options?.includeStatus === true;
   const includeControls = includeStatus || options?.includeControls === true;
   const cacheKey = includeStatus ? `${scope}:status` : includeControls ? `${scope}:controls` : scope;
@@ -217,7 +224,9 @@ export async function readPersistedAgentRuntimeFacts(
       } : undefined,
     };
   };
-  const entry = { size, mtime, checkpointToken: ckptStat.token, contextTokens: metadata?.contextTokens, promise: read() };
+  const promise = read();
+  void promise.catch(() => {});
+  const entry = { size, mtime, checkpointToken: ckptStat.token, contextTokens: metadata?.contextTokens, promise };
   cache.delete(cacheKey);
   cache.set(cacheKey, entry);
   if (cache.size > 1024) cache.delete(cache.keys().next().value!);

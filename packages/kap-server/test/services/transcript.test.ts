@@ -4687,6 +4687,31 @@ describe('TranscriptService live integration', () => {
       }
     });
 
+    it('skips persisting cold transcript projection checkpoints exceeding the 4 MiB SQLite payload cap', async () => {
+      const home = await seedWireHomeWithTool();
+      const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      const largeBody = 'z'.repeat(4 * 1024 * 1024 + 32_768);
+      await appendFile(wirePath, `${[
+        { type: 'turn.ended', turnId: 0, reason: 'completed', time: 5_500 },
+        { type: 'turn.prompt', turnId: 1, origin: { kind: 'user' }, input: [{ type: 'text', text: largeBody }], time: 6_000 },
+        { type: 'turn.ended', turnId: 1, reason: 'completed', time: 7_000 },
+        ...Array.from({ length: 300 }, (_, index) => ({ type: 'executor.runtime.update', kind: 'stable', index })),
+      ].map((record) => JSON.stringify(record)).join('\n')}\n`);
+      const core = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents());
+      const query = core.accessor.get(IQueryStore);
+      const key = 'ws\0s1\0main';
+      await query.put('__transcript_projection_checkpoint__', key, { stale: true });
+      const service = new TranscriptService({ homeDir: home, core });
+      try {
+        const snapshot = await service.readColdSnapshot('s1', 'main');
+        expect(snapshot?.items.some((item) => item.kind === 'turn' && item.turnId === 't1')).toBe(true);
+        expect(await query.get('__transcript_projection_checkpoint__', key)).toBeUndefined();
+      } finally {
+        service.dispose();
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
     it('rebuilds a format 7 EOF checkpoint to recover answered question time from unchanged wire', async () => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');

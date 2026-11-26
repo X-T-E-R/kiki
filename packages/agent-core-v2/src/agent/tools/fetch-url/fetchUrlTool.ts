@@ -57,6 +57,10 @@ export class FetchURLTool implements IFetchURLTool {
       const subject = input.action !== 'run' ? `${input.action} ${input.job_id}` : input.source.kind === 'url' ? input.source.url : path ?? input.source.kind;
       return {
         accesses: path === undefined ? ToolAccesses.none() : ToolAccesses.readFile(path),
+        foregroundTimeoutMs:
+          'timeout_ms' in input && input.timeout_ms !== undefined
+            ? input.timeout_ms + 5_000
+            : undefined,
         description: `Fetch: ${sliceUtf16(subject, 0, 100)}`,
         display: path === undefined ? { kind: 'url_fetch', url: subject } : { kind: 'file_io', operation: 'read', path },
         approvalRule: literalRulePattern(this.name, subject),

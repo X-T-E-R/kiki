@@ -6,7 +6,7 @@ import { ILogService } from '#/_base/log/log';
 import { abortable } from '#/_base/utils/abort';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { LifecycleScope } from '#/app/scopes';
-import { acquireFileLock } from '#/persistence/backends/node-fs/fileLock';
+import { acquireFileLock, sweepLockDirectorySidecars } from '#/persistence/backends/node-fs/fileLock';
 import {
   IQueryStore,
   type Checkpoint,
@@ -85,6 +85,7 @@ export class SqliteQueryStore extends Disposable implements IQueryStore {
   }
 
   private async reclaimStaging(worker: QueryStoreWorker): Promise<void> {
+    await sweepLockDirectorySidecars(this.directory).catch(() => undefined);
     const owners = await worker.request<Page<StagingOwner>>({ type: 'query', query: { collection: STAGING } });
     for (const owner of owners.items) {
       if (typeof owner.source !== 'string' || !/^[a-f0-9-]{36}$/.test(owner.id)) throw new Error('Invalid query staging owner');

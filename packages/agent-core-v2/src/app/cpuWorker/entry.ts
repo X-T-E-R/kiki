@@ -66,11 +66,12 @@ async function execute(request: CpuRequest): Promise<void> {
     'result' in response
       ? response.result instanceof ArrayBuffer
         ? [response.result]
-        : response.result !== null &&
-            typeof response.result === 'object' &&
-            'data' in response.result &&
-            response.result.data instanceof ArrayBuffer
-          ? [response.result.data]
+        : response.result !== null && typeof response.result === 'object'
+          ? 'data' in response.result && response.result.data instanceof ArrayBuffer
+            ? [response.result.data]
+            : 'batches' in response.result && Array.isArray(response.result.batches)
+              ? response.result.batches.filter((entry): entry is ArrayBuffer => entry instanceof ArrayBuffer)
+              : []
           : []
       : [];
   port!.postMessage(response, transferList);

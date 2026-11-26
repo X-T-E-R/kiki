@@ -6,6 +6,7 @@ import { resolveWorkerEntry } from '#/_base/node/workerEntry';
 import { MAILBOX_QUEUE_FULL, mailboxWorkerEntry, type MailboxOperation, type MailboxRequest, type MailboxResponse } from './protocol';
 
 const MAILBOX_MAX_WAITING = RESOURCE_DEFAULTS.workerQueue;
+export const MAILBOX_WORKER_REQUEST_TIMEOUT_MS = 30_000;
 
 interface Pending {
   readonly operation: MailboxOperation;
@@ -14,6 +15,7 @@ interface Pending {
   readonly signal?: AbortSignal;
   readonly cancellation?: Int32Array;
   readonly abort?: () => void;
+  watchdog?: ReturnType<typeof setTimeout>;
 }
 
 export class MailboxWorker {
@@ -24,8 +26,17 @@ export class MailboxWorker {
   private stopped = false;
   private closing?: Promise<void>;
   private readonly exited: Promise<void>;
+  private readonly requestTimeoutMs: number;
 
-  constructor(database: string, create: boolean, readOnly: boolean) {
+  get isStopped(): boolean { return this.stopped; }
+
+  constructor(
+    database: string,
+    create: boolean,
+    readOnly: boolean,
+    requestTimeoutMs = MAILBOX_WORKER_REQUEST_TIMEOUT_MS,
+  ) {
+    this.requestTimeoutMs = requestTimeoutMs;
     const entry = resolveWorkerEntry(import.meta.url, './entry.ts', 'mailbox-worker.mjs', {
       configuredEntry: mailboxWorkerEntry(),
       unavailableMessage: 'Canonical mailbox SQLite worker asset is unavailable',
@@ -41,7 +52,7 @@ export class MailboxWorker {
       const pending = this.active;
       if (pending === undefined || response.id !== this.serial) return;
       this.active = undefined;
-      if (pending.abort !== undefined) pending.signal?.removeEventListener('abort', pending.abort);
+      this.release(pending);
       if ('error' in response) pending.reject(Object.assign(new Error(response.error.message), { code: response.error.code, committed: response.error.committed }));
       else pending.resolve(response.result);
       this.pump();
@@ -65,7 +76,7 @@ export class MailboxWorker {
       const cancellation = signal === undefined ? undefined : new Int32Array(new SharedArrayBuffer(4));
       const abort = signal === undefined ? undefined : (): void => {
         const index = this.waiting.indexOf(pending);
-        if (index >= 0) { this.waiting.splice(index, 1); signal.removeEventListener('abort', abort!); reject(signal.reason); }
+        if (index >= 0) { this.waiting.splice(index, 1); this.release(pending); reject(signal.reason); }
         else if (this.active === pending) Atomics.store(cancellation!, 0, 1);
       };
       const pending: Pending = { operation, signal, cancellation, abort, resolve: (value) => resolve(value as T), reject };
@@ -75,12 +86,28 @@ export class MailboxWorker {
     });
   }
 
+  private release(pending: Pending): void {
+    if (pending.abort !== undefined) pending.signal?.removeEventListener('abort', pending.abort);
+    if (pending.watchdog !== undefined) {
+      clearTimeout(pending.watchdog);
+      pending.watchdog = undefined;
+    }
+  }
+
   private pump(): void {
     if (this.active !== undefined || this.stopped) return;
     const pending = this.waiting.shift();
     if (pending === undefined) { if (this.closing === undefined) this.worker.unref(); return; }
     this.active = pending;
     this.worker.ref();
+    if (pending.operation.type !== 'close' && Number.isFinite(this.requestTimeoutMs) && this.requestTimeoutMs > 0) {
+      pending.watchdog = setTimeout(() => {
+        if (this.active === pending) {
+          this.fail(new Error(`Canonical mailbox worker request timed out after ${this.requestTimeoutMs}ms (${pending.operation.type})`));
+        }
+      }, this.requestTimeoutMs);
+      pending.watchdog.unref?.();
+    }
     try { this.worker.postMessage({ id: ++this.serial, operation: pending.operation, cancellation: pending.cancellation?.buffer as SharedArrayBuffer | undefined } satisfies MailboxRequest); }
     catch (error) { this.fail(error instanceof Error ? error : new Error(String(error))); }
   }
@@ -97,7 +124,7 @@ export class MailboxWorker {
     this.stopped = true;
     for (const pending of [this.active, ...this.waiting]) {
       if (pending === undefined) continue;
-      if (pending.abort !== undefined) pending.signal?.removeEventListener('abort', pending.abort);
+      this.release(pending);
       pending.reject(Object.assign(new Error(`${error.message}; ${pending === this.active ? 'outcome unknown; reopen and read the persisted request receipt' : 'request was not dispatched'}`, { cause: error }), { committed: pending === this.active ? undefined : false }));
     }
     this.active = undefined;

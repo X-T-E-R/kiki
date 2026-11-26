@@ -263,6 +263,7 @@ export class AgentOutcomeDocuments {
       flight = this.store.get<OutcomeDocument>(this.scope, ref).finally(() => {
         if (this.inFlightReads.get(ref) === flight) this.inFlightReads.delete(ref);
       });
+      void flight.catch(() => {});
       this.inFlightReads.set(ref, flight);
     }
     const outcome = await flight;
